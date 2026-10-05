@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use shards_cmdline::commands::{
     self, CONTAINER_INSPECT, HISTORY, IMAGE_INSPECT, IMAGES, KILL, LOAD, LOGS, PORT, PS, PULL, PUSH, RENAME,
-    RM, RMI, SAVE, STOP, TAG, WAIT,
+    RM, RMI, SAVE, STOP, SYSTEM_DF, TAG, WAIT,
 };
 use shards_cmdline::flags::{self, Outcome, Parsed};
 use shards_cmdline::{go, gotime, width};
@@ -373,6 +373,8 @@ impl<D: crate::containers::Disk> Daemon<D> {
             self.rmi(&parsed, asker.styled(), reply)
         } else if std::ptr::eq(command, &IMAGE_INSPECT) {
             self.image_inspect(&parsed.args, asker.styled(), reply)
+        } else if std::ptr::eq(command, &SYSTEM_DF) {
+            self.system_df(asker, reply)
         } else if std::ptr::eq(command, &RENAME) {
             self.rename(&parsed.args, reply)
         } else if std::ptr::eq(command, &HISTORY) {

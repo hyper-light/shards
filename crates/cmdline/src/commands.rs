@@ -422,6 +422,21 @@ pub static RENAME: Command = Command {
     error_prefix: "",
 };
 
+/// `shards system df` (docker/cli cli/command/system/df.go): what the store and the
+/// microVMs take on disk.
+pub static SYSTEM_DF: Command = Command {
+    usage: "[OPTIONS]",
+    about: "Show docker disk usage",
+    aliases: "",
+    args: Args::None,
+    flags: &[HELP],
+    unserved: "\
+format - s - -\n\
+verbose v b - -",
+    interspersed: true,
+    error_prefix: "",
+};
+
 /// `shards save`.
 pub static SAVE: Command = Command {
     usage: "[OPTIONS] IMAGE [IMAGE...]",
@@ -852,6 +867,7 @@ pub fn find(words: &[&str]) -> Option<(&'static Command, &'static str, usize)> {
         ["image", "tag", ..] => (&TAG, "shards image tag", 2),
         ["image", "inspect", ..] => (&IMAGE_INSPECT, "shards image inspect", 2),
         ["history", ..] => (&HISTORY, "shards history", 1),
+        ["system", "df", ..] => (&SYSTEM_DF, "shards system df", 2),
         ["rename", ..] => (&RENAME, "shards rename", 1),
         ["container", "rename", ..] => (&RENAME, "shards container rename", 2),
         ["image", "history", ..] => (&HISTORY, "shards image history", 2),

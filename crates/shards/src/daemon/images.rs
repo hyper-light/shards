@@ -737,6 +737,132 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
     }
 }
 
+/// The bytes the files under `dir` hold, as `du` counts them: their blocks.
+fn on_disk(dir: &std::path::Path) -> u64 {
+    use std::os::unix::fs::MetadataExt;
+    let mut total = 0u64;
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&d) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(meta) = entry.metadata() else {
+                continue;
+            };
+            if meta.is_dir() {
+                stack.push(entry.path());
+            } else {
+                total = total.saturating_add(meta.blocks().saturating_mul(512));
+            }
+        }
+    }
+    total
+}
+
+impl<D: crate::containers::Disk> super::Daemon<D> {
+    /// `shards system df` (docker/cli formatter/disk_usage.go): images, containers, local
+    /// volumes and the build cache, each its count, how many are in use, its size, and
+    /// what removing the unused would free. A colour terminal also hears of the microVMs'
+    /// templates, which only shards has.
+    pub(super) fn system_df(&self, asker: &super::commands::Asker, reply: &super::commands::Reply<'_>) -> u8 {
+        let images = self.listed(None, false).unwrap_or_default();
+        let (img_total, img_active) = (images.len(), images.iter().filter(|i| i.containers > 0).count());
+        let img_size: i64 = images.iter().map(|i| i.size).sum();
+        let img_free: i64 = images.iter().filter(|i| i.containers == 0).map(|i| i.size).sum();
+        let held: Vec<(bool, String)> = super::lock(&self.containers)
+            .all()
+            .map(|c| (c.state == crate::containers::State::Running, c.id.clone()))
+            .collect();
+        let containers: Vec<(bool, u64)> = held
+            .into_iter()
+            .map(|(running, id)| (running, on_disk(&self.home.join("containers").join(id))))
+            .collect();
+        let c_total = containers.len();
+        let c_active = containers.iter().filter(|(r, _)| *r).count();
+        let c_size = i64::try_from(containers.iter().map(|(_, s)| s).sum::<u64>()).unwrap_or(i64::MAX);
+        let c_free = i64::try_from(
+            containers
+                .iter()
+                .filter(|(r, _)| !*r)
+                .map(|(_, s)| s)
+                .sum::<u64>(),
+        )
+        .unwrap_or(i64::MAX);
+        let templates = self.home.join("templates");
+        let t_total = std::fs::read_dir(&templates)
+            .map(|d| d.flatten().count())
+            .unwrap_or(0);
+        let t_size = i64::try_from(on_disk(&templates)).unwrap_or(i64::MAX);
+        if asker.styled() {
+            let mut sheet = shards_ipc::Sheet::new("df");
+            for (kind, total, active, bytes, freeable) in [
+                ("images", img_total, img_active, img_size, img_free),
+                ("microVMs", c_total, c_active, c_size, c_free),
+                ("templates", t_total, t_total, t_size, 0),
+            ] {
+                sheet.record(&[
+                    ("kind", kind.into()),
+                    ("total", total.to_string()),
+                    ("active", active.to_string()),
+                    ("size", bytes.to_string()),
+                    ("reclaimable", freeable.to_string()),
+                ]);
+            }
+            reply.sheet(&sheet);
+            return 0;
+        }
+        let free = |f: i64, all: i64| {
+            if all <= 0 {
+                human_size(0)
+            } else {
+                format!("{} ({}%)", human_size(f), f * 100 / all)
+            }
+        };
+        let rows = [
+            [
+                "TYPE".to_string(),
+                "TOTAL".into(),
+                "ACTIVE".into(),
+                "SIZE".into(),
+                "RECLAIMABLE".into(),
+            ],
+            [
+                "Images".into(),
+                img_total.to_string(),
+                img_active.to_string(),
+                human_size(img_size),
+                free(img_free, img_size),
+            ],
+            [
+                "Containers".into(),
+                c_total.to_string(),
+                c_active.to_string(),
+                human_size(c_size),
+                free(c_free, c_size),
+            ],
+            [
+                "Local Volumes".into(),
+                "0".into(),
+                "0".into(),
+                human_size(0),
+                human_size(0),
+            ],
+            [
+                "Build Cache".into(),
+                "0".into(),
+                "0".into(),
+                human_size(0),
+                human_size(0),
+            ],
+        ];
+        for line in super::commands::tabulate(&rows, asker.east_asian) {
+            reply.out(&line);
+        }
+        0
+    }
+}
+
 /// The microVM a name made, gone from the machine's local image store with the name.
 fn unpublish(name: &str) {
     if std::env::var("SHARDS_LOCAL_STORE").is_ok_and(|v| v == "none") {

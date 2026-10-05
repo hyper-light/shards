@@ -24,6 +24,7 @@ pub fn show(sheet: &Sheet) {
         "tag" => tag(&mut page, &p, sheet),
         "port" => port(&mut page, &p, sheet),
         "history" => history(&mut page, &p, sheet),
+        "df" => disk(&mut page, &p, sheet),
         "json" => {
             json(&p, sheet.get(0, "text").unwrap_or(""));
             return;
@@ -170,9 +171,16 @@ fn table(page: &mut Page, p: &Paint, cols: usize, columns: &[Column], rows: &[(C
         l.bold(p, cell.bold).put(p, cell.color, &text).bold(p, false);
         if let Some((bw, share)) = cell.bar {
             l.pad(1);
-            let filled = ((share.clamp(0.0, 1.0) * bw as f64).round() as usize).clamp(1, bw);
-            bar::draw(&mut l.s, p, filled, Fill::Done, 0.0, 0.0);
-            l.w += filled;
+            // Nothing, no bar; anything, at least a cell of one.
+            let filled = if share > 0.0 {
+                ((share.clamp(0.0, 1.0) * bw as f64).round() as usize).clamp(1, bw)
+            } else {
+                0
+            };
+            if filled > 0 {
+                bar::draw(&mut l.s, p, filled, Fill::Done, 0.0, 0.0);
+                l.w += filled;
+            }
             l.pad(bw - filled);
         }
         if !right {
@@ -735,6 +743,88 @@ fn history(page: &mut Page, p: &Paint, sheet: &Sheet) {
         })
         .collect();
     table(page, p, cols, &columns, &table_rows);
+}
+
+/// `shards inspect disk`: what images, microVMs and their templates take, each drawn
+/// against the largest, with what removing the unused would free.
+fn disk(page: &mut Page, p: &Paint, sheet: &Sheet) {
+    let cols = look::width();
+    let num = |i: usize, k: &str| sheet.get(i, k).and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
+    let n = sheet.records.len();
+    let all: u64 = (0..n).map(|i| num(i, "size")).sum();
+    let freeable: u64 = (0..n).map(|i| num(i, "reclaimable")).sum();
+    look::head(
+        page,
+        p,
+        cols,
+        "disk",
+        &[(
+            tokens::MUTED,
+            false,
+            format!(
+                "{} in all · {} could be freed",
+                text::bytes(all),
+                text::bytes(freeable)
+            ),
+        )],
+    );
+    page.blank();
+    let largest = (0..n).map(|i| num(i, "size")).max().unwrap_or(0).max(1);
+    let size_w = (0..n)
+        .map(|i| text::bytes(num(i, "size")).len())
+        .max()
+        .unwrap_or(0);
+    let columns = [
+        Column {
+            heading: "WHAT",
+            right: false,
+            keep: 9,
+        },
+        Column {
+            heading: "COUNT",
+            right: false,
+            keep: 6,
+        },
+        Column {
+            heading: "IN USE",
+            right: false,
+            keep: 5,
+        },
+        Column {
+            heading: "SIZE",
+            right: false,
+            keep: 8,
+        },
+        Column {
+            heading: "FREEABLE",
+            right: false,
+            keep: 7,
+        },
+    ];
+    let rows: Vec<(Cell, Vec<Cell>)> = (0..n)
+        .map(|i| {
+            let mut size = Cell::new(
+                format!("{:<size_w$}", text::bytes(num(i, "size"))),
+                tokens::LAVENDER,
+            );
+            size.bar = Some((12, num(i, "size") as f64 / largest as f64));
+            let free = num(i, "reclaimable");
+            (
+                Cell::new("●", if free > 0 { tokens::AMBER } else { tokens::SAGE }),
+                vec![
+                    Cell::new(sheet.get(i, "kind").unwrap_or(""), tokens::BRIGHT).bold(),
+                    Cell::new(num(i, "total").to_string(), tokens::FOREGROUND),
+                    Cell::new(num(i, "active").to_string(), tokens::FOREGROUND),
+                    size,
+                    Cell::new(
+                        if free > 0 { text::bytes(free) } else { "—".into() },
+                        if free > 0 { tokens::AMBER } else { tokens::FAINT },
+                    ),
+                ],
+            )
+        })
+        .collect();
+    table(page, p, cols, &columns, &rows);
 }
 
 /// `shards tag`: the new name, and the image it names.

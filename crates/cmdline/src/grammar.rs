@@ -22,6 +22,8 @@ pub enum Thing {
     Daemon,
     /// The kernel and shards-init runs boot.
     Guest,
+    /// What shards takes on disk.
+    Disk,
 }
 
 impl Thing {
@@ -32,6 +34,7 @@ impl Thing {
             "image" | "images" => Some(Thing::Image),
             "daemon" => Some(Thing::Daemon),
             "guest" => Some(Thing::Guest),
+            "disk" => Some(Thing::Disk),
             _ => None,
         }
     }
@@ -44,7 +47,7 @@ pub fn rewrite(args: &[String]) -> Option<Vec<String>> {
     // `shards image ls` is `shards ls image`: Docker's management form, turned round.
     let (action, thing, rest) = match (Thing::of(first), second) {
         (Some(thing @ (Thing::Image | Thing::Container)), Some(action)) => (action, thing, args.get(2..)?),
-        (Some(Thing::Vm | Thing::Daemon | Thing::Guest), _) => return None,
+        (Some(Thing::Vm | Thing::Daemon | Thing::Guest | Thing::Disk), _) => return None,
         _ => (first, Thing::of(second?)?, args.get(2..)?),
     };
     let said: &[&str] = match (action, thing) {
@@ -55,6 +58,7 @@ pub fn rewrite(args: &[String]) -> Option<Vec<String>> {
         ("remove" | "rm" | "delete" | "rmi", Thing::Image) => &["rmi", "--vms"],
         ("inspect", Thing::Image) => &["image", "inspect"],
         ("history", Thing::Image) => &["history"],
+        ("inspect", Thing::Disk) => &["system", "df"],
         ("rename", Thing::Vm | Thing::Container) => &["rename"],
         ("inspect", Thing::Vm | Thing::Container) => &["container", "inspect"],
         ("run", Thing::Vm | Thing::Container) => &["run"],
@@ -118,6 +122,12 @@ pub static ACTIONS: &[(&str, &str, &str, &str)] = &[
         "history",
         "image NAME",
         "Show how an image's layers were made",
+    ),
+    (
+        "inspect",
+        "inspect",
+        "disk",
+        "Show what images, microVMs and templates take on disk",
     ),
     (
         "inspect",
