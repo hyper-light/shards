@@ -4167,10 +4167,32 @@ mod tests {
         let status = daemon.command(&argv, &asker, &commands::Reply(&ours));
         drop(ours);
         let (mut out, mut err) = (Vec::new(), Vec::new());
+        // A listing's rows, laid out as the client lays them out.
+        let asked = crate::cli::listing::Asked {
+            format: args
+                .iter()
+                .position(|a| *a == "--format")
+                .and_then(|i| args.get(i + 1))
+                .map_or(String::new(), |f| (*f).to_string()),
+            quiet: args.iter().any(|a| matches!(*a, "-q" | "--quiet" | "-aq")),
+            trunc: !args.contains(&"--no-trunc"),
+            digests: args.contains(&"--digests"),
+            human: !args.contains(&"--human=false") && !args.contains(&"-H=false"),
+        };
+        let clock = shards_cmdline::format::Clock {
+            now: i128::try_from(containers::now()).unwrap(),
+            zone: &shards_cmdline::format::utc,
+        };
         while let Ok(Some(m)) = shards_ipc::recv(&theirs) {
             match m.kind {
                 kind::OUT => out.extend(m.payload),
                 kind::ERR => err.extend(m.payload),
+                kind::SHEET => {
+                    let sheet = shards_ipc::Sheet::decode(&m.payload).unwrap();
+                    if let Some(text) = crate::cli::listing::render(&sheet, &asked, &clock).unwrap() {
+                        out.extend(text.into_bytes());
+                    }
+                }
                 _ => {}
             }
         }

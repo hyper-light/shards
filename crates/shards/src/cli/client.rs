@@ -259,6 +259,8 @@ fn answer<'s>(
     let error_paint = crate::cli::look::styled_err();
     let mut errors: Vec<u8> = Vec::new();
     let mut paged = false;
+    // A listing this client could not lay out (its `--format` failed on a row).
+    let mut unlisted = false;
     // A page redrawn in place as the daemon sends it again (`stats`).
     let mut live = shards_tui::frame::Frame::new();
     let pass = |display: &Option<std::sync::mpsc::Sender<Shown>>, shown: Shown| match (display, shown) {
@@ -305,8 +307,19 @@ fn answer<'s>(
             }
             Ok(Some(m)) if m.kind == kind::SHEET => {
                 if let Some(sheet) = shards_ipc::Sheet::decode(&m.payload) {
-                    crate::cli::screens::show(&sheet, &mut live);
-                    paged = true;
+                    // A listing's rows, laid out here as the CLI lays them out; else a
+                    // page of shards' own.
+                    match crate::cli::listing::show(&sheet) {
+                        Ok(true) => {}
+                        Ok(false) => {
+                            crate::cli::screens::show(&sheet, &mut live);
+                            paged = true;
+                        }
+                        Err(e) => {
+                            let _ = writeln!(std::io::stderr(), "{e}");
+                            unlisted = true;
+                        }
+                    }
                 }
             }
             Ok(Some(m)) if m.kind == kind::OUT => pass(&display, Shown::Out(m.payload)),
@@ -326,6 +339,9 @@ fn answer<'s>(
                         .map(|l| l.strip_prefix("Error response from daemon: ").unwrap_or(l))
                         .collect();
                     crate::cli::look::panel(p, &said.join("\n"), !paged);
+                }
+                if unlisted {
+                    return Some(1);
                 }
                 return Some(m.payload.first().copied().unwrap_or(1));
             }

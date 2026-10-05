@@ -15,6 +15,8 @@ use shards_cmdline::flags::{self, Command, Outcome, Parsed};
 #[cfg(unix)]
 mod client;
 #[cfg(unix)]
+pub(crate) mod listing;
+#[cfg(unix)]
 pub(crate) mod look;
 mod request;
 #[cfg(unix)]
@@ -171,6 +173,49 @@ fn container(
         Err(answered) => return answered,
     };
     let _ = std::io::stdout().write_all(parsed.notices.as_bytes());
+    // A listing's `--format` is the client's to apply, and to check first, as the CLI
+    // checks it before it asks (container/list.go, buildContainerListOptions).
+    #[cfg(unix)]
+    if std::ptr::eq(command, &shards_cmdline::commands::PS) {
+        let format = parsed.string("format").to_string();
+        if !format.is_empty() {
+            let clock = shards_cmdline::format::Clock {
+                now: 0,
+                zone: &shards_cmdline::format::utc,
+            };
+            if let Err(e) = shards_cmdline::format::container::check(&format, &clock) {
+                let _ = writeln!(std::io::stderr(), "{e}");
+                return ExitCode::FAILURE;
+            }
+        }
+        listing::ask(listing::Asked {
+            format,
+            quiet: parsed.bool("quiet"),
+            trunc: !parsed.bool("no-trunc"),
+            digests: false,
+            human: false,
+        });
+    }
+    #[cfg(unix)]
+    if std::ptr::eq(command, &shards_cmdline::commands::IMAGES) {
+        listing::ask(listing::Asked {
+            format: parsed.string("format").to_string(),
+            quiet: parsed.bool("quiet"),
+            trunc: !parsed.bool("no-trunc"),
+            digests: parsed.bool("digests"),
+            human: false,
+        });
+    }
+    #[cfg(unix)]
+    if std::ptr::eq(command, &shards_cmdline::commands::HISTORY) {
+        listing::ask(listing::Asked {
+            format: parsed.string("format").to_string(),
+            quiet: parsed.bool("quiet"),
+            trunc: !parsed.bool("no-trunc"),
+            digests: false,
+            human: parsed.bool("human"),
+        });
+    }
     // A prune asks first, as the Docker CLI does, unless forced: on a colour terminal in
     // shards' look, elsewhere in the CLI's words.
     if let Some(warning) = prune_warning(command, &parsed) {

@@ -294,15 +294,22 @@ pub fn bridge() -> shards_net::bridge::Bridge {
 /// (Linux's from 32768, net.ipv4.ip_local_port_range; macOS's and Windows' from 49152, as
 /// RFC 6335 §6 has it): one no other test's connection is given meanwhile, as a port a
 /// daemon picked from that range may be the moment it is free. Tried from a place of the
-/// process's own, so that tests running beside each other seldom try the same.
+/// process's own, so that test processes running beside each other seldom try the same.
 pub fn fixed_port() -> u16 {
     const FIRST: u32 = 20_000;
     const SPAN: u32 = 12_000;
+    // A port handed out is not handed out again in this process: its probe lets it go at
+    // once, and tests running beside each other would otherwise be given the same one.
+    static HANDED: std::sync::Mutex<Vec<u16>> = std::sync::Mutex::new(Vec::new());
+    let mut handed = HANDED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let start = std::process::id() % SPAN;
-    (0..SPAN)
+    let port = (0..SPAN)
         .filter_map(|i| u16::try_from(FIRST + (start + i) % SPAN).ok())
+        .filter(|port| !handed.contains(port))
         .find(|&port| std::net::TcpListener::bind(("0.0.0.0", port)).is_ok())
-        .expect("a free port below the ephemeral ranges")
+        .expect("a free port below the ephemeral ranges");
+    handed.push(port);
+    port
 }
 
 /// The network process: each networked VM's.

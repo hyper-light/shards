@@ -286,6 +286,12 @@ pub static PS: Command = Command {
             Some(b'a'),
             "Show all containers (default shows just running)",
         ),
+        Flag::string(
+            "format",
+            None,
+            "",
+            "Format output using a custom template:\n'table':            Print output in table format with column headers (default)\n'table TEMPLATE':   Print output in table format using the given Go template\n'json':             Print in JSON format\n'TEMPLATE':         Print output using the given Go template.\nRefer to https://docs.docker.com/go/formatting/ for more information about formatting output with templates",
+        ),
         HELP,
         Flag::int(
             "last",
@@ -303,7 +309,6 @@ pub static PS: Command = Command {
     ],
     unserved: "\
 filter f m - -\n\
-format - s - -\n\
 size s b false -",
     interspersed: true,
     error_prefix: "",
@@ -322,6 +327,12 @@ pub static IMAGES: Command = Command {
             "Show all images (default hides intermediate and dangling images)",
         ),
         Flag::bool("digests", None, "Show digests"),
+        Flag::string(
+            "format",
+            None,
+            "",
+            "Format output using a custom template:\n'table':            Print output in table format with column headers (default)\n'table TEMPLATE':   Print output in table format using the given Go template\n'json':             Print in JSON format\n'TEMPLATE':         Print output using the given Go template.\nRefer to https://docs.docker.com/go/formatting/ for more information about formatting output with templates",
+        ),
         HELP,
         Flag::bool("no-trunc", None, "Don't truncate output"),
         Flag::bool("quiet", Some(b'q'), "Only show image IDs"),
@@ -332,8 +343,7 @@ pub static IMAGES: Command = Command {
         ),
     ],
     unserved: "\
-filter f m - -\n\
-format - s - -",
+filter f m - -",
     interspersed: true,
     error_prefix: "",
 };
@@ -393,6 +403,12 @@ pub static HISTORY: Command = Command {
     aliases: "shards image history, shards history",
     args: Args::Exactly(1),
     flags: &[
+        Flag::string(
+            "format",
+            None,
+            "",
+            "Format output using a custom template:\n'table':            Print output in table format with column headers (default)\n'table TEMPLATE':   Print output in table format using the given Go template\n'json':             Print in JSON format\n'TEMPLATE':         Print output using the given Go template.\nRefer to https://docs.docker.com/go/formatting/ for more information about formatting output with templates",
+        ),
         HELP,
         Flag::bool(
             "human",
@@ -404,7 +420,6 @@ pub static HISTORY: Command = Command {
         Flag::bool("quiet", Some(b'q'), "Only show image IDs"),
     ],
     unserved: "\
-format - s - -\n\
 platform - s - -",
     interspersed: true,
     error_prefix: "",

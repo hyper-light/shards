@@ -18,7 +18,7 @@ use shards_cmdline::commands::{
     SYSTEM_DF, SYSTEM_PRUNE, TAG, TOP, UNPAUSE, WAIT,
 };
 use shards_cmdline::flags::{self, Outcome, Parsed};
-use shards_cmdline::{go, gotime, width};
+use shards_cmdline::{gotime, width};
 use shards_ipc::kind;
 
 use super::logs::{self, LogFile, Piece, Reader};
@@ -1689,10 +1689,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
         let listed: Vec<Listed> = list
             .iter()
             .map(|c| Listed {
-                id: c.id.clone(),
-                image: c.image.clone(),
                 command: command_line(&c.command),
-                created: c.created,
                 status: status(
                     c,
                     at,
@@ -1716,11 +1713,10 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 } else {
                     String::new()
                 },
-                name: c.name.clone(),
             })
             .collect();
         // A colour terminal gets shards' page: each microVM a record.
-        if asker.styled() && !parsed.bool("quiet") {
+        if asker.styled() && !parsed.bool("quiet") && parsed.string("format").is_empty() {
             let mut sheet = shards_ipc::Sheet::new("ps");
             let running = list.iter().filter(|c| c.state == Life::Running).count();
             let total = lock(&self.containers).all().count();
@@ -1752,14 +1748,55 @@ impl<D: crate::containers::Disk> Daemon<D> {
             reply.sheet(&sheet);
             return 0;
         }
-        let shown = Listing {
-            trunc,
-            quiet: parsed.bool("quiet"),
-            east_asian,
-        };
-        for line in ps_lines(&listed, at, shown) {
-            reply.out(&line);
-        }
+        // Anywhere else, the rows, which the client lays out as the CLI does
+        // (cli/listing.rs): in its clock and zone, with its `--format`.
+        let rows: Vec<serde_json::Value> = list
+            .iter()
+            .zip(&listed)
+            .map(|(c, l)| {
+                let ports: Vec<serde_json::Value> = if c.state == Life::Running {
+                    c.ports
+                        .iter()
+                        .map(|p| {
+                            serde_json::json!({
+                                "ip": p.ip.map(|ip| ip.to_string()),
+                                "private": p.private,
+                                "public": p.public,
+                                "type": p.proto,
+                            })
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                let state = match c.state {
+                    Life::Running if paused.contains(&c.id) => "paused",
+                    Life::Running => "running",
+                    Life::Created => "created",
+                    _ => "exited",
+                };
+                serde_json::json!({
+                    "id": c.id,
+                    "name": c.name,
+                    "image": c.image,
+                    "image_id": c.image_id.clone().unwrap_or_default(),
+                    "command": l.command,
+                    "created": i64::try_from(c.created / 1_000_000_000).unwrap_or(0),
+                    "ports": ports,
+                    "state": state,
+                    "status": l.status,
+                    "health": health.get(&c.id).map_or("", |h| match h.status {
+                        super::health::Status::Starting => "starting",
+                        super::health::Status::Healthy => "healthy",
+                        super::health::Status::Unhealthy => "unhealthy",
+                    }),
+                })
+            })
+            .collect();
+        let mut sheet = shards_ipc::Sheet::new("ps-rows");
+        sheet.record(&[("rows", serde_json::Value::Array(rows).to_string())]);
+        reply.sheet(&sheet);
+        let _ = (trunc, east_asian);
         0
     }
 
@@ -2196,58 +2233,6 @@ mod tests {
     }
 
     #[test]
-    fn ps_prints_what_the_docker_cli_prints() {
-        let golden: serde_json::Value = serde_json::from_str(include_str!("docker-ps.json")).unwrap();
-        let s = 1_000_000_000u128;
-        for d in golden["durations"].as_array().unwrap() {
-            let seconds = u128::from(d["seconds"].as_u64().unwrap());
-            assert_eq!(
-                human_duration(seconds * s),
-                d["text"].as_str().unwrap(),
-                "{seconds} s"
-            );
-        }
-        let tables = golden["tables"].as_array().unwrap();
-        assert_eq!(tables.len(), 16);
-        let at = 1_790_673_154 * s;
-        for t in tables {
-            let text = |v: &serde_json::Value| v.as_str().unwrap().to_string();
-            let list: Vec<Listed> = t["containers"]
-                .as_array()
-                .map(Vec::as_slice)
-                .unwrap_or_default()
-                .iter()
-                .map(|c| Listed {
-                    id: text(&c["id"]),
-                    image: text(&c["image"]),
-                    command: text(&c["command"]),
-                    created: at - u128::from(c["ago"].as_u64().unwrap()) * s,
-                    status: text(&c["status"]),
-                    ports: displayable_ports(port_summaries(&c["ports"])),
-                    name: text(&c["name"]),
-                })
-                .collect();
-            let shown = Listing {
-                trunc: t["trunc"].as_bool().unwrap(),
-                quiet: t["quiet"].as_bool().unwrap(),
-                east_asian: t["east_asian"].as_bool().unwrap(),
-            };
-            let printed: String = ps_lines(&list, at, shown)
-                .iter()
-                .map(|l| format!("{l}\n"))
-                .collect();
-            assert_eq!(
-                printed,
-                t["output"].as_str().unwrap(),
-                "trunc {} quiet {} east_asian {}",
-                shown.trunc,
-                shown.quiet,
-                shown.east_asian
-            );
-        }
-    }
-
-    #[test]
     fn durations_read_as_go_units_writes_them() {
         let s = 1_000_000_000u128;
         for (ns, words) in [
@@ -2272,27 +2257,9 @@ mod tests {
     }
 
     #[test]
-    fn commands_and_images_show_as_docker_ps_shows_them() {
+    fn commands_show_as_dockerd_lists_them() {
         let argv = |w: &[&str]| w.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
         assert_eq!(command_line(&argv(&["sh", "-c", "echo hi"])), "sh -c 'echo hi'");
-        for (stored, shown) in [
-            ("alpine", "alpine"),
-            ("alpine:3.20", "alpine:3.20"),
-            ("docker.io/library/alpine:latest", "alpine:latest"),
-            ("ghcr.io/a/b:v1", "ghcr.io/a/b:v1"),
-            (
-                "alpine:3.20@sha256:0000000000000000000000000000000000000000000000000000000000000000",
-                "alpine:3.20",
-            ),
-            ("", "<no image>"),
-            ("NOT/valid", "NOT/valid"),
-        ] {
-            assert_eq!(image(stored, true), shown, "{stored}");
-        }
-        assert_eq!(
-            image("docker.io/library/alpine", false),
-            "docker.io/library/alpine"
-        );
     }
 
     #[test]
@@ -2343,16 +2310,12 @@ mod tests {
     }
 }
 
-/// A container as dockerd lists it to the CLI: its command as one line, its status in
-/// words, and when it was made, in nanoseconds since the epoch.
+/// What dockerd says of a container it lists: its command as one line, its status in
+/// words, and its ports.
 struct Listed {
-    id: String,
-    image: String,
     command: String,
-    created: u128,
     status: String,
     ports: String,
-    name: String,
 }
 
 /// A port as dockerd lists a running container's: published at a host address and port,
@@ -2416,60 +2379,6 @@ pub(super) fn displayable_ports(mut ports: Vec<PortSummary>) -> String {
     result.join(", ")
 }
 
-/// How `ps` was asked to list: `--no-trunc` or not, `-q`, and the client's locale.
-#[derive(Clone, Copy)]
-struct Listing {
-    trunc: bool,
-    quiet: bool,
-    east_asian: bool,
-}
-
-/// `list` as `docker ps` prints it at `at` (docker/cli cli/command/formatter/container.go,
-/// the default table): with `-q` the IDs alone, else a table under its header.
-fn ps_lines(list: &[Listed], at: u128, shown: Listing) -> Vec<String> {
-    let id = |c: &Listed| {
-        if shown.trunc {
-            c.id.get(..12).unwrap_or(&c.id).to_string()
-        } else {
-            c.id.clone()
-        }
-    };
-    if shown.quiet {
-        return list.iter().map(id).collect();
-    }
-    let mut rows = vec![
-        [
-            "CONTAINER ID",
-            "IMAGE",
-            "COMMAND",
-            "CREATED",
-            "STATUS",
-            "PORTS",
-            "NAMES",
-        ]
-        .map(String::from),
-    ];
-    for c in list {
-        let command = if shown.trunc {
-            width::ellipsis(&c.command, 20)
-        } else {
-            c.command.clone()
-        };
-        // The API gives creation times in whole seconds.
-        let created = c.created / 1_000_000_000 * 1_000_000_000;
-        rows.push([
-            id(c),
-            image(&c.image, shown.trunc),
-            go::quote(&command),
-            format!("{} ago", human_duration(at.saturating_sub(created))),
-            c.status.clone(),
-            c.ports.clone(),
-            c.name.clone(),
-        ]);
-    }
-    tabulate(&rows, shown.east_asian)
-}
-
 /// A container's command as the API shows it: the path, then the arguments, each in single
 /// quotes if it holds a space (moby daemon/container/view.go).
 fn command_line(argv: &[String]) -> String {
@@ -2488,25 +2397,6 @@ fn command_line(argv: &[String]) -> String {
         }
     }
     line
-}
-
-/// A container's image as `docker ps` shows it (docker/cli formatter/container.go,
-/// Image): as given with `--no-trunc`; else its familiar name, without the digest but
-/// with the tag.
-fn image(stored: &str, trunc: bool) -> String {
-    if stored.is_empty() {
-        return "<no image>".into();
-    }
-    if !trunc {
-        return stored.to_string();
-    }
-    match shards_image::reference::Reference::parse_normalized(stored) {
-        Ok(mut reference) => {
-            reference.digest = None;
-            reference.familiar()
-        }
-        Err(_) => stored.to_string(),
-    }
 }
 
 /// A microVM `stats` sampled: its ID and name, and while it runs, its share of a CPU in

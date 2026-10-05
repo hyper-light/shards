@@ -148,29 +148,42 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                 return 1;
             }
         };
+        let formatted = !parsed.string("format").is_empty();
         // A colour terminal gets shards' page: the images as records.
-        if asker.styled() && !quiet && !no_trunc && !digests && !expanded {
+        if asker.styled() && !quiet && !no_trunc && !digests && !expanded && !formatted {
             reply.sheet(&self.sheet(&images));
             return 0;
         }
-        let text = if quiet || no_trunc || digests {
-            let now = asker.now / 1_000_000_000;
-            table(&images, now, !no_trunc, quiet, digests)
+        // The CLI's formatter's forms are the client's to lay out (cli/listing.rs).
+        if quiet || no_trunc || digests || formatted {
+            let rows: Vec<serde_json::Value> = images
                 .iter()
-                .map(|l| format!("{l}\n"))
-                .collect()
-        } else {
-            tree(
-                &images,
-                expanded,
-                Out {
-                    terminal: asker.terminal,
-                    width: asker.width,
-                    color: asker.color,
-                    east_asian: asker.east_asian,
-                },
-            )
-        };
+                .map(|i| {
+                    serde_json::json!({
+                        "id": i.id,
+                        "tags": i.tags,
+                        "digests": i.digests,
+                        "created": i.created,
+                        "size": i.size,
+                        "containers": i.containers,
+                    })
+                })
+                .collect();
+            let mut sheet = shards_ipc::Sheet::new("images-rows");
+            sheet.record(&[("rows", serde_json::Value::Array(rows).to_string())]);
+            reply.sheet(&sheet);
+            return 0;
+        }
+        let text = tree(
+            &images,
+            expanded,
+            Out {
+                terminal: asker.terminal,
+                width: asker.width,
+                color: asker.color,
+                east_asian: asker.east_asian,
+            },
+        );
         let _ = reply.bytes(crate::spec::LOG_STDOUT, text.as_bytes());
         0
     }
@@ -680,7 +693,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         steps.reverse();
         let now = asker.now / 1_000_000_000;
         let id = truncate_id(&image.id.to_string()).to_string();
-        if asker.styled() && !parsed.bool("quiet") {
+        if asker.styled() && !parsed.bool("quiet") && parsed.string("format").is_empty() {
             let mut sheet = shards_ipc::Sheet::new("history");
             sheet.record(&[
                 ("kind", "head".into()),
@@ -700,50 +713,27 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             reply.sheet(&sheet);
             return 0;
         }
-        let (human, trunc) = (parsed.bool("human"), !parsed.bool("no-trunc"));
-        if parsed.bool("quiet") {
-            for (i, _) in steps.iter().enumerate() {
-                reply.out(if i == 0 { &id } else { "<missing>" });
-            }
-            return 0;
-        }
-        let mut rows = vec![[
-            "IMAGE".to_string(),
-            "CREATED".into(),
-            "CREATED BY".into(),
-            "SIZE".into(),
-            "COMMENT".into(),
-        ]];
-        for (i, (created, by, comment, size, _)) in steps.iter().enumerate() {
-            let when = shards_dockerfile::go::parse_rfc3339(created.as_bytes()).map_or(0, |t| t.unix().0);
-            let created = if human {
-                let ago = u128::try_from(now.saturating_sub(when).max(0)).unwrap_or(0) * 1_000_000_000;
-                format!("{} ago", super::commands::human_duration(ago))
-            } else {
-                created.clone()
-            };
-            let by = by.replace('\t', " ");
-            let by = if trunc && by.chars().count() > 45 {
-                format!("{}…", by.chars().take(44).collect::<String>())
-            } else {
-                by
-            };
-            let size = if human {
-                human_size(*size)
-            } else {
-                size.to_string()
-            };
-            rows.push([
-                if i == 0 { id.clone() } else { "<missing>".into() },
-                created,
-                by,
-                size,
-                comment.clone(),
-            ]);
-        }
-        for line in super::commands::tabulate(&rows, asker.east_asian) {
-            reply.out(&line);
-        }
+        // The CLI's forms are the client's to lay out (cli/listing.rs): each step, the
+        // newest first, the image's ID on it alone, as dockerd's history gives them.
+        let full = image.id.to_string();
+        let rows: Vec<serde_json::Value> = steps
+            .iter()
+            .enumerate()
+            .map(|(i, (created, by, comment, size, _))| {
+                let when = shards_dockerfile::go::parse_rfc3339(created.as_bytes()).map_or(0, |t| t.unix().0);
+                serde_json::json!({
+                    "id": if i == 0 { full.as_str() } else { "<missing>" },
+                    "created": when,
+                    "created_by": by,
+                    "size": size,
+                    "comment": comment,
+                })
+            })
+            .collect();
+        let _ = (now, &id);
+        let mut sheet = shards_ipc::Sheet::new("history-rows");
+        sheet.record(&[("rows", serde_json::Value::Array(rows).to_string())]);
+        reply.sheet(&sheet);
         0
     }
 }
@@ -1496,129 +1486,6 @@ fn ellipsis(s: &str, length: usize) -> String {
     out
 }
 
-// The table (formatter/image.go).
-
-/// What the table shows of `images` at `now` (seconds since the epoch): with `quiet`,
-/// each row's ID; else its rows under their header.
-pub(super) fn table(images: &[Summary], now: i64, trunc: bool, quiet: bool, digests: bool) -> Vec<String> {
-    let mut rows: Vec<(String, String, String, &Summary)> = Vec::new();
-    for img in images {
-        if img.tags.is_empty() && img.digests.is_empty() {
-            rows.push(("<none>".into(), "<none>".into(), "<none>".into(), img));
-            continue;
-        }
-        tagged_and_digested(img, digests, &mut rows);
-    }
-    let id = |img: &Summary| {
-        if trunc {
-            truncate_id(&img.id).to_string()
-        } else {
-            img.id.clone()
-        }
-    };
-    if quiet {
-        return rows.iter().map(|(_, _, _, img)| id(img)).collect();
-    }
-    let created = |img: &Summary| {
-        let ago = u128::try_from(now.saturating_sub(img.created)).unwrap_or(0) * 1_000_000_000;
-        format!("{} ago", super::commands::human_duration(ago))
-    };
-    if digests {
-        let mut table =
-            vec![["REPOSITORY", "TAG", "DIGEST", "IMAGE ID", "CREATED", "SIZE"].map(String::from)];
-        table.extend(rows.iter().map(|(repo, tag, digest, img)| {
-            [
-                repo.clone(),
-                tag.clone(),
-                digest.clone(),
-                id(img),
-                created(img),
-                human_size(img.size),
-            ]
-        }));
-        super::commands::tabulate(&table, false)
-    } else {
-        let mut table = vec![["REPOSITORY", "TAG", "IMAGE ID", "CREATED", "SIZE"].map(String::from)];
-        table.extend(rows.iter().map(|(repo, tag, _, img)| {
-            [
-                repo.clone(),
-                tag.clone(),
-                id(img),
-                created(img),
-                human_size(img.size),
-            ]
-        }));
-        super::commands::tabulate(&table, false)
-    }
-}
-
-/// imageFormatTaggedAndDigest: a row per tag of each repository, with each of that
-/// repository's digests when `digests` are shown; then the repositories with digests
-/// alone. Names that are not references are left out.
-fn tagged_and_digested<'a>(
-    img: &'a Summary,
-    digests: bool,
-    rows: &mut Vec<(String, String, String, &'a Summary)>,
-) {
-    use shards_image::reference::Reference;
-    let familiar = |mut r: Reference| {
-        r.tag = None;
-        r.digest = None;
-        r.familiar()
-    };
-    let mut tags: Vec<(String, Vec<String>)> = Vec::new();
-    for s in &img.tags {
-        let Ok(r) = Reference::parse_normalized(s) else {
-            continue;
-        };
-        let Some(tag) = r.tag.clone() else { continue };
-        let repo = familiar(r);
-        match tags.iter_mut().find(|(name, _)| *name == repo) {
-            Some((_, list)) => list.push(tag),
-            None => tags.push((repo, vec![tag])),
-        }
-    }
-    let mut by_digest: Vec<(String, Vec<String>)> = Vec::new();
-    for s in &img.digests {
-        let Ok(r) = Reference::parse_normalized(s) else {
-            continue;
-        };
-        let Some(digest) = r.digest.as_ref().map(ToString::to_string) else {
-            continue;
-        };
-        let repo = familiar(r);
-        match by_digest.iter_mut().find(|(name, _)| *name == repo) {
-            Some((_, list)) => list.push(digest),
-            None => by_digest.push((repo, vec![digest])),
-        }
-    }
-    for (repo, list) in &tags {
-        let pos = by_digest.iter().position(|(name, _)| name == repo);
-        let own = pos
-            .map(|p| by_digest.remove(p).1)
-            .filter(|_| digests)
-            .unwrap_or_default();
-        for tag in list {
-            if own.is_empty() {
-                rows.push((repo.clone(), tag.clone(), "<none>".into(), img));
-                continue;
-            }
-            for d in &own {
-                rows.push((repo.clone(), tag.clone(), d.clone(), img));
-            }
-        }
-    }
-    for (repo, list) in by_digest {
-        if digests {
-            for d in list {
-                rows.push((repo.clone(), "<none>".into(), d, img));
-            }
-        } else {
-            rows.push((repo, "<none>".into(), String::new(), img));
-        }
-    }
-}
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -1803,30 +1670,6 @@ mod tests {
                 "width {width}, expanded {}, no colour {}",
                 t["expanded"],
                 t["no_color"]
-            );
-        }
-    }
-
-    #[test]
-    fn tables_show_as_docker_images_shows_them() {
-        let golden = golden();
-        let now = 1_790_673_154;
-        for t in golden["tables"].as_array().unwrap() {
-            let lines = table(
-                &summaries(&t["images"], now),
-                now,
-                t["trunc"].as_bool().unwrap(),
-                t["quiet"].as_bool().unwrap(),
-                t["digests"].as_bool().unwrap(),
-            );
-            let got: String = lines.iter().map(|l| format!("{l}\n")).collect();
-            assert_eq!(
-                got,
-                t["output"].as_str().unwrap(),
-                "{} {} {}",
-                t["trunc"],
-                t["quiet"],
-                t["digests"]
             );
         }
     }
