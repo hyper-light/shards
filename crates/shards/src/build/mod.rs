@@ -35,6 +35,7 @@ use shards_registry::pull::{self as registry_pull, Event};
 
 mod builder;
 mod cache;
+mod domains;
 mod exec;
 mod git;
 pub(crate) mod http;
@@ -1284,7 +1285,7 @@ fn run(parsed: &Parsed) -> Result<(), String> {
             && let Some(body) = store.cache_get(k).map_err(|e| e.to_string())?
         {
             let v = progress.borrow_mut().start(&name);
-            let outs = cache::decode(&body)
+            let outs: Vec<exec::Ref> = cache::decode(&body)
                 .and_then(|outputs| {
                     outputs
                         .into_iter()
@@ -1293,6 +1294,7 @@ fn run(parsed: &Parsed) -> Result<(), String> {
                 })
                 .map_err(|e| fail(&v, &e))?;
             progress.borrow().cached(&v);
+            guard(meta, &inputs, &outs, &plan.domains, &store).map_err(|e| fail(&v, &e))?;
             store.cache_used(k).map_err(|e| e.to_string())?;
             results.push(outs);
             keys.push(key);
@@ -1415,6 +1417,7 @@ fn run(parsed: &Parsed) -> Result<(), String> {
             OpKind::File { actions } => {
                 let v = progress.borrow_mut().start(&name);
                 let outs = exec.file(&inputs, actions, &name).map_err(|e| fail(&v, &e))?;
+
                 progress.borrow().done(&v);
                 outs
             }
@@ -1533,6 +1536,9 @@ fn run(parsed: &Parsed) -> Result<(), String> {
                 r
             }
         };
+        // A step that may write in no domain but its own (D55).
+        guard(meta, &inputs, &outs, &plan.domains, &store)
+            .map_err(|e| format!("failed to build: failed to solve: {name}: {e}"))?;
         // Its key: a source's from what it holds; a step's, recorded with what it made where
         // its layers make each of its outputs.
         let key = match &op.kind {
@@ -1617,6 +1623,16 @@ fn run(parsed: &Parsed) -> Result<(), String> {
     // sources and stages all go before the export stacks the layers again, so the two
     // never hold memory at once.
     drop(results);
+    // Each domain's isolation, before anything leaves the build (§9.2).
+    if let Some(r) = &target
+        && !plan.domains.is_empty()
+    {
+        let v = progress
+            .borrow_mut()
+            .start("[internal] checking the domains' isolation");
+        domains::check(&r.fs, &plan.domains).map_err(|e| fail_export(&progress, &v, &e))?;
+        progress.borrow().done(&v);
+    }
     // The filesystem outputs, from the snapshot itself: its times to the nanosecond,
     // which its layers' headers keep to the second.
     for o in outputs.iter().filter(|o| o.kind == "local" || o.kind == "tar") {
@@ -2241,6 +2257,92 @@ fn import_layout(store: &Store, dir: &Path, digest: &Digest) -> Result<Descripto
         platform: None,
         annotations: Default::default(),
     })
+}
+
+/// A guarded step's writes (D55, §9.2): what its new layers hold, read entry by entry, in
+/// no domain but the one its own directive writes, if it is one. A removal is a write.
+fn guard(
+    meta: &shards_dockerfile::llb::Meta,
+    inputs: &[exec::Ref],
+    outs: &[exec::Ref],
+    domains: &[plan::DomainDir],
+    store: &Store,
+) -> Result<(), String> {
+    if domains.is_empty() || !meta.description.contains_key(plan::GUARD) {
+        return Ok(());
+    }
+    let parts = |p: &[u8]| -> Vec<Vec<u8>> {
+        p.split(|&b| b == b'/')
+            .filter(|c| !c.is_empty() && *c != b".")
+            .map(<[u8]>::to_vec)
+            .collect()
+    };
+    let mut roots: Vec<(Vec<Vec<u8>>, usize)> = Vec::new();
+    for (i, d) in domains.iter().enumerate() {
+        let dir = parts(&d.dir);
+        let mut grants = dir.clone();
+        if let Some(last) = grants.last_mut() {
+            last.extend_from_slice(b".d");
+        }
+        roots.push((dir, i));
+        roots.push((grants, i));
+    }
+    let domain_of = |p: &[Vec<u8>]| -> Option<usize> {
+        roots
+            .iter()
+            .filter(|(r, _)| p.len() >= r.len() && p.get(..r.len()) == Some(r.as_slice()))
+            .max_by_key(|(r, _)| r.len())
+            .map(|&(_, d)| d)
+    };
+    let own = meta.description.get(plan::OWN).and_then(|o| domain_of(&parts(o)));
+    let known: std::collections::HashSet<&[u8]> = inputs
+        .iter()
+        .flat_map(|r| r.layers.iter().map(|l| l.digest.as_slice()))
+        .collect();
+    for out in outs {
+        for l in out.layers.iter().filter(|l| !known.contains(l.digest.as_slice())) {
+            let digest = Digest::parse(&show(&l.digest)).map_err(|e| e.to_string())?;
+            let file = std::fs::File::open(store.blob_path(&digest)).map_err(|e| format!("{digest}: {e}"))?;
+            let mut r = shards_image::tar::Reader::seekable(std::io::BufReader::new(file))
+                .map_err(|e| format!("{digest}: {e}"))?;
+            // The directories above what changed come along in a layer; what is named is
+            // the first thing written that is no directory, where there is one.
+            let mut found: Option<(Vec<u8>, usize)> = None;
+            while let Some(e) = r.next_entry().map_err(|e| format!("{digest}: {e}"))? {
+                let mut p = parts(&e.path);
+                if let Some(last) = p.last_mut()
+                    && let Some(name) = last.strip_prefix(b".wh.")
+                {
+                    *last = name.to_vec();
+                }
+                let Some(d) = domain_of(&p) else { continue };
+                if Some(d) == own {
+                    continue;
+                }
+                let dir = matches!(e.kind, shards_image::tar::Type::Dir);
+                if found.is_none() || !dir {
+                    found = Some((p.join(&b"/"[..]), d));
+                }
+                if !dir {
+                    break;
+                }
+            }
+            if let Some((path, d)) = found {
+                let dom = domains.get(d).map_or_else(String::new, |x| {
+                    format!(
+                        "{} {}",
+                        if x.harness { "the harness" } else { "the agent" },
+                        show(&x.name)
+                    )
+                });
+                return Err(format!(
+                    "it writes /{} in {dom}'s domain, which only that domain's own directives write (AGENTFILE_ARCH.md §9.2)",
+                    show(&path)
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The export's failure `why`, on its step and as the build's error.

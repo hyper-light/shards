@@ -3209,3 +3209,120 @@ fn agents_are_osi_artifacts_made_pushed_and_taken() {
         refused.stderr
     );
 }
+
+/// An image with agents is checked before it leaves the build (D55, §9.2): an agent's
+/// directory holding a symlink out of its domain fails the build, naming the path and
+/// where it leads, as does a grant made set-user-ID; one that stays inside builds.
+#[test]
+fn domains_are_checked_before_an_image_leaves_the_build() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("build-isolation-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let ctx = context("build-isolation-ctx", &format!("FROM {image}\n"));
+    std::fs::create_dir_all(ctx.join("agent")).unwrap();
+    std::fs::write(ctx.join("agent/run"), "run\n").unwrap();
+    std::os::unix::fs::symlink("run", ctx.join("agent/inside")).unwrap();
+    std::fs::write(
+        ctx.join("Agentfile"),
+        format!("FROM {image}\nAGENT main FROM ./agent\n"),
+    )
+    .unwrap();
+    let ok = shards(&["build", "--progress=plain", ctx.to_str().unwrap()]);
+    assert_eq!(ok.status, Some(0), "{}", ok.stderr);
+    assert!(
+        ok.stderr.contains("checking the domains' isolation"),
+        "{}",
+        ok.stderr
+    );
+
+    std::os::unix::fs::symlink("/etc/passwd", ctx.join("agent/escape")).unwrap();
+    let out = shards(&["build", ctx.to_str().unwrap()]);
+    assert_ne!(out.status, Some(0));
+    assert!(
+        out.stderr.contains(
+            "/agents/main/escape -> /etc/passwd: a symlink out of the agent main's domain, to the system"
+        ),
+        "{}",
+        out.stderr
+    );
+    std::fs::remove_file(ctx.join("agent/escape")).unwrap();
+
+    std::fs::create_dir_all(ctx.join("skills/tool")).unwrap();
+    std::fs::write(
+        ctx.join("skills/tool/SKILL.md"),
+        "---\nname: tool\ndescription: A tool.\n---\n",
+    )
+    .unwrap();
+    std::fs::write(
+        ctx.join("Agentfile"),
+        format!("FROM {image}\nAGENT main FROM ./agent\nSKILL --chmod=4755 ./skills/tool FOR main\n"),
+    )
+    .unwrap();
+    let suid = shards(&["build", ctx.to_str().unwrap()]);
+    assert_ne!(suid.status, Some(0));
+    assert!(
+        suid.stderr.contains("/agents/main.d/skills/tool/SKILL.md: set-user-ID or set-group-ID bits (4755) in the agent main's domain"),
+        "{}",
+        suid.stderr
+    );
+}
+
+/// Only a domain's own directives write in it (D55, §9.2, §7 Q19.3): a `RUN` writing in an
+/// agent's directory fails the build, before the `AGENT` line or after it, as does a
+/// `COPY` into its grants; a `RUN` writing elsewhere builds.
+#[test]
+fn only_a_domains_own_directives_write_in_it() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("build-writes-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let ctx = context("build-writes-ctx", &format!("FROM {image}\n"));
+    std::fs::create_dir_all(ctx.join("agent")).unwrap();
+    std::fs::write(ctx.join("agent/run"), "run\n").unwrap();
+    std::fs::write(ctx.join("note"), "note\n").unwrap();
+    let build = |agentfile: String| {
+        std::fs::write(ctx.join("Agentfile"), agentfile).unwrap();
+        shards(&["build", ctx.to_str().unwrap()])
+    };
+    let ok = build(format!(
+        "FROM {image}\nUSER root\nAGENT main FROM ./agent\nRUN [\"/bin/testguest\", \"fs\", \"write:/elsewhere=1\"]\n"
+    ));
+    assert_eq!(ok.status, Some(0), "{}", ok.stderr);
+    for (agentfile, says) in [
+        (
+            format!(
+                "FROM {image}\nUSER root\nAGENT main FROM ./agent\nRUN [\"/bin/testguest\", \"fs\", \"write:/agents/main/planted=1\"]\n"
+            ),
+            "it writes /agents/main/planted in the agent main's domain",
+        ),
+        (
+            format!(
+                "FROM {image}\nUSER root\nRUN [\"/bin/testguest\", \"fs\", \"mkdir:/agents\", \"mkdir:/agents/main\", \"write:/agents/main/early=1\"]\nAGENT main FROM ./agent\n"
+            ),
+            "it writes /agents/main/early in the agent main's domain",
+        ),
+        (
+            format!("FROM {image}\nAGENT main FROM ./agent\nCOPY note /agents/main.d/note\n"),
+            "it writes /agents/main.d/note in the agent main's domain",
+        ),
+    ] {
+        let out = build(agentfile);
+        assert_ne!(out.status, Some(0), "{says}");
+        assert!(out.stderr.contains(says), "{says}:\n{}", out.stderr);
+    }
+}

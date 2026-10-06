@@ -3005,6 +3005,42 @@ and pushed to a registry (its manifest, config and layer types as specified), li
 removed here, then pulled by an Agentfile's `AGENT` and laid out with its config; a
 harness `FROM` an agent refused; a symlink out of the directory refused when made.
 
+### Domains checked at build time (D55)
+
+An image with agents or harnesses is checked before anything of it leaves the build
+(AGENTFILE_ARCH.md §9.2), every path placed in its domain: an agent's or harness's
+directory and the `.d` grants beside it, or the system. The planner records each domain
+where its directive lays it (`TO`'s path, which must now be absolute, as grants and checks
+find a domain by it whatever order the file declares things in; grants follow it to
+`<dir>.d`), and the build fails, naming each path and why, where:
+
+- a symlink in a domain resolves, inside the image and through any symlinks on the way
+  (40 at most, as Linux follows), outside it: absolute or relative, into the system or
+  another domain;
+- a hard link's names lie in two domains;
+- a domain holds a device node, FIFO or socket, or a file with set-ID bits or file
+  capabilities (`security.capability`);
+- **a step other than a domain's own directives writes in it** (§7 Q19.3): every file
+  operation and command of the target's lineage is marked, and each domain's own steps
+  with the destination they write; each marked step's new layers are read entry by entry,
+  a removal (a whiteout) counted as a write, and a path in a domain not the step's own
+  fails it, naming the file. A step the cache answers is checked as one that ran.
+
+Found while testing: a directive's path source (`AGENT … FROM ./agent`, `SKILL ./x`) did
+not count among the context's paths, so a build that also `COPY`ed from the context sent
+the context without them; it counts now.
+
+Tested: the rules over trees made in memory (`build::domains` tests: symlinks out by
+absolute and relative targets and through another symlink, in by both, a hard link across,
+devices, FIFOs, set-ID bits, a grant's symlink), and on real microVMs
+(`domains_are_checked_before_an_image_leaves_the_build`,
+`only_a_domains_own_directives_write_in_it`: `RUN` writing in an agent's directory after
+its `AGENT` and before it, `COPY` into its grants, all refused; `RUN` elsewhere built);
+the write rule mutation-checked.
+
+Open (§9.2): owners (a path outside a domain owned by its user), which the runtime's
+uids decide; §9.5's transitive reach and §9.8's triggers.
+
 ## 4. Start path (≤ 5 ms budget)
 
 | Step | Cost | Evidence |

@@ -115,6 +115,22 @@ pub enum EpochSource {
     Git { stage: Vec<u8>, git: git::GitRef },
 }
 
+/// The metadata of a step that may write in no domain but its own (D55): every file
+/// operation and command of the target's lineage carries it.
+pub const GUARD: &[u8] = b"vnd.osi.guard";
+/// The metadata of a domain's own directive's step: the destination it writes, whose
+/// domain it may write.
+pub const OWN: &[u8] = b"vnd.osi.own";
+
+/// An agent's or harness's domain (AGENTFILE_ARCH.md §9.1): its name, its kind, and its
+/// directory, absolute; its grants are in the directory beside it named `<dir>.d`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DomainDir {
+    pub name: Vec<u8>,
+    pub harness: bool,
+    pub dir: Vec<u8>,
+}
+
 /// A planned build: its graph, the target's state, the image config and the warnings.
 #[derive(Debug)]
 pub struct Plan {
@@ -125,6 +141,8 @@ pub struct Plan {
     pub warnings: Vec<lint::Warning>,
     /// SOURCE_DATE_EPOCH, in seconds, when the build has one.
     pub epoch: Option<i64>,
+    /// The domains the target's agents and harnesses make, for the export's checks.
+    pub domains: Vec<DomainDir>,
 }
 
 impl Plan {
@@ -237,6 +255,8 @@ struct Ds {
     agentfile: Vec<crate::agentfile::Directive>,
     /// The named context the stage itself is (its name is a context's).
     named: Option<Named>,
+    /// The agents' and harnesses' domains in its lineage.
+    domains: Vec<DomainDir>,
 }
 
 impl Ds {
@@ -264,6 +284,7 @@ impl Ds {
             workdir_set: false,
             epoch: None,
             named: None,
+            domains: Vec::new(),
             entrypoint: Tracker::default(),
             cmd: Tracker::default(),
             healthcheck: Tracker::default(),
@@ -311,6 +332,8 @@ struct Planner<'a> {
     /// each has said which of its paths it uses: the source, the stage, its key and its
     /// local name.
     named_locals: Vec<(Output, usize, Vec<u8>, Vec<u8>)>,
+    /// The vertices each stage's dispatch made: its index, and the range.
+    made: Vec<(usize, std::ops::Range<usize>)>,
 }
 
 /// The frontends shards' own is: docker/dockerfile at any tag, labs ones included, which at
@@ -537,6 +560,7 @@ fn plan_with(
         context,
         ignore: None,
         named_locals: Vec::new(),
+        made: Vec::new(),
     };
     p.build_dispatch_states(ins.stages)?;
     let target = p.resolve_target()?;
@@ -1421,7 +1445,9 @@ impl Planner<'_> {
         image.config.on_build.clear();
         let (paths, workdir_set, build_args) = (base.paths, base.workdir_set, base.build_args.clone());
         let agentfile = base.agentfile.clone();
+        let domains = base.domains.clone();
         if let Some(d) = self.states.get_mut(i) {
+            d.domains = domains;
             d.state = state;
             d.platform = platform;
             d.image = image;
@@ -1806,10 +1832,12 @@ impl Planner<'_> {
                 self.dispatch_user(d, &user, false);
             }
             let steps = self.states.get(d).map(|s| s.steps.clone()).unwrap_or_default();
+            let first = self.graph.vertices.len();
             for step in steps {
                 let loc = step.command.location.clone();
                 self.dispatch(d, step).map_err(|f| f.at(&loc))?;
             }
+            self.made.push((d, first..self.graph.vertices.len()));
         }
         let paths = self.states.get(target).map(|s| s.paths);
         if let Some(p) = paths.and_then(|p| self.path_sets.get_mut(p)) {
@@ -2066,12 +2094,22 @@ impl Planner<'_> {
                 | crate::agentfile::Directive::Attach(_)),
             ) => self.ds(d)?.agentfile.push(directive),
             Kind::Agentfile(crate::agentfile::Directive::Agent(a)) => {
-                let dest = a.to.clone().unwrap_or_else(|| errb(&[b"/agents/", &a.name]));
+                let dest = domain_dir(&a, false).map_err(Fail::new)?;
+                self.ds(d)?.domains.push(DomainDir {
+                    name: a.name.clone(),
+                    harness: false,
+                    dir: dest.clone(),
+                });
                 self.fetch_into(d, b"agent", &a.source, &dest, &code, &loc, &lint)?;
                 self.ds(d)?.agentfile.push(crate::agentfile::Directive::Agent(a));
             }
             Kind::Agentfile(crate::agentfile::Directive::Harness(h)) => {
-                let dest = h.to.clone().unwrap_or_else(|| errb(&[b"/harness/", &h.name]));
+                let dest = domain_dir(&h, true).map_err(Fail::new)?;
+                self.ds(d)?.domains.push(DomainDir {
+                    name: h.name.clone(),
+                    harness: true,
+                    dir: dest.clone(),
+                });
                 self.fetch_into(d, b"harness", &h.source, &dest, &code, &loc, &lint)?;
                 self.ds(d)?
                     .agentfile
@@ -2088,7 +2126,7 @@ impl Planner<'_> {
                     let dests = if m.scope.names.is_empty() {
                         vec![errb(&[b"/mcp/", &m.name])]
                     } else {
-                        self.grant_dirs(d, &m.scope, b"mcp")
+                        self.grant_dirs(d, &m.scope, b"mcp")?
                             .into_iter()
                             .map(|g| errb(&[&g, b"/", &m.name]))
                             .collect()
@@ -3142,17 +3180,53 @@ impl Planner<'_> {
         TargetKind::Agent
     }
 
-    /// Where a grant to `scope`'s names goes (§12.1): each agent's
-    /// `/agents/<name>.d/<what>` and each harness's `/harness/<name>.d/<what>`.
-    fn grant_dirs(&self, d: usize, scope: &crate::agentfile::Scope, what: &[u8]) -> Vec<Vec<u8>> {
+    /// Where a grant to `scope`'s names goes (§12.1): beside each grantee's directory,
+    /// in `<dir>.d/<what>`: `/agents/<name>.d/<what>` for an agent where it unpacks by
+    /// default.
+    fn grant_dirs(
+        &self,
+        d: usize,
+        scope: &crate::agentfile::Scope,
+        what: &[u8],
+    ) -> Result<Vec<Vec<u8>>, Fail> {
         scope
             .names
             .iter()
-            .map(|n| match self.domain_kind(d, n, scope.kind) {
-                crate::agentfile::TargetKind::Agent => errb(&[b"/agents/", n, b".d/", what]),
-                crate::agentfile::TargetKind::Harness => errb(&[b"/harness/", n, b".d/", what]),
+            .map(|n| {
+                let harness = self.domain_kind(d, n, scope.kind) == crate::agentfile::TargetKind::Harness;
+                let dir = self.declared_dir(d, n, harness)?;
+                Ok(errb(&[&dir, b".d/", what]))
             })
             .collect()
+    }
+
+    /// The directory of the domain `name` of stage `d`'s lineage, as its directive lays it.
+    fn declared_dir(&self, d: usize, name: &[u8], harness: bool) -> Result<Vec<u8>, Fail> {
+        use crate::agentfile::Directive;
+        let mut at = Some(d);
+        while let Some(i) = at {
+            let Some(s) = self.states.get(i) else { break };
+            for c in &s.stage.commands {
+                match &c.kind {
+                    Kind::Agentfile(Directive::Agent(a)) if !harness && a.name == name => {
+                        return domain_dir(a, false).map_err(Fail::new);
+                    }
+                    Kind::Agentfile(Directive::Harness(h)) if harness && h.name == name => {
+                        return domain_dir(h, true).map_err(Fail::new);
+                    }
+                    _ => {}
+                }
+            }
+            at = s.base;
+        }
+        Ok(errb(&[
+            if harness {
+                b"/harness/".as_slice()
+            } else {
+                b"/agents/"
+            },
+            name,
+        ]))
     }
 
     /// An agent's, harness's or MCP server's source fetched into `dest` as a layer of its
@@ -3170,7 +3244,12 @@ impl Planner<'_> {
         lint: &LinterView<'_>,
     ) -> Result<(), Fail> {
         let unpack = match crate::agentfile::source_of(source).map_err(Fail::new)? {
-            crate::agentfile::Source::Path(_) | crate::agentfile::Source::Git(_) => None,
+            // What it reads of the context, which is sent with only the paths read.
+            crate::agentfile::Source::Path(p) => {
+                self.ds(d)?.ctx_paths.insert(go::join(&[b"/", &p]));
+                None
+            }
+            crate::agentfile::Source::Git(_) => None,
             crate::agentfile::Source::Http(_) => Some(true),
             crate::agentfile::Source::Oci(r) => {
                 return self.artifact_into(d, kind, &r, dest, code, loc, lint);
@@ -3180,6 +3259,7 @@ impl Planner<'_> {
         if !dest.ends_with(b"/") {
             dest.push(b'/');
         }
+        let dest_of_own = dest.clone();
         let cfg = CopyConfig {
             sources: instructions::Sources {
                 dest,
@@ -3200,7 +3280,18 @@ impl Planner<'_> {
             onto: None,
             history: Some(code.to_vec()),
         };
-        self.dispatch_copy(d, cfg, loc, lint).map(|_| ())
+        let first = self.graph.vertices.len();
+        self.dispatch_copy(d, cfg, loc, lint)?;
+        self.own(first, dest_of_own);
+        Ok(())
+    }
+
+    /// Marks the vertices made since `first` as a domain's own directive's, writing
+    /// `dest` (D55).
+    fn own(&mut self, first: usize, dest: Vec<u8>) {
+        for v in self.graph.vertices.iter_mut().skip(first) {
+            v.meta.description.insert(OWN.to_vec(), dest.clone());
+        }
     }
 
     /// An OSI artifact (§8 Q1, §12.17) laid into `dest` as a layer of its own: its content,
@@ -3253,23 +3344,27 @@ impl Planner<'_> {
             onto: None,
             history: Some(code.to_vec()),
         };
+        let first = self.graph.vertices.len();
         self.dispatch_copy(
             d,
             copy(Some(source), vec![b"/".to_vec()], Vec::new(), content_dest),
             loc,
             lint,
         )?;
+        self.own(first, base.clone());
         let config = instructions::SourceContent {
             path: b"osi.json".to_vec(),
             data: resolved.config,
             expand: false,
         };
+        let first = self.graph.vertices.len();
         self.dispatch_copy(
             d,
             copy(None, Vec::new(), vec![config], errb(&[&base, b".d/"])),
             loc,
             lint,
         )?;
+        self.own(first, base.clone());
         Ok(())
     }
 
@@ -3322,6 +3417,13 @@ impl Planner<'_> {
         };
         let mut scratch = State::scratch();
         scratch.platform = self.states.get(d).and_then(|s| s.platform.clone());
+        if sources.is_empty()
+            && let crate::agentfile::SkillSource::Path(p) = &sk.source
+            && !is_http_source(p)
+            && !matches!(git::parse_git_ref(p), git::Parsed::Git(g) if !g.indistinguishable_from_local)
+        {
+            self.ds(d)?.ctx_paths.insert(go::join(&[b"/", p]));
+        }
         let fetched = self
             .dispatch_copy(
                 d,
@@ -3364,7 +3466,7 @@ impl Planner<'_> {
         let dests = match (&sk.dest, sk.scope.names.is_empty()) {
             (Some(dest), _) => vec![dest.clone()],
             (None, true) => vec![b"/skills/".to_vec()],
-            (None, false) => self.grant_dirs(d, &sk.scope, b"skills"),
+            (None, false) => self.grant_dirs(d, &sk.scope, b"skills")?,
         };
         for dest in dests {
             let mut dest = dest;
@@ -3391,7 +3493,10 @@ impl Planner<'_> {
                 onto: None,
                 history: Some(code.to_vec()),
             };
+            let first = self.graph.vertices.len();
+            let mark = cfg.sources.dest.clone();
             self.dispatch_copy(d, cfg, loc, lint)?;
+            self.own(first, mark);
         }
         Ok(())
     }
@@ -3454,6 +3559,26 @@ impl Planner<'_> {
     }
 
     fn finalize(mut self, target: usize) -> Result<Plan, Fail> {
+        // Every file operation and command of the target's lineage may write in no
+        // domain but its own (D55).
+        if self.states.get(target).is_some_and(|t| !t.domains.is_empty()) {
+            let mut lineage = Vec::new();
+            let mut at = Some(target);
+            while let Some(i) = at {
+                lineage.push(i);
+                at = self.states.get(i).and_then(|s| s.base);
+            }
+            for (stage, range) in std::mem::take(&mut self.made) {
+                if !lineage.contains(&stage) {
+                    continue;
+                }
+                for v in self.graph.vertices.get_mut(range).unwrap_or_default() {
+                    if matches!(v.kind, llb::Kind::Exec { .. } | llb::Kind::File { .. }) {
+                        v.meta.description.insert(GUARD.to_vec(), b"1".to_vec());
+                    }
+                }
+            }
+        }
         let ctx_paths: BTreeSet<Vec<u8>> = self
             .states
             .iter()
@@ -3573,6 +3698,11 @@ impl Planner<'_> {
             platform,
             warnings: Vec::new(),
             epoch: self.epoch.map(|(s, _)| s),
+            domains: self
+                .states
+                .get(target)
+                .map(|t| t.domains.clone())
+                .unwrap_or_default(),
         })
     }
 }
@@ -4266,6 +4396,34 @@ fn normalize_context_paths(paths: &BTreeSet<Vec<u8>>) -> Option<Vec<Vec<u8>>> {
     let mut out: Vec<Vec<u8>> = paths.iter().map(|p| go::join(&[b".", p])).collect();
     out.sort();
     Some(out)
+}
+
+/// A domain's directory: `TO`'s, which must be absolute, the anchor its grants and checks
+/// are found by whatever order the file declares them in; else `/agents/<name>` or
+/// `/harness/<name>` (§12.1).
+fn domain_dir(dom: &crate::agentfile::Domain, harness: bool) -> Result<Vec<u8>, Vec<u8>> {
+    match &dom.to {
+        Some(to) if to.starts_with(b"/") => {
+            let clean = go::clean(to);
+            if clean == b"/" {
+                return Err(b"TO / would make the whole image one domain: name a directory".to_vec());
+            }
+            Ok(clean)
+        }
+        Some(to) => Err(errb(&[
+            b"TO ",
+            to,
+            b": a domain's directory must be absolute, as its grants and checks find it by it",
+        ])),
+        None => Ok(errb(&[
+            if harness {
+                b"/harness/".as_slice()
+            } else {
+                b"/agents/"
+            },
+            &dom.name,
+        ])),
+    }
 }
 
 /// `State.WithImageConfig`: the image's environment (each variable added), working

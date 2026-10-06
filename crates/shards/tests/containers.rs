@@ -2334,6 +2334,7 @@ impl Going {
         let status = exit(&mut self.child);
         Run {
             status,
+            signal: None,
             stdout: self.out.join().unwrap(),
             stderr: self.err.join().unwrap(),
             elapsed: start.elapsed(),
@@ -3429,11 +3430,30 @@ fn published_udp_ports_carry_datagrams_both_ways() {
         "{ps}"
     );
     // What the guest answers `client`'s `payload` with, and where the answer came from.
+    // An answer that never comes says what each side saw: the daemon's log, the run's
+    // own output, and the host's UDP sockets on the port (a lost datagram, 2026-10-06,
+    // under the full suite's load).
     let ask = |client: &UdpSocket, to: std::net::SocketAddr, payload: &[u8]| {
         client.set_read_timeout(Some(TIMEOUT)).unwrap();
         client.send_to(payload, to).unwrap();
         let mut buf = [0u8; 2048];
-        let (len, from) = client.recv_from(&mut buf).unwrap();
+        let (len, from) = client.recv_from(&mut buf).unwrap_or_else(|e| {
+            let log = std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default();
+            let tail: Vec<&str> = log.lines().rev().take(60).collect();
+            let logs = shards_in(&home, &["logs", "dns"]);
+            let sockets = std::process::Command::new("netstat")
+                .args(["-an", "-p", "udp"])
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+                .unwrap_or_default();
+            let port = to.port().to_string();
+            let ours: Vec<&str> = sockets.lines().filter(|l| l.contains(&port)).collect();
+            panic!(
+                "no answer to {payload:?} from {to}: {e}\n--- daemon.log (last lines first)\n{}\n--- logs\n{logs}\n--- netstat {port}\n{}",
+                tail.join("\n"),
+                ours.join("\n")
+            )
+        });
         (String::from_utf8_lossy(&buf[..len]).into_owned(), from)
     };
     let v4 = std::net::SocketAddr::from(([127, 0, 0, 1], n));

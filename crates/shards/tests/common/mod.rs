@@ -446,6 +446,8 @@ fn prune(root: &Path, keep: &str) {
 
 pub struct Run {
     pub status: Option<i32>,
+    /// The signal that ended it, where one did: a status of `None` says no more.
+    pub signal: Option<i32>,
     pub stdout: String,
     pub stderr: String,
     pub elapsed: Duration,
@@ -455,8 +457,14 @@ impl fmt::Display for Run {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "status {:?} after {:?}\n--- stdout\n{}\n--- stderr\n{}",
-            self.status, self.elapsed, self.stdout, self.stderr
+            "status {:?}{} after {:?}\n--- stdout\n{}\n--- stderr\n{}",
+            self.status,
+            self.signal
+                .map(|s| format!(", ended by signal {s}"))
+                .unwrap_or_default(),
+            self.elapsed,
+            self.stdout,
+            self.stderr
         )
     }
 }
@@ -624,8 +632,13 @@ fn run_shards_with<S: AsRef<std::ffi::OsStr>>(
         }
         std::thread::sleep(Duration::from_millis(2));
     };
+    #[cfg(unix)]
+    let signal = std::os::unix::process::ExitStatusExt::signal(&status);
+    #[cfg(not(unix))]
+    let signal = None;
     Run {
         status: status.code(),
+        signal,
         stdout: took(&out),
         stderr: took(&err),
         elapsed: start.elapsed(),

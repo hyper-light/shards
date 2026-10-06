@@ -76,6 +76,7 @@ fn measure(bin: &std::path::Path, args: &[String], hold: bool, env: &[(&str, &st
     assert_eq!(reaped, pid, "waitpid: {}", std::io::Error::last_os_error());
     let run = common::Run {
         status: libc::WIFEXITED(status).then(|| libc::WEXITSTATUS(status)),
+        signal: libc::WIFSIGNALED(status).then(|| libc::WTERMSIG(status)),
         stdout: String::new(),
         stderr: reader.join().unwrap(),
         elapsed,
