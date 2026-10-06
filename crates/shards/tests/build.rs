@@ -1933,13 +1933,16 @@ fn git_in(dir: &std::path::Path, args: &[&str]) -> String {
 /// Smart HTTP for the repositories under `root`, as git's http-backend serves them: each
 /// request one stateless run of git's own upload-pack, with the protocol version the
 /// client asked for.
-fn git_http_server(root: std::path::PathBuf) -> u16 {
+/// Repositories under `/private/` answer only requests carrying one of `accepted` as
+/// their Authorization.
+fn git_http_server(root: std::path::PathBuf, accepted: Vec<String>) -> u16 {
     use std::io::{BufRead as _, BufReader, Read as _, Write as _};
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     std::thread::spawn(move || {
         for conn in listener.incoming().flatten() {
             let root = root.clone();
+            let accepted = accepted.clone();
             std::thread::spawn(move || {
                 let mut reader = BufReader::new(conn.try_clone().unwrap());
                 let mut conn = conn;
@@ -1949,7 +1952,8 @@ fn git_http_server(root: std::path::PathBuf) -> u16 {
                         return;
                     }
                     let target = line.split_whitespace().nth(1).unwrap_or_default().to_string();
-                    let (mut length, mut protocol) = (0usize, String::new());
+                    let (mut length, mut protocol, mut authorization) =
+                        (0usize, String::new(), String::new());
                     loop {
                         let mut h = String::new();
                         reader.read_line(&mut h).unwrap();
@@ -1961,12 +1965,19 @@ fn git_http_server(root: std::path::PathBuf) -> u16 {
                         match k.to_ascii_lowercase().as_str() {
                             "content-length" => length = v.trim().parse().unwrap(),
                             "git-protocol" => protocol = v.trim().to_string(),
+                            "authorization" => authorization = v.trim().to_string(),
                             _ => {}
                         }
                     }
                     let mut body = vec![0u8; length];
                     reader.read_exact(&mut body).unwrap();
                     let path = target.split('?').next().unwrap_or_default();
+                    if path.starts_with("/private/") && !accepted.contains(&authorization) {
+                        let _ = conn.write_all(
+                            b"HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"git\"\r\nContent-Length: 0\r\n\r\n",
+                        );
+                        continue;
+                    }
                     let (repo, advertise, kind) = if let Some(r) = path.strip_suffix("/info/refs") {
                         (r, true, "application/x-git-upload-pack-advertisement")
                     } else if let Some(r) = path.strip_suffix("/git-upload-pack") {
@@ -2076,7 +2087,7 @@ fn add_fetches_git_repositories() {
             .spawn()
             .unwrap(),
     );
-    let hport = git_http_server(repos.to_path_buf());
+    let hport = git_http_server(repos.to_path_buf(), Vec::new());
     // The daemon listens a moment after it starts.
     for _ in 0..100 {
         if std::net::TcpStream::connect(("127.0.0.1", dport)).is_ok() {
@@ -2195,4 +2206,74 @@ fn add_fetches_git_repositories() {
         "{}",
         refused.stderr
     );
+}
+
+/// A repository that asks for credentials is fetched with the build's secrets, as
+/// BuildKit's git source takes them: `GIT_AUTH_TOKEN` as `basic` credentials of
+/// `x-access-token`, `GIT_AUTH_HEADER.<host>` as the whole header; without them, refused.
+#[test]
+fn add_fetches_git_with_the_builds_secrets() {
+    if cannot_run_vms() {
+        return;
+    }
+    if std::process::Command::new("git")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        eprintln!("SKIP: no git on this host");
+        return;
+    }
+    let repos = TempDir::new("build-add-git-auth-repos");
+    let origin = repos.join("private/repo.git");
+    std::fs::create_dir_all(&origin).unwrap();
+    git_in(&origin, &["init", "-q", "-b", "main"]);
+    std::fs::write(origin.join("only.txt"), "for the asked\n").unwrap();
+    git_in(&origin, &["add", "-A"]);
+    git_in(&origin, &["commit", "-q", "-m", "one"]);
+    // base64("x-access-token:s3cr3t"), as BuildKit sends a token.
+    let token = "basic eC1hY2Nlc3MtdG9rZW46czNjcjN0".to_string();
+    let header = "Bearer h3ad3r".to_string();
+    let hport = git_http_server(repos.to_path_buf(), vec![token, header]);
+    let (image, _) = served();
+    let home = TempDir::new("build-add-git-auth-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+        ("TOK", std::ffi::OsStr::new("s3cr3t")),
+        ("HDR", std::ffi::OsStr::new("Bearer h3ad3r")),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let ctx = context(
+        "build-add-git-auth-ctx",
+        &format!("FROM {image}\nADD http://127.0.0.1:{hport}/private/repo.git /p\n"),
+    );
+    let refused = shards(&["build", ctx.to_str().unwrap()]);
+    assert_ne!(refused.status, Some(0));
+    assert!(
+        refused.stderr.contains("Authentication failed for"),
+        "{}",
+        refused.stderr
+    );
+    for secret in [
+        "id=GIT_AUTH_TOKEN,env=TOK".to_string(),
+        format!("id=GIT_AUTH_HEADER.127.0.0.1:{hport},env=HDR"),
+    ] {
+        let built = shards(&[
+            "build",
+            "--secret",
+            &secret,
+            "-t",
+            "authed:1",
+            ctx.to_str().unwrap(),
+        ]);
+        assert_eq!(built.status, Some(0), "{secret}: {}", built.stderr);
+        let stat = shards(&["run", "--rm", "authed:1", "stat", "/p/only.txt"]);
+        assert_eq!(
+            stat.stdout, "/p/only.txt file 644 0:0 14\n= for the asked\\n\n",
+            "{}",
+            stat.stderr
+        );
+    }
 }

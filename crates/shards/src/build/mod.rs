@@ -1216,7 +1216,8 @@ fn run(parsed: &Parsed) -> Result<(), String> {
                 };
                 let say = |line: &str| progress.borrow().line(&v, line);
                 let cancel = shards_registry::http::Cancel::new();
-                let r = match git::snapshot(&mut exec, &src, fetch_limits, &cancel, &say) {
+                let auth = git::auth(&src, &secrets);
+                let r = match git::snapshot(&mut exec, &src, fetch_limits, &cancel, auth.as_ref(), &say) {
                     Ok(r) => r,
                     Err(git::Failure::CacheKey(e)) => {
                         return Err(fail_in(&v, "failed to load cache key: ", &e));

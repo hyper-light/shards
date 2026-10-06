@@ -2728,8 +2728,15 @@ its upload-pack checked out as `ls-tree` and `show` list it, refs as BuildKit re
 them, `git daemon`, a kept `.git`); `build.rs` `add_fetches_git_repositories` on real
 microVMs, from a git daemon and from smart HTTP served by git's own upload-pack.
 
-Open: SSH remotes and `--ssh`; `GIT_AUTH_TOKEN`/`GIT_AUTH_HEADER` from `--secret`;
-`SOURCE_DATE_EPOCH` taken from a Git stage (the commit's committer time, as BuildKit
+- **Credentials from the build's secrets**, as BuildKit's git source takes them (v0.28.1
+  source.go authSecretNames, getAuthToken, tokenScope): the first of
+  `GIT_AUTH_HEADER.<host>`, `GIT_AUTH_TOKEN.<host>`, `GIT_AUTH_HEADER`, `GIT_AUTH_TOKEN`
+  (`--secret id=...`); a token sent as `basic` credentials of `x-access-token`, a header as
+  it is; to the remote, or to all of github.com for a github.com remote, scoped as git
+  scopes `http.<url>.extraheader` (urlmatch.c), so a submodule elsewhere is not sent them
+  (tested: `add_fetches_git_with_the_builds_secrets`, refused without them).
+
+Open: SSH remotes and `--ssh`; `SOURCE_DATE_EPOCH` taken from a Git stage (the commit's committer time, as BuildKit
 takes it); servers that refuse a commit not at a ref's tip ("not our ref"), which BuildKit
 fetches whole.
 

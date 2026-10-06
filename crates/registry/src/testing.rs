@@ -327,15 +327,10 @@ mod tests {
         let mut answer = [0u8; 38];
         held.read_exact(&mut answer).unwrap();
         drop(server);
-        // Refused; or connected to itself, when the system chose the freed port as the
-        // client's own (TCP's simultaneous open), which no server is party to.
-        match TcpStream::connect(("127.0.0.1", port)) {
-            Err(e) => assert_eq!(e.kind(), io::ErrorKind::ConnectionRefused),
-            Ok(s) => {
-                let (local, peer) = (s.local_addr().unwrap(), s.peer_addr().unwrap());
-                assert_eq!(local, peer, "something answered on {port}: {local} -> {peer}");
-            }
-        }
+        // Not probed by connecting to its port again: the tests beside it are given freed
+        // ports at once, so another's server may answer there. Its threads are joined, its
+        // listener gone with its accept loop's; what is left to see is the connection it
+        // held, closed.
         held.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
         assert_eq!(
             held.read(&mut [0u8; 1]).unwrap(),

@@ -45,6 +45,10 @@ pub struct Source {
     pub keep_git_dir: bool,
     pub checksum: Option<String>,
     pub submodules: bool,
+    /// The secrets that authorize its fetches: a token's (`git.authtokensecret`) and a
+    /// whole header's (`git.authheadersecret`).
+    pub auth_token: Option<String>,
+    pub auth_header: Option<String>,
 }
 
 /// The source `identifier` (`git://HOST/PATH[#REF[:SUBDIR]]`) and `attrs` name.
@@ -80,6 +84,8 @@ pub fn source(identifier: &[u8], attrs: &BTreeMap<Vec<u8>, Vec<u8>>) -> Result<S
         keep_git_dir: attr(b"git.keepgitdir")?.as_deref() == Some("true"),
         checksum: attr(b"git.checksum")?,
         submodules: attr(b"git.skipsubmodules")?.as_deref() != Some("true"),
+        auth_token: attr(b"git.authtokensecret")?,
+        auth_header: attr(b"git.authheadersecret")?,
     })
 }
 
@@ -105,6 +111,9 @@ fn clean_subdir(s: &str) -> String {
 /// request, and with later ones only to that origin.
 struct Http {
     client: Client,
+    /// The build's Authorization for this repository, from its secrets, sent with every
+    /// request in place of the URL's own credentials.
+    secret_auth: Option<String>,
     /// The repository's URL, without its userinfo and trailing `/`.
     base: RefCell<String>,
     authorization: Option<String>,
@@ -113,7 +122,7 @@ struct Http {
 }
 
 impl Http {
-    fn new(url: &str, cancel: Cancel) -> Result<Http, String> {
+    fn new(url: &str, cancel: Cancel, auth: Option<&Auth>) -> Result<Http, String> {
         let (target, authorization) = super::http::userinfo(url)?;
         let config = shards_registry::tls::client_config(Vec::new(), None).map_err(|e| e.to_string())?;
         let client = Client::new(Box::new(move |_| Ok(config.clone())), &agent())
@@ -122,8 +131,12 @@ impl Http {
                 std::env::var(k).ok()
             }));
         let base = target.trim_end_matches('/').to_string();
+        let secret_auth = auth
+            .filter(|a| in_scope(&a.scope, &base))
+            .map(|a| a.value.clone());
         Ok(Http {
             client,
+            secret_auth,
             shown: super::http::shown(url).trim_end_matches('/').to_string(),
             base: RefCell::new(base),
             authorization,
@@ -148,10 +161,10 @@ impl Transport for Http {
         let url = Url::parse(&at).map_err(|e| e.to_string())?;
         let first = Cell::new(true);
         let authorize = |_: &Url| {
-            Ok(if first.replace(false) {
-                self.authorization.clone()
-            } else {
-                None
+            Ok(match &self.secret_auth {
+                Some(a) => Some(a.clone()),
+                None if first.replace(false) => self.authorization.clone(),
+                None => None,
             })
         };
         let request = Request {
@@ -184,7 +197,7 @@ impl Transport for Http {
     fn command(&self, body: &[u8]) -> Result<Box<dyn Read + '_>, String> {
         let url =
             Url::parse(&format!("{}/git-upload-pack", self.base.borrow())).map_err(|e| e.to_string())?;
-        let authorize = |_: &Url| Ok(self.authorization.clone());
+        let authorize = |_: &Url| Ok(self.secret_auth.clone().or_else(|| self.authorization.clone()));
         let request = Request {
             method: "POST",
             url: &url,
@@ -241,10 +254,65 @@ impl Transport for Wire {
     }
 }
 
+/// An Authorization the build's secrets give, and the URLs it is sent to.
+#[derive(Debug, Clone)]
+pub struct Auth {
+    scope: String,
+    value: String,
+}
+
+/// The Authorization `src`'s secrets give, as BuildKit's git source takes it (v0.28.1
+/// source/git/source.go authSecretNames, getAuthToken): the first of the header secret
+/// for the remote's host, the token secret for it, the header secret, the token secret;
+/// a token as `basic` credentials of `x-access-token`, a header as it is; sent to the
+/// remote, or to all of github.com for a github.com remote (tokenScope).
+pub fn auth(
+    src: &Source,
+    secrets: &std::collections::BTreeMap<String, shards_cmdline::buildflags::SecretBytes>,
+) -> Option<Auth> {
+    let authority = src.url.split_once("://")?.1.split(['/', '?', '#']).next()?;
+    let host = authority.rsplit('@').next()?;
+    let mut names: Vec<(String, bool)> = Vec::new();
+    if let Some(h) = &src.auth_header {
+        names.push((format!("{h}.{host}"), false));
+    }
+    if let Some(t) = &src.auth_token {
+        names.push((format!("{t}.{host}"), true));
+    }
+    if let Some(h) = &src.auth_header {
+        names.push((h.clone(), false));
+    }
+    if let Some(t) = &src.auth_token {
+        names.push((t.clone(), true));
+    }
+    let (secret, token) = names
+        .into_iter()
+        .find_map(|(n, t)| secrets.get(&n).map(|s| (s.bytes().to_vec(), t)))?;
+    let value = if token {
+        let basic = shards_registry::auth::basic(b"x-access-token", &secret);
+        format!("basic {}", basic.strip_prefix("Basic ").unwrap_or(&basic))
+    } else {
+        String::from_utf8_lossy(&secret).into_owned()
+    };
+    let remote = remote_url(&src.url);
+    let scope = ["https://github.com/", "https://www.github.com/"]
+        .into_iter()
+        .find(|p| remote.starts_with(p))
+        .map_or(remote.clone(), str::to_string);
+    Some(Auth { scope, value })
+}
+
+/// Whether `url` is within `scope`, as git matches a URL to `http.<url>.*` (urlmatch.c):
+/// the scope's scheme, host and port, and its path a prefix of the URL's at a `/`.
+fn in_scope(scope: &str, url: &str) -> bool {
+    let scope = scope.trim_end_matches('/');
+    url == scope || url.strip_prefix(scope).is_some_and(|rest| rest.starts_with('/'))
+}
+
 /// The transport `url` names: smart HTTP(S), or git's own; SSH needs `--ssh`.
-fn wire(url: &str, cancel: &Cancel) -> Result<Wire, String> {
+fn wire(url: &str, cancel: &Cancel, auth: Option<&Auth>) -> Result<Wire, String> {
     if url.starts_with("https://") || url.starts_with("http://") {
-        return Ok(Wire::Http(Box::new(Http::new(url, cancel.clone())?)));
+        return Ok(Wire::Http(Box::new(Http::new(url, cancel.clone(), auth)?)));
     }
     if url.starts_with("git://") {
         return Ok(Wire::Daemon(shards_git::daemon::Daemon::of_url(
@@ -269,6 +337,7 @@ pub fn snapshot(
     src: &Source,
     limits: Limits,
     cancel: &Cancel,
+    auth: Option<&Auth>,
     say: &dyn Fn(&str),
 ) -> Result<Ref, Failure> {
     let key = Failure::CacheKey;
@@ -285,7 +354,7 @@ pub fn snapshot(
     } else {
         format!("failed to fetch remote {}", src.url)
     };
-    let remote = Remote::open(wire(&src.url, cancel).map_err(key)?, &agent())
+    let remote = Remote::open(wire(&src.url, cancel, auth).map_err(key)?, &agent())
         .map_err(|e| key(format!("{wrap}: {e}")))?;
     let resolved = remote
         .resolve(&src.reference)
@@ -310,7 +379,11 @@ pub fn snapshot(
         .map_err(|e| snap(format!("{wrap}: {e}")))?;
     let commit = commit_of(&pack, &resolved.commit).map_err(snap)?;
     let stage = exec.stage().map_err(snap)?;
-    let mut out = Checkout::new(stage.join(format!("git-{}", resolved.commit.hex()))).map_err(snap)?;
+    let mut out = Checkout::new(
+        stage.join(format!("git-{}", resolved.commit.hex())),
+        auth.cloned(),
+    )
+    .map_err(snap)?;
     let time = (commit.committed, 0);
     let root_tree = subtree(&pack, &commit.tree, &src.subdir).map_err(snap)?;
     let tracked = out.walk(&pack, &root_tree, b"", time).map_err(snap)?;
@@ -467,10 +540,12 @@ struct Checkout {
     written: u64,
     entries: Vec<(Vec<u8>, Node, Option<u64>)>,
     dirs: std::collections::HashSet<Vec<u8>>,
+    /// The build's Authorization, for submodules within its scope.
+    auth: Option<Auth>,
 }
 
 impl Checkout {
-    fn new(path: PathBuf) -> Result<Checkout, String> {
+    fn new(path: PathBuf, auth: Option<Auth>) -> Result<Checkout, String> {
         let file = File::create(&path).map_err(|e| format!("{}: {e}", path.display()))?;
         Ok(Checkout {
             path,
@@ -478,6 +553,7 @@ impl Checkout {
             written: 0,
             entries: Vec::new(),
             dirs: std::collections::HashSet::new(),
+            auth,
         })
     }
 
@@ -695,7 +771,7 @@ impl Checkout {
                 "Submodule '{}' ({sub_url}) registered for path '{shown}'",
                 String::from_utf8_lossy(&name)
             ));
-            let remote = Remote::open(wire(&sub_url, cancel)?, &agent())?;
+            let remote = Remote::open(wire(&sub_url, cancel, self.auth.as_ref())?, &agent())?;
             let sub_pack = remote.fetch(&[commit], limits)?;
             let sub_commit = commit_of(&sub_pack, &commit)?;
             let time = (sub_commit.committed, 0);
