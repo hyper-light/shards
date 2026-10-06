@@ -106,6 +106,9 @@ pub struct Step {
     /// `--ulimit`s: Linux's resource number (the same on every architecture shards runs),
     /// the soft and the hard limit; the rest are inherited.
     pub rlimits: Vec<(u32, u64, u64)>,
+    /// The seccomp filter it runs under, as a run's `seccomp=` setup entry holds one (its
+    /// seccomp(2) flags, little-endian, then its `struct sock_filter`s); empty for none.
+    pub seccomp: Vec<u8>,
 }
 
 fn put_u32(out: &mut Vec<u8>, n: u32) {
@@ -210,6 +213,7 @@ impl Step {
             out.extend_from_slice(&soft.to_be_bytes());
             out.extend_from_slice(&hard.to_be_bytes());
         }
+        put_bytes(&mut out, &self.seccomp);
         out
     }
 
@@ -276,6 +280,7 @@ impl Step {
             let hard = u64::from_be_bytes(r.take(8)?.try_into().ok()?);
             rlimits.push((resource, soft, hard));
         }
+        let seccomp = r.bytes()?;
         r.0.is_empty().then_some(Step {
             root,
             upper,
@@ -292,6 +297,7 @@ impl Step {
             insecure,
             mounts,
             rlimits,
+            seccomp,
         })
     }
 }
@@ -420,6 +426,7 @@ mod tests {
                 ),
             ],
             rlimits: vec![(7, 1024, 4096)],
+            seccomp: vec![0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 255, 127],
         };
         let bytes = step.encode();
         assert_eq!(Step::decode(&bytes), Some(step));

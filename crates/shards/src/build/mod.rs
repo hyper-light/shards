@@ -1064,6 +1064,8 @@ fn run(parsed: &Parsed) -> Result<(), String> {
     let mut downloads = http::Downloads::start(sources, &dir, limits)?;
     let log_limits = LogLimits::from_env();
     let mut builder: Option<builder::Builder> = None;
+    // Its steps' seccomp filter, compiled once for the kernel the builder boots.
+    let mut step_filter: Vec<u8> = Vec::new();
     let mut results: Vec<Vec<exec::Ref>> = Vec::with_capacity(def.ops.len());
     // What other operations read, so a base image is unpacked only when one does.
     let read: std::collections::HashSet<usize> = def
@@ -1275,6 +1277,8 @@ fn run(parsed: &Parsed) -> Result<(), String> {
                         memory_mib: builder_memory_mib(),
                         bases: &run_bases,
                     };
+                    let kernel = crate::guest::version_of(&guest.0).map_err(|e| fail(&v, &e))?;
+                    step_filter = crate::setup::step_seccomp(kernel).map_err(|e| fail(&v, &e))?;
                     builder = Some(builder::Builder::start(&boot).map_err(|e| fail(&v, &e))?);
                 }
                 let Some(b) = builder.as_mut() else {
@@ -1292,6 +1296,7 @@ fn run(parsed: &Parsed) -> Result<(), String> {
                     // no host to guard (docs/design/architecture.md D33).
                     insecure: allowed.grants(buildflags::SECURITY_INSECURE),
                     network_host: allowed.grants(buildflags::NETWORK_HOST),
+                    seccomp: &step_filter,
                 };
                 let mut log = StepLog::new(log_limits);
                 let r = exec.run(b, &inputs, &op, &name, &mut |which, bytes| {

@@ -750,6 +750,9 @@ pub struct RunOp<'o> {
     /// `--allow security.insecure` and `--allow network.host`.
     pub insecure: bool,
     pub network_host: bool,
+    /// The seccomp filter every step but an insecure one runs under
+    /// (crate::setup::step_seccomp).
+    pub seccomp: &'o [u8],
 }
 
 /// Secret `id`'s bytes, if the build was given it.
@@ -1003,6 +1006,13 @@ impl Exec<'_> {
             insecure: op.security == Security::Insecure,
             mounts,
             rlimits,
+            // BuildKit leaves an insecure step unconfined, as runc does a privileged
+            // container (oci/spec.go: WithDefaultSeccomp unless insecure).
+            seccomp: if op.security == Security::Insecure {
+                Vec::new()
+            } else {
+                op.seccomp.to_vec()
+            },
         };
         let mut fs = (*root.fs).clone();
         fs.begin();

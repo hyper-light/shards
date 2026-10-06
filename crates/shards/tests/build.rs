@@ -390,6 +390,12 @@ fn run_steps_take_the_builds_secrets_ulimits_and_entitlements() {
         "an insecure step, every capability\n{shown}"
     );
     assert!(!caps(&reports[3]).is_empty(), "{shown}");
+    // Under moby's default seccomp profile, as BuildKit runs every step (`Seccomp: 2`, a
+    // filter); an insecure step unconfined.
+    let seccomp =
+        |r: &std::collections::BTreeMap<String, String>| r.get("seccomp").cloned().unwrap_or_default();
+    assert_eq!(seccomp(&reports[2]), "2", "a step's filter\n{shown}");
+    assert_eq!(seccomp(&reports[3]), "0", "an insecure step's none\n{shown}");
 
     // Nothing of the secrets in the image.
     let ran = run_shards_env(&["run"], &["--rm", "given:1"], &env, TIMEOUT);

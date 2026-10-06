@@ -2740,6 +2740,21 @@ Open: SSH remotes and `--ssh`; `SOURCE_DATE_EPOCH` taken from a Git stage (the c
 takes it); servers that refuse a commit not at a ref's tip ("not our ref"), which BuildKit
 fetches whole.
 
+### RUN steps under Docker's default seccomp profile (D49)
+
+BuildKit runs every step under moby's default seccomp profile (its executor's
+oci/spec.go WithDefaultSeccomp; `Seccomp: 2` in a step's `/proc/self/status`, measured), an
+insecure step unconfined. shards' builder does the same: the profile `docker run` applies
+(D42, `crates/seccomp`, compiled as libseccomp and runc compile it) is compiled once per
+build for a step's capabilities (the defaults a container has, `shards_abi::run::CAPS`), the
+builder's architecture and its kernel's version, and carried in each step
+(`shards_abi::build::Step::seccomp`); the builder guest loads it while the step is still
+root with every capability, as runc loads a container's before it changes user where
+no_new_privs is unset (BuildKit sets none), so that the change of user, the capabilities
+and the exec that follow run under it. Tested in
+`run_steps_take_the_builds_secrets_ulimits_and_entitlements` (mutation-checked: a step's
+`Seccomp:` is 2, an insecure step's 0).
+
 ## 4. Start path (≤ 5 ms budget)
 
 | Step | Cost | Evidence |

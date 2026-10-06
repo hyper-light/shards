@@ -897,6 +897,7 @@ fn setup(step: &Step, root: &Path, files: &Path, sources: &[Option<PathBuf>], wo
     // The working directory, as runc's init makes it, in the step's root, now `/`.
     let cwd: &[u8] = if step.cwd.is_empty() { b"/" } else { &step.cwd };
     Root::open(Path::new("/"))?.mkdir_all(cwd, 0o755, None)?;
+    confine(step)?;
     identity(step)?;
     // SAFETY: umask(2) always succeeds. runc's default (rootfs_linux.go).
     unsafe { libc::umask(0o022) };
@@ -946,6 +947,38 @@ fn bind(
             libc::MS_BIND | libc::MS_REMOUNT | flags | ro,
             "",
         )?;
+    }
+    Ok(())
+}
+
+/// The step's seccomp filter, loaded while the step can still load one: runc loads a
+/// container's before it changes user where no_new_privs is unset (libcontainer
+/// standard_init_linux.go), and BuildKit sets none. What init does after it, the change of
+/// user and capabilities and the exec, the default profile allows.
+fn confine(step: &Step) -> io::Result<()> {
+    if step.seccomp.is_empty() {
+        return Ok(());
+    }
+    let entry = [b"seccomp=".as_slice(), &step.seccomp].concat();
+    let (flags, program) = crate::setup::filter(std::slice::from_ref(&entry))
+        .ok_or_else(|| err("a seccomp filter cut short"))?;
+    let prog = libc::sock_fprog {
+        len: u16::try_from(program.len()).map_err(|_| err("a seccomp filter too long"))?,
+        filter: program.as_ptr().cast_mut(),
+    };
+    // SAFETY: seccomp(2) with a program that outlives the call.
+    if unsafe {
+        libc::syscall(
+            libc::SYS_seccomp,
+            libc::SECCOMP_SET_MODE_FILTER,
+            flags,
+            &raw const prog,
+        )
+    } != 0
+    {
+        return Err(os_err(
+            "error loading seccomp filter into kernel: error loading seccomp filter",
+        ));
     }
     Ok(())
 }

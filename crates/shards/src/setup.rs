@@ -150,6 +150,34 @@ pub fn capability_names(run: &Run) -> Vec<String> {
         .collect()
 }
 
+/// The seccomp filter a build's `RUN` steps run under, as BuildKit gives each step
+/// moby's default profile (its executor's `Seccomp: 2`, oci/spec.go
+/// WithDefaultSeccomp): compiled for a step's capabilities, the defaults a container
+/// has (shards_abi::run::CAPS), and the builder's kernel; as a step carries it
+/// ([`shards_abi::build::Step::seccomp`]), empty where the profile asks for none.
+pub fn step_seccomp(kernel: shards_seccomp::Kernel) -> Result<Vec<u8>, String> {
+    let caps: Vec<String> = shards_abi::run::CAPS
+        .iter()
+        .filter_map(|&c| shards_abi::run::CAP_NAMES.get(usize::try_from(c).ok()?))
+        .map(|n| (*n).to_string())
+        .collect();
+    let arch = shards_seccomp::Arch::host().ok_or("seccomp needs an amd64 or arm64 guest")?;
+    let c = shards_seccomp::Container {
+        arch,
+        caps: &caps,
+        kernel,
+    };
+    Ok(shards_seccomp::compile(shards_seccomp::DEFAULT, &c)?
+        .map(|p| {
+            let mut e = p.flags.to_le_bytes().to_vec();
+            for i in &p.insns {
+                e.extend_from_slice(&i.to_ne_bytes());
+            }
+            e
+        })
+        .unwrap_or_default())
+}
+
 /// The seccomp filter a container's workload runs under, as moby chooses its profile
 /// (daemon/seccomp_linux.go, WithSeccomp): none for `unconfined`; a privileged
 /// container's only where it names one; else the one it names or Docker's default. As the
