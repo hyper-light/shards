@@ -11,6 +11,8 @@ pub mod diff;
 pub mod host;
 pub mod mode;
 pub mod ops;
+pub mod skill;
+mod skill_tables;
 pub mod stack;
 pub mod sync;
 pub mod upper;

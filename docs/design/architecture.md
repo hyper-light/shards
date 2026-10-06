@@ -2912,6 +2912,34 @@ digest as it is stored, the platform's manifest chosen from an index, so a layou
 is built on as any base is (`oci_layout_contexts_are_the_images_they_hold`). buildx locks
 the index to read it, leaving a lock file in the layout; shards only reads.
 
+### Skills checked as the Agent Skills reference checks them (D54)
+
+`SKILL` takes skills in the Agent Skills format (AGENTFILE_ARCH.md §8 Q12): a directory
+whose `SKILL.md` opens with YAML frontmatter, `name` and `description` required. Each is
+checked as the format's reference validator checks it (agentskills/skills-ref
+`validate`, 69ef37e; `shards_build::skill`), held to it by `crates/build/tests/skills.rs`
+over 131 skills, every error and every parsed frontmatter alike, as
+`scripts/skills/generate` records skills-ref (on Python 3.14.3, from its own lockfile)
+making of them:
+
+- the 14 Apache-2.0 skills of anthropics/skills (683bc88), committed with their licence;
+  skills-ref refuses one of them (`claude-api`, a 1068-character description), and so
+  does shards;
+- 117 crafted ones, for each rule: names (NFKC-normalized and stripped, Python's
+  `str.isalnum` taken from the same Python, lowercase, hyphens, length in code points,
+  the directory's name), descriptions, compatibility, unknown fields, and the YAML.
+
+The frontmatter is read as strictyaml reads it, by a parser of its subset written for
+this: block style only, every scalar a string, a document that is no collection its raw
+text; flow style, anchors, aliases, tags, merge keys, repeated keys, tabs outside quoted
+and block values, and `-`, `?` or `:` before a space where a value starts all refused.
+Two of its found quirks kept: a value of the key's indentation on the next line is an
+error, and NEL, LINE and PARAGRAPH SEPARATOR fold within a value without ending its line.
+Deviation, recorded in the test: where the YAML is refused, shards says what is wrong and
+on which frontmatter line after skills-ref's own prefix; strictyaml's texts (ruamel's,
+naming `<unicode string>`) are not reproduced. Mutation-checked: a description limit
+moved, and a value's `: ` let through, each fail the corpus.
+
 ## 4. Start path (≤ 5 ms budget)
 
 | Step | Cost | Evidence |

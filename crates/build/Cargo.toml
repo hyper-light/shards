@@ -18,6 +18,8 @@ shards-image = { path = "../image" }
 bzip2 = "0.6"
 flate2 = { version = "1", default-features = false, features = ["zlib-rs", "runtime_detection"] }
 lzma-rust2 = { version = "0.21", default-features = false, features = ["std", "xz"] }
+# Skill names NFKC-normalized, as the Agent Skills reference validator reads them (D54).
+unicode-normalization = "0.1.25"
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
