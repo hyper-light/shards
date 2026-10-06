@@ -31,6 +31,8 @@ mod local_store;
 mod names;
 #[cfg(unix)]
 mod netproc;
+#[cfg(unix)]
+mod networks;
 mod pull;
 mod resources;
 mod run;

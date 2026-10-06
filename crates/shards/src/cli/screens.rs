@@ -1245,6 +1245,7 @@ fn prune(page: &mut Page, p: &Paint, sheet: &Sheet) {
     let vms = (0..n).filter(|&i| sheet.get(i, "vm").is_some()).count();
     let images = (0..n).filter(|&i| sheet.get(i, "deleted").is_some()).count();
     let vols = (0..n).filter(|&i| sheet.get(i, "volume").is_some()).count();
+    let nets = (0..n).filter(|&i| sheet.get(i, "network").is_some()).count();
     look::head(
         page,
         p,
@@ -1259,6 +1260,12 @@ fn prune(page: &mut Page, p: &Paint, sheet: &Sheet) {
                     if images == 1 { "image" } else { "images" }
                 ));
             }
+            if nets > 0 {
+                said.push(format!(
+                    "{nets} {}",
+                    if nets == 1 { "network" } else { "networks" }
+                ));
+            }
             if vols > 0 {
                 said.push(format!("{vols} {}", if vols == 1 { "volume" } else { "volumes" }));
             }
@@ -1267,7 +1274,7 @@ fn prune(page: &mut Page, p: &Paint, sheet: &Sheet) {
         })],
     );
     page.blank();
-    if vms + images + vols == 0 {
+    if vms + images + vols + nets == 0 {
         page.line().pad(4).put(p, tokens::MUTED, "Nothing to remove.");
         return;
     }
@@ -1285,6 +1292,12 @@ fn prune(page: &mut Page, p: &Paint, sheet: &Sheet) {
             l.pad(6)
                 .put(p, tokens::SUBTLE, "untagged ")
                 .put(p, tokens::FOREGROUND, name);
+        } else if let Some(name) = sheet.get(i, "network") {
+            l.pad(4)
+                .put(p, tokens::SAGE, "● ")
+                .put(p, tokens::FOREGROUND, name)
+                .pad(2)
+                .put(p, tokens::MUTED, "network removed");
         } else if let Some(name) = sheet.get(i, "volume") {
             l.pad(4)
                 .put(p, tokens::SAGE, "● ")

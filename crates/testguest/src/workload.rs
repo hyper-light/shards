@@ -86,6 +86,7 @@ pub fn main() -> ! {
         "loopback" => loopback(),
         "fs" => fs(args.get(1..).unwrap_or_default()),
         "tcp" => tcp(arg(1)),
+        "ask" => ask(arg(1)),
         "udp" => udp(arg(1)),
         "serve" => serve(arg(1), arg(2).parse().unwrap_or(1)),
         "hold" => hold(arg(1)),
@@ -370,6 +371,28 @@ fn report() -> i32 {
     }
     let _ = io::stdout().write_all(out.as_bytes());
     0
+}
+
+/// Connects to `addr` (HOST:PORT, a name resolved as the C library resolves it), says
+/// nothing, its side closed, and prints what comes back until the far end closes: `ask
+/// BYTES`, or `ask error E`.
+fn ask(addr: &str) -> i32 {
+    use std::io::Read as _;
+    let mut got = Vec::new();
+    let asked = std::net::TcpStream::connect(addr).and_then(|mut s| {
+        s.shutdown(std::net::Shutdown::Write)?;
+        s.read_to_end(&mut got)
+    });
+    match asked {
+        Ok(_) => {
+            let _ = writeln!(io::stdout(), "ask {}", String::from_utf8_lossy(&got).trim_end());
+            0
+        }
+        Err(e) => {
+            let _ = writeln!(io::stdout(), "ask error {e}");
+            1
+        }
+    }
 }
 
 /// Connects to `addr` (IP:PORT), reads until the far end closes, and prints what came:

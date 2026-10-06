@@ -505,6 +505,52 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             mac,
         });
         let paused = super::lock(&self.paused).contains(&c.id);
+        // A user network's endpoint (D46): its own while it runs; its network's ID and
+        // the names it would have, kept while it is stopped, as dockerd keeps them.
+        let user_net = match self.membership(&c.id) {
+            Some((n, m)) => Some(super::inspect_doc::UserNet {
+                name: n.name.clone(),
+                network_id: n.id.clone(),
+                endpoint: m.endpoint,
+                ip: Some(m.ip),
+                gateway: n.pools.first().map(|p| p.gateway),
+                prefix: n.pools.first().map_or(0, |p| p.subnet.1),
+                mac: m.mac,
+                dns_names: m.dns_names,
+            }),
+            None => self
+                .user_network(
+                    &self
+                        .connected_network(&request)
+                        .unwrap_or_else(|| request.network.clone()),
+                )
+                .map(|n| {
+                    let asked = request.endpoints.iter().find(|e| e.network == n.name);
+                    let mut dns_names = vec![c.name.clone()];
+                    let short = c.id.get(..12).unwrap_or(&c.id).to_string();
+                    let hostname = request.hostname.clone().unwrap_or_else(|| short.clone());
+                    for name in asked
+                        .map(|e| e.aliases.clone())
+                        .unwrap_or_default()
+                        .into_iter()
+                        .chain([short, hostname])
+                    {
+                        if !dns_names.contains(&name) {
+                            dns_names.push(name);
+                        }
+                    }
+                    super::inspect_doc::UserNet {
+                        name: n.name,
+                        network_id: n.id,
+                        endpoint: String::new(),
+                        ip: None,
+                        gateway: None,
+                        prefix: 0,
+                        mac: String::new(),
+                        dns_names,
+                    }
+                }),
+        };
         document(&Facts {
             container: c,
             request: &request,
@@ -516,6 +562,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             exec_ids,
             log_path: dir.join("log").display().to_string(),
             net,
+            user_net,
             size: sized.then(|| self.container_sizes(c)),
         })
     }

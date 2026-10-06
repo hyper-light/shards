@@ -154,6 +154,29 @@ pub fn render(sheet: &shards_ipc::Sheet, asked: &Asked, clock: &Clock<'_>) -> Re
             };
             format::volume::write(&ctx, &volumes, &mut out)?;
         }
+        "networks-rows" => {
+            let mut networks: Vec<format::network::Network> = rows
+                .as_array()
+                .map(Vec::as_slice)
+                .unwrap_or_default()
+                .iter()
+                .map(network)
+                .collect();
+            // runList: by name, in natural order.
+            networks.sort_by(|a, b| shards_cmdline::ports::natural_compare(&a.name, &b.name));
+            let source = if asked.format.is_empty() {
+                format::TABLE
+            } else {
+                &asked.format
+            };
+            let ctx = Context {
+                format: &format::network::format(source, asked.quiet),
+                trunc: asked.trunc,
+                east_asian: shards_cmdline::width::east_asian(|name| std::env::var(name).ok()),
+                clock,
+            };
+            format::network::write(&ctx, &networks, &mut out)?;
+        }
         "history-rows" => {
             let steps: Vec<format::history::History> = rows
                 .as_array()
@@ -259,6 +282,36 @@ pub fn render(sheet: &shards_ipc::Sheet, asked: &Asked, clock: &Clock<'_>) -> Re
         _ => return Ok(None),
     }
     Ok(Some(out))
+}
+
+/// A network of a `networks-rows` sheet.
+fn network(row: &serde_json::Value) -> format::network::Network {
+    let text = |k: &str| {
+        row.get(k)
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    };
+    let flag = |k: &str| row.get(k).and_then(serde_json::Value::as_bool).unwrap_or(false);
+    format::network::Network {
+        id: text("Id"),
+        name: text("Name"),
+        driver: text("Driver"),
+        scope: text("Scope"),
+        ipv4: flag("EnableIPv4"),
+        ipv6: flag("EnableIPv6"),
+        internal: flag("Internal"),
+        labels: row
+            .get("Labels")
+            .and_then(serde_json::Value::as_object)
+            .map(|m| {
+                m.iter()
+                    .map(|(k, v)| (k.clone(), v.as_str().unwrap_or_default().to_string()))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        created: text("Created").parse().unwrap_or(0),
+    }
 }
 
 /// A volume of a `volumes-rows` sheet.

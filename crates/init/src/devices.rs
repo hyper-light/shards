@@ -1,8 +1,8 @@
-//! A container's devices (D44), as dockerd and runc give a container its host's: each
+//! A microVM's devices (D44), as dockerd and runc give a container its host's: each
 //! `--device` found (moby daemon/oci_linux.go WithDevices, daemon/pkg/oci DevicesFromPath),
 //! here among the VM's own, which `/sys/dev` lists; its rules and each
 //! `--device-cgroup-rule` (AppendDevicePermissionsFromCgroupRules); the CDI devices, which
-//! no VM has a spec for; then the nodes made in the container's `/dev` (runc
+//! no VM has a spec for; then the nodes made in the workload's `/dev` (runc
 //! createDevices) and its cgroup confined to its devices by runc's eBPF program
 //! (opencontainers/cgroups devices, `shards-devcgroup`). Init does it all, outside the
 //! workload's cgroup, before the standby runs anything there.
@@ -27,7 +27,7 @@ pub struct Node {
 
 /// The modes systemd-udev's default rules give the devices a guest can have
 /// (systemd v257 rules.d/50-udev-default.rules.in), over devtmpfs's: the VM is the host a
-/// container's `--device` and `--privileged` take nodes from, and a host's are so.
+/// microVM's `--device` and `--privileged` take nodes from, and a host's are so.
 const UDEV_MODES: [(&str, u32); 5] = [
     ("/dev/fuse", 0o666),
     ("/dev/net/tun", 0o666),
@@ -211,7 +211,7 @@ fn asked(entry: &[u8]) -> Option<Asked<'_>> {
     Some(a)
 }
 
-/// What a container's devices come to before its cgroup is set: its I/O limits by
+/// What a microVM's devices come to before its cgroup is set: its I/O limits by
 /// device number, and the rules of its device filter (none where it is privileged).
 pub struct Prepared {
     weights: Vec<String>,
@@ -220,7 +220,7 @@ pub struct Prepared {
 }
 
 /// What setup entry `entry` asks, as dockerd makes a spec of it (WithResources, then
-/// WithDevices) and runc prepares the container's root (createDevices): the devices'
+/// WithDevices) and runc prepares a container's root (createDevices): the devices'
 /// numbers found, the CDI devices refused, and the nodes made in the `/dev` init shares
 /// with the workload. What failed, as dockerd or runc says it.
 pub fn prepare(entry: &[u8]) -> Result<Prepared, String> {
@@ -265,7 +265,7 @@ pub fn prepare(entry: &[u8]) -> Result<Prepared, String> {
     let mut nodes = Vec::new();
     let mut given = Vec::new();
     for [host, container, perms] in &a.devices {
-        // A privileged container has the VM's devices where the VM has them already.
+        // A privileged microVM's workload has the VM's devices where the VM has them already.
         if a.privileged && host == container {
             continue;
         }
@@ -337,7 +337,7 @@ impl Prepared {
 
     /// runc's setDevices: the filter of its rules compiled, loaded and attached to
     /// `cgroup` in place of Docker's default one, which it leaves where they are the
-    /// same; none for a privileged container, which has the default taken away.
+    /// same; none for a privileged microVM, which has the default taken away.
     pub fn attach(&self, cgroup: &str) -> Result<(), String> {
         let default = DEFAULT.get();
         let Some(rules) = &self.rules else {

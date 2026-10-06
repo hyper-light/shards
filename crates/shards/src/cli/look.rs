@@ -843,6 +843,7 @@ mod tests {
         let mut out = Vec::new();
         assert!(management(&p, "image", &mut out));
         assert!(seen(&out).contains("ls"));
-        assert!(!management(&p, "network", &mut Vec::new()));
+        assert!(management(&p, "network", &mut Vec::new()));
+        assert!(!management(&p, "swarm", &mut Vec::new()));
     }
 }

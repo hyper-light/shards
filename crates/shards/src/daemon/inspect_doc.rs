@@ -58,6 +58,20 @@ pub(super) struct Net {
     pub mac: Option<[u8; 6]>,
 }
 
+/// A microVM's endpoint on a user network (D46): its network's ID and, while it runs,
+/// its endpoint's; and the names its peers know it by.
+pub(super) struct UserNet {
+    /// The network's name, which `Networks` is keyed by.
+    pub name: String,
+    pub network_id: String,
+    pub endpoint: String,
+    pub ip: Option<Ipv4Addr>,
+    pub gateway: Option<Ipv4Addr>,
+    pub prefix: u8,
+    pub mac: String,
+    pub dns_names: Vec<String>,
+}
+
 /// What a microVM's document is made of.
 pub(super) struct Facts<'a> {
     pub container: &'a Container,
@@ -76,6 +90,8 @@ pub(super) struct Facts<'a> {
     pub log_path: String,
     /// Its place on the bridge, while it runs there.
     pub net: Option<Net>,
+    /// Its endpoint on its user network, if it is on one.
+    pub user_net: Option<UserNet>,
     /// With `--size`: SizeRw and SizeRootFs.
     pub size: Option<(i64, i64)>,
 }
@@ -971,6 +987,50 @@ fn network_settings(f: &Facts<'_>, run: &Run) -> Value {
     };
     let net = f.net.as_ref().filter(|_| running && mode == "bridge");
     let addr = |a: Option<Ipv4Addr>| a.map(|a| a.to_string()).unwrap_or_default();
+    if let Some(u) = &f.user_net {
+        let mode = u.name.as_str();
+        let asked = run.endpoints.iter().find(|e| e.network == mode);
+        let ipam = match asked.filter(|e| !e.ipv4.is_empty() || !e.ipv6.is_empty()) {
+            Some(e) => Struct::pointer("network.EndpointIPAMConfig")
+                .tagged("IPv4Address", Some("IPv4Address"), true, s(&e.ipv4))
+                .tagged("IPv6Address", Some("IPv6Address"), true, s(&e.ipv6))
+                .value(),
+            None => Struct::nil("network.EndpointIPAMConfig"),
+        };
+        let aliases = match asked.map(|e| &e.aliases).filter(|a| !a.is_empty()) {
+            Some(a) => Value::strings(a.iter().cloned()),
+            None => Value::NilList(Kind::String),
+        };
+        let endpoint = Struct::pointer("network.EndpointSettings")
+            .field("IPAMConfig", ipam)
+            .field("Links", Value::NilList(Kind::String))
+            .field("Aliases", aliases)
+            .field("DriverOpts", Value::NilMap(Kind::String))
+            .field("GwPriority", int(asked.map_or(0, |e| e.gw_priority)))
+            .field("NetworkID", s(&u.network_id))
+            .field("EndpointID", s(&u.endpoint))
+            .field("Gateway", s(&addr(u.gateway)))
+            .field("IPAddress", s(&addr(u.ip)))
+            .field("MacAddress", s(&u.mac))
+            .field(
+                "IPPrefixLen",
+                int(i64::from(if u.ip.is_some() { u.prefix } else { 0 })),
+            )
+            .field("IPv6Gateway", s(""))
+            .field("GlobalIPv6Address", s(""))
+            .field("GlobalIPv6PrefixLen", int(0))
+            .field("DNSNames", Value::strings(u.dns_names.iter().cloned()))
+            .value();
+        return Struct::pointer("container.NetworkSettings")
+            .field("SandboxID", s(""))
+            .field("SandboxKey", s(""))
+            .field("Ports", Value::Map(Kind::Any, ports))
+            .field(
+                "Networks",
+                Value::Map(Kind::Any, [(mode.to_owned(), endpoint)].into_iter().collect()),
+            )
+            .value();
+    }
     let endpoint = Struct::pointer("network.EndpointSettings")
         .field("IPAMConfig", Struct::nil("network.EndpointIPAMConfig"))
         .field("Links", Value::NilList(Kind::String))
@@ -1361,6 +1421,7 @@ mod tests {
                 exec_ids: Vec::new(),
                 log_path: String::new(),
                 net: None,
+                user_net: None,
                 size: None,
             };
             let mut got: serde_json::Value = serde_json::from_str(&json(&document(&facts))).unwrap();

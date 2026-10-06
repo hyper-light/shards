@@ -6248,3 +6248,161 @@ fn attach_joins_a_running_container_as_docker_attach_does() {
     );
     assert_eq!(shards(&["rm", "-f", "term"]).status, Some(0));
 }
+
+/// D46: microVMs on a user network reach one another, by address and by every name
+/// Docker's embedded DNS answers (name, alias, short ID, host name, any case), at
+/// Docker's 127.0.0.11; the server sees each by its own address; a microVM off the network
+/// reaches none of them; and `shards network` creates, lists, inspects, refuses and
+/// removes networks in Docker's words (probed on Docker Engine 29.3.1).
+#[test]
+fn microvms_on_a_network_reach_one_another_by_name() {
+    let Some((home, image)) = home("containers-networks") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let made = shards(&[
+        "network",
+        "create",
+        "--subnet",
+        "10.77.0.0/24",
+        "--gateway",
+        "10.77.0.1",
+        "lan",
+    ]);
+    assert_eq!(made.status, Some(0), "{made}");
+    assert_eq!(made.stdout.trim().len(), 64, "{made}");
+    // A server, by name, alias and address; it is said each client's own address.
+    let mut srv = start(
+        &home,
+        &image,
+        &[
+            "--name",
+            "srv",
+            "--hostname",
+            "srvhost",
+            "--network",
+            "lan",
+            "--network-alias",
+            "web",
+            "--ip",
+            "10.77.0.50",
+        ],
+        &["serve", "7000", "6"],
+    );
+    let id = shards(&["inspect", "-f", "{{.Id}}", "srv"])
+        .stdout
+        .trim()
+        .get(..12)
+        .unwrap()
+        .to_string();
+    for to in [
+        "srv:7000",
+        "WEB:7000",
+        "srvhost:7000",
+        "10.77.0.50:7000",
+        &format!("{id}:7000"),
+    ] {
+        let r = run_in(&home, &image, &["--rm", "--network", "lan"], &["ask", to]);
+        assert_eq!(r.status, Some(0), "{to}: {r}");
+        assert!(r.stdout.starts_with("ask from 10.77.0."), "{to}: {r}");
+        assert!(!r.stdout.contains("10.77.0.50\n"), "{to}: {r}");
+    }
+    // Its own name too, and Docker's resolver address in its resolv.conf.
+    let r = run_in(
+        &home,
+        &image,
+        &["--rm", "--network", "lan", "--name", "me"],
+        &["fs", "print:/etc/resolv.conf"],
+    );
+    assert_eq!(r.stdout, "nameserver 127.0.0.11\noptions ndots:0\n", "{r}");
+    // Off the network: no reach.
+    let r = run_in(&home, &image, &["--rm"], &["ask", "10.77.0.50:7000"]);
+    assert_ne!(r.status, Some(0), "{r}");
+    // What inspect says of both.
+    let members = shards(&[
+        "network",
+        "inspect",
+        "-f",
+        "{{range .Containers}}{{.Name}} {{.IPv4Address}}{{end}}",
+        "lan",
+    ]);
+    assert_eq!(members.stdout, "srv 10.77.0.50/24\n", "{members}");
+    let endpoint = shards(&[
+        "inspect",
+        "-f",
+        "{{with .NetworkSettings.Networks.lan}}{{.IPAddress}} {{.Gateway}} {{.IPPrefixLen}} {{.Aliases}} {{.DNSNames}}{{end}}",
+        "srv",
+    ]);
+    assert_eq!(
+        endpoint.stdout,
+        format!("10.77.0.50 10.77.0.1 24 [web] [srv web {id} srvhost]\n"),
+        "{endpoint}"
+    );
+    // dockerd's refusals: an address taken, or out of the subnet; a network in use.
+    let r = run_in(
+        &home,
+        &image,
+        &["--rm", "--network", "lan", "--ip", "10.77.0.50"],
+        &["exit", "0"],
+    );
+    assert!(
+        r.stderr
+            .contains("failed to set up container networking: Address already in use"),
+        "{r}"
+    );
+    let r = run_in(
+        &home,
+        &image,
+        &["--rm", "--network", "lan", "--ip", "10.9.9.9"],
+        &["exit", "0"],
+    );
+    assert!(
+        r.stderr.contains("invalid config for network lan: invalid endpoint settings:\nno configured subnet contains IP address 10.9.9.9"),
+        "{r}"
+    );
+    let rm = shards(&["network", "rm", "lan"]);
+    assert_eq!(rm.status, Some(1), "{rm}");
+    assert!(rm.stderr.starts_with("Error response from daemon: error while removing network: network lan has active endpoints (name:\"srv\" id:\""), "{rm}");
+    assert!(rm.stderr.ends_with("\")\nexit status 1\n"), "{rm}");
+    assert_eq!(shards(&["rm", "-f", "srv"]).status, Some(0));
+    let _ = srv.kill();
+    let _ = srv.wait();
+    // Docker's table, and its refusals.
+    let ls = shards(&["network", "ls", "--format", "{{.Name}} {{.Driver}} {{.Scope}}"]);
+    assert_eq!(
+        ls.stdout, "bridge bridge local\nhost host local\nlan bridge local\nnone null local\n",
+        "{ls}"
+    );
+    for (args, said) in [
+        (
+            &["network", "create", "lan"][..],
+            "Error response from daemon: network with name lan already exists\n",
+        ),
+        (
+            &["network", "create", "bridge"],
+            "Error response from daemon: operation is not permitted on predefined bridge network \n",
+        ),
+        (
+            &["network", "create", "--subnet", "10.77.0.0/24", "other"],
+            "Error response from daemon: invalid pool request: Pool overlaps with other one on this address space\n",
+        ),
+        (
+            &["network", "create", "--gateway", "1.2.3.4", "other"],
+            "every ip-range or gateway must have a corresponding subnet\n",
+        ),
+        (
+            &["network", "rm", "bridge"],
+            "Error response from daemon: bridge is a pre-defined network and cannot be removed\nexit status 1\n",
+        ),
+    ] {
+        let r = shards(args);
+        assert_eq!((r.status, r.stderr.as_str()), (Some(1), said), "{args:?}");
+    }
+    assert_eq!(shards(&["network", "rm", "lan"]).stdout, "lan\n");
+    let made = shards(&["network", "create", "spare"]);
+    assert_eq!(made.status, Some(0), "{made}");
+    assert_eq!(
+        shards(&["network", "prune", "-f"]).stdout,
+        "Deleted Networks:\nspare\n\n"
+    );
+}

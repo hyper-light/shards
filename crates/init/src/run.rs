@@ -310,6 +310,15 @@ fn sort_setup(entries: &[Vec<u8>], into: &mut Inherited) -> Result<Vec<Vec<u8>>,
             into.caps = std::str::from_utf8(caps).ok().and_then(|c| c.parse().ok());
         } else if let Some(group) = entry.strip_prefix(b"group=") {
             into.groups.push(group.to_vec());
+        } else if let Some(gateway) = entry.strip_prefix(b"dns=") {
+            // Docker's embedded DNS address, relayed to the network's resolver (D46).
+            let gateway = std::str::from_utf8(gateway)
+                .ok()
+                .and_then(|g| g.parse().ok())
+                .ok_or_else(|| setup_failed("a malformed dns entry"))?;
+            crate::dnsrelay::start(gateway).map_err(setup_failed)?;
+        } else if entry.starts_with(b"address=") {
+            // Init's, as the run starts (`Standby::start`).
         } else if entry.starts_with(b"devices=") {
             // Init's, done as the workload's limits are (`limit`).
         } else {
@@ -732,7 +741,7 @@ fn set_hostname(name: &[u8], domain: &[u8], extra: &[Vec<u8>]) -> Result<(), Fai
     }
     // The guest's own address on a network, as Docker names a container on its bridge;
     // the loopback's otherwise.
-    let own = crate::net::from_cmdline().map(|(addr, _, _)| addr.to_string());
+    let own = crate::net::current().map(|(addr, _, _)| addr.to_string());
     hosts.extend_from_slice(own.as_deref().map_or(OWN_ADDRESS, str::as_bytes));
     hosts.push(b'\t');
     let mut full = name.to_vec();
@@ -1106,6 +1115,18 @@ impl Standby {
         // SAFETY: waitpid(2) for our own child, without blocking.
         let ended = unsafe { libc::waitpid(self.pid, &mut status, libc::WNOHANG) } == self.pid;
         let standby = if ended { Standby::fork(None)? } else { self };
+        // A network's address, where it is not the template's (D46): before /etc/hosts,
+        // which names it.
+        if let Some(to) = spec.setup.iter().find_map(|e| e.strip_prefix(b"address=")) {
+            let to = std::str::from_utf8(to).ok().and_then(crate::net::parse);
+            let from = crate::net::current();
+            if let (Some(to), Some(from)) = (to, from)
+                && to != from
+            {
+                crate::net::readdress((from.0, from.1), to)
+                    .map_err(|e| setup_failed(format!("eth0's address: {e}")))?;
+            }
+        }
         if !spec.hostname.is_empty() {
             // SAFETY: a buffer of the given length.
             if unsafe { libc::sethostname(spec.hostname.as_ptr().cast(), spec.hostname.len()) } != 0 {

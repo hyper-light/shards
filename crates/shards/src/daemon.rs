@@ -49,6 +49,7 @@ mod inspect_doc;
 mod load;
 mod logs;
 mod network;
+mod networks;
 mod ps;
 mod publish;
 mod pull;
@@ -385,6 +386,8 @@ struct Tracked {
     visit: bool,
     /// Its guest's MAC on its network, for `inspect`.
     mac: Option<[u8; 6]>,
+    /// Its network process's control socket, where peers on its network come (D46).
+    net: Option<UnixStream>,
 }
 
 /// What a run has told the daemon, and the socket it tells it on: read under this lock
@@ -636,6 +639,9 @@ struct Daemon<D: Disk = Real> {
     /// The containers `shards pause` froze: their VM processes stopped (SIGSTOP), until
     /// `unpause`, or a stop or kill, lets them go on.
     paused: Mutex<HashSet<String>>,
+    /// Each user network's members, by its ID: the endpoints of its running containers
+    /// (D46).
+    members: Mutex<std::collections::BTreeMap<String, Vec<networks::Member>>>,
     /// A container's ID, directory and log, made ahead of the run that takes them.
     spare: Mutex<Spare>,
     /// Numbers the templates a run saves before they become the template.
@@ -1147,6 +1153,7 @@ impl<D: Disk> Daemon<D> {
             ports_freed: Condvar::new(),
             removing: Mutex::default(),
             paused: Mutex::default(),
+            members: Mutex::default(),
             events: events::Events::default(),
             settling: Mutex::default(),
             settled: Condvar::new(),
@@ -1693,7 +1700,21 @@ impl<D: Disk> Daemon<D> {
         }
         // Its networks as dockerd checks them before it makes the container; what fails
         // as it starts fails once the container is made.
-        let mut start = match network::check(&run, self.bridge, |name| self.resolve(name).is_ok()) {
+        // Connected to one user network from the default bridge: on it alone (D46).
+        if let Some(only) = self.connected_network(&run) {
+            run.network.clone_from(&only);
+            run.endpoints.retain(|e| e.network == only);
+        }
+        let user_subnets = |term: &str| {
+            self.user_network(term)
+                .map(|n| n.pools.iter().map(|p| p.subnet).collect())
+        };
+        let mut start = match network::check(
+            &run,
+            self.bridge,
+            |name| self.resolve(name).is_ok(),
+            &user_subnets,
+        ) {
             Ok(start) => start,
             Err(e) => {
                 refuse(&e);
@@ -1762,6 +1783,24 @@ impl<D: Disk> Daemon<D> {
             abandon(&id);
             return None;
         }
+        // A user network's endpoint (D46): its address, as the microVM starts, or why
+        // the start fails, the microVM kept.
+        let mut network_setup = Vec::new();
+        if start == network::Start::Attach(network::Net::User) {
+            let term = run.network.clone();
+            let endpoint = run.endpoints.iter().find(|e| e.network == term);
+            let ip = endpoint.map(|e| e.ipv4.clone()).unwrap_or_default();
+            let aliases = endpoint.map(|e| e.aliases.clone()).unwrap_or_default();
+            let hostname = run.hostname.clone().unwrap_or_default();
+            match self.join_network(&id, &term, &ip, &aliases, &hostname) {
+                Ok((network, member)) => {
+                    let before = prepared.spec.setup.len();
+                    self.network_guest(&network, member.ip, &run, &mut prepared.spec);
+                    network_setup = prepared.spec.setup.split_off(before);
+                }
+                Err(e) => start = network::Start::Fails(e),
+            }
+        }
         if let Err(e) = crate::spec::fits(&prepared.spec) {
             refuse(&e);
             abandon(&id);
@@ -1772,7 +1811,7 @@ impl<D: Disk> Daemon<D> {
         // dockerd publishes nothing, and says nothing of it.
         let (bindings, alone) = publish::wanted(&run, &prepared.exposed);
         let bound = match start {
-            network::Start::Attach(network::Net::Bridge) => {
+            network::Start::Attach(network::Net::Bridge | network::Net::User) => {
                 if let Some(e) = publish::unsupported(&bindings) {
                     refuse(&e);
                     abandon(&id);
@@ -1825,6 +1864,8 @@ impl<D: Disk> Daemon<D> {
                 return None;
             }
         };
+        // Its name is a member's name on its network (DNSNames' first).
+        self.name_member(&id, &name);
         // A new container keeps the request it was made by, for `shards start` (D37).
         if again.is_none() {
             let dir = lock(&self.containers).dir(&id);
@@ -1863,6 +1904,7 @@ impl<D: Disk> Daemon<D> {
         let shared = crate::volumes::open(&points, first, &crate::volumes::Store::new(&self.home)).and_then(
             |opened| {
                 prepared.spec.setup = crate::setup::setup(&run, &opened.mounts)?;
+                prepared.spec.setup.extend(network_setup.iter().cloned());
                 let kernel = crate::guest::version_of(crate::run::kernel_of(&prepared.boot))?;
                 prepared
                     .spec
@@ -2035,6 +2077,15 @@ impl<D: Disk> Daemon<D> {
                     self.uncommit(id);
                     continue;
                 }
+            }
+            // On a network of its own: its address, peers and names, before it has the run.
+            if let Some(net) = &ready.net
+                && let Err(e) = self.give_network(id, net, ready.mac)
+            {
+                log(format!("warm VM {}'s network: {e}", ready.vm.id()));
+                let _ = ready.vm.kill(libc::SIGKILL);
+                self.uncommit(id);
+                continue;
             }
             let handed = hand_over(&ready.socket, payload, fds);
             // Only now, so that starting its successor delays no run: on the refiller's
@@ -2869,6 +2920,7 @@ impl<D: Disk> Daemon<D> {
             inbox: inbox.clone(),
             visit,
             mac: ready.mac,
+            net: ready.net,
         };
         // As the daemon stops, the stop thread, which this wakes, stops it.
         lock(&self.runs).insert(id.to_string(), RunState::Tracked(tracked));
@@ -3131,6 +3183,7 @@ impl<D: Disk> Daemon<D> {
 
     /// Run `id` ended: `done` is its DONE, or `None` for a VM that ended without one.
     fn run_ended(&self, id: &str, inbox: &mut Inbox, done: Option<&[u8]>) {
+        self.leave_network(id);
         inbox.ended = true;
         // A visit's end is its own: the container stays as it was.
         if inbox.visit {
@@ -3501,7 +3554,11 @@ impl<D: Disk> Daemon<D> {
             network::Start::Fails(why) => return Err(why.clone()),
         };
         let bridge = match net {
-            network::Net::Bridge => Some(self.bridge.ok_or(shards_net::bridge::NO_SUBNET)?),
+            // A user network's guest boots on the bridge's template, and takes its own
+            // address as it starts (D46).
+            network::Net::Bridge | network::Net::User => {
+                Some(self.bridge.ok_or(shards_net::bridge::NO_SUBNET)?)
+            }
             network::Net::None => None,
         };
         // Sized for its limits; a template is of one size (run::template).

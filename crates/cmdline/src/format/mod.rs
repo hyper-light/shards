@@ -32,6 +32,7 @@ pub mod container;
 pub mod disk;
 pub mod history;
 pub mod image;
+pub mod network;
 mod reference;
 pub mod stats;
 mod tabwriter;

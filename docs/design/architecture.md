@@ -2510,7 +2510,7 @@ item).
 
 ### Devices and block I/O (D44)
 
-A container reaches the devices Docker gives one and those it is given, and no other of
+A microVM's workload reaches the devices Docker gives a container and those it is given, and no other of
 its VM's: before, it could make a node of the VM's image disk (259:0) and read it. Its
 cgroup has runc's eBPF device filter (opencontainers/cgroups v0.0.4, which runc v1.3.4
 pins: the rules emulator of devices_emulator.go, the program of devicefilter.go), over
@@ -2520,10 +2520,10 @@ crate of no dependencies that shards-init builds. Its program is runc's, byte fo
 `tests` hold it to what `scripts/devcgroup/generate` records of runc's own deviceFilter,
 run in a pinned Go on Linux, for 27 rule sets (Docker's own, `--device`s, every kind of
 `--device-cgroup-rule`, privileged, the emulator's refusals). Execs are in its cgroup and
-under it, as a container's are.
+under it, as a container's execs are.
 
 `--device` takes the VM's devices as Docker's takes its host's (WithDevices,
-DevicesFromPath): one by its path, a directory's each, at the path in the container
+DevicesFromPath): one by its path, a directory's each, at the path in the microVM
 asked, with its permissions, refused as dockerd refuses one it cannot find; the VM's
 devices are those `/sys/dev` lists, which shards-init reads, with the modes systemd-udev's
 default rules give a host's (fuse, net/tun, vsock and vfio 0666, rfkill 0664; v257
@@ -2554,7 +2554,7 @@ Improvements over Docker, each measured or tested:
   container read, write and make every device. shards reads one that is not `a *:* rwm`
   as a block and a char rule of its numbers and access (tested: `a *:* r` reads a loop
   device and cannot write it).
-- `docker start` of a container that cannot start says why as Docker's does, without
+- `shards start` of a microVM that cannot start says why as `docker start` does, without
   run's help (it said run's before, for every start that failed).
 
 Open: BuildKit's RUN steps run under containerd's default device rules; `shards build`'s
@@ -2562,25 +2562,98 @@ steps are to be held to them.
 
 ### attach (D45)
 
-`shards attach` joins a running container's command as `docker attach` does (docker/cli
+`shards attach` joins a running microVM's command as `docker attach` joins a container's (docker/cli
 container/attach.go; moby daemon/attach.go, daemon/internal/stream CopyStreams): the CLI
-inspects the container first, for its terminal and its stdin, and refuses a stopped,
+inspects the microVM first, for its terminal and its stdin, and refuses a stopped,
 paused or restarting one, a missing one, and a terminal's stdin that is not one, in
-docker/cli's words; the client goes to the container's VM as an exec's does (`ATTACH_RUN`,
+docker/cli's words; the client goes to the microVM's VM process as an exec's does (`ATTACH_RUN`,
 held until the VM has it, M24), which writes it the command's output from then on,
-passes its stdin on where the container reads one (`-i`), its signals without a terminal
+passes its stdin on where the microVM's command reads one (`-i`), its signals without a terminal
 (`--sig-proxy`), and its terminal's size, one row and column larger first so that the
 command redraws (resizeTTY), and tells it the command's status, its own. The detach keys
-leave with "read escape sequence" and 1, the container running. A client's stdin ending
+leave with "read escape sequence" and 1, the microVM running. A client's stdin ending
 closes the command's where moby's does (StdinOnce, no terminal), so a detach never closes
 a shell's: before, `run -it`'s detach did.
 
 Beyond Docker: where its stdin's end does not close the command's, an attached client's
 output goes on to the command's end, where dockerd ends the attach with its stdin and
 what the command says after is lost (measured: `echo hello | docker attach` of a
-`run -di` container that answers printed nothing; shards' prints the answer; tested).
+`run -di` container that answers printed nothing; shards' of a `run -di` microVM prints the answer; tested).
 A slow client holds the command's output back, as Docker's and shards' own `run` client
 do.
+
+### Networks of microVMs (D46)
+
+`shards network` makes networks of microVMs as `docker network` makes them of
+containers, with Docker's inputs and words: create, ls, inspect, rm, prune, connect and
+disconnect, as docker/cli parses them (held byte for byte to docker/cli by
+`scripts/docker-cli/generate`) and as dockerd 29.3.1 (f78c987a) answers them, measured
+on an isolated Docker Engine 29.3.1 (a docker-in-docker container, so that no probe
+touches the user's Docker). Networks are kept in the home, one file each; dockerd's
+predefined `bridge`, `host` and `none` are listed beside them, the bridge on the subnet
+the daemon elected (D31).
+
+- **Addresses, as libnetwork's IPAM gives them.** A network's IPv4 pool is the subnet
+  asked for, or the lowest of dockerd's default pools that overlaps no other network's
+  nor the host's (InferReservedNetworks); its gateway is the first free address of its
+  range, or of its subnet; each microVM's is the lowest free one (not the next: a freed
+  address is the next given), or its `--ip`. Status' counts are dockerd's (IPsInUse
+  marks the network and broadcast addresses, the gateway, auxiliary addresses and
+  members). IPv6 pools are kept and shown as dockerd's, the ULA one derived from the
+  home's engine ID by dockerd's formula; a microVM's guest has no IPv6 (D31), so takes no
+  address of one.
+- **One template for every network.** A microVM on a network boots on the default
+  bridge's template, as every run does, and shards-init moves eth0 to its own address
+  and gateway as the run starts (one netlink address swap and route replace, only where
+  the address differs), before it writes /etc/hosts, which names it. Its network process
+  takes the address over its control socket (`NET_ADDRESS`).
+- **MicroVM to microVM.** The daemon pairs the network processes of every two members
+  with a stream socket (`NET_PEER`); a process sends a frame whose destination is a
+  peer's address to that peer whole, its virtio header's segmentation cleared (a
+  65520-byte MTU's TCP sends no aggregate) and its partial checksum kept, which the
+  peer's device takes (GUEST_CSUM). A peer's frame is taken only from its own address to
+  this guest's, and given the gateway's MAC as a routed frame; every peer is reached
+  through the gateway's MAC, which the process answers ARP with. A frame a full socket
+  cannot take whole waits only for the frame before it; others are dropped, as a full
+  switch port drops them, and TCP sends them again. Members reach each other past the
+  default deny; nothing else is opened (D31): a network is what Docker's `--internal`
+  one is, and a name off it is SERVFAIL, as Docker's internal networks answer.
+- **Names, at Docker's address.** A microVM on a network has Docker's resolver address,
+  127.0.0.11 (resolv.conf `nameserver 127.0.0.11`, `options ndots:0` after its own, no
+  comments naming an engine); a process of shards-init, outside the workload's cgroup,
+  relays each query there, by UDP and TCP, to the network process at the gateway, which
+  answers what Docker's embedded DNS answers (measured): each member's name, aliases,
+  short ID and host name as A records with a TTL of 600, whatever the case; AAAA with
+  none; PTR as `name.network.`. The daemon sends each member the table as members come
+  and go (`NET_NAMES`). Programs written for Docker that ask 127.0.0.11 by address
+  (nginx's `resolver`) work unchanged.
+- **Members.** A microVM is a member while its run lasts: from its start, under the
+  network's lock (no two take one address), to its end; one whose start fails is no
+  member, however it failed. `network rm` refuses a network with members in dockerd's
+  words; inspect lists them, and a microVM's NetworkSettings carry its endpoint as
+  dockerd's, its network's ID and DNS names kept while it is stopped.
+- **Measured and tested** (containers.rs `microvms_on_a_network_reach_one_another_by_name`):
+  reach by every name and by address, the server seeing each client's own address, no
+  reach from a microVM off the network, Docker's resolv.conf, inspect's endpoint, and
+  dockerd's refusals; the network process's resolver (net/src/dns.rs), the IPAM
+  (networks.rs) and the CLI's consolidation (daemon/networks.rs) held to Docker's answers
+  in unit tests.
+
+Unlike Docker, by the microVM: a microVM has one network device, so it is on one network.
+One left on the default bridge and connected to one user network is on that network
+alone, which under default deny gives it all the bridge would. A microVM on two user
+networks is refused ("a microVM on more than one network is not supported by shards
+yet"), and so is connecting or disconnecting a running one.
+
+Open:
+- A microVM on several networks, and connecting a running one: a network device per
+  network, added to a running VM.
+- A MAC per microVM: every microVM restored from one template shares the template's, which
+  inspect shows.
+- The TTY pages of `network ls` and `inspect`, in shards' own design (they print Docker's
+  table on a terminal too).
+- Egress grants for a network (AGENTFILE_ARCH §4.6 `NETWORK --egress`), with the
+  Agentfile.
 
 ## 4. Start path (≤ 5 ms budget)
 

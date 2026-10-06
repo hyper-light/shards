@@ -25,7 +25,7 @@ import (
 
 // The flags shards serves, by command; the rest are hidden, as shards hides them.
 var served = map[string][]string{
-	"run": {"add-host", "blkio-weight", "blkio-weight-device", "cap-add", "cap-drop", "cidfile", "cpu-period", "cpu-quota", "cpu-shares", "cpus", "cpuset-cpus", "cpuset-mems", "detach", "detach-keys", "device", "device-cgroup-rule", "device-read-bps", "device-read-iops", "device-write-bps", "device-write-iops", "disable-content-trust", "dns", "dns-opt", "dns-option", "dns-search", "domainname", "entrypoint", "env", "env-file", "expose", "group-add", "health-cmd", "health-interval", "health-retries", "health-start-interval", "health-start-period", "health-timeout", "help", "hostname", "init", "interactive", "kernel-memory", "label", "label-file", "memory", "memory-reservation", "memory-swap", "memory-swappiness", "mount", "name", "net", "network", "no-healthcheck", "oom-kill-disable", "oom-score-adj", "pids-limit", "platform", "privileged", "publish", "publish-all", "pull", "quiet", "read-only", "restart", "rm", "security-opt", "shm-size", "sig-proxy", "stop-signal", "stop-timeout", "sysctl", "tmpfs", "tty", "ulimit", "user", "volume", "volume-driver", "volumes-from", "workdir"},
+	"run": {"add-host", "blkio-weight", "blkio-weight-device", "cap-add", "cap-drop", "cidfile", "cpu-period", "cpu-quota", "cpu-shares", "cpus", "cpuset-cpus", "cpuset-mems", "detach", "detach-keys", "device", "device-cgroup-rule", "device-read-bps", "device-read-iops", "device-write-bps", "device-write-iops", "disable-content-trust", "dns", "dns-opt", "dns-option", "dns-search", "domainname", "entrypoint", "env", "env-file", "expose", "group-add", "health-cmd", "health-interval", "health-retries", "health-start-interval", "health-start-period", "health-timeout", "help", "hostname", "init", "interactive", "ip", "ip6", "kernel-memory", "label", "label-file", "memory", "memory-reservation", "memory-swap", "memory-swappiness", "mount", "name", "net", "net-alias", "network", "network-alias", "no-healthcheck", "oom-kill-disable", "oom-score-adj", "pids-limit", "platform", "privileged", "publish", "publish-all", "pull", "quiet", "read-only", "restart", "rm", "security-opt", "shm-size", "sig-proxy", "stop-signal", "stop-timeout", "sysctl", "tmpfs", "tty", "ulimit", "user", "volume", "volume-driver", "volumes-from", "workdir"},
 	"ps":   {"all", "filter", "format", "help", "last", "latest", "no-trunc", "quiet", "size"},
 	"ls":   {"all", "filter", "format", "help", "last", "latest", "no-trunc", "quiet", "size"},
 	"wait": {"help"},
@@ -73,6 +73,13 @@ var served = map[string][]string{
 	// `container prune` and `system prune`, which share the name.
 	"prune":             {"all", "filter", "force", "help", "volumes"},
 	"image prune":       {"all", "filter", "force", "help"},
+	"network connect":    {"alias", "driver-opt", "gw-priority", "help", "ip", "ip6", "link", "link-local-ip"},
+	"network create":     {"attachable", "aux-address", "config-from", "config-only", "driver", "gateway", "help", "ingress", "internal", "ip-range", "ipam-driver", "ipam-opt", "ipv4", "ipv6", "label", "opt", "scope", "subnet"},
+	"network disconnect": {"force", "help"},
+	"network inspect":    {"format", "help", "verbose"},
+	"network ls":         {"filter", "format", "help", "no-trunc", "quiet"},
+	"network prune":      {"filter", "force", "help"},
+	"network rm":         {"force", "help"},
 	"volume create":     {"driver", "help", "label", "name", "opt"},
 	"import":            {"change", "help", "message", "platform"},
 	"image import":      {"change", "help", "message", "platform"},
@@ -81,7 +88,7 @@ var served = map[string][]string{
 	"volume inspect":    {"format", "help"},
 	"volume rm":         {"force", "help"},
 	"volume prune":      {"all", "filter", "force", "help"},
-	"create": {"add-host", "blkio-weight", "blkio-weight-device", "cap-add", "cap-drop", "cidfile", "cpu-period", "cpu-quota", "cpu-shares", "cpus", "cpuset-cpus", "cpuset-mems", "device", "device-cgroup-rule", "device-read-bps", "device-read-iops", "device-write-bps", "device-write-iops", "disable-content-trust", "dns", "dns-opt", "dns-option", "dns-search", "domainname", "entrypoint", "env", "env-file", "expose", "group-add", "health-cmd", "health-interval", "health-retries", "health-start-interval", "health-start-period", "health-timeout", "help", "hostname", "init", "interactive", "kernel-memory", "label", "label-file", "memory", "memory-reservation", "memory-swap", "memory-swappiness", "mount", "name", "net", "network", "no-healthcheck", "oom-kill-disable", "oom-score-adj", "pids-limit", "platform", "privileged", "publish", "publish-all", "pull", "quiet", "read-only", "restart", "rm", "security-opt", "shm-size", "stop-signal", "stop-timeout", "sysctl", "tmpfs", "tty", "ulimit", "user", "volume", "volume-driver", "volumes-from", "workdir"},
+	"create": {"add-host", "blkio-weight", "blkio-weight-device", "cap-add", "cap-drop", "cidfile", "cpu-period", "cpu-quota", "cpu-shares", "cpus", "cpuset-cpus", "cpuset-mems", "device", "device-cgroup-rule", "device-read-bps", "device-read-iops", "device-write-bps", "device-write-iops", "disable-content-trust", "dns", "dns-opt", "dns-option", "dns-search", "domainname", "entrypoint", "env", "env-file", "expose", "group-add", "health-cmd", "health-interval", "health-retries", "health-start-interval", "health-start-period", "health-timeout", "help", "hostname", "init", "interactive", "ip", "ip6", "kernel-memory", "label", "label-file", "memory", "memory-reservation", "memory-swap", "memory-swappiness", "mount", "name", "net", "net-alias", "network", "network-alias", "no-healthcheck", "oom-kill-disable", "oom-score-adj", "pids-limit", "platform", "privileged", "publish", "publish-all", "pull", "quiet", "read-only", "restart", "rm", "security-opt", "shm-size", "stop-signal", "stop-timeout", "sysctl", "tmpfs", "tty", "ulimit", "user", "volume", "volume-driver", "volumes-from", "workdir"},
 	"container create": {
 		"disable-content-trust", "entrypoint", "env", "help",
 		"hostname", "init", "interactive", "kernel-memory", "name", "net", "network", "pull",
@@ -165,6 +172,39 @@ var cases = [][]string{
 	{"update", "--kernel-memory", "10m", "a"},
 	{"container", "update", "--cpu-rt-period", "1000", "a"},
 	{"update"},
+	{"run", "--ip", "10.1.0.5", "--ip6", "fd00::5", "--network-alias", "a", "--net-alias", "b", "--network", "n", "img"},
+	{"run", "--ip", "bogus", "img"},
+	{"network", "create", "--help"},
+	{"network", "create", "--subnet", "10.1.0.0/16,10.2.0.0/16", "--gateway", "10.1.0.1", "--ip-range", "10.1.0.5/24", "--aux-address", "a=10.1.0.9", "-o", "k=v", "--label", "l", "--ipv6", "--internal", "n1"},
+	{"network", "create", "--gateway", "bogus", "n"},
+	{"network", "create", "--ip-range", "bogus", "n"},
+	{"network", "create", "--label", "bad label", "n"},
+	{"network", "create", "--label", "=x", "n"},
+	{"network", "create"},
+	{"network", "create", "a", "b"},
+	{"network", "connect", "--help"},
+	{"network", "connect", "--ip", "10.1.0.5", "--ip6", "fd00::5", "--alias", "a,b", "--driver-opt", "k=v", "--gw-priority", "5", "--link-local-ip", "169.254.1.1", "--link", "c:d", "n", "c"},
+	{"network", "connect", "--ip", "bogus", "n", "c"},
+	{"network", "connect", "--link-local-ip", "bogus", "n", "c"},
+	{"network", "connect", "--link", "bad:a:b", "n", "c"},
+	{"network", "connect", "--gw-priority", "x", "n", "c"},
+	{"network", "connect", "n"},
+	{"network", "disconnect", "--help"},
+	{"network", "disconnect", "-f", "n", "c"},
+	{"network", "disconnect", "n"},
+	{"network", "inspect", "--help"},
+	{"network", "inspect", "-v", "-f", "{{.Name}}", "a", "b"},
+	{"network", "inspect"},
+	{"network", "ls", "--help"},
+	{"network", "list", "-q", "--no-trunc", "-f", "driver=bridge", "--format", "{{.Name}}"},
+	{"network", "ls", "-f", "noequals"},
+	{"network", "ls", "x"},
+	{"network", "rm", "--help"},
+	{"network", "remove", "-f", "a", "b"},
+	{"network", "rm"},
+	{"network", "prune", "--help"},
+	{"network", "prune", "-f", "--filter", "until=1h"},
+	{"network", "prune", "x"},
 	{"volume", "create", "--help"},
 	{"volume", "create", "-d", "local", "--label", "a=b", "-o", "type=tmpfs", "-o", "device=tmpfs", "v1"},
 	{"volume", "create", "--name", "n", "v"},
@@ -537,7 +577,7 @@ func root(t *testing.T, stdout, stderr *bytes.Buffer) *cobra.Command {
 		}
 		// `image ls` and `image rm` share their names with container commands.
 		key := c.Name()
-		if p := c.Parent().Name(); p == "image" || p == "volume" {
+		if p := c.Parent().Name(); p == "image" || p == "volume" || p == "network" {
 			key = p + " " + key
 		}
 		keep, ok := served[key]

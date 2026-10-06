@@ -10,6 +10,8 @@ mod copy;
 mod defaults;
 #[cfg(target_os = "linux")]
 mod devices;
+#[cfg(target_os = "linux")]
+mod dnsrelay;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod frames;
 #[cfg(target_os = "linux")]

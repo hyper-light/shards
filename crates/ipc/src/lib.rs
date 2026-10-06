@@ -184,6 +184,18 @@ pub mod kind {
     /// stdin, stdout and stderr; the payload is its number, as an exec's, and its
     /// [`ATTACH_STDIN`] flag. The VM answers [`EXEC_TAKEN`] with the number.
     pub const ATTACH_RUN: u8 = 36;
+    /// Daemon → network process: the guest's address on its network (D46), its prefix and
+    /// gateway, each IPv4 address's four bytes and the prefix's one; answered with the same
+    /// kind once taken.
+    pub const NET_ADDRESS: u8 = 37;
+    /// Daemon → network process: a peer on the guest's network, its guest's address's four
+    /// bytes, with a stream socket to its network process; answered with the same kind once
+    /// taken, as the daemon holds its copy until then (M24).
+    pub const NET_PEER: u8 = 38;
+    /// Daemon → network process: the names the guest's network answers to (D46), whole,
+    /// each time its members change (shards_net::dns::Names::encode); answered with the
+    /// same kind.
+    pub const NET_NAMES: u8 = 39;
 }
 
 /// An `ATTACH_RUN` flag: the client's stdin goes to the command's.

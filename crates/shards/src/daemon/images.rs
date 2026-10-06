@@ -1333,6 +1333,15 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                 }
             }
         }
+        // `system prune`: the user networks no microVM is on, after the microVMs that were
+        // (pruner.pruneOrder: containers, networks, volumes, images).
+        let mut removed_networks: Vec<String> = Vec::new();
+        if images && containers {
+            match self.prune_networks(given, asker) {
+                Ok(names) => removed_networks = names,
+                Err(e) => return refuse(e),
+            }
+        }
         // `system prune --volumes`: the anonymous volumes no container mounts, after the
         // containers that mounted them (pruner.pruneOrder).
         let mut removed_volumes: Vec<String> = Vec::new();
@@ -1457,6 +1466,9 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             for (id, name) in &removed_vms {
                 sheet.record(&[("vm", name.clone()), ("id", truncate_id(id).to_string())]);
             }
+            for name in &removed_networks {
+                sheet.record(&[("network", name.clone())]);
+            }
             for name in &removed_volumes {
                 sheet.record(&[("volume", name.clone())]);
             }
@@ -1476,6 +1488,14 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             text.push_str("Deleted Containers:\n");
             for (id, _) in &removed_vms {
                 text.push_str(id);
+                text.push('\n');
+            }
+            text.push('\n');
+        }
+        if !removed_networks.is_empty() {
+            text.push_str("Deleted Networks:\n");
+            for name in &removed_networks {
+                text.push_str(name);
                 text.push('\n');
             }
             text.push('\n');

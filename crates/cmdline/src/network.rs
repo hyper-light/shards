@@ -157,13 +157,23 @@ pub fn mode(given: &[Attachment]) -> &str {
 /// The endpoints `run` asks the daemon for, by network, in the order given, from the
 /// attachments its `--network` flags read (parseNetworkOpts): none given is the default
 /// network; one given that asks nothing of its endpoint is left for the daemon to make.
-pub fn endpoints(given: &[Attachment]) -> Result<Vec<Attachment>, String> {
+pub fn endpoints(given: &[Attachment], top: &TopLevel) -> Result<Vec<Attachment>, String> {
     if given.is_empty() {
-        return Ok(vec![Attachment {
+        let mut a = Attachment {
             target: "default".into(),
             ..Attachment::default()
-        }]);
+        };
+        top.apply(&mut a)?;
+        if !is_user_defined(&a.target) && !a.aliases.is_empty() {
+            return Err("network-scoped aliases are only supported for user-defined networks".into());
+        }
+        return Ok(vec![a]);
     }
+    let mut given = given.to_vec();
+    if let Some(first) = given.first_mut() {
+        top.apply(first)?;
+    }
+    let given = given.as_slice();
     let mut out: Vec<Attachment> = Vec::with_capacity(given.len());
     let (mut user_defined, mut predefined) = (false, false);
     for (i, a) in given.iter().enumerate() {
@@ -198,6 +208,43 @@ pub fn endpoints(given: &[Attachment]) -> Result<Vec<Attachment>, String> {
         );
     }
     Ok(out)
+}
+
+/// The flags `run` sets its first network's endpoint by (`--network-alias`, `--ip`,
+/// `--ip6`), as applyContainerOptions sets them.
+#[derive(Debug, Clone, Default)]
+pub struct TopLevel {
+    pub aliases: Vec<String>,
+    pub ipv4: Option<Addr>,
+    pub ipv6: Option<Addr>,
+}
+
+impl TopLevel {
+    /// applyContainerOptions: each given here and not in `a` set on it; one given in both,
+    /// refused in its words.
+    fn apply(&self, a: &mut Attachment) -> Result<(), String> {
+        if !a.aliases.is_empty() && !self.aliases.is_empty() {
+            return Err(
+                "conflicting options: cannot specify both --network-alias and per-network alias".into(),
+            );
+        }
+        if a.ipv4.is_some() && self.ipv4.is_some() {
+            return Err("conflicting options: cannot specify both --ip and per-network IPv4 address".into());
+        }
+        if a.ipv6.is_some() && self.ipv6.is_some() {
+            return Err("conflicting options: cannot specify both --ip6 and per-network IPv6 address".into());
+        }
+        if !self.aliases.is_empty() {
+            a.aliases.clone_from(&self.aliases);
+        }
+        if self.ipv4.is_some() {
+            a.ipv4.clone_from(&self.ipv4);
+        }
+        if self.ipv6.is_some() {
+            a.ipv6.clone_from(&self.ipv6);
+        }
+        Ok(())
+    }
 }
 
 /// `strings.ToLower`: each rune's simple lowercase mapping, which differs from Rust's full

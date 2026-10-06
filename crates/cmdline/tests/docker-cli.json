@@ -612,6 +612,409 @@
   },
   {
     "argv": [
+      "run",
+      "--ip",
+      "10.1.0.5",
+      "--ip6",
+      "fd00::5",
+      "--network-alias",
+      "a",
+      "--net-alias",
+      "b",
+      "--network",
+      "n",
+      "img"
+    ],
+    "stdout": "RUN --ip=10.1.0.5 --ip6=fd00::5 --net-alias=[a b] --network= --network-alias=[a b] \"img\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--ip",
+      "bogus",
+      "img"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"bogus\" for \"--ip\" flag: failed to parse IP: \"bogus\"\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "network",
+      "create",
+      "--help"
+    ],
+    "stdout": "Usage:  shards network create [OPTIONS] NETWORK\n\nCreate a network\n\nOptions:\n      --attachable            Enable manual container attachment\n      --aux-address map       Auxiliary IPv4 or IPv6 addresses used by\n                              Network driver (default map[])\n      --config-from string    The network from which to copy the configuration\n      --config-only           Create a configuration only network\n  -d, --driver string         Driver to manage the Network (default \"bridge\")\n      --gateway ipSlice       IPv4 or IPv6 Gateway for the master subnet\n                              (default [])\n      --ingress               Create swarm routing-mesh network\n      --internal              Restrict external access to the network\n      --ip-range ipNetSlice   Allocate container ip from a sub-range\n                              (default [])\n      --ipam-driver string    IP Address Management Driver (default \"default\")\n      --ipam-opt map          Set IPAM driver specific options (default map[])\n      --ipv4                  Enable or disable IPv4 address assignment\n                              (default true)\n      --ipv6                  Enable or disable IPv6 address assignment\n      --label list            Set metadata on a network\n  -o, --opt map               Set driver specific options (default map[])\n      --scope string          Control the network's scope\n      --subnet strings        Subnet in CIDR format that represents a\n                              network segment\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "network",
+      "create",
+      "--subnet",
+      "10.1.0.0/16,10.2.0.0/16",
+      "--gateway",
+      "10.1.0.1",
+      "--ip-range",
+      "10.1.0.5/24",
+      "--aux-address",
+      "a=10.1.0.9",
+      "-o",
+      "k=v",
+      "--label",
+      "l",
+      "--ipv6",
+      "--internal",
+      "n1"
+    ],
+    "stdout": "RUN --aux-address=map[a:10.1.0.9] --gateway=[10.1.0.1] --internal=true --ip-range=[10.1.0.0/24] --ipv6=true --label=[l] --opt=map[k:v] --subnet=[10.1.0.0/16,10.2.0.0/16] \"n1\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "network",
+      "create",
+      "--gateway",
+      "bogus",
+      "n"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"bogus\" for \"--gateway\" flag: invalid string being converted to IP address: bogus\n\nUsage:  shards network create [OPTIONS] NETWORK\n\nRun 'shards network create --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "network",
+      "create",
+      "--ip-range",
+      "bogus",
+      "n"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"bogus\" for \"--ip-range\" flag: invalid string being converted to CIDR: bogus\n\nUsage:  shards network create [OPTIONS] NETWORK\n\nRun 'shards network create --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "network",
+      "create",
+      "--label",
+      "bad label",
+      "n"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"bad label\" for \"--label\" flag: label 'bad label' contains whitespaces\n\nUsage:  shards network create [OPTIONS] NETWORK\n\nRun 'shards network create --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "network",
+      "create",
+      "--label",
+      "=x",
+      "n"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"=x\" for \"--label\" flag: invalid label '=x': empty name\n\nUsage:  shards network create [OPTIONS] NETWORK\n\nRun 'shards network create --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "network",
+      "create"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards network create' requires 1 argument\n\nUsage:  shards network create [OPTIONS] NETWORK\n\nRun 'shards network create --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "network",
+      "create",
+      "a",
+      "b"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards network create' requires 1 argument\n\nUsage:  shards network create [OPTIONS] NETWORK\n\nRun 'shards network create --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "network",
+      "connect",
+      "--help"
+    ],
+    "stdout": "Usage:  shards network connect [OPTIONS] NETWORK CONTAINER\n\nConnect a container to a network\n\nOptions:\n      --alias strings           Add network-scoped alias for the container\n      --driver-opt strings      driver options for the network\n      --gw-priority int         Highest gw-priority provides the default\n                                gateway. Accepts positive and negative values.\n      --ip ip                   IPv4 address (e.g., \"172.30.100.104\")\n      --ip6 ip                  IPv6 address (e.g., \"2001:db8::33\")\n      --link list               Add link to another container\n      --link-local-ip ipSlice   Add a link-local address for the\n                                container (default [])\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "network",
+      "connect",
+      "--ip",
+      "10.1.0.5",
+      "--ip6",
+      "fd00::5",
+      "--alias",
+      "a,b",
+      "--driver-opt",
+      "k=v",
+      "--gw-priority",
+      "5",
+      "--link-local-ip",
+      "169.254.1.1",
+      "--link",
+      "c:d",
+      "n",
+      "c"
+    ],
+    "stdout": "RUN --alias=[a,b] --driver-opt=[k=v] --gw-priority=5 --ip=10.1.0.5 --ip6=fd00::5 --link=[c:d] --link-local-ip=[169.254.1.1] \"n\" \"c\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "network",
+      "connect",
+      "--ip",
+      "bogus",
+      "n",
+      "c"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"bogus\" for \"--ip\" flag: failed to parse IP: \"bogus\"\n\nUsage:  shards network connect [OPTIONS] NETWORK CONTAINER\n\nRun 'shards network connect --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "network",
+      "connect",
+      "--link-local-ip",
+      "bogus",
+      "n",
+      "c"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"bogus\" for \"--link-local-ip\" flag: invalid string being converted to IP address: bogus\n\nUsage:  shards network connect [OPTIONS] NETWORK CONTAINER\n\nRun 'shards network connect --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "network",
+      "connect",
+      "--link",
+      "bad:a:b",
+      "n",
+      "c"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"bad:a:b\" for \"--link\" flag: bad format for links: bad:a:b\n\nUsage:  shards network connect [OPTIONS] NETWORK CONTAINER\n\nRun 'shards network connect --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "network",
+      "connect",
+      "--gw-priority",
+      "x",
+      "n",
+      "c"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"x\" for \"--gw-priority\" flag: strconv.ParseInt: parsing \"x\": invalid syntax\n\nUsage:  shards network connect [OPTIONS] NETWORK CONTAINER\n\nRun 'shards network connect --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "network",
+      "connect",
+      "n"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards network connect' requires 2 arguments\n\nUsage:  shards network connect [OPTIONS] NETWORK CONTAINER\n\nRun 'shards network connect --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "network",
+      "disconnect",
+      "--help"
+    ],
+    "stdout": "Usage:  shards network disconnect [OPTIONS] NETWORK CONTAINER\n\nDisconnect a container from a network\n\nOptions:\n  -f, --force   Force the container to disconnect from a network\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "network",
+      "disconnect",
+      "-f",
+      "n",
+      "c"
+    ],
+    "stdout": "RUN --force=true \"n\" \"c\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "network",
+      "disconnect",
+      "n"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards network disconnect' requires 2 arguments\n\nUsage:  shards network disconnect [OPTIONS] NETWORK CONTAINER\n\nRun 'shards network disconnect --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "network",
+      "inspect",
+      "--help"
+    ],
+    "stdout": "Usage:  shards network inspect [OPTIONS] NETWORK [NETWORK...]\n\nDisplay detailed information on one or more networks\n\nOptions:\n  -f, --format string   Format output using a custom template:\n                        'json':             Print in JSON format\n                        'TEMPLATE':         Print output using the given\n                        Go template.\n                        Refer to https://docs.docker.com/go/formatting/\n                        for more information about formatting output with\n                        templates\n  -v, --verbose         Verbose output for diagnostics\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "network",
+      "inspect",
+      "-v",
+      "-f",
+      "{{.Name}}",
+      "a",
+      "b"
+    ],
+    "stdout": "RUN --format={{.Name}} --verbose=true \"a\" \"b\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "network",
+      "inspect"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards network inspect' requires at least 1 argument\n\nUsage:  shards network inspect [OPTIONS] NETWORK [NETWORK...]\n\nSee 'shards network inspect --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "network",
+      "ls",
+      "--help"
+    ],
+    "stdout": "Usage:  shards network ls [OPTIONS]\n\nList networks\n\nAliases:\n  shards network ls, shards network list\n\nOptions:\n  -f, --filter filter   Provide filter values (e.g. \"driver=bridge\")\n      --format string   Format output using a custom template:\n                        'table':            Print output in table format\n                        with column headers (default)\n                        'table TEMPLATE':   Print output in table format\n                        using the given Go template\n                        'json':             Print in JSON format\n                        'TEMPLATE':         Print output using the given\n                        Go template.\n                        Refer to https://docs.docker.com/go/formatting/\n                        for more information about formatting output with\n                        templates\n      --no-trunc        Do not truncate the output\n  -q, --quiet           Only display network IDs\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "network",
+      "list",
+      "-q",
+      "--no-trunc",
+      "-f",
+      "driver=bridge",
+      "--format",
+      "{{.Name}}"
+    ],
+    "stdout": "RUN --filter={\"driver\":{\"bridge\":true}} --format={{.Name}} --no-trunc=true --quiet=true\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "network",
+      "ls",
+      "-f",
+      "noequals"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"noequals\" for \"-f, --filter\" flag: bad format of filter (expected name=value)\n\nUsage:  shards network ls [OPTIONS]\n\nRun 'shards network ls --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "network",
+      "ls",
+      "x"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards network ls' accepts no arguments\n\nUsage:  shards network ls [OPTIONS]\n\nRun 'shards network ls --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "network",
+      "rm",
+      "--help"
+    ],
+    "stdout": "Usage:  shards network rm NETWORK [NETWORK...]\n\nRemove one or more networks\n\nAliases:\n  shards network rm, shards network remove\n\nOptions:\n  -f, --force   Do not error if the network does not exist\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "network",
+      "remove",
+      "-f",
+      "a",
+      "b"
+    ],
+    "stdout": "RUN --force=true \"a\" \"b\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "network",
+      "rm"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards network rm' requires at least 1 argument\n\nUsage:  shards network rm NETWORK [NETWORK...]\n\nSee 'shards network rm --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "network",
+      "prune",
+      "--help"
+    ],
+    "stdout": "Usage:  shards network prune [OPTIONS]\n\nRemove all unused networks\n\nOptions:\n      --filter filter   Provide filter values (e.g. \"until=\u003ctimestamp\u003e\")\n  -f, --force           Do not prompt for confirmation\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "network",
+      "prune",
+      "-f",
+      "--filter",
+      "until=1h"
+    ],
+    "stdout": "RUN --filter={\"until\":{\"1h\":true}} --force=true\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "network",
+      "prune",
+      "x"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards network prune' accepts no arguments\n\nUsage:  shards network prune [OPTIONS]\n\nRun 'shards network prune --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
       "volume",
       "create",
       "--help"
@@ -931,7 +1334,7 @@
       "create",
       "--help"
     ],
-    "stdout": "Usage:  shards create [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nCreate a new container\n\nAliases:\n  shards container create, shards create\n\nOptions:\n      --add-host list                    Add a custom host-to-IP mapping\n                                         (host:ip)\n      --blkio-weight uint16              Block IO (relative weight),\n                                         between 10 and 1000, or 0 to\n                                         disable (default 0)\n      --blkio-weight-device list         Block IO weight (relative device\n                                         weight) (default [])\n      --cap-add list                     Add Linux capabilities\n      --cap-drop list                    Drop Linux capabilities\n      --cidfile string                   Write the container ID to the file\n      --cpu-period int                   Limit CPU CFS (Completely Fair\n                                         Scheduler) period\n      --cpu-quota int                    Limit CPU CFS (Completely Fair\n                                         Scheduler) quota\n  -c, --cpu-shares int                   CPU shares (relative weight)\n      --cpus decimal                     Number of CPUs\n      --cpuset-cpus string               CPUs in which to allow execution\n                                         (0-3, 0,1)\n      --cpuset-mems string               MEMs in which to allow execution\n                                         (0-3, 0,1)\n      --device list                      Add a host device to the container\n      --device-cgroup-rule list          Add a rule to the cgroup allowed\n                                         devices list\n      --device-read-bps list             Limit read rate (bytes per\n                                         second) from a device (default [])\n      --device-read-iops list            Limit read rate (IO per second)\n                                         from a device (default [])\n      --device-write-bps list            Limit write rate (bytes per\n                                         second) to a device (default [])\n      --device-write-iops list           Limit write rate (IO per second)\n                                         to a device (default [])\n      --dns list                         Set custom DNS servers\n      --dns-option list                  Set DNS options\n      --dns-search list                  Set custom DNS search domains\n      --domainname string                Container NIS domain name\n      --entrypoint string                Overwrite the default ENTRYPOINT\n                                         of the image\n  -e, --env list                         Set environment variables\n      --env-file list                    Read in a file of environment\n                                         variables\n      --expose list                      Expose a port or a range of ports\n      --group-add list                   Add additional groups to join\n      --health-cmd string                Command to run to check health\n      --health-interval duration         Time between running the check\n                                         (ms|s|m|h) (default 0s)\n      --health-retries int               Consecutive failures needed to\n                                         report unhealthy\n      --health-start-interval duration   Time between running the check\n                                         during the start period\n                                         (ms|s|m|h) (default 0s)\n      --health-start-period duration     Start period for the container\n                                         to initialize before starting\n                                         health-retries countdown\n                                         (ms|s|m|h) (default 0s)\n      --health-timeout duration          Maximum time to allow one check\n                                         to run (ms|s|m|h) (default 0s)\n      --help                             Print usage\n  -h, --hostname string                  Container host name\n      --init                             Run an init inside the container\n                                         that forwards signals and reaps\n                                         processes\n  -i, --interactive                      Keep STDIN open even if not attached\n  -l, --label list                       Set meta data on a container\n      --label-file list                  Read in a line delimited file of\n                                         labels\n  -m, --memory bytes                     Memory limit\n      --memory-reservation bytes         Memory soft limit\n      --memory-swap bytes                Swap limit equal to memory plus\n                                         swap: '-1' to enable unlimited swap\n      --memory-swappiness int            Tune container memory swappiness\n                                         (0 to 100) (default -1)\n      --mount mount                      Attach a filesystem mount to the\n                                         container\n      --name string                      Assign a name to the container\n      --network network                  Connect a container to a network\n      --no-healthcheck                   Disable any container-specified\n                                         HEALTHCHECK\n      --oom-kill-disable                 Disable OOM Killer\n      --oom-score-adj int                Tune host's OOM preferences\n                                         (-1000 to 1000)\n      --pids-limit int                   Tune container pids limit (set\n                                         -1 for unlimited)\n      --platform string                  Set platform if server is\n                                         multi-platform capable\n      --privileged                       Give extended privileges to this\n                                         container\n  -p, --publish list                     Publish a container's port(s) to\n                                         the host\n  -P, --publish-all                      Publish all exposed ports to\n                                         random ports\n      --pull string                      Pull image before creating\n                                         (\"always\", \"missing\", \"never\")\n                                         (default \"missing\")\n  -q, --quiet                            Suppress the pull output\n      --read-only                        Mount the container's root\n                                         filesystem as read only\n      --restart string                   Restart policy to apply when a\n                                         container exits (default \"no\")\n      --rm                               Automatically remove the\n                                         container and its associated\n                                         anonymous volumes when it exits\n      --security-opt list                Security Options\n      --shm-size bytes                   Size of /dev/shm\n      --stop-signal string               Signal to stop the container\n      --stop-timeout int                 Timeout (in seconds) to stop a\n                                         container\n      --sysctl map                       Sysctl options (default map[])\n      --tmpfs list                       Mount a tmpfs directory\n  -t, --tty                              Allocate a pseudo-TTY\n      --ulimit ulimit                    Ulimit options (default [])\n  -u, --user string                      Username or UID (format:\n                                         \u003cname|uid\u003e[:\u003cgroup|gid\u003e])\n  -v, --volume list                      Bind mount a volume\n      --volume-driver string             Optional volume driver for the\n                                         container\n      --volumes-from list                Mount volumes from the specified\n                                         container(s)\n  -w, --workdir string                   Working directory inside the\n                                         container\n",
+    "stdout": "Usage:  shards create [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nCreate a new container\n\nAliases:\n  shards container create, shards create\n\nOptions:\n      --add-host list                    Add a custom host-to-IP mapping\n                                         (host:ip)\n      --blkio-weight uint16              Block IO (relative weight),\n                                         between 10 and 1000, or 0 to\n                                         disable (default 0)\n      --blkio-weight-device list         Block IO weight (relative device\n                                         weight) (default [])\n      --cap-add list                     Add Linux capabilities\n      --cap-drop list                    Drop Linux capabilities\n      --cidfile string                   Write the container ID to the file\n      --cpu-period int                   Limit CPU CFS (Completely Fair\n                                         Scheduler) period\n      --cpu-quota int                    Limit CPU CFS (Completely Fair\n                                         Scheduler) quota\n  -c, --cpu-shares int                   CPU shares (relative weight)\n      --cpus decimal                     Number of CPUs\n      --cpuset-cpus string               CPUs in which to allow execution\n                                         (0-3, 0,1)\n      --cpuset-mems string               MEMs in which to allow execution\n                                         (0-3, 0,1)\n      --device list                      Add a host device to the container\n      --device-cgroup-rule list          Add a rule to the cgroup allowed\n                                         devices list\n      --device-read-bps list             Limit read rate (bytes per\n                                         second) from a device (default [])\n      --device-read-iops list            Limit read rate (IO per second)\n                                         from a device (default [])\n      --device-write-bps list            Limit write rate (bytes per\n                                         second) to a device (default [])\n      --device-write-iops list           Limit write rate (IO per second)\n                                         to a device (default [])\n      --dns list                         Set custom DNS servers\n      --dns-option list                  Set DNS options\n      --dns-search list                  Set custom DNS search domains\n      --domainname string                Container NIS domain name\n      --entrypoint string                Overwrite the default ENTRYPOINT\n                                         of the image\n  -e, --env list                         Set environment variables\n      --env-file list                    Read in a file of environment\n                                         variables\n      --expose list                      Expose a port or a range of ports\n      --group-add list                   Add additional groups to join\n      --health-cmd string                Command to run to check health\n      --health-interval duration         Time between running the check\n                                         (ms|s|m|h) (default 0s)\n      --health-retries int               Consecutive failures needed to\n                                         report unhealthy\n      --health-start-interval duration   Time between running the check\n                                         during the start period\n                                         (ms|s|m|h) (default 0s)\n      --health-start-period duration     Start period for the container\n                                         to initialize before starting\n                                         health-retries countdown\n                                         (ms|s|m|h) (default 0s)\n      --health-timeout duration          Maximum time to allow one check\n                                         to run (ms|s|m|h) (default 0s)\n      --help                             Print usage\n  -h, --hostname string                  Container host name\n      --init                             Run an init inside the container\n                                         that forwards signals and reaps\n                                         processes\n  -i, --interactive                      Keep STDIN open even if not attached\n      --ip ip                            IPv4 address (e.g., 172.30.100.104)\n      --ip6 ip                           IPv6 address (e.g., 2001:db8::33)\n  -l, --label list                       Set meta data on a container\n      --label-file list                  Read in a line delimited file of\n                                         labels\n  -m, --memory bytes                     Memory limit\n      --memory-reservation bytes         Memory soft limit\n      --memory-swap bytes                Swap limit equal to memory plus\n                                         swap: '-1' to enable unlimited swap\n      --memory-swappiness int            Tune container memory swappiness\n                                         (0 to 100) (default -1)\n      --mount mount                      Attach a filesystem mount to the\n                                         container\n      --name string                      Assign a name to the container\n      --network network                  Connect a container to a network\n      --network-alias list               Add network-scoped alias for the\n                                         container\n      --no-healthcheck                   Disable any container-specified\n                                         HEALTHCHECK\n      --oom-kill-disable                 Disable OOM Killer\n      --oom-score-adj int                Tune host's OOM preferences\n                                         (-1000 to 1000)\n      --pids-limit int                   Tune container pids limit (set\n                                         -1 for unlimited)\n      --platform string                  Set platform if server is\n                                         multi-platform capable\n      --privileged                       Give extended privileges to this\n                                         container\n  -p, --publish list                     Publish a container's port(s) to\n                                         the host\n  -P, --publish-all                      Publish all exposed ports to\n                                         random ports\n      --pull string                      Pull image before creating\n                                         (\"always\", \"missing\", \"never\")\n                                         (default \"missing\")\n  -q, --quiet                            Suppress the pull output\n      --read-only                        Mount the container's root\n                                         filesystem as read only\n      --restart string                   Restart policy to apply when a\n                                         container exits (default \"no\")\n      --rm                               Automatically remove the\n                                         container and its associated\n                                         anonymous volumes when it exits\n      --security-opt list                Security Options\n      --shm-size bytes                   Size of /dev/shm\n      --stop-signal string               Signal to stop the container\n      --stop-timeout int                 Timeout (in seconds) to stop a\n                                         container\n      --sysctl map                       Sysctl options (default map[])\n      --tmpfs list                       Mount a tmpfs directory\n  -t, --tty                              Allocate a pseudo-TTY\n      --ulimit ulimit                    Ulimit options (default [])\n  -u, --user string                      Username or UID (format:\n                                         \u003cname|uid\u003e[:\u003cgroup|gid\u003e])\n  -v, --volume list                      Bind mount a volume\n      --volume-driver string             Optional volume driver for the\n                                         container\n      --volumes-from list                Mount volumes from the specified\n                                         container(s)\n  -w, --workdir string                   Working directory inside the\n                                         container\n",
     "stderr": "",
     "status": 0
   },
@@ -2137,7 +2540,7 @@
       "run",
       "--help"
     ],
-    "stdout": "Usage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nCreate and run a new container from an image\n\nAliases:\n  shards container run, shards run\n\nOptions:\n      --add-host list                    Add a custom host-to-IP mapping\n                                         (host:ip)\n      --blkio-weight uint16              Block IO (relative weight),\n                                         between 10 and 1000, or 0 to\n                                         disable (default 0)\n      --blkio-weight-device list         Block IO weight (relative device\n                                         weight) (default [])\n      --cap-add list                     Add Linux capabilities\n      --cap-drop list                    Drop Linux capabilities\n      --cidfile string                   Write the container ID to the file\n      --cpu-period int                   Limit CPU CFS (Completely Fair\n                                         Scheduler) period\n      --cpu-quota int                    Limit CPU CFS (Completely Fair\n                                         Scheduler) quota\n  -c, --cpu-shares int                   CPU shares (relative weight)\n      --cpus decimal                     Number of CPUs\n      --cpuset-cpus string               CPUs in which to allow execution\n                                         (0-3, 0,1)\n      --cpuset-mems string               MEMs in which to allow execution\n                                         (0-3, 0,1)\n  -d, --detach                           Run container in background and\n                                         print container ID\n      --detach-keys string               Override the key sequence for\n                                         detaching a container\n      --device list                      Add a host device to the container\n      --device-cgroup-rule list          Add a rule to the cgroup allowed\n                                         devices list\n      --device-read-bps list             Limit read rate (bytes per\n                                         second) from a device (default [])\n      --device-read-iops list            Limit read rate (IO per second)\n                                         from a device (default [])\n      --device-write-bps list            Limit write rate (bytes per\n                                         second) to a device (default [])\n      --device-write-iops list           Limit write rate (IO per second)\n                                         to a device (default [])\n      --dns list                         Set custom DNS servers\n      --dns-option list                  Set DNS options\n      --dns-search list                  Set custom DNS search domains\n      --domainname string                Container NIS domain name\n      --entrypoint string                Overwrite the default ENTRYPOINT\n                                         of the image\n  -e, --env list                         Set environment variables\n      --env-file list                    Read in a file of environment\n                                         variables\n      --expose list                      Expose a port or a range of ports\n      --group-add list                   Add additional groups to join\n      --health-cmd string                Command to run to check health\n      --health-interval duration         Time between running the check\n                                         (ms|s|m|h) (default 0s)\n      --health-retries int               Consecutive failures needed to\n                                         report unhealthy\n      --health-start-interval duration   Time between running the check\n                                         during the start period\n                                         (ms|s|m|h) (default 0s)\n      --health-start-period duration     Start period for the container\n                                         to initialize before starting\n                                         health-retries countdown\n                                         (ms|s|m|h) (default 0s)\n      --health-timeout duration          Maximum time to allow one check\n                                         to run (ms|s|m|h) (default 0s)\n      --help                             Print usage\n  -h, --hostname string                  Container host name\n      --init                             Run an init inside the container\n                                         that forwards signals and reaps\n                                         processes\n  -i, --interactive                      Keep STDIN open even if not attached\n  -l, --label list                       Set meta data on a container\n      --label-file list                  Read in a line delimited file of\n                                         labels\n  -m, --memory bytes                     Memory limit\n      --memory-reservation bytes         Memory soft limit\n      --memory-swap bytes                Swap limit equal to memory plus\n                                         swap: '-1' to enable unlimited swap\n      --memory-swappiness int            Tune container memory swappiness\n                                         (0 to 100) (default -1)\n      --mount mount                      Attach a filesystem mount to the\n                                         container\n      --name string                      Assign a name to the container\n      --network network                  Connect a container to a network\n      --no-healthcheck                   Disable any container-specified\n                                         HEALTHCHECK\n      --oom-kill-disable                 Disable OOM Killer\n      --oom-score-adj int                Tune host's OOM preferences\n                                         (-1000 to 1000)\n      --pids-limit int                   Tune container pids limit (set\n                                         -1 for unlimited)\n      --platform string                  Set platform if server is\n                                         multi-platform capable\n      --privileged                       Give extended privileges to this\n                                         container\n  -p, --publish list                     Publish a container's port(s) to\n                                         the host\n  -P, --publish-all                      Publish all exposed ports to\n                                         random ports\n      --pull string                      Pull image before running\n                                         (\"always\", \"missing\", \"never\")\n                                         (default \"missing\")\n  -q, --quiet                            Suppress the pull output\n      --read-only                        Mount the container's root\n                                         filesystem as read only\n      --restart string                   Restart policy to apply when a\n                                         container exits (default \"no\")\n      --rm                               Automatically remove the\n                                         container and its associated\n                                         anonymous volumes when it exits\n      --security-opt list                Security Options\n      --shm-size bytes                   Size of /dev/shm\n      --sig-proxy                        Proxy received signals to the\n                                         process (default true)\n      --stop-signal string               Signal to stop the container\n      --stop-timeout int                 Timeout (in seconds) to stop a\n                                         container\n      --sysctl map                       Sysctl options (default map[])\n      --tmpfs list                       Mount a tmpfs directory\n  -t, --tty                              Allocate a pseudo-TTY\n      --ulimit ulimit                    Ulimit options (default [])\n  -u, --user string                      Username or UID (format:\n                                         \u003cname|uid\u003e[:\u003cgroup|gid\u003e])\n  -v, --volume list                      Bind mount a volume\n      --volume-driver string             Optional volume driver for the\n                                         container\n      --volumes-from list                Mount volumes from the specified\n                                         container(s)\n  -w, --workdir string                   Working directory inside the\n                                         container\n",
+    "stdout": "Usage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nCreate and run a new container from an image\n\nAliases:\n  shards container run, shards run\n\nOptions:\n      --add-host list                    Add a custom host-to-IP mapping\n                                         (host:ip)\n      --blkio-weight uint16              Block IO (relative weight),\n                                         between 10 and 1000, or 0 to\n                                         disable (default 0)\n      --blkio-weight-device list         Block IO weight (relative device\n                                         weight) (default [])\n      --cap-add list                     Add Linux capabilities\n      --cap-drop list                    Drop Linux capabilities\n      --cidfile string                   Write the container ID to the file\n      --cpu-period int                   Limit CPU CFS (Completely Fair\n                                         Scheduler) period\n      --cpu-quota int                    Limit CPU CFS (Completely Fair\n                                         Scheduler) quota\n  -c, --cpu-shares int                   CPU shares (relative weight)\n      --cpus decimal                     Number of CPUs\n      --cpuset-cpus string               CPUs in which to allow execution\n                                         (0-3, 0,1)\n      --cpuset-mems string               MEMs in which to allow execution\n                                         (0-3, 0,1)\n  -d, --detach                           Run container in background and\n                                         print container ID\n      --detach-keys string               Override the key sequence for\n                                         detaching a container\n      --device list                      Add a host device to the container\n      --device-cgroup-rule list          Add a rule to the cgroup allowed\n                                         devices list\n      --device-read-bps list             Limit read rate (bytes per\n                                         second) from a device (default [])\n      --device-read-iops list            Limit read rate (IO per second)\n                                         from a device (default [])\n      --device-write-bps list            Limit write rate (bytes per\n                                         second) to a device (default [])\n      --device-write-iops list           Limit write rate (IO per second)\n                                         to a device (default [])\n      --dns list                         Set custom DNS servers\n      --dns-option list                  Set DNS options\n      --dns-search list                  Set custom DNS search domains\n      --domainname string                Container NIS domain name\n      --entrypoint string                Overwrite the default ENTRYPOINT\n                                         of the image\n  -e, --env list                         Set environment variables\n      --env-file list                    Read in a file of environment\n                                         variables\n      --expose list                      Expose a port or a range of ports\n      --group-add list                   Add additional groups to join\n      --health-cmd string                Command to run to check health\n      --health-interval duration         Time between running the check\n                                         (ms|s|m|h) (default 0s)\n      --health-retries int               Consecutive failures needed to\n                                         report unhealthy\n      --health-start-interval duration   Time between running the check\n                                         during the start period\n                                         (ms|s|m|h) (default 0s)\n      --health-start-period duration     Start period for the container\n                                         to initialize before starting\n                                         health-retries countdown\n                                         (ms|s|m|h) (default 0s)\n      --health-timeout duration          Maximum time to allow one check\n                                         to run (ms|s|m|h) (default 0s)\n      --help                             Print usage\n  -h, --hostname string                  Container host name\n      --init                             Run an init inside the container\n                                         that forwards signals and reaps\n                                         processes\n  -i, --interactive                      Keep STDIN open even if not attached\n      --ip ip                            IPv4 address (e.g., 172.30.100.104)\n      --ip6 ip                           IPv6 address (e.g., 2001:db8::33)\n  -l, --label list                       Set meta data on a container\n      --label-file list                  Read in a line delimited file of\n                                         labels\n  -m, --memory bytes                     Memory limit\n      --memory-reservation bytes         Memory soft limit\n      --memory-swap bytes                Swap limit equal to memory plus\n                                         swap: '-1' to enable unlimited swap\n      --memory-swappiness int            Tune container memory swappiness\n                                         (0 to 100) (default -1)\n      --mount mount                      Attach a filesystem mount to the\n                                         container\n      --name string                      Assign a name to the container\n      --network network                  Connect a container to a network\n      --network-alias list               Add network-scoped alias for the\n                                         container\n      --no-healthcheck                   Disable any container-specified\n                                         HEALTHCHECK\n      --oom-kill-disable                 Disable OOM Killer\n      --oom-score-adj int                Tune host's OOM preferences\n                                         (-1000 to 1000)\n      --pids-limit int                   Tune container pids limit (set\n                                         -1 for unlimited)\n      --platform string                  Set platform if server is\n                                         multi-platform capable\n      --privileged                       Give extended privileges to this\n                                         container\n  -p, --publish list                     Publish a container's port(s) to\n                                         the host\n  -P, --publish-all                      Publish all exposed ports to\n                                         random ports\n      --pull string                      Pull image before running\n                                         (\"always\", \"missing\", \"never\")\n                                         (default \"missing\")\n  -q, --quiet                            Suppress the pull output\n      --read-only                        Mount the container's root\n                                         filesystem as read only\n      --restart string                   Restart policy to apply when a\n                                         container exits (default \"no\")\n      --rm                               Automatically remove the\n                                         container and its associated\n                                         anonymous volumes when it exits\n      --security-opt list                Security Options\n      --shm-size bytes                   Size of /dev/shm\n      --sig-proxy                        Proxy received signals to the\n                                         process (default true)\n      --stop-signal string               Signal to stop the container\n      --stop-timeout int                 Timeout (in seconds) to stop a\n                                         container\n      --sysctl map                       Sysctl options (default map[])\n      --tmpfs list                       Mount a tmpfs directory\n  -t, --tty                              Allocate a pseudo-TTY\n      --ulimit ulimit                    Ulimit options (default [])\n  -u, --user string                      Username or UID (format:\n                                         \u003cname|uid\u003e[:\u003cgroup|gid\u003e])\n  -v, --volume list                      Bind mount a volume\n      --volume-driver string             Optional volume driver for the\n                                         container\n      --volumes-from list                Mount volumes from the specified\n                                         container(s)\n  -w, --workdir string                   Working directory inside the\n                                         container\n",
     "stderr": "",
     "status": 0
   },

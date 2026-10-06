@@ -115,7 +115,7 @@ fn runs_ask_for_the_networks_run_asks_for() {
             })
             .collect();
         let ours = read.and_then(|given| {
-            let mut endpoints: Vec<String> = network::endpoints(&given)?
+            let mut endpoints: Vec<String> = network::endpoints(&given, &network::TopLevel::default())?
                 .into_iter()
                 .map(|a| a.target)
                 .collect();

@@ -78,6 +78,7 @@ pub static TOP: &[Group] = &[
         entries: &[
             own("container", "Manage containers"),
             own("image", "Manage images"),
+            own("network", "Manage networks"),
             own("volume", "Manage volumes"),
         ],
     },
@@ -163,6 +164,19 @@ pub static MANAGEMENT: &[(&str, &str, &[Entry])] = &[
             of("rm", &commands::RMI),
             of("save", &commands::SAVE),
             of("tag", &commands::TAG),
+        ],
+    ),
+    (
+        "network",
+        "Manage networks",
+        &[
+            of("connect", &commands::NETWORK_CONNECT),
+            of("create", &commands::NETWORK_CREATE),
+            of("disconnect", &commands::NETWORK_DISCONNECT),
+            of("inspect", &commands::NETWORK_INSPECT),
+            of("ls", &commands::NETWORK_LS),
+            of("prune", &commands::NETWORK_PRUNE),
+            of("rm", &commands::NETWORK_RM),
         ],
     ),
     (
@@ -255,7 +269,9 @@ mod tests {
         let image = management_help("image").unwrap();
         assert!(image.starts_with("Usage:  shards image COMMAND\n\nManage images\n\nCommands:\n  build "));
         assert!(image.contains("\n  ls          List images\n"));
-        assert!(management_help("network").is_none());
+        let network = management_help("network").unwrap();
+        assert!(network.contains("\n  connect     Connect a container to a network\n"));
+        assert!(management_help("swarm").is_none());
     }
 
     #[test]

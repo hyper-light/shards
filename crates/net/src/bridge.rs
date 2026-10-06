@@ -101,6 +101,30 @@ impl std::str::FromStr for Bridge {
     }
 }
 
+/// The lowest subnet of dockerd's default pools that overlaps none of `taken` (libnetwork
+/// defaultipam allocatePredefinedPool, over its local pools): each pool's own size, or
+/// `bits` long where asked (`--subnet 0.0.0.0/BITS`), from the pools that hold one.
+pub fn free_subnet(taken: &[Prefix], bits: Option<u8>) -> Option<Prefix> {
+    POOLS.iter().find_map(|&(base, base_bits, split)| {
+        let size = match bits {
+            Some(b) if b >= base_bits && b <= 32 => b,
+            Some(_) => return None,
+            None => split,
+        };
+        let count = 1u64 << (size - base_bits);
+        (0..count)
+            .filter_map(|i| u32::try_from(i).ok())
+            .map(|i| Ipv4Addr::from(u32::from(base) + (i << (32 - u32::from(size)))))
+            .find(|&subnet| !taken.iter().any(|&t| overlaps((subnet, size), t)))
+            .map(|subnet| (subnet, size))
+    })
+}
+
+/// Whether two prefixes share an address.
+pub fn overlap(a: Prefix, b: Prefix) -> bool {
+    overlaps(a, b)
+}
+
 /// The mask of a prefix `bits` long.
 fn mask(bits: u8) -> u32 {
     u32::MAX.checked_shl(32 - u32::from(bits.min(32))).unwrap_or(0)

@@ -532,6 +532,20 @@ impl<D: crate::containers::Disk> Daemon<D> {
             self.import(&parsed, asker, reply)
         } else if std::ptr::eq(command, &shards_cmdline::commands::UPDATE) {
             self.update(&parsed, reply)
+        } else if std::ptr::eq(command, &shards_cmdline::commands::NETWORK_CREATE) {
+            self.network_create(&parsed, reply)
+        } else if std::ptr::eq(command, &shards_cmdline::commands::NETWORK_LS) {
+            self.network_ls(&parsed, reply)
+        } else if std::ptr::eq(command, &shards_cmdline::commands::NETWORK_INSPECT) {
+            self.network_inspect(&parsed, asker, reply)
+        } else if std::ptr::eq(command, &shards_cmdline::commands::NETWORK_RM) {
+            self.network_rm(&parsed, reply)
+        } else if std::ptr::eq(command, &shards_cmdline::commands::NETWORK_PRUNE) {
+            self.network_prune(&parsed, asker, reply)
+        } else if std::ptr::eq(command, &shards_cmdline::commands::NETWORK_CONNECT) {
+            self.network_connect(&parsed, reply)
+        } else if std::ptr::eq(command, &shards_cmdline::commands::NETWORK_DISCONNECT) {
+            self.network_disconnect(&parsed, reply)
         } else if std::ptr::eq(command, &shards_cmdline::commands::VOLUME_CREATE) {
             self.volume_create(&parsed, asker.styled(), reply)
         } else if std::ptr::eq(command, &shards_cmdline::commands::VOLUME_LS) {

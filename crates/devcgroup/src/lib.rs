@@ -1,4 +1,4 @@
-//! A container's device rules, as runc v1.3.4 keeps them (opencontainers/cgroups v0.0.4,
+//! A microVM workload's device rules, as runc v1.3.4 keeps a container's (opencontainers/cgroups v0.0.4,
 //! devices/devices_emulator.go: cgroup v1's devices.allow and devices.deny replayed in
 //! order) and compiles them for cgroup v2 (devices/devicefilter.go): an eBPF program of
 //! type BPF_PROG_TYPE_CGROUP_DEVICE, which allows each access to a device that one of the
@@ -324,15 +324,15 @@ pub fn compile(rules: &[Rule]) -> Result<Vec<u8>, String> {
         .collect())
 }
 
-/// A device given to a container (`--device`), as runc's rules name it: its path in
-/// the container, which drops runc's own rule for that path.
+/// A device given to a microVM (`--device`), as runc's rules name it: its path in
+/// the workload, which drops runc's own rule for that path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Given {
     pub path: String,
     pub rule: Rule,
 }
 
-/// A container's rules as dockerd and runc make them (moby daemon/oci_linux.go
+/// A microVM's rules as dockerd and runc make a container's (moby daemon/oci_linux.go
 /// WithDevices; runc specconv createDevices and CreateCgroupConfig): moby's defaults,
 /// then each device given and each `--device-cgroup-rule`, then runc's own, less those
 /// whose path a device given takes; a privileged one's, everything, then runc's own.
@@ -378,7 +378,7 @@ pub fn container(given: &[Given], rules: &[Rule], privileged: bool) -> Vec<Rule>
     out
 }
 
-/// moby's default rules for a container (daemon/pkg/oci/defaults.go): none but
+/// moby's default rules, a container's (daemon/pkg/oci/defaults.go): none but
 /// /dev/null, zero, urandom, random, tty and console, and /dev/fuse denied.
 pub fn moby_defaults() -> Vec<Rule> {
     let c = |major, minor, allow| Rule {
@@ -426,7 +426,7 @@ pub const RUNC_PATHS: [&str; 6] = [
     "/dev/urandom",
 ];
 
-/// runc's AllowedDevices (libcontainer/specconv), appended after a container's own, each
+/// runc's AllowedDevices (libcontainer/specconv), appended after a workload's own, each
 /// with its path: mknod of any device, /dev/null, random, full, tty, zero, urandom, the
 /// ptys and ptmx, and /dev/net/tun.
 const RUNC_ALLOWED: [(&str, Rule); 11] = [
@@ -491,7 +491,7 @@ mod tests {
         container(&[], extra, false)
     }
 
-    /// A default container's: its few devices read and written, any device made, no
+    /// A default microVM's: its few devices read and written, any device made, no
     /// other read: /dev/pmem0 (259:0), which shards' guests mount their image from, is not.
     #[test]
     fn a_default_container_reaches_dockers_devices_alone() {
@@ -544,7 +544,7 @@ mod tests {
         assert_eq!(run(&p, Kind::Char, WRITE, 10, 229), Some(false));
     }
 
-    /// A privileged container's: everything.
+    /// A privileged microVM's: everything.
     #[test]
     fn a_privileged_container_reaches_every_device() {
         let (allow, clean) = reduce(&container(&[], &[], true)).unwrap();

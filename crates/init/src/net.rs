@@ -10,9 +10,11 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 
 const RTM_NEWLINK: u16 = 16;
 const RTM_NEWADDR: u16 = 20;
+const RTM_DELADDR: u16 = 21;
 const RTM_NEWROUTE: u16 = 24;
 const NLM_F_REQUEST: u16 = 1;
 const NLM_F_ACK: u16 = 4;
+const NLM_F_REPLACE: u16 = 0x100;
 const NLM_F_EXCL: u16 = 0x200;
 const NLM_F_CREATE: u16 = 0x400;
 const NLMSG_ERROR: u16 = 2;
@@ -31,14 +33,16 @@ const MTU: u32 = 65520;
 
 /// The guest's address, prefix and gateway, from `shards_net=ADDR/PREFIX,GATEWAY`.
 pub fn from_cmdline() -> Option<(Ipv4Addr, u8, Ipv4Addr)> {
-    let v = std::env::var("shards_net").ok()?;
-    let (cidr, gw) = v.split_once(',')?;
-    let (addr, prefix) = cidr.split_once('/')?;
-    Some((
-        addr.parse().ok()?,
-        prefix.parse().ok().filter(|p| *p <= 32)?,
-        gw.parse().ok()?,
-    ))
+    parse(&std::env::var("shards_net").ok()?)
+}
+
+/// The address a run moved the guest to ([`readdress`]), if any.
+static MOVED: std::sync::Mutex<Option<(Ipv4Addr, u8, Ipv4Addr)>> = std::sync::Mutex::new(None);
+
+/// The guest's address, prefix and gateway now: its run's, or its template's.
+pub fn current() -> Option<(Ipv4Addr, u8, Ipv4Addr)> {
+    let moved = *MOVED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    moved.or_else(from_cmdline)
 }
 
 /// Brings `eth0` up as the host named it.
@@ -103,6 +107,74 @@ pub fn configure(addr: Ipv4Addr, prefix: u8, gateway: Ipv4Addr) -> io::Result<()
     attr(&mut r, RTA_GATEWAY, &gateway.octets());
     attr(&mut r, RTA_OIF, &index.to_ne_bytes());
     request(&sock, RTM_NEWROUTE, NLM_F_CREATE | NLM_F_EXCL, &r)
+}
+
+/// Moves `eth0` from the address its template booted with, `from`, to `to`, and its default
+/// route to `to`'s gateway: a run on a network of its own takes the template of the default
+/// bridge's, as every run does, and its own address as it starts. The old address goes
+/// with its subnet's route; the new one comes with its own.
+pub fn readdress(from: (Ipv4Addr, u8), to: (Ipv4Addr, u8, Ipv4Addr)) -> io::Result<()> {
+    // SAFETY: if_nametoindex(3) with a NUL-terminated name.
+    let index = unsafe { libc::if_nametoindex(c"eth0".as_ptr()) };
+    if index == 0 {
+        return Err(io::Error::other("no eth0"));
+    }
+    // SAFETY: socket(2) with constant arguments.
+    let fd = unsafe {
+        libc::socket(
+            libc::AF_NETLINK,
+            libc::SOCK_RAW | libc::SOCK_CLOEXEC,
+            libc::NETLINK_ROUTE,
+        )
+    };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: a descriptor just made.
+    let sock = unsafe { OwnedFd::from_raw_fd(fd) };
+    let address = |addr: Ipv4Addr, prefix: u8| {
+        let mut a = vec![libc::AF_INET as u8, prefix, 0, 0];
+        a.extend_from_slice(&index.to_ne_bytes());
+        attr(&mut a, IFA_LOCAL, &addr.octets());
+        attr(&mut a, IFA_ADDRESS, &addr.octets());
+        let mask = u32::MAX.checked_shr(u32::from(prefix)).unwrap_or(0);
+        attr(&mut a, IFA_BROADCAST, &(u32::from(addr) | mask).to_be_bytes());
+        a
+    };
+    request(&sock, RTM_DELADDR, 0, &address(from.0, from.1))?;
+    request(
+        &sock,
+        RTM_NEWADDR,
+        NLM_F_CREATE | NLM_F_EXCL,
+        &address(to.0, to.1),
+    )?;
+    let mut r = vec![
+        libc::AF_INET as u8,
+        0,
+        0,
+        0,
+        RT_TABLE_MAIN,
+        RTPROT_BOOT,
+        RT_SCOPE_UNIVERSE,
+        RTN_UNICAST,
+    ];
+    r.extend_from_slice(&0u32.to_ne_bytes());
+    attr(&mut r, RTA_GATEWAY, &to.2.octets());
+    attr(&mut r, RTA_OIF, &index.to_ne_bytes());
+    request(&sock, RTM_NEWROUTE, NLM_F_CREATE | NLM_F_REPLACE, &r)?;
+    *MOVED.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(to);
+    Ok(())
+}
+
+/// `ADDR/PREFIX,GATEWAY`, as the command line and an `address=` setup entry say it.
+pub fn parse(v: &str) -> Option<(Ipv4Addr, u8, Ipv4Addr)> {
+    let (cidr, gw) = v.split_once(',')?;
+    let (addr, prefix) = cidr.split_once('/')?;
+    Some((
+        addr.parse().ok()?,
+        prefix.parse().ok().filter(|p| *p <= 32)?,
+        gw.parse().ok()?,
+    ))
 }
 
 /// Appends a route attribute: length, type, value, padded to four bytes.

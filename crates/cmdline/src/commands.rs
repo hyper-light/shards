@@ -152,6 +152,22 @@ pub static RUN: Command = Command {
             .sharing("dns-option")
             .hidden(),
         Flag::many("dns-option", None, "list", "Set DNS options"),
+        Flag::value("ip", None, "ip", "IPv4 address (e.g., 172.30.100.104)").defaulting("<nil>"),
+        Flag::value("ip6", None, "ip", "IPv6 address (e.g., 2001:db8::33)").defaulting("<nil>"),
+        Flag::many(
+            "net-alias",
+            None,
+            "list",
+            "Add network-scoped alias for the container",
+        )
+        .sharing("network-alias")
+        .hidden(),
+        Flag::many(
+            "network-alias",
+            None,
+            "list",
+            "Add network-scoped alias for the container",
+        ),
         Flag::many("dns-search", None, "list", "Set custom DNS search domains"),
         Flag::string("domainname", None, "", "Container NIS domain name"),
         Flag::string("cidfile", None, "", "Write the container ID to the file"),
@@ -324,8 +340,6 @@ cpu-rt-runtime - i 0 -\n\
 cpuset-gpus - m - -\n\
 io-maxbandwidth - s 0 -\n\
 io-maxiops - s 0 -\n\
-ip - s <nil> -\n\
-ip6 - s <nil> -\n\
 ipc - s - -\n\
 isolation - s - -\n\
 link - m - -\n\
@@ -333,8 +347,6 @@ link-local-ip - m - -\n\
 log-driver - s - -\n\
 log-opt - m - -\n\
 mac-address - s - -\n\
-net-alias - m - network-alias\n\
-network-alias - m - -\n\
 pid - s - -\n\
 runtime - s - -\n\
 storage-opt - m - -\n\
@@ -479,6 +491,22 @@ pub static CREATE: Command = Command {
             .sharing("dns-option")
             .hidden(),
         Flag::many("dns-option", None, "list", "Set DNS options"),
+        Flag::value("ip", None, "ip", "IPv4 address (e.g., 172.30.100.104)").defaulting("<nil>"),
+        Flag::value("ip6", None, "ip", "IPv6 address (e.g., 2001:db8::33)").defaulting("<nil>"),
+        Flag::many(
+            "net-alias",
+            None,
+            "list",
+            "Add network-scoped alias for the container",
+        )
+        .sharing("network-alias")
+        .hidden(),
+        Flag::many(
+            "network-alias",
+            None,
+            "list",
+            "Add network-scoped alias for the container",
+        ),
         Flag::many("dns-search", None, "list", "Set custom DNS search domains"),
         Flag::string("domainname", None, "", "Container NIS domain name"),
         Flag::string("cidfile", None, "", "Write the container ID to the file"),
@@ -651,8 +679,6 @@ cpus - s - -\n\
 gpus - m - -\n\
 io-maxbandwidth - s 0 -\n\
 io-maxiops - s 0 -\n\
-ip - s <nil> -\n\
-ip6 - s <nil> -\n\
 ipc - s - -\n\
 isolation - s - -\n\
 link - m - -\n\
@@ -660,8 +686,6 @@ link-local-ip - m - -\n\
 log-driver - s - -\n\
 log-opt - m - -\n\
 mac-address - s - -\n\
-net-alias - m - network-alias\n\
-network-alias - m - -\n\
 pid - s - -\n\
 runtime - s - -\n\
 storage-opt - m - -\n\
@@ -1254,6 +1278,201 @@ sharing - s none -
 topology-preferred - m - -
 topology-required - m - -
 type - s block -",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards network create` (docker/cli cli/command/network/create.go).
+pub static NETWORK_CREATE: Command = Command {
+    usage: "[OPTIONS] NETWORK",
+    about: "Create a network",
+    aliases: "",
+    args: Args::Exactly(1),
+    flags: &[
+        Flag::bool("attachable", None, "Enable manual container attachment"),
+        Flag::many(
+            "aux-address",
+            None,
+            "map",
+            "Auxiliary IPv4 or IPv6 addresses used by Network driver",
+        )
+        .defaulting("map[]"),
+        Flag::string(
+            "config-from",
+            None,
+            "",
+            "The network from which to copy the configuration",
+        ),
+        Flag::bool("config-only", None, "Create a configuration only network"),
+        Flag::string("driver", Some(b'd'), "bridge", "Driver to manage the Network"),
+        Flag::many(
+            "gateway",
+            None,
+            "ipSlice",
+            "IPv4 or IPv6 Gateway for the master subnet",
+        )
+        .defaulting("[]"),
+        HELP,
+        Flag::bool("ingress", None, "Create swarm routing-mesh network"),
+        Flag::bool("internal", None, "Restrict external access to the network"),
+        Flag::many(
+            "ip-range",
+            None,
+            "ipNetSlice",
+            "Allocate container ip from a sub-range",
+        )
+        .defaulting("[]"),
+        Flag::string("ipam-driver", None, "default", "IP Address Management Driver"),
+        Flag::many("ipam-opt", None, "map", "Set IPAM driver specific options").defaulting("map[]"),
+        Flag::bool("ipv4", None, "Enable or disable IPv4 address assignment").defaulting("true"),
+        Flag::bool("ipv6", None, "Enable or disable IPv6 address assignment"),
+        Flag::many("label", None, "list", "Set metadata on a network"),
+        Flag::many("opt", Some(b'o'), "map", "Set driver specific options").defaulting("map[]"),
+        Flag::string("scope", None, "", "Control the network's scope"),
+        Flag::many(
+            "subnet",
+            None,
+            "strings",
+            "Subnet in CIDR format that represents a network segment",
+        ),
+    ],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards network connect` (docker/cli cli/command/network/connect.go).
+pub static NETWORK_CONNECT: Command = Command {
+    usage: "[OPTIONS] NETWORK CONTAINER",
+    about: "Connect a container to a network",
+    aliases: "",
+    args: Args::Exactly(2),
+    flags: &[
+        Flag::many(
+            "alias",
+            None,
+            "strings",
+            "Add network-scoped alias for the container",
+        ),
+        Flag::many("driver-opt", None, "strings", "driver options for the network"),
+        Flag::int(
+            "gw-priority",
+            None,
+            "0",
+            "Highest gw-priority provides the default gateway. Accepts positive and negative values.",
+        ),
+        HELP,
+        Flag::value("ip", None, "ip", "IPv4 address (e.g., \"172.30.100.104\")"),
+        Flag::value("ip6", None, "ip", "IPv6 address (e.g., \"2001:db8::33\")"),
+        Flag::many("link", None, "list", "Add link to another container"),
+        Flag::many(
+            "link-local-ip",
+            None,
+            "ipSlice",
+            "Add a link-local address for the container",
+        )
+        .defaulting("[]"),
+    ],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards network disconnect` (docker/cli cli/command/network/disconnect.go).
+pub static NETWORK_DISCONNECT: Command = Command {
+    usage: "[OPTIONS] NETWORK CONTAINER",
+    about: "Disconnect a container from a network",
+    aliases: "",
+    args: Args::Exactly(2),
+    flags: &[
+        Flag::bool(
+            "force",
+            Some(b'f'),
+            "Force the container to disconnect from a network",
+        ),
+        HELP,
+    ],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards network inspect` (docker/cli cli/command/network/inspect.go).
+pub static NETWORK_INSPECT: Command = Command {
+    usage: "[OPTIONS] NETWORK [NETWORK...]",
+    about: "Display detailed information on one or more networks",
+    aliases: "",
+    args: Args::AtLeast(1),
+    flags: &[
+        Flag::string("format", Some(b'f'), "", INSPECT_FORMAT_HELP),
+        HELP,
+        Flag::bool("verbose", Some(b'v'), "Verbose output for diagnostics"),
+    ],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards network ls` (docker/cli cli/command/network/list.go).
+pub static NETWORK_LS: Command = Command {
+    usage: "[OPTIONS]",
+    about: "List networks",
+    aliases: "shards network ls, shards network list",
+    args: Args::None,
+    flags: &[
+        Flag::many(
+            "filter",
+            Some(b'f'),
+            "filter",
+            "Provide filter values (e.g. \"driver=bridge\")",
+        ),
+        Flag::string(
+            "format",
+            None,
+            "",
+            "Format output using a custom template:\n'table':            Print output in table format with column headers (default)\n'table TEMPLATE':   Print output in table format using the given Go template\n'json':             Print in JSON format\n'TEMPLATE':         Print output using the given Go template.\nRefer to https://docs.docker.com/go/formatting/ for more information about formatting output with templates",
+        ),
+        HELP,
+        Flag::bool("no-trunc", None, "Do not truncate the output"),
+        Flag::bool("quiet", Some(b'q'), "Only display network IDs"),
+    ],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards network prune` (docker/cli cli/command/network/prune.go).
+pub static NETWORK_PRUNE: Command = Command {
+    usage: "[OPTIONS]",
+    about: "Remove all unused networks",
+    aliases: "",
+    args: Args::None,
+    flags: &[
+        Flag::many(
+            "filter",
+            None,
+            "filter",
+            "Provide filter values (e.g. \"until=<timestamp>\")",
+        ),
+        Flag::bool("force", Some(b'f'), "Do not prompt for confirmation"),
+        HELP,
+    ],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards network rm` (docker/cli cli/command/network/remove.go).
+pub static NETWORK_RM: Command = Command {
+    usage: "NETWORK [NETWORK...]",
+    about: "Remove one or more networks",
+    aliases: "shards network rm, shards network remove",
+    args: Args::AtLeast(1),
+    flags: &[
+        Flag::bool("force", Some(b'f'), "Do not error if the network does not exist"),
+        HELP,
+    ],
+    unserved: "",
     interspersed: true,
     error_prefix: "",
 };
@@ -2000,6 +2219,13 @@ pub fn find(words: &[&str]) -> Option<(&'static Command, &'static str, usize)> {
         ["import", ..] => (&IMPORT, "shards import", 1),
         ["image", "import", ..] => (&IMPORT, "shards image import", 2),
         ["container", "update", ..] => (&UPDATE, "shards container update", 2),
+        ["network", "create", ..] => (&NETWORK_CREATE, "shards network create", 2),
+        ["network", "connect", ..] => (&NETWORK_CONNECT, "shards network connect", 2),
+        ["network", "disconnect", ..] => (&NETWORK_DISCONNECT, "shards network disconnect", 2),
+        ["network", "inspect", ..] => (&NETWORK_INSPECT, "shards network inspect", 2),
+        ["network", "ls" | "list", ..] => (&NETWORK_LS, "shards network ls", 2),
+        ["network", "prune", ..] => (&NETWORK_PRUNE, "shards network prune", 2),
+        ["network", "rm" | "remove", ..] => (&NETWORK_RM, "shards network rm", 2),
         ["volume", "create", ..] => (&VOLUME_CREATE, "shards volume create", 2),
         ["volume", "ls" | "list", ..] => (&VOLUME_LS, "shards volume ls", 2),
         ["volume", "inspect", ..] => (&VOLUME_INSPECT, "shards volume inspect", 2),

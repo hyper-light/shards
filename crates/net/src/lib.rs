@@ -10,6 +10,7 @@
 #![cfg(unix)]
 
 pub mod bridge;
+pub mod dns;
 pub mod pktinfo;
 mod poll;
 mod siphash;
@@ -249,6 +250,7 @@ mod token {
     pub const TCP: u64 = 3;
     pub const UDP: u64 = 4;
     pub const INBOUND: u64 = 5;
+    pub const PEER: u64 = 6;
 
     pub fn of(kind: u64, generation: u32, index: u32) -> u64 {
         kind << 56 | (u64::from(generation) & 0xff_ffff) << 32 | u64::from(index)
@@ -379,6 +381,25 @@ struct Stack<'r> {
     inbound_ports: HashMap<(usize, std::net::SocketAddr), u16>,
     /// The gateway port the next published connection tries first.
     next_port: u16,
+    /// The other VMs on the guest's network (D46), by the slot their token names.
+    peers: Vec<Option<Peer>>,
+    /// The names its members answer to, which the gateway's resolver says: none off a
+    /// network of its own.
+    names: Option<dns::Names>,
+}
+
+/// A peer on the guest's network (D46): another VM's network process, on a stream socket
+/// the daemon paired the two with, and its guest's address. A frame goes each way whole,
+/// its length's four bytes first. One the socket takes only in part is finished before
+/// the next goes; frames meanwhile are dropped, as a switch whose port is full drops them,
+/// and the guests' TCP sends them again.
+struct Peer {
+    ip: Ipv4Addr,
+    sock: std::os::unix::net::UnixStream,
+    /// What of the frame being sent the socket has yet to take.
+    unsent: Vec<u8>,
+    /// What has come of the frames being received.
+    received: Vec<u8>,
 }
 
 /// Sends frames to the guest through the ring, into the backlog while it is full.
@@ -485,7 +506,13 @@ impl Control {
     /// Whether a message of `kind` is this socket's to send.
     fn says(self, kind: u8) -> bool {
         match self {
-            Control::Daemon => kind == shards_ipc::kind::PUBLISH,
+            Control::Daemon => matches!(
+                kind,
+                shards_ipc::kind::PUBLISH
+                    | shards_ipc::kind::NET_ADDRESS
+                    | shards_ipc::kind::NET_PEER
+                    | shards_ipc::kind::NET_NAMES
+            ),
             Control::Release => kind == shards_ipc::kind::UNPUBLISH,
         }
     }
@@ -537,6 +564,8 @@ pub fn serve(
         inbound: HashMap::new(),
         inbound_ports: HashMap::new(),
         next_port: *EPHEMERAL.start(),
+        peers: Vec::new(),
+        names: None,
     };
     let doorbell = from_guest.waits_on();
     stack.poller.set(
@@ -617,6 +646,7 @@ pub fn serve(
                     None => {}
                 },
                 token::TCP => stack.on_socket(e),
+                token::PEER => stack.on_peer(index as usize, e),
                 token::UDP => stack.on_udp(index),
                 _ => {}
             }
@@ -646,6 +676,20 @@ fn control(
         let answered = if m.kind == shards_ipc::kind::PUBLISH {
             stack.publish(&m.payload, m.fds);
             shards_ipc::send(sock, shards_ipc::kind::PUBLISH, &[], &[])
+        } else if m.kind == shards_ipc::kind::NET_ADDRESS {
+            if !stack.readdress(&m.payload) {
+                return false;
+            }
+            shards_ipc::send(sock, shards_ipc::kind::NET_ADDRESS, &[], &[])
+        } else if m.kind == shards_ipc::kind::NET_NAMES {
+            let Some(names) = dns::Names::decode(&m.payload) else {
+                return false;
+            };
+            stack.names = Some(names);
+            shards_ipc::send(sock, shards_ipc::kind::NET_NAMES, &[], &[])
+        } else if m.kind == shards_ipc::kind::NET_PEER {
+            stack.add_peer(&m.payload, m.fds);
+            shards_ipc::send(sock, shards_ipc::kind::NET_PEER, &[], &[])
         } else {
             // Flows left answer nobody: their sockets are gone, and the poller forgets
             // them.
@@ -894,6 +938,16 @@ impl<'r> Stack<'r> {
                 if ip.src != self.cfg.guest_ip {
                     return;
                 }
+                // A peer's, on the guest's network: to its VM whole, past the policy, as
+                // a bridge's members reach one another.
+                if let Some(i) = self
+                    .peers
+                    .iter()
+                    .position(|p| p.as_ref().is_some_and(|p| p.ip == ip.dst))
+                {
+                    self.forward_to_peer(i, f);
+                    return;
+                }
                 match ip.proto {
                     wire::PROTO_ICMP => self.on_icmp(&ip),
                     wire::PROTO_UDP => self.on_guest_udp(&ip),
@@ -902,6 +956,200 @@ impl<'r> Stack<'r> {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// The guest's address on its network, its prefix and gateway (`NET_ADDRESS`): what
+    /// its frames come from, and the gateway they go through. False for a malformed one.
+    fn readdress(&mut self, payload: &[u8]) -> bool {
+        let Some(&[a, b, c, d, _prefix, g0, g1, g2, g3]) = payload.first_chunk::<9>() else {
+            return false;
+        };
+        self.cfg.guest_ip = Ipv4Addr::new(a, b, c, d);
+        self.cfg.gateway_ip = Ipv4Addr::new(g0, g1, g2, g3);
+        self.cfg.gateway_mac = [0x02, 0x42, g0, g1, g2, g3];
+        self.frames.gateway_mac = self.cfg.gateway_mac;
+        true
+    }
+
+    /// A peer (`NET_PEER`): its guest's address and the socket to its network process.
+    fn add_peer(&mut self, payload: &[u8], fds: Vec<OwnedFd>) {
+        let (Some(&[a, b, c, d]), Some(fd)) = (payload.first_chunk::<4>(), fds.into_iter().next()) else {
+            return;
+        };
+        let sock = std::os::unix::net::UnixStream::from(fd);
+        if sock.set_nonblocking(true).is_err() {
+            return;
+        }
+        let i = self
+            .peers
+            .iter()
+            .position(Option::is_none)
+            .unwrap_or(self.peers.len());
+        let token = token::of(token::PEER, 0, u32::try_from(i).unwrap_or(u32::MAX));
+        if self
+            .poller
+            .set(
+                sock.as_raw_fd(),
+                token,
+                poll::Interest::NONE,
+                poll::Interest::READ,
+            )
+            .is_err()
+        {
+            return;
+        }
+        let peer = Peer {
+            ip: Ipv4Addr::new(a, b, c, d),
+            sock,
+            unsent: Vec::new(),
+            received: Vec::new(),
+        };
+        match self.peers.get_mut(i) {
+            Some(slot) => *slot = Some(peer),
+            None => self.peers.push(Some(peer)),
+        }
+    }
+
+    /// Sends the guest's frame `f` to peer `i`: its virtio header's segmentation cleared,
+    /// as the frame fits the peer's MTU whole (the guest's TCP segments a 65520-byte MTU's
+    /// way), its checksum's partial state kept, which the peer's device takes
+    /// (VIRTIO_NET_F_GUEST_CSUM).
+    fn forward_to_peer(&mut self, i: usize, f: &[u8]) {
+        let Some(Some(peer)) = self.peers.get_mut(i) else {
+            return;
+        };
+        if !peer.unsent.is_empty() {
+            return;
+        }
+        let Ok(len) = u32::try_from(f.len()) else { return };
+        let mut framed = Vec::with_capacity(4 + f.len());
+        framed.extend_from_slice(&len.to_be_bytes());
+        framed.extend_from_slice(f);
+        // gso_type, hdr_len and gso_size: bytes 1 to 5 of the header.
+        if let Some(gso) = framed.get_mut(5..10) {
+            gso.fill(0);
+        }
+        use std::io::Write as _;
+        match (&peer.sock).write(&framed) {
+            Ok(n) if n == framed.len() => {}
+            Ok(n) => {
+                peer.unsent = framed.split_off(n);
+                let token = token::of(token::PEER, 0, u32::try_from(i).unwrap_or(u32::MAX));
+                let both = poll::Interest {
+                    read: true,
+                    write: true,
+                };
+                let _ = self
+                    .poller
+                    .set(peer.sock.as_raw_fd(), token, poll::Interest::READ, both);
+            }
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
+            Err(_) => self.drop_peer(i),
+        }
+    }
+
+    /// Peer `i`'s socket is ready: what is unsent goes on, and its frames come to the
+    /// guest, each only from its own address to the guest's, from the gateway's MAC as a
+    /// routed one would.
+    fn on_peer(&mut self, i: usize, e: &poll::Event) {
+        use std::io::{Read as _, Write as _};
+        let token = token::of(token::PEER, 0, u32::try_from(i).unwrap_or(u32::MAX));
+        let mut gone = e.ended;
+        let mut frames = Vec::new();
+        {
+            let Some(Some(peer)) = self.peers.get_mut(i) else {
+                return;
+            };
+            if e.write && !peer.unsent.is_empty() {
+                match (&peer.sock).write(&peer.unsent) {
+                    Ok(n) => {
+                        peer.unsent.drain(..n);
+                        if peer.unsent.is_empty() {
+                            let both = poll::Interest {
+                                read: true,
+                                write: true,
+                            };
+                            let _ = self
+                                .poller
+                                .set(peer.sock.as_raw_fd(), token, both, poll::Interest::READ);
+                        }
+                    }
+                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
+                    Err(_) => gone = true,
+                }
+            }
+            let mut buf = [0u8; 64 * 1024];
+            for _ in 0..BUDGET {
+                match (&peer.sock).read(&mut buf) {
+                    Ok(0) => {
+                        gone = true;
+                        break;
+                    }
+                    Ok(n) => peer.received.extend_from_slice(buf.get(..n).unwrap_or_default()),
+                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
+                    Err(_) => {
+                        gone = true;
+                        break;
+                    }
+                }
+            }
+            while let Some(&len) = peer.received.first_chunk::<4>() {
+                let len = u32::from_be_bytes(len) as usize;
+                if len > shards_netring::MAX_FRAME {
+                    gone = true;
+                    break;
+                }
+                if peer.received.len() < 4 + len {
+                    break;
+                }
+                let frame: Vec<u8> = peer.received.drain(..4 + len).skip(4).collect();
+                frames.push((peer.ip, frame));
+            }
+        }
+        for (from, mut frame) in frames {
+            let Some(eth) = frame.get(wire::VNET..).and_then(wire::eth) else {
+                continue;
+            };
+            if eth.kind != wire::ETHERTYPE_IPV4 {
+                continue;
+            }
+            let Some(ip) = wire::ipv4(eth.payload) else {
+                continue;
+            };
+            if ip.src != from || ip.dst != self.cfg.guest_ip {
+                continue;
+            }
+            if let Some(macs) = frame.get_mut(wire::VNET..wire::VNET + 12)
+                && let (dst, src) = macs.split_at_mut(6)
+            {
+                dst.copy_from_slice(&self.cfg.guest_mac);
+                src.copy_from_slice(&self.cfg.gateway_mac);
+            }
+            self.out().send(&[&frame]);
+        }
+        if gone {
+            self.drop_peer(i);
+        }
+    }
+
+    /// Forgets peer `i`, whose VM has gone.
+    fn drop_peer(&mut self, i: usize) {
+        if let Some(slot) = self.peers.get_mut(i)
+            && let Some(peer) = slot.take()
+        {
+            let token = token::of(token::PEER, 0, u32::try_from(i).unwrap_or(u32::MAX));
+            let was = if peer.unsent.is_empty() {
+                poll::Interest::READ
+            } else {
+                poll::Interest {
+                    read: true,
+                    write: true,
+                }
+            };
+            let _ = self
+                .poller
+                .set(peer.sock.as_raw_fd(), token, was, poll::Interest::NONE);
         }
     }
 
@@ -919,6 +1167,15 @@ impl<'r> Stack<'r> {
         let Some(u) = wire::udp(ip.payload) else { return };
         // An answer to a published port's peer, through the gateway port it was given.
         if ip.dst == self.cfg.gateway_ip {
+            // The network's resolver, as Docker's embedded DNS (the guest's 127.0.0.11
+            // relays to it).
+            if u.dst_port == 53
+                && let Some(answer) = self.names.as_ref().and_then(|n| n.answer(u.payload))
+            {
+                let gateway = self.cfg.gateway_ip;
+                self.out().datagram((gateway, 53), u.src_port, &answer);
+                return;
+            }
             if let Some(f) = self.inbound.get_mut(&u.dst_port)
                 && f.guest_port == u.src_port
                 && let Some((Listener::Udp(sock), _)) = self.published.get(f.published)
@@ -1300,6 +1557,8 @@ mod tests {
             inbound: HashMap::new(),
             inbound_ports: HashMap::new(),
             next_port: *EPHEMERAL.start(),
+            peers: Vec::new(),
+            names: None,
         };
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let _client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();

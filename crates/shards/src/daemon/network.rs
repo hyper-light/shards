@@ -22,7 +22,12 @@ pub enum Net {
     Bridge,
     /// A loopback alone.
     None,
+    /// A user-defined network (D46), which the run's address and peers are of.
+    User,
 }
+
+/// A user network's IPv4 subnets, by its name or ID; none for one there is not.
+pub type UserSubnets<'a> = &'a dyn Fn(&str) -> Option<Vec<(Ipv4Addr, u8)>>;
 
 /// What starting the run will find of its networks: one to attach it to, or what dockerd
 /// says as the start fails, the container left created.
@@ -37,7 +42,10 @@ const SYSCTLS: &str = "com.docker.network.endpoint.sysctls";
 
 /// The IPv4 subnets of dockerd's predefined networks, the default bridge's `bridge`, or
 /// `None` for a network it does not have; none has IPv6.
-fn subnets(network: &str, bridge: Option<Bridge>) -> Option<Vec<(Ipv4Addr, u8)>> {
+fn subnets(network: &str, bridge: Option<Bridge>, user: UserSubnets<'_>) -> Option<Vec<(Ipv4Addr, u8)>> {
+    if is_user_defined(network) {
+        return user(network);
+    }
     match network {
         "bridge" => Some(bridge.iter().map(Bridge::subnet).collect()),
         "none" | "host" => Some(Vec::new()),
@@ -48,7 +56,12 @@ fn subnets(network: &str, bridge: Option<Bridge>) -> Option<Vec<(Ipv4Addr, u8)>>
 /// What run `run` will find as it starts, or why its container is not created. `bridge`
 /// is the default bridge the daemon elected, none if every subnet it may take is in use
 /// on the host; `exists` says whether a container is named so (for `container:NAME`).
-pub fn check(run: &Run, bridge: Option<Bridge>, exists: impl Fn(&str) -> bool) -> Result<Start, String> {
+pub fn check(
+    run: &Run,
+    bridge: Option<Bridge>,
+    exists: impl Fn(&str) -> bool,
+    user: UserSubnets<'_>,
+) -> Result<Start, String> {
     // dockerd takes the default network mode as its bridge, and the endpoint named for it
     // as the bridge's.
     let mode = match run.network.as_str() {
@@ -75,7 +88,7 @@ pub fn check(run: &Run, bridge: Option<Bridge>, exists: impl Fn(&str) -> bool) -
     let invalid: Vec<String> = endpoints
         .iter()
         .filter_map(|e| {
-            endpoint_settings(e, bridge)
+            endpoint_settings(e, bridge, user)
                 .err()
                 .map(|why| format!("invalid config for network {}: {why}", e.network))
         })
@@ -111,6 +124,7 @@ pub fn check(run: &Run, bridge: Option<Bridge>, exists: impl Fn(&str) -> bool) -
         "bridge" if bridge.is_none() => return Err(shards_net::bridge::NO_SUBNET.into()),
         "bridge" => Net::Bridge,
         "none" => Net::None,
+        user_net if user(user_net).is_some() => Net::User,
         _ => {
             return match container {
                 Some(name) => fails(format!(
@@ -122,6 +136,17 @@ pub fn check(run: &Run, bridge: Option<Bridge>, exists: impl Fn(&str) -> bool) -
             };
         }
     };
+    // One network device a microVM: one network a microVM, yet (D46's open item).
+    if net == Net::User
+        && endpoints
+            .iter()
+            .any(|e| e.network != mode && user(&e.network).is_some())
+    {
+        return Err(
+            "a microVM on more than one network is not supported by shards yet: each has one network device"
+                .into(),
+        );
+    }
     if let Some(e) = endpoints.iter().find(|e| e.network != mode) {
         let why = match e.network.as_str() {
             "none" => "container cannot be connected to multiple networks with one of the networks in private (none) mode".to_string(),
@@ -135,7 +160,7 @@ pub fn check(run: &Run, bridge: Option<Bridge>, exists: impl Fn(&str) -> bool) -
 }
 
 /// validateEndpointSettings: Ok, or the errors joined under "invalid endpoint settings:".
-fn endpoint_settings(e: &Endpoint, bridge: Option<Bridge>) -> Result<(), String> {
+fn endpoint_settings(e: &Endpoint, bridge: Option<Bridge>, user: UserSubnets<'_>) -> Result<(), String> {
     let addr = |s: &str| (!s.is_empty()).then(|| parse_addr(s)).transpose();
     let ipv4 = addr(&e.ipv4)?;
     let ipv6 = addr(&e.ipv6)?;
@@ -170,7 +195,7 @@ fn endpoint_settings(e: &Endpoint, bridge: Option<Bridge>) -> Result<(), String>
         }
     }
     // validateIPAMConfigIsInRange, for the networks dockerd has.
-    if let Some(v4) = subnets(&e.network, bridge) {
+    if let Some(v4) = subnets(&e.network, bridge, user) {
         let within = |a: &Addr| match a.ip {
             IpAddr::V4(ip) => v4.iter().any(|(net, bits)| {
                 let mask = u32::MAX.checked_shl(32 - u32::from(*bits)).unwrap_or(0);
@@ -222,6 +247,11 @@ fn join(errs: &[String]) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// [`super::check`] where no user network is there.
+    fn check(run: &Run, bridge: Option<Bridge>, exists: impl Fn(&str) -> bool) -> Result<Start, String> {
+        super::check(run, bridge, exists, &|_| None)
+    }
+
     use super::*;
 
     fn run(networks: &[&str]) -> Run {
@@ -231,20 +261,23 @@ mod tests {
             .collect();
         Run {
             network: shards_cmdline::network::mode(&given).to_string(),
-            endpoints: shards_cmdline::network::endpoints(&given)
-                .unwrap()
-                .into_iter()
-                .map(|a| Endpoint {
-                    network: a.target,
-                    aliases: a.aliases,
-                    ipv4: a.ipv4.map(|a| a.to_string()).unwrap_or_default(),
-                    ipv6: a.ipv6.map(|a| a.to_string()).unwrap_or_default(),
-                    link_local: a.link_local.iter().map(ToString::to_string).collect(),
-                    mac: a.mac,
-                    driver_opts: a.driver_opts,
-                    gw_priority: a.gw_priority,
-                })
-                .collect(),
+            endpoints: shards_cmdline::network::endpoints(
+                &given,
+                &shards_cmdline::network::TopLevel::default(),
+            )
+            .unwrap()
+            .into_iter()
+            .map(|a| Endpoint {
+                network: a.target,
+                aliases: a.aliases,
+                ipv4: a.ipv4.map(|a| a.to_string()).unwrap_or_default(),
+                ipv6: a.ipv6.map(|a| a.to_string()).unwrap_or_default(),
+                link_local: a.link_local.iter().map(ToString::to_string).collect(),
+                mac: a.mac,
+                driver_opts: a.driver_opts,
+                gw_priority: a.gw_priority,
+            })
+            .collect(),
             ..Run::default()
         }
     }

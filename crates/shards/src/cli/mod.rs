@@ -220,6 +220,15 @@ fn container(
         });
     }
     #[cfg(unix)]
+    if std::ptr::eq(command, &shards_cmdline::commands::NETWORK_LS) {
+        listing::ask(listing::Asked {
+            format: parsed.string("format").to_string(),
+            quiet: parsed.bool("quiet"),
+            trunc: !parsed.bool("no-trunc"),
+            ..listing::Asked::default()
+        });
+    }
+    #[cfg(unix)]
     if std::ptr::eq(command, &shards_cmdline::commands::IMAGES) {
         listing::ask(listing::Asked {
             format: parsed.string("format").to_string(),
@@ -526,6 +535,12 @@ fn prune_warning(command: &'static Command, parsed: &Parsed) -> Option<String> {
     if parsed.bool("force") {
         return None;
     }
+    if std::ptr::eq(command, &shards_cmdline::commands::NETWORK_PRUNE) {
+        return Some(
+            "WARNING! This will remove all custom networks not used by at least one container.\nAre you sure you want to continue? [y/N] "
+                .into(),
+        );
+    }
     if std::ptr::eq(command, &VOLUME_PRUNE) {
         let which = if parsed.bool("all") { "all" } else { "anonymous" };
         return Some(format!(
@@ -595,6 +610,15 @@ fn look_name(path: &str) -> String {
 #[cfg(unix)]
 fn prune_items(command: &'static Command, parsed: &Parsed) -> Vec<String> {
     use shards_cmdline::commands::{CONTAINER_PRUNE, IMAGE_PRUNE, VOLUME_PRUNE};
+    if std::ptr::eq(command, &shards_cmdline::commands::NETWORK_PRUNE) {
+        let mut items = vec!["every custom network no microVM is on".to_string()];
+        items.extend(
+            prune_filters(parsed)
+                .into_iter()
+                .map(|f| format!("only those {f} keeps")),
+        );
+        return items;
+    }
     if std::ptr::eq(command, &VOLUME_PRUNE) {
         let mut items = vec![if parsed.bool("all") {
             "every volume no microVM mounts".to_string()

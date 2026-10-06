@@ -452,7 +452,18 @@ fn request(parsed: &Parsed) -> Result<Run, String> {
         .iter()
         .map(|v| network::attachment(v))
         .collect::<Result<Vec<_>, _>>()?;
-    let endpoints = network::endpoints(&attachments)?
+    let address = |name: &str| {
+        let v = parsed.string(name);
+        (!v.is_empty() && v != "<nil>")
+            .then(|| shards_cmdline::network::parse_addr(v))
+            .transpose()
+    };
+    let top = network::TopLevel {
+        aliases: parsed.many("network-alias").to_vec(),
+        ipv4: address("ip")?,
+        ipv6: address("ip6")?,
+    };
+    let endpoints = network::endpoints(&attachments, &top)?
         .into_iter()
         .map(|a| Endpoint {
             network: a.target,

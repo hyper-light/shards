@@ -230,6 +230,29 @@ pub struct Command {
 /// `v` as Go's `encoding/csv` writes one record, without its line end (pflag's
 /// `writeAsCSV`): a field is quoted, its quotes doubled, if it holds a comma, a quote or a
 /// line break, or starts with a space.
+/// A CSV record's fields, as encoding/csv reads one line (pflag's readAsCSV): commas
+/// part them, a quoted field keeps its commas, and a doubled quote in it is one.
+fn csv_fields(line: &str) -> Vec<String> {
+    let mut fields = Vec::new();
+    let mut field = String::new();
+    let mut chars = line.chars().peekable();
+    let mut quoted = false;
+    while let Some(c) = chars.next() {
+        match (quoted, c) {
+            (false, ',') => fields.push(std::mem::take(&mut field)),
+            (false, '"') if field.is_empty() => quoted = true,
+            (true, '"') if chars.peek() == Some(&'"') => {
+                chars.next();
+                field.push('"');
+            }
+            (true, '"') => quoted = false,
+            (_, c) => field.push(c),
+        }
+    }
+    fields.push(field);
+    fields
+}
+
 fn csv_record(v: &[String]) -> String {
     let fields: Vec<String> = v
         .iter()
@@ -375,6 +398,10 @@ impl Parsed {
                     Some(Value::Many(v)) if v.is_empty() => String::new(),
                     // NetworkOpt prints as nothing, whatever it holds.
                     Some(Value::Many(_)) if matches!(f.kind, Kind::Many("network")) => String::new(),
+                    // pflag's IP and IP network slices print joined by commas.
+                    Some(Value::Many(v)) if matches!(f.kind, Kind::Many("ipSlice" | "ipNetSlice")) => {
+                        format!("[{}]", v.join(","))
+                    }
                     // pflag's string slices and arrays print as one CSV record.
                     Some(Value::Many(v)) if matches!(f.kind, Kind::Many("stringArray" | "strings")) => {
                         format!("[{}]", csv_record(v))
@@ -674,6 +701,16 @@ pub fn value(flag: &Flag, value: &str) -> Result<String, String> {
         ("dns-search", Kind::Many("list")) => validate_dns_search(value),
         ("add-host", Kind::Many("list")) => validate_extra_host(value),
         ("device-cgroup-rule", Kind::Many("list")) => validate_device_cgroup_rule(value),
+        // pflag's IP values: an address, as Go's net.IP prints it.
+        (_, Kind::Many("ipSlice")) => go_ip(value.trim())
+            .ok_or_else(|| format!("invalid string being converted to IP address: {value}")),
+        (_, Kind::Many("ipNetSlice")) => {
+            go_cidr(value.trim()).ok_or_else(|| format!("invalid string being converted to CIDR: {value}"))
+        }
+        (_, Kind::Value("ip")) => {
+            go_ip(value.trim()).ok_or_else(|| format!("failed to parse IP: {}", crate::go::quote(value)))
+        }
+        ("link", Kind::Many("list")) => validate_link(value),
         ("device-read-bps" | "device-write-bps", Kind::Many("list")) => validate_throttle_bps(value),
         ("device-read-iops" | "device-write-iops", Kind::Many("list")) => validate_throttle_iops(value),
         ("blkio-weight-device", Kind::Many("list")) => validate_weight_device(value),
@@ -688,6 +725,53 @@ pub fn value(flag: &Flag, value: &str) -> Result<String, String> {
         },
         _ => Ok(value.to_string()),
     }
+}
+
+/// An address as Go's net.ParseIP takes it, as its String prints it: an IPv4-mapped one in
+/// dotted form.
+fn go_ip(s: &str) -> Option<String> {
+    let ip: std::net::IpAddr = s.parse().ok()?;
+    Some(match ip {
+        std::net::IpAddr::V6(v6) => v6
+            .to_ipv4_mapped()
+            .map_or_else(|| v6.to_string(), |v4| v4.to_string()),
+        v4 => v4.to_string(),
+    })
+}
+
+/// A CIDR as Go's net.ParseCIDR takes it, as the network it names prints: its address
+/// masked by its length.
+fn go_cidr(s: &str) -> Option<String> {
+    let (addr, bits) = s.split_once('/')?;
+    let bits: u8 = bits.parse().ok().filter(|_| !bits.starts_with('+'))?;
+    match addr.parse::<std::net::IpAddr>().ok()? {
+        std::net::IpAddr::V4(v4) if bits <= 32 => {
+            let mask = u32::MAX.checked_shl(32 - u32::from(bits)).unwrap_or(0);
+            Some(format!(
+                "{}/{bits}",
+                std::net::Ipv4Addr::from(u32::from(v4) & mask)
+            ))
+        }
+        std::net::IpAddr::V6(v6) if bits <= 128 => {
+            let mask = u128::MAX.checked_shl(128 - u32::from(bits)).unwrap_or(0);
+            Some(format!(
+                "{}/{bits}",
+                std::net::Ipv6Addr::from(u128::from(v6) & mask)
+            ))
+        }
+        _ => None,
+    }
+}
+
+/// opts.ValidateLink: `NAME[:ALIAS]`.
+fn validate_link(value: &str) -> Result<String, String> {
+    if value.is_empty() {
+        return Err("empty string specified for links".into());
+    }
+    if value.split(':').count() > 2 {
+        return Err(format!("bad format for links: {value}"));
+    }
+    Ok(value.to_string())
 }
 
 /// A device's path and the rest (opts/throttledevice.go and weightdevice.go): `PATH:REST`,
@@ -996,12 +1080,26 @@ fn set(
         (Kind::String, _) => Value::Text(value.to_string()),
         (Kind::Duration, _) => Value::Int(crate::gotime::duration(value).map_err(invalid)?),
         (Kind::Value(_), _) => Value::Text(validate(&flag, value).map_err(invalid)?),
-        (Kind::Many(_), before) => {
+        (Kind::Many(kind), before) => {
             let mut all = match before {
                 Some(Value::Many(all)) => all,
                 _ => Vec::new(),
             };
-            all.push(validate(&flag, value).map_err(invalid)?);
+            // pflag's slices take each value's pieces (StringSlice's as a CSV record,
+            // IPSlice's and IPNetSlice's at each comma, quotes dropped), each checked.
+            match kind {
+                "strings" => {
+                    for piece in csv_fields(value) {
+                        all.push(validate(&flag, &piece).map_err(invalid)?);
+                    }
+                }
+                "ipSlice" | "ipNetSlice" => {
+                    for piece in value.replace('"', "").split(',') {
+                        all.push(validate(&flag, piece).map_err(invalid)?);
+                    }
+                }
+                _ => all.push(validate(&flag, value).map_err(invalid)?),
+            }
             Value::Many(all)
         }
     });
