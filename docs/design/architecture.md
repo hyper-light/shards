@@ -3039,7 +3039,68 @@ its `AGENT` and before it, `COPY` into its grants, all refused; `RUN` elsewhere 
 the write rule mutation-checked.
 
 Open (§9.2): owners (a path outside a domain owned by its user), which the runtime's
-uids decide; §9.5's transitive reach and §9.8's triggers.
+uids decide; §9.8's triggers. §9.5's transitive reach is D58.
+
+### The extensions expand their words; `COPY --from=<agent>` (D56)
+
+The Agentfile's directives expand `ARG` and `ENV` where `ADD` does (BuildKit's
+`dispatch` expands a command's words with the stage's environment before it runs it):
+`AGENT`'s, `HARNESS`'s and `MCP`'s sources and `TO`, `SKILL`'s source, destination,
+`--chown`, `--chmod` and `--checksum`, and `VOLUME`'s paths and options. Names stay as
+written, as a stage's name does (`FROM … AS $x` is not expanded either), so a grant's names
+are checked before any build argument is known.
+
+`COPY --from=<agent or harness>` copies the domain's content, its files at the root, into
+any stage, without the domain (§7 Q19.1). A domain's name is no stage (one namespace,
+Q19.2), so the copy's source is the content state the directive itself copies from: the
+context's, git's, http's, or the OSI artifact's. The stage that declares it is made a
+dependency of the stage that copies, as `COPY --from=<stage>` makes it, so it is
+dispatched first and its source expanded in its own scope (found by the test: expanding
+with the global `ARG`s alone gave a declaring stage's `ARG SRC` the empty string). A domain
+a later stage declares is refused, as a stage named before it is defined is.
+
+Tested: `agents_expand_their_words_and_are_copied_from` (an `ARG`-named source,
+`COPY --from=main` into a stage without the agent, the image holding the file and no
+`/agents`), the dependency mutation-checked; BuildKit's oracle unchanged.
+
+### An Agentfile's manifest says what it holds (D57)
+
+The manifest of an Agentfile's image carries annotations (OCI image-spec `manifest.md`,
+"annotations": arbitrary metadata, `vnd.`-prefixed keys for vendors) so that a registry's
+listing, or the referrers API, finds it without fetching its config:
+`vnd.osi.agentfile.digest` (the normalized Agentfile's digest, as the label), and
+`vnd.osi.agentfile.agents` and `vnd.osi.agentfile.harnesses`, each the names
+comma-separated in name order, left out when empty. `json.MarshalIndent` order is kept
+(ocispec.Manifest writes `annotations` after `layers`), and a Dockerfile's manifest is byte
+for byte what it was.
+
+Tested: `an_agentfiles_manifest_says_what_it_holds` (the stored manifest's annotations for
+an Agentfile with two agents and a harness; none on a Dockerfile's).
+
+### Reach is transitive (D58)
+
+The build computes, over the target's directives, what each agent and harness reaches
+(AGENTFILE_ARCH.md §9.5). Edges: a network both join (`CONNECT … ON`), a named volume
+granted to both (`VOLUME name … FOR`), `ATTACH`. A domain reaches the world when it joins a
+network that is not internal and opens any port (`NETWORK --expose/--ingress/--egress`,
+`EXPOSE … FOR` it; an ingress-only port answers what reaches it, so replies carry data
+out), or an external network (the host's, whose reach the build cannot see), or when a
+remote MCP server is granted to it or to every agent. A local MCP server is no edge: each
+caller has an instance of its own (§9.6). An internal-only domain (§9.5: one that joins
+an internal network, and does not reach the world itself) with a path to one that does
+fails the build with the shortest path, read outward:
+`agent b -> network back -> agent a -> network world`. A domain on no internal network
+holds nothing declared internal, so a harness driving an agent that reaches the world is
+no error; one attached to an internal-only agent and to a world-reaching one is (§9.8).
+Relays and declassifiers (Q20), which would allow such a path, are not designed yet, so
+none is. Found by the suite: a first rule that took every domain not reaching the world
+as internal-only refused the plain harness-drives-agent Agentfile of D54's test.
+
+Tested: `reach_through_any_declared_edge_is_reach` (paths through an internal network, a
+volume, `ATTACH` and a remote MCP server; networks with no port, or internal, reaching
+nothing; a local MCP server joining no one; every agent reaching the world refusing none;
+a harness driving a world-reaching agent allowed), mutation-checked three ways: a search
+that follows no edge, every domain taken as internal-only, and none.
 
 ## 4. Start path (≤ 5 ms budget)
 

@@ -1520,10 +1520,15 @@ mod tests {
         let (mut rb, wb) = pipe();
         let (a, b) = (wa.as_raw_fd(), wb.as_raw_fd());
         // a's writer goes to b's number, and b's to a's. Written through /dev/fd: dash,
-        // Debian's sh, takes no descriptor above 9 in `>&N` ("Bad fd number").
+        // Debian's sh, takes no descriptor above 9 in `>&N` ("Bad fd number"). The 64
+        // numbers above both are scanned upward by the shell itself: BSD seq counts down
+        // when its first number is the larger, which scanned the given two once the
+        // suite's other tests had them above 64.
+        let top = a.max(b);
         let script = format!(
-            "echo A >/dev/fd/{b}; echo B >/dev/fd/{a}; for fd in $(seq {} 64); do [ -e /dev/fd/$fd ] && echo leaked $fd >/dev/fd/{b}; done; exit 0",
-            a.max(b) + 1
+            "echo A >/dev/fd/{b}; echo B >/dev/fd/{a}; fd={}; while [ $fd -le {} ]; do [ -e /dev/fd/$fd ] && echo leaked $fd >/dev/fd/{b}; fd=$((fd+1)); done; exit 0",
+            top + 1,
+            top + 64
         );
         let child = spawn(
             Path::new("/bin/sh"),

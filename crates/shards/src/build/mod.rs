@@ -1678,7 +1678,45 @@ fn run(parsed: &Parsed) -> Result<(), String> {
     let epoch = plan.epoch.map(Time::from_unix);
     let config = export::config(&plan.image, &layers, epoch, base_image.as_ref()).map_err(|e| show(&e))?;
     let config_digest = sha256(&config);
-    let manifest = export::manifest(&config, config_digest.to_string().as_bytes(), &layers);
+    // An Agentfile's image: findable by its manifest's annotations (D57).
+    let mut annotations = BTreeMap::new();
+    if let Some(digest) = plan
+        .image
+        .config
+        .labels
+        .get(shards_dockerfile::agentfile::DIGEST_LABEL)
+    {
+        annotations.insert(
+            shards_dockerfile::agentfile::DIGEST_LABEL.to_vec(),
+            digest.clone(),
+        );
+        let names = |harness: bool| -> Vec<u8> {
+            let mut n: Vec<&[u8]> = plan
+                .domains
+                .iter()
+                .filter(|d| d.harness == harness)
+                .map(|d| d.name.as_slice())
+                .collect();
+            n.sort_unstable();
+            n.dedup();
+            n.join(&b","[..])
+        };
+        for (key, harness) in [
+            (shards_dockerfile::agentfile::AGENTS_ANNOTATION, false),
+            (shards_dockerfile::agentfile::HARNESSES_ANNOTATION, true),
+        ] {
+            let list = names(harness);
+            if !list.is_empty() {
+                annotations.insert(key.to_vec(), list);
+            }
+        }
+    }
+    let manifest = export::manifest_annotated(
+        &config,
+        config_digest.to_string().as_bytes(),
+        &layers,
+        &annotations,
+    );
     let manifest_digest = sha256(&manifest);
     // Named and kept where an output loads it (the image exporter, `--load`'s docker one,
     // or none asked for, docker build's own); an output to a file or directory alone

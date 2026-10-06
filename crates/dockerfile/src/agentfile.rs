@@ -871,6 +871,191 @@ pub const SPEC_PATH: &[u8] = b"/.agentfile.json";
 /// OSI's media types (`application/vnd.osi.agent.v1`).
 pub const DIGEST_LABEL: &[u8] = b"vnd.osi.agentfile.digest";
 
+/// The manifest annotations of an Agentfile's image (D57), by which a registry's
+/// listing finds it without fetching its config: the normalized Agentfile's digest, and
+/// its agents' and harnesses' names, each list comma-separated in name order.
+pub const AGENTS_ANNOTATION: &[u8] = b"vnd.osi.agentfile.agents";
+pub const HARNESSES_ANNOTATION: &[u8] = b"vnd.osi.agentfile.harnesses";
+
+/// What a domain reaches, through every edge an Agentfile declares (§9.5, §9.8, D58): a
+/// network both join (by `CONNECT ... ON`), a named volume granted to both, `ATTACH`.
+/// A domain reaches the world when it joins a network that is not internal and opens any
+/// port (`NETWORK --expose/--ingress/--egress`, `EXPOSE ... FOR` it): an ingress-only port
+/// answers what reaches it, so its replies carry data out too; or when a remote MCP
+/// server is granted to it, or to every agent. An internal-only domain, one that joins an
+/// internal network and does not reach the world, with a path of edges to one that does,
+/// reaches the world through it: a build error naming the path, as relays and
+/// declassifiers are not designed yet (§7 Q20). A local MCP server is no
+/// edge: each caller has its own instance, in its own confinement (§9.6).
+pub fn reach(directives: &[Directive]) -> Result<(), Vec<u8>> {
+    use std::collections::{BTreeMap, BTreeSet, VecDeque};
+    // A domain: (is a harness, name).
+    type Node = (bool, Vec<u8>);
+    let mut domains: BTreeSet<Node> = BTreeSet::new();
+    for d in directives {
+        match d {
+            Directive::Agent(a) => {
+                domains.insert((false, a.name.clone()));
+            }
+            Directive::Harness(h) => {
+                domains.insert((true, h.name.clone()));
+            }
+            _ => {}
+        }
+    }
+    let kind_of = |name: &[u8], said: Option<TargetKind>| -> Node {
+        let harness = match said {
+            Some(TargetKind::Harness) => true,
+            Some(TargetKind::Agent) => false,
+            None => !domains.contains(&(false, name.to_vec())) && domains.contains(&(true, name.to_vec())),
+        };
+        (harness, name.to_vec())
+    };
+    let shown = |d: &Node| -> String {
+        format!(
+            "{} {}",
+            if d.0 { "harness" } else { "agent" },
+            String::from_utf8_lossy(&d.1)
+        )
+    };
+    // Each network: whether it is internal, and whether it opens any port.
+    let mut networks: BTreeMap<Vec<u8>, (bool, bool)> = BTreeMap::new();
+    for d in directives {
+        if let Directive::Network(n) = d {
+            let e = networks.entry(n.name.clone()).or_default();
+            e.0 = n.internal;
+            // An external network is the host's: what it reaches, the build cannot see.
+            e.1 |= !n.ports.is_empty() || n.external;
+        }
+    }
+    for d in directives {
+        if let Directive::Expose(x) = d {
+            for net in &x.networks {
+                networks.entry(net.clone()).or_default().1 = true;
+            }
+        }
+    }
+    // The edges, each labelled as the path says it.
+    let mut edges: BTreeMap<Node, Vec<(Node, String)>> = BTreeMap::new();
+    let mut joined: BTreeMap<Vec<u8>, BTreeSet<Node>> = BTreeMap::new();
+    let mut volumes: BTreeMap<Vec<u8>, BTreeSet<Node>> = BTreeMap::new();
+    let mut world: BTreeMap<Node, String> = BTreeMap::new();
+    let mut link = |a: &Node, b: &Node, why: String| {
+        edges.entry(a.clone()).or_default().push((b.clone(), why.clone()));
+        edges.entry(b.clone()).or_default().push((a.clone(), why));
+    };
+    for d in directives {
+        match d {
+            Directive::Connect(c) => {
+                for net in &c.on {
+                    for n in c.from.iter().chain(&c.to) {
+                        joined.entry(net.clone()).or_default().insert(kind_of(n, c.kind));
+                    }
+                }
+            }
+            Directive::Volume(v) => {
+                if let Some(src) = &v.source {
+                    for n in &v.scope.names {
+                        volumes
+                            .entry(src.clone())
+                            .or_default()
+                            .insert(kind_of(n, v.scope.kind));
+                    }
+                }
+            }
+            Directive::Attach(a) => {
+                for h in &a.harnesses {
+                    for ag in &a.agents {
+                        link(&(true, h.clone()), &(false, ag.clone()), "ATTACH".into());
+                    }
+                }
+            }
+            Directive::Mcp(m) if m.source.starts_with(b"http://") || m.source.starts_with(b"https://") => {
+                let why = format!("remote MCP server {}", String::from_utf8_lossy(&m.name));
+                if m.scope.names.is_empty() {
+                    for dom in domains.iter().filter(|d| !d.0) {
+                        world.entry(dom.clone()).or_insert_with(|| why.clone());
+                    }
+                } else {
+                    for n in &m.scope.names {
+                        world
+                            .entry(kind_of(n, m.scope.kind))
+                            .or_insert_with(|| why.clone());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    for (net, members) in &joined {
+        let (internal, open) = networks.get(net).copied().unwrap_or_default();
+        let why = format!("network {}", String::from_utf8_lossy(net));
+        if !internal && open {
+            for m in members {
+                world.entry(m.clone()).or_insert_with(|| why.clone());
+            }
+        }
+        let list: Vec<&Node> = members.iter().collect();
+        for (i, a) in list.iter().enumerate() {
+            for b in list.iter().skip(i + 1) {
+                link(a, b, why.clone());
+            }
+        }
+    }
+    for (vol, members) in &volumes {
+        let list: Vec<&Node> = members.iter().collect();
+        for (i, a) in list.iter().enumerate() {
+            for b in list.iter().skip(i + 1) {
+                link(a, b, format!("volume {}", String::from_utf8_lossy(vol)));
+            }
+        }
+    }
+    // The internal-only domains, and from each the shortest path to one reaching the world.
+    let internal_only: BTreeSet<&Node> = joined
+        .iter()
+        .filter(|(net, _)| networks.get(*net).is_some_and(|n| n.0))
+        .flat_map(|(_, members)| members)
+        .filter(|d| !world.contains_key(*d))
+        .collect();
+    let mut found = Vec::new();
+    for start in internal_only {
+        let mut prev: BTreeMap<Node, (Node, String)> = BTreeMap::new();
+        let mut queue = VecDeque::from([start.clone()]);
+        let mut seen = BTreeSet::from([start.clone()]);
+        while let Some(at) = queue.pop_front() {
+            if let Some(why) = world.get(&at) {
+                // Read from the domain that does not reach the world, outward.
+                let mut path = vec![shown(&at)];
+                let mut cur = at.clone();
+                while let Some((p, edge)) = prev.get(&cur) {
+                    path.push(edge.clone());
+                    path.push(shown(p));
+                    cur = p.clone();
+                }
+                path.reverse();
+                path.push(why.clone());
+                found.push(path.join(" -> "));
+                break;
+            }
+            for (next, why) in edges.get(&at).map(Vec::as_slice).unwrap_or_default() {
+                if seen.insert(next.clone()) {
+                    prev.insert(next.clone(), (at.clone(), why.clone()));
+                    queue.push_back(next.clone());
+                }
+            }
+        }
+    }
+    if found.is_empty() {
+        return Ok(());
+    }
+    let mut text = b"an internal-only domain reaches the world through another (AGENTFILE_ARCH.md \xc2\xa79.5), which needs a relay the Agentfile cannot name yet:".to_vec();
+    for f in found {
+        text.extend_from_slice(b"\n  ");
+        text.extend_from_slice(f.as_bytes());
+    }
+    Err(text)
+}
+
 /// The normalized Agentfile (§8, D35): what a target stage's lineage declared, in the
 /// order declared, defaults resolved, as JSON shards' runtime reads. Its first field is
 /// its schema's version, which a reader refuses past what it knows.

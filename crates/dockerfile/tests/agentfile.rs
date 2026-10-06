@@ -455,3 +455,95 @@ fn the_normalized_agentfile_holds_what_was_declared() {
         &b"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"[..]
     );
 }
+
+/// What the last stage's directives reach (§9.5, D58): the error's text, if any.
+fn reached(text: &str) -> Result<(), String> {
+    let parsed = parser::parse_as(text.as_bytes(), Dialect::Agentfile)
+        .map_err(|e| String::from_utf8_lossy(&e.message).into_owned())?;
+    let ins = instructions::parse(&parsed, &Linter::default())
+        .map_err(|e| String::from_utf8_lossy(&e.message).into_owned())?;
+    let directives: Vec<_> = ins
+        .stages
+        .last()
+        .unwrap()
+        .commands
+        .iter()
+        .filter_map(|c| match &c.kind {
+            Kind::Agentfile(d) => Some(d.clone()),
+            _ => None,
+        })
+        .collect();
+    shards_dockerfile::agentfile::reach(&directives).map_err(|e| String::from_utf8_lossy(&e).into_owned())
+}
+
+/// Reach is transitive (§9.5, §9.8): an internal-only domain, with a path of declared
+/// edges to one that reaches the world, fails the build, the path named; a network that
+/// opens no port, or is internal, reaches nothing outside; a local MCP server joins no one;
+/// a domain on no internal network is not internal-only, so a harness driving an agent
+/// that reaches the world is no error.
+#[test]
+fn reach_through_any_declared_edge_is_reach() {
+    let base = "FROM alpine\nAGENT a FROM ./a\nAGENT b FROM ./b\n";
+    // b on an internal network of its own: internal-only.
+    let inner = "NETWORK --internal inner\nCONNECT b WITH b ON inner\n";
+    // Through an internal network to one on a network open to the world.
+    let e = reached(&format!(
+        "{base}NETWORK --internal back\nNETWORK --egress=443 world\n\
+         CONNECT b WITH a ON back\nCONNECT a WITH a ON world\n"
+    ))
+    .unwrap_err();
+    assert!(
+        e.contains("agent b -> network back -> agent a -> network world"),
+        "{e}"
+    );
+    // A network that opens no port reaches nothing; an internal one neither.
+    assert_eq!(
+        reached(&format!(
+            "{base}NETWORK --internal back\nNETWORK world\nNETWORK --internal --egress=443 shut\n\
+             CONNECT b WITH a ON back\nCONNECT a WITH a ON world shut\n"
+        )),
+        Ok(())
+    );
+    // EXPOSE ... FOR opens a network's port.
+    let e = reached(&format!(
+        "{base}NETWORK world\nEXPOSE 443 AS egress FOR world\nVOLUME data /data FOR a b\nCONNECT a WITH a ON world\n{inner}"
+    ))
+    .unwrap_err();
+    assert!(
+        e.contains("agent b -> volume data -> agent a -> network world"),
+        "{e}"
+    );
+    // A harness attached to both joins them.
+    let e = reached(&format!(
+        "{base}HARNESS h FROM ./h\nNETWORK --ingress=8080 world\nCONNECT a WITH a ON world\nATTACH a b FOR h\n{inner}"
+    ))
+    .unwrap_err();
+    assert!(
+        e.contains("agent b -> ATTACH -> harness h -> ATTACH -> agent a -> network world"),
+        "{e}"
+    );
+    // A remote MCP server is egress; a local one joins no one.
+    let e = reached(&format!(
+        "{base}MCP web FROM https://mcp.example.com FOR a\nMCP files FROM ./files\nVOLUME shared /s FOR a b\n{inner}"
+    ))
+    .unwrap_err();
+    assert!(
+        e.contains("agent b -> volume shared -> agent a -> remote MCP server web"),
+        "{e}"
+    );
+    assert_eq!(reached(&format!("{base}MCP files FROM ./files\n{inner}")), Ok(()));
+    // Not internal-only: a harness driving an agent that reaches the world.
+    assert_eq!(
+        reached(&format!(
+            "{base}HARNESS h FROM ./h\nMCP web FROM https://mcp.example.com FOR a\nATTACH a b FOR h\n"
+        )),
+        Ok(())
+    );
+    // Every agent reaching the world: nothing reaches it through another.
+    assert_eq!(
+        reached(&format!(
+            "{base}MCP web FROM https://mcp.example.com\nVOLUME s /s FOR a b\n"
+        )),
+        Ok(())
+    );
+}

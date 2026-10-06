@@ -334,6 +334,10 @@ struct Planner<'a> {
     named_locals: Vec<(Output, usize, Vec<u8>, Vec<u8>)>,
     /// The vertices each stage's dispatch made: its index, and the range.
     made: Vec<(usize, std::ops::Range<usize>)>,
+    /// Each agent's and harness's content, its files at the root, by name (Q19.1).
+    contents: BTreeMap<Vec<u8>, State>,
+    /// Each agent's and harness's source, as its stage expanded it.
+    domain_sources: BTreeMap<Vec<u8>, (Vec<u8>, Vec<u8>)>,
 }
 
 /// The frontends shards' own is: docker/dockerfile at any tag, labs ones included, which at
@@ -561,6 +565,8 @@ fn plan_with(
         ignore: None,
         named_locals: Vec::new(),
         made: Vec::new(),
+        contents: BTreeMap::new(),
+        domain_sources: BTreeMap::new(),
     };
     p.build_dispatch_states(ins.stages)?;
     let target = p.resolve_target()?;
@@ -1239,6 +1245,8 @@ impl Planner<'_> {
     fn step_of(&mut self, command: Command) -> Result<Step, Fail> {
         let mut sources = Vec::new();
         match &command.kind {
+            // An agent's or harness's content, which no stage is (Q19.1).
+            Kind::Copy(c) if !c.from.is_empty() && self.declares_domain(&c.from) => {}
             Kind::Copy(c) if !c.from.is_empty() => {
                 let from = c.from.clone();
                 let expanded = self.shlex.process(&from, &lex::NoEnv)?;
@@ -1329,8 +1337,9 @@ impl Planner<'_> {
             let mut steps = Vec::with_capacity(commands.len());
             for c in commands {
                 let loc = c.location.clone();
+                let after = self.declaring_stage(&c);
                 let step = self.step_of(c)?;
-                for &s in &step.sources {
+                for &s in step.sources.iter().chain(&after) {
                     if let Some(d) = self.states.get_mut(i) {
                         set_dep(&mut d.deps, s, &loc);
                     }
@@ -1546,13 +1555,14 @@ impl Planner<'_> {
             }
             let c = instructions::parse_command(&node).map_err(|e| Fail(e.message, e.location))?;
             let loc = c.location.clone();
+            let after = self.declaring_stage(&c);
             let mut step = self.step_of(c)?;
             step.on_build = true;
-            if !step.sources.is_empty() {
+            if !step.sources.is_empty() || after.is_some() {
                 new_deps = true;
             }
             if let Some(s) = self.states.get_mut(d) {
-                for &src in &step.sources {
+                for &src in step.sources.iter().chain(&after) {
                     set_dep(&mut s.deps, src, &loc);
                 }
             }
@@ -1955,6 +1965,29 @@ impl Planner<'_> {
                 v.chown = ex(&v.chown)?;
                 v.chmod = ex(&v.chmod)?;
             }
+            // Their sources and paths as ADD's: names stay as written, as a stage's do.
+            Kind::Agentfile(
+                crate::agentfile::Directive::Agent(a) | crate::agentfile::Directive::Harness(a),
+            ) => {
+                a.source = ex(&a.source)?;
+                if let Some(to) = &mut a.to {
+                    *to = ex(to)?;
+                }
+            }
+            Kind::Agentfile(crate::agentfile::Directive::Mcp(m)) => {
+                m.source = ex(&m.source)?;
+            }
+            Kind::Agentfile(crate::agentfile::Directive::Skill(sk)) => {
+                if let crate::agentfile::SkillSource::Path(p) = &mut sk.source {
+                    *p = ex(p)?;
+                }
+                if let Some(dest) = &mut sk.dest {
+                    *dest = ex(dest)?;
+                }
+                sk.chown = ex(&sk.chown)?;
+                sk.chmod = ex(&sk.chmod)?;
+                sk.checksum = ex(&sk.checksum)?;
+            }
             Kind::Run(r) => {
                 let mut mounts = Vec::new();
                 for spec in &r.mount_specs {
@@ -2100,6 +2133,9 @@ impl Planner<'_> {
                     harness: false,
                     dir: dest.clone(),
                 });
+                self.domain_sources
+                    .entry(a.name.clone())
+                    .or_insert_with(|| (b"agent".to_vec(), a.source.clone()));
                 self.fetch_into(d, b"agent", &a.source, &dest, &code, &loc, &lint)?;
                 self.ds(d)?.agentfile.push(crate::agentfile::Directive::Agent(a));
             }
@@ -2110,6 +2146,9 @@ impl Planner<'_> {
                     harness: true,
                     dir: dest.clone(),
                 });
+                self.domain_sources
+                    .entry(h.name.clone())
+                    .or_insert_with(|| (b"harness".to_vec(), h.source.clone()));
                 self.fetch_into(d, b"harness", &h.source, &dest, &code, &loc, &lint)?;
                 self.ds(d)?
                     .agentfile
@@ -2213,8 +2252,12 @@ impl Planner<'_> {
                         }
                         Some(src.state.clone())
                     }
+                    None if !c.from.is_empty() && self.declares_domain(&c.from) => {
+                        Some(self.domain_content(d, &c.from)?)
+                    }
                     None => None,
                 };
+                let from_domain = step.sources.is_empty() && !c.from.is_empty();
                 let cfg = CopyConfig {
                     sources: c.sources.clone(),
                     exclude: c.exclude.clone(),
@@ -2233,6 +2276,7 @@ impl Planner<'_> {
                 };
                 self.dispatch_copy(d, cfg, &loc, &lint)?;
                 match step.sources.first() {
+                    None if from_domain => {}
                     None => {
                         let ds = self.ds(d)?;
                         for src in &c.sources.paths {
@@ -3142,6 +3186,23 @@ impl Planner<'_> {
     }
 
     /// Whether the file declares an agent or harness of this name, in any stage.
+    /// For `COPY --from=<agent>`, the stage that declares the agent: dispatched first, as a
+    /// stage copied from is, so that its source is expanded in its own scope (D56).
+    fn declaring_stage(&self, command: &Command) -> Option<usize> {
+        let Kind::Copy(c) = &command.kind else { return None };
+        if c.from.is_empty() {
+            return None;
+        }
+        let name = go::to_lower(&c.from);
+        self.states.iter().position(|s| {
+            s.stage.commands.iter().any(|c| match &c.kind {
+                Kind::Agentfile(crate::agentfile::Directive::Agent(a))
+                | Kind::Agentfile(crate::agentfile::Directive::Harness(a)) => a.name == name,
+                _ => false,
+            })
+        })
+    }
+
     fn declares_domain(&self, name: &[u8]) -> bool {
         let name = go::to_lower(name);
         self.states.iter().any(|s| {
@@ -3243,18 +3304,11 @@ impl Planner<'_> {
         loc: &Location,
         lint: &LinterView<'_>,
     ) -> Result<(), Fail> {
-        let unpack = match crate::agentfile::source_of(source).map_err(Fail::new)? {
-            // What it reads of the context, which is sent with only the paths read.
-            crate::agentfile::Source::Path(p) => {
-                self.ds(d)?.ctx_paths.insert(go::join(&[b"/", &p]));
-                None
-            }
-            crate::agentfile::Source::Git(_) => None,
-            crate::agentfile::Source::Http(_) => Some(true),
-            crate::agentfile::Source::Oci(r) => {
-                return self.artifact_into(d, kind, &r, dest, code, loc, lint);
-            }
-        };
+        if let crate::agentfile::Source::Oci(r) = crate::agentfile::source_of(source).map_err(Fail::new)? {
+            return self.artifact_into(d, kind, &r, dest, code, loc, lint);
+        }
+        let _ = lint;
+        let content = self.content_of(d, source)?;
         let mut dest = dest.to_vec();
         if !dest.ends_with(b"/") {
             dest.push(b'/');
@@ -3263,12 +3317,12 @@ impl Planner<'_> {
         let cfg = CopyConfig {
             sources: instructions::Sources {
                 dest,
-                paths: vec![source.to_vec()],
+                paths: vec![b"/".to_vec()],
                 contents: Vec::new(),
             },
             exclude: Vec::new(),
-            from: None,
-            is_add: true,
+            from: Some(content),
+            is_add: false,
             code: code.to_vec(),
             chown: Vec::new(),
             chmod: Vec::new(),
@@ -3276,7 +3330,7 @@ impl Planner<'_> {
             keep_git_dir: None,
             checksum: Vec::new(),
             parents: false,
-            unpack,
+            unpack: None,
             onto: None,
             history: Some(code.to_vec()),
         };
@@ -3284,6 +3338,94 @@ impl Planner<'_> {
         self.dispatch_copy(d, cfg, loc, lint)?;
         self.own(first, dest_of_own);
         Ok(())
+    }
+
+    /// What a path, Git or http(s) source holds, at the root of a state of its own: a
+    /// Git repository's tree; a URL's download, or a path of the context, unpacked where it
+    /// is an archive, as `ADD` takes them.
+    fn content_of(&mut self, d: usize, source: &[u8]) -> Result<State, Fail> {
+        let shown = errb(&[b"[internal] load ", source]);
+        let mut scratch = State::scratch();
+        scratch.platform = self.states.get(d).and_then(|s| s.platform.clone());
+        let copy = |from: State, src: Vec<u8>, contents: bool| Action::Copy {
+            from: from.output,
+            from_dir: from.dir.clone(),
+            src,
+            dest: b"/".to_vec(),
+            info: CopyInfo {
+                follow_symlinks: true,
+                dir_contents_only: contents,
+                attempt_unpack: true,
+                create_dest_path: true,
+                allow_wildcard: contents,
+                allow_empty_wildcard: contents,
+                ..CopyInfo::default()
+            },
+        };
+        match crate::agentfile::source_of(source).map_err(Fail::new)? {
+            crate::agentfile::Source::Git(g) => {
+                Ok(self.git_source(&g, g.keep_git_dir == Some(true), &g.checksum, &shown))
+            }
+            crate::agentfile::Source::Http(url) => {
+                let name = http_filename(&url);
+                let mut attrs = BTreeMap::new();
+                attrs.insert(b"http.filename".to_vec(), name.clone());
+                let st = self.graph.source(url, attrs, None, custom_name(shown.clone()));
+                Ok(self
+                    .graph
+                    .file(&scratch, vec![copy(st, name, false)], custom_name(shown)))
+            }
+            crate::agentfile::Source::Path(p) => {
+                let src = normalize_path(b"/", &p, false);
+                if let Some(ds) = self.states.get_mut(d) {
+                    ds.ctx_paths.insert(src.clone());
+                }
+                let mut context = State::scratch();
+                context.output = Some(self.context);
+                Ok(self
+                    .graph
+                    .file(&scratch, vec![copy(context, src, true)], custom_name(shown)))
+            }
+            crate::agentfile::Source::Oci(r) => Err(Fail::new(errb(&[
+                r.as_slice(),
+                b": an OSI artifact's content is taken by its own directive",
+            ]))),
+        }
+    }
+
+    /// The content of the agent or harness `name` (Q19.1): what its directive lays at its
+    /// directory, at the root; its source as its own stage expanded it.
+    fn domain_content(&mut self, d: usize, name: &[u8]) -> Result<State, Fail> {
+        let name = go::to_lower(name);
+        if let Some(st) = self.contents.get(&name) {
+            return Ok(st.clone());
+        }
+        // Its stage, a dependency, was dispatched first.
+        let Some((kind, source)) = self.domain_sources.get(&name).cloned() else {
+            return Err(Fail::new(errb(&[
+                b"COPY --from=",
+                &name,
+                b": the agent or harness is declared by a stage after this one",
+            ])));
+        };
+        let kind = kind.as_slice();
+        let st = match crate::agentfile::source_of(&source).map_err(Fail::new)? {
+            crate::agentfile::Source::Oci(r) => {
+                let log = errb(&[b"[internal] load metadata for ", &r]);
+                let resolved = self.resolver.artifact(&r, kind, &log).map_err(Fail::new)?;
+                let mut attrs = BTreeMap::new();
+                attrs.insert(b"osi.kind".to_vec(), kind.to_vec());
+                self.graph.source(
+                    [b"osi-artifact://".as_slice(), &resolved.reference].concat(),
+                    attrs,
+                    None,
+                    custom_name(errb(&[b"[internal] load ", kind, b" ", &r])),
+                )
+            }
+            _ => self.content_of(d, &source)?,
+        };
+        self.contents.insert(name, st.clone());
+        Ok(st)
     }
 
     /// Marks the vertices made since `first` as a domain's own directive's, writing
@@ -3665,6 +3807,7 @@ impl Planner<'_> {
         // An Agentfile's directives travel in a layer of their own, the normalized
         // Agentfile, and its digest in a label (§8, D35).
         if !t.agentfile.is_empty() {
+            crate::agentfile::reach(&t.agentfile).map_err(Fail::new)?;
             let spec = crate::agentfile::spec(&t.agentfile);
             image.config.labels.insert(
                 crate::agentfile::DIGEST_LABEL.to_vec(),

@@ -263,16 +263,33 @@ fn descriptor(
 /// the config, then the layers with OCI's media types and their annotations but the
 /// exporter's internal ones (`RemoveInternalLayerAnnotations`).
 pub fn manifest(config: &[u8], config_digest: &[u8], layers: &[Layer]) -> Vec<u8> {
-    manifest_as(config, config_digest, layers, false)
+    manifest_as(config, config_digest, layers, false, &BTreeMap::new())
+}
+
+/// [`manifest`] with `annotations`, which `json.MarshalIndent` writes after the layers, as
+/// ocispec.Manifest orders its fields; none, and it is [`manifest`]'s.
+pub fn manifest_annotated(
+    config: &[u8],
+    config_digest: &[u8],
+    layers: &[Layer],
+    annotations: &BTreeMap<Vec<u8>, Vec<u8>>,
+) -> Vec<u8> {
+    manifest_as(config, config_digest, layers, false, annotations)
 }
 
 /// [`manifest`] in Docker's media types, as the `docker` exporter writes it (`OCITypes`
 /// false, buildkit exporter/oci/export.go): the same document, the same blobs.
 pub fn docker_manifest(config: &[u8], config_digest: &[u8], layers: &[Layer]) -> Vec<u8> {
-    manifest_as(config, config_digest, layers, true)
+    manifest_as(config, config_digest, layers, true, &BTreeMap::new())
 }
 
-fn manifest_as(config: &[u8], config_digest: &[u8], layers: &[Layer], docker: bool) -> Vec<u8> {
+fn manifest_as(
+    config: &[u8],
+    config_digest: &[u8],
+    layers: &[Layer],
+    docker: bool,
+    annotations: &BTreeMap<Vec<u8>, Vec<u8>>,
+) -> Vec<u8> {
     let (manifest_type, config_type) = if docker {
         (DOCKER_MANIFEST, DOCKER_CONFIG)
     } else {
@@ -320,6 +337,19 @@ fn manifest_as(config: &[u8], config_digest: &[u8], layers: &[Layer], docker: bo
             );
         }
         out.push_str("\n  ]");
+    }
+    if !annotations.is_empty() {
+        out.push_str(",\n  \"annotations\": {\n");
+        for (i, (k, v)) in annotations.iter().enumerate() {
+            if i > 0 {
+                out.push_str(",\n");
+            }
+            out.push_str("    ");
+            json::write_string(&mut out, k);
+            out.push_str(": ");
+            json::write_string(&mut out, v);
+        }
+        out.push_str("\n  }");
     }
     out.push_str("\n}");
     out.into_bytes()

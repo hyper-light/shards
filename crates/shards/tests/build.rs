@@ -3326,3 +3326,115 @@ fn only_a_domains_own_directives_write_in_it() {
         assert!(out.stderr.contains(says), "{says}:\n{}", out.stderr);
     }
 }
+
+/// The extensions' sources expand ARGs and ENV as `ADD`'s do, and `COPY --from=<agent>`
+/// copies from the agent's content, its files at the root (D56, §7 Q19.1), into any stage
+/// without its agent.
+#[test]
+fn agents_expand_their_words_and_are_copied_from() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("build-q19-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let ctx = context("build-q19-ctx", &format!("FROM {image}\n"));
+    std::fs::create_dir_all(ctx.join("agent/bin")).unwrap();
+    std::fs::write(ctx.join("agent/bin/run"), "run\n").unwrap();
+    std::fs::write(
+        ctx.join("Agentfile"),
+        format!(
+            "FROM {image} AS with-agent\nARG SRC=./agent\nAGENT main FROM $SRC\n\
+             FROM {image}\nCOPY --from=main /bin/run /copied/run\n"
+        ),
+    )
+    .unwrap();
+    let out = TempDir::new("build-q19-out");
+    let built = shards(&[
+        "build",
+        "-o",
+        out.join("root").to_str().unwrap(),
+        ctx.to_str().unwrap(),
+    ]);
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    let root = out.join("root");
+    assert_eq!(std::fs::read_to_string(root.join("copied/run")).unwrap(), "run\n");
+    assert!(
+        !root.join("agents").exists(),
+        "the stage copied from keeps its agent"
+    );
+
+    // Expanded where it is laid out too.
+    std::fs::write(
+        ctx.join("Agentfile"),
+        format!("FROM {image}\nARG SRC=./agent\nAGENT main FROM $SRC\n"),
+    )
+    .unwrap();
+    let laid = shards(&[
+        "build",
+        "-o",
+        out.join("laid").to_str().unwrap(),
+        ctx.to_str().unwrap(),
+    ]);
+    assert_eq!(laid.status, Some(0), "{}", laid.stderr);
+    assert_eq!(
+        std::fs::read_to_string(out.join("laid/agents/main/bin/run")).unwrap(),
+        "run\n"
+    );
+}
+
+/// An Agentfile's image carries the normalized Agentfile's digest and its agents' and
+/// harnesses' names as manifest annotations (D57), so a registry's listing finds it; a
+/// Dockerfile's image carries none.
+#[test]
+fn an_agentfiles_manifest_says_what_it_holds() {
+    use shards_image::reference::Reference;
+    use shards_image::store::Store;
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("build-annot-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let ctx = context("build-annot-ctx", &format!("FROM {image}\nLABEL plain=yes\n"));
+    std::fs::create_dir_all(ctx.join("a")).unwrap();
+    std::fs::write(ctx.join("a/run"), "run\n").unwrap();
+    let manifest = |name: &str| -> serde_json::Value {
+        let store = Store::open(&home.join("images")).unwrap();
+        let desc = store
+            .tagged(&Reference::parse(name).unwrap().to_string())
+            .unwrap()
+            .unwrap();
+        serde_json::from_slice(&store.content(&desc, 1 << 20).unwrap().unwrap()).unwrap()
+    };
+    let plain = shards(&["build", "-t", "plain:1", ctx.to_str().unwrap()]);
+    assert_eq!(plain.status, Some(0), "{}", plain.stderr);
+    assert!(manifest("plain:1").get("annotations").is_none());
+    std::fs::write(
+        ctx.join("Agentfile"),
+        format!("FROM {image}\nAGENT zed FROM ./a\nAGENT alpha FROM ./a\nHARNESS drive FROM ./a\nATTACH zed alpha FOR drive\n"),
+    )
+    .unwrap();
+    let built = shards(&["build", "-t", "agents:1", ctx.to_str().unwrap()]);
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    let m = manifest("agents:1");
+    let a = &m["annotations"];
+    assert_eq!(a["vnd.osi.agentfile.agents"], "alpha,zed");
+    assert_eq!(a["vnd.osi.agentfile.harnesses"], "drive");
+    assert!(
+        a["vnd.osi.agentfile.digest"]
+            .as_str()
+            .unwrap()
+            .starts_with("sha256:")
+    );
+}
