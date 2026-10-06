@@ -97,6 +97,12 @@ pub struct Conn {
     retries: u32,
     probes: u32,
     pub closed: bool,
+    /// The guest reset the connection: nothing more goes to it, nor is read from the host;
+    /// what it sent before, which this side acknowledged, still goes to the host, whose
+    /// write side is then shut, as Linux hands a reader its queued bytes before a reset's
+    /// error (tcp_recvmsg) and Docker's proxy copies them before it shuts its client's
+    /// (cmd/docker-proxy tcp_proxy.go).
+    guest_reset: bool,
     /// The ring to the guest had no room for a segment of bytes: the connection sends
     /// again once it has ([`Conn::unblock`]).
     blocked: bool,
@@ -179,6 +185,7 @@ impl Conn {
             retries: 0,
             probes: 0,
             closed: false,
+            guest_reset: false,
             blocked: false,
             resend: false,
             recover: isn,
@@ -213,6 +220,7 @@ impl Conn {
             retries: 0,
             probes: 0,
             closed: false,
+            guest_reset: false,
             blocked: false,
             resend: false,
             recover: isn,
@@ -270,8 +278,13 @@ impl Conn {
     /// The window this side advertises, scaled if the guest scales.
     fn window(&self) -> u16 {
         let free = TO_HOST.saturating_sub(self.to_host.len());
-        let shift = if self.scaled { OUR_WSCALE } else { 0 };
+        let shift = self.our_scale();
         u16::try_from(free >> shift).unwrap_or(u16::MAX)
+    }
+
+    /// The shift of the window this side advertises: its own scale, if the guest scales.
+    fn our_scale(&self) -> u8 {
+        if self.scaled { OUR_WSCALE } else { 0 }
     }
 
     fn ack(&self, out: &mut dyn ToGuest) {
@@ -288,8 +301,61 @@ impl Conn {
 
     /// A reset for the guest, ending the connection.
     pub fn reset(&mut self, out: &mut dyn ToGuest) {
+        self.lost("a reset", None);
+        self.closed = true;
+        if self.guest_reset {
+            return;
+        }
         out.segment(&self.key, self.snd_nxt, self.rcv_nxt, RST | ACK, 0, None, EMPTY);
         self.closed = true;
+    }
+
+    /// After the guest's reset: what it sent goes to the host, then the host's write side
+    /// is shut and the connection ends; a host that cannot take it is reset.
+    fn drain_after_reset(&mut self, out: &mut dyn ToGuest) {
+        if !self.to_host.is_empty() {
+            let (a, b) = self.to_host.as_slices();
+            match write_now(&self.sock, [a, b]) {
+                Ok(n) => {
+                    self.to_host.drain(..n);
+                }
+                Err(_) => {
+                    self.lost("the host's socket, after the guest's reset,", None);
+                    self.closed = true;
+                    return;
+                }
+            }
+        }
+        if self.to_host.is_empty() {
+            let _ = self.sock.shutdown(Shutdown::Write);
+            self.host_shut = true;
+            self.closed = true;
+        }
+        let _ = out;
+    }
+
+    /// Says on stderr (the daemon's log) that `why` ends this connection with bytes the
+    /// guest sent, and was told the host has, not yet written to the host: they are lost.
+    fn lost(&self, why: &str, seg: Option<&wire::Tcp<'_>>) {
+        if self.to_host.is_empty() {
+            return;
+        }
+        let at = seg.map_or(String::new(), |s| {
+            format!(
+                ", its seq {} ack {} against rcv_nxt {} snd_una {}",
+                s.seq, s.ack, self.rcv_nxt, self.snd_una
+            )
+        });
+        let _ = writeln!(
+            io::stderr(),
+            "shards-net: {why} ended guest port {}'s connection from {:?} with {} bytes for the host unwritten{at}; guest_fin {} host_eof {} fin_sent {}",
+            self.key.guest_port,
+            self.key.remote,
+            self.to_host.len(),
+            self.guest_fin,
+            self.host_eof,
+            self.fin_sent
+        );
     }
 
     /// Whether this connection waits for its socket to become writable: to finish
@@ -300,7 +366,8 @@ impl Conn {
 
     /// Whether it can take host bytes for the guest now.
     pub fn wants_read(&self) -> bool {
-        self.state == State::Open
+        !self.guest_reset
+            && self.state == State::Open
             && !self.host_eof
             && self.to_guest.len() < TO_GUEST.min(self.guest_wnd as usize + 1)
     }
@@ -340,6 +407,10 @@ impl Conn {
     }
 
     fn flush_to_host(&mut self, out: &mut dyn ToGuest) {
+        if self.guest_reset {
+            self.drain_after_reset(out);
+            return;
+        }
         let before_window = self.window();
         if !self.to_host.is_empty() {
             let (a, b) = self.to_host.as_slices();
@@ -421,7 +492,7 @@ impl Conn {
     /// `to_guest`, within its window, then FIN once all is sent and the host is done. Each
     /// segment's bytes go from the queue to the ring, copied once.
     fn send_new(&mut self, out: &mut dyn ToGuest) {
-        if !self.syn_acked {
+        if !self.syn_acked || self.guest_reset {
             return;
         }
         self.blocked = false;
@@ -589,8 +660,23 @@ impl Conn {
             self.on_syn_sent(seg, out);
             return;
         }
+        if self.guest_reset {
+            return;
+        }
         if seg.flags & RST != 0 {
-            self.closed = true;
+            // RFC 5961 §3.2: a reset numbered exactly where this side is ends the
+            // connection; one elsewhere in the window is answered with where this side is,
+            // which a peer that meant it answers with an exact one; any other is dropped.
+            if seg.seq != self.rcv_nxt {
+                if seg.seq.wrapping_sub(self.rcv_nxt) < u32::from(self.window()) << self.our_scale() {
+                    self.ack(out);
+                }
+                return;
+            }
+            self.guest_reset = true;
+            self.to_guest.clear();
+            self.sent_at = None;
+            self.flush_to_host(out);
             return;
         }
         if seg.flags & SYN != 0 {
@@ -702,6 +788,9 @@ impl Conn {
 
     /// When the next retransmission is due, if anything is unacknowledged.
     pub fn deadline(&self) -> Option<Instant> {
+        if self.guest_reset {
+            return None;
+        }
         self.sent_at.map(|t| t + RTO * 2u32.saturating_pow(self.retries))
     }
 
@@ -917,6 +1006,57 @@ mod tests {
         let mut c = Conn::accept(key, sock, 1000, sent);
         c.on_segment(&segment(5000, 1001, SYN | ACK), sent);
         (c, client)
+    }
+
+    /// The guest's reset counts only where RFC 5961 §3.2 says: exactly where this side
+    /// is; one elsewhere in the window is challenged, one past it dropped. What the guest
+    /// sent before it, and this side acknowledged, reaches the host whole before the
+    /// connection ends, and nothing more goes to the guest (published ports lost the tail
+    /// of an echo the guest's server had sent, the guest's kernel having reset it).
+    #[test]
+    fn a_guest_reset_delivers_what_was_acknowledged_first() {
+        let mut sent = Sent::default();
+        let (mut c, mut client) = opened(&mut sent);
+        // More than the client's socket takes unread: the rest waits in `to_host`.
+        let big: Vec<u8> = (0..TO_HOST as u32).map(|i| (i % 251) as u8).collect();
+        let mut seq = 5001u32;
+        for chunk in big.chunks(60_000) {
+            let seg = wire::Tcp {
+                payload: chunk,
+                ..segment(seq, 1001, ACK)
+            };
+            c.on_segment(&seg, &mut sent);
+            seq = seq.wrapping_add(chunk.len() as u32);
+        }
+        assert!(!c.to_host.is_empty());
+        sent.take();
+        c.on_segment(&segment(seq.wrapping_add(10), 0, RST), &mut sent);
+        assert_eq!(sent.take(), [(1001, seq, ACK, vec![])], "a challenge");
+        c.on_segment(&segment(seq.wrapping_add(1 << 30), 0, RST), &mut sent);
+        assert_eq!(sent.take(), []);
+        assert!(!c.closed);
+        c.on_segment(&segment(seq, 0, RST), &mut sent);
+        let reader = std::thread::spawn(move || {
+            let mut got = Vec::new();
+            client.read_to_end(&mut got).unwrap();
+            got
+        });
+        let deadline = Instant::now() + std::time::Duration::from_secs(10);
+        while !c.closed && Instant::now() < deadline {
+            c.on_writable(&mut sent);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert!(c.closed);
+        let quiet = !c.wants_read() && c.deadline().is_none();
+        // Closed, it goes with its socket, as the network process lets it go (`settle`).
+        drop(c);
+        let got = reader.join().unwrap();
+        assert!(got == big, "the host had {} bytes of {}", got.len(), big.len());
+        assert!(
+            quiet,
+            "nothing read from the host nor timed after the guest's reset"
+        );
+        assert_eq!(sent.take(), [], "nothing went to the guest after its reset");
     }
 
     /// A keepalive or window probe, which carries nothing and is numbered one before

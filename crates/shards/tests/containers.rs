@@ -341,7 +341,13 @@ fn pause_freezes_a_microvm_until_unpause_or_stop() {
         (Some(0), "frozen\n"),
         "{unpaused}"
     );
-    assert!(cpu() > 50.0, "a resumed microVM did not run");
+    // Running again: past the bound a frozen one stays under. Not a share of the host,
+    // which the tests beside it spinning microVMs of their own leave it no half of.
+    let resumed = cpu();
+    assert!(
+        resumed > 5.0,
+        "a resumed microVM did not run: {resumed}% of a CPU"
+    );
     let not = shards(&["unpause", "frozen"]);
     assert!(not.stderr.ends_with("is not paused\n"), "{not}");
     // A stop lets a frozen microVM go on to hear its signal, as dockerd's does.
@@ -3112,7 +3118,45 @@ fn exec_runs_commands_in_a_running_container_as_docker_exec_does() {
     refused(&["-it", "ex", "/bin/testguest", "report"], 1, untty);
 }
 
-/// `-p`: a container's ports published on the host as dockerd publishes them. Each
+/// Who holds TCP port `port`, as lsof lists them: each process's ID, command and
+/// sockets, for a test to say whose a port it found taken is.
+fn holders_of(port: u16) -> String {
+    let owned = std::process::Command::new("lsof")
+        .args(["-nP", &format!("-iTCP:{port}"), "-Fpcn"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).replace('\n', " "))
+        .unwrap_or_else(|e| format!("(lsof: {e})"));
+    // And what no process owns, which lsof cannot see: connections in TIME_WAIT, say.
+    let kernel: String = std::process::Command::new("netstat")
+        .args(["-an", "-p", "tcp"])
+        .output()
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .filter(|l| l.contains(&format!(".{port} ")) || l.contains(&format!(":{port} ")))
+                .map(|l| format!("{}; ", l.split_whitespace().collect::<Vec<_>>().join(" ")))
+                .collect()
+        })
+        .unwrap_or_default();
+    format!("[{owned}] netstat: [{kernel}]")
+}
+
+/// The processes listening on TCP port `port`, as lsof lists them: empty where none does
+/// (or where the host has no lsof).
+fn listeners_of(port: u16) -> String {
+    std::process::Command::new("lsof")
+        .args(["-nP", &format!("-iTCP:{port}"), "-sTCP:LISTEN", "-Fpcn"])
+        .output()
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .replace('\n', " ")
+                .trim()
+                .to_string()
+        })
+        .unwrap_or_default()
+}
+
+/// `-p`: a microVM's ports published on the host as dockerd publishes them. Each
 /// connection reaches the guest from the bridge's gateway, as through dockerd's userland
 /// proxy, and carries what either side sends whole; `ps` and `port` list the bindings as
 /// docker's do; a host port taken is refused in dockerd's words, a container's as its
@@ -3148,6 +3192,29 @@ fn published_ports_reach_the_guest_as_dockerd_publishes_them() {
         listed.stdout,
         format!("7000/tcp -> 0.0.0.0:{n}\n7000/tcp -> [::]:{n}\n7001/tcp -> 127.0.0.1:{m}\n"),
     );
+    // The listening sockets are the run's network process's alone: the daemon lets go of
+    // its copies once the VM has the run (M24), and a copy kept would hold the port after
+    // the run's end is told, until the daemon had reaped both of its processes.
+    if let Ok(lsof) = std::process::Command::new("lsof")
+        .args(["-nP", &format!("-iTCP:{n}"), "-sTCP:LISTEN", "-Fp"])
+        .output()
+    {
+        let log = std::fs::read_to_string(home.join("daemon.log")).unwrap();
+        let daemon = log
+            .lines()
+            .find_map(|l| l.strip_prefix("shards daemon ")?.split(':').next())
+            .unwrap()
+            .to_string();
+        let holders: Vec<String> = String::from_utf8_lossy(&lsof.stdout)
+            .lines()
+            .filter_map(|l| l.strip_prefix('p').map(String::from))
+            .collect();
+        assert!(!holders.is_empty(), "nothing listens on {n}");
+        assert!(
+            !holders.contains(&daemon),
+            "the daemon {daemon} holds {n}: {holders:?}"
+        );
+    }
     let one = shards(&["port", "web", "7000"]);
     assert_eq!(one.stdout, format!("0.0.0.0:{n}\n[::]:{n}\n"), "{one}");
     let none = shards(&["port", "web", "7002/tcp"]);
@@ -3185,7 +3252,25 @@ fn published_ports_reach_the_guest_as_dockerd_publishes_them() {
     for _ in 0..10 {
         let (from, echoed) = exchange(SocketAddr::from(([127, 0, 0, 1], n)), big.clone());
         assert_eq!(from, format!("from {}\n", bridge().gateway()));
-        assert!(echoed == big, "{} bytes came back of {}", echoed.len(), big.len());
+        if echoed != big {
+            // Where the echo first differs, and what the guest's server said: an end of its
+            // own (`serve error`), or none, which leaves the bytes to the network process.
+            let differs = echoed.iter().zip(&big).position(|(a, b)| a != b);
+            let logs = shards(&["logs", "web"]);
+            let net: String = std::fs::read_to_string(home.join("daemon.log"))
+                .unwrap_or_default()
+                .lines()
+                .filter(|l| l.contains("shards-net"))
+                .map(|l| format!("{l}\n"))
+                .collect();
+            panic!(
+                "{} bytes came back of {}, first differing at {differs:?}; the guest said:\n{}{}\nthe network process said:\n{net}",
+                echoed.len(),
+                big.len(),
+                logs.stdout,
+                logs.stderr
+            );
+        }
     }
     let (from, echoed) = exchange(format!("[::1]:{n}").parse().unwrap(), b"over IPv6".to_vec());
     assert_eq!(
@@ -3280,12 +3365,22 @@ fn published_ports_reach_the_guest_as_dockerd_publishes_them() {
             &["--rm", "-p", &format!("{p}:7000")],
             &["exit", "0"],
         );
-        assert_eq!(again.status, Some(0), "{again}");
-        drop(std::net::TcpListener::bind(("0.0.0.0", p)).unwrap());
+        assert_eq!(again.status, Some(0), "{again}; held by {}", holders_of(p));
+        // Nothing listens on it once `run` has returned: asked of the system, not by
+        // binding, which SO_REUSEADDR lets succeed beside a socket a later bind meets.
+        let listening = listeners_of(p);
+        assert!(
+            listening.is_empty(),
+            "{p} after a run ended: still listened on by {listening}"
+        );
+        if let Err(e) = std::net::TcpListener::bind(("0.0.0.0", p)) {
+            panic!("{p} after a run ended: {e}; held by {}", holders_of(p));
+        }
     }
     // And the daemon holds it no longer: taken by another program, it is refused at once,
     // not after the wait for a run's ports to come free.
-    let held = std::net::TcpListener::bind(("0.0.0.0", p)).unwrap();
+    let held = std::net::TcpListener::bind(("0.0.0.0", p))
+        .unwrap_or_else(|e| panic!("{p}: {e}; held by {}", holders_of(p)));
     let began = Instant::now();
     let refused = run_in(
         &home,

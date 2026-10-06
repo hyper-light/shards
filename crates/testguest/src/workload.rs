@@ -454,7 +454,10 @@ fn serve(port: &str, connections: usize) -> i32 {
         let served = listener.accept().and_then(|(mut c, peer)| {
             writeln!(c, "from {}", peer.ip())?;
             let mut read = c.try_clone()?;
-            io::copy(&mut read, &mut c)?;
+            let echoed = io::copy(&mut read, &mut c)?;
+            // What it had of the connection, for a test to tell a stream cut on its way in
+            // from one cut on its way back.
+            let _ = writeln!(io::stdout(), "served {echoed}");
             c.shutdown(std::net::Shutdown::Write)
         });
         if let Err(e) = served {

@@ -1833,13 +1833,14 @@ impl<D: Disk> Daemon<D> {
         // The run's container, before anything starts: its name must be free. Its record
         // is written while a VM is found for it.
         let made = match &again {
-            // Its record stays, with the ports it has now.
+            // Its record stays, with the ports it has now. Its last exit code stays until
+            // it runs (`run_started`), as dockerd's SetRunning clears it with Restarting:
+            // cleared here, a restart showed `Restarting (0)` while it began.
             Some(_) => {
                 let mut registry = lock(&self.containers);
                 let name = registry.get(&id).map(|c| c.name.clone()).unwrap_or_default();
                 match registry.change(&id, |c| {
                     c.ports = ports;
-                    c.exit_code = None;
                 }) {
                     Ok(()) => Ok(name),
                     Err(e) => Err(format!("container {id}: {e}")),
@@ -3155,6 +3156,7 @@ impl<D: Disk> Daemon<D> {
         let changed = lock(&self.containers).change(id, |c| {
             c.state = Life::Running;
             c.started = Some(containers::now());
+            c.exit_code = None;
             c.oom_killed = false;
             c.error.clear();
             c.restart.restarting = false;

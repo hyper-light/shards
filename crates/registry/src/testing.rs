@@ -327,12 +327,15 @@ mod tests {
         let mut answer = [0u8; 38];
         held.read_exact(&mut answer).unwrap();
         drop(server);
-        assert_eq!(
-            TcpStream::connect(("127.0.0.1", port))
-                .map_err(|e| e.kind())
-                .err(),
-            Some(io::ErrorKind::ConnectionRefused)
-        );
+        // Refused; or connected to itself, when the system chose the freed port as the
+        // client's own (TCP's simultaneous open), which no server is party to.
+        match TcpStream::connect(("127.0.0.1", port)) {
+            Err(e) => assert_eq!(e.kind(), io::ErrorKind::ConnectionRefused),
+            Ok(s) => {
+                let (local, peer) = (s.local_addr().unwrap(), s.peer_addr().unwrap());
+                assert_eq!(local, peer, "something answered on {port}: {local} -> {peer}");
+            }
+        }
         held.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
         assert_eq!(
             held.read(&mut [0u8; 1]).unwrap(),
