@@ -199,6 +199,12 @@ impl Reference {
         self
     }
 
+    /// Parses a reference as distribution's `Parse` does: as written, its domain not
+    /// filled in, its tag and digest only those it names.
+    pub fn parse_as_written(s: &str) -> Result<Reference, Error> {
+        parse(s)
+    }
+
     /// Parses a reference as `ParseNormalizedNamed` does, with the tag or digest it names
     /// and no other.
     pub fn parse_normalized(s: &str) -> Result<Reference, Error> {

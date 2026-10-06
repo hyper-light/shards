@@ -65,10 +65,11 @@ pub struct Options {
     pub context_excludes: BTreeMap<Vec<u8>, Vec<Vec<u8>>>,
 }
 
-/// A named context a stage or base name is given (dockerui's NamedContext): the key it
-/// was found by, and its value.
+/// A named context a stage or base name is given (dockerui's NamedContext): its name (the
+/// reference's familiar form), the key it was found by, and its value.
 #[derive(Debug, Clone)]
 struct Named {
+    name: Vec<u8>,
     key: Vec<u8>,
     value: Vec<u8>,
 }
@@ -2854,9 +2855,10 @@ impl Planner<'_> {
             .to_vec();
         let p = platform.cloned().unwrap_or_else(|| self.target_platform.clone());
         let keyed = errb(&[&familiar, b"::", &platform::format_all(&platform::normalize(&p))]);
-        for key in [keyed, familiar] {
+        for key in [keyed, familiar.clone()] {
             if let Some(v) = self.opts.contexts.get(&key) {
                 return Ok(Some(Named {
+                    name: familiar,
                     key,
                     value: v.clone(),
                 }));
@@ -2958,6 +2960,56 @@ impl Planner<'_> {
                     self.named_locals.push((out, d, n.key.clone(), rest.to_vec()));
                 }
                 Ok((st, None))
+            }
+            // An image of an OCI layout the client serves as a content store: its store's
+            // name and the manifest's digest, under a stand-in reference made of the
+            // context's name and that digest.
+            b"oci-layout" => {
+                let spec = rest.strip_prefix(b"//").unwrap_or(rest);
+                let q = |b: &[u8]| go::quote(b);
+                let r = std::str::from_utf8(spec)
+                    .map_err(|_| "invalid reference format".to_string())
+                    .and_then(|s| Reference::parse_as_written(s).map_err(|e| e.to_string()))
+                    .map_err(|e| {
+                        Fail::new(errb(&[
+                            b"could not parse oci-layout reference ",
+                            q(spec).as_bytes(),
+                            b": ",
+                            e.as_bytes(),
+                        ]))
+                    })?;
+                let Some(digest) = r.digest.clone() else {
+                    return Err(Fail::new(errb(&[
+                        b"oci-layout reference ",
+                        q(r.to_string().as_bytes()).as_bytes(),
+                        b" has no digest",
+                    ])));
+                };
+                let mut dummy = parse_normalized(&n.name).map_err(|e| {
+                    Fail::new(errb(&[
+                        b"could not parse oci-layout reference ",
+                        q(&n.name).as_bytes(),
+                        b": ",
+                        &e,
+                    ]))
+                })?;
+                dummy.digest = Some(digest);
+                let dummy = dummy.to_string().into_bytes();
+                let log = errb(&[b"[context ", &n.key, b"] load metadata for ", &dummy]);
+                let resolved = self.resolver.resolve(&dummy, platform, &log).map_err(Fail::new)?;
+                let mut img = Image::from_json(&resolved.config)
+                    .map_err(|e| Fail::new(errb(&[b"could not parse oci-layout image config: ", &e])))?;
+                img.created = None;
+                let mut attrs = BTreeMap::new();
+                attrs.insert(b"oci.store".to_vec(), r.name().into_bytes());
+                let mut state = self.graph.source(
+                    [b"oci-layout://".as_slice(), &dummy].concat(),
+                    attrs,
+                    Some(platform.clone()),
+                    custom_name(errb(&[b"[context ", &n.key, b"] OCI load from client"])),
+                );
+                with_image_config(&mut state, &img);
+                Ok((state, Some(img)))
             }
             // buildx gives the frontend no inputs for a context it names.
             b"input" => Err(Fail::new(errb(&[b"invalid input ", rest, b" for ", &n.key]))),

@@ -5232,6 +5232,196 @@
   "warnings": null
  },
  {
+  "error": "\"could not parse oci-layout reference \\\"Store1@sha256:00\\\": invalid reference format\"",
+  "file": "corpus/plan/named-oci-bad.Dockerfile",
+  "location": [
+   [
+    [
+     1,
+     1
+    ]
+   ]
+  ],
+  "warnings": null
+ },
+ {
+  "error": "\"oci-layout reference \\\"store1:v1\\\" has no digest\"",
+  "file": "corpus/plan/named-oci-nodigest.Dockerfile",
+  "location": [
+   [
+    [
+     1,
+     1
+    ]
+   ]
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/named-oci-tag.Dockerfile",
+  "image": "{\"architecture\":\"amd64\",\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:0000000000000000000000000000000000000000000000000000000000000001\"]},\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"COPY /a /a # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"}],\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"/bin/sh\"]}}",
+  "ops": [
+   {
+    "constraints": {},
+    "inputs": [],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "FROM alpine",
+      "llb.customname": "[stage-0 1/2] FROM docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    },
+    "source": {
+     "identifier": "docker-image://docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+    }
+   },
+   {
+    "constraints": {},
+    "inputs": [],
+    "metadata": {
+     "description": {
+      "llb.customname": "[context base] OCI load from client"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    },
+    "source": {
+     "attrs": {
+      "oci.store": "store1"
+     },
+     "identifier": "oci-layout://docker.io/library/base@sha256:418a46c7f9e35f367e24064323e9759a208f30223ddd001667753d28ffe59570"
+    }
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "copy": {
+        "allowEmptyWildcard": true,
+        "allowWildcard": true,
+        "createDestPath": true,
+        "dest": "/a",
+        "dirCopyContents": true,
+        "followSymlink": true,
+        "mode": -1,
+        "src": "/a",
+        "timestamp": "-1"
+       },
+       "secondaryInput": "1"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      0,
+      0
+     ],
+     [
+      1,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "llb.customname": "[stage-0 2/2] COPY --from=base /a /a"
+     }
+    }
+   },
+   {
+    "inputs": [
+     [
+      2,
+      0
+     ]
+    ],
+    "metadata": {}
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/named-oci.Dockerfile",
+  "image": "{\"architecture\":\"amd64\",\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:0000000000000000000000000000000000000000000000000000000000000001\"]},\"history\":[{\"created\":\"2025-06-01T10:20:30.123456789+02:00\",\"created_by\":\"/bin/sh -c #(nop) USER app\",\"author\":\"someone\",\"comment\":\"c \\u003c\\u0026\\u003e\",\"empty_layer\":true},{\"created_by\":\"base\"},{\"created_by\":\"RUN /bin/bash -eo pipefail -c echo hi # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"}],\"config\":{\"User\":\"app:app\",\"Env\":[\"PATH=/usr/bin:/bin\"],\"Volumes\":{\"/data\":{}},\"WorkingDir\":\"/srv/app\",\"StopSignal\":\"SIGQUIT\",\"Shell\":[\"/bin/bash\",\"-eo\",\"pipefail\",\"-c\"]}}",
+  "ops": [
+   {
+    "constraints": {},
+    "inputs": [],
+    "metadata": {
+     "description": {
+      "llb.customname": "[context base] OCI load from client"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    },
+    "source": {
+     "attrs": {
+      "oci.store": "store1"
+     },
+     "identifier": "oci-layout://docker.io/library/base@sha256:418a46c7f9e35f367e24064323e9759a208f30223ddd001667753d28ffe59570"
+    }
+   },
+   {
+    "constraints": {},
+    "exec": {
+     "meta": {
+      "args": [
+       "/bin/bash",
+       "-eo",
+       "pipefail",
+       "-c",
+       "echo hi"
+      ],
+      "cwd": "/srv/app",
+      "env": [
+       "PATH=/usr/bin:/bin"
+      ],
+      "removeMountStubsRecursive": true,
+      "user": "app:app"
+     },
+     "mounts": [
+      {
+       "dest": "/"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      0,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "RUN echo hi",
+      "llb.customname": "[1/2] RUN echo hi"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    }
+   },
+   {
+    "inputs": [
+     [
+      1,
+      0
+     ]
+    ],
+    "metadata": {}
+   }
+  ],
+  "warnings": null
+ },
+ {
   "file": "corpus/plan/named-platform.Dockerfile",
   "image": "{\"architecture\":\"amd64\",\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:0000000000000000000000000000000000000000000000000000000000000001\"]},\"history\":[{\"created\":\"2025-06-01T10:20:30.123456789+02:00\",\"created_by\":\"/bin/sh -c #(nop) USER app\",\"author\":\"someone\",\"comment\":\"c \\u003c\\u0026\\u003e\",\"empty_layer\":true},{\"created_by\":\"base\"},{\"created_by\":\"RUN /bin/bash -eo pipefail -c echo hi # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"}],\"config\":{\"User\":\"app:app\",\"Env\":[\"PATH=/usr/bin:/bin\"],\"Volumes\":{\"/data\":{}},\"WorkingDir\":\"/srv/app\",\"StopSignal\":\"SIGQUIT\",\"Shell\":[\"/bin/bash\",\"-eo\",\"pipefail\",\"-c\"]}}",
   "ops": [

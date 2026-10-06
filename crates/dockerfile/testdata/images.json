@@ -264,5 +264,50 @@
   },
   "digest": "sha256:0107e9cb37820c4f34ead1213fc3600d14a65faf7606323afa9a68b17044d209",
   "ref": "registry.example.com:5000/team/app:1.0"
+ },
+ "docker.io/library/base@sha256:418a46c7f9e35f367e24064323e9759a208f30223ddd001667753d28ffe59570": {
+  "ref": "docker.io/library/base@sha256:418a46c7f9e35f367e24064323e9759a208f30223ddd001667753d28ffe59570",
+  "digest": "sha256:418a46c7f9e35f367e24064323e9759a208f30223ddd001667753d28ffe59570",
+  "config": {
+   "architecture": "amd64",
+   "config": {
+    "Env": [
+     "PATH=/usr/bin:/bin"
+    ],
+    "Shell": [
+     "/bin/bash",
+     "-eo",
+     "pipefail",
+     "-c"
+    ],
+    "StopSignal": "SIGQUIT",
+    "User": "app:app",
+    "Volumes": {
+     "/data": {}
+    },
+    "WorkingDir": "/srv/app"
+   },
+   "created": "2026-01-01T00:00:00Z",
+   "history": [
+    {
+     "author": "someone",
+     "comment": "c <&>",
+     "created": "2025-06-01T10:20:30.123456789+02:00",
+     "created_by": "/bin/sh -c #(nop) USER app",
+     "empty_layer": true
+    },
+    {
+     "created_by": "base",
+     "empty_layer": false
+    }
+   ],
+   "os": "linux",
+   "rootfs": {
+    "diff_ids": [
+     "sha256:0000000000000000000000000000000000000000000000000000000000000001"
+    ],
+    "type": "layers"
+   }
+  }
  }
 }

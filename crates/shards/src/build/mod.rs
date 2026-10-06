@@ -483,6 +483,9 @@ struct Bases<'a> {
     /// Each base, by what the planner names its source: the name it resolved, without
     /// any digest it carried, then `@` and the digest it resolved to.
     resolved: RefCell<BTreeMap<String, Base>>,
+    /// The manifests of OCI layouts named contexts name, imported into the store: by the
+    /// digest the context names, the manifest for this platform.
+    layouts: BTreeMap<String, Descriptor>,
 }
 
 impl Resolver for Bases<'_> {
@@ -567,6 +570,12 @@ impl Bases<'_> {
             )));
         }
         let reference = Reference::parse(name).map_err(|e| fail(e.to_string()))?;
+        // An OCI layout's image, imported already: no registry is asked.
+        if let Some(d) = &reference.digest
+            && let Some(record) = self.layouts.get(&d.to_string())
+        {
+            return self.base_of(name, &reference, record.clone(), d.clone());
+        }
         let limits = crate::pull::limits().map_err(fail)?;
         let local = if self.pull {
             None
@@ -598,6 +607,19 @@ impl Bases<'_> {
             .tagged(&reference.to_string())
             .map_err(|e| fail(e.to_string()))?
             .ok_or_else(|| fail(format!("{name}: not in the store after its pull")))?;
+        self.base_of(name, &reference, record, pulled.resolved.clone())
+    }
+
+    /// The base `record` names, a manifest the store holds, as `name` resolved to
+    /// `resolved`.
+    fn base_of(
+        &self,
+        name: &str,
+        reference: &Reference,
+        record: Descriptor,
+        resolved: Digest,
+    ) -> Result<Resolved, Vec<u8>> {
+        let fail = |e: String| e.into_bytes();
         let manifest_bytes = self
             .store
             .content(&record, oci::MAX_MANIFEST)
@@ -631,9 +653,9 @@ impl Bases<'_> {
                 description: format!("pulled from {reference}").into_bytes(),
             });
         }
-        let resolved = Resolved {
+        let out = Resolved {
             reference: reference.to_string().into_bytes(),
-            digest: Some(pulled.resolved.to_string().into_bytes()),
+            digest: Some(resolved.to_string().into_bytes()),
             config,
         };
         let bare = name.rsplit_once('@').map_or(name, |(bare, _)| bare);
@@ -645,8 +667,8 @@ impl Bases<'_> {
         }
         self.resolved
             .borrow_mut()
-            .insert(format!("{bare}@{}", pulled.resolved), base);
-        Ok(resolved)
+            .insert(format!("{bare}@{resolved}"), base);
+        Ok(out)
     }
 }
 
@@ -1005,6 +1027,11 @@ fn run(parsed: &Parsed) -> Result<(), String> {
         pull: parsed.bool("pull"),
         progress: &progress,
         resolved: RefCell::new(BTreeMap::new()),
+        layouts: named
+            .layouts
+            .iter()
+            .map(|(dir, digest)| import_layout(&store, dir, digest).map(|d| (digest.to_string(), d)))
+            .collect::<Result<_, String>>()?,
     };
     let opts = Options {
         target_platform: host.clone(),
@@ -1211,9 +1238,16 @@ fn run(parsed: &Parsed) -> Result<(), String> {
             continue;
         }
         let outs = match &op.kind {
-            OpKind::Source { identifier, .. } if identifier.starts_with(b"docker-image://") => {
+            OpKind::Source { identifier, .. }
+                if identifier.starts_with(b"docker-image://") || identifier.starts_with(b"oci-layout://") =>
+            {
                 let v = progress.borrow_mut().start(&name);
-                let reference = show(identifier.strip_prefix(b"docker-image://").unwrap_or(identifier));
+                let reference = show(
+                    identifier
+                        .strip_prefix(b"docker-image://")
+                        .or_else(|| identifier.strip_prefix(b"oci-layout://"))
+                        .unwrap_or(identifier),
+                );
                 progress.borrow().line(&v, &format!("resolve {reference} done"));
                 let base = bases
                     .resolved
@@ -1888,6 +1922,8 @@ struct NamedContexts {
     keys: BTreeMap<Vec<u8>, Vec<u8>>,
     excludes: BTreeMap<Vec<u8>, Vec<Vec<u8>>>,
     locals: BTreeMap<Vec<u8>, PathBuf>,
+    /// OCI layouts to import: each directory and the digest its context names.
+    layouts: Vec<(PathBuf, Digest)>,
 }
 
 /// `--build-context`'s values as buildx's loadInputs hands them to the frontend
@@ -1905,10 +1941,24 @@ fn named_contexts(named: &BTreeMap<String, String>) -> Result<NamedContexts, Str
                 .insert(k.clone().into_bytes(), v.clone().into_bytes());
             continue;
         }
-        if v.starts_with("oci-layout://") {
-            return Err(format!(
-                "{k}: an oci-layout:// context is not served yet; load the layout (shards load) and name it with docker-image://"
-            ));
+        if let Some(r) = parse_oci_layout(v)? {
+            let digest = match &r.digest {
+                Some(d) => d.clone(),
+                None => resolve_layout_digest(&r.path, &r.tag).map_err(|e| {
+                    format!("oci-layout reference {} could not be resolved: {e}", go_quote(v))
+                })?,
+            };
+            // The layout's store, named for the frontend as buildx names it (a session
+            // store's ID): here the order it is given in.
+            let store = format!("layout{}", out.layouts.len());
+            let mut spec = format!("oci-layout://{store}");
+            if !r.tag.is_empty() {
+                spec.push_str(&format!(":{}", r.tag));
+            }
+            spec.push_str(&format!("@{digest}"));
+            out.contexts.insert(k.clone().into_bytes(), spec.into_bytes());
+            out.layouts.push((PathBuf::from(&r.path), digest));
+            continue;
         }
         let md = std::fs::metadata(v).map_err(|e| {
             format!(
@@ -1950,6 +2000,161 @@ fn named_contexts(named: &BTreeMap<String, String>) -> Result<NamedContexts, Str
         out.locals.insert(local.into_bytes(), dir);
     }
     Ok(out)
+}
+
+fn go_quote(s: &str) -> String {
+    shards_cmdline::go::quote(s)
+}
+
+/// An `oci-layout://` reference as buildx's ocilayout.Parse reads it: the directory, a
+/// tag and a digest, `latest` the tag when neither is given.
+struct LayoutRef {
+    path: String,
+    tag: String,
+    digest: Option<Digest>,
+}
+
+fn parse_oci_layout(s: &str) -> Result<Option<LayoutRef>, String> {
+    let Some(mut path) = s.strip_prefix("oci-layout://") else {
+        return Ok(None);
+    };
+    let mut out = LayoutRef {
+        path: String::new(),
+        tag: String::new(),
+        digest: None,
+    };
+    let digest_re =
+        regex::Regex::new(r"^[A-Za-z][A-Za-z0-9]*(?:[-_+.][A-Za-z][A-Za-z0-9]*)*:[0-9a-fA-F]{32,}$")
+            .map_err(|e| e.to_string())?;
+    let tag_re = regex::Regex::new(r"^[\w][\w.-]{0,127}$").map_err(|e| e.to_string())?;
+    if let Some(i) = path.rfind('@') {
+        let after = path.get(i + 1..).unwrap_or_default();
+        if digest_re.is_match(after) {
+            out.digest = Some(Digest::parse(after).map_err(|e| e.to_string())?);
+            path = path.get(..i).unwrap_or_default();
+        }
+    }
+    if let Some(i) = path.rfind(':') {
+        let windows_drive = i == 1
+            && path.len() >= 3
+            && matches!(path.as_bytes().get(2), Some(b'/' | b'\\'))
+            && path.as_bytes().first().is_some_and(u8::is_ascii_alphabetic);
+        let after = path.get(i + 1..).unwrap_or_default();
+        if !windows_drive && tag_re.is_match(after) {
+            out.tag = after.to_string();
+            path = path.get(..i).unwrap_or_default();
+        }
+    }
+    out.path = path.to_string();
+    if out.tag.is_empty() && out.digest.is_none() {
+        out.tag = "latest".into();
+    }
+    Ok(Some(out))
+}
+
+/// buildx's resolveDigest: the layout's index entry named `tag` (by its image name, then
+/// its reference name), else its only entry.
+fn resolve_layout_digest(dir: &str, tag: &str) -> Result<Digest, String> {
+    let path = Path::new(dir).join("index.json");
+    let bytes = std::fs::read(&path).map_err(|e| {
+        format!(
+            "could not read {}: open {}: {}",
+            path.display(),
+            path.display(),
+            buildflags::os_error(&e)
+        )
+    })?;
+    let index: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| {
+        format!(
+            "could not unmarshal {} ({}): {e}",
+            path.display(),
+            go_quote(&String::from_utf8_lossy(&bytes))
+        )
+    })?;
+    let manifests = index
+        .get("manifests")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let annotation = |m: &serde_json::Value, k: &str| {
+        m.get("annotations")
+            .and_then(|a| a.get(k))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+    };
+    let found = manifests
+        .iter()
+        .find(|m| annotation(m, "io.containerd.image.name").as_deref() == Some(tag))
+        .or_else(|| {
+            manifests
+                .iter()
+                .find(|m| annotation(m, "org.opencontainers.image.ref.name").as_deref() == Some(tag))
+        })
+        .or_else(|| (manifests.len() == 1).then(|| manifests.first()).flatten())
+        .ok_or("failed to resolve digest")?;
+    let d = found
+        .get("digest")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    Digest::parse(d).map_err(|e| format!("invalid digest {d}: {e}"))
+}
+
+/// Imports the image `digest` names from the OCI layout in `dir` into the store, each
+/// blob checked against its digest as it is stored: an index's manifest for this
+/// platform, its config and layers. Returns that manifest's descriptor.
+fn import_layout(store: &Store, dir: &Path, digest: &Digest) -> Result<Descriptor, String> {
+    let blob = |d: &Digest| dir.join("blobs").join(d.algorithm().name()).join(d.hex());
+    let put = |d: &Digest| -> Result<(), String> {
+        if store.has(d) {
+            return Ok(());
+        }
+        let path = blob(d);
+        let size = std::fs::metadata(&path)
+            .map_err(|e| format!("{}: {e}", path.display()))?
+            .len();
+        let mut f = std::fs::File::open(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        store
+            .ingest(d, size, &mut f)
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        Ok(())
+    };
+    let read = |d: &Digest| -> Result<Vec<u8>, String> {
+        put(d)?;
+        let bytes = std::fs::read(store.blob_path(d)).map_err(|e| e.to_string())?;
+        if bytes.len() as u64 > oci::MAX_MANIFEST {
+            return Err(format!("{d}: a manifest over {} bytes", oci::MAX_MANIFEST));
+        }
+        Ok(bytes)
+    };
+    let media = |bytes: &[u8]| {
+        serde_json::from_slice::<serde_json::Value>(bytes)
+            .ok()
+            .and_then(|v| v.get("mediaType").and_then(|m| m.as_str()).map(str::to_string))
+            .unwrap_or_else(|| oci::media::OCI_MANIFEST.to_string())
+    };
+    let mut d = digest.clone();
+    let mut bytes = read(&d)?;
+    let mut kind = media(&bytes);
+    if let Document::Index(index) = oci::parse_document(&bytes, &kind).map_err(|e| e.to_string())? {
+        let chosen = image_platform::select(&index, &image_platform::guest())
+            .ok_or_else(|| format!("{digest}: no manifest for this platform in the layout"))?;
+        d = chosen.digest().map_err(|e| e.to_string())?;
+        bytes = read(&d)?;
+        kind = media(&bytes);
+    }
+    let Document::Manifest(m) = oci::parse_document(&bytes, &kind).map_err(|e| e.to_string())? else {
+        return Err(format!("{d}: an index inside an index"));
+    };
+    for part in std::iter::once(&m.config).chain(&m.layers) {
+        put(&part.digest().map_err(|e| e.to_string())?)?;
+    }
+    Ok(Descriptor {
+        media_type: kind,
+        digest: d.to_string(),
+        size: i64::try_from(bytes.len()).map_err(|e| e.to_string())?,
+        platform: None,
+        annotations: Default::default(),
+    })
 }
 
 /// The export's failure `why`, on its step and as the build's error.

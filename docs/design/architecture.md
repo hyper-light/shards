@@ -2902,7 +2902,15 @@ Also held to buildx: a `local` or `tar` output refused beside `--iidfile`. Teste
 real microVM (`named_contexts_stand_in_for_what_they_name`); the platform-keyed lookup
 mutation-checked.
 
-Open: `oci-layout://` contexts (buildx serves the layout as a session content store).
+`oci-layout://PATH[:TAG][@DIGEST]` contexts are read as buildx's ocilayout.Parse reads
+them, the digest found as its resolveDigest finds it (the index entry named the tag, by
+image name then reference name, else the only entry), and planned as BuildKit plans them
+(`oci-layout://` over a stand-in of the context's name and that digest, `oci.store` the
+layout's store; 4 more plan cases). Where buildx serves the layout to BuildKit as a session
+content store, shards takes the image's blobs into its own store, each checked against its
+digest as it is stored, the platform's manifest chosen from an index, so a layout's image
+is built on as any base is (`oci_layout_contexts_are_the_images_they_hold`). buildx locks
+the index to read it, leaving a lock file in the layout; shards only reads.
 
 ## 4. Start path (≤ 5 ms budget)
 

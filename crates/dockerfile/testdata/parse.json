@@ -11450,6 +11450,96 @@
   ]
  },
  {
+  "file": "corpus/plan/named-oci-bad.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"base\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"base\\\"\"",
+    "original": "\"FROM base\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/named-oci-nodigest.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"base\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"base\\\"\"",
+    "original": "\"FROM base\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/named-oci-tag.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\")\\n(copy [\\\"--from=base\\\"] \\\"/a\\\" \\\"/a\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy [\\\"--from=base\\\"] \\\"/a\\\" \\\"/a\\\"\"",
+    "original": "\"COPY --from=base /a /a\"",
+    "flags": [
+     "\"--from=base\""
+    ],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/named-oci.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"base\\\")\\n(run \\\"echo hi\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"base\\\"\"",
+    "original": "\"FROM base\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"echo hi\\\"\"",
+    "original": "\"RUN echo hi\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
   "file": "corpus/plan/named-platform.Dockerfile",
   "escape": "\"\\\\\"",
   "dump": "\"(from \\\"alpine\\\")\\n(run \\\"echo hi\\\")\"",

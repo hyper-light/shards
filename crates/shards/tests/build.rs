@@ -2910,3 +2910,82 @@ fn named_contexts_stand_in_for_what_they_name() {
         missing.stderr
     );
 }
+
+/// An `oci-layout://` context is the image an OCI layout holds, as buildx serves one to
+/// BuildKit: found by its tag (`latest` when none is given) in the layout's index, its
+/// blobs checked and taken into the store, and built on as a base; the layout's only
+/// entry taken for a tag it lacks, as buildx takes it; a directory with no index refused
+/// in buildx's words.
+#[test]
+fn oci_layout_contexts_are_the_images_they_hold() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("build-layout-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let out = TempDir::new("build-layout-out");
+    let layout = out.join("layout");
+    let first = context("build-layout-first", &format!("FROM {image}\nCOPY made /made\n"));
+    std::fs::write(first.join("made"), "in the layout\n").unwrap();
+    let made = shards(&[
+        "build",
+        "-t",
+        "laid:v1",
+        "-o",
+        &format!("type=oci,tar=false,dest={}", layout.to_str().unwrap()),
+        first.to_str().unwrap(),
+    ]);
+    assert_eq!(made.status, Some(0), "{}", made.stderr);
+
+    let second = context("build-layout-second", "FROM base\nCOPY more /more\n");
+    std::fs::write(second.join("more"), "on top\n").unwrap();
+    let built = shards(&[
+        "build",
+        "--progress=plain",
+        "--build-context",
+        &format!("base=oci-layout://{}:v1", layout.to_str().unwrap()),
+        "-o",
+        out.join("root").to_str().unwrap(),
+        second.to_str().unwrap(),
+    ]);
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    assert!(
+        built.stderr.contains("[context base] OCI load from client"),
+        "{}",
+        built.stderr
+    );
+    let root = out.join("root");
+    assert_eq!(std::fs::read(root.join("made")).unwrap(), b"in the layout\n");
+    assert_eq!(std::fs::read(root.join("more")).unwrap(), b"on top\n");
+    assert!(root.join("bin/testguest").exists());
+
+    // A tag the index lacks: its one entry, as buildx's resolveDigest falls back to it.
+    let single = shards(&[
+        "build",
+        "--build-context",
+        &format!("base=oci-layout://{}:nope", layout.to_str().unwrap()),
+        second.to_str().unwrap(),
+    ]);
+    assert_eq!(single.status, Some(0), "{}", single.stderr);
+    let none = out.join("empty");
+    std::fs::create_dir(&none).unwrap();
+    let missing = shards(&[
+        "build",
+        "--build-context",
+        &format!("base=oci-layout://{}", none.to_str().unwrap()),
+        second.to_str().unwrap(),
+    ]);
+    assert_ne!(missing.status, Some(0));
+    assert!(
+        missing.stderr.contains("could not be resolved: could not read")
+            && missing.stderr.contains("index.json: no such file or directory"),
+        "{}",
+        missing.stderr
+    );
+}

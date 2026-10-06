@@ -17111,6 +17111,150 @@
   "warnings": null
  },
  {
+  "file": "corpus/plan/named-oci-bad.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"base\"",
+    "commands": null,
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM base\""
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/named-oci-nodigest.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"base\"",
+    "commands": null,
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM base\""
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/named-oci-tag.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "chmod": "\"\"",
+      "chown": "\"\"",
+      "code": "\"COPY --from=base /a /a\"",
+      "comments": [],
+      "exclude": [],
+      "from": "\"base\"",
+      "kind": "*instructions.CopyCommand",
+      "link": false,
+      "location": [
+       [
+        2,
+        2
+       ]
+      ],
+      "name": "\"COPY\"",
+      "parents": false,
+      "sources": {
+       "contents": null,
+       "dest": "\"/a\"",
+       "paths": [
+        "\"/a\""
+       ]
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine\""
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/named-oci.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"base\"",
+    "commands": [
+     {
+      "code": "\"RUN echo hi\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        2,
+        2
+       ]
+      ],
+      "mounts": null,
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"echo hi\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM base\""
+   }
+  ],
+  "warnings": null
+ },
+ {
   "file": "corpus/plan/named-platform.Dockerfile",
   "meta_args": null,
   "stages": [
