@@ -442,7 +442,7 @@ fn state(f: &Facts<'_>) -> Value {
         .field("Dead", Value::Bool(false))
         .field("Pid", int(f.pid.filter(|_| running).map_or(0, i64::from)))
         .field("ExitCode", int(c.exit_code.map_or(0, i64::from)))
-        .field("Error", s(""))
+        .field("Error", s(&c.error))
         .field("StartedAt", s(&go_time(c.started)))
         .field("FinishedAt", s(&go_time(c.finished)))
         .tagged("Health", Some("Health"), true, health)
@@ -738,15 +738,19 @@ fn host_config(f: &Facts<'_>) -> Value {
         .field("Privileged", Value::Bool(run.privileged))
         .field("PublishAllPorts", Value::Bool(run.publish_all))
         .field("ReadonlyRootfs", Value::Bool(run.read_only))
-        // generateSecurityOpt (daemon/daemon_unix.go): a privileged container's labels off.
-        .field(
-            "SecurityOpt",
+        // As the CLI sent them, and generateSecurityOpt's (daemon/daemon_unix.go) after: a
+        // privileged container's labels off.
+        .field("SecurityOpt", {
+            let mut opts = run.security_opt.clone();
             if run.privileged {
-                Value::strings(["label=disable"])
-            } else {
+                opts.push("label=disable".into());
+            }
+            if opts.is_empty() {
                 Value::NilList(Kind::String)
-            },
-        )
+            } else {
+                Value::strings(opts)
+            }
+        })
         .tagged(
             "StorageOpt",
             Some("StorageOpt"),
@@ -853,11 +857,14 @@ fn host_config(f: &Facts<'_>) -> Value {
         .field("IOMaximumIOps", Value::Uint(0))
         .field("IOMaximumBandwidth", Value::Uint(0))
         .tagged("Mounts", Some("Mounts"), true, api_mounts(&run.mounts))
-        // A privileged container's are none (daemon/oci_linux.go).
+        // A privileged container's are none (daemon/oci_linux.go); the CLI sends empty
+        // ones for `--security-opt systempaths=unconfined`.
         .field(
             "MaskedPaths",
             if run.privileged {
                 Value::NilList(Kind::String)
+            } else if run.system_paths {
+                Value::strings(Vec::<String>::new())
             } else {
                 Value::strings(MASKED)
             },
@@ -866,6 +873,8 @@ fn host_config(f: &Facts<'_>) -> Value {
             "ReadonlyPaths",
             if run.privileged {
                 Value::NilList(Kind::String)
+            } else if run.system_paths {
+                Value::strings(Vec::<String>::new())
             } else {
                 Value::strings(READONLY)
             },
@@ -1259,6 +1268,7 @@ mod tests {
                 started: started.then_some(2),
                 finished: None,
                 exit_code: None,
+                error: String::new(),
                 auto_remove: run.remove,
                 log_lost: 0,
                 stop_signal: None,

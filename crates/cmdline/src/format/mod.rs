@@ -45,6 +45,11 @@ use shards_template::{Kind, Object, Template, Value};
 
 pub use clock::{Clock, Zone, rfc3339_at, utc};
 
+/// go-units' BytesSize, as `stats` shows memory.
+pub fn units_bytes_size(size: f64) -> String {
+    units::bytes_size(size)
+}
+
 /// formatter.go's format keys.
 pub const TABLE: &str = "table";
 pub const RAW: &str = "raw";

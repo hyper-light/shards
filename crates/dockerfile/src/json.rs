@@ -119,6 +119,31 @@ enum Open {
 /// The message of Go's `SyntaxError` for running out of input.
 const END: &[u8] = b"unexpected end of JSON input";
 
+/// encoding/json's Compact: `text`, one JSON value as Go's scanner reads one, with the
+/// whitespace between its tokens taken out and nothing else changed; else the scanner's
+/// message for what it refuses. docker/cli sends a seccomp profile's file so.
+pub fn compact(text: &[u8]) -> Result<Vec<u8>, String> {
+    parse(text).map_err(|m| String::from_utf8_lossy(&m).into_owned())?;
+    let mut out = Vec::with_capacity(text.len());
+    let (mut in_string, mut escaped) = (false, false);
+    for &b in text {
+        if in_string {
+            out.push(b);
+            if escaped {
+                escaped = false;
+            } else if b == b'\\' {
+                escaped = true;
+            } else if b == b'"' {
+                in_string = false;
+            }
+        } else if !matches!(b, b' ' | b'\t' | b'\n' | b'\r') {
+            out.push(b);
+            in_string = b == b'"';
+        }
+    }
+    Ok(out)
+}
+
 /// `text` as one JSON value with only whitespace around it, or Go's `SyntaxError` message
 /// for the first thing its scanner refuses.
 pub(crate) fn parse(text: &[u8]) -> Result<Value, Vec<u8>> {
@@ -544,6 +569,24 @@ mod tests {
     }
 
     /// Values parse whole, members in order with duplicates kept, and nothing malformed.
+    /// json.Compact's (Go 1.24): whitespace between tokens goes, a string's stays, and what
+    /// is no JSON is refused in the scanner's words.
+    #[test]
+    fn json_compacts_as_go_compacts_it() {
+        assert_eq!(
+            compact(b" { \"a\" : [ 1 , \" b \\\" c \" ] }\n").unwrap(),
+            br#"{"a":[1," b \" c "]}"#
+        );
+        assert_eq!(
+            compact(b"{\"defaultAction\": ").unwrap_err(),
+            "unexpected end of JSON input"
+        );
+        assert_eq!(
+            compact(b"{} x").unwrap_err(),
+            "invalid character 'x' after top-level value"
+        );
+    }
+
     #[test]
     fn values_parse_as_go_scans_them() {
         let v = parse(br#" {"a": [1, -2.5e3, true, null], "b": {}, "a": "\u00e9\ud800x"} "#).unwrap();

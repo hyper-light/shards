@@ -33,6 +33,10 @@ pub struct Container {
     pub started: Option<u128>,
     pub finished: Option<u128>,
     pub exit_code: Option<u8>,
+    /// Why its last start failed, as inspect's State.Error says it; empty once one
+    /// starts.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub error: String,
     /// `--rm`: removed once it ends.
     pub auto_remove: bool,
     /// Bytes of its output its log could not keep (audit A12).
@@ -718,6 +722,7 @@ mod tests {
             started: Some(2),
             finished: None,
             exit_code: None,
+            error: String::new(),
             auto_remove: false,
             log_lost: 0,
             stop_signal: None,

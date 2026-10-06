@@ -842,14 +842,17 @@ impl<D: crate::containers::Disk> Daemon<D> {
     /// What only the guest knows (network and block I/O, PIDs) is `--`, as docker/cli
     /// shows what it lacks.
     fn stats(&self, parsed: &Parsed, asker: &Asker, reply: &Reply<'_>) -> u8 {
-        let limit = shards_vmm::vm::MEMORY_MIB.saturating_mul(1 << 20);
         let all = parsed.bool("all");
         let trunc = !parsed.bool("no-trunc");
         // Those named, each found as every command finds one; else every one listed.
         let mut named = Vec::new();
+        let mut given_as: Vec<(String, String)> = Vec::new();
         for given in &parsed.args {
             match self.resolve_held(lock(&self.containers), given).1 {
-                Ok(id) => named.push(id),
+                Ok(id) => {
+                    given_as.push((id.clone(), given.clone()));
+                    named.push(id);
+                }
                 Err(said) => {
                     reply.err(&said);
                     return 1;
@@ -878,90 +881,111 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 })
                 .collect()
         };
-        let mut last: std::collections::HashMap<String, (u64, Instant)> = std::collections::HashMap::new();
-        let mut sample = || -> Vec<Sampled> {
-            targets()
+        // Its Container: as it was asked for, else its full ID (docker/cli stats.go).
+        let named_as = |id: &str| {
+            given_as
+                .iter()
+                .find(|(i, _)| i == id)
+                .map_or_else(|| id.to_string(), |(_, g)| g.clone())
+        };
+        // Each running one's guest sampled at once, as dockerd's collector samples each
+        // container's cgroup (daemon/stats/collector.go): STATS, once a second.
+        // A paused one's VM cannot answer: its last sample stands, taken as it was
+        // paused, its CPU idle meanwhile.
+        let take = |targets: &[(String, String, Option<u32>)]| -> Vec<Option<Usage>> {
+            let paused = lock(&self.paused).clone();
+            std::thread::scope(|scope| {
+                let asked: Vec<_> = targets
+                    .iter()
+                    .map(|(id, _, pid)| {
+                        pid.map(|_| {
+                            let paused = paused.contains(id);
+                            scope.spawn(move || {
+                                if paused {
+                                    lock(&LAST_USAGE).get(id).cloned()
+                                } else {
+                                    self.usage_of(id)
+                                }
+                            })
+                        })
+                    })
+                    .collect();
+                asked
+                    .into_iter()
+                    .map(|h| h.and_then(|h| h.join().ok().flatten()))
+                    .collect()
+            })
+        };
+        let mut last: std::collections::HashMap<String, (Usage, Instant)> = std::collections::HashMap::new();
+        let mut sample = || -> Vec<shards_cmdline::format::stats::Stats> {
+            let targets = targets();
+            let used = take(&targets);
+            targets
                 .into_iter()
-                .map(|(id, name, pid)| {
-                    let Some(u) = pid.and_then(|p| shards_vmm::platform::process_usage(p).ok()) else {
-                        return Sampled { id, name, used: None };
+                .zip(used)
+                .map(|((id, name, pid), u)| {
+                    let container = named_as(&id);
+                    let Some(u) = u else {
+                        // Not running: nothing to sample, zeros (a stopped one); one whose
+                        // sample failed: invalid, as the CLI shows "--".
+                        return shards_cmdline::format::stats::Stats {
+                            container,
+                            name,
+                            id,
+                            invalid: pid.is_some(),
+                            ..Default::default()
+                        };
                     };
                     let now = Instant::now();
-                    let cpu = match last.insert(id.clone(), (u.cpu_ns, now)) {
-                        Some((before, at)) => {
-                            #[allow(clippy::cast_precision_loss)]
-                            let share = u.cpu_ns.saturating_sub(before) as f64
-                                / now.duration_since(at).as_nanos().max(1) as f64;
-                            share * 100.0
-                        }
-                        None => 0.0,
-                    };
-                    Sampled {
-                        id,
-                        name,
-                        used: Some((cpu, u.resident)),
-                    }
+                    let before = last.insert(id.clone(), (u.clone(), now));
+                    let elapsed = before.as_ref().map(|(_, at)| now.duration_since(*at));
+                    u.stats(before.as_ref().map(|(b, _)| b).zip(elapsed), container, name, id)
                 })
                 .collect()
         };
         // The first sample is a baseline: CPU is measured over the second after it.
         sample();
+        let source = match parsed.string("format") {
+            "" => shards_cmdline::format::TABLE,
+            f => f,
+        };
+        let format = shards_cmdline::format::stats::format(source);
         loop {
             std::thread::sleep(Duration::from_secs(1));
             let rows = sample();
-            #[allow(clippy::cast_precision_loss)]
-            let share = |mem: u64| mem as f64 / limit.max(1) as f64 * 100.0;
-            let taken = if asker.styled() {
+            let taken = if asker.styled() && parsed.string("format").is_empty() {
                 let mut sheet = shards_ipc::Sheet::new("stats");
-                for Sampled { id, name, used } in &rows {
-                    let (cpu, mem) = used.unwrap_or_default();
+                for r in &rows {
                     sheet.record(&[
-                        ("running", used.is_some().to_string()),
-                        ("id", id.get(..12).unwrap_or(id).to_string()),
-                        ("name", name.clone()),
-                        ("cpu", format!("{cpu:.2}")),
-                        ("mem", binary_size(mem)),
-                        ("limit", binary_size(limit)),
-                        ("share", format!("{:.2}", share(mem))),
+                        ("running", (!r.invalid && r.memory_limit > 0.0).to_string()),
+                        ("id", r.id.get(..12).unwrap_or(&r.id).to_string()),
+                        ("name", r.name.clone()),
+                        ("cpu", format!("{:.2}", r.cpu_percentage)),
+                        ("mem", shards_cmdline::format::units_bytes_size(r.memory)),
+                        ("limit", shards_cmdline::format::units_bytes_size(r.memory_limit)),
+                        ("share", format!("{:.2}", r.memory_percentage)),
                     ]);
                 }
                 reply.sheet_taken(&sheet)
             } else {
-                let mut table = vec![[
-                    "CONTAINER ID".to_string(),
-                    "NAME".into(),
-                    "CPU %".into(),
-                    "MEM USAGE / LIMIT".into(),
-                    "MEM %".into(),
-                    "NET I/O".into(),
-                    "BLOCK I/O".into(),
-                    "PIDS".into(),
-                ]];
-                for Sampled { id, name, used } in &rows {
-                    let (cpu, mem) = used.unwrap_or_default();
-                    table.push([
-                        if trunc {
-                            id.get(..12).unwrap_or(id).to_string()
-                        } else {
-                            id.clone()
-                        },
-                        name.clone(),
-                        format!("{cpu:.2}%"),
-                        format!("{} / {}", binary_size(mem), binary_size(limit)),
-                        format!("{:.2}%", share(mem)),
-                        "--".into(),
-                        "--".into(),
-                        "--".into(),
-                    ]);
-                }
+                let clock = shards_cmdline::format::Clock {
+                    now: 0,
+                    zone: &shards_cmdline::format::utc,
+                };
+                let ctx = shards_cmdline::format::Context {
+                    format: &format,
+                    trunc,
+                    east_asian: asker.east_asian,
+                    clock: &clock,
+                };
                 let mut text = String::new();
                 // On a terminal each table replaces the last, as docker/cli clears it.
                 if asker.terminal && !parsed.bool("no-stream") {
                     text.push_str("\x1b[2J\x1b[H");
                 }
-                for line in tabulate(&table, asker.east_asian) {
-                    text.push_str(&line);
-                    text.push('\n');
+                if let Err(e) = shards_cmdline::format::stats::write(&ctx, &rows, &mut text) {
+                    reply.err(&format!("template parsing error: {e}"));
+                    return 1;
                 }
                 reply.bytes(LOG_STDOUT, text.as_bytes()).is_ok()
             };
@@ -1244,6 +1268,8 @@ impl<D: crate::containers::Disk> Daemon<D> {
                             "Error response from daemon: container {id} is already paused"
                         )));
                     }
+                    // Its last sample, for `stats` to show while it cannot answer.
+                    let _ = self.usage_of(&id);
                     let frozen = match lock(&self.runs).get(&id) {
                         Some(RunState::Tracked(t)) => t.vm.kill(libc::SIGSTOP),
                         _ => Err(io::Error::from(io::ErrorKind::NotFound)),
@@ -2536,13 +2562,13 @@ mod tests {
             ["0123456789ab", "alpine", "web"].map(String::from),
         ];
         assert_eq!(
-            tabulate(&rows, false),
+            tabulate_with(&rows, 10, false),
             ["CONTAINER ID   IMAGE     NAMES", "0123456789ab   alpine    web"]
         );
         // The ellipsis is ambiguous: two columns in an East Asian locale.
         let cut = [["\"ab\u{2026}\"", "x"].map(String::from)];
-        assert_eq!(tabulate(&cut, false), ["\"ab\u{2026}\"     x"]);
-        assert_eq!(tabulate(&cut, true), ["\"ab\u{2026}\"    x"]);
+        assert_eq!(tabulate_with(&cut, 10, false), ["\"ab\u{2026}\"     x"]);
+        assert_eq!(tabulate_with(&cut, 10, true), ["\"ab\u{2026}\"    x"]);
     }
 
     #[test]
@@ -2668,10 +2694,119 @@ fn command_line(argv: &[String]) -> String {
 
 /// A microVM `stats` sampled: its ID and name, and while it runs, its share of a CPU in
 /// percent and its resident bytes.
-struct Sampled {
-    id: String,
-    name: String,
-    used: Option<(f64, u64)>,
+/// Each container's last sample, for one whose VM is paused and cannot be asked: taken
+/// as it is paused, and as `stats` samples it; a removed one's goes as `stats` next looks.
+static LAST_USAGE: std::sync::Mutex<std::collections::BTreeMap<String, Usage>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+impl<D: crate::containers::Disk> Daemon<D> {
+    /// Container `id`'s use of its microVM, as its guest's STATS says it; kept as its last.
+    fn usage_of(&self, id: &str) -> Option<Usage> {
+        let spec = shards_abi::run::Spec {
+            builtin: shards_abi::run::builtin::STATS,
+            ..Default::default()
+        };
+        let u = self
+            .exec_quietly(id, &spec, None, 1 << 12, super::TAKE_TIMEOUT)
+            .ok()
+            .filter(|q| q.status == Some(0))
+            .map(|q| Usage::parse(&String::from_utf8_lossy(&q.output)))?;
+        let mut last = lock(&LAST_USAGE);
+        last.retain(|known, _| lock(&self.containers).get(known).is_some());
+        last.insert(id.to_string(), u.clone());
+        Some(u)
+    }
+}
+
+/// A workload's use of its microVM, as shards-init's STATS says it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct Usage {
+    cpu: u64,
+    system: u64,
+    online: u64,
+    memory: u64,
+    inactive_file: u64,
+    limit: u64,
+    pids: u64,
+    read: u64,
+    write: u64,
+    rx: u64,
+    tx: u64,
+}
+
+impl Usage {
+    fn parse(text: &str) -> Usage {
+        let mut u = Usage::default();
+        for line in text.lines() {
+            let Some((k, v)) = line.split_once(' ') else {
+                continue;
+            };
+            let v: u64 = v.trim().parse().unwrap_or(0);
+            match k {
+                "cpu" => u.cpu = v,
+                "system" => u.system = v,
+                "online" => u.online = v,
+                "memory" => u.memory = v,
+                "inactive_file" => u.inactive_file = v,
+                "limit" => u.limit = v,
+                "pids" => u.pids = v,
+                "read" => u.read = v,
+                "write" => u.write = v,
+                "rx" => u.rx = v,
+                "tx" => u.tx = v,
+                _ => {}
+            }
+        }
+        u
+    }
+
+    /// The CLI's figures of this sample, `elapsed` after `before` (docker/cli
+    /// container/stats_helpers.go): CPU as calculateCPUPercentUnix works it out, its
+    /// time over the system's times its CPUs, the system's being the time between the
+    /// samples on every CPU, which here is the host's clock, as the guest's /proc/stat
+    /// on a loaded host does not keep (measured: 329% and 2503% for one spinning vCPU);
+    /// memory less its inactive file pages (calculateMemUsageUnixNoCache, cgroup v2), and
+    /// its share of the limit.
+    #[allow(clippy::cast_precision_loss)]
+    fn stats(
+        &self,
+        before: Option<(&Usage, Duration)>,
+        container: String,
+        name: String,
+        id: String,
+    ) -> shards_cmdline::format::stats::Stats {
+        let cpu_percentage = match before {
+            Some((b, elapsed)) if self.cpu > b.cpu && !elapsed.is_zero() => {
+                (self.cpu - b.cpu) as f64 / elapsed.as_nanos() as f64 * 100.0
+            }
+            _ => 0.0,
+        };
+        let memory = if self.inactive_file < self.memory {
+            self.memory - self.inactive_file
+        } else {
+            self.memory
+        };
+        let memory_percentage = if self.limit == 0 {
+            0.0
+        } else {
+            memory as f64 / self.limit as f64 * 100.0
+        };
+        shards_cmdline::format::stats::Stats {
+            container,
+            name,
+            id,
+            cpu_percentage,
+            memory: memory as f64,
+            memory_limit: self.limit as f64,
+            memory_percentage,
+            network_rx: self.rx as f64,
+            network_tx: self.tx as f64,
+            block_read: self.read as f64,
+            block_write: self.write as f64,
+            pids: self.pids,
+            invalid: false,
+        }
+    }
 }
 
 /// go-units' BytesSize (`%.4g` and binary units), as `stats` shows memory: 1.5MiB, 256MiB.
@@ -2763,14 +2898,9 @@ fn status(
     }
 }
 
-/// `rows` aligned as the Docker CLI's tabwriter aligns them (minimum width 10, padding 3,
-/// spaces; docker/cli cli/command/formatter/tabwriter): each column but the last is as
-/// wide as its widest cell plus 3, and at least 10, in go-runewidth's columns.
-pub(super) fn tabulate<const N: usize>(rows: &[[String; N]], east_asian: bool) -> Vec<String> {
-    tabulate_with(rows, 10, east_asian)
-}
-
-/// [`tabulate`], with columns at least `min` wide, for rows of any one length.
+/// `rows` aligned as the Docker CLI's tabwriter aligns them (padding 3, spaces; docker/cli
+/// cli/command/formatter/tabwriter): each column but the last is as wide as its widest
+/// cell plus 3, and at least `min` (the CLI's is 10), in go-runewidth's columns.
 pub(super) fn tabulate_with<R: AsRef<[String]>>(rows: &[R], min: usize, east_asian: bool) -> Vec<String> {
     let cell_width = |cell: &str| width::string_width(cell, east_asian);
     let mut widths: Vec<usize> = Vec::new();

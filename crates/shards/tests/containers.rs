@@ -241,7 +241,7 @@ fn stop_and_kill_signal_the_command() {
 }
 
 #[test]
-fn stats_measures_each_microvm_from_its_vm_process() {
+fn stats_measures_each_microvm_from_its_guest() {
     let Some((home, image)) = home("containers-stats") else {
         return;
     };
@@ -264,19 +264,24 @@ fn stats_measures_each_microvm_from_its_vm_process() {
             .unwrap();
         let fields: Vec<&str> = line.split_whitespace().collect();
         let cpu = fields[2].trim_end_matches('%').parse().unwrap();
-        assert_eq!(
-            (&fields[4..6], &fields[7..]),
-            (&["/", "256MiB"][..], &["--", "--", "--"][..]),
-            "{line}"
-        );
+        // Against the guest's memory, no limit given; its interfaces' and devices'
+        // bytes, and its one process.
+        assert_eq!(fields[4], "/", "{line}");
+        assert!(fields[5].ends_with("MiB"), "{line}");
+        assert_eq!(fields.last(), Some(&"1"), "{line}");
         (cpu, fields[3].to_string())
     };
     let (spinning, held) = row("spinner");
     let (sleeping, _) = row("sleeper");
-    // A guest spinning one vCPU keeps its VM process at most of a CPU; one asleep, at
-    // little.
+    // A workload spinning one vCPU uses most of a CPU; one asleep, little.
     assert!(spinning > 50.0 && sleeping < 10.0, "{stats}");
-    assert!(held.ends_with("MiB"), "{stats}");
+    // The workload's own memory, not its VM's: a binary size.
+    assert!(
+        ["B", "KiB", "MiB"]
+            .iter()
+            .any(|u| held.ends_with(u) && held.len() > u.len()),
+        "{stats}"
+    );
     let named = shards_in(&home, &["stats", "--no-stream", "sleeper"]);
     assert_eq!(named.stdout.lines().count(), 2, "{named}");
     let missing = shards_in(&home, &["stats", "--no-stream", "nobody"]);
@@ -5610,6 +5615,15 @@ fn inspecting_a_run_as_it_ends_never_deadlocks() {
                 })
             })
             .collect();
+        // However this loop ends, the inspectors stop: a failed step fails the test, and
+        // never leaves them spinning.
+        struct Stop<'a>(&'a std::sync::atomic::AtomicBool);
+        impl Drop for Stop<'_> {
+            fn drop(&mut self) {
+                self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+        let stop = Stop(&done);
         for i in 0..100 {
             let name = format!("ending-{i}");
             *current.lock().unwrap() = name.clone();
@@ -5618,8 +5632,243 @@ fn inspecting_a_run_as_it_ends_never_deadlocks() {
             let waited = shards_in(&home, &["wait", &name]);
             assert_eq!(waited.status, Some(0), "{waited}");
         }
-        done.store(true, std::sync::atomic::Ordering::Relaxed);
+        drop(stop);
         let asked: usize = inspectors.into_iter().map(|i| i.join().unwrap()).sum();
         assert!(asked > 40, "inspected only {asked} times");
     });
+}
+
+/// `--security-opt` (D42), as Docker's: the default profile's filter on the workload and
+/// its execs, none for `unconfined` or a privileged container (but one it names; here
+/// `builtin` too, which dockerd fails to read), a profile's file read by the CLI and
+/// kept in SecurityOpt, `no-new-privileges`, `systempaths=unconfined` leaving the paths
+/// unmasked, and refusals in dockerd's words: of an option as the container is made, of
+/// a profile as it starts, the container kept, created, with State.Error.
+#[test]
+fn security_opt_confines_as_docker_does() {
+    let Some((home, image)) = home("containers-security-opt") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let field = |out: &str, key: &str| -> String {
+        out.split("\\n")
+            .find_map(|l| l.strip_prefix(key))
+            .map(|v| v.trim().to_string())
+            .unwrap_or_default()
+    };
+    let status = |opts: &[&str]| {
+        let mut o = vec!["--rm"];
+        o.extend_from_slice(opts);
+        let ran = run_in(&home, &image, &o, &["stat", "/proc/self/status"]);
+        assert_eq!(ran.status, Some(0), "{opts:?}: {ran}");
+        (field(&ran.stdout, "Seccomp:"), field(&ran.stdout, "NoNewPrivs:"))
+    };
+    assert_eq!(status(&[]), ("2".into(), "0".into()), "the default profile");
+    assert_eq!(status(&["--security-opt", "seccomp=unconfined"]).0, "0");
+    assert_eq!(status(&["--privileged"]).0, "0");
+    assert_eq!(
+        status(&["--privileged", "--security-opt", "seccomp=builtin"]).0,
+        "2"
+    );
+    assert_eq!(
+        status(&["--security-opt", "no-new-privileges"]),
+        ("2".into(), "1".into())
+    );
+    assert_eq!(
+        status(&["--security-opt", "no-new-privileges:true", "-u", "1000"]).1,
+        "1"
+    );
+    // A profile's file: mkdir refused, in the workload and in an exec of it.
+    let profile = home.join("deny-mkdir.json");
+    std::fs::write(
+        &profile,
+        r#"{ "defaultAction": "SCMP_ACT_ALLOW",
+             "syscalls": [ { "names": ["mkdir", "mkdirat"], "action": "SCMP_ACT_ERRNO" } ] }"#,
+    )
+    .unwrap();
+    let opt = format!("seccomp={}", profile.display());
+    let refused = run_in(
+        &home,
+        &image,
+        &["--rm", "--security-opt", &opt],
+        &["fs", "mkdir:/made"],
+    );
+    assert_ne!(refused.status, Some(0), "{refused}");
+    assert!(refused.stderr.contains("Operation not permitted"), "{refused}");
+    let made = run_in(
+        &home,
+        &image,
+        &["-d", "--name", "confined", "--security-opt", &opt],
+        &["sleep"],
+    );
+    assert_eq!(made.status, Some(0), "{made}");
+    let exec = shards(&["exec", "confined", "/bin/testguest", "fs", "mkdir:/made"]);
+    assert!(exec.stderr.contains("Operation not permitted"), "{exec}");
+    let kept = shards(&["inspect", "-f", "{{json .HostConfig.SecurityOpt}}", "confined"]);
+    assert_eq!(
+        kept.stdout,
+        "[\"seccomp={\\\"defaultAction\\\":\\\"SCMP_ACT_ALLOW\\\",\\\"syscalls\\\":[{\\\"names\\\":[\\\"mkdir\\\",\\\"mkdirat\\\"],\\\"action\\\":\\\"SCMP_ACT_ERRNO\\\"}]}\"]\n"
+    );
+    assert_eq!(shards(&["rm", "-f", "confined"]).status, Some(0));
+    // systempaths=unconfined: /proc/kcore is the kernel's, not /dev/null over it.
+    let kcore = |opts: &[&str]| {
+        let mut o = vec!["--rm"];
+        o.extend_from_slice(opts);
+        run_in(&home, &image, &o, &["stat", "/proc/kcore"]).stdout
+    };
+    assert!(kcore(&[]).starts_with("/proc/kcore other"), "{}", kcore(&[]));
+    assert!(kcore(&["--security-opt", "systempaths=unconfined"]).starts_with("/proc/kcore file"));
+    let made = shards(&[
+        "create",
+        "--security-opt",
+        "systempaths=unconfined",
+        "--security-opt",
+        "label=disable",
+        &image,
+    ]);
+    let id = made.stdout.trim().to_string();
+    let shown = shards(&[
+        "inspect",
+        "-f",
+        "{{json .HostConfig.SecurityOpt}} {{json .HostConfig.MaskedPaths}} {{json .HostConfig.ReadonlyPaths}}",
+        &id,
+    ]);
+    assert_eq!(shown.stdout, "[\"label=disable\"] [] []\n");
+    assert_eq!(shards(&["rm", &id]).status, Some(0));
+    // Refusals: the CLI's, dockerd's as it makes the container, and as it starts it.
+    for (opt, said) in [
+        ("bogus", "invalid --security-opt: \"bogus\""),
+        (
+            "no-new-privileges=yes",
+            "Error response from daemon: invalid --security-opt 2: \"no-new-privileges=yes\"",
+        ),
+        (
+            "bogus=1",
+            "Error response from daemon: invalid --security-opt 2: \"bogus=1\"",
+        ),
+    ] {
+        let out = shards(&["run", "--rm", "--security-opt", opt, &image, "exit", "0"]);
+        assert_eq!(out.status, Some(125), "{out}");
+        assert!(out.stderr.contains(said), "{opt}: {out}");
+    }
+    let bad = home.join("bad-action.json");
+    std::fs::write(&bad, r#"{"defaultAction":"SCMP_ACT_NOPE"}"#).unwrap();
+    let opt = format!("seccomp={}", bad.display());
+    let made = shards(&[
+        "create",
+        "--name",
+        "bad",
+        "--security-opt",
+        &opt,
+        &image,
+        "exit",
+        "0",
+    ]);
+    assert_eq!(made.status, Some(0), "made as dockerd makes it: {made}");
+    let started = shards(&["start", "bad"]);
+    assert_eq!(started.status, Some(1), "{started}");
+    assert!(
+        started
+            .stderr
+            .contains("string SCMP_ACT_NOPE is not a valid action for seccomp"),
+        "{started}"
+    );
+    let state = shards(&[
+        "inspect",
+        "-f",
+        "{{.State.Status}} {{.State.ExitCode}} {{.State.Error}}",
+        "bad",
+    ]);
+    assert_eq!(
+        state.stdout,
+        "created 128 string SCMP_ACT_NOPE is not a valid action for seccomp\n"
+    );
+    let ran = shards(&["run", "--rm", "--security-opt", &opt, &image, "exit", "0"]);
+    assert_eq!(ran.status, Some(125), "{ran}");
+}
+
+/// A workload starts with Docker's resource limits (Docker Desktop 29.3.1's, from its
+/// runtime's: open files 1048576, processes and locked memory unlimited), not the guest
+/// kernel's own init's; `--ulimit` sets its own over them, in an exec too.
+#[test]
+fn workloads_start_with_dockers_limits() {
+    let Some((home, image)) = home("containers-limits") else {
+        return;
+    };
+    let limit = |out: &str, name: &str| -> String {
+        out.split("\\n")
+            .find_map(|l| l.strip_prefix(name))
+            .map(|v| v.split_whitespace().take(2).collect::<Vec<_>>().join(" "))
+            .unwrap_or_default()
+    };
+    let ran = run_in(&home, &image, &["--rm"], &["stat", "/proc/self/limits"]);
+    assert_eq!(ran.status, Some(0), "{ran}");
+    assert_eq!(limit(&ran.stdout, "Max open files"), "1048576 1048576", "{ran}");
+    assert_eq!(limit(&ran.stdout, "Max processes"), "unlimited unlimited");
+    assert_eq!(limit(&ran.stdout, "Max locked memory"), "unlimited unlimited");
+    let made = run_in(
+        &home,
+        &image,
+        &["-d", "--name", "limited", "--ulimit", "nofile=1024:2048"],
+        &["sleep"],
+    );
+    assert_eq!(made.status, Some(0), "{made}");
+    let exec = shards_in(
+        &home,
+        &["exec", "limited", "/bin/testguest", "stat", "/proc/self/limits"],
+    );
+    assert_eq!(limit(&exec.stdout, "Max open files"), "1024 2048", "{exec}");
+    assert_eq!(limit(&exec.stdout, "Max processes"), "unlimited unlimited");
+    assert_eq!(shards_in(&home, &["rm", "-f", "limited"]).status, Some(0));
+}
+
+/// `stats` reads each running container's guest as dockerd reads a container's cgroup:
+/// its CPU over the second between two samples, memory less inactive file pages against
+/// its limit, its processes, and its interfaces' and block devices' bytes, laid out as
+/// docker/cli lays them out, `--format` included; a stopped one's zeros under `-a`.
+#[test]
+fn stats_read_the_guest_as_docker_reads_a_container() {
+    let Some((home, image)) = home("containers-stats-guest") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let made = run_in(
+        &home,
+        &image,
+        &["-d", "--name", "busy", "--memory", "64m"],
+        &["spin"],
+    );
+    assert_eq!(made.status, Some(0), "{made}");
+    let shown = shards(&["stats", "--no-stream", "--format", "{{json .}}", "busy"]);
+    assert_eq!(shown.status, Some(0), "{shown}");
+    let v: serde_json::Value = serde_json::from_str(shown.stdout.trim()).unwrap();
+    assert_eq!(v["Container"], "busy");
+    assert_eq!(v["Name"], "busy");
+    let cpu: f64 = v["CPUPerc"]
+        .as_str()
+        .unwrap()
+        .trim_end_matches('%')
+        .parse()
+        .unwrap();
+    assert!(cpu > 50.0, "a spinning workload's CPU: {shown}");
+    let mem = v["MemUsage"].as_str().unwrap();
+    assert!(mem.ends_with(" / 64MiB"), "its limit: {shown}");
+    assert_eq!(v["PIDs"], "1", "{shown}");
+    let table = shards(&["stats", "--no-stream", "busy"]);
+    assert!(
+        table
+            .stdout
+            .starts_with("CONTAINER ID   NAME      CPU %     MEM USAGE / LIMIT   MEM %     NET I/O"),
+        "{table}"
+    );
+    assert_eq!(shards(&["create", "--name", "idle", &image]).status, Some(0));
+    let all = shards(&[
+        "stats",
+        "--no-stream",
+        "-a",
+        "--format",
+        "{{.Name}} {{.CPUPerc}} {{.MemUsage}} {{.PIDs}}",
+    ]);
+    assert!(all.stdout.lines().any(|l| l == "idle 0.00% 0B / 0B 0"), "{all}");
+    assert_eq!(shards(&["rm", "-f", "busy", "idle"]).status, Some(0));
 }

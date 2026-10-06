@@ -234,6 +234,9 @@ pub mod builtin {
     pub const CGROUP: u8 = 9;
     /// The disk the writable layer uses, in decimal: inspect's and `ps -s`'s SizeRw.
     pub const SIZE: u8 = 10;
+    /// The workload's use of its microVM, for `stats`: lines of `KEY VALUE`, each in
+    /// decimal, as the cgroup's interface files and /proc say them (see shards-init).
+    pub const STATS: u8 = 11;
 }
 
 /// A terminal's size in character cells. Zero in either leaves the pty's size alone, as

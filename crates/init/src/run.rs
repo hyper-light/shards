@@ -58,6 +58,8 @@ fn setup_failed(message: impl Into<String>) -> Failure {
 /// template (`template`), it asks for a snapshot once the image is mounted: every VM
 /// restored from it continues from there, and dials the host for its own workload.
 pub fn main(device: &str, template: bool) -> ! {
+    // Docker's limits for what it starts, inherited by the standby and so the workload.
+    defaults::limits();
     // Before any snapshot, so that every copy of a template has one.
     let standby = mount_root(device).and_then(|()| Standby::fork(None));
     if template && standby.is_ok() {
@@ -285,7 +287,8 @@ struct Inherited {
     caps: Option<u64>,
     /// `--group-add`'s groups.
     groups: Vec<Vec<u8>>,
-    /// Its setup entries an exec's standby applies too: `ulimit=` and `oom=`.
+    /// Its setup entries an exec's standby applies too: `ulimit=`, `oom=`, and its
+    /// seccomp filter and no_new_privs, as runc's exec takes the container's.
     setup: Vec<Vec<u8>>,
 }
 
@@ -306,13 +309,100 @@ fn sort_setup(entries: &[Vec<u8>], into: &mut Inherited) -> Result<Vec<Vec<u8>>,
         } else if let Some(group) = entry.strip_prefix(b"group=") {
             into.groups.push(group.to_vec());
         } else {
-            if entry.starts_with(b"ulimit=") || entry.starts_with(b"oom=") {
+            if entry.starts_with(b"ulimit=")
+                || entry.starts_with(b"oom=")
+                || entry.starts_with(b"seccomp=")
+                || entry == b"nnp"
+            {
                 into.setup.push(entry.clone());
             }
             standby.push(entry.clone());
         }
     }
     Ok(standby)
+}
+
+/// The workload's use of its microVM, as dockerd's stats read a container's
+/// (moby daemon/stats/collector_unix.go, containerd's cgroup v2 metrics): its cgroup's
+/// CPU time in ns (cpu.stat usage_usec), memory in use, its inactive file pages and its
+/// limit (memory.current, memory.stat, memory.max, else MemTotal), processes
+/// (pids.current), bytes read and written (io.stat's rbytes and wbytes, summed); the
+/// VM's CPU time in ns from /proc/stat, as dockerd's system usage, and its online CPUs;
+/// and the bytes its interfaces received and sent but loopback's (/proc/net/dev), as
+/// libnetwork counts a container's endpoints.
+fn stats() -> String {
+    let read = |p: &str| std::fs::read_to_string(p).unwrap_or_default();
+    let cg = |f: &str| read(&format!("{WORKLOAD_CGROUP}/{f}"));
+    let field = |text: &str, key: &str| -> u64 {
+        text.lines()
+            .find_map(|l| l.strip_prefix(key)?.strip_prefix(' ')?.trim().parse().ok())
+            .unwrap_or(0)
+    };
+    let number = |text: String| text.trim().parse::<u64>().unwrap_or(0);
+    let cpu = field(&cg("cpu.stat"), "usage_usec").saturating_mul(1000);
+    let memory = cg("memory.stat");
+    let limit = match cg("memory.max").trim() {
+        "max" | "" => read("/proc/meminfo")
+            .lines()
+            .find_map(|l| {
+                l.strip_prefix("MemTotal:")?
+                    .split_whitespace()
+                    .next()?
+                    .parse::<u64>()
+                    .ok()
+            })
+            .unwrap_or(0)
+            .saturating_mul(1024),
+        n => n.parse().unwrap_or(0),
+    };
+    let (mut rbytes, mut wbytes) = (0u64, 0u64);
+    for line in cg("io.stat").lines() {
+        for kv in line.split_whitespace() {
+            if let Some(n) = kv.strip_prefix("rbytes=").and_then(|n| n.parse::<u64>().ok()) {
+                rbytes = rbytes.saturating_add(n);
+            } else if let Some(n) = kv.strip_prefix("wbytes=").and_then(|n| n.parse::<u64>().ok()) {
+                wbytes = wbytes.saturating_add(n);
+            }
+        }
+    }
+    // /proc/stat's "cpu" line, in clock ticks (USER_HZ, 100 on Linux) over every CPU.
+    let stat = read("/proc/stat");
+    let ticks: u64 = stat
+        .lines()
+        .find(|l| l.starts_with("cpu "))
+        .map(|l| {
+            l.split_whitespace()
+                .skip(1)
+                .filter_map(|t| t.parse::<u64>().ok())
+                .sum()
+        })
+        .unwrap_or(0);
+    let online = stat
+        .lines()
+        .filter(|l| l.starts_with("cpu") && !l.starts_with("cpu "))
+        .count();
+    let (mut rx, mut tx) = (0u64, 0u64);
+    for line in read("/proc/net/dev").lines().skip(2) {
+        let Some((name, counters)) = line.split_once(':') else {
+            continue;
+        };
+        if name.trim() == "lo" {
+            continue;
+        }
+        let c: Vec<u64> = counters
+            .split_whitespace()
+            .filter_map(|t| t.parse().ok())
+            .collect();
+        rx = rx.saturating_add(c.first().copied().unwrap_or(0));
+        tx = tx.saturating_add(c.get(8).copied().unwrap_or(0));
+    }
+    format!(
+        "cpu {cpu}\nsystem {}\nonline {online}\nmemory {}\ninactive_file {}\nlimit {limit}\npids {}\nread {rbytes}\nwrite {wbytes}\nrx {rx}\ntx {tx}\n",
+        ticks.saturating_mul(10_000_000),
+        number(cg("memory.current")),
+        field(&memory, "inactive_file"),
+        number(cg("pids.current")),
+    )
 }
 
 /// Where the workload's cgroup is, as init sees the hierarchy.
@@ -829,6 +919,10 @@ mod step {
     /// An entry of `Spec::setup`, its index in the candidate's place
     /// (crate::setup::apply).
     pub const SETUP: u8 = 8;
+    /// Loading its seccomp filter.
+    pub const SECCOMP: u8 = 9;
+    /// Setting no_new_privs.
+    pub const NNP: u8 = 10;
 }
 
 /// A running workload and init's ends of its stdio. With a terminal, `stdout` is its
@@ -1267,6 +1361,13 @@ fn standby(ends: Ends, join: Option<libc::pid_t>) -> ! {
     let stdin = null.as_ref().map_or(stdin.as_raw_fd(), AsRawFd::as_raw_fd);
     // Read now, in this single-threaded fork of init, and not in `child`.
     let last_cap = defaults::last_cap();
+    let filter = crate::setup::filter(&o.setup);
+    let fprog = filter.as_ref().map(|(_, p)| libc::sock_fprog {
+        len: u16::try_from(p.len()).unwrap_or(u16::MAX),
+        filter: p.as_ptr().cast_mut(),
+    });
+    let seccomp = filter.as_ref().map(|(f, _)| *f).zip(fprog.as_ref());
+    let nnp = o.setup.iter().any(|e| e == b"nnp");
     // SAFETY: this process is the child of a fork of single-threaded init, and `child`
     // runs on data built above.
     unsafe {
@@ -1282,6 +1383,8 @@ fn standby(ends: Ends, join: Option<libc::pid_t>) -> ! {
             candidates: &candidates,
             explicit: o.explicit,
             last_cap,
+            seccomp,
+            nnp,
             argv: argv_ptrs.as_ptr(),
             envp: envp_ptrs.as_ptr(),
         })
@@ -1366,6 +1469,7 @@ fn builtin(kind: u8, args: &[Vec<u8>]) -> Result<Started, Failure> {
             run::builtin::CHANGES => crate::changes::write(&mut out),
             run::builtin::EXPORT => export(&mut out),
             run::builtin::CGROUP => write_cgroup(args).map_err(io::Error::other),
+            run::builtin::STATS => out.write_all(stats().as_bytes()),
             run::builtin::SIZE => crate::changes::upper()
                 .ok_or_else(|| io::Error::other("the writable layer was not kept"))
                 .and_then(|u| crate::layer::usage(std::path::Path::new(&u)))
@@ -2013,6 +2117,19 @@ fn exec_failure(which: u8, errno: i32, argv0: &[u8], tried: &[u8], cwd: &[u8], u
                 daemon: false,
             };
         }
+        // runc's words (libcontainer/seccomp, init_linux.go).
+        step::SECCOMP | step::NNP => {
+            let message = if which == step::SECCOMP {
+                format!("error loading seccomp filter into kernel: error loading seccomp filter: {err}")
+            } else {
+                format!("prctl(SET_NO_NEW_PRIVS): {err}")
+            };
+            return Failure {
+                status: NOT_RUN,
+                message,
+                daemon: false,
+            };
+        }
         _ => format!("exec {}: {err}", String::from_utf8_lossy(tried)),
     };
     Failure {
@@ -2038,6 +2155,9 @@ struct Child<'a> {
     explicit: bool,
     /// The kernel's last capability, for the bounding set's.
     last_cap: u32,
+    /// Its seccomp filter and its seccomp(2) flags, and whether no_new_privs is set.
+    seccomp: Option<(u32, &'a libc::sock_fprog)>,
+    nnp: bool,
     argv: *const *const libc::c_char,
     envp: *const *const libc::c_char,
 }
@@ -2098,6 +2218,23 @@ unsafe fn child(c: &Child<'_>) -> ! {
         }
         // As root first; if root may not, again as the user (runc does the same).
         let mut chdir_ok = libc::chdir(c.cwd.as_ptr()) == 0;
+        // seccomp(2) with the filter: SECCOMP_SET_MODE_FILTER, its flags, its program.
+        let load = |(flags, prog): (u32, &libc::sock_fprog)| {
+            libc::syscall(
+                libc::SYS_seccomp,
+                1 as libc::c_long,
+                libc::c_long::from(flags),
+                prog as *const libc::sock_fprog,
+            ) == 0
+        };
+        // Without no_new_privs, loading a filter needs CAP_SYS_ADMIN: before the
+        // capabilities go (runc, standard_init_linux.go).
+        if !c.nnp
+            && let Some(f) = c.seccomp
+            && !load(f)
+        {
+            fail(step::SECCOMP);
+        }
         // A container's capabilities (crate::defaults), as runc applies them
         // (finalizeNamespace): the bounding set first, the rest kept across the change of
         // user, then set. For any user but root, execve then leaves none but the
@@ -2122,6 +2259,17 @@ unsafe fn child(c: &Child<'_>) -> ! {
         }
         if !chdir_ok {
             fail(step::CHDIR);
+        }
+        // With it, as late as can be: just before the command (runc).
+        if c.nnp {
+            if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
+                fail(step::NNP);
+            }
+            if let Some(f) = c.seccomp
+                && !load(f)
+            {
+                fail(step::SECCOMP);
+            }
         }
         for (i, path) in c.candidates.iter().enumerate() {
             // Go's findExecutable: a file that is not a directory, executable by us.

@@ -438,6 +438,12 @@ pub struct Run {
     pub oom_score_adj: i64,
     /// `--privileged`.
     pub privileged: bool,
+    /// `--security-opt`, as docker/cli sends them (HostConfig.SecurityOpt): a seccomp
+    /// profile's file read in, `seccomp=` and its JSON compacted; `systempaths=` taken out.
+    pub security_opt: Vec<String>,
+    /// `--security-opt systempaths=unconfined`: no paths masked or made read-only
+    /// (HostConfig.MaskedPaths and ReadonlyPaths empty).
+    pub system_paths: bool,
     /// `-v`'s binds and named volumes (HostConfig.Binds), each `SOURCE:DEST[:MODE]`, a
     /// relative host path made absolute.
     pub binds: Vec<String>,
@@ -787,6 +793,15 @@ impl Run {
                     Vec::new()
                 },
             ),
+            ("security-opt", self.security_opt.clone()),
+            (
+                "system-paths",
+                if self.system_paths {
+                    vec![String::new()]
+                } else {
+                    Vec::new()
+                },
+            ),
             ("binds", self.binds.clone()),
             ("volumes", self.volumes.clone()),
             ("mounts", self.mounts.clone()),
@@ -935,6 +950,8 @@ impl Run {
                     "group-add" => run.group_add = values,
                     "oom-score-adj" => run.oom_score_adj = values.first()?.parse().ok()?,
                     "privileged" => run.privileged = true,
+                    "security-opt" => run.security_opt = values,
+                    "system-paths" => run.system_paths = true,
                     "binds" => run.binds = values,
                     "volumes" => run.volumes = values,
                     "mounts" => run.mounts = values,
@@ -1454,6 +1471,11 @@ mod tests {
             group_add: vec!["audio".into()],
             oom_score_adj: -500,
             privileged: true,
+            security_opt: vec![
+                "no-new-privileges".into(),
+                "seccomp={\"defaultAction\":\"SCMP_ACT_ALLOW\"}".into(),
+            ],
+            system_paths: true,
             binds: vec!["/h:/c:ro".into()],
             volumes: vec!["/anon".into()],
             mounts: vec!["type=volume,source=v,target=/v".into()],
@@ -1488,6 +1510,8 @@ mod tests {
             group_add: Vec::new(),
             oom_score_adj: 0,
             privileged: false,
+            security_opt: Vec::new(),
+            system_paths: false,
             binds: Vec::new(),
             volumes: Vec::new(),
             mounts: Vec::new(),

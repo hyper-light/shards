@@ -412,6 +412,7 @@ fn request(parsed: &Parsed) -> Result<Run, String> {
         blkio_weight: parsed.string("blkio-weight").parse().unwrap_or(0),
     };
     let (cap_add, cap_drop) = effective_caps(parsed.many("cap-add"), parsed.many("cap-drop"));
+    let (security_opt, system_paths) = security_opts(parsed.many("security-opt"))?;
     let (binds, volumes, mounts) = volumes(parsed)?;
     // Each range a port at a time, as the CLI exposes them (container/opts.go).
     let mut expose = Vec::new();
@@ -484,6 +485,8 @@ fn request(parsed: &Parsed) -> Result<Run, String> {
         ulimits: parsed.many("ulimit").to_vec(),
         sysctls: parsed.many("sysctl").to_vec(),
         cap_add,
+        security_opt,
+        system_paths,
         cap_drop,
         group_add: parsed.many("group-add").to_vec(),
         oom_score_adj: parsed.int("oom-score-adj"),
@@ -754,6 +757,43 @@ fn effective_caps(add: &[String], drop: &[String]) -> (Vec<String>, Vec<String>)
             .collect()
     };
     (normalize(add), normalize(drop))
+}
+
+/// `--security-opt`, as docker/cli reads it (cli/command/container/opts.go,
+/// parseSecurityOpts then parseSystemPaths): each `KEY=VALUE` or `KEY:VALUE` but
+/// `no-new-privileges`, which needs none; a seccomp profile's file, but `builtin` and
+/// `unconfined`, read here and sent as its JSON compacted; and `systempaths=unconfined`
+/// taken out, for no paths masked.
+fn security_opts(opts: &[String]) -> Result<(Vec<String>, bool), String> {
+    let mut out = Vec::with_capacity(opts.len());
+    for opt in opts {
+        let (k, v, ok) = match opt.split_once('=') {
+            Some((k, v)) => (k, v, true),
+            None if opt == "no-new-privileges" => (opt.as_str(), "", false),
+            None => match opt.split_once(':') {
+                Some((k, v)) => (k, v, true),
+                None => (opt.as_str(), "", false),
+            },
+        };
+        if (!ok || v.is_empty()) && k != "no-new-privileges" {
+            return Err(format!(
+                "invalid --security-opt: {}",
+                shards_cmdline::go::quote(opt)
+            ));
+        }
+        if k == "seccomp" && v != "builtin" && v != "unconfined" {
+            let text = std::fs::read(v)
+                .map_err(|e| format!("opening seccomp profile ({v}) failed: open {v}: {}", go_errno(&e)))?;
+            let compacted = shards_dockerfile::json_compact(&text)
+                .map_err(|e| format!("compacting json for seccomp profile ({v}) failed: {e}"))?;
+            out.push(format!("seccomp={}", String::from_utf8_lossy(&compacted)));
+            continue;
+        }
+        out.push(opt.clone());
+    }
+    let system_paths = out.iter().any(|o| o == "systempaths=unconfined");
+    out.retain(|o| o != "systempaths=unconfined");
+    Ok((out, system_paths))
 }
 
 /// An I/O error as Go's syscall.Errno says it.

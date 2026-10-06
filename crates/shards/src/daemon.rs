@@ -1851,6 +1851,11 @@ impl<D: Disk> Daemon<D> {
         let shared = crate::volumes::open(&points, first, &crate::volumes::Store::new(&self.home)).and_then(
             |opened| {
                 prepared.spec.setup = crate::setup::setup(&run, &opened.mounts)?;
+                let kernel = crate::guest::version_of(crate::run::kernel_of(&prepared.boot))?;
+                prepared
+                    .spec
+                    .setup
+                    .extend(crate::setup::security_setup(&run, kernel)?);
                 crate::spec::fits(&prepared.spec)?;
                 let link = self.start_shares(threads, &opened.dirs)?;
                 prepared.shares = u32::try_from(opened.dirs.len()).map_err(|_| "too many shares")?;
@@ -2425,6 +2430,7 @@ impl<D: Disk> Daemon<D> {
             started: None,
             finished: None,
             exit_code: None,
+            error: String::new(),
             auto_remove: run.remove,
             log_lost: 0,
             stop_signal,
@@ -2526,7 +2532,10 @@ impl<D: Disk> Daemon<D> {
             (format!("No such container: {id}"), 0)
         } else {
             let (said, code) = shards_cmdline::commands::start_failed(why);
-            removal = self.end_container(&mut registry, id, |c| c.exit_code = Some(code));
+            removal = self.end_container(&mut registry, id, |c| {
+                c.exit_code = Some(code);
+                c.error.clone_from(&said);
+            });
             (said, code)
         };
         lock(&self.runs).remove(id);
@@ -3083,6 +3092,7 @@ impl<D: Disk> Daemon<D> {
             c.state = Life::Running;
             c.started = Some(containers::now());
             c.oom_killed = false;
+            c.error.clear();
             c.restart.restarting = false;
             if !by_policy {
                 c.restart.count = 0;
@@ -3162,6 +3172,9 @@ impl<D: Disk> Daemon<D> {
             let mut registry = lock(&self.containers);
             let removal = self.end_container(&mut registry, id, |c| {
                 c.exit_code = Some(status);
+                if let Some(why) = &said {
+                    c.error.clone_from(why);
+                }
                 if started {
                     c.state = Life::Exited;
                     c.finished = Some(containers::now());

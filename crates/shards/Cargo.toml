@@ -31,6 +31,7 @@ shards-template = { path = "../template" }
 shards-build = { path = "../build" }
 shards-cmdline = { path = "../cmdline" }
 shards-dockerfile = { path = "../dockerfile" }
+shards-seccomp = { path = "../seccomp" }
 shards-image = { path = "../image" }
 regex = "1"
 shards-ipc = { path = "../ipc" }

@@ -106,3 +106,25 @@ pub fn set(last: u32, keep: impl Fn(u32) -> bool) -> bool {
     // SAFETY: capset(2) with a version 3 header and two data structs.
     unsafe { libc::syscall(libc::SYS_capset, &raw mut header, data.as_ptr()) == 0 }
 }
+
+/// The resource limits a container's process starts with, as Docker's runtime gives them,
+/// which it inherits from containerd's (its systemd unit's LimitNOFILE and LimitNPROC
+/// infinity; measured on Docker Desktop 29.3.1, `cat /proc/self/limits`, 2026-10-05):
+/// open files 1048576 (the kernel's nr_open), processes and locked memory unlimited. The
+/// guest kernel's own would be its init's (1024:4096 files, and processes and pending
+/// signals by the VM's small memory). Pending signals stay the kernel's, by the VM's
+/// memory, as Docker's are by its host's. `--ulimit` sets its own over them.
+pub fn limits() {
+    let set = |resource, cur, max| {
+        let limit = libc::rlimit {
+            rlim_cur: cur,
+            rlim_max: max,
+        };
+        // SAFETY: setrlimit(2) of a resource with a limit on our stack; a limit the kernel
+        // refuses leaves its own.
+        unsafe { libc::setrlimit(resource, &limit) };
+    };
+    set(libc::RLIMIT_NOFILE, 1_048_576, 1_048_576);
+    set(libc::RLIMIT_NPROC, libc::RLIM_INFINITY, libc::RLIM_INFINITY);
+    set(libc::RLIMIT_MEMLOCK, libc::RLIM_INFINITY, libc::RLIM_INFINITY);
+}

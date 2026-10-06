@@ -423,15 +423,8 @@ fn sheet(f: &Facts) -> shards_ipc::Sheet {
     sheet
 }
 
-/// The release a kernel image says it is (`Linux version 6.18.48 …`, the banner every
-/// kernel carries, init/version.c), where it is not compressed.
 fn kernel_version(kernel: &Path) -> Option<String> {
-    let image = std::fs::read(kernel).ok()?;
-    let banner = b"Linux version ";
-    let at = image.windows(banner.len()).position(|w| w == banner)? + banner.len();
-    let rest = image.get(at..)?;
-    let end = rest.iter().position(|&b| b == b' ' || b == 0)?;
-    std::str::from_utf8(rest.get(..end)?).ok().map(str::to_string)
+    crate::guest::release(kernel)
 }
 
 /// The host's operating system: macOS's product name and version, or os-release's

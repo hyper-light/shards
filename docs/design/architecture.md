@@ -2197,9 +2197,16 @@ gone with the VM. So a container that stays (not `--rm`) keeps it on the host:
   visit's), one visit at a time, and `start` waits for one under way; what `cp` copied in
   is saved as its layer as the visit ends. It costs 5.7 ms at p50 over a running one's
   [PM M116]. `top` of a stopped container is refused, as dockerd refuses it.
-- Open: keeping the layer on the host from the start (a disk under the overlay) would
-  cost a stop nothing and let a stopped container's files be read without a VM; to be
-  measured against M115 and M116.
+- Open, and owed before the Agentfile: keeping the layer on the host from the start (a
+  disk under the overlay) would cost a stop nothing and let a stopped container's files
+  be read without a VM; to be measured against M115 and M116. It is also what makes
+  shards hold what Docker holds: in guest memory, the files a container writes are its
+  memory, charged to its cgroup, so that `stats` shows a container that wrote a 20 MiB
+  file as 20.38MiB where Docker shows 1.398MiB (the file its page cache, which the CLI
+  leaves out), and a container without a limit can write what its VM's memory holds,
+  where Docker's writes what its host's disk does. Under a limit both alike kill a writer
+  past it (`dd` of 100 MiB under `--memory 64m`: killed at 64 MiB in both, Docker 29.3.1,
+  2026-10-05).
 - **`cp`.** docker/cli's `cp.go` on shards-archive's port of go-archive's copy rules;
   dockerd's half (stat, archive, extract into a directory, `-a`'s owner) runs as init
   built-ins in the microVM, and the archive passes between it and the client through a
@@ -2431,6 +2438,75 @@ Docker Engine 29.3.1's.
   client sets none. The E2E tests set `SHARDS_LOCAL_STORE=none` (`common::command`) and
   publish only to an engine of their own; before, every test daemon published to the
   host's Docker, and any upload a test's end cut off would lock its content there.
+
+### Security options and seccomp (D42)
+
+`--security-opt` on `run` and `create` is Docker's (docker/cli opts.go parseSecurityOpts
+and parseSystemPaths; moby docker-v29.8.1 daemon/daemon_unix.go parseSecurityOpt,
+daemon/seccomp_linux.go WithSeccomp, oci_linux.go; runc v1.3.4's init), held to Docker
+Engine 29.3.1's words and to what its containers see (`security_opt_confines_as_docker_does`):
+
+- The CLI reads a profile's file and sends its JSON compacted (Go's json.Compact, its
+  words on what is no JSON), takes `systempaths=unconfined` out for no masked or
+  read-only paths, and refuses an option without a value but `no-new-privileges`.
+  dockerd refuses the rest as the container is made ("invalid --security-opt 1/2"), keeps
+  them in HostConfig.SecurityOpt (`label=disable` after for a privileged container), and
+  takes labels and AppArmor profiles as a host without SELinux or AppArmor does, which
+  the guest kernel has neither of; `writable-cgroups=true` leaves the cgroup hierarchy
+  writable.
+- The workload runs under Docker's default seccomp profile (moby/profiles seccomp
+  v0.2.3), the one a container names, or none (`unconfined`, or privileged and naming
+  none), resolved for its capabilities, the guest's architecture and the guest kernel's
+  version (`minKernel`), compiled at start, cached per profile, capabilities and kernel,
+  and loaded by shards-init where runc loads it: before the capabilities go, or with
+  `no-new-privileges` just before the command; an exec takes the container's. A profile
+  that cannot be loaded fails the start, not the making, the container kept created with
+  exit code 128 and the reason in State.Error, which shards now keeps for every start that
+  fails (it was always empty); `docker run` exits 125.
+- The filter is shards' own (crates/seccomp). Its rules are kept as libseccomp 2.5.4
+  keeps them (db.c ported), so that a profile's overlapping rules mean what they mean to
+  Docker, and Docker mode in its tests decides as runc's program does on every input of a
+  grid and refuses in its words, for 33 cases on both guest architectures recorded on
+  native Linux (scripts/seccomp/generate). Where Docker's toolchain gets a profile wrong,
+  shards does better, each difference pinned by its tests:
+  - Names are read by the guest kernel's own tables (Linux 6.18.48,
+    scripts/seccomp/kernel-tables). Docker's runc reads them by its libseccomp's: Docker
+    Desktop 29.3.1's refuses listmount, statmount and mseal, which its own default
+    profile allows and its kernel has, with ENOSYS (PM M119).
+  - runc's -ENOSYS stub for syscalls past the profile's last is kept; a number below it
+    that is no syscall is ENOSYS too, as the kernel's own answer.
+  - On x86, libseccomp writes socketcall(2)'s call number over a socket rule's first
+  comparison, so that `socket` allowed but for some families is socketcall allowed for
+  every family; here the multiplexer takes such a rule's action only where it is the
+  more restrictive. ipc(2)'s call is compared in its low 16 bits, which are all the
+  kernel reads of it.
+  - libseccomp's slip merging 64-bit LT/LE rules (it sets the true action) is fixed.
+  - `--privileged --security-opt seccomp=builtin` is the default profile; dockerd reads
+  `builtin` as JSON and fails.
+  - The program: ranges of one decision by binary search, identical decisions shared, a
+  third of runc's length and 43% fewer instructions per syscall at the median (PM M120).
+- Not served: SCMP_ACT_NOTIFY, which needs a seccomp agent (listenerPath) shards does not
+  run; it is refused as the container starts.
+
+### stats (D43)
+
+`shards stats` reads each running container's guest as dockerd's collector reads a
+container's cgroup (moby daemon/stats/collector_unix.go): shards-init's STATS built-in
+says the workload cgroup's CPU time, memory in use and its inactive file pages, its
+limit (memory.max, else the VM's memory), its processes and its block devices' bytes,
+the VM's CPU time from /proc/stat and its online CPUs, and the bytes its interfaces but
+loopback's moved. docker/cli's helpers make the figures of two samples a second apart
+(calculateCPUPercentUnix; memory less inactive_file on cgroup v2), and its formatter
+(container/formatter_stats.go, `format::stats`) lays them out, `--format` with it; a
+stopped container under `-a` shows zeros, as Docker's does. Every container is sampled at
+once, each on its own thread. The CPU's denominator is the host's clock between the
+samples, where docker/cli's is the system's CPU time from /proc/stat: inside a VM on a
+loaded host that does not keep time (one spinning vCPU read 329% and 2503%). A paused
+container's VM cannot answer; it shows the sample taken as it was paused, its CPU 0%,
+where dockerd reads a frozen cgroup's files from outside it. Before, `stats` showed the VM process's own CPU and
+resident memory and `--` for the rest. Memory is the guest's truth: the files a
+container writes are memory while its writable layer is in guest memory (D37's open
+item).
 
 ## 4. Start path (≤ 5 ms budget)
 

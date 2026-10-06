@@ -237,6 +237,10 @@ fn mkdir_all(path: &str) -> io::Result<()> {
 /// fork of init, before it execs. The errno of what failed.
 pub fn apply(entry: &[u8]) -> Result<(), i32> {
     let last = || io::Error::last_os_error().raw_os_error().unwrap_or(libc::EIO);
+    // The process's own, done last, as it execs (run.rs `child`).
+    if entry.starts_with(b"seccomp=") || entry == b"nnp" {
+        return Ok(());
+    }
     let text = std::str::from_utf8(entry).map_err(|_| libc::EINVAL)?;
     let mount = |src: &str, dst: &str, fstype: &str, flags: libc::c_ulong, data: &str| -> Result<(), i32> {
         let (src, dst, fstype, data) = (
@@ -286,6 +290,13 @@ pub fn apply(entry: &[u8]) -> Result<(), i32> {
         std::fs::write("/proc/self/oom_score_adj", n).map_err(|e| e.raw_os_error().unwrap_or(libc::EIO))?;
     } else if text == "privileged" {
         privileged().map_err(|e| e.raw_os_error().unwrap_or(libc::EIO))?;
+    } else if text == "unmasked" {
+        // `--security-opt systempaths=unconfined`: none masked or made read-only.
+        unmask();
+    } else if text == "cgroups-rw" {
+        // `--security-opt writable-cgroups=true`: the cgroup hierarchy writable.
+        let flags = libc::MS_REMOUNT | libc::MS_BIND | libc::MS_NOSUID | libc::MS_NOEXEC | libc::MS_NODEV;
+        mount("", "/sys/fs/cgroup", "", flags, "")?;
     } else if text == "readonly" {
         // runc's remount of the root: this mount namespace's, read-only.
         mount(
@@ -497,23 +508,44 @@ fn copy_xattrs(from: &std::path::Path, to: &std::path::Path) {
     }
 }
 
+/// The masked and read-only paths, undone (each mount over one detached).
+fn unmask() {
+    for p in crate::defaults::MASKED
+        .iter()
+        .chain(crate::defaults::READONLY.iter())
+    {
+        if let Some(c) = c(p) {
+            // SAFETY: umount2(2) of a NUL-terminated path; one not mounted is left.
+            unsafe { libc::umount2(c.as_ptr(), libc::MNT_DETACH) };
+        }
+    }
+}
+
+/// The seccomp filter a setup names (`seccomp=`: its seccomp(2) flags, then its program's
+/// instructions as `struct sock_filter`s), if it names one.
+pub fn filter(entries: &[Vec<u8>]) -> Option<(u32, Vec<libc::sock_filter>)> {
+    let raw = entries.iter().find_map(|e| e.strip_prefix(b"seccomp="))?;
+    let (flags, insns) = raw.split_first_chunk::<4>()?;
+    let program = insns
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .map(|&[c0, c1, jt, jf, k0, k1, k2, k3]| libc::sock_filter {
+            code: u16::from_ne_bytes([c0, c1]),
+            jt,
+            jf,
+            k: u32::from_ne_bytes([k0, k1, k2, k3]),
+        })
+        .collect();
+    Some((u32::from_le_bytes(*flags), program))
+}
+
 /// What a privileged container has of the host's, of the VM's (moby daemon/oci_linux.go,
 /// WithDevices, WithMounts and masked and read-only paths left out): no masked or
 /// read-only paths, `/sys` and its cgroup writable, and every device the VM has, made in
 /// `/dev` from what `/sys/dev` says of each, as runc makes a host's devices.
 fn privileged() -> io::Result<()> {
-    let detach = |p: &str| {
-        if let Some(c) = c(p) {
-            // SAFETY: umount2(2) of a NUL-terminated path; one not mounted is left.
-            unsafe { libc::umount2(c.as_ptr(), libc::MNT_DETACH) };
-        }
-    };
-    for p in crate::defaults::MASKED
-        .iter()
-        .chain(crate::defaults::READONLY.iter())
-    {
-        detach(p);
-    }
+    unmask();
     let remount = |path: &std::ffi::CStr, flags: libc::c_ulong| -> io::Result<()> {
         // SAFETY: mount(2) remounting a NUL-terminated path.
         if unsafe {
@@ -613,6 +645,9 @@ pub fn failed(entry: &[u8], errno: i32) -> String {
     }
     if text == "privileged" {
         return format!("making the container privileged: {err}");
+    }
+    if text == "cgroups-rw" {
+        return format!("error remounting the cgroup hierarchy writable: {err}");
     }
     if let Some(rest) = text.strip_prefix("volume=") {
         let dest = rest.split('\0').nth(1).unwrap_or_default();

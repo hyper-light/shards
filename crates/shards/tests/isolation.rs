@@ -15,7 +15,9 @@ const TIMEOUT: Duration = Duration::from_secs(120);
 /// The guest reaches the host over vsock alone, and its init holds the host's ports, the
 /// run and signal ports, before the workload starts: a workload that dials them, the
 /// moment it starts, or any other host port, is refused. Before, a workload took a
-/// second connection on the run port, and could take the signal port from init.
+/// second connection on the run port, and could take the signal port from init. Under
+/// Docker's default seccomp profile (D42) it cannot make a vsock socket at all; with none
+/// (`seccomp=unconfined`), the host refuses each connection.
 #[test]
 fn a_workload_reaches_no_host_port_over_vsock() {
     if cannot_run_vms() {
@@ -37,20 +39,27 @@ fn a_workload_reaches_no_host_port_over_vsock() {
         52_000,
     ]
     .map(|p| p.to_string());
-    let mut args = vec!["--rm", &image, "vsock"];
-    args.extend(ports.iter().map(String::as_str));
-    // The first run boots the image; the second restores its template.
-    for _ in 0..2 {
-        let ran = run_shards_env(&["run"], &args, &env, TIMEOUT);
-        let shown = format!("--- stdout\n{}\n--- stderr\n{}", ran.stdout, ran.stderr);
-        assert_eq!(ran.status, Some(0), "{shown}");
-        let lines: Vec<&str> = ran.stdout.lines().collect();
-        assert_eq!(lines.len(), ports.len(), "{shown}");
-        for (line, port) in lines.iter().zip(&ports) {
-            assert!(
-                line.starts_with(&format!("{port} refused")),
-                "port {port} must refuse the workload: {shown}"
-            );
+    for (opts, said) in [
+        (&[][..], "socket Operation not permitted"),
+        (&["--security-opt", "seccomp=unconfined"][..], "refused"),
+    ] {
+        let mut args = vec!["--rm"];
+        args.extend_from_slice(opts);
+        args.extend([image.as_str(), "vsock"]);
+        args.extend(ports.iter().map(String::as_str));
+        // The first run boots the image; the second restores its template.
+        for _ in 0..2 {
+            let ran = run_shards_env(&["run"], &args, &env, TIMEOUT);
+            let shown = format!("--- stdout\n{}\n--- stderr\n{}", ran.stdout, ran.stderr);
+            assert_eq!(ran.status, Some(0), "{shown}");
+            let lines: Vec<&str> = ran.stdout.lines().collect();
+            assert_eq!(lines.len(), ports.len(), "{shown}");
+            for (line, port) in lines.iter().zip(&ports) {
+                assert!(
+                    line.starts_with(&format!("{port} {said}")),
+                    "port {port} must refuse the workload ({opts:?}): {shown}"
+                );
+            }
         }
     }
     let _ = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);

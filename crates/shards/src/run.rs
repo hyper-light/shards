@@ -33,6 +33,14 @@ pub enum Boot {
     Stored(Guest),
 }
 
+/// The kernel a run boots.
+pub fn kernel_of(boot: &Boot) -> &std::path::Path {
+    match boot {
+        Boot::Given(cfg) => &cfg.kernel,
+        Boot::Stored(guest) => &guest.kernel,
+    }
+}
+
 /// A request made ready to run.
 pub struct Prepared {
     pub boot: Boot,

@@ -38,6 +38,63 @@ pub struct Guest {
     pub init_digest: String,
 }
 
+/// The release a kernel image says it is (`Linux version 6.18.48 …`, the banner every
+/// kernel carries, init/version.c), where it is not compressed; each file's read once.
+// Only Unix has the daemon, so far.
+#[cfg_attr(not(unix), allow(dead_code))]
+pub fn release(kernel: &Path) -> Option<String> {
+    use std::sync::{Mutex, PoisonError};
+    /// Each file read: its path, length and time, and what it said.
+    type Read = (PathBuf, u64, Option<std::time::SystemTime>, Option<String>);
+    static READ: Mutex<Vec<Read>> = Mutex::new(Vec::new());
+    let meta = std::fs::metadata(kernel).ok()?;
+    let (len, modified) = (meta.len(), meta.modified().ok());
+    let mut read = READ.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some((_, _, _, r)) = read
+        .iter()
+        .find(|(p, l, m, _)| p == kernel && *l == len && *m == modified)
+    {
+        return r.clone();
+    }
+    let image = std::fs::read(kernel).ok()?;
+    let banner = b"Linux version ";
+    let found = image
+        .windows(banner.len())
+        .position(|w| w == banner)
+        .and_then(|at| image.get(at + banner.len()..))
+        .and_then(|rest| {
+            let end = rest.iter().position(|&b| b == b' ' || b == 0)?;
+            std::str::from_utf8(rest.get(..end)?).ok().map(str::to_string)
+        });
+    read.retain(|(p, ..)| p != kernel);
+    read.push((kernel.to_path_buf(), len, modified, found.clone()));
+    found
+}
+
+/// The kernel and major revision of the kernel image at `path`, as moby's seccomp
+/// profiles read the host's: what a profile's `minKernel` is held to.
+// Only Unix has the daemon, so far.
+#[cfg_attr(not(unix), allow(dead_code))]
+pub fn version_of(path: &Path) -> Result<shards_seccomp::Kernel, String> {
+    let release = release(path).ok_or_else(|| {
+        format!(
+            "{}: no kernel version in it, which a seccomp profile is read by",
+            path.display()
+        )
+    })?;
+    kernel_version(&release).ok_or_else(|| format!("{}: kernel version {release:?}", path.display()))
+}
+
+/// A release's kernel and major revision, as moby's profiles read the host's.
+// Only Unix has the daemon, so far.
+#[cfg_attr(not(unix), allow(dead_code))]
+pub fn kernel_version(release: &str) -> Option<shards_seccomp::Kernel> {
+    let mut parts = release.split(|c: char| !c.is_ascii_digit());
+    let k = parts.next()?.parse().ok()?;
+    let m = parts.next()?.parse().ok()?;
+    Some(shards_seccomp::Kernel(k, m))
+}
+
 pub fn guest(args: impl Iterator<Item = OsString>) -> ExitCode {
     let mut args = args.map(|a| {
         a.into_string()

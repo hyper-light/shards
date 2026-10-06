@@ -84,10 +84,134 @@ pub fn capabilities(run: &Run) -> u64 {
     (defaults & !drop) | add
 }
 
+/// A container's `--security-opt`, as dockerd reads them as it makes one (moby
+/// daemon/daemon_unix.go, parseSecurityOpt): each `KEY=VALUE`, else `KEY:VALUE` (which it
+/// calls deprecated), but `no-new-privileges`, `writable-cgroups` and `disable` alone.
+/// Labels and AppArmor profiles are kept, as on a host without SELinux or AppArmor,
+/// which the guest kernel has neither of.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Security {
+    pub no_new_privileges: bool,
+    pub writable_cgroups: Option<bool>,
+    /// `seccomp=`'s value: `unconfined`, `builtin`, a profile's JSON, or none.
+    pub seccomp: Option<String>,
+}
+
+pub fn security(run: &Run) -> Result<Security, String> {
+    let mut out = Security::default();
+    for opt in &run.security_opt {
+        match opt.as_str() {
+            "no-new-privileges" => {
+                out.no_new_privileges = true;
+                continue;
+            }
+            "writable-cgroups" => {
+                out.writable_cgroups = Some(true);
+                continue;
+            }
+            "disable" => continue,
+            _ => {}
+        }
+        let cut = if opt.contains('=') {
+            opt.split_once('=')
+        } else {
+            opt.split_once(':')
+        };
+        let Some((k, v)) = cut else {
+            return Err(format!(
+                "invalid --security-opt 1: {}",
+                shards_cmdline::go::quote(opt)
+            ));
+        };
+        let two = || format!("invalid --security-opt 2: {}", shards_cmdline::go::quote(opt));
+        match k {
+            "label" | "apparmor" => {}
+            "seccomp" => out.seccomp = Some(v.to_string()),
+            "no-new-privileges" => {
+                out.no_new_privileges = shards_cmdline::go::parse_bool(v).map_err(|_| two())?
+            }
+            "writable-cgroups" => {
+                out.writable_cgroups = Some(shards_cmdline::go::parse_bool(v).map_err(|_| two())?)
+            }
+            _ => return Err(two()),
+        }
+    }
+    Ok(out)
+}
+
+/// The capabilities of a container's bounding set, by name.
+pub fn capability_names(run: &Run) -> Vec<String> {
+    let mask = capabilities(run);
+    shards_abi::run::CAP_NAMES
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| mask & (1u64 << i) != 0)
+        .map(|(_, n)| (*n).to_string())
+        .collect()
+}
+
+/// The seccomp filter a container's workload runs under, as moby chooses its profile
+/// (daemon/seccomp_linux.go, WithSeccomp): none for `unconfined`; a privileged
+/// container's only where it names one; else the one it names or Docker's default. As the
+/// setup entry init loads it by (`seccomp=`, the seccomp(2) flags and the program); none
+/// where the profile asks for none. Each profile, set of capabilities and kernel is
+/// compiled once.
+///
+/// moby reads `builtin` named for a privileged container as a profile's JSON, and fails
+/// ("invalid character 'b'"): here it is the default profile, as it is for any other.
+pub fn seccomp(
+    run: &Run,
+    security: &Security,
+    kernel: shards_seccomp::Kernel,
+) -> Result<Option<Vec<u8>>, String> {
+    let profile: &[u8] = match security.seccomp.as_deref() {
+        Some("unconfined") => return Ok(None),
+        None | Some("") if run.privileged => return Ok(None),
+        None | Some("" | "builtin") => shards_seccomp::DEFAULT,
+        Some(json) => json.as_bytes(),
+    };
+    let arch = shards_seccomp::Arch::host().ok_or("seccomp needs an amd64 or arm64 guest")?;
+    let version = kernel;
+    let caps = capability_names(run);
+    type Key = (Vec<u8>, Vec<String>, shards_seccomp::Kernel);
+    static COMPILED: std::sync::Mutex<std::collections::BTreeMap<Key, Option<Vec<u8>>>> =
+        std::sync::Mutex::new(std::collections::BTreeMap::new());
+    let key = (profile.to_vec(), caps, version);
+    let cached = COMPILED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&key)
+        .cloned();
+    if let Some(entry) = cached {
+        return Ok(entry);
+    }
+    let c = shards_seccomp::Container {
+        arch,
+        caps: &key.1,
+        kernel: version,
+    };
+    let entry = shards_seccomp::compile(profile, &c)?.map(|p| {
+        let mut e = b"seccomp=".to_vec();
+        e.extend_from_slice(&p.flags.to_le_bytes());
+        for i in &p.insns {
+            e.extend_from_slice(&i.to_ne_bytes());
+        }
+        e
+    });
+    let mut compiled = COMPILED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    // Bounded by what a daemon's runs have asked: a profile is a run's own request.
+    if compiled.len() >= 256 {
+        compiled.clear();
+    }
+    compiled.insert(key, entry.clone());
+    Ok(entry)
+}
+
 /// What dockerd refuses of these as it makes a container: unknown capabilities
 /// (validateCapabilities), an OOM score out of range, a `/dev/shm` below 0, and a tmpfs
 /// at `/` or at a relative path (ValidateTmpfsMountDestination).
 pub fn verify(run: &Run) -> Result<(), String> {
+    security(run)?;
     known_caps(&run.cap_add, "CapAdd")?;
     known_caps(&run.cap_drop, "CapDrop")?;
     if !(-1000..=1000).contains(&run.oom_score_adj) {
@@ -221,6 +345,28 @@ pub fn setup(run: &Run, points: &[(String, Vec<u8>)]) -> Result<Vec<Vec<u8>>, St
     }
     if run.read_only {
         out.push(b"readonly".to_vec());
+    }
+    Ok(out)
+}
+
+/// `--security-opt`'s setup entries, after the rest: the paths left unmasked, the cgroup
+/// writable, no new privileges and the seccomp filter, which its execs take too (init
+/// installs the filter last, as runc does). Made as the container starts, so that a
+/// profile it cannot load fails its start and not its making, as dockerd's does.
+pub fn security_setup(run: &Run, kernel: shards_seccomp::Kernel) -> Result<Vec<Vec<u8>>, String> {
+    let mut out = Vec::new();
+    let security = security(run)?;
+    if run.system_paths && !run.privileged {
+        out.push(b"unmasked".to_vec());
+    }
+    if security.writable_cgroups == Some(true) && !run.privileged {
+        out.push(b"cgroups-rw".to_vec());
+    }
+    if security.no_new_privileges {
+        out.push(b"nnp".to_vec());
+    }
+    if let Some(filter) = seccomp(run, &security, kernel)? {
+        out.push(filter);
     }
     Ok(out)
 }

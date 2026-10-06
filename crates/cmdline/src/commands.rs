@@ -184,6 +184,7 @@ pub static RUN: Command = Command {
             "Tune host's OOM preferences (-1000 to 1000)",
         ),
         Flag::bool("privileged", None, "Give extended privileges to this container"),
+        Flag::many("security-opt", None, "list", "Security Options"),
         Flag::bool(
             "read-only",
             None,
@@ -301,7 +302,6 @@ net-alias - m - network-alias\n\
 network-alias - m - -\n\
 pid - s - -\n\
 runtime - s - -\n\
-security-opt - m - -\n\
 storage-opt - m - -\n\
 umask - s - -\n\
 use-api-socket - b false -\n\
@@ -476,6 +476,7 @@ pub static CREATE: Command = Command {
             "Tune host's OOM preferences (-1000 to 1000)",
         ),
         Flag::bool("privileged", None, "Give extended privileges to this container"),
+        Flag::many("security-opt", None, "list", "Security Options"),
         Flag::bool(
             "read-only",
             None,
@@ -593,7 +594,6 @@ net-alias - m - network-alias\n\
 network-alias - m - -\n\
 pid - s - -\n\
 runtime - s - -\n\
-security-opt - m - -\n\
 storage-opt - m - -\n\
 umask - s - -\n\
 use-api-socket - b false -\n\
@@ -1297,6 +1297,12 @@ pub static STATS: Command = Command {
             Some(b'a'),
             "Show all containers (default shows just running)",
         ),
+        Flag::string(
+            "format",
+            None,
+            "",
+            "Format output using a custom template:\n'table':            Print output in table format with column headers (default)\n'table TEMPLATE':   Print output in table format using the given Go template\n'json':             Print in JSON format\n'TEMPLATE':         Print output using the given Go template.\nRefer to https://docs.docker.com/go/formatting/ for more information about formatting output with templates",
+        ),
         HELP,
         Flag::bool(
             "no-stream",
@@ -1305,8 +1311,7 @@ pub static STATS: Command = Command {
         ),
         Flag::bool("no-trunc", None, "Do not truncate output"),
     ],
-    unserved: "\
-format - s - -",
+    unserved: "",
     interspersed: true,
     error_prefix: "",
 };

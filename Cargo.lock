@@ -848,6 +848,7 @@ dependencies = [
  "shards-net",
  "shards-netring",
  "shards-registry",
+ "shards-seccomp",
  "shards-template",
  "shards-testguest",
  "shards-tui",
