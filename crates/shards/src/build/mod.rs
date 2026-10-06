@@ -856,6 +856,9 @@ fn run(parsed: &Parsed) -> Result<(), String> {
         u64::from(shards_abi::run::MAX_PAYLOAD),
     )?;
     let allowed = buildflags::parse_entitlements(parsed.many("allow"))?;
+    let agents = buildflags::ssh_agents(&buildflags::parse_ssh(parsed.many("ssh")), &|k| {
+        std::env::var(k).ok()
+    })?;
     let ulimits: Vec<shards_dockerfile::llb::Ulimit> = buildflags::ulimits(parsed.many("ulimit"))?
         .into_iter()
         .map(|u| shards_dockerfile::llb::Ulimit {
@@ -1341,6 +1344,7 @@ fn run(parsed: &Parsed) -> Result<(), String> {
                     insecure: allowed.grants(buildflags::SECURITY_INSECURE),
                     network_host: allowed.grants(buildflags::NETWORK_HOST),
                     seccomp: &step_filter,
+                    agents: &agents,
                 };
                 let mut log = StepLog::new(log_limits);
                 let r = exec.run(b, &inputs, &op, &name, &mut |which, bytes| {

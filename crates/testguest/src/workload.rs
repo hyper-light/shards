@@ -89,6 +89,8 @@ pub fn main() -> ! {
         "ask" => ask(arg(1)),
         "udp" => udp(arg(1)),
         "serve" => serve(arg(1), arg(2).parse().unwrap_or(1)),
+        "agent" => agent(),
+        "vsock-agent" => vsock_agent(arg(1).parse().unwrap_or(1028)),
         "hold" => hold(arg(1)),
         "udp-echo" => udp_echo(arg(1), arg(2).parse().unwrap_or(1)),
         "spin" => {
@@ -441,6 +443,120 @@ fn udp(addr: &str) -> i32 {
 /// Listens on TCP `port` at every address, says `ready`, then serves `connections`
 /// connections in turn: to each, `from IP\n` (its peer's address), then all it sends
 /// back, until it closes its side.
+/// Dials the host's vsock `port` as a builder's agent relay does, with a token it was never
+/// given, and asks for the agent's keys: `vsock-agent refused` if the host closes it
+/// unanswered, `vsock-agent answered` if it answers, `vsock-agent dial ERROR` if it cannot
+/// dial.
+fn vsock_agent(port: u32) -> i32 {
+    use std::io::Read as _;
+    use std::os::fd::FromRawFd as _;
+    // SAFETY: socket(2) with constant arguments.
+    let fd = unsafe { libc::socket(libc::AF_VSOCK, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0) };
+    if fd < 0 {
+        let _ = writeln!(io::stdout(), "vsock-agent dial {}", io::Error::last_os_error());
+        return 1;
+    }
+    // SAFETY: a fresh descriptor nothing else owns.
+    let mut sock = unsafe { std::fs::File::from_raw_fd(fd) };
+    // SAFETY: an all-zero sockaddr_vm is a valid value.
+    let mut addr: libc::sockaddr_vm = unsafe { std::mem::zeroed() };
+    addr.svm_family = libc::AF_VSOCK as libc::sa_family_t;
+    addr.svm_cid = libc::VMADDR_CID_HOST;
+    addr.svm_port = port;
+    // SAFETY: connect(2) with an address of its own type and size.
+    if unsafe {
+        libc::connect(
+            fd,
+            (&raw const addr).cast(),
+            std::mem::size_of::<libc::sockaddr_vm>() as libc::socklen_t,
+        )
+    } != 0
+    {
+        let _ = writeln!(io::stdout(), "vsock-agent dial {}", io::Error::last_os_error());
+        return 1;
+    }
+    let id = b"default";
+    let mut hello = vec![0u8; 16];
+    hello.extend_from_slice(&(id.len() as u16).to_be_bytes());
+    hello.extend_from_slice(id);
+    hello.extend_from_slice(&[0, 0, 0, 1, 11]);
+    let _ = sock.write_all(&hello);
+    let mut answer = [0u8; 1];
+    let said = match sock.read(&mut answer) {
+        Ok(0) | Err(_) => "refused",
+        Ok(_) => "answered",
+    };
+    let _ = writeln!(io::stdout(), "vsock-agent {said}");
+    0
+}
+
+/// Speaks to the SSH agent at `SSH_AUTH_SOCK`: lists its keys (`agent keys N COMMENT...`),
+/// signs with the first (`agent signed` or `agent sign refused`), and asks it to forget
+/// them all (`agent remove refused` or `agent removed`).
+fn agent() -> i32 {
+    use std::io::Read as _;
+    let Some(path) = std::env::var_os("SSH_AUTH_SOCK") else {
+        let _ = writeln!(io::stdout(), "agent no SSH_AUTH_SOCK");
+        return 1;
+    };
+    let mut c = match std::os::unix::net::UnixStream::connect(&path) {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = writeln!(io::stdout(), "agent connect {e}");
+            return 1;
+        }
+    };
+    let mut ask = |body: &[u8]| -> io::Result<Vec<u8>> {
+        c.write_all(&(body.len() as u32).to_be_bytes())?;
+        c.write_all(body)?;
+        let mut n = [0u8; 4];
+        c.read_exact(&mut n)?;
+        let mut answer = vec![0u8; u32::from_be_bytes(n) as usize];
+        c.read_exact(&mut answer)?;
+        Ok(answer)
+    };
+    let take = |b: &[u8], at: &mut usize| -> Option<Vec<u8>> {
+        let n = u32::from_be_bytes(b.get(*at..*at + 4)?.try_into().ok()?) as usize;
+        let v = b.get(*at + 4..*at + 4 + n)?.to_vec();
+        *at += 4 + n;
+        Some(v)
+    };
+    let Ok(list) = ask(&[11]) else { return 1 };
+    let mut out = String::new();
+    let mut first_key = None;
+    if list.first() == Some(&12) {
+        let n = u32::from_be_bytes(list.get(1..5).and_then(|b| b.try_into().ok()).unwrap_or([0; 4]));
+        let mut at = 5;
+        let mut comments = Vec::new();
+        for _ in 0..n {
+            let (Some(key), Some(comment)) = (take(&list, &mut at), take(&list, &mut at)) else {
+                break;
+            };
+            first_key.get_or_insert(key);
+            comments.push(String::from_utf8_lossy(&comment).into_owned());
+        }
+        out.push_str(&format!("agent keys {n} {}\n", comments.join(" ")));
+    }
+    if let Some(key) = first_key {
+        let mut body = vec![13];
+        body.extend_from_slice(&(key.len() as u32).to_be_bytes());
+        body.extend_from_slice(&key);
+        body.extend_from_slice(&5u32.to_be_bytes());
+        body.extend_from_slice(b"hello");
+        body.extend_from_slice(&0u32.to_be_bytes());
+        match ask(&body) {
+            Ok(a) if a.first() == Some(&14) => out.push_str("agent signed\n"),
+            _ => out.push_str("agent sign refused\n"),
+        }
+    }
+    match ask(&[19]) {
+        Ok(a) if a.first() == Some(&5) => out.push_str("agent remove refused\n"),
+        _ => out.push_str("agent removed\n"),
+    }
+    let _ = io::stdout().write_all(out.as_bytes());
+    0
+}
+
 fn serve(port: &str, connections: usize) -> i32 {
     let listener = match std::net::TcpListener::bind(format!("0.0.0.0:{port}")) {
         Ok(l) => l,

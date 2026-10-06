@@ -19,6 +19,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/docker/buildx/build"
 	"github.com/docker/buildx/commands"
 	"github.com/docker/buildx/util/buildflags"
 	"github.com/docker/buildx/util/cobrautil"
@@ -35,7 +36,7 @@ import (
 // The flags shards serves.
 var served = []string{
 	"allow", "build-arg", "file", "help", "iidfile", "label", "load", "no-cache", "platform",
-	"progress", "pull", "quiet", "secret", "tag", "target", "ulimit",
+	"progress", "pull", "quiet", "secret", "ssh", "tag", "target", "ulimit",
 }
 
 // The command lines asked, each the words after `buildx build`.
@@ -98,6 +99,12 @@ var cases = [][]string{
 	{"--secret", "id=\"a,b\",src=small.txt", "."},
 	{"--secret", "", "."},
 	{"--secret", "id=x,src=small.txt", "--secret", "id=x,src=edge.txt", "."},
+	// --ssh, SSH_AUTH_SOCK unset (TestShardsOracle): what BuildKit's provider refuses.
+	{"--ssh", "default", "."},
+	{"--ssh", "", "."},
+	{"--ssh", "c=", "."},
+	{"--ssh", "a=/shards/no/such/socket", "."},
+	{"--ssh", "=/shards/no/such/socket", "."},
 	{"--secret", "id=x,src=small.txt", "--secret", "id=y,env=SHARDS_ORACLE_SECRET", "."},
 	{"--secret=id=small,src=small.txt", "--allow", "nope", "."},
 	// Ulimits, as docker/cli's UlimitOpt and go-units read them.
@@ -244,6 +251,19 @@ func built(c *cobra.Command) error {
 			head = head[:16]
 		}
 		fmt.Fprintf(out, "SECRET %s: %d bytes, %q\n", id, len(dt), head)
+	}
+	// The SSH agents (ParseSSHSpecs, CreateSSH: BuildKit's sshprovider), with no
+	// SSH_AUTH_SOCK (TestShardsOracle).
+	sshArgs, _ := c.Flags().GetStringArray("ssh")
+	sshSpecs, err := buildflags.ParseSSHSpecs(sshArgs)
+	if err != nil {
+		return err
+	}
+	if _, err := build.CreateSSH(sshSpecs); err != nil {
+		return err
+	}
+	for _, s := range sshSpecs {
+		fmt.Fprintf(out, "SSH %s %q\n", s.ID, s.Paths)
 	}
 	allow, _ := c.Flags().GetStringArray("allow")
 	granted, deleteOK, err := buildflags.ParseEntitlements(allow)

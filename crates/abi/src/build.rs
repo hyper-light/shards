@@ -15,6 +15,12 @@ use alloc::vec::Vec;
 /// The host port the guest dials.
 pub const PORT: u32 = 1026;
 
+/// The host port a step's SSH agent socket is relayed to (`RUN --mount=type=ssh`): each
+/// connection opens with the step's token for the mount and the agent's id, which the host
+/// checks before it reaches the agent, so that no process of the guest's reaches it by
+/// the port alone.
+pub const SSH_PORT: u32 = 1028;
+
 /// Frame kinds, beside the run protocol's `STDOUT`, `STDERR`, `SYSTEM_ERR` and `EXIT`.
 pub mod kind {
     /// Host to guest: a big-endian u32 layer id, then the next bytes of that layer's
@@ -66,6 +72,15 @@ pub enum Mount {
         uid: u32,
         gid: u32,
         readonly: bool,
+    },
+    /// A socket of mode `mode` owned `uid:gid`, relayed to the client's SSH agent `id` with
+    /// `token`, the host's for this mount of this step.
+    Ssh {
+        id: Vec<u8>,
+        mode: u32,
+        uid: u32,
+        gid: u32,
+        token: [u8; 16],
     },
 }
 
@@ -205,6 +220,20 @@ impl Step {
                     put_u32(&mut out, *gid);
                     out.push(u8::from(*readonly));
                 }
+                Mount::Ssh {
+                    id,
+                    mode,
+                    uid,
+                    gid,
+                    token,
+                } => {
+                    out.push(4);
+                    put_bytes(&mut out, id);
+                    put_u32(&mut out, *mode);
+                    put_u32(&mut out, *uid);
+                    put_u32(&mut out, *gid);
+                    out.extend_from_slice(token);
+                }
             }
         }
         put_len(&mut out, self.rlimits.len());
@@ -267,6 +296,13 @@ impl Step {
                     uid: r.u32()?,
                     gid: r.u32()?,
                     readonly: r.flag()?,
+                },
+                4 => Mount::Ssh {
+                    id: r.bytes()?,
+                    mode: r.u32()?,
+                    uid: r.u32()?,
+                    gid: r.u32()?,
+                    token: r.take(16)?.try_into().ok()?,
                 },
                 _ => return None,
             };
@@ -412,6 +448,16 @@ mod tests {
                         mode: 0o400,
                         uid: 0,
                         gid: 0,
+                    },
+                ),
+                (
+                    b"/run/buildkit/ssh_agent.0".to_vec(),
+                    Mount::Ssh {
+                        id: b"default".to_vec(),
+                        mode: 0o600,
+                        uid: 0,
+                        gid: 0,
+                        token: [7; 16],
                     },
                 ),
                 (

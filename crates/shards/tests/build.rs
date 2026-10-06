@@ -2380,3 +2380,124 @@ fn builds_reuse_the_steps_they_have_run() {
         assert!(!cached(&after, step), "{step} ran after the prune\n{after}");
     }
 }
+
+/// `RUN --mount=type=ssh` reaches the client's SSH agent through the builder, as
+/// BuildKit's steps reach it (`--ssh default`, `SSH_AUTH_SOCK` in the step): the step
+/// sees the agent's keys and has it sign, and cannot have it forget them, which BuildKit's
+/// read-only agent refuses; without `--ssh`, BuildKit's refusal.
+#[test]
+fn run_steps_reach_the_clients_ssh_agent() {
+    if cannot_run_vms() {
+        return;
+    }
+    let tools = ["ssh-agent", "ssh-keygen", "ssh-add"];
+    if tools
+        .iter()
+        .any(|t| std::process::Command::new(t).arg("-h").output().is_err())
+    {
+        eprintln!("SKIP: no OpenSSH tools on this host");
+        return;
+    }
+    let keys = TempDir::new("build-ssh-agent");
+    let sock = keys.join("agent.sock");
+    let mut agent = std::process::Command::new("ssh-agent")
+        .args(["-D", "-a"])
+        .arg(&sock)
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    struct Ended<'a>(&'a mut std::process::Child);
+    impl Drop for Ended<'_> {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let _agent = Ended(&mut agent);
+    for _ in 0..100 {
+        if sock.exists() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let key = keys.join("id");
+    let made = std::process::Command::new("ssh-keygen")
+        .args(["-q", "-t", "ed25519", "-N", "", "-C", "shards-test-key", "-f"])
+        .arg(&key)
+        .output()
+        .unwrap();
+    assert!(made.status.success(), "{}", String::from_utf8_lossy(&made.stderr));
+    let added = std::process::Command::new("ssh-add")
+        .arg(&key)
+        .env("SSH_AUTH_SOCK", &sock)
+        .output()
+        .unwrap();
+    assert!(
+        added.status.success(),
+        "{}",
+        String::from_utf8_lossy(&added.stderr)
+    );
+
+    let (image, _) = served();
+    let home = TempDir::new("build-ssh-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+        ("SSH_AUTH_SOCK", sock.as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let ctx = context(
+        "build-ssh-ctx",
+        &format!(
+            "FROM {image}\nUSER root\nRUN --mount=type=ssh [\"/bin/testguest\", \"agent\"]\n\
+             RUN --security=insecure [\"/bin/testguest\", \"vsock-agent\"]\n"
+        ),
+    );
+    let built = shards(&[
+        "build",
+        "--progress=plain",
+        "--no-cache",
+        "--ssh",
+        "default",
+        "--allow",
+        "security.insecure",
+        ctx.to_str().unwrap(),
+    ]);
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    // A step given no agent, dialling the relay itself with a token it was never given,
+    // is closed on unanswered.
+    for line in [
+        " agent keys 1 shards-test-key\n",
+        " agent signed\n",
+        " agent remove refused\n",
+        " vsock-agent refused\n",
+    ] {
+        assert!(built.stderr.contains(line), "{line:?}\n{}", built.stderr);
+    }
+    // The agent kept its key: the step could not have it forget them.
+    let listed = std::process::Command::new("ssh-add")
+        .arg("-l")
+        .env("SSH_AUTH_SOCK", &sock)
+        .output()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&listed.stdout).contains("shards-test-key"));
+
+    // Without --ssh, an optional mount (BuildKit's default) is left out, and a required
+    // one refused in BuildKit's words.
+    let required = context(
+        "build-ssh-required-ctx",
+        &format!(
+            "FROM {image}\nUSER root\nRUN --mount=type=ssh,required=true [\"/bin/testguest\", \"exit\", \"0\"]\n"
+        ),
+    );
+    let refused = shards(&["build", "--no-cache", required.to_str().unwrap()]);
+    assert_ne!(refused.status, Some(0));
+    assert!(
+        refused
+            .stderr
+            .contains("no SSH key \"default\" forwarded from the client"),
+        "{}",
+        refused.stderr
+    );
+}

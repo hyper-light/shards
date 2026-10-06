@@ -46,6 +46,13 @@ fn built(parsed: &flags::Parsed, out: &mut String) -> Result<(), String> {
             shards_cmdline::go::quote(&head)
         ));
     }
+    // The SSH agents, as BuildKit's provider takes them, with no SSH_AUTH_SOCK.
+    let ssh = buildflags::parse_ssh(parsed.many("ssh"));
+    buildflags::ssh_agents(&ssh, &|_| None)?;
+    for s in &ssh {
+        let paths: Vec<String> = s.paths.iter().map(|p| shards_cmdline::go::quote(p)).collect();
+        out.push_str(&format!("SSH {} [{}]\n", s.id, paths.join(" ")));
+    }
     let allowed = buildflags::parse_entitlements(parsed.many("allow"))?;
     if !allowed.granted.is_empty() || allowed.local_delete {
         let granted: Vec<String> = allowed

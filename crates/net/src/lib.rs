@@ -141,7 +141,7 @@ pub fn random_mac() -> io::Result<[u8; 6]> {
 }
 
 /// `buf` filled from the kernel's random source.
-fn entropy(buf: &mut [u8]) -> io::Result<()> {
+pub fn entropy(buf: &mut [u8]) -> io::Result<()> {
     // getrandom(2), which the libc crate binds on glibc and musl alike; it fills a buffer
     // of at most 256 bytes at once once the pool is initialized, but a signal can
     // interrupt it.

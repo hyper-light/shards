@@ -132,6 +132,9 @@ struct Builder {
     /// The layer whose stream is arriving, and its writer.
     writing: Option<(u32, LayerWriter)>,
     serial: u64,
+    /// The step's SSH agent sockets, listened on here and relayed to the host while it
+    /// runs: each mount's listener, the agent's id and the host's token for it.
+    ssh: Vec<(std::os::unix::net::UnixListener, Vec<u8>, [u8; 16])>,
 }
 
 /// Starts the builder: the host's layers and steps, until it hangs up.
@@ -176,6 +179,7 @@ fn serve() -> io::Result<()> {
         bases: HashMap::new(),
         writing: None,
         serial: 0,
+        ssh: Vec::new(),
     };
     let mut h = [0u8; run::HEADER];
     let mut payload = Vec::new();
@@ -315,6 +319,8 @@ impl Builder {
             Ok(files) => self.run(step, root, &files, &sources, &work),
             Err(e) => Err(e),
         };
+        // Its agents' sockets go with it, whether or not it ran.
+        self.ssh.clear();
         clean_stubs(root, &stubs);
         let _ = umount(root);
         for (i, s) in sources.iter().enumerate() {
@@ -367,6 +373,32 @@ impl Builder {
                 Mount::Cache {
                     id, mode, uid, gid, ..
                 } => Some(cache(id, *mode, *uid, *gid)?),
+                // A socket here, which the step's mount places at its target and this
+                // process relays to the host's agent (`relay_ssh`).
+                Mount::Ssh {
+                    id,
+                    mode,
+                    uid,
+                    gid,
+                    token,
+                } => {
+                    let dir = work.join(format!("ssh{i}"));
+                    std::fs::create_dir_all(&dir)?;
+                    let path = dir.join("agent.sock");
+                    let listener = std::os::unix::net::UnixListener::bind(&path)?;
+                    listener.set_nonblocking(true)?;
+                    let c = cstr(&path)?;
+                    // SAFETY: a NUL-terminated path.
+                    unsafe {
+                        if libc::chown(c.as_ptr(), *uid, *gid) != 0
+                            || libc::chmod(c.as_ptr(), mode & 0o777) != 0
+                        {
+                            return Err(os_err("an SSH agent's socket"));
+                        }
+                    }
+                    self.ssh.push((listener, id.clone(), *token));
+                    Some(path)
+                }
                 _ => None,
             };
             sources.push(source);
@@ -399,7 +431,7 @@ impl Builder {
     /// Runs the step's command, relaying its output; its status as `docker run` reports
     /// one: its code, or 128 and the signal that ended it.
     fn run(
-        &self,
+        &mut self,
         step: &Step,
         root: &Path,
         files: &Path,
@@ -454,10 +486,26 @@ impl Builder {
             }
         }
         drop((out_w, err_w, fail_w));
-        self.relay(out_r, err_r)?;
+        // Its SSH agents relayed while it runs, on threads of this process's own, begun
+        // only now that it has forked, so that none held a lock its child would need.
+        let ssh = std::mem::take(&mut self.ssh);
+        // The step's end wakes the relays (`wake`), which take no more connections.
+        let (wake, woken) = std::os::unix::net::UnixStream::pair()?;
         let mut status = 0;
-        // SAFETY: waits for our own child.
-        if unsafe { libc::waitpid(pid as libc::pid_t, &mut status, 0) } < 0 {
+        let waited = std::thread::scope(|scope| {
+            for (listener, id, token) in &ssh {
+                let woken = &woken;
+                let _ = std::thread::Builder::new()
+                    .name("ssh relay".into())
+                    .spawn_scoped(scope, move || relay_ssh(scope, listener, id, token, woken));
+            }
+            let relayed = self.relay(out_r, err_r);
+            // SAFETY: waits for our own child.
+            let waited = unsafe { libc::waitpid(pid as libc::pid_t, &mut status, 0) };
+            drop(wake);
+            relayed.map(|()| waited)
+        })?;
+        if waited < 0 {
             return Err(os_err("waiting for the step"));
         }
         let mut msg = Vec::new();
@@ -821,6 +869,16 @@ fn setup(step: &Step, root: &Path, files: &Path, sources: &[Option<PathBuf>], wo
                     &data,
                 )?;
             }
+            Mount::Ssh { mode, .. } => {
+                let sock = sources
+                    .get(i)
+                    .and_then(Option::as_ref)
+                    .ok_or_else(|| err("an SSH agent's socket was not made"))?;
+                let target = &r.resolve(target, false)?;
+                let at = r.file(target, 0o666)?;
+                let exec_bit = if mode & 0o111 == 0 { noexec } else { 0 };
+                bind(sock, &at, &r, target, nosuid | nodev | exec_bit, true)?;
+            }
             Mount::Secret { data, mode, uid, gid } => {
                 let holder = work.join(format!("secret{i}"));
                 std::fs::create_dir_all(&holder)?;
@@ -948,6 +1006,68 @@ fn bind(
             "",
         )?;
     }
+    Ok(())
+}
+
+/// Relays each connection to `listener`, an SSH agent socket of the step's, to the host
+/// (shards_abi::build::SSH_PORT), opened with the mount's `token` and the agent's `id`,
+/// until `woken` says the step has ended (its other end closed); each connection's bytes
+/// both ways, on threads of `scope`.
+fn relay_ssh<'s, 'e>(
+    scope: &'s std::thread::Scope<'s, 'e>,
+    listener: &'e std::os::unix::net::UnixListener,
+    id: &'e [u8],
+    token: &'e [u8; 16],
+    woken: &'e std::os::unix::net::UnixStream,
+) {
+    loop {
+        let mut polled = [listener.as_raw_fd(), woken.as_raw_fd()].map(|fd| libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        });
+        // SAFETY: poll(2) on two descriptors of ours, until either has something.
+        if unsafe { libc::poll(polled.as_mut_ptr(), 2, -1) } < 0 {
+            if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return;
+        }
+        if polled[1].revents != 0 {
+            return;
+        }
+        let Ok((conn, _)) = listener.accept() else {
+            continue;
+        };
+        let _ = std::thread::Builder::new()
+            .name("ssh conn".into())
+            .spawn_scoped(scope, move || {
+                let _ = relay_ssh_conn(conn, id, token);
+            });
+    }
+}
+
+/// One agent connection: the host dialled, the mount's token and the agent's id said,
+/// then the bytes each way until either side ends.
+fn relay_ssh_conn(conn: std::os::unix::net::UnixStream, id: &[u8], token: &[u8; 16]) -> io::Result<()> {
+    conn.set_nonblocking(false)?;
+    let mut host = crate::run::dial(build::SSH_PORT, true)?;
+    let len = u16::try_from(id.len()).map_err(|_| err("an SSH agent id too long"))?;
+    host.write_all(&[token.as_slice(), &len.to_be_bytes(), id].concat())?;
+    let mut to_host = host.try_clone()?;
+    let mut from_step = conn.try_clone()?;
+    std::thread::scope(|s| {
+        let _ = std::thread::Builder::new()
+            .name("ssh up".into())
+            .spawn_scoped(s, || {
+                let _ = io::copy(&mut from_step, &mut to_host);
+                // SAFETY: shutdown(2) of a descriptor this thread owns a clone of.
+                unsafe { libc::shutdown(to_host.as_raw_fd(), libc::SHUT_WR) };
+            });
+        let mut to_step = &conn;
+        let _ = io::copy(&mut host, &mut to_step);
+        let _ = conn.shutdown(std::net::Shutdown::Write);
+    });
     Ok(())
 }
 

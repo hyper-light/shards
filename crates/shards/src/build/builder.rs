@@ -90,6 +90,8 @@ pub struct Builder {
     /// Its network process, which ends with the VM.
     net: shards_ipc::Child,
     conn: UnixStream,
+    /// Where its steps' SSH agent sockets are relayed to (build::SSH_PORT).
+    ssh: UnixListener,
     /// Where its vsock socket is: removed with the builder.
     dir: PathBuf,
     /// The layer each origin's own part is, once the guest has it, by the origin's id.
@@ -121,6 +123,7 @@ impl Builder {
         _: Step,
         _: &mut dyn FnMut(u8, &[u8]),
         _: &mut Applier<'_>,
+        _: &std::collections::BTreeMap<String, PathBuf>,
     ) -> Result<(Ended, u32), String> {
         Err("no builder".into())
     }
@@ -203,6 +206,11 @@ impl Builder {
         listener
             .set_nonblocking(true)
             .map_err(|e| format!("the builder's port: {e}"))?;
+        let mut ssh_at = vsock.clone().into_os_string();
+        ssh_at.push(format!("_{}", build::SSH_PORT));
+        let ssh = UnixListener::bind(&ssh_at).map_err(|e| format!("the builder's SSH port: {e}"))?;
+        ssh.set_nonblocking(true)
+            .map_err(|e| format!("the builder's SSH port: {e}"))?;
         // The builder's network: BuildKit's steps reach what their host does, so the
         // network process allows every flow but to the host itself (D31).
         let mac = shards_net::random_mac().map_err(|e| format!("the builder's MAC: {e}"))?;
@@ -317,6 +325,7 @@ impl Builder {
             vm,
             net,
             conn,
+            ssh,
             dir,
             layers: HashMap::new(),
             next: 0,
@@ -439,9 +448,45 @@ impl Builder {
         mut step: Step,
         out: &mut dyn FnMut(u8, &[u8]),
         applier: &mut Applier<'_>,
+        agents: &std::collections::BTreeMap<String, PathBuf>,
     ) -> Result<(Ended, u32), String> {
         step.upper = self.layer_id();
         self.frame(kind::STEP, &step.encode())?;
+        // The SSH agents this step may reach: each mount's token and the agent's id.
+        let grants: Vec<([u8; 16], Vec<u8>)> = step
+            .mounts
+            .iter()
+            .filter_map(|(_, m)| match m {
+                build::Mount::Ssh { token, id, .. } => Some((*token, id.clone())),
+                _ => None,
+            })
+            .collect();
+        // Every step's relayed connections are taken while it runs, and those of no grant
+        // of its closed at once: one a step makes of its own (an insecure step can dial the
+        // port) waits on nothing. The step's end wakes the taker (`wake`).
+        let ssh = self
+            .ssh
+            .try_clone()
+            .map_err(|e| format!("the builder's SSH port: {e}"))?;
+        let (wake, woken) = UnixStream::pair().map_err(|e| format!("the builder's SSH port: {e}"))?;
+        std::thread::scope(|scope| {
+            let (ssh, grants, woken) = (&ssh, &grants, &woken);
+            let _ = std::thread::Builder::new()
+                .name("ssh agents".into())
+                .spawn_scoped(scope, move || accept_agents(scope, ssh, grants, agents, woken));
+            let r = self.frames(step.upper, out, applier);
+            drop(wake);
+            r
+        })
+    }
+
+    /// A step's frames: its output, then its status, then, if it succeeded, its changes.
+    fn frames(
+        &mut self,
+        upper: u32,
+        out: &mut dyn FnMut(u8, &[u8]),
+        applier: &mut Applier<'_>,
+    ) -> Result<(Ended, u32), String> {
         let mut buf = Vec::new();
         let mut not_run: Option<String> = None;
         let status = loop {
@@ -459,7 +504,7 @@ impl Builder {
             }
         };
         if let Some(why) = not_run {
-            return Ok((Ended::NotRun(why), step.upper));
+            return Ok((Ended::NotRun(why), upper));
         }
         if status == 0 {
             loop {
@@ -472,8 +517,110 @@ impl Builder {
                 }
             }
         }
-        Ok((Ended::Status(status), step.upper))
+        Ok((Ended::Status(status), upper))
     }
+}
+
+/// The longest message an SSH agent takes or sends (OpenSSH's AGENT_MAX_MSGLEN).
+#[cfg(unix)]
+const AGENT_MAX: usize = 256 * 1024;
+
+/// What a step may ask of an agent, as BuildKit's read-only agent lets it
+/// (sshprovider readOnlyAgent): its keys, signatures, and unlocking; adding, removing or
+/// locking keys and extensions are refused.
+#[cfg(unix)]
+const AGENT_ALLOWED: [u8; 3] = [11, 13, 23];
+
+/// Takes a step's relayed agent connections until `woken` says the step has ended (its
+/// other end closed), each on a thread of `scope`.
+#[cfg(unix)]
+fn accept_agents<'s, 'e>(
+    scope: &'s std::thread::Scope<'s, 'e>,
+    ssh: &'e UnixListener,
+    grants: &'e [([u8; 16], Vec<u8>)],
+    agents: &'e std::collections::BTreeMap<String, PathBuf>,
+    woken: &'e UnixStream,
+) {
+    use std::os::fd::AsRawFd as _;
+    loop {
+        let mut polled = [ssh.as_raw_fd(), woken.as_raw_fd()].map(|fd| libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        });
+        // SAFETY: poll(2) on two descriptors of ours, until either has something.
+        if unsafe { libc::poll(polled.as_mut_ptr(), 2, -1) } < 0 {
+            if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return;
+        }
+        if polled[1].revents != 0 {
+            return;
+        }
+        let Ok((conn, _)) = ssh.accept() else { continue };
+        let _ = std::thread::Builder::new()
+            .name("ssh agent".into())
+            .spawn_scoped(scope, move || {
+                let _ = serve_agent(conn, grants, agents);
+            });
+    }
+}
+
+/// One relayed connection: opened with a grant's token and its agent's id, or closed; then
+/// each request the step makes, passed to the agent if a read-only agent takes it,
+/// refused (SSH_AGENT_FAILURE) if not.
+#[cfg(unix)]
+fn serve_agent(
+    mut conn: UnixStream,
+    grants: &[([u8; 16], Vec<u8>)],
+    agents: &std::collections::BTreeMap<String, PathBuf>,
+) -> std::io::Result<()> {
+    use std::io::{Read as _, Write as _};
+    conn.set_nonblocking(false)?;
+    let mut token = [0u8; 16];
+    conn.read_exact(&mut token)?;
+    let mut len = [0u8; 2];
+    conn.read_exact(&mut len)?;
+    let mut id = vec![0u8; usize::from(u16::from_be_bytes(len))];
+    conn.read_exact(&mut id)?;
+    if !grants.iter().any(|(t, i)| *t == token && *i == id) {
+        return Ok(());
+    }
+    let Some(path) = agents.get(&*String::from_utf8_lossy(&id)) else {
+        return Ok(());
+    };
+    let mut agent = UnixStream::connect(path)?;
+    let read_msg = |from: &mut UnixStream| -> std::io::Result<Option<Vec<u8>>> {
+        let mut n = [0u8; 4];
+        match from.read_exact(&mut n) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
+            Err(e) => return Err(e),
+        }
+        let n = usize::try_from(u32::from_be_bytes(n)).unwrap_or(usize::MAX);
+        if n == 0 || n > AGENT_MAX {
+            return Err(std::io::Error::other("an agent message of a bad length"));
+        }
+        let mut body = vec![0u8; n];
+        from.read_exact(&mut body)?;
+        Ok(Some(body))
+    };
+    while let Some(request) = read_msg(&mut conn)? {
+        let allowed = request.first().is_some_and(|t| AGENT_ALLOWED.contains(t));
+        if !allowed {
+            conn.write_all(&[0, 0, 0, 1, 5])?;
+            continue;
+        }
+        agent.write_all(&u32::try_from(request.len()).unwrap_or(0).to_be_bytes())?;
+        agent.write_all(&request)?;
+        let Some(answer) = read_msg(&mut agent)? else {
+            return Ok(());
+        };
+        conn.write_all(&u32::try_from(answer.len()).unwrap_or(0).to_be_bytes())?;
+        conn.write_all(&answer)?;
+    }
+    Ok(())
 }
 
 /// Whether `origin` stands on a base image.

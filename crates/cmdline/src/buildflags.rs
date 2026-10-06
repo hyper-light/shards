@@ -29,6 +29,104 @@ pub struct Secret {
 /// The `--secret` values, each a CSV record of `type`, `id`, `src` (or `source`) and
 /// `env`, keys in any case; empty ones are skipped. `type=env` reads `src` as the
 /// variable's name.
+/// An `--ssh` spec, as buildx's ParseSSHSpecs reads one (util/buildflags/ssh.go,
+/// v0.37.1): `ID[=PATH,...]`, the paths sockets or keys, none for `SSH_AUTH_SOCK`'s.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Ssh {
+    pub id: String,
+    pub paths: Vec<String>,
+}
+
+/// `--ssh`'s specs, empty ones skipped, each kept: `buildx build` does not normalize them
+/// (commands/build.go), so that an id given twice is refused ([`ssh_agents`]).
+pub fn parse_ssh(specs: &[String]) -> Vec<Ssh> {
+    specs
+        .iter()
+        .filter(|s| !s.is_empty())
+        .map(|spec| match spec.split_once('=') {
+            Some((id, paths)) => Ssh {
+                id: id.to_string(),
+                paths: paths.split(',').map(str::to_string).collect(),
+            },
+            None => Ssh {
+                id: spec.clone(),
+                paths: Vec::new(),
+            },
+        })
+        .collect()
+}
+
+/// The SSH agents `specs` forward, by id, as BuildKit's sshprovider takes them
+/// (v0.28.1 session/sshforward/sshprovider/agentprovider.go, NewSSHAgentProvider): an id
+/// `default` where none is given; no path, `SSH_AUTH_SOCK`'s (`env`); one socket. A key
+/// file is not forwarded yet: BuildKit loads it into an agent of its own, which signs
+/// with it.
+pub fn ssh_agents(
+    specs: &[Ssh],
+    env: &dyn Fn(&str) -> Option<String>,
+) -> Result<std::collections::BTreeMap<String, std::path::PathBuf>, String> {
+    #[cfg(unix)]
+    let is_socket = |m: &std::fs::Metadata| std::os::unix::fs::FileTypeExt::is_socket(&m.file_type());
+    // No builder runs on Windows yet, nor does a socket there say what it is.
+    #[cfg(not(unix))]
+    let is_socket = |_: &std::fs::Metadata| true;
+    let mut out = std::collections::BTreeMap::new();
+    for spec in specs {
+        let id = if spec.id.is_empty() {
+            "default"
+        } else {
+            spec.id.as_str()
+        };
+        if out.contains_key(id) {
+            return Err(format!("duplicate agent ID {}", go::quote(id)));
+        }
+        // Go's %v of AgentConfig{ID, Paths, Raw}.
+        let conf = format!("{{{id} [{}] false}}", spec.paths.join(" "));
+        let fail = |why: String| format!("failed to convert agent config {conf}: {why}");
+        let mut paths = spec.paths.clone();
+        if paths.is_empty() || paths.len() == 1 && paths.first().is_some_and(String::is_empty) {
+            paths = vec![env("SSH_AUTH_SOCK").unwrap_or_default()];
+        }
+        if paths.first().is_some_and(String::is_empty) {
+            return Err(fail(
+                "invalid empty ssh agent socket: make sure SSH_AUTH_SOCK is set".into(),
+            ));
+        }
+        let mut socket = None;
+        for p in &paths {
+            let wrap = |why: String| {
+                fail(format!(
+                    "failed to convert agent config for ID: {}: {why}",
+                    go::quote(id)
+                ))
+            };
+            if socket.is_some() {
+                return Err(wrap("only single socket allowed".into()));
+            }
+            let meta = std::fs::metadata(p).map_err(|e| {
+                wrap(format!(
+                    "stat {p}: {}",
+                    match e.kind() {
+                        std::io::ErrorKind::NotFound => "no such file or directory".to_string(),
+                        std::io::ErrorKind::PermissionDenied => "permission denied".to_string(),
+                        _ => e.to_string(),
+                    }
+                ))
+            })?;
+            if !is_socket(&meta) {
+                return Err(wrap(format!(
+                    "{p}: a key file, which shards build does not forward yet; forward an agent holding it"
+                )));
+            }
+            socket = Some(std::path::PathBuf::from(p));
+        }
+        if let Some(s) = socket {
+            out.insert(id.to_string(), s);
+        }
+    }
+    Ok(out)
+}
+
 pub fn parse_secrets(specs: &[String]) -> Result<Vec<Secret>, String> {
     specs
         .iter()
@@ -349,6 +447,51 @@ pub fn validate(flag: &crate::flags::Flag, value: &str) -> Result<String, String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// buildx's: `ID[=PATH,...]`, each kept; BuildKit's provider's refusals.
+    #[test]
+    fn ssh_specs_are_read_as_buildx_reads_them() {
+        let s = |v: &[&str]| parse_ssh(&v.iter().map(|x| x.to_string()).collect::<Vec<_>>());
+        let ssh = |id: &str, paths: &[&str]| Ssh {
+            id: id.into(),
+            paths: paths.iter().map(|p| p.to_string()).collect(),
+        };
+        assert_eq!(s(&["default"]), [ssh("default", &[])]);
+        assert_eq!(s(&["a=/x,/y", "", "b"]), [ssh("a", &["/x", "/y"]), ssh("b", &[])]);
+        assert_eq!(s(&["c="]), [ssh("c", &[""])]);
+        let none = |_: &str| None;
+        // A duplicate is met once the first of its id resolves: a socket here.
+        #[cfg(unix)]
+        {
+            let dir = std::env::temp_dir().join(format!("shards-ssh-spec-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            let sock = dir.join("agent");
+            let _listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+            let at = sock.to_string_lossy().into_owned();
+            let agents = ssh_agents(&s(&["a"]), &|_| Some(at.clone())).unwrap();
+            assert_eq!(agents.get("a"), Some(&sock));
+            assert_eq!(
+                ssh_agents(&s(&["a", "a"]), &|_| Some(at.clone())).unwrap_err(),
+                "duplicate agent ID \"a\""
+            );
+            assert_eq!(
+                ssh_agents(&s(&[&format!("b={at},{at}")]), &none).unwrap_err(),
+                format!(
+                    "failed to convert agent config {{b [{at} {at}] false}}: failed to convert agent config for ID: \"b\": only single socket allowed"
+                )
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+        assert_eq!(
+            ssh_agents(&s(&["default"]), &none).unwrap_err(),
+            "failed to convert agent config {default [] false}: invalid empty ssh agent socket: make sure SSH_AUTH_SOCK is set"
+        );
+        assert_eq!(
+            ssh_agents(&s(&["k=/no/such"]), &none).unwrap_err(),
+            "failed to convert agent config {k [/no/such] false}: failed to convert agent config for ID: \"k\": stat /no/such: no such file or directory"
+        );
+    }
 
     /// A secret past the limit is refused in BuildKit's words, with the limit it is past:
     /// BuildKit's own, as buildx printed it (tests/buildx.json), and shards' step's.

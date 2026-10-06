@@ -2790,6 +2790,39 @@ so that a change elsewhere in it runs again what BuildKit's checksums would keep
 filters; a bound on what the cache keeps (BuildKit's default GC policy); `RUN
 --mount=type=cache` kept across builds.
 
+### RUN steps reach the client's SSH agent (D51)
+
+`RUN --mount=type=ssh` reaches the agent `--ssh` names, as BuildKit's steps reach it:
+`--ssh` read as buildx reads it (each `ID[=PATH,...]` kept, not normalized,
+commands/build.go), its agents as BuildKit's sshprovider takes them (an id `default` where
+none is given, `SSH_AUTH_SOCK`'s socket where no path is, one socket an agent, BuildKit's
+errors word for word: held to buildx v0.37.1 and BuildKit by `scripts/buildx/generate`);
+the mount at `/run/buildkit/ssh_agent.N` with `SSH_AUTH_SOCK` set, an empty id read as
+`default`, a mount not `required` left out without an agent, a required one refused in
+BuildKit's words.
+
+- **Through the microVM.** The builder guest listens on a socket of the step's own, of the
+  mount's mode and owner, bound at its target, and relays each connection to the host
+  over vsock (`shards_abi::build::SSH_PORT`), opened with a token the host made for that
+  mount of that step (16 bytes of getrandom) and the agent's id; the host takes relayed
+  connections only while a step runs, and only of a grant of that step's, closing any
+  other at once, so that a step given no agent, or another step's, reaches none by
+  dialling the port itself (tested: an insecure step, which can make vsock sockets, is
+  closed on unanswered). Both ends' relays stop as the step ends.
+- **Read-only, as BuildKit's agent is.** BuildKit serves a step a read-only wrapper of the
+  agent (readOnlyAgent): keys and signatures, no adding, removing, locking or extensions.
+  The host relays an agent request only if it is one of those (identities, sign, unlock)
+  and answers any other SSH_AGENT_FAILURE, each message bounded by OpenSSH's 256 KiB.
+- **Tested** on real microVMs against a real ssh-agent holding a key ssh-keygen made
+  (`run_steps_reach_the_clients_ssh_agent`): the step lists the key and has the agent sign,
+  its request to forget the keys is refused and the agent keeps them, a rogue dial is
+  refused; both the filter and the token check are mutation-checked.
+
+Open: key files given to `--ssh` (BuildKit loads them into an agent of its own, which signs
+with them: an in-process agent with AWS-LC's signatures); Git remotes over SSH (`ADD
+git@...`), which need an SSH client; a `default` agent added where the build context is an
+SSH Git URL, as buildx adds one.
+
 ## 4. Start path (≤ 5 ms budget)
 
 | Step | Cost | Evidence |

@@ -753,6 +753,33 @@ pub struct RunOp<'o> {
     /// The seccomp filter every step but an insecure one runs under
     /// (crate::setup::step_seccomp).
     pub seccomp: &'o [u8],
+    /// The SSH agents `--ssh` forwards, by id.
+    pub agents: &'o BTreeMap<String, PathBuf>,
+}
+
+/// An SSH mount's agent id: `default` where it names none, as BuildKit's sshforward
+/// reads an empty one (DefaultID).
+fn ssh_id(id: &[u8]) -> String {
+    if id.is_empty() {
+        "default".into()
+    } else {
+        String::from_utf8_lossy(id).into_owned()
+    }
+}
+
+/// A token of an SSH mount's own, from the kernel's random source, which its relay
+/// presents to the host.
+#[cfg(unix)]
+fn ssh_token() -> Result<[u8; 16], String> {
+    let mut token = [0u8; 16];
+    shards_net::entropy(&mut token).map_err(|e| format!("an SSH mount's token: {e}"))?;
+    Ok(token)
+}
+
+/// No builder runs on Windows yet (builder.rs), so no step there reaches an agent.
+#[cfg(not(unix))]
+fn ssh_token() -> Result<[u8; 16], String> {
+    Err("RUN steps run in a builder microVM, which shards starts on Linux and macOS hosts only so far".into())
 }
 
 /// Secret `id`'s bytes, if the build was given it.
@@ -963,14 +990,24 @@ impl Exec<'_> {
                     None if *optional => continue,
                     None => return Err(format!("secret {}: not found", String::from_utf8_lossy(id))),
                 },
+                OpMountKind::Ssh {
+                    id, uid, gid, mode, ..
+                } if op.agents.contains_key(&ssh_id(id)) => {
+                    // A token of this mount's own, which its relay presents to the host.
+                    let token = ssh_token()?;
+                    Mount::Ssh {
+                        id: ssh_id(id).into_bytes(),
+                        mode: *mode,
+                        uid: *uid,
+                        gid: *gid,
+                        token,
+                    }
+                }
                 OpMountKind::Ssh { id, optional, .. } => {
                     if *optional {
                         continue;
                     }
-                    return Err(format!(
-                        "no SSH key {:?} forwarded from the client",
-                        String::from_utf8_lossy(id)
-                    ));
+                    return Err(format!("no SSH key {:?} forwarded from the client", ssh_id(id)));
                 }
             };
             mounts.push((m.dest.clone(), mount));
@@ -1019,7 +1056,7 @@ impl Exec<'_> {
         fs.now = now();
         let (mut staging, source, at) = self.staging()?;
         let mut applier = shards_build::upper::Applier::new(&mut fs, &mut staging, source, at);
-        let (ended, layer) = builder.run(step, out, &mut applier)?;
+        let (ended, layer) = builder.run(step, out, &mut applier, op.agents)?;
         match ended {
             super::builder::Ended::Status(0) => {}
             super::builder::Ended::Status(n) => return Err(fail(&format!("exit code: {n}"))),

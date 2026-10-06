@@ -2137,6 +2137,12 @@ pub static BUILD: Command = Command {
             "stringArray",
             "Secret to expose to the build (format: \"id=mysecret[,src=/local/secret]\")",
         ),
+        Flag::many(
+            "ssh",
+            None,
+            "stringArray",
+            "SSH agent socket or keys to expose to the build (format: \"default|<id>[=<socket>|<key>[,<key>]]\")",
+        ),
         Flag::string("target", None, "", "Set the target build stage to build"),
         Flag::many("ulimit", None, "ulimit", "Ulimit options").defaulting("[]"),
     ],
@@ -2174,8 +2180,7 @@ rm - b true -\n\
 sbom - s - -\n\
 security-opt - m - -\n\
 shm-size - s 0 -\n\
-squash - b false -\n\
-ssh - m - -",
+squash - b false -",
     interspersed: true,
     error_prefix: "ERROR: ",
 };
