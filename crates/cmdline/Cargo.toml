@@ -19,3 +19,4 @@ shards-template = { path = "../template" }
 
 [dev-dependencies]
 serde_json = "1"
+shards-image = { path = "../image" }

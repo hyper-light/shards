@@ -238,6 +238,35 @@ pub fn create_exports(
     Ok(outs)
 }
 
+/// toBuildOptions' check of the outputs against `--iidfile`: a `local` or `tar` output
+/// makes no image to name.
+pub fn check_iidfile(exports: &[Export], iidfile: &str) -> Result<(), String> {
+    if !iidfile.is_empty() && exports.iter().any(|e| e.kind == "local" || e.kind == "tar") {
+        return Err("local and tar exporters are incompatible with image ID file".into());
+    }
+    Ok(())
+}
+
+/// `--build-context`'s values, as buildx's ParseContextNames reads them
+/// (util/buildflags/context.go, v0.37.1): each `NAME=VALUE`, empty ones skipped, the name
+/// as `familiar` makes it of a reference (FamiliarString of ParseNormalizedNamed, its
+/// `:latest` dropped), a later value for a name replacing an earlier.
+pub fn parse_contexts(
+    values: &[String],
+    familiar: &dyn Fn(&str) -> Result<String, String>,
+) -> Result<std::collections::BTreeMap<String, String>, String> {
+    let mut out = std::collections::BTreeMap::new();
+    for value in values.iter().filter(|v| !v.is_empty()) {
+        let Some((name, v)) = value.split_once('=') else {
+            return Err(format!("invalid context value: {value}, expected key=value"));
+        };
+        let named = familiar(name).map_err(|e| format!("invalid context name {name}: {e}"))?;
+        let named = named.strip_suffix(":latest").unwrap_or(&named).to_string();
+        out.insert(named, v.to_string());
+    }
+    Ok(out)
+}
+
 /// An `--ssh` spec, as buildx's ParseSSHSpecs reads one (util/buildflags/ssh.go,
 /// v0.37.1): `ID[=PATH,...]`, the paths sockets or keys, none for `SSH_AUTH_SOCK`'s.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -468,7 +497,7 @@ fn too_big(id: &str, _len: u64, max: u64) -> String {
 /// An error of the OS in Go's words: on Linux its `syscall.Errno` table; elsewhere the C
 /// library's `strerror`, its first letter lowered where the second is lower, as Go's
 /// tables are made from it (mkerrors.sh).
-fn os_error(e: &std::io::Error) -> String {
+pub fn os_error(e: &std::io::Error) -> String {
     let Some(code) = e.raw_os_error() else {
         return e.to_string();
     };

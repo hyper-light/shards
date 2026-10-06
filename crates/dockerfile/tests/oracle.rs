@@ -1005,6 +1005,9 @@ fn plans_are_buildkits() {
             context_id: b"*".to_vec(),
             excludes: Vec::new(),
             dialect: shards_dockerfile::parser::Dialect::Dockerfile,
+            contexts: map(&opts_v["contexts"]),
+            context_keys: map(&opts_v["shared_keys"]),
+            context_excludes: Default::default(),
         };
         let mut got = serde_json::Map::new();
         got.insert("file".into(), file.into());

@@ -35,6 +35,18 @@ const BETTER: &[(&[&str], &str, &str, u8)] = &[
 /// What buildx's build is given, as oracle_test.go's `built` says it, from shards'
 /// reading of the same flags: stdout's lines, or the error.
 fn built(parsed: &flags::Parsed, out: &mut String) -> Result<(), String> {
+    let familiar = |n: &str| {
+        shards_image::reference::Reference::parse_normalized(n)
+            .map(|r| r.familiar())
+            .map_err(|e| e.to_string())
+    };
+    for (name, value) in buildflags::parse_contexts(parsed.many("build-context"), &familiar)? {
+        out.push_str(&format!("CONTEXT {name} {}\n", shards_cmdline::go::quote(&value)));
+    }
+    buildflags::check_iidfile(
+        &buildflags::parse_exports(parsed.many("output"))?,
+        parsed.string("iidfile"),
+    )?;
     let env = |name: &str| (name == "SHARDS_ORACLE_SECRET").then(|| b"from the environment".to_vec());
     let secrets = buildflags::parse_secrets(parsed.many("secret"))?;
     for (id, value) in buildflags::store(secrets, &env, STEP)? {

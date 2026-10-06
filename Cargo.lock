@@ -970,6 +970,7 @@ dependencies = [
  "num-traits",
  "regex",
  "serde_json",
+ "shards-image",
  "shards-template",
 ]
 

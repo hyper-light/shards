@@ -11185,6 +11185,428 @@
   ]
  },
  {
+  "file": "corpus/plan/named-bad-source.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"base\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"base\\\"\"",
+    "original": "\"FROM base\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/named-bad-spec.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"base\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"base\\\"\"",
+    "original": "\"FROM base\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/named-base.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\")\\n(run \\\"echo hi\\\")\\n(from \\\"alpine:latest\\\" \\\"AS\\\" \\\"two\\\")\\n(run \\\"echo two\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"echo hi\\\"\"",
+    "original": "\"RUN echo hi\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"alpine:latest\\\" \\\"AS\\\" \\\"two\\\"\"",
+    "original": "\"FROM alpine:latest AS two\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"echo two\\\"\"",
+    "original": "\"RUN echo two\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/named-context-name.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\")\\n(copy [\\\"--from=context\\\"] \\\"/a\\\" \\\"/a\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy [\\\"--from=context\\\"] \\\"/a\\\" \\\"/a\\\"\"",
+    "original": "\"COPY --from=context /a /a\"",
+    "flags": [
+     "\"--from=context\""
+    ],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/named-git-ssh.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\")\\n(copy [\\\"--from=repo\\\"] \\\"/README.md\\\" \\\"/r\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy [\\\"--from=repo\\\"] \\\"/README.md\\\" \\\"/r\\\"\"",
+    "original": "\"COPY --from=repo /README.md /r\"",
+    "flags": [
+     "\"--from=repo\""
+    ],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/named-git.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\")\\n(copy [\\\"--from=repo\\\"] \\\"/README.md\\\" \\\"/r\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy [\\\"--from=repo\\\"] \\\"/README.md\\\" \\\"/r\\\"\"",
+    "original": "\"COPY --from=repo /README.md /r\"",
+    "flags": [
+     "\"--from=repo\""
+    ],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/named-http.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\")\\n(copy [\\\"--from=f\\\"] \\\"/context\\\" \\\"/x\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy [\\\"--from=f\\\"] \\\"/context\\\" \\\"/x\\\"\"",
+    "original": "\"COPY --from=f /context /x\"",
+    "flags": [
+     "\"--from=f\""
+    ],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/named-image.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"base\\\")\\n(run \\\"echo hi\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"base\\\"\"",
+    "original": "\"FROM base\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"echo hi\\\"\"",
+    "original": "\"RUN echo hi\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/named-local.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\")\\n(copy [\\\"--from=src\\\"] \\\"/x\\\" \\\"/x\\\")\\n(copy [\\\"--from=src\\\"] \\\"/y\\\" \\\"/y\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy [\\\"--from=src\\\"] \\\"/x\\\" \\\"/x\\\"\"",
+    "original": "\"COPY --from=src /x /x\"",
+    "flags": [
+     "\"--from=src\""
+    ],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy [\\\"--from=src\\\"] \\\"/y\\\" \\\"/y\\\"\"",
+    "original": "\"COPY --from=src /y /y\"",
+    "flags": [
+     "\"--from=src\""
+    ],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/named-platform.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\")\\n(run \\\"echo hi\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"echo hi\\\"\"",
+    "original": "\"RUN echo hi\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/named-scratch.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"base\\\")\\n(copy \\\"a\\\" \\\"/a\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"base\\\"\"",
+    "original": "\"FROM base\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy \\\"a\\\" \\\"/a\\\"\"",
+    "original": "\"COPY a /a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/named-stage.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\" \\\"AS\\\" \\\"deps\\\")\\n(run \\\"touch /a\\\")\\n(from \\\"scratch\\\")\\n(copy [\\\"--from=deps\\\"] \\\"/a\\\" \\\"/a\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\" \\\"AS\\\" \\\"deps\\\"\"",
+    "original": "\"FROM alpine AS deps\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"touch /a\\\"\"",
+    "original": "\"RUN touch /a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"scratch\\\"\"",
+    "original": "\"FROM scratch\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy [\\\"--from=deps\\\"] \\\"/a\\\" \\\"/a\\\"\"",
+    "original": "\"COPY --from=deps /a /a\"",
+    "flags": [
+     "\"--from=deps\""
+    ],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/named-tagged.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"registry.example.com:5000/team/app:1.0\\\")\\n(run \\\"echo hi\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"registry.example.com:5000/team/app:1.0\\\"\"",
+    "original": "\"FROM registry.example.com:5000/team/app:1.0\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"echo hi\\\"\"",
+    "original": "\"RUN echo hi\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/named-unused.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\")\\n(run \\\"echo hi\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"echo hi\\\"\"",
+    "original": "\"RUN echo hi\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
   "file": "corpus/plan/nopath.Dockerfile",
   "escape": "\"\\\\\"",
   "dump": "\"(from \\\"nopath\\\")\\n(run \\\"echo hi\\\")\"",

@@ -55,6 +55,22 @@ pub struct Options {
     pub excludes: Vec<Vec<u8>>,
     /// What the file is read as: a Dockerfile, or an Agentfile (D35).
     pub dialect: parser::Dialect,
+    /// The named contexts (`--build-context`): the frontend's `context:KEY` options, each
+    /// KEY a name or `NAME::PLATFORM`, each value `docker-image://`, `local:`, a Git or
+    /// HTTP URL, as buildx sends them.
+    pub contexts: BTreeMap<Vec<u8>, Vec<u8>>,
+    /// Each local named context's `sharedkey:localdir:KEY` option, by KEY.
+    pub context_keys: BTreeMap<Vec<u8>, Vec<u8>>,
+    /// Each local named context's `.dockerignore` patterns, by its local name.
+    pub context_excludes: BTreeMap<Vec<u8>, Vec<Vec<u8>>>,
+}
+
+/// A named context a stage or base name is given (dockerui's NamedContext): the key it
+/// was found by, and its value.
+#[derive(Debug, Clone)]
+struct Named {
+    key: Vec<u8>,
+    value: Vec<u8>,
 }
 
 /// A base image as resolved: its reference, digest and config.
@@ -212,6 +228,8 @@ struct Ds {
     healthcheck: Tracker,
     /// An Agentfile's directives in its lineage, in order (D35).
     agentfile: Vec<crate::agentfile::Directive>,
+    /// The named context the stage itself is (its name is a context's).
+    named: Option<Named>,
 }
 
 impl Ds {
@@ -238,6 +256,7 @@ impl Ds {
             cmd_total: 0,
             workdir_set: false,
             epoch: None,
+            named: None,
             entrypoint: Tracker::default(),
             cmd: Tracker::default(),
             healthcheck: Tracker::default(),
@@ -281,6 +300,10 @@ struct Planner<'a> {
     proxy: Option<llb::ProxyEnv>,
     /// The .dockerignore's patterns, once dispatch begins, if it has any.
     ignore: Option<crate::glob::PatternMatcher>,
+    /// Local named contexts' sources, their attributes set once the stage that reads
+    /// each has said which of its paths it uses: the source, the stage, its key and its
+    /// local name.
+    named_locals: Vec<(Output, usize, Vec<u8>, Vec<u8>)>,
 }
 
 /// The frontends shards' own is: docker/dockerfile at any tag, labs ones included, which at
@@ -506,6 +529,7 @@ fn plan_with(
         graph,
         context,
         ignore: None,
+        named_locals: Vec::new(),
     };
     p.build_dispatch_states(ins.stages)?;
     let target = p.resolve_target()?;
@@ -1070,6 +1094,17 @@ impl Planner<'_> {
                 })?;
                 ds.platform = Some(p);
             }
+            if !ds.stage.name.is_empty() {
+                let platform = ds.platform.clone();
+                if let Some(n) = self.named_context(&ds.stage.name, platform.as_ref())? {
+                    ds.named = Some(n);
+                    let idx = self.add_state(ds);
+                    if let Some(d) = self.states.get_mut(idx) {
+                        d.base = None;
+                    }
+                    continue;
+                }
+            }
             if ds.stage.name.is_empty() {
                 ds.stage_name = format!("stage-{i}").into_bytes();
             }
@@ -1472,7 +1507,7 @@ impl Planner<'_> {
                 continue;
             }
             let is_reachable = reachable.contains(&d);
-            let scratch = s.stage.base_name == EMPTY_IMAGE;
+            let scratch = s.stage.base_name == EMPTY_IMAGE && s.named.is_none();
             let target = self.target_platform.clone();
             if let Some(s) = self.states.get_mut(d) {
                 s.resolved = is_reachable;
@@ -1525,7 +1560,43 @@ impl Planner<'_> {
         let mut base_name = r.to_string().into_bytes();
         let mut image = ds.image.clone();
         let mut scratch = false;
+        let named = ds.named.clone();
         if reachable {
+            // A stage that is a named context is that context, its steps not run.
+            if let Some(n) = named {
+                let (state, img) = self.load_named(d, &n, &platform)?;
+                let ds = self.ds(d)?;
+                ds.stage.base_name = base_name;
+                ds.dispatched = true;
+                ds.state = state;
+                if let Some(mut img) = img {
+                    img.created = None;
+                    if !img.platform.architecture.is_empty() && !img.platform.os.is_empty() {
+                        ds.platform = Some(Platform {
+                            os: img.platform.os.clone(),
+                            architecture: img.platform.architecture.clone(),
+                            variant: img.platform.variant.clone(),
+                            os_version: img.platform.os_version.clone(),
+                            os_features: img.platform.os_features.clone(),
+                        });
+                    }
+                    ds.image = img;
+                }
+                return Ok(());
+            }
+            // A base a named context names is that context.
+            if let Some(n) = self.named_context(&base_name, Some(&platform))? {
+                let (mut state, img) = self.load_named(d, &n, &platform)?;
+                let mut img = img.unwrap_or_else(|| empty_image(&platform));
+                img.created = None;
+                state.platform = Some(platform.clone());
+                let ds = self.ds(d)?;
+                ds.stage.base_name = base_name;
+                ds.image = img;
+                ds.state = state;
+                ds.platform = Some(platform);
+                return Ok(());
+            }
             let mut log = b"[".to_vec();
             if self.multi_platform {
                 log.extend_from_slice(&platform::format_all(&platform));
@@ -2763,6 +2834,142 @@ impl Planner<'_> {
         Ok(())
     }
 
+    /// dockerui's `NamedContext`, as Dockerfile2LLB asks it (namedContextFunc): none for
+    /// `scratch` or `context`; else the context keyed by the name's familiar form (its
+    /// `:latest` dropped) with the platform, `NAME::os/arch`, or without.
+    fn named_context(&self, name: &[u8], platform: Option<&Platform>) -> Result<Option<Named>, Fail> {
+        if self.opts.contexts.is_empty()
+            || equal_fold_name(b"scratch", name)
+            || equal_fold_name(b"context", name)
+        {
+            return Ok(None);
+        }
+        let r = parse_normalized(name)
+            .map_err(|e| Fail::new(errb(&[b"invalid context name ", name, b": ", &e])))?;
+        let familiar = r.familiar();
+        let familiar = familiar
+            .strip_suffix(":latest")
+            .unwrap_or(&familiar)
+            .as_bytes()
+            .to_vec();
+        let p = platform.cloned().unwrap_or_else(|| self.target_platform.clone());
+        let keyed = errb(&[&familiar, b"::", &platform::format_all(&platform::normalize(&p))]);
+        for key in [keyed, familiar] {
+            if let Some(v) = self.opts.contexts.get(&key) {
+                return Ok(Some(Named {
+                    key,
+                    value: v.clone(),
+                }));
+            }
+        }
+        Ok(None)
+    }
+
+    /// `NamedContext.Load`: the state a named context is, for stage `d` on `platform`,
+    /// and the image config it brings, if it is an image.
+    fn load_named(
+        &mut self,
+        d: usize,
+        n: &Named,
+        platform: &Platform,
+    ) -> Result<(State, Option<Image>), Fail> {
+        let input = n.value.clone();
+        let Some(colon) = input.iter().position(|&b| b == b':') else {
+            return Err(Fail::new(errb(&[
+                b"invalid context specifier ",
+                &input,
+                b" for ",
+                &n.key,
+            ])));
+        };
+        let (kind, rest) = (go::head(&input, colon), go::tail(&input, colon + 1));
+        let kind: &[u8] = if kind.starts_with(b"git@") { b"git" } else { kind };
+        let git = |planner: &mut Self| -> Result<Option<State>, Fail> {
+            match git::parse_git_ref(&input) {
+                git::Parsed::Git(g) => {
+                    let name = errb(&[b"[internal] load git source ", &input]);
+                    Ok(Some(planner.git_source(
+                        &g,
+                        g.keep_git_dir == Some(true),
+                        &g.checksum,
+                        &name,
+                    )))
+                }
+                git::Parsed::BadGit(e) => Err(Fail::new(e)),
+                git::Parsed::NotGit => Ok(None),
+            }
+        };
+        match kind {
+            b"docker-image" => {
+                let r = rest.strip_prefix(b"//").unwrap_or(rest);
+                if r == EMPTY_IMAGE {
+                    return Ok((State::scratch(), None));
+                }
+                let mut named = parse_normalized(r).map_err(Fail::new)?;
+                if named.tag.is_none() && named.digest.is_none() {
+                    named.tag = Some("latest".into());
+                }
+                let log = errb(&[b"[context ", &n.key, b"] load metadata for ", r]);
+                let resolved = self
+                    .resolver
+                    .resolve(named.to_string().as_bytes(), platform, &log)
+                    .map_err(Fail::new)?;
+                let mut reference = parse_normalized(&resolved.reference).map_err(Fail::new)?;
+                if reference.tag.is_none() && reference.digest.is_none() {
+                    reference.tag = Some("latest".into());
+                }
+                let mut img = Image::from_json(&resolved.config).map_err(Fail::new)?;
+                img.created = None;
+                let mut state = self.graph.source(
+                    [b"docker-image://".as_slice(), reference.to_string().as_bytes()].concat(),
+                    BTreeMap::new(),
+                    Some(platform.clone()),
+                    custom_name(errb(&[b"[context ", &n.key, b"] ", r])),
+                );
+                with_image_config(&mut state, &img);
+                Ok((state, Some(img)))
+            }
+            b"git" => match git(self)? {
+                Some(st) => Ok((st, None)),
+                None => Err(Fail::new(errb(&[b"invalid git context ", &input]))),
+            },
+            b"http" | b"https" => {
+                if let Some(st) = git(self)? {
+                    return Ok((st, None));
+                }
+                let mut attrs = BTreeMap::new();
+                attrs.insert(b"http.filename".to_vec(), b"context".to_vec());
+                let st = self.graph.source(
+                    input.clone(),
+                    attrs,
+                    None,
+                    custom_name(errb(&[b"[context ", &n.key, b"] ", &input])),
+                );
+                Ok((st, None))
+            }
+            b"local" => {
+                let st = self.graph.source(
+                    [b"local://".as_slice(), rest].concat(),
+                    BTreeMap::new(),
+                    None,
+                    custom_name(errb(&[b"[context ", &n.key, b"] load from client"])),
+                );
+                if let Some(out) = st.output {
+                    self.named_locals.push((out, d, n.key.clone(), rest.to_vec()));
+                }
+                Ok((st, None))
+            }
+            // buildx gives the frontend no inputs for a context it names.
+            b"input" => Err(Fail::new(errb(&[b"invalid input ", rest, b" for ", &n.key]))),
+            other => Err(Fail::new(errb(&[
+                b"unsupported context source ",
+                other,
+                b" for ",
+                &n.key,
+            ]))),
+        }
+    }
+
     /// `llb.Git`: the repository as a source, its ID and attributes as BuildKit makes
     /// them. Unlike BuildKit, no SSH host keys are scanned while planning: they are the
     /// fetch's to verify.
@@ -2846,6 +3053,38 @@ impl Planner<'_> {
         }
         attrs.insert(b"local.sharedkeyhint".to_vec(), b"context".to_vec());
         attrs.insert(b"local.unique".to_vec(), self.opts.context_id.clone());
+        // Each local named context, with only the paths its stage copies from it
+        // (asyncLocalOutput, as it is marshalled once every stage is dispatched).
+        for (out, d, key, name) in std::mem::take(&mut self.named_locals) {
+            let mut a = BTreeMap::new();
+            let paths = self
+                .states
+                .get(d)
+                .and_then(|s| self.path_sets.get(s.paths))
+                .cloned()
+                .unwrap_or_default();
+            if let Some(paths) = normalize_context_paths(&paths) {
+                let mut json = String::new();
+                crate::json::write_strings(&mut json, &paths);
+                a.insert(b"local.followpaths".to_vec(), json.into_bytes());
+            }
+            if let Some(ex) = self.opts.context_excludes.get(&name).filter(|e| !e.is_empty()) {
+                let mut json = String::new();
+                crate::json::write_strings(&mut json, ex);
+                a.insert(b"local.excludepatterns".to_vec(), json.into_bytes());
+            }
+            let shared = self.opts.context_keys.get(&key).cloned().unwrap_or_default();
+            a.insert(
+                b"local.sharedkeyhint".to_vec(),
+                errb(&[b"context:", &key, b"-", &shared]),
+            );
+            a.insert(b"local.unique".to_vec(), self.opts.context_id.clone());
+            if let Some(v) = self.graph.vertices.get_mut(out.vertex)
+                && let llb::Kind::Source { attrs: at, .. } = &mut v.kind
+            {
+                *at = a;
+            }
+        }
         if let Some(v) = self.graph.vertices.get_mut(self.context.vertex) {
             if let llb::Kind::Source { attrs: a, .. } = &mut v.kind {
                 *a = attrs;
@@ -3596,6 +3835,30 @@ fn normalize_context_paths(paths: &BTreeSet<Vec<u8>>) -> Option<Vec<Vec<u8>>> {
     let mut out: Vec<Vec<u8>> = paths.iter().map(|p| go::join(&[b".", p])).collect();
     out.sort();
     Some(out)
+}
+
+/// `State.WithImageConfig`: the image's environment (each variable added), working
+/// directory and platform.
+fn with_image_config(state: &mut State, img: &Image) {
+    for e in &img.config.env {
+        let (k, v) = match e.iter().position(|&b| b == b'=') {
+            Some(i) => (go::head(e, i), go::tail(e, i + 1)),
+            None => (e.as_slice(), b"".as_slice()),
+        };
+        if !k.is_empty() {
+            state.env.add(k, v);
+        }
+    }
+    state.set_dir(&img.config.working_dir);
+    if !img.platform.architecture.is_empty() && !img.platform.os.is_empty() {
+        state.platform = Some(Platform {
+            os: img.platform.os.clone(),
+            architecture: img.platform.architecture.clone(),
+            variant: img.platform.variant.clone(),
+            os_version: img.platform.os_version.clone(),
+            os_features: img.platform.os_features.clone(),
+        });
+    }
 }
 
 /// `emptyImage`.

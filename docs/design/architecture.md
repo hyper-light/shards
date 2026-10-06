@@ -2875,6 +2875,35 @@ refused its escape).
 
 Open: the attestations `image` outputs carry (provenance), `--platform` lists.
 
+### Builds take named contexts (D53)
+
+`--build-context NAME=VALUE` is read as buildx v0.37.1 reads it (ParseContextNames: each
+name a reference's familiar form, `:latest` dropped; held to buildx by
+`scripts/buildx/generate`) and handed to the planner as buildx's loadInputs hands it to
+the frontend: a remote URL or `docker-image://` as it is; a directory as a local of the
+context's name (`_context`, `_dockerfile` for those two), keyed by its base name, its own
+`.dockerignore` read. The planner applies them as Dockerfile2LLB does (dockerui
+NamedContext, dockerfile/1.27.1):
+
+- a stage whose name is a context's is that context, its own steps never run; a base or
+  `COPY --from` name a context names (looked up as `NAME::os/arch`, then `NAME`) is that
+  context: an image (`[context NAME] REF`, its config's environment, working directory and
+  platform, its ONBUILD triggers run), scratch, a Git repository, an HTTP file
+  (`context`), or a directory read with only the paths the stage copies from it;
+- BuildKit's own quirks kept: `--from=context` reaches a context named `context`, its
+  name being normalized before the check that spares `context`; BuildKit's errors word
+  for word (`invalid context specifier`, `unsupported context source`).
+
+Held to BuildKit by 14 plan cases its own converter planned through a gateway client that
+`scripts/dockerfile/oracle` fakes (images.json's images, contexts with no
+`.dockerignore`); one recorded deviation: an SSH Git context carries no host keys scanned
+over the network while planning (BuildKit's sshutil.SSHKeyScan), the fetch verifies them.
+Also held to buildx: a `local` or `tar` output refused beside `--iidfile`. Tested on a
+real microVM (`named_contexts_stand_in_for_what_they_name`); the platform-keyed lookup
+mutation-checked.
+
+Open: `oci-layout://` contexts (buildx serves the layout as a session content store).
+
 ## 4. Start path (≤ 5 ms budget)
 
 | Step | Cost | Evidence |

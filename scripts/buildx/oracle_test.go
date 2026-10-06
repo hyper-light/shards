@@ -36,12 +36,24 @@ import (
 
 // The flags shards serves.
 var served = []string{
-	"allow", "build-arg", "file", "help", "iidfile", "label", "load", "no-cache", "platform",
+	"allow", "build-arg", "build-context", "file", "help", "iidfile", "label", "load", "no-cache", "platform",
 	"output", "progress", "pull", "push", "quiet", "secret", "ssh", "tag", "target", "ulimit",
 }
 
 // The command lines asked, each the words after `buildx build`.
 var cases = [][]string{
+	{"--build-context", "base=docker-image://alpine:3.22", "--build-context", "src=./dir", "."},
+	{"--build-context", "Alpine:latest=x", "."},
+	{"--build-context", "docker.io/library/alpine:latest=x", "--build-context", "alpine=y", "."},
+	{"--build-context", "noequals", "."},
+	{"--build-context", "=x", "."},
+	{"--build-context", "", "."},
+	{"--build-context", "a=b=c", "."},
+	{"--build-context", "registry.example.com:5000/team/base:1.0=oci-layout://./layout:1.0", "."},
+	{"--build-context", "x@sha256:abcd=y", "."},
+	{"--iidfile", "id.txt", "-o", "type=tar,dest=a.tar", "."},
+	{"--iidfile", "id.txt", "-o", "./outdir", "."},
+	{"--iidfile", "id.txt", "-o", "type=oci,dest=a.tar", "."},
 	{},
 	{"--help"},
 	{"-h"},
@@ -250,6 +262,33 @@ func ask(t *testing.T, argv []string) answer {
 // (ParseEntitlements); the ulimits as the frontend's `ulimit` option carries them.
 func built(c *cobra.Command) error {
 	out := c.OutOrStdout()
+	// The named contexts (ParseContextNames), as toBuildOptions reads them before the
+	// outputs; then the outputs' check against an image ID file.
+	ctxArgs, _ := c.Flags().GetStringArray("build-context")
+	contexts, err := buildflags.ParseContextNames(ctxArgs)
+	if err != nil {
+		return err
+	}
+	var ctxNames []string
+	for k := range contexts {
+		ctxNames = append(ctxNames, k)
+	}
+	sort.Strings(ctxNames)
+	for _, k := range ctxNames {
+		fmt.Fprintf(out, "CONTEXT %s %q\n", k, contexts[k])
+	}
+	earlyOut, _ := c.Flags().GetStringArray("output")
+	early, err := buildflags.ParseExports(earlyOut)
+	if err != nil {
+		return err
+	}
+	if iid, _ := c.Flags().GetString("iidfile"); iid != "" {
+		for _, e := range early {
+			if e.Type == "local" || e.Type == "tar" {
+				return fmt.Errorf("local and tar exporters are incompatible with image ID file")
+			}
+		}
+	}
 	specs, _ := c.Flags().GetStringArray("secret")
 	secrets, err := buildflags.ParseSecretSpecs(specs)
 	if err != nil {

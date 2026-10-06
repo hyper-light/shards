@@ -28,12 +28,16 @@ import (
 	"github.com/tonistiigi/go-csvvalue"
 	"github.com/moby/patternmatcher"
 	"github.com/moby/patternmatcher/ignorefile"
+	"github.com/moby/buildkit/client/llb"
 	"github.com/moby/buildkit/client/llb/sourceresolver"
 	"github.com/moby/buildkit/frontend/dockerfile/dfgitutil"
 	"github.com/moby/buildkit/util/gitutil"
 	"github.com/moby/buildkit/frontend/dockerfile/dockerfile2llb"
 	"github.com/moby/buildkit/frontend/dockerfile/instructions"
 	"github.com/moby/buildkit/frontend/dockerui"
+	gwclient "github.com/moby/buildkit/frontend/gateway/client"
+	gwpb "github.com/moby/buildkit/frontend/gateway/pb"
+	fstypes "github.com/tonistiigi/fsutil/types"
 	"github.com/moby/buildkit/solver/pb"
 	dockerspec "github.com/moby/docker-image-spec/specs-go/v1"
 	digest "github.com/opencontainers/go-digest"
@@ -368,6 +372,47 @@ type planOpts struct {
 	Hostname  string            `json:"hostname"`
 	// The frontend's `ulimit` option, as buildx sends --ulimit's values.
 	Ulimit string `json:"ulimit"`
+	// The frontend's named contexts (`context:NAME` options, as buildx sends
+	// --build-context's) and their `sharedkey:localdir:NAME` keys.
+	Contexts   map[string]string `json:"contexts"`
+	SharedKeys map[string]string `json:"shared_keys"`
+}
+
+// A gateway as the frontend sees one, of a build given only named contexts: its options,
+// the fake images for ResolveImageConfig, and a context with no .dockerignore. Anything
+// else the frontend asks of it is a nil interface's panic: the plan asks nothing else.
+type gateway struct {
+	gwclient.Client
+	opts   gwclient.BuildOpts
+	images resolver
+}
+
+func (g *gateway) BuildOpts() gwclient.BuildOpts { return g.opts }
+
+func (g *gateway) ResolveImageConfig(ctx context.Context, ref string, opt sourceresolver.Opt) (string, digest.Digest, []byte, error) {
+	return g.images.ResolveImageConfig(ctx, ref, opt)
+}
+
+func (g *gateway) Solve(context.Context, gwclient.SolveRequest) (*gwclient.Result, error) {
+	res := gwclient.NewResult()
+	res.SetRef(noFiles{})
+	return res, nil
+}
+
+// The frontend's inputs: none, as buildx gives none for these contexts.
+func (g *gateway) Inputs(context.Context) (map[string]llb.State, error) {
+	return map[string]llb.State{}, nil
+}
+
+// A solved local source holding none of the files asked for.
+type noFiles struct{ gwclient.Reference }
+
+func (noFiles) StatFile(context.Context, gwclient.StatRequest) (*fstypes.Stat, error) {
+	return nil, os.ErrNotExist
+}
+
+func (noFiles) ReadFile(context.Context, gwclient.ReadRequest) ([]byte, error) {
+	return nil, os.ErrNotExist
 }
 
 // parseUlimits reads the frontend's `ulimit` option as dockerui's own (unexported)
@@ -413,7 +458,22 @@ func planFile(root, rel string, images resolver) map[string]any {
 	var warnings []string
 	platform := ocispecs.Platform{OS: "linux", Architecture: "amd64"}
 	caps := pb.Caps.CapSet(pb.Caps.All())
+	var named *dockerui.Client
+	if len(opts.Contexts) > 0 {
+		bopts := gwclient.BuildOpts{Opts: map[string]string{}, LLBCaps: caps, Caps: gwpb.Caps.CapSet(gwpb.Caps.All())}
+		for k, v := range opts.Contexts {
+			bopts.Opts["context:"+k] = v
+		}
+		for k, v := range opts.SharedKeys {
+			bopts.Opts["sharedkey:localdir:"+k] = v
+		}
+		named, err = dockerui.NewClient(&gateway{opts: bopts, images: images})
+		if err != nil {
+			panic(err)
+		}
+	}
 	res, err := dockerfile2llb.Dockerfile2LLB(context.Background(), data, dockerfile2llb.ConvertOpt{
+		Client:         named,
 		Config: dockerui.Config{
 			BuildArgs:      opts.BuildArgs,
 			Target:         opts.Target,

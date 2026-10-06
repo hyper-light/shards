@@ -467,6 +467,7 @@ pub(crate) fn host_memory() -> Option<u64> {
 }
 
 /// A base image as the build resolved it.
+#[derive(Clone)]
 struct Base {
     image: Image,
     layers: Vec<Layer>,
@@ -636,9 +637,15 @@ impl Bases<'_> {
             config,
         };
         let bare = name.rsplit_once('@').map_or(name, |(bare, _)| bare);
+        let base = Base { image, layers };
+        // A named context's image is its source by the reference alone, as BuildKit's
+        // NamedContext names it (no digest).
+        if !name.contains('@') {
+            self.resolved.borrow_mut().insert(name.to_string(), base.clone());
+        }
         self.resolved
             .borrow_mut()
-            .insert(format!("{bare}@{}", pulled.resolved), Base { image, layers });
+            .insert(format!("{bare}@{}", pulled.resolved), base);
         Ok(resolved)
     }
 }
@@ -851,7 +858,14 @@ fn run(parsed: &Parsed) -> Result<(), String> {
     // now and once, each as large as a step carries; then its entitlements; its ulimits
     // were read with its flags (shards_cmdline::buildflags).
     // Its outputs as buildx reads them, first (toOptions); checked once its agents are.
+    let familiar = |n: &str| {
+        Reference::parse_normalized(n)
+            .map(|r| r.familiar())
+            .map_err(|e| e.to_string())
+    };
+    let named = buildflags::parse_contexts(parsed.many("build-context"), &familiar)?;
     let exports = buildflags::parse_exports(parsed.many("output"))?;
+    buildflags::check_iidfile(&exports, parsed.string("iidfile"))?;
     let env = |name: &str| std::env::var_os(name).map(os_bytes);
     let secrets = buildflags::store(
         buildflags::parse_secrets(parsed.many("secret"))?,
@@ -981,6 +995,7 @@ fn run(parsed: &Parsed) -> Result<(), String> {
         .map(|t| shards_dockerfile::ignore::read_all(t))
         .unwrap_or_default();
 
+    let named = named_contexts(&named)?;
     let home = shards_ipc::home()?;
     let store = crate::pull::store(&home)?;
     let _lease = store.lease().map_err(|e| e.to_string())?;
@@ -1003,6 +1018,9 @@ fn run(parsed: &Parsed) -> Result<(), String> {
         context_id: format!("shards-{}", std::process::id()).into_bytes(),
         excludes,
         dialect: dialect_of(&name),
+        contexts: named.contexts,
+        context_keys: named.keys,
+        context_excludes: named.excludes,
     };
     let plan = match plan::plan(&text, &opts, &bases) {
         Ok(p) => p,
@@ -1234,7 +1252,17 @@ fn run(parsed: &Parsed) -> Result<(), String> {
                     exclude: list(b"local.excludepatterns"),
                     follow: list(b"local.followpaths"),
                 };
-                let r = exec.context(&context, &filters).map_err(|e| fail(&v, &e))?;
+                let local = identifier.strip_prefix(b"local://").unwrap_or_default();
+                let dir = if local == b"context" {
+                    context.clone()
+                } else {
+                    named
+                        .locals
+                        .get(local)
+                        .cloned()
+                        .ok_or_else(|| fail(&v, &format!("no local directory {}", show(local))))?
+                };
+                let r = exec.context(&dir, &filters).map_err(|e| fail(&v, &e))?;
                 let (files, bytes) = context_size(&r.fs);
                 progress
                     .borrow()
@@ -1850,6 +1878,78 @@ fn units_bytes(n: u64) -> String {
         return format!("{n}B");
     }
     format!("{:.2}{}", n as f64 / base as f64, UNITS.get(i).unwrap_or(&"B"))
+}
+
+/// The named contexts as the frontend is given them, and the directories of the local
+/// ones.
+#[derive(Debug, Default)]
+struct NamedContexts {
+    contexts: BTreeMap<Vec<u8>, Vec<u8>>,
+    keys: BTreeMap<Vec<u8>, Vec<u8>>,
+    excludes: BTreeMap<Vec<u8>, Vec<Vec<u8>>>,
+    locals: BTreeMap<Vec<u8>, PathBuf>,
+}
+
+/// `--build-context`'s values as buildx's loadInputs hands them to the frontend
+/// (build/opt.go, v0.37.1): a remote URL, `docker-image://` or `target:` as it is; else a
+/// directory, sent as a local of the context's name (`_context` and `_dockerfile` for
+/// those two), keyed by its base name, its `.dockerignore` read as the frontend reads it.
+fn named_contexts(named: &BTreeMap<String, String>) -> Result<NamedContexts, String> {
+    let mut out = NamedContexts::default();
+    for (k, v) in named {
+        let remote = ["http://", "https://", "git://", "github.com/", "git@"]
+            .iter()
+            .any(|p| v.starts_with(p));
+        if remote || v.starts_with("docker-image://") || v.starts_with("target:") {
+            out.contexts
+                .insert(k.clone().into_bytes(), v.clone().into_bytes());
+            continue;
+        }
+        if v.starts_with("oci-layout://") {
+            return Err(format!(
+                "{k}: an oci-layout:// context is not served yet; load the layout (shards load) and name it with docker-image://"
+            ));
+        }
+        let md = std::fs::metadata(v).map_err(|e| {
+            format!(
+                "failed to get build context {k}: stat {v}: {}",
+                buildflags::os_error(&e)
+            )
+        })?;
+        if !md.is_dir() {
+            return Err(format!(
+                "failed to get build context path {{{v} <nil>}}: not a directory"
+            ));
+        }
+        let local = if k == "context" || k == "dockerfile" {
+            format!("_{k}")
+        } else {
+            k.clone()
+        };
+        let dir = PathBuf::from(v);
+        let key = std::path::absolute(&dir)
+            .ok()
+            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .unwrap_or_else(|| {
+                dir.file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+            });
+        let ignore = read_if_present(&dir.join(".dockerignore"), ".dockerignore").map_err(|e| {
+            format!("failed to build: failed to solve: failed to read dockerignore patterns: {e}")
+        })?;
+        out.excludes.insert(
+            local.clone().into_bytes(),
+            ignore
+                .map(|t| shards_dockerfile::ignore::read_all(&t))
+                .unwrap_or_default(),
+        );
+        out.contexts
+            .insert(k.clone().into_bytes(), format!("local:{local}").into_bytes());
+        out.keys.insert(k.clone().into_bytes(), key.into_bytes());
+        out.locals.insert(local.into_bytes(), dir);
+    }
+    Ok(out)
 }
 
 /// The export's failure `why`, on its step and as the build's error.

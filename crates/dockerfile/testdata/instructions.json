@@ -16655,6 +16655,749 @@
   "warnings": null
  },
  {
+  "file": "corpus/plan/named-bad-source.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"base\"",
+    "commands": null,
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM base\""
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/named-bad-spec.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"base\"",
+    "commands": null,
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM base\""
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/named-base.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "code": "\"RUN echo hi\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        2,
+        2
+       ]
+      ],
+      "mounts": null,
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"echo hi\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine\""
+   },
+   {
+    "base_name": "\"alpine:latest\"",
+    "commands": [
+     {
+      "code": "\"RUN echo two\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        4,
+        4
+       ]
+      ],
+      "mounts": null,
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"echo two\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      3,
+      3
+     ]
+    ],
+    "name": "\"two\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine:latest AS two\""
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/named-context-name.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "chmod": "\"\"",
+      "chown": "\"\"",
+      "code": "\"COPY --from=context /a /a\"",
+      "comments": [],
+      "exclude": [],
+      "from": "\"context\"",
+      "kind": "*instructions.CopyCommand",
+      "link": false,
+      "location": [
+       [
+        2,
+        2
+       ]
+      ],
+      "name": "\"COPY\"",
+      "parents": false,
+      "sources": {
+       "contents": null,
+       "dest": "\"/a\"",
+       "paths": [
+        "\"/a\""
+       ]
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine\""
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/named-git-ssh.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "chmod": "\"\"",
+      "chown": "\"\"",
+      "code": "\"COPY --from=repo /README.md /r\"",
+      "comments": [],
+      "exclude": [],
+      "from": "\"repo\"",
+      "kind": "*instructions.CopyCommand",
+      "link": false,
+      "location": [
+       [
+        2,
+        2
+       ]
+      ],
+      "name": "\"COPY\"",
+      "parents": false,
+      "sources": {
+       "contents": null,
+       "dest": "\"/r\"",
+       "paths": [
+        "\"/README.md\""
+       ]
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine\""
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/named-git.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "chmod": "\"\"",
+      "chown": "\"\"",
+      "code": "\"COPY --from=repo /README.md /r\"",
+      "comments": [],
+      "exclude": [],
+      "from": "\"repo\"",
+      "kind": "*instructions.CopyCommand",
+      "link": false,
+      "location": [
+       [
+        2,
+        2
+       ]
+      ],
+      "name": "\"COPY\"",
+      "parents": false,
+      "sources": {
+       "contents": null,
+       "dest": "\"/r\"",
+       "paths": [
+        "\"/README.md\""
+       ]
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine\""
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/named-http.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "chmod": "\"\"",
+      "chown": "\"\"",
+      "code": "\"COPY --from=f /context /x\"",
+      "comments": [],
+      "exclude": [],
+      "from": "\"f\"",
+      "kind": "*instructions.CopyCommand",
+      "link": false,
+      "location": [
+       [
+        2,
+        2
+       ]
+      ],
+      "name": "\"COPY\"",
+      "parents": false,
+      "sources": {
+       "contents": null,
+       "dest": "\"/x\"",
+       "paths": [
+        "\"/context\""
+       ]
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine\""
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/named-image.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"base\"",
+    "commands": [
+     {
+      "code": "\"RUN echo hi\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        2,
+        2
+       ]
+      ],
+      "mounts": null,
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"echo hi\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM base\""
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/named-local.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "chmod": "\"\"",
+      "chown": "\"\"",
+      "code": "\"COPY --from=src /x /x\"",
+      "comments": [],
+      "exclude": [],
+      "from": "\"src\"",
+      "kind": "*instructions.CopyCommand",
+      "link": false,
+      "location": [
+       [
+        2,
+        2
+       ]
+      ],
+      "name": "\"COPY\"",
+      "parents": false,
+      "sources": {
+       "contents": null,
+       "dest": "\"/x\"",
+       "paths": [
+        "\"/x\""
+       ]
+      }
+     },
+     {
+      "chmod": "\"\"",
+      "chown": "\"\"",
+      "code": "\"COPY --from=src /y /y\"",
+      "comments": [],
+      "exclude": [],
+      "from": "\"src\"",
+      "kind": "*instructions.CopyCommand",
+      "link": false,
+      "location": [
+       [
+        3,
+        3
+       ]
+      ],
+      "name": "\"COPY\"",
+      "parents": false,
+      "sources": {
+       "contents": null,
+       "dest": "\"/y\"",
+       "paths": [
+        "\"/y\""
+       ]
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine\""
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/named-platform.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "code": "\"RUN echo hi\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        2,
+        2
+       ]
+      ],
+      "mounts": null,
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"echo hi\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine\""
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/named-scratch.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"base\"",
+    "commands": [
+     {
+      "chmod": "\"\"",
+      "chown": "\"\"",
+      "code": "\"COPY a /a\"",
+      "comments": [],
+      "exclude": [],
+      "from": "\"\"",
+      "kind": "*instructions.CopyCommand",
+      "link": false,
+      "location": [
+       [
+        2,
+        2
+       ]
+      ],
+      "name": "\"COPY\"",
+      "parents": false,
+      "sources": {
+       "contents": null,
+       "dest": "\"/a\"",
+       "paths": [
+        "\"a\""
+       ]
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM base\""
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/named-stage.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "code": "\"RUN touch /a\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        2,
+        2
+       ]
+      ],
+      "mounts": null,
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"touch /a\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"deps\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine AS deps\""
+   },
+   {
+    "base_name": "\"scratch\"",
+    "commands": [
+     {
+      "chmod": "\"\"",
+      "chown": "\"\"",
+      "code": "\"COPY --from=deps /a /a\"",
+      "comments": [],
+      "exclude": [],
+      "from": "\"deps\"",
+      "kind": "*instructions.CopyCommand",
+      "link": false,
+      "location": [
+       [
+        4,
+        4
+       ]
+      ],
+      "name": "\"COPY\"",
+      "parents": false,
+      "sources": {
+       "contents": null,
+       "dest": "\"/a\"",
+       "paths": [
+        "\"/a\""
+       ]
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      3,
+      3
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM scratch\""
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/named-tagged.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"registry.example.com:5000/team/app:1.0\"",
+    "commands": [
+     {
+      "code": "\"RUN echo hi\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        2,
+        2
+       ]
+      ],
+      "mounts": null,
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"echo hi\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM registry.example.com:5000/team/app:1.0\""
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/named-unused.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "code": "\"RUN echo hi\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        2,
+        2
+       ]
+      ],
+      "mounts": null,
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"echo hi\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine\""
+   }
+  ],
+  "warnings": null
+ },
+ {
   "file": "corpus/plan/nopath.Dockerfile",
   "meta_args": null,
   "stages": [

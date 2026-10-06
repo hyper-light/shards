@@ -2138,6 +2138,12 @@ pub static BUILD: Command = Command {
             "Secret to expose to the build (format: \"id=mysecret[,src=/local/secret]\")",
         ),
         Flag::many(
+            "build-context",
+            None,
+            "stringArray",
+            "Additional build contexts (e.g., name=path)",
+        ),
+        Flag::many(
             "output",
             Some(b'o'),
             "stringArray",
@@ -2161,7 +2167,6 @@ pub static BUILD: Command = Command {
 add-host - m - -\n\
 annotation - m - -\n\
 attest - m - -\n\
-build-context - m - -\n\
 builder - s - -\n\
 cache-from - m - -\n\
 cache-to - m - -\n\

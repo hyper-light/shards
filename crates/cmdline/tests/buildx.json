@@ -1,5 +1,135 @@
 [
   {
+    "argv": [
+      "--build-context",
+      "base=docker-image://alpine:3.22",
+      "--build-context",
+      "src=./dir",
+      "."
+    ],
+    "stdout": "RUN --build-context=[base=docker-image://alpine:3.22,src=./dir] \".\"\nCONTEXT base \"docker-image://alpine:3.22\"\nCONTEXT src \"./dir\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "--build-context",
+      "Alpine:latest=x",
+      "."
+    ],
+    "stdout": "RUN --build-context=[Alpine:latest=x] \".\"\n",
+    "stderr": "ERROR: invalid context name Alpine:latest: invalid reference format: repository name (library/Alpine) must be lowercase\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "--build-context",
+      "docker.io/library/alpine:latest=x",
+      "--build-context",
+      "alpine=y",
+      "."
+    ],
+    "stdout": "RUN --build-context=[docker.io/library/alpine:latest=x,alpine=y] \".\"\nCONTEXT alpine \"y\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "--build-context",
+      "noequals",
+      "."
+    ],
+    "stdout": "RUN --build-context=[noequals] \".\"\n",
+    "stderr": "ERROR: invalid context value: noequals, expected key=value\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "--build-context",
+      "=x",
+      "."
+    ],
+    "stdout": "RUN --build-context=[=x] \".\"\n",
+    "stderr": "ERROR: invalid context name : invalid reference format\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "--build-context",
+      "",
+      "."
+    ],
+    "stdout": "RUN --build-context=[] \".\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "--build-context",
+      "a=b=c",
+      "."
+    ],
+    "stdout": "RUN --build-context=[a=b=c] \".\"\nCONTEXT a \"b=c\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "--build-context",
+      "registry.example.com:5000/team/base:1.0=oci-layout://./layout:1.0",
+      "."
+    ],
+    "stdout": "RUN --build-context=[registry.example.com:5000/team/base:1.0=oci-layout://./layout:1.0] \".\"\nCONTEXT registry.example.com:5000/team/base:1.0 \"oci-layout://./layout:1.0\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "--build-context",
+      "x@sha256:abcd=y",
+      "."
+    ],
+    "stdout": "RUN --build-context=[x@sha256:abcd=y] \".\"\n",
+    "stderr": "ERROR: invalid context name x@sha256:abcd: invalid reference format\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "--iidfile",
+      "id.txt",
+      "-o",
+      "type=tar,dest=a.tar",
+      "."
+    ],
+    "stdout": "RUN --iidfile=id.txt --output=[\"type=tar,dest=a.tar\"] \".\"\n",
+    "stderr": "ERROR: local and tar exporters are incompatible with image ID file\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "--iidfile",
+      "id.txt",
+      "-o",
+      "./outdir",
+      "."
+    ],
+    "stdout": "RUN --iidfile=id.txt --output=[./outdir] \".\"\n",
+    "stderr": "ERROR: local and tar exporters are incompatible with image ID file\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "--iidfile",
+      "id.txt",
+      "-o",
+      "type=oci,dest=a.tar",
+      "."
+    ],
+    "stdout": "RUN --iidfile=id.txt --output=[\"type=oci,dest=a.tar\"] \".\"\nOUTPUT oci [] dir=\"\" file=true\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
     "argv": [],
     "stdout": "",
     "stderr": "ERROR: shards: 'shards buildx build' requires 1 argument\n\nUsage:  shards buildx build [OPTIONS] PATH | URL | -\n\nRun 'shards buildx build --help' for more information\n",
@@ -9,7 +139,7 @@
     "argv": [
       "--help"
     ],
-    "stdout": "Usage:  shards buildx build [OPTIONS] PATH | URL | -\n\nStart a build\n\nAliases:\n  shards build, shards builder build, shards image build, shards buildx b\n\nOptions:\n      --allow stringArray       Allow extra privileged entitlement (e.g.,\n                                \"network.host\", \"security.insecure\",\n                                \"device\", \"buildx.local.delete\")\n      --build-arg stringArray   Set build-time variables\n  -f, --file string             Name of the Dockerfile (default:\n                                \"PATH/Dockerfile\")\n      --iidfile string          Write the image ID to a file\n      --label stringArray       Set metadata for an image\n      --load                    Shorthand for \"--output=type=docker\"\n      --no-cache                Do not use cache when building the image\n  -o, --output stringArray      Output destination (format:\n                                \"type=local,dest=path\")\n      --platform stringArray    Set target platform for build\n      --progress string         Set type of progress output (\"auto\",\n                                \"none\",  \"plain\", \"quiet\", \"rawjson\",\n                                \"tty\"). Use plain to show container\n                                output (default \"auto\")\n      --pull                    Always attempt to pull all referenced images\n      --push                    Shorthand for\n                                \"--output=type=registry,unpack=false\"\n  -q, --quiet                   Suppress the build output and print image\n                                ID on success\n      --secret stringArray      Secret to expose to the build (format:\n                                \"id=mysecret[,src=/local/secret]\")\n      --ssh stringArray         SSH agent socket or keys to expose to the\n                                build (format:\n                                \"default|\u003cid\u003e[=\u003csocket\u003e|\u003ckey\u003e[,\u003ckey\u003e]]\")\n  -t, --tag stringArray         Image identifier (format:\n                                \"[registry/]repository[:tag]\")\n      --target string           Set the target build stage to build\n      --ulimit ulimit           Ulimit options (default [])\n",
+    "stdout": "Usage:  shards buildx build [OPTIONS] PATH | URL | -\n\nStart a build\n\nAliases:\n  shards build, shards builder build, shards image build, shards buildx b\n\nOptions:\n      --allow stringArray           Allow extra privileged entitlement\n                                    (e.g., \"network.host\",\n                                    \"security.insecure\", \"device\",\n                                    \"buildx.local.delete\")\n      --build-arg stringArray       Set build-time variables\n      --build-context stringArray   Additional build contexts (e.g.,\n                                    name=path)\n  -f, --file string                 Name of the Dockerfile (default:\n                                    \"PATH/Dockerfile\")\n      --iidfile string              Write the image ID to a file\n      --label stringArray           Set metadata for an image\n      --load                        Shorthand for \"--output=type=docker\"\n      --no-cache                    Do not use cache when building the image\n  -o, --output stringArray          Output destination (format:\n                                    \"type=local,dest=path\")\n      --platform stringArray        Set target platform for build\n      --progress string             Set type of progress output (\"auto\",\n                                    \"none\",  \"plain\", \"quiet\", \"rawjson\",\n                                    \"tty\"). Use plain to show container\n                                    output (default \"auto\")\n      --pull                        Always attempt to pull all referenced\n                                    images\n      --push                        Shorthand for\n                                    \"--output=type=registry,unpack=false\"\n  -q, --quiet                       Suppress the build output and print\n                                    image ID on success\n      --secret stringArray          Secret to expose to the build\n                                    (format:\n                                    \"id=mysecret[,src=/local/secret]\")\n      --ssh stringArray             SSH agent socket or keys to expose to\n                                    the build (format:\n                                    \"default|\u003cid\u003e[=\u003csocket\u003e|\u003ckey\u003e[,\u003ckey\u003e]]\")\n  -t, --tag stringArray             Image identifier (format:\n                                    \"[registry/]repository[:tag]\")\n      --target string               Set the target build stage to build\n      --ulimit ulimit               Ulimit options (default [])\n",
     "stderr": "",
     "status": 0
   },
@@ -17,7 +147,7 @@
     "argv": [
       "-h"
     ],
-    "stdout": "Flag shorthand -h has been deprecated, use --help\nUsage:  shards buildx build [OPTIONS] PATH | URL | -\n\nStart a build\n\nAliases:\n  shards build, shards builder build, shards image build, shards buildx b\n\nOptions:\n      --allow stringArray       Allow extra privileged entitlement (e.g.,\n                                \"network.host\", \"security.insecure\",\n                                \"device\", \"buildx.local.delete\")\n      --build-arg stringArray   Set build-time variables\n  -f, --file string             Name of the Dockerfile (default:\n                                \"PATH/Dockerfile\")\n      --iidfile string          Write the image ID to a file\n      --label stringArray       Set metadata for an image\n      --load                    Shorthand for \"--output=type=docker\"\n      --no-cache                Do not use cache when building the image\n  -o, --output stringArray      Output destination (format:\n                                \"type=local,dest=path\")\n      --platform stringArray    Set target platform for build\n      --progress string         Set type of progress output (\"auto\",\n                                \"none\",  \"plain\", \"quiet\", \"rawjson\",\n                                \"tty\"). Use plain to show container\n                                output (default \"auto\")\n      --pull                    Always attempt to pull all referenced images\n      --push                    Shorthand for\n                                \"--output=type=registry,unpack=false\"\n  -q, --quiet                   Suppress the build output and print image\n                                ID on success\n      --secret stringArray      Secret to expose to the build (format:\n                                \"id=mysecret[,src=/local/secret]\")\n      --ssh stringArray         SSH agent socket or keys to expose to the\n                                build (format:\n                                \"default|\u003cid\u003e[=\u003csocket\u003e|\u003ckey\u003e[,\u003ckey\u003e]]\")\n  -t, --tag stringArray         Image identifier (format:\n                                \"[registry/]repository[:tag]\")\n      --target string           Set the target build stage to build\n      --ulimit ulimit           Ulimit options (default [])\n",
+    "stdout": "Flag shorthand -h has been deprecated, use --help\nUsage:  shards buildx build [OPTIONS] PATH | URL | -\n\nStart a build\n\nAliases:\n  shards build, shards builder build, shards image build, shards buildx b\n\nOptions:\n      --allow stringArray           Allow extra privileged entitlement\n                                    (e.g., \"network.host\",\n                                    \"security.insecure\", \"device\",\n                                    \"buildx.local.delete\")\n      --build-arg stringArray       Set build-time variables\n      --build-context stringArray   Additional build contexts (e.g.,\n                                    name=path)\n  -f, --file string                 Name of the Dockerfile (default:\n                                    \"PATH/Dockerfile\")\n      --iidfile string              Write the image ID to a file\n      --label stringArray           Set metadata for an image\n      --load                        Shorthand for \"--output=type=docker\"\n      --no-cache                    Do not use cache when building the image\n  -o, --output stringArray          Output destination (format:\n                                    \"type=local,dest=path\")\n      --platform stringArray        Set target platform for build\n      --progress string             Set type of progress output (\"auto\",\n                                    \"none\",  \"plain\", \"quiet\", \"rawjson\",\n                                    \"tty\"). Use plain to show container\n                                    output (default \"auto\")\n      --pull                        Always attempt to pull all referenced\n                                    images\n      --push                        Shorthand for\n                                    \"--output=type=registry,unpack=false\"\n  -q, --quiet                       Suppress the build output and print\n                                    image ID on success\n      --secret stringArray          Secret to expose to the build\n                                    (format:\n                                    \"id=mysecret[,src=/local/secret]\")\n      --ssh stringArray             SSH agent socket or keys to expose to\n                                    the build (format:\n                                    \"default|\u003cid\u003e[=\u003csocket\u003e|\u003ckey\u003e[,\u003ckey\u003e]]\")\n  -t, --tag stringArray             Image identifier (format:\n                                    \"[registry/]repository[:tag]\")\n      --target string               Set the target build stage to build\n      --ulimit ulimit               Ulimit options (default [])\n",
     "stderr": "",
     "status": 0
   },

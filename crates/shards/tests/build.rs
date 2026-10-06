@@ -2829,3 +2829,84 @@ fn umask() -> u32 {
     std::fs::DirBuilder::new().create(&dir).unwrap();
     0o777 & !(std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777)
 }
+
+/// `--build-context` gives a build named contexts as buildx and BuildKit do: a directory
+/// a `COPY --from` reads (its own .dockerignore heeded), an image a `FROM` names in place
+/// of the one it says, and a stage replaced whole by a directory; a missing directory is
+/// refused in buildx's words.
+#[test]
+fn named_contexts_stand_in_for_what_they_name() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("build-named-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let ctx = context(
+        "build-named-ctx",
+        "FROM scratch AS deps\nCOPY never /d\n\
+         FROM base\nCOPY --from=src /x /from-src/\nCOPY --from=deps /d /from-deps/\n",
+    );
+    // The stage's own steps never run: what it would copy is not even there.
+    let src = TempDir::new("build-named-src");
+    std::fs::create_dir(src.join("x")).unwrap();
+    std::fs::write(src.join("x/kept"), "kept\n").unwrap();
+    std::fs::write(src.join("x/ignored"), "ignored\n").unwrap();
+    std::fs::write(src.join(".dockerignore"), "x/ignored\n").unwrap();
+    let deps = TempDir::new("build-named-deps");
+    std::fs::create_dir(deps.join("d")).unwrap();
+    std::fs::write(deps.join("d/dep"), "dep\n").unwrap();
+    let out = TempDir::new("build-named-out");
+    let built = shards(&[
+        "build",
+        "--progress=plain",
+        "--build-context",
+        &format!("base=docker-image://{image}"),
+        "--build-context",
+        &format!("src={}", src.to_str().unwrap()),
+        "--build-context",
+        &format!("deps={}", deps.to_str().unwrap()),
+        "-o",
+        out.join("root").to_str().unwrap(),
+        ctx.to_str().unwrap(),
+    ]);
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    assert!(
+        built.stderr.contains("[context base] load metadata for"),
+        "{}",
+        built.stderr
+    );
+    assert!(
+        built.stderr.contains("[context src] load from client"),
+        "{}",
+        built.stderr
+    );
+    let root = out.join("root");
+    assert!(root.join("bin/testguest").exists(), "the named image is the base");
+    assert_eq!(std::fs::read(root.join("from-src/kept")).unwrap(), b"kept\n");
+    assert!(
+        !root.join("from-src/ignored").exists(),
+        "its .dockerignore heeded"
+    );
+    assert_eq!(std::fs::read(root.join("from-deps/dep")).unwrap(), b"dep\n");
+
+    let missing = shards(&[
+        "build",
+        "--build-context",
+        "src=/nonexistent-shards-context",
+        ctx.to_str().unwrap(),
+    ]);
+    assert_ne!(missing.status, Some(0));
+    assert!(
+        missing.stderr.contains(
+            "failed to get build context src: stat /nonexistent-shards-context: no such file or directory"
+        ),
+        "{}",
+        missing.stderr
+    );
+}
