@@ -1116,12 +1116,18 @@ impl Planner<'_> {
                 .ok_or_else(|| Fail::new(b"no stage".to_vec()))?;
             let mut total = usize::from(ds.stage.base_name != EMPTY_IMAGE && ds.base.is_none());
             for c in &ds.stage.commands {
-                if matches!(
-                    c.kind,
-                    Kind::Add(_) | Kind::Copy(_) | Kind::Run(_) | Kind::Workdir(_)
-                ) {
-                    total += 1;
-                }
+                use crate::agentfile::Directive;
+                total += match &c.kind {
+                    Kind::Add(_) | Kind::Copy(_) | Kind::Run(_) | Kind::Workdir(_) => 1,
+                    Kind::Agentfile(Directive::Agent(_) | Directive::Harness(_)) => 1,
+                    Kind::Agentfile(Directive::Mcp(m)) => match crate::agentfile::source_of(&m.source) {
+                        Ok(crate::agentfile::Source::Http(_)) | Err(_) => 0,
+                        _ => m.scope.names.len().max(1),
+                    },
+                    // Its fetch, its check, and a layer where each goes.
+                    Kind::Agentfile(Directive::Skill(sk)) => 2 + sk.scope.names.len().max(1),
+                    _ => 0,
+                };
             }
             ds.cmd_total = total;
         }
@@ -1211,6 +1217,25 @@ impl Planner<'_> {
                         }
                         i as usize
                     }
+                    None => self.stage_or_unregistered(&from, &command.location),
+                };
+                sources.push(s);
+            }
+            Kind::Agentfile(crate::agentfile::Directive::Skill(sk)) if !sk.from.is_empty() => {
+                let from = sk.from.clone();
+                if self.declares_domain(&from) {
+                    return Err(Fail::new(errb(&[
+                        b"SKILL --from=",
+                        &from,
+                        b": a skill an agent's config lists is taken from its OSI artifact, which shards does not fetch yet",
+                    ])));
+                }
+                let s = match std::str::from_utf8(&from)
+                    .ok()
+                    .and_then(|f| f.parse::<i64>().ok())
+                {
+                    Some(i) if i >= 0 && (i as usize) < self.states.len() => i as usize,
+                    Some(i) => return Err(Fail::new(format!("invalid stage index {i}").into_bytes())),
                     None => self.stage_or_unregistered(&from, &command.location),
                 };
                 sources.push(s);
@@ -2024,11 +2049,43 @@ impl Planner<'_> {
                 | crate::agentfile::Directive::Connect(_)
                 | crate::agentfile::Directive::Attach(_)),
             ) => self.ds(d)?.agentfile.push(directive),
-            Kind::Agentfile(_) => {
-                return Err(Fail::new(errb(&[
-                    &name,
-                    b" is an Agentfile directive shards does not build yet",
-                ])));
+            Kind::Agentfile(crate::agentfile::Directive::Agent(a)) => {
+                let dest = a.to.clone().unwrap_or_else(|| errb(&[b"/agents/", &a.name]));
+                self.fetch_into(d, &a.source, &dest, &code, &loc, &lint)?;
+                self.ds(d)?.agentfile.push(crate::agentfile::Directive::Agent(a));
+            }
+            Kind::Agentfile(crate::agentfile::Directive::Harness(h)) => {
+                let dest = h.to.clone().unwrap_or_else(|| errb(&[b"/harness/", &h.name]));
+                self.fetch_into(d, &h.source, &dest, &code, &loc, &lint)?;
+                self.ds(d)?
+                    .agentfile
+                    .push(crate::agentfile::Directive::Harness(h));
+            }
+            Kind::Agentfile(crate::agentfile::Directive::Mcp(m)) => {
+                // A remote server is reached, not fetched (§4.4); one over stdio is laid out
+                // where its scope says (§12.1).
+                let remote = matches!(
+                    crate::agentfile::source_of(&m.source).map_err(Fail::new)?,
+                    crate::agentfile::Source::Http(_)
+                );
+                if !remote {
+                    let dests = if m.scope.names.is_empty() {
+                        vec![errb(&[b"/mcp/", &m.name])]
+                    } else {
+                        self.grant_dirs(d, &m.scope, b"mcp")
+                            .into_iter()
+                            .map(|g| errb(&[&g, b"/", &m.name]))
+                            .collect()
+                    };
+                    for dest in dests {
+                        self.fetch_into(d, &m.source, &dest, &code, &loc, &lint)?;
+                    }
+                }
+                self.ds(d)?.agentfile.push(crate::agentfile::Directive::Mcp(m));
+            }
+            Kind::Agentfile(crate::agentfile::Directive::Skill(sk)) => {
+                self.dispatch_skill(d, &sk, &step.sources, &code, &loc, &lint)?;
+                self.ds(d)?.agentfile.push(crate::agentfile::Directive::Skill(sk));
             }
             Kind::User(u) => self.dispatch_user(d, &u, true),
             Kind::Volume(v) => {
@@ -2069,6 +2126,8 @@ impl Planner<'_> {
                     checksum: a.checksum.clone(),
                     parents: false,
                     unpack: a.unpack,
+                    onto: None,
+                    history: None,
                 };
                 self.dispatch_copy(d, cfg, &loc, &lint)?;
                 let ds = self.ds(d)?;
@@ -2115,6 +2174,8 @@ impl Planner<'_> {
                     checksum: Vec::new(),
                     parents: c.parents,
                     unpack: None,
+                    onto: None,
+                    history: None,
                 };
                 self.dispatch_copy(d, cfg, &loc, &lint)?;
                 match step.sources.first() {
@@ -2588,7 +2649,7 @@ impl Planner<'_> {
         cfg: CopyConfig,
         loc: &Location,
         lint: &LinterView<'_>,
-    ) -> Result<(), Fail> {
+    ) -> Result<Option<State>, Fail> {
         let multi = self.named_by_platform();
         let target_platform = self.target_platform.clone();
         let ds = self
@@ -2790,6 +2851,10 @@ impl Planner<'_> {
             });
         }
         msg.extend_from_slice(&errb(&[b" ", &cfg.sources.dest]));
+        if let Some(onto) = &cfg.onto {
+            return Ok(Some(self.graph.file(onto, actions, custom_name(pg_name))));
+        }
+        let msg = cfg.history.clone().unwrap_or(msg);
         let ds = self.ds(d)?;
         let state = ds.state.clone();
         if cfg.link && cfg.chmod.is_empty() {
@@ -2832,7 +2897,7 @@ impl Planner<'_> {
         }
         let ds = self.ds(d)?;
         commit(ds, msg, true, true);
-        Ok(())
+        Ok(None)
     }
 
     /// dockerui's `NamedContext`, as Dockerfile2LLB asks it (namedContextFunc): none for
@@ -3020,6 +3085,231 @@ impl Planner<'_> {
                 &n.key,
             ]))),
         }
+    }
+
+    /// Whether the file declares an agent or harness of this name, in any stage.
+    fn declares_domain(&self, name: &[u8]) -> bool {
+        let name = go::to_lower(name);
+        self.states.iter().any(|s| {
+            s.stage.commands.iter().any(|c| match &c.kind {
+                Kind::Agentfile(crate::agentfile::Directive::Agent(a))
+                | Kind::Agentfile(crate::agentfile::Directive::Harness(a)) => a.name == name,
+                _ => false,
+            })
+        })
+    }
+
+    /// The kind of the domain `name` names in stage `d`'s lineage: `kind` if said, else
+    /// what declares it (agentfile::check has refused a name both declare unsaid).
+    fn domain_kind(
+        &self,
+        d: usize,
+        name: &[u8],
+        kind: Option<crate::agentfile::TargetKind>,
+    ) -> crate::agentfile::TargetKind {
+        use crate::agentfile::{Directive, TargetKind};
+        if let Some(k) = kind {
+            return k;
+        }
+        let mut at = Some(d);
+        while let Some(i) = at {
+            let Some(s) = self.states.get(i) else { break };
+            for c in &s.stage.commands {
+                match &c.kind {
+                    Kind::Agentfile(Directive::Agent(a)) if a.name == name => return TargetKind::Agent,
+                    Kind::Agentfile(Directive::Harness(h)) if h.name == name => return TargetKind::Harness,
+                    _ => {}
+                }
+            }
+            at = s.base;
+        }
+        TargetKind::Agent
+    }
+
+    /// Where a grant to `scope`'s names goes (§12.1): each agent's
+    /// `/agents/<name>.d/<what>` and each harness's `/harness/<name>.d/<what>`.
+    fn grant_dirs(&self, d: usize, scope: &crate::agentfile::Scope, what: &[u8]) -> Vec<Vec<u8>> {
+        scope
+            .names
+            .iter()
+            .map(|n| match self.domain_kind(d, n, scope.kind) {
+                crate::agentfile::TargetKind::Agent => errb(&[b"/agents/", n, b".d/", what]),
+                crate::agentfile::TargetKind::Harness => errb(&[b"/harness/", n, b".d/", what]),
+            })
+            .collect()
+    }
+
+    /// An agent's, harness's or MCP server's source fetched into `dest` as a layer of its
+    /// own (`ADD --link`, §7 Q19): a directory's files, a local archive or a URL's
+    /// unpacked, a Git repository's tree.
+    fn fetch_into(
+        &mut self,
+        d: usize,
+        source: &[u8],
+        dest: &[u8],
+        code: &[u8],
+        loc: &Location,
+        lint: &LinterView<'_>,
+    ) -> Result<(), Fail> {
+        let unpack = match crate::agentfile::source_of(source).map_err(Fail::new)? {
+            crate::agentfile::Source::Path(_) | crate::agentfile::Source::Git(_) => None,
+            crate::agentfile::Source::Http(_) => Some(true),
+            crate::agentfile::Source::Oci(r) => {
+                return Err(Fail::new(errb(&[
+                    b"an OSI artifact from a registry (",
+                    &r,
+                    b") is not fetched by shards yet: name a path, Git or http(s) URL",
+                ])));
+            }
+        };
+        let mut dest = dest.to_vec();
+        if !dest.ends_with(b"/") {
+            dest.push(b'/');
+        }
+        let cfg = CopyConfig {
+            sources: instructions::Sources {
+                dest,
+                paths: vec![source.to_vec()],
+                contents: Vec::new(),
+            },
+            exclude: Vec::new(),
+            from: None,
+            is_add: true,
+            code: code.to_vec(),
+            chown: Vec::new(),
+            chmod: Vec::new(),
+            link: true,
+            keep_git_dir: None,
+            checksum: Vec::new(),
+            parents: false,
+            unpack,
+            onto: None,
+            history: Some(code.to_vec()),
+        };
+        self.dispatch_copy(d, cfg, loc, lint).map(|_| ())
+    }
+
+    /// `SKILL` (§4.3, §8 Q12): its source taken as `ADD` takes one, onto nothing; each
+    /// skill it holds checked and laid out in a directory of its name (D54); then laid as
+    /// a layer of its own where it goes: the given destination, `/skills/` for every
+    /// agent, or each grantee's `.d/skills/`.
+    fn dispatch_skill(
+        &mut self,
+        d: usize,
+        sk: &crate::agentfile::Skill,
+        sources: &[usize],
+        code: &[u8],
+        loc: &Location,
+        lint: &LinterView<'_>,
+    ) -> Result<(), Fail> {
+        if sk.dest.is_some() && !sk.scope.names.is_empty() {
+            return Err(Fail::new(
+                b"SKILL ... FOR lays the skill in each grantee's own skills directory: drop the destination"
+                    .to_vec(),
+            ));
+        }
+        let (paths, contents) = match &sk.source {
+            crate::agentfile::SkillSource::Path(p) => (vec![p.clone()], Vec::new()),
+            crate::agentfile::SkillSource::Text(t) => (Vec::new(), vec![t.clone()]),
+        };
+        // The directory a source that is one skill comes as, for the check of its name.
+        let base = |p: &[u8]| -> Vec<u8> {
+            let trimmed = p.strip_suffix(b"/").unwrap_or(p);
+            trimmed.rsplit(|&b| b == b'/').next().unwrap_or_default().to_vec()
+        };
+        let name = match paths.first() {
+            None => Vec::new(),
+            Some(p) => match git::parse_git_ref(p) {
+                git::Parsed::Git(g) if !g.indistinguishable_from_local => {
+                    if g.subdir.is_empty() {
+                        g.short_name.clone()
+                    } else {
+                        base(&g.subdir)
+                    }
+                }
+                // What a URL serves is named by no directory.
+                _ if is_http_source(p) => Vec::new(),
+                _ => base(p),
+            },
+        };
+        let from = match sources.first() {
+            Some(&s) => Some(self.ds(s)?.state.clone()),
+            None => None,
+        };
+        let mut scratch = State::scratch();
+        scratch.platform = self.states.get(d).and_then(|s| s.platform.clone());
+        let fetched = self
+            .dispatch_copy(
+                d,
+                CopyConfig {
+                    sources: instructions::Sources {
+                        dest: b"/".to_vec(),
+                        paths,
+                        contents,
+                    },
+                    exclude: sk.exclude.clone(),
+                    from,
+                    is_add: true,
+                    code: code.to_vec(),
+                    chown: Vec::new(),
+                    chmod: Vec::new(),
+                    link: false,
+                    keep_git_dir: sk.keep_git_dir,
+                    checksum: sk.checksum.clone(),
+                    parents: false,
+                    unpack: None,
+                    onto: Some(scratch),
+                    history: None,
+                },
+                loc,
+                lint,
+            )?
+            .ok_or_else(|| Fail::new(b"SKILL fetched nothing".to_vec()))?;
+        let multi = self.named_by_platform();
+        let ds = self.ds(d)?;
+        let platform = ds.platform.clone();
+        let env = ds.state.env.clone();
+        let check = prefix_command(
+            ds,
+            &errb(&[b"SKILL checking ", &name]),
+            multi.as_ref(),
+            platform.as_ref(),
+            &env,
+        );
+        let laid = self.graph.skills(&fetched, &name, custom_name(check));
+        let dests = match (&sk.dest, sk.scope.names.is_empty()) {
+            (Some(dest), _) => vec![dest.clone()],
+            (None, true) => vec![b"/skills/".to_vec()],
+            (None, false) => self.grant_dirs(d, &sk.scope, b"skills"),
+        };
+        for dest in dests {
+            let mut dest = dest;
+            if !dest.ends_with(b"/") {
+                dest.push(b'/');
+            }
+            let cfg = CopyConfig {
+                sources: instructions::Sources {
+                    dest,
+                    paths: vec![b"/".to_vec()],
+                    contents: Vec::new(),
+                },
+                exclude: Vec::new(),
+                from: Some(laid.clone()),
+                is_add: false,
+                code: code.to_vec(),
+                chown: sk.chown.clone(),
+                chmod: sk.chmod.clone(),
+                link: true,
+                keep_git_dir: None,
+                checksum: Vec::new(),
+                parents: false,
+                unpack: None,
+                onto: None,
+                history: Some(code.to_vec()),
+            };
+            self.dispatch_copy(d, cfg, loc, lint)?;
+        }
+        Ok(())
     }
 
     /// `llb.Git`: the repository as a source, its ID and attributes as BuildKit makes
@@ -3225,6 +3515,11 @@ struct CopyConfig {
     checksum: Vec<u8>,
     parents: bool,
     unpack: Option<bool>,
+    /// Where the files land instead of the stage: a state the copy makes, returned and
+    /// not committed (an Agentfile directive's own steps, D54).
+    onto: Option<State>,
+    /// The history's text, where it is not `ADD`'s or `COPY`'s own.
+    history: Option<Vec<u8>>,
 }
 
 /// `validateCopySourcePath`: a warning for a source the .dockerignore excludes. Nothing is

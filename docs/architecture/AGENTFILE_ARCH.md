@@ -793,6 +793,44 @@ until the review changes it. The first four fix the grammar the parser reads; th
 16. **Agentfiles from images (Q22)** are of one image, `FROM` it by digest, its history
     as comments. Compose files and rebuildable `RUN` history are later work.
 
+17. **What an agent artifact holds, and how it runs (Q1's remaining part; proposed
+    2026-10-06).** §8 fixed the shape; this fixes the content, so that `AGENT … FROM` an
+    OCI reference, `shards push` of an agent and the runtime agree. The same holds for a
+    harness (`application/vnd.osi.harness.v1`, its config
+    `application/vnd.osi.harness.config.v1+json`) and an MCP server over stdio
+    (`application/vnd.osi.mcp.v1`, `application/vnd.osi.mcp.config.v1+json`).
+    - **Content**: one or more layers, `application/vnd.osi.agent.content.v1.tar` with
+      `+zstd` or `+gzip` (or none), applied in order onto an empty directory, the
+      domain's (`/agents/<name>`). They hold files and directories alone: no whiteouts,
+      device nodes, FIFOs, sockets, set-ID bits or links leaving the directory, which the
+      build refuses as §9.2 refuses them anywhere in a domain.
+    - **Config** (JSON, every path relative to the domain's directory, none may leave it):
+      ```json
+      {
+        "schemaVersion": 1,
+        "name": "main",
+        "version": "1.4.0",
+        "description": "What it is, for whoever reads the registry",
+        "platform": {"os": "linux", "architecture": "arm64"},
+        "run": {"command": ["bin/agent", "--serve"], "env": ["LOG=info"], "workdir": "."},
+        "skills": ["skills/pdf-tools"],
+        "mcp": [{"name": "files", "command": ["mcp/files/server"]}],
+        "asks": {"network": ["api.example.com:443"], "volumes": ["/data"], "processes": 16}
+      }
+      ```
+      `platform` is absent for an agent of any platform (scripts, Python); `run.command`
+      is what the runtime starts as the agent's first process, in its domain (§9.3);
+      `skills` and `mcp` list what it brings, each laid out and checked as `SKILL` and
+      `MCP` are; `asks` lists what it needs that only the Agentfile can grant: the
+      build reports each ask no directive grants, and grants nothing itself.
+    - **Readers refuse** a `schemaVersion` they do not know, an unknown media type, a
+      config whose `name` is no stage-style name, and any path in it that is absolute or
+      leaves the directory.
+    - **Made by `shards build --agent`** (and `--harness`, `--mcp`) from a directory with
+      an `agent.json` (the config above, `schemaVersion` filled in), pushed by `shards
+      push`, pulled by `AGENT … FROM` and `shards pull`; an index for several platforms
+      when built with `--platform` lists.
+
 ## 11. Conformance: every directive, at build and at run
 
 The Dockerfile reference (docs.docker.com/reference/dockerfile, read 2026-10-02) and
@@ -832,7 +870,7 @@ of 2026-10-02:
 | buildx flags not served (`--platform` lists, attestations) | **missing** | n/a |
 | The Agentfile dialect: an `Agentfile` read before a `Dockerfile`, each directive parsed with its errors, a Dockerfile still read as BuildKit reads it (D35) | done (`tests/agentfile.rs`, the oracle, E2E) | n/a |
 | Extensions `EXPOSE … AS/FOR`, `VOLUME` with options, a name and `FOR`, `NETWORK`, `CONNECT`, `ATTACH` | done: their Docker effects in the config, the rest in the normalized Agentfile (D35) | **missing** |
-| Extensions `AGENT`, `HARNESS`, `SKILL`, `MCP`: their content fetched and laid out | **missing**: refused by name | **missing** |
+| Extensions `AGENT`, `HARNESS`, `SKILL`, `MCP`: their content fetched and laid out | done from paths, Git and http(s) URLs (D54): each a layer of its own where §12.1 puts it, skills checked as the Agent Skills reference validator checks them (131 skills held to skills-ref), a remote MCP server not fetched (`agentfile_directives_lay_out_what_they_bring`); OSI artifacts from registries, and `SKILL --from=<agent>`, **missing** | **missing** |
 | `ARG` and `ENV` expanded in the extensions as Docker expands them in its instructions | `EXPOSE`'s and `VOLUME`'s done; the others' **missing** | n/a |
 | Names (§4.10): `--target-kind`, one namespace of stages, agents and harnesses (Q19.2), each grant's names declared in its stage's lineage, `CONNECT` on networks whose `FOR` allows it | done (D35) | n/a |
 | `COPY --from=<agent or harness>`, writes into a domain refused, `AGENT`/`HARNESS` layers as `COPY --link`, directives per stage (Q19) | **missing** | n/a |

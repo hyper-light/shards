@@ -41,6 +41,7 @@ pub(crate) mod http;
 #[cfg(unix)]
 mod live;
 mod output;
+mod skills;
 pub(crate) mod step;
 
 const PATH: &str = "shards buildx build";
@@ -1208,7 +1209,10 @@ fn run(parsed: &Parsed) -> Result<(), String> {
         }
         // A step the build cache holds is not run again: its outputs are the layers it
         // made, as BuildKit's solver takes a vertex its cache key finds.
-        let step = matches!(op.kind, OpKind::Exec { .. } | OpKind::File { .. } | OpKind::Merge);
+        let step = matches!(
+            op.kind,
+            OpKind::Exec { .. } | OpKind::File { .. } | OpKind::Merge | OpKind::Skills { .. }
+        );
         let key = if step {
             op.inputs
                 .iter()
@@ -1325,6 +1329,18 @@ fn run(parsed: &Parsed) -> Result<(), String> {
                 let r = exec.downloaded(download, file).map_err(|e| fail(&v, &e))?;
                 progress.borrow().done(&v);
                 vec![r]
+            }
+            OpKind::Skills { name: came_as } => {
+                let v = progress.borrow_mut().start(&name);
+                let input = inputs
+                    .first()
+                    .cloned()
+                    .ok_or_else(|| fail(&v, "a skills step without what it checks"))?;
+                let actions =
+                    skills::layout(&input, &show(came_as), &mut exec.sources).map_err(|e| fail(&v, &e))?;
+                let outs = exec.file(&[input], &actions, &name).map_err(|e| fail(&v, &e))?;
+                progress.borrow().done(&v);
+                outs
             }
             OpKind::File { actions } => {
                 let v = progress.borrow_mut().start(&name);

@@ -168,6 +168,61 @@ pub enum Directive {
     Volume(Volume),
 }
 
+/// What an `AGENT`, `HARNESS` or `MCP` `FROM` names (§12.2), told apart as written: a Git
+/// URL (as BuildKit's git contexts read one), an http(s) URL, a path from the build
+/// context (`.`, `./`, `../` or `/` first), or else an OCI reference.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Source {
+    Git(crate::git::GitRef),
+    Http(Vec<u8>),
+    Path(Vec<u8>),
+    Oci(Vec<u8>),
+}
+
+/// `src` told apart (§12.2). A path or URL takes no version: a final `:<tag>` on a path
+/// is refused, for it would read as an OCI reference's.
+pub fn source_of(src: &[u8]) -> Result<Source, Vec<u8>> {
+    match crate::git::parse_git_ref(src) {
+        crate::git::Parsed::Git(g) if !g.indistinguishable_from_local => return Ok(Source::Git(g)),
+        crate::git::Parsed::BadGit(e) => return Err(e),
+        _ => {}
+    }
+    if src.starts_with(b"http://") || src.starts_with(b"https://") {
+        return Ok(Source::Http(src.to_vec()));
+    }
+    if src == b"." || src.starts_with(b"./") || src.starts_with(b"../") || src.starts_with(b"/") {
+        let last = src.rsplit(|&b| b == b'/').next().unwrap_or_default();
+        if let Some(i) = last.iter().rposition(|&b| b == b':') {
+            let tag = last.get(i + 1..).unwrap_or_default();
+            let tagged = !tag.is_empty()
+                && tag.len() <= 128
+                && tag
+                    .first()
+                    .is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'_')
+                && tag
+                    .iter()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'.' | b'-'));
+            if tagged {
+                return Err(errf(&[
+                    go::quote(src).as_bytes(),
+                    b" is a path, which takes no version: a :tag is an OCI reference's",
+                ]));
+            }
+        }
+        return Ok(Source::Path(src.to_vec()));
+    }
+    std::str::from_utf8(src)
+        .ok()
+        .and_then(|s| shards_image::reference::Reference::parse_normalized(s).ok())
+        .map(|_| Source::Oci(src.to_vec()))
+        .ok_or_else(|| {
+            errf(&[
+                go::quote(src).as_bytes(),
+                b" is no path (./, ../ or /), Git or http(s) URL, or OCI reference",
+            ])
+        })
+}
+
 fn is(word: &[u8], keyword: &[u8]) -> bool {
     go::to_lower(word) == keyword
 }

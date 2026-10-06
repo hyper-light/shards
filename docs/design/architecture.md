@@ -2940,6 +2940,40 @@ on which frontmatter line after skills-ref's own prefix; strictyaml's texts (rua
 naming `<unicode string>`) are not reproduced. Mutation-checked: a description limit
 moved, and a value's `: ` let through, each fail the corpus.
 
+**What the directives lay out.** `AGENT`, `HARNESS`, `MCP` and `SKILL` build (no longer
+refused by name), each a layer of its own (`--link`, §7 Q19), so a domain's files are its
+directive's alone:
+
+- **Sources** (§12.2) are told apart as written: a Git URL (as BuildKit's git contexts
+  read one) is cloned; an http(s) URL is downloaded and unpacked (an agent served over
+  HTTP is an archive); a path (`.`, `./`, `../`, `/`) is taken from the build context as
+  `ADD` takes one, a local archive unpacked; anything else is an OCI reference, an OSI
+  artifact, which shards does not fetch yet (refused with what to name instead). A path
+  ending in a `:tag` is refused: a version is an OCI reference's.
+- **Where each goes** (§12.1): an agent at `/agents/<name>`, a harness at
+  `/harness/<name>` (or `TO`'s path); an MCP server over stdio at `/mcp/<name>`, or with
+  `FOR` at each grantee's `/agents/<name>.d/mcp/<server>` (`/harness/<name>.d/…` for a
+  harness, by `--target-kind` or what declares the name); a remote one (an http(s) URL)
+  fetched not at all, the normalized Agentfile carrying it.
+- **Skills**: the source taken as `ADD` takes one (`--from`, `--checksum`,
+  `--keep-git-dir`, `--exclude`), then a step of shards' own: each skill it holds checked
+  as the reference validator checks it (above), and laid out in a directory of its name.
+  A tree is one skill when its root holds `SKILL.md`, its name to match the directory it
+  came as (a path's, a Git repository's or subdirectory's; none for a URL or heredoc);
+  one Markdown file is a skill's `SKILL.md`; otherwise each entry at its root must be a
+  skill. Anything else fails the build, each skill and what is wrong with it named. The
+  skills then go to `/skills/` for every agent (shards' choice: one copy beside `/mcp/`,
+  which §4.3 leaves open), to each grantee's `.d/skills/` with `FOR`, or to a destination
+  given without `FOR`; a destination with `FOR` is refused, for a grant writes into its
+  grantee's domain alone.
+- `SKILL --from=<agent>` (§12.12) is refused until OSI agent configs, which list an
+  agent's skills, are fetched.
+
+Tested on a real microVM (`agentfile_directives_lay_out_what_they_bring`): an agent's
+directory, a harness's archive unpacked, an MCP server granted to one agent and a remote
+one not fetched, a skill granted to one agent and a directory of shared skills; and a
+skill the reference refuses failing the build in its words.
+
 ## 4. Start path (≤ 5 ms budget)
 
 | Step | Cost | Evidence |

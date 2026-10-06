@@ -282,6 +282,13 @@ pub enum Kind {
     Merge {
         inputs: Vec<Output>,
     },
+    /// shards' own (D54): the skills a tree holds, each checked as the Agent Skills
+    /// reference checks it and laid out in a directory of its name. `name` is the
+    /// directory a source that is one skill came as, for the check of its name.
+    Skills {
+        input: Output,
+        name: Vec<u8>,
+    },
 }
 
 /// A vertex: what it does, the platform it runs for (sources of images and commands
@@ -319,6 +326,7 @@ impl Vertex {
                 }
             }
             Kind::Merge { inputs } => inputs.iter().copied().for_each(add),
+            Kind::Skills { input, .. } => add(*input),
         }
         out
     }
@@ -544,6 +552,23 @@ impl Graph {
 
     /// `llb.Merge`'s output: the outputs layered in order. Scratch adds nothing, and one
     /// output alone is itself.
+    /// The skills `state` holds, laid out as [`Kind::Skills`] says.
+    pub fn skills(&mut self, state: &State, name: &[u8], meta: Meta) -> State {
+        let mut out = state.clone();
+        out.output = state.output.map(|input| {
+            let id = self.add(Vertex {
+                kind: Kind::Skills {
+                    input,
+                    name: name.to_vec(),
+                },
+                platform: None,
+                meta,
+            });
+            Output { vertex: id, index: 0 }
+        });
+        out
+    }
+
     pub fn merge(&mut self, outputs: &[Option<Output>], meta: Meta) -> Option<Output> {
         let inputs: Vec<Output> = outputs.iter().flatten().copied().collect();
         match inputs.as_slice() {
@@ -693,6 +718,10 @@ pub enum OpKind {
         actions: Vec<OpAction>,
     },
     Merge,
+    /// shards' own: see [`Kind::Skills`].
+    Skills {
+        name: Vec<u8>,
+    },
 }
 
 /// `llb.Definition`: the operations a state needs, each once, every input before what
@@ -949,6 +978,12 @@ impl Marshal<'_> {
                     }
                 }
                 OpKind::Merge
+            }
+            Kind::Skills { input, name } => {
+                if let Some(i) = self.input(*input) {
+                    inputs.push(i);
+                }
+                OpKind::Skills { name: name.clone() }
             }
         };
         // Commands and image sources are for a platform: theirs, or the default.

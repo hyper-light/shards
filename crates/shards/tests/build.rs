@@ -2989,3 +2989,116 @@ fn oci_layout_contexts_are_the_images_they_hold() {
         missing.stderr
     );
 }
+
+/// An Agentfile's `AGENT`, `HARNESS`, `MCP` and `SKILL` lay out what they bring, each a
+/// layer of its own (D54): an agent's directory at `/agents/<name>`, a harness's archive
+/// unpacked at `/harness/<name>`, an MCP server over stdio at its grantee's
+/// `/agents/<name>.d/mcp/<server>`, a remote one fetched not at all, skills checked as the
+/// Agent Skills reference checks them and laid out by their names, for one agent or all;
+/// and a skill the reference refuses fails the build, saying why.
+#[test]
+fn agentfile_directives_lay_out_what_they_bring() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("build-domains-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let ctx = context("build-domains-ctx", &format!("FROM {image}\n"));
+    let write = |rel: &str, text: &str| {
+        let p = ctx.join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, text).unwrap();
+    };
+    write("agent/run.sh", "#!/bin/sh\necho agent\n");
+    write("agent/lib/data.txt", "data\n");
+    write("mcp-files/server.py", "print('mcp')\n");
+    write(
+        "skills/pdf-tools/SKILL.md",
+        "---\nname: pdf-tools\ndescription: Works with PDF files.\n---\nUse it.\n",
+    );
+    write("skills/pdf-tools/scripts/x.sh", "echo x\n");
+    write(
+        "shared/review/SKILL.md",
+        "---\nname: review\ndescription: Reviews code. Use when asked to review.\n---\n",
+    );
+    write(
+        "shared/notes/SKILL.md",
+        "---\nname: notes\ndescription: Takes notes.\n---\n",
+    );
+    // A harness as an archive: unpacked where it goes.
+    let tar = ctx.join("harness.tar");
+    let status = std::process::Command::new("tar")
+        .args([
+            "-cf",
+            tar.to_str().unwrap(),
+            "-C",
+            ctx.join("agent").to_str().unwrap(),
+            "run.sh",
+        ])
+        .status()
+        .unwrap();
+    assert!(status.success());
+    std::fs::write(
+        ctx.join("Agentfile"),
+        format!(
+            "FROM {image}\n\
+             AGENT main FROM ./agent\n\
+             HARNESS drive FROM ./harness.tar\n\
+             MCP files FROM ./mcp-files FOR main\n\
+             MCP web FROM https://mcp.example.com/sse\n\
+             SKILL ./skills/pdf-tools FOR main\n\
+             SKILL ./shared\n\
+             ATTACH main FOR drive\n"
+        ),
+    )
+    .unwrap();
+    let out = TempDir::new("build-domains-out");
+    let built = shards(&[
+        "build",
+        "--progress=plain",
+        "-o",
+        out.join("root").to_str().unwrap(),
+        ctx.to_str().unwrap(),
+    ]);
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    let root = out.join("root");
+    let read = |p: &str| std::fs::read_to_string(root.join(p)).unwrap_or_else(|e| panic!("{p}: {e}"));
+    assert_eq!(read("agents/main/run.sh"), "#!/bin/sh\necho agent\n");
+    assert_eq!(read("agents/main/lib/data.txt"), "data\n");
+    assert_eq!(read("harness/drive/run.sh"), "#!/bin/sh\necho agent\n");
+    assert_eq!(read("agents/main.d/mcp/files/server.py"), "print('mcp')\n");
+    assert!(!root.join("mcp/web").exists(), "a remote server is not fetched");
+    assert!(
+        !root.join("mcp/files").exists(),
+        "a granted server is its grantee's alone"
+    );
+    assert!(read("agents/main.d/skills/pdf-tools/SKILL.md").contains("name: pdf-tools"));
+    assert_eq!(read("agents/main.d/skills/pdf-tools/scripts/x.sh"), "echo x\n");
+    assert!(read("skills/review/SKILL.md").contains("name: review"));
+    assert!(read("skills/notes/SKILL.md").contains("name: notes"));
+    assert!(
+        !root.join("skills/pdf-tools").exists(),
+        "a granted skill is its grantee's alone"
+    );
+
+    // A skill the reference refuses: the build fails, saying which and why.
+    write(
+        "shared/Bad_Name/SKILL.md",
+        "---\nname: Bad_Name\ndescription: d\n---\n",
+    );
+    let refused = shards(&["build", ctx.to_str().unwrap()]);
+    assert_ne!(refused.status, Some(0));
+    assert!(
+        refused
+            .stderr
+            .contains("skill Bad_Name: Skill name 'Bad_Name' must be lowercase"),
+        "{}",
+        refused.stderr
+    );
+}

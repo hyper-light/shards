@@ -872,6 +872,10 @@ fn op_v(op: &shards_dockerfile::llb::Op, md: &shards_dockerfile::llb::Meta, orde
                 .collect();
             o.insert("merge".into(), serde_json::json!({ "inputs": ins }));
         }
+        // shards' own step (D54), which no plan of BuildKit's holds.
+        OpKind::Skills { name } => {
+            o.insert("skills".into(), serde_json::json!({ "name": ustr(name) }));
+        }
     }
     o.insert("metadata".into(), meta_v(md));
     Value::Object(o)
