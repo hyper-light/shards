@@ -29,6 +29,8 @@ pub const ROOTFS_VERSION: u32 = 2;
 /// Bumped whenever a reference's record changes shape: records of an older shape are not
 /// read, and the images they name are pulled again.
 const REFS_VERSION: u32 = 1;
+/// The build cache's records' format (`buildcache/v1`).
+const CACHE_VERSION: u32 = 1;
 const CHUNK: usize = 1 << 20;
 /// The largest zstd window decoded: klauspost/compress v1.20.0's `MaxWindowSize`, in the
 /// decoder containerd uses.
@@ -267,6 +269,41 @@ pub struct Named {
     /// When each reference's record was written: when the name came to name this image,
     /// as containerd's `CreatedAt` for it (a name given another image is a new record).
     pub tagged: BTreeMap<String, std::time::SystemTime>,
+}
+
+/// A build cache record (D50): the blobs it holds, and what the build put.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct CacheRecord {
+    blobs: Vec<String>,
+    body: String,
+    /// The bytes of what its step made itself, its last layer's.
+    #[serde(default)]
+    size: u64,
+    /// When it was made and last used, seconds since the epoch, and how often it has been.
+    #[serde(default)]
+    created: i64,
+    #[serde(default)]
+    last_used: i64,
+    #[serde(default)]
+    usage: u64,
+}
+
+/// A build cache record, as `system df` and `system prune` see it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CacheEntry {
+    pub key: String,
+    pub size: u64,
+    pub created: i64,
+    pub last_used: i64,
+    pub usage: u64,
+    /// Its step's own layer, which an image may share.
+    pub own: Option<Digest>,
+}
+
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
 }
 
 /// An image the store's references name: what they resolved to (its ID, as dockerd's
@@ -839,7 +876,10 @@ impl Store {
         // not made again, with the directories above it.
         let refs = format!("refs/v{REFS_VERSION}");
         let rootfs = format!("rootfs/v{ROOTFS_VERSION}");
+        let cache = format!("buildcache/v{CACHE_VERSION}");
         for dir in [
+            "buildcache",
+            &cache,
             "blobs",
             "blobs/sha256",
             "blobs/sha384",
@@ -1257,6 +1297,127 @@ impl Store {
     }
 
     /// Writes `tag`'s record, durably, in place of any of its reference.
+    fn cache_path(&self, key: &str) -> Result<PathBuf, Error> {
+        if key.is_empty() || !key.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return bad(format!("{key}: not a build cache key"));
+        }
+        Ok(self.root.join(format!("buildcache/v{CACHE_VERSION}")).join(key))
+    }
+
+    /// The build cache's record `key` names (D50), if it has one: its body as it was put.
+    pub fn cache_get(&self, key: &str) -> Result<Option<Vec<u8>>, Error> {
+        match fs::read(self.cache_path(key)?) {
+            Ok(bytes) => {
+                let record: CacheRecord = serde_json::from_slice(&bytes).map_err(|e| Error(e.to_string()))?;
+                // A record whose blobs are not all here holds nothing.
+                for b in &record.blobs {
+                    let d = Digest::parse(b).map_err(|e| Error(e.to_string()))?;
+                    if !self.blob_path(&d).exists() {
+                        return Ok(None);
+                    }
+                }
+                Ok(Some(record.body.into_bytes()))
+            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Records `body` as the build cache's for `key`, keeping `blobs` from collection while
+    /// it is there (they are its roots, as a reference's are).
+    pub fn cache_put(&self, key: &str, blobs: &[Digest], size: u64, body: &str) -> Result<(), Error> {
+        let now = unix_now();
+        self.write_cache(
+            key,
+            &CacheRecord {
+                blobs: blobs.iter().map(Digest::to_string).collect(),
+                body: body.to_string(),
+                size,
+                created: now,
+                last_used: now,
+                usage: 1,
+            },
+        )
+    }
+
+    /// Counts a use of record `key`: its last use now, its count one more.
+    pub fn cache_used(&self, key: &str) -> Result<(), Error> {
+        let bytes = match fs::read(self.cache_path(key)?) {
+            Ok(b) => b,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(e.into()),
+        };
+        let mut record: CacheRecord = serde_json::from_slice(&bytes).map_err(|e| Error(e.to_string()))?;
+        record.last_used = unix_now();
+        record.usage = record.usage.saturating_add(1);
+        self.write_cache(key, &record)
+    }
+
+    /// Every build cache record, by key.
+    pub fn cache_entries(&self) -> Result<Vec<CacheEntry>, Error> {
+        let mut out = Vec::new();
+        for entry in fs::read_dir(self.root.join(format!("buildcache/v{CACHE_VERSION}")))? {
+            let entry = entry?;
+            let Ok(bytes) = fs::read(entry.path()) else {
+                continue;
+            };
+            let Ok(record) = serde_json::from_slice::<CacheRecord>(&bytes) else {
+                continue;
+            };
+            out.push(CacheEntry {
+                key: entry.file_name().to_string_lossy().into_owned(),
+                size: record.size,
+                created: record.created,
+                last_used: record.last_used,
+                usage: record.usage,
+                own: record.blobs.last().and_then(|b| Digest::parse(b).ok()),
+            });
+        }
+        out.sort_by(|a, b| a.key.cmp(&b.key));
+        Ok(out)
+    }
+
+    /// The blobs references hold, the build cache's records left out: what a record
+    /// shares with an image, which removing the record does not free.
+    pub fn referenced_blobs(&self) -> Result<HashSet<PathBuf>, Error> {
+        Ok(self.roots(false)?.0)
+    }
+
+    /// Removes record `key`; its blobs go at the next collection, unless held otherwise.
+    pub fn cache_remove(&self, key: &str) -> Result<(), Error> {
+        match fs::remove_file(self.cache_path(key)?) {
+            Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e.into()),
+            _ => Ok(()),
+        }
+    }
+
+    fn write_cache(&self, key: &str, record: &CacheRecord) -> Result<(), Error> {
+        let bytes = serde_json::to_vec(record).map_err(|e| Error(e.to_string()))?;
+        let path = self.cache_path(key)?;
+        // Written through `ingest/`, which a collection empties: none runs meanwhile.
+        let _lease = self.lease()?;
+        let mut partial = Partial::create(&self.root.join("ingest"))?;
+        partial.write_all(&bytes)?;
+        partial.replace(&path)?;
+        sync_dir(&self.root.join(format!("buildcache/v{CACHE_VERSION}")))
+    }
+
+    /// Removes every build cache record, as `docker builder prune -a` does: how many, and
+    /// the bytes their records took. Their blobs go at the next collection, unless a
+    /// reference holds them.
+    pub fn cache_clear(&self) -> Result<(u64, u64), Error> {
+        let (mut n, mut bytes) = (0u64, 0u64);
+        for entry in fs::read_dir(self.root.join(format!("buildcache/v{CACHE_VERSION}")))? {
+            let entry = entry?;
+            let len = entry.metadata().map_or(0, |m| m.len());
+            if fs::remove_file(entry.path()).is_ok() {
+                n += 1;
+                bytes = bytes.saturating_add(len);
+            }
+        }
+        Ok((n, bytes))
+    }
+
     fn write_record(&self, tag: &Tag) -> Result<(), Error> {
         let record = serde_json::to_vec(tag).map_err(|e| Error(e.to_string()))?;
         let mut partial = Partial::create(&self.root.join("ingest"))?;
@@ -1578,7 +1739,7 @@ impl Store {
     pub fn collect(&self) -> Result<(Collected, Whole), Error> {
         let whole = self.lease_file()?;
         whole.lock()?;
-        let (blobs, rootfs) = self.roots()?;
+        let (blobs, rootfs) = self.roots(true)?;
         let mut collected = Collected::default();
         let mut remove = |path: &Path, count: &mut u64| {
             let meta = fs::symlink_metadata(path);
@@ -1629,6 +1790,13 @@ impl Store {
                 }
             }
         }
+        let current = format!("v{CACHE_VERSION}");
+        for entry in fs::read_dir(self.root.join("buildcache"))? {
+            let entry = entry?;
+            if entry.file_name() != current.as_str() {
+                let _ = fs::remove_dir_all(entry.path());
+            }
+        }
         let current = format!("v{REFS_VERSION}");
         for entry in fs::read_dir(self.root.join("refs"))? {
             let entry = entry?;
@@ -1646,8 +1814,23 @@ impl Store {
     /// The blobs and root filesystems the references need: each one's manifest, config
     /// and layers, and the root filesystem of its layers. A record that cannot be read,
     /// or names what is not whole, holds only what it names that is.
-    fn roots(&self) -> Result<(HashSet<PathBuf>, HashSet<PathBuf>), Error> {
+    fn roots(&self, with_cache: bool) -> Result<(HashSet<PathBuf>, HashSet<PathBuf>), Error> {
         let (mut blobs, mut rootfs) = (HashSet::new(), HashSet::new());
+        // The build cache's records hold their blobs (D50).
+        let cache_dir = self.root.join(format!("buildcache/v{CACHE_VERSION}"));
+        for entry in fs::read_dir(&cache_dir)?.filter(|_| with_cache) {
+            let Ok(bytes) = fs::read(entry?.path()) else {
+                continue;
+            };
+            let Ok(record) = serde_json::from_slice::<CacheRecord>(&bytes) else {
+                continue;
+            };
+            for b in &record.blobs {
+                if let Ok(d) = Digest::parse(b) {
+                    blobs.insert(self.blob_path(&d));
+                }
+            }
+        }
         for entry in fs::read_dir(self.root.join(format!("refs/v{REFS_VERSION}")))? {
             // One removed since it was listed (an rmi meanwhile) holds nothing.
             let bytes = match fs::read(entry?.path()) {

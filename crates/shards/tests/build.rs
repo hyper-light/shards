@@ -2283,3 +2283,100 @@ fn add_fetches_git_with_the_builds_secrets() {
         );
     }
 }
+
+/// The build cache (D50): built again, every step is answered by the cache, as
+/// BuildKit's are (`#N CACHED`), and the image's layers are the same; a changed file of
+/// the context runs again what reads it and what follows, not what came before; with
+/// `--no-cache`, every step runs.
+#[test]
+fn builds_reuse_the_steps_they_have_run() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("build-cache-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let ctx = context(
+        "build-cache-ctx",
+        &format!(
+            "FROM {image}\nUSER root\nRUN [\"/bin/testguest\", \"fs\", \"write:/one=1\"]\nCOPY a.txt /a.txt\n\
+             RUN [\"/bin/testguest\", \"fs\", \"write:/two=2\"]\n"
+        ),
+    );
+    std::fs::write(ctx.join("a.txt"), "first\n").unwrap();
+    let build = |extra: &[&str], tag: &str| {
+        let mut args = vec!["build", "--progress=plain"];
+        args.extend_from_slice(extra);
+        args.extend_from_slice(&["-t", tag, ctx.to_str().unwrap()]);
+        let built = shards(&args);
+        assert_eq!(built.status, Some(0), "{}", built.stderr);
+        built.stderr
+    };
+    // Each step's progress, by its name, and whether the cache answered it.
+    let cached = |log: &str, step: &str| -> bool {
+        let n = log
+            .lines()
+            .find_map(|l| {
+                l.strip_prefix('#')
+                    .and_then(|r| r.split_once(' '))
+                    .filter(|(_, t)| t.contains(step))
+                    .map(|(n, _)| n.to_string())
+            })
+            .unwrap_or_else(|| panic!("no step {step:?} in\n{log}"));
+        log.lines().any(|l| l == format!("#{n} CACHED"))
+    };
+    let layers = |tag: &str| shards(&["image", "inspect", "--format", "{{json .RootFS.Layers}}", tag]).stdout;
+    let first = build(&[], "cached:1");
+    for step in ["write:/one=1", "COPY a.txt", "write:/two=2"] {
+        assert!(!cached(&first, step), "{step} ran\n{first}");
+    }
+    let again = build(&[], "cached:2");
+    for step in ["write:/one=1", "COPY a.txt", "write:/two=2"] {
+        assert!(cached(&again, step), "{step} was cached\n{again}");
+    }
+    assert_eq!(layers("cached:1"), layers("cached:2"));
+
+    std::fs::write(ctx.join("a.txt"), "second\n").unwrap();
+    let changed = build(&[], "cached:3");
+    assert!(cached(&changed, "write:/one=1"), "{changed}");
+    assert!(!cached(&changed, "COPY a.txt"), "{changed}");
+    assert!(!cached(&changed, "write:/two=2"), "{changed}");
+    let stat = shards(&["run", "--rm", "-u", "root", "cached:3", "stat", "/a.txt", "/two"]);
+    assert_eq!(
+        stat.stdout, "/a.txt file 644 0:0 7\n= second\\n\n/two file 644 0:0 1\n= 2\n",
+        "{}",
+        stat.stderr
+    );
+
+    let fresh = build(&["--no-cache"], "cached:4");
+    for step in ["write:/one=1", "COPY a.txt", "write:/two=2"] {
+        assert!(!cached(&fresh, step), "{step} ran\n{fresh}");
+    }
+
+    // `system df` counts the cache's records, `system prune` removes them, as Docker's do;
+    // built again, every step runs.
+    let df = shards(&["system", "df", "--format", "{{.Type}} {{.TotalCount}}"]);
+    let records: usize = df
+        .stdout
+        .lines()
+        .find_map(|l| l.strip_prefix("Build Cache "))
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(0);
+    assert!(records >= 3, "{}", df.stdout);
+    let pruned = shards(&["system", "prune", "-f"]);
+    assert_eq!(pruned.status, Some(0), "{}", pruned.stderr);
+    assert!(
+        pruned.stdout.contains("Deleted build cache objects:\n"),
+        "{}",
+        pruned.stdout
+    );
+    let after = build(&[], "cached:5");
+    for step in ["write:/one=1", "COPY a.txt", "write:/two=2"] {
+        assert!(!cached(&after, step), "{step} ran after the prune\n{after}");
+    }
+}

@@ -1246,6 +1246,7 @@ fn prune(page: &mut Page, p: &Paint, sheet: &Sheet) {
     let images = (0..n).filter(|&i| sheet.get(i, "deleted").is_some()).count();
     let vols = (0..n).filter(|&i| sheet.get(i, "volume").is_some()).count();
     let nets = (0..n).filter(|&i| sheet.get(i, "network").is_some()).count();
+    let cached = (0..n).filter(|&i| sheet.get(i, "cache").is_some()).count();
     look::head(
         page,
         p,
@@ -1269,12 +1270,18 @@ fn prune(page: &mut Page, p: &Paint, sheet: &Sheet) {
             if vols > 0 {
                 said.push(format!("{vols} {}", if vols == 1 { "volume" } else { "volumes" }));
             }
+            if cached > 0 {
+                said.push(format!(
+                    "{cached} cached {}",
+                    if cached == 1 { "step" } else { "steps" }
+                ));
+            }
             said.push(format!("{} freed", text::bytes(freed)));
             said.join(" · ")
         })],
     );
     page.blank();
-    if vms + images + vols + nets == 0 {
+    if vms + images + vols + nets + cached == 0 {
         page.line().pad(4).put(p, tokens::MUTED, "Nothing to remove.");
         return;
     }
@@ -1292,6 +1299,12 @@ fn prune(page: &mut Page, p: &Paint, sheet: &Sheet) {
             l.pad(6)
                 .put(p, tokens::SUBTLE, "untagged ")
                 .put(p, tokens::FOREGROUND, name);
+        } else if let Some(id) = sheet.get(i, "cache") {
+            l.pad(4)
+                .put(p, tokens::SAGE, "● ")
+                .put(p, tokens::FOREGROUND, id)
+                .pad(2)
+                .put(p, tokens::MUTED, "cached step removed");
         } else if let Some(name) = sheet.get(i, "network") {
             l.pad(4)
                 .put(p, tokens::SAGE, "● ")

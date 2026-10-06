@@ -21,6 +21,7 @@ const TAIL: usize = 5;
 enum State {
     Running,
     Done,
+    Cached,
     Failed,
     Canceled,
 }
@@ -138,6 +139,15 @@ impl Live {
         self.draw();
     }
 
+    /// A step the build cache answered.
+    pub(super) fn cached(&mut self, index: usize) {
+        if let Some(s) = self.step(index) {
+            s.state = State::Cached;
+            s.took = Some(0.0);
+        }
+        self.draw();
+    }
+
     pub(super) fn canceled(&mut self, index: usize) {
         if let Some(s) = self.step(index) {
             s.state = State::Canceled;
@@ -233,6 +243,7 @@ impl Live {
                     tokens::mix(tokens::LAVENDER, tokens::BRIGHT, motion::breath(t, 1.4, i as f64)),
                 ),
                 State::Done => ("◆", tokens::SAGE),
+                State::Cached => ("◆", tokens::SUBTLE),
                 State::Failed => ("○", tokens::ROSE),
                 State::Canceled => ("◇", tokens::SUBTLE),
             };
@@ -249,6 +260,7 @@ impl Live {
                 State::Failed => tokens::ROSE,
                 State::Canceled => tokens::SUBTLE,
                 State::Done => tokens::FOREGROUND,
+                State::Cached => tokens::SUBTLE,
             };
             l.put(p, nc, &name);
             l.to(cols.saturating_sub(took.len() + 1))

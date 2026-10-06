@@ -262,7 +262,27 @@ pub fn render(sheet: &shards_ipc::Sheet, asked: &Asked, clock: &Clock<'_>) -> Re
                     active_count: ba,
                     total_size: bs,
                     reclaimable: br,
-                    items: Vec::new(),
+                    items: items("build_cache")
+                        .iter()
+                        .map(|r| {
+                            let text =
+                                |k: &str| r.get(k).and_then(serde_json::Value::as_str).unwrap_or_default();
+                            let ns = |k: &str| text(k).parse::<i128>().unwrap_or(0);
+                            format::disk::BuildCache {
+                                id: text("id").to_string(),
+                                kind: text("type").to_string(),
+                                shared: r
+                                    .get("shared")
+                                    .and_then(serde_json::Value::as_bool)
+                                    .unwrap_or(false),
+                                size: r.get("size").and_then(serde_json::Value::as_i64).unwrap_or(0),
+                                created_at: ns("created"),
+                                last_used_at: Some(ns("last_used")),
+                                usage_count: r.get("usage").and_then(serde_json::Value::as_i64).unwrap_or(0),
+                                ..format::disk::BuildCache::default()
+                            }
+                        })
+                        .collect(),
                 },
             };
             // runDiskUsage: `table` where no format is given.

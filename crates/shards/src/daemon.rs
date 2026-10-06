@@ -1833,14 +1833,20 @@ impl<D: Disk> Daemon<D> {
         // The run's container, before anything starts: its name must be free. Its record
         // is written while a VM is found for it.
         let made = match &again {
-            // Its record stays, with the ports it has now. Its last exit code stays until
-            // it runs (`run_started`), as dockerd's SetRunning clears it with Restarting:
-            // cleared here, a restart showed `Restarting (0)` while it began.
+            // Its record stays, with the ports it has now. A restart by its policy keeps
+            // its last exit code until it runs (`run_started`), as dockerd's SetRunning
+            // clears it with Restarting, so that it shows `Restarting (N)` meanwhile; one
+            // asked for (`start`) has none from here, so that a `wait` asked after it waits
+            // for this run's, as `docker start` returns once its container runs.
             Some(_) => {
+                let by_policy = lock(&self.restarting_now).contains(&id);
                 let mut registry = lock(&self.containers);
                 let name = registry.get(&id).map(|c| c.name.clone()).unwrap_or_default();
                 match registry.change(&id, |c| {
                     c.ports = ports;
+                    if !by_policy {
+                        c.exit_code = None;
+                    }
                 }) {
                     Ok(()) => Ok(name),
                     Err(e) => Err(format!("container {id}: {e}")),

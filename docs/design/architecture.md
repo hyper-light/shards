@@ -2755,6 +2755,41 @@ and the exec that follow run under it. Tested in
 `run_steps_take_the_builds_secrets_ulimits_and_entitlements` (mutation-checked: a step's
 `Seccomp:` is 2, an insecure step's 0).
 
+### The build cache (D50)
+
+A step `shards build` has run before, from the same definition and inputs, is not run
+again: its result is the layers it made then, and its progress says so as BuildKit's does
+(`#N CACHED`), as BuildKit's solver takes a vertex its cache key finds.
+
+- **Keys.** A step's key is the SHA-256 of shards' version, its definition, and each input's
+  key in its inputs' order, not where they sit in the plan. An input a chain of layers
+  makes, a base image or an earlier step, is keyed by what made it; one none makes, the
+  build context, a download or a Git checkout, by its content: each path's kind, mode,
+  owner, extended attributes, link target and bytes, without times, as BuildKit's content
+  checksums take them (a cached step's layers keep the times they were made with, as
+  BuildKit's do). A source is keyed by what it is and what it holds, not its session
+  attributes (`local.unique` differs on every build).
+- **Records** are the store's (`buildcache/v1`), one per key: each of the step's outputs
+  as its layers, with their history, the size of the step's own layer, when it was made and
+  last used, and how often it has been. Their blobs are roots of the store's collector
+  while a record is there, as a reference's are.
+- **What uses them.** `--no-cache` takes none, and still records what it makes, as
+  BuildKit's does. `system df` counts them on its Build Cache row and lists them under
+  `-v` (each step's own layer, shared where an image holds it, reclaimable where not);
+  `system prune` removes them all, as `docker system prune` removes all build cache no
+  build is using, its blobs collected where no image holds them.
+
+Tested on real microVMs (`builds_reuse_the_steps_they_have_run`): built again, every step
+is cached and the image's layers are the same; a changed context file runs again what
+reads it and what follows, not what came before; `--no-cache` runs all; `system df` and
+`system prune` count and remove the records.
+
+Open: a `COPY`'s key from the paths it copies alone, where it is from the whole context,
+so that a change elsewhere in it runs again what BuildKit's checksums would keep;
+`--no-cache-filter`; `--cache-from` and `--cache-to`; `docker builder prune` and its
+filters; a bound on what the cache keeps (BuildKit's default GC policy); `RUN
+--mount=type=cache` kept across builds.
+
 ## 4. Start path (≤ 5 ms budget)
 
 | Step | Cost | Evidence |

@@ -34,6 +34,7 @@ use shards_image::store::{self, Store};
 use shards_registry::pull::{self as registry_pull, Event};
 
 mod builder;
+mod cache;
 mod exec;
 mod git;
 pub(crate) mod http;
@@ -150,6 +151,15 @@ impl Progress {
             live.borrow_mut().error(v.index, message);
         }
         self.say(&format!("#{} ERROR: {message}\n", v.index));
+    }
+
+    /// A vertex the build cache answered, as progressui says it.
+    fn cached(&self, v: &Vertex) {
+        #[cfg(unix)]
+        if let Some(live) = &self.live {
+            live.borrow_mut().cached(v.index);
+        }
+        self.say(&format!("#{} CACHED\n", v.index));
     }
 
     /// A vertex the build's failure stopped.
@@ -1067,6 +1077,9 @@ fn run(parsed: &Parsed) -> Result<(), String> {
     // Its steps' seccomp filter, compiled once for the kernel the builder boots.
     let mut step_filter: Vec<u8> = Vec::new();
     let mut results: Vec<Vec<exec::Ref>> = Vec::with_capacity(def.ops.len());
+    // Each operation's cache key (D50), where it has one: none where an input has none.
+    let mut keys: Vec<Option<String>> = Vec::with_capacity(def.ops.len());
+    let no_cache = parsed.bool("no-cache");
     // What other operations read, so a base image is unpacked only when one does.
     let read: std::collections::HashSet<usize> = def
         .ops
@@ -1115,6 +1128,37 @@ fn run(parsed: &Parsed) -> Result<(), String> {
         };
         if let Some((op, failure)) = downloads.failed() {
             return Err(fetch_failed(op, failure));
+        }
+        // A step the build cache holds is not run again: its outputs are the layers it
+        // made, as BuildKit's solver takes a vertex its cache key finds.
+        let step = matches!(op.kind, OpKind::Exec { .. } | OpKind::File { .. } | OpKind::Merge);
+        let key = if step {
+            op.inputs
+                .iter()
+                .map(|inp| keys.get(inp.op).and_then(|k| k.as_deref()))
+                .collect::<Option<Vec<&str>>>()
+                .map(|ks| cache::op_key(op, &ks))
+        } else {
+            None
+        };
+        if !no_cache
+            && let Some(k) = key.as_deref()
+            && let Some(body) = store.cache_get(k).map_err(|e| e.to_string())?
+        {
+            let v = progress.borrow_mut().start(&name);
+            let outs = cache::decode(&body)
+                .and_then(|outputs| {
+                    outputs
+                        .into_iter()
+                        .map(|layers| exec.image(layers, None))
+                        .collect()
+                })
+                .map_err(|e| fail(&v, &e))?;
+            progress.borrow().cached(&v);
+            store.cache_used(k).map_err(|e| e.to_string())?;
+            results.push(outs);
+            keys.push(key);
+            continue;
         }
         let outs = match &op.kind {
             OpKind::Source { identifier, .. } if identifier.starts_with(b"docker-image://") => {
@@ -1308,7 +1352,54 @@ fn run(parsed: &Parsed) -> Result<(), String> {
                 r
             }
         };
+        // Its key: a source's from what it holds; a step's, recorded with what it made where
+        // its layers make each of its outputs.
+        let key = match &op.kind {
+            OpKind::Source { identifier, .. } if identifier.starts_with(b"docker-image://") => {
+                let digests: Vec<u8> = outs
+                    .first()
+                    .map(|r| {
+                        r.layers
+                            .iter()
+                            .flat_map(|l| [l.digest.as_slice(), b"\n"].concat())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                Some(cache::source_key(identifier, &String::from_utf8_lossy(&digests)))
+            }
+            // What it is and what it holds: its attributes include the session's own
+            // (`local.unique`), which differ from build to build where its files do not.
+            OpKind::Source { identifier, .. } => match outs.first() {
+                Some(r) => {
+                    let content = cache::content_key(&r.fs, &mut exec.sources)?;
+                    Some(cache::source_key(identifier, &content))
+                }
+                None => None,
+            },
+            _ => {
+                let layered = outs.iter().all(|r| {
+                    matches!(r.stack, shards_build::stack::Stack::Known(_)) && r.stack.follows(r.fs.tree())
+                });
+                if let Some(k) = key.as_deref()
+                    && layered
+                {
+                    let layers: Vec<Vec<Layer>> = outs.iter().map(|r| r.layers.clone()).collect();
+                    let blobs = layers
+                        .iter()
+                        .flatten()
+                        .map(|l| Digest::parse(&show(&l.digest)).map_err(|e| e.to_string()))
+                        .collect::<Result<Vec<_>, String>>()?;
+                    // What the step made itself: its root output's last layer.
+                    let own = outs.first().and_then(|r| r.layers.last()).map_or(0, |l| l.size);
+                    store
+                        .cache_put(k, &blobs, own, &cache::encode(&layers)?)
+                        .map_err(|e| e.to_string())?;
+                }
+                key
+            }
+        };
         results.push(outs);
+        keys.push(key);
         crate::phase("op");
     }
     // The image: the target's layers, and its stage's base image for the exporter.

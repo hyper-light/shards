@@ -1203,6 +1203,27 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                     })
                 })
                 .collect();
+            // The build cache's records (D50): each step's own layer, shared where an image
+            // holds it too, reclaimable where not; none is in use, no build running here.
+            let (mut b_total, mut b_size, mut b_free, mut cache_rows) = (0usize, 0i64, 0i64, Vec::new());
+            if let Ok(Some(store)) = self.store() {
+                let held = store.referenced_blobs().unwrap_or_default();
+                for e in store.cache_entries().unwrap_or_default() {
+                    let shared = e.own.as_ref().is_some_and(|d| held.contains(&store.blob_path(d)));
+                    let size = i64::try_from(e.size).unwrap_or(i64::MAX);
+                    b_total += 1;
+                    b_size = b_size.saturating_add(size);
+                    if !shared {
+                        b_free = b_free.saturating_add(size);
+                    }
+                    let ns = |s: i64| i128::from(s) * 1_000_000_000;
+                    cache_rows.push(serde_json::json!({
+                        "id": e.key.get(..25).unwrap_or(&e.key), "type": "regular", "size": size,
+                        "shared": shared, "created": ns(e.created).to_string(),
+                        "last_used": ns(e.last_used).to_string(), "usage": e.usage,
+                    }));
+                }
+            }
             let kind = |total: usize, active: usize, size: i64, free: i64, items: Vec<serde_json::Value>| serde_json::json!({"total": total, "active": active, "size": size, "reclaimable": free, "items": items});
             let rows = serde_json::json!({
                 "images": kind(img_total, img_active, img_size, img_free, image_rows),
@@ -1216,7 +1237,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                         "UsageData": {"RefCount": refs, "Size": size},
                     }))
                     .collect()),
-                "build_cache": kind(0, 0, 0, 0, Vec::new()),
+                "build_cache": kind(b_total, 0, b_size, b_free, cache_rows),
             });
             let mut sheet = shards_ipc::Sheet::new("df-rows");
             sheet.record(&[("rows", rows.to_string())]);
@@ -1460,9 +1481,30 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                 }
             }
         }
+        // The build cache, all of it, as `docker system prune` removes all that no build is
+        // using; what an image shares stays until the image goes.
+        let mut removed_cache: Vec<String> = Vec::new();
+        if let Ok(Some(store)) = self.store() {
+            let held = store.referenced_blobs().unwrap_or_default();
+            for e in store.cache_entries().unwrap_or_default() {
+                if store.cache_remove(&e.key).is_err() {
+                    continue;
+                }
+                if !e.own.as_ref().is_some_and(|d| held.contains(&store.blob_path(d))) {
+                    reclaimed = reclaimed.saturating_add(i64::try_from(e.size).unwrap_or(i64::MAX));
+                }
+                removed_cache.push(e.key.get(..25).unwrap_or(&e.key).to_string());
+            }
+            if !removed_cache.is_empty() {
+                self.collect_soon();
+            }
+        }
         if asker.styled() {
             let mut sheet = shards_ipc::Sheet::new("prune");
             sheet.record(&[("kind", "head".into()), ("reclaimed", reclaimed.to_string())]);
+            for id in &removed_cache {
+                sheet.record(&[("cache", id.clone())]);
+            }
             for (id, name) in &removed_vms {
                 sheet.record(&[("vm", name.clone()), ("id", truncate_id(id).to_string())]);
             }
@@ -1515,6 +1557,14 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                     super::rmi::Removed::Untagged(n) => text.push_str(&format!("untagged: {n}\n")),
                     super::rmi::Removed::Deleted(d) => text.push_str(&format!("deleted: {d}\n")),
                 }
+            }
+            text.push('\n');
+        }
+        if !removed_cache.is_empty() {
+            text.push_str("Deleted build cache objects:\n");
+            for id in &removed_cache {
+                text.push_str(id);
+                text.push('\n');
             }
             text.push('\n');
         }
