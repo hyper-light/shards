@@ -90,6 +90,8 @@ var served = map[string][]string{
 		"rm", "stop-signal",
 		"stop-timeout", "tty", "user", "workdir",
 	},
+	"attach":            {"detach-keys", "help", "no-stdin", "sig-proxy"},
+	"container attach":  {"detach-keys", "help", "no-stdin", "sig-proxy"},
 	"start":             {"attach", "detach-keys", "help", "interactive"},
 	"container start":   {"attach", "detach-keys", "help", "interactive"},
 	"restart":           {"help", "signal", "time", "timeout"},

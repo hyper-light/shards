@@ -349,6 +349,73 @@ impl<D: crate::containers::Disk> Daemon<D> {
         }
     }
 
+    /// `shards attach`: the client attached to a running container's command, as dockerd's
+    /// ContainerAttach attaches one (moby daemon/attach.go), refused as docker/cli refuses
+    /// one it has inspected (attach.go inspectContainerAndCheckState). The client goes to
+    /// the container's VM, which answers it, as an exec's does.
+    pub(super) fn attach(&self, message: &shards_ipc::Message, conn: &UnixStream) {
+        let stderr = message
+            .fds
+            .get(2)
+            .and_then(|fd| fd.try_clone().ok())
+            .map(std::fs::File::from);
+        let refuse = |why: &str| {
+            if let Some(mut err) = stderr.as_ref() {
+                let _ = writeln!(err, "{why}");
+            }
+            let _ = shards_ipc::send(conn, kind::EXIT, &[1], &[]);
+        };
+        let Some(attach) = shards_ipc::Attach::decode(&message.payload) else {
+            return refuse("shards: a malformed attach");
+        };
+        let [stdin, stdout, stderr] = match <&[std::os::fd::OwnedFd; 3]>::try_from(message.fds.as_slice()) {
+            Ok(fds) => fds,
+            Err(_) => return refuse("shards: an attach without the client's stdio"),
+        };
+        let id = match self.resolve(&attach.container) {
+            Ok(id) => id,
+            Err(e) => return refuse(&e),
+        };
+        self.await_start(&id);
+        // A restarting container is not running, as dockerd's is between its runs.
+        if self.is_restarting(&id) {
+            return refuse("cannot attach to a restarting container, wait until it is running");
+        }
+        if lock(&self.paused).contains(&id) {
+            return refuse("cannot attach to a paused container, unpause it first");
+        }
+        let (base, socket, inbox) = match lock(&self.runs).get(&id) {
+            Some(RunState::Tracked(run)) => (run.base.clone(), run.socket.clone(), run.inbox.clone()),
+            _ => return refuse("cannot attach to a stopped container, start it first"),
+        };
+        // Its stdin goes in where the container's command reads one (Config.OpenStdin).
+        let flags = if attach.stdin && base.options.interactive {
+            shards_ipc::ATTACH_STDIN
+        } else {
+            0
+        };
+        let number = self.next_exec.fetch_add(1, Ordering::Relaxed);
+        let mut payload = number.to_be_bytes().to_vec();
+        payload.push(flags);
+        // Held until the VM says it has it (`EXEC_TAKEN`), or its run ends.
+        let held = match conn.try_clone() {
+            Ok(held) => held,
+            Err(e) => {
+                return refuse(&format!(
+                    "Error response from daemon: holding the connection: {e}"
+                ));
+            }
+        };
+        lock(&inbox).execs_in_flight.push((number, held));
+        let fds = [conn.as_fd(), stdin.as_fd(), stdout.as_fd(), stderr.as_fd()];
+        if let Err(e) = socket.send(kind::ATTACH_RUN, &payload, &fds) {
+            lock(&inbox).execs_in_flight.retain(|(n, _)| *n != number);
+            refuse(&format!(
+                "Error response from daemon: the container's microVM: {e}"
+            ));
+        }
+    }
+
     /// Logs exec `argv`'s creation and start in container `id` as dockerd does (moby
     /// daemon/exec.go: `exec_create: ENTRYPOINT ARGS`, then `exec_start`, each with its
     /// ID), and returns the ID, for its `exec_die`; none if no ID could be made.

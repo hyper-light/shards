@@ -57,6 +57,7 @@ pub fn run(
         card: request
             .detach
             .then(|| (request.image.clone(), request.name.clone())),
+        detach_said: None,
     };
     let code = serve(home, daemon, &asked, detach_keys, cid);
     terminal::restore();
@@ -75,6 +76,34 @@ pub fn exec(home: &Path, daemon: &Path, request: &shards_ipc::Exec, detach_keys:
         tty: request.tty.is_some(),
         proxies_signals: false,
         card: None,
+        detach_said: None,
+    };
+    let code = serve(home, daemon, &asked, detach_keys, &mut None);
+    terminal::restore();
+    code
+}
+
+/// Attaches to a running container's command (`shards attach`), whose terminal `tty`
+/// says, its signals passed on with `proxies_signals`, as `docker attach` attaches; a
+/// detach is said as docker/cli says it, and exits 1 (attach.go: the streamer's
+/// EscapeError).
+pub fn attach(
+    home: &Path,
+    daemon: &Path,
+    request: &shards_ipc::Attach,
+    tty: bool,
+    proxies_signals: bool,
+    detach_keys: &[u8],
+) -> ExitCode {
+    let asked = Attached {
+        kind: kind::ATTACH,
+        payload: request.encode(),
+        interactive: request.stdin,
+        detach: false,
+        tty,
+        proxies_signals,
+        card: None,
+        detach_said: Some(("read escape sequence", 1)),
     };
     let code = serve(home, daemon, &asked, detach_keys, &mut None);
     terminal::restore();
@@ -92,6 +121,8 @@ struct Attached {
     proxies_signals: bool,
     /// A detached run's image and name: on a colour terminal its ID is shown in a card.
     card: Option<(String, Option<String>)>,
+    /// What the client says as it leaves by its detach keys, and its status; none for 0.
+    detach_said: Option<(&'static str, u8)>,
 }
 
 fn serve(
@@ -157,7 +188,7 @@ fn serve(
                 return failed(&e);
             }
             if let Some(filler) = filler
-                && let Err(e) = fill_stdin(filler, proxy)
+                && let Err(e) = fill_stdin(filler, proxy, request.detach_said)
             {
                 return failed(&e);
             }
@@ -169,8 +200,13 @@ fn serve(
                 .try_clone()
                 .map_err(|e| format!("the daemon's connection: {e}"))?;
             *current.lock().unwrap_or_else(PoisonError::into_inner) = Some(signals);
-            // The size as the command starts, in case it changed since the request.
+            // The size as the command starts, in case it changed since the request; an
+            // attach's one row and column larger first, so that the size changes and the
+            // command redraws what it shows (docker/cli attach.go resizeTTY).
             if resizes {
+                if request.kind == kind::ATTACH {
+                    resize_by(&conn, 1);
+                }
                 resize(&conn);
             }
             Ok(())
@@ -588,7 +624,11 @@ fn command_stdin(interactive: bool) -> Result<(OwnedFd, Option<io::PipeWriter>),
 /// closing it when that ends or this process exits. With a `proxy`, the detach keys end
 /// the client instead, with status 0 and the terminal restored, and the command runs on,
 /// as a container outlives the `docker run` that detached from it.
-fn fill_stdin(mut writer: io::PipeWriter, mut proxy: Option<EscapeProxy>) -> Result<(), String> {
+fn fill_stdin(
+    mut writer: io::PipeWriter,
+    mut proxy: Option<EscapeProxy>,
+    detach_said: Option<(&'static str, u8)>,
+) -> Result<(), String> {
     std::thread::Builder::new()
         .name("stdin".into())
         .spawn(move || {
@@ -617,7 +657,14 @@ fn fill_stdin(mut writer: io::PipeWriter, mut proxy: Option<EscapeProxy>) -> Res
                 }
                 if detached {
                     terminal::restore();
-                    std::process::exit(0);
+                    let code = match detach_said {
+                        Some((said, code)) => {
+                            let _ = writeln!(io::stderr(), "{said}");
+                            code
+                        }
+                        None => 0,
+                    };
+                    std::process::exit(i32::from(code));
                 }
             }
         })
@@ -627,8 +674,15 @@ fn fill_stdin(mut writer: io::PipeWriter, mut proxy: Option<EscapeProxy>) -> Res
 
 /// Sends the size of this process's stdout as the command's terminal's.
 fn resize(conn: &UnixStream) {
+    resize_by(conn, 0);
+}
+
+/// Sends the size of this process's stdout, `more` rows and columns larger, as the
+/// command's terminal's.
+fn resize_by(conn: &UnixStream, more: u16) {
     let (rows, cols) = terminal::size(1);
-    if rows != 0 && cols != 0 {
+    let (rows, cols) = (rows.saturating_add(more), cols.saturating_add(more));
+    if rows != more && cols != more {
         let [a, b] = rows.to_be_bytes();
         let [c, d] = cols.to_be_bytes();
         let _ = shards_ipc::send(conn, kind::RESIZE, &[a, b, c, d], &[]);

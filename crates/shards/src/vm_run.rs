@@ -686,6 +686,7 @@ fn serve_workload(
                             Ok(workload::Asked {
                                 spec: (*spec).clone(),
                                 interactive,
+                                detached: false,
                                 log: None,
                                 started: None,
                                 layer_in: None,
@@ -763,6 +764,7 @@ fn serve_workload(
                             Ok(workload::Asked {
                                 spec: request.spec,
                                 interactive: request.interactive,
+                                detached: request.detached,
                                 log: request.log,
                                 started: Some(&started),
                                 layer_in: request.layer_in,

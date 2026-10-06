@@ -15,6 +15,8 @@ use std::os::fd::AsRawFd;
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
 #[cfg(unix)]
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+#[cfg(unix)]
 use std::sync::{Mutex, PoisonError};
 
 #[cfg(unix)]
@@ -100,6 +102,8 @@ pub enum Request<'a> {
 pub struct Asked<'a> {
     pub spec: Spec,
     pub interactive: bool,
+    /// Its client does not stay: its stdin, if it reads one, is for `shards attach`.
+    pub detached: bool,
     pub log: Option<Logger>,
     pub started: Option<&'a (dyn Fn() + Sync)>,
     /// The container's writable layer from before, to put back before the command runs
@@ -265,6 +269,7 @@ pub fn serve(
     let Asked {
         spec,
         interactive,
+        detached,
         log,
         started,
         layer_in,
@@ -275,6 +280,7 @@ pub fn serve(
         Request::Now { spec, interactive } => Asked {
             spec: *spec,
             interactive,
+            detached: false,
             log: None,
             started: None,
             layer_in: None,
@@ -298,13 +304,21 @@ pub fn serve(
         send_layer(&mut conn, layer).map_err(|e| format!("sending the container's files: {e}"))?;
     }
     send(&mut conn, kind::SPEC, &spec.encode()).map_err(|e| format!("sending the command: {e}"))?;
-    if interactive {
-        let mut input = conn.try_clone().map_err(|e| e.to_string())?;
+    // The command's stdin, which its client, then those attached, write (`attach`); a
+    // detached run's stays open for them, an attached run's closes with its client's
+    // (Docker's StdinOnce).
+    *lock_stdin() = Some(conn.try_clone().map_err(|e| e.to_string())?);
+    // moby's CopyStreams: a client's stdin ending closes the command's where it is
+    // StdinOnce and has no terminal; with one, it is the client leaving, by its detach
+    // keys or not, and the command keeps its stdin.
+    STDIN_ONCE.store(!detached && spec.tty.is_none(), Ordering::Relaxed);
+    STDIN_OPEN.store(interactive, Ordering::Relaxed);
+    if interactive && !detached {
         std::thread::Builder::new()
             .name("stdin".into())
-            .spawn(move || forward_stdin(&mut input))
+            .spawn(forward_stdin)
             .map_err(|e| format!("stdin: {e}"))?;
-    } else {
+    } else if !interactive {
         send(&mut conn, kind::STDIN, &[]).map_err(|e| format!("closing stdin: {e}"))?;
     }
     lock(to).running = true;
@@ -349,6 +363,9 @@ pub fn serve(
         let mut state = lock(to);
         *state = Signals::default();
     }
+    *lock_stdin() = None;
+    STDIN_OPEN.store(false, Ordering::Relaxed);
+    lock_attached().clear();
     // Execs still waiting for the guest will never start.
     pending().clear();
     // The guest powers off once the host closes the run connection: shutting it down
@@ -396,12 +413,14 @@ fn relay(
                 if let Some(log) = log.as_deref_mut() {
                     log.keep(LOG_STDOUT, payload);
                 }
+                fan_out(payload, false);
             }
             kind::STDERR => {
                 let _ = write_fd(2, payload);
                 if let Some(log) = log.as_deref_mut() {
                     log.keep(LOG_STDERR, payload);
                 }
+                fan_out(payload, true);
             }
             kind::STARTED => {
                 if let Some(started) = started {
@@ -414,8 +433,13 @@ fn relay(
             kind::EXIT => {
                 let _ = timing.answered_us.set(shards_vmm::log::uptime_us());
                 let status: [u8; 4] = payload.try_into().map_err(|_| "malformed exit status")?;
+                let status = u8::try_from(u32::from_be_bytes(status)).unwrap_or(u8::MAX);
+                // Those attached exit with the command, as `docker attach` does.
+                for a in lock_attached().drain(..) {
+                    let _ = shards_ipc::send(&a.client, shards_ipc::kind::EXIT, &[status], &[]);
+                }
                 return Ok(Ended {
-                    status: u8::try_from(u32::from_be_bytes(status)).unwrap_or(u8::MAX),
+                    status,
                     not_run,
                     lost: log.as_deref().map_or(0, Logger::lost),
                     oom,
@@ -891,22 +915,162 @@ fn exec_session(to: &'static ToGuest, req: &mut ExecRequest) -> Result<(Option<u
     }
 }
 
-/// Copies shards' stdin to the workload's, then closes it.
+/// Copies shards' stdin to the workload's, then closes it, where its end is the
+/// workload's ([`STDIN_ONCE`]).
 #[cfg(unix)]
-fn forward_stdin(conn: &mut UnixStream) {
-    let mut stdin = io::stdin().lock();
+fn forward_stdin() {
+    copy_stdin(&mut io::stdin().lock());
+    if STDIN_ONCE.load(Ordering::Relaxed) {
+        close_stdin();
+    }
+}
+
+/// Copies `from` to the workload's stdin until its end.
+#[cfg(unix)]
+fn copy_stdin(from: &mut impl Read) {
     let mut buf = vec![0u8; 64 * 1024];
     loop {
-        match stdin.read(&mut buf) {
-            Ok(0) | Err(_) => break,
+        match from.read(&mut buf) {
+            Ok(0) | Err(_) => return,
             Ok(n) => {
-                if send(conn, kind::STDIN, buf.get(..n).unwrap_or_default()).is_err() {
+                let data = buf.get(..n).unwrap_or_default();
+                let sent = lock_stdin()
+                    .as_mut()
+                    .is_some_and(|c| send(c, kind::STDIN, data).is_ok());
+                if !sent {
                     return;
                 }
             }
         }
     }
-    let _ = send(conn, kind::STDIN, &[]);
+}
+
+/// Closes the workload's stdin, once.
+#[cfg(unix)]
+fn close_stdin() {
+    if STDIN_OPEN.swap(false, Ordering::Relaxed)
+        && let Some(c) = lock_stdin().as_mut()
+    {
+        let _ = send(c, kind::STDIN, &[]);
+    }
+}
+
+/// The run connection's copy that carries the workload's stdin, which every writer of it
+/// shares: its client's, and those attached.
+#[cfg(unix)]
+static STDIN: Mutex<Option<UnixStream>> = Mutex::new(None);
+/// The workload reads a stdin, still open.
+#[cfg(unix)]
+static STDIN_OPEN: AtomicBool = AtomicBool::new(false);
+/// Its stdin closes as a client's ends: the run was attached (StdinOnce), without a
+/// terminal.
+#[cfg(unix)]
+static STDIN_ONCE: AtomicBool = AtomicBool::new(false);
+
+#[cfg(unix)]
+fn lock_stdin() -> std::sync::MutexGuard<'static, Option<UnixStream>> {
+    STDIN.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// A client attached to the workload (`shards attach`): where its output goes, and its
+/// connection, told the workload's status.
+#[cfg(unix)]
+struct Attacher {
+    id: u64,
+    out: fs::File,
+    err: fs::File,
+    client: UnixStream,
+}
+
+/// Those attached, which the output's relay writes to: a lock of its own, apart from the
+/// stdin's, so that a guest that has stopped reading stdin stalls no output.
+#[cfg(unix)]
+static ATTACHED: Mutex<Vec<Attacher>> = Mutex::new(Vec::new());
+
+#[cfg(unix)]
+fn lock_attached() -> std::sync::MutexGuard<'static, Vec<Attacher>> {
+    ATTACHED.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// The workload's output to each client attached, as dockerd's attach streams it: as it
+/// comes, waited for as the run's own client is. One that has gone is let go.
+#[cfg(unix)]
+fn fan_out(payload: &[u8], stderr: bool) {
+    lock_attached().retain_mut(|a| {
+        let to = if stderr { &mut a.err } else { &mut a.out };
+        to.write_all(payload).is_ok()
+    });
+}
+
+/// A client to attach (`kind::ATTACH_RUN`): its connection and stdio, and whether its stdin
+/// is the workload's.
+#[cfg(unix)]
+pub struct AttachRequest {
+    pub client: UnixStream,
+    pub stdin: fs::File,
+    pub stdout: fs::File,
+    pub stderr: fs::File,
+    pub reads_stdin: bool,
+}
+
+/// Attaches `req`'s client to the workload, as `docker attach` attaches: its output from
+/// now, its stdin to the workload's where the workload has one open, its signals and its
+/// terminal's size; told the workload's status as it ends. Its stdin's end closes the
+/// workload's where the run's own client's would ([`STDIN_ONCE`]); where it does not, its
+/// output goes on to the end, where dockerd's attach ends with its stdin and loses it.
+#[cfg(unix)]
+pub fn attach(to: &'static ToGuest, req: AttachRequest) -> Result<(), String> {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let id = NEXT.fetch_add(1, Ordering::Relaxed);
+    let AttachRequest {
+        client,
+        mut stdin,
+        stdout,
+        stderr,
+        reads_stdin,
+    } = req;
+    let listened = client
+        .try_clone()
+        .map_err(|e| format!("the client's connection: {e}"))?;
+    lock_attached().push(Attacher {
+        id,
+        out: stdout,
+        err: stderr,
+        client,
+    });
+    std::thread::Builder::new()
+        .name("attached".into())
+        .spawn(move || {
+            while let Ok(Some(m)) = shards_ipc::recv(&listened) {
+                match m.kind {
+                    shards_ipc::kind::SIGNAL => {
+                        if let Ok(sig) = <[u8; 4]>::try_from(m.payload.as_slice()) {
+                            signal_guest(to, u32::from_be_bytes(sig));
+                        }
+                    }
+                    shards_ipc::kind::RESIZE => {
+                        if let Some(size) = Size::decode(&m.payload) {
+                            resize_guest(to, size);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            lock_attached().retain(|a| a.id != id);
+        })
+        .map_err(|e| format!("an attached client's thread: {e}"))?;
+    if reads_stdin && STDIN_OPEN.load(Ordering::Relaxed) {
+        std::thread::Builder::new()
+            .name("attached-stdin".into())
+            .spawn(move || {
+                copy_stdin(&mut stdin);
+                if STDIN_ONCE.load(Ordering::Relaxed) {
+                    close_stdin();
+                }
+            })
+            .map_err(|e| format!("an attached client's stdin thread: {e}"))?;
+    }
+    Ok(())
 }
 
 /// Forwards the signals shards receives to the workload, through `to`, even those shards

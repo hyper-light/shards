@@ -305,6 +305,95 @@ pub fn exec(path: &str, args: &[OsString]) -> ExitCode {
     }
 }
 
+/// Runs the command line `args`, the words after `path` (`shards attach`), as `docker
+/// attach` does (docker/cli cli/command/container/attach.go): the container inspected for
+/// its terminal and its stdin, refused as the CLI refuses it, then attached until its
+/// command ends, whose status is this one's, or until the detach keys.
+pub fn attach(path: &str, args: &[OsString]) -> ExitCode {
+    let argv = match crate::cli::utf8(args) {
+        Ok(argv) => argv,
+        Err(e) => return crate::cli::failed(&e),
+    };
+    let parsed = match crate::cli::read(&shards_cmdline::commands::ATTACH, path, &argv, &validate) {
+        Ok(parsed) => parsed,
+        Err(answered) => return answered,
+    };
+    let _ = std::io::stdout().write_all(parsed.notices.as_bytes());
+    let Some(container) = parsed.args.first().cloned() else {
+        return crate::cli::failed("a container is required");
+    };
+    let keys = parsed.string("detach-keys");
+    let detach_keys = if keys.is_empty() {
+        term::DETACH_KEYS.to_vec()
+    } else {
+        match term::to_bytes(keys) {
+            Ok(bytes) => bytes,
+            Err(e) => return refuse(&format!("invalid detach keys ({keys}): {e}")),
+        }
+    };
+    let (no_stdin, sig_proxy) = (parsed.bool("no-stdin"), parsed.bool("sig-proxy"));
+    #[cfg(unix)]
+    {
+        let daemon = match crate::cli::shardsd() {
+            Ok(daemon) => daemon,
+            Err(e) => return crate::cli::failed(&e),
+        };
+        let identity = match Identity::of_build(&daemon) {
+            Ok(identity) => identity,
+            Err(e) => return crate::cli::failed(&format!("{}: {e}", daemon.display())),
+        };
+        let home = match shards_ipc::home() {
+            Ok(home) => home,
+            Err(e) => return crate::cli::failed(&e),
+        };
+        // ContainerInspect first: its terminal, and whether it reads a stdin.
+        let probe = shards_ipc::Command {
+            argv: [
+                "inspect",
+                "--type",
+                "container",
+                "--format",
+                "{{.Config.Tty}} {{.Config.OpenStdin}}",
+                container.as_str(),
+            ]
+            .map(String::from)
+            .to_vec(),
+            daemon: identity,
+            ..shards_ipc::Command::default()
+        };
+        let (tty, open_stdin) = match crate::cli::client::ask(&home, &daemon, &probe, &[]) {
+            Ok((0, out, _)) => {
+                let out = String::from_utf8_lossy(&out);
+                let mut words = out.split_whitespace();
+                (words.next() == Some("true"), words.next() == Some("true"))
+            }
+            Ok(_) => {
+                return refuse(&format!(
+                    "Error response from daemon: No such container: {container}"
+                ));
+            }
+            Err(e) => return crate::cli::failed(&e),
+        };
+        // In().CheckTty(!NoStdin, Tty).
+        if tty && !no_stdin && !std::io::stdin().is_terminal() {
+            return refuse("cannot attach stdin to a TTY-enabled container because stdin is not a terminal");
+        }
+        let request = shards_ipc::Attach {
+            container,
+            stdin: !no_stdin && open_stdin,
+            daemon: identity,
+        };
+        crate::cli::client::attach(&home, &daemon, &request, tty, sig_proxy && !tty, &detach_keys)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (container, detach_keys, no_stdin, sig_proxy);
+        crate::cli::failed(
+            "attaching needs the daemon, which needs Unix sockets, which shards does not support on this platform yet",
+        )
+    }
+}
+
 /// Says `why` as the CLI says a plain error, and exits 1 (docker/cli cmd/docker/docker.go).
 fn refuse(why: &str) -> ExitCode {
     let _ = writeln!(std::io::stderr(), "{why}");

@@ -6167,3 +6167,84 @@ fn block_io_limits_hold_as_dockers_do() {
         "[] [] [] [] []\n"
     );
 }
+
+/// `shards attach`, as `docker attach` attaches (probed on Docker Engine 29.3.1): to a
+/// running container's command, its stdin where the container reads one, its output from
+/// now, until the command ends, whose status is the client's; refused as docker/cli
+/// refuses it. Its stdin's end leaves a detached container's open and its output still
+/// coming, where Docker's attach ends with its stdin and loses what follows.
+#[test]
+fn attach_joins_a_running_container_as_docker_attach_does() {
+    use std::io::Write as _;
+    let Some((home, image)) = home("containers-attach") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let made = run_in(&home, &image, &["-d", "-i", "--name", "echo"], &["cat"]);
+    assert_eq!(made.status, Some(0), "{made}");
+    let attach = || {
+        common::command()
+            .args(["attach", "echo"])
+            .env("SHARDS_HOME", &*home)
+            .env("SHARDS_KERNEL", kernel())
+            .env("SHARDS_INIT", guest_init())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap()
+    };
+    // What one attached client writes, it reads back; its stdin's end ends neither the
+    // command's stdin nor its output to it.
+    let mut first = attach();
+    let mut first_out = BufReader::new(first.stdout.take().unwrap());
+    first.stdin.take().unwrap().write_all(b"hello\n").unwrap();
+    let mut line = String::new();
+    first_out.read_line(&mut line).unwrap();
+    assert_eq!(line, "hello\n");
+    let mut second = attach();
+    let mut second_out = BufReader::new(second.stdout.take().unwrap());
+    let mut second_in = second.stdin.take().unwrap();
+    second_in.write_all(b"again\n").unwrap();
+    for out in [&mut first_out, &mut second_out] {
+        let mut line = String::new();
+        out.read_line(&mut line).unwrap();
+        assert_eq!(line, "again\n");
+    }
+    // Both end with the command, with its status: SIGTERM's.
+    assert_eq!(shards(&["stop", "echo"]).status, Some(0));
+    assert_eq!(exit(&mut first), Some(143));
+    assert_eq!(exit(&mut second), Some(143));
+    drop(second_in);
+    // docker/cli's refusals.
+    let stopped = shards(&["attach", "echo"]);
+    assert_eq!(
+        (stopped.status, stopped.stderr.as_str()),
+        (Some(1), "cannot attach to a stopped container, start it first\n")
+    );
+    let missing = shards(&["attach", "nope"]);
+    assert_eq!(
+        (missing.status, missing.stderr.as_str()),
+        (Some(1), "Error response from daemon: No such container: nope\n")
+    );
+    let made = run_in(&home, &image, &["-d", "--name", "held"], &["sleep"]);
+    assert_eq!(made.status, Some(0), "{made}");
+    assert_eq!(shards(&["pause", "held"]).status, Some(0));
+    let paused = shards(&["attach", "held"]);
+    assert_eq!(
+        (paused.status, paused.stderr.as_str()),
+        (Some(1), "cannot attach to a paused container, unpause it first\n")
+    );
+    assert_eq!(shards(&["rm", "-f", "held", "echo"]).status, Some(0));
+    let made = run_in(&home, &image, &["-d", "-t", "--name", "term"], &["sleep"]);
+    assert_eq!(made.status, Some(0), "{made}");
+    let piped = shards(&["attach", "term"]);
+    assert_eq!(
+        (piped.status, piped.stderr.as_str()),
+        (
+            Some(1),
+            "cannot attach stdin to a TTY-enabled container because stdin is not a terminal\n"
+        )
+    );
+    assert_eq!(shards(&["rm", "-f", "term"]).status, Some(0));
+}

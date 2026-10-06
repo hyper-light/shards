@@ -111,6 +111,8 @@ pub struct Request {
     pub spec: Spec,
     /// The command reads the client's stdin.
     pub interactive: bool,
+    /// The run is detached: its stdin, if it reads one, is for `shards attach`.
+    pub detached: bool,
     /// The client asked for the timing line.
     pub timing: bool,
     /// The container's log, if its output is kept.
@@ -306,6 +308,7 @@ pub fn receive(
         client,
         spec,
         interactive: flags & shards_ipc::RUN_INTERACTIVE != 0,
+        detached,
         timing: flags & shards_ipc::RUN_TIMING != 0,
         log,
         layer_in,
@@ -399,6 +402,14 @@ fn relay_signals(conn: &UnixStream, to: &'static ToGuest, from: From) {
                     let _ = writeln!(io::stderr(), "shards: an exec: {e}");
                 }
             }
+            kind::ATTACH_RUN if !client => {
+                if let Some(number) = message.payload.first_chunk::<8>() {
+                    let _ = shards_ipc::send(conn, kind::EXEC_TAKEN, number, &[]);
+                }
+                if let Err(e) = attach_request(message, to) {
+                    let _ = writeln!(io::stderr(), "shards: an attach: {e}");
+                }
+            }
             kind::RESIZE if client => {
                 if let Some(size) = shards_abi::run::Size::decode(&message.payload) {
                     workload::resize_guest(to, size);
@@ -445,6 +456,32 @@ fn exec_request(
             stdin: File::from(stdin),
             stdout: File::from(stdout),
             stderr: File::from(stderr),
+        },
+    )
+}
+
+/// Attaches the client the daemon's `ATTACH_RUN` brings (workload::attach): its flag, and
+/// its connection, stdin, stdout and stderr.
+fn attach_request(message: shards_ipc::Message, to: &'static ToGuest) -> Result<(), String> {
+    let flags = message
+        .payload
+        .get(8)
+        .copied()
+        .ok_or("an attach without its flags")?;
+    let mut fds = message.fds.into_iter();
+    let (Some(client), Some(stdin), Some(stdout), Some(stderr), None) =
+        (fds.next(), fds.next(), fds.next(), fds.next(), fds.next())
+    else {
+        return Err("an attach without its client's four descriptors".into());
+    };
+    workload::attach(
+        to,
+        workload::AttachRequest {
+            client: UnixStream::from(client),
+            stdin: File::from(stdin),
+            stdout: File::from(stdout),
+            stderr: File::from(stderr),
+            reads_stdin: flags & shards_ipc::ATTACH_STDIN != 0,
         },
     )
 }

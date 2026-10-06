@@ -2560,6 +2560,28 @@ Improvements over Docker, each measured or tested:
 Open: BuildKit's RUN steps run under containerd's default device rules; `shards build`'s
 steps are to be held to them.
 
+### attach (D45)
+
+`shards attach` joins a running container's command as `docker attach` does (docker/cli
+container/attach.go; moby daemon/attach.go, daemon/internal/stream CopyStreams): the CLI
+inspects the container first, for its terminal and its stdin, and refuses a stopped,
+paused or restarting one, a missing one, and a terminal's stdin that is not one, in
+docker/cli's words; the client goes to the container's VM as an exec's does (`ATTACH_RUN`,
+held until the VM has it, M24), which writes it the command's output from then on,
+passes its stdin on where the container reads one (`-i`), its signals without a terminal
+(`--sig-proxy`), and its terminal's size, one row and column larger first so that the
+command redraws (resizeTTY), and tells it the command's status, its own. The detach keys
+leave with "read escape sequence" and 1, the container running. A client's stdin ending
+closes the command's where moby's does (StdinOnce, no terminal), so a detach never closes
+a shell's: before, `run -it`'s detach did.
+
+Beyond Docker: where its stdin's end does not close the command's, an attached client's
+output goes on to the command's end, where dockerd ends the attach with its stdin and
+what the command says after is lost (measured: `echo hello | docker attach` of a
+`run -di` container that answers printed nothing; shards' prints the answer; tested).
+A slow client holds the command's output back, as Docker's and shards' own `run` client
+do.
+
 ## 4. Start path (≤ 5 ms budget)
 
 | Step | Cost | Evidence |

@@ -177,7 +177,17 @@ pub mod kind {
     /// answers [`TAKEN`] once it has them all, before which the share process keeps its
     /// copies (shards_ipc's flush in flight, PM M24).
     pub const SHARE_ENDS: u8 = 34;
+    /// Client → daemon: `shards attach` ([`Attach`]), with the client's stdin, stdout and
+    /// stderr; the VM answers the client as it does an exec's.
+    pub const ATTACH: u8 = 35;
+    /// Daemon → warm VM: a client to attach to the running command, with its connection,
+    /// stdin, stdout and stderr; the payload is its number, as an exec's, and its
+    /// [`ATTACH_STDIN`] flag. The VM answers [`EXEC_TAKEN`] with the number.
+    pub const ATTACH_RUN: u8 = 36;
 }
+
+/// An `ATTACH_RUN` flag: the client's stdin goes to the command's.
+pub const ATTACH_STDIN: u8 = 1;
 
 /// An `EXEC_RUN` flag: the command reads the client's stdin (`-i`).
 pub const EXEC_INTERACTIVE: u8 = 1;
@@ -255,6 +265,36 @@ impl Exec {
             privileged: r.flag()?,
         };
         r.0.is_empty().then_some(exec)
+    }
+}
+
+/// `shards attach` as the client asks for it: the container, whether its stdin goes to the
+/// command's, and the daemon binary the client would start, as in [`Run`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Attach {
+    pub container: String,
+    pub stdin: bool,
+    pub daemon: Identity,
+}
+
+impl Attach {
+    pub fn encode(&self) -> Vec<u8> {
+        let mut w = Vec::new();
+        put_str(&mut w, &self.container);
+        w.push(u8::from(self.stdin));
+        put_identity(&mut w, &self.daemon);
+        w
+    }
+
+    /// `None` for anything but a whole, well-formed request.
+    pub fn decode(bytes: &[u8]) -> Option<Attach> {
+        let mut r = Reader(bytes);
+        let attach = Attach {
+            container: r.str()?,
+            stdin: r.flag()?,
+            daemon: r.identity()?,
+        };
+        r.0.is_empty().then_some(attach)
     }
 }
 
@@ -1387,6 +1427,26 @@ mod tests {
             assert_eq!(Exec::decode(&bytes[..n]), None, "an exec cut at {n} decoded");
         }
         assert_eq!(Exec::decode(&Exec::default().encode()), Some(Exec::default()));
+    }
+
+    #[test]
+    fn attach_requests_round_trip() {
+        let attach = Attach {
+            container: "web".into(),
+            stdin: true,
+            daemon: Identity {
+                dev: 1,
+                ino: 2,
+                size: 3,
+                mtime_s: 4,
+                mtime_ns: 5,
+            },
+        };
+        let bytes = attach.encode();
+        assert_eq!(Attach::decode(&bytes), Some(attach));
+        for n in 0..bytes.len() {
+            assert_eq!(Attach::decode(&bytes[..n]), None, "an attach cut at {n} decoded");
+        }
     }
 
     /// A name's value is its own, not that of a name it begins.

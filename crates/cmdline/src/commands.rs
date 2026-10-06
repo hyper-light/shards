@@ -1788,6 +1788,28 @@ pub static EXEC: Command = Command {
     error_prefix: "",
 };
 
+/// `shards attach`.
+pub static ATTACH: Command = Command {
+    usage: "[OPTIONS] CONTAINER",
+    about: "Attach local standard input, output, and error streams to a running container",
+    aliases: "shards container attach, shards attach",
+    args: Args::Exactly(1),
+    flags: &[
+        Flag::string(
+            "detach-keys",
+            None,
+            "",
+            "Override the key sequence for detaching a container",
+        ),
+        HELP,
+        Flag::bool("no-stdin", None, "Do not attach STDIN"),
+        Flag::bool("sig-proxy", None, "Proxy all received signals to the process").defaulting("true"),
+    ],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
 /// `shards kill`.
 pub static KILL: Command = Command {
     usage: "[OPTIONS] CONTAINER [CONTAINER...]",
@@ -1915,6 +1937,8 @@ pub fn find(words: &[&str]) -> Option<(&'static Command, &'static str, usize)> {
         ["stop", ..] => (&STOP, "shards stop", 1),
         ["container", "stop", ..] => (&STOP, "shards container stop", 2),
         ["kill", ..] => (&KILL, "shards kill", 1),
+        ["attach", ..] => (&ATTACH, "shards attach", 1),
+        ["container", "attach", ..] => (&ATTACH, "shards container attach", 2),
         ["exec", ..] => (&EXEC, "shards exec", 1),
         ["container", "exec", ..] => (&EXEC, "shards container exec", 2),
         ["container", "kill", ..] => (&KILL, "shards container kill", 2),

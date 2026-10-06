@@ -84,6 +84,7 @@ pub static TOP: &[Group] = &[
     Group {
         heading: "Commands",
         entries: &[
+            of("attach", &commands::ATTACH),
             of("commit", &commands::COMMIT),
             short("cp", COPY_SHORT, &commands::COPY),
             of("create", &commands::CREATE),
@@ -122,6 +123,7 @@ pub static MANAGEMENT: &[(&str, &str, &[Entry])] = &[
         "container",
         "Manage containers",
         &[
+            of("attach", &commands::ATTACH),
             of("commit", &commands::COMMIT),
             short("cp", COPY_SHORT, &commands::COPY),
             of("create", &commands::CREATE),

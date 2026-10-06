@@ -1563,6 +1563,18 @@ impl<D: Disk> Daemon<D> {
                 self.step_aside(threads);
                 return None;
             }
+            kind::ATTACH => {
+                self.release_client(number);
+                if let Some(attach) = shards_ipc::Attach::decode(&message.payload)
+                    && attach.daemon != self.identity
+                {
+                    self.step_aside(threads);
+                    let _ = shards_ipc::send(conn, kind::RESTART, &[], &[]);
+                    return None;
+                }
+                self.attach(&message, conn);
+                return None;
+            }
             kind::EXEC => {
                 self.release_client(number);
                 if let Some(exec) = shards_ipc::Exec::decode(&message.payload)
