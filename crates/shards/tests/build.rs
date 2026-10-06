@@ -3102,3 +3102,110 @@ fn agentfile_directives_lay_out_what_they_bring() {
         refused.stderr
     );
 }
+
+/// Agents are OSI artifacts (D54, §12.17): `shards build agent` makes one of a directory
+/// and its `agent.json`, refusing what no domain may hold; `shards push agent` puts it in
+/// a registry as OCI 1.1's own-config-and-layers artifact; `AGENT … FROM` its reference
+/// pulls it, checks its type, and lays its content at `/agents/<name>` and its config at
+/// `/agents/<name>.d/osi.json`. A harness's `FROM` naming an agent is refused.
+#[test]
+fn agents_are_osi_artifacts_made_pushed_and_taken() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let (port, repos) = common::writable_registry();
+    let home = TempDir::new("build-osi-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let dir = TempDir::new("build-osi-agent");
+    std::fs::create_dir_all(dir.join("bin")).unwrap();
+    std::fs::write(dir.join("bin/run"), "#!/bin/sh\necho agent\n").unwrap();
+    std::fs::write(
+        dir.join("agent.json"),
+        r#"{"name":"main","version":"1.0.0","run":{"command":["bin/run"]},"asks":{"network":["api.example.com:443"]}}"#,
+    )
+    .unwrap();
+    let name = format!("127.0.0.1:{port}/team/agent:1");
+    let made = shards(&["build", "agent", dir.to_str().unwrap(), "-t", &name]);
+    assert_eq!(made.status, Some(0), "{}", made.stderr);
+    let pushed = shards(&["push", "agent", &name]);
+    assert_eq!(pushed.status, Some(0), "{}", pushed.stderr);
+    {
+        let repos = repos.lock().unwrap();
+        let (_, manifest) = repos.manifests["team/agent"]["1"].clone();
+        let m: serde_json::Value = serde_json::from_slice(&manifest).unwrap();
+        assert_eq!(m["artifactType"], "application/vnd.osi.agent.v1");
+        assert_eq!(
+            m["config"]["mediaType"],
+            "application/vnd.osi.agent.config.v1+json"
+        );
+        assert_eq!(
+            m["layers"][0]["mediaType"],
+            "application/vnd.osi.agent.content.v1.tar"
+        );
+    }
+    let listed = shards(&["ls", "agent"]);
+    assert!(listed.stdout.contains(&name), "{}", listed.stdout);
+    // Taken from the registry by a build, nothing of it left here first.
+    let removed = shards(&["rm", "agent", &name]);
+    assert_eq!(removed.status, Some(0), "{}", removed.stderr);
+    let ctx = context("build-osi-ctx", &format!("FROM {image}\n"));
+    std::fs::write(
+        ctx.join("Agentfile"),
+        format!("FROM {image}\nAGENT main FROM {name}\n"),
+    )
+    .unwrap();
+    let out = TempDir::new("build-osi-out");
+    let built = shards(&[
+        "build",
+        "--progress=plain",
+        "-o",
+        out.join("root").to_str().unwrap(),
+        ctx.to_str().unwrap(),
+    ]);
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    let root = out.join("root");
+    assert_eq!(
+        std::fs::read_to_string(root.join("agents/main/bin/run")).unwrap(),
+        "#!/bin/sh\necho agent\n"
+    );
+    assert!(
+        !root.join("agents/main/agent.json").exists(),
+        "the config is not content"
+    );
+    let config: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(root.join("agents/main.d/osi.json")).unwrap()).unwrap();
+    assert_eq!(config["name"], "main");
+    assert_eq!(config["schemaVersion"], 1);
+
+    // A harness is no agent.
+    std::fs::write(
+        ctx.join("Agentfile"),
+        format!("FROM {image}\nHARNESS drive FROM {name}\n"),
+    )
+    .unwrap();
+    let wrong = shards(&["build", ctx.to_str().unwrap()]);
+    assert_ne!(wrong.status, Some(0));
+    assert!(
+        wrong.stderr.contains("is an OSI agent, not an OSI harness"),
+        "{}",
+        wrong.stderr
+    );
+
+    // What no domain may hold is refused when the artifact is made.
+    std::os::unix::fs::symlink("/etc/passwd", dir.join("escape")).unwrap();
+    let refused = shards(&["build", "agent", dir.to_str().unwrap(), "-t", "local/bad:1"]);
+    assert_ne!(refused.status, Some(0));
+    assert!(
+        refused
+            .stderr
+            .contains("escape: a symlink to /etc/passwd, outside the directory"),
+        "{}",
+        refused.stderr
+    );
+}

@@ -7,6 +7,7 @@
 use std::io::Write;
 use std::process::ExitCode;
 
+mod agent;
 #[cfg(all(feature = "alloc-count", unix))]
 mod alloc_count;
 mod build;
@@ -73,6 +74,7 @@ pub(crate) fn shardsd(args: Vec<std::ffi::OsString>) -> ExitCode {
             usage_error("the daemon needs Unix sockets, which shards does not support on this platform yet")
         }
         Some("guest") => guest::guest(args),
+        Some(kind @ ("agent" | "harness" | "mcp")) => agent::command(kind, args),
         // the VM's broker (`shards run --kernel`, `shards restore`): not for people to run.
         #[cfg(target_os = "macos")]
         Some("grants") => grant_answer::broker(),

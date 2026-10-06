@@ -28,6 +28,10 @@ pub enum Thing {
     System,
     /// Volumes: directories microVMs mount, which outlive them.
     Volume,
+    /// Agents, harnesses and MCP servers: OSI artifacts (D54), shards' own groups.
+    Agent,
+    Harness,
+    Mcp,
 }
 
 impl Thing {
@@ -41,6 +45,9 @@ impl Thing {
             "disk" => Some(Thing::Disk),
             "system" => Some(Thing::System),
             "volume" | "volumes" => Some(Thing::Volume),
+            "agent" | "agents" => Some(Thing::Agent),
+            "harness" | "harnesses" => Some(Thing::Harness),
+            "mcp" => Some(Thing::Mcp),
             _ => None,
         }
     }
@@ -54,7 +61,20 @@ pub fn rewrite(args: &[String]) -> Option<Vec<String>> {
     let docker_form = matches!(Thing::of(first), Some(Thing::Image | Thing::Container));
     let (action, thing, rest) = match (Thing::of(first), second) {
         (Some(thing @ (Thing::Image | Thing::Container)), Some(action)) => (action, thing, args.get(2..)?),
-        (Some(Thing::Vm | Thing::Daemon | Thing::Guest | Thing::Disk | Thing::System | Thing::Volume), _) => {
+        (
+            Some(
+                Thing::Vm
+                | Thing::Daemon
+                | Thing::Guest
+                | Thing::Disk
+                | Thing::System
+                | Thing::Volume
+                | Thing::Agent
+                | Thing::Harness
+                | Thing::Mcp,
+            ),
+            _,
+        ) => {
             return None;
         }
         _ => (first, Thing::of(second?)?, args.get(2..)?),
@@ -102,6 +122,20 @@ pub fn rewrite(args: &[String]) -> Option<Vec<String>> {
         ("inspect" | "show", Thing::Guest) => &["guest"],
         (action @ ("stop" | "kill" | "logs" | "wait" | "port" | "exec"), Thing::Vm | Thing::Container) => {
             return Some(once(action, rest));
+        }
+        // An agent, harness or MCP server: shards' own group, `shards agent build ...`.
+        (
+            action @ ("build" | "push" | "pull" | "list" | "ls" | "inspect" | "remove" | "rm" | "delete"),
+            thing @ (Thing::Agent | Thing::Harness | Thing::Mcp),
+        ) => {
+            let group = match thing {
+                Thing::Agent => "agent",
+                Thing::Harness => "harness",
+                _ => "mcp",
+            };
+            let mut out = vec![group.to_string(), action.to_string()];
+            out.extend(rest.iter().cloned());
+            return Some(out);
         }
         (action @ ("push" | "tag" | "save"), _) if !docker_form => {
             let mut out = once(action, &[]);

@@ -487,6 +487,9 @@ struct Bases<'a> {
     /// The manifests of OCI layouts named contexts name, imported into the store: by the
     /// digest the context names, the manifest for this platform.
     layouts: BTreeMap<String, Descriptor>,
+    /// The OSI artifacts the build takes, by what the planner names their sources: their
+    /// content layers, read as image layers.
+    artifacts: RefCell<BTreeMap<String, Vec<Layer>>>,
 }
 
 impl Resolver for Bases<'_> {
@@ -500,6 +503,20 @@ impl Resolver for Bases<'_> {
             Err(e) => progress.error(&v, &String::from_utf8_lossy(e)),
         }
         r
+    }
+
+    /// An OSI artifact, from the store or pulled (with `--pull`, pulled again), checked:
+    /// its type, config and content (crate::agent::fetch); its content layers kept for the
+    /// source that names it.
+    fn artifact(&self, name: &[u8], kind: &[u8], log: &[u8]) -> Result<Resolved, Vec<u8>> {
+        let v = self.progress.borrow_mut().start(&String::from_utf8_lossy(log));
+        let r = self.artifact_of(&String::from_utf8_lossy(name), kind);
+        let progress = self.progress.borrow();
+        match &r {
+            Ok(_) => progress.done(&v),
+            Err(e) => progress.error(&v, e),
+        }
+        r.map_err(String::into_bytes)
     }
 
     /// Each under the name of the step BuildKit's metadata resolution shows
@@ -526,6 +543,45 @@ impl Resolver for Bases<'_> {
 }
 
 impl Bases<'_> {
+    fn artifact_of(&self, name: &str, kind: &[u8]) -> Result<Resolved, String> {
+        let want = match kind {
+            b"agent" => shards_image::osi::Kind::Agent,
+            b"harness" => shards_image::osi::Kind::Harness,
+            _ => shards_image::osi::Kind::Mcp,
+        };
+        let reference = Reference::parse(name).map_err(|e| format!("{name}: {e}"))?;
+        let (desc, manifest, _) = crate::agent::fetch(self.store, &reference, want, self.pull, &|_| {})?;
+        let diff_ids = crate::agent::diff_ids(self.store, want, &manifest)?;
+        let mut layers = Vec::new();
+        for (l, diff_id) in manifest.layers.iter().zip(diff_ids) {
+            let media = crate::agent::layer_type(want, &l.media_type)
+                .ok_or_else(|| format!("{name}: a layer of type {}", l.media_type))?;
+            layers.push(Layer {
+                media_type: media.as_bytes().to_vec(),
+                digest: l.digest.as_bytes().to_vec(),
+                size: u64::try_from(l.size).map_err(|_| format!("{name}: a layer's size is negative"))?,
+                diff_id: diff_id.to_string().into_bytes(),
+                annotations: BTreeMap::new(),
+                created: None,
+                description: format!("the {} {reference}", want.word()).into_bytes(),
+            });
+        }
+        let mut bare = reference.clone();
+        bare.digest = Some(desc.digest().map_err(|e| e.to_string())?);
+        let resolved = bare.to_string();
+        self.artifacts.borrow_mut().insert(resolved.clone(), layers);
+        let config = self
+            .store
+            .content(&manifest.config, oci::MAX_CONFIG)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("{name}: its config is not here"))?;
+        Ok(Resolved {
+            reference: resolved.into_bytes(),
+            digest: Some(desc.digest.clone().into_bytes()),
+            config,
+        })
+    }
+
     /// When `source` says it was made (resolveSourceDateEpochFromState): a local context
     /// says nothing, BuildKit's metadata of one being neither Git's nor HTTP's; a URL
     /// fetched without a checksum, its Last-Modified if it has one; else the newest
@@ -1028,6 +1084,7 @@ fn run(parsed: &Parsed) -> Result<(), String> {
         pull: parsed.bool("pull"),
         progress: &progress,
         resolved: RefCell::new(BTreeMap::new()),
+        artifacts: RefCell::new(BTreeMap::new()),
         layouts: named
             .layouts
             .iter()
@@ -1327,6 +1384,19 @@ fn run(parsed: &Parsed) -> Result<(), String> {
                     .get(b"http.filename".as_slice())
                     .ok_or_else(|| fail(&v, "an HTTP source without a file name"))?;
                 let r = exec.downloaded(download, file).map_err(|e| fail(&v, &e))?;
+                progress.borrow().done(&v);
+                vec![r]
+            }
+            OpKind::Source { identifier, .. } if identifier.starts_with(b"osi-artifact://") => {
+                let v = progress.borrow_mut().start(&name);
+                let reference = show(identifier.strip_prefix(b"osi-artifact://").unwrap_or(identifier));
+                let layers = bases
+                    .artifacts
+                    .borrow()
+                    .get(&reference)
+                    .cloned()
+                    .ok_or_else(|| fail(&v, &format!("{reference}: not resolved")))?;
+                let r = exec.image(layers, None).map_err(|e| fail(&v, &e))?;
                 progress.borrow().done(&v);
                 vec![r]
             }

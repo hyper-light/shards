@@ -2974,6 +2974,37 @@ directory, a harness's archive unpacked, an MCP server granted to one agent and 
 one not fetched, a skill granted to one agent and a directory of shared skills; and a
 skill the reference refuses failing the build in its words.
 
+**OSI artifacts.** Agents, harnesses and MCP servers are OCI 1.1 artifacts of their own
+types (§8 Q1), and their content and config are as §12.17 proposes
+(`shards_image::osi`): `artifactType` `application/vnd.osi.{agent,harness,mcp}.v1`, a
+config `application/vnd.osi.*.config.v1+json` (schema version 1; a reader refuses another
+version, unknown fields, a name no Agentfile could give, and a path that is absolute or
+climbs out), and content layers `application/vnd.osi.*.content.v1.tar` (`+gzip` and
+`+zstd` read).
+
+- **Made** by `shards build agent DIR -t NAME` (and `harness`, `mcp`, in shards' own
+  grammar, `shards agent build …` the group it is said as) of a directory and its
+  `agent.json` (`harness.json`, `mcp.json`), which is the config and not content: one
+  uncompressed tar, names in order, owned by root, times kept, refused if it holds what
+  §9.2 keeps out of any domain (device nodes, FIFOs, sockets, set-ID bits, symlinks whose
+  targets leave the directory).
+- **Kept, pushed, pulled, listed, inspected, removed** as images are, in the same store
+  (`shards push|pull|ls|inspect|rm agent`), pushed by the registry client every image push
+  uses.
+- **Taken** by `AGENT`, `HARNESS` and `MCP` `FROM` an OCI reference: resolved from the
+  store, or pulled (with `--pull`, pulled again), its `artifactType`, config and layer types
+  checked against what the directive takes, and its content read through and refused for
+  whiteouts, devices, FIFOs, set-ID bits, absolute or climbing names, and links leaving
+  the directory, each time a build takes it, however it came to be stored. Its content is
+  laid as a layer of its own at the domain's directory and its config at
+  `<directory>.d/osi.json`, where the runtime reads how it runs; the source names the
+  artifact by digest.
+
+Tested on a real microVM (`agents_are_osi_artifacts_made_pushed_and_taken`): an agent made
+and pushed to a registry (its manifest, config and layer types as specified), listed,
+removed here, then pulled by an Agentfile's `AGENT` and laid out with its config; a
+harness `FROM` an agent refused; a symlink out of the directory refused when made.
+
 ## 4. Start path (≤ 5 ms budget)
 
 | Step | Cost | Evidence |

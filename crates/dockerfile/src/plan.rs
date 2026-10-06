@@ -89,6 +89,12 @@ pub trait Resolver {
     fn resolve(&self, name: &[u8], platform: &Platform, log: &[u8]) -> Result<Resolved, Vec<u8>>;
     /// When `source` says it was made, if it says: seconds and nanoseconds since 1970.
     fn epoch(&self, source: &EpochSource) -> Result<Option<(i64, u32)>, Vec<u8>>;
+    /// An OSI artifact of `kind` (`agent`, `harness` or `mcp`, D54): its reference, with
+    /// the digest it resolved to, and its config's bytes. `log` names the step.
+    fn artifact(&self, name: &[u8], kind: &[u8], log: &[u8]) -> Result<Resolved, Vec<u8>> {
+        let _ = (kind, log);
+        Err(errb(&[name, b": OSI artifacts are not resolved here"]))
+    }
 }
 
 /// Where SOURCE_DATE_EPOCH's time comes from when it is no number of seconds
@@ -1119,9 +1125,19 @@ impl Planner<'_> {
                 use crate::agentfile::Directive;
                 total += match &c.kind {
                     Kind::Add(_) | Kind::Copy(_) | Kind::Run(_) | Kind::Workdir(_) => 1,
-                    Kind::Agentfile(Directive::Agent(_) | Directive::Harness(_)) => 1,
+                    Kind::Agentfile(Directive::Agent(a) | Directive::Harness(a)) => {
+                        if matches!(
+                            crate::agentfile::source_of(&a.source),
+                            Ok(crate::agentfile::Source::Oci(_))
+                        ) {
+                            2
+                        } else {
+                            1
+                        }
+                    }
                     Kind::Agentfile(Directive::Mcp(m)) => match crate::agentfile::source_of(&m.source) {
                         Ok(crate::agentfile::Source::Http(_)) | Err(_) => 0,
+                        Ok(crate::agentfile::Source::Oci(_)) => 2 * m.scope.names.len().max(1),
                         _ => m.scope.names.len().max(1),
                     },
                     // Its fetch, its check, and a layer where each goes.
@@ -2051,12 +2067,12 @@ impl Planner<'_> {
             ) => self.ds(d)?.agentfile.push(directive),
             Kind::Agentfile(crate::agentfile::Directive::Agent(a)) => {
                 let dest = a.to.clone().unwrap_or_else(|| errb(&[b"/agents/", &a.name]));
-                self.fetch_into(d, &a.source, &dest, &code, &loc, &lint)?;
+                self.fetch_into(d, b"agent", &a.source, &dest, &code, &loc, &lint)?;
                 self.ds(d)?.agentfile.push(crate::agentfile::Directive::Agent(a));
             }
             Kind::Agentfile(crate::agentfile::Directive::Harness(h)) => {
                 let dest = h.to.clone().unwrap_or_else(|| errb(&[b"/harness/", &h.name]));
-                self.fetch_into(d, &h.source, &dest, &code, &loc, &lint)?;
+                self.fetch_into(d, b"harness", &h.source, &dest, &code, &loc, &lint)?;
                 self.ds(d)?
                     .agentfile
                     .push(crate::agentfile::Directive::Harness(h));
@@ -2078,7 +2094,7 @@ impl Planner<'_> {
                             .collect()
                     };
                     for dest in dests {
-                        self.fetch_into(d, &m.source, &dest, &code, &loc, &lint)?;
+                        self.fetch_into(d, b"mcp", &m.source, &dest, &code, &loc, &lint)?;
                     }
                 }
                 self.ds(d)?.agentfile.push(crate::agentfile::Directive::Mcp(m));
@@ -3142,9 +3158,11 @@ impl Planner<'_> {
     /// An agent's, harness's or MCP server's source fetched into `dest` as a layer of its
     /// own (`ADD --link`, §7 Q19): a directory's files, a local archive or a URL's
     /// unpacked, a Git repository's tree.
+    #[allow(clippy::too_many_arguments)]
     fn fetch_into(
         &mut self,
         d: usize,
+        kind: &[u8],
         source: &[u8],
         dest: &[u8],
         code: &[u8],
@@ -3155,11 +3173,7 @@ impl Planner<'_> {
             crate::agentfile::Source::Path(_) | crate::agentfile::Source::Git(_) => None,
             crate::agentfile::Source::Http(_) => Some(true),
             crate::agentfile::Source::Oci(r) => {
-                return Err(Fail::new(errb(&[
-                    b"an OSI artifact from a registry (",
-                    &r,
-                    b") is not fetched by shards yet: name a path, Git or http(s) URL",
-                ])));
+                return self.artifact_into(d, kind, &r, dest, code, loc, lint);
             }
         };
         let mut dest = dest.to_vec();
@@ -3187,6 +3201,76 @@ impl Planner<'_> {
             history: Some(code.to_vec()),
         };
         self.dispatch_copy(d, cfg, loc, lint).map(|_| ())
+    }
+
+    /// An OSI artifact (§8 Q1, §12.17) laid into `dest` as a layer of its own: its content,
+    /// resolved by digest and checked by the resolver, and its config beside it, at
+    /// `<dest>.d/osi.json`, for the runtime to read how it runs.
+    #[allow(clippy::too_many_arguments)]
+    fn artifact_into(
+        &mut self,
+        d: usize,
+        kind: &[u8],
+        reference: &[u8],
+        dest: &[u8],
+        code: &[u8],
+        loc: &Location,
+        lint: &LinterView<'_>,
+    ) -> Result<(), Fail> {
+        let log = errb(&[b"[internal] load metadata for ", reference]);
+        let resolved = self.resolver.artifact(reference, kind, &log).map_err(Fail::new)?;
+        let mut attrs = BTreeMap::new();
+        attrs.insert(b"osi.kind".to_vec(), kind.to_vec());
+        let source = self.graph.source(
+            [b"osi-artifact://".as_slice(), &resolved.reference].concat(),
+            attrs,
+            None,
+            custom_name(errb(&[b"[internal] load ", kind, b" ", reference])),
+        );
+        let base = dest.strip_suffix(b"/").unwrap_or(dest).to_vec();
+        let mut content_dest = base.clone();
+        content_dest.push(b'/');
+        let copy = |from: Option<State>,
+                    paths: Vec<Vec<u8>>,
+                    contents: Vec<instructions::SourceContent>,
+                    dest: Vec<u8>| CopyConfig {
+            sources: instructions::Sources {
+                dest,
+                paths,
+                contents,
+            },
+            exclude: Vec::new(),
+            from,
+            is_add: false,
+            code: code.to_vec(),
+            chown: Vec::new(),
+            chmod: Vec::new(),
+            link: true,
+            keep_git_dir: None,
+            checksum: Vec::new(),
+            parents: false,
+            unpack: None,
+            onto: None,
+            history: Some(code.to_vec()),
+        };
+        self.dispatch_copy(
+            d,
+            copy(Some(source), vec![b"/".to_vec()], Vec::new(), content_dest),
+            loc,
+            lint,
+        )?;
+        let config = instructions::SourceContent {
+            path: b"osi.json".to_vec(),
+            data: resolved.config,
+            expand: false,
+        };
+        self.dispatch_copy(
+            d,
+            copy(None, Vec::new(), vec![config], errb(&[&base, b".d/"])),
+            loc,
+            lint,
+        )?;
+        Ok(())
     }
 
     /// `SKILL` (§4.3, §8 Q12): its source taken as `ADD` takes one, onto nothing; each
