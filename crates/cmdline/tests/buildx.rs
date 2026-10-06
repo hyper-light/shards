@@ -54,6 +54,46 @@ fn built(parsed: &flags::Parsed, out: &mut String) -> Result<(), String> {
         out.push_str(&format!("SSH {} [{}]\n", s.id, paths.join(" ")));
     }
     let allowed = buildflags::parse_entitlements(parsed.many("allow"))?;
+    let exports = buildflags::parse_exports(parsed.many("output"))?;
+    let stat = |p: &str| match std::fs::metadata(p) {
+        Ok(m) if m.is_dir() => Ok(buildflags::Found::Dir),
+        Ok(_) => Ok(buildflags::Found::File),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(buildflags::Found::Nothing),
+        Err(e) => Err(e.to_string()),
+    };
+    // isSafeLocalDeleteDest: under the working directory, and not it.
+    let safe = |d: &std::path::Path| {
+        let wd = std::env::current_dir().unwrap();
+        let at = if d.is_absolute() {
+            d.to_path_buf()
+        } else {
+            wd.join(d)
+        };
+        at.starts_with(&wd) && at != wd
+    };
+    let outputs = buildflags::create_exports(
+        &exports,
+        parsed.bool("push"),
+        parsed.bool("load"),
+        allowed.local_delete,
+        &stat,
+        false,
+        &safe,
+    )?;
+    for o in &outputs {
+        let attrs: Vec<String> = o.attrs.iter().map(|(k, v)| format!("{k}={v}")).collect();
+        let (dir, file) = match &o.dest {
+            buildflags::Dest::Dir(d) => (d.to_string_lossy().into_owned(), false),
+            buildflags::Dest::File(_) | buildflags::Dest::Stdout => (String::new(), true),
+            buildflags::Dest::Store => (String::new(), false),
+        };
+        out.push_str(&format!(
+            "OUTPUT {} [{}] dir={} file={file}\n",
+            o.kind,
+            attrs.join(" "),
+            shards_cmdline::go::quote(&dir)
+        ));
+    }
     if !allowed.granted.is_empty() || allowed.local_delete {
         let granted: Vec<String> = allowed
             .granted

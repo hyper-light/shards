@@ -29,6 +29,215 @@ pub struct Secret {
 /// The `--secret` values, each a CSV record of `type`, `id`, `src` (or `source`) and
 /// `env`, keys in any case; empty ones are skipped. `type=env` reads `src` as the
 /// variable's name.
+/// An `--output`, as buildx's ExportEntry reads one (util/buildflags/export.go, v0.37.1):
+/// its type, its destination, and its other attributes, keys lowercased.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Export {
+    pub kind: String,
+    pub dest: String,
+    pub attrs: std::collections::BTreeMap<String, String>,
+}
+
+/// `--output`'s specs, empty ones skipped (ParseExports): `PATH` a local directory, `-`
+/// a tar on stdout, else CSV fields `type=`, `dest=` and attributes.
+pub fn parse_exports(specs: &[String]) -> Result<Vec<Export>, String> {
+    let mut out = Vec::new();
+    for spec in specs.iter().filter(|s| !s.is_empty()) {
+        let fields = go::csv_fields(spec.as_bytes()).map_err(|e| String::from_utf8_lossy(&e).into_owned())?;
+        let mut e = Export::default();
+        let lone = fields.len() == 1
+            && fields.first().is_some_and(|f| f == spec.as_bytes())
+            && !spec.starts_with("type=");
+        if lone {
+            e.kind = if spec == "-" { "tar" } else { "local" }.into();
+            e.dest.clone_from(spec);
+        } else {
+            for field in &fields {
+                let field = String::from_utf8_lossy(field);
+                let Some((k, v)) = field.split_once('=') else {
+                    return Err(format!("invalid value {field}"));
+                };
+                match k.trim().to_lowercase().as_str() {
+                    "type" => e.kind = v.to_string(),
+                    "dest" => e.dest = v.to_string(),
+                    key => {
+                        e.attrs.insert(key.to_string(), v.to_string());
+                    }
+                }
+            }
+        }
+        if e.kind.is_empty() {
+            return Err("type is required for output".into());
+        }
+        out.push(e);
+    }
+    Ok(out)
+}
+
+/// Where an output goes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Dest {
+    /// The image store (`image`, and `docker` with no file: loaded).
+    Store,
+    Stdout,
+    Dir(std::path::PathBuf),
+    File(std::path::PathBuf),
+}
+
+/// An output, as buildx's CreateExports makes it of an `--output`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Output {
+    pub kind: String,
+    pub attrs: std::collections::BTreeMap<String, String>,
+    pub dest: Dest,
+}
+
+/// What a destination is, as the outputs' checks ask: none, a directory, or a file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Found {
+    Nothing,
+    Dir,
+    File,
+}
+
+/// buildx's CreateExports (build/opt.go, v0.37.1): each output's destination checked as
+/// its type wants one (`local` a directory; `tar`, `oci` and `docker` a file, or with
+/// `tar=false` a directory; stdout for a file not given, but `docker`'s, which loads),
+/// `registry` an image pushed; then `--push` and `--load` folded in as buildx's build
+/// folds them (commands/build.go); then a `local` output's `mode`, `delete` only with
+/// `--allow buildx.local.delete` or into a directory under the working one.
+pub fn create_exports(
+    exports: &[Export],
+    push: bool,
+    load: bool,
+    allow_delete: bool,
+    stat: &dyn Fn(&str) -> Result<Found, String>,
+    stdout_is_terminal: bool,
+    safe_delete: &dyn Fn(&std::path::Path) -> bool,
+) -> Result<Vec<Output>, String> {
+    let mut outs = Vec::new();
+    let mut stdout_used = false;
+    for e in exports {
+        let mut kind = e.kind.clone();
+        let mut attrs = e.attrs.clone();
+        let (mut file, mut dir) = (false, false);
+        match kind.as_str() {
+            "local" => dir = true,
+            "tar" => file = true,
+            "oci" | "docker" => {
+                let tar = attrs.get("tar").is_none_or(|t| go::parse_bool(t).unwrap_or(true));
+                file = tar;
+                dir = !tar;
+            }
+            "registry" => {
+                kind = "image".into();
+                attrs.insert("push".into(), "true".into());
+                attrs.entry("unpack".into()).or_insert_with(|| "false".into());
+            }
+            _ => {}
+        }
+        let mut dest = Dest::Store;
+        if dir {
+            if e.dest.is_empty() {
+                return Err(format!("dest is required for {kind} exporter"));
+            }
+            if e.dest == "-" {
+                return Err(format!("dest cannot be stdout for {kind} exporter"));
+            }
+            match stat(&e.dest).map_err(|why| format!("invalid destination directory: {}: {why}", e.dest))? {
+                Found::File => return Err(format!("destination directory {} is a file", e.dest)),
+                Found::Nothing | Found::Dir => dest = Dest::Dir(e.dest.clone().into()),
+            }
+        }
+        if file {
+            let mut at = e.dest.clone();
+            if at.is_empty() && kind != "docker" {
+                at = "-".into();
+            }
+            if at == "-" {
+                if stdout_used {
+                    return Err("multiple outputs configured to write to stdout".into());
+                }
+                if stdout_is_terminal {
+                    return Err(format!(
+                        "dest file is required for {kind} exporter. refusing to write to console"
+                    ));
+                }
+                stdout_used = true;
+                dest = Dest::Stdout;
+            } else if !at.is_empty() {
+                match stat(&at).map_err(|why| format!("invalid destination file: {at}: {why}"))? {
+                    Found::Dir => return Err(format!("destination file {at} is a directory")),
+                    Found::Nothing | Found::File => dest = Dest::File(at.into()),
+                }
+            }
+        }
+        outs.push(Output { kind, attrs, dest });
+    }
+    if push {
+        let mut used = false;
+        for o in outs.iter_mut().filter(|o| o.kind == "image") {
+            o.attrs.insert("push".into(), "true".into());
+            o.attrs.entry("unpack".into()).or_insert_with(|| "false".into());
+            used = true;
+        }
+        if !used {
+            outs.push(Output {
+                kind: "image".into(),
+                attrs: [
+                    ("push".to_string(), "true".to_string()),
+                    ("unpack".to_string(), "false".to_string()),
+                ]
+                .into_iter()
+                .collect(),
+                dest: Dest::Store,
+            });
+        }
+    }
+    if load
+        && !outs
+            .iter()
+            .any(|o| o.kind == "docker" && !o.attrs.contains_key("dest"))
+    {
+        outs.push(Output {
+            kind: "docker".into(),
+            attrs: std::collections::BTreeMap::new(),
+            dest: Dest::Store,
+        });
+    }
+    for o in &outs {
+        if o.kind != "local" {
+            continue;
+        }
+        let mode = o
+            .attrs
+            .get("mode")
+            .map(|m| m.trim().to_lowercase())
+            .unwrap_or_default();
+        match mode.as_str() {
+            "" | "copy" => {}
+            "delete" => {
+                if let Dest::Dir(d) = &o.dest
+                    && !allow_delete
+                    && !safe_delete(d)
+                {
+                    return Err(format!(
+                        "local output mode=delete for destination {} requires --allow=buildx.local.delete",
+                        go::quote(&d.to_string_lossy())
+                    ));
+                }
+            }
+            _ => {
+                return Err(format!(
+                    "invalid local exporter mode {}",
+                    go::quote(o.attrs.get("mode").map_or("", String::as_str))
+                ));
+            }
+        }
+    }
+    Ok(outs)
+}
+
 /// An `--ssh` spec, as buildx's ParseSSHSpecs reads one (util/buildflags/ssh.go,
 /// v0.37.1): `ID[=PATH,...]`, the paths sockets or keys, none for `SSH_AUTH_SOCK`'s.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

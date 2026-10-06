@@ -390,7 +390,6 @@ pub(crate) fn targets(given: &str) -> Result<Vec<Target>, String> {
 /// A registry to push `reference`'s repository to, with the credentials and TLS a pull
 /// of it would use, and pull access to `mount`, a repository of the same registry its
 /// blobs may be mounted from.
-#[cfg(unix)]
 pub fn registry_for_push(
     reference: &Reference,
     mount: Option<&str>,

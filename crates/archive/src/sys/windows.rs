@@ -334,6 +334,19 @@ impl Root {
         })
     }
 
+    /// The names in the directory `name` (the root itself for `.`).
+    pub(crate) fn read_dir(&self, name: &[u8]) -> Result<Vec<Vec<u8>>, WalkError> {
+        let list = |p: &[u8]| -> io::Result<Vec<Vec<u8>>> {
+            fs::read_dir(os_path(p))?
+                .map(|e| e.map(|e| path_bytes(Path::new(&e.file_name()))))
+                .collect()
+        };
+        if name.is_empty() || name == b"." {
+            return Ok(list(&self.name)?);
+        }
+        self.walk(name, |dir, last| list(&join(dir, last)).map(Step::Done))
+    }
+
     /// RemoveAll: links themselves removed, never followed.
     pub(crate) fn remove_all(&self, name: &[u8]) -> Result<(), WalkError> {
         let r = self.walk(name, |dir, last| {

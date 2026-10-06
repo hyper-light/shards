@@ -162,6 +162,37 @@ pub fn config(
 
 const OCI_MANIFEST: &[u8] = b"application/vnd.oci.image.manifest.v1+json";
 const OCI_CONFIG: &[u8] = b"application/vnd.oci.image.config.v1+json";
+const DOCKER_MANIFEST: &[u8] = b"application/vnd.docker.distribution.manifest.v2+json";
+const DOCKER_CONFIG: &[u8] = b"application/vnd.docker.container.image.v1+json";
+
+/// `s` as `json.Marshal` writes a string: `<`, `>` and `&` escaped for HTML.
+pub fn json_string(s: &[u8]) -> String {
+    let mut out = String::new();
+    json::write_string(&mut out, s);
+    out
+}
+
+/// `toDockerLayerType` (buildkit util/compression/compression.go): a layer's media type
+/// as Docker names it; one it does not know as it is.
+pub fn docker_layer_type(media_type: &[u8]) -> Vec<u8> {
+    let docker: &[u8] = match media_type {
+        b"application/vnd.oci.image.layer.v1.tar" => b"application/vnd.docker.image.rootfs.diff.tar",
+        b"application/vnd.oci.image.layer.v1.tar+gzip" => {
+            b"application/vnd.docker.image.rootfs.diff.tar.gzip"
+        }
+        b"application/vnd.oci.image.layer.v1.tar+zstd" => {
+            b"application/vnd.docker.image.rootfs.diff.tar.zstd"
+        }
+        b"application/vnd.oci.image.layer.nondistributable.v1.tar" => {
+            b"application/vnd.docker.image.rootfs.foreign.diff.tar"
+        }
+        b"application/vnd.oci.image.layer.nondistributable.v1.tar+gzip" => {
+            b"application/vnd.docker.image.rootfs.foreign.diff.tar.gzip"
+        }
+        other => other,
+    };
+    docker.to_vec()
+}
 
 /// `toOCILayerType`: a layer's media type as OCI names it; one it does not know as it is.
 pub fn oci_layer_type(media_type: &[u8]) -> Vec<u8> {
@@ -232,13 +263,28 @@ fn descriptor(
 /// the config, then the layers with OCI's media types and their annotations but the
 /// exporter's internal ones (`RemoveInternalLayerAnnotations`).
 pub fn manifest(config: &[u8], config_digest: &[u8], layers: &[Layer]) -> Vec<u8> {
+    manifest_as(config, config_digest, layers, false)
+}
+
+/// [`manifest`] in Docker's media types, as the `docker` exporter writes it (`OCITypes`
+/// false, buildkit exporter/oci/export.go): the same document, the same blobs.
+pub fn docker_manifest(config: &[u8], config_digest: &[u8], layers: &[Layer]) -> Vec<u8> {
+    manifest_as(config, config_digest, layers, true)
+}
+
+fn manifest_as(config: &[u8], config_digest: &[u8], layers: &[Layer], docker: bool) -> Vec<u8> {
+    let (manifest_type, config_type) = if docker {
+        (DOCKER_MANIFEST, DOCKER_CONFIG)
+    } else {
+        (OCI_MANIFEST, OCI_CONFIG)
+    };
     let mut out = String::from("{\n  \"schemaVersion\": 2,\n  \"mediaType\": ");
-    json::write_string(&mut out, OCI_MANIFEST);
+    json::write_string(&mut out, manifest_type);
     out.push_str(",\n  \"config\": ");
     descriptor(
         &mut out,
         "  ",
-        OCI_CONFIG,
+        config_type,
         config_digest,
         config.len() as u64,
         &BTreeMap::new(),
@@ -263,10 +309,11 @@ pub fn manifest(config: &[u8], config_digest: &[u8], layers: &[Layer]) -> Vec<u8
                 })
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect();
+            let oci = oci_layer_type(&l.media_type);
             descriptor(
                 &mut out,
                 "    ",
-                &oci_layer_type(&l.media_type),
+                &if docker { docker_layer_type(&oci) } else { oci },
                 &l.digest,
                 l.size,
                 &kept,

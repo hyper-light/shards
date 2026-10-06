@@ -40,6 +40,7 @@ mod git;
 pub(crate) mod http;
 #[cfg(unix)]
 mod live;
+mod output;
 pub(crate) mod step;
 
 const PATH: &str = "shards buildx build";
@@ -849,6 +850,8 @@ fn run(parsed: &Parsed) -> Result<(), String> {
     // What the build is given, in the order buildx's runBuild meets it: its secrets, read
     // now and once, each as large as a step carries; then its entitlements; its ulimits
     // were read with its flags (shards_cmdline::buildflags).
+    // Its outputs as buildx reads them, first (toOptions); checked once its agents are.
+    let exports = buildflags::parse_exports(parsed.many("output"))?;
     let env = |name: &str| std::env::var_os(name).map(os_bytes);
     let secrets = buildflags::store(
         buildflags::parse_secrets(parsed.many("secret"))?,
@@ -859,6 +862,32 @@ fn run(parsed: &Parsed) -> Result<(), String> {
     let agents = buildflags::ssh_agents(&buildflags::parse_ssh(parsed.many("ssh")), &|k| {
         std::env::var(k).ok()
     })?;
+    let outputs = buildflags::create_exports(
+        &exports,
+        parsed.bool("push"),
+        parsed.bool("load"),
+        allowed.local_delete,
+        &|p| match std::fs::metadata(p) {
+            Ok(m) if m.is_dir() => Ok(buildflags::Found::Dir),
+            Ok(_) => Ok(buildflags::Found::File),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(buildflags::Found::Nothing),
+            Err(e) => Err(e.to_string()),
+        },
+        std::io::IsTerminal::is_terminal(&std::io::stdout()),
+        &safe_delete_dest,
+    )
+    .map_err(|e| format!("failed to build: {e}"))?;
+    check_outputs(&outputs)?;
+    // toSolveOpt: an image pushed must have a name.
+    let pushes = outputs.iter().any(|o| {
+        o.kind == "image"
+            && o.attrs
+                .get("push")
+                .is_some_and(|p| shards_cmdline::go::parse_bool(p).unwrap_or(false))
+    });
+    if pushes && parsed.many("tag").is_empty() {
+        return Err("failed to build: tag is needed when pushing to registry".into());
+    }
     let ulimits: Vec<shards_dockerfile::llb::Ulimit> = buildflags::ulimits(parsed.many("ulimit"))?
         .into_iter()
         .map(|u| shards_dockerfile::llb::Ulimit {
@@ -1440,6 +1469,25 @@ fn run(parsed: &Parsed) -> Result<(), String> {
     // sources and stages all go before the export stacks the layers again, so the two
     // never hold memory at once.
     drop(results);
+    // The filesystem outputs, from the snapshot itself: its times to the nanosecond,
+    // which its layers' headers keep to the second.
+    for o in outputs.iter().filter(|o| o.kind == "local" || o.kind == "tar") {
+        let empty;
+        let fs = match &target {
+            Some(r) => &*r.fs,
+            None => {
+                empty = shards_build::vfs::Fs::new(
+                    shards_image::erofs::Tree::new(shards_image::erofs::Meta {
+                        mode: 0o755,
+                        ..Default::default()
+                    }),
+                    exec::now(),
+                );
+                &empty
+            }
+        };
+        write_fs_output(o, fs, &mut exec.sources, plan.epoch, &progress)?;
+    }
     let flat = target.map(|r| exec.flat(r));
     // With SHARDS_TIMING set, which way the export goes, and why, for tests and
     // benchmarks to hold.
@@ -1463,12 +1511,40 @@ fn run(parsed: &Parsed) -> Result<(), String> {
     };
     crate::phase("drop");
 
-    let v = progress.borrow_mut().start("exporting to image");
     let epoch = plan.epoch.map(Time::from_unix);
     let config = export::config(&plan.image, &layers, epoch, base_image.as_ref()).map_err(|e| show(&e))?;
     let config_digest = sha256(&config);
     let manifest = export::manifest(&config, config_digest.to_string().as_bytes(), &layers);
     let manifest_digest = sha256(&manifest);
+    // Named and kept where an output loads it (the image exporter, `--load`'s docker one,
+    // or none asked for, docker build's own); an output to a file or directory alone
+    // leaves no image, as BuildKit's exporters leave none.
+    let kept = outputs.is_empty()
+        || outputs.iter().any(|o| {
+            matches!(o.dest, buildflags::Dest::Store)
+                && matches!(o.kind.as_str(), "image" | "moby" | "docker")
+        });
+    if !kept && !pushes {
+        drop(exec);
+        drop(flat);
+        write_image_outputs(
+            &outputs,
+            &store,
+            &output::Made {
+                config: &config,
+                config_digest: &config_digest,
+                manifest: &manifest,
+                manifest_digest: &manifest_digest,
+                layers: &layers,
+            },
+            parsed.many("tag"),
+            plan.epoch,
+            &progress,
+        )?;
+        print_warnings(&plan.warnings, quiet);
+        return finish(parsed, &config_digest.to_string());
+    }
+    let v = progress.borrow_mut().start("exporting to image");
     progress.borrow().line(&v, "exporting layers done");
     store
         .ingest(&config_digest, config.len() as u64, &mut config.as_slice())
@@ -1510,7 +1586,7 @@ fn run(parsed: &Parsed) -> Result<(), String> {
     };
     let mut contents = vec![manifest_digest.clone(), config_digest.clone()];
     contents.extend(store_layers.iter().map(|l| l.blob.clone()));
-    let tags = parsed.many("tag");
+    let tags: &[String] = if kept { parsed.many("tag") } else { &[] };
     for tag in tags {
         let reference = Reference::parse(tag).map_err(|e| format!("invalid tag {tag:?}: {e}"))?;
         store
@@ -1521,25 +1597,297 @@ fn run(parsed: &Parsed) -> Result<(), String> {
     // Unnamed, it is kept all the same, dangling, as dockerd keeps a build it was given no
     // name for (moby daemon/containerd/image_builder.go): `images -a` lists it, and a
     // collection leaves it.
-    if tags.is_empty() {
+    if kept && tags.is_empty() {
         let dangling = format!("{}{manifest_digest}", store::DANGLING);
         store
             .tag(&dangling, &desc, &manifest_digest, &contents)
             .map_err(|e| e.to_string())?;
     }
+    // An image output that pushes: each of its names, as BuildKit's exporter pushes
+    // them (util/push): its layers, then its manifest.
+    if pushes {
+        for tag in parsed.many("tag") {
+            let reference = Reference::parse(tag).map_err(|e| format!("invalid tag {tag:?}: {e}"))?;
+            progress.borrow().line(&v, "pushing layers");
+            let registry =
+                crate::pull::registry_for_push(&reference, None, None, &|k| std::env::var(k).ok())?;
+            shards_registry::push::push(
+                &registry,
+                &store,
+                &desc,
+                reference.tag.as_deref(),
+                None,
+                &|_, _| {},
+            )
+            .map_err(|e| fail_export(&progress, &v, &e.to_string()))?;
+            progress.borrow().line(
+                &v,
+                &format!("pushing manifest for {reference}@{manifest_digest} done"),
+            );
+        }
+    }
     progress.borrow().done(&v);
+    write_image_outputs(
+        &outputs,
+        &store,
+        &output::Made {
+            config: &config,
+            config_digest: &config_digest,
+            manifest: &manifest,
+            manifest_digest: &manifest_digest,
+            layers: &layers,
+        },
+        parsed.many("tag"),
+        plan.epoch,
+        &progress,
+    )?;
     print_warnings(&plan.warnings, quiet);
+    finish(parsed, &config_digest.to_string())
+}
 
-    let id = config_digest.to_string();
+/// The build's ID where it is asked for: in `--iidfile`, and with `-q` on stdout.
+fn finish(parsed: &Parsed, id: &str) -> Result<(), String> {
     let iidfile = parsed.string("iidfile");
     if !iidfile.is_empty() {
-        std::fs::write(iidfile, &id).map_err(|e| format!("{iidfile}: {e}"))?;
+        std::fs::write(iidfile, id).map_err(|e| format!("{iidfile}: {e}"))?;
     }
     if parsed.bool("quiet") {
         let _ = writeln!(std::io::stdout(), "{id}");
     }
     crate::phase("end");
     Ok(())
+}
+
+/// What BuildKit refuses of the outputs when its solve begins, before any step runs:
+/// an exporter it has none of, a `tar` attribute no bool, an epoch no number, the
+/// `docker` exporter into a directory (the moby exporter writes none), and two OCI
+/// layouts into directories (their store's key is one, `export`: buildkit
+/// client/solve.go).
+fn check_outputs(outputs: &[buildflags::Output]) -> Result<(), String> {
+    let mut layouts = 0;
+    for o in outputs {
+        let solve = |why: String| format!("failed to build: failed to solve: {why}");
+        match o.kind.as_str() {
+            "image" | "moby" | "local" | "tar" | "oci" | "docker" => {}
+            other => {
+                return Err(solve(format!(
+                    "exporter {} could not be found",
+                    shards_cmdline::go::quote(other)
+                )));
+            }
+        }
+        if matches!(o.kind.as_str(), "oci" | "docker")
+            && let Some(t) = o.attrs.get("tar")
+            && shards_cmdline::go::parse_bool(t).is_err()
+        {
+            return Err(solve(format!(
+                "non-bool value specified for tar: strconv.ParseBool: parsing {}: invalid syntax",
+                shards_cmdline::go::quote(t)
+            )));
+        }
+        output::epoch(&o.attrs, None).map_err(solve)?;
+        if let buildflags::Dest::Dir(_) = o.dest {
+            match o.kind.as_str() {
+                "docker" => {
+                    return Err("failed to build: output directory is not supported by moby exporter".into());
+                }
+                "oci" => {
+                    layouts += 1;
+                    if layouts > 1 {
+                        return Err("failed to build: oci store key \"export\" already exists".into());
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(())
+}
+
+/// A `local` or `tar` output of the snapshot `fs`.
+fn write_fs_output(
+    o: &buildflags::Output,
+    fs: &shards_build::vfs::Fs,
+    sources: &mut shards_build::data::Sources,
+    build_epoch: Option<i64>,
+    progress: &RefCell<Progress>,
+) -> Result<(), String> {
+    let epoch =
+        output::epoch(&o.attrs, build_epoch).map_err(|e| format!("failed to build: failed to solve: {e}"))?;
+    if o.kind == "local" {
+        let v = progress.borrow_mut().start("exporting to client directory");
+        let buildflags::Dest::Dir(dest) = &o.dest else {
+            return Err(fail_export(progress, &v, "a local output without a directory"));
+        };
+        let mirror = o
+            .attrs
+            .get("mode")
+            .is_some_and(|m| m.trim().eq_ignore_ascii_case("delete"));
+        let bytes =
+            output::local(fs, sources, epoch, dest, mirror).map_err(|e| fail_export(progress, &v, &e))?;
+        progress
+            .borrow()
+            .line(&v, &format!("copying files {} done", units_bytes(bytes)));
+        progress.borrow().done(&v);
+        return Ok(());
+    }
+    let v = progress.borrow_mut().start("exporting to client tarball");
+    let written = match &o.dest {
+        buildflags::Dest::Stdout => {
+            let out = std::io::BufWriter::new(std::io::stdout().lock());
+            output::tar(fs, sources, epoch, out).and_then(|mut w| w.flush().map_err(|e| e.to_string()))
+        }
+        buildflags::Dest::File(path) => create_dest_file(path)
+            .and_then(|f| output::tar(fs, sources, epoch, std::io::BufWriter::new(f)))
+            .and_then(|mut w| w.flush().map_err(|e| e.to_string())),
+        _ => Err("a tar output without a file".into()),
+    };
+    written.map_err(|e| fail_export(progress, &v, &e))?;
+    progress.borrow().line(&v, "sending tarball done");
+    progress.borrow().done(&v);
+    Ok(())
+}
+
+/// A file output's file, as buildx's client makes it: its directory with
+/// `MkdirAll(dir, 0755)`, the file created or truncated (build/opt.go).
+fn create_dest_file(path: &Path) -> Result<std::fs::File, String> {
+    if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+        let mut b = std::fs::DirBuilder::new();
+        b.recursive(true);
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(&mut b, 0o755);
+        b.create(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    }
+    std::fs::File::create(path).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// The `oci` and `docker` outputs to a file, stdout or (`oci` with `tar=false`) a
+/// directory, each named by its `name` attribute or the build's tags, as buildx names
+/// them (build/opt.go).
+fn write_image_outputs(
+    outputs: &[buildflags::Output],
+    store: &Store,
+    made: &output::Made<'_>,
+    tags: &[String],
+    build_epoch: Option<i64>,
+    progress: &RefCell<Progress>,
+) -> Result<(), String> {
+    for o in outputs.iter().filter(|o| o.kind == "oci" || o.kind == "docker") {
+        if matches!(o.dest, buildflags::Dest::Store) {
+            continue;
+        }
+        let docker = o.kind == "docker";
+        let v = progress
+            .borrow_mut()
+            .start(&format!("exporting to {} image format", o.kind));
+        let fail = |e: String| fail_export(progress, &v, &e);
+        let names: Vec<Reference> = match o.attrs.get("name") {
+            Some(n) => n
+                .split(',')
+                .filter(|n| !n.is_empty())
+                .map(str::to_string)
+                .collect(),
+            None => tags.to_vec(),
+        }
+        .iter()
+        .map(|n| Reference::parse(n.trim()).map_err(|e| fail(e.to_string())))
+        .collect::<Result<_, _>>()?;
+        let epoch = output::epoch(&o.attrs, build_epoch).map_err(fail)?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0));
+        let created = Time::from_unix(epoch.unwrap_or(now))
+            .rfc3339_nano()
+            .map_err(|e| fail(show(&e)))?;
+        progress.borrow().line(&v, "exporting layers done");
+        let manifest_digest = if docker {
+            sha256(&export::docker_manifest(
+                made.config,
+                made.config_digest.to_string().as_bytes(),
+                made.layers,
+            ))
+        } else {
+            made.manifest_digest.clone()
+        };
+        progress
+            .borrow()
+            .line(&v, &format!("exporting manifest {manifest_digest} done"));
+        progress
+            .borrow()
+            .line(&v, &format!("exporting config {} done", made.config_digest));
+        match &o.dest {
+            buildflags::Dest::Dir(dest) => {
+                output::layout_dir(store, made, &names, &created, dest).map_err(fail)?;
+            }
+            buildflags::Dest::Stdout => {
+                let out = std::io::BufWriter::new(std::io::stdout().lock());
+                output::layout(store, made, docker, &names, &created, out).map_err(fail)?;
+                progress.borrow().line(&v, "sending tarball done");
+            }
+            buildflags::Dest::File(path) => {
+                let f = create_dest_file(path).map_err(fail)?;
+                output::layout(store, made, docker, &names, &created, std::io::BufWriter::new(f))
+                    .map_err(fail)?;
+                progress.borrow().line(&v, "sending tarball done");
+            }
+            buildflags::Dest::Store => {}
+        }
+        progress.borrow().done(&v);
+    }
+    Ok(())
+}
+
+/// tonistiigi/units' `%.2f` of a byte count, as progressui prints one: decimal units,
+/// whole bytes below a kilobyte.
+fn units_bytes(n: u64) -> String {
+    const UNITS: [&str; 7] = ["B", "kB", "MB", "GB", "TB", "PB", "EB"];
+    let (mut i, mut base) = (0usize, 1u64);
+    while i + 1 < UNITS.len() && n >= base.saturating_mul(1000) {
+        base = base.saturating_mul(1000);
+        i += 1;
+    }
+    if i == 0 {
+        return format!("{n}B");
+    }
+    format!("{:.2}{}", n as f64 / base as f64, UNITS.get(i).unwrap_or(&"B"))
+}
+
+/// The export's failure `why`, on its step and as the build's error.
+fn fail_export(progress: &std::cell::RefCell<Progress>, v: &Vertex, why: &str) -> String {
+    progress.borrow().error(v, why);
+    format!("failed to build: failed to solve: {why}")
+}
+
+/// isSafeLocalDeleteDest (buildx build/opt.go): a directory under the working one, and not
+/// it, which a local output's `mode=delete` may empty without `--allow buildx.local.delete`.
+fn safe_delete_dest(dest: &Path) -> bool {
+    let Ok(wd) = std::env::current_dir().and_then(|d| d.canonicalize()) else {
+        return false;
+    };
+    // The path as far as it exists, resolved, and the rest as it is.
+    let absolute = if dest.is_absolute() {
+        dest.to_path_buf()
+    } else {
+        wd.join(dest)
+    };
+    let mut existing = absolute.clone();
+    let mut rest = Vec::new();
+    while existing.canonicalize().is_err() {
+        let Some(name) = existing.file_name().map(std::ffi::OsStr::to_os_string) else {
+            return false;
+        };
+        rest.push(name);
+        if !existing.pop() {
+            return false;
+        }
+    }
+    let Ok(mut at) = existing.canonicalize() else {
+        return false;
+    };
+    for name in rest.into_iter().rev() {
+        at.push(name);
+    }
+    at.starts_with(&wd) && at != wd
 }
 
 /// The files a context holds and their bytes, each file once however many names it has.

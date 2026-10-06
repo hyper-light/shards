@@ -827,7 +827,8 @@ of 2026-10-02:
 | `STOPSIGNAL` | done (config) | done: `stop` sends the image's, or `run --stop-signal`'s, and waits `--stop-timeout` (E2E) |
 | `ONBUILD` | triggers planned (oracle); run when their steps are | n/a |
 | Build cache by step and whole image; `--cache-from/--cache-to`, `--no-cache` | by step done (D50): keys from definitions, inputs and content, `CACHED`, `--no-cache`, `system df`/`system prune`; per-path context keys, `--no-cache-filter`, `--cache-from/--cache-to`, `builder prune`, a GC bound and cross-build cache mounts **missing** | n/a |
-| buildx flags not served (`--build-context`, `--output`, `--push`, `--platform` lists, attestations) | **missing** | n/a |
+| `--output` (`local`, `tar`, `oci`, `docker`, `image`, `registry`, `-o DIR`, `-o -`, several at once) and `--push` | done (D52): read and checked as buildx v0.37.1 reads them (held by `scripts/buildx/generate`), written as BuildKit's exporters write them (measured, dockerd 29.3.1), BuildKit's refusals made before any step runs (`builds_write_each_output_as_buildkit_exports_it`, `builds_push_what_they_build`); layers shards made stay uncompressed, so an `oci`/`docker` archive is not BuildKit's byte for byte | n/a |
+| buildx flags not served (`--build-context`, `--platform` lists, attestations) | **missing** | n/a |
 | The Agentfile dialect: an `Agentfile` read before a `Dockerfile`, each directive parsed with its errors, a Dockerfile still read as BuildKit reads it (D35) | done (`tests/agentfile.rs`, the oracle, E2E) | n/a |
 | Extensions `EXPOSE … AS/FOR`, `VOLUME` with options, a name and `FOR`, `NETWORK`, `CONNECT`, `ATTACH` | done: their Docker effects in the config, the rest in the normalized Agentfile (D35) | **missing** |
 | Extensions `AGENT`, `HARNESS`, `SKILL`, `MCP`: their content fetched and laid out | **missing**: refused by name | **missing** |

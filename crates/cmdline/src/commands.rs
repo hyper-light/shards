@@ -2138,6 +2138,17 @@ pub static BUILD: Command = Command {
             "Secret to expose to the build (format: \"id=mysecret[,src=/local/secret]\")",
         ),
         Flag::many(
+            "output",
+            Some(b'o'),
+            "stringArray",
+            "Output destination (format: \"type=local,dest=path\")",
+        ),
+        Flag::bool(
+            "push",
+            None,
+            "Shorthand for \"--output=type=registry,unpack=false\"",
+        ),
+        Flag::many(
             "ssh",
             None,
             "stringArray",
@@ -2170,11 +2181,9 @@ memory-swap - s - -\n\
 metadata-file - s - -\n\
 network - s default -\n\
 no-cache-filter - m - -\n\
-output o m - -\n\
 policy - m - -\n\
 print - s - -\n\
 provenance - s - -\n\
-push - b false -\n\
 resource - m - -\n\
 rm - b true -\n\
 sbom - s - -\n\

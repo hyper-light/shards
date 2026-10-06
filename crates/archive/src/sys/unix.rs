@@ -549,6 +549,24 @@ impl Root {
         })?
     }
 
+    /// The names in the directory `name` (the root itself for `.`), but `.` and `..`,
+    /// never following it.
+    pub(crate) fn read_dir(&self, name: &[u8]) -> Result<Vec<Vec<u8>>, WalkError> {
+        let list = |dir: RawFd, last: &CStr| -> io::Result<Vec<Vec<u8>>> {
+            let fd = openat(
+                dir,
+                last,
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW,
+                0,
+            )?;
+            Ok(names(&fd)?.into_iter().map(CString::into_bytes).collect())
+        };
+        if name.is_empty() || name == b"." {
+            return Ok(list(self.fd.as_raw_fd(), c".")?);
+        }
+        self.walk(name, |dir, last| list(dir, last).map(Step::Done))
+    }
+
     /// Root.RemoveAll: nothing followed; a missing name is no error.
     pub(crate) fn remove_all(&self, name: &[u8]) -> Result<(), WalkError> {
         let mut name = name;

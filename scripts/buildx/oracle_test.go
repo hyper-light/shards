@@ -24,6 +24,7 @@ import (
 	"github.com/docker/buildx/util/buildflags"
 	"github.com/docker/buildx/util/cobrautil"
 	dockeropts "github.com/docker/cli/opts"
+	"github.com/moby/buildkit/client"
 	"github.com/moby/buildkit/session/secrets/secretsprovider"
 	"github.com/docker/cli/cli"
 	"github.com/docker/cli/cli-plugins/metadata"
@@ -36,7 +37,7 @@ import (
 // The flags shards serves.
 var served = []string{
 	"allow", "build-arg", "file", "help", "iidfile", "label", "load", "no-cache", "platform",
-	"progress", "pull", "quiet", "secret", "ssh", "tag", "target", "ulimit",
+	"output", "progress", "pull", "push", "quiet", "secret", "ssh", "tag", "target", "ulimit",
 }
 
 // The command lines asked, each the words after `buildx build`.
@@ -99,6 +100,35 @@ var cases = [][]string{
 	{"--secret", "id=\"a,b\",src=small.txt", "."},
 	{"--secret", "", "."},
 	{"--secret", "id=x,src=small.txt", "--secret", "id=x,src=edge.txt", "."},
+	// --output, --push and --load, in the oracle's directory, where small.txt is a file.
+	{"-o", "out", "."},
+	{"-o", "-", "."},
+	{"-o", "type=tar", "."},
+	{"-o", "type=tar,dest=out.tar", "."},
+	{"-o", "type=local", "."},
+	{"-o", "type=local,dest=-", "."},
+	{"-o", "type=local,dest=small.txt", "."},
+	{"-o", "type=tar,dest=.", "."},
+	{"-o", "type=oci,dest=out.tar", "."},
+	{"-o", "type=oci,tar=false,dest=layout", "."},
+	{"-o", "type=docker", "."},
+	{"-o", "type=docker,dest=out.tar", "."},
+	{"-o", "type=registry", "."},
+	{"-o", "type=image,name=x,push=true", "."},
+	{"-o", "-", "-o", "type=tar", "."},
+	{"-o", "dest=x", "."},
+	{"-o", "a=b,c", "."},
+	{"-o", "type=foo,dest=x,Key=V", "."},
+	{"-o", "type=local,dest=out,mode=delete", "."},
+	{"-o", "type=local,dest=/tmp/shards-oracle-out,mode=delete", "."},
+	{"-o", "type=local,dest=/tmp/shards-oracle-out,mode=delete", "--allow", "buildx.local.delete", "."},
+	{"-o", "type=local,dest=out,mode=bogus", "."},
+	{"--push", "."},
+	{"--push", "-o", "type=image", "."},
+	{"--push", "-o", "out", "."},
+	{"--load", "."},
+	{"--load", "-o", "type=docker,dest=out.tar", "."},
+	{"--load", "--push", "."},
 	// --ssh, SSH_AUTH_SOCK unset (TestShardsOracle): what BuildKit's provider refuses.
 	{"--ssh", "default", "."},
 	{"--ssh", "", "."},
@@ -269,6 +299,57 @@ func built(c *cobra.Command) error {
 	granted, deleteOK, err := buildflags.ParseEntitlements(allow)
 	if err != nil {
 		return err
+	}
+	// The outputs: ParseExports, CreateExports, --push and --load as toBuildOptions folds
+	// them in, then ValidateLocalExportDelete.
+	outArgs, _ := c.Flags().GetStringArray("output")
+	exports, err := buildflags.ParseExports(outArgs)
+	if err != nil {
+		return err
+	}
+	outputs, _, err := build.CreateExports(exports)
+	if err != nil {
+		return err
+	}
+	if push, _ := c.Flags().GetBool("push"); push {
+		used := false
+		for i := range outputs {
+			if outputs[i].Type == "image" {
+				outputs[i].Attrs["push"] = "true"
+				if _, ok := outputs[i].Attrs["unpack"]; !ok {
+					outputs[i].Attrs["unpack"] = "false"
+				}
+				used = true
+			}
+		}
+		if !used {
+			outputs = append(outputs, client.ExportEntry{Type: "image", Attrs: map[string]string{"push": "true", "unpack": "false"}})
+		}
+	}
+	if load, _ := c.Flags().GetBool("load"); load {
+		used := false
+		for i := range outputs {
+			if outputs[i].Type == "docker" {
+				if _, ok := outputs[i].Attrs["dest"]; !ok {
+					used = true
+					break
+				}
+			}
+		}
+		if !used {
+			outputs = append(outputs, client.ExportEntry{Type: "docker", Attrs: map[string]string{}})
+		}
+	}
+	if err := build.ValidateLocalExportDelete(outputs, deleteOK); err != nil {
+		return err
+	}
+	for _, o := range outputs {
+		var keys []string
+		for k := range o.Attrs {
+			keys = append(keys, k+"="+o.Attrs[k])
+		}
+		sort.Strings(keys)
+		fmt.Fprintf(out, "OUTPUT %s [%s] dir=%q file=%v\n", o.Type, strings.Join(keys, " "), o.OutputDir, o.Output != nil)
 	}
 	if len(granted) > 0 || deleteOK {
 		fmt.Fprintf(out, "ALLOW %q local.delete=%v\n", granted, deleteOK)

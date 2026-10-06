@@ -36,6 +36,7 @@ mod unpack;
 mod whiteout;
 
 pub mod copy;
+pub mod receive;
 pub mod tar;
 
 pub use error::{Error, Kind};

@@ -2501,3 +2501,331 @@ fn run_steps_reach_the_clients_ssh_agent() {
         refused.stderr
     );
 }
+
+/// `--push`, as `docker build --push` pushes: the image built, stored and named, then
+/// pushed under its name, its manifest and every blob it names in the registry; without
+/// a name, buildx's refusal.
+#[test]
+fn builds_push_what_they_build() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let (port, repos) = common::writable_registry();
+    let home = TempDir::new("build-push-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let ctx = context("build-push-ctx", &format!("FROM {image}\nLABEL pushed=yes\n"));
+    let refused = shards(&["build", "--push", ctx.to_str().unwrap()]);
+    assert_ne!(refused.status, Some(0));
+    assert!(
+        refused.stderr.contains("tag is needed when pushing to registry"),
+        "{}",
+        refused.stderr
+    );
+    let name = format!("127.0.0.1:{port}/team/built:1");
+    let built = shards(&["build", "--push", "-t", &name, ctx.to_str().unwrap()]);
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    let repos = repos.lock().unwrap();
+    let manifests = repos.manifests.get("team/built").expect("the repository pushed");
+    let (_, manifest) = manifests.get("1").expect("its tag pushed");
+    let manifest: serde_json::Value = serde_json::from_slice(manifest).unwrap();
+    let blobs = repos.blobs.get("team/built").expect("its blobs pushed");
+    let config = manifest["config"]["digest"].as_str().unwrap();
+    assert!(blobs.contains_key(config), "the config pushed");
+    for layer in manifest["layers"].as_array().unwrap() {
+        let d = layer["digest"].as_str().unwrap();
+        assert!(blobs.contains_key(d), "layer {d} pushed");
+    }
+}
+
+/// The entries of a tar, as Go's reader reads them: each header, and a regular file's bytes.
+fn tar_entries(bytes: &[u8]) -> Vec<(shards_archive::tar::Header, Vec<u8>)> {
+    use std::io::Read as _;
+    let mut r = shards_archive::tar::Reader::new(bytes);
+    let mut out = Vec::new();
+    while let Some(h) = r.next_header().unwrap() {
+        let mut data = Vec::new();
+        r.read_to_end(&mut data).unwrap();
+        out.push((h, data));
+    }
+    out
+}
+
+/// `--output` writes what BuildKit's exporters write (D52): the whole root filesystem
+/// received into a directory (owned by the one who builds, its modes, links and
+/// nanosecond times kept), the same as fsutil's tar (times rounded, owners kept, no
+/// root), and the image as an OCI or Docker layout of the very blobs the store keeps;
+/// none of them leaves an image in the store; what BuildKit refuses before it solves is
+/// refused before any step runs.
+#[test]
+fn builds_write_each_output_as_buildkit_exports_it() {
+    use std::os::unix::fs::MetadataExt as _;
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("build-out-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let ctx = context(
+        "build-out-ctx",
+        &format!(
+            "FROM {image}\nUSER root\nCOPY --chown=1000:1000 a.txt /out/owned\n\
+             RUN [\"/bin/testguest\", \"fs\", \"write:/out/f=hello\", \"link:/out/f:/out/h\", \
+             \"symlink:f:/out/l\", \"mkdir:/out/empty\", \"chmod:4755:/out/f\", \
+             \"write:/out/\u{fc}n\u{ef}c\u{f8}d\u{e9}=u\"]\n"
+        ),
+    );
+    std::fs::write(ctx.join("a.txt"), "owned\n").unwrap();
+    let out = TempDir::new("build-out-dest");
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let path = |p: &str| out.join(p).to_str().unwrap().to_string();
+
+    // Refused before the build: no step reported.
+    for (spec, why) in [
+        (
+            "type=foo,dest=x",
+            "failed to solve: exporter \"foo\" could not be found",
+        ),
+        (
+            "type=docker,tar=false,dest=d",
+            "output directory is not supported by moby exporter",
+        ),
+        (
+            "type=oci,tar=maybe,dest=x.tar",
+            "non-bool value specified for tar",
+        ),
+        (
+            "type=local",
+            "failed to build: dest is required for local exporter",
+        ),
+    ] {
+        let refused = shards(&["build", "--progress=plain", "-o", spec, ctx.to_str().unwrap()]);
+        assert_ne!(refused.status, Some(0));
+        assert!(refused.stderr.contains(why), "{spec}: {}", refused.stderr);
+        assert!(!refused.stderr.contains("#1 "), "{spec} ran: {}", refused.stderr);
+    }
+
+    let mut cmd = common::command();
+    cmd.args([
+        "build",
+        "--progress=plain",
+        "-t",
+        "outs:v1",
+        "-o",
+        &path("rootfs"),
+        "-o",
+        "-",
+        "-o",
+        &format!("type=tar,dest={}", path("nested/a/f.tar")),
+        "-o",
+        &format!("type=oci,dest={}", path("oci.tar")),
+        "-o",
+        &format!("type=docker,dest={}", path("docker.tar")),
+        "-o",
+        &format!("type=oci,tar=false,dest={}", path("layout")),
+        ctx.to_str().unwrap(),
+    ]);
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    let built = cmd.output().unwrap();
+    let stderr = String::from_utf8_lossy(&built.stderr);
+    assert_eq!(built.status.code(), Some(0), "{stderr}");
+    for vertex in [
+        "exporting to client directory",
+        "exporting to client tarball",
+        "exporting to oci image format",
+        "exporting to docker image format",
+    ] {
+        assert!(stderr.contains(vertex), "{vertex}: {stderr}");
+    }
+    assert!(!stderr.contains("exporting to image"), "{stderr}");
+    // No image kept: the outputs went to files alone.
+    let inspect = shards(&["image", "inspect", "outs:v1"]);
+    assert_ne!(inspect.status, Some(0), "{}", inspect.stdout);
+
+    // local: the whole tree, as the builder owns it.
+    let root = out.join("rootfs");
+    let md = |p: &str| std::fs::symlink_metadata(root.join(p)).unwrap();
+    assert_eq!(md(".").mode() & 0o7777, 0o700 & !umask());
+    assert!(root.join("bin/testguest").exists(), "the base image's files too");
+    assert_eq!(md("out/f").mode() & 0o7777, 0o4755);
+    assert_eq!(md("out/f").ino(), md("out/h").ino());
+    assert_eq!(
+        std::fs::read_link(root.join("out/l")).unwrap().to_str(),
+        Some("f")
+    );
+    assert!(md("out/empty").is_dir());
+    let me = std::fs::metadata(&*out).unwrap();
+    assert_eq!(
+        (md("out/owned").uid(), md("out/owned").gid()),
+        (me.uid(), me.gid())
+    );
+    assert_eq!(std::fs::read(root.join("out/owned")).unwrap(), b"owned\n");
+
+    // tar: stdout's and the file's are one archive.
+    let tar = std::fs::read(out.join("nested/a/f.tar")).unwrap();
+    assert!(built.stdout == tar, "stdout's tar is the file's");
+    assert!(tar.ends_with(&[0u8; 1024]) && tar.len().is_multiple_of(512));
+    let entries = tar_entries(&tar);
+    let names: Vec<String> = entries
+        .iter()
+        .map(|(h, _)| String::from_utf8_lossy(&h.name).into_owned())
+        .collect();
+    assert!(
+        !names.iter().any(|n| n == "./" || n == "/" || n.is_empty()),
+        "no root"
+    );
+    let mut sorted = names.clone();
+    sorted.sort_by(|a, b| {
+        a.trim_end_matches('/')
+            .split('/')
+            .cmp(b.trim_end_matches('/').split('/'))
+    });
+    assert_eq!(names, sorted, "walk order");
+    let entry = |n: &str| &entries.iter().find(|(h, _)| h.name == n.as_bytes()).unwrap().0;
+    assert_eq!((entry("out/owned").uid, entry("out/owned").gid), (1000, 1000));
+    assert_eq!(entry("out/h").typeflag, b'1');
+    assert_eq!(entry("out/h").linkname, b"out/f");
+    assert_eq!(entry("out/f").mode, 0o4755);
+    assert_eq!(entry("out/empty/").typeflag, b'5');
+    assert!(
+        names.iter().any(|n| n == "out/\u{fc}n\u{ef}c\u{f8}d\u{e9}"),
+        "{names:?}"
+    );
+    // Times: the snapshot's, to the nearest second.
+    let local = md("out/f");
+    let rounded = local.mtime() + i64::from(local.mtime_nsec() >= 500_000_000);
+    assert_eq!(entry("out/f").mtime.sec, rounded);
+
+    // oci and docker: layouts of the store's own blobs, named as built.
+    for (file, docker) in [("oci.tar", false), ("docker.tar", true)] {
+        let entries = tar_entries(&std::fs::read(out.join(file)).unwrap());
+        let names: Vec<&[u8]> = entries.iter().map(|(h, _)| h.name.as_slice()).collect();
+        let mut sorted = names.clone();
+        sorted.sort();
+        assert_eq!(names, sorted, "{file}: name order");
+        let doc = |n: &str| -> serde_json::Value {
+            serde_json::from_slice(&entries.iter().find(|(h, _)| h.name == n.as_bytes()).unwrap().1).unwrap()
+        };
+        for (h, data) in &entries {
+            assert_eq!(h.mtime.sec, 0);
+            let name = String::from_utf8_lossy(&h.name);
+            let mode = match name.as_ref() {
+                "index.json" | "manifest.json" => 0o644,
+                n if n.ends_with('/') => 0o755,
+                _ => 0o444,
+            };
+            assert_eq!(h.mode, mode, "{file}: {name}");
+            if let Some(hex) = name.strip_prefix("blobs/sha256/").filter(|h| !h.is_empty()) {
+                use sha2::Digest as _;
+                let got: String = sha2::Sha256::digest(data)
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect();
+                assert_eq!(got, hex, "{file}: {name} is what it is named");
+            }
+        }
+        let index = doc("index.json");
+        let entry = &index["manifests"][0];
+        assert_eq!(index["manifests"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            entry["annotations"]["io.containerd.image.name"],
+            "docker.io/library/outs:v1"
+        );
+        assert_eq!(entry["annotations"]["org.opencontainers.image.ref.name"], "v1");
+        assert!(
+            entry["annotations"]["org.opencontainers.image.created"]
+                .as_str()
+                .unwrap()
+                .ends_with('Z')
+        );
+        let media = if docker {
+            "application/vnd.docker.distribution.manifest.v2+json"
+        } else {
+            "application/vnd.oci.image.manifest.v1+json"
+        };
+        assert_eq!(entry["mediaType"], media);
+        let digest = entry["digest"].as_str().unwrap().strip_prefix("sha256:").unwrap();
+        let manifest = doc(&format!("blobs/sha256/{digest}"));
+        assert_eq!(manifest["mediaType"], media);
+        if docker {
+            let m = doc("manifest.json");
+            assert_eq!(m[0]["RepoTags"][0], "outs:v1");
+            assert_eq!(
+                m[0]["Layers"].as_array().unwrap().len(),
+                manifest["layers"].as_array().unwrap().len()
+            );
+        } else {
+            assert!(!names.contains(&b"manifest.json".as_slice()));
+        }
+    }
+
+    // oci with tar=false: a content store, its index merged into.
+    let layout = out.join("layout");
+    assert!(layout.join("ingest").is_dir());
+    assert_eq!(
+        std::fs::metadata(layout.join("oci-layout")).unwrap().mode() & 0o777,
+        0o644
+    );
+    let index: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(layout.join("index.json")).unwrap()).unwrap();
+    assert_eq!(
+        index["manifests"][0]["annotations"]["org.opencontainers.image.ref.name"],
+        "v1"
+    );
+    let again = shards(&[
+        "build",
+        "-o",
+        &format!("type=oci,tar=false,dest={}", path("layout")),
+        ctx.to_str().unwrap(),
+    ]);
+    assert_eq!(again.status, Some(0), "{}", again.stderr);
+    let index: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(layout.join("index.json")).unwrap()).unwrap();
+    let refs: Vec<&str> = index["manifests"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| {
+            m["annotations"]["org.opencontainers.image.ref.name"]
+                .as_str()
+                .unwrap()
+        })
+        .collect();
+    assert_eq!(refs, ["v1", "latest"]);
+
+    // SOURCE_DATE_EPOCH: every entry's time.
+    let epoch = shards(&[
+        "build",
+        "--build-arg",
+        "SOURCE_DATE_EPOCH=1700000000",
+        "-o",
+        &format!("type=tar,dest={}", path("epoch.tar")),
+        ctx.to_str().unwrap(),
+    ]);
+    assert_eq!(epoch.status, Some(0), "{}", epoch.stderr);
+    for (h, _) in tar_entries(&std::fs::read(out.join("epoch.tar")).unwrap()) {
+        if h.typeflag != b'x' {
+            assert_eq!(h.mtime.sec, 1_700_000_000, "{}", String::from_utf8_lossy(&h.name));
+        }
+    }
+}
+
+/// The process's umask, as a directory made with 0777 shows it.
+fn umask() -> u32 {
+    use std::os::unix::fs::PermissionsExt as _;
+    let probe = TempDir::new("umask-probe");
+    let dir = probe.join("d");
+    std::fs::DirBuilder::new().create(&dir).unwrap();
+    0o777 & !(std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777)
+}

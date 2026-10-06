@@ -2823,6 +2823,58 @@ with them: an in-process agent with AWS-LC's signatures); Git remotes over SSH (
 git@...`), which need an SSH client; a `default` agent added where the build context is an
 SSH Git URL, as buildx adds one.
 
+### Builds write their outputs as BuildKit's exporters do (D52)
+
+`--output` and `--push` are read and checked as buildx v0.37.1 reads them (ParseExports,
+CreateExports, the `--push`/`--load` folding and `mode=delete`'s check; held to buildx by
+`scripts/buildx/generate`), and each output is written as BuildKit v0.28.1's exporter
+writes it through buildx, measured inside dockerd 29.3.1 (Docker's containerd store) and
+read in its source (fsutil a2aa163d723f, containerd v2.2.1, buildkit client/ociindex):
+
+- **`local`** (`-o DIR`): the whole root filesystem, received as fsutil's DiskWriter
+  receives it (`shards_archive::receive`): the directory made 0700 if new and merged into
+  if not (emptied of the rest with `mode=delete`), a directory over a directory taking
+  only its attributes, anything else replaced; modes with set-id and sticky bits, hard
+  links, symlinks, empty directories, nanosecond times (directories' set last), every
+  entry owned by the one who builds, as buildx's receive filter sets it.
+  - **Better than fsutil:** every name is walked from the destination as Go's os.Root
+    walks it, so neither the tree's symlinks nor ones the destination already held take a
+    write outside it; fsutil joins paths and follows what the destination held.
+- **`tar`** (`-o -`, `type=tar`): fsutil.WriteTar through Go's archive/tar
+  (`shards_archive::tar`, held to Go): walk order, no root entry, owners kept with no
+  names, times rounded to the second, `PaxHeaders.0` records only where USTAR cannot hold
+  a field, two zero blocks; stdout's and a file's are one archive (tested).
+- **`oci`/`docker`**: the image as an OCI layout of the store's own blobs, in a tar as
+  containerd's exporter writes one (names in order, times 0, blobs 0444, documents
+  0644), with `org.opencontainers.image.created` (export time, or SOURCE_DATE_EPOCH) and an
+  index entry per name (`io.containerd.image.name`, `org.opencontainers.image.ref.name`);
+  `docker` adds `manifest.json` and names its manifest and layers in Docker's media types
+  (`toDockerLayerType`). With `tar=false`, `oci` writes a content store as buildkit's
+  client does: blobs it lacks, `ingest/`, `oci-layout` 0644, `index.json` read and
+  merged under a lock (`latest` its name without one).
+- **Images and pushes**: an image is kept and named only where an output loads it (none
+  given, `--load`, `image`, `docker` without a file); one to files alone leaves none, as
+  BuildKit's leave none. `--push` and `type=registry` push each name.
+- **Refused before the build** where BuildKit refuses when its solve begins, in its words
+  (an exporter it has none of, `tar` no bool, `source-date-epoch` no number, `docker`
+  into a directory, two OCI directory layouts): BuildKit says so before any step runs
+  too, so nothing is built in vain.
+- **Times.** The filesystem outputs are written from the build's last snapshot, whose
+  times are the kernel's to the nanosecond, before it is put in its layers' form.
+
+Deviation, recorded: a layer shards made is uncompressed (D15's layers), where BuildKit's
+are Go's gzip, which no other compressor reproduces byte for byte; an `oci`/`docker`
+archive holds the same documents over different layer blobs. A non-directory reached by
+two names is a hard link in every kind (fsutil writes a hard-linked symlink as a symlink
+to its first name).
+
+Tested on real microVMs (`builds_write_each_output_as_buildkit_exports_it`: six outputs
+of one build, the refusals, a merged layout, SOURCE_DATE_EPOCH; the hard-link rule
+mutation-checked) and in `shards_archive::receive`'s unit test (merge, mirror, a symlink
+refused its escape).
+
+Open: the attestations `image` outputs carry (provenance), `--platform` lists.
+
 ## 4. Start path (≤ 5 ms budget)
 
 | Step | Cost | Evidence |
