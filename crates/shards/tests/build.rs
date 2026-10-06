@@ -1900,3 +1900,299 @@ fn an_agentfile_is_found_first_and_built_as_docker_sees_it() {
         refused.stderr
     );
 }
+
+/// Runs `git` in `dir` with nothing of the user's configuration.
+fn git_in(dir: &std::path::Path, args: &[&str]) -> String {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args([
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "commit.gpgsign=false",
+        ])
+        .args(["-c", "protocol.file.allow=always"])
+        .args(args)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("HOME", dir)
+        .env("GIT_COMMITTER_DATE", "1600000000 +0000")
+        .env("GIT_AUTHOR_DATE", "1500000000 +0000")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8(out.stdout).unwrap()
+}
+
+/// Smart HTTP for the repositories under `root`, as git's http-backend serves them: each
+/// request one stateless run of git's own upload-pack, with the protocol version the
+/// client asked for.
+fn git_http_server(root: std::path::PathBuf) -> u16 {
+    use std::io::{BufRead as _, BufReader, Read as _, Write as _};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for conn in listener.incoming().flatten() {
+            let root = root.clone();
+            std::thread::spawn(move || {
+                let mut reader = BufReader::new(conn.try_clone().unwrap());
+                let mut conn = conn;
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                        return;
+                    }
+                    let target = line.split_whitespace().nth(1).unwrap_or_default().to_string();
+                    let (mut length, mut protocol) = (0usize, String::new());
+                    loop {
+                        let mut h = String::new();
+                        reader.read_line(&mut h).unwrap();
+                        let h = h.trim_end();
+                        if h.is_empty() {
+                            break;
+                        }
+                        let (k, v) = h.split_once(':').unwrap();
+                        match k.to_ascii_lowercase().as_str() {
+                            "content-length" => length = v.trim().parse().unwrap(),
+                            "git-protocol" => protocol = v.trim().to_string(),
+                            _ => {}
+                        }
+                    }
+                    let mut body = vec![0u8; length];
+                    reader.read_exact(&mut body).unwrap();
+                    let path = target.split('?').next().unwrap_or_default();
+                    let (repo, advertise, kind) = if let Some(r) = path.strip_suffix("/info/refs") {
+                        (r, true, "application/x-git-upload-pack-advertisement")
+                    } else if let Some(r) = path.strip_suffix("/git-upload-pack") {
+                        (r, false, "application/x-git-upload-pack-result")
+                    } else {
+                        let _ = conn.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n");
+                        continue;
+                    };
+                    let dir = root.join(repo.trim_start_matches('/'));
+                    let mut cmd = std::process::Command::new("git");
+                    cmd.args(["upload-pack", "--stateless-rpc"]);
+                    if advertise {
+                        cmd.arg("--advertise-refs");
+                    }
+                    let mut child = cmd
+                        .arg(&dir)
+                        .env("GIT_PROTOCOL", &protocol)
+                        .stdin(std::process::Stdio::piped())
+                        .stdout(std::process::Stdio::piped())
+                        .stderr(std::process::Stdio::null())
+                        .spawn()
+                        .unwrap();
+                    child.stdin.take().unwrap().write_all(&body).unwrap();
+                    let out = child.wait_with_output().unwrap().stdout;
+                    let head = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: {kind}\r\nContent-Length: {}\r\n\r\n",
+                        out.len()
+                    );
+                    if conn
+                        .write_all(head.as_bytes())
+                        .and_then(|()| conn.write_all(&out))
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    port
+}
+
+/// `ADD` of Git repositories, as BuildKit's git source makes them, fetched by shards' own
+/// client from a real git daemon (`git://`) and over smart HTTP from git's own
+/// upload-pack: the default branch, an annotated tag, a subdirectory, a submodule found by
+/// its relative URL, `--keep-git-dir`; files 0644 or 0755, symlinks, all root's. Unlike
+/// BuildKit, every entry's time is the commit's, so that the same commit makes the same
+/// layer: built again without the cache, the layers are the same bytes.
+#[test]
+fn add_fetches_git_repositories() {
+    if cannot_run_vms() {
+        return;
+    }
+    if std::process::Command::new("git")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        eprintln!("SKIP: no git on this host");
+        return;
+    }
+    let repos = TempDir::new("build-add-git-repos");
+    let (origin, sub) = (repos.join("repo.git"), repos.join("sub.git"));
+    std::fs::create_dir_all(&sub).unwrap();
+    git_in(&sub, &["init", "-q", "-b", "main"]);
+    std::fs::write(sub.join("subfile.txt"), "in the submodule\n").unwrap();
+    git_in(&sub, &["add", "-A"]);
+    git_in(&sub, &["commit", "-q", "-m", "sub"]);
+    std::fs::create_dir_all(origin.join("dir/deep")).unwrap();
+    git_in(&origin, &["init", "-q", "-b", "main"]);
+    std::fs::write(origin.join("a.txt"), "first\n").unwrap();
+    std::fs::write(origin.join("run.sh"), "#!/bin/sh\n").unwrap();
+    std::fs::write(origin.join("dir/deep/d.txt"), "deep\n").unwrap();
+    std::os::unix::fs::symlink("a.txt", origin.join("link")).unwrap();
+    git_in(&origin, &["add", "-A"]);
+    git_in(&origin, &["update-index", "--chmod=+x", "run.sh"]);
+    git_in(&origin, &["submodule", "add", "-q", "../sub.git", "mods/sub"]);
+    git_in(&origin, &["commit", "-q", "-m", "two"]);
+    git_in(&origin, &["tag", "-a", "v1", "-m", "annotated"]);
+    let head = git_in(&origin, &["rev-parse", "HEAD"]).trim().to_string();
+    // The submodule's URL is relative: each server resolves it to its own sub.git.
+    let exec_path = git_in(&origin, &["--exec-path"]);
+    let dport = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    // Ended however the test ends: left running, it would hold the test's output open.
+    struct Ended(std::process::Child);
+    impl Drop for Ended {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let _daemon = Ended(
+        std::process::Command::new(std::path::Path::new(exec_path.trim()).join("git-daemon"))
+            .args([
+                "--export-all",
+                "--reuseaddr",
+                "--listen=127.0.0.1",
+                &format!("--port={dport}"),
+            ])
+            .arg(format!("--base-path={}", repos.display()))
+            .arg(repos.as_os_str())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let hport = git_http_server(repos.to_path_buf());
+    // The daemon listens a moment after it starts.
+    for _ in 0..100 {
+        if std::net::TcpStream::connect(("127.0.0.1", dport)).is_ok() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    let (image, _) = served();
+    let home = TempDir::new("build-add-git-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let g = format!("git://127.0.0.1:{dport}/repo.git");
+    let h = format!("http://127.0.0.1:{hport}/repo.git");
+    let ctx = context(
+        "build-add-git-ctx",
+        &format!(
+            "FROM {image}\nADD {g} /g\nADD {h}#v1 /h\nADD {g}#main:dir /sub\n\
+             ADD --keep-git-dir=true {g}#main /k\n"
+        ),
+    );
+    let built = shards(&["build", "-t", "gitted:1", ctx.to_str().unwrap()]);
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    let stat = shards(&[
+        "run",
+        "--rm",
+        "-u",
+        "root",
+        "gitted:1",
+        "stat",
+        "/g",
+        "/g/a.txt",
+        "/g/run.sh",
+        "/g/link",
+        "/g/dir/deep/d.txt",
+        "/g/mods/sub/subfile.txt",
+        "/g/.git",
+        "/h/a.txt",
+        "/sub/deep/d.txt",
+        "/sub/a.txt",
+        "/k/.git/HEAD",
+        "/k/.git/shallow",
+        "/k/.git/refs/heads/main",
+        "/k/mods/sub/.git",
+    ]);
+    assert_eq!(
+        stat.stdout,
+        format!(
+            "/g dir 755 0:0 132\n/g/a.txt file 644 0:0 6\n= first\\n\n/g/run.sh file 755 0:0 10\n= #!/bin/sh\\n\n\
+             /g/link symlink 777 0:0 5\n-> a.txt\n/g/dir/deep/d.txt file 644 0:0 5\n= deep\\n\n\
+             /g/mods/sub/subfile.txt file 644 0:0 17\n= in the submodule\\n\n\
+             /g/.git missing No such file or directory (os error 2)\n/h/a.txt file 644 0:0 6\n= first\\n\n\
+             /sub/deep/d.txt file 644 0:0 5\n= deep\\n\n/sub/a.txt missing No such file or directory (os error 2)\n\
+             /k/.git/HEAD file 644 0:0 41\n= {head}\\n\n/k/.git/shallow file 644 0:0 41\n= {head}\\n\n\
+             /k/.git/refs/heads/main file 644 0:0 41\n= {head}\\n\n\
+             /k/mods/sub/.git file 644 0:0 36\n= gitdir: ../../.git/modules/mods/sub\\n\n"
+        ),
+        "{}",
+        stat.stderr
+    );
+    // The commit's time, not the clock's at checkout.
+    let times = shards(&[
+        "run",
+        "--rm",
+        "gitted:1",
+        "mtime",
+        "/g",
+        "/g/a.txt",
+        "/g/dir",
+        "/k/.git/HEAD",
+    ]);
+    assert_eq!(
+        times.stdout, "/g 1600000000\n/g/a.txt 1600000000\n/g/dir 1600000000\n/k/.git/HEAD 1600000000\n",
+        "{}",
+        times.stderr
+    );
+    // The same commit, the same layers.
+    let layers = |tag: &str| shards(&["image", "inspect", "--format", "{{json .RootFS.Layers}}", tag]).stdout;
+    let again = shards(&["build", "--no-cache", "-t", "gitted:2", ctx.to_str().unwrap()]);
+    assert_eq!(again.status, Some(0), "{}", again.stderr);
+    let (first, second) = (layers("gitted:1"), layers("gitted:2"));
+    if first != second {
+        // Each pair of layers that differ, entry by entry, as tar lists them.
+        let list = |digest: &str| {
+            let blob = home
+                .join("images/blobs/sha256")
+                .join(digest.trim_start_matches("sha256:"));
+            let out = std::process::Command::new("tar")
+                .arg("-tvf")
+                .arg(&blob)
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout).into_owned()
+        };
+        let digests = |j: &str| -> Vec<String> { serde_json::from_str(j.trim()).unwrap() };
+        let mut shown = String::new();
+        for (a, b) in digests(&first).iter().zip(digests(&second)) {
+            if *a != b {
+                shown.push_str(&format!("--- {a}\n{}--- {b}\n{}", list(a), list(&b)));
+            }
+        }
+        panic!("the same commit made other layers:\n{shown}");
+    }
+    // A ref the repository lacks is BuildKit's error, on its step.
+    let bad = context("build-add-git-bad", &format!("FROM {image}\nADD {g}#nope /x\n"));
+    let refused = shards(&["build", bad.to_str().unwrap()]);
+    assert_ne!(refused.status, Some(0));
+    assert!(
+        refused
+            .stderr
+            .contains("failed to load cache key: repository does not contain ref nope, output: \"\""),
+        "{}",
+        refused.stderr
+    );
+}

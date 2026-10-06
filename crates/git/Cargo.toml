@@ -1,0 +1,16 @@
+[package]
+name = "shards-git"
+version = "0.1.0"
+description = "Git repositories fetched as BuildKit's git source fetches them: protocol v2, packfiles and trees"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+flate2 = { version = "1", default-features = false, features = ["zlib-rs", "runtime_detection"] }
+# Git's object names are SHA-1 with collision detection, as git's own (sha1dc).
+sha1-checked = { version = "0.10", default-features = false, features = ["std"] }

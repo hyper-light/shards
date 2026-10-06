@@ -424,7 +424,7 @@ fn authority(url: &str) -> Option<(&str, &str, &str)> {
 
 /// `url` without its userinfo, and the Basic credentials Go's client makes of it, the
 /// user and password percent-decoded (net/url parseAuthority, validUserinfo, unescape).
-fn userinfo(url: &str) -> Result<(String, Option<String>), String> {
+pub(super) fn userinfo(url: &str) -> Result<(String, Option<String>), String> {
     let Some((scheme, authority, tail)) = authority(url) else {
         return Ok((url.to_string(), None));
     };
@@ -474,7 +474,7 @@ fn as_go_sends(url: &str) -> String {
 }
 
 /// `url` for an error, its password, if any, as Go's client shows one: `***`.
-fn shown(url: &str) -> String {
+pub(super) fn shown(url: &str) -> String {
     let Some((scheme, authority, tail)) = authority(url) else {
         return url.to_string();
     };

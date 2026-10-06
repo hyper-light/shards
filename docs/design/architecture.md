@@ -2671,6 +2671,68 @@ options in each command's help). Tested in `images.rs`
 (`actions_on_an_image_not_here_convert_it_first`, on real microVMs, and that neither
 Docker's order nor removal fetches anything) and in the grammar's unit tests.
 
+### ADD of Git repositories: shards' own client (D48)
+
+`ADD <git URL> DEST` builds as BuildKit's git source builds it (moby/buildkit v0.28.1
+source/git/source.go, the backend of Docker Engine 29.3.1, measured there against a real
+smart HTTP server: every form, file header and error), but without a `git` beside `shards`
+(D36): `crates/git` is a client of its own, written from git's documents
+(gitprotocol-common, gitprotocol-v2, gitprotocol-http, gitprotocol-pack, gitformat-pack,
+gitformat-index) and its code where they leave a format to it (tree-walk.c, commit.c,
+tag.c, submodule-config.c).
+
+- **Fetching.** Protocol v2 over smart HTTP(S) (the registry's client, its proxies and
+  TLS) and over `git://` (git's daemon); a server that speaks only v0 is refused, as is an
+  SSH remote until `--ssh` is served. One commit is fetched one deep (`deepen 1`), a full
+  commit name too, where BuildKit fetches all of its history (`--unshallow`). Packs are
+  read with both delta kinds; every object is named from its data with collision-detecting
+  SHA-1, as git's sha1dc names them, so a pack holds only what it claims; the pack and each
+  object are bounded by what a build may unpack.
+- **Refs** resolve as BuildKit resolves them: the default branch from HEAD's target;
+  `refs/NAME`, then `refs/heads/NAME` before `refs/tags/NAME`; an annotated tag peeled; a
+  40- or 64-digit lowercase name as a commit, a shorter one as a ref. `--checksum` and
+  `?checksum=` take a hex prefix of the commit's or the tag's name. Errors are BuildKit's
+  (`repository does not contain ref NAME, output: ""`, `invalid subdir ...`, `expected
+  checksum to match ...`, under `failed to load cache key:` where BuildKit says it).
+- **The checkout** is git's under BuildKit's umask: files 0644 or 0755 by the owner's
+  execute bit (canon_mode), symlinks, directories 0755, all root's; `#REF:SUBDIR` takes a
+  directory every part of which is one (validateDirsOnly); submodules, unless
+  `?submodules=false`, fetched one deep from `.gitmodules`' URLs, relative ones resolved
+  against the superproject's, recursively.
+
+Unlike BuildKit, by design:
+- **Every entry's time is the commit's** (its committer's), where BuildKit's is the clock's
+  at checkout: the same commit makes the same layer on every builder and every build
+  (tested: built again with `--no-cache`, the layers are the same bytes), as frontend
+  1.27.1's `mtime=commit` asks of a build context. Measured: BuildKit's two fresh
+  checkouts of one tree made two layers differing only by mtimes.
+- **No submodule `.git` file naming the builder** (`gitdir: ../../../../52/fs/modules/...`,
+  BuildKit's, a path into its snapshot store that dangles in every image).
+- **A ref's checkout is that ref's alone.** BuildKit checks out through a repository shared
+  by every build of a URL, whose index and config outlive them: measured, a commit with no
+  submodule checked out after one with a submodule got that submodule's files.
+- **A checksum that matches neither an annotated tag nor its commit names both**
+  (BuildKit's message loses the tag's: `got  or <commit>`).
+- **`--keep-git-dir` keeps a `.git` that is the commit's alone:** HEAD detached at it,
+  `shallow`, `origin` the URL without credentials, the ref asked for (a branch under
+  `refs/heads`, a tag under `refs/tags`, none for a commit's name), the fetched pack with
+  its index, and an index of the work tree at the commit's time; each submodule's
+  repository under `.git/modules`, its work tree's `.git` naming it. BuildKit's holds the
+  builder's inode numbers and times, its hostname in a reflog, and refs that depend on
+  what earlier builds fetched. git reads shards' as its own (`verify-pack`, `fsck`, a
+  clean `status`; crates/git/tests/real_git.rs). With a subdir no `.git` is kept, as
+  BuildKit keeps none.
+
+Tested: crates/git against git itself (its packs object for object, a shallow fetch from
+its upload-pack checked out as `ls-tree` and `show` list it, refs as BuildKit resolves
+them, `git daemon`, a kept `.git`); `build.rs` `add_fetches_git_repositories` on real
+microVMs, from a git daemon and from smart HTTP served by git's own upload-pack.
+
+Open: SSH remotes and `--ssh`; `GIT_AUTH_TOKEN`/`GIT_AUTH_HEADER` from `--secret`;
+`SOURCE_DATE_EPOCH` taken from a Git stage (the commit's committer time, as BuildKit
+takes it); servers that refuse a commit not at a ref's tip ("not our ref"), which BuildKit
+fetches whole.
+
 ## 4. Start path (≤ 5 ms budget)
 
 | Step | Cost | Evidence |

@@ -319,6 +319,38 @@ impl<'a> Exec<'a> {
         })
     }
 
+    /// A source's tree as one snapshot (a Git checkout's): `root`'s directory holding
+    /// `entries`, each path's parent before it, every directory's meta set again once what
+    /// it holds is in. Its `bytes` count against the build's budget for what ADD writes.
+    pub fn tree_of(&mut self, root: Meta, entries: Vec<(Vec<u8>, Node)>, bytes: u64) -> Result<Ref, String> {
+        self.budget.fetched(bytes).map_err(|e| e.0)?;
+        // Its clock is its root's time: what its entries change is stamped as the source
+        // says, not as the build's clock would (the root itself, once it holds them).
+        let clock = (root.mtime, root.mtime_nsec);
+        let mut fs = Fs::new(Tree::new(root), clock);
+        let mut dirs = Vec::new();
+        for (path, node) in entries {
+            if matches!(node.kind, Kind::Dir(_)) {
+                fs.put_dir(&path, node.meta.clone(), false)
+                    .map_err(|e| e.to_string())?;
+                dirs.push((path, node.meta));
+            } else {
+                fs.put(&path, node).map_err(|e| e.to_string())?;
+            }
+        }
+        for (path, meta) in dirs.into_iter().rev() {
+            fs.set_meta(&path, meta).map_err(|e| e.to_string())?;
+        }
+        fs.begin();
+        let fs = Rc::new(fs);
+        Ok(Ref {
+            fs: fs.clone(),
+            layers: Vec::new(),
+            stack: Stack::unknown("a source's tree, which no layers make"),
+            origin: Rc::new(Origin::Whole { id: origin_id(), fs }),
+        })
+    }
+
     /// A merge (COPY --link's): the inputs' layers one after another, and the snapshot
     /// they stack to.
     pub fn merge(&mut self, inputs: &[Ref]) -> Result<Ref, String> {

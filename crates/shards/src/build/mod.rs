@@ -6,8 +6,8 @@
 //!
 //! Every Dockerfile instruction runs: file operations (COPY, ADD of the context, of
 //! archives and of URLs, WORKDIR) here, on in-memory snapshots as BuildKit's backend makes
-//! them (`shards_build`), and RUN steps in a builder microVM (`builder`). A source shards
-//! does not fetch yet, a Git repository's, fails the step that reads it, saying so.
+//! them (`shards_build`), Git repositories by shards' own client (`git`), and RUN steps in
+//! a builder microVM (`builder`).
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -35,6 +35,7 @@ use shards_registry::pull::{self as registry_pull, Event};
 
 mod builder;
 mod exec;
+mod git;
 pub(crate) mod http;
 #[cfg(unix)]
 mod live;
@@ -1202,6 +1203,27 @@ fn run(parsed: &Parsed) -> Result<(), String> {
                 if let Some(v) = &v {
                     progress.borrow().done(v);
                 }
+                vec![r]
+            }
+            OpKind::Source { identifier, attrs } if identifier.starts_with(b"git://") => {
+                let v = progress.borrow_mut().start(&name);
+                let src = git::source(identifier, attrs).map_err(|e| fail(&v, &e))?;
+                // A repository's pack, and each object in it, within what a build may unpack.
+                let bound = usize::try_from(limits.bytes).unwrap_or(usize::MAX);
+                let fetch_limits = shards_git::remote::Limits {
+                    pack: bound,
+                    object: bound,
+                };
+                let say = |line: &str| progress.borrow().line(&v, line);
+                let cancel = shards_registry::http::Cancel::new();
+                let r = match git::snapshot(&mut exec, &src, fetch_limits, &cancel, &say) {
+                    Ok(r) => r,
+                    Err(git::Failure::CacheKey(e)) => {
+                        return Err(fail_in(&v, "failed to load cache key: ", &e));
+                    }
+                    Err(git::Failure::Snapshot(e)) => return Err(fail(&v, &e)),
+                };
+                progress.borrow().done(&v);
                 vec![r]
             }
             OpKind::Source { .. } => {
