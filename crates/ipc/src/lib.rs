@@ -458,6 +458,21 @@ pub struct Run {
     /// `--restart`, as docker/cli sends it (ParseRestartPolicy): the policy's name, empty
     /// where `--restart ""` gave none, and its most retries.
     pub restart_policy: (String, i64),
+    /// `--device`s, as docker/cli parses them (HostConfig.Devices): each
+    /// `PATH_ON_HOST:PATH_IN_CONTAINER:PERMISSIONS`, the host being the VM.
+    pub devices: Vec<String>,
+    /// `--device-cgroup-rule`s (HostConfig.DeviceCgroupRules).
+    pub device_cgroup_rules: Vec<String>,
+    /// `--device`s that name CDI devices (HostConfig.DeviceRequests, driver `cdi`).
+    pub cdi_devices: Vec<String>,
+    /// `--blkio-weight-device`s, each `PATH:WEIGHT` (HostConfig.BlkioWeightDevice).
+    pub blkio_weight_device: Vec<String>,
+    /// `--device-read-bps`, `--device-write-bps`, `--device-read-iops` and
+    /// `--device-write-iops`, each `PATH:RATE`, bytes or operations a second.
+    pub device_read_bps: Vec<String>,
+    pub device_write_bps: Vec<String>,
+    pub device_read_iops: Vec<String>,
+    pub device_write_iops: Vec<String>,
 }
 
 /// `run`'s resource flags as docker/cli sends them (container.Resources): memory in
@@ -822,6 +837,14 @@ impl Run {
                     vec![self.restart_policy.0.clone(), self.restart_policy.1.to_string()]
                 },
             ),
+            ("devices", self.devices.clone()),
+            ("device-cgroup-rules", self.device_cgroup_rules.clone()),
+            ("cdi-devices", self.cdi_devices.clone()),
+            ("blkio-weight-device", self.blkio_weight_device.clone()),
+            ("device-read-bps", self.device_read_bps.clone()),
+            ("device-write-bps", self.device_write_bps.clone()),
+            ("device-read-iops", self.device_read_iops.clone()),
+            ("device-write-iops", self.device_write_iops.clone()),
         ]
         .into_iter()
         .filter(|(_, v)| !v.is_empty())
@@ -961,6 +984,14 @@ impl Run {
                         let (name, max) = (values.first()?, values.get(1)?);
                         run.restart_policy = (name.clone(), max.parse().ok()?);
                     }
+                    "devices" => run.devices = values,
+                    "device-cgroup-rules" => run.device_cgroup_rules = values,
+                    "cdi-devices" => run.cdi_devices = values,
+                    "blkio-weight-device" => run.blkio_weight_device = values,
+                    "device-read-bps" => run.device_read_bps = values,
+                    "device-write-bps" => run.device_write_bps = values,
+                    "device-read-iops" => run.device_read_iops = values,
+                    "device-write-iops" => run.device_write_iops = values,
                     // One a later build added: not this one's to read.
                     _ => {}
                 }
@@ -1482,6 +1513,14 @@ mod tests {
             volumes_from: vec!["web:ro".into()],
             volume_driver: "local".into(),
             restart_policy: ("on-failure".into(), 3),
+            devices: vec!["/dev/fuse:/dev/fuse:rwm".into()],
+            device_cgroup_rules: vec!["c 1:3 r".into()],
+            cdi_devices: vec!["vendor.com/gpu=0".into()],
+            blkio_weight_device: vec!["/dev/pmem0:300".into()],
+            device_read_bps: vec!["/dev/pmem0:1048576".into()],
+            device_write_bps: vec!["/dev/loop0:1".into()],
+            device_read_iops: vec!["/dev/loop0:2".into()],
+            device_write_iops: vec!["/dev/loop0:3".into()],
         };
         let bytes = run.encode();
         let identity = run.daemon;
@@ -1518,6 +1557,14 @@ mod tests {
             volumes_from: Vec::new(),
             volume_driver: String::new(),
             restart_policy: Default::default(),
+            devices: Vec::new(),
+            device_cgroup_rules: Vec::new(),
+            cdi_devices: Vec::new(),
+            blkio_weight_device: Vec::new(),
+            device_read_bps: Vec::new(),
+            device_write_bps: Vec::new(),
+            device_read_iops: Vec::new(),
+            device_write_iops: Vec::new(),
             ..run.clone()
         };
         let boundary = earlier.encode().len() - 4;

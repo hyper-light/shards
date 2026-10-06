@@ -274,6 +274,8 @@ fn mount_root(device: &str) -> Result<(), Failure> {
         crate::net::configure(addr, prefix, gateway).map_err(|e| setup_failed(format!("eth0: {e}")))?;
     }
     cgroups()?;
+    // Docker's device rules, before any snapshot: a run with them does nothing more.
+    crate::devices::confine_by_default(WORKLOAD_CGROUP).map_err(setup_failed)?;
     crate::setup::keep_proc_sys().map_err(|e| setup_failed(format!("/proc/sys: {e}")))?;
     // Last: init writes /proc/sys above, and no more after but through what it kept.
     masked()
@@ -308,6 +310,8 @@ fn sort_setup(entries: &[Vec<u8>], into: &mut Inherited) -> Result<Vec<Vec<u8>>,
             into.caps = std::str::from_utf8(caps).ok().and_then(|c| c.parse().ok());
         } else if let Some(group) = entry.strip_prefix(b"group=") {
             into.groups.push(group.to_vec());
+        } else if entry.starts_with(b"devices=") {
+            // Init's, done as the workload's limits are (`limit`).
         } else {
             if entry.starts_with(b"ulimit=")
                 || entry.starts_with(b"oom=")
@@ -511,9 +515,29 @@ fn oom_killed() -> bool {
 }
 
 /// Sets the workload's limits, each `FILE=VALUE` of [`Spec::cgroup`], as runc's cgroups
-/// WriteFile does, and in its words when the kernel refuses one.
-fn limit(cgroup: &[Vec<u8>]) -> Result<(), Failure> {
-    write_cgroup(cgroup).map_err(setup_failed)
+/// WriteFile does, and in its words when the kernel refuses one; with its devices' I/O
+/// limits and filter, in the order runc's fs2 Set writes them all: pids, memory and the
+/// weight (the list's head), the devices' I/O, CPU, the filter, then cpusets.
+fn limit(cgroup: &[Vec<u8>], devices: Option<&crate::devices::Prepared>) -> Result<(), Failure> {
+    let hooks = |e: String| setup_failed(format!("error setting cgroup config for procHooks process: {e}"));
+    let at = |p: &dyn Fn(&[u8]) -> bool| cgroup.iter().position(|e| p(e)).unwrap_or(cgroup.len());
+    let cpu = at(&|e| e.starts_with(b"cpu.") || e.starts_with(b"cpuset."));
+    let cpuset = at(&|e| e.starts_with(b"cpuset.")).max(cpu);
+    let (head, rest) = cgroup
+        .split_at_checked(cpu)
+        .ok_or_else(|| hooks("a misplaced limit".into()))?;
+    let (cpus, cpusets) = rest
+        .split_at_checked(cpuset - cpu)
+        .ok_or_else(|| hooks("a misplaced limit".into()))?;
+    write_cgroup(head).map_err(hooks)?;
+    if let Some(d) = devices {
+        d.write_io(WORKLOAD_CGROUP).map_err(hooks)?;
+    }
+    write_cgroup(cpus).map_err(hooks)?;
+    if let Some(d) = devices {
+        d.attach(WORKLOAD_CGROUP).map_err(hooks)?;
+    }
+    write_cgroup(cpusets).map_err(hooks)
 }
 
 /// Writes each `FILE=VALUE` of `cgroup` to the workload's cgroup, as runc's fs2 writes
@@ -1116,7 +1140,17 @@ impl Standby {
                 _held: Some(orders),
             });
         }
-        limit(&spec.cgroup)?;
+        // Its devices first, as dockerd finds them and runc makes their nodes, init's: in
+        // the /dev it shares with the workload, the limits and filter on the cgroup it is
+        // outside of.
+        let devices = spec
+            .setup
+            .iter()
+            .find_map(|e| e.strip_prefix(b"devices="))
+            .map(crate::devices::prepare)
+            .transpose()
+            .map_err(setup_failed)?;
+        limit(&spec.cgroup, devices.as_ref())?;
         // Sysctls, by init; the rest by the standby, in its namespaces.
         let mut inherited = Inherited::default();
         let setup = sort_setup(&spec.setup, &mut inherited)?;

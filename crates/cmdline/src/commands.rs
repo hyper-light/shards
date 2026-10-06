@@ -185,6 +185,48 @@ pub static RUN: Command = Command {
         ),
         Flag::bool("privileged", None, "Give extended privileges to this container"),
         Flag::many("security-opt", None, "list", "Security Options"),
+        Flag::many("device", None, "list", "Add a host device to the container"),
+        Flag::many(
+            "device-cgroup-rule",
+            None,
+            "list",
+            "Add a rule to the cgroup allowed devices list",
+        ),
+        Flag::many(
+            "blkio-weight-device",
+            None,
+            "list",
+            "Block IO weight (relative device weight)",
+        )
+        .defaulting("[]"),
+        Flag::many(
+            "device-read-bps",
+            None,
+            "list",
+            "Limit read rate (bytes per second) from a device",
+        )
+        .defaulting("[]"),
+        Flag::many(
+            "device-read-iops",
+            None,
+            "list",
+            "Limit read rate (IO per second) from a device",
+        )
+        .defaulting("[]"),
+        Flag::many(
+            "device-write-bps",
+            None,
+            "list",
+            "Limit write rate (bytes per second) to a device",
+        )
+        .defaulting("[]"),
+        Flag::many(
+            "device-write-iops",
+            None,
+            "list",
+            "Limit write rate (IO per second) to a device",
+        )
+        .defaulting("[]"),
         Flag::bool(
             "read-only",
             None,
@@ -273,20 +315,13 @@ pub static RUN: Command = Command {
     unserved: "\
 annotation - m - -\n\
 attach a m - -\n\
-blkio-weight-device - m - -\n\
-cgroup-parent - s - -\n\
+blkio-weight-cgroup-parent - s - -\n\
 cgroupns - s - -\n\
 cpu-count - i 0 -\n\
 cpu-percent - i 0 -\n\
 cpu-rt-period - i 0 -\n\
 cpu-rt-runtime - i 0 -\n\
-cpuset-device - m - -\n\
-device-cgroup-rule - m - -\n\
-device-read-bps - m - -\n\
-device-read-iops - m - -\n\
-device-write-bps - m - -\n\
-device-write-iops - m - -\n\
-gpus - m - -\n\
+cpuset-gpus - m - -\n\
 io-maxbandwidth - s 0 -\n\
 io-maxiops - s 0 -\n\
 ip - s <nil> -\n\
@@ -477,6 +512,48 @@ pub static CREATE: Command = Command {
         ),
         Flag::bool("privileged", None, "Give extended privileges to this container"),
         Flag::many("security-opt", None, "list", "Security Options"),
+        Flag::many("device", None, "list", "Add a host device to the container"),
+        Flag::many(
+            "device-cgroup-rule",
+            None,
+            "list",
+            "Add a rule to the cgroup allowed devices list",
+        ),
+        Flag::many(
+            "blkio-weight-device",
+            None,
+            "list",
+            "Block IO weight (relative device weight)",
+        )
+        .defaulting("[]"),
+        Flag::many(
+            "device-read-bps",
+            None,
+            "list",
+            "Limit read rate (bytes per second) from a device",
+        )
+        .defaulting("[]"),
+        Flag::many(
+            "device-read-iops",
+            None,
+            "list",
+            "Limit read rate (IO per second) from a device",
+        )
+        .defaulting("[]"),
+        Flag::many(
+            "device-write-bps",
+            None,
+            "list",
+            "Limit write rate (bytes per second) to a device",
+        )
+        .defaulting("[]"),
+        Flag::many(
+            "device-write-iops",
+            None,
+            "list",
+            "Limit write rate (IO per second) to a device",
+        )
+        .defaulting("[]"),
         Flag::bool(
             "read-only",
             None,
@@ -564,20 +641,13 @@ pub static CREATE: Command = Command {
     unserved: "\
 annotation - m - -\n\
 attach a m - -\n\
-blkio-weight-device - m - -\n\
-cgroup-parent - s - -\n\
+blkio-weight-cgroup-parent - s - -\n\
 cgroupns - s - -\n\
 cpu-count - i 0 -\n\
 cpu-percent - i 0 -\n\
 cpu-rt-period - i 0 -\n\
 cpu-rt-runtime - i 0 -\n\
 cpus - s - -\n\
-device - m - -\n\
-device-cgroup-rule - m - -\n\
-device-read-bps - m - -\n\
-device-read-iops - m - -\n\
-device-write-bps - m - -\n\
-device-write-iops - m - -\n\
 gpus - m - -\n\
 io-maxbandwidth - s 0 -\n\
 io-maxiops - s 0 -\n\
@@ -757,6 +827,17 @@ pub static RESTART: Command = Command {
 /// the exit code the container keeps: 126 when the command could not be invoked, 127
 /// when it was not found, 128 for anything else.
 pub fn start_failed(why: &str) -> (String, u8) {
+    // What dockerd refuses as it makes the spec, before the runtime: its code, untranslated.
+    const DAEMONS: [&str; 5] = [
+        "error gathering device information while adding custom device ",
+        "invalid device cgroup rule format: ",
+        "invalid major value in device cgroup rule format: ",
+        "invalid minor value in device cgroup rule format: ",
+        "CDI device injection failed: ",
+    ];
+    if DAEMONS.iter().any(|d| why.starts_with(d)) {
+        return (why.to_string(), 128);
+    }
     let lower = why.to_lowercase();
     if lower.contains("permission denied") {
         return (why.to_string(), 126);

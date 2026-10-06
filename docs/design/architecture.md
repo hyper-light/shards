@@ -2508,6 +2508,58 @@ resident memory and `--` for the rest. Memory is the guest's truth: the files a
 container writes are memory while its writable layer is in guest memory (D37's open
 item).
 
+### Devices and block I/O (D44)
+
+A container reaches the devices Docker gives one and those it is given, and no other of
+its VM's: before, it could make a node of the VM's image disk (259:0) and read it. Its
+cgroup has runc's eBPF device filter (opencontainers/cgroups v0.0.4, which runc v1.3.4
+pins: the rules emulator of devices_emulator.go, the program of devicefilter.go), over
+moby's default rules (daemon/pkg/oci/defaults.go) and runc's own (specconv
+AllowedDevices, less those whose path a device given takes), in `crates/devcgroup`, a
+crate of no dependencies that shards-init builds. Its program is runc's, byte for byte:
+`tests` hold it to what `scripts/devcgroup/generate` records of runc's own deviceFilter,
+run in a pinned Go on Linux, for 27 rule sets (Docker's own, `--device`s, every kind of
+`--device-cgroup-rule`, privileged, the emulator's refusals). Execs are in its cgroup and
+under it, as a container's are.
+
+`--device` takes the VM's devices as Docker's takes its host's (WithDevices,
+DevicesFromPath): one by its path, a directory's each, at the path in the container
+asked, with its permissions, refused as dockerd refuses one it cannot find; the VM's
+devices are those `/sys/dev` lists, which shards-init reads, with the modes systemd-udev's
+default rules give a host's (fuse, net/tun, vsock and vfio 0666, rfkill 0664; v257
+50-udev-default.rules.in) where devtmpfs's are 0600, so that the image's user opens
+`/dev/fuse` as on a Docker host; `--privileged` makes its nodes from the same list. A
+CDI device's name is a device request, as the CLI makes it, which no VM has a spec for:
+refused in dockerd's words. `--device-cgroup-rule` is checked by the CLI's pattern and
+read as dockerd reads it; `--device-read-bps`, `--device-write-bps`, `--device-read-iops`,
+`--device-write-iops` and `--blkio-weight-device` as docker/cli's validators take them and
+dockerd stats their paths (getBlkioThrottleDevices), written as runc's setIo writes them:
+io.max, and BFQ's per-device weights where its weight file takes them, which the kernel
+refuses for the image's disk, bio-based, as it refuses runc on a host whose disk BFQ does
+not schedule. Init does it all, outside the workload's cgroup, in Docker's order:
+dockerd's lookups (the I/O limits' paths, the devices, the rules, the CDI devices), the
+nodes, then runc's cgroup Set (pids, memory, the weight, the devices' I/O, CPU, the
+filter, cpusets), each failure in its words with runc's procHooks prefix; dockerd's own
+fail the start with 128, untranslated. `inspect` says each as Docker's does.
+
+Improvements over Docker, each measured or tested:
+
+- **No cost to a run with Docker's rules.** Init attaches the default filter as the VM
+  boots, before the template's snapshot: every VM restored from it has it. A run with
+  other rules swaps its own in (BPF_F_REPLACE, as runc replaces its one old program), a
+  privileged one takes it away. Loading the filter at each start cost a run 1026 µs of
+  its time in the guest; at boot, nothing (PM M121).
+- **An `a` rule allows what it says.** runc's emulator reads any `a` rule as every
+  device, every access: `--device-cgroup-rule 'a 1:2 m'` or `'a *:* r'` lets a Docker
+  container read, write and make every device. shards reads one that is not `a *:* rwm`
+  as a block and a char rule of its numbers and access (tested: `a *:* r` reads a loop
+  device and cannot write it).
+- `docker start` of a container that cannot start says why as Docker's does, without
+  run's help (it said run's before, for every start that failed).
+
+Open: BuildKit's RUN steps run under containerd's default device rules; `shards build`'s
+steps are to be held to them.
+
 ## 4. Start path (≤ 5 ms budget)
 
 | Step | Cost | Evidence |

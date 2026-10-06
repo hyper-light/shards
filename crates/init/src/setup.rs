@@ -543,7 +543,7 @@ pub fn filter(entries: &[Vec<u8>]) -> Option<(u32, Vec<libc::sock_filter>)> {
 /// What a privileged container has of the host's, of the VM's (moby daemon/oci_linux.go,
 /// WithDevices, WithMounts and masked and read-only paths left out): no masked or
 /// read-only paths, `/sys` and its cgroup writable, and every device the VM has, made in
-/// `/dev` from what `/sys/dev` says of each, as runc makes a host's devices.
+/// `/dev` as the VM has them (devices.rs), as runc makes a host's devices.
 fn privileged() -> io::Result<()> {
     unmask();
     let remount = |path: &std::ffi::CStr, flags: libc::c_ulong| -> io::Result<()> {
@@ -567,44 +567,25 @@ fn privileged() -> io::Result<()> {
     remount(c"/sys", libc::MS_REMOUNT | base)?;
     remount(c"/sys", libc::MS_REMOUNT | libc::MS_BIND | base)?;
     remount(c"/sys/fs/cgroup", libc::MS_REMOUNT | libc::MS_BIND | base)?;
-    for (dir, kind) in [
-        ("/sys/dev/char", libc::S_IFCHR),
-        ("/sys/dev/block", libc::S_IFBLK),
-    ] {
-        let Ok(entries) = std::fs::read_dir(dir) else {
+    for n in crate::devices::vm_devices() {
+        if std::fs::symlink_metadata(&n.path).is_ok() {
+            continue;
+        }
+        if let Some(parent) = std::path::Path::new(&n.path).parent() {
+            let _ = mkdir_all(&parent.to_string_lossy());
+        }
+        let Some(p) = c(&n.path) else {
             continue;
         };
-        for entry in entries.flatten() {
-            let Ok(uevent) = std::fs::read_to_string(entry.path().join("uevent")) else {
-                continue;
-            };
-            let field = |k: &str| uevent.lines().find_map(|l| l.strip_prefix(k)?.strip_prefix('='));
-            let (Some(major), Some(minor), Some(name)) = (
-                field("MAJOR").and_then(|m| m.parse::<u32>().ok()),
-                field("MINOR").and_then(|m| m.parse::<u32>().ok()),
-                field("DEVNAME"),
-            ) else {
-                continue;
-            };
-            let path = format!("/dev/{name}");
-            if std::fs::symlink_metadata(&path).is_ok() {
-                continue;
-            }
-            if let Some(parent) = std::path::Path::new(&path).parent() {
-                let _ = mkdir_all(&parent.to_string_lossy());
-            }
-            // devtmpfs's own mode where the kernel says one, else its default.
-            let mode = field("DEVMODE")
-                .and_then(|m| u32::from_str_radix(m, 8).ok())
-                .unwrap_or(0o600);
-            let Some(p) = c(&path) else {
-                continue;
-            };
-            // SAFETY: mknod(2) and chmod(2) of a NUL-terminated path.
-            unsafe {
-                if libc::mknod(p.as_ptr(), kind | mode, libc::makedev(major, minor)) == 0 {
-                    libc::chmod(p.as_ptr(), mode);
-                }
+        let kind = match n.kind {
+            shards_devcgroup::Kind::Block => libc::S_IFBLK,
+            _ => libc::S_IFCHR,
+        };
+        // SAFETY: mknod(2), chmod(2) and lchown(2) of a NUL-terminated path.
+        unsafe {
+            if libc::mknod(p.as_ptr(), kind | n.mode, libc::makedev(n.major, n.minor)) == 0 {
+                libc::chmod(p.as_ptr(), n.mode);
+                libc::lchown(p.as_ptr(), n.uid, n.gid);
             }
         }
     }

@@ -3217,9 +3217,15 @@ impl<D: Disk> Daemon<D> {
         if let Some(wait) = restart_after {
             self.schedule_restart(id, wait);
         }
-        // A detached command that never started: why, as `docker run -d` says it.
+        // A detached command that never started: why, as `docker run -d` says it, or as
+        // `docker start` does, without run's help (container/start.go).
         if let Some(client) = inbox.detached.take() {
-            let (text, exits) = crate::spec::not_run(said.as_deref().unwrap_or_default());
+            let said = said.as_deref().unwrap_or_default();
+            let (text, exits) = if inbox.named.is_some() {
+                (format!("Error response from daemon: {said}"), 1)
+            } else {
+                crate::spec::not_run(said)
+            };
             let _ = shards_ipc::send(&client, kind::ERR, format!("{text}\n").as_bytes(), &[]);
             let _ = shards_ipc::send(&client, kind::END, &[exits], &[]);
         }

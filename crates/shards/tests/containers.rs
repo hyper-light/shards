@@ -2750,6 +2750,9 @@ fn a_refused_datagram_is_said_refused_at_once() {
     let Some((home, image)) = home("containers-udp-refused") else {
         return;
     };
+    // The home's first run boots its VM and saves its template; the probe's alone is timed.
+    let warm = run_in(&home, &image, &["--rm"], &["exit", "0"]);
+    assert_eq!(warm.status, Some(0), "{warm}");
     let t0 = std::time::Instant::now();
     let ran = run_in(&home, &image, &["--rm", "-u", "root"], &["udp", "192.0.2.1:53"]);
     assert_eq!(ran.status, Some(1), "{ran}");
@@ -5871,4 +5874,296 @@ fn stats_read_the_guest_as_docker_reads_a_container() {
     ]);
     assert!(all.stdout.lines().any(|l| l == "idle 0.00% 0B / 0B 0"), "{all}");
     assert_eq!(shards(&["rm", "-f", "busy", "idle"]).status, Some(0));
+}
+
+/// D44: a container reaches Docker's devices and those it is given, as dockerd and runc
+/// confine one (moby's default rules, runc's eBPF device filter), its execs too; `--device`
+/// takes the VM's devices, as Docker's takes its host's; every refusal is Docker's (probed
+/// on Docker Engine 29.3.1); `a` rules allow what they say.
+#[test]
+fn devices_are_given_and_confined_as_dockers_are() {
+    let Some((home, image)) = home("containers-devices") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let fs = |opts: &[&str], ops: &[&str]| {
+        let mut o = vec!["--rm"];
+        o.extend_from_slice(opts);
+        let mut a = vec!["fs"];
+        a.extend_from_slice(ops);
+        run_in(&home, &image, &o, &a)
+    };
+    // Any node made, but the image's disk (259:0) not opened; Docker's own devices are.
+    let root = ["-u", "0"];
+    let r = fs(&root, &["mknod:b:259:0:/disk", "open:r:/disk"]);
+    assert!(r.stderr.contains("open:r:/disk: Operation not permitted"), "{r}");
+    let r = fs(
+        &[],
+        &[
+            "open:w:/dev/null",
+            "open:r:/dev/urandom",
+            "open:w:/dev/full",
+            "open:w:/dev/zero",
+        ],
+    );
+    assert_eq!(r.status, Some(0), "{r}");
+    let r = fs(
+        &["-u", "0", "--device-cgroup-rule", "b 259:0 r"],
+        &["mknod:b:259:0:/disk", "open:r:/disk"],
+    );
+    assert_eq!(r.status, Some(0), "{r}");
+    // Reading every device is that alone, where runc's reading of `a` gives writing too.
+    let r = fs(
+        &["-u", "0", "--device-cgroup-rule", "a *:* r"],
+        &["mknod:b:7:0:/loop", "open:r:/loop", "open:w:/loop"],
+    );
+    assert!(r.stderr.contains("open:w:/loop: Operation not permitted"), "{r}");
+    // A device of the VM's, at another path, with a host's mode and the access given: the
+    // image's user opens it.
+    let r = fs(
+        &["--device", "/dev/fuse:/dev/x:r"],
+        &["dev:/dev/x", "open:r:/dev/x", "open:w:/dev/x"],
+    );
+    assert!(r.stdout.contains("/dev/x c 10:229 666"), "{r}");
+    assert!(r.stderr.contains("open:w:/dev/x: Operation not permitted"), "{r}");
+    // A directory's devices.
+    let r = fs(
+        &["--device", "/dev/net"],
+        &["dev:/dev/net/tun", "open:w:/dev/net/tun"],
+    );
+    assert_eq!(r.status, Some(0), "{r}");
+    assert!(r.stdout.contains("/dev/net/tun c 10:200 666"), "{r}");
+    // Privileged: every device, as the VM has it.
+    assert_eq!(
+        fs(&["-u", "0", "--privileged"], &["open:r:/dev/pmem0"]).status,
+        Some(0)
+    );
+    // An exec is confined as its container is.
+    let made = run_in(&home, &image, &["-d", "--name", "confined"], &["sleep"]);
+    assert_eq!(made.status, Some(0), "{made}");
+    let exec = shards(&[
+        "exec",
+        "-u",
+        "0",
+        "confined",
+        "/bin/testguest",
+        "fs",
+        "mknod:b:259:0:/disk",
+        "open:r:/disk",
+    ]);
+    assert!(
+        exec.stderr.contains("open:r:/disk: Operation not permitted"),
+        "{exec}"
+    );
+    assert_eq!(shards(&["rm", "-f", "confined"]).status, Some(0));
+    // The CLI's refusals.
+    for (opts, words) in [
+        (["--device", "/dev/fuse:/dev/x:rwx"], "bad mode specified: rwx"),
+        (["--device", "rel"], "rel is not an absolute path"),
+        (["--device", "/a:/b:r:x"], "bad format for path: /a:/b:r:x"),
+        (
+            ["--device-cgroup-rule", "c 1:3"],
+            "invalid argument \"c 1:3\" for \"--device-cgroup-rule\" flag: invalid device cgroup format 'c 1:3'",
+        ),
+    ] {
+        let r = run_in(&home, &image, &opts, &["exit", "0"]);
+        assert_eq!(r.status, Some(125), "{opts:?}: {r}");
+        assert!(r.stderr.contains(words), "{opts:?}: {r}");
+    }
+    // dockerd's, as the container starts: kept, created, 128, and its error.
+    let missing = "error gathering device information while adding custom device \"/dev/nope\": no such file or directory";
+    let r = run_in(&home, &image, &["--rm", "--device", "/dev/nope"], &["exit", "0"]);
+    assert_eq!(r.status, Some(127), "{r}");
+    assert!(r.stderr.contains(missing), "{r}");
+    let made = shards(&[
+        "create",
+        "--pull",
+        "never",
+        "--name",
+        "nodev",
+        "--device",
+        "/dev/nope",
+        &image,
+    ]);
+    assert_eq!(made.status, Some(0), "{made}");
+    let started = shards(&["start", "nodev"]);
+    assert_eq!(started.status, Some(1), "{started}");
+    assert_eq!(
+        started.stderr,
+        format!("Error response from daemon: {missing}\nfailed to start containers: nodev\n")
+    );
+    let state = shards(&[
+        "inspect",
+        "-f",
+        "{{.State.Status}} {{.State.ExitCode}} {{.State.Error}}",
+        "nodev",
+    ]);
+    assert_eq!(state.stdout, format!("created 128 {missing}\n"));
+    let r = run_in(
+        &home,
+        &image,
+        &["--rm", "--device", "vendor.com/gpu=0"],
+        &["exit", "0"],
+    );
+    assert!(
+        r.stderr
+            .contains("CDI device injection failed: unresolvable CDI devices vendor.com/gpu=0"),
+        "{r}"
+    );
+    // What inspect says of them, as Docker's does.
+    let fields = "{{json .HostConfig.Devices}} {{json .HostConfig.DeviceCgroupRules}} {{json .HostConfig.DeviceRequests}}";
+    let made = shards(&[
+        "create",
+        "--pull",
+        "never",
+        "--name",
+        "devices",
+        "--device",
+        "/dev/fuse:/dev/x:r",
+        "--device",
+        "vendor.com/gpu=0",
+        "--device-cgroup-rule",
+        "c 1:3 r",
+        &image,
+    ]);
+    assert_eq!(made.status, Some(0), "{made}");
+    assert_eq!(
+        shards(&["inspect", "-f", fields, "devices"]).stdout,
+        "[{\"PathOnHost\":\"/dev/fuse\",\"PathInContainer\":\"/dev/x\",\"CgroupPermissions\":\"r\"}] [\"c 1:3 r\"] \
+         [{\"Driver\":\"cdi\",\"Count\":0,\"DeviceIDs\":[\"vendor.com/gpu=0\"],\"Capabilities\":null,\"Options\":null}]\n"
+    );
+    let made = shards(&["create", "--pull", "never", "--name", "plain", &image]);
+    assert_eq!(made.status, Some(0), "{made}");
+    assert_eq!(
+        shards(&["inspect", "-f", fields, "plain"]).stdout,
+        "[] null null\n"
+    );
+}
+
+/// D44: a container's block I/O limits on the VM's devices, as runc writes them (fs2
+/// setIo) and the kernel keeps them: a read of the image's disk held to its rate; every
+/// refusal Docker's (probed on Docker Engine 29.3.1), and inspect's lists.
+#[test]
+fn block_io_limits_hold_as_dockers_do() {
+    let Some((home, image)) = home("containers-block-io") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let limits = [
+        "--device-read-bps",
+        "/dev/pmem0:1mb",
+        "--device-write-bps",
+        "/dev/loop0:2k",
+        "--device-read-iops",
+        "/dev/loop1:7",
+        "--device-write-iops",
+        "/dev/loop0:100",
+    ];
+    let mut opts = vec!["--rm"];
+    opts.extend_from_slice(&limits);
+    let r = run_in(&home, &image, &opts, &["fs", "print:/sys/fs/cgroup/io.max"]);
+    assert_eq!(r.status, Some(0), "{r}");
+    let mut lines: Vec<&str> = r.stdout.lines().collect();
+    lines.sort_unstable();
+    assert_eq!(
+        lines,
+        [
+            "259:0 rbps=1048576 wbps=max riops=max wiops=max",
+            "7:0 rbps=max wbps=2048 riops=max wiops=100",
+            "7:1 rbps=max wbps=max riops=7 wiops=max",
+        ]
+    );
+    // A MiB of the disk (of two) at half a MiB a second: no less than a second, where
+    // unlimited it takes milliseconds.
+    let read = |extra: &[&str]| {
+        let mut o = vec!["--rm", "-u", "0", "--device", "/dev/pmem0"];
+        o.extend_from_slice(extra);
+        let started = std::time::Instant::now();
+        let r = run_in(&home, &image, &o, &["fs", "readn:1048576:/dev/pmem0"]);
+        assert_eq!(r.status, Some(0), "{r}");
+        started.elapsed()
+    };
+    let held = read(&["--device-read-bps", "/dev/pmem0:512kb"]);
+    assert!(held >= std::time::Duration::from_secs(1), "{held:?}");
+    let free = read(&[]);
+    assert!(free < held, "{free:?} {held:?}");
+    // dockerd's and runc's refusals, as the container starts.
+    for (opts, words, status) in [
+        (
+            ["--device-read-bps", "/dev/nope:1mb"],
+            "stat /dev/nope: no such file or directory",
+            127,
+        ),
+        (
+            ["--device-read-iops", "/dev/pmem0:0"],
+            "error setting cgroup config for procHooks process: failed to write \"259:0 riops=0\": write /sys/fs/cgroup/io.max: numerical result out of range",
+            125,
+        ),
+        (
+            ["--blkio-weight-device", "/dev/pmem0:300"],
+            "error setting cgroup config for procHooks process: setting device weight \"259:0 300\": write /sys/fs/cgroup/io.bfq.weight: operation not supported",
+            125,
+        ),
+    ] {
+        let r = run_in(&home, &image, &opts, &["exit", "0"]);
+        assert_eq!(r.status, Some(status), "{opts:?}: {r}");
+        assert!(r.stderr.contains(words), "{opts:?}: {r}");
+    }
+    // The CLI's.
+    for (opts, words) in [
+        (
+            ["--device-read-bps", "/dev/sda"],
+            "invalid argument \"/dev/sda\" for \"--device-read-bps\" flag: bad format: /dev/sda",
+        ),
+        (
+            ["--device-read-bps", "rel:1mb"],
+            "bad format for device path: rel:1mb",
+        ),
+        (
+            ["--device-read-bps", "/dev/sda:1xb"],
+            "invalid rate for device: /dev/sda:1xb. The correct format is <device-path>:<number>[<unit>]. Number must be a positive integer. Unit is optional and can be kb, mb, or gb",
+        ),
+        (
+            ["--device-write-iops", "/dev/sda:1.5"],
+            "invalid rate for device: /dev/sda:1.5. The correct format is <device-path>:<number>. Number must be a positive integer",
+        ),
+        (
+            ["--blkio-weight-device", "/dev/sda:5"],
+            "invalid weight for device: /dev/sda:5",
+        ),
+        (
+            ["--blkio-weight-device", "/dev/sda:1001"],
+            "invalid weight for device: /dev/sda:1001",
+        ),
+    ] {
+        let r = run_in(&home, &image, &opts, &["exit", "0"]);
+        assert_eq!(r.status, Some(125), "{opts:?}: {r}");
+        assert!(r.stderr.contains(words), "{opts:?}: {r}");
+    }
+    let made = shards(&[
+        "create",
+        "--pull",
+        "never",
+        "--name",
+        "limited",
+        "--device-read-bps",
+        "/dev/pmem0:1.5mb",
+        "--device-write-iops",
+        "/dev/pmem0:100",
+        "--blkio-weight-device",
+        "/dev/pmem0:300",
+        &image,
+    ]);
+    assert_eq!(made.status, Some(0), "{made}");
+    let fields = "{{json .HostConfig.BlkioWeightDevice}} {{json .HostConfig.BlkioDeviceReadBps}} {{json .HostConfig.BlkioDeviceWriteBps}} {{json .HostConfig.BlkioDeviceReadIOps}} {{json .HostConfig.BlkioDeviceWriteIOps}}";
+    assert_eq!(
+        shards(&["inspect", "-f", fields, "limited"]).stdout,
+        "[{\"Path\":\"/dev/pmem0\",\"Weight\":300}] [{\"Path\":\"/dev/pmem0\",\"Rate\":1572864}] [] [] [{\"Path\":\"/dev/pmem0\",\"Rate\":100}]\n"
+    );
+    let made = shards(&["create", "--pull", "never", "--name", "plain", &image]);
+    assert_eq!(made.status, Some(0), "{made}");
+    assert_eq!(
+        shards(&["inspect", "-f", fields, "plain"]).stdout,
+        "[] [] [] [] []\n"
+    );
 }

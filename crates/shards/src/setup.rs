@@ -362,6 +362,9 @@ pub fn security_setup(run: &Run, kernel: shards_seccomp::Kernel) -> Result<Vec<V
     if security.writable_cgroups == Some(true) && !run.privileged {
         out.push(b"cgroups-rw".to_vec());
     }
+    if let Some(devices) = devices(run) {
+        out.push(devices);
+    }
     if security.no_new_privileges {
         out.push(b"nnp".to_vec());
     }
@@ -369,6 +372,58 @@ pub fn security_setup(run: &Run, kernel: shards_seccomp::Kernel) -> Result<Vec<V
         out.push(filter);
     }
     Ok(out)
+}
+
+/// The setup entry by which init gives the container its devices and confines it to
+/// them (D44): `devices=`, then, each NUL-ended, `p` where it is privileged (`-` where
+/// not), and `d` with each device's host and container paths and permissions, `r` with
+/// each `--device-cgroup-rule`, `i` with each CDI device, and `w`, `rb`, `wb`, `ri` and
+/// `wi` with each device weight's and throttle's path and number. Without one, a container keeps
+/// the filter of Docker's defaults that its VM booted with.
+fn devices(run: &Run) -> Option<Vec<u8>> {
+    let io = [
+        (&b"w"[..], &run.blkio_weight_device),
+        (b"rb", &run.device_read_bps),
+        (b"wb", &run.device_write_bps),
+        (b"ri", &run.device_read_iops),
+        (b"wi", &run.device_write_iops),
+    ];
+    if !run.privileged
+        && run.devices.is_empty()
+        && run.device_cgroup_rules.is_empty()
+        && run.cdi_devices.is_empty()
+        && io.iter().all(|(_, v)| v.is_empty())
+    {
+        return None;
+    }
+    let mut e = b"devices=".to_vec();
+    e.extend_from_slice(if run.privileged { b"p\0" } else { b"-\0" });
+    for d in &run.devices {
+        let mut parts = d.splitn(3, ':');
+        e.extend_from_slice(b"d\0");
+        for _ in 0..3 {
+            e.extend_from_slice(parts.next().unwrap_or_default().as_bytes());
+            e.push(0);
+        }
+    }
+    for (tag, values) in [(b"r", &run.device_cgroup_rules), (b"i", &run.cdi_devices)] {
+        for v in values {
+            e.extend_from_slice(tag);
+            e.push(0);
+            e.extend_from_slice(v.as_bytes());
+            e.push(0);
+        }
+    }
+    for (tag, values) in io {
+        for v in values {
+            let (path, number) = v.split_once(':').unwrap_or((v, ""));
+            for word in [tag, path.as_bytes(), number.as_bytes()] {
+                e.extend_from_slice(word);
+                e.push(0);
+            }
+        }
+    }
+    Some(e)
 }
 
 #[cfg(test)]

@@ -413,6 +413,7 @@ fn request(parsed: &Parsed) -> Result<Run, String> {
     };
     let (cap_add, cap_drop) = effective_caps(parsed.many("cap-add"), parsed.many("cap-drop"));
     let (security_opt, system_paths) = security_opts(parsed.many("security-opt"))?;
+    let (devices, cdi_devices) = devices(parsed.many("device"))?;
     let (binds, volumes, mounts) = volumes(parsed)?;
     // Each range a port at a time, as the CLI exposes them (container/opts.go).
     let mut expose = Vec::new();
@@ -487,6 +488,14 @@ fn request(parsed: &Parsed) -> Result<Run, String> {
         cap_add,
         security_opt,
         system_paths,
+        devices,
+        device_cgroup_rules: parsed.many("device-cgroup-rule").to_vec(),
+        cdi_devices,
+        blkio_weight_device: parsed.many("blkio-weight-device").to_vec(),
+        device_read_bps: parsed.many("device-read-bps").to_vec(),
+        device_write_bps: parsed.many("device-write-bps").to_vec(),
+        device_read_iops: parsed.many("device-read-iops").to_vec(),
+        device_write_iops: parsed.many("device-write-iops").to_vec(),
         cap_drop,
         group_add: parsed.many("group-add").to_vec(),
         oom_score_adj: parsed.int("oom-score-adj"),
@@ -794,6 +803,119 @@ fn security_opts(opts: &[String]) -> Result<(Vec<String>, bool), String> {
     let system_paths = out.iter().any(|o| o == "systempaths=unconfined");
     out.retain(|o| o != "systempaths=unconfined");
     Ok((out, system_paths))
+}
+
+/// `--device`, as docker/cli reads it for a Linux daemon (cli/command/container/opts.go):
+/// a CDI device's qualified name kept apart, for its device request; each other checked
+/// (validateLinuxPath) and parsed (parseLinuxDevice) into `HOST:CONTAINER:PERMISSIONS`.
+fn devices(given: &[String]) -> Result<(Vec<String>, Vec<String>), String> {
+    let (mut devices, mut cdi) = (Vec::new(), Vec::new());
+    for device in given {
+        if is_cdi_name(device) {
+            cdi.push(device.clone());
+            continue;
+        }
+        let validated = validate_linux_path(device)?;
+        let arr: Vec<&str> = validated.splitn(4, ':').collect();
+        let (src, mut dst, mut permissions) = (arr.first().copied().unwrap_or_default(), "", "rwm");
+        match arr[..] {
+            [_, d, p] => {
+                (dst, permissions) = (d, p);
+            }
+            [_, d] if valid_device_mode(d) => permissions = d,
+            [_, d] => dst = d,
+            [_] => {}
+            _ => return Err(format!("invalid device specification: {device}")),
+        }
+        if dst.is_empty() {
+            dst = src;
+        }
+        devices.push(format!("{src}:{dst}:{permissions}"));
+    }
+    Ok((devices, cdi))
+}
+
+/// validDeviceMode: r, w and m, each at most once.
+fn valid_device_mode(mode: &str) -> bool {
+    let mut seen = [false; 3];
+    !mode.is_empty()
+        && mode.bytes().all(|b| {
+            let i = match b {
+                b'r' => 0,
+                b'w' => 1,
+                b'm' => 2,
+                _ => return false,
+            };
+            seen.get_mut(i).is_some_and(|s| !std::mem::replace(s, true))
+        })
+}
+
+/// validateLinuxPath(val, validDeviceMode): `[host-dir:]container-path[:mode]`, its
+/// container path cleaned and absolute.
+fn validate_linux_path(val: &str) -> Result<String, String> {
+    use shards_cmdline::mounts::clean;
+    if val.matches(':').count() > 2 {
+        return Err(format!("bad format for path: {val}"));
+    }
+    let split: Vec<&str> = val.splitn(3, ':').collect();
+    if split.first().is_none_or(|s| s.is_empty()) {
+        return Err(format!("bad format for path: {val}"));
+    }
+    let (container_path, out) = match split[..] {
+        [c] => (c, clean(c)),
+        [c, mode] if valid_device_mode(mode) => (c, format!("{}:{mode}", clean(c))),
+        [host, c] => (c, format!("{host}:{}", clean(c))),
+        [host, c, mode] => {
+            if !valid_device_mode(mode) {
+                return Err(format!("bad mode specified: {mode}"));
+            }
+            (c, format!("{host}:{c}:{mode}"))
+        }
+        _ => return Err(format!("bad format for path: {val}")),
+    };
+    if !container_path.starts_with('/') {
+        return Err(format!("{container_path} is not an absolute path"));
+    }
+    Ok(out)
+}
+
+/// A CDI device's fully qualified name, `VENDOR/CLASS=NAME` (container-device-interface
+/// pkg/parser IsQualifiedName).
+fn is_cdi_name(device: &str) -> bool {
+    let letter = |c: char| c.is_ascii_alphabetic();
+    let alnum = |c: char| c.is_ascii_alphanumeric();
+    // A vendor's or class's: a letter, then letters, digits, `_`, `-` and `.`, ending in
+    // a letter or digit; a device's: from a letter or digit, `:` too.
+    let name_ok = |name: &str, first: &dyn Fn(char) -> bool, colon: bool| {
+        let mut chars = name.chars();
+        let Some(c0) = chars.next() else { return false };
+        if !first(c0) {
+            return false;
+        }
+        let rest: Vec<char> = chars.collect();
+        let Some((last, middle)) = rest.split_last() else {
+            return true;
+        };
+        middle
+            .iter()
+            .all(|&c| alnum(c) || matches!(c, '_' | '-' | '.') || (colon && c == ':'))
+            && alnum(*last)
+    };
+    if device.is_empty() || device.starts_with('/') {
+        return false;
+    }
+    let Some((qualifier, name)) = device.split_once('=') else {
+        return false;
+    };
+    let Some((vendor, class)) = qualifier.split_once('/') else {
+        return false;
+    };
+    !vendor.is_empty()
+        && !class.is_empty()
+        && !name.is_empty()
+        && name_ok(vendor, &letter, false)
+        && name_ok(class, &letter, false)
+        && name_ok(name, &alnum, true)
 }
 
 /// An I/O error as Go's syscall.Errno says it.

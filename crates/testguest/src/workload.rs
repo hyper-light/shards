@@ -549,8 +549,10 @@ fn udp_echo(port: &str, datagrams: usize) -> i32 {
 }
 
 /// File operations, in order: `mkdir:P`, `write:P=DATA`, `link:OLD:NEW`, `symlink:T:P`,
-/// `rm:P`, `rmdir:P` (and what it holds), `chmod:OCTAL:P`. Stops at the first that
-/// fails, saying which.
+/// `rm:P`, `rmdir:P` (and what it holds), `chmod:OCTAL:P`, `mknod:b|c:MAJOR:MINOR:P`,
+/// `open:r|w:P`, `dev:P`, which prints a device node's type, numbers and mode, `print:P`,
+/// which prints a file, and `readn:N:P`, which reads N bytes of P. Stops
+/// at the first that fails, saying which.
 fn fs(ops: &[String]) -> i32 {
     use std::os::unix::fs::PermissionsExt as _;
     for op in ops {
@@ -577,6 +579,42 @@ fn fs(ops: &[String]) -> i32 {
                     .map_err(io::Error::other)
                     .and_then(|m| std::fs::set_permissions(p, std::fs::Permissions::from_mode(m)))
             }
+            "mknod" => mknod(rest),
+            "open" => {
+                let (m, p) = rest.split_once(':').unwrap_or((rest, ""));
+                std::fs::OpenOptions::new()
+                    .read(m == "r")
+                    .write(m == "w")
+                    .open(p)
+                    .map(drop)
+            }
+            "print" => std::fs::read(rest).map(|b| {
+                let _ = io::stdout().write_all(&b);
+            }),
+            "readn" => {
+                let (n, p) = rest.split_once(':').unwrap_or((rest, ""));
+                n.parse::<u64>().map_err(io::Error::other).and_then(|n| {
+                    let mut f = std::fs::File::open(p)?.take(n);
+                    let read = io::copy(&mut f, &mut io::sink())?;
+                    if read == n {
+                        Ok(())
+                    } else {
+                        Err(io::Error::other(format!("{read} bytes")))
+                    }
+                })
+            }
+            "dev" => std::fs::symlink_metadata(rest).map(|m| {
+                use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _};
+                let t = if m.file_type().is_block_device() { 'b' } else { 'c' };
+                let rdev = m.rdev();
+                let _ = writeln!(
+                    io::stdout(),
+                    "{rest} {t} {}:{} {:o}",
+                    libc::major(rdev),
+                    libc::minor(rdev),
+                    m.mode() & 0o7777
+                );
+            }),
             _ => Err(io::Error::other("an unknown operation")),
         };
         if let Err(e) = done {
@@ -585,6 +623,25 @@ fn fs(ops: &[String]) -> i32 {
         }
     }
     0
+}
+
+/// `KIND:MAJOR:MINOR:PATH`'s node, mode 0600.
+fn mknod(spec: &str) -> io::Result<()> {
+    let mut parts = spec.splitn(4, ':');
+    let bad = || io::Error::other("a malformed mknod");
+    let kind = match parts.next() {
+        Some("b") => libc::S_IFBLK,
+        Some("c") => libc::S_IFCHR,
+        _ => return Err(bad()),
+    };
+    let major: u32 = parts.next().and_then(|n| n.parse().ok()).ok_or_else(bad)?;
+    let minor: u32 = parts.next().and_then(|n| n.parse().ok()).ok_or_else(bad)?;
+    let path = std::ffi::CString::new(parts.next().ok_or_else(bad)?).map_err(|_| bad())?;
+    // SAFETY: mknod(2) of a NUL-terminated path.
+    if unsafe { libc::mknod(path.as_ptr(), kind | 0o600, libc::makedev(major, minor)) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 /// Sends a byte to itself over TCP on 127.0.0.1, on ::1, and from any address to its own

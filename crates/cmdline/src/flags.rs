@@ -673,6 +673,10 @@ pub fn value(flag: &Flag, value: &str) -> Result<String, String> {
         ("dns", Kind::Many("list")) => validate_ip(value),
         ("dns-search", Kind::Many("list")) => validate_dns_search(value),
         ("add-host", Kind::Many("list")) => validate_extra_host(value),
+        ("device-cgroup-rule", Kind::Many("list")) => validate_device_cgroup_rule(value),
+        ("device-read-bps" | "device-write-bps", Kind::Many("list")) => validate_throttle_bps(value),
+        ("device-read-iops" | "device-write-iops", Kind::Many("list")) => validate_throttle_iops(value),
+        ("blkio-weight-device", Kind::Many("list")) => validate_weight_device(value),
         ("sysctl", Kind::Many("map")) => validate_sysctl(value),
         // opts.MountOpt.Set.
         (_, Kind::Many("mount")) => crate::mounts::parse_mount(value, None).map(|_| value.to_string()),
@@ -683,6 +687,74 @@ pub fn value(flag: &Flag, value: &str) -> Result<String, String> {
             _ => Ok(value.to_string()),
         },
         _ => Ok(value.to_string()),
+    }
+}
+
+/// A device's path and the rest (opts/throttledevice.go and weightdevice.go): `PATH:REST`,
+/// PATH under `/dev/`.
+fn device_and(value: &str) -> Result<(&str, &str), String> {
+    match value.split_once(':') {
+        Some((k, v)) if !k.is_empty() => {
+            if k.starts_with("/dev/") {
+                Ok((k, v))
+            } else {
+                Err(format!("bad format for device path: {value}"))
+            }
+        }
+        _ => Err(format!("bad format: {value}")),
+    }
+}
+
+/// ValidateThrottleBpsDevice: `PATH:RATE`, the rate as go-units' RAMInBytes reads it; kept
+/// as `PATH:BYTES`.
+fn validate_throttle_bps(value: &str) -> Result<String, String> {
+    let (path, rate) = device_and(value)?;
+    match crate::resources::ram_in_bytes(rate) {
+        Ok(n) if n >= 0 => Ok(format!("{path}:{n}")),
+        _ => Err(format!(
+            "invalid rate for device: {value}. The correct format is <device-path>:<number>[<unit>]. Number must be a positive integer. Unit is optional and can be kb, mb, or gb"
+        )),
+    }
+}
+
+/// ValidateThrottleIOpsDevice: `PATH:RATE`, a whole number.
+fn validate_throttle_iops(value: &str) -> Result<String, String> {
+    let (path, rate) = device_and(value)?;
+    let n = crate::go::parse_uint_bits(rate, 64).map_err(|_| {
+        format!("invalid rate for device: {value}. The correct format is <device-path>:<number>. Number must be a positive integer")
+    })?;
+    Ok(format!("{path}:{n}"))
+}
+
+/// ValidateWeightDevice: `PATH:WEIGHT`, 0 or 10 to 1000.
+fn validate_weight_device(value: &str) -> Result<String, String> {
+    let (path, weight) = device_and(value)?;
+    match crate::go::parse_uint_bits(weight, 16) {
+        Ok(w) if w == 0 || (10..=1000).contains(&w) => Ok(format!("{path}:{w}")),
+        _ => Err(format!("invalid weight for device: {value}")),
+    }
+}
+
+/// validateDeviceCgroupRule (cli/command/container/opts.go): `^[acb] ([0-9]+|\*):([0-9]+|\*) [rwm]{1,3}$`.
+fn validate_device_cgroup_rule(value: &str) -> Result<String, String> {
+    let number = |s: &str| s == "*" || (!s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()));
+    let ok = (|| {
+        let (kind, rest) = value.split_once(' ')?;
+        let (numbers, access) = rest.split_once(' ')?;
+        let (major, minor) = numbers.split_once(':')?;
+        Some(
+            matches!(kind, "a" | "c" | "b")
+                && number(major)
+                && number(minor)
+                && (1..=3).contains(&access.len())
+                && access.bytes().all(|b| matches!(b, b'r' | b'w' | b'm')),
+        )
+    })()
+    .unwrap_or(false);
+    if ok {
+        Ok(value.to_string())
+    } else {
+        Err(format!("invalid device cgroup format '{value}'"))
     }
 }
 

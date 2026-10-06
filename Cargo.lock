@@ -904,6 +904,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "shards-devcgroup"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "shards-dockerfile"
 version = "0.1.0"
 dependencies = [
@@ -934,6 +941,7 @@ dependencies = [
  "shards-abi",
  "shards-archive",
  "shards-cmdline",
+ "shards-devcgroup",
  "shards-user",
 ]
 

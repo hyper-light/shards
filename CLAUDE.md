@@ -71,4 +71,6 @@ Targets: request → usable in **under 5 ms, boot included**, and less memory pe
 - `crates/template`: Go's text/template with the Docker CLI's functions, for `--format`; held to Go by `scripts/template/generate`.
 - `crates/archive`: tar archives as moby/go-archive makes and unpacks them, for `export` and `cp`, in the guest and on the host; held to go-archive by `scripts/archive/generate`.
 - `shards top` lays a microVM's processes out as procps-ng 4.0.2's `ps` (`crates/shards/src/daemon/top.rs`), from shards-init's `/proc` dump; held to real procps by `scripts/top/generate`.
+- `crates/seccomp`: Docker's seccomp profiles compiled as libseccomp and runc compile them, held to them by `src/oracle.rs` against `scripts/seccomp/generate`'s records (D41, D42).
+- `crates/devcgroup`: a container's device rules and runc's eBPF device filter (D44), held byte for byte to runc's own by `src/oracle.rs` against `scripts/devcgroup/generate`'s records.
 - `crates/ipc`: what the CLI, the daemon and warm VMs say to each other (`lib.rs`), and on Unix the transport, messages with file descriptors, plus `spawn`, which gives a child only the descriptors named for it (`unix.rs`).

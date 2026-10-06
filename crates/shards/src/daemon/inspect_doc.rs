@@ -93,9 +93,67 @@ fn strs(list: &[String], nil: bool) -> Value {
     }
 }
 
-/// A non-nil empty slice of structs (`[]*blkiodev.WeightDevice{}` and the like).
-fn empty() -> Value {
-    Value::List(Kind::Any, Vec::new())
+/// A blkiodev.WeightDevice or ThrottleDevice list: each `PATH:NUMBER`, its number named
+/// `number`.
+fn io_devices(list: &[String], number: &str) -> Value {
+    let list = list
+        .iter()
+        .map(|d| {
+            let (path, n) = d.split_once(':').unwrap_or((d, "0"));
+            let kind = if number == "Weight" {
+                "blkiodev.WeightDevice"
+            } else {
+                "blkiodev.ThrottleDevice"
+            };
+            Struct::pointer(kind)
+                .field("Path", s(path))
+                .field(number, Value::Uint(n.parse().unwrap_or(0)))
+                .value()
+        })
+        .collect();
+    Value::List(Kind::Any, list)
+}
+
+/// HostConfig.Devices: each `--device` as the CLI parsed it, an empty list for none.
+fn devices(run: &Run) -> Value {
+    let list = run
+        .devices
+        .iter()
+        .map(|d| {
+            let mut parts = d.splitn(3, ':');
+            let (host, container, perms) = (
+                parts.next().unwrap_or_default(),
+                parts.next().unwrap_or_default(),
+                parts.next().unwrap_or_default(),
+            );
+            Struct::new("container.DeviceMapping")
+                .field("PathOnHost", s(host))
+                .field("PathInContainer", s(container))
+                .field("CgroupPermissions", s(perms))
+                .value()
+        })
+        .collect();
+    Value::List(Kind::Any, list)
+}
+
+/// HostConfig.DeviceRequests: the CDI devices' one request, as the CLI makes it, or nil.
+fn device_requests(run: &Run) -> Value {
+    if run.cdi_devices.is_empty() {
+        return Value::NilList(Kind::Any);
+    }
+    let request = Struct::new("container.DeviceRequest")
+        .field("Driver", s("cdi"))
+        .field("Count", int(0))
+        .tagged(
+            "DeviceIDs",
+            Some("DeviceIDs"),
+            false,
+            strs(&run.cdi_devices, false),
+        )
+        .field("Capabilities", Value::NilList(Kind::Any))
+        .field("Options", Value::NilMap(Kind::String))
+        .value();
+    Value::List(Kind::Any, vec![request])
 }
 
 fn int(n: i64) -> Value {
@@ -800,20 +858,26 @@ fn host_config(f: &Facts<'_>) -> Value {
         .tagged("NanoCPUs", Some("NanoCpus"), false, int(res.nano_cpus))
         .field("CgroupParent", s(""))
         .field("BlkioWeight", Value::Uint(u64::from(res.blkio_weight)))
-        .field("BlkioWeightDevice", empty())
-        .field("BlkioDeviceReadBps", empty())
-        .field("BlkioDeviceWriteBps", empty())
-        .field("BlkioDeviceReadIOps", empty())
-        .field("BlkioDeviceWriteIOps", empty())
+        .field(
+            "BlkioWeightDevice",
+            io_devices(&run.blkio_weight_device, "Weight"),
+        )
+        .field("BlkioDeviceReadBps", io_devices(&run.device_read_bps, "Rate"))
+        .field("BlkioDeviceWriteBps", io_devices(&run.device_write_bps, "Rate"))
+        .field("BlkioDeviceReadIOps", io_devices(&run.device_read_iops, "Rate"))
+        .field("BlkioDeviceWriteIOps", io_devices(&run.device_write_iops, "Rate"))
         .tagged("CPUPeriod", Some("CpuPeriod"), false, int(res.cpu_period))
         .tagged("CPUQuota", Some("CpuQuota"), false, int(res.cpu_quota))
         .tagged("CPURealtimePeriod", Some("CpuRealtimePeriod"), false, int(0))
         .tagged("CPURealtimeRuntime", Some("CpuRealtimeRuntime"), false, int(0))
         .field("CpusetCpus", s(&res.cpuset_cpus))
         .field("CpusetMems", s(&res.cpuset_mems))
-        .field("Devices", empty())
-        .field("DeviceCgroupRules", Value::NilList(Kind::String))
-        .field("DeviceRequests", Value::NilList(Kind::Any))
+        .field("Devices", devices(run))
+        .field(
+            "DeviceCgroupRules",
+            strs(&run.device_cgroup_rules, run.device_cgroup_rules.is_empty()),
+        )
+        .field("DeviceRequests", device_requests(run))
         .field("MemoryReservation", int(res.memory_reservation))
         .field("MemorySwap", int(crate::resources::memory_swap(res)))
         .field("MemorySwappiness", Struct::nil("int64"))

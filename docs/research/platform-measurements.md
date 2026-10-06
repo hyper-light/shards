@@ -4100,3 +4100,31 @@ revision before comparing a changed API/implementation.
   median: each ABI's numbers as ranges of one decision found by a binary search, and
   identical decisions shared. Counts, not time: the guest's time per syscall under each
   is to be measured in a VM.
+
+### M121. What the device filter costs a run
+
+- **Method.** `docs/research/measurements/build-ab/ab.py OLD NEW alpine:3.22 200 true`,
+  `AB_FLAGS=--rm`: 200 pooled runs through each of two builds' daemons, alternating, each
+  arm's own template (the change is in shards-init, which the template holds, so the two
+  cannot share one: templates alone differ by tens of µs, M29). OLD is 946ce6f; NEW is
+  946ce6f with D44's device filter, first loaded and attached by shards-init at each
+  start, then attached at boot, before the snapshot. Apple M5 Max (Mac17,6), macOS
+  26.4.1, load average 80 to 86 throughout (another project's tests), 2026-10-05.
+- **Results** (µs; "command" is the run's time in the guest, request to status, by the
+  VM's clock; "outside" the rest of the client's wall clock).
+
+  | Build | Part | n | p50 | p90 | p99 | max | NEW − OLD, paired median [95%] |
+  |---|---|---:|---:|---:|---:|---:|---|
+  | OLD | command | 200 | 842 | 1009 | 1641 | 2105 | |
+  | NEW, at each start | command | 200 | 1862 | 2117 | 2739 | 2825 | +1026 [+1006, +1044] |
+  | OLD | wall | 200 | 7900 | 9400 | 13854 | 14636 | |
+  | NEW, at each start | wall | 200 | 8971 | 10069 | 13656 | 16273 | +1021 [+891, +1180] |
+  | OLD | command | 200 | 892 | 1024 | 1518 | 3504 | |
+  | NEW, at boot | command | 200 | 872 | 995 | 1355 | 1544 | −15 [−24, +0] |
+  | OLD | wall | 200 | 7908 | 8934 | 14701 | 17655 | |
+  | NEW, at boot | wall | 200 | 7853 | 9051 | 12460 | 13991 | −80 [−196, +28] |
+
+- **Consequence.** Loading and attaching the eBPF filter (and reading `/sys/dev`) at each
+  start cost a run a millisecond of guest time, a fifth of the start budget. Attached at
+  boot, before the template's snapshot, it costs a run with Docker's rules nothing that
+  200 paired runs can find; only runs with other rules load their own.
