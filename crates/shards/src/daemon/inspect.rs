@@ -436,10 +436,20 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         parsed: &shards_cmdline::flags::Parsed,
         styled: bool,
         reply: &super::commands::Reply<'_>,
+        convert: bool,
     ) -> u8 {
         let mut documents = Vec::new();
         let mut errors = Vec::new();
         for given in &parsed.args {
+            // shards' grammar (`inspect vm IMAGE`): a name of no microVM that names an
+            // image, made one, says the microVM it makes.
+            if convert
+                && self.resolve(given).is_err()
+                && let Ok(doc) = self.image_doc(given)
+            {
+                documents.push(doc);
+                continue;
+            }
             let found = self.resolve(given).and_then(|id| {
                 super::lock(&self.containers)
                     .get(&id)

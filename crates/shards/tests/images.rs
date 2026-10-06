@@ -292,3 +292,86 @@ fn repeat_runs_restore_a_template_of_the_image() {
         fourth.stderr
     );
 }
+
+/// shards' grammar makes an image a microVM before any action but its removal, as `run`
+/// does: `inspect vm`, `inspect image`, `history image` and `tag image` of an image not
+/// here pull and convert it first. Docker's own order (`image inspect`) answers as
+/// Docker's does, and removal fetches nothing.
+#[test]
+fn actions_on_an_image_not_here_convert_it_first() {
+    if cannot_run_vms() {
+        eprintln!("SKIP: this host cannot run VMs");
+        return;
+    }
+    let (image, served) = served();
+    let home = TempDir::new("convert");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| {
+        let (command, rest) = args.split_first().unwrap();
+        run_shards_env(&[command], rest, &env, TIMEOUT)
+    };
+    let shown = |r: &common::Run| format!("--- stdout\n{}\n--- stderr\n{}", r.stdout, r.stderr);
+    let rmi = || {
+        let r = shards(&["rmi", image.as_str()]);
+        assert_eq!(r.status, Some(0), "{}", shown(&r));
+    };
+
+    // Neither Docker's order nor removal fetches anything.
+    let docker = shards(&["image", "inspect", image.as_str()]);
+    assert_eq!(docker.status, Some(1), "{}", shown(&docker));
+    assert!(docker.stderr.contains("No such image"), "{}", shown(&docker));
+    let removed = shards(&["remove", "image", image.as_str()]);
+    assert_ne!(removed.status, Some(0), "{}", shown(&removed));
+    assert_eq!(served.load(Ordering::SeqCst), 0, "nothing was fetched");
+
+    // `inspect vm IMAGE`: converted, and its microVM described.
+    let vm = shards(&[
+        "inspect",
+        "vm",
+        "--format",
+        "{{.Id}} {{.Config.Cmd}}",
+        image.as_str(),
+    ]);
+    assert_eq!(vm.status, Some(0), "{}", shown(&vm));
+    assert!(
+        vm.stderr
+            .contains(&format!("Unable to find image '{image}' locally")),
+        "{}",
+        shown(&vm)
+    );
+    assert!(
+        vm.stdout.starts_with("sha256:") && vm.stdout.trim_end().ends_with("[report]"),
+        "{}",
+        shown(&vm)
+    );
+    rmi();
+
+    let inspected = shards(&["inspect", "image", "--format", "{{.Id}}", image.as_str()]);
+    assert_eq!(inspected.status, Some(0), "{}", shown(&inspected));
+    assert_eq!(
+        inspected.stdout,
+        vm.stdout.split(' ').next().unwrap().to_string() + "\n"
+    );
+    rmi();
+
+    let history = shards(&["history", "image", "-q", image.as_str()]);
+    assert_eq!(history.status, Some(0), "{}", shown(&history));
+    // The test image's config records no history, so none is listed; it is stored now.
+    let stored = shards(&["images", "-q"]);
+    assert!(!stored.stdout.trim().is_empty(), "{}", shown(&stored));
+    rmi();
+
+    let tagged = shards(&["tag", "image", image.as_str(), "mine:converted"]);
+    assert_eq!(tagged.status, Some(0), "{}", shown(&tagged));
+    let listed = shards(&["images", "--format", "{{.Repository}}:{{.Tag}}"]);
+    assert!(
+        listed.stdout.lines().any(|l| l == "mine:converted"),
+        "{}",
+        shown(&listed)
+    );
+    let _ = shards(&["stop", "daemon"]);
+}

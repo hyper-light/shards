@@ -464,6 +464,11 @@ impl<D: crate::containers::Disk> Daemon<D> {
         {
             self.settle();
         }
+        // shards' grammar's `--convert`: each image the command names that is not yet a
+        // microVM here is made one first, pulled and converted as `run` makes one.
+        if parsed.bool("convert") {
+            self.convert_named(command, &parsed, asker, reply);
+        }
         if std::ptr::eq(command, &PS) {
             self.ps(&parsed, asker, reply)
         } else if std::ptr::eq(command, &WAIT) {
@@ -519,7 +524,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
         } else if std::ptr::eq(command, &shards_cmdline::commands::INSPECT) {
             self.inspect_any(&parsed, asker, reply)
         } else if std::ptr::eq(command, &CONTAINER_INSPECT) {
-            self.container_inspect(&parsed, asker.styled(), reply)
+            self.container_inspect(&parsed, asker.styled(), reply, parsed.bool("convert"))
         } else if std::ptr::eq(command, &SAVE) {
             self.save(&parsed.args, asker, reply)
         } else if std::ptr::eq(command, &LOAD) {
@@ -2775,6 +2780,43 @@ fn command_line(argv: &[String]) -> String {
 
 /// A microVM `stats` sampled: its ID and name, and while it runs, its share of a CPU in
 /// percent and its resident bytes.
+impl<D: crate::containers::Disk> Daemon<D> {
+    /// The images `command` names in `parsed` that are not microVMs here yet, made ones:
+    /// pulled and converted (run::find_image), the pull said on stderr as `run` says it.
+    /// One that cannot be is left for the command to refuse in its words.
+    fn convert_named(
+        &self,
+        command: &shards_cmdline::flags::Command,
+        parsed: &shards_cmdline::flags::Parsed,
+        asker: &Asker,
+        reply: &Reply<'_>,
+    ) {
+        let images: Vec<&String> = if std::ptr::eq(command, &CONTAINER_INSPECT) {
+            parsed.args.iter().filter(|a| self.resolve(a).is_err()).collect()
+        } else if std::ptr::eq(command, &IMAGE_INSPECT) || std::ptr::eq(command, &SAVE) {
+            parsed.args.iter().collect()
+        } else {
+            parsed.args.first().into_iter().collect()
+        };
+        let Ok(targets) = crate::pull::targets("") else {
+            return;
+        };
+        let cancel = shards_registry::http::Cancel::new();
+        let say = |line: &str| reply.err(line);
+        for image in images {
+            let _ = crate::run::find_image(
+                image,
+                shards_ipc::Pull::Missing,
+                &targets,
+                &asker.registry_env,
+                &self.home,
+                &say,
+                &cancel,
+            );
+        }
+    }
+}
+
 /// Each container's last sample, for one whose VM is paused and cannot be asked: taken
 /// as it is paused, and as `stats` samples it; a removed one's goes as `stats` next looks.
 static LAST_USAGE: std::sync::Mutex<std::collections::BTreeMap<String, Usage>> =

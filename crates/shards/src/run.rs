@@ -111,6 +111,84 @@ fn merge_health(
     })
 }
 
+/// Image `name` as a microVM in `home`, as `docker run` finds its image: here, or, as
+/// `pull` says, pulled and made a microVM on the way (a container image is converted as
+/// it comes), its messages through `say`; with the lease that holds it. Every action on
+/// an image that is not here yet converts it this way.
+pub fn find_image(
+    name: &str,
+    pull: Pull,
+    targets: &[shards_image::platform::Target],
+    registry_env: &[String],
+    home: &Path,
+    say: &(dyn Fn(&str) + Sync),
+    cancel: &Cancel,
+) -> Result<(shards_registry::pull::Pulled, Lease), String> {
+    let reference = Reference::parse(name).map_err(|e| e.to_string())?;
+    let store = crate::pull::store(home)?;
+    let lease = store.lease().map_err(|e| e.to_string())?;
+    let mut changed = false;
+    let found = match pull {
+        Pull::Always => None,
+        Pull::Missing | Pull::Never => {
+            let limits = crate::pull::limits()?;
+            match local(&store, &reference, targets, &limits) {
+                // A stored copy that has changed is fetched again, as a pull mends it.
+                Err(e) if e.kind() == ErrorKind::Changed && pull == Pull::Missing => {
+                    say(&format!("{e}; pulling '{}' again", reference.familiar()));
+                    changed = true;
+                    None
+                }
+                Err(e) if e.kind() == ErrorKind::Changed => {
+                    return Err(format!("{e}; pull '{}' again to mend it", reference.familiar()));
+                }
+                found => found.map_err(|e| e.to_string())?,
+            }
+        }
+    };
+    let image = match found {
+        Some(image) => image,
+        None if pull == Pull::Never => {
+            return Err(format!("No such image: {}", reference.familiar()));
+        }
+        None => {
+            // `docker run` pulls as `docker pull` does, on stderr.
+            if pull == Pull::Missing && !changed {
+                say(&format!(
+                    "Unable to find image '{}' locally",
+                    reference.familiar()
+                ));
+            }
+            let report = |event: Event<'_>| match event {
+                Event::Layer(d) => say(&format!("{}: Download complete", short(&d.to_string()))),
+                Event::Present(d) => say(&format!("{}: Already exists", short(&d.to_string()))),
+                Event::Manifest(..)
+                | Event::Progress(..)
+                | Event::Building
+                | Event::Unpacking(_)
+                | Event::Pulling => {}
+            };
+            let (pulled, _) = crate::pull::fetch(
+                home,
+                &reference,
+                targets,
+                &report,
+                &say,
+                Some(cancel),
+                &|k| shards_ipc::env_value(registry_env, k),
+                false,
+            )?;
+            say(&format!("Digest: {}", pulled.resolved));
+            say(&format!(
+                "Status: Downloaded newer image for {}",
+                reference.familiar()
+            ));
+            pulled
+        }
+    };
+    Ok((image, lease))
+}
+
 /// The daemon's half: finds the request's image in `home`, pulling it as `docker run`
 /// does with its messages through `say`, and merges its settings under the request's.
 /// Whatever it downloads, `cancel` stops.
@@ -142,69 +220,15 @@ pub fn prepare(
         }),
         _ => return Err("--kernel and --init (or SHARDS_KERNEL and SHARDS_INIT) go together".into()),
     };
-    let asked = request;
-    let reference = Reference::parse(&asked.image).map_err(|e| e.to_string())?;
-    let store = crate::pull::store(home)?;
-    let lease = store.lease().map_err(|e| e.to_string())?;
-    let mut changed = false;
-    let found = match asked.pull {
-        Pull::Always => None,
-        Pull::Missing | Pull::Never => {
-            let limits = crate::pull::limits()?;
-            match local(&store, &reference, &targets, &limits) {
-                // A stored copy that has changed is fetched again, as a pull mends it.
-                Err(e) if e.kind() == ErrorKind::Changed && asked.pull == Pull::Missing => {
-                    say(&format!("{e}; pulling '{}' again", reference.familiar()));
-                    changed = true;
-                    None
-                }
-                Err(e) if e.kind() == ErrorKind::Changed => {
-                    return Err(format!("{e}; pull '{}' again to mend it", reference.familiar()));
-                }
-                found => found.map_err(|e| e.to_string())?,
-            }
-        }
-    };
-    let image = match found {
-        Some(image) => image,
-        None if asked.pull == Pull::Never => {
-            return Err(format!("No such image: {}", reference.familiar()));
-        }
-        None => {
-            // `docker run` pulls as `docker pull` does, on stderr.
-            if asked.pull == Pull::Missing && !changed {
-                say(&format!(
-                    "Unable to find image '{}' locally",
-                    reference.familiar()
-                ));
-            }
-            let report = |event: Event<'_>| match event {
-                Event::Layer(d) => say(&format!("{}: Download complete", short(&d.to_string()))),
-                Event::Present(d) => say(&format!("{}: Already exists", short(&d.to_string()))),
-                Event::Manifest(..)
-                | Event::Progress(..)
-                | Event::Building
-                | Event::Unpacking(_)
-                | Event::Pulling => {}
-            };
-            let (pulled, _) = crate::pull::fetch(
-                home,
-                &reference,
-                &targets,
-                &report,
-                &say,
-                Some(cancel),
-                &|k| shards_ipc::env_value(&asked.registry_env, k),
-                false,
-            )?;
-            say(&format!("Digest: {}", pulled.resolved));
-            say(&format!(
-                "Status: Downloaded newer image for {}",
-                reference.familiar()
-            ));
-            pulled
-        }
-    };
+    let (image, lease) = find_image(
+        &request.image,
+        request.pull,
+        &targets,
+        &request.registry_env,
+        home,
+        say,
+        cancel,
+    )?;
     let options = compose(image.config.config.as_ref(), request)?;
     let stop_signal = request
         .stop_signal
@@ -218,7 +242,7 @@ pub fn prepare(
     let rootfs = image.rootfs.ok_or_else(|| {
         format!(
             "{}: an image of a platform this host's microVMs do not run",
-            reference.familiar()
+            Reference::parse(&request.image).map_or_else(|_| request.image.clone(), |r| r.familiar())
         )
     })?;
     Ok(Prepared {

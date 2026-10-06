@@ -1019,7 +1019,16 @@ pub static IMAGE_INSPECT: Command = Command {
     about: "Display detailed information on one or more images",
     aliases: "",
     args: Args::AtLeast(1),
-    flags: &[Flag::string("format", Some(b'f'), "", INSPECT_FORMAT_HELP), HELP],
+    flags: &[
+        Flag::bool(
+            "convert",
+            None,
+            "Convert an image that is not a microVM yet, first",
+        )
+        .extension(),
+        Flag::string("format", Some(b'f'), "", INSPECT_FORMAT_HELP),
+        HELP,
+    ],
     unserved: "\
 platform - s - -",
     interspersed: true,
@@ -1034,6 +1043,12 @@ pub static CONTAINER_INSPECT: Command = Command {
     aliases: "",
     args: Args::AtLeast(1),
     flags: &[
+        Flag::bool(
+            "convert",
+            None,
+            "Convert an image that is not a microVM yet, first",
+        )
+        .extension(),
         Flag::string("format", Some(b'f'), "", INSPECT_FORMAT_HELP),
         HELP,
         Flag::bool("size", Some(b's'), "Display total file sizes"),
@@ -1051,6 +1066,12 @@ pub static HISTORY: Command = Command {
     aliases: "shards image history, shards history",
     args: Args::Exactly(1),
     flags: &[
+        Flag::bool(
+            "convert",
+            None,
+            "Convert an image that is not a microVM yet, first",
+        )
+        .extension(),
         Flag::string(
             "format",
             None,
@@ -1623,6 +1644,12 @@ pub static SAVE: Command = Command {
     aliases: "shards image save, shards save",
     args: Args::AtLeast(1),
     flags: &[
+        Flag::bool(
+            "convert",
+            None,
+            "Convert an image that is not a microVM yet, first",
+        )
+        .extension(),
         HELP,
         Flag::string("output", Some(b'o'), "", "Write to a file, instead of STDOUT"),
     ],
@@ -1709,6 +1736,12 @@ pub static PUSH: Command = Command {
     args: Args::Exactly(1),
     flags: &[
         Flag::bool(
+            "convert",
+            None,
+            "Convert an image that is not a microVM yet, first",
+        )
+        .extension(),
+        Flag::bool(
             "all-tags",
             Some(b'a'),
             "Push all tags of an image to the repository",
@@ -1735,7 +1768,15 @@ pub static TAG: Command = Command {
     about: "Create a tag TARGET_IMAGE that refers to SOURCE_IMAGE",
     aliases: "shards image tag, shards tag",
     args: Args::Exactly(2),
-    flags: &[HELP],
+    flags: &[
+        Flag::bool(
+            "convert",
+            None,
+            "Convert an image that is not a microVM yet, first",
+        )
+        .extension(),
+        HELP,
+    ],
     unserved: "",
     interspersed: false,
     error_prefix: "",

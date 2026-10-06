@@ -51,6 +51,7 @@ impl Thing {
 pub fn rewrite(args: &[String]) -> Option<Vec<String>> {
     let (first, second) = (args.first()?.as_str(), args.get(1).map(String::as_str));
     // `shards image ls` is `shards ls image`: Docker's management form, turned round.
+    let docker_form = matches!(Thing::of(first), Some(Thing::Image | Thing::Container));
     let (action, thing, rest) = match (Thing::of(first), second) {
         (Some(thing @ (Thing::Image | Thing::Container)), Some(action)) => (action, thing, args.get(2..)?),
         (Some(Thing::Vm | Thing::Daemon | Thing::Guest | Thing::Disk | Thing::System | Thing::Volume), _) => {
@@ -64,8 +65,11 @@ pub fn rewrite(args: &[String]) -> Option<Vec<String>> {
         ("remove" | "rm" | "delete", Thing::Vm | Thing::Container) => &["rm"],
         // An image goes with the stopped microVMs made from it.
         ("remove" | "rm" | "delete" | "rmi", Thing::Image) => &["rmi", "--vms"],
-        ("inspect", Thing::Image) => &["image", "inspect"],
-        ("history", Thing::Image) => &["history"],
+        // An image not yet a microVM is made one first, as anything but its removal
+        // asked of it does (`--convert`); Docker's own order, `image inspect`, answers
+        // as Docker's does.
+        ("inspect", Thing::Image) => &["image", "inspect", "--convert"],
+        ("history", Thing::Image) => &["history", "--convert"],
         ("inspect", Thing::Disk) => &["system", "df"],
         ("prune", Thing::Vm | Thing::Container) => &["container", "prune"],
         ("prune", Thing::Image) => &["image", "prune"],
@@ -89,7 +93,7 @@ pub fn rewrite(args: &[String]) -> Option<Vec<String>> {
         ("restart", Thing::Vm | Thing::Container) => &["restart"],
         ("create" | "make", Thing::Vm | Thing::Container) => &["create"],
         ("unpause" | "resume" | "thaw", Thing::Vm | Thing::Container) => &["unpause"],
-        ("inspect", Thing::Vm | Thing::Container) => &["container", "inspect"],
+        ("inspect", Thing::Vm | Thing::Container) => &["container", "inspect", "--convert"],
         ("run", Thing::Vm | Thing::Container) => &["run"],
         ("restore", Thing::Vm) => &["restore"],
         ("run" | "start", Thing::Daemon) => &["daemon"],
@@ -99,12 +103,22 @@ pub fn rewrite(args: &[String]) -> Option<Vec<String>> {
         (action @ ("stop" | "kill" | "logs" | "wait" | "port" | "exec"), Thing::Vm | Thing::Container) => {
             return Some(once(action, rest));
         }
-        (action @ ("pull" | "push" | "tag" | "save" | "load" | "build"), _) => {
+        (action @ ("push" | "tag" | "save"), _) if !docker_form => {
+            let mut out = once(action, &[]);
+            out.push("--convert".into());
+            out.extend(rest.iter().cloned());
+            return Some(out);
+        }
+        (action @ ("pull" | "load" | "build"), _) => {
             return Some(once(action, rest));
         }
         _ => return None,
     };
-    let mut out: Vec<String> = said.iter().map(|w| (*w).to_string()).collect();
+    let mut out: Vec<String> = said
+        .iter()
+        .filter(|w| !(docker_form && **w == "--convert"))
+        .map(|w| (*w).to_string())
+        .collect();
     out.extend(rest.iter().cloned());
     Some(out)
 }
@@ -495,10 +509,29 @@ mod tests {
             said("run vm -d alpine sleep 9").as_deref(),
             Some("run -d alpine sleep 9")
         );
+        // Anything but removal makes an image a microVM first; Docker's order does not.
         assert_eq!(
             said("inspect image alpine").as_deref(),
+            Some("image inspect --convert alpine")
+        );
+        assert_eq!(
+            said("image inspect alpine").as_deref(),
             Some("image inspect alpine")
         );
+        assert_eq!(
+            said("inspect vm ubuntu").as_deref(),
+            Some("container inspect --convert ubuntu")
+        );
+        assert_eq!(
+            said("history image ubuntu").as_deref(),
+            Some("history --convert ubuntu")
+        );
+        assert_eq!(
+            said("tag image ubuntu mine").as_deref(),
+            Some("tag --convert ubuntu mine")
+        );
+        assert_eq!(said("push image mine").as_deref(), Some("push --convert mine"));
+        assert_eq!(said("save image a b").as_deref(), Some("save --convert a b"));
         assert_eq!(said("pull image alpine").as_deref(), Some("pull alpine"));
         assert_eq!(
             said("run vm --kernel k --cpus 2").as_deref(),

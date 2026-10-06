@@ -2655,6 +2655,22 @@ Open:
 - Egress grants for a network (AGENTFILE_ARCH §4.6 `NETWORK --egress`), with the
   Agentfile.
 
+### Every action makes an image a microVM first (D47)
+
+`shards run vm IMAGE` has made a microVM of a container image as it pulls it since D25:
+any OCI image a registry or Docker holds is one shards runs. Shards' grammar does the same
+for every other action on an image or a microVM that names an image: `inspect vm IMAGE`,
+`inspect image`, `history image`, `tag image`, `push image` and `save image` pull an image
+that is not here yet and convert it, as `run` does (one path, `run::find_image`, saying
+the pull as `docker run` says it), and then act on the microVM it makes. `inspect vm IMAGE`
+of a name that is no microVM describes the image's microVM. Removal converts nothing: it
+fetches nothing to delete it. Docker's own order (`image inspect`, `history`, `tag`) answers
+as Docker's does, "No such image" included, so that scripts written for Docker see
+Docker's answers; the conversion is shards' grammar's (`--convert`, shown under shards'
+options in each command's help). Tested in `images.rs`
+(`actions_on_an_image_not_here_convert_it_first`, on real microVMs, and that neither
+Docker's order nor removal fetches anything) and in the grammar's unit tests.
+
 ## 4. Start path (≤ 5 ms budget)
 
 | Step | Cost | Evidence |

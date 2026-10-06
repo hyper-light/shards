@@ -72,6 +72,9 @@ fn answer(argv: &[String]) -> (String, String, u8, bool) {
 
 /// What shards' `--help` adds after the CLI's text, by command: its own flags
 /// (`Flag::extension`), each a deliberate difference.
+const CONVERT: &str =
+    "\nShards options:\n      --convert   Convert an image that is not a microVM yet, first\n";
+
 const EXTENDED: &[(&str, &str)] = &[
     (
         "pull",
@@ -87,6 +90,12 @@ const EXTENDED: &[(&str, &str)] = &[
         "remove",
         "\nShards options:\n      --vms   Remove stopped microVMs\n",
     ),
+    // shards' grammar asks these to convert an image first (`--convert`).
+    ("inspect", CONVERT),
+    ("history", CONVERT),
+    ("save", CONVERT),
+    ("push", CONVERT),
+    ("tag", CONVERT),
 ];
 
 /// `got`, with the section shards adds to `argv`'s help taken off: that section must be
