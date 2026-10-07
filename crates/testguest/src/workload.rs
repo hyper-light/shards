@@ -1129,7 +1129,7 @@ fn confined(args: &[String]) -> i32 {
     for a in args {
         match a.as_str() {
             "see" | "write" | "bind" | "connect" | "call" | "listen" | "reach" | "unreach" | "cat"
-            | "resolve" | "dnsprobe" | "unix" | "abstract" => mode = a.as_str(),
+            | "resolve" | "dnsprobe" | "unix" | "abstract" | "unix-serve" => mode = a.as_str(),
             "fill" => {
                 let _ = io::stdout().write_all(out.as_bytes());
                 return fill_scratch();
@@ -1170,6 +1170,22 @@ fn confined(args: &[String]) -> i32 {
                 };
                 out.push_str(&format!("confined unix {path}: {said}\n"));
                 out.push_str(&format!("confined unix tried {}\n", monotonic_ns()));
+            }
+            path if mode == "unix-serve" => {
+                let _ = std::fs::remove_file(path);
+                let said = match std::os::unix::net::UnixListener::bind(path) {
+                    Ok(l) => {
+                        let _ = std::thread::Builder::new().spawn(move || {
+                            for c in l.incoming().flatten() {
+                                let mut c = c;
+                                let _ = c.write_all(b"hello\n");
+                            }
+                        });
+                        "ok".to_string()
+                    }
+                    Err(e) => errno(&e),
+                };
+                out.push_str(&format!("confined unix-serve {path}: {said}\n"));
             }
             name if mode == "abstract" => {
                 let said = match abstract_connect(name) {

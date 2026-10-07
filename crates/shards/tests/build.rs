@@ -4444,3 +4444,80 @@ fn agents_out_of_memory_end_whole_and_spare_the_run() {
         "init did not end y:\n{all}"
     );
 }
+
+/// Unix sockets an Agentfile grants (`NETWORK --protocol=unix`, `CONNECT
+/// --port=unix:<name>`, D59), by name and one way: b, receiving tools and secret, makes
+/// both; a, granted tools, connects to it and cannot make one there, and secret does not
+/// exist for it; c, granted secret alone, likewise; d, granted none, sees neither.
+#[test]
+fn agents_reach_only_the_unix_sockets_granted() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let (port, _repos) = common::writable_registry();
+    let home = TempDir::new("sock-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let tools = "/run/networks/n/tools/sock";
+    let secret = "/run/networks/n/secret/sock";
+    let mut agents = String::new();
+    for (name, verbs) in [
+        ("b", format!("\"unix-serve\",\"{tools}\",\"{secret}\"")),
+        (
+            "a",
+            format!("\"unix\",\"{tools}\",\"{secret}\",\"unix-serve\",\"/run/networks/n/tools/a\""),
+        ),
+        ("c", format!("\"unix\",\"{secret}\",\"{tools}\"")),
+        ("d", format!("\"unix\",\"{tools}\"")),
+    ] {
+        let dir = TempDir::new(&format!("sock-agent-{name}"));
+        std::fs::create_dir_all(dir.join("bin")).unwrap();
+        std::fs::copy(common::test_guest(), dir.join("bin/testguest")).unwrap();
+        std::fs::write(
+            dir.join("agent.json"),
+            format!(r#"{{"name":"{name}","run":{{"command":["bin/testguest","confined",{verbs}]}}}}"#),
+        )
+        .unwrap();
+        let tag = format!("127.0.0.1:{port}/team/sock-{name}:1");
+        let made = shards(&["build", "agent", dir.to_str().unwrap(), "-t", &tag]);
+        assert_eq!(made.status, Some(0), "{}", made.stderr);
+        let pushed = shards(&["push", "agent", &tag]);
+        assert_eq!(pushed.status, Some(0), "{}", pushed.stderr);
+        agents.push_str(&format!("AGENT {name} FROM {tag}\n"));
+    }
+    let ctx = context("sock-ctx", &format!("FROM {image}\n"));
+    std::fs::write(
+        ctx.join("Agentfile"),
+        format!(
+            "FROM {image}\n{agents}\
+             NETWORK --protocol=unix --ingress=unix:tools --ingress=unix:secret n\n\
+             CONNECT --port=unix:tools a TO b ON n\n\
+             CONNECT --port=unix:secret c TO b ON n\n\
+             CONNECT d WITH d ON n\n"
+        ),
+    )
+    .unwrap();
+    let built = shards(&["build", "-t", "sock:1", ctx.to_str().unwrap()]);
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    let ran = shards(&["run", "--rm", "sock:1", "await", "confined-ready", "4"]);
+    let all = format!("{}{}", ran.stdout, ran.stderr);
+    assert_eq!(ran.status, Some(0), "{all}");
+    let said = |agent: &str, line: &str| {
+        let want = format!("[agent {agent}] confined {line}");
+        assert!(all.lines().any(|l| l == want), "no {want:?} in\n{all}");
+    };
+    said("b", &format!("unix-serve {tools}: ok"));
+    said("b", &format!("unix-serve {secret}: ok"));
+    said("a", &format!("unix {tools}: ok"));
+    said("a", &format!("unix {secret}: errno 2"));
+    // EROFS: it connects, and makes nothing there.
+    said("a", "unix-serve /run/networks/n/tools/a: errno 30");
+    said("c", &format!("unix {secret}: ok"));
+    said("c", &format!("unix {tools}: errno 2"));
+    said("d", &format!("unix {tools}: errno 2"));
+}

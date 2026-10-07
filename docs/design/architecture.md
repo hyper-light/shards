@@ -3563,6 +3563,52 @@ none; without `memory.oom.group`, a domain's PID 1 outlived its filler. Found wh
 can fill and end between two looks of the run's command at `/proc`, and nothing else of
 it reaches the run, so the test's agents are seen filling before they fill.
 
+### Protocols a network carries, and Unix sockets granted (D59, part ten)
+
+Raised 2026-10-07 by the user: a network should say which protocols it carries, TCP, UDP,
+Unix or any of them, with TCP and UDP by default; and agents, harnesses, the skills they
+call and anything they run must use no Unix socket not granted. The interface is the
+user's choice of three put to them:
+
+- `NETWORK --protocol=<tcp|udp|unix>` is a boundary like `--ingress`: every port on the
+  network, and every `EXPOSE … FOR` it, must be of a protocol it carries, checked at build
+  (`agentfile::connections`). The runtime grants only ports already, so TCP and UDP need
+  nothing more there.
+- A Unix socket is a port, `unix:<name>`: let in by `NETWORK --ingress` (or `--expose`;
+  `--egress` refused, since one never leaves the microVM) and granted by `CONNECT
+  --port=unix:<name>`, one way or both as the `CONNECT` says.
+
+At run, each name granted on a network is a directory of the tmpfs the run's writable
+layer lies in (`/rw`), which no path from the run's root reaches, and which is no shared
+mount, so nothing made there after the run starts reaches the run's mount namespace. init
+copies the directory's mount for each agent granted it (`open_tree`, `OPEN_TREE_CLONE`,
+Linux 5.2: a copy of a mount of init's own; copying one already detached needs 6.15,
+c5c12f871a30, so none is), read-only where it only connects (`mount_setattr`, 5.12), and
+the agent attaches it at `/run/networks/<network>/<name>/` (`move_mount`), whose mount
+point its own skeleton holds: no agent sees the name of a socket it is not granted. The
+preview put the socket at `<name>.sock`; a socket cannot be a mount point before it
+exists, and a directory shared by every name would grant each agent every name, so a
+grant is a directory, the socket inside.
+
+Two more things a socket needs, found in the kernel's source:
+
+- Connecting needs write permission on the socket (unix(7)), and `bind` applies the
+  binder's umask itself (net/unix/af_unix.c, `unix_bind_bsd`), so a default ACL on the
+  directory would not help: an agent receiving a socket starts with umask 0, its sockets
+  then let in exactly who can see the directory, those granted. The directory is sticky,
+  so none removes another's.
+- Landlock refuses making a socket outside an agent's scratch: an agent receiving one is
+  given `MAKE_SOCK` and `REMOVE_FILE` beneath its directory alone.
+
+Tested: `networks_carry_only_their_protocols` (the build's rules: TCP and UDP by default,
+Unix where named, a protocol not carried refused wherever named, a name not let in, a Unix
+socket as egress, what is no protocol and what is no port) and, on real microVMs,
+`agents_reach_only_the_unix_sockets_granted`: b receives tools and secret and makes both;
+a, granted tools, connects to it, cannot make one there (`EROFS`), and secret does not
+exist for it; c, granted secret, likewise; d, a member granted none, sees neither.
+Mutation-checked: a sender's directory writable, every grant mounted in every agent, the
+umask kept, the Landlock rule taken away, and the default carrying Unix each fail a test.
+
 ### `SKILL --from=<agent>` (D54, continued)
 
 `SKILL --from=<agent> <skill> FOR <other>` copies, at build time, a skill the agent's

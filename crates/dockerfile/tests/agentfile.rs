@@ -197,7 +197,7 @@ fn connections_go_with_or_to_agents_on_networks() {
     assert!(matches!(one("CONNECT a WITH a ON back"), Directive::Connect(c) if c.ports.is_empty()));
     // Default deny: between agents, no port is no grant, refused rather than read as one.
     assert!(refused("CONNECT a TO b ON back").contains("CONNECT between agents grants no port"));
-    assert!(refused("CONNECT --port=http a TO b ON back").contains("no port or range of ports"));
+    assert!(refused("CONNECT --port=http a TO b ON back").contains("no port, range of ports or Unix socket"));
     assert!(refused("CONNECT --port=8080 a WITH b TO c ON n").contains("WITH or TO, not both"));
     assert!(refused("CONNECT a WITH b").contains("CONNECT requires names"));
     assert!(refused("CONNECT WITH b ON n").contains("CONNECT requires names"));
@@ -449,7 +449,7 @@ fn the_normalized_agentfile_holds_what_was_declared() {
             "\"skills\":[],\"mcp\":[],",
             "\"networks\":[{\"name\":\"back\",\"driver\":\"\",\"ipamDriver\":\"\",\"attachable\":false,\"internal\":false,\"external\":false,\"dns\":false,",
             "\"ipv4\":null,\"ipv6\":null,\"driverOpts\":[],\"labels\":[],\"ipamOpts\":[],\"subnets\":[],\"ipRanges\":[],\"gateways\":[],",
-            "\"auxAddresses\":[],\"ports\":[{\"port\":\"443\",\"direction\":\"egress\"}],\"for\":{\"kind\":null,\"names\":[\"main\"]}}],",
+            "\"auxAddresses\":[],\"protocols\":[\"tcp\",\"udp\"],\"ports\":[{\"port\":\"443\",\"direction\":\"egress\"}],\"for\":{\"kind\":null,\"names\":[\"main\"]}}],",
             "\"connections\":[],\"attachments\":[],",
             "\"exposures\":[{\"ports\":[\"8080\"],\"direction\":\"ingress\",\"networks\":[\"back\"]}],",
             "\"volumes\":[{\"source\":\"data\",\"paths\":[\"/data\"],\"chown\":\"\",\"chmod\":\"\",\"for\":{\"kind\":null,\"names\":[\"main\"]}}]}"
@@ -774,5 +774,99 @@ fn connections_grant_only_what_their_networks_let_in() {
         )))
         .map_err(|e| String::from_utf8_lossy(&e).into_owned()),
         Ok(())
+    );
+}
+
+/// What a network carries (`NETWORK --protocol`, D59): TCP and UDP where none is said, a
+/// port of another refused, and Unix sockets, carried only where named, granted by name.
+#[test]
+fn networks_carry_only_their_protocols() {
+    use shards_dockerfile::instructions::Kind;
+    let directives = |text: &str| -> Result<Vec<_>, String> {
+        let parsed = parser::parse_as(text.as_bytes(), Dialect::Agentfile).unwrap();
+        let ins = instructions::parse(&parsed, &Linter::default())
+            .map_err(|e| String::from_utf8_lossy(&e.message).into_owned())?;
+        Ok(ins
+            .stages
+            .last()
+            .unwrap()
+            .commands
+            .iter()
+            .filter_map(|c| match &c.kind {
+                Kind::Agentfile(d) => Some(d.clone()),
+                _ => None,
+            })
+            .collect())
+    };
+    let check = |text: &str| -> Result<(), String> {
+        shards_dockerfile::agentfile::connections(&directives(text)?)
+            .map_err(|e| String::from_utf8_lossy(&e).into_owned())
+    };
+    let base = "FROM alpine\nAGENT a FROM ./a\nAGENT b FROM ./b\n";
+    // TCP and UDP by default; Unix only where named.
+    assert_eq!(
+        check(&format!(
+            "{base}NETWORK --ingress=8080 --ingress=53/udp n\nCONNECT --port=8080 --port=53/udp a TO b ON n\n"
+        )),
+        Ok(())
+    );
+    let e = check(&format!("{base}NETWORK --ingress=unix:tools n\n")).unwrap_err();
+    assert!(
+        e.contains("--ingress=unix:tools on network n: the network does not carry unix"),
+        "{e}"
+    );
+    assert_eq!(
+        check(&format!(
+            "{base}NETWORK --protocol=tcp,unix --ingress=7000 --ingress=unix:tools n\n\
+             CONNECT --port=7000 --port=unix:tools a TO b ON n\n"
+        )),
+        Ok(())
+    );
+    // A protocol it does not carry, refused wherever it is named.
+    let e = check(&format!("{base}NETWORK --protocol=tcp --ingress=53/udp n\n")).unwrap_err();
+    assert!(
+        e.contains("--ingress=53/udp on network n: the network does not carry udp"),
+        "{e}"
+    );
+    let e = check(&format!(
+        "{base}NETWORK --protocol=udp --egress=53/udp n\nEXPOSE 443 FOR n\n"
+    ))
+    .unwrap_err();
+    assert!(
+        e.contains("EXPOSE 443 on network n: the network does not carry tcp"),
+        "{e}"
+    );
+    let e = check(&format!(
+        "{base}NETWORK --protocol=tcp --ingress=7000 n\nCONNECT --port=unix:tools a TO b ON n\n"
+    ))
+    .unwrap_err();
+    assert!(
+        e.contains("CONNECT --port=unix:tools on network n: the network does not carry unix"),
+        "{e}"
+    );
+    // A Unix socket granted by name: one the network does not let in is refused, and one
+    // never leaves the microVM.
+    let e = check(&format!(
+        "{base}NETWORK --protocol=unix --ingress=unix:tools n\nCONNECT --port=unix:other a TO b ON n\n"
+    ))
+    .unwrap_err();
+    assert!(e.contains("lets no such Unix socket in"), "{e}");
+    let e = check(&format!("{base}NETWORK --protocol=unix --egress=unix:tools n\n")).unwrap_err();
+    assert!(e.contains("a Unix socket never leaves the microVM"), "{e}");
+    // What is no protocol, and what is no port.
+    let e = check(&format!("{base}NETWORK --protocol=sctp n\n")).unwrap_err();
+    assert!(
+        e.contains("NETWORK --protocol=sctp: no protocol it may carry"),
+        "{e}"
+    );
+    let e = check(&format!("{base}NETWORK --ingress=unix:/etc/x n\n")).unwrap_err();
+    assert!(e.contains("no port, range of ports or Unix socket"), "{e}");
+    let e = check(&format!(
+        "{base}NETWORK --protocol=unix --ingress=unix:t n\nCONNECT --port=unix: a TO b ON n\n"
+    ))
+    .unwrap_err();
+    assert!(
+        e.contains("CONNECT --port=unix:: no port, range of ports or Unix socket"),
+        "{e}"
     );
 }

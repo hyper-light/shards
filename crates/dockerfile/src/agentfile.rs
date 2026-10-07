@@ -115,7 +115,40 @@ pub struct Network {
     /// which no other grant implies (D59).
     pub dns: bool,
     pub ports: Vec<(Vec<u8>, Direction)>,
+    /// `--protocol`: what it carries at all, a bit for each of [`PROTOCOLS`]; none for its
+    /// default, TCP and UDP. A port of another is refused (D59).
+    pub protocols: u8,
     pub scope: Scope,
+}
+
+/// The protocols a network may carry (`NETWORK --protocol`).
+pub const PROTOCOLS: [&[u8]; 3] = [b"tcp", b"udp", b"unix"];
+
+/// What a network carries: its `--protocol`s, else TCP and UDP.
+pub fn carries(n: &Network, protocol: &[u8]) -> bool {
+    let bits = if n.protocols == 0 { 0b011 } else { n.protocols };
+    PROTOCOLS
+        .iter()
+        .position(|p| *p == protocol)
+        .is_some_and(|i| bits & (1 << i) != 0)
+}
+
+/// A Unix socket a network carries, `unix:<name>`: its name, a stage-style name, which is
+/// the directory its socket lies in, `/run/networks/<network>/<name>/` (D59).
+pub fn unix_endpoint(s: &[u8]) -> Option<&[u8]> {
+    s.strip_prefix(b"unix:")
+        .filter(|n| valid_stage_name(n) && go::to_lower(n) == *n)
+}
+
+/// The protocol a port names: `unix` for a Unix socket, else its IP protocol's name.
+fn protocol_of(p: &[u8]) -> Option<&'static [u8]> {
+    if unix_endpoint(p).is_some() {
+        return Some(b"unix");
+    }
+    match port_range(p)?.0 {
+        6 => Some(b"tcp"),
+        _ => Some(b"udp"),
+    }
 }
 
 /// `CONNECT`: who may send to whom, on which ports, on which networks (§4.7). Networks are
@@ -441,6 +474,7 @@ fn network(req: &mut Req<'_>) -> Result<Network, Vec<u8>> {
         ("ingress", FlagType::Strings),
         ("egress", FlagType::Strings),
         ("dns", FlagType::Bool),
+        ("protocol", FlagType::Strings),
         ("target-kind", FlagType::String),
     ] {
         req.flags
@@ -463,6 +497,21 @@ fn network(req: &mut Req<'_>) -> Result<Network, Vec<u8>> {
     ] {
         ports.extend(f.values(flag).into_iter().map(|p| (p, direction)));
     }
+    // What it carries: each `--protocol`, a comma-separated list.
+    let mut protocols = 0u8;
+    for v in f.values("protocol") {
+        for p in v.split(|&b| b == b',') {
+            let p = go::to_lower(p.trim_ascii());
+            let Some(i) = PROTOCOLS.iter().position(|q| *q == p.as_slice()) else {
+                return Err(errf(&[
+                    b"NETWORK --protocol=",
+                    &v,
+                    b": no protocol it may carry (tcp, udp, unix)",
+                ]));
+            };
+            protocols |= 1 << i;
+        }
+    }
     Ok(Network {
         name: name(n, "a network")?,
         driver: f.value("driver"),
@@ -481,6 +530,7 @@ fn network(req: &mut Req<'_>) -> Result<Network, Vec<u8>> {
         aux_addresses: f.values("aux-address"),
         dns: f.is_true("dns"),
         ports,
+        protocols,
         scope: Scope {
             kind: target_kind(req)?,
             names: for_names(after, "NETWORK")?,
@@ -517,11 +567,11 @@ fn connect(req: &mut Req<'_>) -> Result<Connect, Vec<u8>> {
     }
     let ports = req.flags.values("port");
     for p in &ports {
-        if port_range(p).is_none() {
+        if protocol_of(p).is_none() {
             return Err(errf(&[
                 b"CONNECT --port=",
                 p,
-                b": no port or range of ports (8080, 53/udp, 8000-8010/tcp)",
+                b": no port, range of ports or Unix socket (8080, 53/udp, 8000-8010/tcp, unix:<name>)",
             ]));
         }
     }
@@ -531,7 +581,7 @@ fn connect(req: &mut Req<'_>) -> Result<Connect, Vec<u8>> {
     // nothing, and is refused rather than read as a grant.
     let alone = from.iter().chain(&to).all(|n| Some(n) == from.first());
     if ports.is_empty() && !alone {
-        return Err(b"CONNECT between agents grants no port: name what the receiving side accepts with --port=<port>[/tcp|/udp] (networks are default deny)".to_vec());
+        return Err(b"CONNECT between agents grants no port: name what the receiving side accepts with --port=<port>[/tcp|/udp] or --port=unix:<name> (networks are default deny)".to_vec());
     }
     Ok(Connect {
         kind: target_kind(req)?,
@@ -1072,8 +1122,76 @@ pub fn egress_declared(directives: &[Directive]) -> Vec<Vec<u8>> {
 /// Each `CONNECT`'s flows held to its networks (default deny): every port it grants must be
 /// one each network it is on lets in to its members (`NETWORK --ingress` or `--expose`),
 /// a network it is on must be declared, and `--dns` names a resolver past the microVM,
+/// A port of a protocol network `net` does not carry, refused.
+fn carried(net: &[u8], what: &[u8], p: &[u8], protocol: &[u8]) -> Vec<u8> {
+    [
+        what,
+        p,
+        b" on network ",
+        net,
+        b": the network does not carry ",
+        protocol,
+        b"; name it with NETWORK --protocol (TCP and UDP where none is said; networks are default deny)",
+    ]
+    .concat()
+}
+
 /// which an internal network has none of.
 pub fn connections(directives: &[Directive]) -> Result<(), Vec<u8>> {
+    // Each port a network opens is of a protocol it carries, and a Unix socket never
+    // leaves the microVM.
+    for d in directives {
+        let Directive::Network(n) = d else { continue };
+        for (p, direction) in &n.ports {
+            let flag: &[u8] = match direction {
+                Direction::Both => b"--expose=",
+                Direction::Ingress => b"--ingress=",
+                Direction::Egress => b"--egress=",
+            };
+            let Some(protocol) = protocol_of(p) else {
+                return Err([
+                    b"NETWORK ".as_slice(),
+                    flag,
+                    p,
+                    b" on network ",
+                    &n.name,
+                    b": no port, range of ports or Unix socket (8080, 53/udp, 8000-8010/tcp, unix:<name>)",
+                ]
+                .concat());
+            };
+            if protocol == b"unix" && *direction == Direction::Egress {
+                return Err([
+                    b"NETWORK --egress=".as_slice(),
+                    p,
+                    b" on network ",
+                    &n.name,
+                    b": a Unix socket never leaves the microVM; let it in to the network's members with --ingress",
+                ]
+                .concat());
+            }
+            if !carries(n, protocol) {
+                return Err(carried(&n.name, flag, p, protocol));
+            }
+        }
+    }
+    for d in directives {
+        let Directive::Expose(e) = d else { continue };
+        for net in &e.networks {
+            let Some(n) = directives.iter().find_map(|d| match d {
+                Directive::Network(n) if n.name == *net => Some(n),
+                _ => None,
+            }) else {
+                continue;
+            };
+            for p in &e.ports {
+                if let Some(protocol) = protocol_of(p)
+                    && !carries(n, protocol)
+                {
+                    return Err(carried(net, b"EXPOSE ", p, protocol));
+                }
+            }
+        }
+    }
     for d in directives {
         if let Directive::Network(n) = d
             && n.dns
@@ -1103,6 +1221,28 @@ pub fn connections(directives: &[Directive]) -> Result<(), Vec<u8>> {
                 .filter_map(|(p, _)| port_range(p))
                 .collect();
             for p in &c.ports {
+                if let Some(name) = unix_endpoint(p) {
+                    if !carries(n, b"unix") {
+                        return Err(carried(net, b"CONNECT --port=", p, b"unix"));
+                    }
+                    let opened = n
+                        .ports
+                        .iter()
+                        .any(|(q, d)| *d != Direction::Egress && unix_endpoint(q) == Some(name));
+                    if !opened {
+                        return Err([
+                            b"CONNECT --port=".as_slice(),
+                            p,
+                            b" on network ",
+                            net,
+                            b": the network lets no such Unix socket in to its members; open it with NETWORK --ingress=",
+                            p,
+                            b" (networks are default deny)",
+                        ]
+                        .concat());
+                    }
+                    continue;
+                }
                 let Some((proto, lo, hi)) = port_range(p) else {
                     continue;
                 };
@@ -1516,6 +1656,13 @@ pub fn spec(directives: &[Directive]) -> Vec<u8> {
                     field(&mut o, name);
                     write_strings(&mut o, values);
                 }
+                field(&mut o, "protocols");
+                let carried: Vec<Vec<u8>> = PROTOCOLS
+                    .iter()
+                    .filter(|p| carries(n, p))
+                    .map(|p| p.to_vec())
+                    .collect();
+                write_strings(&mut o, &carried);
                 field(&mut o, "ports");
                 o.push('[');
                 for (i, (port, d)) in n.ports.iter().enumerate() {

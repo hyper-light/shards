@@ -73,6 +73,9 @@ pub struct Link {
     pub mcp: Vec<(String, u16)>,
     pub connects: bool,
     pub accepts: bool,
+    /// The Unix sockets it is granted (`CONNECT --port=unix:<name>`), each a network, a
+    /// name and whether it may make one there (it receives) or only connect to one.
+    pub unix: Vec<(String, String, bool)>,
 }
 
 /// A remote MCP server's host, lowered, and port, from its URL: the port written, or else
@@ -154,6 +157,7 @@ pub fn plan(spec: &Value, names: &[Name], own: Option<(Ipv4Addr, u8)>) -> Result
     // each from one domain to another on the ports its CONNECT names, and nothing else:
     // networks are default deny, and membership grants no flow.
     let mut members: Vec<(String, Vec<usize>)> = Vec::new();
+    let mut sockets: Vec<(usize, String, String, bool)> = Vec::new();
     let mut pairs: Vec<(usize, usize, Vec<Egress>)> = Vec::new();
     let mut grant = |x: usize, y: usize, ports: &[Egress]| {
         if x == y {
@@ -185,8 +189,11 @@ pub fn plan(spec: &Value, names: &[Name], own: Option<(Ipv4Addr, u8)>) -> Result
             .filter_map(|n| index(kind, n))
             .collect();
         let both = matches!(c.get("bothWays"), Some(Value::Bool(true)));
-        let ports: Vec<Egress> = strings(c.get("ports"))
+        let all = strings(c.get("ports"));
+        let unix: Vec<&str> = all.iter().filter_map(|p| p.strip_prefix("unix:")).collect();
+        let ports: Vec<Egress> = all
             .iter()
+            .filter(|p| !p.starts_with("unix:"))
             .map(|p| port_range(p).ok_or_else(|| format!("CONNECT --port={p}: no port or range of ports")))
             .collect::<Result<_, _>>()?;
         for net in strings(c.get("on")) {
@@ -205,11 +212,22 @@ pub fn plan(spec: &Value, names: &[Name], own: Option<(Ipv4Addr, u8)>) -> Result
                 }
             }
         }
-        for &x in &from {
-            for &y in &to {
-                grant(x, y, &ports);
-                if both {
-                    grant(y, x, &ports);
+        if !ports.is_empty() {
+            for &x in &from {
+                for &y in &to {
+                    grant(x, y, &ports);
+                    if both {
+                        grant(y, x, &ports);
+                    }
+                }
+            }
+        }
+        // Its Unix sockets: those after TO receive, making them; those before connect,
+        // and with WITH receive too.
+        for net in strings(c.get("on")) {
+            for name in &unix {
+                for (&d, receives) in from.iter().map(|d| (d, both)).chain(to.iter().map(|d| (d, true))) {
+                    sockets.push((d, net.clone(), (*name).to_string(), receives));
                 }
             }
         }
@@ -387,6 +405,12 @@ pub fn plan(spec: &Value, names: &[Name], own: Option<(Ipv4Addr, u8)>) -> Result
             link.mcp = granted;
             link.connects = connects;
             link.accepts = accepts;
+            for (_, net, name, receives) in sockets.iter().filter(|s| s.0 == d) {
+                match link.unix.iter_mut().find(|(n, m, _)| n == net && m == name) {
+                    Some(have) => have.2 |= receives,
+                    None => link.unix.push((net.clone(), name.clone(), *receives)),
+                }
+            }
         }
     }
     let uplink = links

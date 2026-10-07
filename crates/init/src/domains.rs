@@ -275,6 +275,8 @@ mod landlock {
     pub const WRITE_FILE: u64 = 1 << 1;
     pub const READ_FILE: u64 = 1 << 2;
     pub const READ_DIR: u64 = 1 << 3;
+    pub const REMOVE_FILE: u64 = 1 << 5;
+    pub const MAKE_SOCK: u64 = 1 << 9;
     /// `IOCTL_DEV`, ABI 5: the last filesystem right, so every right is below it.
     pub const IOCTL_DEV: u64 = 1 << 15;
     pub const FS_ALL: u64 = (IOCTL_DEV << 1) - 1;
@@ -320,6 +322,54 @@ struct Prepared {
     go: Option<RawFd>,
     /// Its root: the image as built, a mount not yet attached.
     root: RawFd,
+    /// Its Unix sockets' directories, each a mount not yet attached and where it goes,
+    /// `/run/networks/<network>/<name>`; read-only where it only connects.
+    sockets: Vec<(RawFd, CString)>,
+    /// Those of them it receives on, which Landlock lets it make sockets in.
+    receives: Vec<CString>,
+}
+
+/// `open_tree`'s and `mount_setattr`'s (include/uapi/linux/mount.h).
+mod tree {
+    pub const OPEN_TREE_CLONE: u32 = 1;
+    pub const OPEN_TREE_CLOEXEC: u32 = libc::O_CLOEXEC as u32;
+}
+
+/// A copy of the mount of directory `dir`, attached nowhere, with `attr` set: a mount of
+/// init's own, as `open_tree` has copied since Linux 5.2, and `mount_setattr` changes since
+/// 5.12.
+fn copy_of(dir: &str, attr: u64) -> io::Result<OwnedFd> {
+    let path = CString::new(dir).map_err(io::Error::other)?;
+    // SAFETY: open_tree(2) of a NUL-terminated path.
+    let fd = unsafe {
+        libc::syscall(
+            libc::SYS_open_tree,
+            libc::AT_FDCWD,
+            path.as_ptr(),
+            tree::OPEN_TREE_CLONE | tree::OPEN_TREE_CLOEXEC,
+        )
+    };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: the descriptor open_tree just made, owned here alone.
+    let copy = unsafe { OwnedFd::from_raw_fd(fd as RawFd) };
+    let set: [u64; 4] = [attr, 0, 0, 0];
+    // SAFETY: mount_setattr(2) of the copy just made, with a struct mount_attr it owns.
+    if unsafe {
+        libc::syscall(
+            libc::SYS_mount_setattr,
+            copy.as_raw_fd(),
+            c"".as_ptr(),
+            libc::AT_EMPTY_PATH,
+            set.as_ptr(),
+            std::mem::size_of_val(&set),
+        )
+    } != 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(copy)
 }
 
 /// The new mount API's (include/uapi/linux/mount.h).
@@ -382,7 +432,7 @@ fn detached(fstype: &CStr, options: &[(&CStr, &CStr)]) -> io::Result<OwnedFd> {
 
 /// What a domain mounts over and the image may lack, made where it does: the run makes
 /// them in its writable layer, which a domain does not see.
-fn skeleton(lower: std::os::fd::BorrowedFd<'_>) -> io::Result<OwnedFd> {
+fn skeleton(lower: std::os::fd::BorrowedFd<'_>, sockets: &[CString]) -> io::Result<OwnedFd> {
     let skel = detached(c"tmpfs", &[(c"mode", c"0755")])?;
     let lacks = |path: &CStr| {
         // SAFETY: fstatat(2) of a NUL-terminated path into a zeroed stat it owns, a type of
@@ -404,6 +454,27 @@ fn skeleton(lower: std::os::fd::BorrowedFd<'_>) -> io::Result<OwnedFd> {
         // SAFETY: mkdirat(2) of a NUL-terminated path in the tmpfs just made.
         if unsafe { libc::mkdirat(skel.as_raw_fd(), dir.as_ptr(), 0o755) } != 0 {
             return Err(io::Error::last_os_error());
+        }
+    }
+    // Where its Unix sockets' directories go: `run/networks/<network>/<name>`, each made
+    // with its parents, `run` merged with the image's own.
+    for dir in sockets {
+        let bytes = dir.to_bytes();
+        for (at, _) in bytes
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| **b == b'/')
+            .chain([(bytes.len(), &0)])
+        {
+            let Ok(part) = CString::new(bytes.get(..at).unwrap_or_default()) else {
+                continue;
+            };
+            // SAFETY: mkdirat(2) of a NUL-terminated path in the tmpfs just made.
+            if unsafe { libc::mkdirat(skel.as_raw_fd(), part.as_ptr(), 0o755) } != 0
+                && io::Error::last_os_error().kind() != io::ErrorKind::AlreadyExists
+            {
+                return Err(io::Error::last_os_error());
+            }
         }
     }
     for file in [c"etc/hosts", c"etc/resolv.conf"] {
@@ -518,6 +589,10 @@ impl Memory {
             .as_bytes());
         }
     }
+}
+
+fn cstr_of(s: &str) -> Result<CString, String> {
+    CString::new(s).map_err(|_| format!("a NUL in {s:?}"))
 }
 
 /// `MemAvailable` of `/proc/meminfo`, in bytes.
@@ -685,7 +760,28 @@ pub fn start(
     landlock_abi()?;
     let lower =
         crate::changes::lower().ok_or("the image's layers were not kept, which a domain's root is")?;
-    let skel = skeleton(lower).map_err(|e| format!("a domain's root: {e}"))?;
+    let skel = skeleton(lower, &[]).map_err(|e| format!("a domain's root: {e}"))?;
+    // The Unix sockets granted (`CONNECT --port=unix:<name>`): a directory each, of the
+    // tmpfs the run's writable layer lies in, which no path from the run's root reaches and
+    // no mount of the run's shares; sticky, so that none removes another's.
+    let shared = crate::changes::upper().map(|u| format!("{u}/../agents"));
+    let mut made: Vec<(String, String)> = Vec::new();
+    for d in domains {
+        for (net, name, _) in d.link.as_ref().map(|l| l.unix.as_slice()).unwrap_or_default() {
+            if made.iter().any(|(n, m)| n == net && m == name) {
+                continue;
+            }
+            let base = shared
+                .as_ref()
+                .ok_or("the run's writable layer was not kept, where Unix sockets lie")?;
+            let dir = format!("{base}/{net}/{name}");
+            std::fs::create_dir_all(&dir).map_err(|e| format!("Unix socket {net}/{name}: {e}"))?;
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o1777))
+                .map_err(|e| format!("Unix socket {net}/{name}: {e}"))?;
+            made.push((net.clone(), name.clone()));
+        }
+    }
     let mut started = Vec::new();
     for (i, d) in domains.iter().enumerate() {
         let group = format!("{CGROUPS}/{}", d.cgroup);
@@ -710,9 +806,43 @@ pub fn start(
             len: u16::try_from(filter.1.len()).map_err(|_| "the domains' seccomp filter is too long")?,
             filter: filter.1.as_ptr().cast_mut(),
         };
-        let root = image_root(&skel, lower).map_err(|e| format!("{}: its root: {e}", d.label))?;
+        let granted = d.link.as_ref().map(|l| l.unix.as_slice()).unwrap_or_default();
+        let mut sockets = Vec::new();
+        let mut copies = Vec::new();
+        let mut receives = Vec::new();
+        for (net, name, receiving) in granted {
+            let target = cstr_of(&format!("run/networks/{net}/{name}"))?;
+            let base = shared
+                .as_ref()
+                .ok_or("the run's writable layer was not kept, where Unix sockets lie")?;
+            let quiet = libc::MOUNT_ATTR_NOSUID | libc::MOUNT_ATTR_NODEV | libc::MOUNT_ATTR_NOEXEC;
+            let attr = if *receiving {
+                quiet
+            } else {
+                quiet | libc::MOUNT_ATTR_RDONLY
+            };
+            let copy = copy_of(&format!("{base}/{net}/{name}"), attr)
+                .map_err(|e| format!("{}: Unix socket {net}/{name}: {e}", d.label))?;
+            let at = cstr_of(&format!("/run/networks/{net}/{name}"))?;
+            if *receiving {
+                receives.push(at.clone());
+            }
+            sockets.push((copy.as_raw_fd(), at));
+            copies.push((copy, target));
+        }
+        let own_skel;
+        let skel_of = if copies.is_empty() {
+            &skel
+        } else {
+            let dirs: Vec<CString> = copies.iter().map(|(_, t)| t.clone()).collect();
+            own_skel = skeleton(lower, &dirs).map_err(|e| format!("{}: its root: {e}", d.label))?;
+            &own_skel
+        };
+        let root = image_root(skel_of, lower).map_err(|e| format!("{}: its root: {e}", d.label))?;
         let prepared = Prepared {
             root: root.as_raw_fd(),
+            sockets,
+            receives,
             hide: all
                 .iter()
                 .filter(|x| **x != d.dir)
@@ -798,6 +928,7 @@ pub fn start(
         }
         drop(write_end);
         drop(root);
+        drop(copies);
         if let (Some(link), Some((r, w))) = (&d.link, go) {
             drop(r);
             let switch = match SWITCH.get() {
@@ -1026,6 +1157,28 @@ fn child(d: &Domain, p: &Prepared, out: RawFd, flags: u32, program: &libc::sock_
                 fail(out, mounting);
             }
         }
+        // Its Unix sockets' directories, each its own mount, read-only where it only
+        // connects: connecting needs no write to the directory, and making a socket does.
+        for (copy, at) in &p.sockets {
+            if libc::syscall(
+                libc::SYS_move_mount,
+                *copy,
+                c"".as_ptr(),
+                libc::AT_FDCWD,
+                at.as_ptr(),
+                mount_api::MOVE_MOUNT_F_EMPTY_PATH,
+            ) != 0
+            {
+                fail(out, c"mounting its Unix sockets");
+            }
+        }
+        // One that receives makes its sockets for others' uids to connect to (unix(7):
+        // connecting needs write permission on the socket), and `bind` applies its umask
+        // (net/unix/af_unix.c, `unix_bind_bsd`): none, whom the directory shows to only those
+        // granted.
+        if !p.receives.is_empty() {
+            libc::umask(0);
+        }
         // Its own name, and loopback.
         if libc::sethostname(p.hostname.as_ptr(), p.hostname.as_bytes().len()) != 0 {
             fail(out, c"naming its host");
@@ -1116,6 +1269,25 @@ fn child(d: &Domain, p: &Prepared, out: RawFd, flags: u32, program: &libc::sock_
             if added != 0 {
                 fail(out, c"adding a Landlock rule");
             }
+        }
+        for at in &p.receives {
+            let fd = libc::open(at.as_ptr(), libc::O_PATH | libc::O_CLOEXEC);
+            let rule = landlock::PathBeneathAttr {
+                allowed_access: landlock::MAKE_SOCK | landlock::REMOVE_FILE,
+                parent_fd: fd,
+            };
+            if fd < 0
+                || libc::syscall(
+                    libc::SYS_landlock_add_rule,
+                    ruleset,
+                    landlock::RULE_PATH_BENEATH,
+                    &raw const rule,
+                    0u32,
+                ) != 0
+            {
+                fail(out, c"adding a Landlock rule for its Unix sockets");
+            }
+            libc::close(fd);
         }
         if libc::syscall(libc::SYS_landlock_restrict_self, ruleset, 0u32) != 0 {
             fail(out, c"entering its Landlock ruleset");
