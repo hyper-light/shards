@@ -948,6 +948,39 @@ pub fn boundary(directives: &[Directive], net: &[u8], outward: bool) -> Vec<(u8,
     out
 }
 
+/// The label of the ports an Agentfile declares `EXPOSE ... AS egress` alone (§12 answer
+/// 6): `shards run -p` refuses to publish them, as an egress port is a destination, not a
+/// listener.
+pub const EGRESS_DECLARED_LABEL: &[u8] = b"vnd.osi.agentfile.egress-declared";
+
+/// The ports an Agentfile declares `EXPOSE ... AS egress` and nowhere both ways or for
+/// ingress, as Docker writes them, each once.
+pub fn egress_declared(directives: &[Directive]) -> Vec<Vec<u8>> {
+    let mut out: Vec<Vec<u8>> = Vec::new();
+    let inward: Vec<&[u8]> = directives
+        .iter()
+        .filter_map(|d| match d {
+            Directive::Expose(e) if e.direction != Direction::Egress => {
+                Some(e.ports.iter().map(Vec::as_slice))
+            }
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    for d in directives {
+        if let Directive::Expose(e) = d
+            && e.direction == Direction::Egress
+        {
+            for p in &e.ports {
+                if !inward.contains(&p.as_slice()) && !out.contains(p) {
+                    out.push(p.clone());
+                }
+            }
+        }
+    }
+    out
+}
+
 /// What an Agentfile lets in past its microVM (§4.1, §4.6, §12 answer 6): a network's
 /// ports both boundaries open inward reach its member, as `shards run -p` publishes them.
 /// Which of several members a connection is for no directive says yet, so a network with

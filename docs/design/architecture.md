@@ -3375,8 +3375,14 @@ two members has a unit test. Mutation-checked: no DNAT, and no switch rule, each
 7100 unanswered.
 
 Open: DNS over TCP, for answers too long for UDP; ingress to a network of several members
-(which one a connection is for); refusing `-p` of a port declared `AS egress` (answer 6),
-which needs the image to name those ports (`--ingress`, `EXPOSE … AS ingress`: a published port to a
+(which one a connection is for).
+
+A port the Agentfile declares `EXPOSE … AS egress`, and nowhere both ways or for ingress,
+is named in the image's label `vnd.osi.agentfile.egress-declared` (ranges as Docker writes
+them). A run that publishes one, by `-p` or `-P`, is refused before its microVM is made:
+an egress port is where agents reach out to, not where they listen (answer 6). Tested by
+the ingress test (`-p` of an egress-declared port refused, its words), mutation-checked;
+the label's ports by a unit test. (`--ingress`, `EXPOSE … AS ingress`: a published port to a
 domain); remote MCP servers, whose grant names one destination and not a port; IPv6
 subnets; process events; §9.10's escape tests beyond these.
 

@@ -1813,6 +1813,25 @@ impl<D: Disk> Daemon<D> {
         // fails, fails the start once the container is made, as dockerd's does. On none,
         // dockerd publishes nothing, and says nothing of it.
         let (bindings, alone) = publish::wanted(&run, &prepared.exposed);
+        // A port its image's Agentfile declares `AS egress`: a destination, not a listener,
+        // so none is published (AGENTFILE_ARCH.md §12 answer 6).
+        let label =
+            std::str::from_utf8(shards_dockerfile::agentfile::EGRESS_DECLARED_LABEL).unwrap_or_default();
+        if let Some(declared) = prepared.labels.get(label) {
+            let declared = shards_net::Ports::parse(declared).unwrap_or_default();
+            let proto = |p: &str| match p {
+                "udp" => shards_net::Proto::Udp,
+                _ => shards_net::Proto::Tcp,
+            };
+            if let Some(b) = bindings.iter().find(|b| declared.has(proto(&b.proto), b.port)) {
+                refuse(&format!(
+                    "cannot publish port {}/{}: the image's Agentfile declares it AS egress, a port its agents reach out to, not one they listen on",
+                    b.port, b.proto
+                ));
+                abandon(&id);
+                return None;
+            }
+        }
         let bound = match start {
             network::Start::Attach(network::Net::Bridge | network::Net::User) => {
                 if let Some(e) = publish::unsupported(&bindings) {

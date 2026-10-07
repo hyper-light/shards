@@ -651,3 +651,33 @@ fn ingress_reaches_a_networks_one_member() {
         Ok(())
     );
 }
+
+/// The ports declared `EXPOSE ... AS egress` alone, which `shards run -p` refuses to publish
+/// (§12 answer 6); a port also declared both ways or for ingress is publishable.
+#[test]
+fn egress_declared_ports_are_named_for_the_run() {
+    use shards_dockerfile::instructions::Kind;
+    let parsed = parser::parse_as(
+        b"FROM alpine\nAGENT a FROM ./a\nNETWORK out\nEXPOSE 443 9000-9010/udp AS egress FOR out\n\
+          EXPOSE 8443 AS egress FOR out\nEXPOSE 8443 FOR out\nCONNECT a WITH a ON out\n",
+        Dialect::Agentfile,
+    )
+    .unwrap();
+    let ins = instructions::parse(&parsed, &Linter::default()).unwrap();
+    let directives: Vec<_> = ins
+        .stages
+        .last()
+        .unwrap()
+        .commands
+        .iter()
+        .filter_map(|c| match &c.kind {
+            Kind::Agentfile(d) => Some(d.clone()),
+            _ => None,
+        })
+        .collect();
+    let got: Vec<String> = shards_dockerfile::agentfile::egress_declared(&directives)
+        .into_iter()
+        .map(|p| String::from_utf8(p).unwrap())
+        .collect();
+    assert_eq!(got, ["443", "9000-9010/udp"]);
+}

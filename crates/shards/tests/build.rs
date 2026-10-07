@@ -3893,12 +3893,23 @@ fn agents_answer_what_their_networks_let_in() {
         format!(
             "FROM {image}\nAGENT a FROM {tag}\n\
              NETWORK --ingress=7100 front\nEXPOSE 7100 AS ingress FOR front\nEXPOSE 7200\n\
+             EXPOSE 9443 AS egress FOR front\n\
              CONNECT a WITH a ON front\n"
         ),
     )
     .unwrap();
     let built = shards(&["build", "-t", "ingress:1", ctx.to_str().unwrap()]);
     assert_eq!(built.status, Some(0), "{}", built.stderr);
+    // A port declared AS egress is a destination: publishing it is refused (§12 answer 6).
+    let refused = shards(&["run", "--rm", "-p", "127.0.0.1::9443", "ingress:1", "exit", "0"]);
+    assert_ne!(refused.status, Some(0), "{}", refused.stdout);
+    assert!(
+        refused
+            .stderr
+            .contains("cannot publish port 9443/tcp: the image's Agentfile declares it AS egress"),
+        "{}",
+        refused.stderr
+    );
     let ran = shards(&[
         "run",
         "-d",

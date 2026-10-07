@@ -3809,6 +3809,13 @@ impl Planner<'_> {
         if !t.agentfile.is_empty() {
             crate::agentfile::reach(&t.agentfile).map_err(Fail::new)?;
             crate::agentfile::ingress(&t.agentfile).map_err(Fail::new)?;
+            let declared = crate::agentfile::egress_declared(&t.agentfile);
+            if !declared.is_empty() {
+                image.config.labels.insert(
+                    crate::agentfile::EGRESS_DECLARED_LABEL.to_vec(),
+                    declared.join(&b","[..]),
+                );
+            }
             let egress = crate::agentfile::egress(&t.agentfile);
             if !egress.is_empty() {
                 image

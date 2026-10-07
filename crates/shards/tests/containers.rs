@@ -3359,14 +3359,23 @@ fn published_ports_reach_the_guest_as_dockerd_publishes_them() {
     // program to bind it has it, every time. A port below the ephemeral ranges, which no
     // other test's connection can be given between the runs.
     let p = fixed_port();
-    for _ in 0..20 {
+    // When this test last had p itself, bound and let go: a run refused after it says how
+    // long another program had to take it (project-port-free-flake).
+    let mut freed = Instant::now();
+    for i in 0..20 {
         let again = run_in(
             &home,
             &image,
             &["--rm", "-p", &format!("{p}:7000")],
             &["exit", "0"],
         );
-        assert_eq!(again.status, Some(0), "{again}; held by {}", holders_of(p));
+        assert_eq!(
+            again.status,
+            Some(0),
+            "{again}; run {i} of 20, {:?} after this test had {p} free; held by {}",
+            freed.elapsed(),
+            holders_of(p)
+        );
         // Nothing listens on it once `run` has returned: asked of the system, not by
         // binding, which SO_REUSEADDR lets succeed beside a socket a later bind meets.
         let listening = listeners_of(p);
@@ -3377,6 +3386,7 @@ fn published_ports_reach_the_guest_as_dockerd_publishes_them() {
         if let Err(e) = std::net::TcpListener::bind(("0.0.0.0", p)) {
             panic!("{p} after a run ended: {e}; held by {}", holders_of(p));
         }
+        freed = Instant::now();
     }
     // And the daemon holds it no longer: taken by another program, it is refused at once,
     // not after the wait for a run's ports to come free.

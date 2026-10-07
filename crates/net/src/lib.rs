@@ -147,7 +147,8 @@ impl Ports {
         Some(Ports(out))
     }
 
-    fn has(&self, proto: Proto, port: u16) -> bool {
+    /// Whether `port` of `proto` is among them.
+    pub fn has(&self, proto: Proto, port: u16) -> bool {
         self.0
             .iter()
             .any(|&(p, lo, hi)| p == proto && (lo..=hi).contains(&port))
