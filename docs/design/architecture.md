@@ -3176,8 +3176,18 @@ Mutation-checked: requests from a peer not answered, answers to no request, send
 peer not sent to, and `TO` taken both ways each fail a test. `ATTACH`'s channels are the
 same edges, harness to agent, and are not yet tested on a microVM.
 
-Next: MCP servers in scope through it, labels, and code mode, whose sandbox's language is
-yet to be chosen.
+**MCP servers, offered** (§4.4, §12 answer 5: offered, not imposed). init gives each
+instance the servers its caller is in scope for: those with no `FOR` to every agent, and
+those whose `FOR` names it, harnesses only so. A remote one is given by its URL; one
+spoken to over stdio by where it lies in the caller's view (`/mcp/<name>`, or `<its
+dir>.d/mcp/<name>` where `FOR` names it) and the command its OSI config gives, which the
+caller runs itself, in its own confinement, as §9.6 asks: a server is never a deputy
+holding more than its caller. The instance's `mcp` tool answers with them. Tested on real
+microVMs: `mcp_servers_are_offered_to_those_in_scope` (a remote server `FOR a` offered
+to a alone, a local one to a and b); mutation-checked: with every server in every
+scope, b is offered a's.
+
+Next: labels, and code mode, whose sandbox's language is yet to be chosen.
 
 ### Agents run in their domains (D59, part one)
 

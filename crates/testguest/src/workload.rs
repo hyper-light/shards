@@ -1233,6 +1233,14 @@ fn confined(args: &[String]) -> i32 {
             "see" | "write" | "bind" | "connect" | "call" | "listen" | "reach" | "unreach" | "cat"
             | "resolve" | "dnsprobe" | "unix" | "abstract" | "unix-serve" | "pause" | "udpflood"
             | "reachmany" | "udpask" | "srv-send" | "srv-receive" | "srv-answer" => mode = a.as_str(),
+            "srv-mcp" => {
+                let said = match server_call("mcp", "{}") {
+                    Ok((t, false)) => t,
+                    Ok((t, true)) => format!("refused {t}"),
+                    Err(e) => format!("error {e}"),
+                };
+                out.push_str(&format!("confined srv-mcp: {said}\n"));
+            }
             "srv-peers" => {
                 let said = match server_call("peers", "{}") {
                     Ok((t, false)) => t,

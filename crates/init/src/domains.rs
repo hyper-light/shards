@@ -81,6 +81,9 @@ pub struct Domain {
     /// that run: each with whether it may send them requests, and whether it answers
     /// theirs.
     pub channels: Vec<(usize, bool, bool)>,
+    /// The MCP servers offered it (§4.4, §12 answer 5), as its server instance lists
+    /// them: a JSON array.
+    pub mcp: String,
     /// Its `/etc/resolv.conf`, where it reaches past the microVM: the microVM's gateway,
     /// whose network process asks the host's resolvers (D59).
     pub resolv: Option<Vec<u8>>,
@@ -142,6 +145,9 @@ pub fn read() -> Result<Read, String> {
         (std::net::Ipv4Addr::from(u32::from(addr) & mask), prefix)
     });
     let plan = crate::netplan::plan(&spec, &names, own)?;
+    for d in &mut out {
+        d.mcp = offered(&spec, d);
+    }
     for (x, y) in crate::netplan::channels(&spec, &names) {
         for (me, peer, send) in [(x, y, true), (y, x, false)] {
             if let Some(d) = out.get_mut(me) {
@@ -165,6 +171,98 @@ pub fn read() -> Result<Read, String> {
         d.link = link;
     }
     Ok((dirs, out, plan.pairs))
+}
+
+/// The MCP servers the Agentfile offers `d` (§4.4, §12 answer 5): those with no `FOR`,
+/// to every agent, and those whose `FOR` names it. A remote one by its URL; one spoken to
+/// over stdio by where it lies in `d`'s view, `/mcp/<name>`, or `<its dir>.d/mcp/<name>`
+/// where `FOR` names it, and the command its OSI config gives (`<that>.d/osi.json`),
+/// its program made absolute there. A JSON array.
+fn offered(spec: &Value, d: &Domain) -> String {
+    let (harness, me) = (&d.name.0, &d.name.1);
+    let mut items = Vec::new();
+    for m in spec.get("mcp").map(Value::array).unwrap_or_default() {
+        let Some(name) = m.get("name").and_then(Value::str) else {
+            continue;
+        };
+        let Some(source) = m.get("source").and_then(Value::str) else {
+            continue;
+        };
+        let scope = m.get("for");
+        let kind = scope.and_then(|f| f.get("kind")).and_then(Value::str);
+        let names = scope
+            .and_then(|f| f.get("names"))
+            .and_then(Value::strings)
+            .unwrap_or_default();
+        let ours = if names.is_empty() {
+            !harness
+        } else {
+            names.iter().any(|n| n == me)
+                && match kind {
+                    Some("agent") => !harness,
+                    Some("harness") => *harness,
+                    _ => true,
+                }
+        };
+        if !ours {
+            continue;
+        }
+        if source.starts_with("https://") || source.starts_with("http://") {
+            items.push(format!(
+                r#"{{"name":{},"remote":true,"url":{}}}"#,
+                quote(name),
+                quote(source)
+            ));
+            continue;
+        }
+        let dir = if names.is_empty() {
+            format!("/mcp/{name}")
+        } else {
+            format!("{}.d/mcp/{name}", String::from_utf8_lossy(&d.dir))
+        };
+        let command: Vec<String> = std::fs::read(format!("{dir}.d/osi.json"))
+            .ok()
+            .and_then(|c| json::parse(&c).ok())
+            .and_then(|c| {
+                c.get("run")
+                    .and_then(|r| r.get("command"))
+                    .and_then(Value::strings)
+            })
+            .map(|mut c| {
+                if let Some(first) = c.first_mut()
+                    && !first.starts_with('/')
+                    && first.contains('/')
+                {
+                    *first = format!("{dir}/{first}");
+                }
+                c
+            })
+            .unwrap_or_default();
+        let command: Vec<String> = command.iter().map(|c| quote(c)).collect();
+        items.push(format!(
+            r#"{{"name":{},"remote":false,"dir":{},"command":[{}]}}"#,
+            quote(name),
+            quote(&dir),
+            command.join(",")
+        ));
+    }
+    format!("[{}]", items.join(","))
+}
+
+/// `s` as a JSON string (RFC 8259 §7).
+fn quote(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for ch in s.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            c if u32::from(c) < 0x20 => out.push_str(&format!("\\u{:04x}", u32::from(c))),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 fn domain(
@@ -248,6 +346,7 @@ fn domain(
         name: (kind == "harness", name.to_string()),
         link: None,
         channels: Vec::new(),
+        mcp: "[]".into(),
         resolv: None,
     })
 }
@@ -1177,6 +1276,8 @@ impl Server {
                     .map(|(k, p)| format!("{}\t{}\t{}\t{}\n", 7 + k, p.label, p.send, p.answer))
                     .collect::<String>(),
             )?,
+            // The MCP servers offered its domain.
+            cstr_of(&d.mcp)?,
         ];
         let argv: Vec<*const libc::c_char> = argv_owned
             .iter()

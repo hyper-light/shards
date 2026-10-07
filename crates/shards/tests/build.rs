@@ -4951,3 +4951,63 @@ fn agents_message_one_another_as_granted() {
         assert!(all.lines().any(|l| l == want), "no {want:?} in\n{all}");
     }
 }
+
+/// MCP servers are offered through the in-VM server to the agents in their scope, and to
+/// no other (§4.4, §12 answer 5, D60): a remote one `FOR a` to a alone, by its URL; a
+/// local one with no `FOR` to every agent, by where it lies.
+#[test]
+fn mcp_servers_are_offered_to_those_in_scope() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let (port, _repos) = common::writable_registry();
+    let home = TempDir::new("offer-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let mut agents = String::new();
+    for name in ["a", "b"] {
+        let dir = TempDir::new(&format!("offer-agent-{name}"));
+        std::fs::create_dir_all(dir.join("bin")).unwrap();
+        std::fs::copy(common::test_guest(), dir.join("bin/testguest")).unwrap();
+        std::fs::write(
+            dir.join("agent.json"),
+            format!(r#"{{"name":"{name}","run":{{"command":["bin/testguest","confined","srv-mcp"]}}}}"#),
+        )
+        .unwrap();
+        let tag = format!("127.0.0.1:{port}/team/offer-{name}:1");
+        let made = shards(&["build", "agent", dir.to_str().unwrap(), "-t", &tag]);
+        assert_eq!(made.status, Some(0), "{}", made.stderr);
+        let pushed = shards(&["push", "agent", &tag]);
+        assert_eq!(pushed.status, Some(0), "{}", pushed.stderr);
+        agents.push_str(&format!("AGENT {name} FROM {tag}\n"));
+    }
+    let ctx = context("offer-ctx", &format!("FROM {image}\n"));
+    std::fs::create_dir_all(ctx.join("tools")).unwrap();
+    std::fs::write(ctx.join("tools/server.py"), "print('tools')\n").unwrap();
+    std::fs::write(
+        ctx.join("Agentfile"),
+        format!(
+            "FROM {image}\n{agents}MCP web FROM https://mcp.example.com/sse FOR a\nMCP tools FROM ./tools\n"
+        ),
+    )
+    .unwrap();
+    let built = shards(&["build", "-t", "offer:1", ctx.to_str().unwrap()]);
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    let ran = shards(&["run", "--rm", "offer:1", "await", "confined-ready", "2"]);
+    let all = format!("{}{}", ran.stdout, ran.stderr);
+    assert_eq!(ran.status, Some(0), "{all}");
+    let local = r#"{"name":"tools","remote":false,"dir":"/mcp/tools","command":[]}"#;
+    for want in [
+        format!(
+            r#"[agent a] confined srv-mcp: [{{"name":"web","remote":true,"url":"https://mcp.example.com/sse"}},{local}]"#
+        ),
+        format!("[agent b] confined srv-mcp: [{local}]"),
+    ] {
+        assert!(all.lines().any(|l| l == want), "no {want:?} in\n{all}");
+    }
+}

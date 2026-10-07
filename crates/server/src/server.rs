@@ -51,6 +51,8 @@ pub struct Prepared {
     /// The certificate issued to its caller, which a connection must present.
     cert: CertificateDer<'static>,
     config: Arc<rustls::ServerConfig>,
+    /// The MCP servers offered its caller (§12 answer 5): a JSON array.
+    offered: String,
 }
 
 pub fn main() -> ExitCode {
@@ -82,7 +84,14 @@ fn run(args: &[OsString]) -> Result<(), String> {
     };
     let (ready, filter) = (fd(3, "READY")?, fd(4, "FILTER")?);
     let mut peers = channels(args.get(5).and_then(|a| a.to_str()).unwrap_or_default())?;
-    let p = prepare(dir, label, gid)?;
+    let mut p = prepare(dir, label, gid)?;
+    // The MCP servers offered its caller, as init found them: a JSON array.
+    p.offered = args
+        .get(6)
+        .and_then(|a| a.to_str())
+        .filter(|a| json::parse(a.as_bytes()).is_ok())
+        .unwrap_or("[]")
+        .to_string();
     let program = read_filter(filter)?;
     let mut ready = std::fs::File::from(ready);
     ready
@@ -336,6 +345,7 @@ pub fn prepare(dir: &str, label: &str, gid: u32) -> Result<Prepared, String> {
         listener,
         cert: cert.der().clone(),
         config: Arc::new(config),
+        offered: "[]".into(),
     })
 }
 
@@ -552,6 +562,7 @@ fn text(value: &str, is_error: bool) -> String {
 /// What it offers: who the caller is, those it may message, and messaging them.
 const TOOLS: &str = r#"{"tools":[
 {"name":"whoami","description":"Who this server knows the caller as: the agent or harness whose socket it called on.","inputSchema":{"type":"object","properties":{}}},
+{"name":"mcp","description":"The MCP servers offered the caller: a remote one by its URL, one spoken to over stdio by its directory and the command that runs it, which the caller runs itself, in its own confinement.","inputSchema":{"type":"object","properties":{}}},
 {"name":"peers","description":"The agents and harnesses the caller may message, as its Agentfile grants: whether it may send each requests (send), and whether it answers theirs (answer).","inputSchema":{"type":"object","properties":{}}},
 {"name":"send","description":"Sends a peer the caller may send requests a request; its ID, which the peer's answer carries.","inputSchema":{"type":"object","properties":{"to":{"type":"string"},"text":{"type":"string"}},"required":["to","text"]}},
 {"name":"receive","description":"What peers have sent the caller and it has not taken: their requests, and their answers to its own.","inputSchema":{"type":"object","properties":{}}},
@@ -585,6 +596,7 @@ fn rpc(p: &Prepared, peers: &mut [Peer], msg: &Value) -> Option<String> {
             let arg = |k: &str| args.and_then(|a| a.get(k));
             match params.and_then(|p| p.get("name")).and_then(Value::str) {
                 Some("whoami") => text(&p.label, false),
+                Some("mcp") => text(&p.offered, false),
                 Some("peers") => {
                     let list: Vec<String> = peers
                         .iter()
