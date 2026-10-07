@@ -1134,6 +1134,19 @@ fn confined(args: &[String]) -> i32 {
                 let _ = io::stdout().write_all(out.as_bytes());
                 return fill_scratch();
             }
+            // An innocent agent: 16 MiB resident, more than a filler, and no scratch.
+            "hold" => {
+                let _ = io::stdout().write_all(out.as_bytes());
+                let held: Vec<u8> = vec![1; 16 << 20];
+                // SAFETY: prctl(2) with a NUL-terminated name; pause(2) until a signal.
+                unsafe {
+                    libc::prctl(libc::PR_SET_NAME, c"innocent".as_ptr());
+                    loop {
+                        libc::pause();
+                        std::hint::black_box(&held);
+                    }
+                }
+            }
             path if mode == "unix" => {
                 // Until it exists, 3 s at most: the run's own command makes it as it starts.
                 // The last try's time (CLOCK_MONOTONIC, which the domain shares) says whether
@@ -1559,9 +1572,10 @@ fn outlive(hold: usize) -> i32 {
             std::hint::black_box(&held);
             let _ = writeln!(
                 io::stdout(),
-                "outlived held={} stopped={}",
+                "outlived held={} stopped={} innocent={}",
                 count("held"),
-                count("fill-stopped")
+                count("fill-stopped"),
+                count("innocent")
             );
             return 0;
         }

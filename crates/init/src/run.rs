@@ -93,7 +93,18 @@ pub fn main(device: &str, template: bool) -> ! {
         match crate::domains::read()
             .and_then(|(all, domains, pairs)| crate::domains::start(&all, &domains, &pairs, &filters))
         {
-            Ok(domains) => workload.domains = domains,
+            Ok(domains) if domains.is_empty() => {}
+            Ok(domains) => match crate::domains::Memory::watch() {
+                Ok(memory) => {
+                    workload.domains = domains;
+                    workload.memory = Some(memory);
+                }
+                Err(e) => {
+                    // SAFETY: kill(2) of the workload, our own child: the run fails whole.
+                    unsafe { libc::kill(workload.pid, libc::SIGKILL) };
+                    return Err(setup_failed(e));
+                }
+            },
             Err(e) => {
                 // SAFETY: kill(2) of the workload, our own child: the run fails whole.
                 unsafe { libc::kill(workload.pid, libc::SIGKILL) };
@@ -1012,6 +1023,8 @@ struct Workload {
     /// The image's agents and harnesses, started before it (D59): their output is relayed
     /// on its stderr, each line prefixed with the domain.
     domains: Vec<crate::domains::Started>,
+    /// Their memory, watched, where there are any.
+    memory: Option<crate::domains::Memory>,
 }
 
 /// A pty's master, and the path of its peer, which the standby opens as the workload's
@@ -1202,6 +1215,7 @@ impl Standby {
                 tty: false,
                 _held: Some(orders),
                 domains: Vec::new(),
+                memory: None,
             });
         }
         // Its devices first, as dockerd finds them and runc makes their nodes, init's: in
@@ -1377,6 +1391,7 @@ impl Standby {
                 tty: false,
                 _held: None,
                 domains: Vec::new(),
+                memory: None,
             });
         };
         // The terminal carries everything; the pipes go unused.
@@ -1393,6 +1408,7 @@ impl Standby {
             tty: true,
             _held: None,
             domains: Vec::new(),
+            memory: None,
         })
     }
 }
@@ -1750,6 +1766,8 @@ enum Owner {
     Exec(usize, Part),
     /// A domain's output, by its index.
     Domain(usize),
+    /// The domains' memory.
+    Memory,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1873,6 +1891,11 @@ impl Workload {
                     Owner::Domain(i),
                 );
             }
+            poll(
+                self.memory.as_ref().map(crate::domains::Memory::fd),
+                libc::POLLIN,
+                Owner::Memory,
+            );
             for (i, e) in execs.iter().enumerate() {
                 let conn_events = if !e.connected {
                     libc::POLLOUT
@@ -2068,6 +2091,14 @@ impl Workload {
                         });
                         if eof {
                             d.out = None;
+                        }
+                    }
+                    Owner::Memory => {
+                        if let Some(m) = self.memory.as_ref() {
+                            m.relieve(&self.domains, |line| {
+                                let len = u32::try_from(line.len()).unwrap_or(u32::MAX);
+                                to_host.extend(&[&run::header(kind::STDERR, len), line]);
+                            });
                         }
                     }
                     Owner::Exec(i, part) => {

@@ -239,6 +239,8 @@ fn domain(
 #[derive(Debug)]
 pub struct Started {
     pub label: String,
+    /// Its cgroup's directory.
+    pub cgroup: String,
     pub out: Option<OwnedFd>,
     /// What it wrote past its last whole line.
     pub partial: Vec<u8>,
@@ -438,6 +440,86 @@ fn image_root(skel: &OwnedFd, lower: std::os::fd::BorrowedFd<'_>) -> io::Result<
     detached(c"overlay", &[(c"lowerdir", layers.as_c_str())])
 }
 
+/// The domains' memory, watched: past their share (`memory.high`), the domain holding the
+/// most, its scratch counted (`memory.current`), is ended whole (`cgroup.kill`). One ended
+/// holds the most until it has left its cgroup, which a process does after its namespaces,
+/// and with its mount namespace its scratch, are gone (kernel/exit.c, `do_exit`): so no
+/// other is ended for memory it still holds.
+pub struct Memory {
+    events: OwnedFd,
+}
+
+impl Memory {
+    /// Watches the domains' `memory.events`, which the kernel marks modified as they change
+    /// (Documentation/admin-guide/cgroup-v2.rst, "Conventions").
+    pub fn watch() -> Result<Memory, String> {
+        // SAFETY: inotify_init1(2), whose descriptor is owned below.
+        let fd = unsafe { libc::inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC) };
+        if fd < 0 {
+            return Err(format!(
+                "watching the domains' memory: {}",
+                io::Error::last_os_error()
+            ));
+        }
+        // SAFETY: the descriptor inotify_init1 just made, owned here alone.
+        let events = unsafe { OwnedFd::from_raw_fd(fd) };
+        let path = CString::new(format!("{CGROUPS}/memory.events")).map_err(|e| e.to_string())?;
+        // SAFETY: inotify_add_watch(2) of a NUL-terminated path.
+        if unsafe { libc::inotify_add_watch(events.as_raw_fd(), path.as_ptr(), libc::IN_MODIFY) } < 0 {
+            return Err(format!(
+                "watching the domains' memory: {}",
+                io::Error::last_os_error()
+            ));
+        }
+        Ok(Memory { events })
+    }
+
+    pub fn fd(&self) -> RawFd {
+        self.events.as_raw_fd()
+    }
+
+    /// After the watch says the domains' memory changed: ends the domain holding the most
+    /// where they are past their share, and says so through `say`.
+    pub fn relieve(&self, domains: &[Started], mut say: impl FnMut(&[u8])) {
+        let mut buf = [0u8; 4096];
+        // SAFETY: read(2) into a buffer it owns, until the watch has nothing more.
+        while unsafe { libc::read(self.events.as_raw_fd(), buf.as_mut_ptr().cast(), buf.len()) } > 0 {}
+        let number = |path: &str| {
+            std::fs::read_to_string(path)
+                .ok()
+                .and_then(|v| v.trim().parse::<u64>().ok())
+        };
+        let populated = |d: &Started| {
+            std::fs::read_to_string(format!("{}/cgroup.events", d.cgroup))
+                .is_ok_and(|e| e.lines().any(|l| l == "populated 1"))
+        };
+        let (Some(current), Some(high)) = (
+            number(&format!("{CGROUPS}/memory.current")),
+            number(&format!("{CGROUPS}/memory.high")),
+        ) else {
+            return;
+        };
+        if current <= high {
+            return;
+        }
+        let most = domains
+            .iter()
+            .enumerate()
+            .filter(|(_, d)| populated(d))
+            .map(|(i, d)| (i, number(&format!("{}/memory.current", d.cgroup)).unwrap_or(0)))
+            .max_by_key(|&(_, held)| held);
+        let Some((i, held)) = most else { return };
+        let Some(d) = domains.get(i) else { return };
+        if std::fs::write(format!("{}/cgroup.kill", d.cgroup), "1").is_ok() {
+            say(format!(
+                "[{}] shards-init: ended: the agents' memory, {current} bytes, was past their share, {high}, and its {held} the most\n",
+                d.label
+            )
+            .as_bytes());
+        }
+    }
+}
+
 /// `MemAvailable` of `/proc/meminfo`, in bytes.
 fn available_memory() -> Result<u64, String> {
     let meminfo = std::fs::read_to_string("/proc/meminfo").map_err(|e| format!("/proc/meminfo: {e}"))?;
@@ -591,11 +673,14 @@ pub fn start(
     // (`MemAvailable`, Documentation/filesystems/proc.rst), less what the workload's own
     // limit (`-m`) still promises it: never what init and the workload hold or may. Their
     // scratch tmpfs counts, which the OOM killer's choice by resident memory does not
-    // (mm/oom_kill.c, `oom_badness`).
+    // (mm/oom_kill.c, `oom_badness`), so the kernel does not choose: past `memory.high`
+    // it throttles them and kills none (Documentation/admin-guide/cgroup-v2.rst), in the
+    // charge itself as well as on the way back to user space (mm/memcontrol.c,
+    // `try_charge_memcg`), and [`Memory`] ends the domain holding the most.
     let promised = crate::run::workload_headroom();
     let available = available_memory()?.saturating_sub(promised);
-    std::fs::write(format!("{CGROUPS}/memory.max"), available.to_string())
-        .map_err(|e| format!("{CGROUPS}/memory.max: {e}"))?;
+    std::fs::write(format!("{CGROUPS}/memory.high"), available.to_string())
+        .map_err(|e| format!("{CGROUPS}/memory.high: {e}"))?;
     let last_cap = crate::defaults::last_cap();
     landlock_abi()?;
     let lower =
@@ -737,6 +822,7 @@ pub fn start(
         crate::run::set_nonblocking(read_end.as_raw_fd(), true);
         started.push(Started {
             label: d.label.clone(),
+            cgroup: group.clone(),
             out: Some(read_end),
             partial: Vec::new(),
         });

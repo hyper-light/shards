@@ -4359,9 +4359,10 @@ fn an_agent_reaches_no_socket_of_the_runs_own() {
 }
 
 /// Agents filling their memory, scratch included, end whole and never take the run's own
-/// command's (D59): x alone, at the limit its config asks (`asks.memory`, 64 MiB); y and z,
-/// asking none, at what the domains together may take, the memory the microVM has as they
-/// start less what the workload's `-m` still promises it.
+/// command's (D59): x alone, at the limit its config asks (`asks.memory`, 64 MiB); y, asking
+/// none, at what the domains together may take, the memory the microVM has as they start
+/// less what the workload's `-m` still promises it, chosen by init over z, which holds more
+/// resident memory and no scratch, and which the kernel's choice would end first.
 #[test]
 fn agents_out_of_memory_end_whole_and_spare_the_run() {
     if cannot_run_vms() {
@@ -4376,13 +4377,13 @@ fn agents_out_of_memory_end_whole_and_spare_the_run() {
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
     let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
-    let agent = |name: &str, asks: &str| {
+    let agent = |name: &str, verb: &str, asks: &str| {
         let dir = TempDir::new(&format!("oom-agent-{name}"));
         std::fs::create_dir_all(dir.join("bin")).unwrap();
         std::fs::copy(common::test_guest(), dir.join("bin/testguest")).unwrap();
         std::fs::write(
             dir.join("agent.json"),
-            format!(r#"{{"name":"{name}","run":{{"command":["bin/testguest","confined","fill"]}}{asks}}}"#),
+            format!(r#"{{"name":"{name}","run":{{"command":["bin/testguest","confined","{verb}"]}}{asks}}}"#),
         )
         .unwrap();
         let tag = format!("127.0.0.1:{port}/team/oom-{name}:1");
@@ -4392,8 +4393,8 @@ fn agents_out_of_memory_end_whole_and_spare_the_run() {
         assert_eq!(pushed.status, Some(0), "{}", pushed.stderr);
         format!("AGENT {name} FROM {tag}\n")
     };
-    let x = agent("x", r#","asks":{"memory":67108864}"#);
-    let yz = agent("y", "") + &agent("z", "");
+    let x = agent("x", "fill", r#","asks":{"memory":67108864}"#);
+    let yz = agent("y", "fill", "") + &agent("z", "hold", "");
     let run = |tag: &str, agents: &str| {
         let ctx = context(&format!("oom-ctx-{tag}"), &format!("FROM {image}\n"));
         std::fs::write(ctx.join("Agentfile"), format!("FROM {image}\n{agents}")).unwrap();
@@ -4430,10 +4431,16 @@ fn agents_out_of_memory_end_whole_and_spare_the_run() {
             filled("y"),
             filled("z")
         );
-        (filled("x"), all)
+        (filled("x"), n("innocent="), all)
     };
     // x ends at its own limit, where its memory is its resident 9 MiB and its scratch.
-    let (x_filled, all) = run("oom-x:1", &x);
+    let (x_filled, _, all) = run("oom-x:1", &x);
     assert!(x_filled > 32 && x_filled < 64, "x filled {x_filled} MiB:\n{all}");
-    run("oom-yz:1", &yz);
+    let (_, innocent, all) = run("oom-yz:1", &yz);
+    assert_eq!(innocent, 1, "z, holding no scratch, was ended:\n{all}");
+    assert!(
+        all.lines()
+            .any(|l| l.starts_with("[agent y] shards-init: ended: the agents' memory")),
+        "init did not end y:\n{all}"
+    );
 }

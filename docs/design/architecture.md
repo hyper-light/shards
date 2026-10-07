@@ -3518,7 +3518,7 @@ in it, init (PID 1, whose end is the microVM's) and the run's own command includ
   killer chooses by resident memory, page tables and swap (mm/oom_kill.c,
   `oom_badness`), not a tmpfs's pages, so an agent filling `/tmp` would have the kernel
   kill the run's command, again and again. Now:
-  - the domains together are a cgroup whose `memory.max` is what the microVM has as they
+  - the domains together are a cgroup whose `memory.high` is what the microVM has as they
     start (`MemAvailable`, Documentation/filesystems/proc.rst) less what the workload's
     `-m` still allows it (`memory.max` less `memory.current` of its cgroup); the root
     cgroup has no `memory.current` (Documentation/admin-guide/cgroup-v2.rst), so the
@@ -3528,13 +3528,24 @@ in it, init (PID 1, whose end is the microVM's) and the run's own command includ
   - an agent's OSI config may ask a lower limit of its own, `asks.memory` in bytes, beside
     `asks.processes`. The user chose this over a per-agent share or no default.
 
-  Charged past `memory.max`, a write invokes that cgroup's OOM killer
-  (mm/memcontrol.c, `try_charge_memcg`, `mem_cgroup_oom`), whose victim is again chosen by
-  resident memory. So under the domains' cap, an agent filling its scratch can have
-  another agent killed first, and a killed domain's tmpfs is freed only as its mount
-  namespace goes, after its processes have ended: in the test, y and z were both ended
-  at the cap. The run's command and init are not. Open: choosing the domain whose memory
-  is largest, scratch included (`memory.current`), before the kernel chooses.
+  - **init chooses, not the kernel.** Charged past a `memory.max`, a write invokes that
+    cgroup's OOM killer (mm/memcontrol.c, `try_charge_memcg`, `mem_cgroup_oom`), whose
+    victim is again chosen by resident memory: with the domains' cap first a `memory.max`,
+    an agent filling its scratch had others ended before it (in the first version of the
+    test, y and z both), and a killed domain's tmpfs is freed only as its mount namespace
+    goes. So the cap is `memory.high`: past it the kernel throttles the domains, in the
+    charge itself every 64 pages as well as on the way back to user space, and kills none
+    (Documentation/admin-guide/cgroup-v2.rst: "Going over the high limit never invokes the
+    OOM killer"; the file names the case, an external process that monitors the cgroup).
+    init watches the domains' `memory.events`, which the kernel marks modified as it
+    changes, and past the cap ends the domain whose `memory.current`, scratch included,
+    is the most, with `cgroup.kill` (Linux 5.14), saying so on the run's stderr
+    (`[agent y] shards-init: ended: the agents' memory, …`). systemd-oomd and oomd choose
+    by cgroup usage in the same way. A domain ended still holds the most until it has left
+    its cgroup, which a process does after its namespaces, and with them its scratch, are
+    gone (kernel/exit.c, `do_exit`: `exit_nsproxy_namespaces`, `exit_task_work`, then
+    `cgroup_task_exit`), so no other is ended for memory it still holds; a rule waiting for
+    it, written first, changed no outcome under mutation, and is not kept.
 
 `/tmp` stays where an agent's scratch is: the run's own writable layer is a tmpfs as well
 (`run.rs`, `mount_root`), so every writable directory in a microVM is its memory, and a
@@ -3542,11 +3553,13 @@ programs' default temporary directory (POSIX `TMPDIR`) is where they look.
 
 Tested on real microVMs: `agents_out_of_memory_end_whole_and_spare_the_run`, the run's
 command holding 64 MiB under `-m 128m`: x, asking 64 MiB, ends with 58 MiB written (its
-resident memory the rest); y and z, asking nothing, end at the domains' cap; the run's
+resident memory the rest); y, asking nothing, is ended by init at the domains' cap, and z,
+holding 16 MiB resident and no scratch, more than y's resident memory, lives; the run's
 command outlives them, and each domain ended lost its PID 1 with its filler. Each guard
-mutation-checked: without x's limit it wrote 82 MiB; without the domains' cap, or
-without the workload's share taken from it, the kernel killed the run's command; without
-`memory.oom.group`, a domain's PID 1 outlived its filler. Found while testing: an agent
+mutation-checked: without x's limit it wrote 82 MiB; without the workload's share taken
+from the cap, the kernel killed the run's command; with the cap a `memory.max`, the
+kernel ended z; with init choosing the least, z was ended; without a cap, init ended
+none; without `memory.oom.group`, a domain's PID 1 outlived its filler. Found while testing: an agent
 can fill and end between two looks of the run's command at `/proc`, and nothing else of
 it reaches the run, so the test's agents are seen filling before they fill.
 
