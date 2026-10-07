@@ -862,6 +862,26 @@ until the review changes it. The first four fix the grammar the parser reads; th
       push`, pulled by `AGENT … FROM` and `shards pull`; an index for several platforms
       when built with `--platform` lists.
 
+18. **The in-VM server (Q17), decided 2026-10-07 by the user.**
+    - It runs in shards-init, outside every domain, as the agents' resolver does. Each
+      domain has a socket of its own, `/run/shards/server.sock`, in a directory of its
+      own mounted read-only, and the server knows a caller by the socket it was accepted
+      on: an identity the kernel makes, which no agent can forge.
+    - Over that, mutual TLS 1.3: a CA made by init for the run, as its domains start (so
+      no two runs restored from one template share a key); a key and certificate for each
+      domain in its own scratch, readable by its uid alone; the server's certificate from
+      the same CA; rustls on AWS-LC, TLS 1.3 only. A domain's certificate on another
+      domain's socket is refused. Noise is not added inside it: two sessions between the
+      same ends, keyed by the same party, add cost and no protection.
+    - It speaks MCP over streamable HTTP, and is deny-by-default: what it offers a caller
+      is what the Agentfile granted it. `CONNECT` pairs may send each other messages, one
+      way or both as granted; `ATTACH` lets a harness send an agent requests and read its
+      results; the `MCP … FOR` servers in a caller's scope are listed and called through
+      it. Every message carries its sender's label (§9.5).
+    - Code mode: the server describes every tool open to the caller as a typed API, and
+      takes a program that calls them, run in a sandbox with the caller's grants and no
+      more: many calls in one round trip.
+
 ## 11. Conformance: every directive, at build and at run
 
 The Dockerfile reference (docs.docker.com/reference/dockerfile, read 2026-10-02) and
