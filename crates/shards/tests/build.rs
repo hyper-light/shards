@@ -4589,3 +4589,124 @@ fn an_agents_flood_of_flows_takes_no_others() {
         "c's connections were taken:\n{all}"
     );
 }
+
+/// What an agent reaches past its grants (AGENTFILE_ARCH.md §9.10, D59; default deny):
+/// d, granted TCP 7000 to b alone, and e, granted nothing, each try TCP and UDP to the
+/// run's own command, listening on 7100 at every address of the microVM's; to the
+/// switch's and init's ends of the uplink; and to the microVM's gateway; d to its own
+/// network's gateway too, the switch's end of its link, DNS among it. Nothing answers:
+/// each is dropped or has no route. d still reaches b.
+#[test]
+fn an_agent_reaches_nothing_past_its_grants() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let (port, _repos) = common::writable_registry();
+    let home = TempDir::new("sweep-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    // Where the microVM is, from a run of its own: its address and gateway.
+    let probe = shards(&["run", "--rm", &image, "sweep-target", "7100", "none", "0"]);
+    let where_ = |all: &str| -> (String, String) {
+        let w = all
+            .lines()
+            .find_map(|l| l.strip_prefix("where "))
+            .unwrap_or_else(|| panic!("no address in\n{all}"))
+            .to_string();
+        let (a, g) = w.split_once(' ').unwrap();
+        (a.to_string(), g.to_string())
+    };
+    let (own, gw) = where_(&format!("{}{}", probe.stdout, probe.stderr));
+    let mut targets = Vec::new();
+    for host in [own.as_str(), "169.254.77.1", "169.254.77.2", gw.as_str()] {
+        targets.push(format!("\"unreach\",\"{host}:7100\",\"udpask\",\"{host}:7100\""));
+    }
+    let sweep = targets.join(",");
+    // d's own network's gateway, the switch's end of its link: TCP and UDP, DNS among it.
+    let on_link =
+        "\"unreach\",\"NET1:7100\",\"udpask\",\"NET1:53\",\"udpask\",\"NET1:7100\",\"unreach\",\"NET1:53\"";
+    let mut agents = String::new();
+    for (name, verbs) in [
+        ("b", "\"listen\",\"7000\"".to_string()),
+        ("d", format!("\"reach\",\"b:7000\",{sweep},{on_link}")),
+        ("e", sweep.clone()),
+    ] {
+        let dir = TempDir::new(&format!("sweep-agent-{name}"));
+        std::fs::create_dir_all(dir.join("bin")).unwrap();
+        std::fs::copy(common::test_guest(), dir.join("bin/testguest")).unwrap();
+        std::fs::write(
+            dir.join("agent.json"),
+            format!(r#"{{"name":"{name}","run":{{"command":["bin/testguest","confined",{verbs}]}}}}"#),
+        )
+        .unwrap();
+        let tag = format!("127.0.0.1:{port}/team/sweep-{name}:1");
+        let made = shards(&["build", "agent", dir.to_str().unwrap(), "-t", &tag]);
+        assert_eq!(made.status, Some(0), "{}", made.stderr);
+        let pushed = shards(&["push", "agent", &tag]);
+        assert_eq!(pushed.status, Some(0), "{}", pushed.stderr);
+        agents.push_str(&format!("AGENT {name} FROM {tag}\n"));
+    }
+    let ctx = context("sweep-ctx", &format!("FROM {image}\n"));
+    std::fs::write(
+        ctx.join("Agentfile"),
+        format!(
+            "FROM {image}\n{agents}\
+             NETWORK --ingress=7000 n\n\
+             CONNECT --port=7000 d TO b ON n\n"
+        ),
+    )
+    .unwrap();
+    let built = shards(&["build", "-t", "sweep:1", ctx.to_str().unwrap()]);
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    let ran = shards(&[
+        "run",
+        "--rm",
+        "sweep:1",
+        "sweep-target",
+        "7100",
+        "confined-ready",
+        "3",
+    ]);
+    let all = format!("{}{}", ran.stdout, ran.stderr);
+    assert_eq!(ran.status, Some(0), "{all}");
+    // The run swept the addresses the probe saw.
+    assert_eq!(where_(&all), (own.clone(), gw.clone()), "{all}");
+    assert!(
+        all.lines().any(|l| l == "[agent d] confined reach b:7000: ok"),
+        "{all}"
+    );
+    let mut tried = 0;
+    for agent in ["d", "e"] {
+        for line in all
+            .lines()
+            .filter_map(|l| l.strip_prefix(&format!("[agent {agent}] confined ")))
+        {
+            eprintln!("{agent}: {line}");
+            let Some((what, said)) = line.split_once(": ") else {
+                continue;
+            };
+            if what.starts_with("unreach ") {
+                tried += 1;
+                // Dropped (timeout), no route (ENETUNREACH 101, EHOSTUNREACH 113), or
+                // refused before it leaves (Landlock, EACCES 13, where no grant lets it
+                // connect); a refusal by the far end (111) would be an answer.
+                assert!(
+                    ["timeout", "errno 101", "errno 113", "errno 13"].contains(&said),
+                    "{agent} {line}\n{all}"
+                );
+            } else if what.starts_with("udpask ") {
+                tried += 1;
+                assert!(
+                    ["none", "errno 101", "errno 113"].contains(&said),
+                    "{agent} {line}\n{all}"
+                );
+            }
+        }
+    }
+    assert_eq!(tried, 2 * 8 + 4, "{all}");
+}

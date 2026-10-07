@@ -126,6 +126,30 @@ pub fn main() -> ! {
             }
         }
         "outlive" => outlive(arg(1).parse().unwrap_or(0)),
+        // Where the microVM is (its first non-loopback IPv4 address and its default
+        // gateway), then TCP and UDP answered on `arg(1)`, until `arg(3)` processes named
+        // `arg(2)` exist.
+        "sweep-target" => {
+            let _ = writeln!(io::stdout(), "where {} {}", own_address(), gateway());
+            let port: u16 = arg(1).parse().unwrap_or(0);
+            if let Ok(l) = std::net::TcpListener::bind(("0.0.0.0", port)) {
+                let _ = std::thread::Builder::new().spawn(move || {
+                    for c in l.incoming().flatten() {
+                        let mut c = c;
+                        let _ = c.write_all(b"workload\n");
+                    }
+                });
+            }
+            if let Ok(u) = std::net::UdpSocket::bind(("0.0.0.0", port)) {
+                let _ = std::thread::Builder::new().spawn(move || {
+                    let mut b = [0u8; 64];
+                    while let Ok((n, from)) = u.recv_from(&mut b) {
+                        let _ = u.send_to(b.get(..n).unwrap_or_default(), from);
+                    }
+                });
+            }
+            await_process(arg(2), arg(3).parse().unwrap_or(1), "")
+        }
         "sleep" => {
             let _ = writeln!(io::stdout(), "ready");
             loop {
@@ -1130,7 +1154,7 @@ fn confined(args: &[String]) -> i32 {
         match a.as_str() {
             "see" | "write" | "bind" | "connect" | "call" | "listen" | "reach" | "unreach" | "cat"
             | "resolve" | "dnsprobe" | "unix" | "abstract" | "unix-serve" | "pause" | "udpflood"
-            | "reachmany" => mode = a.as_str(),
+            | "reachmany" | "udpask" => mode = a.as_str(),
             "fill" => {
                 let _ = io::stdout().write_all(out.as_bytes());
                 return fill_scratch();
@@ -1171,6 +1195,25 @@ fn confined(args: &[String]) -> i32 {
                 };
                 out.push_str(&format!("confined unix {path}: {said}\n"));
                 out.push_str(&format!("confined unix tried {}\n", monotonic_ns()));
+            }
+            // A datagram to ADDR, and whether anything answered in 2 s.
+            addr if mode == "udpask" => {
+                // `NET1` is the first address of its own network, its gateway there.
+                let addr = addr.replace("NET1", &first_of_own());
+                let addr = addr.as_str();
+                let said = match std::net::UdpSocket::bind("0.0.0.0:0").and_then(|s| {
+                    s.set_read_timeout(Some(std::time::Duration::from_secs(2)))?;
+                    s.send_to(b"ask", addr)?;
+                    let mut b = [0u8; 64];
+                    s.recv_from(&mut b).map(drop)
+                }) {
+                    Ok(()) => "reply".to_string(),
+                    Err(e) if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) => {
+                        "none".to_string()
+                    }
+                    Err(e) => errno(&e),
+                };
+                out.push_str(&format!("confined udpask {addr}: {said}\n"));
             }
             secs if mode == "pause" => {
                 std::thread::sleep(std::time::Duration::from_secs(secs.parse().unwrap_or(0)));
@@ -1318,6 +1361,9 @@ fn confined(args: &[String]) -> i32 {
             }
             addr if mode == "reach" || mode == "unreach" => {
                 use std::net::ToSocketAddrs as _;
+                // `NET1` is the first address of its own network, its gateway there.
+                let addr = addr.replace("NET1", &first_of_own());
+                let addr = addr.as_str();
                 let once = |wait: u64| -> Result<(), io::Error> {
                     let to = addr
                         .to_socket_addrs()?
@@ -1659,4 +1705,69 @@ fn outlive(hold: usize) -> i32 {
     }
     let _ = writeln!(io::stdout(), "outlive timeout");
     1
+}
+
+/// The first IPv4 address of an interface other than loopback, or `none`.
+fn own_address() -> String {
+    // SAFETY: getifaddrs(3) into a list freed below; each entry read while it lives.
+    unsafe {
+        let mut list: *mut libc::ifaddrs = std::ptr::null_mut();
+        if libc::getifaddrs(&mut list) != 0 {
+            return "none".to_string();
+        }
+        let mut found = "none".to_string();
+        let mut at = list;
+        while !at.is_null() {
+            let a = (*at).ifa_addr;
+            if !a.is_null() && i32::from((*a).sa_family) == libc::AF_INET {
+                let sin = &*a.cast::<libc::sockaddr_in>();
+                let ip = std::net::Ipv4Addr::from(u32::from_be(sin.sin_addr.s_addr));
+                if !ip.is_loopback() {
+                    found = ip.to_string();
+                    break;
+                }
+            }
+            at = (*at).ifa_next;
+        }
+        libc::freeifaddrs(list);
+        found
+    }
+}
+
+/// The default route's gateway, or `none`: `/proc/net/route` writes the address's bytes,
+/// in network order, as a native-endian number in hex (net/ipv4/fib_trie.c, `%08X`).
+fn gateway() -> String {
+    std::fs::read_to_string("/proc/net/route")
+        .unwrap_or_default()
+        .lines()
+        .skip(1)
+        .find_map(|l| {
+            let f: Vec<&str> = l.split_whitespace().collect();
+            if f.get(1) != Some(&"00000000") {
+                return None;
+            }
+            let g = u32::from_str_radix(f.get(2)?, 16).ok()?;
+            Some(std::net::Ipv4Addr::from(g.to_ne_bytes()).to_string())
+        })
+        .unwrap_or_else(|| "none".to_string())
+}
+
+/// Its own network's gateway, the switch's end of its link: the gateway of its first
+/// route to a network (`/proc/net/route`, as [`gateway`] reads it), an agent reaching its
+/// peers through the switch; `none` where it has none. Read there, not through
+/// `getifaddrs`, which asks over netlink, which an agent may not open.
+fn first_of_own() -> String {
+    std::fs::read_to_string("/proc/net/route")
+        .unwrap_or_default()
+        .lines()
+        .skip(1)
+        .find_map(|l| {
+            let f: Vec<&str> = l.split_whitespace().collect();
+            if f.get(1) == Some(&"00000000") || f.get(2) == Some(&"00000000") {
+                return None;
+            }
+            let g = u32::from_str_radix(f.get(2)?, 16).ok()?;
+            Some(std::net::Ipv4Addr::from(g.to_ne_bytes()).to_string())
+        })
+        .unwrap_or_else(|| "none".to_string())
 }

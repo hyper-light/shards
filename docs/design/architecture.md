@@ -3630,6 +3630,22 @@ exist for it; c, granted secret, likewise; d, a member granted none, sees neithe
 Mutation-checked: a sender's directory writable, every grant mounted in every agent, the
 umask kept, the Landlock rule taken away, and the default carrying Unix each fail a test.
 
+### Nothing past an agent's grants (D59, part eleven)
+
+§9.10's sweep, on a real microVM (`an_agent_reaches_nothing_past_its_grants`): the run's
+own command answers TCP and UDP on 7100 at every address it has; d, granted TCP 7000 to b
+alone, and e, granted nothing, try it at the microVM's address, both ends of the uplink
+and the microVM's gateway, and d its own network's gateway (the switch's end of its link,
+DNS among it). What came of each, measured: d has no default route, an agent without
+egress having only its network's route (via the switch), so every address past its
+network is `ENETUNREACH`, and its gateway drops all (timeouts); e has its loopback alone,
+so UDP has no route and TCP is refused by Landlock before it leaves (`EACCES`). d still
+reaches b on 7000. Mutation-checked: with the switch's `input` chain accepting, d's
+connection to its gateway is refused by it (`ECONNREFUSED`), an answer.
+
+Found while writing it: `getifaddrs` fails in an agent, musl's asking over netlink, which
+an agent's seccomp filter refuses; the test reads `/proc/net/route` instead.
+
 ### `SKILL --from=<agent>` (D54, continued)
 
 `SKILL --from=<agent> <skill> FOR <other>` copies, at build time, a skill the agent's
