@@ -3082,9 +3082,11 @@ an Agentfile with two agents and a harness; none on a Dockerfile's).
 The build computes, over the target's directives, what each agent and harness reaches
 (AGENTFILE_ARCH.md §9.5). Edges: a network both join (`CONNECT … ON`), a named volume
 granted to both (`VOLUME name … FOR`), `ATTACH`. A domain reaches the world when it joins a
-network that is not internal and opens any port (`NETWORK --expose/--ingress/--egress`,
-`EXPOSE … FOR` it; an ingress-only port answers what reaches it, so replies carry data
-out), or an external network (the host's, whose reach the build cannot see), or when a
+network that is not internal and lets some port cross both its own boundary
+(`NETWORK --expose/--ingress/--egress`) and the microVM's (`EXPOSE … FOR` it), either way
+(an ingress-only port answers what reaches it, so replies carry data out; §12 answer 6:
+a flow crossing both needs both, corrected with D59 part four, which first read either
+alone as enough), or an external network (the host's, whose reach the build cannot see), or when a
 remote MCP server is granted to it or to every agent. A local MCP server is no edge: each
 caller has an instance of its own (§9.6). An internal-only domain (§9.5: one that joins
 an internal network, and does not reach the world itself) with a path to one that does
@@ -3275,10 +3277,15 @@ gateways, and capacity.
 
 Part four, egress past the microVM, by port (AGENTFILE_ARCH.md §4.1, §4.6):
 
-- **What is granted.** A domain may open flows past the microVM to the `--egress` and
-  `--expose` ports of each network it joins that is not internal, and to each `EXPOSE …
-  FOR` such a network that is not ingress-only. A domain's grants let it connect, as far
-  as Landlock is concerned. The build records the union of all domains' grants in the
+- **What is granted.** Two boundaries, each its own grant, and a flow crossing both needs
+  both (AGENTFILE_ARCH.md §12 answer 6). A domain may open flows past the microVM to a
+  port where, of a network it joins that is not internal, both open it outward: the
+  network's own grant (`--egress`, `--expose`) and the microVM's for that network
+  (`EXPOSE … FOR` it, both ways or `AS egress`). Ranges meet where both cover them
+  (`agentfile::boundary`, and the guest's planner alike). The first version of this part
+  (368663d) took either grant alone as enough, which opened what the decided grammar keeps
+  shut; the test now holds a port that only the network grants to the switch's drop. A
+  domain's grants let it connect, as far as Landlock is concerned. The build records the union of all domains' grants in the
   image's label `vnd.osi.agentfile.egress` (`443,53/udp,8000-8010`), as it records the
   Agentfile's digest.
 - **The host holds the microVM to the union.** A run of a labelled image hands its VM's

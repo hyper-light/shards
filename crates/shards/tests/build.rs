@@ -3675,9 +3675,10 @@ fn agents_reach_only_what_connect_grants() {
 }
 
 /// Agents reach past their microVM the ports their networks grant (D59, AGENTFILE_ARCH.md
-/// §4.1, §4.6, §9.7): `NETWORK --egress` on a network that is not internal lets the
-/// agents a `CONNECT` joins to it open flows to that port, through the switch's link to
-/// the microVM's own network and its network process, and no other port; an agent on an
+/// §4.1, §4.6, §9.7, §12 answer 6): `NETWORK --egress` on a network that is not internal,
+/// with `EXPOSE ... FOR` it at the microVM's boundary, lets the agents a `CONNECT` joins to
+/// it open flows to that port, through the switch's link to the microVM's own network and
+/// its network process, and no port only one boundary opens; an agent on an
 /// internal network reaches nothing past the microVM, though its network names the port
 /// and Landlock lets it connect to its peer; and the run's own command reaches nothing it
 /// did not before.
@@ -3799,7 +3800,8 @@ fn agents_reach_past_the_microvm_what_their_networks_grant() {
         ctx.join("Agentfile"),
         format!(
             "FROM {image}\nAGENT a FROM {a}\nAGENT b FROM {b}\nAGENT c FROM {c}\n\
-             NETWORK --egress={granted} out\nNETWORK --internal --egress={granted} inner\n\
+             NETWORK --egress={granted} --egress={other} out\nEXPOSE {granted} AS egress FOR out\n\
+             NETWORK --internal --egress={granted} inner\nEXPOSE {granted} FOR inner\n\
              CONNECT a WITH a ON out\nCONNECT b WITH c ON inner\n"
         ),
     )
@@ -3829,7 +3831,8 @@ fn agents_reach_past_the_microvm_what_their_networks_grant() {
         ("a", format!("confined reach {by_name}: ok")),
         // Without egress, no name past the microVM either: its queries are dropped.
         ("b", "confined resolve api.example: -3,-3".to_string()),
-        // A port no grant names: the switch lets nothing else up.
+        // A port its network grants, but not the microVM's boundary: a flow crossing both
+        // needs both (§12 answer 6), and the switch lets nothing else up.
         ("a", format!("confined unreach {}: timeout", to(other))),
         // On an internal network: nothing past the microVM.
         ("b", format!("confined unreach {}: timeout", to(granted))),

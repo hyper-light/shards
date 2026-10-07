@@ -488,7 +488,7 @@ fn reach_through_any_declared_edge_is_reach() {
     let inner = "NETWORK --internal inner\nCONNECT b WITH b ON inner\n";
     // Through an internal network to one on a network open to the world.
     let e = reached(&format!(
-        "{base}NETWORK --internal back\nNETWORK --egress=443 world\n\
+        "{base}NETWORK --internal back\nNETWORK --egress=443 world\nEXPOSE 443 FOR world\n\
          CONNECT b WITH a ON back\nCONNECT a WITH a ON world\n"
     ))
     .unwrap_err();
@@ -496,17 +496,19 @@ fn reach_through_any_declared_edge_is_reach() {
         e.contains("agent b -> network back -> agent a -> network world"),
         "{e}"
     );
-    // A network that opens no port reaches nothing; an internal one neither.
+    // A network that opens no port reaches nothing; an internal one neither; nor one whose
+    // port only one boundary opens (§12 answer 6: a flow crossing both needs both).
     assert_eq!(
         reached(&format!(
             "{base}NETWORK --internal back\nNETWORK world\nNETWORK --internal --egress=443 shut\n\
-             CONNECT b WITH a ON back\nCONNECT a WITH a ON world shut\n"
+             NETWORK --egress=443 half\nEXPOSE 80 FOR half\nEXPOSE 443 FOR world\n\
+             CONNECT b WITH a ON back\nCONNECT a WITH a ON world shut half\n"
         )),
         Ok(())
     );
-    // EXPOSE ... FOR opens a network's port.
+    // EXPOSE ... FOR, with the network's own port, opens it.
     let e = reached(&format!(
-        "{base}NETWORK world\nEXPOSE 443 AS egress FOR world\nVOLUME data /data FOR a b\nCONNECT a WITH a ON world\n{inner}"
+        "{base}NETWORK --egress=443 world\nEXPOSE 443 AS egress FOR world\nVOLUME data /data FOR a b\nCONNECT a WITH a ON world\n{inner}"
     ))
     .unwrap_err();
     assert!(
@@ -515,7 +517,7 @@ fn reach_through_any_declared_edge_is_reach() {
     );
     // A harness attached to both joins them.
     let e = reached(&format!(
-        "{base}HARNESS h FROM ./h\nNETWORK --ingress=8080 world\nCONNECT a WITH a ON world\nATTACH a b FOR h\n{inner}"
+        "{base}HARNESS h FROM ./h\nNETWORK --ingress=8080 world\nEXPOSE 8080 AS ingress FOR world\nCONNECT a WITH a ON world\nATTACH a b FOR h\n{inner}"
     ))
     .unwrap_err();
     assert!(
@@ -549,8 +551,8 @@ fn reach_through_any_declared_edge_is_reach() {
 }
 
 /// The ports an Agentfile's image may reach past its microVM (D59), its network process's
-/// union: a network's egress and both-ways ports, and `EXPOSE ... FOR` it not ingress-only,
-/// where the network is joined and not internal; each once.
+/// union: of each joined network that is not internal, those both its own grants and the
+/// microVM's for it (`EXPOSE ... FOR`) open outward (§12 answer 6); each once.
 #[test]
 fn egress_is_what_joined_networks_open() {
     use shards_dockerfile::instructions::Kind;
@@ -579,12 +581,16 @@ fn egress_is_what_joined_networks_open() {
     let base = "FROM alpine\nAGENT a FROM ./a\n";
     assert_eq!(
         ports(&format!(
-            "{base}NETWORK --egress=443 --ingress=8080 --expose=53/udp out\n\
-             NETWORK --internal --egress=22 shut\nNETWORK --egress=25 unjoined\n\
-             EXPOSE 9000-9010 AS egress FOR out\nEXPOSE 7000 AS ingress FOR out\nEXPOSE 443 FOR out\n\
+            "{base}NETWORK --egress=443 --ingress=8080 --expose=53/udp --egress=9000-9010 --egress=25 out\n\
+             NETWORK --internal --egress=22 shut\nNETWORK --egress=443 unjoined\n\
+             EXPOSE 9005-9020 AS egress FOR out\nEXPOSE 53/udp AS ingress FOR out\nEXPOSE 443 8080 FOR out\n\
+             EXPOSE 7000 FOR out\nEXPOSE 22 FOR shut\nEXPOSE 443 FOR unjoined\n\
              CONNECT a WITH a ON out shut\n"
         )),
-        ["443", "53/udp", "9000-9010"]
+        // 443 both boundaries open outward; 9005-9010 where their ranges meet. Not 53/udp
+        // (the microVM's ingress-only), 8080 (the network's), 25 nor 7000 (one boundary
+        // each), 22 (internal), the unjoined network's.
+        ["443", "9005-9010"]
     );
     assert!(
         ports(&format!(

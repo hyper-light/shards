@@ -882,44 +882,103 @@ pub const HARNESSES_ANNOTATION: &[u8] = b"vnd.osi.agentfile.harnesses";
 /// its own by its microVM's switch.
 pub const EGRESS_LABEL: &[u8] = b"vnd.osi.agentfile.egress";
 
-/// The ports an Agentfile lets some domain open flows to past its microVM (§4.1, §4.6):
-/// each `NETWORK --egress` and `--expose` port, and each `EXPOSE ... FOR` port not
-/// ingress-only, of a network that is not internal and that a `CONNECT` joins; each once.
-pub fn egress(directives: &[Directive]) -> Vec<Vec<u8>> {
-    let joined = |name: &[u8]| {
-        directives
-            .iter()
-            .any(|d| matches!(d, Directive::Connect(c) if c.on.iter().any(|n| n == name)))
+/// A port as Docker writes one (`443`, `53/udp`, `8000-8010/tcp`): its protocol's IP
+/// number (6 TCP, 17 UDP, TCP where none is said) and its range's ends.
+pub fn port_range(s: &[u8]) -> Option<(u8, u16, u16)> {
+    let s = std::str::from_utf8(s).ok()?;
+    let (range, proto) = match s.rsplit_once('/') {
+        Some((r, "tcp")) => (r, 6),
+        Some((r, "udp")) => (r, 17),
+        Some(_) => return None,
+        None => (s, 6),
     };
-    let internal = |name: &[u8]| {
-        directives
-            .iter()
-            .any(|d| matches!(d, Directive::Network(n) if n.name == name && n.internal))
+    let port = |p: &str| p.parse::<u16>().ok().filter(|p| *p > 0);
+    let (lo, hi) = match range.split_once('-') {
+        Some((a, b)) => (port(a)?, port(b)?),
+        None => (port(range)?, port(range)?),
     };
-    let mut out: Vec<Vec<u8>> = Vec::new();
-    let mut add = |port: &[u8]| {
-        if !out.iter().any(|p| p == port) {
-            out.push(port.to_vec());
-        }
+    (lo <= hi).then_some((proto, lo, hi))
+}
+
+/// The ports network `net` lets cross the microVM's boundary, outward (egress) or inward
+/// (ingress): two boundaries, each its own grant (§12 answer 6), and a flow crossing both
+/// needs both. The network's own (`NETWORK --expose`, and `--egress` or `--ingress`) and
+/// the microVM's for it (`EXPOSE ... FOR` it, both ways or `AS` that direction), as
+/// ranges of each protocol that both open; none for an internal network.
+pub fn boundary(directives: &[Directive], net: &[u8], outward: bool) -> Vec<(u8, u16, u16)> {
+    let away = if outward {
+        Direction::Ingress
+    } else {
+        Direction::Egress
     };
+    let mut ours = Vec::new();
     for d in directives {
-        match d {
-            Directive::Network(n) if !n.internal && joined(&n.name) => {
-                for (port, direction) in &n.ports {
-                    if *direction != Direction::Ingress {
-                        add(port);
-                    }
+        if let Directive::Network(n) = d
+            && n.name == net
+        {
+            if n.internal {
+                return Vec::new();
+            }
+            ours.extend(
+                n.ports
+                    .iter()
+                    .filter(|(_, d)| *d != away)
+                    .filter_map(|(p, _)| port_range(p)),
+            );
+        }
+    }
+    let mut vms = Vec::new();
+    for d in directives {
+        if let Directive::Expose(e) = d
+            && e.direction != away
+            && e.networks.iter().any(|n| n == net)
+        {
+            vms.extend(e.ports.iter().filter_map(|p| port_range(p)));
+        }
+    }
+    let mut out: Vec<(u8, u16, u16)> = Vec::new();
+    for &(p, lo, hi) in &ours {
+        for &(q, a, b) in &vms {
+            let (lo, hi) = (lo.max(a), hi.min(b));
+            if p == q && lo <= hi && !out.contains(&(p, lo, hi)) {
+                out.push((p, lo, hi));
+            }
+        }
+    }
+    out
+}
+
+/// The ports an Agentfile lets some domain open flows to past its microVM: of each network
+/// a `CONNECT` joins, those it lets cross both boundaries outward ([`boundary`]), each
+/// once, as Docker writes them.
+pub fn egress(directives: &[Directive]) -> Vec<Vec<u8>> {
+    let mut nets: Vec<&[u8]> = Vec::new();
+    for d in directives {
+        if let Directive::Connect(c) = d {
+            for n in &c.on {
+                if !nets.contains(&n.as_slice()) {
+                    nets.push(n);
                 }
             }
-            Directive::Expose(e)
-                if e.direction != Direction::Ingress
-                    && e.networks.iter().any(|n| !internal(n) && joined(n)) =>
-            {
-                for port in &e.ports {
-                    add(port);
-                }
+        }
+    }
+    let mut out: Vec<Vec<u8>> = Vec::new();
+    for net in nets {
+        for (proto, lo, hi) in boundary(directives, net, true) {
+            let range = if lo == hi {
+                lo.to_string()
+            } else {
+                format!("{lo}-{hi}")
+            };
+            let port = if proto == 17 {
+                format!("{range}/udp")
+            } else {
+                range
             }
-            _ => {}
+            .into_bytes();
+            if !out.contains(&port) {
+                out.push(port);
+            }
         }
     }
     out
@@ -927,9 +986,10 @@ pub fn egress(directives: &[Directive]) -> Vec<Vec<u8>> {
 
 /// What a domain reaches, through every edge an Agentfile declares (§9.5, §9.8, D58): a
 /// network both join (by `CONNECT ... ON`), a named volume granted to both, `ATTACH`.
-/// A domain reaches the world when it joins a network that is not internal and opens any
-/// port (`NETWORK --expose/--ingress/--egress`, `EXPOSE ... FOR` it): an ingress-only port
-/// answers what reaches it, so its replies carry data out too; or when a remote MCP
+/// A domain reaches the world when it joins a network that is not internal and lets a port
+/// cross both its boundary and the microVM's ([`boundary`]), either way: an ingress-only
+/// port answers what reaches it, so its replies carry data out too; or an external one,
+/// whose reach the build cannot see; or when a remote MCP
 /// server is granted to it, or to every agent. An internal-only domain, one that joins an
 /// internal network and does not reach the world, with a path of edges to one that does,
 /// reaches the world through it: a build error naming the path, as relays and
@@ -966,21 +1026,18 @@ pub fn reach(directives: &[Directive]) -> Result<(), Vec<u8>> {
             String::from_utf8_lossy(&d.1)
         )
     };
-    // Each network: whether it is internal, and whether it opens any port.
+    // Each network: whether it is internal, and whether some port crosses both
+    // boundaries, either way ([`boundary`]): an ingress-only port answers what reaches it,
+    // so its replies carry data out too.
     let mut networks: BTreeMap<Vec<u8>, (bool, bool)> = BTreeMap::new();
     for d in directives {
         if let Directive::Network(n) = d {
+            let open = !boundary(directives, &n.name, true).is_empty()
+                || !boundary(directives, &n.name, false).is_empty();
             let e = networks.entry(n.name.clone()).or_default();
             e.0 = n.internal;
             // An external network is the host's: what it reaches, the build cannot see.
-            e.1 |= !n.ports.is_empty() || n.external;
-        }
-    }
-    for d in directives {
-        if let Directive::Expose(x) = d {
-            for net in &x.networks {
-                networks.entry(net.clone()).or_default().1 = true;
-            }
+            e.1 |= open || n.external;
         }
     }
     // The edges, each labelled as the path says it.

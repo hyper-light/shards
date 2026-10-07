@@ -8,10 +8,10 @@
 //! another directive grants `y` to `x` outright. Each domain has one link (§9.7) and policy
 //! goes by link, so a pair any shared network allows is allowed.
 //!
-//! Past the microVM, a domain may open flows to the ports its networks grant (§4.1,
-//! §4.6): of each network it joins that is not internal, the `--egress` and `--expose`
-//! ports, and each `EXPOSE ... FOR` it that is not ingress-only, as the build's
-//! `agentfile::egress` finds their union.
+//! Past the microVM, a domain may open flows to the ports its networks let cross both
+//! boundaries (§4.1, §4.6, §12 answer 6): of each network it joins that is not internal,
+//! those its own grants (`--egress`, `--expose`) and the microVM's for it (`EXPOSE ...
+//! FOR` it, not ingress-only) both open, as the build's `agentfile::boundary` reads them.
 
 use std::net::Ipv4Addr;
 
@@ -295,47 +295,49 @@ pub fn plan(spec: &Value, names: &[Name], own: Option<(Ipv4Addr, u8)>) -> Result
     Ok(Plan { links, pairs, uplink })
 }
 
-/// The ports a domain on `joined` may reach past the microVM, each once.
+/// The ports a domain on `joined` may reach past the microVM, each once: of each joined
+/// network that is not internal, those both its own grants (`NETWORK --expose/--egress`)
+/// and the microVM's for it (`EXPOSE ... FOR` it, not ingress-only) open, where their
+/// ranges meet. Two boundaries, and a flow crossing both needs both (AGENTFILE_ARCH.md §12
+/// answer 6); the build's `agentfile::boundary` reads them alike.
 fn egress_of(spec: &Value, joined: &[String]) -> Result<Vec<Egress>, String> {
-    let networks = spec.get("networks").map(Value::array).unwrap_or_default();
-    let internal = |name: &str| {
-        networks.iter().any(|n| {
-            n.get("name").and_then(Value::str) == Some(name)
-                && matches!(n.get("internal"), Some(Value::Bool(true)))
-        })
+    let ranges = |ports: Vec<String>| -> Result<Vec<Egress>, String> {
+        ports
+            .iter()
+            .map(|p| port_range(p).ok_or_else(|| format!("the port {p:?} is no port or range of ports")))
+            .collect()
     };
     let mut out: Vec<Egress> = Vec::new();
-    let mut add = |port: &str| -> Result<(), String> {
-        let range =
-            port_range(port).ok_or_else(|| format!("the port {port:?} is no port or range of ports"))?;
-        if !out.contains(&range) {
-            out.push(range);
-        }
-        Ok(())
-    };
-    for n in networks {
+    for n in spec.get("networks").map(Value::array).unwrap_or_default() {
         let Some(name) = n.get("name").and_then(Value::str) else {
             continue;
         };
-        if internal(name) || !joined.iter().any(|j| j == name) {
+        if matches!(n.get("internal"), Some(Value::Bool(true))) || !joined.iter().any(|j| j == name) {
             continue;
         }
-        for p in n.get("ports").map(Value::array).unwrap_or_default() {
-            if p.get("direction").and_then(Value::str) != Some("ingress")
-                && let Some(port) = p.get("port").and_then(Value::str)
+        let ours = ranges(
+            n.get("ports")
+                .map(Value::array)
+                .unwrap_or_default()
+                .iter()
+                .filter(|p| p.get("direction").and_then(Value::str) != Some("ingress"))
+                .filter_map(|p| p.get("port").and_then(Value::str).map(str::to_string))
+                .collect(),
+        )?;
+        let mut vms = Vec::new();
+        for e in spec.get("exposures").map(Value::array).unwrap_or_default() {
+            if e.get("direction").and_then(Value::str) != Some("ingress")
+                && strings(e.get("networks")).iter().any(|x| x == name)
             {
-                add(port)?;
+                vms.extend(ranges(strings(e.get("ports")))?);
             }
         }
-    }
-    for e in spec.get("exposures").map(Value::array).unwrap_or_default() {
-        if e.get("direction").and_then(Value::str) == Some("ingress") {
-            continue;
-        }
-        let nets = strings(e.get("networks"));
-        if nets.iter().any(|n| !internal(n) && joined.iter().any(|j| j == n)) {
-            for port in strings(e.get("ports")) {
-                add(&port)?;
+        for &(p, lo, hi) in &ours {
+            for &(q, a, b) in &vms {
+                let (lo, hi) = (lo.max(a), hi.min(b));
+                if p == q && lo <= hi && !out.contains(&(p, lo, hi)) {
+                    out.push((p, lo, hi));
+                }
             }
         }
     }
@@ -395,15 +397,19 @@ mod tests {
                                       {"port":"53/udp","direction":"both"}]},
                             {"name":"shut","internal":true,"subnets":[],"gateways":[],
                              "ports":[{"port":"22","direction":"egress"}]}],
-                "exposures":[{"ports":["9000-9010"],"direction":"egress","networks":["out"]},
-                             {"ports":["7000"],"direction":"both","networks":["shut"]}],
+                "exposures":[{"ports":["443","8080"],"direction":"both","networks":["out"]},
+                             {"ports":["53/udp"],"direction":"egress","networks":["out"]},
+                             {"ports":["9000-9010"],"direction":"egress","networks":["out"]},
+                             {"ports":["22"],"direction":"both","networks":["shut"]}],
                 "connections":[{"kind":null,"from":["a"],"bothWays":true,"to":["a"],"on":["out"]},
                                {"kind":null,"from":["b"],"bothWays":true,"to":["b"],"on":["shut"]}]}"#,
         )
         .unwrap();
         let p = plan(&spec, &names(&["a", "b"]), None).unwrap();
         let a = p.links[0].as_ref().unwrap();
-        assert_eq!(a.egress, vec![(6, 443, 443), (17, 53, 53), (6, 9000, 9010)]);
+        // 443 and 53/udp both boundaries open outward; not 8080 (the network's
+        // ingress-only), nor 9000-9010 (the microVM's alone).
+        assert_eq!(a.egress, vec![(6, 443, 443), (17, 53, 53)]);
         assert!(a.connects, "egress lets it connect");
         let b = p.links[1].as_ref().unwrap();
         assert!(
