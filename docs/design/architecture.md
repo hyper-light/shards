@@ -3109,6 +3109,54 @@ nothing; a local MCP server joining no one; every agent reaching the world refus
 a harness driving a world-reaching agent allowed), mutation-checked three ways: a search
 that follows no edge, every domain taken as internal-only, and none.
 
+### D60. The in-VM server: an instance for each agent, apart from init
+
+AGENTFILE_ARCH.md §5 and §12 answer 18 (Q17), decided by the user on 2026-10-07 in three
+steps: kernel isolation and mutual TLS 1.3 (Noise not added inside it: two sessions
+between the same ends, keyed by the same party); code mode as a typed API run in a
+sandbox; and, once TLS compiled into init was measured costing every microVM 3.0 MiB of
+memory (PM M122), one least-privileged instance for each agent, from a device of its own.
+
+- **Where it lies.** `shards-server` (crates/server), a static musl binary `shards`
+  carries as it carries init (build.rs). The daemon writes it, once, into an EROFS image
+  of it alone (`guest::server_device`, `$SHARDS_HOME/guest/server-<sha256>.erofs`) and
+  attaches that read-only after the root filesystem (`/dev/pmem1`) to microVMs whose
+  image is an Agentfile's (`vnd.osi.agentfile.digest`); a template's key names it. init
+  makes its own node for the device (the run's `/dev` holds the run's devices alone) and
+  mounts it with DAX beside the run's writable layer, where no path from the run's root
+  reaches.
+- **An instance for each domain**, started before it: init forks, gives the child
+  network, IPC and UTS namespaces of its own, the domain's group as its only supplementary
+  group (to give its files to), its own uid and gid (`shards_abi::SERVER_FIRST_ID` plus
+  n: past every domain's, there being no more domains than a kernel's PIDs), no
+  capability, bounding set included, and `no_new_privs`, and execs the binary from the
+  device (`execveat`). The instance makes its own CA, its certificate, and its domain's
+  certificate and key in a directory of its own, listens there, says so to init, and then
+  loads the seccomp filter the domains with no processes run under, before it reads
+  anything an agent sends. init starts the domain only then, with that directory mounted
+  read-only at `/run/shards`.
+- **Who calls.** The socket a connection is accepted on, which only its domain sees, and
+  over it mutual TLS 1.3 with the certificate issued for that domain alone: no key is
+  shared between agents, and init holds none. No agent shares an instance, a queue or a
+  process with another's, so none can time or stall another through it.
+- **Its C.** AWS-LC is compiled for the guest by zig 0.16.0 on every host
+  (`scripts/zig-cc`, `scripts/install-zig` in CI), its paths remapped
+  (`-ffile-prefix-map`) as the Rust's are, so that what `shards` carries is the same
+  wherever it is built.
+
+Tested: `an_instance_answers_its_own_caller_alone` (in a microVM: its own caller's
+certificate answered, another instance's and none refused; requests past their bounds
+refused), and on real microVMs `the_in_vm_server_knows_each_agent`: x and y each ask
+their instance, over MCP, who they are, and are told; each instance runs as its own uid
+and gid with its agent's group alone beside them, no capability, `no_new_privs`, seccomp
+mode 2, and a network namespace of `lo` alone. Mutation-checked: without its uid it ran
+as root; without the groups, the bounding set (`000001ffffffffff`), `no_new_privs`, its
+network namespace (`lo,eth0`) or its own seccomp filter (mode 0), the test fails.
+
+Next: its tools as the grants say (messages between `CONNECT` pairs over socket pairs
+init makes, `ATTACH`, MCP servers in scope), labels, and code mode, whose sandbox's
+language is yet to be chosen.
+
 ### Agents run in their domains (D59, part one)
 
 When a microVM runs an image whose normalized Agentfile (`/.agentfile.json`) declares

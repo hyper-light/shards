@@ -4128,3 +4128,24 @@ revision before comparing a changed API/implementation.
   start cost a run a millisecond of guest time, a fifth of the start budget. Attached at
   boot, before the template's snapshot, it costs a run with Docker's rules nothing that
   200 paired runs can find; only runs with other rules load their own.
+
+### M122. What the in-VM server's TLS costs a microVM, in init and apart
+
+- **Question.** The in-VM server (D60) needs TLS 1.3 (rustls on AWS-LC). Compiled into
+  shards-init, what does it cost every microVM's memory, and what does an instance of its
+  own cost?
+- **Method.** `docs/research/measurements/init-tls/measure.sh`: the same image, booted with
+  each init in turn (`SHARDS_INIT`), interleaved, ten runs each after each init's template
+  was made, reading `MemAvailable` in the guest as the run starts. Host: MacBook arm64,
+  macOS 26.4, pinned kernel 6.18.48, 237,036 KiB guest, revision 6ac7c81 plus the change.
+  Then, with the server apart, each instance's `RssAnon` and `RssFile`
+  (`/proc/PID/status`), read by the run's command in
+  `the_in_vm_server_knows_each_agent`.
+- **Numbers.** init grew from 1,055,672 to 2,273,744 bytes. `MemAvailable`: old init
+  218,604 KiB (9 runs) and 218,564 (1); new init 215,496 KiB (10 runs): 3,108 KiB less
+  in every microVM, more than the binary grew, init being in the initramfs, which is guest
+  memory. Apart, from its own read-only device with DAX: init back to 1,055,672 bytes;
+  each instance 132–136 KiB anonymous, 848–856 KiB of file pages, its code, which DAX
+  maps from the device rather than copying into the page cache (M74).
+- **Consequence.** The server is a binary of its own, on a device of its own attached only
+  to microVMs whose image has agents; a microVM without agents pays nothing for it.

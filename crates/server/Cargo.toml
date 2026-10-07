@@ -1,7 +1,7 @@
 [package]
-name = "shards-testguest"
+name = "shards-server"
 version = "0.1.0"
-description = "Guest-side agent for shards E2E tests (runs as PID 1 inside test VMs)"
+description = "The in-VM server: one instance per agent or harness, outside every domain"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -13,11 +13,11 @@ workspace = true
 
 [dependencies]
 libc = { workspace = true }
-shards-abi = { path = "../abi" }
-
-[[bin]]
-name = "shards-testguest"
-path = "src/main.rs"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 rustls = { version = "0.23.45", default-features = false, features = ["std", "aws_lc_rs"] }
+rcgen = { version = "0.14.10", default-features = false, features = ["aws_lc_rs", "pem"] }
+
+[[bin]]
+name = "shards-server"
+path = "src/main.rs"

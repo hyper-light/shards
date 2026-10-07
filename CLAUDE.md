@@ -38,10 +38,11 @@ Targets: request → usable in **under 5 ms, boot included**, and less memory pe
 - `cargo test --workspace --release` runs unit and E2E tests. E2E downloads a pinned kernel into `target/artifacts`.
   - On macOS, `crates/shards/build.rs` ad-hoc signs the carried VM process with `resources/vm.entitlements` and `-o runtime` (App Sandbox, the hypervisor, Hardened Runtime) before embedding it, and `scripts/hvf-run` (the cargo runner) signs test binaries that create VMs with `resources/hvf.entitlements`. Unsigned VM processes fail with `HV_DENIED`; one outside App Sandbox starts no VM. E2E tests run the copy of `shards` that `common::shards()` places in `target/e2e/`; `common::shards_vm()` is the carried VM process (`SHARDS_HELPERS_CARRIED`).
 - `crates/shards/build.rs` builds shards-init for `shards` to embed, with a nested cargo for the host arch's musl target (`SHARDS_INIT_BINARY`, an absolute path, names a prebuilt one), and the VM and network processes (`SHARDS_HELPERS_DIR` names prebuilt ones; `SHARDS_HELPERS=skip`, which `scripts/lint` sets, carries none, for check builds of other targets).
-- Guest binaries are static musl, linked by `rust-lld`, so no cross toolchain is needed:
+- Guest binaries (shards-init, shards-server, testguest) are static musl, linked by `rust-lld`:
   `cargo build -p shards-init --profile guest --target <arch>-unknown-linux-musl`
   - The guest arch is the host arch.
   - Lint them with the same `--target`, because host builds compile only their stub.
+  - shards-server and testguest carry TLS (AWS-LC's C), compiled by zig 0.16.0 (`scripts/install-zig`): `build.rs` and the tests set `CC_<triple>=scripts/zig-cc`, `AR_<triple>=scripts/zig-ar` and `ZIG_TARGET`; set them yourself to build or lint those by hand. `SHARDS_SERVER_BINARY` names a prebuilt server.
 - Lint every matrix target before pushing: `scripts/lint`, or `scripts/lint <triple>…`. `.github/workflows/ci.yml` lists the triples.
   - aws-lc-sys compiles C for each target, so this needs zig, LLVM (clang-cl, llvm-lib), NASM and cargo-xwin: `brew install zig llvm nasm` and `cargo install cargo-xwin`.
   - The first Windows lint downloads Microsoft's CRT and SDK.

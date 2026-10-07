@@ -3,6 +3,8 @@
 //! - shards-init, the guest's PID 1, for this target's architecture, so that `shards`
 //!   carries the init its guests run and the two always match (D28).
 //!   `SHARDS_INIT_BINARY` names a prebuilt one instead.
+//! - shards-server, the in-VM server (D60), likewise; `SHARDS_SERVER_BINARY` names a
+//!   prebuilt one.
 //! - The VM process (`shards-vm`) and the network process (`shards-net`), which `shards`
 //!   writes out once per build and starts (src/helpers.rs). Built by a nested cargo for
 //!   this target and profile into `target/helpers`, kept between builds; on macOS the VM
@@ -44,52 +46,81 @@ fn build() -> Result<(), String> {
     {
         let _ = writeln!(out, "cargo::rustc-env=SHARDS_RUSTC={}", v.trim());
     }
-    let _ = writeln!(out, "cargo::rerun-if-env-changed=SHARDS_INIT_BINARY");
+    for var in ["CC_x86_64_unknown_linux_musl", "CC_aarch64_unknown_linux_musl"] {
+        let _ = writeln!(out, "cargo::rerun-if-env-changed={var}");
+    }
     // Only Unix hosts run VMs from `shardsd` yet.
     if env::var("CARGO_CFG_TARGET_FAMILY").is_ok_and(|f| !f.split(',').any(|f| f == "unix")) {
         return Ok(());
     }
     let var = |name: &str| env::var_os(name).ok_or_else(|| format!("{name} is not set"));
     let out_dir = PathBuf::from(var("OUT_DIR")?);
-    let init = match env::var_os("SHARDS_INIT_BINARY").filter(|p| !p.is_empty()) {
-        Some(given) => {
-            let path = PathBuf::from(given);
-            // A build script runs in its package's directory, not where cargo was run.
-            if !path.is_absolute() || !path.is_file() {
-                return Err(format!(
-                    "SHARDS_INIT_BINARY: {} is not an absolute path to a file",
-                    path.display()
-                ));
+    // Each guest binary it carries: shards-init, and the in-VM server (D60), whose
+    // instances init starts from a read-only device of their own.
+    let guests: [(&str, &str, &str, &[&str]); 2] = [
+        (
+            "shards-init",
+            "SHARDS_INIT_BINARY",
+            "init",
+            &["crates/init", "crates/abi", "crates/cmdline"],
+        ),
+        (
+            "shards-server",
+            "SHARDS_SERVER_BINARY",
+            "server",
+            &["crates/server", "crates/init/src/json.rs", "vendor"],
+        ),
+    ];
+    for (package, given_var, dir, inputs) in guests {
+        let _ = writeln!(out, "cargo::rerun-if-env-changed={given_var}");
+        let built = match env::var_os(given_var).filter(|p| !p.is_empty()) {
+            Some(given) => {
+                let path = PathBuf::from(given);
+                // A build script runs in its package's directory, not where cargo was run.
+                if !path.is_absolute() || !path.is_file() {
+                    return Err(format!(
+                        "{given_var}: {} is not an absolute path to a file",
+                        path.display()
+                    ));
+                }
+                let _ = writeln!(out, "cargo::rerun-if-changed={}", path.display());
+                path
             }
-            let _ = writeln!(out, "cargo::rerun-if-changed={}", path.display());
-            path
-        }
-        None => {
-            let arch =
-                env::var("CARGO_CFG_TARGET_ARCH").map_err(|e| format!("CARGO_CFG_TARGET_ARCH: {e}"))?;
-            if arch != "x86_64" && arch != "aarch64" {
-                return Err(format!("shards guests are x86_64 or aarch64, not {arch}"));
+            None => {
+                let arch =
+                    env::var("CARGO_CFG_TARGET_ARCH").map_err(|e| format!("CARGO_CFG_TARGET_ARCH: {e}"))?;
+                if arch != "x86_64" && arch != "aarch64" {
+                    return Err(format!("shards guests are x86_64 or aarch64, not {arch}"));
+                }
+                let root = Path::new(&var("CARGO_MANIFEST_DIR")?).join("..").join("..");
+                for input in inputs.iter().chain(&["Cargo.toml", "Cargo.lock"]) {
+                    let _ = writeln!(out, "cargo::rerun-if-changed={}", root.join(input).display());
+                }
+                compile(
+                    &root,
+                    &arch,
+                    &out_dir.join(dir),
+                    var("CARGO")?,
+                    package,
+                    given_var,
+                )?
             }
-            let root = Path::new(&var("CARGO_MANIFEST_DIR")?).join("..").join("..");
-            for input in [
-                "crates/init",
-                "crates/abi",
-                "crates/cmdline",
-                "Cargo.toml",
-                "Cargo.lock",
-            ] {
-                let _ = writeln!(out, "cargo::rerun-if-changed={}", root.join(input).display());
-            }
-            compile(&root, &arch, &out_dir.join("init"), var("CARGO")?)?
-        }
-    };
-    let to = out_dir.join("shards-init");
-    fs::copy(&init, &to).map_err(|e| format!("copying {} to {}: {e}", init.display(), to.display()))?;
+        };
+        let to = out_dir.join(package);
+        fs::copy(&built, &to).map_err(|e| format!("copying {} to {}: {e}", built.display(), to.display()))?;
+    }
     Ok(())
 }
 
 /// Runs the nested build and returns the binary it made.
-fn compile(root: &Path, arch: &str, target_dir: &Path, cargo: OsString) -> Result<PathBuf, String> {
+fn compile(
+    root: &Path,
+    arch: &str,
+    target_dir: &Path,
+    cargo: OsString,
+    package: &str,
+    given_var: &str,
+) -> Result<PathBuf, String> {
     let triple = format!("{arch}-unknown-linux-musl");
     let linker = format!(
         "CARGO_TARGET_{}_LINKER",
@@ -98,14 +129,7 @@ fn compile(root: &Path, arch: &str, target_dir: &Path, cargo: OsString) -> Resul
     let mut command = Command::new(cargo);
     command
         .current_dir(root)
-        .args([
-            "build",
-            "--locked",
-            "--package",
-            "shards-init",
-            "--profile",
-            "guest",
-        ])
+        .args(["build", "--locked", "--package", package, "--profile", "guest"])
         .args(["--target", &triple, "--target-dir"])
         .arg(target_dir)
         .env(linker, "rust-lld")
@@ -129,28 +153,58 @@ fn compile(root: &Path, arch: &str, target_dir: &Path, cargo: OsString) -> Resul
         remaps.push(format!("--remap-path-prefix={}=/cargo", home.display()));
     }
     command.env("CARGO_ENCODED_RUSTFLAGS", remaps.join("\x1f"));
-    let output = command
-        .output()
-        .map_err(|e| format!("building shards-init: {e}"))?;
+    // AWS-LC's C, for the TLS of the in-VM server (AGENTFILE_ARCH.md §12 answer 18), by
+    // zig on every host (scripts/zig-cc, which drops the Rust triple cc-rs passes): one
+    // compiler, so that init's bytes, which name its template, are the same wherever it
+    // is built; its paths remapped as the Rust's are (`-ffile-prefix-map`). A compiler
+    // named for the target already is used instead.
+    let var = triple.replace('-', "_");
+    if std::env::var_os(format!("CC_{var}")).is_none() {
+        let tool = |name: &str| {
+            let script = root.join("scripts").join(name);
+            if cfg!(windows) {
+                format!("sh {}", script.display())
+            } else {
+                script.display().to_string()
+            }
+        };
+        command
+            .env(format!("CC_{var}"), tool("zig-cc"))
+            .env(format!("AR_{var}"), tool("zig-ar"))
+            .env("ZIG_TARGET", format!("{arch}-linux-musl"));
+    }
+    let maps: Vec<String> = remaps
+        .iter()
+        .filter_map(|r| r.strip_prefix("--remap-path-prefix="))
+        .map(|m| format!("-ffile-prefix-map={m}"))
+        .collect();
+    command.env(format!("CFLAGS_{var}"), maps.join(" "));
+    let output = command.output().map_err(|e| format!("building {package}: {e}"))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let tail: Vec<&str> = stderr.lines().rev().take(20).collect();
-        let mut message = format!("building shards-init for {triple} failed");
+        let mut message = format!("building {package} for {triple} failed");
         if stderr.contains("E0463") {
             message.push_str(&format!(
                 "\nthe Rust standard library for {triple} is missing: rustup target add {triple}"
             ));
         }
-        message.push_str("\nor name a prebuilt one with SHARDS_INIT_BINARY");
+        if stderr.contains("aws-lc") || stderr.contains("zig") {
+            message.push_str(&format!(
+                "\nits C (AWS-LC) is compiled by zig 0.16.0: install it (https://ziglang.org/download/, \
+                 `brew install zig`), or name a compiler with CC_{var}"
+            ));
+        }
+        message.push_str(&format!("\nor name a prebuilt one with {given_var}"));
         for line in tail.iter().rev() {
             message.push('\n');
             message.push_str(line);
         }
         return Err(message);
     }
-    let binary = target_dir.join(&triple).join("guest").join("shards-init");
+    let binary = target_dir.join(&triple).join("guest").join(package);
     if !binary.is_file() {
-        return Err(format!("building shards-init made no {}", binary.display()));
+        return Err(format!("building {package} made no {}", binary.display()));
     }
     Ok(binary)
 }

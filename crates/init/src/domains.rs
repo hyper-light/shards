@@ -783,6 +783,17 @@ pub fn start(
             made.push((net.clone(), name.clone()));
         }
     }
+    // The in-VM server (§5, D60): an instance for each domain, from the read-only device
+    // the daemon attaches to microVMs with agents, mounted beside the run's writable
+    // layer, where no path from the run's root reaches, as the Unix sockets granted are.
+    let rw = crate::changes::upper()
+        .map(|u| format!("{u}/.."))
+        .ok_or("the run's writable layer was not kept, where the in-VM server lies")?;
+    let server = Server::mount(&rw)?;
+    let no_processes = filters
+        .get(1)
+        .and_then(Option::as_ref)
+        .ok_or("the run gave no seccomp filter for the in-VM server")?;
     let mut started = Vec::new();
     for (i, d) in domains.iter().enumerate() {
         let group = format!("{CGROUPS}/{}", d.cgroup);
@@ -831,6 +842,14 @@ pub fn start(
             sockets.push((copy.as_raw_fd(), at));
             copies.push((copy, target));
         }
+        // Its server instance, listening before it starts, and its way there, read-only:
+        // its socket, the instance's CA, its certificate and key.
+        let dir = server.start(i, d, no_processes, last_cap)?;
+        let quiet = libc::MOUNT_ATTR_NOSUID | libc::MOUNT_ATTR_NODEV | libc::MOUNT_ATTR_NOEXEC;
+        let copy = copy_of(&dir, quiet | libc::MOUNT_ATTR_RDONLY)
+            .map_err(|e| format!("{}: the in-VM server: {e}", d.label))?;
+        sockets.push((copy.as_raw_fd(), cstr_of(SERVER_AT)?));
+        copies.push((copy, cstr_of(SERVER_AT.trim_start_matches('/'))?));
         let own_skel;
         let skel_of = if copies.is_empty() {
             &skel
@@ -960,6 +979,225 @@ pub fn start(
         });
     }
     Ok(started)
+}
+
+/// Where a domain finds its server instance: its socket, the instance's CA, and its own
+/// certificate and key.
+const SERVER_AT: &str = "/run/shards";
+/// The device the in-VM server lies on, which the daemon attaches after the root
+/// filesystem's (vm_run.rs): its number, as sysfs gives it. The run's /dev holds its own
+/// devices alone, as a container's does, so init makes a node of its own for it.
+const SERVER_DEVICE: &str = "/sys/block/pmem1/dev";
+
+/// The in-VM server's binary, mounted, and where its instances' directories go.
+struct Server {
+    binary: OwnedFd,
+    base: String,
+}
+
+impl Server {
+    /// Mounts the server's device read-only (EROFS, DAX: its pages are the host's, not the
+    /// guest's memory), once, under `rw`.
+    fn mount(rw: &str) -> Result<Server, String> {
+        let number = std::fs::read_to_string(SERVER_DEVICE)
+            .map_err(|e| format!("the in-VM server's device ({SERVER_DEVICE}): {e}"))?;
+        let (major, minor) = number
+            .trim()
+            .split_once(':')
+            .and_then(|(a, b)| Some((a.parse::<u32>().ok()?, b.parse::<u32>().ok()?)))
+            .ok_or_else(|| format!("the in-VM server's device: {SERVER_DEVICE} says {number:?}"))?;
+        let node = cstr_of(&format!("{rw}/server-device"))?;
+        // SAFETY: mknod(2) of a NUL-terminated path; an old one from a restored template
+        // is the same device.
+        if unsafe { libc::mknod(node.as_ptr(), libc::S_IFBLK | 0o600, libc::makedev(major, minor)) } != 0
+            && io::Error::last_os_error().kind() != io::ErrorKind::AlreadyExists
+        {
+            return Err(format!(
+                "the in-VM server's device: {}",
+                io::Error::last_os_error()
+            ));
+        }
+        let at = format!("{rw}/server-binary");
+        std::fs::create_dir_all(&at).map_err(|e| format!("{at}: {e}"))?;
+        let target = cstr_of(&at)?;
+        // SAFETY: mount(2) of NUL-terminated strings.
+        if unsafe {
+            libc::mount(
+                node.as_ptr(),
+                target.as_ptr(),
+                c"erofs".as_ptr(),
+                libc::MS_RDONLY | libc::MS_NOSUID | libc::MS_NODEV,
+                c"dax=always".as_ptr().cast(),
+            )
+        } != 0
+        {
+            return Err(format!(
+                "mounting the in-VM server's device: {}",
+                io::Error::last_os_error()
+            ));
+        }
+        let path = cstr_of(&format!("{at}/shards-server"))?;
+        // SAFETY: open(2) of a NUL-terminated path, its descriptor owned below.
+        let fd = unsafe { libc::open(path.as_ptr(), libc::O_PATH | libc::O_CLOEXEC) };
+        if fd < 0 {
+            return Err(format!(
+                "the in-VM server's binary: {}",
+                io::Error::last_os_error()
+            ));
+        }
+        Ok(Server {
+            // SAFETY: the descriptor open just made, owned here alone.
+            binary: unsafe { OwnedFd::from_raw_fd(fd) },
+            base: format!("{rw}/server"),
+        })
+    }
+
+    /// Starts the `n`-th domain's instance, least-privileged (its own uid and gid, the
+    /// domain's group to give its files to, no capability, `no_new_privs`, its own
+    /// network, IPC and UTS namespaces), confined by `filter` once it listens; returns
+    /// the directory it listens in, once it does.
+    fn start(&self, n: usize, d: &Domain, filter: &Filter, last_cap: u32) -> Result<String, String> {
+        let fail = |e: String| format!("{}: its server: {e}", d.label);
+        let id = u32::try_from(n)
+            .ok()
+            .and_then(|n| shards_abi::SERVER_FIRST_ID.checked_add(n))
+            .ok_or_else(|| fail("no uid left".into()))?;
+        let dir = format!("{}/{}", self.base, d.cgroup);
+        std::fs::create_dir_all(&dir).map_err(|e| fail(format!("{dir}: {e}")))?;
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o750))
+            .map_err(|e| fail(e.to_string()))?;
+        std::os::unix::fs::chown(&dir, Some(id), Some(d.id)).map_err(|e| fail(e.to_string()))?;
+        // Its directory, which no path of its own reaches, as its descriptor 6.
+        let dir_path = cstr_of(&dir)?;
+        // SAFETY: open(2) of a NUL-terminated path, its descriptor owned below.
+        let dir_fd = unsafe {
+            libc::open(
+                dir_path.as_ptr(),
+                libc::O_PATH | libc::O_DIRECTORY | libc::O_CLOEXEC,
+            )
+        };
+        if dir_fd < 0 {
+            return Err(fail(format!("{dir}: {}", io::Error::last_os_error())));
+        }
+        // SAFETY: the descriptor open just made, owned here alone.
+        let dir_fd = unsafe { OwnedFd::from_raw_fd(dir_fd) };
+        let argv_owned = [
+            cstr_of("shards-server")?,
+            cstr_of(&d.label)?,
+            cstr_of("/proc/self/fd/6")?,
+            cstr_of(&d.id.to_string())?,
+            cstr_of("3")?,
+            cstr_of("4")?,
+        ];
+        let argv: Vec<*const libc::c_char> = argv_owned
+            .iter()
+            .map(|a| a.as_ptr())
+            .chain([std::ptr::null()])
+            .collect();
+        let envp = [std::ptr::null::<libc::c_char>()];
+        let pipe = || -> Result<(OwnedFd, OwnedFd), String> {
+            let mut fds = [0 as RawFd; 2];
+            // SAFETY: pipe2(2) into a two-element array.
+            if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
+                return Err(fail(io::Error::last_os_error().to_string()));
+            }
+            // SAFETY: both descriptors were just made, and are owned here alone.
+            Ok(unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) })
+        };
+        let (ready_r, ready_w) = pipe()?;
+        let (filter_r, filter_w) = pipe()?;
+        // What it says before it listens, if it ends: its stderr until then.
+        let (said_r, said_w) = pipe()?;
+        let groups = [d.id];
+        // SAFETY: fork(2) from init with no other thread running; the child calls only the
+        // kernel, on what was made above, and execs or exits.
+        let pid = unsafe { libc::fork() };
+        if pid < 0 {
+            return Err(fail(io::Error::last_os_error().to_string()));
+        }
+        if pid == 0 {
+            // SAFETY: system calls on descriptors and buffers made before the fork.
+            unsafe {
+                let up = |fd: RawFd| libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 10);
+                let (r, f, b, e, w) = (
+                    up(ready_w.as_raw_fd()),
+                    up(filter_r.as_raw_fd()),
+                    up(self.binary.as_raw_fd()),
+                    up(said_w.as_raw_fd()),
+                    up(dir_fd.as_raw_fd()),
+                );
+                let null = libc::open(c"/dev/null".as_ptr(), libc::O_RDWR | libc::O_CLOEXEC);
+                if r < 0
+                    || f < 0
+                    || b < 0
+                    || e < 0
+                    || w < 0
+                    || null < 0
+                    || libc::dup2(null, 0) < 0
+                    || libc::dup2(null, 1) < 0
+                    || libc::dup2(e, 2) < 0
+                    || libc::dup2(r, 3) < 0
+                    || libc::dup2(f, 4) < 0
+                    || libc::dup2(b, 5) < 0
+                    || libc::fcntl(5, libc::F_SETFD, libc::FD_CLOEXEC) < 0
+                    || libc::dup2(w, 6) < 0
+                    || libc::syscall(libc::SYS_close_range, 7u32, u32::MAX, 0u32) != 0
+                    || libc::unshare(libc::CLONE_NEWNET | libc::CLONE_NEWIPC | libc::CLONE_NEWUTS) != 0
+                    || !crate::defaults::bound(last_cap, |_| false)
+                    || libc::setgroups(groups.len(), groups.as_ptr()) != 0
+                    || libc::setresgid(id, id, id) != 0
+                    || libc::setresuid(id, id, id) != 0
+                    || !crate::defaults::set(last_cap, |_| false)
+                    || libc::prctl(libc::PR_CAP_AMBIENT, libc::PR_CAP_AMBIENT_CLEAR_ALL, 0, 0, 0) != 0
+                    || libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0
+                {
+                    libc::_exit(126);
+                }
+                libc::syscall(
+                    libc::SYS_execveat,
+                    5,
+                    c"".as_ptr(),
+                    argv.as_ptr(),
+                    envp.as_ptr(),
+                    libc::AT_EMPTY_PATH,
+                );
+                libc::_exit(127)
+            }
+        }
+        drop(ready_w);
+        drop(filter_r);
+        drop(said_w);
+        // Its filter, as init's setup carries one: flags, then the program.
+        let mut bytes = filter.0.to_le_bytes().to_vec();
+        for i in &filter.1 {
+            bytes.extend_from_slice(&i.code.to_ne_bytes());
+            bytes.extend_from_slice(&[i.jt, i.jf]);
+            bytes.extend_from_slice(&i.k.to_ne_bytes());
+        }
+        use std::io::{Read as _, Write as _};
+        std::fs::File::from(filter_w)
+            .write_all(&bytes)
+            .map_err(|e| fail(format!("giving it its filter: {e}")))?;
+        let mut said = [0u8; 1];
+        match std::fs::File::from(ready_r).read(&mut said) {
+            Ok(1) => Ok(dir),
+            _ => {
+                // Why: its status (126 a step before its exec, 127 the exec), and what it
+                // wrote.
+                let mut status = 0;
+                // SAFETY: waitpid(2) of the child just forked, which has ended or will.
+                unsafe { libc::waitpid(pid, &raw mut status, 0) };
+                let mut text = String::new();
+                let _ = std::fs::File::from(said_r).take(4096).read_to_string(&mut text);
+                Err(fail(format!(
+                    "it ended before it listened (status {}): {}",
+                    libc::WEXITSTATUS(status),
+                    text.trim()
+                )))
+            }
+        }
+    }
 }
 
 /// Writes `shards-init: <what>: errno <n>` to `out` and exits 125, without allocating.

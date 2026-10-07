@@ -7,8 +7,12 @@
 #   docker run ... -v "$PWD:/work" -w /work -e TARGET ... IMAGE scripts/musl-ci
 set -eu
 
-apk add --no-cache build-base curl
+apk add --no-cache build-base curl xz
 rustup component add clippy
+# shards-init's C is compiled by the pinned zig (crates/shards/build.rs).
+zig=$(RUNNER_TEMP=/opt GITHUB_PATH= scripts/install-zig)
+chmod -R a+rX "$zig"
+export PATH="$zig:$PATH"
 uid=$(stat -c %u /work)
 if [ "$uid" = 0 ]; then
 	echo "musl-ci: /work is root's; the tests run as its owner, never as root" >&2

@@ -3647,9 +3647,17 @@ impl<D: Disk> Daemon<D> {
             }
             network::Net::None => None,
         };
+        // An Agentfile's image: the in-VM server's device after its root filesystem
+        // (D60), so that init starts each agent's instance from it.
+        let server = if prepared.labels.contains_key("vnd.osi.agentfile.digest") {
+            Some(crate::guest::server_device(&self.home)?)
+        } else {
+            None
+        };
         // Sized for its limits; a template is of one size (run::template).
         let on_network = |cfg: &mut Config| {
             (cfg.vcpus, cfg.memory_mib) = prepared.size;
+            cfg.pmem.extend(server.iter().cloned());
             // A slot for each directory it shares (D38), which its run fills.
             cfg.shares = (0..prepared.shares).map(|_| Arc::default()).collect();
             if let Some(bridge) = &bridge {
@@ -4021,6 +4029,9 @@ impl<D: Disk> Daemon<D> {
         ];
         if let Some(init) = &cfg.init {
             args.extend(["--init".into(), init.into()]);
+        }
+        for pmem in &cfg.pmem {
+            args.extend(["--pmem".into(), pmem.into()]);
         }
         if let Some(fresh) = save {
             args.extend(["--snapshot-dir".into(), fresh.into()]);

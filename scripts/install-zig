@@ -1,0 +1,36 @@
+#!/bin/sh
+# Installs zig 0.16.0, pinned by digest, for this host (crates/shards/build.rs compiles
+# shards-init's C with it), and puts it on PATH: through $GITHUB_PATH in CI, else by
+# printing the directory. Digests from https://ziglang.org/download/index.json.
+set -eu
+version=0.16.0
+case "$(uname -s)-$(uname -m)" in
+	Linux-x86_64) host=x86_64-linux; sum=70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00 ;;
+	Linux-aarch64) host=aarch64-linux; sum=ea4b09bfb22ec6f6c6ceac57ab63efb6b46e17ab08d21f69f3a48b38e1534f17 ;;
+	Darwin-x86_64) host=x86_64-macos; sum=0387557ed1877bc6a2e1802c8391953baddba76081876301c522f52977b52ba7 ;;
+	Darwin-arm64) host=aarch64-macos; sum=b23d70deaa879b5c2d486ed3316f7eaa53e84acf6fc9cc747de152450d401489 ;;
+	MINGW*-x86_64 | MSYS*-x86_64) host=x86_64-windows; sum=68659eb5f1e4eb1437a722f1dd889c5a322c9954607f5edcf337bc3684a75a7e ;;
+	MINGW*-aarch64 | MSYS*-aarch64 | MINGW*-arm64) host=aarch64-windows; sum=aee38316ee4111717900f45dd3130145c39289e105541d737eb8c5ed653c78ef ;;
+	*) echo "install-zig: no pinned zig for $(uname -s)-$(uname -m)" >&2; exit 1 ;;
+esac
+dir="${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
+case $host in
+	*-windows) archive="zig-$host-$version.zip" ;;
+	*) archive="zig-$host-$version.tar.xz" ;;
+esac
+curl -fsSL --retry 5 --retry-all-errors --retry-delay 10 -o "$dir/$archive" "https://ziglang.org/download/$version/$archive"
+if command -v sha256sum >/dev/null 2>&1; then
+	echo "$sum  $dir/$archive" | sha256sum -c -
+else
+	echo "$sum  $dir/$archive" | shasum -a 256 -c -
+fi
+case $archive in
+	*.zip) unzip -q -o "$dir/$archive" -d "$dir" ;;
+	*) tar -xJf "$dir/$archive" -C "$dir" ;;
+esac
+bin="$dir/zig-$host-$version"
+if [ -n "${GITHUB_PATH:-}" ]; then
+	echo "$bin" >> "$GITHUB_PATH"
+else
+	echo "$bin"
+fi

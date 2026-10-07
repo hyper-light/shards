@@ -29,6 +29,71 @@ const USAGE: &str = "usage: shards guest use --kernel FILE --init FILE
 #[cfg(unix)]
 const INIT: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/shards-init"));
 
+/// The in-VM server this build carries (D60), built for this host's guests by build.rs.
+#[cfg(unix)]
+const SERVER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/shards-server"));
+
+/// The in-VM server's device (D60): an EROFS image of its binary alone, which the daemon
+/// attaches read-only to microVMs whose image has agents, so that its pages are mapped
+/// from the host (DAX) and not copied into guest memory. Kept by content in the store,
+/// as `server-<sha256 of the binary>.erofs`, written once.
+#[cfg(unix)]
+pub fn server_device(home: &Path) -> Result<PathBuf, String> {
+    let bytes = SERVER;
+    let dir = home.join("guest");
+    let path = dir.join(format!("server-{}.erofs", hex(&Sha256::digest(bytes))));
+    if path.is_file() {
+        return Ok(path);
+    }
+    shards_vmm::platform::create_private_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let _held = hold(&dir)?;
+    if !path.is_file() {
+        store(&dir, &path, &server_image(bytes)?)?;
+    }
+    Ok(path)
+}
+
+/// An EROFS image whose root holds `binary` as `shards-server`, owned by root, mode 0755.
+#[cfg(unix)]
+fn server_image(binary: &[u8]) -> Result<Vec<u8>, String> {
+    use shards_image::erofs::{self, DataRef, Kind, Meta, Node, Source, Tree};
+    struct Bytes<'a>(&'a [u8]);
+    impl Source for Bytes<'_> {
+        fn read_at(&mut self, data: DataRef, at: u64, buf: &mut [u8]) -> io::Result<()> {
+            let start = data
+                .offset
+                .checked_add(at)
+                .and_then(|s| usize::try_from(s).ok())
+                .ok_or_else(|| io::Error::other("past the binary"))?;
+            let from = start
+                .checked_add(buf.len())
+                .and_then(|end| self.0.get(start..end))
+                .ok_or_else(|| io::Error::other("past the binary"))?;
+            buf.copy_from_slice(from);
+            Ok(())
+        }
+    }
+    let meta = || Meta {
+        mode: 0o755,
+        ..Meta::default()
+    };
+    let mut tree = Tree::new(meta());
+    let size = u64::try_from(binary.len()).map_err(|_| "the in-VM server is too large")?;
+    let file = Node {
+        kind: Kind::File {
+            size,
+            data: DataRef { source: 0, offset: 0 },
+        },
+        meta: meta(),
+    };
+    tree.insert(Tree::ROOT, b"shards-server", file)
+        .map_err(|e| format!("the in-VM server's image: {e}"))?;
+    let mut out = Vec::new();
+    erofs::write(&tree, &mut Bytes(binary), &mut out)
+        .map_err(|e| format!("the in-VM server's image: {e}"))?;
+    Ok(out)
+}
+
 /// A guest: its files in the store, and their digests.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Guest {

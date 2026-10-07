@@ -126,6 +126,50 @@ pub fn main() -> ! {
             }
         }
         "outlive" => outlive(arg(1).parse().unwrap_or(0)),
+        // Once `arg(2)` processes named `arg(1)` exist, what each of the in-VM server's
+        // instances is: its uid, gid, groups, capabilities, no_new_privs, seccomp mode,
+        // the interfaces of its network namespace (`/proc/PID/net/dev`, which a process
+        // without CAP_SYS_PTRACE may read where `ns/net` it may not), and its resident
+        // memory, anonymous and of files apart.
+        "inspect-servers" => {
+            let code = await_process(arg(1), arg(2).parse().unwrap_or(1), "");
+            for e in std::fs::read_dir("/proc").into_iter().flatten().flatten() {
+                let p = e.path();
+                if !std::fs::read_to_string(p.join("comm")).is_ok_and(|c| c.trim_end() == "shards-server") {
+                    continue;
+                }
+                let status = std::fs::read_to_string(p.join("status")).unwrap_or_default();
+                let field = |k: &str| {
+                    status
+                        .lines()
+                        .find_map(|l| l.strip_prefix(k))
+                        .map(|v| v.split_whitespace().collect::<Vec<_>>().join(","))
+                        .unwrap_or_default()
+                };
+                let links: Vec<String> = std::fs::read_to_string(p.join("net/dev"))
+                    .unwrap_or_default()
+                    .lines()
+                    .skip(2)
+                    .filter_map(|l| l.split(':').next().map(|n| n.trim().to_string()))
+                    .collect();
+                let _ = writeln!(
+                    io::stdout(),
+                    "server uid={} gid={} groups={} capeff={} capprm={} capbnd={} nnp={} seccomp={} links={} rss_anon_kb={} rss_file_kb={}",
+                    field("Uid:"),
+                    field("Gid:"),
+                    field("Groups:"),
+                    field("CapEff:"),
+                    field("CapPrm:"),
+                    field("CapBnd:"),
+                    field("NoNewPrivs:"),
+                    field("Seccomp:"),
+                    links.join(","),
+                    field("RssAnon:").trim_end_matches(",kB"),
+                    field("RssFile:").trim_end_matches(",kB"),
+                );
+            }
+            code
+        }
         // Waits (60 s at most) to see a process named `arg(1)`, then (60 s at most) for none.
         "vanish" => {
             let count = |name: &str| {
@@ -1187,6 +1231,14 @@ fn confined(args: &[String]) -> i32 {
             "see" | "write" | "bind" | "connect" | "call" | "listen" | "reach" | "unreach" | "cat"
             | "resolve" | "dnsprobe" | "unix" | "abstract" | "unix-serve" | "pause" | "udpflood"
             | "reachmany" | "udpask" => mode = a.as_str(),
+            // The in-VM server, as an MCP client asks it: who it knows this agent as.
+            "whoami" => {
+                let said = match server_whoami() {
+                    Ok(name) => name,
+                    Err(e) => format!("error {e}"),
+                };
+                out.push_str(&format!("confined whoami: {said}\n"));
+            }
             // A grandchild let go as daemons are (fork, setsid, fork), named `escaped`,
             // that waits until it is ended.
             "daemonize" => {
@@ -1904,3 +1956,75 @@ fn first_of_own() -> String {
 
 /// The System V key §9.8's channel probes use: "SHAR".
 const IPC_KEY: libc::key_t = 0x5348_4152;
+
+/// Asks the in-VM server, over the agent's socket and mutual TLS 1.3 with the
+/// certificate and key beside it, who it is: MCP's `initialize`, then `tools/call` of
+/// `whoami`; the text it answered.
+fn server_whoami() -> Result<String, String> {
+    use rustls::pki_types::pem::PemObject as _;
+    use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
+    use std::sync::Arc;
+    let at = "/run/shards";
+    let e = |what: &str, x: &dyn std::fmt::Display| format!("{what}: {x}");
+    let ca = CertificateDer::from_pem_file(format!("{at}/ca.pem")).map_err(|x| e("ca.pem", &x))?;
+    let cert = CertificateDer::from_pem_file(format!("{at}/cert.pem")).map_err(|x| e("cert.pem", &x))?;
+    let key = PrivateKeyDer::from_pem_file(format!("{at}/key.pem")).map_err(|x| e("key.pem", &x))?;
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(ca).map_err(|x| e("ca", &x))?;
+    let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+    let config = rustls::ClientConfig::builder_with_provider(provider)
+        .with_protocol_versions(&[&rustls::version::TLS13])
+        .map_err(|x| e("tls", &x))?
+        .with_root_certificates(roots)
+        .with_client_auth_cert(vec![cert], key)
+        .map_err(|x| e("client cert", &x))?;
+    let name = ServerName::try_from("shards").map_err(|x| e("name", &x))?;
+    let tls = rustls::ClientConnection::new(Arc::new(config), name).map_err(|x| e("tls", &x))?;
+    let sock = std::os::unix::net::UnixStream::connect(format!("{at}/server.sock"))
+        .map_err(|x| format!("errno {}", x.raw_os_error().unwrap_or(0)))?;
+    let mut s = rustls::StreamOwned::new(tls, sock);
+    let mut ask = |body: &str| -> Result<String, String> {
+        let req = format!(
+            "POST /mcp HTTP/1.1\r\nHost: shards\r\nContent-Type: application/json\r\n\
+             Accept: application/json, text/event-stream\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        s.write_all(req.as_bytes()).map_err(|x| e("write", &x))?;
+        let mut got = Vec::new();
+        let mut b = [0u8; 4096];
+        loop {
+            let n = s.read(&mut b).map_err(|x| e("read", &x))?;
+            if n == 0 {
+                return Err("closed".to_string());
+            }
+            got.extend_from_slice(b.get(..n).unwrap_or_default());
+            let text = String::from_utf8_lossy(&got).into_owned();
+            if let Some((head, body)) = text.split_once("\r\n\r\n") {
+                let len: usize = head
+                    .lines()
+                    .find_map(|l| {
+                        l.to_ascii_lowercase()
+                            .strip_prefix("content-length:")
+                            .map(|v| v.trim().to_string())
+                    })
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(0);
+                if body.len() >= len {
+                    return Ok(body.to_string());
+                }
+            }
+        }
+    };
+    ask(
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"testguest","version":"1"}}}"#,
+    )?;
+    let answer =
+        ask(r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"whoami","arguments":{}}}"#)?;
+    // The text of its one content item.
+    let text = answer
+        .split_once(r#""text":""#)
+        .and_then(|(_, rest)| rest.split_once('"'))
+        .map(|(t, _)| t.to_string())
+        .ok_or_else(|| format!("no text in {answer}"))?;
+    Ok(text)
+}

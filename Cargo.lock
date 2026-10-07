@@ -1088,6 +1088,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "shards-server"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "rcgen",
+ "rustls",
+]
+
+[[package]]
 name = "shards-template"
 version = "0.1.0"
 dependencies = [
@@ -1099,6 +1108,7 @@ name = "shards-testguest"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "rustls",
  "shards-abi",
 ]
 

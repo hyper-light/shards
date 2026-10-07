@@ -4813,3 +4813,74 @@ fn no_kernel_channel_joins_two_agents() {
     }
     assert!(!all.lines().any(|l| l.starts_with("await timeout")), "{all}");
 }
+
+/// The in-VM server knows each agent by the socket it calls on, over mutual TLS 1.3
+/// with the certificate issued for it (AGENTFILE_ARCH.md §5, §12 answer 18; D60): x and y
+/// each ask their instance, as an MCP client asks, who they are, and are told. Each
+/// instance runs least-privileged: a uid and gid of its own, its agent's group alone
+/// beside them, no capability, `no_new_privs`, a seccomp filter, a network namespace of
+/// its own.
+#[test]
+fn the_in_vm_server_knows_each_agent() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let (port, _repos) = common::writable_registry();
+    let home = TempDir::new("server-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let mut agents = String::new();
+    for name in ["x", "y"] {
+        let dir = TempDir::new(&format!("server-agent-{name}"));
+        std::fs::create_dir_all(dir.join("bin")).unwrap();
+        std::fs::copy(common::test_guest(), dir.join("bin/testguest")).unwrap();
+        std::fs::write(
+            dir.join("agent.json"),
+            format!(r#"{{"name":"{name}","run":{{"command":["bin/testguest","confined","see","/run/shards","whoami"]}}}}"#),
+        )
+        .unwrap();
+        let tag = format!("127.0.0.1:{port}/team/server-{name}:1");
+        let made = shards(&["build", "agent", dir.to_str().unwrap(), "-t", &tag]);
+        assert_eq!(made.status, Some(0), "{}", made.stderr);
+        let pushed = shards(&["push", "agent", &tag]);
+        assert_eq!(pushed.status, Some(0), "{}", pushed.stderr);
+        agents.push_str(&format!("AGENT {name} FROM {tag}\n"));
+    }
+    let ctx = context("server-ctx", &format!("FROM {image}\n"));
+    std::fs::write(ctx.join("Agentfile"), format!("FROM {image}\n{agents}")).unwrap();
+    let built = shards(&["build", "-t", "server:1", ctx.to_str().unwrap()]);
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    let ran = shards(&[
+        "run",
+        "--rm",
+        "server:1",
+        "inspect-servers",
+        "confined-ready",
+        "2",
+    ]);
+    let all = format!("{}{}", ran.stdout, ran.stderr);
+    assert_eq!(ran.status, Some(0), "{all}");
+    let servers: Vec<&str> = all.lines().filter_map(|l| l.strip_prefix("server ")).collect();
+    assert_eq!(servers.len(), 2, "{all}");
+    for (n, agent) in [(0u32, 200_000u32), (1, 200_001)] {
+        let id = 200_000 + 4 * 1024 * 1024 + n;
+        let want = format!(
+            "uid={id},{id},{id},{id} gid={id},{id},{id},{id} groups={agent} capeff=0000000000000000 \
+             capprm=0000000000000000 capbnd=0000000000000000 nnp=1 seccomp=2 links=lo rss_anon_kb="
+        );
+        let line = servers.iter().find(|s| s.starts_with(&want));
+        assert!(line.is_some(), "no instance as {want:?} in\n{all}");
+        eprintln!("instance {n}: {}", line.unwrap_or(&""));
+    }
+    for name in ["x", "y"] {
+        let want = format!("[agent {name}] confined whoami: agent {name}");
+        assert!(all.lines().any(|l| l == want), "no {want:?} in\n{all}");
+        let sees = format!("[agent {name}] confined see /run/shards: ca.pem,cert.pem,key.pem,server.sock");
+        assert!(all.lines().any(|l| l == sees), "no {sees:?} in\n{all}");
+    }
+}

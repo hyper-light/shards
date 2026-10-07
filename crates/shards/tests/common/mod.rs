@@ -185,10 +185,27 @@ fn guest_binary_in(name: &str, target_dir: &str, env: &[(&str, &str)]) -> PathBu
     std::fs::create_dir_all(&target_dir).unwrap();
     let lock = std::fs::File::create(target_dir.join(".tests.lock")).unwrap();
     lock.lock().unwrap();
+    // Its C (AWS-LC) by zig, as build.rs compiles init's (scripts/zig-cc).
+    let var = guest_target.replace('-', "_");
+    let mut cc: Vec<(String, String)> = Vec::new();
+    if std::env::var_os(format!("CC_{var}")).is_none() {
+        let tool = |name: &str| {
+            let script = workspace().join("scripts").join(name);
+            if cfg!(windows) {
+                format!("sh {}", script.display())
+            } else {
+                script.display().to_string()
+            }
+        };
+        cc.push((format!("CC_{var}"), tool("zig-cc")));
+        cc.push((format!("AR_{var}"), tool("zig-ar")));
+        cc.push(("ZIG_TARGET".to_string(), format!("{ARCH}-linux-musl")));
+    }
     let st = Command::new("cargo")
         .env_remove("DYLD_FALLBACK_LIBRARY_PATH")
         .env_remove("DYLD_LIBRARY_PATH")
         .env(linker, "rust-lld")
+        .envs(cc)
         .envs(env.iter().copied())
         .current_dir(workspace())
         .args([

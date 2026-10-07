@@ -863,16 +863,26 @@ until the review changes it. The first four fix the grammar the parser reads; th
       when built with `--platform` lists.
 
 18. **The in-VM server (Q17), decided 2026-10-07 by the user.**
-    - It runs in shards-init, outside every domain, as the agents' resolver does. Each
-      domain has a socket of its own, `/run/shards/server.sock`, in a directory of its
-      own mounted read-only, and the server knows a caller by the socket it was accepted
-      on: an identity the kernel makes, which no agent can forge.
-    - Over that, mutual TLS 1.3: a CA made by init for the run, as its domains start (so
-      no two runs restored from one template share a key); a key and certificate for each
-      domain in its own scratch, readable by its uid alone; the server's certificate from
-      the same CA; rustls on AWS-LC, TLS 1.3 only. A domain's certificate on another
-      domain's socket is refused. Noise is not added inside it: two sessions between the
-      same ends, keyed by the same party, add cost and no protection.
+    - One server instance per agent or harness, outside every domain: its own process,
+      exec'd from a binary `shards` carries, attached read-only (virtio-pmem, DAX) only to
+      microVMs whose image has agents, so its code is mapped from the host and costs no
+      guest memory (compiled into init, TLS cost every microVM 3.0 MiB of it, measured,
+      D60). Each instance runs least-privileged: a uid of its own, no capability, its own
+      namespaces, a seccomp filter. It shares no process, queue or key with another
+      agent's, so no agent can time or stall another's through it, and a compromised
+      instance holds one agent's authority. Instances reach each other only over socket
+      pairs init makes for what `CONNECT` and `ATTACH` grant. Init starts an agent only
+      once its instance listens.
+    - Each domain has a socket of its own, `/run/shards/server.sock`, in a directory of its
+      own mounted read-only, and the instance knows its caller by that socket: an identity
+      the kernel makes, which no agent can forge.
+    - Over that, mutual TLS 1.3: each instance makes a CA of its own as it starts (so no
+      two runs restored from one template share a key, and no key is shared between
+      agents or held by init), its own certificate, and its agent's certificate and key,
+      readable by the agent alone; rustls on AWS-LC, TLS 1.3 only. A certificate other
+      than the one issued for the socket is refused. Noise is not added inside it: two
+      sessions between the same ends, keyed by the same party, add cost and no
+      protection.
     - It speaks MCP over streamable HTTP, and is deny-by-default: what it offers a caller
       is what the Agentfile granted it. `CONNECT` pairs may send each other messages, one
       way or both as granted; `ATTACH` lets a harness send an agent requests and read its
@@ -931,7 +941,7 @@ of 2026-10-02:
 | OCI objects (§1): `push`, `tag`, `inspect`, `images`, `rmi`, `save`, `load`, OCI layouts and `docker save` tars taken in (§10) | `pull` done | **missing** |
 | An Agentfile made from any image (§10) | **missing** | n/a |
 | The in-VM runtime: many agents and harnesses per microVM, each a domain (§6, §9.3) | n/a | each domain whose OSI config says how it runs started by shards-init as the run's command starts, its output on the run's stderr prefixed `[agent NAME]` (D59); the server (§5) **missing** |
-| The in-VM server: agents' encrypted, deny-by-default communication, the code-mode MCP server they discover (§5) | n/a | **missing** |
+| The in-VM server: agents' encrypted, deny-by-default communication, the code-mode MCP server they discover (§5) | n/a | an instance for each agent, least-privileged, from a device of its own (DAX), socket and mutual TLS 1.3, MCP over streamable HTTP with `whoami` (D60); its tools as the grants say, labels, code mode **missing** |
 | Build-time isolation checks (§9.2) and transitive reach, relays, declassifiers (§9.5, §9.8) | §9.2 done (D55): symlinks and hard links out of a domain, devices, FIFOs, sockets, set-ID bits and capabilities in one, and any other step's write into one, refused; §9.5's transitive reach done (D58): a path from an internal-only domain to one that reaches the world fails the build, named; owners done (a path outside a domain, or in another's, owned by a domain's uid or gid); relays and declassifiers (Q20), and §9.8, **missing** | n/a |
 | Run-time confinement (§9.3, §9.7–9.9): namespaces, IDs, cgroups and `pids.max`, Landlock, seccomp, `io_uring` off, vsock closed to workloads, process events | n/a | namespaces, IDs, no capabilities, `no_new_privs`, cgroups and `pids.max`, the filesystem rules, Landlock (filesystem, TCP, scopes), seccomp (no vsock, netlink, `io_uring`, keys, `userfaultfd`, bpf, perf) `--processes=none` (threads, no process) done (D59); network grants between domains, default deny (`CONNECT --port` within the network's ingress, names of granted peers alone, `NETWORK --dns`, the agents' resolver identifying askers by link, strict reverse-path filtering), remote MCP servers as grants of that server alone, and egress past the microVM by port (`NETWORK --egress/--expose`, `EXPOSE … FOR`) done (D59), names past the microVM for agents with egress, and ingress to a network's one member (`--ingress` with `EXPOSE … AS ingress FOR`, published by `shards run -p`) (D59); refusing `-p` of a port declared `AS egress` (D59); a root of the image as built, none of the run's files, mounts or Unix sockets (D59); `NETWORK --protocol`, Unix sockets granted by name (`CONNECT --port=unix:<name>`) (D59); output lines bounded, memory capped for the agents together less the workload's `-m`, `asks.memory`, a domain ended whole (D59); ingress to a network of several members, remote MCP servers' own destinations, IPv6 subnets, process events **missing** |
 | Labels on data through the in-VM server and MCP results; per-caller MCP instances (§9.5, §9.6) | n/a | **missing** |

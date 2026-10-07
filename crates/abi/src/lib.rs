@@ -10,6 +10,12 @@ extern crate alloc;
 /// n, and the build checks that no file outside a domain is its user's (§9.2).
 pub const DOMAIN_FIRST_ID: u32 = 200_000;
 
+/// The first in-VM server instance's uid and gid (D60): the n-th domain's instance runs as
+/// this plus n. Past every domain's: each domain has a process, so there are no more
+/// domains than a 64-bit kernel's PIDs, `PID_MAX_LIMIT` (include/linux/threads.h,
+/// 4 * 1024 * 1024).
+pub const SERVER_FIRST_ID: u32 = DOMAIN_FIRST_ID + 4 * 1024 * 1024;
+
 pub mod build;
 pub mod changes;
 pub mod run;
