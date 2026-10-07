@@ -336,6 +336,9 @@ struct Planner<'a> {
     made: Vec<(usize, std::ops::Range<usize>)>,
     /// Each agent's and harness's content, its files at the root, by name (Q19.1).
     contents: BTreeMap<Vec<u8>, State>,
+    /// Each agent's and harness's OSI config, by name, where it came as an artifact: what
+    /// `SKILL --from=<agent>` may take is what it lists.
+    domain_configs: BTreeMap<Vec<u8>, Vec<u8>>,
     /// Each agent's and harness's source, as its stage expanded it.
     domain_sources: BTreeMap<Vec<u8>, (Vec<u8>, Vec<u8>)>,
 }
@@ -566,6 +569,7 @@ fn plan_with(
         named_locals: Vec::new(),
         made: Vec::new(),
         contents: BTreeMap::new(),
+        domain_configs: BTreeMap::new(),
         domain_sources: BTreeMap::new(),
     };
     p.build_dispatch_states(ins.stages)?;
@@ -1271,12 +1275,13 @@ impl Planner<'_> {
             }
             Kind::Agentfile(crate::agentfile::Directive::Skill(sk)) if !sk.from.is_empty() => {
                 let from = sk.from.clone();
+                // An agent's or harness's skill: its content, which no stage is (Q19.6).
                 if self.declares_domain(&from) {
-                    return Err(Fail::new(errb(&[
-                        b"SKILL --from=",
-                        &from,
-                        b": a skill an agent's config lists is taken from its OSI artifact, which shards does not fetch yet",
-                    ])));
+                    return Ok(Step {
+                        command,
+                        sources,
+                        on_build: false,
+                    });
                 }
                 let s = match std::str::from_utf8(&from)
                     .ok()
@@ -1337,7 +1342,8 @@ impl Planner<'_> {
             let mut steps = Vec::with_capacity(commands.len());
             for c in commands {
                 let loc = c.location.clone();
-                let after = self.declaring_stage(&c);
+                // Its own stage is no dependency: what it declares comes first in it.
+                let after = self.declaring_stage(&c).filter(|&s| s != i);
                 let step = self.step_of(c)?;
                 for &s in step.sources.iter().chain(&after) {
                     if let Some(d) = self.states.get_mut(i) {
@@ -1555,7 +1561,7 @@ impl Planner<'_> {
             }
             let c = instructions::parse_command(&node).map_err(|e| Fail(e.message, e.location))?;
             let loc = c.location.clone();
-            let after = self.declaring_stage(&c);
+            let after = self.declaring_stage(&c).filter(|&s| s != d);
             let mut step = self.step_of(c)?;
             step.on_build = true;
             if !step.sources.is_empty() || after.is_some() {
@@ -2177,7 +2183,12 @@ impl Planner<'_> {
                 self.ds(d)?.agentfile.push(crate::agentfile::Directive::Mcp(m));
             }
             Kind::Agentfile(crate::agentfile::Directive::Skill(sk)) => {
-                self.dispatch_skill(d, &sk, &step.sources, &code, &loc, &lint)?;
+                let domain = if !sk.from.is_empty() && self.declares_domain(&sk.from) {
+                    Some(self.domain_skill(d, &sk)?)
+                } else {
+                    None
+                };
+                self.dispatch_skill(d, &sk, &step.sources, domain, &code, &loc, &lint)?;
                 self.ds(d)?.agentfile.push(crate::agentfile::Directive::Skill(sk));
             }
             Kind::User(u) => self.dispatch_user(d, &u, true),
@@ -3189,11 +3200,15 @@ impl Planner<'_> {
     /// For `COPY --from=<agent>`, the stage that declares the agent: dispatched first, as a
     /// stage copied from is, so that its source is expanded in its own scope (D56).
     fn declaring_stage(&self, command: &Command) -> Option<usize> {
-        let Kind::Copy(c) = &command.kind else { return None };
-        if c.from.is_empty() {
+        let from = match &command.kind {
+            Kind::Copy(c) => &c.from,
+            Kind::Agentfile(crate::agentfile::Directive::Skill(sk)) => &sk.from,
+            _ => return None,
+        };
+        if from.is_empty() {
             return None;
         }
-        let name = go::to_lower(&c.from);
+        let name = go::to_lower(from);
         self.states.iter().position(|s| {
             s.stage.commands.iter().any(|c| match &c.kind {
                 Kind::Agentfile(crate::agentfile::Directive::Agent(a))
@@ -3413,6 +3428,7 @@ impl Planner<'_> {
             crate::agentfile::Source::Oci(r) => {
                 let log = errb(&[b"[internal] load metadata for ", &r]);
                 let resolved = self.resolver.artifact(&r, kind, &log).map_err(Fail::new)?;
+                self.domain_configs.insert(name.clone(), resolved.config.clone());
                 let mut attrs = BTreeMap::new();
                 attrs.insert(b"osi.kind".to_vec(), kind.to_vec());
                 self.graph.source(
@@ -3514,11 +3530,60 @@ impl Planner<'_> {
     /// skill it holds checked and laid out in a directory of its name (D54); then laid as
     /// a layer of its own where it goes: the given destination, `/skills/` for every
     /// agent, or each grantee's `.d/skills/`.
+    /// What `SKILL --from=<agent> <skill>` takes (§12 answer 12): the agent's content, at
+    /// whose root the skill is, once its OSI config is seen to list it. That is a
+    /// declaration of what the agent brings, not one agent reading another: a path its
+    /// config does not list, or an agent with no config (from a path, Git or http(s)), is
+    /// refused.
+    fn domain_skill(&mut self, d: usize, sk: &crate::agentfile::Skill) -> Result<State, Fail> {
+        let content = self.domain_content(d, &sk.from)?;
+        let name = go::to_lower(&sk.from);
+        let crate::agentfile::SkillSource::Path(p) = &sk.source else {
+            return Err(Fail::new(errb(&[
+                b"SKILL --from=",
+                &sk.from,
+                b" takes a path its config lists, not a heredoc",
+            ])));
+        };
+        let Some(config) = self.domain_configs.get(&name) else {
+            return Err(Fail::new(errb(&[
+                b"SKILL --from=",
+                &sk.from,
+                b": it has no OSI config listing its skills; only an agent or harness from an OSI artifact has one",
+            ])));
+        };
+        let norm = |p: &[u8]| -> Vec<u8> {
+            let p = p.strip_prefix(b"./").unwrap_or(p);
+            p.strip_suffix(b"/").unwrap_or(p).to_vec()
+        };
+        let listed: Vec<Vec<u8>> = serde_json::from_slice::<serde_json::Value>(config)
+            .ok()
+            .and_then(|c| c.get("skills").and_then(|s| s.as_array()).cloned())
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|s| s.as_str().map(|s| norm(s.as_bytes())))
+            .collect();
+        if !listed.contains(&norm(p)) {
+            return Err(Fail::new(errb(&[
+                b"SKILL --from=",
+                &sk.from,
+                b" ",
+                p,
+                b": its config lists no such skill (it lists ",
+                &listed.join(&b", "[..]),
+                b")",
+            ])));
+        }
+        Ok(content)
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn dispatch_skill(
         &mut self,
         d: usize,
         sk: &crate::agentfile::Skill,
         sources: &[usize],
+        domain: Option<State>,
         code: &[u8],
         loc: &Location,
         lint: &LinterView<'_>,
@@ -3553,13 +3618,16 @@ impl Planner<'_> {
                 _ => base(p),
             },
         };
-        let from = match sources.first() {
-            Some(&s) => Some(self.ds(s)?.state.clone()),
-            None => None,
+        let taken = domain.is_some();
+        let from = match (domain, sources.first()) {
+            (Some(content), _) => Some(content),
+            (None, Some(&s)) => Some(self.ds(s)?.state.clone()),
+            (None, None) => None,
         };
         let mut scratch = State::scratch();
         scratch.platform = self.states.get(d).and_then(|s| s.platform.clone());
         if sources.is_empty()
+            && !taken
             && let crate::agentfile::SkillSource::Path(p) = &sk.source
             && !is_http_source(p)
             && !matches!(git::parse_git_ref(p), git::Parsed::Git(g) if !g.indistinguishable_from_local)

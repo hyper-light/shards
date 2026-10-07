@@ -4155,3 +4155,87 @@ fn a_remote_mcp_server_is_a_grant_of_that_server_alone() {
         );
     }
 }
+
+/// `SKILL --from=<agent>` takes, at build time, a skill the agent's OSI config lists into
+/// another's grants (AGENTFILE_ARCH.md §12 answer 12, D54): a declaration of what the agent
+/// brings, not one agent reading another, so a path its config does not list, and an agent
+/// with no config, are refused.
+#[test]
+fn a_skill_an_agent_lists_is_taken_from_it() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let (port, _repos) = common::writable_registry();
+    let home = TempDir::new("skill-from-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let dir = TempDir::new("skill-from-agent");
+    std::fs::create_dir_all(dir.join("skills/pdf")).unwrap();
+    std::fs::write(
+        dir.join("skills/pdf/SKILL.md"),
+        "---\nname: pdf\ndescription: Reads PDFs.\n---\nRead them.\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("secret.txt"), "main's own\n").unwrap();
+    std::fs::write(
+        dir.join("agent.json"),
+        r#"{"name":"main","skills":["skills/pdf"]}"#,
+    )
+    .unwrap();
+    let tag = format!("127.0.0.1:{port}/team/skilled:1");
+    let made = shards(&["build", "agent", dir.to_str().unwrap(), "-t", &tag]);
+    assert_eq!(made.status, Some(0), "{}", made.stderr);
+    let pushed = shards(&["push", "agent", &tag]);
+    assert_eq!(pushed.status, Some(0), "{}", pushed.stderr);
+    let ctx = context("skill-from-ctx", &format!("FROM {image}\n"));
+    std::fs::create_dir_all(ctx.join("other")).unwrap();
+    std::fs::write(ctx.join("other/run"), "other\n").unwrap();
+    let build = |agentfile: String| {
+        std::fs::write(ctx.join("Agentfile"), agentfile).unwrap();
+        let out = TempDir::new("skill-from-out");
+        let built = shards(&[
+            "build",
+            "-o",
+            out.join("root").to_str().unwrap(),
+            ctx.to_str().unwrap(),
+        ]);
+        (built, out)
+    };
+    let base = format!("FROM {image}\nAGENT main FROM {tag}\nAGENT other FROM ./other\n");
+    let (built, out) = build(format!("{base}SKILL --from=main skills/pdf FOR other\n"));
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    let root = out.join("root");
+    assert_eq!(
+        std::fs::read_to_string(root.join("agents/other.d/skills/pdf/SKILL.md")).unwrap(),
+        "---\nname: pdf\ndescription: Reads PDFs.\n---\nRead them.\n"
+    );
+    assert!(
+        !root.join("agents/other.d/skills/secret.txt").exists(),
+        "only the skill is taken"
+    );
+    // What its config does not list is no skill of its to give.
+    let (refused, _) = build(format!("{base}SKILL --from=main secret.txt FOR other\n"));
+    assert_ne!(refused.status, Some(0));
+    assert!(
+        refused
+            .stderr
+            .contains("SKILL --from=main secret.txt: its config lists no such skill (it lists skills/pdf)"),
+        "{}",
+        refused.stderr
+    );
+    // An agent from a path has no config to list skills.
+    let (refused, _) = build(format!("{base}SKILL --from=other run FOR main\n"));
+    assert_ne!(refused.status, Some(0));
+    assert!(
+        refused
+            .stderr
+            .contains("SKILL --from=other: it has no OSI config listing its skills"),
+        "{}",
+        refused.stderr
+    );
+}

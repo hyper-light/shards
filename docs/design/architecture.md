@@ -3466,6 +3466,24 @@ a pair's ports, each fail their test.
 
 Open: DNS over TCP; IPv6; process events; ingress to a network of several members.
 
+### `SKILL --from=<agent>` (D54, continued)
+
+`SKILL --from=<agent> <skill> FOR <other>` copies, at build time, a skill the agent's
+OSI config lists (`skills`) into the other's grants (AGENTFILE_ARCH.md §12 answer 12): a
+declaration in the Agentfile of what the agent brings, not one agent reading another.
+The skill comes from the agent's content, the state `COPY --from=<agent>` copies from
+(D56), and is checked and laid out as any skill. A path its config does not list is
+refused, naming what it lists; so is an agent with no config, one from a path, Git or
+an http(s) URL, as only an OSI artifact carries one. As `COPY --from=<agent>` does, it
+makes the agent's declaring stage a dependency, except where that stage is its own: a
+directive of the same stage comes first in it, and the first version, which made it a
+dependency of itself, failed as a circular one (found by the test, and the same held for
+`COPY --from=<agent>` in its declaring stage).
+
+Tested: `a_skill_an_agent_lists_is_taken_from_it` (an OSI agent's listed skill laid in
+another's grants, nothing else of its content; an unlisted path and an agent with no
+config refused in their words), the listing check mutation-checked.
+
 ## 4. Start path (≤ 5 ms budget)
 
 | Step | Cost | Evidence |
