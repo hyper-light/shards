@@ -319,6 +319,44 @@ pub type Filter = (u32, Vec<libc::sock_filter>);
 /// process holds lives while a descriptor of it does.
 static SWITCH: std::sync::OnceLock<crate::links::Switch> = std::sync::OnceLock::new();
 
+/// The switch `domains` link to: `pairs` of them allowed to open connections to each
+/// other, and those with egress grants up through init's namespace and eth0.
+fn switch(domains: &[Domain], pairs: &[(usize, usize)]) -> io::Result<crate::links::Switch> {
+    let egress: Vec<(usize, Vec<crate::netplan::Egress>)> = domains
+        .iter()
+        .enumerate()
+        .filter_map(|(i, d)| {
+            d.link
+                .as_ref()
+                .filter(|l| !l.egress.is_empty())
+                .map(|l| (i, l.egress.clone()))
+        })
+        .collect();
+    let uplink = match egress.is_empty() {
+        true => None,
+        false => {
+            let (addr, prefix, _) = crate::net::current()
+                .ok_or_else(|| io::Error::other("the microVM has no address for its agents' egress"))?;
+            let mask = u32::MAX.checked_shl(32 - u32::from(prefix)).unwrap_or(0);
+            let mut subnets: Vec<(std::net::Ipv4Addr, u8)> = Vec::new();
+            for a in domains
+                .iter()
+                .filter_map(|d| d.link.as_ref())
+                .flat_map(|l| &l.addresses)
+            {
+                if !subnets.contains(&(a.subnet, a.prefix)) {
+                    subnets.push((a.subnet, a.prefix));
+                }
+            }
+            Some(crate::links::Uplink {
+                subnets,
+                eth0: (addr, std::net::Ipv4Addr::from(u32::from(addr) & mask), prefix),
+            })
+        }
+    };
+    crate::links::Switch::new(pairs, &egress, uplink.as_ref())
+}
+
 /// Starts each of `domains`, hiding from each the directories of `all` but its own, under
 /// the filter of `filters` it needs, which the host compiles (`domains-seccomp=`, and
 /// `domains-seccomp-none=` for `--processes=none`); none starts without it. Those with a
@@ -445,7 +483,7 @@ pub fn start(
             drop(r);
             let switch = match SWITCH.get() {
                 Some(s) => Ok(s),
-                None => crate::links::Switch::new(pairs).map(|s| SWITCH.get_or_init(|| s)),
+                None => switch(domains, pairs).map(|s| SWITCH.get_or_init(|| s)),
             };
             let linked = switch.and_then(|s| s.attach(i, pid as libc::pid_t, link));
             if let Err(e) = linked {

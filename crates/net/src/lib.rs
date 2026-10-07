@@ -74,8 +74,88 @@ impl Lifetime {
 /// is dropped, as a full NIC queue drops; TCP never adds to it unasked.
 const BACKLOG: usize = 1024;
 
-/// What a VM may reach.
+/// A transport protocol a grant names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Proto {
+    Tcp,
+    Udp,
+}
+
+/// The ports a VM may open flows to (`Policy::Ports`): its image's Agentfile's egress
+/// grants, each a range of one protocol's ports, as Docker writes a port (`443`,
+/// `53/udp`, `8000-8010/tcp`), TCP where none is said.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Ports(pub Vec<(Proto, u16, u16)>);
+
+impl Ports {
+    /// Ports as the build's label lists them, comma-separated.
+    pub fn parse(text: &str) -> Result<Ports, String> {
+        let mut out = Vec::new();
+        for item in text.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+            let (range, proto) = match item.rsplit_once('/') {
+                Some((r, "tcp")) => (r, Proto::Tcp),
+                Some((r, "udp")) => (r, Proto::Udp),
+                Some((_, p)) => return Err(format!("{item:?}: no protocol {p:?}, only tcp or udp")),
+                None => (item, Proto::Tcp),
+            };
+            let port = |p: &str| p.parse::<u16>().ok().filter(|p| *p > 0);
+            let (lo, hi) = match range.split_once('-') {
+                Some((a, b)) => (port(a), port(b)),
+                None => (port(range), port(range)),
+            };
+            match (lo, hi) {
+                (Some(lo), Some(hi)) if lo <= hi => out.push((proto, lo, hi)),
+                _ => return Err(format!("{item:?}: no port or range of ports")),
+            }
+        }
+        Ok(Ports(out))
+    }
+
+    /// As `NET_POLICY` carries them: each a protocol's IP number and the range's ends,
+    /// in network order.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(self.0.len() * 5);
+        for (proto, lo, hi) in &self.0 {
+            out.push(match proto {
+                Proto::Tcp => 6,
+                Proto::Udp => 17,
+            });
+            out.extend_from_slice(&lo.to_be_bytes());
+            out.extend_from_slice(&hi.to_be_bytes());
+        }
+        out
+    }
+
+    pub fn decode(bytes: &[u8]) -> Option<Ports> {
+        let (chunks, rest) = bytes.as_chunks::<5>();
+        if !rest.is_empty() {
+            return None;
+        }
+        let mut out = Vec::with_capacity(chunks.len());
+        for &[p, a, b, c, d] in chunks {
+            let proto = match p {
+                6 => Proto::Tcp,
+                17 => Proto::Udp,
+                _ => return None,
+            };
+            let (lo, hi) = (u16::from_be_bytes([a, b]), u16::from_be_bytes([c, d]));
+            if lo == 0 || lo > hi {
+                return None;
+            }
+            out.push((proto, lo, hi));
+        }
+        Some(Ports(out))
+    }
+
+    fn has(&self, proto: Proto, port: u16) -> bool {
+        self.0
+            .iter()
+            .any(|&(p, lo, hi)| p == proto && (lo..=hi).contains(&port))
+    }
+}
+
+/// What a VM may reach.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Policy {
     /// The Internet and the host's networks, as BuildKit's default network reaches them:
     /// a build's steps. Not the host itself (the gateway, its loopback); not link-local
@@ -86,6 +166,9 @@ pub enum Policy {
     AllowAll,
     /// Nothing: a run's, by default (spec §3), and a VM without grants.
     DenyAll,
+    /// What `AllowAll` reaches, on these ports alone: an Agentfile's egress grants, the
+    /// union of its agents' (D59), each agent held to its own by its microVM's switch.
+    Ports(Ports),
 }
 
 /// The guest's link: its address and MAC, the gateway's, and the VM's policy.
@@ -187,12 +270,13 @@ impl Config {
         }
     }
 
-    fn allows(&self, to: Ipv4Addr) -> bool {
-        match self.policy {
+    fn allows(&self, to: Ipv4Addr, proto: Proto, port: u16) -> bool {
+        match &self.policy {
             Policy::DenyAll => false,
+            Policy::Ports(p) if !p.has(proto, port) => false,
             // The gateway would be the host itself: never by default (rootless-security.md
             // R4.16).
-            Policy::AllowAll => {
+            Policy::AllowAll | Policy::Ports(_) => {
                 to != self.gateway_ip
                     && !to.is_loopback()
                     && !to.is_unspecified()
@@ -512,6 +596,7 @@ impl Control {
                     | shards_ipc::kind::NET_ADDRESS
                     | shards_ipc::kind::NET_PEER
                     | shards_ipc::kind::NET_NAMES
+                    | shards_ipc::kind::NET_POLICY
             ),
             Control::Release => kind == shards_ipc::kind::UNPUBLISH,
         }
@@ -687,6 +772,12 @@ fn control(
             };
             stack.names = Some(names);
             shards_ipc::send(sock, shards_ipc::kind::NET_NAMES, &[], &[])
+        } else if m.kind == shards_ipc::kind::NET_POLICY {
+            let Some(ports) = Ports::decode(&m.payload) else {
+                return false;
+            };
+            stack.cfg.policy = Policy::Ports(ports);
+            shards_ipc::send(sock, shards_ipc::kind::NET_POLICY, &[], &[])
         } else if m.kind == shards_ipc::kind::NET_PEER {
             stack.add_peer(&m.payload, m.fds);
             shards_ipc::send(sock, shards_ipc::kind::NET_PEER, &[], &[])
@@ -1188,7 +1279,7 @@ impl<'r> Stack<'r> {
         // Refused, said at once (review 2.27): a connected socket's next call fails
         // (Linux: EHOSTUNREACH, net/ipv4/icmp.c icmp_err_convert), where a datagram
         // dropped would leave a resolver to wait out its timeouts.
-        if !self.cfg.allows(ip.dst) {
+        if !self.cfg.allows(ip.dst, Proto::Udp, u.dst_port) {
             let gateway = self.cfg.gateway_ip;
             self.out().built(|frames, f| {
                 frames.icmp_unreachable(f, gateway, ip.src, wire::ADMIN_PROHIBITED, ip);
@@ -1283,7 +1374,7 @@ impl<'r> Stack<'r> {
                 }
                 return;
             }
-            if !self.cfg.allows(ip.dst) {
+            if !self.cfg.allows(ip.dst, Proto::Tcp, seg.dst_port) {
                 let mut o = self.out();
                 o.segment(
                     &key,
@@ -1668,7 +1759,7 @@ mod tests {
         let bridge = bridge::Bridge::elect(&[]).unwrap();
         let allow = Config::on_bridge(Policy::AllowAll, [2, 0, 0, 0, 0, 1], &bridge);
         for to in [[8, 8, 8, 8], [192, 168, 1, 10], [10, 0, 0, 1], [172, 17, 0, 3]] {
-            assert!(allow.allows(Ipv4Addr::from(to)), "{to:?}");
+            assert!(allow.allows(Ipv4Addr::from(to), Proto::Tcp, 443), "{to:?}");
         }
         for to in [
             [172, 17, 0, 1],
@@ -1680,10 +1771,44 @@ mod tests {
             [239, 255, 255, 250],
             [255, 255, 255, 255],
         ] {
-            assert!(!allow.allows(Ipv4Addr::from(to)), "{to:?}");
+            assert!(!allow.allows(Ipv4Addr::from(to), Proto::Tcp, 443), "{to:?}");
         }
         let deny = Config::on_bridge(Policy::DenyAll, [2, 0, 0, 0, 0, 1], &bridge);
-        assert!(!deny.allows(Ipv4Addr::new(8, 8, 8, 8)));
+        assert!(!deny.allows(Ipv4Addr::new(8, 8, 8, 8), Proto::Tcp, 443));
+    }
+
+    /// An Agentfile's egress grants: their ports alone, of their protocol, and never
+    /// what `AllowAll` keeps out; written as Docker writes ports, and carried whole.
+    #[test]
+    fn ports_reach_their_ports_alone() {
+        let bridge = bridge::Bridge::elect(&[]).unwrap();
+        let ports = Ports::parse("443, 53/udp,8000-8010/tcp").unwrap();
+        assert_eq!(Ports::decode(&ports.encode()), Some(ports.clone()));
+        let cfg = Config::on_bridge(Policy::Ports(ports), [2, 0, 0, 0, 0, 1], &bridge);
+        let out = Ipv4Addr::new(8, 8, 8, 8);
+        for (proto, port) in [
+            (Proto::Tcp, 443),
+            (Proto::Udp, 53),
+            (Proto::Tcp, 8000),
+            (Proto::Tcp, 8010),
+        ] {
+            assert!(cfg.allows(out, proto, port), "{proto:?} {port}");
+        }
+        for (proto, port) in [
+            (Proto::Udp, 443),
+            (Proto::Tcp, 53),
+            (Proto::Tcp, 7999),
+            (Proto::Tcp, 8011),
+        ] {
+            assert!(!cfg.allows(out, proto, port), "{proto:?} {port}");
+        }
+        assert!(!cfg.allows(Ipv4Addr::new(169, 254, 169, 254), Proto::Tcp, 443));
+        assert!(!cfg.allows(Ipv4Addr::new(127, 0, 0, 1), Proto::Tcp, 443));
+        for bad in ["0", "70000", "9-8", "443/sctp", "x"] {
+            assert!(Ports::parse(bad).is_err(), "{bad}");
+        }
+        assert_eq!(Ports::decode(&[6, 0, 0, 0, 1]), None);
+        assert_eq!(Ports::decode(&[6, 0, 1]), None);
     }
 
     /// The daemon's control socket publishes and the VM's lets go, and neither says the

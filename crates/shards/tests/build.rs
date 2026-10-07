@@ -3673,3 +3673,123 @@ fn agents_reach_only_what_connect_grants() {
     }
     assert_eq!(hosts("c"), ["172.31.2.2\tc"]);
 }
+
+/// Agents reach past their microVM the ports their networks grant (D59, AGENTFILE_ARCH.md
+/// §4.1, §4.6, §9.7): `NETWORK --egress` on a network that is not internal lets the
+/// agents a `CONNECT` joins to it open flows to that port, through the switch's link to
+/// the microVM's own network and its network process, and no other port; an agent on an
+/// internal network reaches nothing past the microVM, though its network names the port
+/// and Landlock lets it connect to its peer; and the run's own command reaches nothing it
+/// did not before.
+#[test]
+fn agents_reach_past_the_microvm_what_their_networks_grant() {
+    if cannot_run_vms() {
+        return;
+    }
+    // This host's address on its default route: a UDP connect sends nothing.
+    let host = std::net::UdpSocket::bind("0.0.0.0:0")
+        .and_then(|s| s.connect("192.0.2.1:9").map(|()| s))
+        .and_then(|s| s.local_addr());
+    let Ok(host) = host else {
+        eprintln!("SKIP: this host has no route to give a guest an address of it");
+        return;
+    };
+    let host = host.ip();
+    // Two servers on the host: one port granted, one not. Each answers every connection
+    // until the test ends.
+    let serve = || {
+        let server = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+        let port = server.local_addr().unwrap().port();
+        std::thread::spawn(move || for _ in server.incoming() {});
+        port
+    };
+    let (granted, other) = (serve(), serve());
+    let (image, _) = served();
+    let (port, _repos) = common::writable_registry();
+    let home = TempDir::new("egress-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let agent = |name: &str, args: &[String]| -> String {
+        let dir = TempDir::new(&format!("egress-agent-{name}"));
+        std::fs::create_dir_all(dir.join("bin")).unwrap();
+        std::fs::copy(common::test_guest(), dir.join("bin/testguest")).unwrap();
+        let command: Vec<String> = ["bin/testguest", "confined"]
+            .iter()
+            .map(|s| (*s).to_string())
+            .chain(args.iter().cloned())
+            .map(|a| format!("{a:?}"))
+            .collect();
+        std::fs::write(
+            dir.join("agent.json"),
+            format!(
+                r#"{{"name":"{name}","run":{{"command":[{}]}}}}"#,
+                command.join(",")
+            ),
+        )
+        .unwrap();
+        let tag = format!("127.0.0.1:{port}/team/egress-{name}:1");
+        let made = shards(&["build", "agent", dir.to_str().unwrap(), "-t", &tag]);
+        assert_eq!(made.status, Some(0), "{}", made.stderr);
+        let pushed = shards(&["push", "agent", &tag]);
+        assert_eq!(pushed.status, Some(0), "{}", pushed.stderr);
+        tag
+    };
+    let to = |p: u16| format!("{host}:{p}");
+    let a = agent("a", &["reach".into(), to(granted), "unreach".into(), to(other)]);
+    let b = agent("b", &["unreach".into(), to(granted)]);
+    let c = agent("c", &["listen".into(), "7000".into()]);
+    let ctx = context("egress-ctx", &format!("FROM {image}\n"));
+    std::fs::write(
+        ctx.join("Agentfile"),
+        format!(
+            "FROM {image}\nAGENT a FROM {a}\nAGENT b FROM {b}\nAGENT c FROM {c}\n\
+             NETWORK --egress={granted} out\nNETWORK --internal --egress={granted} inner\n\
+             CONNECT a WITH a ON out\nCONNECT b WITH c ON inner\n"
+        ),
+    )
+    .unwrap();
+    let built = shards(&["build", "-t", "egress:1", ctx.to_str().unwrap()]);
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    let ran = shards(&[
+        "run",
+        "--rm",
+        "egress:1",
+        "await",
+        "confined-ready",
+        "3",
+        &to(granted),
+    ]);
+    assert_eq!(ran.status, Some(0), "{}{}", ran.stdout, ran.stderr);
+    let said = |who: &str| -> Vec<String> {
+        let prefix = format!("[agent {who}] ");
+        ran.stderr
+            .lines()
+            .filter_map(|l| l.strip_prefix(&prefix).map(str::to_string))
+            .collect()
+    };
+    for (who, want) in [
+        ("a", format!("confined reach {}: ok", to(granted))),
+        // A port no grant names: the switch lets nothing else up.
+        ("a", format!("confined unreach {}: timeout", to(other))),
+        // On an internal network: nothing past the microVM.
+        ("b", format!("confined unreach {}: timeout", to(granted))),
+    ] {
+        assert!(
+            said(who).contains(&want),
+            "no {want:?} from {who} in:\n{}",
+            ran.stderr
+        );
+    }
+    // The run's own command: as without agents.
+    assert!(
+        ran.stdout
+            .contains(&format!("await unreach {}: timeout", to(granted))),
+        "{}{}",
+        ran.stdout,
+        ran.stderr
+    );
+}

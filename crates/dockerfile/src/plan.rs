@@ -3808,6 +3808,13 @@ impl Planner<'_> {
         // Agentfile, and its digest in a label (§8, D35).
         if !t.agentfile.is_empty() {
             crate::agentfile::reach(&t.agentfile).map_err(Fail::new)?;
+            let egress = crate::agentfile::egress(&t.agentfile);
+            if !egress.is_empty() {
+                image
+                    .config
+                    .labels
+                    .insert(crate::agentfile::EGRESS_LABEL.to_vec(), egress.join(&b","[..]));
+            }
             let spec = crate::agentfile::spec(&t.agentfile);
             image.config.labels.insert(
                 crate::agentfile::DIGEST_LABEL.to_vec(),

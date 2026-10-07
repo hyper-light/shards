@@ -339,6 +339,9 @@ struct Keep<'a> {
     /// A visit to a stopped container's files (visit.rs): no start, no end, no state of
     /// the container's changes with it.
     visit: bool,
+    /// The ports its image's Agentfile grants its agents (D59), for its VM's network
+    /// process: `NET_POLICY`'s payload.
+    egress: Option<Vec<u8>>,
 }
 
 /// A run in progress: its VM's socket, to signal the command, and the VM itself.
@@ -2011,6 +2014,19 @@ impl<D: Disk> Daemon<D> {
         payload.extend(container_log.seq.to_be_bytes());
         prepared.spec.encode_into(&mut payload);
         let detached = run.detach.then_some(conn);
+        // An Agentfile's egress grants, as its build labelled the image (D59).
+        let label = std::str::from_utf8(shards_dockerfile::agentfile::EGRESS_LABEL).unwrap_or_default();
+        let egress = match prepared.labels.get(label) {
+            Some(text) => match shards_net::Ports::parse(text) {
+                Ok(ports) => Some(ports.encode()),
+                Err(e) => {
+                    refuse(&format!("the image's egress grants: {e}"));
+                    abandon(&id);
+                    return None;
+                }
+            },
+            None => None,
+        };
         let started = self.start_run(
             threads,
             &id,
@@ -2024,6 +2040,7 @@ impl<D: Disk> Daemon<D> {
                 named: again.clone().filter(|_| run.detach),
                 layer_pending: layer_out.is_some(),
                 visit: false,
+                egress,
             },
             || self.warm_for(threads, &prepared, &start, &say),
         );
@@ -2098,6 +2115,20 @@ impl<D: Disk> Daemon<D> {
                 let _ = ready.vm.kill(libc::SIGKILL);
                 self.uncommit(id);
                 continue;
+            }
+            // Its agents' egress grants (D59), before it has the run. One whose network
+            // process does not take them goes, as one that does not take its ports.
+            if let Some(ports) = &keep.egress {
+                let given = match &ready.net {
+                    Some(net) => networks::ask_net(net, kind::NET_POLICY, ports, &[]),
+                    None => Err("no network process".into()),
+                };
+                if let Err(e) = given {
+                    log(format!("warm VM {}'s egress grants: {e}", ready.vm.id()));
+                    let _ = ready.vm.kill(libc::SIGKILL);
+                    self.uncommit(id);
+                    continue;
+                }
             }
             let handed = hand_over(&ready.socket, payload, fds);
             // Only now, so that starting its successor delays no run: on the refiller's
@@ -2890,6 +2921,7 @@ impl<D: Disk> Daemon<D> {
             named,
             layer_pending,
             visit,
+            egress: _,
         } = keep;
         if layer_pending {
             lock(&self.settling).insert(id.to_string());
@@ -4358,13 +4390,59 @@ fn new_log(dir: &Path) -> io::Result<Log> {
     })
 }
 
+/// How long a VM process may take to send its first request for access before its stacks
+/// are sampled: a diagnostic's trigger, not a limit. A sixth of [`READY_TIMEOUT`], so that
+/// the sample is taken while a stalled VM is still stalled, and four thousand times the
+/// VM process's measured launch (2.5 ms, PM M113). The stall it catches, a VM that asks
+/// nothing for the whole wait, is the open p99 flake that only its stacks while stalled
+/// can explain.
+#[cfg(target_os = "macos")]
+const GRANT_STALL: Duration = Duration::from_secs(10);
+
 /// Answers what VM `pid` asks to reach until it has all it needs and closes the link,
-/// each request within [`READY_TIMEOUT`] (macOS, grant).
+/// each request within [`READY_TIMEOUT`] (macOS, grant). A VM that has asked nothing in
+/// [`GRANT_STALL`] is sampled (Apple's sample(1), 3 s of its threads' stacks) into the
+/// home, beside daemon.log, as it goes on being waited for; a wait that then fails says
+/// where.
 #[cfg(target_os = "macos")]
 fn grant(link: &UnixStream, pid: u32) -> Result<(), String> {
+    use std::os::fd::AsRawFd as _;
+    let mut first = libc::pollfd {
+        fd: link.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    let stall = i32::try_from(GRANT_STALL.as_millis()).unwrap_or(i32::MAX);
+    // SAFETY: poll(2) of one pollfd of ours.
+    let asked = unsafe { libc::poll(&raw mut first, 1, stall) };
+    let sampled = (asked == 0).then(|| {
+        let file = format!("vm-{pid}.sample");
+        log(format!(
+            "VM {pid}: no request for access in {GRANT_STALL:?}; sampling its stacks to {file}"
+        ));
+        let spawned = std::process::Command::new("/usr/bin/sample")
+            .args([pid.to_string().as_str(), "3", "-mayDie", "-file", file.as_str()])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+        match spawned {
+            // Reaped where it ends, on a thread of its own, so that no zombie is left.
+            Ok(mut child) => {
+                let _ = std::thread::Builder::new()
+                    .name("sample".into())
+                    .spawn(move || child.wait());
+            }
+            Err(e) => log(format!("VM {pid}: sampling it: {e}")),
+        }
+        file
+    });
     link.set_read_timeout(Some(READY_TIMEOUT))
         .map_err(|e| format!("VM {pid}: {e}"))?;
-    crate::grant_answer::serve(link).map_err(|e| format!("VM {pid}: {e}"))
+    crate::grant_answer::serve(link).map_err(|e| match &sampled {
+        Some(file) => format!("VM {pid}: {e} (its stacks at {GRANT_STALL:?}: {file} in the home)"),
+        None => format!("VM {pid}: {e}"),
+    })
 }
 
 /// Waits for a starting VM to say it is ready.
@@ -4800,6 +4878,7 @@ mod tests {
                         named: None,
                         layer_pending: false,
                         visit: false,
+                        egress: None,
                     },
                     acquire,
                 )?;
@@ -6629,6 +6708,7 @@ mod tests {
                 named: None,
                 layer_pending: false,
                 visit: false,
+                egress: None,
             };
             let _inbox = t.daemon.register(ready, &id, keep);
             say(&vm, kind::STARTED, &[]);

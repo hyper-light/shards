@@ -196,6 +196,10 @@ pub mod kind {
     /// each time its members change (shards_net::dns::Names::encode); answered with the
     /// same kind.
     pub const NET_NAMES: u8 = 39;
+    /// Daemon → network process: the ports its guest may open flows to, its image's
+    /// Agentfile's egress grants (D59, shards_net::Ports::encode); answered with the same
+    /// kind once taken.
+    pub const NET_POLICY: u8 = 40;
 }
 
 /// An `ATTACH_RUN` flag: the client's stdin goes to the command's.

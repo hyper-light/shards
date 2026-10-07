@@ -101,7 +101,7 @@ pub fn main() -> ! {
             }
         }
         "confined" => confined(args.get(1..).unwrap_or_default()),
-        "await" => await_process(arg(1), arg(2).parse().unwrap_or(1)),
+        "await" => await_process(arg(1), arg(2).parse().unwrap_or(1), arg(3)),
         "sleep" => {
             let _ = writeln!(io::stdout(), "ready");
             loop {
@@ -1277,8 +1277,9 @@ fn confined(args: &[String]) -> i32 {
     }
 }
 
-/// Waits, 60 s at most, until `count` processes whose `comm` is `name` exist.
-fn await_process(name: &str, count: usize) -> i32 {
+/// Waits, 60 s at most, until `count` processes whose `comm` is `name` exist; then says
+/// whether it reaches `then`, an address, where one is given.
+fn await_process(name: &str, count: usize, then: &str) -> i32 {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     while std::time::Instant::now() < deadline {
         let found = std::fs::read_dir("/proc")
@@ -1288,6 +1289,22 @@ fn await_process(name: &str, count: usize) -> i32 {
             .filter(|e| std::fs::read_to_string(e.path().join("comm")).is_ok_and(|c| c.trim_end() == name))
             .count();
         if found >= count {
+            // Then, where an address is given, whether this process reaches it, in 3 s.
+            if !then.is_empty() {
+                use std::net::ToSocketAddrs as _;
+                let said = match then.to_socket_addrs().map(|mut a| a.next()) {
+                    Ok(Some(to)) => {
+                        match std::net::TcpStream::connect_timeout(&to, std::time::Duration::from_secs(3)) {
+                            Ok(_) => "ok".to_string(),
+                            Err(e) if e.kind() == io::ErrorKind::TimedOut => "timeout".to_string(),
+                            Err(e) => format!("errno {}", e.raw_os_error().unwrap_or(0)),
+                        }
+                    }
+                    Ok(None) => "no address".to_string(),
+                    Err(e) => e.to_string(),
+                };
+                let _ = writeln!(io::stdout(), "await unreach {then}: {said}");
+            }
             return 0;
         }
         std::thread::sleep(std::time::Duration::from_millis(5));

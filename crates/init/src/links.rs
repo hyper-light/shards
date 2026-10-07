@@ -44,6 +44,23 @@ const RTNH_F_ONLINK: u32 = 4;
 const DOMAIN_IFINDEX: i32 = 2;
 /// The n-th domain's link in the switch: `d<n>`, index this plus n.
 const SWITCH_IFINDEX: i32 = 100;
+/// The switch's link to init's namespace, past which the microVM's eth0 is: `up0` in the
+/// switch, `agents0` in init's, each index this; on a link-local /30 of their own (RFC
+/// 3927), which no network of the guest's or the host's takes.
+const UPLINK_IFINDEX: i32 = 99;
+const UPLINK_INIT: Ipv4Addr = Ipv4Addr::new(169, 254, 77, 1);
+const UPLINK_SWITCH: Ipv4Addr = Ipv4Addr::new(169, 254, 77, 2);
+const UPLINK_PREFIX: u8 = 30;
+/// The mark init's forward chain gives what an agent sends past the microVM, by which its
+/// postrouting chain gives it eth0's address.
+const MARK_AGENTS: u32 = 0x5a59_0001;
+
+/// The switch's link past the microVM: the agents' subnets, which init's namespace routes
+/// back down it, and eth0's address and subnet, which their flows leave by.
+pub struct Uplink {
+    pub subnets: Vec<(Ipv4Addr, u8)>,
+    pub eth0: (Ipv4Addr, Ipv4Addr, u8),
+}
 
 /// nfnetlink and nf_tables (include/uapi/linux/netfilter/nfnetlink.h, nf_tables.h).
 mod nft {
@@ -98,6 +115,25 @@ mod nft {
     pub const NF_ACCEPT: u32 = 1;
     pub const NF_INET_LOCAL_IN: u32 = 1;
     pub const NF_INET_FORWARD: u32 = 2;
+    pub const NF_INET_LOCAL_OUT: u32 = 3;
+    pub const NF_INET_POST_ROUTING: u32 = 4;
+    /// NF_IP_PRI_NAT_SRC.
+    pub const PRIORITY_SNAT: u32 = 100;
+    pub const NFTA_META_SREG: u16 = 3;
+    pub const NFT_META_MARK: u32 = 3;
+    pub const NFT_META_L4PROTO: u32 = 16;
+    pub const NFTA_PAYLOAD_DREG: u16 = 1;
+    pub const NFTA_PAYLOAD_BASE: u16 = 2;
+    pub const NFTA_PAYLOAD_OFFSET: u16 = 3;
+    pub const NFTA_PAYLOAD_LEN: u16 = 4;
+    pub const NFT_PAYLOAD_NETWORK_HEADER: u32 = 1;
+    pub const NFT_PAYLOAD_TRANSPORT_HEADER: u32 = 2;
+    pub const NFT_CMP_LTE: u32 = 3;
+    pub const NFT_CMP_GTE: u32 = 5;
+    pub const NFTA_NAT_TYPE: u16 = 1;
+    pub const NFTA_NAT_FAMILY: u16 = 2;
+    pub const NFTA_NAT_REG_ADDR_MIN: u16 = 3;
+    pub const NFT_NAT_SNAT: u32 = 0;
 }
 
 const TABLE: &[u8] = b"shards\0";
@@ -260,12 +296,19 @@ pub struct Switch {
     route: OwnedFd,
     /// A route socket in init's own namespace, where veths are made.
     here: OwnedFd,
+    /// Whether it has a link past the microVM, which every domain's default route takes.
+    uplink: bool,
 }
 
 impl Switch {
     /// Makes the switch: forwarding on, and nf_tables that drop all but the answers to
-    /// what is allowed, and `pairs`, each `(from, to)` by the domains' indices.
-    pub fn new(pairs: &[(usize, usize)]) -> io::Result<Switch> {
+    /// what is allowed, `pairs`, each `(from, to)` by the domains' indices, and each
+    /// domain's `egress` past the microVM, through `uplink`.
+    pub fn new(
+        pairs: &[(usize, usize)],
+        egress: &[(usize, Vec<crate::netplan::Egress>)],
+        uplink: Option<&Uplink>,
+    ) -> io::Result<Switch> {
         let (ns, route, nftables) = in_netns(None, || {
             let ns = open_ns("/proc/thread-self/ns/net")?;
             let route = netlink_socket(libc::NETLINK_ROUTE)?;
@@ -277,12 +320,85 @@ impl Switch {
             crate::setup::write_sysctl("net.ipv4.ip_forward", "1").map_err(io::Error::other)?;
             Ok((ns, route, nftables))
         })?;
-        policy(&nftables, pairs)?;
-        Ok(Switch {
+        policy(&nftables, pairs, egress)?;
+        let switch = Switch {
             ns,
             route,
             here: netlink_socket(libc::NETLINK_ROUTE)?,
-        })
+            uplink: uplink.is_some(),
+        };
+        if let Some(u) = uplink {
+            switch.up(u)?;
+        }
+        Ok(switch)
+    }
+
+    /// The link past the microVM: `agents0` in init's namespace, `up0` in the switch's,
+    /// the switch's default route up it and init's routes to the agents' subnets down it;
+    /// init's namespace forwarding what comes up to eth0, under eth0's address, and
+    /// nothing else; and the run's own processes kept to what they reached before.
+    fn up(&self, u: &Uplink) -> io::Result<()> {
+        let create = NLM_F_REQUEST | NLM_F_ACK | NLM_F_CREATE | NLM_F_EXCL;
+        let mut m = ifinfomsg(UPLINK_IFINDEX, 0, 0);
+        attr(&mut m, IFLA_IFNAME, b"agents0\0");
+        let switch_fd = self.ns.as_raw_fd() as u32;
+        nested(&mut m, IFLA_LINKINFO, |li| {
+            attr(li, IFLA_INFO_KIND, b"veth");
+            nested(li, IFLA_INFO_DATA, |data| {
+                nested(data, VETH_INFO_PEER, |peer| {
+                    peer.extend_from_slice(&ifinfomsg(UPLINK_IFINDEX, 0, 0));
+                    attr(peer, IFLA_IFNAME, b"up0\0");
+                    attr(peer, IFLA_NET_NS_FD, &switch_fd.to_ne_bytes());
+                });
+            });
+        });
+        exchange(&self.here, &[(RTM_NEWLINK, create, m)])?;
+        let up = libc::IFF_UP as u32;
+        let link_up = |i| (RTM_NEWLINK, NLM_F_REQUEST | NLM_F_ACK, ifinfomsg(i, up, up));
+        exchange(
+            &self.route,
+            &[
+                link_up(UPLINK_IFINDEX),
+                (
+                    RTM_NEWADDR,
+                    create,
+                    addr_msg_prefix(UPLINK_IFINDEX, UPLINK_SWITCH, UPLINK_PREFIX),
+                ),
+            ],
+        )?;
+        exchange(
+            &self.route,
+            &[(
+                RTM_NEWROUTE,
+                create,
+                route_msg(UPLINK_IFINDEX, Ipv4Addr::UNSPECIFIED, 0, Some(UPLINK_INIT), None),
+            )],
+        )?;
+        let mut here = vec![
+            link_up(UPLINK_IFINDEX),
+            (
+                RTM_NEWADDR,
+                create,
+                addr_msg_prefix(UPLINK_IFINDEX, UPLINK_INIT, UPLINK_PREFIX),
+            ),
+        ];
+        for &(subnet, prefix) in &u.subnets {
+            here.push((
+                RTM_NEWROUTE,
+                create,
+                route_msg(UPLINK_IFINDEX, subnet, prefix, Some(UPLINK_SWITCH), None),
+            ));
+        }
+        let (first, rest) = here.split_at(1);
+        exchange(&self.here, first)?;
+        exchange(&self.here, rest)?;
+        crate::setup::write_sysctl("net.ipv4.ip_forward", "1").map_err(io::Error::other)?;
+        // SAFETY: if_nametoindex(3) of a NUL-terminated literal.
+        let eth0 = unsafe { libc::if_nametoindex(c"eth0".as_ptr()) };
+        if eth0 == 0 {
+            return Err(io::Error::other("the microVM has no eth0 for its agents' egress"));
+        }
+        outside(&netlink_socket(libc::NETLINK_NETFILTER)?, eth0, u.eth0)
     }
 
     /// Links the `n`-th domain, its first process `pid`, as `link` says.
@@ -336,6 +452,23 @@ impl Switch {
             }
             theirs.push((RTM_NEWROUTE, create, route_msg(index, a.addr, 32, None, None)));
         }
+        // Past the microVM, through its first network's gateway, where there is a way:
+        // after its addresses, as a route's preferred source must be one.
+        if self.uplink
+            && let Some(a) = link.addresses.first()
+        {
+            ours.push((
+                RTM_NEWROUTE,
+                create,
+                route_msg(
+                    DOMAIN_IFINDEX,
+                    Ipv4Addr::UNSPECIFIED,
+                    0,
+                    Some(a.gateway),
+                    Some(a.addr),
+                ),
+            ));
+        }
         // Up before its routes: a route through a link that is down is refused.
         let (up_ours, rest_ours) = ours.split_at(1);
         let (up_theirs, rest_theirs) = theirs.split_at(1);
@@ -350,8 +483,12 @@ impl Switch {
 }
 
 fn addr_msg(index: i32, addr: Ipv4Addr) -> Vec<u8> {
+    addr_msg_prefix(index, addr, 32)
+}
+
+fn addr_msg_prefix(index: i32, addr: Ipv4Addr, prefix: u8) -> Vec<u8> {
     // struct ifaddrmsg: family, prefix length, flags, scope, index.
-    let mut m = vec![libc::AF_INET as u8, 32, 0, RT_SCOPE_UNIVERSE];
+    let mut m = vec![libc::AF_INET as u8, prefix, 0, RT_SCOPE_UNIVERSE];
     m.extend_from_slice(&(index as u32).to_ne_bytes());
     attr(&mut m, IFA_LOCAL, &addr.octets());
     attr(&mut m, IFA_ADDRESS, &addr.octets());
@@ -440,80 +577,222 @@ fn nft_msg(kind: u16, flags: u16, attrs: Vec<u8>) -> (u16, u16, Vec<u8>) {
     )
 }
 
-/// The switch's nf_tables, in one transaction: table `shards`; chain `input`, which drops
-/// all, so no domain reaches the switch; chain `forward`, which drops all but the answers
-/// of connections (conntrack's established and related), and new ones from each pair's
-/// first link to its second.
-fn policy(sock: &OwnedFd, pairs: &[(usize, usize)]) -> io::Result<()> {
-    let mut msgs = Vec::new();
-    // The batch's bounds: res_id the subsystem, in network order (nfnetlink.c).
-    let bound = |kind: u16| {
+/// One nf_tables transaction for table `shards`, of family ip: its chains, each with
+/// its rules (nf_tables_api.c commits a batch whole or not at all).
+struct Batch {
+    msgs: Vec<(u16, u16, Vec<u8>)>,
+}
+
+impl Batch {
+    fn new() -> Batch {
+        let mut b = Batch {
+            msgs: vec![Batch::bound(nft::NFNL_MSG_BATCH_BEGIN)],
+        };
+        let mut t = Vec::new();
+        attr(&mut t, nft::NFTA_TABLE_NAME, TABLE);
+        b.msgs.push(nft_msg(nft::NFT_MSG_NEWTABLE, NLM_F_CREATE, t));
+        b
+    }
+
+    /// A batch's bounds: res_id the subsystem, in network order (nfnetlink.c).
+    fn bound(kind: u16) -> (u16, u16, Vec<u8>) {
         let mut m = vec![libc::AF_UNSPEC as u8, 0];
         m.extend_from_slice(&nft::NFNL_SUBSYS_NFTABLES.to_be_bytes());
         (kind, NLM_F_REQUEST, m)
-    };
-    msgs.push(bound(nft::NFNL_MSG_BATCH_BEGIN));
-    let mut t = Vec::new();
-    attr(&mut t, nft::NFTA_TABLE_NAME, TABLE);
-    msgs.push(nft_msg(nft::NFT_MSG_NEWTABLE, NLM_F_CREATE, t));
-    for (name, hook) in [
-        (&b"input\0"[..], nft::NF_INET_LOCAL_IN),
-        (b"forward\0", nft::NF_INET_FORWARD),
-    ] {
+    }
+
+    /// A base chain on `hook`, of `kind` (`filter\0`, `nat\0`), its policy `policy`.
+    fn chain(&mut self, name: &[u8], kind: &[u8], hook: u32, priority: u32, policy: u32) {
         let mut c = Vec::new();
         attr(&mut c, nft::NFTA_CHAIN_TABLE, TABLE);
         attr(&mut c, nft::NFTA_CHAIN_NAME, name);
         nested(&mut c, nft::NFTA_CHAIN_HOOK, |h| {
             be32(h, nft::NFTA_HOOK_HOOKNUM, hook);
-            be32(h, nft::NFTA_HOOK_PRIORITY, 0);
+            be32(h, nft::NFTA_HOOK_PRIORITY, priority);
         });
-        be32(&mut c, nft::NFTA_CHAIN_POLICY, nft::NF_DROP);
-        attr(&mut c, nft::NFTA_CHAIN_TYPE, b"filter\0");
-        msgs.push(nft_msg(nft::NFT_MSG_NEWCHAIN, NLM_F_CREATE, c));
+        be32(&mut c, nft::NFTA_CHAIN_POLICY, policy);
+        attr(&mut c, nft::NFTA_CHAIN_TYPE, kind);
+        self.msgs.push(nft_msg(nft::NFT_MSG_NEWCHAIN, NLM_F_CREATE, c));
     }
-    let rule = |exprs: Vec<u8>| {
+
+    fn rule(&mut self, chain: &[u8], exprs: Vec<u8>) {
         let mut r = Vec::new();
         attr(&mut r, nft::NFTA_RULE_TABLE, TABLE);
-        attr(&mut r, nft::NFTA_RULE_CHAIN, b"forward\0");
+        attr(&mut r, nft::NFTA_RULE_CHAIN, chain);
         attr(&mut r, nft::NFTA_RULE_EXPRESSIONS | NLA_F_NESTED, &exprs);
-        nft_msg(nft::NFT_MSG_NEWRULE, NLM_F_CREATE | NLM_F_APPEND, r)
-    };
-    // ct state established,related accept.
+        self.msgs
+            .push(nft_msg(nft::NFT_MSG_NEWRULE, NLM_F_CREATE | NLM_F_APPEND, r));
+    }
+
+    fn commit(mut self, sock: &OwnedFd) -> io::Result<()> {
+        self.msgs.push(Batch::bound(nft::NFNL_MSG_BATCH_END));
+        exchange(sock, &self.msgs)
+    }
+}
+
+/// `ct state established,related accept`.
+fn answers() -> Vec<u8> {
     let mut e = Vec::new();
     expr(&mut e, b"ct\0", |d| {
         be32(d, nft::NFTA_CT_DREG, nft::NFT_REG_1);
         be32(d, nft::NFTA_CT_KEY, nft::NFT_CT_STATE);
     });
-    expr(&mut e, b"bitwise\0", |d| {
-        be32(d, nft::NFTA_BITWISE_SREG, nft::NFT_REG_1);
-        be32(d, nft::NFTA_BITWISE_DREG, nft::NFT_REG_1);
-        be32(d, nft::NFTA_BITWISE_LEN, 4);
-        nested(d, nft::NFTA_BITWISE_MASK, |v| {
-            attr(v, nft::NFTA_DATA_VALUE, &nft::ESTABLISHED_RELATED.to_ne_bytes());
-        });
-        nested(d, nft::NFTA_BITWISE_XOR, |v| {
-            attr(v, nft::NFTA_DATA_VALUE, &0u32.to_ne_bytes())
-        });
-    });
+    masked(&mut e, &nft::ESTABLISHED_RELATED.to_ne_bytes());
     compare(&mut e, nft::NFT_CMP_NEQ, &0u32.to_ne_bytes());
     accept(&mut e);
-    msgs.push(rule(e));
-    // iif d<from> oif d<to> accept, for each pair.
+    e
+}
+
+/// Register 1, and-ed with `mask`.
+fn masked(list: &mut Vec<u8>, mask: &[u8]) {
+    let len = u32::try_from(mask.len()).unwrap_or(0);
+    expr(list, b"bitwise\0", |d| {
+        be32(d, nft::NFTA_BITWISE_SREG, nft::NFT_REG_1);
+        be32(d, nft::NFTA_BITWISE_DREG, nft::NFT_REG_1);
+        be32(d, nft::NFTA_BITWISE_LEN, len);
+        nested(d, nft::NFTA_BITWISE_MASK, |v| attr(v, nft::NFTA_DATA_VALUE, mask));
+        nested(d, nft::NFTA_BITWISE_XOR, |v| {
+            attr(v, nft::NFTA_DATA_VALUE, &vec![0u8; mask.len()])
+        });
+    });
+}
+
+/// Register 1, `len` bytes of the packet at `offset` of header `base`.
+fn payload(list: &mut Vec<u8>, base: u32, offset: u32, len: u32) {
+    expr(list, b"payload\0", |d| {
+        be32(d, nft::NFTA_PAYLOAD_DREG, nft::NFT_REG_1);
+        be32(d, nft::NFTA_PAYLOAD_BASE, base);
+        be32(d, nft::NFTA_PAYLOAD_OFFSET, offset);
+        be32(d, nft::NFTA_PAYLOAD_LEN, len);
+    });
+}
+
+/// Register 1, `value`.
+fn load(list: &mut Vec<u8>, value: &[u8]) {
+    expr(list, b"immediate\0", |d| {
+        be32(d, nft::NFTA_IMMEDIATE_DREG, nft::NFT_REG_1);
+        nested(d, nft::NFTA_IMMEDIATE_DATA, |v| {
+            attr(v, nft::NFTA_DATA_VALUE, value)
+        });
+    });
+}
+
+fn link_index(n: usize) -> io::Result<u32> {
+    let n = u32::try_from(n).map_err(|_| io::Error::other("too many domains"))?;
+    (SWITCH_IFINDEX as u32)
+        .checked_add(n)
+        .ok_or_else(|| io::Error::other("too many domains"))
+}
+
+/// The switch's nf_tables, in one transaction: chain `input`, which drops all, so no
+/// domain reaches the switch; chain `forward`, which drops all but the answers of
+/// connections (conntrack's established and related), new ones from each pair's first
+/// link to its second, and from each domain's link up to the microVM's, to the ports its
+/// networks grant.
+fn policy(
+    sock: &OwnedFd,
+    pairs: &[(usize, usize)],
+    egress: &[(usize, Vec<crate::netplan::Egress>)],
+) -> io::Result<()> {
+    let mut b = Batch::new();
+    b.chain(b"input\0", b"filter\0", nft::NF_INET_LOCAL_IN, 0, nft::NF_DROP);
+    b.chain(b"forward\0", b"filter\0", nft::NF_INET_FORWARD, 0, nft::NF_DROP);
+    b.rule(b"forward\0", answers());
     for &(from, to) in pairs {
-        let index = |n: usize| -> io::Result<u32> {
-            let n = u32::try_from(n).map_err(|_| io::Error::other("too many domains"))?;
-            (SWITCH_IFINDEX as u32)
-                .checked_add(n)
-                .ok_or_else(|| io::Error::other("too many domains"))
-        };
         let mut e = Vec::new();
         meta(&mut e, nft::NFT_META_IIF);
-        compare(&mut e, nft::NFT_CMP_EQ, &index(from)?.to_ne_bytes());
+        compare(&mut e, nft::NFT_CMP_EQ, &link_index(from)?.to_ne_bytes());
         meta(&mut e, nft::NFT_META_OIF);
-        compare(&mut e, nft::NFT_CMP_EQ, &index(to)?.to_ne_bytes());
+        compare(&mut e, nft::NFT_CMP_EQ, &link_index(to)?.to_ne_bytes());
         accept(&mut e);
-        msgs.push(rule(e));
+        b.rule(b"forward\0", e);
     }
-    msgs.push(bound(nft::NFNL_MSG_BATCH_END));
-    exchange(sock, &msgs)
+    for (n, ranges) in egress {
+        for &(proto, lo, hi) in ranges {
+            let mut e = Vec::new();
+            meta(&mut e, nft::NFT_META_IIF);
+            compare(&mut e, nft::NFT_CMP_EQ, &link_index(*n)?.to_ne_bytes());
+            meta(&mut e, nft::NFT_META_OIF);
+            compare(&mut e, nft::NFT_CMP_EQ, &(UPLINK_IFINDEX as u32).to_ne_bytes());
+            meta(&mut e, nft::NFT_META_L4PROTO);
+            compare(&mut e, nft::NFT_CMP_EQ, &[proto]);
+            // The destination port, at offset 2 of TCP's header and UDP's alike, compared
+            // as the network-order bytes it is.
+            payload(&mut e, nft::NFT_PAYLOAD_TRANSPORT_HEADER, 2, 2);
+            compare(&mut e, nft::NFT_CMP_GTE, &lo.to_be_bytes());
+            compare(&mut e, nft::NFT_CMP_LTE, &hi.to_be_bytes());
+            accept(&mut e);
+            b.rule(b"forward\0", e);
+        }
+    }
+    b.commit(sock)
+}
+
+/// Init's own namespace's nf_tables, once agents reach past the microVM:
+///
+/// - `forward` drops all but answers, and what comes up from the switch (`agents0`) to
+///   eth0, which it marks;
+/// - `post` gives what is marked eth0's address, so that the network process, which takes
+///   frames from the guest's address alone, takes it;
+/// - `out` keeps the run's own processes to what they reached before: the default deny
+///   held them at the host, which now opens the agents' ports to the whole microVM, so
+///   no new flow leaves eth0 but to eth0's own subnet (its network's members, D46).
+fn outside(sock: &OwnedFd, eth0: u32, (addr, subnet, prefix): (Ipv4Addr, Ipv4Addr, u8)) -> io::Result<()> {
+    let mut b = Batch::new();
+    b.chain(b"forward\0", b"filter\0", nft::NF_INET_FORWARD, 0, nft::NF_DROP);
+    b.rule(b"forward\0", answers());
+    let mut e = Vec::new();
+    meta(&mut e, nft::NFT_META_IIF);
+    compare(&mut e, nft::NFT_CMP_EQ, &(UPLINK_IFINDEX as u32).to_ne_bytes());
+    meta(&mut e, nft::NFT_META_OIF);
+    compare(&mut e, nft::NFT_CMP_EQ, &eth0.to_ne_bytes());
+    load(&mut e, &MARK_AGENTS.to_ne_bytes());
+    expr(&mut e, b"meta\0", |d| {
+        be32(d, nft::NFTA_META_KEY, nft::NFT_META_MARK);
+        be32(d, nft::NFTA_META_SREG, nft::NFT_REG_1);
+    });
+    accept(&mut e);
+    b.rule(b"forward\0", e);
+    b.chain(
+        b"post\0",
+        b"nat\0",
+        nft::NF_INET_POST_ROUTING,
+        nft::PRIORITY_SNAT,
+        nft::NF_ACCEPT,
+    );
+    let mut e = Vec::new();
+    meta(&mut e, nft::NFT_META_MARK);
+    compare(&mut e, nft::NFT_CMP_EQ, &MARK_AGENTS.to_ne_bytes());
+    load(&mut e, &addr.octets());
+    expr(&mut e, b"nat\0", |d| {
+        be32(d, nft::NFTA_NAT_TYPE, nft::NFT_NAT_SNAT);
+        be32(d, nft::NFTA_NAT_FAMILY, u32::from(nft::NFPROTO_IPV4));
+        be32(d, nft::NFTA_NAT_REG_ADDR_MIN, nft::NFT_REG_1);
+    });
+    b.rule(b"post\0", e);
+    b.chain(b"out\0", b"filter\0", nft::NF_INET_LOCAL_OUT, 0, nft::NF_ACCEPT);
+    b.rule(b"out\0", answers());
+    let mut e = Vec::new();
+    meta(&mut e, nft::NFT_META_OIF);
+    compare(&mut e, nft::NFT_CMP_EQ, &eth0.to_ne_bytes());
+    // The destination address, at offset 16 of IPv4's header, in eth0's subnet.
+    payload(&mut e, nft::NFT_PAYLOAD_NETWORK_HEADER, 16, 4);
+    let mask = u32::MAX.checked_shl(32 - u32::from(prefix)).unwrap_or(0);
+    masked(&mut e, &mask.to_be_bytes());
+    compare(&mut e, nft::NFT_CMP_EQ, &subnet.octets());
+    accept(&mut e);
+    b.rule(b"out\0", e);
+    let mut e = Vec::new();
+    meta(&mut e, nft::NFT_META_OIF);
+    compare(&mut e, nft::NFT_CMP_EQ, &eth0.to_ne_bytes());
+    expr(&mut e, b"immediate\0", |d| {
+        be32(d, nft::NFTA_IMMEDIATE_DREG, nft::NFT_REG_VERDICT);
+        nested(d, nft::NFTA_IMMEDIATE_DATA, |v| {
+            nested(v, nft::NFTA_DATA_VERDICT, |c| {
+                be32(c, nft::NFTA_VERDICT_CODE, nft::NF_DROP)
+            });
+        });
+    });
+    b.rule(b"out\0", e);
+    b.commit(sock)
 }

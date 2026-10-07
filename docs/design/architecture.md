@@ -3273,8 +3273,58 @@ Mutation-checked:
 The planner has unit tests for pairs, pool allocation clear of eth0, declared subnets and
 gateways, and capacity.
 
-Open: egress and ingress past the microVM (`EXPOSE … FOR`, `NETWORK --expose/--ingress/
---egress`, remote MCP servers) through eth0 and the network process (D31, D46); IPv6
+Part four, egress past the microVM, by port (AGENTFILE_ARCH.md §4.1, §4.6):
+
+- **What is granted.** A domain may open flows past the microVM to the `--egress` and
+  `--expose` ports of each network it joins that is not internal, and to each `EXPOSE …
+  FOR` such a network that is not ingress-only. A domain's grants let it connect, as far
+  as Landlock is concerned. The build records the union of all domains' grants in the
+  image's label `vnd.osi.agentfile.egress` (`443,53/udp,8000-8010`), as it records the
+  Agentfile's digest.
+- **The host holds the microVM to the union.** A run of a labelled image hands its VM's
+  network process `NET_POLICY` before the VM has the run (warm VMs start before their run
+  is known). That makes the policy `Ports`: what `AllowAll` reaches, on those ports and
+  protocols alone, and never the host itself, its loopback, link-local addresses,
+  multicast or broadcast. Other ports are refused at once, a TCP reset or ICMP
+  administratively prohibited, as the default deny refuses them. A VM whose network
+  process does not take the policy goes, as one that does not take its ports.
+- **The switch holds each domain to its own grants, by link.** A veth links the switch
+  (`up0`) to init's namespace (`agents0`), on a link-local /30 of its own, and the
+  switch's default route goes up it. Its forward chain admits `iif d<x> oif up0` only
+  for x's protocol and a destination port within one of x's ranges (`meta l4proto`; the
+  transport header's port, compared as network-order bytes). Every linked domain's
+  default route goes through its first network's gateway, so a domain without grants is
+  dropped by the switch, not left without a route.
+- **Init's namespace forwards it out** (`ip_forward` on). Its forward chain drops all but
+  answers and `agents0 → eth0`, which it marks; its postrouting chain gives what is
+  marked eth0's address. That is the address the network process takes frames from, and
+  it maps the flows to host sockets.
+- **The run's own command reaches no more than it did.** The host now opens the agents'
+  ports to the whole microVM, so init's `out` chain drops every new flow leaving eth0
+  except to eth0's own subnet (the network's members, D46, and its resolver relay).
+
+Tested: `agents_reach_past_the_microvm_what_their_networks_grant`. A real microVM and two
+servers run on the host's address, one port granted to network `out`, one not:
+
+- `a`, on `out`, reaches the granted port, and is dropped on the other;
+- `b`, on an internal network that names the granted port too, is dropped, though
+  Landlock lets it connect to its peer;
+- the run's own command is dropped.
+
+Mutation-checked, each failing the test:
+
+- no port comparison in the switch: `a` reaches the other port, and the host refuses it
+  (ECONNREFUSED), which shows its own policy holds;
+- no `NET_POLICY` sent: the host's default deny refuses `a`;
+- `out`'s drop made an accept: the run's command reaches the host;
+- the planner ignoring `internal`: `b` reaches the host.
+
+The host's `Ports` policy and its encoding, the build's union, and the planner's
+per-domain grants have unit tests.
+
+Open: names past the microVM (DNS for egress hosts, which today resolves only the
+network's members); ingress (`--ingress`, `EXPOSE … AS ingress`: a published port to a
+domain); remote MCP servers, whose grant names one destination and not a port; IPv6
 subnets; process events; §9.10's escape tests beyond these.
 
 ## 4. Start path (≤ 5 ms budget)

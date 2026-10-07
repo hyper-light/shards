@@ -877,6 +877,54 @@ pub const DIGEST_LABEL: &[u8] = b"vnd.osi.agentfile.digest";
 pub const AGENTS_ANNOTATION: &[u8] = b"vnd.osi.agentfile.agents";
 pub const HARNESSES_ANNOTATION: &[u8] = b"vnd.osi.agentfile.harnesses";
 
+/// The label of an Agentfile's egress grants (D59), the ports [`egress`] finds,
+/// comma-separated: the union its microVM's network process allows, each agent held to
+/// its own by its microVM's switch.
+pub const EGRESS_LABEL: &[u8] = b"vnd.osi.agentfile.egress";
+
+/// The ports an Agentfile lets some domain open flows to past its microVM (§4.1, §4.6):
+/// each `NETWORK --egress` and `--expose` port, and each `EXPOSE ... FOR` port not
+/// ingress-only, of a network that is not internal and that a `CONNECT` joins; each once.
+pub fn egress(directives: &[Directive]) -> Vec<Vec<u8>> {
+    let joined = |name: &[u8]| {
+        directives
+            .iter()
+            .any(|d| matches!(d, Directive::Connect(c) if c.on.iter().any(|n| n == name)))
+    };
+    let internal = |name: &[u8]| {
+        directives
+            .iter()
+            .any(|d| matches!(d, Directive::Network(n) if n.name == name && n.internal))
+    };
+    let mut out: Vec<Vec<u8>> = Vec::new();
+    let mut add = |port: &[u8]| {
+        if !out.iter().any(|p| p == port) {
+            out.push(port.to_vec());
+        }
+    };
+    for d in directives {
+        match d {
+            Directive::Network(n) if !n.internal && joined(&n.name) => {
+                for (port, direction) in &n.ports {
+                    if *direction != Direction::Ingress {
+                        add(port);
+                    }
+                }
+            }
+            Directive::Expose(e)
+                if e.direction != Direction::Ingress
+                    && e.networks.iter().any(|n| !internal(n) && joined(n)) =>
+            {
+                for port in &e.ports {
+                    add(port);
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
 /// What a domain reaches, through every edge an Agentfile declares (§9.5, §9.8, D58): a
 /// network both join (by `CONNECT ... ON`), a named volume granted to both, `ATTACH`.
 /// A domain reaches the world when it joins a network that is not internal and opens any

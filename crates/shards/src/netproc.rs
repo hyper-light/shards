@@ -70,6 +70,8 @@ pub fn start(
     let policy = match policy {
         shards_net::Policy::AllowAll => "allow",
         shards_net::Policy::DenyAll => "deny",
+        // A run's, given as it starts (NET_POLICY): a VM starts before its run is known.
+        shards_net::Policy::Ports(_) => return Err("a VM's network starts allowing all or nothing".into()),
     };
     let pair = || std::os::unix::net::UnixStream::pair().map_err(|e| format!("a VM's network control: {e}"));
     let (control, theirs) = pair()?;

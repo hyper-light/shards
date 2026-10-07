@@ -35,7 +35,7 @@ pub(super) struct Member {
 
 /// Sends a network process `which` and waits for it to say it took it, as published
 /// ports are given (`give_ports`).
-fn ask_net(
+pub(super) fn ask_net(
     net: &std::os::unix::net::UnixStream,
     which: u8,
     payload: &[u8],

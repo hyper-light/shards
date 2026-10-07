@@ -547,3 +547,49 @@ fn reach_through_any_declared_edge_is_reach() {
         Ok(())
     );
 }
+
+/// The ports an Agentfile's image may reach past its microVM (D59), its network process's
+/// union: a network's egress and both-ways ports, and `EXPOSE ... FOR` it not ingress-only,
+/// where the network is joined and not internal; each once.
+#[test]
+fn egress_is_what_joined_networks_open() {
+    use shards_dockerfile::instructions::Kind;
+    let directives = |text: &str| -> Vec<_> {
+        let parsed = parser::parse_as(text.as_bytes(), Dialect::Agentfile).unwrap();
+        let ins = instructions::parse(&parsed, &Linter::default()).unwrap();
+        ins.stages
+            .last()
+            .unwrap()
+            .commands
+            .iter()
+            .filter_map(|c| match &c.kind {
+                Kind::Agentfile(d) => Some(d.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+    let ports = |text: &str| -> Vec<String> {
+        shards_dockerfile::agentfile::egress(&directives(text))
+            .into_iter()
+            .map(|p| String::from_utf8(p).unwrap())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    };
+    let base = "FROM alpine\nAGENT a FROM ./a\n";
+    assert_eq!(
+        ports(&format!(
+            "{base}NETWORK --egress=443 --ingress=8080 --expose=53/udp out\n\
+             NETWORK --internal --egress=22 shut\nNETWORK --egress=25 unjoined\n\
+             EXPOSE 9000-9010 AS egress FOR out\nEXPOSE 7000 AS ingress FOR out\nEXPOSE 443 FOR out\n\
+             CONNECT a WITH a ON out shut\n"
+        )),
+        ["443", "53/udp", "9000-9010"]
+    );
+    assert!(
+        ports(&format!(
+            "{base}NETWORK --internal --egress=443 shut\nCONNECT a WITH a ON shut\n"
+        ))
+        .is_empty()
+    );
+}

@@ -7,6 +7,11 @@
 //! others (§4.6), except that `CONNECT x TO y` lets `y` only answer `x` (§4.7), unless
 //! another directive grants `y` to `x` outright. Each domain has one link (§9.7) and policy
 //! goes by link, so a pair any shared network allows is allowed.
+//!
+//! Past the microVM, a domain may open flows to the ports its networks grant (§4.1,
+//! §4.6): of each network it joins that is not internal, the `--egress` and `--expose`
+//! ports, and each `EXPOSE ... FOR` it that is not ingress-only, as the build's
+//! `agentfile::egress` finds their union.
 
 use std::net::Ipv4Addr;
 
@@ -41,14 +46,36 @@ pub struct Address {
     pub gateway: Ipv4Addr,
 }
 
-/// A domain's link: its addresses, the names it resolves (`/etc/hosts`), and whether it
-/// opens connections and is connected to, which its Landlock rules follow.
+/// A port range a domain may open flows to past its microVM: the protocol's IP number
+/// (6 TCP, 17 UDP), and the range's ends.
+pub type Egress = (u8, u16, u16);
+
+/// A domain's link: its addresses, the names it resolves (`/etc/hosts`), the ports it may
+/// reach past the microVM, and whether it opens connections and is connected to, which its
+/// Landlock rules follow.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Link {
     pub addresses: Vec<Address>,
     pub hosts: Vec<u8>,
+    pub egress: Vec<Egress>,
     pub connects: bool,
     pub accepts: bool,
+}
+
+/// A port as Docker writes one (`443`, `53/udp`, `8000-8010/tcp`), TCP where none is said.
+fn port_range(s: &str) -> Option<Egress> {
+    let (range, proto) = match s.rsplit_once('/') {
+        Some((r, "tcp")) => (r, 6),
+        Some((r, "udp")) => (r, 17),
+        Some(_) => return None,
+        None => (s, 6),
+    };
+    let port = |p: &str| p.parse::<u16>().ok().filter(|p| *p > 0);
+    let (lo, hi) = match range.split_once('-') {
+        Some((a, b)) => (port(a)?, port(b)?),
+        None => (port(range)?, port(range)?),
+    };
+    (lo <= hi).then_some((proto, lo, hi))
 }
 
 /// The plan: each domain's link, by its index in `names`, and the pairs `(from, to)` that
@@ -57,6 +84,8 @@ pub struct Link {
 pub struct Plan {
     pub links: Vec<Option<Link>>,
     pub pairs: Vec<(usize, usize)>,
+    /// Whether any domain reaches past the microVM: the switch's link to it.
+    pub uplink: bool,
 }
 
 fn strings(v: Option<&Value>) -> Vec<String> {
@@ -251,15 +280,66 @@ pub fn plan(spec: &Value, names: &[Name], own: Option<(Ipv4Addr, u8)>) -> Result
                 named.push(peer);
             }
         }
-        let connects = pairs.iter().any(|(x, _)| *x == d);
+        let joined: Vec<String> = own.addresses.iter().map(|a| a.network.clone()).collect();
+        let egress = egress_of(spec, &joined)?;
+        let connects = pairs.iter().any(|(x, _)| *x == d) || !egress.is_empty();
         let accepts = pairs.iter().any(|(_, y)| *y == d);
         if let Some(Some(link)) = links.get_mut(d) {
             link.hosts = [HOSTS, hosts.as_bytes()].concat();
+            link.egress = egress;
             link.connects = connects;
             link.accepts = accepts;
         }
     }
-    Ok(Plan { links, pairs })
+    let uplink = links.iter().flatten().any(|l| !l.egress.is_empty());
+    Ok(Plan { links, pairs, uplink })
+}
+
+/// The ports a domain on `joined` may reach past the microVM, each once.
+fn egress_of(spec: &Value, joined: &[String]) -> Result<Vec<Egress>, String> {
+    let networks = spec.get("networks").map(Value::array).unwrap_or_default();
+    let internal = |name: &str| {
+        networks.iter().any(|n| {
+            n.get("name").and_then(Value::str) == Some(name)
+                && matches!(n.get("internal"), Some(Value::Bool(true)))
+        })
+    };
+    let mut out: Vec<Egress> = Vec::new();
+    let mut add = |port: &str| -> Result<(), String> {
+        let range =
+            port_range(port).ok_or_else(|| format!("the port {port:?} is no port or range of ports"))?;
+        if !out.contains(&range) {
+            out.push(range);
+        }
+        Ok(())
+    };
+    for n in networks {
+        let Some(name) = n.get("name").and_then(Value::str) else {
+            continue;
+        };
+        if internal(name) || !joined.iter().any(|j| j == name) {
+            continue;
+        }
+        for p in n.get("ports").map(Value::array).unwrap_or_default() {
+            if p.get("direction").and_then(Value::str) != Some("ingress")
+                && let Some(port) = p.get("port").and_then(Value::str)
+            {
+                add(port)?;
+            }
+        }
+    }
+    for e in spec.get("exposures").map(Value::array).unwrap_or_default() {
+        if e.get("direction").and_then(Value::str) == Some("ingress") {
+            continue;
+        }
+        let nets = strings(e.get("networks"));
+        if nets.iter().any(|n| !internal(n) && joined.iter().any(|j| j == n)) {
+            for port in strings(e.get("ports")) {
+                add(&port)?;
+            }
+        }
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -305,6 +385,33 @@ mod tests {
         // c is alone on side: linked, reaching no one.
         let c = p.links[2].as_ref().unwrap();
         assert!(!c.connects && !c.accepts);
+    }
+
+    #[test]
+    fn a_domain_reaches_past_the_microvm_what_its_networks_grant() {
+        let spec = crate::json::parse(
+            br#"{"networks":[{"name":"out","internal":false,"subnets":[],"gateways":[],
+                             "ports":[{"port":"443","direction":"egress"},{"port":"8080","direction":"ingress"},
+                                      {"port":"53/udp","direction":"both"}]},
+                            {"name":"shut","internal":true,"subnets":[],"gateways":[],
+                             "ports":[{"port":"22","direction":"egress"}]}],
+                "exposures":[{"ports":["9000-9010"],"direction":"egress","networks":["out"]},
+                             {"ports":["7000"],"direction":"both","networks":["shut"]}],
+                "connections":[{"kind":null,"from":["a"],"bothWays":true,"to":["a"],"on":["out"]},
+                               {"kind":null,"from":["b"],"bothWays":true,"to":["b"],"on":["shut"]}]}"#,
+        )
+        .unwrap();
+        let p = plan(&spec, &names(&["a", "b"]), None).unwrap();
+        let a = p.links[0].as_ref().unwrap();
+        assert_eq!(a.egress, vec![(6, 443, 443), (17, 53, 53), (6, 9000, 9010)]);
+        assert!(a.connects, "egress lets it connect");
+        let b = p.links[1].as_ref().unwrap();
+        assert!(
+            b.egress.is_empty(),
+            "an internal network reaches nothing past the microVM"
+        );
+        assert!(!b.connects);
+        assert!(p.uplink);
     }
 
     #[test]
