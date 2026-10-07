@@ -13,8 +13,9 @@
 //!   sockets, a Unix socket's path being reachable to any process that can see it
 //!   (unix(7)); its own directory and grants with it; every other domain's directory
 //!   and grants hidden under an empty tmpfs no one may read; `/sys` hidden; a `/proc` of
-//!   its PID namespace; a `/dev` of six nodes, the `fd` and stdio links, and a `shm` of
-//!   its own; and a scratch tmpfs of its own at `/tmp`, lost when it ends;
+//!   its PID namespace; a `/dev` of six nodes, the `fd` and stdio links, a `shm` of its
+//!   own and an `mqueue` of its IPC namespace's; and a scratch tmpfs of its own at
+//!   `/tmp`, lost when it ends;
 //! - has only its own loopback, brought up;
 //! - runs as uid and gid `200000 + n`, the n-th domain's, with no supplementary groups and
 //!   no capability left, bounding set included, and `no_new_privs` set;
@@ -1082,8 +1083,8 @@ fn child(d: &Domain, p: &Prepared, out: RawFd, flags: u32, program: &libc::sock_
                 fail(out, c"linking its /dev");
             }
         }
-        if libc::mkdir(c"/dev/shm".as_ptr(), 0o755) != 0 {
-            fail(out, c"making its /dev/shm");
+        if libc::mkdir(c"/dev/shm".as_ptr(), 0o755) != 0 || libc::mkdir(c"/dev/mqueue".as_ptr(), 0o755) != 0 {
+            fail(out, c"making its /dev/shm and /dev/mqueue");
         }
         let ro_dev = libc::MS_REMOUNT | libc::MS_BIND | libc::MS_RDONLY | libc::MS_NOSUID | libc::MS_NOEXEC;
         if libc::mount(null, c"/dev".as_ptr(), null, ro_dev, nil) != 0 {
@@ -1109,6 +1110,19 @@ fn child(d: &Domain, p: &Prepared, out: RawFd, flags: u32, program: &libc::sock_
             {
                 fail(out, c"making its scratch");
             }
+        }
+        // Its POSIX message queues, of its own IPC namespace, as a Docker container's
+        // (moby daemon/pkg/oci/defaults.go): mq_open makes them in the same filesystem
+        // (ipc/mqueue.c, the namespace's `mq_mnt`), which Landlock lets it write beneath.
+        if libc::mount(
+            c"mqueue".as_ptr(),
+            c"/dev/mqueue".as_ptr(),
+            c"mqueue".as_ptr(),
+            libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC,
+            nil,
+        ) != 0
+        {
+            fail(out, c"mounting its /dev/mqueue");
         }
         // Its names: its peers', over the system's /etc/hosts, and where it reaches past
         // the microVM its resolver, over /etc/resolv.conf; each read-only, made in its
@@ -1248,6 +1262,7 @@ fn child(d: &Domain, p: &Prepared, out: RawFd, flags: u32, program: &libc::sock_
             (c"/", read),
             (c"/dev", read | landlock::WRITE_FILE | landlock::IOCTL_DEV),
             (c"/dev/shm", landlock::FS_ALL),
+            (c"/dev/mqueue", landlock::FS_ALL),
             (c"/tmp", landlock::FS_ALL),
         ] {
             let fd = libc::open(path.as_ptr(), libc::O_PATH | libc::O_CLOEXEC);

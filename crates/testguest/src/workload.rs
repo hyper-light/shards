@@ -1212,6 +1212,74 @@ fn confined(args: &[String]) -> i32 {
                 }
                 out.push_str("confined daemonize: done\n");
             }
+            // §9.8's kernel channels, made: a System V shared memory segment and message queue
+            // of one key, a POSIX message queue, a file in /dev/shm.
+            "ipc-make" => {
+                let said = |rc: libc::c_int| {
+                    if rc < 0 {
+                        errno(&io::Error::last_os_error())
+                    } else {
+                        "ok".to_string()
+                    }
+                };
+                // SAFETY: each a system call on constant arguments; descriptors are kept, so
+                // that what they name lives while the agent does.
+                let made = unsafe {
+                    [
+                        ("shm", said(libc::shmget(IPC_KEY, 4096, libc::IPC_CREAT | 0o666))),
+                        ("msg", said(libc::msgget(IPC_KEY, libc::IPC_CREAT | 0o666))),
+                        (
+                            "mq",
+                            said(libc::mq_open(
+                                c"/shards-chan".as_ptr(),
+                                libc::O_CREAT | libc::O_RDWR,
+                                0o666 as libc::mode_t,
+                                std::ptr::null::<libc::mq_attr>(),
+                            )),
+                        ),
+                        (
+                            "file",
+                            said(libc::open(
+                                c"/dev/shm/shards-chan".as_ptr(),
+                                libc::O_CREAT | libc::O_RDWR,
+                                0o666,
+                            )),
+                        ),
+                    ]
+                };
+                for (what, r) in made {
+                    out.push_str(&format!("confined ipc-make {what}: {r}\n"));
+                }
+            }
+            // The same, opened as another would: each, and a signal to every process it can.
+            "ipc-try" => {
+                let said = |rc: libc::c_int| {
+                    if rc < 0 {
+                        errno(&io::Error::last_os_error())
+                    } else {
+                        "ok".to_string()
+                    }
+                };
+                // SAFETY: each a system call on constant arguments.
+                let tried = unsafe {
+                    [
+                        ("shm", said(libc::shmget(IPC_KEY, 0, 0))),
+                        ("msg", said(libc::msgget(IPC_KEY, 0))),
+                        (
+                            "mq",
+                            said(libc::mq_open(c"/shards-chan".as_ptr(), libc::O_RDONLY)),
+                        ),
+                        (
+                            "file",
+                            said(libc::open(c"/dev/shm/shards-chan".as_ptr(), libc::O_RDONLY)),
+                        ),
+                        ("kill", said(libc::kill(-1, libc::SIGUSR1))),
+                    ]
+                };
+                for (what, r) in tried {
+                    out.push_str(&format!("confined ipc-try {what}: {r}\n"));
+                }
+            }
             // Its first process ends here.
             "end" => {
                 let _ = io::stdout().write_all(out.as_bytes());
@@ -1833,3 +1901,6 @@ fn first_of_own() -> String {
         })
         .unwrap_or_else(|| "none".to_string())
 }
+
+/// The System V key §9.8's channel probes use: "SHAR".
+const IPC_KEY: libc::key_t = 0x5348_4152;

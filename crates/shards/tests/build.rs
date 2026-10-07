@@ -3501,7 +3501,7 @@ fn agents_run_in_their_domains() {
         // Another domain, and /sys, hidden; its own /dev.
         "confined see /agents/other: errno 13",
         "confined see /sys: errno 13",
-        "confined see /dev: fd,full,null,random,shm,stderr,stdin,stdout,tty,urandom,zero",
+        "confined see /dev: fd,full,mqueue,null,random,shm,stderr,stdin,stdout,tty,urandom,zero",
         // Its stdio and the directory being listed: nothing of init's.
         "confined see /proc/self/fd: 0,1,2,3",
         // Its directory and the system read-only; its scratch its own.
@@ -4757,4 +4757,59 @@ fn an_agents_daemon_ends_with_it() {
     );
     assert!(all.lines().any(|l| l == "vanish escaped: vanished"), "{all}");
     assert_eq!(ran.status, Some(0), "{all}");
+}
+
+/// No kernel channel §9.8 names joins two domains that no directive joined
+/// (AGENTFILE_ARCH.md §9.8): a makes a System V shared memory segment and message queue,
+/// a POSIX message queue and a file in /dev/shm, and opens each itself; b opens none of
+/// them, and its signal to every process it may signal reaches no other domain's.
+#[test]
+fn no_kernel_channel_joins_two_agents() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let (port, _repos) = common::writable_registry();
+    let home = TempDir::new("chan-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let mut agents = String::new();
+    for (name, verbs) in [
+        ("a", "\"ipc-make\",\"ipc-try\""),
+        ("b", "\"pause\",\"2\",\"ipc-try\""),
+    ] {
+        let dir = TempDir::new(&format!("chan-agent-{name}"));
+        std::fs::create_dir_all(dir.join("bin")).unwrap();
+        std::fs::copy(common::test_guest(), dir.join("bin/testguest")).unwrap();
+        std::fs::write(
+            dir.join("agent.json"),
+            format!(r#"{{"name":"{name}","run":{{"command":["bin/testguest","confined",{verbs}]}}}}"#),
+        )
+        .unwrap();
+        let tag = format!("127.0.0.1:{port}/team/chan-{name}:1");
+        let made = shards(&["build", "agent", dir.to_str().unwrap(), "-t", &tag]);
+        assert_eq!(made.status, Some(0), "{}", made.stderr);
+        let pushed = shards(&["push", "agent", &tag]);
+        assert_eq!(pushed.status, Some(0), "{}", pushed.stderr);
+        agents.push_str(&format!("AGENT {name} FROM {tag}\n"));
+    }
+    let ctx = context("chan-ctx", &format!("FROM {image}\n"));
+    std::fs::write(ctx.join("Agentfile"), format!("FROM {image}\n{agents}")).unwrap();
+    let built = shards(&["build", "-t", "chan:1", ctx.to_str().unwrap()]);
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    // Both still running once b has tried: its signal ended no one of a's.
+    let ran = shards(&["run", "--rm", "chan:1", "await", "confined-ready", "2"]);
+    let all = format!("{}{}", ran.stdout, ran.stderr);
+    assert_eq!(ran.status, Some(0), "{all}");
+    let said = |line: String| assert!(all.lines().any(|l| l == line), "no {line:?} in\n{all}");
+    for what in ["shm", "msg", "mq", "file"] {
+        said(format!("[agent a] confined ipc-make {what}: ok"));
+        said(format!("[agent a] confined ipc-try {what}: ok"));
+        said(format!("[agent b] confined ipc-try {what}: errno 2"));
+    }
+    assert!(!all.lines().any(|l| l.starts_with("await timeout")), "{all}");
 }

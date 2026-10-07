@@ -3649,6 +3649,19 @@ seen it, and its first process ends; the grandchild ends with it, the kernel end
 namespace's every process with its first. Mutation-checked: without `CLONE_NEWPID` the
 grandchild outlives the agent.
 
+§9.8's kernel channels, on a real microVM (`no_kernel_channel_joins_two_agents`): a makes
+a System V shared memory segment and message queue of one key, a POSIX message queue and
+a file in `/dev/shm`, and opens each itself; b, given none, opens none (`ENOENT` each), and
+its signal to every process it may signal (`kill(-1)`) reaches none of a's. Mutation-
+checked: without `CLONE_NEWIPC`, b opens a's segment and both queues.
+
+Found by it: an agent could make no POSIX message queue at all, even its own. `mq_open`
+makes one in its IPC namespace's mqueue filesystem, which no path of the agent's reached,
+so Landlock refused it (`EACCES`). A Docker container has `/dev/mqueue` (moby
+daemon/pkg/oci/defaults.go), as the run's command here does; now each domain mounts its
+own there, which is the filesystem `mq_open` uses (ipc/mqueue.c, `mqueue_get_tree` keys it
+by the IPC namespace), with every Landlock right beneath it.
+
 Found while writing the sweep: `getifaddrs` fails in an agent, musl's asking over netlink, which
 an agent's seccomp filter refuses; the test reads `/proc/net/route` instead.
 
