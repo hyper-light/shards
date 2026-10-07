@@ -57,6 +57,13 @@ pub fn keep(lower: &str, upper: &str) -> io::Result<()> {
     Ok(())
 }
 
+/// The image's layers kept by [`keep`]: the root as the image made it, before the run
+/// wrote to it.
+pub fn lower() -> Option<std::os::fd::BorrowedFd<'static>> {
+    use std::os::fd::AsFd;
+    LAYERS.get().map(|(lower, _)| lower.as_fd())
+}
+
 /// Where the writable layer kept by [`keep`] is reached, whatever the root.
 pub fn upper() -> Option<String> {
     LAYERS

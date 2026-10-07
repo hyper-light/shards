@@ -4280,3 +4280,80 @@ fn a_domains_user_owns_nothing_past_its_domain() {
         built.stderr
     );
 }
+
+/// What the run's own command opens to anyone is no agent's to reach (D59, AGENTFILE_ARCH.md
+/// §9.7, §9.8; default deny): a pathname Unix socket of mode 0777, though the agent sees the
+/// system it lies in, and an abstract one, in another network namespace.
+#[test]
+fn an_agent_reaches_no_socket_of_the_runs_own() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let (port, _repos) = common::writable_registry();
+    let home = TempDir::new("unix-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let dir = TempDir::new("unix-agent");
+    std::fs::create_dir_all(dir.join("bin")).unwrap();
+    std::fs::copy(common::test_guest(), dir.join("bin/testguest")).unwrap();
+    std::fs::write(
+        dir.join("agent.json"),
+        r#"{"name":"x","run":{"command":["bin/testguest","confined","unix","/work/escape.sock","abstract","shards-escape"]}}"#,
+    )
+    .unwrap();
+    let tag = format!("127.0.0.1:{port}/team/unix-x:1");
+    let made = shards(&["build", "agent", dir.to_str().unwrap(), "-t", &tag]);
+    assert_eq!(made.status, Some(0), "{}", made.stderr);
+    let pushed = shards(&["push", "agent", &tag]);
+    assert_eq!(pushed.status, Some(0), "{}", pushed.stderr);
+    let ctx = context("unix-ctx", &format!("FROM {image}\n"));
+    std::fs::write(
+        ctx.join("Agentfile"),
+        format!("FROM {image}\nAGENT x FROM {tag}\n"),
+    )
+    .unwrap();
+    let built = shards(&["build", "-t", "unix:1", ctx.to_str().unwrap()]);
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    let ran = shards(&[
+        "run",
+        "--rm",
+        "unix:1",
+        "unix-listen",
+        "/work/escape.sock",
+        "shards-escape",
+        "confined-ready",
+        "1",
+    ]);
+    assert_eq!(ran.status, Some(0), "{}{}", ran.stdout, ran.stderr);
+    let said: Vec<&str> = ran
+        .stderr
+        .lines()
+        .filter_map(|l| l.strip_prefix("[agent x] "))
+        .collect();
+    for line in &said {
+        eprintln!("{line}");
+    }
+    // Each tried while the sockets were there: the agent's unix try ended, and its abstract
+    // one began, after the run bound both.
+    let all = format!("{}{}", ran.stdout, ran.stderr);
+    let time = |prefix: &str| -> u128 {
+        all.lines()
+            .find_map(|l| l.trim_start_matches("[agent x] ").strip_prefix(prefix))
+            .and_then(|t| t.trim().parse().ok())
+            .unwrap_or_else(|| panic!("no {prefix:?} in\n{all}"))
+    };
+    assert!(time("unix-listen bound ") < time("confined unix tried "), "{all}");
+    assert!(
+        said.contains(&"confined unix /work/escape.sock: errno 2"),
+        "{all}"
+    );
+    assert!(
+        said.contains(&"confined abstract shards-escape: errno 111"),
+        "{all}"
+    );
+}

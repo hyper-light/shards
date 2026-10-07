@@ -8,8 +8,10 @@
 //! cgroup) and into a cgroup of its own, `/sys/fs/cgroup/domains/<kind>-<name>`, whose
 //! `pids.max` bounds what it starts. Its first process, PID 1 of its namespace:
 //!
-//! - sees the microVM's system read-only, `nosuid` and `nodev` (workloads inherit the
-//!   microVM's OS), its own directory and grants with it; every other domain's directory
+//! - sees the image's system as built, read-only, `nosuid` and `nodev` (workloads inherit
+//!   the microVM's OS), and nothing the run made of it since: none of its files, mounts or
+//!   sockets, a Unix socket's path being reachable to any process that can see it
+//!   (unix(7)); its own directory and grants with it; every other domain's directory
 //!   and grants hidden under an empty tmpfs no one may read; `/sys` hidden; a `/proc` of
 //!   its PID namespace; a `/dev` of six nodes, the `fd` and stdio links, and a `shm` of
 //!   its own; and a scratch tmpfs of its own at `/tmp`, lost when it ends;
@@ -303,6 +305,126 @@ struct Prepared {
     resolv: Option<Vec<u8>>,
     /// Where it waits for its link, before it holds nothing of init's.
     go: Option<RawFd>,
+    /// Its root: the image as built, a mount not yet attached.
+    root: RawFd,
+}
+
+/// The new mount API's (include/uapi/linux/mount.h).
+mod mount_api {
+    pub const FSOPEN_CLOEXEC: u32 = 0x1;
+    pub const FSCONFIG_SET_STRING: u32 = 1;
+    pub const FSCONFIG_CMD_CREATE: u32 = 6;
+    pub const FSMOUNT_CLOEXEC: u32 = 0x1;
+    pub const MOVE_MOUNT_F_EMPTY_PATH: u32 = 0x4;
+}
+
+/// A new mount of `fstype` with `options`, attached nowhere.
+fn detached(fstype: &CStr, options: &[(&CStr, &CStr)]) -> io::Result<OwnedFd> {
+    use mount_api::*;
+    // SAFETY: fsopen(2) of a NUL-terminated name.
+    let fs = unsafe { libc::syscall(libc::SYS_fsopen, fstype.as_ptr(), FSOPEN_CLOEXEC) };
+    if fs < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: the descriptor fsopen just made, owned here alone.
+    let fs = unsafe { OwnedFd::from_raw_fd(fs as RawFd) };
+    for (key, value) in options {
+        // SAFETY: fsconfig(2) of NUL-terminated strings on the context just made.
+        let set = unsafe {
+            libc::syscall(
+                libc::SYS_fsconfig,
+                fs.as_raw_fd(),
+                FSCONFIG_SET_STRING,
+                key.as_ptr(),
+                value.as_ptr(),
+                0,
+            )
+        };
+        if set < 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    let null = std::ptr::null::<libc::c_char>();
+    // SAFETY: fsconfig(2) and fsmount(2) on the context just made.
+    let mounted = unsafe {
+        if libc::syscall(
+            libc::SYS_fsconfig,
+            fs.as_raw_fd(),
+            FSCONFIG_CMD_CREATE,
+            null,
+            null,
+            0,
+        ) < 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        libc::syscall(libc::SYS_fsmount, fs.as_raw_fd(), FSMOUNT_CLOEXEC, 0)
+    };
+    if mounted < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: the descriptor fsmount just made, owned here alone.
+    Ok(unsafe { OwnedFd::from_raw_fd(mounted as RawFd) })
+}
+
+/// What a domain mounts over and the image may lack, made where it does: the run makes
+/// them in its writable layer, which a domain does not see.
+fn skeleton(lower: std::os::fd::BorrowedFd<'_>) -> io::Result<OwnedFd> {
+    let skel = detached(c"tmpfs", &[(c"mode", c"0755")])?;
+    let lacks = |path: &CStr| {
+        // SAFETY: fstatat(2) of a NUL-terminated path into a zeroed stat it owns, a type of
+        // integers alone.
+        unsafe {
+            let mut st: libc::stat = std::mem::zeroed();
+            libc::fstatat(
+                lower.as_raw_fd(),
+                path.as_ptr(),
+                &raw mut st,
+                libc::AT_SYMLINK_NOFOLLOW,
+            ) != 0
+        }
+    };
+    for dir in [c"proc", c"dev", c"sys", c"tmp", c"etc"] {
+        if !(lacks(dir) || dir == c"etc") {
+            continue;
+        }
+        // SAFETY: mkdirat(2) of a NUL-terminated path in the tmpfs just made.
+        if unsafe { libc::mkdirat(skel.as_raw_fd(), dir.as_ptr(), 0o755) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    for file in [c"etc/hosts", c"etc/resolv.conf"] {
+        if !lacks(file) {
+            continue;
+        }
+        // SAFETY: openat(2) of a NUL-terminated path in the tmpfs just made.
+        let fd = unsafe {
+            libc::openat(
+                skel.as_raw_fd(),
+                file.as_ptr(),
+                libc::O_CREAT | libc::O_EXCL | libc::O_WRONLY | libc::O_CLOEXEC,
+                0o644,
+            )
+        };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: the descriptor openat just made, closed here.
+        drop(unsafe { OwnedFd::from_raw_fd(fd) });
+    }
+    Ok(skel)
+}
+
+/// A domain's root: the image as built, under what [`skeleton`] adds, an overlay with no
+/// writable layer, attached nowhere.
+fn image_root(skel: &OwnedFd, lower: std::os::fd::BorrowedFd<'_>) -> io::Result<OwnedFd> {
+    let layers = CString::new(format!(
+        "/proc/self/fd/{}:/proc/self/fd/{}",
+        skel.as_raw_fd(),
+        lower.as_raw_fd()
+    ))
+    .map_err(io::Error::other)?;
+    detached(c"overlay", &[(c"lowerdir", layers.as_c_str())])
 }
 
 /// The Landlock ABI the guest kernel has; an error where it lacks what a domain needs.
@@ -444,6 +566,9 @@ pub fn start(
         .map_err(|e| format!("{CGROUPS}: enabling pids: {e}"))?;
     let last_cap = crate::defaults::last_cap();
     landlock_abi()?;
+    let lower =
+        crate::changes::lower().ok_or("the image's layers were not kept, which a domain's root is")?;
+    let skel = skeleton(lower).map_err(|e| format!("a domain's root: {e}"))?;
     let mut started = Vec::new();
     for (i, d) in domains.iter().enumerate() {
         let group = format!("{CGROUPS}/{}", d.cgroup);
@@ -461,7 +586,9 @@ pub fn start(
             len: u16::try_from(filter.1.len()).map_err(|_| "the domains' seccomp filter is too long")?,
             filter: filter.1.as_ptr().cast_mut(),
         };
+        let root = image_root(&skel, lower).map_err(|e| format!("{}: its root: {e}", d.label))?;
         let prepared = Prepared {
+            root: root.as_raw_fd(),
             hide: all
                 .iter()
                 .filter(|x| **x != d.dir)
@@ -546,6 +673,7 @@ pub fn start(
             child(d, &prepared, write_end.as_raw_fd(), filter.0, &program);
         }
         drop(write_end);
+        drop(root);
         if let (Some(link), Some((r, w))) = (&d.link, go) {
             drop(r);
             let switch = match SWITCH.get() {
@@ -619,6 +747,23 @@ fn child(d: &Domain, p: &Prepared, out: RawFd, flags: u32, program: &libc::sock_
         // Nothing of these mounts reaches init's namespace.
         if libc::mount(null, c"/".as_ptr(), null, libc::MS_REC | libc::MS_PRIVATE, nil) != 0 {
             fail(out, c"making its mounts private");
+        }
+        // The image as built, over the system's /proc, then its root; the system's mounts
+        // under it detached (pivot_root(2), NOTES).
+        if libc::syscall(
+            libc::SYS_move_mount,
+            p.root,
+            c"".as_ptr(),
+            libc::AT_FDCWD,
+            c"/proc".as_ptr(),
+            mount_api::MOVE_MOUNT_F_EMPTY_PATH,
+        ) != 0
+            || libc::chdir(c"/proc".as_ptr()) != 0
+            || libc::syscall(libc::SYS_pivot_root, c".".as_ptr(), c".".as_ptr()) != 0
+            || libc::umount2(c".".as_ptr(), libc::MNT_DETACH) != 0
+            || libc::chdir(c"/".as_ptr()) != 0
+        {
+            fail(out, c"entering the image as built");
         }
         // The microVM's system, read-only, nosuid and nodev (struct mount_attr).
         let attr: [u64; 4] = [

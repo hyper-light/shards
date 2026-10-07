@@ -102,6 +102,29 @@ pub fn main() -> ! {
         }
         "confined" => confined(args.get(1..).unwrap_or_default()),
         "await" => await_process(arg(1), arg(2).parse().unwrap_or(1), arg(3)),
+        // A workload's own Unix sockets, open to anyone: a pathname one at arg 1, mode
+        // 0777, and an abstract one named arg 2; held while it awaits arg 3's processes.
+        "unix-listen" => {
+            use std::os::unix::fs::PermissionsExt as _;
+            use std::os::unix::net::UnixListener;
+            let path = arg(1);
+            let _ = std::fs::remove_file(path);
+            let held = UnixListener::bind(path).and_then(|l| {
+                std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o777))?;
+                Ok(l)
+            });
+            let abstract_held = abstract_listener(arg(2));
+            match (held, abstract_held) {
+                (Ok(_l), Ok(_a)) => {
+                    let _ = writeln!(io::stdout(), "unix-listen bound {}", monotonic_ns());
+                    await_process(arg(3), arg(4).parse().unwrap_or(1), "")
+                }
+                (Err(e), _) | (_, Err(e)) => {
+                    let _ = writeln!(io::stdout(), "unix-listen error {e}");
+                    1
+                }
+            }
+        }
         "sleep" => {
             let _ = writeln!(io::stdout(), "ready");
             loop {
@@ -1105,7 +1128,38 @@ fn confined(args: &[String]) -> i32 {
     for a in args {
         match a.as_str() {
             "see" | "write" | "bind" | "connect" | "call" | "listen" | "reach" | "unreach" | "cat"
-            | "resolve" | "dnsprobe" => mode = a.as_str(),
+            | "resolve" | "dnsprobe" | "unix" | "abstract" => mode = a.as_str(),
+            path if mode == "unix" => {
+                // Until it exists, 3 s at most: the run's own command makes it as it starts.
+                // The last try's time (CLOCK_MONOTONIC, which the domain shares) says whether
+                // it was made by then.
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+                let tried = loop {
+                    let r = std::os::unix::net::UnixStream::connect(path);
+                    match &r {
+                        Err(e)
+                            if e.kind() == io::ErrorKind::NotFound
+                                && std::time::Instant::now() < deadline =>
+                        {
+                            std::thread::sleep(std::time::Duration::from_millis(20));
+                        }
+                        _ => break r,
+                    }
+                };
+                let said = match tried {
+                    Ok(_) => "ok".to_string(),
+                    Err(e) => errno(&e),
+                };
+                out.push_str(&format!("confined unix {path}: {said}\n"));
+                out.push_str(&format!("confined unix tried {}\n", monotonic_ns()));
+            }
+            name if mode == "abstract" => {
+                let said = match abstract_connect(name) {
+                    Ok(()) => "ok".to_string(),
+                    Err(e) => errno(&e),
+                };
+                out.push_str(&format!("confined abstract {name}: {said}\n"));
+            }
             addr if mode == "dnsprobe" => {
                 // A query for api.example's A record, by hand: what answers, if anything.
                 // `resolver` asks the one /etc/resolv.conf names.
@@ -1357,4 +1411,60 @@ fn await_process(name: &str, count: usize, then: &str) -> i32 {
     }
     let _ = writeln!(io::stdout(), "await timeout {name}");
     1
+}
+
+/// An abstract Unix socket's address (unix(7)): a zero byte, then the name.
+fn abstract_addr(name: &str) -> (libc::sockaddr_un, libc::socklen_t) {
+    // SAFETY: all-zero is a valid sockaddr_un.
+    let mut a: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    a.sun_family = libc::AF_UNIX as libc::sa_family_t;
+    for (slot, b) in a.sun_path.iter_mut().skip(1).zip(name.bytes()) {
+        *slot = b as libc::c_char;
+    }
+    let len = std::mem::size_of::<libc::sa_family_t>() + 1 + name.len();
+    (a, len as libc::socklen_t)
+}
+
+/// A listening abstract Unix socket named `name`, closed when its descriptor is.
+fn abstract_listener(name: &str) -> io::Result<std::os::fd::OwnedFd> {
+    use std::os::fd::FromRawFd as _;
+    let (a, len) = abstract_addr(name);
+    // SAFETY: socket(2), bind(2) and listen(2) of a descriptor owned from here on.
+    unsafe {
+        let fd = libc::socket(libc::AF_UNIX, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0);
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let owned = std::os::fd::OwnedFd::from_raw_fd(fd);
+        if libc::bind(fd, (&raw const a).cast(), len) != 0 || libc::listen(fd, 8) != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(owned)
+    }
+}
+
+fn abstract_connect(name: &str) -> io::Result<()> {
+    let (a, len) = abstract_addr(name);
+    // SAFETY: socket(2) and connect(2), the descriptor closed after.
+    unsafe {
+        let fd = libc::socket(libc::AF_UNIX, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0);
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let r = libc::connect(fd, (&raw const a).cast(), len);
+        let e = io::Error::last_os_error();
+        libc::close(fd);
+        if r != 0 { Err(e) } else { Ok(()) }
+    }
+}
+
+/// CLOCK_MONOTONIC, in nanoseconds: one clock for every process of the microVM.
+fn monotonic_ns() -> u128 {
+    let mut t = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: clock_gettime(2) into a timespec it owns.
+    unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &raw mut t) };
+    u128::try_from(t.tv_sec).unwrap_or(0) * 1_000_000_000 + u128::try_from(t.tv_nsec).unwrap_or(0)
 }

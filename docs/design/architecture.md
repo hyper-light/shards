@@ -3471,6 +3471,37 @@ a pair's ports, each fail their test.
 
 Open: DNS over TCP; IPv6; process events; ingress to a network of several members.
 
+### A domain sees the image as built (D59, part eight)
+
+Found by probe, 2026-10-07: an agent with no grant connected to a pathname Unix socket the
+run's own command made at `/work/escape.sock` with mode 0777. A domain saw the microVM's
+live system, read-only; connecting to a socket needs write permission on its file
+(unix(7), "Pathname socket ownership and permissions") and no write access to its
+filesystem, so the read-only mount and Landlock's write rights did not stop it. Landlock
+closes this only from ABI 9 (`LANDLOCK_ACCESS_FS_RESOLVE_UNIX`, Linux 7.1, ae97330d1bd6),
+and the pinned kernel, 6.18.48, has ABI 7. The live system also let an agent read every
+file the run wrote and every volume it mounted, grants no directive made.
+
+Now a domain's root is the image as built, an overlay with no writable layer of the
+image's EROFS layers (the descriptor `changes::keep` holds for `diff`) under a tmpfs that
+adds only what a domain mounts over and the image may lack (`/proc`, `/dev`, `/sys`,
+`/tmp`, `/etc/hosts`, `/etc/resolv.conf`). Its first process attaches it over `/proc`
+(`move_mount`), makes it its root (`pivot_root(".", ".")`) and detaches the system under
+it, before any other mount. Nothing the run makes reaches it: not its files, mounts or
+sockets, pathname or abstract. Only long-standing primitives hold this (the new mount
+API, Linux 5.2; overlayfs), so it holds on any guest kernel a domain runs on, and for any
+image; a newer kernel's Landlock rights would be a layer under it, never the only one.
+The rule is the user's: fixes are version-agnostic where they can be.
+
+An agent's own sockets, in its own `/tmp`, still work among its own processes; one
+another domain made is hidden with its directory, and one the run makes does not exist
+for it. No directive yet grants a domain a socket of the run's.
+
+Tested on real microVMs: `an_agent_reaches_no_socket_of_the_runs_own`, where the run binds
+`/work/escape.sock` (0777) and an abstract `shards-escape`, and an agent with no grants
+tries both: `ENOENT` and `ECONNREFUSED`, its last try after the run bound both (one
+`CLOCK_MONOTONIC`). Mutation-checked: without the new root the agent connects.
+
 ### `SKILL --from=<agent>` (D54, continued)
 
 `SKILL --from=<agent> <skill> FOR <other>` copies, at build time, a skill the agent's
