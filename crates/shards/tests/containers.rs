@@ -273,8 +273,10 @@ fn stats_measures_each_microvm_from_its_guest() {
     };
     let (spinning, held) = row("spinner");
     let (sleeping, _) = row("sleeper");
-    // A workload spinning one vCPU uses most of a CPU; one asleep, little.
-    assert!(spinning > 50.0 && sleeping < 10.0, "{stats}");
+    // A workload spinning one vCPU uses what the host gives that vCPU, which on a busy
+    // host is less than a CPU (34% on a shared CI runner, 2026-10-07); one asleep, almost
+    // nothing. Measured from each guest, the two stand apart by an order of magnitude.
+    assert!(spinning > 10.0 * sleeping.max(1.0) && sleeping < 10.0, "{stats}");
     // The workload's own memory, not its VM's: a binary size.
     assert!(
         ["B", "KiB", "MiB"]

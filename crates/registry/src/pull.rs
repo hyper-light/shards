@@ -957,6 +957,23 @@ mod tests {
         Fake { registry, cdn }
     }
 
+    /// This host's architecture, as OCI names it: a pull builds a root filesystem only for
+    /// an image this host's guests run (`platform::runs`), so what tests of the build pull
+    /// is of it, on every host.
+    const NATIVE: &str = if cfg!(target_arch = "aarch64") {
+        "arm64"
+    } else {
+        "amd64"
+    };
+
+    fn native() -> Vec<Target> {
+        vec![Target {
+            os: "linux".into(),
+            architecture: NATIVE.into(),
+            variant: String::new(),
+        }]
+    }
+
     fn arm64() -> Vec<Target> {
         vec![Target {
             os: "linux".into(),
@@ -1016,7 +1033,7 @@ mod tests {
     #[test]
     fn images_pull_through_tokens_redirects_and_a_cut_download() {
         let big: Vec<u8> = (0..200_000u32).map(|i| (i % 251) as u8).collect();
-        let image = image("arm64", &[("etc/hostname", b"box\n"), ("data/big", &big)], true);
+        let image = image(NATIVE, &[("etc/hostname", b"box\n"), ("data/big", &big)], true);
         let cut = image.layers[1].clone();
         let fake = fake(image, Some(cut.clone()));
         let server = &fake.registry;
@@ -1025,7 +1042,7 @@ mod tests {
         let store = Store::open(&root).unwrap();
         let registry = Registry::new(client(), &reference, Credentials::Anonymous).unwrap();
         let events = Mutex::new(Vec::new());
-        let pulled = pull(&registry, &store, &reference, &arm64(), &Limits::none(), &|e| {
+        let pulled = pull(&registry, &store, &reference, &native(), &Limits::none(), &|e| {
             let event = match e {
                 // As dockerd says it: the index fetched, our manifest not yet.
                 Event::Pulling => format!(
@@ -1049,7 +1066,7 @@ mod tests {
         assert_eq!(recorded.digest().unwrap(), pulled.manifest);
         assert_eq!(
             recorded.platform.map(|p| p.architecture),
-            Some("arm64".to_string())
+            Some(NATIVE.to_string())
         );
         assert_eq!(
             pulled.config.config.unwrap().cmd,
@@ -1089,7 +1106,7 @@ mod tests {
 
         // Pulling again finds everything stored: it only resolves the tag.
         let before = server.requests().len();
-        pull(&registry, &store, &reference, &arm64(), &Limits::none(), &|_| {}).unwrap();
+        pull(&registry, &store, &reference, &native(), &Limits::none(), &|_| {}).unwrap();
         let again: Vec<String> = server.requests()[before..].to_vec();
         assert!(
             again
@@ -1138,12 +1155,12 @@ mod tests {
 
     #[test]
     fn layers_whose_diff_ids_disagree_are_refused() {
-        let fake = fake(image("arm64", &[("a", b"a")], false), None);
+        let fake = fake(image(NATIVE, &[("a", b"a")], false), None);
         let reference = Reference::parse(&format!("127.0.0.1:{}/test/image:v1", fake.registry.port)).unwrap();
         let root = temp("diffid");
         let store = Store::open(&root).unwrap();
         let registry = Registry::new(client(), &reference, Credentials::Anonymous).unwrap();
-        let e = pull(&registry, &store, &reference, &arm64(), &Limits::none(), &|_| {}).unwrap_err();
+        let e = pull(&registry, &store, &reference, &native(), &Limits::none(), &|_| {}).unwrap_err();
         assert!(e.to_string().contains("DiffID"), "{e}");
         assert_eq!(
             store.tagged(&reference.to_string()).unwrap(),
@@ -1330,7 +1347,7 @@ mod tests {
     #[test]
     fn layers_unpack_while_the_rest_download() {
         let image = image(
-            "arm64",
+            NATIVE,
             &[("a", b"the first layer"), ("b", b"the last layer")],
             true,
         );
@@ -1365,7 +1382,7 @@ mod tests {
         );
         let reference = Reference::parse(&format!("127.0.0.1:{}/test/image:v1", fake.registry.port)).unwrap();
         let registry = Registry::new(client(), &reference, Credentials::Anonymous).unwrap();
-        let pulled = pull(&registry, &store, &reference, &arm64(), &Limits::none(), &|_| {}).unwrap();
+        let pulled = pull(&registry, &store, &reference, &native(), &Limits::none(), &|_| {}).unwrap();
         assert!(pulled.rootfs.is_some());
         assert!(
             saw.load(Ordering::SeqCst),
@@ -1412,23 +1429,25 @@ mod tests {
     /// as a changed copy of its own kind, and the next pull fetches it again in its place.
     #[test]
     fn a_stored_image_whose_documents_changed_is_refused_then_mended() {
-        let fake = fake(image("arm64", &[("a", b"a")], true), None);
+        let fake = fake(image(NATIVE, &[("a", b"a")], true), None);
         let reference = Reference::parse(&format!("127.0.0.1:{}/test/image:v1", fake.registry.port)).unwrap();
         let root = temp("changed");
         let store = Store::open(&root).unwrap();
         let registry = Registry::new(client(), &reference, Credentials::Anonymous).unwrap();
-        let pulled = pull(&registry, &store, &reference, &arm64(), &Limits::none(), &|_| {}).unwrap();
-        let found = local(&store, &reference, &arm64(), &Limits::none())
+        let pulled = pull(&registry, &store, &reference, &native(), &Limits::none(), &|_| {}).unwrap();
+        let found = local(&store, &reference, &native(), &Limits::none())
             .unwrap()
             .unwrap();
         assert_eq!(
             (&found.manifest, &found.config, &found.rootfs),
             (&pulled.manifest, &pulled.config, &pulled.rootfs)
         );
-        // Its index labelled it for arm64, and guests of another platform do not run it.
+        // Its index labelled it for this host's platform, and guests of another do not
+        // run it.
         let e = local(&store, &reference, &riscv64(), &Limits::none()).unwrap_err();
         assert!(
-            e.to_string().contains("is for linux/arm64, not linux/riscv64"),
+            e.to_string()
+                .contains(&format!("is for linux/{NATIVE}, not linux/riscv64")),
             "{e}"
         );
 
@@ -1460,22 +1479,22 @@ mod tests {
         for (path, changed, why) in cases {
             let original = std::fs::read(path).unwrap();
             std::fs::write(path, changed).unwrap();
-            let e = local(&store, &reference, &arm64(), &Limits::none()).unwrap_err();
+            let e = local(&store, &reference, &native(), &Limits::none()).unwrap_err();
             assert_eq!(e.kind(), ErrorKind::Changed, "{why}: {e}");
             assert!(
                 e.to_string().contains("the stored copy has changed"),
                 "{why}: {e}"
             );
-            let mended = pull(&registry, &store, &reference, &arm64(), &Limits::none(), &|_| {}).unwrap();
+            let mended = pull(&registry, &store, &reference, &native(), &Limits::none(), &|_| {}).unwrap();
             assert_eq!(mended.config, pulled.config, "{why}");
             assert_eq!(std::fs::read(path).unwrap(), original, "{why}: not mended");
-            let found = local(&store, &reference, &arm64(), &Limits::none())
+            let found = local(&store, &reference, &native(), &Limits::none())
                 .unwrap()
                 .unwrap();
             assert_eq!(found.config, pulled.config, "{why}");
         }
         assert!(
-            local(&store, &reference, &arm64(), &Limits::none())
+            local(&store, &reference, &native(), &Limits::none())
                 .unwrap()
                 .is_some()
         );
@@ -1489,7 +1508,7 @@ mod tests {
         changed[middle] ^= 0xff;
         std::fs::write(&layer_path, &changed).unwrap();
         std::fs::remove_file(pulled.rootfs.as_ref().unwrap()).unwrap();
-        let mended = pull(&registry, &store, &reference, &arm64(), &Limits::none(), &|_| {}).unwrap();
+        let mended = pull(&registry, &store, &reference, &native(), &Limits::none(), &|_| {}).unwrap();
         assert_eq!(mended.rootfs, pulled.rootfs);
         assert_eq!(std::fs::read(&layer_path).unwrap(), original, "the layer mended");
         let _ = std::fs::remove_dir_all(&root);

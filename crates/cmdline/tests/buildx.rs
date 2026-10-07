@@ -190,8 +190,15 @@ fn build_answers_as_buildx() {
         // shards keeps `-h` for help, where buildx's root deprecates it: a deliberate
         // difference, its notice the only one.
         let stdout = stdout.replace("Flag shorthand -h has been deprecated, use --help\n", "");
+        // An answer that carries the host's own error text (a file not found) is buildx's
+        // on the host the oracle ran on, Linux: on Windows the text is Windows', which the
+        // oracle does not record, so there the rest of the answer alone is compared.
+        let os_text = "no such file or directory";
         let ok = if refused {
             stdout.starts_with("RUN") && got_status == 1
+        } else if cfg!(windows) && stderr.contains(os_text) {
+            let head = |s: &str| s.split(": stat ").next().map(str::to_string);
+            got_out == stdout && head(&got_err) == head(stderr) && got_status == status
         } else {
             got_out == stdout && got_err == stderr && got_status == status
         };

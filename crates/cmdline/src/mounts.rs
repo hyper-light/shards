@@ -132,7 +132,7 @@ pub fn parse_mount(value: &str, cwd: Option<&std::path::Path>) -> Result<Mount, 
                     && val.starts_with('.')
                     && let Some(cwd) = cwd
                 {
-                    m.source = clean(&cwd.join(&val).to_string_lossy());
+                    m.source = host_clean(&cwd.join(&val));
                 }
             }
             "target" | "dst" | "destination" => m.target = val,
@@ -392,6 +392,31 @@ fn is_file_path(source: &str) -> bool {
     second == ':' && first.is_alphabetic()
 }
 
+/// Go's filepath.Clean, of a path on this host: its separators the host's (`\` on
+/// Windows), `.` dropped and `..` taken back where it can be, as docker/cli's
+/// `filepath.Abs` leaves a bind mount's relative source.
+pub fn host_clean(p: &std::path::Path) -> String {
+    use std::path::Component;
+    let mut out = std::path::PathBuf::new();
+    for c in p.components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if matches!(out.components().next_back(), Some(Component::Normal(_))) {
+                    out.pop();
+                } else if !out.has_root() {
+                    out.push("..");
+                }
+            }
+            other => out.push(other),
+        }
+    }
+    if out.as_os_str().is_empty() {
+        return ".".into();
+    }
+    out.to_string_lossy().into_owned()
+}
+
 /// Go's path.Clean, of a slash-separated path.
 pub fn clean(p: &str) -> String {
     let rooted = p.starts_with('/');
@@ -431,7 +456,9 @@ mod tests {
         assert_eq!(m.bind.as_ref().unwrap().propagation, "rshared");
         assert_eq!(parse_mount(&encode(&m), None).unwrap(), m);
         let rel = parse_mount("type=bind,source=./x,target=/y", Some(std::path::Path::new("/w"))).unwrap();
-        assert_eq!(rel.source, "/w/x");
+        // The client's own path, cleaned as Go cleans one on its host.
+        let want = if cfg!(windows) { "\\w\\x" } else { "/w/x" };
+        assert_eq!(rel.source, want);
         for (given, said) in [
             ("", "value is empty"),
             ("type=bind,src", "invalid field 'src' must be a key=value pair"),

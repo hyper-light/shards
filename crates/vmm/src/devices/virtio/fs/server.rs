@@ -1359,8 +1359,12 @@ fn rename(s: &mut State, olddir: u64, old: &CStr, newdir: u64, new: &CStr, flags
         }
         #[cfg(target_os = "linux")]
         {
+            // The system call itself: musl 1.2.5, which Rust's musl targets link, has no
+            // renameat2 wrapper, and glibc's is the same call.
             // SAFETY: renameat2(2) of NUL-terminated names in directories we hold.
-            unsafe { libc::renameat2(od, old.as_ptr(), nd, new.as_ptr(), flags) }
+            unsafe {
+                libc::syscall(libc::SYS_renameat2, od, old.as_ptr(), nd, new.as_ptr(), flags) as libc::c_int
+            }
         }
     };
     if rc != 0 {
