@@ -8,6 +8,32 @@ use shards_abi::run;
 
 /// Calls `f` with each complete frame in `buf`, then removes them. Returns false if the
 /// stream is malformed, which cannot be resynchronized: `buf` is emptied.
+/// Each whole line `data` completes, prefixed `[<label>] `, into `emit`; the rest kept in
+/// `partial`, and at `eof` emitted with a newline: a domain's output (D59).
+pub fn prefixed_lines(
+    label: &str,
+    partial: &mut Vec<u8>,
+    data: &[u8],
+    eof: bool,
+    mut emit: impl FnMut(&[u8]),
+) {
+    partial.extend_from_slice(data);
+    let mut start = 0;
+    while let Some(i) = partial
+        .get(start..)
+        .and_then(|r| r.iter().position(|&b| b == b'\n'))
+    {
+        let line = partial.get(start..start + i + 1).unwrap_or_default();
+        emit(&[b"[", label.as_bytes(), b"] ", line].concat());
+        start += i + 1;
+    }
+    partial.drain(..start);
+    if eof && !partial.is_empty() {
+        emit(&[b"[", label.as_bytes(), b"] ", partial.as_slice(), b"\n"].concat());
+        partial.clear();
+    }
+}
+
 pub fn each_frame(buf: &mut Vec<u8>, mut f: impl FnMut(u8, &[u8])) -> bool {
     let mut at = 0;
     let whole = loop {

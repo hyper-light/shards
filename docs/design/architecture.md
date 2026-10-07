@@ -3102,6 +3102,75 @@ nothing; a local MCP server joining no one; every agent reaching the world refus
 a harness driving a world-reaching agent allowed), mutation-checked three ways: a search
 that follows no edge, every domain taken as internal-only, and none.
 
+### Agents run in their domains (D59, part one)
+
+When a microVM runs an image whose normalized Agentfile (`/.agentfile.json`) declares
+agents or harnesses, shards-init, once the run's spec is in and before the run's command,
+starts each domain whose OSI config (`<dir>.d/osi.json`) has `run` (AGENTFILE_ARCH.md §9.3,
+§9.9), with the guest kernel's own primitives and no container runtime. A domain with no
+`run` is files alone. Init reads both files with a JSON reader of its own (RFC 8259, 1 MiB
+and 32 levels at most, duplicate keys and leading zeros refused) rather than linking a
+JSON library into PID 1. Each domain gets:
+
+- **Its own IDs.** uid and gid `200000 + n` for the n-th domain in the Agentfile's order,
+  no supplementary groups. Every capability is dropped: the bounding set first, which
+  needs `CAP_SETPCAP`; then the permitted and effective sets, which go when no uid stays 0
+  (capabilities(7), "Effect of user ID changes on capabilities"); then the inheritable and
+  ambient sets. `no_new_privs` is set.
+- **Its own cgroup**, `/sys/fs/cgroup/domains/<kind>-<name>`, entered at birth by
+  `clone3`'s `CLONE_INTO_CGROUP` (Linux 5.7), so no process of it runs outside it even
+  briefly. Its `pids.max` is `--processes`, or else the config's `asks.processes`; `none`
+  is 1 until part two's seccomp refuses every way to start a process.
+- **Namespaces of its own:** mount, PID (its first process is PID 1 there), IPC, network,
+  UTS (its host name `<kind>-<name>`) and cgroup.
+- **Its filesystem:**
+  - The microVM's system is read-only, `nosuid` and `nodev`, made so by one recursive
+    `mount_setattr` (Linux 5.12) after the namespace's mounts are made private. Workloads
+    inherit the microVM's OS; that is the runtime model's rule.
+  - Its own directory and grants are read-only with the system.
+  - Every other domain's directory and `.d` grants are hidden under an empty read-only
+    tmpfs of mode 000. `/sys` is hidden the same way.
+  - A `/proc` of its PID namespace.
+  - A `/dev` holding Docker's six nodes (moby `DefaultLinuxDevices` less the console),
+    runc's `fd`/`stdin`/`stdout`/`stderr` links and a `shm` of its own, remounted
+    read-only.
+  - A scratch `/tmp` of its own, mode 700 and its uid's, lost when it ends.
+- **Only a loopback**, brought up; network grants are part three.
+- **Its stdio:** stdin is `/dev/null`; stdout and stderr are one pipe that init relays a
+  line at a time on the run's **stderr**, each line prefixed `[agent main] `. It goes to
+  stderr so that the workload's stdout stays its own, for pipes. Every descriptor past 2
+  is closed before exec. Every descriptor init holds is close-on-exec today, which the
+  mutation shows: without the close, nothing of init's reaches the agent. The close is
+  there so that one descriptor not marked close-on-exec, such as the O_PATH descriptors
+  of the image's layers that `diff` keeps, cannot become a way into another domain.
+- **Its command:** as its config says. A relative program is its directory's, and a bare
+  name is found on Docker's default `PATH` before the clone. After the clone the child
+  only calls the kernel: no allocation, as it is the fork of a process that may run
+  threads. A failed step writes `shards-init: <step>: errno N` on its output.
+
+The workload's end ends the domains, as it ends every process of the microVM.
+
+Tested: `agents_run_in_their_domains` boots a real microVM. Its agent comes from an OSI
+artifact pushed to a registry; beside it is an agent of files alone. The agent reports:
+
+- uid and gid 200000, no groups;
+- PID 1, alone in its `/proc`;
+- its host name;
+- all five capability sets empty, and `no_new_privs`;
+- the other agent's directory and `/sys` unreadable (EACCES);
+- its `/dev`, and its descriptors (stdio alone);
+- its own directory and `/etc` read-only (EROFS), `/tmp` writable;
+- only `lo`.
+
+The run's stdout stays empty, and the agent of files alone runs nothing. Each of these
+mutations fails the test: hiding no other domain, keeping the bounding set, leaving the
+system writable.
+
+Open, part two: Landlock, seccomp (Docker's profile less the socket families, keys,
+io_uring, bpf, perf and userfaultfd; with `--processes=none`, every way to start one),
+`kernel.io_uring_disabled`, process events, and §9.10's escape tests. Part three: network
+grants, with D46's networks.
+
 ## 4. Start path (≤ 5 ms budget)
 
 | Step | Cost | Evidence |

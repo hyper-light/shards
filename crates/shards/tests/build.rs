@@ -3438,3 +3438,81 @@ fn an_agentfiles_manifest_says_what_it_holds() {
             .starts_with("sha256:")
     );
 }
+
+/// An image's agents run as its microVM starts (D59, AGENTFILE_ARCH.md §9.3), each in its
+/// domain: its own uid and no capability, PID 1 of its own PID namespace, its own host
+/// name and only a loopback, the system and its own directory read-only, every other
+/// domain's hidden, a scratch `/tmp` of its own, a `/dev` of six nodes; its output on the
+/// run's stderr, each line prefixed with it. An agent whose config says nothing of how it
+/// runs is files alone.
+#[test]
+fn agents_run_in_their_domains() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let (port, _repos) = common::writable_registry();
+    let home = TempDir::new("domains-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let dir = TempDir::new("domains-agent");
+    std::fs::create_dir_all(dir.join("bin")).unwrap();
+    std::fs::copy(common::test_guest(), dir.join("bin/testguest")).unwrap();
+    std::fs::write(
+        dir.join("agent.json"),
+        r#"{"name":"main","run":{"command":["bin/testguest","confined","see","/agents/other","/sys","/dev","/proc/self/fd","write","/agents/main/x","/etc/x","/tmp/x"]}}"#,
+    )
+    .unwrap();
+    let name = format!("127.0.0.1:{port}/team/confined:1");
+    let made = shards(&["build", "agent", dir.to_str().unwrap(), "-t", &name]);
+    assert_eq!(made.status, Some(0), "{}", made.stderr);
+    let pushed = shards(&["push", "agent", &name]);
+    assert_eq!(pushed.status, Some(0), "{}", pushed.stderr);
+    let ctx = context("domains-ctx", &format!("FROM {image}\n"));
+    std::fs::create_dir_all(ctx.join("other")).unwrap();
+    std::fs::write(ctx.join("other/secret"), "theirs\n").unwrap();
+    std::fs::write(
+        ctx.join("Agentfile"),
+        format!("FROM {image}\nAGENT main FROM {name}\nAGENT other FROM ./other\n"),
+    )
+    .unwrap();
+    let built = shards(&["build", "-t", "confined:1", ctx.to_str().unwrap()]);
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    // The workload ends once the agent has said what it sees.
+    let ran = shards(&["run", "--rm", "confined:1", "await", "confined-ready"]);
+    assert_eq!(ran.status, Some(0), "{}{}", ran.stdout, ran.stderr);
+    assert_eq!(ran.stdout, "", "the workload's stdout is its own");
+    let said: Vec<&str> = ran
+        .stderr
+        .lines()
+        .filter_map(|l| l.strip_prefix("[agent main] "))
+        .collect();
+    for want in [
+        "confined uid=200000 gid=200000 groups=0",
+        "confined pid=1 procs=1",
+        "confined hostname=agent-main",
+        "confined caps eff=0000000000000000 prm=0000000000000000 inh=0000000000000000 bnd=0000000000000000 amb=0000000000000000 nnp=1",
+        // Another domain, and /sys, hidden; its own /dev.
+        "confined see /agents/other: errno 13",
+        "confined see /sys: errno 13",
+        "confined see /dev: fd,full,null,random,shm,stderr,stdin,stdout,tty,urandom,zero",
+        // Its stdio and the directory being listed: nothing of init's.
+        "confined see /proc/self/fd: 0,1,2,3",
+        // Its directory and the system read-only; its scratch its own.
+        "confined write /agents/main/x: errno 30",
+        "confined write /etc/x: errno 30",
+        "confined write /tmp/x: ok",
+        "confined net=lo",
+    ] {
+        assert!(said.contains(&want), "no {want:?} in:\n{}", ran.stderr);
+    }
+    assert!(
+        !ran.stderr.contains("[agent other]"),
+        "an agent of files alone runs nothing:\n{}",
+        ran.stderr
+    );
+}

@@ -100,6 +100,8 @@ pub fn main() -> ! {
                 n = std::hint::black_box(n.wrapping_add(1));
             }
         }
+        "confined" => confined(args.get(1..).unwrap_or_default()),
+        "await" => await_process(arg(1)),
         "sleep" => {
             let _ = writeln!(io::stdout(), "ready");
             loop {
@@ -1046,4 +1048,117 @@ fn trap(name: &str) -> i32 {
     }
     let _ = writeln!(io::stdout(), "got {}", CAUGHT.load(Ordering::Relaxed));
     0
+}
+
+/// As an agent's first process (D59): what its domain gives it, a line each, `confined`
+/// first, then `comm` set to `confined-ready` and held until killed. Each path in `see`
+/// is listed or its errno said; each in `write` written or its errno said.
+fn confined(args: &[String]) -> i32 {
+    let mut out = String::new();
+    // SAFETY: plain getters, and getgroups(2) into 64 entries.
+    let (uid, gid, groups) = unsafe {
+        let mut g = [0 as libc::gid_t; 64];
+        let n = libc::getgroups(64, g.as_mut_ptr());
+        (libc::getuid(), libc::getgid(), usize::try_from(n).unwrap_or(0))
+    };
+    out.push_str(&format!("confined uid={uid} gid={gid} groups={groups}\n"));
+    let procs = std::fs::read_dir("/proc")
+        .map(|d| {
+            d.flatten()
+                .filter(|e| {
+                    e.file_name()
+                        .to_string_lossy()
+                        .bytes()
+                        .all(|b| b.is_ascii_digit())
+                })
+                .count()
+        })
+        .unwrap_or(0);
+    out.push_str(&format!("confined pid={} procs={procs}\n", std::process::id()));
+    // SAFETY: an all-zero utsname is a valid out-parameter, and uname(2) NUL-terminates.
+    let host = unsafe {
+        let mut uts: libc::utsname = std::mem::zeroed();
+        libc::uname(&mut uts);
+        std::ffi::CStr::from_ptr(uts.nodename.as_ptr())
+            .to_string_lossy()
+            .into_owned()
+    };
+    out.push_str(&format!("confined hostname={host}\n"));
+    let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+    let field = |k: &str| {
+        status
+            .lines()
+            .find_map(|l| l.strip_prefix(k).map(|v| v.trim().to_string()))
+            .unwrap_or_default()
+    };
+    out.push_str(&format!(
+        "confined caps eff={} prm={} inh={} bnd={} amb={} nnp={}\n",
+        field("CapEff:"),
+        field("CapPrm:"),
+        field("CapInh:"),
+        field("CapBnd:"),
+        field("CapAmb:"),
+        field("NoNewPrivs:")
+    ));
+    let errno = |e: &io::Error| format!("errno {}", e.raw_os_error().unwrap_or(0));
+    let mut mode = "";
+    for a in args {
+        match a.as_str() {
+            "see" | "write" => mode = if a == "see" { "see" } else { "write" },
+            path if mode == "see" => {
+                let said = match std::fs::read_dir(path) {
+                    Ok(d) => {
+                        let mut names: Vec<String> = d
+                            .flatten()
+                            .map(|e| e.file_name().to_string_lossy().into_owned())
+                            .collect();
+                        names.sort();
+                        names.join(",")
+                    }
+                    Err(e) => errno(&e),
+                };
+                out.push_str(&format!("confined see {path}: {said}\n"));
+            }
+            path => {
+                let said = match std::fs::write(path, "x") {
+                    Ok(()) => "ok".to_string(),
+                    Err(e) => errno(&e),
+                };
+                out.push_str(&format!("confined write {path}: {said}\n"));
+            }
+        }
+    }
+    let ifaces: Vec<String> = std::fs::read_to_string("/proc/net/dev")
+        .unwrap_or_default()
+        .lines()
+        .skip(2)
+        .filter_map(|l| l.split(':').next().map(|n| n.trim().to_string()))
+        .collect();
+    out.push_str(&format!("confined net={}\n", ifaces.join(",")));
+    let _ = io::stdout().write_all(out.as_bytes());
+    let _ = io::stdout().flush();
+    // SAFETY: prctl(2) naming this thread, with a NUL-terminated name of 15 bytes or fewer.
+    unsafe { libc::prctl(libc::PR_SET_NAME, c"confined-ready".as_ptr()) };
+    loop {
+        // SAFETY: blocks until a signal arrives.
+        unsafe { libc::pause() };
+    }
+}
+
+/// Waits, 60 s at most, until a process whose `comm` is `name` exists.
+fn await_process(name: &str) -> i32 {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while std::time::Instant::now() < deadline {
+        let found = std::fs::read_dir("/proc")
+            .into_iter()
+            .flatten()
+            .flatten()
+            .any(|e| std::fs::read_to_string(e.path().join("comm")).is_ok_and(|c| c.trim_end() == name));
+        if found {
+            return 0;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let _ = writeln!(io::stdout(), "await timeout {name}");
+    1
 }

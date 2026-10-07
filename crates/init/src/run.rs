@@ -86,7 +86,16 @@ pub fn main(device: &str, template: bool) -> ! {
     // a workload that dials one finds it taken (AGENTFILE_ARCH.md §9.7). Without blocking:
     // the relay finishes the connection while the workload runs.
     let signals = dial(run::SIGNAL_PORT, false).ok();
-    let started = standby.and_then(|standby| standby.start(&receive(&conn)?));
+    let started = standby.and_then(|standby| {
+        let spec = receive(&conn)?;
+        // The image's agents and harnesses, each in its domain, before the workload (D59).
+        let domains = crate::domains::read()
+            .and_then(|(all, domains)| crate::domains::start(&all, &domains))
+            .map_err(setup_failed)?;
+        let mut workload = standby.start(&spec)?;
+        workload.domains = domains;
+        Ok(workload)
+    });
     let status = match started {
         Ok(workload) => {
             let _ = crate::linux::control_write(control::MARKER, marker::WORKLOAD_STARTED);
@@ -762,10 +771,20 @@ fn set_hostname(name: &[u8], domain: &[u8], extra: &[Vec<u8>]) -> Result<(), Fai
 /// `--network none` included: the kernel then gives it 127.0.0.1/8 and ::1
 /// (netdevice(7), SIOCSIFFLAGS).
 pub(crate) fn loopback_up() -> io::Result<()> {
-    let failed = |what: &str| {
+    lo_up().map_err(|what| {
         let e = io::Error::last_os_error();
         io::Error::new(e.kind(), format!("bringing up lo: {what}: {e}"))
-    };
+    })
+}
+
+/// [`loopback_up`] without allocating, for a process just cloned (D59): the step that
+/// failed, its errno left as it was.
+pub(crate) fn loopback_up_raw() -> bool {
+    lo_up().is_ok()
+}
+
+fn lo_up() -> Result<(), &'static str> {
+    let failed = |what: &'static str| what;
     // SAFETY: socket(2) with constant arguments.
     let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM | libc::SOCK_CLOEXEC, 0) };
     if fd < 0 {
@@ -970,6 +989,9 @@ struct Workload {
     /// A held standby's orders, never sent: it waits on them until it is killed
     /// ([`run::builtin::HOLD`]).
     _held: Option<OwnedFd>,
+    /// The image's agents and harnesses, started before it (D59): their output is relayed
+    /// on its stderr, each line prefixed with the domain.
+    domains: Vec<crate::domains::Started>,
 }
 
 /// A pty's master, and the path of its peer, which the standby opens as the workload's
@@ -1159,6 +1181,7 @@ impl Standby {
                 sigchld,
                 tty: false,
                 _held: Some(orders),
+                domains: Vec::new(),
             });
         }
         // Its devices first, as dockerd finds them and runc makes their nodes, init's: in
@@ -1333,6 +1356,7 @@ impl Standby {
                 sigchld,
                 tty: false,
                 _held: None,
+                domains: Vec::new(),
             });
         };
         // The terminal carries everything; the pipes go unused.
@@ -1348,6 +1372,7 @@ impl Standby {
             sigchld,
             tty: true,
             _held: None,
+            domains: Vec::new(),
         })
     }
 }
@@ -1703,6 +1728,8 @@ enum Owner {
     Stderr,
     /// An exec's, by its index.
     Exec(usize, Part),
+    /// A domain's output, by its index.
+    Domain(usize),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1769,6 +1796,7 @@ impl Workload {
                 && self.stderr.is_none()
                 && (to_host.is_empty() || host.is_none())
                 && execs.is_empty()
+                && self.domains.iter().all(|d| d.out.is_none())
             {
                 break;
             }
@@ -1818,6 +1846,13 @@ impl Workload {
                 out_events,
                 Owner::Stderr,
             );
+            for (i, d) in self.domains.iter().enumerate() {
+                poll(
+                    d.out.as_ref().map(AsRawFd::as_raw_fd),
+                    out_events,
+                    Owner::Domain(i),
+                );
+            }
             for (i, e) in execs.iter().enumerate() {
                 let conn_events = if !e.connected {
                     libc::POLLOUT
@@ -1998,6 +2033,23 @@ impl Workload {
                     Owner::Stdin => feed(&mut self.stdin, &mut to_stdin),
                     Owner::Stdout => drain_into(&mut self.stdout, kind::STDOUT, &mut buf, &mut to_host),
                     Owner::Stderr => drain_into(&mut self.stderr, kind::STDERR, &mut buf, &mut to_host),
+                    Owner::Domain(i) => {
+                        let Some(d) = self.domains.get_mut(i) else {
+                            continue;
+                        };
+                        let (data, eof) = match read(fd, &mut buf) {
+                            Err(e) if e.kind() == io::ErrorKind::WouldBlock => continue,
+                            Ok(0) | Err(_) => (&[][..], true),
+                            Ok(n) => (buf.get(..n).unwrap_or_default(), false),
+                        };
+                        crate::frames::prefixed_lines(&d.label, &mut d.partial, data, eof, |line| {
+                            let len = u32::try_from(line.len()).unwrap_or(u32::MAX);
+                            to_host.extend(&[&run::header(kind::STDERR, len), line]);
+                        });
+                        if eof {
+                            d.out = None;
+                        }
+                    }
                     Owner::Exec(i, part) => {
                         let Some(e) = execs.get_mut(i) else {
                             continue;
@@ -2355,7 +2407,7 @@ unsafe fn child(c: &Child<'_>) -> ! {
     }
 }
 
-fn set_nonblocking(fd: RawFd, on: bool) {
+pub(crate) fn set_nonblocking(fd: RawFd, on: bool) {
     // SAFETY: fcntl(2) on a descriptor we own.
     unsafe {
         let flags = libc::fcntl(fd, libc::F_GETFL);

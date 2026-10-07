@@ -875,14 +875,14 @@ of 2026-10-02:
 | Names (§4.10): `--target-kind`, one namespace of stages, agents and harnesses (Q19.2), each grant's names declared in its stage's lineage, `CONNECT` on networks whose `FOR` allows it | done (D35) | n/a |
 | `COPY --from=<agent or harness>`, writes into a domain refused, `AGENT`/`HARNESS` layers as `COPY --link`, directives per stage (Q19) | done: writes refused (D55), layers as `--link` and directives of the target's lineage only (D54), `COPY --from=<agent>` its content at the root, its stage dispatched first (D56) | n/a |
 | Agent and harness artifacts: OSI `artifactType`, config, content layers, index, pull and push (§8 Q1) | done (D54, §12.17): `shards build|push|pull|ls|inspect|rm agent` (and `harness`, `mcp`), config schema 1, content checked for what no domain may hold; an index for several platforms **missing** | **missing** |
-| The normalized Agentfile as a layer of its own, its label and manifest annotations (§8) | done: `/.agentfile.json`, schema 1, label `vnd.osi.agentfile.digest` (D35); manifest annotations `vnd.osi.agentfile.{digest,agents,harnesses}` (D57) | read by the runtime: **missing** |
+| The normalized Agentfile as a layer of its own, its label and manifest annotations (§8) | done: `/.agentfile.json`, schema 1, label `vnd.osi.agentfile.digest` (D35); manifest annotations `vnd.osi.agentfile.{digest,agents,harnesses}` (D57) | read by shards-init at each run (D59) |
 | A BuildKit frontend, so `docker buildx build` builds an Agentfile (`# syntax=`, §8 Q16) | **missing** | n/a |
 | OCI objects (§1): `push`, `tag`, `inspect`, `images`, `rmi`, `save`, `load`, OCI layouts and `docker save` tars taken in (§10) | `pull` done | **missing** |
 | An Agentfile made from any image (§10) | **missing** | n/a |
-| The in-VM runtime: many agents and harnesses per microVM, each a domain (§6, §9.3) | n/a | **missing** |
+| The in-VM runtime: many agents and harnesses per microVM, each a domain (§6, §9.3) | n/a | each domain whose OSI config says how it runs started by shards-init before the run's command, its output on the run's stderr prefixed `[agent NAME]` (D59); the server (§5) **missing** |
 | The in-VM server: agents' encrypted, deny-by-default communication, the code-mode MCP server they discover (§5) | n/a | **missing** |
 | Build-time isolation checks (§9.2) and transitive reach, relays, declassifiers (§9.5, §9.8) | §9.2 done (D55): symlinks and hard links out of a domain, devices, FIFOs, sockets, set-ID bits and capabilities in one, and any other step's write into one, refused; §9.5's transitive reach done (D58): a path from an internal-only domain to one that reaches the world fails the build, named; owners, relays and declassifiers (Q20), and §9.8, **missing** | n/a |
-| Run-time confinement (§9.3, §9.7–9.9): namespaces, IDs, cgroups and `pids.max`, Landlock, seccomp, `io_uring` off, vsock closed to workloads, process events | n/a | **missing** |
+| Run-time confinement (§9.3, §9.7–9.9): namespaces, IDs, cgroups and `pids.max`, Landlock, seccomp, `io_uring` off, vsock closed to workloads, process events | n/a | namespaces, IDs, no capabilities, `no_new_privs`, cgroups and `pids.max`, the filesystem rules done (D59); Landlock, seccomp, `io_uring` off, process events, network grants **missing** |
 | Labels on data through the in-VM server and MCP results; per-caller MCP instances (§9.5, §9.6) | n/a | **missing** |
 | The escape tests of §9.10, each mutation-checked | **missing** | **missing** |
 
