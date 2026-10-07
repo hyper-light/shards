@@ -196,6 +196,11 @@ jobs:
         env:
           SHARDS_BENCH_SAMPLES: ${{ github.workspace }}/target/bench-samples
         run: cargo bench --locked -p shards --bench arrival -- --rates 2,5,10,20,40 --secs 10
+      # What the guest kernel keeps of a microVM's memory by its size, on x86_64 (PM M117,
+      # measured on arm64): shards sizes a microVM so that -m fits beside it.
+      - name: Guest memory (M117)
+        if: always()
+        run: SHARDS_HOME=$(mktemp -d) docs/research/measurements/guest-memory/measure-direct.sh target/release/shards
       - name: Raw samples
         if: always()
         uses: actions/upload-artifact@v7.0.1
