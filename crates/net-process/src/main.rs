@@ -29,6 +29,8 @@ fn run() -> Result<(), String> {
     let mut policy = None;
     // Nor a subnet of its own: the guest's is its spawner's to elect.
     let mut bridge: Option<shards_net::bridge::Bridge> = None;
+    // The host's resolvers, which a guest granted egress asks its names of (D59).
+    let mut resolvers: Vec<(std::net::Ipv4Addr, u16)> = Vec::new();
     let mut args = std::env::args_os().skip(1);
     while let Some(a) = args.next() {
         let value = |args: &mut dyn Iterator<Item = std::ffi::OsString>, name: &str| {
@@ -53,6 +55,13 @@ fn run() -> Result<(), String> {
                         .parse()
                         .map_err(|e| format!("--bridge: {e}"))?,
                 )
+            }
+            Some("--resolver") => {
+                let v = value(&mut args, "--resolver")?;
+                let a = v
+                    .parse::<std::net::SocketAddrV4>()
+                    .map_err(|e| format!("--resolver {v:?}: {e}"))?;
+                resolvers.push((*a.ip(), a.port()));
             }
             Some("--policy") => {
                 policy = Some(match value(&mut args, "--policy")?.as_str() {
@@ -101,14 +110,9 @@ fn run() -> Result<(), String> {
             Ok((*role, std::os::unix::net::UnixStream::from(adopt(fd)?)))
         })
         .collect::<Result<_, String>>()?;
-    shards_net::serve(
-        region,
-        me,
-        peer,
-        shards_net::Config::on_bridge(policy, mac, &bridge),
-        controls,
-    )
-    .map_err(|e| e.to_string())
+    let mut cfg = shards_net::Config::on_bridge(policy, mac, &bridge);
+    cfg.resolvers = resolvers;
+    shards_net::serve(region, me, peer, cfg, controls).map_err(|e| e.to_string())
 }
 
 #[cfg(not(unix))]

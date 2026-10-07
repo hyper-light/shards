@@ -179,6 +179,11 @@ pub struct Config {
     pub gateway_mac: [u8; 6],
     pub gateway_ip: Ipv4Addr,
     pub policy: Policy,
+    /// The resolvers a guest's names past the microVM are asked of, the host's own
+    /// (`/etc/resolv.conf`, or `SHARDS_DNS`): asked only under [`Policy::Ports`], for a
+    /// name the network's members do not hold, as Docker's embedded DNS asks the host's
+    /// for a name its network does not hold.
+    pub resolvers: Vec<(Ipv4Addr, u16)>,
 }
 
 /// A MAC address as shards' processes pass it to one another (review 2.32): its six
@@ -267,6 +272,7 @@ impl Config {
             gateway_mac: [0x02, 0x42, a, b, c, d],
             gateway_ip: bridge.gateway(),
             policy,
+            resolvers: Vec::new(),
         }
     }
 
@@ -1267,6 +1273,16 @@ impl<'r> Stack<'r> {
                 self.out().datagram((gateway, 53), u.src_port, &answer);
                 return;
             }
+            // A name past the microVM, for agents granted egress (D59): to the host's
+            // resolver, as a flow keyed to the gateway, so that its answer comes back from
+            // it.
+            if u.dst_port == 53
+                && matches!(self.cfg.policy, Policy::Ports(_))
+                && let Some(&up) = self.cfg.resolvers.first()
+            {
+                self.flow((u.src_port, ip.dst, 53), up, u.payload);
+                return;
+            }
             if let Some(f) = self.inbound.get_mut(&u.dst_port)
                 && f.guest_port == u.src_port
                 && let Some((Listener::Udp(sock), _)) = self.published.get(f.published)
@@ -1286,14 +1302,19 @@ impl<'r> Stack<'r> {
             });
             return;
         }
-        let key = (u.src_port, ip.dst, u.dst_port);
+        self.flow((u.src_port, ip.dst, u.dst_port), (ip.dst, u.dst_port), u.payload);
+    }
+
+    /// Sends `payload` on UDP flow `key`, its host socket connected to `to`, made where
+    /// there is none; its answers go to the guest from `key`'s remote end.
+    fn flow(&mut self, key: UdpKey, to: (Ipv4Addr, u16), payload: &[u8]) {
         let f = match self.udp.entry(key) {
             std::collections::hash_map::Entry::Occupied(o) => o.into_mut(),
             std::collections::hash_map::Entry::Vacant(v) => {
                 let Ok(sock) = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)) else {
                     return;
                 };
-                if sock.connect((ip.dst, u.dst_port)).is_err() || sock.set_nonblocking(true).is_err() {
+                if sock.connect(to).is_err() || sock.set_nonblocking(true).is_err() {
                     return;
                 }
                 // Its answers waited for from now on, and its end timed.
@@ -1318,7 +1339,7 @@ impl<'r> Stack<'r> {
                 v.insert(UdpFlow { sock, life })
             }
         };
-        let _ = f.sock.send(u.payload);
+        let _ = f.sock.send(payload);
         f.life.datagram(Instant::now(), false);
     }
 

@@ -3704,6 +3704,39 @@ fn agents_reach_past_the_microvm_what_their_networks_grant() {
         port
     };
     let (granted, other) = (serve(), serve());
+    // The host's resolver, as the daemon is told to ask (SHARDS_DNS): `api.example` is
+    // this host; any other question has no answer.
+    let resolver = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
+    let resolver_at = format!("{host}:{}", resolver.local_addr().unwrap().port());
+    let address = match host {
+        std::net::IpAddr::V4(a) => a.octets(),
+        std::net::IpAddr::V6(_) => panic!("an IPv4 host address"),
+    };
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 512];
+        while let Ok((n, from)) = resolver.recv_from(&mut buf) {
+            let q = &buf[..n];
+            // The question: its name's labels, then type and class (RFC 1035 §4.1.2).
+            let mut at = 12;
+            let mut name = Vec::new();
+            while at < q.len() && q[at] != 0 {
+                let len = usize::from(q[at]);
+                name.push(String::from_utf8_lossy(&q[at + 1..at + 1 + len]).to_lowercase());
+                at += 1 + len;
+            }
+            let question_end = at + 5;
+            let qtype = u16::from_be_bytes([q[at + 1], q[at + 2]]);
+            let answer = name.join(".") == "api.example" && qtype == 1;
+            let mut r = q[..2].to_vec();
+            r.extend_from_slice(&[0x81, 0x80, 0, 1, 0, u8::from(answer), 0, 0, 0, 0]);
+            r.extend_from_slice(&q[12..question_end]);
+            if answer {
+                r.extend_from_slice(&[0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4]);
+                r.extend_from_slice(&address);
+            }
+            let _ = resolver.send_to(&r, from);
+        }
+    });
     let (image, _) = served();
     let (port, _repos) = common::writable_registry();
     let home = TempDir::new("egress-home");
@@ -3711,6 +3744,7 @@ fn agents_reach_past_the_microvm_what_their_networks_grant() {
         ("SHARDS_HOME", home.as_os_str()),
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
+        ("SHARDS_DNS", std::ffi::OsStr::new(&resolver_at)),
     ];
     let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
     let agent = |name: &str, args: &[String]| -> String {
@@ -3739,8 +3773,26 @@ fn agents_reach_past_the_microvm_what_their_networks_grant() {
         tag
     };
     let to = |p: u16| format!("{host}:{p}");
-    let a = agent("a", &["reach".into(), to(granted), "unreach".into(), to(other)]);
-    let b = agent("b", &["unreach".into(), to(granted)]);
+    let by_name = format!("api.example:{granted}");
+    let a = agent(
+        "a",
+        &[
+            "reach".into(),
+            to(granted),
+            by_name.clone(),
+            "unreach".into(),
+            to(other),
+        ],
+    );
+    let b = agent(
+        "b",
+        &[
+            "resolve".into(),
+            "api.example".into(),
+            "unreach".into(),
+            to(granted),
+        ],
+    );
     let c = agent("c", &["listen".into(), "7000".into()]);
     let ctx = context("egress-ctx", &format!("FROM {image}\n"));
     std::fs::write(
@@ -3773,6 +3825,10 @@ fn agents_reach_past_the_microvm_what_their_networks_grant() {
     };
     for (who, want) in [
         ("a", format!("confined reach {}: ok", to(granted))),
+        // By name: the host's resolver, asked through the microVM's network process.
+        ("a", format!("confined reach {by_name}: ok")),
+        // Without egress, no name past the microVM either: its queries are dropped.
+        ("b", "confined resolve api.example: -3,-3".to_string()),
         // A port no grant names: the switch lets nothing else up.
         ("a", format!("confined unreach {}: timeout", to(other))),
         // On an internal network: nothing past the microVM.

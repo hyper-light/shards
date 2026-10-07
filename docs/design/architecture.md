@@ -3322,8 +3322,29 @@ Mutation-checked, each failing the test:
 The host's `Ports` policy and its encoding, the build's union, and the planner's
 per-domain grants have unit tests.
 
-Open: names past the microVM (DNS for egress hosts, which today resolves only the
-network's members); ingress (`--ingress`, `EXPOSE … AS ingress`: a published port to a
+Part five, names past the microVM:
+
+- **The host's resolvers answer them.** A VM's network process knows the host's resolvers:
+  the daemon passes each `--resolver`, from `SHARDS_DNS` (`ADDR[:PORT]`, comma-separated,
+  as `dockerd --dns` names them) or else the host's own IPv4 nameservers in
+  `/etc/resolv.conf`. Under `Ports`, a query to the gateway's port 53 that the network's
+  members do not answer goes to the first of them, as Docker's embedded DNS asks the
+  host's for a name its network does not hold. It goes as a UDP flow keyed to the
+  gateway, so the answer comes back from the gateway. The host asks, so a loopback
+  resolver (a local cache, systemd-resolved's 127.0.0.53) serves as it is, where Docker
+  must replace it for a container.
+- **Only agents with egress ask.** Each such domain's `/etc/resolv.conf` names the
+  microVM's gateway (`options ndots:0`), mounted read-only over the system's as its
+  `/etc/hosts` is. The switch admits its UDP to the gateway's address, port 53, and
+  nothing else of DNS; a domain without egress keeps the system's file, and its queries
+  are dropped at the switch.
+
+Tested: the egress test runs a resolver on the host (`SHARDS_DNS`). `a` reaches the
+granted port by name; `b`, without egress, resolves nothing (EAI_AGAIN).
+Mutation-checked: a network process that never forwards, and a switch with no rule for
+DNS, each leave `a` unable to resolve.
+
+Open: DNS over TCP, for answers too long for UDP; ingress (`--ingress`, `EXPOSE … AS ingress`: a published port to a
 domain); remote MCP servers, whose grant names one destination and not a port; IPv6
 subnets; process events; §9.10's escape tests beyond these.
 

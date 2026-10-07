@@ -71,6 +71,9 @@ pub struct Domain {
     pub name: crate::netplan::Name,
     /// Its link to the others, where the Agentfile grants it one.
     pub link: Option<crate::netplan::Link>,
+    /// Its `/etc/resolv.conf`, where it reaches past the microVM: the microVM's gateway,
+    /// whose network process asks the host's resolvers (D59).
+    pub resolv: Option<Vec<u8>>,
 }
 
 /// What the image's normalized Agentfile says to start: every domain's directory, the
@@ -125,7 +128,13 @@ pub fn read() -> Result<Read, String> {
         (std::net::Ipv4Addr::from(u32::from(addr) & mask), prefix)
     });
     let plan = crate::netplan::plan(&spec, &names, own)?;
+    let gateway = crate::net::current().map(|(_, _, g)| g);
     for (d, link) in out.iter_mut().zip(plan.links) {
+        if let (Some(l), Some(g)) = (&link, gateway)
+            && !l.egress.is_empty()
+        {
+            d.resolv = Some(format!("nameserver {g}\noptions ndots:0\n").into_bytes());
+        }
         d.link = link;
     }
     Ok((dirs, out, plan.pairs))
@@ -203,6 +212,7 @@ fn domain(
         workdir,
         name: (kind == "harness", name.to_string()),
         link: None,
+        resolv: None,
     })
 }
 
@@ -283,6 +293,8 @@ struct Prepared {
     net_handled: u64,
     /// Its `/etc/hosts`, where it has a link.
     hosts: Option<Vec<u8>>,
+    /// Its `/etc/resolv.conf`, where it reaches past the microVM.
+    resolv: Option<Vec<u8>>,
     /// Where it waits for its link, before it holds nothing of init's.
     go: Option<RawFd>,
 }
@@ -354,7 +366,10 @@ fn switch(domains: &[Domain], pairs: &[(usize, usize)]) -> io::Result<crate::lin
             })
         }
     };
-    crate::links::Switch::new(pairs, &egress, uplink.as_ref())
+    let resolver = uplink
+        .as_ref()
+        .and_then(|_| crate::net::current().map(|(_, _, g)| g));
+    crate::links::Switch::new(pairs, &egress, uplink.as_ref(), resolver)
 }
 
 /// Starts each of `domains`, hiding from each the directories of `all` but its own, under
@@ -425,6 +440,7 @@ pub fn start(
                 None => landlock::NET_BIND_TCP | landlock::NET_CONNECT_TCP,
             },
             hosts: d.link.as_ref().map(|l| l.hosts.clone()),
+            resolv: d.resolv.clone(),
             go: None,
         };
         let mut prepared = prepared;
@@ -642,34 +658,51 @@ fn child(d: &Domain, p: &Prepared, out: RawFd, flags: u32, program: &libc::sock_
                 fail(out, c"making its scratch");
             }
         }
-        // Its names: its peers', over the system's /etc/hosts, read-only, made in its
+        // Its names: its peers', over the system's /etc/hosts, and where it reaches past
+        // the microVM its resolver, over /etc/resolv.conf; each read-only, made in its
         // scratch and left there by no name.
-        let mut st: libc::stat = std::mem::zeroed();
-        if let Some(hosts) = &p.hosts
-            && libc::stat(c"/etc/hosts".as_ptr(), &raw mut st) == 0
-            && libc::stat(c"/tmp".as_ptr(), &raw mut st) == 0
-        {
-            let made = c"/tmp/.hosts";
+        let ro = libc::MS_REMOUNT
+            | libc::MS_BIND
+            | libc::MS_RDONLY
+            | libc::MS_NOSUID
+            | libc::MS_NODEV
+            | libc::MS_NOEXEC;
+        for (content, target, made, writing, mounting) in [
+            (
+                &p.hosts,
+                c"/etc/hosts",
+                c"/tmp/.hosts",
+                c"writing its /etc/hosts",
+                c"mounting its /etc/hosts",
+            ),
+            (
+                &p.resolv,
+                c"/etc/resolv.conf",
+                c"/tmp/.resolv",
+                c"writing its /etc/resolv.conf",
+                c"mounting its /etc/resolv.conf",
+            ),
+        ] {
+            let mut st: libc::stat = std::mem::zeroed();
+            let Some(content) = content else { continue };
+            if libc::stat(target.as_ptr(), &raw mut st) != 0 || libc::stat(c"/tmp".as_ptr(), &raw mut st) != 0
+            {
+                continue;
+            }
             let fd = libc::open(
                 made.as_ptr(),
                 libc::O_CREAT | libc::O_EXCL | libc::O_WRONLY | libc::O_CLOEXEC,
                 0o444,
             );
-            if fd < 0 || libc::write(fd, hosts.as_ptr().cast(), hosts.len()) != hosts.len() as isize {
-                fail(out, c"writing its /etc/hosts");
+            if fd < 0 || libc::write(fd, content.as_ptr().cast(), content.len()) != content.len() as isize {
+                fail(out, writing);
             }
             libc::close(fd);
-            let ro = libc::MS_REMOUNT
-                | libc::MS_BIND
-                | libc::MS_RDONLY
-                | libc::MS_NOSUID
-                | libc::MS_NODEV
-                | libc::MS_NOEXEC;
-            if libc::mount(made.as_ptr(), c"/etc/hosts".as_ptr(), null, libc::MS_BIND, nil) != 0
-                || libc::mount(null, c"/etc/hosts".as_ptr(), null, ro, nil) != 0
+            if libc::mount(made.as_ptr(), target.as_ptr(), null, libc::MS_BIND, nil) != 0
+                || libc::mount(null, target.as_ptr(), null, ro, nil) != 0
                 || libc::unlink(made.as_ptr()) != 0
             {
-                fail(out, c"mounting its /etc/hosts");
+                fail(out, mounting);
             }
         }
         // Its own name, and loopback.

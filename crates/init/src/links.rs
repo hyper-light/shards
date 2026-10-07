@@ -303,11 +303,13 @@ pub struct Switch {
 impl Switch {
     /// Makes the switch: forwarding on, and nf_tables that drop all but the answers to
     /// what is allowed, `pairs`, each `(from, to)` by the domains' indices, and each
-    /// domain's `egress` past the microVM, through `uplink`.
+    /// domain's `egress` past the microVM, through `uplink`, and its names' queries to
+    /// `resolver`, the microVM's gateway.
     pub fn new(
         pairs: &[(usize, usize)],
         egress: &[(usize, Vec<crate::netplan::Egress>)],
         uplink: Option<&Uplink>,
+        resolver: Option<Ipv4Addr>,
     ) -> io::Result<Switch> {
         let (ns, route, nftables) = in_netns(None, || {
             let ns = open_ns("/proc/thread-self/ns/net")?;
@@ -320,7 +322,7 @@ impl Switch {
             crate::setup::write_sysctl("net.ipv4.ip_forward", "1").map_err(io::Error::other)?;
             Ok((ns, route, nftables))
         })?;
-        policy(&nftables, pairs, egress)?;
+        policy(&nftables, pairs, egress, resolver)?;
         let switch = Switch {
             ns,
             route,
@@ -693,6 +695,7 @@ fn policy(
     sock: &OwnedFd,
     pairs: &[(usize, usize)],
     egress: &[(usize, Vec<crate::netplan::Egress>)],
+    resolver: Option<Ipv4Addr>,
 ) -> io::Result<()> {
     let mut b = Batch::new();
     b.chain(b"input\0", b"filter\0", nft::NF_INET_LOCAL_IN, 0, nft::NF_DROP);
@@ -721,6 +724,24 @@ fn policy(
             payload(&mut e, nft::NFT_PAYLOAD_TRANSPORT_HEADER, 2, 2);
             compare(&mut e, nft::NFT_CMP_GTE, &lo.to_be_bytes());
             compare(&mut e, nft::NFT_CMP_LTE, &hi.to_be_bytes());
+            accept(&mut e);
+            b.rule(b"forward\0", e);
+        }
+        // Its names' queries, by UDP, to the gateway's resolver alone (D59): the network
+        // process asks the host's for it.
+        if let Some(r) = resolver {
+            let mut e = Vec::new();
+            meta(&mut e, nft::NFT_META_IIF);
+            compare(&mut e, nft::NFT_CMP_EQ, &link_index(*n)?.to_ne_bytes());
+            meta(&mut e, nft::NFT_META_OIF);
+            compare(&mut e, nft::NFT_CMP_EQ, &(UPLINK_IFINDEX as u32).to_ne_bytes());
+            meta(&mut e, nft::NFT_META_L4PROTO);
+            compare(&mut e, nft::NFT_CMP_EQ, &[17]);
+            // The destination address, at offset 16 of IPv4's header.
+            payload(&mut e, nft::NFT_PAYLOAD_NETWORK_HEADER, 16, 4);
+            compare(&mut e, nft::NFT_CMP_EQ, &r.octets());
+            payload(&mut e, nft::NFT_PAYLOAD_TRANSPORT_HEADER, 2, 2);
+            compare(&mut e, nft::NFT_CMP_EQ, &53u16.to_be_bytes());
             accept(&mut e);
             b.rule(b"forward\0", e);
         }

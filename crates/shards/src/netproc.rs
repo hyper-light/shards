@@ -8,6 +8,34 @@ use std::os::fd::{AsFd, OwnedFd};
 /// reads, and nothing else. A daemon's environment is that of the client that started
 /// it, which may hold secrets (an API key, an agent's socket), and these are the
 /// processes a guest could take over.
+/// The resolvers a VM's network process asks names past the microVM of (D59): `SHARDS_DNS`,
+/// each `ADDR[:PORT]`, comma-separated, as `dockerd --dns` names them; else the host's own
+/// IPv4 nameservers (`/etc/resolv.conf`), at port 53. The host asks, so a loopback one (a
+/// local cache's) serves as it is, which Docker must replace for a container.
+pub fn resolvers() -> Vec<String> {
+    let with_port = |s: &str| -> Option<String> {
+        if s.parse::<std::net::SocketAddrV4>().is_ok() {
+            Some(s.to_string())
+        } else {
+            s.parse::<std::net::Ipv4Addr>().ok().map(|a| format!("{a}:53"))
+        }
+    };
+    if let Some(v) = std::env::var_os("SHARDS_DNS") {
+        return v
+            .to_string_lossy()
+            .split(',')
+            .map(str::trim)
+            .filter_map(with_port)
+            .collect();
+    }
+    std::fs::read_to_string("/etc/resolv.conf")
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("nameserver"))
+        .filter_map(|a| with_port(a.trim()))
+        .collect()
+}
+
 pub fn child_env() -> Vec<(&'static str, std::ffi::OsString)> {
     ["SHARDS_LOG", "SHARDS_TIMING"]
         .into_iter()
@@ -80,22 +108,28 @@ pub fn start(
     let mac = shards_net::Mac(*mac).to_string();
     let bridge = bridge.to_string();
     let env = child_env();
+    let resolvers = resolvers();
+    let mut args: Vec<&std::ffi::OsStr> = vec![
+        "--ring".as_ref(),
+        "3,4,5".as_ref(),
+        "--policy".as_ref(),
+        policy.as_ref(),
+        "--mac".as_ref(),
+        mac.as_ref(),
+        "--bridge".as_ref(),
+        bridge.as_ref(),
+        "--control".as_ref(),
+        "6".as_ref(),
+        "--release".as_ref(),
+        "7".as_ref(),
+    ];
+    for r in &resolvers {
+        args.push("--resolver".as_ref());
+        args.push(r.as_ref());
+    }
     let child = shards_ipc::spawn_in(
         &binary,
-        &[
-            "--ring".as_ref(),
-            "3,4,5".as_ref(),
-            "--policy".as_ref(),
-            policy.as_ref(),
-            "--mac".as_ref(),
-            mac.as_ref(),
-            "--bridge".as_ref(),
-            bridge.as_ref(),
-            "--control".as_ref(),
-            "6".as_ref(),
-            "--release".as_ref(),
-            "7".as_ref(),
-        ],
+        &args,
         &[
             (err.as_fd(), 2),
             (region.as_fd(), 3),
