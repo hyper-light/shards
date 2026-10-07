@@ -6,10 +6,14 @@
 
 use shards_abi::run;
 
-/// Calls `f` with each complete frame in `buf`, then removes them. Returns false if the
-/// stream is malformed, which cannot be resynchronized: `buf` is emptied.
+/// The most of a line a domain's output holds before it is written unfinished: Docker's
+/// for a container's log lines (moby daemon/logger/copier.go, `defaultBufSize`), so a
+/// domain writing no newline holds no more of init's memory than this.
+pub const LINE_MAX: usize = 16 * 1024;
+
 /// Each whole line `data` completes, prefixed `[<label>] `, into `emit`; the rest kept in
-/// `partial`, and at `eof` emitted with a newline: a domain's output (D59).
+/// `partial`, written in pieces of [`LINE_MAX`] with a newline each as it reaches that, and
+/// at `eof` written with a newline: a domain's output (D59).
 pub fn prefixed_lines(
     label: &str,
     partial: &mut Vec<u8>,
@@ -28,12 +32,19 @@ pub fn prefixed_lines(
         start += i + 1;
     }
     partial.drain(..start);
+    while partial.len() >= LINE_MAX {
+        let piece = partial.get(..LINE_MAX).unwrap_or_default();
+        emit(&[b"[", label.as_bytes(), b"] ", piece, b"\n"].concat());
+        partial.drain(..LINE_MAX);
+    }
     if eof && !partial.is_empty() {
         emit(&[b"[", label.as_bytes(), b"] ", partial.as_slice(), b"\n"].concat());
         partial.clear();
     }
 }
 
+/// Calls `f` with each complete frame in `buf`, then removes them. Returns false if the
+/// stream is malformed, which cannot be resynchronized: `buf` is emptied.
 pub fn each_frame(buf: &mut Vec<u8>, mut f: impl FnMut(u8, &[u8])) -> bool {
     let mut at = 0;
     let whole = loop {
@@ -269,5 +280,24 @@ mod tests {
             total += 1;
         }
         assert!(moved <= total, "moved {moved} bytes for {total} written");
+    }
+
+    /// A domain writing no newline holds at most [`LINE_MAX`] of init's memory: each piece
+    /// that long is written as a line of its own, and lines it ends are kept whole.
+    #[test]
+    fn a_line_without_end_is_written_in_pieces() {
+        let mut partial = Vec::new();
+        let mut lines: Vec<Vec<u8>> = Vec::new();
+        let chunk = vec![b'x'; 4096];
+        for _ in 0..9 {
+            prefixed_lines("agent a", &mut partial, &chunk, false, |l| lines.push(l.to_vec()));
+            assert!(partial.len() < LINE_MAX);
+        }
+        let piece = [b"[agent a] ".as_slice(), &[b'x'; LINE_MAX], b"\n"].concat();
+        assert_eq!(lines, [piece.clone(), piece]);
+        prefixed_lines("agent a", &mut partial, b"y\nz", true, |l| lines.push(l.to_vec()));
+        let rest = [b"[agent a] ".as_slice(), &[b'x'; 4096], b"y\n"].concat();
+        assert_eq!(lines.get(2..), Some([rest, b"[agent a] z\n".to_vec()].as_slice()));
+        assert!(partial.is_empty());
     }
 }

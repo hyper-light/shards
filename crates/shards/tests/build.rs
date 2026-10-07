@@ -4357,3 +4357,83 @@ fn an_agent_reaches_no_socket_of_the_runs_own() {
         "{all}"
     );
 }
+
+/// Agents filling their memory, scratch included, end whole and never take the run's own
+/// command's (D59): x alone, at the limit its config asks (`asks.memory`, 64 MiB); y and z,
+/// asking none, at what the domains together may take, the memory the microVM has as they
+/// start less what the workload's `-m` still promises it.
+#[test]
+fn agents_out_of_memory_end_whole_and_spare_the_run() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let (port, _repos) = common::writable_registry();
+    let home = TempDir::new("oom-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let agent = |name: &str, asks: &str| {
+        let dir = TempDir::new(&format!("oom-agent-{name}"));
+        std::fs::create_dir_all(dir.join("bin")).unwrap();
+        std::fs::copy(common::test_guest(), dir.join("bin/testguest")).unwrap();
+        std::fs::write(
+            dir.join("agent.json"),
+            format!(r#"{{"name":"{name}","run":{{"command":["bin/testguest","confined","fill"]}}{asks}}}"#),
+        )
+        .unwrap();
+        let tag = format!("127.0.0.1:{port}/team/oom-{name}:1");
+        let made = shards(&["build", "agent", dir.to_str().unwrap(), "-t", &tag]);
+        assert_eq!(made.status, Some(0), "{}", made.stderr);
+        let pushed = shards(&["push", "agent", &tag]);
+        assert_eq!(pushed.status, Some(0), "{}", pushed.stderr);
+        format!("AGENT {name} FROM {tag}\n")
+    };
+    let x = agent("x", r#","asks":{"memory":67108864}"#);
+    let yz = agent("y", "") + &agent("z", "");
+    let run = |tag: &str, agents: &str| {
+        let ctx = context(&format!("oom-ctx-{tag}"), &format!("FROM {image}\n"));
+        std::fs::write(ctx.join("Agentfile"), format!("FROM {image}\n{agents}")).unwrap();
+        let built = shards(&["build", "-t", tag, ctx.to_str().unwrap()]);
+        assert_eq!(built.status, Some(0), "{}", built.stderr);
+        let ran = shards(&["run", "--rm", "-m", "128m", tag, "outlive", "64"]);
+        let all = format!("{}{}", ran.stdout, ran.stderr);
+        assert_eq!(ran.status, Some(0), "{all}");
+        // The run's command outlived them, and every domain the kernel ended lost its
+        // holder with it: those `held` left are of domains whose writes failed.
+        let outlived = all
+            .lines()
+            .find_map(|l| l.strip_prefix("outlived "))
+            .unwrap_or_else(|| panic!("the run's command did not outlive its agents:\n{all}"))
+            .to_string();
+        let n = |k: &str| -> usize {
+            outlived
+                .split(' ')
+                .find_map(|f| f.strip_prefix(k))
+                .and_then(|v| v.parse().ok())
+                .unwrap()
+        };
+        assert_eq!(n("held="), n("stopped="), "{all}");
+        let filled = |a: &str| {
+            all.lines()
+                .filter_map(|l| l.strip_prefix(&format!("[agent {a}] confined filled ")))
+                .filter_map(|v| v.parse::<u64>().ok())
+                .max()
+                .unwrap_or(0)
+        };
+        eprintln!(
+            "{tag}: x {} y {} z {}; {outlived}",
+            filled("x"),
+            filled("y"),
+            filled("z")
+        );
+        (filled("x"), all)
+    };
+    // x ends at its own limit, where its memory is its resident 9 MiB and its scratch.
+    let (x_filled, all) = run("oom-x:1", &x);
+    assert!(x_filled > 32 && x_filled < 64, "x filled {x_filled} MiB:\n{all}");
+    run("oom-yz:1", &yz);
+}

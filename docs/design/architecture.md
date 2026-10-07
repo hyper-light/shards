@@ -3502,6 +3502,54 @@ Tested on real microVMs: `an_agent_reaches_no_socket_of_the_runs_own`, where the
 tries both: `ENOENT` and `ECONNREFUSED`, its last try after the run bound both (one
 `CLOCK_MONOTONIC`). Mutation-checked: without the new root the agent connects.
 
+### What a failing agent may take (D59, part nine)
+
+Raised 2026-10-07 by the user: how a malfunctioning or compromised agent might abuse the
+microVM, mitigated without burdening the Agentfile. Two ways it could take down everything
+in it, init (PID 1, whose end is the microVM's) and the run's own command included:
+
+- **Its output.** init relays an agent's output a line at a time and held an unfinished
+  line whole, so an agent writing no newline grew init's memory without bound. Now a line
+  is written unfinished at 16 KiB, Docker's bound for a container's log lines (moby
+  daemon/logger/copier.go, `defaultBufSize`), each piece a line of its own
+  (`frames::LINE_MAX`; test `a_line_without_end_is_written_in_pieces`).
+- **Its memory.** Domains had no memory cgroup, and each one's scratch tmpfs could grow to
+  half the microVM's memory (Documentation/filesystems/tmpfs.rst, `size`). The OOM
+  killer chooses by resident memory, page tables and swap (mm/oom_kill.c,
+  `oom_badness`), not a tmpfs's pages, so an agent filling `/tmp` would have the kernel
+  kill the run's command, again and again. Now:
+  - the domains together are a cgroup whose `memory.max` is what the microVM has as they
+    start (`MemAvailable`, Documentation/filesystems/proc.rst) less what the workload's
+    `-m` still allows it (`memory.max` less `memory.current` of its cgroup); the root
+    cgroup has no `memory.current` (Documentation/admin-guide/cgroup-v2.rst), so the
+    kernel's own estimate is the measure. Their tmpfs pages are charged to them;
+  - each domain has `memory.oom.group`, so that one out of memory ends whole: a filler
+    killed alone would leave its scratch held by the rest of the domain;
+  - an agent's OSI config may ask a lower limit of its own, `asks.memory` in bytes, beside
+    `asks.processes`. The user chose this over a per-agent share or no default.
+
+  Charged past `memory.max`, a write invokes that cgroup's OOM killer
+  (mm/memcontrol.c, `try_charge_memcg`, `mem_cgroup_oom`), whose victim is again chosen by
+  resident memory. So under the domains' cap, an agent filling its scratch can have
+  another agent killed first, and a killed domain's tmpfs is freed only as its mount
+  namespace goes, after its processes have ended: in the test, y and z were both ended
+  at the cap. The run's command and init are not. Open: choosing the domain whose memory
+  is largest, scratch included (`memory.current`), before the kernel chooses.
+
+`/tmp` stays where an agent's scratch is: the run's own writable layer is a tmpfs as well
+(`run.rs`, `mount_root`), so every writable directory in a microVM is its memory, and a
+programs' default temporary directory (POSIX `TMPDIR`) is where they look.
+
+Tested on real microVMs: `agents_out_of_memory_end_whole_and_spare_the_run`, the run's
+command holding 64 MiB under `-m 128m`: x, asking 64 MiB, ends with 58 MiB written (its
+resident memory the rest); y and z, asking nothing, end at the domains' cap; the run's
+command outlives them, and each domain ended lost its PID 1 with its filler. Each guard
+mutation-checked: without x's limit it wrote 82 MiB; without the domains' cap, or
+without the workload's share taken from it, the kernel killed the run's command; without
+`memory.oom.group`, a domain's PID 1 outlived its filler. Found while testing: an agent
+can fill and end between two looks of the run's command at `/proc`, and nothing else of
+it reaches the run, so the test's agents are seen filling before they fill.
+
 ### `SKILL --from=<agent>` (D54, continued)
 
 `SKILL --from=<agent> <skill> FOR <other>` copies, at build time, a skill the agent's

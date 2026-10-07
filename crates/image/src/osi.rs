@@ -95,6 +95,10 @@ pub struct Asks {
     pub volumes: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub processes: Option<u32>,
+    /// The most memory it may hold, in bytes, scratch included; under what the agents of
+    /// a microVM may take together.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory: Option<u64>,
 }
 
 /// The platform it runs on; none for any.

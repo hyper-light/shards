@@ -125,6 +125,7 @@ pub fn main() -> ! {
                 }
             }
         }
+        "outlive" => outlive(arg(1).parse().unwrap_or(0)),
         "sleep" => {
             let _ = writeln!(io::stdout(), "ready");
             loop {
@@ -1129,6 +1130,10 @@ fn confined(args: &[String]) -> i32 {
         match a.as_str() {
             "see" | "write" | "bind" | "connect" | "call" | "listen" | "reach" | "unreach" | "cat"
             | "resolve" | "dnsprobe" | "unix" | "abstract" => mode = a.as_str(),
+            "fill" => {
+                let _ = io::stdout().write_all(out.as_bytes());
+                return fill_scratch();
+            }
             path if mode == "unix" => {
                 // Until it exists, 3 s at most: the run's own command makes it as it starts.
                 // The last try's time (CLOCK_MONOTONIC, which the domain shares) says whether
@@ -1467,4 +1472,120 @@ fn monotonic_ns() -> u128 {
     // SAFETY: clock_gettime(2) into a timespec it owns.
     unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &raw mut t) };
     u128::try_from(t.tv_sec).unwrap_or(0) * 1_000_000_000 + u128::try_from(t.tv_nsec).unwrap_or(0)
+}
+
+/// An agent filling its scratch: this process, its PID 1, named `held`, holds nothing and
+/// waits, so that only a kill of its whole domain ends it (the kernel ends a PID namespace
+/// with its PID 1, which a kill of the filler alone would not reach); its child, named
+/// `filling`, writes `/tmp/fill` a MiB at a time and says each, until a write fails, when
+/// it says so, is named `fill-stopped` and holds; or until it is killed. The child holds 4
+/// MiB more, so that the OOM killer's choice by resident memory is it.
+fn fill_scratch() -> i32 {
+    // SAFETY: fork(2) in a process of one thread; the parent only names itself and waits.
+    match unsafe { libc::fork() } {
+        0 => {}
+        pid if pid < 0 => return 1,
+        // SAFETY: prctl(2) with a NUL-terminated name; pause(2) until a signal ends it.
+        _ => unsafe {
+            libc::prctl(libc::PR_SET_NAME, c"held".as_ptr());
+            loop {
+                libc::pause();
+            }
+        },
+    }
+    // SAFETY: prctl(2) with a NUL-terminated name.
+    unsafe { libc::prctl(libc::PR_SET_NAME, c"filling".as_ptr()) };
+    // Seen filling before it fills: it may fill and end between two of the run's looks,
+    // and nothing else of it can reach the run.
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    let resident: Vec<u8> = vec![1; 4 << 20];
+    let chunk = vec![b'f'; 1 << 20];
+    let mut file = match std::fs::File::create("/tmp/fill") {
+        Ok(f) => f,
+        Err(e) => {
+            let _ = writeln!(
+                io::stdout(),
+                "confined fill: errno {}",
+                e.raw_os_error().unwrap_or(0)
+            );
+            return 1;
+        }
+    };
+    let mut mib = 0u64;
+    loop {
+        if let Err(e) = file.write_all(&chunk) {
+            let _ = writeln!(
+                io::stdout(),
+                "confined fill: errno {}",
+                e.raw_os_error().unwrap_or(0)
+            );
+            break;
+        }
+        mib += 1;
+        let _ = writeln!(io::stdout(), "confined filled {mib}");
+        let _ = io::stdout().flush();
+    }
+    std::hint::black_box(&resident);
+    // SAFETY: prctl(2) with a NUL-terminated name; pause(2) until a signal ends it.
+    unsafe {
+        libc::prctl(libc::PR_SET_NAME, c"fill-stopped".as_ptr());
+        loop {
+            libc::pause();
+        }
+    }
+}
+
+/// The run's own command, outliving agents that fill their scratch: it holds `hold` MiB
+/// resident, waits (60 s at most) until it has seen an agent `filling` and none is left,
+/// and says how many `held` and `fill-stopped` processes remain.
+fn outlive(hold: usize) -> i32 {
+    let held: Vec<u8> = vec![1; hold << 20];
+    let _ = writeln!(io::stdout(), "outlive holding {hold}");
+    let _ = io::stdout().flush();
+    let count = |name: &str| {
+        std::fs::read_dir("/proc")
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|e| std::fs::read_to_string(e.path().join("comm")).is_ok_and(|c| c.trim_end() == name))
+            .count()
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let mut seen = false;
+    while std::time::Instant::now() < deadline {
+        let filling = count("filling");
+        seen |= filling > 0;
+        if seen && filling == 0 {
+            std::hint::black_box(&held);
+            let _ = writeln!(
+                io::stdout(),
+                "outlived held={} stopped={}",
+                count("held"),
+                count("fill-stopped")
+            );
+            return 0;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    // What each process still filling waits on: its state, kernel wait channel and stack.
+    for e in std::fs::read_dir("/proc").into_iter().flatten().flatten() {
+        let p = e.path();
+        if !std::fs::read_to_string(p.join("comm")).is_ok_and(|c| c.trim_end() == "filling") {
+            continue;
+        }
+        let status = std::fs::read_to_string(p.join("status")).unwrap_or_default();
+        let state = status
+            .lines()
+            .find(|l| l.starts_with("State:"))
+            .unwrap_or_default();
+        let wchan = std::fs::read_to_string(p.join("wchan")).unwrap_or_default();
+        let stack = std::fs::read_to_string(p.join("stack")).unwrap_or_default();
+        let _ = writeln!(
+            io::stdout(),
+            "outlive stuck {}: {state} wchan={wchan}\n{stack}",
+            p.display()
+        );
+    }
+    let _ = writeln!(io::stdout(), "outlive timeout");
+    1
 }

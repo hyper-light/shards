@@ -833,14 +833,17 @@ until the review changes it. The first four fix the grammar the parser reads; th
         "run": {"command": ["bin/agent", "--serve"], "env": ["LOG=info"], "workdir": "."},
         "skills": ["skills/pdf-tools"],
         "mcp": [{"name": "files", "command": ["mcp/files/server"]}],
-        "asks": {"network": ["api.example.com:443"], "volumes": ["/data"], "processes": 16}
+        "asks": {"network": ["api.example.com:443"], "volumes": ["/data"], "processes": 16,
+                 "memory": 268435456}
       }
       ```
       `platform` is absent for an agent of any platform (scripts, Python); `run.command`
       is what the runtime starts as the agent's first process, in its domain (§9.3);
       `skills` and `mcp` list what it brings, each laid out and checked as `SKILL` and
       `MCP` are; `asks` lists what it needs that only the Agentfile can grant: the
-      build reports each ask no directive grants, and grants nothing itself.
+      build reports each ask no directive grants, and grants nothing itself; `memory`, in
+      bytes, is a limit it takes on itself, scratch included, under what the microVM's
+      agents may take together (D59).
     - **Readers refuse** a `schemaVersion` they do not know, an unknown media type, a
       config whose `name` is no stage-style name, and any path in it that is absolute or
       leaves the directory.
@@ -900,7 +903,7 @@ of 2026-10-02:
 | The in-VM runtime: many agents and harnesses per microVM, each a domain (§6, §9.3) | n/a | each domain whose OSI config says how it runs started by shards-init as the run's command starts, its output on the run's stderr prefixed `[agent NAME]` (D59); the server (§5) **missing** |
 | The in-VM server: agents' encrypted, deny-by-default communication, the code-mode MCP server they discover (§5) | n/a | **missing** |
 | Build-time isolation checks (§9.2) and transitive reach, relays, declassifiers (§9.5, §9.8) | §9.2 done (D55): symlinks and hard links out of a domain, devices, FIFOs, sockets, set-ID bits and capabilities in one, and any other step's write into one, refused; §9.5's transitive reach done (D58): a path from an internal-only domain to one that reaches the world fails the build, named; owners done (a path outside a domain, or in another's, owned by a domain's uid or gid); relays and declassifiers (Q20), and §9.8, **missing** | n/a |
-| Run-time confinement (§9.3, §9.7–9.9): namespaces, IDs, cgroups and `pids.max`, Landlock, seccomp, `io_uring` off, vsock closed to workloads, process events | n/a | namespaces, IDs, no capabilities, `no_new_privs`, cgroups and `pids.max`, the filesystem rules, Landlock (filesystem, TCP, scopes), seccomp (no vsock, netlink, `io_uring`, keys, `userfaultfd`, bpf, perf) `--processes=none` (threads, no process) done (D59); network grants between domains, default deny (`CONNECT --port` within the network's ingress, names of granted peers alone, `NETWORK --dns`, the agents' resolver identifying askers by link, strict reverse-path filtering), remote MCP servers as grants of that server alone, and egress past the microVM by port (`NETWORK --egress/--expose`, `EXPOSE … FOR`) done (D59), names past the microVM for agents with egress, and ingress to a network's one member (`--ingress` with `EXPOSE … AS ingress FOR`, published by `shards run -p`) (D59); refusing `-p` of a port declared `AS egress` (D59); a root of the image as built, none of the run's files, mounts or Unix sockets (D59); ingress to a network of several members, remote MCP servers' own destinations, IPv6 subnets, process events **missing** |
+| Run-time confinement (§9.3, §9.7–9.9): namespaces, IDs, cgroups and `pids.max`, Landlock, seccomp, `io_uring` off, vsock closed to workloads, process events | n/a | namespaces, IDs, no capabilities, `no_new_privs`, cgroups and `pids.max`, the filesystem rules, Landlock (filesystem, TCP, scopes), seccomp (no vsock, netlink, `io_uring`, keys, `userfaultfd`, bpf, perf) `--processes=none` (threads, no process) done (D59); network grants between domains, default deny (`CONNECT --port` within the network's ingress, names of granted peers alone, `NETWORK --dns`, the agents' resolver identifying askers by link, strict reverse-path filtering), remote MCP servers as grants of that server alone, and egress past the microVM by port (`NETWORK --egress/--expose`, `EXPOSE … FOR`) done (D59), names past the microVM for agents with egress, and ingress to a network's one member (`--ingress` with `EXPOSE … AS ingress FOR`, published by `shards run -p`) (D59); refusing `-p` of a port declared `AS egress` (D59); a root of the image as built, none of the run's files, mounts or Unix sockets (D59); output lines bounded, memory capped for the agents together less the workload's `-m`, `asks.memory`, a domain ended whole (D59); ingress to a network of several members, remote MCP servers' own destinations, IPv6 subnets, process events **missing** |
 | Labels on data through the in-VM server and MCP results; per-caller MCP instances (§9.5, §9.6) | n/a | **missing** |
 | The escape tests of §9.10, each mutation-checked | **missing** | **missing** |
 

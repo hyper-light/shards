@@ -66,6 +66,9 @@ pub struct Domain {
     pub pids: Option<u64>,
     /// `--processes=none`: it starts threads alone (§9.9).
     pub no_processes: bool,
+    /// `memory.max`, in bytes, where its config asks one (`asks.memory`): under the
+    /// domains' own, which every domain has.
+    pub memory: Option<u64>,
     pub argv: Vec<CString>,
     pub env: Vec<CString>,
     pub workdir: CString,
@@ -175,6 +178,13 @@ fn domain(
             .and_then(Value::u64),
         Some(v) => Some(v.u64().ok_or_else(|| format!("{label}: processes is no count"))?),
     };
+    let memory = match config.get("asks").and_then(|a| a.get("memory")) {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(
+            v.u64()
+                .ok_or_else(|| format!("{label}: asks.memory is no count of bytes"))?,
+        ),
+    };
     let workdir = run.get("workdir").and_then(Value::str).unwrap_or(".");
     let mut env = vec![
         cstr(&format!("PATH={PATH}"))?,
@@ -215,6 +225,7 @@ fn domain(
         id,
         pids,
         no_processes,
+        memory,
         argv,
         env,
         workdir,
@@ -427,6 +438,18 @@ fn image_root(skel: &OwnedFd, lower: std::os::fd::BorrowedFd<'_>) -> io::Result<
     detached(c"overlay", &[(c"lowerdir", layers.as_c_str())])
 }
 
+/// `MemAvailable` of `/proc/meminfo`, in bytes.
+fn available_memory() -> Result<u64, String> {
+    let meminfo = std::fs::read_to_string("/proc/meminfo").map_err(|e| format!("/proc/meminfo: {e}"))?;
+    meminfo
+        .lines()
+        .find_map(|l| l.strip_prefix("MemAvailable:"))
+        .and_then(|v| v.trim().strip_suffix("kB"))
+        .and_then(|kb| kb.trim().parse::<u64>().ok())
+        .and_then(|kb| kb.checked_mul(1024))
+        .ok_or_else(|| "/proc/meminfo: no MemAvailable".to_string())
+}
+
 /// The Landlock ABI the guest kernel has; an error where it lacks what a domain needs.
 fn landlock_abi() -> Result<i64, String> {
     // SAFETY: landlock_create_ruleset(2) asked only its version: no attribute is read.
@@ -562,8 +585,17 @@ pub fn start(
         Err(e) if e.kind() != io::ErrorKind::AlreadyExists => return Err(format!("{CGROUPS}: {e}")),
         _ => {}
     }
-    std::fs::write(format!("{CGROUPS}/cgroup.subtree_control"), "+pids")
-        .map_err(|e| format!("{CGROUPS}: enabling pids: {e}"))?;
+    std::fs::write(format!("{CGROUPS}/cgroup.subtree_control"), "+pids +memory")
+        .map_err(|e| format!("{CGROUPS}: enabling pids and memory: {e}"))?;
+    // The domains together take at most what the microVM can give as they start
+    // (`MemAvailable`, Documentation/filesystems/proc.rst), less what the workload's own
+    // limit (`-m`) still promises it: never what init and the workload hold or may. Their
+    // scratch tmpfs counts, which the OOM killer's choice by resident memory does not
+    // (mm/oom_kill.c, `oom_badness`).
+    let promised = crate::run::workload_headroom();
+    let available = available_memory()?.saturating_sub(promised);
+    std::fs::write(format!("{CGROUPS}/memory.max"), available.to_string())
+        .map_err(|e| format!("{CGROUPS}/memory.max: {e}"))?;
     let last_cap = crate::defaults::last_cap();
     landlock_abi()?;
     let lower =
@@ -576,6 +608,13 @@ pub fn start(
         if let Some(n) = d.pids {
             std::fs::write(format!("{group}/pids.max"), n.to_string())
                 .map_err(|e| format!("{group}/pids.max: {e}"))?;
+        }
+        // Out of memory, a domain ends whole, and no other with it.
+        std::fs::write(format!("{group}/memory.oom.group"), "1")
+            .map_err(|e| format!("{group}/memory.oom.group: {e}"))?;
+        if let Some(n) = d.memory {
+            std::fs::write(format!("{group}/memory.max"), n.to_string())
+                .map_err(|e| format!("{group}/memory.max: {e}"))?;
         }
         let cgroup = std::fs::File::open(&group).map_err(|e| format!("{group}: {e}"))?;
         let filter = filters
