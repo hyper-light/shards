@@ -4884,3 +4884,70 @@ fn the_in_vm_server_knows_each_agent() {
         assert!(all.lines().any(|l| l == sees), "no {sees:?} in\n{all}");
     }
 }
+
+/// Agents message one another through their server instances as the Agentfile grants,
+/// and no further (§12 answer 18, D60; default deny): `CONNECT a TO b` lets a send b
+/// requests and b answer them, not b send a its own; c, granted nothing, has no one.
+#[test]
+fn agents_message_one_another_as_granted() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let (port, _repos) = common::writable_registry();
+    let home = TempDir::new("msg-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let mut agents = String::new();
+    for (name, verbs) in [
+        ("a", r#""srv-peers","srv-send","agent b|hi","srv-receive","30""#),
+        (
+            "b",
+            r#""srv-peers","srv-receive","30","srv-answer","hello a","srv-send","agent a|unasked""#,
+        ),
+        ("c", r#""srv-peers","srv-send","agent b|x""#),
+    ] {
+        let dir = TempDir::new(&format!("msg-agent-{name}"));
+        std::fs::create_dir_all(dir.join("bin")).unwrap();
+        std::fs::copy(common::test_guest(), dir.join("bin/testguest")).unwrap();
+        std::fs::write(
+            dir.join("agent.json"),
+            format!(r#"{{"name":"{name}","run":{{"command":["bin/testguest","confined",{verbs}]}}}}"#),
+        )
+        .unwrap();
+        let tag = format!("127.0.0.1:{port}/team/msg-{name}:1");
+        let made = shards(&["build", "agent", dir.to_str().unwrap(), "-t", &tag]);
+        assert_eq!(made.status, Some(0), "{}", made.stderr);
+        let pushed = shards(&["push", "agent", &tag]);
+        assert_eq!(pushed.status, Some(0), "{}", pushed.stderr);
+        agents.push_str(&format!("AGENT {name} FROM {tag}\n"));
+    }
+    let ctx = context("msg-ctx", &format!("FROM {image}\n"));
+    std::fs::write(
+        ctx.join("Agentfile"),
+        format!("FROM {image}\n{agents}NETWORK --ingress=7000 n\nCONNECT --port=7000 a TO b ON n\n"),
+    )
+    .unwrap();
+    let built = shards(&["build", "-t", "msg:1", ctx.to_str().unwrap()]);
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    let ran = shards(&["run", "--rm", "msg:1", "await", "confined-ready", "3"]);
+    let all = format!("{}{}", ran.stdout, ran.stderr);
+    assert_eq!(ran.status, Some(0), "{all}");
+    for want in [
+        r#"[agent a] confined srv-peers: [{"name":"agent b","send":true,"answer":false}]"#,
+        r#"[agent b] confined srv-peers: [{"name":"agent a","send":false,"answer":true}]"#,
+        "[agent c] confined srv-peers: []",
+        r#"[agent a] confined srv-send agent b: ok {"id":1}"#,
+        r#"[agent b] confined srv-receive: [{"from":"agent a","kind":"request","id":1,"text":"hi"}]"#,
+        "[agent b] confined srv-answer: ok {}",
+        r#"[agent a] confined srv-receive: [{"from":"agent b","kind":"answer","id":1,"text":"hello a"}]"#,
+        "[agent b] confined srv-send agent a: refused agent b may not send agent a requests",
+        "[agent c] confined srv-send agent b: refused agent c may not send agent b requests",
+    ] {
+        assert!(all.lines().any(|l| l == want), "no {want:?} in\n{all}");
+    }
+}

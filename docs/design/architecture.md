@@ -3153,9 +3153,31 @@ mode 2, and a network namespace of `lo` alone. Mutation-checked: without its uid
 as root; without the groups, the bounding set (`000001ffffffffff`), `no_new_privs`, its
 network namespace (`lo,eth0`) or its own seccomp filter (mode 0), the test fails.
 
-Next: its tools as the grants say (messages between `CONNECT` pairs over socket pairs
-init makes, `ATTACH`, MCP servers in scope), labels, and code mode, whose sandbox's
-language is yet to be chosen.
+**Messages, as granted.** init derives who may message whom from the Agentfile
+(`netplan::channels`): each `CONNECT`'s agents send requests to those after `TO`, both
+ways with `WITH`, and each `ATTACH`'s harnesses to its agents; the receiver answers. For
+each two domains so joined it makes one `SOCK_SEQPACKET` socket pair, and gives each
+instance its end, and nothing else joins two instances. An instance offers `peers` (who
+its caller may message, and how), `send` (a request, to a peer it may send to),
+`receive` (what peers sent and it has not taken) and `answer` (to a request taken, by
+its ID). Each instance holds the grant too, as defence against another instance made to
+misbehave: a request from a peer its caller does not answer, and an answer to no request
+it sent, are dropped. It holds one unread message a peer; what a peer sends past that
+waits in the kernel's socket buffer, whose bound is the kernel's, and a full buffer is
+said to the sender (`has not taken what was sent it`). An instance joins its domain's
+cgroup before its exec, so that what an agent makes its instance hold counts against the
+agent's own memory and ends with it (part nine).
+
+Tested: `a_peer_is_heard_only_as_granted` (in a microVM, forged frames dropped, granted
+ones held) and, on real microVMs, `agents_message_one_another_as_granted`: with `CONNECT
+a TO b`, a's peers are b (send), b's are a (answer), c's none; a's request reaches b,
+b's answer reaches a, b may not send a a request of its own, and c may send no one.
+Mutation-checked: requests from a peer not answered, answers to no request, sending to a
+peer not sent to, and `TO` taken both ways each fail a test. `ATTACH`'s channels are the
+same edges, harness to agent, and are not yet tested on a microVM.
+
+Next: MCP servers in scope through it, labels, and code mode, whose sandbox's language is
+yet to be chosen.
 
 ### Agents run in their domains (D59, part one)
 

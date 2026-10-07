@@ -1226,15 +1226,26 @@ fn confined(args: &[String]) -> i32 {
     ));
     let errno = |e: &io::Error| format!("errno {}", e.raw_os_error().unwrap_or(0));
     let mut mode: &str = "";
+    // The last request `srv-receive` saw: its sender, and its ID.
+    let mut asked: Option<(String, String)> = None;
     for a in args {
         match a.as_str() {
             "see" | "write" | "bind" | "connect" | "call" | "listen" | "reach" | "unreach" | "cat"
             | "resolve" | "dnsprobe" | "unix" | "abstract" | "unix-serve" | "pause" | "udpflood"
-            | "reachmany" | "udpask" => mode = a.as_str(),
+            | "reachmany" | "udpask" | "srv-send" | "srv-receive" | "srv-answer" => mode = a.as_str(),
+            "srv-peers" => {
+                let said = match server_call("peers", "{}") {
+                    Ok((t, false)) => t,
+                    Ok((t, true)) => format!("refused {t}"),
+                    Err(e) => format!("error {e}"),
+                };
+                out.push_str(&format!("confined srv-peers: {said}\n"));
+            }
             // The in-VM server, as an MCP client asks it: who it knows this agent as.
             "whoami" => {
-                let said = match server_whoami() {
-                    Ok(name) => name,
+                let said = match server_call("whoami", "{}") {
+                    Ok((name, false)) => name,
+                    Ok((why, true)) => format!("refused {why}"),
                     Err(e) => format!("error {e}"),
                 };
                 out.push_str(&format!("confined whoami: {said}\n"));
@@ -1396,6 +1407,66 @@ fn confined(args: &[String]) -> i32 {
                     Err(e) => errno(&e),
                 };
                 out.push_str(&format!("confined udpask {addr}: {said}\n"));
+            }
+            // `TO|TEXT`: a request to TO.
+            spec if mode == "srv-send" => {
+                let (to, body) = spec.split_once('|').unwrap_or((spec, ""));
+                let args = format!(r#"{{"to":{},"text":{}}}"#, quote_json(to), quote_json(body));
+                let said = match server_call("send", &args) {
+                    Ok((t, false)) => format!("ok {t}"),
+                    Ok((t, true)) => format!("refused {t}"),
+                    Err(e) => format!("error {e}"),
+                };
+                out.push_str(&format!("confined srv-send {to}: {said}\n"));
+            }
+            // SECS: what peers sent, asked for until something is there or SECS pass; the
+            // last request among it is what `srv-answer` answers.
+            secs if mode == "srv-receive" => {
+                let until =
+                    std::time::Instant::now() + std::time::Duration::from_secs(secs.parse().unwrap_or(0));
+                let said = loop {
+                    match server_call("receive", "{}") {
+                        Ok((t, false)) if t != "[]" || std::time::Instant::now() >= until => break t,
+                        Ok((_, false)) => std::thread::sleep(std::time::Duration::from_millis(50)),
+                        Ok((t, true)) => break format!("refused {t}"),
+                        Err(e) => break format!("error {e}"),
+                    }
+                };
+                // The last request: its sender and ID, from `"from":"…","kind":"request","id":N`.
+                if let Some(at) = said.rfind(r#""kind":"request","id":"#) {
+                    let id: String = said
+                        .get(at + r#""kind":"request","id":"#.len()..)
+                        .unwrap_or_default()
+                        .chars()
+                        .take_while(char::is_ascii_digit)
+                        .collect();
+                    let from = said
+                        .get(..at)
+                        .and_then(|h| h.rfind(r#""from":""#).map(|i| (h, i)))
+                        .map(|(h, i)| unquote(h.get(i + r#""from":""#.len()..).unwrap_or_default()))
+                        .unwrap_or_default();
+                    asked = Some((from, id));
+                }
+                out.push_str(&format!("confined srv-receive: {said}\n"));
+            }
+            // TEXT: the answer to the last request received.
+            body if mode == "srv-answer" => {
+                let said = match &asked {
+                    Some((from, id)) => {
+                        let args = format!(
+                            r#"{{"to":{},"id":{id},"text":{}}}"#,
+                            quote_json(from),
+                            quote_json(body)
+                        );
+                        match server_call("answer", &args) {
+                            Ok((t, false)) => format!("ok {t}"),
+                            Ok((t, true)) => format!("refused {t}"),
+                            Err(e) => format!("error {e}"),
+                        }
+                    }
+                    None => "no request".to_string(),
+                };
+                out.push_str(&format!("confined srv-answer: {said}\n"));
             }
             secs if mode == "pause" => {
                 std::thread::sleep(std::time::Duration::from_secs(secs.parse().unwrap_or(0)));
@@ -1957,10 +2028,10 @@ fn first_of_own() -> String {
 /// The System V key §9.8's channel probes use: "SHAR".
 const IPC_KEY: libc::key_t = 0x5348_4152;
 
-/// Asks the in-VM server, over the agent's socket and mutual TLS 1.3 with the
-/// certificate and key beside it, who it is: MCP's `initialize`, then `tools/call` of
-/// `whoami`; the text it answered.
-fn server_whoami() -> Result<String, String> {
+/// Calls the in-VM server's `tool` with `args` (a JSON object), as an MCP client calls
+/// one: over the agent's socket and mutual TLS 1.3 with the certificate and key beside it,
+/// MCP's `initialize`, then `tools/call`. Its text, and whether it is an error.
+fn server_call(tool: &str, args: &str) -> Result<(String, bool), String> {
     use rustls::pki_types::pem::PemObject as _;
     use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
     use std::sync::Arc;
@@ -2018,13 +2089,55 @@ fn server_whoami() -> Result<String, String> {
     ask(
         r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"testguest","version":"1"}}}"#,
     )?;
-    let answer =
-        ask(r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"whoami","arguments":{}}}"#)?;
-    // The text of its one content item.
-    let text = answer
-        .split_once(r#""text":""#)
-        .and_then(|(_, rest)| rest.split_once('"'))
-        .map(|(t, _)| t.to_string())
+    let answer = ask(&format!(
+        r#"{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"{tool}","arguments":{args}}}}}"#
+    ))?;
+    let at = answer
+        .find(r#""text":""#)
+        .map(|i| i + r#""text":""#.len())
         .ok_or_else(|| format!("no text in {answer}"))?;
-    Ok(text)
+    Ok((
+        unquote(answer.get(at..).unwrap_or_default()),
+        answer.contains(r#""isError":true"#),
+    ))
+}
+
+/// The JSON string whose text starts `s` (past its opening quote), unescaped: up to its
+/// closing quote.
+fn unquote(s: &str) -> String {
+    let mut out = String::new();
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => break,
+            '\\' => match chars.next() {
+                Some('n') => out.push('\n'),
+                Some('t') => out.push('\t'),
+                Some('u') => {
+                    let hex: String = chars.by_ref().take(4).collect();
+                    if let Some(c) = u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32) {
+                        out.push(c);
+                    }
+                }
+                Some(other) => out.push(other),
+                None => break,
+            },
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// `s` as a JSON string.
+fn quote_json(s: &str) -> String {
+    let mut out = String::from("\"");
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }

@@ -471,6 +471,57 @@ fn boundary_of(spec: &Value, joined: &[String], outward: bool) -> Result<Vec<Egr
     Ok(out)
 }
 
+/// Who may send whom messages through the in-VM server (§12 answer 18, D60), by index in
+/// `names`: each `CONNECT`'s agents to those after `TO`, and both ways with `WITH`; each
+/// `ATTACH`'s harnesses to its agents. A domain the other may send to answers it.
+pub fn channels(spec: &Value, names: &[Name]) -> Vec<(usize, usize)> {
+    let index = |kind: Option<&str>, name: &str| -> Option<usize> {
+        let find = |harness: bool| names.iter().position(|(h, n)| *h == harness && n == name);
+        match kind {
+            Some("agent") => find(false),
+            Some("harness") => find(true),
+            _ => find(false).or_else(|| find(true)),
+        }
+    };
+    let mut out: Vec<(usize, usize)> = Vec::new();
+    let mut edge = |x: usize, y: usize| {
+        if x != y && !out.contains(&(x, y)) {
+            out.push((x, y));
+        }
+    };
+    for c in spec.get("connections").map(Value::array).unwrap_or_default() {
+        let kind = c.get("kind").and_then(Value::str);
+        let both = matches!(c.get("bothWays"), Some(Value::Bool(true)));
+        let to: Vec<usize> = strings(c.get("to"))
+            .iter()
+            .filter_map(|n| index(kind, n))
+            .collect();
+        for x in strings(c.get("from")).iter().filter_map(|n| index(kind, n)) {
+            for &y in &to {
+                edge(x, y);
+                if both {
+                    edge(y, x);
+                }
+            }
+        }
+    }
+    for a in spec.get("attachments").map(Value::array).unwrap_or_default() {
+        let agents: Vec<usize> = strings(a.get("agents"))
+            .iter()
+            .filter_map(|n| index(Some("agent"), n))
+            .collect();
+        for h in strings(a.get("harnesses"))
+            .iter()
+            .filter_map(|n| index(Some("harness"), n))
+        {
+            for &x in &agents {
+                edge(h, x);
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

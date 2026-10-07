@@ -8,7 +8,7 @@
 //!   lie beside the socket, the key readable by the agent's group alone, and a connection
 //!   must present that certificate.
 //!
-//! Started by init as `shards-server LABEL DIR GID READY FILTER`, already in namespaces
+//! Started by init as `shards-server LABEL DIR GID READY FILTER PEERS`, already in namespaces
 //! and a uid of its own with no capability (init's `domains`): it makes its files in DIR,
 //! listens, says so on descriptor READY, then confines itself with the seccomp filter it
 //! reads from descriptor FILTER, before it reads anything an agent sends.
@@ -81,6 +81,7 @@ fn run(args: &[OsString]) -> Result<(), String> {
         Ok(unsafe { OwnedFd::from_raw_fd(n) })
     };
     let (ready, filter) = (fd(3, "READY")?, fd(4, "FILTER")?);
+    let mut peers = channels(args.get(5).and_then(|a| a.to_str()).unwrap_or_default())?;
     let p = prepare(dir, label, gid)?;
     let program = read_filter(filter)?;
     let mut ready = std::fs::File::from(ready);
@@ -89,8 +90,128 @@ fn run(args: &[OsString]) -> Result<(), String> {
         .map_err(|e| format!("saying it listens: {e}"))?;
     drop(ready);
     confine(&program)?;
-    serve(&p);
+    serve(&p, &mut peers);
     Ok(())
+}
+
+/// A channel to another domain's instance, which init made for what the Agentfile grants
+/// (D60): its label, whether this caller may send it requests and answers its, and what is
+/// in flight. Each message is one sequenced packet: a kind (1 a request, 2 an answer), an
+/// ID of the asker's, 8 bytes big-endian, and its text.
+pub struct Peer {
+    label: String,
+    fd: OwnedFd,
+    send: bool,
+    answer: bool,
+    /// What was read from it and not yet taken: one at a time, so that what it sends past
+    /// that waits in the kernel's buffer, whose bound is the kernel's.
+    held: Option<Message>,
+    /// Requests sent it, awaiting its answers: an answer to anything else is dropped.
+    sent: Vec<u64>,
+    /// The last ID given a request sent it.
+    last: u64,
+    /// Its requests taken and not yet answered: an answer to anything else is refused.
+    asked: Vec<u64>,
+    gone: bool,
+}
+
+/// A message read from a peer.
+struct Message {
+    request: bool,
+    id: u64,
+    text: String,
+}
+
+const REQUEST: u8 = 1;
+const ANSWER: u8 = 2;
+
+/// The channels init gave it: one a line, `FD\tLABEL\tSEND\tANSWER`.
+fn channels(spec: &str) -> Result<Vec<Peer>, String> {
+    let mut out = Vec::new();
+    for line in spec.lines().filter(|l| !l.is_empty()) {
+        let f: Vec<&str> = line.split('\t').collect();
+        let [fd, label, send, answer] = f.as_slice() else {
+            return Err(format!("a channel it cannot read: {line:?}"));
+        };
+        let fd: RawFd = fd
+            .parse()
+            .map_err(|_| format!("a channel's descriptor: {fd:?}"))?;
+        // SAFETY: init gives this process the descriptor named, for it alone.
+        let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+        out.push(Peer {
+            label: label.to_string(),
+            fd,
+            send: *send == "true",
+            answer: *answer == "true",
+            held: None,
+            sent: Vec::new(),
+            last: 0,
+            asked: Vec::new(),
+            gone: false,
+        });
+    }
+    Ok(out)
+}
+
+/// Reads what `peer` sent, if nothing of its is held: a request only where this caller
+/// answers its, an answer only to a request sent it; anything else is dropped, whatever
+/// the other instance is made to send.
+fn take(peer: &mut Peer) {
+    if peer.held.is_some() || peer.gone {
+        return;
+    }
+    let mut buf = vec![0u8; 9 + BODY_MAX];
+    // SAFETY: recv(2) into a buffer it owns.
+    let n = unsafe {
+        libc::recv(
+            peer.fd.as_raw_fd(),
+            buf.as_mut_ptr().cast(),
+            buf.len(),
+            libc::MSG_DONTWAIT,
+        )
+    };
+    if n == 0 {
+        peer.gone = true;
+        return;
+    }
+    let Some(frame) = usize::try_from(n).ok().and_then(|n| buf.get(..n)) else {
+        return;
+    };
+    let Some((&kind, rest)) = frame.split_first() else {
+        return;
+    };
+    let Some((id, text)) = rest.split_first_chunk::<8>() else {
+        return;
+    };
+    let id = u64::from_be_bytes(*id);
+    let request = match kind {
+        REQUEST if peer.answer => true,
+        ANSWER if peer.sent.contains(&id) => {
+            peer.sent.retain(|s| *s != id);
+            false
+        }
+        _ => return,
+    };
+    peer.held = Some(Message {
+        request,
+        id,
+        text: String::from_utf8_lossy(text).into_owned(),
+    });
+}
+
+/// Sends `peer` a message of `kind`; false where its buffer is full.
+fn put(peer: &Peer, kind: u8, id: u64, text: &str) -> bool {
+    let frame = [&[kind][..], &id.to_be_bytes(), text.as_bytes()].concat();
+    // SAFETY: send(2) of a buffer it owns, on a socket of its own.
+    let n = unsafe {
+        libc::send(
+            peer.fd.as_raw_fd(),
+            frame.as_ptr().cast(),
+            frame.len(),
+            libc::MSG_DONTWAIT | libc::MSG_NOSIGNAL,
+        )
+    };
+    usize::try_from(n).is_ok_and(|n| n == frame.len())
 }
 
 /// The seccomp filter init passed: its flags, 4 bytes little-endian, then its
@@ -243,7 +364,7 @@ fn room() -> usize {
         .saturating_sub(4)
 }
 
-pub fn serve(p: &Prepared) {
+pub fn serve(p: &Prepared, peers: &mut [Peer]) {
     let room = room();
     let mut conns: Vec<Conn> = Vec::new();
     let mut set: Vec<libc::pollfd> = Vec::new();
@@ -254,6 +375,17 @@ pub fn serve(p: &Prepared) {
             events: libc::POLLIN,
             revents: 0,
         });
+        for peer in peers.iter() {
+            set.push(libc::pollfd {
+                fd: peer.fd.as_raw_fd(),
+                events: if peer.held.is_none() && !peer.gone {
+                    libc::POLLIN
+                } else {
+                    0
+                },
+                revents: 0,
+            });
+        }
         for c in &conns {
             let out = if c.tls.wants_write() { libc::POLLOUT } else { 0 };
             set.push(libc::pollfd {
@@ -282,15 +414,18 @@ pub fn serve(p: &Prepared) {
                 });
             }
         }
+        for peer in peers.iter_mut() {
+            take(peer);
+        }
         for c in &mut conns {
-            step(p, c);
+            step(p, peers, c);
         }
         conns.retain(|c| !(c.closing && !c.tls.wants_write()));
     }
 }
 
 /// Reads what a connection sent, answers each whole request, and writes what is due.
-fn step(p: &Prepared, c: &mut Conn) {
+fn step(p: &Prepared, peers: &mut [Peer], c: &mut Conn) {
     loop {
         match c.tls.read_tls(&mut c.stream) {
             Ok(0) => {
@@ -330,7 +465,7 @@ fn step(p: &Prepared, c: &mut Conn) {
                 break;
             }
         }
-        while let Some((answer, used, close)) = request(p, &c.plain) {
+        while let Some((answer, used, close)) = request(p, peers, &c.plain) {
             c.plain.drain(..used.min(c.plain.len()));
             let _ = c.tls.writer().write_all(&answer);
             if close {
@@ -354,7 +489,7 @@ fn step(p: &Prepared, c: &mut Conn) {
 
 /// The first whole request in `plain`, answered: the answer, the bytes it took, and
 /// whether the connection then closes. None until one is whole.
-fn request(p: &Prepared, plain: &[u8]) -> Option<(Vec<u8>, usize, bool)> {
+fn request(p: &Prepared, peers: &mut [Peer], plain: &[u8]) -> Option<(Vec<u8>, usize, bool)> {
     let end = plain.windows(4).position(|w| w == b"\r\n\r\n");
     let Some(end) = end else {
         return (plain.len() > HEAD_MAX).then(|| (status(431, "header too large"), plain.len(), true));
@@ -391,7 +526,7 @@ fn request(p: &Prepared, plain: &[u8]) -> Option<(Vec<u8>, usize, bool)> {
         return Some((status(405, "method not allowed"), used, close));
     }
     let answer = match json::parse(body) {
-        Ok(msg) => match rpc(p, &msg) {
+        Ok(msg) => match rpc(p, peers, &msg) {
             Some(result) => http(200, "application/json", result.as_bytes()),
             // A notification is accepted, and answered with nothing.
             None => http(202, "", b""),
@@ -405,8 +540,26 @@ fn request(p: &Prepared, plain: &[u8]) -> Option<(Vec<u8>, usize, bool)> {
     Some((answer, used, close))
 }
 
+/// A tool's result: its one text item, a JSON value, and whether it is an error the caller
+/// may act on (MCP's `isError`).
+fn text(value: &str, is_error: bool) -> String {
+    format!(
+        r#"{{"content":[{{"type":"text","text":{}}}],"isError":{is_error}}}"#,
+        quote(value)
+    )
+}
+
+/// What it offers: who the caller is, those it may message, and messaging them.
+const TOOLS: &str = r#"{"tools":[
+{"name":"whoami","description":"Who this server knows the caller as: the agent or harness whose socket it called on.","inputSchema":{"type":"object","properties":{}}},
+{"name":"peers","description":"The agents and harnesses the caller may message, as its Agentfile grants: whether it may send each requests (send), and whether it answers theirs (answer).","inputSchema":{"type":"object","properties":{}}},
+{"name":"send","description":"Sends a peer the caller may send requests a request; its ID, which the peer's answer carries.","inputSchema":{"type":"object","properties":{"to":{"type":"string"},"text":{"type":"string"}},"required":["to","text"]}},
+{"name":"receive","description":"What peers have sent the caller and it has not taken: their requests, and their answers to its own.","inputSchema":{"type":"object","properties":{}}},
+{"name":"answer","description":"Answers a request a peer sent the caller, by its ID.","inputSchema":{"type":"object","properties":{"to":{"type":"string"},"id":{"type":"integer"},"text":{"type":"string"}},"required":["to","id","text"]}}
+]}"#;
+
 /// A JSON-RPC message's answer; None for a notification.
-fn rpc(p: &Prepared, msg: &Value) -> Option<String> {
+fn rpc(p: &Prepared, peers: &mut [Peer], msg: &Value) -> Option<String> {
     let id = msg.get("id")?;
     let result = match msg.get("method").and_then(Value::str) {
         Some("initialize") => {
@@ -425,14 +578,90 @@ fn rpc(p: &Prepared, msg: &Value) -> Option<String> {
             )
         }
         Some("ping") => "{}".to_string(),
-        Some("tools/list") => {
-            r#"{"tools":[{"name":"whoami","description":"Who this server knows the caller as: the agent or harness whose socket it called on.","inputSchema":{"type":"object","properties":{}}}]}"#
-                .to_string()
+        Some("tools/list") => TOOLS.to_string(),
+        Some("tools/call") => {
+            let params = msg.get("params");
+            let args = params.and_then(|p| p.get("arguments"));
+            let arg = |k: &str| args.and_then(|a| a.get(k));
+            match params.and_then(|p| p.get("name")).and_then(Value::str) {
+                Some("whoami") => text(&p.label, false),
+                Some("peers") => {
+                    let list: Vec<String> = peers
+                        .iter()
+                        .map(|q| {
+                            format!(
+                                r#"{{"name":{},"send":{},"answer":{}}}"#,
+                                quote(&q.label),
+                                q.send,
+                                q.answer
+                            )
+                        })
+                        .collect();
+                    text(&format!("[{}]", list.join(",")), false)
+                }
+                Some("send") => {
+                    let to = arg("to").and_then(Value::str).unwrap_or_default();
+                    let body = arg("text").and_then(Value::str).unwrap_or_default();
+                    match peers.iter_mut().find(|q| q.label == to) {
+                        Some(q) if q.send => {
+                            let next = q.last.wrapping_add(1);
+                            if put(q, REQUEST, next, body) {
+                                q.last = next;
+                                q.sent.push(next);
+                                text(&format!(r#"{{"id":{next}}}"#), false)
+                            } else {
+                                text(
+                                    &format!("{to} has not taken what was sent it; send again later"),
+                                    true,
+                                )
+                            }
+                        }
+                        _ => text(&format!("{} may not send {to} requests", p.label), true),
+                    }
+                }
+                Some("receive") => {
+                    let mut got = Vec::new();
+                    for q in peers.iter_mut() {
+                        if let Some(m) = q.held.take() {
+                            if m.request {
+                                q.asked.push(m.id);
+                            }
+                            got.push(format!(
+                                r#"{{"from":{},"kind":"{}","id":{},"text":{}}}"#,
+                                quote(&q.label),
+                                if m.request { "request" } else { "answer" },
+                                m.id,
+                                quote(&m.text)
+                            ));
+                        }
+                    }
+                    text(&format!("[{}]", got.join(",")), false)
+                }
+                Some("answer") => {
+                    let to = arg("to").and_then(Value::str).unwrap_or_default();
+                    let to_id = arg("id").and_then(Value::u64);
+                    let body = arg("text").and_then(Value::str).unwrap_or_default();
+                    match (peers.iter_mut().find(|q| q.label == to), to_id) {
+                        (Some(q), Some(n)) if q.asked.contains(&n) => {
+                            if put(q, ANSWER, n, body) {
+                                q.asked.retain(|a| *a != n);
+                                text("{}", false)
+                            } else {
+                                text(
+                                    &format!("{to} has not taken what was sent it; answer again later"),
+                                    true,
+                                )
+                            }
+                        }
+                        _ => text(
+                            &format!("{} has no request of {to}'s to answer by that ID", p.label),
+                            true,
+                        ),
+                    }
+                }
+                _ => return Some(error(id, -32602, "no such tool")),
+            }
         }
-        Some("tools/call") => match msg.get("params").and_then(|p| p.get("name")).and_then(Value::str) {
-            Some("whoami") => format!(r#"{{"content":[{{"type":"text","text":{}}}]}}"#, quote(&p.label)),
-            _ => return Some(error(id, -32602, "no such tool")),
-        },
         _ => return Some(error(id, -32601, "no such method")),
     };
     Some(format!(
@@ -520,7 +749,7 @@ mod tests {
             .collect();
         for (dir, label) in dirs.iter().zip(["agent x", "agent y"]) {
             let p = prepare(dir, label, gid).unwrap();
-            std::thread::spawn(move || serve(&p));
+            std::thread::spawn(move || serve(&p, &mut Vec::new()));
         }
         let ask = |socket: &str, creds: Option<&str>| -> Result<String, String> {
             let ca = CertificateDer::from_pem_file(format!("{socket}/ca.pem")).map_err(|e| e.to_string())?;
@@ -574,6 +803,56 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
+    /// What another instance sends is taken only as the grant says, whatever it is made to
+    /// send: a request only from a peer this one answers, an answer only to a request it
+    /// sent.
+    #[test]
+    fn a_peer_is_heard_only_as_granted() {
+        let pair = || {
+            let mut fds = [0 as RawFd; 2];
+            // SAFETY: socketpair(2) into a two-element array.
+            let rc = unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_SEQPACKET, 0, fds.as_mut_ptr()) };
+            assert_eq!(rc, 0);
+            // SAFETY: both were just made, and are owned here alone.
+            unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) }
+        };
+        let peer = |fd: OwnedFd, answer: bool| Peer {
+            label: "agent o".into(),
+            fd,
+            send: true,
+            answer,
+            held: None,
+            sent: Vec::new(),
+            last: 0,
+            asked: Vec::new(),
+            gone: false,
+        };
+        let other = |fd: &OwnedFd| peer(fd.try_clone().unwrap(), true);
+        // A request from one it does not answer: dropped.
+        let (mine, theirs) = pair();
+        let mut p = peer(mine, false);
+        assert!(put(&other(&theirs), REQUEST, 1, "do this"));
+        take(&mut p);
+        assert!(p.held.is_none());
+        // From one it answers: held.
+        let (mine, theirs) = pair();
+        let mut p = peer(mine, true);
+        assert!(put(&other(&theirs), REQUEST, 1, "do this"));
+        take(&mut p);
+        assert!(p.held.as_ref().is_some_and(|m| m.request && m.id == 1));
+        // An answer to no request sent: dropped; to one sent, held, and no longer awaited.
+        let (mine, theirs) = pair();
+        let mut p = peer(mine, false);
+        assert!(put(&other(&theirs), ANSWER, 7, "unasked"));
+        take(&mut p);
+        assert!(p.held.is_none());
+        p.sent.push(7);
+        assert!(put(&other(&theirs), ANSWER, 7, "asked"));
+        take(&mut p);
+        assert!(p.held.as_ref().is_some_and(|m| !m.request && m.text == "asked"));
+        assert!(p.sent.is_empty());
+    }
+
     #[test]
     fn strings_are_quoted_as_json_writes_them() {
         assert_eq!(quote("a\"b\\c\n"), r#""a\"b\\c\u000a""#);
@@ -585,13 +864,18 @@ mod tests {
     fn requests_past_their_bounds_are_refused() {
         let p = prepare_for_test();
         let long = vec![b'a'; HEAD_MAX + 1];
-        assert!(request(&p, &long).is_some_and(|(a, _, close)| a.starts_with(b"HTTP/1.1 431") && close));
+        assert!(
+            request(&p, &mut [], &long).is_some_and(|(a, _, close)| a.starts_with(b"HTTP/1.1 431") && close)
+        );
         let big = format!("POST /mcp HTTP/1.1\r\nContent-Length: {}\r\n\r\n", BODY_MAX + 1);
         assert!(
-            request(&p, big.as_bytes()).is_some_and(|(a, _, close)| a.starts_with(b"HTTP/1.1 413") && close)
+            request(&p, &mut [], big.as_bytes())
+                .is_some_and(|(a, _, close)| a.starts_with(b"HTTP/1.1 413") && close)
         );
         let bad = b"POST /mcp HTTP/1.1\r\nContent-Length: x\r\n\r\n";
-        assert!(request(&p, bad).is_some_and(|(a, _, close)| a.starts_with(b"HTTP/1.1 400") && close));
+        assert!(
+            request(&p, &mut [], bad).is_some_and(|(a, _, close)| a.starts_with(b"HTTP/1.1 400") && close)
+        );
     }
 
     fn prepare_for_test() -> Prepared {

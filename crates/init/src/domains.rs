@@ -77,6 +77,10 @@ pub struct Domain {
     pub name: crate::netplan::Name,
     /// Its link to the others, where the Agentfile grants it one.
     pub link: Option<crate::netplan::Link>,
+    /// Those it may message through the in-VM server (D60), by index among the domains
+    /// that run: each with whether it may send them requests, and whether it answers
+    /// theirs.
+    pub channels: Vec<(usize, bool, bool)>,
     /// Its `/etc/resolv.conf`, where it reaches past the microVM: the microVM's gateway,
     /// whose network process asks the host's resolvers (D59).
     pub resolv: Option<Vec<u8>>,
@@ -138,6 +142,17 @@ pub fn read() -> Result<Read, String> {
         (std::net::Ipv4Addr::from(u32::from(addr) & mask), prefix)
     });
     let plan = crate::netplan::plan(&spec, &names, own)?;
+    for (x, y) in crate::netplan::channels(&spec, &names) {
+        for (me, peer, send) in [(x, y, true), (y, x, false)] {
+            if let Some(d) = out.get_mut(me) {
+                match d.channels.iter_mut().find(|c| c.0 == peer) {
+                    Some(c) if send => c.1 = true,
+                    Some(c) => c.2 = true,
+                    None => d.channels.push((peer, send, !send)),
+                }
+            }
+        }
+    }
     for (d, link) in out.iter_mut().zip(plan.links) {
         // A resolver only where a grant names one (`--dns`, a remote MCP server): its own
         // gateway, the agents' resolver, which holds it to what it may ask.
@@ -232,6 +247,7 @@ fn domain(
         workdir,
         name: (kind == "harness", name.to_string()),
         link: None,
+        channels: Vec::new(),
         resolv: None,
     })
 }
@@ -794,6 +810,37 @@ pub fn start(
         .get(1)
         .and_then(Option::as_ref)
         .ok_or("the run gave no seccomp filter for the in-VM server")?;
+    // A socket pair for each two domains one may message, kept until both instances hold
+    // theirs: messages pass only where the Agentfile grants them.
+    let mut joined: Vec<((usize, usize), OwnedFd, OwnedFd)> = Vec::new();
+    for (i, d) in domains.iter().enumerate() {
+        for &(j, _, _) in &d.channels {
+            let key = (i.min(j), i.max(j));
+            if joined.iter().any(|(k, _, _)| *k == key) {
+                continue;
+            }
+            let mut fds = [0 as RawFd; 2];
+            // SAFETY: socketpair(2) into a two-element array.
+            if unsafe {
+                libc::socketpair(
+                    libc::AF_UNIX,
+                    libc::SOCK_SEQPACKET | libc::SOCK_CLOEXEC,
+                    0,
+                    fds.as_mut_ptr(),
+                )
+            } != 0
+            {
+                return Err(format!(
+                    "{}: its server's channels: {}",
+                    d.label,
+                    io::Error::last_os_error()
+                ));
+            }
+            // SAFETY: both descriptors were just made, and are owned here alone.
+            let (a, b) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
+            joined.push((key, a, b));
+        }
+    }
     let mut started = Vec::new();
     for (i, d) in domains.iter().enumerate() {
         let group = format!("{CGROUPS}/{}", d.cgroup);
@@ -844,7 +891,21 @@ pub fn start(
         }
         // Its server instance, listening before it starts, and its way there, read-only:
         // its socket, the instance's CA, its certificate and key.
-        let dir = server.start(i, d, no_processes, last_cap)?;
+        let peers: Vec<Peer<'_>> = d
+            .channels
+            .iter()
+            .filter_map(|&(j, send, answer)| {
+                let (_, a, b) = joined.iter().find(|(k, _, _)| *k == (i.min(j), i.max(j)))?;
+                let end = if i < j { a } else { b };
+                Some(Peer {
+                    fd: end.as_raw_fd(),
+                    label: domains.get(j)?.label.as_str(),
+                    send,
+                    answer,
+                })
+            })
+            .collect();
+        let dir = server.start(i, d, no_processes, last_cap, &group, &peers)?;
         let quiet = libc::MOUNT_ATTR_NOSUID | libc::MOUNT_ATTR_NODEV | libc::MOUNT_ATTR_NOEXEC;
         let copy = copy_of(&dir, quiet | libc::MOUNT_ATTR_RDONLY)
             .map_err(|e| format!("{}: the in-VM server: {e}", d.label))?;
@@ -978,7 +1039,17 @@ pub fn start(
             partial: Vec::new(),
         });
     }
+    drop(joined);
     Ok(started)
+}
+
+/// One of an instance's channels to another domain's: its end, the other's label, and
+/// whether it may send them requests and answers theirs.
+struct Peer<'a> {
+    fd: RawFd,
+    label: &'a str,
+    send: bool,
+    answer: bool,
 }
 
 /// Where a domain finds its server instance: its socket, the instance's CA, and its own
@@ -1056,7 +1127,15 @@ impl Server {
     /// domain's group to give its files to, no capability, `no_new_privs`, its own
     /// network, IPC and UTS namespaces), confined by `filter` once it listens; returns
     /// the directory it listens in, once it does.
-    fn start(&self, n: usize, d: &Domain, filter: &Filter, last_cap: u32) -> Result<String, String> {
+    fn start(
+        &self,
+        n: usize,
+        d: &Domain,
+        filter: &Filter,
+        last_cap: u32,
+        group: &str,
+        peers: &[Peer<'_>],
+    ) -> Result<String, String> {
         let fail = |e: String| format!("{}: its server: {e}", d.label);
         let id = u32::try_from(n)
             .ok()
@@ -1089,6 +1168,15 @@ impl Server {
             cstr_of(&d.id.to_string())?,
             cstr_of("3")?,
             cstr_of("4")?,
+            // Its channels, from descriptor 7 on: one a line, its descriptor, the other's
+            // label, and whether it sends and answers.
+            cstr_of(
+                &peers
+                    .iter()
+                    .enumerate()
+                    .map(|(k, p)| format!("{}\t{}\t{}\t{}\n", 7 + k, p.label, p.send, p.answer))
+                    .collect::<String>(),
+            )?,
         ];
         let argv: Vec<*const libc::c_char> = argv_owned
             .iter()
@@ -1110,6 +1198,11 @@ impl Server {
         // What it says before it listens, if it ends: its stderr until then.
         let (said_r, said_w) = pipe()?;
         let groups = [d.id];
+        // Its domain's cgroup, so that what an agent makes its instance hold counts against
+        // the agent's own memory, and ends with it.
+        let procs = cstr_of(&format!("{group}/cgroup.procs"))?;
+        let ends: Vec<RawFd> = peers.iter().map(|p| p.fd).collect();
+        let first_free = u32::try_from(7 + ends.len()).map_err(|_| fail("too many channels".into()))?;
         // SAFETY: fork(2) from init with no other thread running; the child calls only the
         // kernel, on what was made above, and execs or exits.
         let pid = unsafe { libc::fork() };
@@ -1119,6 +1212,16 @@ impl Server {
         if pid == 0 {
             // SAFETY: system calls on descriptors and buffers made before the fork.
             unsafe {
+                // Its channels above the descriptors they go to (7 on), before any is
+                // placed, so that placing one overwrites none of them; then where they go.
+                let mut high = Vec::with_capacity(ends.len());
+                for &fd in &ends {
+                    let h = libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, first_free as libc::c_int);
+                    if h < 0 {
+                        libc::_exit(126);
+                    }
+                    high.push(h);
+                }
                 let up = |fd: RawFd| libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 10);
                 let (r, f, b, e, w) = (
                     up(ready_w.as_raw_fd()),
@@ -1142,7 +1245,19 @@ impl Server {
                     || libc::dup2(b, 5) < 0
                     || libc::fcntl(5, libc::F_SETFD, libc::FD_CLOEXEC) < 0
                     || libc::dup2(w, 6) < 0
-                    || libc::syscall(libc::SYS_close_range, 7u32, u32::MAX, 0u32) != 0
+                {
+                    libc::_exit(126);
+                }
+                for (k, &h) in high.iter().enumerate() {
+                    if libc::dup2(h, 7 + k as libc::c_int) < 0 {
+                        libc::_exit(126);
+                    }
+                }
+                let join = libc::open(procs.as_ptr(), libc::O_WRONLY | libc::O_CLOEXEC);
+                if join < 0
+                    || libc::write(join, c"0".as_ptr().cast(), 1) != 1
+                    || libc::close(join) != 0
+                    || libc::syscall(libc::SYS_close_range, first_free, u32::MAX, 0u32) != 0
                     || libc::unshare(libc::CLONE_NEWNET | libc::CLONE_NEWIPC | libc::CLONE_NEWUTS) != 0
                     || !crate::defaults::bound(last_cap, |_| false)
                     || libc::setgroups(groups.len(), groups.as_ptr()) != 0
