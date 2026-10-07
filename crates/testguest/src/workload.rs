@@ -1129,7 +1129,8 @@ fn confined(args: &[String]) -> i32 {
     for a in args {
         match a.as_str() {
             "see" | "write" | "bind" | "connect" | "call" | "listen" | "reach" | "unreach" | "cat"
-            | "resolve" | "dnsprobe" | "unix" | "abstract" | "unix-serve" => mode = a.as_str(),
+            | "resolve" | "dnsprobe" | "unix" | "abstract" | "unix-serve" | "pause" | "udpflood"
+            | "reachmany" => mode = a.as_str(),
             "fill" => {
                 let _ = io::stdout().write_all(out.as_bytes());
                 return fill_scratch();
@@ -1170,6 +1171,46 @@ fn confined(args: &[String]) -> i32 {
                 };
                 out.push_str(&format!("confined unix {path}: {said}\n"));
                 out.push_str(&format!("confined unix tried {}\n", monotonic_ns()));
+            }
+            secs if mode == "pause" => {
+                std::thread::sleep(std::time::Duration::from_secs(secs.parse().unwrap_or(0)));
+            }
+            // `ADDR,SECS`: a datagram to ADDR from a socket of a new port each, for SECS:
+            // a new flow each to whatever tracks them.
+            spec if mode == "udpflood" => {
+                let (addr, secs) = spec.split_once(',').unwrap_or((spec, "0"));
+                let until =
+                    std::time::Instant::now() + std::time::Duration::from_secs(secs.parse().unwrap_or(0));
+                let mut sent = 0u64;
+                while std::time::Instant::now() < until {
+                    if let Ok(s) = std::net::UdpSocket::bind("0.0.0.0:0")
+                        && s.send_to(b"x", addr).is_ok()
+                    {
+                        sent += 1;
+                    }
+                }
+                out.push_str(&format!("confined udpflood {addr}: {sent} sent\n"));
+            }
+            // `ADDR,N`: N connections to ADDR, each given 1 s, and how many were made.
+            spec if mode == "reachmany" => {
+                use std::net::ToSocketAddrs as _;
+                let (addr, n) = spec.split_once(',').unwrap_or((spec, "0"));
+                let n: u32 = n.parse().unwrap_or(0);
+                let to = addr.to_socket_addrs().ok().and_then(|mut a| a.next());
+                let mut made = 0u32;
+                let began = std::time::Instant::now();
+                for _ in 0..n {
+                    if let Some(to) = to
+                        && std::net::TcpStream::connect_timeout(&to, std::time::Duration::from_secs(1))
+                            .is_ok()
+                    {
+                        made += 1;
+                    }
+                }
+                out.push_str(&format!(
+                    "confined reachmany {addr}: {made} of {n} in {} ms\n",
+                    began.elapsed().as_millis()
+                ));
             }
             path if mode == "unix-serve" => {
                 let _ = std::fs::remove_file(path);

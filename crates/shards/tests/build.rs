@@ -4521,3 +4521,71 @@ fn agents_reach_only_the_unix_sockets_granted() {
     said("c", &format!("unix {tools}: errno 2"));
     said("d", &format!("unix {tools}: errno 2"));
 }
+
+/// One agent opening new flows without end takes no other agent's connections (D59): a,
+/// granted UDP 7000 to b, sends from a new port each time; c, granted TCP 7001 to b,
+/// connects meanwhile, and makes every connection.
+#[test]
+fn an_agents_flood_of_flows_takes_no_others() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let (port, _repos) = common::writable_registry();
+    let home = TempDir::new("flood-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let flood = std::env::var("SHARDS_FLOOD_SECS").unwrap_or_else(|_| "10".to_string());
+    let mut agents = String::new();
+    for (name, verbs) in [
+        ("b", "\"listen\",\"7001\"".to_string()),
+        ("a", format!("\"udpflood\",\"b:7000,{flood}\"")),
+        ("c", "\"pause\",\"2\",\"reachmany\",\"b:7001,200\"".to_string()),
+    ] {
+        let dir = TempDir::new(&format!("flood-agent-{name}"));
+        std::fs::create_dir_all(dir.join("bin")).unwrap();
+        std::fs::copy(common::test_guest(), dir.join("bin/testguest")).unwrap();
+        std::fs::write(
+            dir.join("agent.json"),
+            format!(r#"{{"name":"{name}","run":{{"command":["bin/testguest","confined",{verbs}]}}}}"#),
+        )
+        .unwrap();
+        let tag = format!("127.0.0.1:{port}/team/flood-{name}:1");
+        let made = shards(&["build", "agent", dir.to_str().unwrap(), "-t", &tag]);
+        assert_eq!(made.status, Some(0), "{}", made.stderr);
+        let pushed = shards(&["push", "agent", &tag]);
+        assert_eq!(pushed.status, Some(0), "{}", pushed.stderr);
+        agents.push_str(&format!("AGENT {name} FROM {tag}\n"));
+    }
+    let ctx = context("flood-ctx", &format!("FROM {image}\n"));
+    std::fs::write(
+        ctx.join("Agentfile"),
+        format!(
+            "FROM {image}\n{agents}\
+             NETWORK --ingress=7000/udp --ingress=7001 n\n\
+             CONNECT --port=7000/udp a TO b ON n\n\
+             CONNECT --port=7001 c TO b ON n\n"
+        ),
+    )
+    .unwrap();
+    let built = shards(&["build", "-t", "flood:1", ctx.to_str().unwrap()]);
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    let ran = shards(&["run", "--rm", "flood:1", "await", "confined-ready", "3"]);
+    let all = format!("{}{}", ran.stdout, ran.stderr);
+    assert_eq!(ran.status, Some(0), "{all}");
+    for l in all
+        .lines()
+        .filter(|l| l.contains("udpflood") || l.contains("reachmany"))
+    {
+        eprintln!("{l}");
+    }
+    assert!(
+        all.lines()
+            .any(|l| l.starts_with("[agent c] confined reachmany b:7001: 200 of 200")),
+        "c's connections were taken:\n{all}"
+    );
+}

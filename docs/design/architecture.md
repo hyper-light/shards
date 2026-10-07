@@ -3556,6 +3556,18 @@ in it, init (PID 1, whose end is the microVM's) and the run's own command includ
   microVM as init's Linux tests are on this host, mutation-checked: with no share, one
   asker took every ID).
 
+- **Flows through the switch, measured: no change needed.** Conntrack's table holds 2048
+  entries in a 237 MB microVM (`nf_conntrack_max`, sized by the kernel from memory), a
+  count kept per network namespace against that one limit (net/netfilter/
+  nf_conntrack_core.c, `__nf_conntrack_alloc`), and an unanswered UDP flow stays 30 s: one
+  agent with a UDP grant fills the switch's table at once. But a full table evicts an
+  entry not yet assured (`early_drop`), which a flood's are. Measured
+  (`an_agents_flood_of_flows_takes_no_others`, 5 runs, each 200 of 200, MacBook arm64, macOS 26.4; in the one printed, a sent
+  860,478 datagrams in 10 s, each from a new socket, to b's granted UDP port, while c made
+  200 of 200 TCP connections to b, in 16 ms. The test stays, so that a rule assuring such
+  flows would be seen. The kernel lacks `nft_connlimit` (`CONFIG_NFT_CONNLIMIT`), which
+  a per-agent bound would need; none is needed.
+
 `/tmp` stays where an agent's scratch is: the run's own writable layer is a tmpfs as well
 (`run.rs`, `mount_root`), so every writable directory in a microVM is its memory, and a
 programs' default temporary directory (POSIX `TMPDIR`) is where they look.
