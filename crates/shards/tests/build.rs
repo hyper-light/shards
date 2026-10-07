@@ -3546,3 +3546,130 @@ fn agents_run_in_their_domains() {
         ran.stderr
     );
 }
+
+/// Agents reach one another as the Agentfile's `CONNECT`s grant (D59, AGENTFILE_ARCH.md
+/// §4.6, §4.7, §9.7), each over one link to a switch that decides by link. On `back`,
+/// `CONNECT a TO b` lets `a` open connections to `b` and `b` only answer it, and `d`, a
+/// member by `CONNECT d WITH d`, reaches both and is reached by both; so `b`, which
+/// Landlock lets connect (to `d`), finds `a` listening and is still dropped by the switch.
+/// `c`, alone on `side`, may neither bind nor connect. Each resolves its network's members.
+#[test]
+fn agents_reach_only_what_connect_grants() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let (port, _repos) = common::writable_registry();
+    let home = TempDir::new("links-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let agent = |name: &str, args: &[&str]| -> String {
+        let dir = TempDir::new(&format!("links-agent-{name}"));
+        std::fs::create_dir_all(dir.join("bin")).unwrap();
+        std::fs::copy(common::test_guest(), dir.join("bin/testguest")).unwrap();
+        let command: Vec<String> = ["bin/testguest", "confined", "cat", "/etc/hosts"]
+            .iter()
+            .chain(args)
+            .map(|a| format!("{a:?}"))
+            .collect();
+        std::fs::write(
+            dir.join("agent.json"),
+            format!(
+                r#"{{"name":"{name}","run":{{"command":[{}]}}}}"#,
+                command.join(",")
+            ),
+        )
+        .unwrap();
+        let tag = format!("127.0.0.1:{port}/team/links-{name}:1");
+        let made = shards(&["build", "agent", dir.to_str().unwrap(), "-t", &tag]);
+        assert_eq!(made.status, Some(0), "{}", made.stderr);
+        let pushed = shards(&["push", "agent", &tag]);
+        assert_eq!(pushed.status, Some(0), "{}", pushed.stderr);
+        tag
+    };
+    let a = agent(
+        "a",
+        &["resolve", "localhost", "listen", "7000", "reach", "b:7000"],
+    );
+    let b = agent("b", &["listen", "7000", "unreach", "a:7000"]);
+    let c = agent("c", &["listen", "7000", "unreach", "172.31.1.3:7000"]);
+    let d = agent("d", &["listen", "7000", "reach", "a:7000", "b:7000"]);
+    let ctx = context("links-ctx", &format!("FROM {image}\n"));
+    std::fs::write(
+        ctx.join("Agentfile"),
+        format!(
+            "FROM {image}\nAGENT a FROM {a}\nAGENT b FROM {b}\nAGENT c FROM {c}\nAGENT d FROM {d}\n\
+             NETWORK --subnet=172.31.1.0/24 back\nNETWORK --subnet=172.31.2.0/24 side\n\
+             CONNECT a TO b ON back\nCONNECT d WITH d ON back\nCONNECT c WITH c ON side\n"
+        ),
+    )
+    .unwrap();
+    let built = shards(&["build", "-t", "links:1", ctx.to_str().unwrap()]);
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    let ran = shards(&["run", "--rm", "links:1", "await", "confined-ready", "4"]);
+    assert_eq!(ran.status, Some(0), "{}{}", ran.stdout, ran.stderr);
+    let said = |who: &str| -> Vec<String> {
+        let prefix = format!("[agent {who}] ");
+        ran.stderr
+            .lines()
+            .filter_map(|l| l.strip_prefix(&prefix).map(str::to_string))
+            .collect()
+    };
+    for (who, wants) in [
+        (
+            "a",
+            &[
+                "confined net=lo,eth0",
+                "confined resolve localhost: 0,0",
+                "confined listen 7000: ok",
+                "confined reach b:7000: ok",
+            ][..],
+        ),
+        (
+            "b",
+            &[
+                "confined listen 7000: ok",
+                // b only answers a: a listens, and the switch drops what b opens to it.
+                "confined unreach a:7000: timeout",
+            ][..],
+        ),
+        (
+            "c",
+            &[
+                // Alone on side: Landlock lets it neither bind nor connect.
+                "confined listen 7000: errno 13",
+                "confined unreach 172.31.1.3:7000: errno 13",
+            ][..],
+        ),
+        (
+            "d",
+            &["confined reach a:7000: ok", "confined reach b:7000: ok"][..],
+        ),
+    ] {
+        let lines = said(who);
+        for want in wants {
+            assert!(
+                lines.iter().any(|l| l == want),
+                "no {want:?} from {who} in:\n{}",
+                ran.stderr
+            );
+        }
+    }
+    // Each resolves its network's members, and no one else, after Docker's own lines.
+    let hosts = |who: &str| -> Vec<String> {
+        said(who)
+            .into_iter()
+            .filter_map(|l| l.strip_prefix("confined cat /etc/hosts: ").map(str::to_string))
+            .filter(|l| l.starts_with("172.31."))
+            .collect()
+    };
+    let back = ["172.31.1.2\ta", "172.31.1.3\tb", "172.31.1.4\td"];
+    for who in ["a", "b", "d"] {
+        assert_eq!(hosts(who), back, "{who}");
+    }
+    assert_eq!(hosts("c"), ["172.31.2.2\tc"]);
+}

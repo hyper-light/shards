@@ -67,14 +67,22 @@ pub struct Domain {
     pub argv: Vec<CString>,
     pub env: Vec<CString>,
     pub workdir: CString,
+    /// Whether it is a harness, and its name, as `CONNECT`s name it.
+    pub name: crate::netplan::Name,
+    /// Its link to the others, where the Agentfile grants it one.
+    pub link: Option<crate::netplan::Link>,
 }
+
+/// What the image's normalized Agentfile says to start: every domain's directory, the
+/// domains that run, and the pairs of them that may open connections, by index.
+pub type Read = (Vec<Vec<u8>>, Vec<Domain>, Vec<(usize, usize)>);
 
 /// The directories of every domain the image's normalized Agentfile declares, and those
 /// domains that say how they run; nothing where the image has no Agentfile.
-pub fn read() -> Result<(Vec<Vec<u8>>, Vec<Domain>), String> {
+pub fn read() -> Result<Read, String> {
     let text = match std::fs::read("/.agentfile.json") {
         Ok(t) => t,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok((Vec::new(), Vec::new())),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok((Vec::new(), Vec::new(), Vec::new())),
         Err(e) => return Err(format!("/.agentfile.json: {e}")),
     };
     let spec = json::parse(&text).map_err(|e| format!("/.agentfile.json: {e}"))?;
@@ -110,7 +118,17 @@ pub fn read() -> Result<(Vec<Vec<u8>>, Vec<Domain>), String> {
             out.push(domain(kind, name, dir, id, d, &config, run)?);
         }
     }
-    Ok((dirs, out))
+    // Their links, clear of the microVM's own network.
+    let names: Vec<crate::netplan::Name> = out.iter().map(|d| d.name.clone()).collect();
+    let own = crate::net::current().map(|(addr, prefix, _)| {
+        let mask = u32::MAX.checked_shl(32 - u32::from(prefix)).unwrap_or(0);
+        (std::net::Ipv4Addr::from(u32::from(addr) & mask), prefix)
+    });
+    let plan = crate::netplan::plan(&spec, &names, own)?;
+    for (d, link) in out.iter_mut().zip(plan.links) {
+        d.link = link;
+    }
+    Ok((dirs, out, plan.pairs))
 }
 
 fn domain(
@@ -183,6 +201,8 @@ fn domain(
         argv,
         env,
         workdir,
+        name: (kind == "harness", name.to_string()),
+        link: None,
     })
 }
 
@@ -258,6 +278,13 @@ struct Prepared {
     argv: Vec<*const libc::c_char>,
     envp: Vec<*const libc::c_char>,
     last_cap: u32,
+    /// The TCP rights Landlock refuses it: connecting unless it may open connections,
+    /// binding unless it may be connected to.
+    net_handled: u64,
+    /// Its `/etc/hosts`, where it has a link.
+    hosts: Option<Vec<u8>>,
+    /// Where it waits for its link, before it holds nothing of init's.
+    go: Option<RawFd>,
 }
 
 /// The Landlock ABI the guest kernel has; an error where it lacks what a domain needs.
@@ -288,12 +315,18 @@ fn landlock_abi() -> Result<i64, String> {
 /// A seccomp filter: its seccomp(2) flags and program.
 pub type Filter = (u32, Vec<libc::sock_filter>);
 
+/// The switch the domains' links meet in, kept while the microVM runs: a namespace no
+/// process holds lives while a descriptor of it does.
+static SWITCH: std::sync::OnceLock<crate::links::Switch> = std::sync::OnceLock::new();
+
 /// Starts each of `domains`, hiding from each the directories of `all` but its own, under
 /// the filter of `filters` it needs, which the host compiles (`domains-seccomp=`, and
-/// `domains-seccomp-none=` for `--processes=none`); none starts without it.
+/// `domains-seccomp-none=` for `--processes=none`); none starts without it. Those with a
+/// link are linked once they exist, `pairs` of them allowed to open connections.
 pub fn start(
     all: &[Vec<u8>],
     domains: &[Domain],
+    pairs: &[(usize, usize)],
     filters: &[Option<Filter>; 2],
 ) -> Result<Vec<Started>, String> {
     if domains.is_empty() {
@@ -308,7 +341,7 @@ pub fn start(
     let last_cap = crate::defaults::last_cap();
     landlock_abi()?;
     let mut started = Vec::new();
-    for d in domains {
+    for (i, d) in domains.iter().enumerate() {
         let group = format!("{CGROUPS}/{}", d.cgroup);
         std::fs::create_dir(&group).map_err(|e| format!("{group}: {e}"))?;
         if let Some(n) = d.pids {
@@ -346,6 +379,34 @@ pub fn start(
                 .chain([std::ptr::null()])
                 .collect(),
             last_cap,
+            net_handled: match &d.link {
+                Some(l) => {
+                    (if l.connects { 0 } else { landlock::NET_CONNECT_TCP })
+                        | (if l.accepts { 0 } else { landlock::NET_BIND_TCP })
+                }
+                None => landlock::NET_BIND_TCP | landlock::NET_CONNECT_TCP,
+            },
+            hosts: d.link.as_ref().map(|l| l.hosts.clone()),
+            go: None,
+        };
+        let mut prepared = prepared;
+        let go = match &d.link {
+            Some(_) => {
+                let mut fds = [0 as RawFd; 2];
+                // SAFETY: pipe2(2) into a two-element array.
+                if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
+                    return Err(format!(
+                        "{}: its link's pipe: {}",
+                        d.label,
+                        io::Error::last_os_error()
+                    ));
+                }
+                // SAFETY: both descriptors were just made, and are owned here alone.
+                let (r, w) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
+                prepared.go = Some(r.as_raw_fd());
+                Some((r, w))
+            }
+            None => None,
         };
         let mut fds = [0 as RawFd; 2];
         // SAFETY: pipe2(2) into a two-element array.
@@ -380,6 +441,27 @@ pub fn start(
             child(d, &prepared, write_end.as_raw_fd(), filter.0, &program);
         }
         drop(write_end);
+        if let (Some(link), Some((r, w))) = (&d.link, go) {
+            drop(r);
+            let switch = match SWITCH.get() {
+                Some(s) => Ok(s),
+                None => crate::links::Switch::new(pairs).map(|s| SWITCH.get_or_init(|| s)),
+            };
+            let linked = switch.and_then(|s| s.attach(i, pid as libc::pid_t, link));
+            if let Err(e) = linked {
+                // SAFETY: kill(2) of the child just made, which waits for its link.
+                unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+                return Err(format!("{}: its link: {e}", d.label));
+            }
+            // SAFETY: write(2) of one byte to the pipe it waits on.
+            if unsafe { libc::write(w.as_raw_fd(), b"g".as_ptr().cast(), 1) } != 1 {
+                return Err(format!(
+                    "{}: its link's pipe: {}",
+                    d.label,
+                    io::Error::last_os_error()
+                ));
+            }
+        }
         crate::run::set_nonblocking(read_end.as_raw_fd(), true);
         started.push(Started {
             label: d.label.clone(),
@@ -522,12 +604,49 @@ fn child(d: &Domain, p: &Prepared, out: RawFd, flags: u32, program: &libc::sock_
                 fail(out, c"making its scratch");
             }
         }
+        // Its names: its peers', over the system's /etc/hosts, read-only, made in its
+        // scratch and left there by no name.
+        let mut st: libc::stat = std::mem::zeroed();
+        if let Some(hosts) = &p.hosts
+            && libc::stat(c"/etc/hosts".as_ptr(), &raw mut st) == 0
+            && libc::stat(c"/tmp".as_ptr(), &raw mut st) == 0
+        {
+            let made = c"/tmp/.hosts";
+            let fd = libc::open(
+                made.as_ptr(),
+                libc::O_CREAT | libc::O_EXCL | libc::O_WRONLY | libc::O_CLOEXEC,
+                0o444,
+            );
+            if fd < 0 || libc::write(fd, hosts.as_ptr().cast(), hosts.len()) != hosts.len() as isize {
+                fail(out, c"writing its /etc/hosts");
+            }
+            libc::close(fd);
+            let ro = libc::MS_REMOUNT
+                | libc::MS_BIND
+                | libc::MS_RDONLY
+                | libc::MS_NOSUID
+                | libc::MS_NODEV
+                | libc::MS_NOEXEC;
+            if libc::mount(made.as_ptr(), c"/etc/hosts".as_ptr(), null, libc::MS_BIND, nil) != 0
+                || libc::mount(null, c"/etc/hosts".as_ptr(), null, ro, nil) != 0
+                || libc::unlink(made.as_ptr()) != 0
+            {
+                fail(out, c"mounting its /etc/hosts");
+            }
+        }
         // Its own name, and loopback.
         if libc::sethostname(p.hostname.as_ptr(), p.hostname.as_bytes().len()) != 0 {
             fail(out, c"naming its host");
         }
         if !crate::run::loopback_up_raw() {
             fail(out, c"bringing its loopback up");
+        }
+        // Its link, which init makes once it exists.
+        if let Some(go) = p.go {
+            let mut byte = 0u8;
+            if libc::read(go, (&raw mut byte).cast(), 1) != 1 {
+                fail(out, c"waiting for its link");
+            }
         }
         // Its stdio, and no other descriptor of init's.
         let devnull = libc::open(c"/dev/null".as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC);
@@ -567,7 +686,7 @@ fn child(d: &Domain, p: &Prepared, out: RawFd, flags: u32, program: &libc::sock_
         // network grant is yet; signals and abstract Unix sockets scoped to the domain.
         let attr = landlock::RulesetAttr {
             handled_access_fs: landlock::FS_ALL,
-            handled_access_net: landlock::NET_BIND_TCP | landlock::NET_CONNECT_TCP,
+            handled_access_net: p.net_handled,
             scoped: landlock::SCOPE_ABSTRACT_UNIX_SOCKET | landlock::SCOPE_SIGNAL,
         };
         let ruleset = libc::syscall(

@@ -1104,7 +1104,79 @@ fn confined(args: &[String]) -> i32 {
     let mut mode: &str = "";
     for a in args {
         match a.as_str() {
-            "see" | "write" | "bind" | "connect" | "call" => mode = a.as_str(),
+            "see" | "write" | "bind" | "connect" | "call" | "listen" | "reach" | "unreach" | "cat"
+            | "resolve" => mode = a.as_str(),
+            name if mode == "resolve" => {
+                let c = std::ffi::CString::new(name).unwrap_or_default();
+                let mut res: *mut libc::addrinfo = std::ptr::null_mut();
+                // SAFETY: getaddrinfo(3) of a NUL-terminated name, its list freed after.
+                let mut rcs = Vec::new();
+                for stream in [false, true] {
+                    // SAFETY: an all-zero addrinfo is valid hints.
+                    let mut hints: libc::addrinfo = unsafe { std::mem::zeroed() };
+                    hints.ai_socktype = if stream { libc::SOCK_STREAM } else { 0 };
+                    // SAFETY: getaddrinfo(3) of a NUL-terminated name, its list freed after.
+                    let rc = unsafe {
+                        let rc =
+                            libc::getaddrinfo(c.as_ptr(), std::ptr::null(), &raw const hints, &raw mut res);
+                        if rc == 0 {
+                            libc::freeaddrinfo(res);
+                        }
+                        rc
+                    };
+                    rcs.push(rc.to_string());
+                }
+                out.push_str(&format!("confined resolve {name}: {}\n", rcs.join(",")));
+            }
+            path if mode == "cat" => match std::fs::read_to_string(path) {
+                Ok(text) => {
+                    for line in text.lines() {
+                        out.push_str(&format!("confined cat {path}: {line}\n"));
+                    }
+                }
+                Err(e) => out.push_str(&format!("confined cat {path}: {}\n", errno(&e))),
+            },
+            port if mode == "listen" => {
+                let said = match std::net::TcpListener::bind(format!("0.0.0.0:{port}")) {
+                    Ok(l) => {
+                        // Answers every connection, for as long as the agent runs.
+                        let _ = std::thread::Builder::new().spawn(move || for _ in l.incoming() {});
+                        "ok".to_string()
+                    }
+                    Err(e) => errno(&e),
+                };
+                out.push_str(&format!("confined listen {port}: {said}\n"));
+            }
+            addr if mode == "reach" || mode == "unreach" => {
+                use std::net::ToSocketAddrs as _;
+                let once = |wait: u64| -> Result<(), io::Error> {
+                    let to = addr
+                        .to_socket_addrs()?
+                        .next()
+                        .ok_or_else(|| io::Error::other("no address"))?;
+                    std::net::TcpStream::connect_timeout(&to, std::time::Duration::from_secs(wait)).map(drop)
+                };
+                let said = |r: Result<(), io::Error>| match r {
+                    Ok(()) => "ok".to_string(),
+                    Err(e) if e.kind() == io::ErrorKind::TimedOut => "timeout".to_string(),
+                    Err(e) if e.raw_os_error().is_none() => format!("{e}"),
+                    Err(e) => errno(&e),
+                };
+                let result = if mode == "reach" {
+                    // Until it listens: a refusal still says packets arrive.
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+                    loop {
+                        let r = once(2);
+                        if r.is_ok() || std::time::Instant::now() >= deadline {
+                            break r;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(20));
+                    }
+                } else {
+                    once(3)
+                };
+                out.push_str(&format!("confined {mode} {addr}: {}\n", said(result)));
+            }
             what if mode == "call" => {
                 // SAFETY: each a system call with constant or null arguments, its
                 // descriptor, if any, closed after.

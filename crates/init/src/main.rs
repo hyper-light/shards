@@ -23,9 +23,13 @@ mod json;
 #[cfg(target_os = "linux")]
 mod layer;
 #[cfg(target_os = "linux")]
+mod links;
+#[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]
 mod net;
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+mod netplan;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod orders;
 #[cfg(target_os = "linux")]

@@ -3105,7 +3105,7 @@ that follows no edge, every domain taken as internal-only, and none.
 ### Agents run in their domains (D59, part one)
 
 When a microVM runs an image whose normalized Agentfile (`/.agentfile.json`) declares
-agents or harnesses, shards-init, once the run's spec is in and before the run's command,
+agents or harnesses, shards-init, as the run's command starts (part three says why not before),
 starts each domain whose OSI config (`<dir>.d/osi.json`) has `run` (AGENTFILE_ARCH.md §9.3,
 §9.9), with the guest kernel's own primitives and no container runtime. A domain with no
 `run` is files alone. Init reads both files with a JSON reader of its own (RFC 8259, 1 MiB
@@ -3217,8 +3217,65 @@ ENOSYS for no capability under Docker's profile, and musl and glibc then fall ba
 (EPERM), while the first agent forks. Mutation-checked: compiling the ordinary domain
 filter for it lets the fork through.
 
-Open: process events, §9.10's escape tests beyond these, and network grants with D46's
-networks (part three).
+Part three, network grants between domains (AGENTFILE_ARCH.md §4.6, §4.7, §9.7):
+
+- **The switch.** Init makes a network namespace of no process's, held by a descriptor
+  for as long as the microVM runs. Its forwarding is on. Each domain with a grant gets
+  one veth link: `eth0` in its namespace, `d<n>` in the switch's. Each link is made in
+  init's namespace, with both ends placed by `IFLA_NET_NS_FD` and their interface indexes
+  chosen in advance, so the rules can name links before the links exist. Neither the
+  switch nor any link touches the microVM's own namespace, its `eth0` or its workload.
+- **Policy by link, never by address** (§9.7), in nf_tables, which init programs over
+  nfnetlink in one transaction:
+  - an `input` chain that drops everything, so no domain reaches the switch itself;
+  - a `forward` chain that drops by default, accepts conntrack's established and related
+    traffic, and accepts new traffic from `iif d<x>` to `oif d<y>` for each allowed pair.
+
+  Whatever the protocol, UDP included, nothing else crosses.
+- **Who may reach whom** (`netplan`). A network's members are the domains its `CONNECT …
+  ON` names. Members reach each other (§4.6), except that `CONNECT x TO y` lets `y` only
+  answer `x` (§4.7), unless another directive grants `y` to `x` outright. A domain has one
+  link, so a pair any shared network allows is allowed. D58's reach graph reads a shared
+  network the same way.
+- **Addresses.** A network's subnet is its first IPv4 `--subnet`, or else the first /24
+  of 10.244.0.0/16 that overlaps neither eth0's subnet nor a declared one. Its gateway is
+  its first `--gateway`, or else `.1`. Members take addresses from `.2` in domain order.
+  A domain holds each address as a /32 and routes the subnet through the gateway on its
+  link (`RTNH_F_ONLINK`). The switch holds each gateway on each link that uses it, and a
+  /32 route to each domain's address.
+- **Names.** Each domain's `/etc/hosts` is Docker's lines followed by each member of each
+  network it joins. It is written in the domain's scratch and bind-mounted read-only over
+  the system's.
+- **Landlock follows the grants.** TCP connect is refused unless the domain opens
+  connections to someone, and TCP bind unless someone may open connections to it.
+- **Ordering.** Domains now start once the run's own files are written, not before: the
+  run replaces `/etc/hosts`, and replacing a file that another mount namespace mounts
+  over detaches that mount (fs/namespace.c, `__detach_mounts`). The test found this: a
+  domain's names resolved, then stopped resolving once the run's file was written.
+
+Tested: `agents_reach_only_what_connect_grants`, four agents on a real microVM:
+
+- `CONNECT a TO b ON back`, `CONNECT d WITH d ON back`, `CONNECT c WITH c ON side`;
+- `a` reaches `b` by name;
+- `b` finds `a` listening, and its connection times out: the switch drops it, and Landlock
+  allows it, since `b` may connect to `d`;
+- `d` reaches both;
+- `c`, alone on `side`, may neither bind nor connect;
+- each agent's `/etc/hosts` holds its network's members alone, and `localhost` resolves.
+
+Mutation-checked:
+
+- a forward chain that accepts by default, and `TO` that restricts nothing: `b` reaches
+  `a`;
+- Landlock handling no TCP right: `c` binds;
+- no `/etc/hosts` of its own: names fail.
+
+The planner has unit tests for pairs, pool allocation clear of eth0, declared subnets and
+gateways, and capacity.
+
+Open: egress and ingress past the microVM (`EXPOSE … FOR`, `NETWORK --expose/--ingress/
+--egress`, remote MCP servers) through eth0 and the network process (D31, D46); IPv6
+subnets; process events; §9.10's escape tests beyond these.
 
 ## 4. Start path (≤ 5 ms budget)
 

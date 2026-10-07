@@ -26,16 +26,9 @@ const NOT_RUN: u32 = 125;
 /// they run is still correct, only slower to restore.
 const SELFTESTS_WAIT: Duration = Duration::from_secs(2);
 
-/// `/etc/hosts` as Docker writes it for every container (moby
-/// daemon/libnetwork/etchosts/etchosts.go, `Build`): the guest's IPv6 is enabled, so the
-/// variant without it (`BuildNoIPv6`) does not apply. Each run adds its own name
+/// `/etc/hosts`'s first lines ([`crate::netplan::HOSTS`]); each run adds its own name
 /// ([`set_hostname`]).
-const HOSTS: &[u8] = b"127.0.0.1\tlocalhost\n\
-::1\tlocalhost ip6-localhost ip6-loopback\n\
-fe00::\tip6-localnet\n\
-ff00::\tip6-mcastprefix\n\
-ff02::1\tip6-allnodes\n\
-ff02::2\tip6-allrouters\n";
+use crate::netplan::HOSTS;
 
 /// Why the workload did not run, and the status to report.
 struct Failure {
@@ -88,16 +81,25 @@ pub fn main(device: &str, template: bool) -> ! {
     let signals = dial(run::SIGNAL_PORT, false).ok();
     let started = standby.and_then(|standby| {
         let spec = receive(&conn)?;
-        // The image's agents and harnesses, each in its domain, before the workload (D59).
+        let mut workload = standby.start(&spec)?;
+        // The image's agents and harnesses, each in its domain (D59), once the run's own
+        // files are written: the run replaces /etc/hosts, and replacing a file another
+        // mount namespace mounts over detaches that mount (fs/namespace.c,
+        // __detach_mounts), which would take a domain's own /etc/hosts away.
         let filters = [
             crate::setup::filter_named(&spec.setup, b"domains-seccomp="),
             crate::setup::filter_named(&spec.setup, b"domains-seccomp-none="),
         ];
-        let domains = crate::domains::read()
-            .and_then(|(all, domains)| crate::domains::start(&all, &domains, &filters))
-            .map_err(setup_failed)?;
-        let mut workload = standby.start(&spec)?;
-        workload.domains = domains;
+        match crate::domains::read()
+            .and_then(|(all, domains, pairs)| crate::domains::start(&all, &domains, &pairs, &filters))
+        {
+            Ok(domains) => workload.domains = domains,
+            Err(e) => {
+                // SAFETY: kill(2) of the workload, our own child: the run fails whole.
+                unsafe { libc::kill(workload.pid, libc::SIGKILL) };
+                return Err(setup_failed(e));
+            }
+        }
         Ok(workload)
     });
     let status = match started {
