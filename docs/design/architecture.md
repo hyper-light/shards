@@ -3099,8 +3099,8 @@ fails the build with the shortest path, read outward:
 `agent b -> network back -> agent a -> network world`. A domain on no internal network
 holds nothing declared internal, so a harness driving an agent that reaches the world is
 no error; one attached to an internal-only agent and to a world-reaching one is (§9.8).
-Relays and declassifiers (Q20), which would allow such a path, are not designed yet, so
-none is. Found by the suite: a first rule that took every domain not reaching the world
+No exception allows such a path: relays and declassifiers were dropped (§12 answer 14,
+2026-10-07), the grants being what decides reach. Found by the suite: a first rule that took every domain not reaching the world
 as internal-only refused the plain harness-drives-agent Agentfile of D54's test.
 
 Tested: `reach_through_any_declared_edge_is_reach` (paths through an internal network, a
