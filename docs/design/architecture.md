@@ -3187,7 +3187,10 @@ microVMs: `mcp_servers_are_offered_to_those_in_scope` (a remote server `FOR a` o
 to a alone, a local one to a and b); mutation-checked: with every server in every
 scope, b is offered a's.
 
-Next: labels, and code mode, whose sandbox's language is yet to be chosen.
+No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
+2026-10-07): every path between domains is a grant, and the build refuses any that joins
+an internal-only domain to the world (D58), so there is no data to label. Code mode
+waits on the user.
 
 ### Agents run in their domains (D59, part one)
 

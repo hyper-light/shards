@@ -429,8 +429,8 @@ Recorded as found. The answers the review has given so far are in §8.
        allow explicitly. Open.
 
 20. **Relays, declassifiers and MCP instances** (raised 2026-10-01).
-    - The syntax that names an agent a relay for another (§9.5), and a declassifier: a
-      `CONNECT` option, a directive of their own, or a grant on `NETWORK`?
+    - The syntax that names an agent a relay for another (§9.5), and a declassifier.
+      Answered: none (§12 answer 14).
     - How long a shared MCP server's instance for one caller lives (§9.6): one run of the
       agent, one session, or the microVM's life, and whether it keeps state between calls.
 
@@ -563,24 +563,23 @@ more access.
 An agent attached to an internal-only network shared with an agent that may reach the
 world can have that agent carry its data out, by asking it, or by injecting instructions
 into what it reads. Each connection is allowed; the escape is in the second agent, whose
-judgment is no control. Two rules close it, neither relying on an agent:
+judgment is no control. The build closes it, relying on no agent:
 
 - **At build time, reach is transitive.** For every agent and harness, the build computes
   what it reaches through every edge: networks, `VOLUME ... FOR` shared, `ATTACH`, MCP
   servers. An internal-only agent with any path to one that may reach the world reaches
   the world, and that is a build error naming the path (`B -> network internal -> A ->
-  network world`), unless the Agentfile names `A` a relay for `B` (§7 Q20). Authority
-  flows along every edge, so the closure is checked, not each edge alone.
-- **At run time, data carries labels** (information flow control: Flume, Krohn et al.,
-  SOSP 2007; HiStar, Zeldovich et al., OSDI 2006). Every message through the in-VM server
-  (§5) carries its sender's label. A process that receives internal-only data takes that
-  label, and the egress gate refuses what carries it. An agent that serves others handles
-  each request in a confined process of its own, labelled by that request alone, so serving
-  `B` taints only the work done for `B`. Only a declassifier the Agentfile grants lets
-  labelled data out.
+  network world`), with no exception to name. Authority flows along every edge, so the
+  closure is checked, not each edge alone.
+- **No run-time labels, relays or declassifiers** (decided 2026-10-07 by the user, §12
+  answer 14). Every path data could take between domains exists only where a directive
+  grants it (default deny), and the closure above refuses every image in which one
+  joins an internal-only domain to the world. Internal-only data then has no route out
+  of any image that builds, so labelling it at run time would follow routes that cannot
+  exist, and a declassifier would be a way to open one. An Agentfile that needs such a
+  path grants it, and the build names it.
 - **Not covered:** covert timing channels (one agent modulating load or the timing of
-  allowed requests). Labels at process granularity do not close them, and this spec does
-  not claim to.
+  allowed requests), which this spec does not claim to close.
 
 ### 9.6 MCP tool calls
 
@@ -596,8 +595,6 @@ whatever the server reaches by asking it.
 - **A remote server** is egress from its caller. Calling it takes the caller's own grant to
   reach it; under §9.5 an internal-only agent, or one holding internal-only data, calls none.
   Remote tools act outside the microVM: what shards holds is what the caller may send.
-- **Results carry labels.** A tool's result carries its server's label joined with what it
-  read for the caller, so what a tool fetched does not pass the rules of §9.5.
 
 ### 9.7 Network reach is the process tree's
 
@@ -658,12 +655,8 @@ shared MCP server. If one domain can trigger another, it reaches what the other 
 and the build's closure counts it. A harness is no exception: `ATTACH` is an edge both ways,
 since the harness drives the agent and reads what it produces. So a harness attached to an
 internal-only agent and to one that may reach the world joins the two, and the build fails
-with that path, unless the Agentfile names the harness a relay (§7 Q20).
-
-Run-time labels (§9.5) follow data only through what shards mediates, the in-VM server and
-MCP results: Linux does not carry taint across a `read()` of a shared file. For files the
-build's check is the guarantee, so a `VOLUME` shared by an internal-only domain and one that
-may reach the world is a build error.
+with that path. A `VOLUME` shared by an internal-only domain and one that may reach the
+world is a build error alike.
 
 ### 9.9 Knowing what a domain runs
 
@@ -797,8 +790,7 @@ until the review changes it. The first four fix the grammar the parser reads; th
 9. **`--chown` (Q11)** is Docker's `--chown=<user>[:<group>]`, read in the domain it
    names. `--chown=<agent>` means that agent's own uid and gid, which the runtime
    assigns; numbers are allowed.
-10. **`CONNECT` (Q13, Q14).** Its only option is `--target-kind` until relays are
-    designed (12.14). Every agent a `CONNECT` names must be allowed by each network's
+10. **`CONNECT` (Q13, Q14).** Its options are `--target-kind` and `--port` (§4.7). Every agent a `CONNECT` names must be allowed by each network's
     `FOR`; otherwise the build fails, naming the agent, the network and both lines.
 11. **Harnesses (Q18).** A harness runs as a domain of its own (§9.3). `ATTACH` lets it
     drive an agent through the in-VM server (send requests, read results) and nothing
@@ -813,8 +805,11 @@ until the review changes it. The first four fix the grammar the parser reads; th
     Agentfile, not one agent reading another at run time.
 13. **MCP instances (Q20)** live for one run of their caller and keep no state between
     runs: state kept longer would carry one run's data into the next.
-14. **Relays and declassifiers (Q20)** wait for their own design; until then a path the
-    closure finds (§9.5) is always a build error.
+14. **No relays, declassifiers or run-time labels (Q20)**, decided 2026-10-07 by the
+    user: shards' primitives already hold what they were for. Every path between domains
+    is a grant (default deny), and the build refuses every image in which one joins an
+    internal-only domain to the world (§9.5), so internal-only data has no route out to
+    label. A path the closure finds is always a build error.
 15. **Spawning (Q21).** `AGENT` and `HARNESS` take `--processes=<n|none>`. `none`
     installs the no-spawn filter of §9.9; without it a domain's `pids.max` is the
     microVM's own limit, until a measured default replaces it.
@@ -887,7 +882,7 @@ until the review changes it. The first four fix the grammar the parser reads; th
       is what the Agentfile granted it. `CONNECT` pairs may send each other messages, one
       way or both as granted; `ATTACH` lets a harness send an agent requests and read its
       results; the `MCP … FOR` servers in a caller's scope are listed and called through
-      it. Every message carries its sender's label (§9.5).
+      it.
     - Code mode: the server describes every tool open to the caller as a typed API, and
       takes a program that calls them, run in a sandbox with the caller's grants and no
       more: many calls in one round trip.
@@ -941,10 +936,10 @@ of 2026-10-02:
 | OCI objects (§1): `push`, `tag`, `inspect`, `images`, `rmi`, `save`, `load`, OCI layouts and `docker save` tars taken in (§10) | `pull` done | **missing** |
 | An Agentfile made from any image (§10) | **missing** | n/a |
 | The in-VM runtime: many agents and harnesses per microVM, each a domain (§6, §9.3) | n/a | each domain whose OSI config says how it runs started by shards-init as the run's command starts, its output on the run's stderr prefixed `[agent NAME]` (D59); the server (§5) **missing** |
-| The in-VM server: agents' encrypted, deny-by-default communication, the code-mode MCP server they discover (§5) | n/a | an instance for each agent, least-privileged, from a device of its own (DAX), socket and mutual TLS 1.3, MCP over streamable HTTP with `whoami`, `peers`, `send`, `receive` and `answer` as `CONNECT` and `ATTACH` grant, `mcp` offering the servers in scope (D60); labels, code mode **missing** |
-| Build-time isolation checks (§9.2) and transitive reach, relays, declassifiers (§9.5, §9.8) | §9.2 done (D55): symlinks and hard links out of a domain, devices, FIFOs, sockets, set-ID bits and capabilities in one, and any other step's write into one, refused; §9.5's transitive reach done (D58): a path from an internal-only domain to one that reaches the world fails the build, named; owners done (a path outside a domain, or in another's, owned by a domain's uid or gid); relays and declassifiers (Q20), and §9.8, **missing** | n/a |
+| The in-VM server: agents' encrypted, deny-by-default communication, the code-mode MCP server they discover (§5) | n/a | an instance for each agent, least-privileged, from a device of its own (DAX), socket and mutual TLS 1.3, MCP over streamable HTTP with `whoami`, `peers`, `send`, `receive` and `answer` as `CONNECT` and `ATTACH` grant, `mcp` offering the servers in scope (D60); code mode **missing** |
+| Build-time isolation checks (§9.2) and transitive reach (§9.5, §9.8) | §9.2 done (D55): symlinks and hard links out of a domain, devices, FIFOs, sockets, set-ID bits and capabilities in one, and any other step's write into one, refused; §9.5's transitive reach done (D58): a path from an internal-only domain to one that reaches the world fails the build, named; owners done (a path outside a domain, or in another's, owned by a domain's uid or gid); §9.8's edges counted by the closure **missing** | n/a |
 | Run-time confinement (§9.3, §9.7–9.9): namespaces, IDs, cgroups and `pids.max`, Landlock, seccomp, `io_uring` off, vsock closed to workloads, process events | n/a | namespaces, IDs, no capabilities, `no_new_privs`, cgroups and `pids.max`, the filesystem rules, Landlock (filesystem, TCP, scopes), seccomp (no vsock, netlink, `io_uring`, keys, `userfaultfd`, bpf, perf) `--processes=none` (threads, no process) done (D59); network grants between domains, default deny (`CONNECT --port` within the network's ingress, names of granted peers alone, `NETWORK --dns`, the agents' resolver identifying askers by link, strict reverse-path filtering), remote MCP servers as grants of that server alone, and egress past the microVM by port (`NETWORK --egress/--expose`, `EXPOSE … FOR`) done (D59), names past the microVM for agents with egress, and ingress to a network's one member (`--ingress` with `EXPOSE … AS ingress FOR`, published by `shards run -p`) (D59); refusing `-p` of a port declared `AS egress` (D59); a root of the image as built, none of the run's files, mounts or Unix sockets (D59); `NETWORK --protocol`, Unix sockets granted by name (`CONNECT --port=unix:<name>`) (D59); output lines bounded, memory capped for the agents together less the workload's `-m`, `asks.memory`, a domain ended whole (D59); ingress to a network of several members, remote MCP servers' own destinations, IPv6 subnets, process events **missing** |
-| Labels on data through the in-VM server and MCP results; per-caller MCP instances (§9.5, §9.6) | n/a | **missing** |
+| Per-caller MCP instances (§9.6): a caller runs a local server itself, in its own confinement | n/a | offered to each caller in scope through its server instance, which it runs itself (D60) |
 | The escape tests of §9.10, each mutation-checked | §9.2's build-time escapes and §9.5's transitive reach done (D55, D58) | in progress: sockets and system calls refused (`vsock`, `netlink`, raw, packet, `io_uring`, keys, `userfaultfd`, a network namespace of its own), the run's pathname and abstract Unix sockets, TCP and UDP past an agent's grants to every address of the microVM's, its switch's and its gateway's, a flood of flows, memory and output, a double fork ended with its agent, §9.8's kernel channels between agents (D59); a harness handed a symlink, a FIFO or an oversized file, MCP tools reading past an agent (both need §5's server) **missing** |
 
 The order follows what depends on what: `RUN` first, since nearly every real file needs
