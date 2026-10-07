@@ -89,9 +89,12 @@ pub fn main(device: &str, template: bool) -> ! {
     let started = standby.and_then(|standby| {
         let spec = receive(&conn)?;
         // The image's agents and harnesses, each in its domain, before the workload (D59).
-        let filter = crate::setup::filter_named(&spec.setup, b"domains-seccomp=");
+        let filters = [
+            crate::setup::filter_named(&spec.setup, b"domains-seccomp="),
+            crate::setup::filter_named(&spec.setup, b"domains-seccomp-none="),
+        ];
         let domains = crate::domains::read()
-            .and_then(|(all, domains)| crate::domains::start(&all, &domains, filter.as_ref()))
+            .and_then(|(all, domains)| crate::domains::start(&all, &domains, &filters))
             .map_err(setup_failed)?;
         let mut workload = standby.start(&spec)?;
         workload.domains = domains;

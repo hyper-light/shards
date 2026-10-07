@@ -101,7 +101,7 @@ pub fn main() -> ! {
             }
         }
         "confined" => confined(args.get(1..).unwrap_or_default()),
-        "await" => await_process(arg(1)),
+        "await" => await_process(arg(1), arg(2).parse().unwrap_or(1)),
         "sleep" => {
             let _ = writeln!(io::stdout(), "ready");
             loop {
@@ -1120,12 +1120,28 @@ fn confined(args: &[String]) -> i32 {
                         // KEYCTL_GET_KEYRING_ID of the session keyring, made if absent.
                         "keyctl" => libc::syscall(libc::SYS_keyctl, 0, -3i32, 1),
                         "userfaultfd" => libc::syscall(libc::SYS_userfaultfd, libc::O_CLOEXEC),
+                        "fork" => {
+                            let pid = libc::fork();
+                            if pid == 0 {
+                                libc::_exit(0);
+                            }
+                            if pid > 0 {
+                                libc::waitpid(pid, std::ptr::null_mut(), 0);
+                                0
+                            } else {
+                                -1
+                            }
+                        }
+                        "thread" => match std::thread::Builder::new().spawn(|| ()) {
+                            Ok(t) => i64::from(t.join().is_ok()) - 1,
+                            Err(_) => -1,
+                        },
                         _ => -1,
                     };
                     (rc, io::Error::last_os_error())
                 };
                 let said = if rc >= 0 {
-                    if what != "keyctl" {
+                    if !matches!(what, "keyctl" | "fork" | "thread") {
                         // SAFETY: closing the descriptor just made.
                         unsafe { libc::close(rc as libc::c_int) };
                     }
@@ -1189,16 +1205,17 @@ fn confined(args: &[String]) -> i32 {
     }
 }
 
-/// Waits, 60 s at most, until a process whose `comm` is `name` exists.
-fn await_process(name: &str) -> i32 {
+/// Waits, 60 s at most, until `count` processes whose `comm` is `name` exist.
+fn await_process(name: &str, count: usize) -> i32 {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     while std::time::Instant::now() < deadline {
         let found = std::fs::read_dir("/proc")
             .into_iter()
             .flatten()
             .flatten()
-            .any(|e| std::fs::read_to_string(e.path().join("comm")).is_ok_and(|c| c.trim_end() == name));
-        if found {
+            .filter(|e| std::fs::read_to_string(e.path().join("comm")).is_ok_and(|c| c.trim_end() == name))
+            .count();
+        if found >= count {
             return 0;
         }
         std::thread::sleep(std::time::Duration::from_millis(5));

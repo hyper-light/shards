@@ -242,7 +242,7 @@ pub fn apply(entry: &[u8]) -> Result<(), i32> {
         return Ok(());
     }
     // Init's, for the domains it starts (D59).
-    if entry.starts_with(b"domains-seccomp=") {
+    if entry.starts_with(b"domains-seccomp=") || entry.starts_with(b"domains-seccomp-none=") {
         return Ok(());
     }
     let text = std::str::from_utf8(entry).map_err(|_| libc::EINVAL)?;

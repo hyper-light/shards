@@ -245,16 +245,26 @@ const DOMAIN_FAMILIES: [u64; 3] = [1, 2, 10];
 /// replaced by `socket` for the families above and `socketpair` for Unix alone. What a
 /// domain must not call besides (io_uring, keyctl, add_key, request_key, userfaultfd) is on
 /// no allow list of the default; bpf and perf_event_open only on capabilities' lists.
-fn domain_profile() -> Result<Vec<u8>, String> {
+///
+/// With `no_processes` (`--processes=none`, §9.9): no `fork` or `vfork`, and `clone` only
+/// for a thread, `CLONE_THREAD` set and no namespace flag (Docker's own mask, 0x7E020000,
+/// with CLONE_THREAD's bit, include/uapi/linux/sched.h); `clone3`, which a filter cannot
+/// read the flags of, already fails with ENOSYS for no capability, and libc then clones.
+fn domain_profile(no_processes: bool) -> Result<Vec<u8>, String> {
     let mut p: serde_json::Value = serde_json::from_slice(shards_seccomp::DEFAULT)
         .map_err(|e| format!("Docker's seccomp profile: {e}"))?;
     let rules = p
         .get_mut("syscalls")
         .and_then(serde_json::Value::as_array_mut)
         .ok_or("Docker's seccomp profile has no syscalls")?;
+    let refused: &[&str] = if no_processes {
+        &["socket", "socketpair", "fork", "vfork", "clone"]
+    } else {
+        &["socket", "socketpair"]
+    };
     for r in rules.iter_mut() {
         if let Some(names) = r.get_mut("names").and_then(serde_json::Value::as_array_mut) {
-            names.retain(|n| n != "socket" && n != "socketpair");
+            names.retain(|n| !refused.iter().any(|r| n == r));
         }
     }
     rules.retain(|r| {
@@ -273,19 +283,33 @@ fn domain_profile() -> Result<Vec<u8>, String> {
         rules.push(allow("socket", family));
     }
     rules.push(allow("socketpair", 1));
+    if no_processes {
+        const CLONE_THREAD: u64 = 0x0001_0000;
+        rules.push(serde_json::json!({
+            "names": ["clone"],
+            "action": "SCMP_ACT_ALLOW",
+            "args": [{"index": 0, "value": 0x7E02_0000u64 | CLONE_THREAD, "valueTwo": CLONE_THREAD, "op": "SCMP_CMP_MASKED_EQ"}],
+        }));
+    }
     serde_json::to_vec(&p).map_err(|e| e.to_string())
 }
 
-/// The setup entry of the filter every domain of the run's image runs under
-/// (`domains-seccomp=`, then as `seccomp=`), compiled once per kernel.
-pub fn domain_seccomp(kernel: shards_seccomp::Kernel) -> Result<Vec<u8>, String> {
-    static COMPILED: std::sync::Mutex<Vec<(shards_seccomp::Kernel, Vec<u8>)>> =
-        std::sync::Mutex::new(Vec::new());
+/// The setup entries of the filters the domains of the run's image run under
+/// (`domains-seccomp=` and, for `--processes=none`, `domains-seccomp-none=`, then as
+/// `seccomp=`), each compiled once per kernel.
+pub fn domain_seccomp(kernel: shards_seccomp::Kernel) -> Result<[Vec<u8>; 2], String> {
+    Ok([domain_filter(kernel, false)?, domain_filter(kernel, true)?])
+}
+
+fn domain_filter(kernel: shards_seccomp::Kernel, no_processes: bool) -> Result<Vec<u8>, String> {
+    type Compiled = Vec<((shards_seccomp::Kernel, bool), Vec<u8>)>;
+    static COMPILED: std::sync::Mutex<Compiled> = std::sync::Mutex::new(Vec::new());
+    let key = (kernel, no_processes);
     if let Some((_, e)) = COMPILED
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .iter()
-        .find(|(k, _)| *k == kernel)
+        .find(|(k, _)| *k == key)
     {
         return Ok(e.clone());
     }
@@ -295,9 +319,13 @@ pub fn domain_seccomp(kernel: shards_seccomp::Kernel) -> Result<Vec<u8>, String>
         caps: &[],
         kernel,
     };
-    let program = shards_seccomp::compile(&domain_profile()?, &c)?
+    let program = shards_seccomp::compile(&domain_profile(no_processes)?, &c)?
         .ok_or("the domains' seccomp profile asks for none")?;
-    let mut e = b"domains-seccomp=".to_vec();
+    let mut e = if no_processes {
+        b"domains-seccomp-none=".to_vec()
+    } else {
+        b"domains-seccomp=".to_vec()
+    };
     e.extend_from_slice(&program.flags.to_le_bytes());
     for i in &program.insns {
         e.extend_from_slice(&i.to_ne_bytes());
@@ -306,7 +334,7 @@ pub fn domain_seccomp(kernel: shards_seccomp::Kernel) -> Result<Vec<u8>, String>
     COMPILED
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .push((kernel, e.clone()));
+        .push((key, e.clone()));
     Ok(e)
 }
 

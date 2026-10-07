@@ -62,6 +62,8 @@ pub struct Domain {
     pub id: u32,
     /// `pids.max`: `None` for the microVM's own.
     pub pids: Option<u64>,
+    /// `--processes=none`: it starts threads alone (§9.9).
+    pub no_processes: bool,
     pub argv: Vec<CString>,
     pub env: Vec<CString>,
     pub workdir: CString,
@@ -127,9 +129,11 @@ fn domain(
         .and_then(Value::strings)
         .filter(|c| !c.is_empty())
         .ok_or_else(|| format!("{label}: run.command is no list of strings"))?;
-    // `--processes` as declared, else what its config asks, else the microVM's.
+    // `--processes` as declared, else what its config asks, else the microVM's. `none`
+    // is its seccomp filter's: pids.max counts threads, which it may start.
+    let no_processes = matches!(declared.get("processes"), Some(Value::String(s)) if s == "none");
     let pids = match declared.get("processes") {
-        Some(Value::String(s)) if s == "none" => Some(1),
+        Some(Value::String(s)) if s == "none" => None,
         Some(Value::Null) | None => config
             .get("asks")
             .and_then(|a| a.get("processes"))
@@ -175,6 +179,7 @@ fn domain(
         dir: dir.as_bytes().to_vec(),
         id,
         pids,
+        no_processes,
         argv,
         env,
         workdir,
@@ -284,16 +289,16 @@ fn landlock_abi() -> Result<i64, String> {
 pub type Filter = (u32, Vec<libc::sock_filter>);
 
 /// Starts each of `domains`, hiding from each the directories of `all` but its own, under
-/// `filter`, which the host compiles (`domains-seccomp=`); none starts without it.
-pub fn start(all: &[Vec<u8>], domains: &[Domain], filter: Option<&Filter>) -> Result<Vec<Started>, String> {
+/// the filter of `filters` it needs, which the host compiles (`domains-seccomp=`, and
+/// `domains-seccomp-none=` for `--processes=none`); none starts without it.
+pub fn start(
+    all: &[Vec<u8>],
+    domains: &[Domain],
+    filters: &[Option<Filter>; 2],
+) -> Result<Vec<Started>, String> {
     if domains.is_empty() {
         return Ok(Vec::new());
     }
-    let filter = filter.ok_or("the run gave no seccomp filter for the image's agents and harnesses")?;
-    let program = libc::sock_fprog {
-        len: u16::try_from(filter.1.len()).map_err(|_| "the domains' seccomp filter is too long")?,
-        filter: filter.1.as_ptr().cast_mut(),
-    };
     match std::fs::create_dir(CGROUPS) {
         Err(e) if e.kind() != io::ErrorKind::AlreadyExists => return Err(format!("{CGROUPS}: {e}")),
         _ => {}
@@ -311,6 +316,14 @@ pub fn start(all: &[Vec<u8>], domains: &[Domain], filter: Option<&Filter>) -> Re
                 .map_err(|e| format!("{group}/pids.max: {e}"))?;
         }
         let cgroup = std::fs::File::open(&group).map_err(|e| format!("{group}: {e}"))?;
+        let filter = filters
+            .get(usize::from(d.no_processes))
+            .and_then(Option::as_ref)
+            .ok_or_else(|| format!("{}: the run gave no seccomp filter for it", d.label))?;
+        let program = libc::sock_fprog {
+            len: u16::try_from(filter.1.len()).map_err(|_| "the domains' seccomp filter is too long")?,
+            filter: filter.1.as_ptr().cast_mut(),
+        };
         let prepared = Prepared {
             hide: all
                 .iter()

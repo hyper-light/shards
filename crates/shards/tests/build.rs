@@ -3466,7 +3466,7 @@ fn agents_run_in_their_domains() {
     std::fs::copy(common::test_guest(), dir.join("bin/testguest")).unwrap();
     std::fs::write(
         dir.join("agent.json"),
-        r#"{"name":"main","run":{"command":["bin/testguest","confined","see","/agents/other","/sys","/dev","/proc/self/fd","write","/agents/main/x","/etc/x","/tmp/x","/tmp/../proc/self/comm","bind","127.0.0.1:8080","connect","127.0.0.1:9","call","socket-vsock","socket-netlink","socket-unix","socket-inet6","io_uring_setup","keyctl","userfaultfd"]}}"#,
+        r#"{"name":"main","run":{"command":["bin/testguest","confined","see","/agents/other","/sys","/dev","/proc/self/fd","write","/agents/main/x","/etc/x","/tmp/x","/tmp/../proc/self/comm","bind","127.0.0.1:8080","connect","127.0.0.1:9","call","fork","thread","socket-vsock","socket-netlink","socket-unix","socket-inet6","io_uring_setup","keyctl","userfaultfd"]}}"#,
     )
     .unwrap();
     let name = format!("127.0.0.1:{port}/team/confined:1");
@@ -3479,13 +3479,13 @@ fn agents_run_in_their_domains() {
     std::fs::write(ctx.join("other/secret"), "theirs\n").unwrap();
     std::fs::write(
         ctx.join("Agentfile"),
-        format!("FROM {image}\nAGENT main FROM {name}\nAGENT other FROM ./other\n"),
+        format!("FROM {image}\nAGENT main FROM {name}\nAGENT other FROM ./other\nAGENT --processes=none solo FROM {name}\n"),
     )
     .unwrap();
     let built = shards(&["build", "-t", "confined:1", ctx.to_str().unwrap()]);
     assert_eq!(built.status, Some(0), "{}", built.stderr);
     // The workload ends once the agent has said what it sees.
-    let ran = shards(&["run", "--rm", "confined:1", "await", "confined-ready"]);
+    let ran = shards(&["run", "--rm", "confined:1", "await", "confined-ready", "2"]);
     assert_eq!(ran.status, Some(0), "{}{}", ran.stdout, ran.stderr);
     assert_eq!(ran.stdout, "", "the workload's stdout is its own");
     let said: Vec<&str> = ran
@@ -3522,8 +3522,23 @@ fn agents_run_in_their_domains() {
         "confined call io_uring_setup: errno 1",
         "confined call keyctl: errno 1",
         "confined call userfaultfd: errno 1",
+        "confined call fork: ok",
+        "confined call thread: ok",
     ] {
         assert!(said.contains(&want), "no {want:?} in:\n{}", ran.stderr);
+    }
+    // `--processes=none`: threads, and no process.
+    let solo: Vec<&str> = ran
+        .stderr
+        .lines()
+        .filter_map(|l| l.strip_prefix("[agent solo] "))
+        .collect();
+    for want in [
+        "confined uid=200002 gid=200002 groups=0",
+        "confined call fork: errno 1",
+        "confined call thread: ok",
+    ] {
+        assert!(solo.contains(&want), "no {want:?} in:\n{}", ran.stderr);
     }
     assert!(
         !ran.stderr.contains("[agent other]"),

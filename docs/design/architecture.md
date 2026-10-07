@@ -3206,9 +3206,19 @@ Mutation-checked:
 - the daemon sending none: the run fails, naming the missing filter;
 - Docker's unmodified default sent: netlink is allowed.
 
-Open: `--processes=none`'s filter (§9.9: every way to start a process refused; `pids.max`
-1 stands in, and it bounds threads too), process events, §9.10's escape tests beyond these,
-and network grants with D46's networks (part three).
+**`--processes=none`** (§9.9) is a filter of its own, `domains-seccomp-none=`. Its
+`pids.max` is left as the microVM's, because pids.max counts threads and such a domain may
+start them. The filter refuses `fork` and `vfork`. It allows `clone` only with
+`CLONE_THREAD` set and no namespace flag: Docker's own mask 0x7E020000 plus CLONE_THREAD's
+bit, `SCMP_CMP_MASKED_EQ`. `clone3`, whose flags a filter cannot read, already fails with
+ENOSYS for no capability under Docker's profile, and musl and glibc then fall back to
+`clone`. `execve` stays: it starts no process. Tested by a third agent declared
+`--processes=none` from the same artifact: its thread starts and its `fork` is refused
+(EPERM), while the first agent forks. Mutation-checked: compiling the ordinary domain
+filter for it lets the fork through.
+
+Open: process events, §9.10's escape tests beyond these, and network grants with D46's
+networks (part three).
 
 ## 4. Start path (≤ 5 ms budget)
 
