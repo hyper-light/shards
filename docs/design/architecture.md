@@ -3166,10 +3166,49 @@ The run's stdout stays empty, and the agent of files alone runs nothing. Each of
 mutations fails the test: hiding no other domain, keeping the bounding set, leaving the
 system writable.
 
-Open, part two: Landlock, seccomp (Docker's profile less the socket families, keys,
-io_uring, bpf, perf and userfaultfd; with `--processes=none`, every way to start one),
-`kernel.io_uring_disabled`, process events, and §9.10's escape tests. Part three: network
-grants, with D46's networks.
+Part two, after `no_new_privs`, before its command:
+
+- **Landlock** (Documentation/userspace-api/landlock.rst; ABI 6 at least, which Linux 6.12
+  brought and the pinned 6.18 has). A domain refuses to start on a kernel without it,
+  rather than run unconfined. The ruleset handles every filesystem right and gives back
+  reads and execution everywhere, writes and device ioctls in `/dev`, and everything in
+  its `/tmp` and `/dev/shm`. It handles TCP bind and connect and gives neither, as no
+  network grant exists yet. Signals and abstract Unix sockets are scoped to the domain.
+  It is a second layer under the mounts: it refuses what the mounts allow, such as
+  writing its own `/proc/self/comm`, and TCP on its own loopback.
+- **seccomp**, compiled by the host with the run's own compiler (D41, held to libseccomp)
+  and sent to init in a setup entry (`domains-seccomp=`). The daemon sends it for an image
+  carrying the Agentfile label, and init starts no domain without it. Its profile is
+  Docker's default compiled for no capability, which leaves bpf and perf_event_open, there
+  only on capabilities' lists, refused. Docker's own allow lists already lack io_uring,
+  keyctl, add_key, request_key and userfaultfd (moby profiles v0.2.3 `default.json`). Its
+  `socket` rules, which refuse only AF_ALG and AF_VSOCK, are replaced by `socket` for
+  AF_UNIX, AF_INET and AF_INET6 and `socketpair` for AF_UNIX alone, so netlink, packet
+  and every other family is refused (EPERM). Measured by the test: without the filter, a
+  domain opens AF_VSOCK, the host's channel (§9.7), and netlink.
+- **`kernel.io_uring_disabled`** is not set. The domain filter refuses io_uring already.
+  The sysctl is the whole guest's, so all it would add is refusing io_uring to the run's
+  own workload where its owner asked for `seccomp=unconfined`, against what they asked.
+
+Tested: the same E2E test, the agent also reporting:
+
+- writing `/proc/self/comm` refused (EACCES);
+- TCP bind and connect on its loopback refused (EACCES);
+- AF_VSOCK and AF_NETLINK sockets, `io_uring_setup`, `keyctl` and `userfaultfd` refused
+  (EPERM);
+- Unix and IPv6 sockets made.
+
+Mutation-checked:
+
+- no Landlock: the write and the bind go through, and the connect is refused only for
+  want of a listener;
+- no filter loaded: vsock and netlink sockets are made;
+- the daemon sending none: the run fails, naming the missing filter;
+- Docker's unmodified default sent: netlink is allowed.
+
+Open: `--processes=none`'s filter (§9.9: every way to start a process refused; `pids.max`
+1 stands in, and it bounds threads too), process events, §9.10's escape tests beyond these,
+and network grants with D46's networks (part three).
 
 ## 4. Start path (≤ 5 ms budget)
 

@@ -210,6 +210,41 @@ struct CloneArgs {
 /// include/uapi/linux/sched.h.
 const CLONE_INTO_CGROUP: u64 = 0x2_0000_0000;
 
+/// Landlock (include/uapi/linux/landlock.h; Documentation/userspace-api/landlock.rst).
+mod landlock {
+    /// `landlock_create_ruleset`'s flag that asks the ABI version.
+    pub const CREATE_RULESET_VERSION: u32 = 1;
+    pub const RULE_PATH_BENEATH: u32 = 1;
+    pub const EXECUTE: u64 = 1 << 0;
+    pub const WRITE_FILE: u64 = 1 << 1;
+    pub const READ_FILE: u64 = 1 << 2;
+    pub const READ_DIR: u64 = 1 << 3;
+    /// `IOCTL_DEV`, ABI 5: the last filesystem right, so every right is below it.
+    pub const IOCTL_DEV: u64 = 1 << 15;
+    pub const FS_ALL: u64 = (IOCTL_DEV << 1) - 1;
+    /// ABI 4.
+    pub const NET_BIND_TCP: u64 = 1 << 0;
+    pub const NET_CONNECT_TCP: u64 = 1 << 1;
+    /// ABI 6.
+    pub const SCOPE_ABSTRACT_UNIX_SOCKET: u64 = 1 << 0;
+    pub const SCOPE_SIGNAL: u64 = 1 << 1;
+    /// The first ABI with every right used here: IOCTL_DEV is 5, the scopes 6.
+    pub const NEEDED: i64 = 6;
+
+    #[repr(C)]
+    pub struct RulesetAttr {
+        pub handled_access_fs: u64,
+        pub handled_access_net: u64,
+        pub scoped: u64,
+    }
+
+    #[repr(C, packed)]
+    pub struct PathBeneathAttr {
+        pub allowed_access: u64,
+        pub parent_fd: i32,
+    }
+}
+
 /// Everything a domain's first process uses, made before it is: after `clone3` it calls
 /// the kernel alone.
 struct Prepared {
@@ -220,11 +255,45 @@ struct Prepared {
     last_cap: u32,
 }
 
-/// Starts each of `domains`, hiding from each the directories of `all` but its own.
-pub fn start(all: &[Vec<u8>], domains: &[Domain]) -> Result<Vec<Started>, String> {
+/// The Landlock ABI the guest kernel has; an error where it lacks what a domain needs.
+fn landlock_abi() -> Result<i64, String> {
+    // SAFETY: landlock_create_ruleset(2) asked only its version: no attribute is read.
+    let abi = unsafe {
+        libc::syscall(
+            libc::SYS_landlock_create_ruleset,
+            std::ptr::null::<landlock::RulesetAttr>(),
+            0usize,
+            landlock::CREATE_RULESET_VERSION,
+        )
+    };
+    if abi < landlock::NEEDED {
+        let why = if abi < 0 {
+            io::Error::last_os_error().to_string()
+        } else {
+            format!("ABI {abi}")
+        };
+        return Err(format!(
+            "the guest kernel's Landlock ({why}) lacks ABI {}, which an agent's domain needs",
+            landlock::NEEDED
+        ));
+    }
+    Ok(abi)
+}
+
+/// A seccomp filter: its seccomp(2) flags and program.
+pub type Filter = (u32, Vec<libc::sock_filter>);
+
+/// Starts each of `domains`, hiding from each the directories of `all` but its own, under
+/// `filter`, which the host compiles (`domains-seccomp=`); none starts without it.
+pub fn start(all: &[Vec<u8>], domains: &[Domain], filter: Option<&Filter>) -> Result<Vec<Started>, String> {
     if domains.is_empty() {
         return Ok(Vec::new());
     }
+    let filter = filter.ok_or("the run gave no seccomp filter for the image's agents and harnesses")?;
+    let program = libc::sock_fprog {
+        len: u16::try_from(filter.1.len()).map_err(|_| "the domains' seccomp filter is too long")?,
+        filter: filter.1.as_ptr().cast_mut(),
+    };
     match std::fs::create_dir(CGROUPS) {
         Err(e) if e.kind() != io::ErrorKind::AlreadyExists => return Err(format!("{CGROUPS}: {e}")),
         _ => {}
@@ -232,6 +301,7 @@ pub fn start(all: &[Vec<u8>], domains: &[Domain]) -> Result<Vec<Started>, String
     std::fs::write(format!("{CGROUPS}/cgroup.subtree_control"), "+pids")
         .map_err(|e| format!("{CGROUPS}: enabling pids: {e}"))?;
     let last_cap = crate::defaults::last_cap();
+    landlock_abi()?;
     let mut started = Vec::new();
     for d in domains {
         let group = format!("{CGROUPS}/{}", d.cgroup);
@@ -294,7 +364,7 @@ pub fn start(all: &[Vec<u8>], domains: &[Domain]) -> Result<Vec<Started>, String
             return Err(format!("starting {}: {}", d.label, io::Error::last_os_error()));
         }
         if pid == 0 {
-            child(d, &prepared, write_end.as_raw_fd());
+            child(d, &prepared, write_end.as_raw_fd(), filter.0, &program);
         }
         drop(write_end);
         crate::run::set_nonblocking(read_end.as_raw_fd(), true);
@@ -339,7 +409,7 @@ fn fail(out: RawFd, what: &CStr) -> ! {
 }
 
 /// A domain's first process, before its program.
-fn child(d: &Domain, p: &Prepared, out: RawFd) -> ! {
+fn child(d: &Domain, p: &Prepared, out: RawFd, flags: u32, program: &libc::sock_fprog) -> ! {
     let null = std::ptr::null::<libc::c_char>();
     let nil = std::ptr::null::<libc::c_void>();
     let tmpfs = c"tmpfs".as_ptr();
@@ -477,6 +547,65 @@ fn child(d: &Domain, p: &Prepared, out: RawFd) -> ! {
         }
         if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
             fail(out, c"setting no_new_privs");
+        }
+        // Landlock, a layer under the mounts': every filesystem right handled, and given
+        // back as reads and execution everywhere, writes to /dev's nodes, and everything
+        // in its scratch; every TCP bind and connect handled, and none given, as no
+        // network grant is yet; signals and abstract Unix sockets scoped to the domain.
+        let attr = landlock::RulesetAttr {
+            handled_access_fs: landlock::FS_ALL,
+            handled_access_net: landlock::NET_BIND_TCP | landlock::NET_CONNECT_TCP,
+            scoped: landlock::SCOPE_ABSTRACT_UNIX_SOCKET | landlock::SCOPE_SIGNAL,
+        };
+        let ruleset = libc::syscall(
+            libc::SYS_landlock_create_ruleset,
+            &raw const attr,
+            std::mem::size_of::<landlock::RulesetAttr>(),
+            0u32,
+        );
+        if ruleset < 0 {
+            fail(out, c"making its Landlock ruleset");
+        }
+        let read = landlock::READ_FILE | landlock::READ_DIR | landlock::EXECUTE;
+        for (path, allowed) in [
+            (c"/", read),
+            (c"/dev", read | landlock::WRITE_FILE | landlock::IOCTL_DEV),
+            (c"/dev/shm", landlock::FS_ALL),
+            (c"/tmp", landlock::FS_ALL),
+        ] {
+            let fd = libc::open(path.as_ptr(), libc::O_PATH | libc::O_CLOEXEC);
+            if fd < 0 {
+                continue;
+            }
+            let rule = landlock::PathBeneathAttr {
+                allowed_access: allowed,
+                parent_fd: fd,
+            };
+            let added = libc::syscall(
+                libc::SYS_landlock_add_rule,
+                ruleset,
+                landlock::RULE_PATH_BENEATH,
+                &raw const rule,
+                0u32,
+            );
+            libc::close(fd);
+            if added != 0 {
+                fail(out, c"adding a Landlock rule");
+            }
+        }
+        if libc::syscall(libc::SYS_landlock_restrict_self, ruleset, 0u32) != 0 {
+            fail(out, c"entering its Landlock ruleset");
+        }
+        libc::close(ruleset as libc::c_int);
+        // Its seccomp filter, last: what it refuses, nothing after may need.
+        if libc::syscall(
+            libc::SYS_seccomp,
+            libc::SECCOMP_SET_MODE_FILTER,
+            flags,
+            std::ptr::from_ref(program),
+        ) != 0
+        {
+            fail(out, c"loading its seccomp filter");
         }
         libc::execve(
             p.argv.first().copied().unwrap_or(std::ptr::null()),

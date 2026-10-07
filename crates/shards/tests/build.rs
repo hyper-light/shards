@@ -3442,7 +3442,9 @@ fn an_agentfiles_manifest_says_what_it_holds() {
 /// An image's agents run as its microVM starts (D59, AGENTFILE_ARCH.md §9.3), each in its
 /// domain: its own uid and no capability, PID 1 of its own PID namespace, its own host
 /// name and only a loopback, the system and its own directory read-only, every other
-/// domain's hidden, a scratch `/tmp` of its own, a `/dev` of six nodes; its output on the
+/// domain's hidden, a scratch `/tmp` of its own, a `/dev` of six nodes; under Landlock, no
+/// write but to its scratch and `/dev`, and no TCP; under seccomp, no vsock, netlink,
+/// io_uring, keys or userfaultfd; its output on the
 /// run's stderr, each line prefixed with it. An agent whose config says nothing of how it
 /// runs is files alone.
 #[test]
@@ -3464,7 +3466,7 @@ fn agents_run_in_their_domains() {
     std::fs::copy(common::test_guest(), dir.join("bin/testguest")).unwrap();
     std::fs::write(
         dir.join("agent.json"),
-        r#"{"name":"main","run":{"command":["bin/testguest","confined","see","/agents/other","/sys","/dev","/proc/self/fd","write","/agents/main/x","/etc/x","/tmp/x"]}}"#,
+        r#"{"name":"main","run":{"command":["bin/testguest","confined","see","/agents/other","/sys","/dev","/proc/self/fd","write","/agents/main/x","/etc/x","/tmp/x","/tmp/../proc/self/comm","bind","127.0.0.1:8080","connect","127.0.0.1:9","call","socket-vsock","socket-netlink","socket-unix","socket-inet6","io_uring_setup","keyctl","userfaultfd"]}}"#,
     )
     .unwrap();
     let name = format!("127.0.0.1:{port}/team/confined:1");
@@ -3507,6 +3509,19 @@ fn agents_run_in_their_domains() {
         "confined write /etc/x: errno 30",
         "confined write /tmp/x: ok",
         "confined net=lo",
+        // Landlock: no write outside its scratch and /dev, though the file is its own,
+        // and no TCP, though the loopback is its own.
+        "confined write /tmp/../proc/self/comm: errno 13",
+        "confined bind 127.0.0.1:8080: errno 13",
+        "confined connect 127.0.0.1:9: errno 13",
+        // seccomp: no vsock, netlink, io_uring, keys or userfaultfd; Unix and IP sockets.
+        "confined call socket-vsock: errno 1",
+        "confined call socket-netlink: errno 1",
+        "confined call socket-unix: ok",
+        "confined call socket-inet6: ok",
+        "confined call io_uring_setup: errno 1",
+        "confined call keyctl: errno 1",
+        "confined call userfaultfd: errno 1",
     ] {
         assert!(said.contains(&want), "no {want:?} in:\n{}", ran.stderr);
     }

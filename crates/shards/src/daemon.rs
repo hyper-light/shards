@@ -1917,6 +1917,11 @@ impl<D: Disk> Daemon<D> {
                     .spec
                     .setup
                     .extend(crate::setup::security_setup(&run, kernel)?);
+                // An Agentfile's image: the filter its domains run under (D59). Its init
+                // starts no domain without one.
+                if prepared.labels.contains_key("vnd.osi.agentfile.digest") {
+                    prepared.spec.setup.push(crate::setup::domain_seccomp(kernel)?);
+                }
                 crate::spec::fits(&prepared.spec)?;
                 let link = self.start_shares(threads, &opened.dirs)?;
                 prepared.shares = u32::try_from(opened.dirs.len()).map_err(|_| "too many shares")?;

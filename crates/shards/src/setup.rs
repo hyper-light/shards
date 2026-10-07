@@ -235,6 +235,81 @@ pub fn seccomp(
     Ok(entry)
 }
 
+/// The socket families a domain may open (§9.7): Unix, IPv4 and IPv6, by their Linux
+/// numbers (include/linux/socket.h), which are every architecture's.
+const DOMAIN_FAMILIES: [u64; 3] = [1, 2, 10];
+
+/// The profile an agent's or harness's domain runs under (D59, AGENTFILE_ARCH.md §9.3):
+/// Docker's default, compiled for no capability, so that its rules for capabilities give
+/// nothing; and its `socket` and `socketpair` rules, which refuse AF_ALG and AF_VSOCK alone,
+/// replaced by `socket` for the families above and `socketpair` for Unix alone. What a
+/// domain must not call besides (io_uring, keyctl, add_key, request_key, userfaultfd) is on
+/// no allow list of the default; bpf and perf_event_open only on capabilities' lists.
+fn domain_profile() -> Result<Vec<u8>, String> {
+    let mut p: serde_json::Value = serde_json::from_slice(shards_seccomp::DEFAULT)
+        .map_err(|e| format!("Docker's seccomp profile: {e}"))?;
+    let rules = p
+        .get_mut("syscalls")
+        .and_then(serde_json::Value::as_array_mut)
+        .ok_or("Docker's seccomp profile has no syscalls")?;
+    for r in rules.iter_mut() {
+        if let Some(names) = r.get_mut("names").and_then(serde_json::Value::as_array_mut) {
+            names.retain(|n| n != "socket" && n != "socketpair");
+        }
+    }
+    rules.retain(|r| {
+        r.get("names")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|n| !n.is_empty())
+    });
+    let allow = |name: &str, family: u64| {
+        serde_json::json!({
+            "names": [name],
+            "action": "SCMP_ACT_ALLOW",
+            "args": [{"index": 0, "value": family, "op": "SCMP_CMP_EQ"}],
+        })
+    };
+    for family in DOMAIN_FAMILIES {
+        rules.push(allow("socket", family));
+    }
+    rules.push(allow("socketpair", 1));
+    serde_json::to_vec(&p).map_err(|e| e.to_string())
+}
+
+/// The setup entry of the filter every domain of the run's image runs under
+/// (`domains-seccomp=`, then as `seccomp=`), compiled once per kernel.
+pub fn domain_seccomp(kernel: shards_seccomp::Kernel) -> Result<Vec<u8>, String> {
+    static COMPILED: std::sync::Mutex<Vec<(shards_seccomp::Kernel, Vec<u8>)>> =
+        std::sync::Mutex::new(Vec::new());
+    if let Some((_, e)) = COMPILED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .find(|(k, _)| *k == kernel)
+    {
+        return Ok(e.clone());
+    }
+    let arch = shards_seccomp::Arch::host().ok_or("seccomp needs an amd64 or arm64 guest")?;
+    let c = shards_seccomp::Container {
+        arch,
+        caps: &[],
+        kernel,
+    };
+    let program = shards_seccomp::compile(&domain_profile()?, &c)?
+        .ok_or("the domains' seccomp profile asks for none")?;
+    let mut e = b"domains-seccomp=".to_vec();
+    e.extend_from_slice(&program.flags.to_le_bytes());
+    for i in &program.insns {
+        e.extend_from_slice(&i.to_ne_bytes());
+    }
+    // One per guest kernel a daemon boots.
+    COMPILED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .push((kernel, e.clone()));
+    Ok(e)
+}
+
 /// What dockerd refuses of these as it makes a container: unknown capabilities
 /// (validateCapabilities), an OOM score out of range, a `/dev/shm` below 0, and a tmpfs
 /// at `/` or at a relative path (ValidateTmpfsMountDestination).

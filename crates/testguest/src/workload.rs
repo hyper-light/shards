@@ -1101,10 +1101,54 @@ fn confined(args: &[String]) -> i32 {
         field("NoNewPrivs:")
     ));
     let errno = |e: &io::Error| format!("errno {}", e.raw_os_error().unwrap_or(0));
-    let mut mode = "";
+    let mut mode: &str = "";
     for a in args {
         match a.as_str() {
-            "see" | "write" => mode = if a == "see" { "see" } else { "write" },
+            "see" | "write" | "bind" | "connect" | "call" => mode = a.as_str(),
+            what if mode == "call" => {
+                // SAFETY: each a system call with constant or null arguments, its
+                // descriptor, if any, closed after.
+                let (rc, err) = unsafe {
+                    let rc = match what {
+                        "socket-vsock" => libc::socket(libc::AF_VSOCK, libc::SOCK_STREAM, 0) as libc::c_long,
+                        "socket-netlink" => libc::socket(libc::AF_NETLINK, libc::SOCK_RAW, 0) as libc::c_long,
+                        "socket-unix" => libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0) as libc::c_long,
+                        "socket-inet6" => libc::socket(libc::AF_INET6, libc::SOCK_DGRAM, 0) as libc::c_long,
+                        "io_uring_setup" => {
+                            libc::syscall(libc::SYS_io_uring_setup, 1u32, std::ptr::null_mut::<u8>())
+                        }
+                        // KEYCTL_GET_KEYRING_ID of the session keyring, made if absent.
+                        "keyctl" => libc::syscall(libc::SYS_keyctl, 0, -3i32, 1),
+                        "userfaultfd" => libc::syscall(libc::SYS_userfaultfd, libc::O_CLOEXEC),
+                        _ => -1,
+                    };
+                    (rc, io::Error::last_os_error())
+                };
+                let said = if rc >= 0 {
+                    if what != "keyctl" {
+                        // SAFETY: closing the descriptor just made.
+                        unsafe { libc::close(rc as libc::c_int) };
+                    }
+                    "ok".to_string()
+                } else {
+                    errno(&err)
+                };
+                out.push_str(&format!("confined call {what}: {said}\n"));
+            }
+            addr if mode == "bind" => {
+                let said = match std::net::TcpListener::bind(addr) {
+                    Ok(_) => "ok".to_string(),
+                    Err(e) => errno(&e),
+                };
+                out.push_str(&format!("confined bind {addr}: {said}\n"));
+            }
+            addr if mode == "connect" => {
+                let said = match std::net::TcpStream::connect(addr) {
+                    Ok(_) => "ok".to_string(),
+                    Err(e) => errno(&e),
+                };
+                out.push_str(&format!("confined connect {addr}: {said}\n"));
+            }
             path if mode == "see" => {
                 let said = match std::fs::read_dir(path) {
                     Ok(d) => {

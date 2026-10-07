@@ -241,6 +241,10 @@ pub fn apply(entry: &[u8]) -> Result<(), i32> {
     if entry.starts_with(b"seccomp=") || entry == b"nnp" {
         return Ok(());
     }
+    // Init's, for the domains it starts (D59).
+    if entry.starts_with(b"domains-seccomp=") {
+        return Ok(());
+    }
     let text = std::str::from_utf8(entry).map_err(|_| libc::EINVAL)?;
     let mount = |src: &str, dst: &str, fstype: &str, flags: libc::c_ulong, data: &str| -> Result<(), i32> {
         let (src, dst, fstype, data) = (
@@ -524,7 +528,12 @@ fn unmask() {
 /// The seccomp filter a setup names (`seccomp=`: its seccomp(2) flags, then its program's
 /// instructions as `struct sock_filter`s), if it names one.
 pub fn filter(entries: &[Vec<u8>]) -> Option<(u32, Vec<libc::sock_filter>)> {
-    let raw = entries.iter().find_map(|e| e.strip_prefix(b"seccomp="))?;
+    filter_named(entries, b"seccomp=")
+}
+
+/// The filter of the entry `name` names: `domains-seccomp=`, the domains' (D59).
+pub fn filter_named(entries: &[Vec<u8>], name: &[u8]) -> Option<(u32, Vec<libc::sock_filter>)> {
+    let raw = entries.iter().find_map(|e| e.strip_prefix(name))?;
     let (flags, insns) = raw.split_first_chunk::<4>()?;
     let program = insns
         .as_chunks::<8>()
