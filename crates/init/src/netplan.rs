@@ -58,6 +58,9 @@ pub struct Link {
     pub addresses: Vec<Address>,
     pub hosts: Vec<u8>,
     pub egress: Vec<Egress>,
+    /// The ports let in past the microVM to it: of networks it is the one member of,
+    /// those both boundaries open inward (the build refuses several members).
+    pub ingress: Vec<Egress>,
     pub connects: bool,
     pub accepts: bool,
 }
@@ -281,26 +284,38 @@ pub fn plan(spec: &Value, names: &[Name], own: Option<(Ipv4Addr, u8)>) -> Result
             }
         }
         let joined: Vec<String> = own.addresses.iter().map(|a| a.network.clone()).collect();
-        let egress = egress_of(spec, &joined)?;
+        let egress = boundary_of(spec, &joined, true)?;
+        let alone: Vec<String> = joined
+            .iter()
+            .filter(|n| members.iter().any(|(m, ds)| m == *n && ds.as_slice() == [d]))
+            .cloned()
+            .collect();
+        let ingress = boundary_of(spec, &alone, false)?;
         let connects = pairs.iter().any(|(x, _)| *x == d) || !egress.is_empty();
-        let accepts = pairs.iter().any(|(_, y)| *y == d);
+        let accepts = pairs.iter().any(|(_, y)| *y == d) || !ingress.is_empty();
         if let Some(Some(link)) = links.get_mut(d) {
             link.hosts = [HOSTS, hosts.as_bytes()].concat();
             link.egress = egress;
+            link.ingress = ingress;
             link.connects = connects;
             link.accepts = accepts;
         }
     }
-    let uplink = links.iter().flatten().any(|l| !l.egress.is_empty());
+    let uplink = links
+        .iter()
+        .flatten()
+        .any(|l| !l.egress.is_empty() || !l.ingress.is_empty());
     Ok(Plan { links, pairs, uplink })
 }
 
-/// The ports a domain on `joined` may reach past the microVM, each once: of each joined
-/// network that is not internal, those both its own grants (`NETWORK --expose/--egress`)
-/// and the microVM's for it (`EXPOSE ... FOR` it, not ingress-only) open, where their
-/// ranges meet. Two boundaries, and a flow crossing both needs both (AGENTFILE_ARCH.md §12
-/// answer 6); the build's `agentfile::boundary` reads them alike.
-fn egress_of(spec: &Value, joined: &[String]) -> Result<Vec<Egress>, String> {
+/// The ports that cross the microVM's boundary for a domain on `joined`, outward (egress)
+/// or inward (ingress), each once: of each joined network that is not internal, those
+/// both its own grants (`NETWORK --expose`, and `--egress` or `--ingress`) and the
+/// microVM's for it (`EXPOSE ... FOR` it, both ways or `AS` that direction) open, where
+/// their ranges meet. Two boundaries, and a flow crossing both needs both
+/// (AGENTFILE_ARCH.md §12 answer 6); the build's `agentfile::boundary` reads them alike.
+fn boundary_of(spec: &Value, joined: &[String], outward: bool) -> Result<Vec<Egress>, String> {
+    let away = if outward { "ingress" } else { "egress" };
     let ranges = |ports: Vec<String>| -> Result<Vec<Egress>, String> {
         ports
             .iter()
@@ -320,13 +335,13 @@ fn egress_of(spec: &Value, joined: &[String]) -> Result<Vec<Egress>, String> {
                 .map(Value::array)
                 .unwrap_or_default()
                 .iter()
-                .filter(|p| p.get("direction").and_then(Value::str) != Some("ingress"))
+                .filter(|p| p.get("direction").and_then(Value::str) != Some(away))
                 .filter_map(|p| p.get("port").and_then(Value::str).map(str::to_string))
                 .collect(),
         )?;
         let mut vms = Vec::new();
         for e in spec.get("exposures").map(Value::array).unwrap_or_default() {
-            if e.get("direction").and_then(Value::str) != Some("ingress")
+            if e.get("direction").and_then(Value::str) != Some(away)
                 && strings(e.get("networks")).iter().any(|x| x == name)
             {
                 vms.extend(ranges(strings(e.get("ports")))?);
@@ -411,6 +426,9 @@ mod tests {
         // ingress-only), nor 9000-9010 (the microVM's alone).
         assert_eq!(a.egress, vec![(6, 443, 443), (17, 53, 53)]);
         assert!(a.connects, "egress lets it connect");
+        // 8080 both boundaries open inward, to out's one member.
+        assert_eq!(a.ingress, vec![(6, 8080, 8080)]);
+        assert!(a.accepts, "ingress lets it be connected to");
         let b = p.links[1].as_ref().unwrap();
         assert!(
             b.egress.is_empty(),

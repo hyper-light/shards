@@ -3852,3 +3852,100 @@ fn agents_reach_past_the_microvm_what_their_networks_grant() {
         ran.stderr
     );
 }
+
+/// What a network lets in past its microVM reaches its agent (D59, AGENTFILE_ARCH.md §4.1,
+/// §4.6, §12 answer 6): a port both its own boundary (`NETWORK --ingress`) and the
+/// microVM's (`EXPOSE ... AS ingress FOR` it) open inward, published as `shards run -p`
+/// publishes it, is the agent's, which answers with its host name; a port the agent
+/// listens on that no grant lets in stays the run's own, and no connection to it reaches
+/// the agent.
+#[test]
+fn agents_answer_what_their_networks_let_in() {
+    use std::io::Read as _;
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let (port, _repos) = common::writable_registry();
+    let home = TempDir::new("ingress-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let dir = TempDir::new("ingress-agent");
+    std::fs::create_dir_all(dir.join("bin")).unwrap();
+    std::fs::copy(common::test_guest(), dir.join("bin/testguest")).unwrap();
+    std::fs::write(
+        dir.join("agent.json"),
+        r#"{"name":"a","run":{"command":["bin/testguest","confined","listen","7100","7200"]}}"#,
+    )
+    .unwrap();
+    let tag = format!("127.0.0.1:{port}/team/ingress-a:1");
+    let made = shards(&["build", "agent", dir.to_str().unwrap(), "-t", &tag]);
+    assert_eq!(made.status, Some(0), "{}", made.stderr);
+    let pushed = shards(&["push", "agent", &tag]);
+    assert_eq!(pushed.status, Some(0), "{}", pushed.stderr);
+    let ctx = context("ingress-ctx", &format!("FROM {image}\n"));
+    std::fs::write(
+        ctx.join("Agentfile"),
+        format!(
+            "FROM {image}\nAGENT a FROM {tag}\n\
+             NETWORK --ingress=7100 front\nEXPOSE 7100 AS ingress FOR front\nEXPOSE 7200\n\
+             CONNECT a WITH a ON front\n"
+        ),
+    )
+    .unwrap();
+    let built = shards(&["build", "-t", "ingress:1", ctx.to_str().unwrap()]);
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    let ran = shards(&[
+        "run",
+        "-d",
+        "--name",
+        "front",
+        "-p",
+        "127.0.0.1::7100",
+        "-p",
+        "127.0.0.1::7200",
+        "ingress:1",
+        "sleep",
+    ]);
+    assert_eq!(ran.status, Some(0), "{}{}", ran.stdout, ran.stderr);
+    let listed = shards(&["port", "front"]);
+    assert_eq!(listed.status, Some(0), "{}", listed.stderr);
+    let host_port = |container: &str| -> u16 {
+        listed
+            .stdout
+            .lines()
+            .find(|l| l.starts_with(&format!("{container}/tcp")))
+            .and_then(|l| l.rsplit(':').next())
+            .and_then(|p| p.parse().ok())
+            .unwrap_or_else(|| panic!("no {container} in {}", listed.stdout))
+    };
+    let (granted, other) = (host_port("7100"), host_port("7200"));
+    // What a connection to the host's published port reads, in 3 s at most.
+    let read = |p: u16| -> String {
+        let Ok(mut c) = std::net::TcpStream::connect(("127.0.0.1", p)) else {
+            return String::new();
+        };
+        let _ = c.set_read_timeout(Some(std::time::Duration::from_secs(3)));
+        let mut got = String::new();
+        let _ = c.read_to_string(&mut got);
+        got
+    };
+    // Once the agent listens: until then a connection finds no one.
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    let mut said = String::new();
+    while std::time::Instant::now() < deadline {
+        said = read(granted);
+        if !said.is_empty() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    assert_eq!(said, "hello from agent-a\n", "the published ingress port");
+    // No grant lets 7200 in: the agent listens on it, and is not reached.
+    assert!(!read(other).contains("agent-a"), "port 7200 reached the agent");
+    let _ = shards(&["rm", "-f", "front"]);
+}

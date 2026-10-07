@@ -60,6 +60,8 @@ const MARK_AGENTS: u32 = 0x5a59_0001;
 pub struct Uplink {
     pub subnets: Vec<(Ipv4Addr, u8)>,
     pub eth0: (Ipv4Addr, Ipv4Addr, u8),
+    /// The ports let in, each to the address of the domain they are for.
+    pub ingress: Vec<(Ipv4Addr, Vec<crate::netplan::Egress>)>,
 }
 
 /// nfnetlink and nf_tables (include/uapi/linux/netfilter/nfnetlink.h, nf_tables.h).
@@ -134,6 +136,10 @@ mod nft {
     pub const NFTA_NAT_FAMILY: u16 = 2;
     pub const NFTA_NAT_REG_ADDR_MIN: u16 = 3;
     pub const NFT_NAT_SNAT: u32 = 0;
+    pub const NFT_NAT_DNAT: u32 = 1;
+    pub const NF_INET_PRE_ROUTING: u32 = 0;
+    /// NF_IP_PRI_NAT_DST, -100, as the u32 nf_tables reads a priority as.
+    pub const PRIORITY_DNAT: u32 = (-100i32) as u32;
 }
 
 const TABLE: &[u8] = b"shards\0";
@@ -308,6 +314,7 @@ impl Switch {
     pub fn new(
         pairs: &[(usize, usize)],
         egress: &[(usize, Vec<crate::netplan::Egress>)],
+        ingress: &[(usize, Vec<crate::netplan::Egress>)],
         uplink: Option<&Uplink>,
         resolver: Option<Ipv4Addr>,
     ) -> io::Result<Switch> {
@@ -322,7 +329,7 @@ impl Switch {
             crate::setup::write_sysctl("net.ipv4.ip_forward", "1").map_err(io::Error::other)?;
             Ok((ns, route, nftables))
         })?;
-        policy(&nftables, pairs, egress, resolver)?;
+        policy(&nftables, pairs, egress, ingress, resolver)?;
         let switch = Switch {
             ns,
             route,
@@ -400,7 +407,12 @@ impl Switch {
         if eth0 == 0 {
             return Err(io::Error::other("the microVM has no eth0 for its agents' egress"));
         }
-        outside(&netlink_socket(libc::NETLINK_NETFILTER)?, eth0, u.eth0)
+        outside(
+            &netlink_socket(libc::NETLINK_NETFILTER)?,
+            eth0,
+            u.eth0,
+            &u.ingress,
+        )
     }
 
     /// Links the `n`-th domain, its first process `pid`, as `link` says.
@@ -669,6 +681,16 @@ fn payload(list: &mut Vec<u8>, base: u32, offset: u32, len: u32) {
     });
 }
 
+/// A protocol's ports: `meta l4proto`, then the destination port, at offset 2 of TCP's
+/// header and UDP's alike, within the range, compared as the network-order bytes it is.
+fn ports(list: &mut Vec<u8>, (proto, lo, hi): crate::netplan::Egress) {
+    meta(list, nft::NFT_META_L4PROTO);
+    compare(list, nft::NFT_CMP_EQ, &[proto]);
+    payload(list, nft::NFT_PAYLOAD_TRANSPORT_HEADER, 2, 2);
+    compare(list, nft::NFT_CMP_GTE, &lo.to_be_bytes());
+    compare(list, nft::NFT_CMP_LTE, &hi.to_be_bytes());
+}
+
 /// Register 1, `value`.
 fn load(list: &mut Vec<u8>, value: &[u8]) {
     expr(list, b"immediate\0", |d| {
@@ -695,12 +717,26 @@ fn policy(
     sock: &OwnedFd,
     pairs: &[(usize, usize)],
     egress: &[(usize, Vec<crate::netplan::Egress>)],
+    ingress: &[(usize, Vec<crate::netplan::Egress>)],
     resolver: Option<Ipv4Addr>,
 ) -> io::Result<()> {
     let mut b = Batch::new();
     b.chain(b"input\0", b"filter\0", nft::NF_INET_LOCAL_IN, 0, nft::NF_DROP);
     b.chain(b"forward\0", b"filter\0", nft::NF_INET_FORWARD, 0, nft::NF_DROP);
     b.rule(b"forward\0", answers());
+    // What comes in past the microVM, down to the domain it is for, on its ports alone.
+    for (n, ranges) in ingress {
+        for &range in ranges {
+            let mut e = Vec::new();
+            meta(&mut e, nft::NFT_META_IIF);
+            compare(&mut e, nft::NFT_CMP_EQ, &(UPLINK_IFINDEX as u32).to_ne_bytes());
+            meta(&mut e, nft::NFT_META_OIF);
+            compare(&mut e, nft::NFT_CMP_EQ, &link_index(*n)?.to_ne_bytes());
+            ports(&mut e, range);
+            accept(&mut e);
+            b.rule(b"forward\0", e);
+        }
+    }
     for &(from, to) in pairs {
         let mut e = Vec::new();
         meta(&mut e, nft::NFT_META_IIF);
@@ -758,10 +794,53 @@ fn policy(
 /// - `out` keeps the run's own processes to what they reached before: the default deny
 ///   held them at the host, which now opens the agents' ports to the whole microVM, so
 ///   no new flow leaves eth0 but to eth0's own subnet (its network's members, D46).
-fn outside(sock: &OwnedFd, eth0: u32, (addr, subnet, prefix): (Ipv4Addr, Ipv4Addr, u8)) -> io::Result<()> {
+fn outside(
+    sock: &OwnedFd,
+    eth0: u32,
+    (addr, subnet, prefix): (Ipv4Addr, Ipv4Addr, u8),
+    ingress: &[(Ipv4Addr, Vec<crate::netplan::Egress>)],
+) -> io::Result<()> {
     let mut b = Batch::new();
     b.chain(b"forward\0", b"filter\0", nft::NF_INET_FORWARD, 0, nft::NF_DROP);
     b.rule(b"forward\0", answers());
+    // What is let in: from eth0 to the agents' link, on its ports, once `pre` has given it
+    // the address of the domain it is for.
+    for (_, ranges) in ingress {
+        for &range in ranges {
+            let mut e = Vec::new();
+            meta(&mut e, nft::NFT_META_IIF);
+            compare(&mut e, nft::NFT_CMP_EQ, &eth0.to_ne_bytes());
+            meta(&mut e, nft::NFT_META_OIF);
+            compare(&mut e, nft::NFT_CMP_EQ, &(UPLINK_IFINDEX as u32).to_ne_bytes());
+            ports(&mut e, range);
+            accept(&mut e);
+            b.rule(b"forward\0", e);
+        }
+    }
+    if !ingress.is_empty() {
+        b.chain(
+            b"pre\0",
+            b"nat\0",
+            nft::NF_INET_PRE_ROUTING,
+            nft::PRIORITY_DNAT,
+            nft::NF_ACCEPT,
+        );
+        for (to, ranges) in ingress {
+            for &range in ranges {
+                let mut e = Vec::new();
+                meta(&mut e, nft::NFT_META_IIF);
+                compare(&mut e, nft::NFT_CMP_EQ, &eth0.to_ne_bytes());
+                ports(&mut e, range);
+                load(&mut e, &to.octets());
+                expr(&mut e, b"nat\0", |d| {
+                    be32(d, nft::NFTA_NAT_TYPE, nft::NFT_NAT_DNAT);
+                    be32(d, nft::NFTA_NAT_FAMILY, u32::from(nft::NFPROTO_IPV4));
+                    be32(d, nft::NFTA_NAT_REG_ADDR_MIN, nft::NFT_REG_1);
+                });
+                b.rule(b"pre\0", e);
+            }
+        }
+    }
     let mut e = Vec::new();
     meta(&mut e, nft::NFT_META_IIF);
     compare(&mut e, nft::NFT_CMP_EQ, &(UPLINK_IFINDEX as u32).to_ne_bytes());

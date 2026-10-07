@@ -948,6 +948,48 @@ pub fn boundary(directives: &[Directive], net: &[u8], outward: bool) -> Vec<(u8,
     out
 }
 
+/// What an Agentfile lets in past its microVM (§4.1, §4.6, §12 answer 6): a network's
+/// ports both boundaries open inward reach its member, as `shards run -p` publishes them.
+/// Which of several members a connection is for no directive says yet, so a network with
+/// such ports and more than one member is refused, naming them, rather than guessed at.
+pub fn ingress(directives: &[Directive]) -> Result<(), Vec<u8>> {
+    let mut nets: Vec<(&[u8], Vec<&[u8]>)> = Vec::new();
+    for d in directives {
+        if let Directive::Connect(c) = d {
+            for n in &c.on {
+                let at = match nets.iter().position(|(x, _)| *x == n.as_slice()) {
+                    Some(at) => at,
+                    None => {
+                        nets.push((n, Vec::new()));
+                        nets.len() - 1
+                    }
+                };
+                if let Some((_, members)) = nets.get_mut(at) {
+                    for m in c.from.iter().chain(&c.to) {
+                        if !members.contains(&m.as_slice()) {
+                            members.push(m);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for (net, members) in nets {
+        if members.len() > 1 && !boundary(directives, net, false).is_empty() {
+            let names: Vec<&[u8]> = members;
+            return Err([
+                b"network ".as_slice(),
+                net,
+                b" lets ports in past the microVM to its members ",
+                &names.join(&b", "[..]),
+                b": which of them a connection is for, no directive says yet (AGENTFILE_ARCH.md \xc2\xa712 answer 6); give each its own network",
+            ]
+            .concat());
+        }
+    }
+    Ok(())
+}
+
 /// The ports an Agentfile lets some domain open flows to past its microVM: of each network
 /// a `CONNECT` joins, those it lets cross both boundaries outward ([`boundary`]), each
 /// once, as Docker writes them.

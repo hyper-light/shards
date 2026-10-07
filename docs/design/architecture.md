@@ -3351,7 +3351,32 @@ granted port by name; `b`, without egress, resolves nothing (EAI_AGAIN).
 Mutation-checked: a network process that never forwards, and a switch with no rule for
 DNS, each leave `a` unable to resolve.
 
-Open: DNS over TCP, for answers too long for UDP; ingress (`--ingress`, `EXPOSE … AS ingress`: a published port to a
+Part six, ingress:
+
+- **What is let in.** A port is let in past the microVM where both boundaries open it
+  inward: the network's own grant (`--ingress`, `--expose`) and the microVM's for it
+  (`EXPOSE … FOR` it, both ways or `AS ingress`). `shards run -p` publishes it as any
+  port; `EXPOSE … AS egress` stays out of the image's exposed ports, so `-P` does not.
+- **To whom.** To the network's member. Which of several members a connection is for, no
+  directive says yet, so the build refuses a network with such ports and more than one
+  member, naming them (`agentfile::ingress`), rather than guess, as D58 refuses a path
+  that only an undesigned relay could allow.
+- **How.** A published connection arrives at eth0 as any does. Init's namespace's `pre`
+  chain (nat, prerouting, NF_IP_PRI_NAT_DST) gives it the agent's address, its `forward`
+  chain accepts `eth0 → agents0` on those ports, and the switch accepts `up0 → d<x>` on
+  them; answers return as established. The agent's Landlock lets it bind. A port the
+  agent listens on that no grant lets in stays the run's own: published, it reaches the
+  workload's namespace, not the agent.
+
+Tested: `agents_answer_what_their_networks_let_in`, a detached run publishing 7100 and
+7200. The agent listens on both; 7100, which `front` lets in, answers with its host name,
+and 7200, which nothing lets in, does not reach it. The build's refusal of a network of
+two members has a unit test. Mutation-checked: no DNAT, and no switch rule, each leave
+7100 unanswered.
+
+Open: DNS over TCP, for answers too long for UDP; ingress to a network of several members
+(which one a connection is for); refusing `-p` of a port declared `AS egress` (answer 6),
+which needs the image to name those ports (`--ingress`, `EXPOSE … AS ingress`: a published port to a
 domain); remote MCP servers, whose grant names one destination and not a port; IPv6
 subnets; process events; §9.10's escape tests beyond these.
 

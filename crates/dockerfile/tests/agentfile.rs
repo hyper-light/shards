@@ -599,3 +599,55 @@ fn egress_is_what_joined_networks_open() {
         .is_empty()
     );
 }
+
+/// A network's ports both boundaries open inward reach its one member; with several, which
+/// one a connection is for no directive says, and the build says so rather than guess.
+#[test]
+fn ingress_reaches_a_networks_one_member() {
+    use shards_dockerfile::instructions::Kind;
+    let check = |text: &str| -> Result<(), String> {
+        let parsed = parser::parse_as(text.as_bytes(), Dialect::Agentfile).unwrap();
+        let ins = instructions::parse(&parsed, &Linter::default()).unwrap();
+        let directives: Vec<_> = ins
+            .stages
+            .last()
+            .unwrap()
+            .commands
+            .iter()
+            .filter_map(|c| match &c.kind {
+                Kind::Agentfile(d) => Some(d.clone()),
+                _ => None,
+            })
+            .collect();
+        shards_dockerfile::agentfile::ingress(&directives)
+            .map_err(|e| String::from_utf8_lossy(&e).into_owned())
+    };
+    let base = "FROM alpine\nAGENT a FROM ./a\nAGENT b FROM ./b\n";
+    assert_eq!(
+        check(&format!(
+            "{base}NETWORK --ingress=8080 front\nEXPOSE 8080 AS ingress FOR front\nCONNECT a WITH a ON front\n"
+        )),
+        Ok(())
+    );
+    let e = check(&format!(
+        "{base}NETWORK --ingress=8080 front\nEXPOSE 8080 AS ingress FOR front\nCONNECT a WITH b ON front\n"
+    ))
+    .unwrap_err();
+    assert!(
+        e.contains("network front lets ports in past the microVM to its members a, b"),
+        "{e}"
+    );
+    // One boundary alone lets nothing in: several members are no question then.
+    assert_eq!(
+        check(&format!(
+            "{base}NETWORK --ingress=8080 front\nCONNECT a WITH b ON front\n"
+        )),
+        Ok(())
+    );
+    assert_eq!(
+        check(&format!(
+            "{base}NETWORK --egress=443 out\nEXPOSE 443 FOR out\nCONNECT a WITH b ON out\n"
+        )),
+        Ok(())
+    );
+}

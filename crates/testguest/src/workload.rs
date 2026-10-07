@@ -1139,8 +1139,15 @@ fn confined(args: &[String]) -> i32 {
             port if mode == "listen" => {
                 let said = match std::net::TcpListener::bind(format!("0.0.0.0:{port}")) {
                     Ok(l) => {
-                        // Answers every connection, for as long as the agent runs.
-                        let _ = std::thread::Builder::new().spawn(move || for _ in l.incoming() {});
+                        // Answers every connection with its host name, for as long as the
+                        // agent runs, so that who answered is known.
+                        let hello = format!("hello from {host}\n");
+                        let _ = std::thread::Builder::new().spawn(move || {
+                            for c in l.incoming().flatten() {
+                                let mut c = c;
+                                let _ = c.write_all(hello.as_bytes());
+                            }
+                        });
                         "ok".to_string()
                     }
                     Err(e) => errno(&e),

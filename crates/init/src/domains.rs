@@ -344,7 +344,17 @@ fn switch(domains: &[Domain], pairs: &[(usize, usize)]) -> io::Result<crate::lin
                 .map(|l| (i, l.egress.clone()))
         })
         .collect();
-    let uplink = match egress.is_empty() {
+    let ingress: Vec<(usize, Vec<crate::netplan::Egress>)> = domains
+        .iter()
+        .enumerate()
+        .filter_map(|(i, d)| {
+            d.link
+                .as_ref()
+                .filter(|l| !l.ingress.is_empty())
+                .map(|l| (i, l.ingress.clone()))
+        })
+        .collect();
+    let uplink = match egress.is_empty() && ingress.is_empty() {
         true => None,
         false => {
             let (addr, prefix, _) = crate::net::current()
@@ -360,7 +370,16 @@ fn switch(domains: &[Domain], pairs: &[(usize, usize)]) -> io::Result<crate::lin
                     subnets.push((a.subnet, a.prefix));
                 }
             }
+            // Each to the domain's first address: every one of its addresses is its link's.
+            let to_domain = ingress
+                .iter()
+                .filter_map(|(i, ranges)| {
+                    let at = domains.get(*i)?.link.as_ref()?.addresses.first()?.addr;
+                    Some((at, ranges.clone()))
+                })
+                .collect();
             Some(crate::links::Uplink {
+                ingress: to_domain,
                 subnets,
                 eth0: (addr, std::net::Ipv4Addr::from(u32::from(addr) & mask), prefix),
             })
@@ -369,7 +388,7 @@ fn switch(domains: &[Domain], pairs: &[(usize, usize)]) -> io::Result<crate::lin
     let resolver = uplink
         .as_ref()
         .and_then(|_| crate::net::current().map(|(_, _, g)| g));
-    crate::links::Switch::new(pairs, &egress, uplink.as_ref(), resolver)
+    crate::links::Switch::new(pairs, &egress, &ingress, uplink.as_ref(), resolver)
 }
 
 /// Starts each of `domains`, hiding from each the directories of `all` but its own, under
