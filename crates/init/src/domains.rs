@@ -78,7 +78,11 @@ pub struct Domain {
 
 /// What the image's normalized Agentfile says to start: every domain's directory, the
 /// domains that run, and the pairs of them that may open connections, by index.
-pub type Read = (Vec<Vec<u8>>, Vec<Domain>, Vec<(usize, usize)>);
+pub type Read = (
+    Vec<Vec<u8>>,
+    Vec<Domain>,
+    Vec<(usize, usize, Vec<crate::netplan::Egress>)>,
+);
 
 /// The directories of every domain the image's normalized Agentfile declares, and those
 /// domains that say how they run; nothing where the image has no Agentfile.
@@ -128,12 +132,14 @@ pub fn read() -> Result<Read, String> {
         (std::net::Ipv4Addr::from(u32::from(addr) & mask), prefix)
     });
     let plan = crate::netplan::plan(&spec, &names, own)?;
-    let gateway = crate::net::current().map(|(_, _, g)| g);
     for (d, link) in out.iter_mut().zip(plan.links) {
-        if let (Some(l), Some(g)) = (&link, gateway)
-            && !l.egress.is_empty()
+        // A resolver only where a grant names one (`--dns`, a remote MCP server): its own
+        // gateway, the agents' resolver, which holds it to what it may ask.
+        if let Some(l) = &link
+            && (l.dns || !l.mcp.is_empty())
+            && let Some(a) = l.addresses.first()
         {
-            d.resolv = Some(format!("nameserver {g}\noptions ndots:0\n").into_bytes());
+            d.resolv = Some(format!("nameserver {}\noptions ndots:0\n", a.gateway).into_bytes());
         }
         d.link = link;
     }
@@ -333,7 +339,10 @@ static SWITCH: std::sync::OnceLock<crate::links::Switch> = std::sync::OnceLock::
 
 /// The switch `domains` link to: `pairs` of them allowed to open connections to each
 /// other, and those with egress grants up through init's namespace and eth0.
-fn switch(domains: &[Domain], pairs: &[(usize, usize)]) -> io::Result<crate::links::Switch> {
+fn switch(
+    domains: &[Domain],
+    pairs: &[(usize, usize, Vec<crate::netplan::Egress>)],
+) -> io::Result<crate::links::Switch> {
     let egress: Vec<(usize, Vec<crate::netplan::Egress>)> = domains
         .iter()
         .enumerate()
@@ -354,7 +363,13 @@ fn switch(domains: &[Domain], pairs: &[(usize, usize)]) -> io::Result<crate::lin
                 .map(|l| (i, l.ingress.clone()))
         })
         .collect();
-    let uplink = match egress.is_empty() && ingress.is_empty() {
+    let dns: Vec<usize> = domains
+        .iter()
+        .enumerate()
+        .filter(|(_, d)| d.link.as_ref().is_some_and(|l| l.dns || !l.mcp.is_empty()))
+        .map(|(i, _)| i)
+        .collect();
+    let uplink = match egress.is_empty() && ingress.is_empty() && dns.is_empty() {
         true => None,
         false => {
             let (addr, prefix, _) = crate::net::current()
@@ -388,7 +403,24 @@ fn switch(domains: &[Domain], pairs: &[(usize, usize)]) -> io::Result<crate::lin
     let resolver = uplink
         .as_ref()
         .and_then(|_| crate::net::current().map(|(_, _, g)| g));
-    crate::links::Switch::new(pairs, &egress, &ingress, uplink.as_ref(), resolver)
+    let switch = crate::links::Switch::new(pairs, &egress, &ingress, &dns, uplink.as_ref())?;
+    // The agents' resolver, for those granted names.
+    let mut askers: Vec<crate::agentdns::Asker> = Vec::new();
+    for &i in &dns {
+        let Some(l) = domains.get(i).and_then(|d| d.link.as_ref()) else {
+            continue;
+        };
+        askers.push(crate::agentdns::Asker {
+            link: crate::links::link_index(i)?,
+            any: l.dns,
+            names: l.mcp.iter().map(|(h, _)| h.clone()).collect(),
+        });
+    }
+    if let (false, Some(up)) = (askers.is_empty(), resolver) {
+        let (listen, upstream) = switch.resolver_sockets(std::net::SocketAddr::from((up, 53)))?;
+        crate::agentdns::start(listen, upstream, askers).map_err(io::Error::other)?;
+    }
+    Ok(switch)
 }
 
 /// Starts each of `domains`, hiding from each the directories of `all` but its own, under
@@ -398,7 +430,7 @@ fn switch(domains: &[Domain], pairs: &[(usize, usize)]) -> io::Result<crate::lin
 pub fn start(
     all: &[Vec<u8>],
     domains: &[Domain],
-    pairs: &[(usize, usize)],
+    pairs: &[(usize, usize, Vec<crate::netplan::Egress>)],
     filters: &[Option<Filter>; 2],
 ) -> Result<Vec<Started>, String> {
     if domains.is_empty() {

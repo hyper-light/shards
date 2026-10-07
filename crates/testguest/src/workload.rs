@@ -1105,7 +1105,40 @@ fn confined(args: &[String]) -> i32 {
     for a in args {
         match a.as_str() {
             "see" | "write" | "bind" | "connect" | "call" | "listen" | "reach" | "unreach" | "cat"
-            | "resolve" => mode = a.as_str(),
+            | "resolve" | "dnsprobe" => mode = a.as_str(),
+            addr if mode == "dnsprobe" => {
+                // A query for api.example's A record, by hand: what answers, if anything.
+                // `resolver` asks the one /etc/resolv.conf names.
+                let named = std::fs::read_to_string("/etc/resolv.conf")
+                    .unwrap_or_default()
+                    .lines()
+                    .find_map(|l| l.strip_prefix("nameserver ").map(|a| a.trim().to_string()));
+                let addr = if addr == "resolver" {
+                    named.as_deref().unwrap_or(addr)
+                } else {
+                    addr
+                };
+                let mut q = vec![0x51, 0x7a, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0];
+                q.extend_from_slice(b"\x03api\x07example\x00\x00\x01\x00\x01");
+                let said = std::net::UdpSocket::bind("0.0.0.0:0")
+                    .and_then(|s| {
+                        s.set_read_timeout(Some(std::time::Duration::from_secs(3)))?;
+                        s.send_to(&q, (addr, 53))?;
+                        let mut buf = [0u8; 512];
+                        let (n, from) = s.recv_from(&mut buf)?;
+                        let a = buf.get(..n).unwrap_or_default();
+                        Ok(format!(
+                            "from {from} rcode {} answers {}",
+                            a.get(3).map_or(0, |b| b & 0x0f),
+                            a.get(7).copied().unwrap_or(0)
+                        ))
+                    })
+                    .unwrap_or_else(|e| match e.kind() {
+                        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut => "timeout".to_string(),
+                        _ => errno(&e),
+                    });
+                out.push_str(&format!("confined dnsprobe {addr}: {said}\n"));
+            }
             name if mode == "resolve" => {
                 let c = std::ffi::CString::new(name).unwrap_or_default();
                 let mut res: *mut libc::addrinfo = std::ptr::null_mut();
@@ -1199,6 +1232,12 @@ fn confined(args: &[String]) -> i32 {
                         // KEYCTL_GET_KEYRING_ID of the session keyring, made if absent.
                         "keyctl" => libc::syscall(libc::SYS_keyctl, 0, -3i32, 1),
                         "userfaultfd" => libc::syscall(libc::SYS_userfaultfd, libc::O_CLOEXEC),
+                        // What spoofing another's address would need, and leaving its own
+                        // network namespace.
+                        "socket-raw" => {
+                            libc::socket(libc::AF_INET, libc::SOCK_RAW, libc::IPPROTO_UDP) as libc::c_long
+                        }
+                        "unshare-net" => libc::c_long::from(libc::unshare(libc::CLONE_NEWNET)),
                         "fork" => {
                             let pid = libc::fork();
                             if pid == 0 {
@@ -1220,7 +1259,7 @@ fn confined(args: &[String]) -> i32 {
                     (rc, io::Error::last_os_error())
                 };
                 let said = if rc >= 0 {
-                    if !matches!(what, "keyctl" | "fork" | "thread") {
+                    if !matches!(what, "keyctl" | "fork" | "thread" | "unshare-net") {
                         // SAFETY: closing the descriptor just made.
                         unsafe { libc::close(rc as libc::c_int) };
                     }

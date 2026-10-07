@@ -1,6 +1,8 @@
 //! shards-init: PID 1 of every shards guest.
 
 #[cfg(target_os = "linux")]
+mod agentdns;
+#[cfg(target_os = "linux")]
 mod build;
 #[cfg(target_os = "linux")]
 mod changes;

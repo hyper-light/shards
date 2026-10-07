@@ -172,8 +172,11 @@ NETWORK [OPTIONS...] <name> [FOR <agent_name_a> <agent_name_b> ...]
   | `--ingress <port>` | ingress only |
   | `--egress <port>` | egress only |
 
-- Without `FOR`, every agent may attach to the network. Agents attached may communicate
-  with one another, and reach whatever ports the network's ingress and egress allow.
+- Without `FOR`, every agent may attach to the network. Attached agents communicate only as
+  `CONNECT` grants, on ports the network lets in (default deny, §4.7).
+- `--dns` lets its members ask the microVM's resolver for names past the microVM; no other
+  grant implies it, and an internal network takes none. A remote `MCP` server's grant lets
+  its agents ask for that server's host name alone.
 - With `FOR`, only the agents named may attach.
 - **Declaring a network attaches no agent**, named or not. It creates the network, exposes
   the ports, and sets which agents may attach.
@@ -186,13 +189,27 @@ CONNECT [OPTIONS...] <agent> [<agent> ...]
     ON <network> [<network> ...]
 ```
 
+**Networks are default deny** (decided 2026-10-06): every agent is airgapped unless the
+Agentfile configures otherwise, and a flow no directive names does not exist. Joining a
+network grants nothing; `CONNECT` names each flow, who to whom on which ports.
+
+- `--port=<port>[/tcp|/udp]` (repeatable; a range such as `8000-8010`; TCP where no
+  protocol is said) names what the receiving side accepts. A `CONNECT` between agents
+  with no `--port` is a build error, not a grant. A `CONNECT` naming one agent alone
+  (`CONNECT a WITH a ON n`) attaches it to the networks and grants no flow.
+- Each `--port` must lie within what each of its networks lets in to its members
+  (`NETWORK --ingress` or `--expose`): the network is a second boundary, inside the
+  microVM as at its edge, and a port outside it is a build error naming both.
+- An agent resolves its own name and those of the peers it is granted a flow to, and no
+  other.
 - Exactly one of `WITH` and `TO` is required.
 - `--target-kind=<agent|harness>` (added 2026-10-01) says whether the names are agents
   or harnesses (§4.10).
 - Several agents may follow `CONNECT`, `WITH` and `TO`, and several networks may follow
   `ON`.
-- `WITH` connects them both ways, for every agent attached to the networks: each may send
-  requests to the others and answer theirs.
+- `WITH` connects them both ways: each agent before `WITH` and each after it may send
+  requests to the other on the `--port`s, and answer theirs. Agents on the same side are
+  not connected to one another by it.
 - `TO` still attaches every agent named to the networks, but only one way:
   - agents after `CONNECT` may send requests to agents after `TO`, and receive their
     responses;
@@ -882,7 +899,7 @@ of 2026-10-02:
 | The in-VM runtime: many agents and harnesses per microVM, each a domain (§6, §9.3) | n/a | each domain whose OSI config says how it runs started by shards-init as the run's command starts, its output on the run's stderr prefixed `[agent NAME]` (D59); the server (§5) **missing** |
 | The in-VM server: agents' encrypted, deny-by-default communication, the code-mode MCP server they discover (§5) | n/a | **missing** |
 | Build-time isolation checks (§9.2) and transitive reach, relays, declassifiers (§9.5, §9.8) | §9.2 done (D55): symlinks and hard links out of a domain, devices, FIFOs, sockets, set-ID bits and capabilities in one, and any other step's write into one, refused; §9.5's transitive reach done (D58): a path from an internal-only domain to one that reaches the world fails the build, named; owners, relays and declassifiers (Q20), and §9.8, **missing** | n/a |
-| Run-time confinement (§9.3, §9.7–9.9): namespaces, IDs, cgroups and `pids.max`, Landlock, seccomp, `io_uring` off, vsock closed to workloads, process events | n/a | namespaces, IDs, no capabilities, `no_new_privs`, cgroups and `pids.max`, the filesystem rules, Landlock (filesystem, TCP, scopes), seccomp (no vsock, netlink, `io_uring`, keys, `userfaultfd`, bpf, perf) `--processes=none` (threads, no process) done (D59); network grants between domains (`NETWORK`, `CONNECT`) and egress past the microVM by port (`NETWORK --egress/--expose`, `EXPOSE … FOR`) done (D59), names past the microVM for agents with egress, and ingress to a network's one member (`--ingress` with `EXPOSE … AS ingress FOR`, published by `shards run -p`) (D59); refusing `-p` of a port declared `AS egress` (D59); ingress to a network of several members, remote MCP servers' own destinations, IPv6 subnets, process events **missing** |
+| Run-time confinement (§9.3, §9.7–9.9): namespaces, IDs, cgroups and `pids.max`, Landlock, seccomp, `io_uring` off, vsock closed to workloads, process events | n/a | namespaces, IDs, no capabilities, `no_new_privs`, cgroups and `pids.max`, the filesystem rules, Landlock (filesystem, TCP, scopes), seccomp (no vsock, netlink, `io_uring`, keys, `userfaultfd`, bpf, perf) `--processes=none` (threads, no process) done (D59); network grants between domains, default deny (`CONNECT --port` within the network's ingress, names of granted peers alone, `NETWORK --dns`, the agents' resolver identifying askers by link, strict reverse-path filtering), remote MCP servers as grants of that server alone, and egress past the microVM by port (`NETWORK --egress/--expose`, `EXPOSE … FOR`) done (D59), names past the microVM for agents with egress, and ingress to a network's one member (`--ingress` with `EXPOSE … AS ingress FOR`, published by `shards run -p`) (D59); refusing `-p` of a port declared `AS egress` (D59); ingress to a network of several members, remote MCP servers' own destinations, IPv6 subnets, process events **missing** |
 | Labels on data through the in-VM server and MCP results; per-caller MCP instances (§9.5, §9.6) | n/a | **missing** |
 | The escape tests of §9.10, each mutation-checked | **missing** | **missing** |
 

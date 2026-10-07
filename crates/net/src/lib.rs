@@ -18,7 +18,7 @@ pub mod tcp;
 pub mod wire;
 
 use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashMap, VecDeque};
+use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
 use std::io;
 use std::net::{Ipv4Addr, UdpSocket};
 use std::os::fd::{AsRawFd, OwnedFd};
@@ -86,6 +86,53 @@ pub enum Proto {
 /// `53/udp`, `8000-8010/tcp`), TCP where none is said.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Ports(pub Vec<(Proto, u16, u16)>);
+
+/// `NET_POLICY`'s payload: each port range as [`Ports::encode`] writes one; 0x81 where any
+/// name may be resolved past the microVM; then each name granted as 0x80, its port in
+/// network order, its length's byte and the name.
+pub fn encode_policy(ports: &Ports, named: &[(String, u16)], dns_all: bool) -> Vec<u8> {
+    let mut out = ports.encode();
+    if dns_all {
+        out.push(0x81);
+    }
+    for (host, port) in named {
+        let Ok(len) = u8::try_from(host.len()) else {
+            continue;
+        };
+        out.push(0x80);
+        out.extend_from_slice(&port.to_be_bytes());
+        out.push(len);
+        out.extend_from_slice(host.as_bytes());
+    }
+    out
+}
+
+/// A policy as `NET_POLICY` carries it: the ports, the names granted with their ports, and
+/// whether any name may be resolved.
+pub type Granted = (Ports, Vec<(String, u16)>, bool);
+
+/// What [`encode_policy`] wrote; None for a malformed payload.
+pub fn decode_policy(mut bytes: &[u8]) -> Option<Granted> {
+    let mut ranges = Vec::new();
+    let mut named = Vec::new();
+    let mut dns_all = false;
+    while let Some(&tag) = bytes.first() {
+        if tag == 0x81 {
+            dns_all = true;
+            bytes = bytes.get(1..)?;
+        } else if tag == 0x80 {
+            let (&[_, a, b, len], rest) = bytes.split_first_chunk::<4>()?;
+            let (name, rest) = rest.split_at_checked(usize::from(len))?;
+            named.push((String::from_utf8(name.to_vec()).ok()?, u16::from_be_bytes([a, b])));
+            bytes = rest;
+        } else {
+            let (record, rest) = bytes.split_at_checked(5)?;
+            ranges.extend(Ports::decode(record)?.0);
+            bytes = rest;
+        }
+    }
+    Some((Ports(ranges), named, dns_all))
+}
 
 impl Ports {
     /// Ports as the build's label lists them, comma-separated.
@@ -185,6 +232,15 @@ pub struct Config {
     /// name the network's members do not hold, as Docker's embedded DNS asks the host's
     /// for a name its network does not hold.
     pub resolvers: Vec<(Ipv4Addr, u16)>,
+    /// Destinations granted by name, each a host and a TCP port (an Agentfile's remote MCP
+    /// servers, D59): reached at the address a host is, or at those the host's resolver
+    /// answered for it through this process.
+    pub named: Vec<(String, u16)>,
+    /// What the named have resolved to, each address with its grant's port.
+    pub learned: HashSet<(Ipv4Addr, u16)>,
+    /// Whether any name may be asked past the microVM (`NETWORK --dns`); else only the
+    /// named's, and every other question is REFUSED.
+    pub dns_all: bool,
 }
 
 /// A MAC address as shards' processes pass it to one another (review 2.32): its six
@@ -274,13 +330,22 @@ impl Config {
             gateway_ip: bridge.gateway(),
             policy,
             resolvers: Vec::new(),
+            named: Vec::new(),
+            learned: HashSet::new(),
+            dns_all: false,
         }
     }
 
     fn allows(&self, to: Ipv4Addr, proto: Proto, port: u16) -> bool {
+        let named = proto == Proto::Tcp
+            && (self.learned.contains(&(to, port))
+                || self
+                    .named
+                    .iter()
+                    .any(|(h, p)| *p == port && h.parse::<Ipv4Addr>().ok() == Some(to)));
         match &self.policy {
             Policy::DenyAll => false,
-            Policy::Ports(p) if !p.has(proto, port) => false,
+            Policy::Ports(p) if !p.has(proto, port) && !named => false,
             // The gateway would be the host itself: never by default (rootless-security.md
             // R4.16).
             Policy::AllowAll | Policy::Ports(_) => {
@@ -780,10 +845,12 @@ fn control(
             stack.names = Some(names);
             shards_ipc::send(sock, shards_ipc::kind::NET_NAMES, &[], &[])
         } else if m.kind == shards_ipc::kind::NET_POLICY {
-            let Some(ports) = Ports::decode(&m.payload) else {
+            let Some((ports, named, dns_all)) = decode_policy(&m.payload) else {
                 return false;
             };
             stack.cfg.policy = Policy::Ports(ports);
+            stack.cfg.named = named;
+            stack.cfg.dns_all = dns_all;
             shards_ipc::send(sock, shards_ipc::kind::NET_POLICY, &[], &[])
         } else if m.kind == shards_ipc::kind::NET_PEER {
             stack.add_peer(&m.payload, m.fds);
@@ -1281,7 +1348,19 @@ impl<'r> Stack<'r> {
                 && matches!(self.cfg.policy, Policy::Ports(_))
                 && let Some(&up) = self.cfg.resolvers.first()
             {
-                self.flow((u.src_port, ip.dst, 53), up, u.payload);
+                // Only what a grant names: any name with `--dns`, else a remote MCP
+                // server's own (default deny).
+                let asked = dns::query_name(u.payload);
+                let granted = self.cfg.dns_all
+                    || asked
+                        .as_deref()
+                        .is_some_and(|q| self.cfg.named.iter().any(|(h, _)| h.eq_ignore_ascii_case(q)));
+                if granted {
+                    self.flow((u.src_port, ip.dst, 53), up, u.payload);
+                } else if let Some(no) = dns::refused(u.payload) {
+                    let gateway = self.cfg.gateway_ip;
+                    self.out().datagram((gateway, 53), u.src_port, &no);
+                }
                 return;
             }
             if let Some(f) = self.inbound.get_mut(&u.dst_port)
@@ -1362,7 +1441,21 @@ impl<'r> Stack<'r> {
                 return;
             };
             f.life.datagram(Instant::now(), true);
-            o.datagram((key.1, key.2), key.0, self.buf.get(..n).unwrap_or_default());
+            let got = self.buf.get(..n).unwrap_or_default();
+            // A forwarded answer for a name granted to agents: what it resolved to, each
+            // address reached at its grant's port from now on.
+            if key.1 == self.cfg.gateway_ip
+                && key.2 == 53
+                && !self.cfg.named.is_empty()
+                && let Some((name, addrs)) = dns::a_records(got)
+            {
+                for (host, port) in &self.cfg.named {
+                    if host.eq_ignore_ascii_case(&name) {
+                        self.cfg.learned.extend(addrs.iter().map(|a| (*a, *port)));
+                    }
+                }
+            }
+            o.datagram((key.1, key.2), key.0, got);
         }
     }
 
@@ -1830,6 +1923,29 @@ mod tests {
             assert!(Ports::parse(bad).is_err(), "{bad}");
         }
         assert_eq!(Ports::decode(&[6, 0, 0, 0, 1]), None);
+        // Names granted, beside the ports, carried whole.
+        let named = vec![("mcp.example".to_string(), 443), ("10.0.0.7".to_string(), 8443)];
+        let both = encode_policy(&Ports::parse("53/udp").unwrap(), &named, true);
+        assert_eq!(
+            decode_policy(&both),
+            Some((Ports::parse("53/udp").unwrap(), named.clone(), true))
+        );
+        assert_eq!(
+            decode_policy(&encode_policy(&Ports::default(), &[], false)),
+            Some((Ports::default(), vec![], false))
+        );
+        assert_eq!(decode_policy(&both[..both.len() - 1]), None);
+        // A named grant reaches its address, learned or literal, at its port alone.
+        let mut cfg = Config::on_bridge(Policy::Ports(Ports::default()), [2, 0, 0, 0, 0, 1], &bridge);
+        cfg.named = named;
+        let learned = Ipv4Addr::new(203, 0, 113, 9);
+        assert!(!cfg.allows(learned, Proto::Tcp, 443), "not yet resolved");
+        cfg.learned.insert((learned, 443));
+        assert!(cfg.allows(learned, Proto::Tcp, 443));
+        assert!(!cfg.allows(learned, Proto::Tcp, 80));
+        assert!(!cfg.allows(learned, Proto::Udp, 443));
+        assert!(cfg.allows(Ipv4Addr::new(10, 0, 0, 7), Proto::Tcp, 8443));
+        assert!(!cfg.allows(Ipv4Addr::new(10, 0, 0, 8), Proto::Tcp, 8443));
         assert_eq!(Ports::decode(&[6, 0, 1]), None);
     }
 

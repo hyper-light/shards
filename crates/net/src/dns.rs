@@ -187,6 +187,64 @@ fn qname(body: &[u8]) -> Option<(Vec<String>, usize)> {
     }
 }
 
+/// A query's one question's name, lowered: what an agent asks of the resolver.
+pub fn query_name(q: &[u8]) -> Option<String> {
+    if q.get(2)? & 0x80 != 0 || u16::from_be_bytes([*q.get(4)?, *q.get(5)?]) != 1 {
+        return None;
+    }
+    let (labels, _) = qname(q.get(12..)?)?;
+    Some(labels.join(".").to_ascii_lowercase())
+}
+
+/// REFUSED (RFC 1035 §4.1.1, RCODE 5) for query `q`, its question kept: a name no grant
+/// lets the guest ask past the microVM (default deny), said at once, so that no resolver
+/// waits out its timeouts.
+pub fn refused(q: &[u8]) -> Option<Vec<u8>> {
+    let (&[id0, id1, f0, _], _) = q.split_first_chunk::<4>()?;
+    let (_, end) = qname(q.get(12..)?)?;
+    let question = q.get(12..12 + end + 4)?;
+    let mut out = vec![id0, id1, 0x80 | (f0 & 0x79), 0x80 | 5, 0, 1, 0, 0, 0, 0, 0, 0];
+    out.extend_from_slice(question);
+    Some(out)
+}
+
+/// A response's question name, lowered and without its last dot, and the addresses of
+/// its answers' A records (RFC 1035 §4.1): what a name granted to agents resolved to
+/// (D59). None for what is no response of one question.
+pub fn a_records(msg: &[u8]) -> Option<(String, Vec<Ipv4Addr>)> {
+    let be16 = |at: usize| Some(u16::from_be_bytes([*msg.get(at)?, *msg.get(at + 1)?]));
+    if msg.get(2)? & 0x80 == 0 || be16(4)? != 1 {
+        return None;
+    }
+    let (labels, end) = qname(msg.get(12..)?)?;
+    let name = labels.join(".").to_ascii_lowercase();
+    // Past the question's type and class.
+    let mut at = 12 + end + 4;
+    let mut out = Vec::new();
+    for _ in 0..be16(6)? {
+        // An owner name: labels, ending in a zero byte or a two-byte pointer.
+        loop {
+            let len = *msg.get(at)?;
+            if len & 0xc0 == 0xc0 {
+                at += 2;
+                break;
+            }
+            at += 1 + usize::from(len);
+            if len == 0 {
+                break;
+            }
+        }
+        let (kind, length) = (be16(at)?, usize::from(be16(at + 8)?));
+        at += 10;
+        if kind == TYPE_A && length == 4 {
+            let &[a, b, c, d] = msg.get(at..at + 4)?.first_chunk::<4>()?;
+            out.push(Ipv4Addr::new(a, b, c, d));
+        }
+        at += length;
+    }
+    Some((name, out))
+}
+
 /// The address `d.c.b.a.in-addr.arpa` names.
 fn ptr_addr(name: &str) -> Option<Ipv4Addr> {
     let rest = name.strip_suffix(".in-addr.arpa")?;
@@ -226,6 +284,41 @@ mod tests {
     /// As Docker's embedded DNS answered on Docker Engine 29.3.1: A records of TTL 600,
     /// whatever the case; an alias's every member; no AAAA; PTR as name.network.; and
     /// SERVFAIL for what it does not hold, upstream denied.
+    /// A forwarded response's name and A records, whatever its owner names are written
+    /// as (a pointer, labels) and whatever other records come between.
+    #[test]
+    fn a_responses_addresses_are_read() {
+        let mut m = vec![0x12, 0x34, 0x81, 0x80, 0, 1, 0, 3, 0, 0, 0, 0];
+        m.extend_from_slice(b"\x03MCP\x07example\x00\x00\x01\x00\x01");
+        // A CNAME by pointer, then two As, one by labels.
+        m.extend_from_slice(&[0xc0, 0x0c, 0, 5, 0, 1, 0, 0, 0, 60, 0, 2, 0xc0, 0x0c]);
+        m.extend_from_slice(&[0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4, 203, 0, 113, 9]);
+        m.extend_from_slice(b"\x01x\x00");
+        m.extend_from_slice(&[0, 1, 0, 1, 0, 0, 0, 60, 0, 4, 203, 0, 113, 10]);
+        assert_eq!(
+            a_records(&m),
+            Some((
+                "mcp.example".to_string(),
+                vec![Ipv4Addr::new(203, 0, 113, 9), Ipv4Addr::new(203, 0, 113, 10)]
+            ))
+        );
+        // The query asked it, and is refused with its question kept.
+        let mut q = vec![0x12, 0x34, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0];
+        q.extend_from_slice(b"\x03MCP\x07example\x00\x00\x01\x00\x01");
+        assert_eq!(query_name(&q).as_deref(), Some("mcp.example"));
+        let no = refused(&q).unwrap();
+        assert_eq!(
+            (&no[..2], no[2] & 0x80, no[3] & 0x0f),
+            (&[0x12, 0x34][..], 0x80, 5)
+        );
+        assert_eq!(&no[12..], &q[12..]);
+        // A query is no answer; a cut one is nothing.
+        let mut q = m.clone();
+        q[2] = 0x01;
+        assert_eq!(a_records(&q), None);
+        assert_eq!(a_records(&m[..m.len() - 2]), None);
+    }
+
     #[test]
     fn names_are_answered_as_dockers_embedded_dns_answers() {
         let n = names();

@@ -42,7 +42,7 @@ pub fn start(gateway: Ipv4Addr) -> Result<(), String> {
 
 /// Closes every descriptor but `keep` and the standard three: none of init's
 /// connections stays open in the relay.
-fn keep_only(keep: &[i32]) {
+pub(crate) fn keep_only(keep: &[i32]) {
     let Ok(entries) = std::fs::read_dir("/proc/self/fd") else {
         return;
     };

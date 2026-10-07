@@ -308,15 +308,15 @@ pub struct Switch {
 
 impl Switch {
     /// Makes the switch: forwarding on, and nf_tables that drop all but the answers to
-    /// what is allowed, `pairs`, each `(from, to)` by the domains' indices, and each
-    /// domain's `egress` past the microVM, through `uplink`, and its names' queries to
-    /// `resolver`, the microVM's gateway.
+    /// what is allowed, `pairs`, each `(from, to)` by the domains' indices on the ports the
+    /// receiver accepts, each of `dns` asking the microVM's resolver, and each
+    /// domain's `egress` past the microVM, through `uplink`.
     pub fn new(
-        pairs: &[(usize, usize)],
+        pairs: &[(usize, usize, Vec<crate::netplan::Egress>)],
         egress: &[(usize, Vec<crate::netplan::Egress>)],
         ingress: &[(usize, Vec<crate::netplan::Egress>)],
+        dns: &[usize],
         uplink: Option<&Uplink>,
-        resolver: Option<Ipv4Addr>,
     ) -> io::Result<Switch> {
         let (ns, route, nftables) = in_netns(None, || {
             let ns = open_ns("/proc/thread-self/ns/net")?;
@@ -327,9 +327,16 @@ impl Switch {
             // (net/sysctl_net.c), through the handle init kept of /proc/sys, which is
             // read-only once the guest is set up.
             crate::setup::write_sysctl("net.ipv4.ip_forward", "1").map_err(io::Error::other)?;
+            // Strict reverse-path filtering (RFC 3704 §2.2), for every link made from now
+            // on: each domain's addresses are routed by its own link alone, so a packet on
+            // d<x> from an address not x's is dropped by the kernel, whatever an agent sends.
+            for scope in ["all", "default"] {
+                crate::setup::write_sysctl(&format!("net.ipv4.conf.{scope}.rp_filter"), "1")
+                    .map_err(io::Error::other)?;
+            }
             Ok((ns, route, nftables))
         })?;
-        policy(&nftables, pairs, egress, ingress, resolver)?;
+        policy(&nftables, pairs, egress, ingress, dns)?;
         let switch = Switch {
             ns,
             route,
@@ -413,6 +420,21 @@ impl Switch {
             u.eth0,
             &u.ingress,
         )
+    }
+
+    /// The agents' resolver's sockets, of the switch's namespace (`agentdns`): port 53 of
+    /// every switch address, which each agent asks at its gateway, and one connected to
+    /// `upstream`, the microVM's resolver.
+    pub fn resolver_sockets(
+        &self,
+        upstream: std::net::SocketAddr,
+    ) -> io::Result<(std::net::UdpSocket, std::net::UdpSocket)> {
+        in_netns(Some(self.ns.as_raw_fd()), || {
+            let listen = std::net::UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 53))?;
+            let up = std::net::UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))?;
+            up.connect(upstream)?;
+            Ok((listen, up))
+        })
     }
 
     /// Links the `n`-th domain, its first process `pid`, as `link` says.
@@ -701,7 +723,8 @@ fn load(list: &mut Vec<u8>, value: &[u8]) {
     });
 }
 
-fn link_index(n: usize) -> io::Result<u32> {
+/// The switch's end of the n-th domain's link, `d<n>`, by interface index.
+pub(crate) fn link_index(n: usize) -> io::Result<u32> {
     let n = u32::try_from(n).map_err(|_| io::Error::other("too many domains"))?;
     (SWITCH_IFINDEX as u32)
         .checked_add(n)
@@ -715,13 +738,15 @@ fn link_index(n: usize) -> io::Result<u32> {
 /// networks grant.
 fn policy(
     sock: &OwnedFd,
-    pairs: &[(usize, usize)],
+    pairs: &[(usize, usize, Vec<crate::netplan::Egress>)],
     egress: &[(usize, Vec<crate::netplan::Egress>)],
     ingress: &[(usize, Vec<crate::netplan::Egress>)],
-    resolver: Option<Ipv4Addr>,
+    dns: &[usize],
 ) -> io::Result<()> {
     let mut b = Batch::new();
     b.chain(b"input\0", b"filter\0", nft::NF_INET_LOCAL_IN, 0, nft::NF_DROP);
+    // The answers to what the switch itself asks: the agents' resolver's, upstream.
+    b.rule(b"input\0", answers());
     b.chain(b"forward\0", b"filter\0", nft::NF_INET_FORWARD, 0, nft::NF_DROP);
     b.rule(b"forward\0", answers());
     // What comes in past the microVM, down to the domain it is for, on its ports alone.
@@ -737,14 +762,18 @@ fn policy(
             b.rule(b"forward\0", e);
         }
     }
-    for &(from, to) in pairs {
-        let mut e = Vec::new();
-        meta(&mut e, nft::NFT_META_IIF);
-        compare(&mut e, nft::NFT_CMP_EQ, &link_index(from)?.to_ne_bytes());
-        meta(&mut e, nft::NFT_META_OIF);
-        compare(&mut e, nft::NFT_CMP_EQ, &link_index(to)?.to_ne_bytes());
-        accept(&mut e);
-        b.rule(b"forward\0", e);
+    // Each flow a CONNECT names, on its ports alone: networks are default deny.
+    for (from, to, ranges) in pairs {
+        for &range in ranges {
+            let mut e = Vec::new();
+            meta(&mut e, nft::NFT_META_IIF);
+            compare(&mut e, nft::NFT_CMP_EQ, &link_index(*from)?.to_ne_bytes());
+            meta(&mut e, nft::NFT_META_OIF);
+            compare(&mut e, nft::NFT_CMP_EQ, &link_index(*to)?.to_ne_bytes());
+            ports(&mut e, range);
+            accept(&mut e);
+            b.rule(b"forward\0", e);
+        }
     }
     for (n, ranges) in egress {
         for &(proto, lo, hi) in ranges {
@@ -763,24 +792,17 @@ fn policy(
             accept(&mut e);
             b.rule(b"forward\0", e);
         }
-        // Its names' queries, by UDP, to the gateway's resolver alone (D59): the network
-        // process asks the host's for it.
-        if let Some(r) = resolver {
-            let mut e = Vec::new();
-            meta(&mut e, nft::NFT_META_IIF);
-            compare(&mut e, nft::NFT_CMP_EQ, &link_index(*n)?.to_ne_bytes());
-            meta(&mut e, nft::NFT_META_OIF);
-            compare(&mut e, nft::NFT_CMP_EQ, &(UPLINK_IFINDEX as u32).to_ne_bytes());
-            meta(&mut e, nft::NFT_META_L4PROTO);
-            compare(&mut e, nft::NFT_CMP_EQ, &[17]);
-            // The destination address, at offset 16 of IPv4's header.
-            payload(&mut e, nft::NFT_PAYLOAD_NETWORK_HEADER, 16, 4);
-            compare(&mut e, nft::NFT_CMP_EQ, &r.octets());
-            payload(&mut e, nft::NFT_PAYLOAD_TRANSPORT_HEADER, 2, 2);
-            compare(&mut e, nft::NFT_CMP_EQ, &53u16.to_be_bytes());
-            accept(&mut e);
-            b.rule(b"forward\0", e);
-        }
+    }
+    // Names past the microVM, for each domain granted them (`--dns`, or a remote MCP
+    // server's): its queries, by UDP, to the switch's own resolver (`agentdns`), which asks
+    // the microVM's for what its grant names alone.
+    for n in dns {
+        let mut e = Vec::new();
+        meta(&mut e, nft::NFT_META_IIF);
+        compare(&mut e, nft::NFT_CMP_EQ, &link_index(*n)?.to_ne_bytes());
+        ports(&mut e, (17, 53, 53));
+        accept(&mut e);
+        b.rule(b"input\0", e);
     }
     b.commit(sock)
 }

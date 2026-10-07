@@ -111,11 +111,17 @@ pub struct Network {
     pub gateways: Vec<Vec<u8>>,
     pub aux_addresses: Vec<Vec<u8>>,
     /// `--expose`, `--ingress` and `--egress`, in the order given.
+    /// `--dns`: its members may ask the microVM's resolver for names past the microVM,
+    /// which no other grant implies (D59).
+    pub dns: bool,
     pub ports: Vec<(Vec<u8>, Direction)>,
     pub scope: Scope,
 }
 
-/// `CONNECT`: who may send to whom on which networks (§4.7).
+/// `CONNECT`: who may send to whom, on which ports, on which networks (§4.7). Networks are
+/// default deny: a flow it does not name does not exist, so its `--port`s are what the
+/// receiving side accepts, and a `CONNECT` of agents to themselves alone, which names no
+/// flow, attaches them to its networks and grants nothing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Connect {
     pub kind: Option<TargetKind>,
@@ -124,6 +130,9 @@ pub struct Connect {
     pub both_ways: bool,
     pub to: Vec<Vec<u8>>,
     pub on: Vec<Vec<u8>>,
+    /// `--port`: each a port or range as Docker writes one (`8080`, `53/udp`,
+    /// `8000-8010/tcp`), TCP where none is said.
+    pub ports: Vec<Vec<u8>>,
 }
 
 /// `ATTACH`: the harnesses that may drive the agents named (§4.9).
@@ -431,6 +440,7 @@ fn network(req: &mut Req<'_>) -> Result<Network, Vec<u8>> {
         ("expose", FlagType::Strings),
         ("ingress", FlagType::Strings),
         ("egress", FlagType::Strings),
+        ("dns", FlagType::Bool),
         ("target-kind", FlagType::String),
     ] {
         req.flags
@@ -469,6 +479,7 @@ fn network(req: &mut Req<'_>) -> Result<Network, Vec<u8>> {
         ip_ranges: f.values("ip-range"),
         gateways: f.values("gateway"),
         aux_addresses: f.values("aux-address"),
+        dns: f.is_true("dns"),
         ports,
         scope: Scope {
             kind: target_kind(req)?,
@@ -480,6 +491,7 @@ fn network(req: &mut Req<'_>) -> Result<Network, Vec<u8>> {
 /// `CONNECT [--target-kind=…] <a>… (WITH|TO) <b>… ON <network>…`.
 fn connect(req: &mut Req<'_>) -> Result<Connect, Vec<u8>> {
     req.flags.add("target-kind", FlagType::String, b"");
+    req.flags.add("port", FlagType::Strings, b"");
     req.flags.parse()?;
     let usage = || {
         b"CONNECT requires names, WITH or TO, names, and ON networks: CONNECT <a> ... (WITH|TO) <b> ... ON <network> ...".to_vec()
@@ -503,12 +515,31 @@ fn connect(req: &mut Req<'_>) -> Result<Connect, Vec<u8>> {
     if from.is_empty() || peers.is_empty() {
         return Err(usage());
     }
+    let ports = req.flags.values("port");
+    for p in &ports {
+        if port_range(p).is_none() {
+            return Err(errf(&[
+                b"CONNECT --port=",
+                p,
+                b": no port or range of ports (8080, 53/udp, 8000-8010/tcp)",
+            ]));
+        }
+    }
+    let from = names(from, "an agent or harness")?;
+    let to = names(peers, "an agent or harness")?;
+    // Networks are default deny: a CONNECT between agents that names no port grants
+    // nothing, and is refused rather than read as a grant.
+    let alone = from.iter().chain(&to).all(|n| Some(n) == from.first());
+    if ports.is_empty() && !alone {
+        return Err(b"CONNECT between agents grants no port: name what the receiving side accepts with --port=<port>[/tcp|/udp] (networks are default deny)".to_vec());
+    }
     Ok(Connect {
         kind: target_kind(req)?,
-        from: names(from, "an agent or harness")?,
+        from,
         both_ways,
-        to: names(peers, "an agent or harness")?,
+        to,
         on,
+        ports,
     })
 }
 
@@ -948,6 +979,63 @@ pub fn boundary(directives: &[Directive], net: &[u8], outward: bool) -> Vec<(u8,
     out
 }
 
+/// The label of an Agentfile whose networks grant names past the microVM (`NETWORK --dns`
+/// on one that is not internal, which a `CONNECT` joins): its microVM's network process
+/// then asks the host's resolvers for any name; else only remote MCP servers' own.
+pub const DNS_LABEL: &[u8] = b"vnd.osi.agentfile.dns";
+
+/// Whether an Agentfile grants names past the microVM ([`DNS_LABEL`]).
+pub fn dns(directives: &[Directive]) -> bool {
+    directives.iter().any(|d| {
+        matches!(d, Directive::Network(n) if n.dns && !n.internal
+            && directives.iter().any(|c| matches!(c, Directive::Connect(c) if c.on.contains(&n.name))))
+    })
+}
+
+/// The label of an Agentfile's remote MCP servers (§4.4, §9.6), each `host:port`,
+/// comma-separated: its microVM's network process lets a flow to that port reach only the
+/// addresses the host resolves to (or the address it is), for the agents granted it.
+pub const MCP_LABEL: &[u8] = b"vnd.osi.agentfile.mcp";
+
+/// A remote MCP server's host and port, from its URL: the port written, or else its
+/// scheme's own (443 for `https`, 80 for `http`; §4.4, decided 2026-10-02). None for a
+/// source that is no http(s) URL, or one with no host.
+pub fn mcp_endpoint(url: &[u8]) -> Option<(Vec<u8>, u16)> {
+    let (rest, default) = match url.strip_prefix(b"https://") {
+        Some(r) => (r, 443),
+        None => (url.strip_prefix(b"http://")?, 80),
+    };
+    let authority = rest.split(|&b| b == b'/' || b == b'?' || b == b'#').next()?;
+    let hostport = authority.rsplit(|&b| b == b'@').next()?;
+    let (host, port) = match hostport.iter().rposition(|&b| b == b':') {
+        Some(i) => {
+            let port = std::str::from_utf8(hostport.get(i + 1..)?)
+                .ok()?
+                .parse::<u16>()
+                .ok()?;
+            (hostport.get(..i)?, port)
+        }
+        None => (hostport, default),
+    };
+    (!host.is_empty() && port > 0).then(|| (host.to_ascii_lowercase(), port))
+}
+
+/// The remote MCP servers an Agentfile declares, each `host:port` once.
+pub fn remote_mcp(directives: &[Directive]) -> Vec<Vec<u8>> {
+    let mut out: Vec<Vec<u8>> = Vec::new();
+    for d in directives {
+        if let Directive::Mcp(m) = d
+            && let Some((host, port)) = mcp_endpoint(&m.source)
+        {
+            let e = [host.as_slice(), b":", port.to_string().as_bytes()].concat();
+            if !out.contains(&e) {
+                out.push(e);
+            }
+        }
+    }
+    out
+}
+
 /// The label of the ports an Agentfile declares `EXPOSE ... AS egress` alone (§12 answer
 /// 6): `shards run -p` refuses to publish them, as an egress port is a destination, not a
 /// listener.
@@ -979,6 +1067,59 @@ pub fn egress_declared(directives: &[Directive]) -> Vec<Vec<u8>> {
         }
     }
     out
+}
+
+/// Each `CONNECT`'s flows held to its networks (default deny): every port it grants must be
+/// one each network it is on lets in to its members (`NETWORK --ingress` or `--expose`),
+/// a network it is on must be declared, and `--dns` names a resolver past the microVM,
+/// which an internal network has none of.
+pub fn connections(directives: &[Directive]) -> Result<(), Vec<u8>> {
+    for d in directives {
+        if let Directive::Network(n) = d
+            && n.dns
+            && n.internal
+        {
+            return Err([
+                b"NETWORK --dns --internal ".as_slice(),
+                &n.name,
+                b": an internal network has no resolver past the microVM to ask",
+            ]
+            .concat());
+        }
+    }
+    for d in directives {
+        let Directive::Connect(c) = d else { continue };
+        for net in &c.on {
+            let Some(n) = directives.iter().find_map(|d| match d {
+                Directive::Network(n) if n.name == *net => Some(n),
+                _ => None,
+            }) else {
+                return Err([b"CONNECT ... ON ".as_slice(), net, b": no NETWORK declares it"].concat());
+            };
+            let inward: Vec<(u8, u16, u16)> = n
+                .ports
+                .iter()
+                .filter(|(_, d)| *d != Direction::Egress)
+                .filter_map(|(p, _)| port_range(p))
+                .collect();
+            for p in &c.ports {
+                let Some((proto, lo, hi)) = port_range(p) else {
+                    continue;
+                };
+                if !inward.iter().any(|&(q, a, b)| q == proto && a <= lo && hi <= b) {
+                    return Err([
+                        b"CONNECT --port=".as_slice(),
+                        p,
+                        b" on network ",
+                        net,
+                        b": the network lets no such port in to its members; open it with NETWORK --ingress or --expose (networks are default deny)",
+                    ]
+                    .concat());
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// What an Agentfile lets in past its microVM (§4.1, §4.6, §12 answer 6): a network's
@@ -1111,8 +1252,9 @@ pub fn reach(directives: &[Directive]) -> Result<(), Vec<u8>> {
                 || !boundary(directives, &n.name, false).is_empty();
             let e = networks.entry(n.name.clone()).or_default();
             e.0 = n.internal;
-            // An external network is the host's: what it reaches, the build cannot see.
-            e.1 |= open || n.external;
+            // An external network is the host's: what it reaches, the build cannot see. A
+            // resolver past the microVM carries what its questions name out.
+            e.1 |= open || n.external || n.dns;
         }
     }
     // The edges, each labelled as the path says it.
@@ -1130,6 +1272,21 @@ pub fn reach(directives: &[Directive]) -> Result<(), Vec<u8>> {
                 for net in &c.on {
                     for n in c.from.iter().chain(&c.to) {
                         joined.entry(net.clone()).or_default().insert(kind_of(n, c.kind));
+                    }
+                }
+                // An edge only where a flow is granted: membership grants none. Either way,
+                // as answers carry data back.
+                if !c.ports.is_empty() {
+                    let why = format!(
+                        "network {}",
+                        String::from_utf8_lossy(c.on.first().map_or(&[][..], |n| n.as_slice()))
+                    );
+                    for x in &c.from {
+                        for y in &c.to {
+                            if x != y {
+                                link(&kind_of(x, c.kind), &kind_of(y, c.kind), why.clone());
+                            }
+                        }
                     }
                 }
             }
@@ -1173,12 +1330,6 @@ pub fn reach(directives: &[Directive]) -> Result<(), Vec<u8>> {
         if !internal && open {
             for m in members {
                 world.entry(m.clone()).or_insert_with(|| why.clone());
-            }
-        }
-        let list: Vec<&Node> = members.iter().collect();
-        for (i, a) in list.iter().enumerate() {
-            for b in list.iter().skip(i + 1) {
-                link(a, b, why.clone());
             }
         }
     }
@@ -1340,6 +1491,7 @@ pub fn spec(directives: &[Directive]) -> Vec<u8> {
                     ("attachable", n.attachable),
                     ("internal", n.internal),
                     ("external", n.external),
+                    ("dns", n.dns),
                 ] {
                     field(&mut o, name);
                     o.push_str(if value { "true" } else { "false" });
@@ -1395,6 +1547,8 @@ pub fn spec(directives: &[Directive]) -> Vec<u8> {
                 write_strings(&mut o, &c.to);
                 field(&mut o, "on");
                 write_strings(&mut o, &c.on);
+                field(&mut o, "ports");
+                write_strings(&mut o, &c.ports);
                 5
             }
             Directive::Attach(a) => {

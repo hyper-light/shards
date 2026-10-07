@@ -3809,6 +3809,20 @@ impl Planner<'_> {
         if !t.agentfile.is_empty() {
             crate::agentfile::reach(&t.agentfile).map_err(Fail::new)?;
             crate::agentfile::ingress(&t.agentfile).map_err(Fail::new)?;
+            crate::agentfile::connections(&t.agentfile).map_err(Fail::new)?;
+            if crate::agentfile::dns(&t.agentfile) {
+                image
+                    .config
+                    .labels
+                    .insert(crate::agentfile::DNS_LABEL.to_vec(), b"1".to_vec());
+            }
+            let servers = crate::agentfile::remote_mcp(&t.agentfile);
+            if !servers.is_empty() {
+                image
+                    .config
+                    .labels
+                    .insert(crate::agentfile::MCP_LABEL.to_vec(), servers.join(&b","[..]));
+            }
             let declared = crate::agentfile::egress_declared(&t.agentfile);
             if !declared.is_empty() {
                 image.config.labels.insert(

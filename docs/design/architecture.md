@@ -3386,6 +3386,86 @@ the label's ports by a unit test. (`--ingress`, `EXPOSE … AS ingress`: a publi
 domain); remote MCP servers, whose grant names one destination and not a port; IPv6
 subnets; process events; §9.10's escape tests beyond these.
 
+### Default deny, made exact (D59, part seven)
+
+Raised 2026-10-06 by the user, and now a rule of the project (CLAUDE.md): networks in a
+shards microVM are default deny, and every agent is airgapped unless configured
+otherwise. Parts three to six had let implicit grants through, each now removed:
+
+- **Membership granted flows.** Members of a network reached one another (my reading of
+  §4.6's "may communicate with one another"), with `TO` only restricting a direction.
+  Now membership grants nothing; a flow exists only where a `CONNECT` names it.
+- **Pairs reached every port.** A `CONNECT` pair passed any port and protocol. Now
+  `CONNECT --port=<port>[/tcp|/udp]` (repeatable, ranges, TCP by default) names what the
+  receiver accepts, and the switch passes those alone (`iif d<x> oif d<y>`, `meta
+  l4proto`, the destination port's range). A `CONNECT` between agents with no `--port`
+  is a build error; one naming one agent alone attaches it and grants nothing.
+- **The network was no boundary inside the microVM.** A `CONNECT` port must lie within
+  what each of its networks lets in (`NETWORK --ingress` or `--expose`), checked at build
+  (`agentfile::connections`), as answer 6's two boundaries apply inside as at the edge.
+- **Names of peers out of reach.** Each agent's `/etc/hosts` listed every member. It now
+  lists the agent and the peers it is granted a flow to.
+- **DNS came with egress.** It is now its own grant: `NETWORK --dns` (any name, on a
+  network that is not internal), or a remote `MCP` server's host name alone.
+
+**The agents' resolver** (`agentdns`), a process of init's in the switch's namespace,
+answers on every switch address, so each agent asks its own gateway. It knows who asks
+by the link the question arrives on (`IP_PKTINFO`'s interface index), not by any address
+an agent could claim, and answers from the address asked. It forwards a granted question
+to the network process under an ID of its own, never holding one query behind another,
+and answers the rest REFUSED at once. The network process forwards what its policy
+allows: any name if the image's label says `--dns`, else the remote MCP servers' host
+names, REFUSED otherwise. That is the union of the agents' grants, held per agent by the
+relay; the test's case shows why both are needed: an agent with an MCP grant alone beside
+one whose network grants `--dns` (so the host allows any name) still has its other
+names refused.
+
+**Remote MCP servers are grants of that server alone** (§4.4, §9.6). The build labels
+each server's `host:port` (`vnd.osi.agentfile.mcp`). An agent its `FOR` names (every
+agent, with no `FOR`; no harness) gets a link, a network of its own if it has none, the
+server's port up the switch, and its host's name at the relay. The network process lets a
+TCP flow to that port reach only the addresses its resolver answered for the name through
+this process (it reads each forwarded answer's A records, RFC 1035 §4.1), or the address
+the URL names. Before the name is resolved, no address of it is reachable.
+
+**What an agent cannot tamper with.** Nothing that enforces this runs where an agent can
+reach it: the switch's rules, the agents' resolver and the network process are outside its
+namespaces; it holds no capability (no `CAP_NET_ADMIN` to change its address or routes,
+no `CAP_NET_RAW` for a raw socket), seccomp refuses netlink and packet sockets, and its
+`/etc/hosts` and `/etc/resolv.conf` are read-only mounts of its own namespace. Identity is
+by link, never by address: the switch's rules match the arriving and leaving link, the
+relay the arriving one, and the switch's namespace runs strict reverse-path filtering
+(RFC 3704 §2.2, `rp_filter` 1) so that a packet on an agent's link from any address not
+its own is dropped by the kernel, as a second layer under the capabilities that keep it
+from being sent at all.
+
+Found while testing: the switch's `input` chain, dropping by default, dropped the
+answers to the relay's own questions upstream until it took conntrack's established
+traffic; and an edit that set `IP_PKTINFO` had not landed, so the relay received
+questions with no arrival and dropped them, which a probe of the control data showed.
+
+Tested on real microVMs:
+
+- `agents_reach_only_what_connect_grants`: `CONNECT --port=7000 a TO b` reaches b on
+  7000 and not on 7001, where b listens too; b's way back to a is dropped; d, paired with
+  b alone, reaches b and not a, a member of the same network; each agent's names are its
+  own and its granted peers';
+- `agents_reach_past_the_microvm_what_their_networks_grant`: names past the microVM with
+  `--dns`, and none without;
+- `a_remote_mcp_server_is_a_grant_of_that_server_alone`: the server's address is refused
+  before its name is resolved and reached after; another port is dropped; an ungranted
+  name is REFUSED by the relay though the host would allow it; the agent cannot rewrite
+  its resolver file (EROFS), open a raw socket or leave its network namespace (EPERM); an
+  agent not named reaches nothing.
+
+The build's rules (`CONNECT --port` required and within its networks' ingress, `--dns`
+not internal, reach edges only from granted pairs) and the planner's (pairs, names,
+grants, MCP scope) have unit tests. Mutation-checked: the relay granting any name, the
+network process passing a named port without a learned address, and the switch ignoring
+a pair's ports, each fail their test.
+
+Open: DNS over TCP; IPv6; process events; ingress to a network of several members.
+
 ## 4. Start path (≤ 5 ms budget)
 
 | Step | Cost | Evidence |

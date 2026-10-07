@@ -172,26 +172,33 @@ fn networks_take_composes_options_and_their_ports() {
 #[test]
 fn connections_go_with_or_to_agents_on_networks() {
     assert_eq!(
-        one("CONNECT a b WITH c ON back front"),
+        one("CONNECT --port=8080 --port=53/udp a b WITH c ON back front"),
         Directive::Connect(Connect {
             kind: None,
             from: vec![b("a"), b("b")],
             both_ways: true,
             to: vec![b("c")],
             on: vec![b("back"), b("front")],
+            ports: vec![b("8080"), b("53/udp")],
         })
     );
     assert_eq!(
-        one("connect --target-kind=harness ci to main on back"),
+        one("connect --target-kind=harness --port=9000-9010 ci to main on back"),
         Directive::Connect(Connect {
             kind: Some(TargetKind::Harness),
             from: vec![b("ci")],
             both_ways: false,
             to: vec![b("main")],
             on: vec![b("back")],
+            ports: vec![b("9000-9010")],
         })
     );
-    assert!(refused("CONNECT a WITH b TO c ON n").contains("WITH or TO, not both"));
+    // An agent to itself names no flow: it attaches it to the networks, and grants nothing.
+    assert!(matches!(one("CONNECT a WITH a ON back"), Directive::Connect(c) if c.ports.is_empty()));
+    // Default deny: between agents, no port is no grant, refused rather than read as one.
+    assert!(refused("CONNECT a TO b ON back").contains("CONNECT between agents grants no port"));
+    assert!(refused("CONNECT --port=http a TO b ON back").contains("no port or range of ports"));
+    assert!(refused("CONNECT --port=8080 a WITH b TO c ON n").contains("WITH or TO, not both"));
     assert!(refused("CONNECT a WITH b").contains("CONNECT requires names"));
     assert!(refused("CONNECT WITH b ON n").contains("CONNECT requires names"));
 }
@@ -327,8 +334,8 @@ fn an_agentfile_whose_names_hold_is_checked_whole() {
          SKILL ./review.md FOR main other\n\
          VOLUME data /data FOR main\n\
          VOLUME --target-kind=harness /work FOR ci\n\
-         CONNECT main WITH other ON back\n\
-         CONNECT --target-kind=agent main TO other ON world\n\
+         CONNECT --port=8080 main WITH other ON back\n\
+         CONNECT --target-kind=agent --port=8080 main TO other ON world\n\
          ATTACH main other FOR ci\n\
          EXPOSE 443 AS egress FOR world\n\
          FROM base\n\
@@ -393,21 +400,21 @@ fn connections_join_one_kind_on_networks_that_allow_them() {
     let declared =
         "FROM scratch\nAGENT a FROM x\nAGENT b FROM y\nHARNESS h FROM z\nNETWORK n FOR a\nNETWORK open\n";
     assert!(
-        checked(&format!("{declared}CONNECT a WITH h ON open\n"))
+        checked(&format!("{declared}CONNECT --port=8080 a WITH h ON open\n"))
             .unwrap_err()
             .contains("CONNECT joins one kind: \"a\" is an agent and \"h\" is not")
     );
     assert!(
-        checked(&format!("{declared}CONNECT a WITH b ON n\n"))
+        checked(&format!("{declared}CONNECT --port=8080 a WITH b ON n\n"))
             .unwrap_err()
             .contains("CONNECT puts \"b\" on network \"n\", whose FOR at line 5 does not allow it")
     );
     assert!(
-        checked(&format!("{declared}CONNECT a WITH b ON gone\n"))
+        checked(&format!("{declared}CONNECT --port=8080 a WITH b ON gone\n"))
             .unwrap_err()
             .contains("CONNECT ... ON names network \"gone\"")
     );
-    checked(&format!("{declared}CONNECT a WITH b ON open\n")).unwrap();
+    checked(&format!("{declared}CONNECT --port=8080 a WITH b ON open\n")).unwrap();
 }
 
 /// A stage sees what its lineage declared, and nothing of a stage it is not built from.
@@ -440,7 +447,7 @@ fn the_normalized_agentfile_holds_what_was_declared() {
             "\"agents\":[{\"name\":\"main\",\"source\":\"reg/main:1\",\"to\":\"/agents/main\",\"processes\":null}],",
             "\"harnesses\":[{\"name\":\"ci\",\"source\":\"./ci\",\"to\":\"/opt/ci\",\"processes\":2}],",
             "\"skills\":[],\"mcp\":[],",
-            "\"networks\":[{\"name\":\"back\",\"driver\":\"\",\"ipamDriver\":\"\",\"attachable\":false,\"internal\":false,\"external\":false,",
+            "\"networks\":[{\"name\":\"back\",\"driver\":\"\",\"ipamDriver\":\"\",\"attachable\":false,\"internal\":false,\"external\":false,\"dns\":false,",
             "\"ipv4\":null,\"ipv6\":null,\"driverOpts\":[],\"labels\":[],\"ipamOpts\":[],\"subnets\":[],\"ipRanges\":[],\"gateways\":[],",
             "\"auxAddresses\":[],\"ports\":[{\"port\":\"443\",\"direction\":\"egress\"}],\"for\":{\"kind\":null,\"names\":[\"main\"]}}],",
             "\"connections\":[],\"attachments\":[],",
@@ -489,7 +496,7 @@ fn reach_through_any_declared_edge_is_reach() {
     // Through an internal network to one on a network open to the world.
     let e = reached(&format!(
         "{base}NETWORK --internal back\nNETWORK --egress=443 world\nEXPOSE 443 FOR world\n\
-         CONNECT b WITH a ON back\nCONNECT a WITH a ON world\n"
+         CONNECT --port=8080 b WITH a ON back\nCONNECT a WITH a ON world\n"
     ))
     .unwrap_err();
     assert!(
@@ -502,7 +509,7 @@ fn reach_through_any_declared_edge_is_reach() {
         reached(&format!(
             "{base}NETWORK --internal back\nNETWORK world\nNETWORK --internal --egress=443 shut\n\
              NETWORK --egress=443 half\nEXPOSE 80 FOR half\nEXPOSE 443 FOR world\n\
-             CONNECT b WITH a ON back\nCONNECT a WITH a ON world shut half\n"
+             CONNECT --port=8080 b WITH a ON back\nCONNECT a WITH a ON world shut half\n"
         )),
         Ok(())
     );
@@ -630,7 +637,7 @@ fn ingress_reaches_a_networks_one_member() {
         Ok(())
     );
     let e = check(&format!(
-        "{base}NETWORK --ingress=8080 front\nEXPOSE 8080 AS ingress FOR front\nCONNECT a WITH b ON front\n"
+        "{base}NETWORK --ingress=8080 front\nEXPOSE 8080 AS ingress FOR front\nCONNECT --port=8080 a WITH b ON front\n"
     ))
     .unwrap_err();
     assert!(
@@ -640,13 +647,13 @@ fn ingress_reaches_a_networks_one_member() {
     // One boundary alone lets nothing in: several members are no question then.
     assert_eq!(
         check(&format!(
-            "{base}NETWORK --ingress=8080 front\nCONNECT a WITH b ON front\n"
+            "{base}NETWORK --ingress=8080 front\nCONNECT --port=8080 a WITH b ON front\n"
         )),
         Ok(())
     );
     assert_eq!(
         check(&format!(
-            "{base}NETWORK --egress=443 out\nEXPOSE 443 FOR out\nCONNECT a WITH b ON out\n"
+            "{base}NETWORK --egress=443 out\nEXPOSE 443 FOR out\nCONNECT --port=8080 a WITH b ON out\n"
         )),
         Ok(())
     );
@@ -680,4 +687,92 @@ fn egress_declared_ports_are_named_for_the_run() {
         .map(|p| String::from_utf8(p).unwrap())
         .collect();
     assert_eq!(got, ["443", "9000-9010/udp"]);
+}
+
+/// A remote MCP server's host and port, as its URL says or its scheme's own (§4.4).
+#[test]
+fn a_remote_mcp_servers_endpoint_is_its_urls() {
+    use shards_dockerfile::agentfile::mcp_endpoint;
+    let e = |u: &str| mcp_endpoint(u.as_bytes()).map(|(h, p)| (String::from_utf8(h).unwrap(), p));
+    assert_eq!(
+        e("https://MCP.example.com/sse"),
+        Some(("mcp.example.com".into(), 443))
+    );
+    assert_eq!(e("http://mcp.example.com"), Some(("mcp.example.com".into(), 80)));
+    assert_eq!(
+        e("https://user:pw@10.0.0.7:8443/x?y#z"),
+        Some(("10.0.0.7".into(), 8443))
+    );
+    for none in [
+        "./files",
+        "git@github.com:org/x.git",
+        "https://",
+        "https://h:0/",
+        "https://h:99999/",
+    ] {
+        assert_eq!(e(none), None, "{none}");
+    }
+}
+
+/// Networks are default deny (D59): a `CONNECT` grants only ports its networks let in to
+/// their members, on networks declared; `--dns` needs a network that is not internal; and
+/// membership alone is no way from one agent to another.
+#[test]
+fn connections_grant_only_what_their_networks_let_in() {
+    use shards_dockerfile::instructions::Kind;
+    let directives = |text: &str| -> Vec<_> {
+        let parsed = parser::parse_as(text.as_bytes(), Dialect::Agentfile).unwrap();
+        let ins = instructions::parse(&parsed, &Linter::default()).unwrap();
+        ins.stages
+            .last()
+            .unwrap()
+            .commands
+            .iter()
+            .filter_map(|c| match &c.kind {
+                Kind::Agentfile(d) => Some(d.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+    let check = |text: &str| {
+        shards_dockerfile::agentfile::connections(&directives(text))
+            .map_err(|e| String::from_utf8_lossy(&e).into_owned())
+    };
+    let base = "FROM alpine\nAGENT a FROM ./a\nAGENT b FROM ./b\n";
+    assert_eq!(
+        check(&format!(
+            "{base}NETWORK --ingress=8000-8100 back\nCONNECT --port=8080 a TO b ON back\n"
+        )),
+        Ok(())
+    );
+    let e = check(&format!(
+        "{base}NETWORK --ingress=8000 back\nCONNECT --port=8080 a TO b ON back\n"
+    ))
+    .unwrap_err();
+    assert!(
+        e.contains("CONNECT --port=8080 on network back: the network lets no such port in"),
+        "{e}"
+    );
+    // An egress-only port lets nothing in.
+    let e = check(&format!(
+        "{base}NETWORK --egress=8080 back\nCONNECT --port=8080 a TO b ON back\n"
+    ))
+    .unwrap_err();
+    assert!(e.contains("lets no such port in"), "{e}");
+    let e = check(&format!("{base}CONNECT --port=8080 a TO b ON nowhere\n")).unwrap_err();
+    assert!(e.contains("ON nowhere: no NETWORK declares it"), "{e}");
+    let e = check(&format!(
+        "{base}NETWORK --internal --dns back\nCONNECT a WITH a ON back\n"
+    ))
+    .unwrap_err();
+    assert!(e.contains("an internal network has no resolver"), "{e}");
+    // Members of one network, never paired: no edge between them for reach to follow.
+    assert_eq!(
+        shards_dockerfile::agentfile::reach(&directives(&format!(
+            "{base}NETWORK --internal inner\nNETWORK --egress=443 out\nEXPOSE 443 FOR out\n\
+             CONNECT b WITH b ON inner\nCONNECT a WITH a ON inner out\n"
+        )))
+        .map_err(|e| String::from_utf8_lossy(&e).into_owned()),
+        Ok(())
+    );
 }

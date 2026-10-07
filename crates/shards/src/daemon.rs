@@ -2033,18 +2033,40 @@ impl<D: Disk> Daemon<D> {
         payload.extend(container_log.seq.to_be_bytes());
         prepared.spec.encode_into(&mut payload);
         let detached = run.detach.then_some(conn);
-        // An Agentfile's egress grants, as its build labelled the image (D59).
-        let label = std::str::from_utf8(shards_dockerfile::agentfile::EGRESS_LABEL).unwrap_or_default();
-        let egress = match prepared.labels.get(label) {
-            Some(text) => match shards_net::Ports::parse(text) {
-                Ok(ports) => Some(ports.encode()),
+        // An Agentfile's egress grants and remote MCP servers, as its build labelled the
+        // image (D59): its VM's network process's policy.
+        let label = |l: &'static [u8]| std::str::from_utf8(l).unwrap_or_default();
+        let ports = prepared
+            .labels
+            .get(label(shards_dockerfile::agentfile::EGRESS_LABEL));
+        let servers = prepared
+            .labels
+            .get(label(shards_dockerfile::agentfile::MCP_LABEL));
+        let dns_all = prepared
+            .labels
+            .contains_key(label(shards_dockerfile::agentfile::DNS_LABEL));
+        let egress = if ports.is_none() && servers.is_none() && !dns_all {
+            None
+        } else {
+            let ports = match ports.map(|p| shards_net::Ports::parse(p)).transpose() {
+                Ok(p) => p.unwrap_or_default(),
                 Err(e) => {
                     refuse(&format!("the image's egress grants: {e}"));
                     abandon(&id);
                     return None;
                 }
-            },
-            None => None,
+            };
+            let named: Vec<(String, u16)> = servers
+                .map(|s| {
+                    s.split(',')
+                        .filter_map(|e| {
+                            let (host, port) = e.trim().rsplit_once(':')?;
+                            Some((host.to_string(), port.parse().ok()?))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            Some(shards_net::encode_policy(&ports, &named, dns_all))
         };
         let started = self.start_run(
             threads,

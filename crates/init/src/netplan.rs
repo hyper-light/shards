@@ -3,10 +3,13 @@
 //! §9.7): which networks each domain joins, its address on each, which domains it may
 //! open connections to, and the names it resolves.
 //!
-//! On a network, its members, every domain a `CONNECT … ON` it names, may each reach the
-//! others (§4.6), except that `CONNECT x TO y` lets `y` only answer `x` (§4.7), unless
-//! another directive grants `y` to `x` outright. Each domain has one link (§9.7) and policy
-//! goes by link, so a pair any shared network allows is allowed.
+//! Networks are default deny: every agent is airgapped unless configured otherwise. A
+//! network's members are the domains a `CONNECT … ON` it names, and membership grants no
+//! flow. A flow exists where a `CONNECT` names it: from each domain before `TO` to each
+//! after it (both ways with `WITH`), on the `--port`s the receiver accepts, which the build
+//! holds within what its network lets in (`agentfile::connections`). Each domain has one
+//! link (§9.7) and policy goes by link. A domain resolves its own name and those of the
+//! peers it is granted a flow to, and no other.
 //!
 //! Past the microVM, a domain may open flows to the ports its networks let cross both
 //! boundaries (§4.1, §4.6, §12 answer 6): of each network it joins that is not internal,
@@ -61,8 +64,32 @@ pub struct Link {
     /// The ports let in past the microVM to it: of networks it is the one member of,
     /// those both boundaries open inward (the build refuses several members).
     pub ingress: Vec<Egress>,
+    /// Whether it may ask the microVM's resolver for names past the microVM: one of its
+    /// networks, not internal, says so (`NETWORK --dns`).
+    pub dns: bool,
+    /// The remote MCP servers it is granted (§4.4, §9.6), each a host and a TCP port: it
+    /// reaches each at that port, at the addresses the host resolves to, and may ask the
+    /// resolver for each host's name alone (`agentdns`).
+    pub mcp: Vec<(String, u16)>,
     pub connects: bool,
     pub accepts: bool,
+}
+
+/// A remote MCP server's host, lowered, and port, from its URL: the port written, or else
+/// its scheme's own (443 for `https`, 80 for `http`; §4.4), as the build's
+/// `agentfile::mcp_endpoint` reads it. None for a source that is no http(s) URL.
+fn mcp_endpoint(url: &str) -> Option<(String, u16)> {
+    let (rest, default) = match url.strip_prefix("https://") {
+        Some(r) => (r, 443),
+        None => (url.strip_prefix("http://")?, 80),
+    };
+    let authority = rest.split(['/', '?', '#']).next()?;
+    let hostport = authority.rsplit('@').next()?;
+    let (host, port) = match hostport.rsplit_once(':') {
+        Some((h, p)) => (h, p.parse::<u16>().ok()?),
+        None => (hostport, default),
+    };
+    (!host.is_empty() && port > 0).then(|| (host.to_ascii_lowercase(), port))
 }
 
 /// A port as Docker writes one (`443`, `53/udp`, `8000-8010/tcp`), TCP where none is said.
@@ -86,7 +113,8 @@ fn port_range(s: &str) -> Option<Egress> {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Plan {
     pub links: Vec<Option<Link>>,
-    pub pairs: Vec<(usize, usize)>,
+    /// Each flow granted: from one domain to another, on the ports the receiver accepts.
+    pub pairs: Vec<(usize, usize, Vec<Egress>)>,
     /// Whether any domain reaches past the microVM: the switch's link to it.
     pub uplink: bool,
 }
@@ -122,10 +150,30 @@ pub fn plan(spec: &Value, names: &[Name], own: Option<(Ipv4Addr, u8)>) -> Result
             _ => find(false).or_else(|| find(true)),
         }
     };
-    // Per network: its members, the grants outright, the TO restrictions.
+    // Per network: its members, every domain a CONNECT on it names; and the flows granted,
+    // each from one domain to another on the ports its CONNECT names, and nothing else:
+    // networks are default deny, and membership grants no flow.
     let mut members: Vec<(String, Vec<usize>)> = Vec::new();
-    let mut granted: Vec<(String, usize, usize)> = Vec::new();
-    let mut restricted: Vec<(String, usize, usize)> = Vec::new();
+    let mut pairs: Vec<(usize, usize, Vec<Egress>)> = Vec::new();
+    let mut grant = |x: usize, y: usize, ports: &[Egress]| {
+        if x == y {
+            return;
+        }
+        let at = match pairs.iter().position(|(a, b, _)| *a == x && *b == y) {
+            Some(at) => at,
+            None => {
+                pairs.push((x, y, Vec::new()));
+                pairs.len() - 1
+            }
+        };
+        if let Some((_, _, have)) = pairs.get_mut(at) {
+            for p in ports {
+                if !have.contains(p) {
+                    have.push(*p);
+                }
+            }
+        }
+    };
     for c in spec.get("connections").map(Value::array).unwrap_or_default() {
         let kind = c.get("kind").and_then(Value::str);
         let from: Vec<usize> = strings(c.get("from"))
@@ -137,6 +185,10 @@ pub fn plan(spec: &Value, names: &[Name], own: Option<(Ipv4Addr, u8)>) -> Result
             .filter_map(|n| index(kind, n))
             .collect();
         let both = matches!(c.get("bothWays"), Some(Value::Bool(true)));
+        let ports: Vec<Egress> = strings(c.get("ports"))
+            .iter()
+            .map(|p| port_range(p).ok_or_else(|| format!("CONNECT --port={p}: no port or range of ports")))
+            .collect::<Result<_, _>>()?;
         for net in strings(c.get("on")) {
             let at = match members.iter().position(|(n, _)| *n == net) {
                 Some(at) => at,
@@ -152,39 +204,50 @@ pub fn plan(spec: &Value, names: &[Name], own: Option<(Ipv4Addr, u8)>) -> Result
                     }
                 }
             }
-            for &x in &from {
-                for &y in &to {
-                    granted.push((net.clone(), x, y));
-                    if both {
-                        granted.push((net.clone(), y, x));
-                    } else {
-                        restricted.push((net.clone(), y, x));
-                    }
+        }
+        for &x in &from {
+            for &y in &to {
+                grant(x, y, &ports);
+                if both {
+                    grant(y, x, &ports);
                 }
             }
-            if both {
-                for &x in &from {
-                    for &y in &from {
-                        granted.push((net.clone(), x, y));
-                    }
-                }
+        }
+    }
+    // The remote MCP servers each domain is granted: those its `FOR` names, or with none
+    // every agent (no harness). One on no network gets a network of its own, of it alone,
+    // which pairs it with no one.
+    let mut mcp: Vec<Vec<(String, u16)>> = vec![Vec::new(); names.len()];
+    for m in spec.get("mcp").map(Value::array).unwrap_or_default() {
+        let Some(endpoint) = m.get("source").and_then(Value::str).and_then(mcp_endpoint) else {
+            continue;
+        };
+        let scope = m.get("for");
+        let kind = scope.and_then(|f| f.get("kind")).and_then(Value::str);
+        let named = strings(scope.and_then(|f| f.get("names")));
+        let to: Vec<usize> = if named.is_empty() {
+            (0..names.len())
+                .filter(|&i| names.get(i).is_some_and(|(h, _)| !h))
+                .collect()
+        } else {
+            named.iter().filter_map(|n| index(kind, n)).collect()
+        };
+        for d in to {
+            if let Some(grants) = mcp.get_mut(d)
+                && !grants.contains(&endpoint)
+            {
+                grants.push(endpoint.clone());
             }
+        }
+    }
+    for (d, grants) in mcp.iter().enumerate() {
+        if !grants.is_empty() && !members.iter().any(|(_, m)| m.contains(&d)) {
+            let name = names.get(d).map(|(_, n)| n.as_str()).unwrap_or_default();
+            members.push((format!("mcp:{name}"), vec![d]));
         }
     }
     for (_, m) in &mut members {
         m.sort_unstable();
-    }
-    let mut pairs = Vec::new();
-    for (net, m) in &members {
-        for &x in m {
-            for &y in m {
-                let outright = granted.iter().any(|(n, a, b)| n == net && *a == x && *b == y);
-                let barred = restricted.iter().any(|(n, a, b)| n == net && *a == x && *b == y);
-                if x != y && (outright || !barred) && !pairs.contains(&(x, y)) {
-                    pairs.push((x, y));
-                }
-            }
-        }
     }
     pairs.sort_unstable();
     // Subnets: as declared, else from the pool.
@@ -267,7 +330,11 @@ pub fn plan(spec: &Value, names: &[Name], own: Option<(Ipv4Addr, u8)>) -> Result
                 continue;
             };
             for &peer in m {
-                if named.contains(&peer) {
+                // Itself, and the peers it is granted a flow to: no name of one it may not
+                // reach.
+                if named.contains(&peer)
+                    || (peer != d && !pairs.iter().any(|(x, y, _)| *x == d && *y == peer))
+                {
                     continue;
                 }
                 let Some(addr) = links
@@ -291,12 +358,33 @@ pub fn plan(spec: &Value, names: &[Name], own: Option<(Ipv4Addr, u8)>) -> Result
             .cloned()
             .collect();
         let ingress = boundary_of(spec, &alone, false)?;
-        let connects = pairs.iter().any(|(x, _)| *x == d) || !egress.is_empty();
-        let accepts = pairs.iter().any(|(_, y)| *y == d) || !ingress.is_empty();
+        let dns = spec
+            .get("networks")
+            .map(Value::array)
+            .unwrap_or_default()
+            .iter()
+            .any(|n| {
+                n.get("name")
+                    .and_then(Value::str)
+                    .is_some_and(|name| joined.iter().any(|j| j == name))
+                    && matches!(n.get("dns"), Some(Value::Bool(true)))
+                    && !matches!(n.get("internal"), Some(Value::Bool(true)))
+            });
+        let granted = mcp.get(d).cloned().unwrap_or_default();
+        let mut egress = egress;
+        for (_, port) in &granted {
+            if !egress.contains(&(6, *port, *port)) {
+                egress.push((6, *port, *port));
+            }
+        }
+        let connects = pairs.iter().any(|(x, _, _)| *x == d) || !egress.is_empty();
+        let accepts = pairs.iter().any(|(_, y, _)| *y == d) || !ingress.is_empty();
         if let Some(Some(link)) = links.get_mut(d) {
             link.hosts = [HOSTS, hosts.as_bytes()].concat();
             link.egress = egress;
             link.ingress = ingress;
+            link.dns = dns;
+            link.mcp = granted;
             link.connects = connects;
             link.accepts = accepts;
         }
@@ -304,7 +392,7 @@ pub fn plan(spec: &Value, names: &[Name], own: Option<(Ipv4Addr, u8)>) -> Result
     let uplink = links
         .iter()
         .flatten()
-        .any(|l| !l.egress.is_empty() || !l.ingress.is_empty());
+        .any(|l| !l.egress.is_empty() || !l.ingress.is_empty() || l.dns || !l.mcp.is_empty());
     Ok(Plan { links, pairs, uplink })
 }
 
@@ -368,22 +456,31 @@ mod tests {
     }
 
     #[test]
-    fn members_reach_each_other_but_to_lets_its_targets_only_answer() {
+    fn flows_are_what_connect_names_on_its_ports_and_no_more() {
         let spec = crate::json::parse(
             br#"{"networks":[{"name":"back","subnets":[],"gateways":[]}],
-                "connections":[{"kind":null,"from":["a"],"bothWays":false,"to":["b"],"on":["back"]},
-                               {"kind":null,"from":["c"],"bothWays":true,"to":["c"],"on":["side"]},
-                               {"kind":null,"from":["d"],"bothWays":true,"to":["d"],"on":["back"]}]}"#,
+                "connections":[{"kind":null,"from":["a"],"bothWays":false,"to":["b"],"on":["back"],"ports":["8080","53/udp"]},
+                               {"kind":null,"from":["c"],"bothWays":true,"to":["c"],"on":["side"],"ports":[]},
+                               {"kind":null,"from":["d"],"bothWays":true,"to":["b"],"on":["back"],"ports":["9000-9010"]},
+                               {"kind":null,"from":["e"],"bothWays":true,"to":["e"],"on":["back"],"ports":[]}]}"#,
         )
         .unwrap();
         let p = plan(
             &spec,
-            &names(&["a", "b", "c", "d"]),
+            &names(&["a", "b", "c", "d", "e"]),
             Some((Ipv4Addr::new(10, 244, 0, 0), 24)),
         )
         .unwrap();
-        // a -> b granted; b -> a barred; d, on back, reaches and is reached by both.
-        assert_eq!(p.pairs, vec![(0, 1), (0, 3), (1, 3), (3, 0), (3, 1)]);
+        // a -> b on its ports; d <-> b both ways on its; nothing for e, a member that no
+        // CONNECT pairs, nor between a and d, members of one network.
+        assert_eq!(
+            p.pairs,
+            vec![
+                (0, 1, vec![(6, 8080, 8080), (17, 53, 53)]),
+                (1, 3, vec![(6, 9000, 9010)]),
+                (3, 1, vec![(6, 9000, 9010)]),
+            ]
+        );
         // The pool's first /24 is the microVM's own: back takes the next, side the one after.
         let a = p.links[0].as_ref().unwrap();
         assert_eq!(a.addresses[0].addr, Ipv4Addr::new(10, 244, 1, 2));
@@ -392,16 +489,28 @@ mod tests {
             p.links[2].as_ref().unwrap().addresses[0].addr,
             Ipv4Addr::new(10, 244, 2, 2)
         );
+        // Its own name and b's, the one it may reach: not d's, nor e's.
         assert_eq!(
             String::from_utf8(a.hosts.strip_prefix(HOSTS).unwrap().to_vec()).unwrap(),
-            "10.244.1.2\ta\n10.244.1.3\tb\n10.244.1.4\td\n"
+            "10.244.1.2\ta\n10.244.1.3\tb\n"
         );
-        assert!(a.connects && a.accepts);
+        assert!(a.connects && !a.accepts);
         let b = p.links[1].as_ref().unwrap();
-        assert!(b.connects && b.accepts, "b reaches d, and a reaches it");
-        // c is alone on side: linked, reaching no one.
-        let c = p.links[2].as_ref().unwrap();
-        assert!(!c.connects && !c.accepts);
+        assert!(b.connects && b.accepts, "b reaches d, and a and d reach it");
+        // c alone, and e unpaired: linked, reaching no one, resolving only themselves.
+        for alone in [2, 4] {
+            let l = p.links[alone].as_ref().unwrap();
+            assert!(!l.connects && !l.accepts);
+            assert_eq!(
+                l.hosts
+                    .strip_prefix(HOSTS)
+                    .unwrap()
+                    .iter()
+                    .filter(|&&c| c == b'\n')
+                    .count(),
+                1
+            );
+        }
     }
 
     #[test]
@@ -438,11 +547,41 @@ mod tests {
         assert!(p.uplink);
     }
 
+    /// A remote MCP server reaches the agents its FOR names, or every agent, at its port,
+    /// one on no network given a network of its own; a harness is no agent.
+    #[test]
+    fn remote_mcp_servers_reach_whom_they_are_for() {
+        let spec = crate::json::parse(
+            br#"{"networks":[],"connections":[],
+                "mcp":[{"name":"web","source":"https://MCP.example/sse","for":{"kind":null,"names":["a"]}},
+                       {"name":"all","source":"http://tools.example:8080","for":{"kind":null,"names":[]}},
+                       {"name":"local","source":"./files","for":{"kind":null,"names":[]}}]}"#,
+        )
+        .unwrap();
+        let mut n = names(&["a", "b"]);
+        n.push((true, "h".to_string()));
+        let p = plan(&spec, &n, None).unwrap();
+        let a = p.links[0].as_ref().unwrap();
+        assert_eq!(
+            a.mcp,
+            vec![
+                ("mcp.example".to_string(), 443),
+                ("tools.example".to_string(), 8080)
+            ]
+        );
+        assert_eq!(a.egress, vec![(6, 443, 443), (6, 8080, 8080)]);
+        assert_eq!(a.addresses[0].network, "mcp:a");
+        let b = p.links[1].as_ref().unwrap();
+        assert_eq!(b.mcp, vec![("tools.example".to_string(), 8080)]);
+        assert!(p.links[2].is_none(), "a harness is given no agent's server");
+        assert!(p.pairs.is_empty() && p.uplink);
+    }
+
     #[test]
     fn a_declared_subnet_and_gateway_are_kept() {
         let spec = crate::json::parse(
             br#"{"networks":[{"name":"n","subnets":["172.30.0.0/29"],"gateways":["172.30.0.2"]}],
-                "connections":[{"kind":"agent","from":["x"],"bothWays":true,"to":["y"],"on":["n"]}]}"#,
+                "connections":[{"kind":"agent","from":["x"],"bothWays":true,"to":["y"],"on":["n"],"ports":["80"]}]}"#,
         )
         .unwrap();
         let p = plan(&spec, &names(&["x", "y"]), None).unwrap();
@@ -453,7 +592,10 @@ mod tests {
             (Ipv4Addr::new(172, 30, 0, 3), Ipv4Addr::new(172, 30, 0, 2), 29)
         );
         assert_eq!(y.addr, Ipv4Addr::new(172, 30, 0, 4));
-        assert_eq!(p.pairs, vec![(0, 1), (1, 0)]);
+        assert_eq!(
+            p.pairs,
+            vec![(0, 1, vec![(6, 80, 80)]), (1, 0, vec![(6, 80, 80)])]
+        );
         // A /30 has room for one member.
         let small = crate::json::parse(
             br#"{"networks":[{"name":"n","subnets":["172.30.0.0/30"],"gateways":[]}],

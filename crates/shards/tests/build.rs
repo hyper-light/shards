@@ -3547,12 +3547,12 @@ fn agents_run_in_their_domains() {
     );
 }
 
-/// Agents reach one another as the Agentfile's `CONNECT`s grant (D59, AGENTFILE_ARCH.md
-/// §4.6, §4.7, §9.7), each over one link to a switch that decides by link. On `back`,
-/// `CONNECT a TO b` lets `a` open connections to `b` and `b` only answer it, and `d`, a
-/// member by `CONNECT d WITH d`, reaches both and is reached by both; so `b`, which
-/// Landlock lets connect (to `d`), finds `a` listening and is still dropped by the switch.
-/// `c`, alone on `side`, may neither bind nor connect. Each resolves its network's members.
+/// Agents reach one another as the Agentfile's `CONNECT`s grant and nothing more (D59,
+/// AGENTFILE_ARCH.md §4.6, §4.7, §9.7; networks are default deny), each over one link to
+/// a switch that decides by link and port. On `back`, `CONNECT --port=7000 a TO b` lets
+/// `a` reach `b` on 7000 alone and `b` only answer it; `d`, paired with `b` alone, reaches
+/// `b` and not `a`, a member of the same network; `c`, alone on `side`, may neither bind
+/// nor connect. Each resolves itself and the peers it is granted, and no one else.
 #[test]
 fn agents_reach_only_what_connect_grants() {
     if cannot_run_vms() {
@@ -3591,20 +3591,30 @@ fn agents_reach_only_what_connect_grants() {
         assert_eq!(pushed.status, Some(0), "{}", pushed.stderr);
         tag
     };
+    // b listens on two ports, of which a CONNECT grants one.
     let a = agent(
         "a",
-        &["resolve", "localhost", "listen", "7000", "reach", "b:7000"],
+        &[
+            "resolve",
+            "localhost",
+            "listen",
+            "7000",
+            "reach",
+            "b:7000",
+            "unreach",
+            "b:7001",
+        ],
     );
-    let b = agent("b", &["listen", "7000", "unreach", "a:7000"]);
+    let b = agent("b", &["listen", "7000", "7001", "unreach", "172.31.1.2:7000"]);
     let c = agent("c", &["listen", "7000", "unreach", "172.31.1.3:7000"]);
-    let d = agent("d", &["listen", "7000", "reach", "a:7000", "b:7000"]);
+    let d = agent("d", &["reach", "b:7000", "unreach", "172.31.1.2:7000"]);
     let ctx = context("links-ctx", &format!("FROM {image}\n"));
     std::fs::write(
         ctx.join("Agentfile"),
         format!(
             "FROM {image}\nAGENT a FROM {a}\nAGENT b FROM {b}\nAGENT c FROM {c}\nAGENT d FROM {d}\n\
-             NETWORK --subnet=172.31.1.0/24 back\nNETWORK --subnet=172.31.2.0/24 side\n\
-             CONNECT a TO b ON back\nCONNECT d WITH d ON back\nCONNECT c WITH c ON side\n"
+             NETWORK --subnet=172.31.1.0/24 --ingress=7000-7001 back\nNETWORK --subnet=172.31.2.0/24 side\n\
+             CONNECT --port=7000 a TO b ON back\nCONNECT --port=7000 d WITH b ON back\nCONNECT c WITH c ON side\n"
         ),
     )
     .unwrap();
@@ -3625,16 +3635,22 @@ fn agents_reach_only_what_connect_grants() {
             &[
                 "confined net=lo,eth0",
                 "confined resolve localhost: 0,0",
-                "confined listen 7000: ok",
+                // No grant lets anything reach a: Landlock refuses its bind.
+                "confined listen 7000: errno 13",
                 "confined reach b:7000: ok",
+                // b listens on 7001 too, which no CONNECT grants: dropped.
+                "confined unreach b:7001: timeout",
             ][..],
         ),
         (
             "b",
             &[
                 "confined listen 7000: ok",
-                // b only answers a: a listens, and the switch drops what b opens to it.
-                "confined unreach a:7000: timeout",
+                "confined listen 7001: ok",
+                // a TO b: b only answers a; nothing listens on a, so a timeout is the
+                // switch's drop, where a packet let through would be refused. By address:
+                // b is granted no flow to a, so it resolves no name of a's.
+                "confined unreach 172.31.1.2:7000: timeout",
             ][..],
         ),
         (
@@ -3647,7 +3663,12 @@ fn agents_reach_only_what_connect_grants() {
         ),
         (
             "d",
-            &["confined reach a:7000: ok", "confined reach b:7000: ok"][..],
+            &[
+                "confined reach b:7000: ok",
+                // A member of back, as a is, and paired with b alone: membership grants
+                // no flow, so d's way to a is dropped.
+                "confined unreach 172.31.1.2:7000: timeout",
+            ][..],
         ),
     ] {
         let lines = said(who);
@@ -3659,7 +3680,8 @@ fn agents_reach_only_what_connect_grants() {
             );
         }
     }
-    // Each resolves its network's members, and no one else, after Docker's own lines.
+    // Each resolves itself and the peers it may reach, and no one else, after Docker's own
+    // lines.
     let hosts = |who: &str| -> Vec<String> {
         said(who)
             .into_iter()
@@ -3667,10 +3689,9 @@ fn agents_reach_only_what_connect_grants() {
             .filter(|l| l.starts_with("172.31."))
             .collect()
     };
-    let back = ["172.31.1.2\ta", "172.31.1.3\tb", "172.31.1.4\td"];
-    for who in ["a", "b", "d"] {
-        assert_eq!(hosts(who), back, "{who}");
-    }
+    assert_eq!(hosts("a"), ["172.31.1.2\ta", "172.31.1.3\tb"]);
+    assert_eq!(hosts("b"), ["172.31.1.3\tb", "172.31.1.4\td"]);
+    assert_eq!(hosts("d"), ["172.31.1.3\tb", "172.31.1.4\td"]);
     assert_eq!(hosts("c"), ["172.31.2.2\tc"]);
 }
 
@@ -3778,6 +3799,8 @@ fn agents_reach_past_the_microvm_what_their_networks_grant() {
     let a = agent(
         "a",
         &[
+            "resolve".into(),
+            "api.example".into(),
             "reach".into(),
             to(granted),
             by_name.clone(),
@@ -3800,9 +3823,9 @@ fn agents_reach_past_the_microvm_what_their_networks_grant() {
         ctx.join("Agentfile"),
         format!(
             "FROM {image}\nAGENT a FROM {a}\nAGENT b FROM {b}\nAGENT c FROM {c}\n\
-             NETWORK --egress={granted} --egress={other} out\nEXPOSE {granted} AS egress FOR out\n\
-             NETWORK --internal --egress={granted} inner\nEXPOSE {granted} FOR inner\n\
-             CONNECT a WITH a ON out\nCONNECT b WITH c ON inner\n"
+             NETWORK --dns --egress={granted} --egress={other} out\nEXPOSE {granted} AS egress FOR out\n\
+             NETWORK --internal --egress={granted} --ingress=7000 inner\nEXPOSE {granted} FOR inner\n\
+             CONNECT a WITH a ON out\nCONNECT --port=7000 b WITH c ON inner\n"
         ),
     )
     .unwrap();
@@ -3959,4 +3982,176 @@ fn agents_answer_what_their_networks_let_in() {
     // No grant lets 7200 in: the agent listens on it, and is not reached.
     assert!(!read(other).contains("agent-a"), "port 7200 reached the agent");
     let _ = shards(&["rm", "-f", "front"]);
+}
+
+/// A remote MCP server is a grant of that server alone (D59, AGENTFILE_ARCH.md §4.4, §9.6;
+/// networks are default deny): the agent its `FOR` names reaches the server's port, at the
+/// addresses its host resolves to and no other, may ask for that host's name and no other,
+/// and can do nothing to widen it; an agent not named reaches nothing.
+#[test]
+fn a_remote_mcp_server_is_a_grant_of_that_server_alone() {
+    if cannot_run_vms() {
+        return;
+    }
+    let host = std::net::UdpSocket::bind("0.0.0.0:0")
+        .and_then(|s| s.connect("192.0.2.1:9").map(|()| s))
+        .and_then(|s| s.local_addr());
+    let Ok(host) = host else {
+        eprintln!("SKIP: this host has no route to give a guest an address of it");
+        return;
+    };
+    let host = host.ip();
+    let std::net::IpAddr::V4(address) = host else {
+        eprintln!("SKIP: this host's address is not IPv4");
+        return;
+    };
+    let serve = || {
+        let server = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+        let port = server.local_addr().unwrap().port();
+        std::thread::spawn(move || for _ in server.incoming() {});
+        port
+    };
+    let (mcp_port, other) = (serve(), serve());
+    // The host's resolver: mcp.example and api.example are this host, so that a name
+    // refused is shards' refusal, not the resolver's.
+    let resolver = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
+    let resolver_at = format!("{host}:{}", resolver.local_addr().unwrap().port());
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 512];
+        while let Ok((n, from)) = resolver.recv_from(&mut buf) {
+            let q = &buf[..n];
+            let mut at = 12;
+            let mut name = Vec::new();
+            while at < q.len() && q[at] != 0 {
+                let len = usize::from(q[at]);
+                name.push(String::from_utf8_lossy(&q[at + 1..at + 1 + len]).to_lowercase());
+                at += 1 + len;
+            }
+            let qtype = u16::from_be_bytes([q[at + 1], q[at + 2]]);
+            let answer = matches!(name.join(".").as_str(), "mcp.example" | "api.example") && qtype == 1;
+            let mut r = q[..2].to_vec();
+            r.extend_from_slice(&[0x81, 0x80, 0, 1, 0, u8::from(answer), 0, 0, 0, 0]);
+            r.extend_from_slice(&q[12..at + 5]);
+            if answer {
+                r.extend_from_slice(&[0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4]);
+                r.extend_from_slice(&address.octets());
+            }
+            let _ = resolver.send_to(&r, from);
+        }
+    });
+    let (image, _) = served();
+    let (port, _repos) = common::writable_registry();
+    let home = TempDir::new("mcp-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+        ("SHARDS_DNS", std::ffi::OsStr::new(&resolver_at)),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let agent = |name: &str, args: &[String]| -> String {
+        let dir = TempDir::new(&format!("mcp-agent-{name}"));
+        std::fs::create_dir_all(dir.join("bin")).unwrap();
+        std::fs::copy(common::test_guest(), dir.join("bin/testguest")).unwrap();
+        let command: Vec<String> = ["bin/testguest", "confined", "cat", "/etc/resolv.conf"]
+            .iter()
+            .map(|s| (*s).to_string())
+            .chain(args.iter().cloned())
+            .map(|a| format!("{a:?}"))
+            .collect();
+        std::fs::write(
+            dir.join("agent.json"),
+            format!(
+                r#"{{"name":"{name}","run":{{"command":[{}]}}}}"#,
+                command.join(",")
+            ),
+        )
+        .unwrap();
+        let tag = format!("127.0.0.1:{port}/team/mcp-{name}:1");
+        let made = shards(&["build", "agent", dir.to_str().unwrap(), "-t", &tag]);
+        assert_eq!(made.status, Some(0), "{}", made.stderr);
+        let pushed = shards(&["push", "agent", &tag]);
+        assert_eq!(pushed.status, Some(0), "{}", pushed.stderr);
+        tag
+    };
+    let to = |p: u16| format!("{host}:{p}");
+    let m = agent(
+        "m",
+        &[
+            // Before its host is resolved: no address of it is known, so none is reached.
+            "unreach".into(),
+            to(mcp_port),
+            "reach".into(),
+            format!("mcp.example:{mcp_port}"),
+            // Its port alone, at the server's addresses.
+            "unreach".into(),
+            to(other),
+            "write".into(),
+            "/etc/resolv.conf".into(),
+            "call".into(),
+            "socket-raw".into(),
+            "unshare-net".into(),
+            // A name its grant does not name: refused, though the resolver upstream holds it.
+            "dnsprobe".into(),
+            "resolver".into(),
+        ],
+    );
+    let n = agent("n", &["unreach".into(), to(mcp_port)]);
+    // g's network grants it any name: the host then asks any of its resolver for the
+    // microVM, and only the agents' resolver keeps m to its server's.
+    let g = agent("g", &["resolve".into(), "api.example".into()]);
+    let ctx = context("mcp-ctx", &format!("FROM {image}\n"));
+    std::fs::write(
+        ctx.join("Agentfile"),
+        format!(
+            "FROM {image}\nAGENT m FROM {m}\nAGENT n FROM {n}\nAGENT g FROM {g}\n\
+             MCP web FROM http://mcp.example:{mcp_port}/sse FOR m\n\
+             NETWORK --dns names\nCONNECT g WITH g ON names\n"
+        ),
+    )
+    .unwrap();
+    let built = shards(&["build", "-t", "mcp:1", ctx.to_str().unwrap()]);
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    let ran = shards(&["run", "--rm", "mcp:1", "await", "confined-ready", "3"]);
+    assert_eq!(ran.status, Some(0), "{}{}", ran.stdout, ran.stderr);
+    let said = |who: &str| -> Vec<String> {
+        let prefix = format!("[agent {who}] ");
+        ran.stderr
+            .lines()
+            .filter_map(|l| l.strip_prefix(&prefix).map(str::to_string))
+            .collect()
+    };
+    let gateway = said("m")
+        .iter()
+        .find_map(|l| {
+            l.strip_prefix("confined cat /etc/resolv.conf: nameserver ")
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| panic!("m has no resolver of its own:\n{}", ran.stderr));
+    for (who, want) in [
+        // The network process has learned no address of mcp.example yet: refused.
+        ("m", format!("confined unreach {}: errno 111", to(mcp_port))),
+        ("m", format!("confined reach mcp.example:{mcp_port}: ok")),
+        ("m", format!("confined unreach {}: timeout", to(other))),
+        // Nothing an agent does widens its grant: its resolver file is read-only, it can
+        // open no raw socket to send as another, and it can leave its namespace for none.
+        ("m", "confined write /etc/resolv.conf: errno 30".to_string()),
+        ("m", "confined call socket-raw: errno 1".to_string()),
+        ("m", "confined call unshare-net: errno 1".to_string()),
+        (
+            "m",
+            format!("confined dnsprobe {gateway}: from {gateway}:53 rcode 5 answers 0"),
+        ),
+        // g, granted any name, resolves the one m may not: the host asks it for the
+        // microVM, and the agents' resolver alone keeps m from it.
+        ("g", "confined resolve api.example: 0,0".to_string()),
+        // Not named: no link, and Landlock lets it connect nowhere.
+        ("n", format!("confined unreach {}: errno 13", to(mcp_port))),
+    ] {
+        assert!(
+            said(who).contains(&want),
+            "no {want:?} from {who} in:\n{}",
+            ran.stderr
+        );
+    }
 }

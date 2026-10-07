@@ -16,6 +16,7 @@ Targets: request → usable in **under 5 ms, boot included**, and less memory pe
   - shards runs on Linux (glibc and musl), macOS and Windows, on x86_64/amd64 and aarch64/arm64: the 8-target matrix CI lints and tests.
   - Hypervisor specifics live behind `hv` (KVM, Hypervisor.framework, WHP), guest-architecture specifics behind `arch`, and OS specifics behind `platform`. Everything else is written once.
   - Configs, builds, optimizations and tests cover every architecture. Use OCI platform names (`amd64`, `arm64`) wherever users see platforms.
+- **Networks are default deny.** In a shards microVM, a network flow that no directive explicitly grants does not exist: no implicit peers, ports, protocols, directions or names. Every grant names who, to whom, on which ports, which way.
 - **Panic-free production code.** Every fallible step returns an error, and the caller handles it.
   - Use `?`, `ok_or`, `.get()`, checked arithmetic on untrusted sizes, `thread::Builder::spawn`, `env::args_os`, and poison-tolerant locks.
   - Write console output with `let _ = writeln!(...)`.
