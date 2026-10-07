@@ -3547,6 +3547,15 @@ in it, init (PID 1, whose end is the microVM's) and the run's own command includ
     `cgroup_task_exit`), so no other is ended for memory it still holds; a rule waiting for
     it, written first, changed no outcome under mutation, and is not kept.
 
+- **The agents' resolver.** It holds each question in flight under an ID of its own, 65,535
+  at most, and refused any beyond: one agent asking without end could take them all, and
+  every other agent's names with them, for as long as its questions wait (5 s, `WAIT`).
+  Now each asker, known by its link, may hold an equal share of the IDs, `u16::MAX` over
+  the askers: no asker can take another's, and the share is the ID space's, not a chosen
+  number (`agentdns::Flight`; test `no_asker_takes_anothers_share_of_the_ids`, run in a
+  microVM as init's Linux tests are on this host, mutation-checked: with no share, one
+  asker took every ID).
+
 `/tmp` stays where an agent's scratch is: the run's own writable layer is a tmpfs as well
 (`run.rs`, `mount_root`), so every writable directory in a microVM is its memory, and a
 programs' default temporary directory (POSIX `TMPDIR`) is where they look.
