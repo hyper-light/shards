@@ -126,6 +126,38 @@ pub fn main() -> ! {
             }
         }
         "outlive" => outlive(arg(1).parse().unwrap_or(0)),
+        // Waits (60 s at most) to see a process named `arg(1)`, then (60 s at most) for none.
+        "vanish" => {
+            let count = |name: &str| {
+                std::fs::read_dir("/proc")
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+                    .filter(|e| {
+                        std::fs::read_to_string(e.path().join("comm")).is_ok_and(|c| c.trim_end() == name)
+                    })
+                    .count()
+            };
+            let wait = |until: &dyn Fn(usize) -> bool| {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+                while std::time::Instant::now() < deadline {
+                    if until(count(arg(1))) {
+                        return true;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                false
+            };
+            let said = if !wait(&|n| n > 0) {
+                "never seen"
+            } else if wait(&|n| n == 0) {
+                "vanished"
+            } else {
+                "still running"
+            };
+            let _ = writeln!(io::stdout(), "vanish {}: {said}", arg(1));
+            i32::from(said != "vanished")
+        }
         // Where the microVM is (its first non-loopback IPv4 address and its default
         // gateway), then TCP and UDP answered on `arg(1)`, until `arg(3)` processes named
         // `arg(2)` exist.
@@ -1155,6 +1187,36 @@ fn confined(args: &[String]) -> i32 {
             "see" | "write" | "bind" | "connect" | "call" | "listen" | "reach" | "unreach" | "cat"
             | "resolve" | "dnsprobe" | "unix" | "abstract" | "unix-serve" | "pause" | "udpflood"
             | "reachmany" | "udpask" => mode = a.as_str(),
+            // A grandchild let go as daemons are (fork, setsid, fork), named `escaped`,
+            // that waits until it is ended.
+            "daemonize" => {
+                // SAFETY: fork(2) in a process of one thread; the children only call the
+                // kernel and wait.
+                unsafe {
+                    match libc::fork() {
+                        0 => {
+                            libc::setsid();
+                            if libc::fork() == 0 {
+                                libc::prctl(libc::PR_SET_NAME, c"escaped".as_ptr());
+                                loop {
+                                    libc::pause();
+                                }
+                            }
+                            libc::_exit(0);
+                        }
+                        pid if pid > 0 => {
+                            libc::waitpid(pid, std::ptr::null_mut(), 0);
+                        }
+                        _ => {}
+                    }
+                }
+                out.push_str("confined daemonize: done\n");
+            }
+            // Its first process ends here.
+            "end" => {
+                let _ = io::stdout().write_all(out.as_bytes());
+                return 0;
+            }
             "fill" => {
                 let _ = io::stdout().write_all(out.as_bytes());
                 return fill_scratch();

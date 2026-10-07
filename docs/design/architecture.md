@@ -3643,7 +3643,13 @@ so UDP has no route and TCP is refused by Landlock before it leaves (`EACCES`). 
 reaches b on 7000. Mutation-checked: with the switch's `input` chain accepting, d's
 connection to its gateway is refused by it (`ECONNREFUSED`), an answer.
 
-Found while writing it: `getifaddrs` fails in an agent, musl's asking over netlink, which
+§9.9's double fork, on a real microVM (`an_agents_daemon_ends_with_it`): an agent lets a
+grandchild go as daemons are (fork, `setsid`, fork), waits until the run's command has
+seen it, and its first process ends; the grandchild ends with it, the kernel ending a PID
+namespace's every process with its first. Mutation-checked: without `CLONE_NEWPID` the
+grandchild outlives the agent.
+
+Found while writing the sweep: `getifaddrs` fails in an agent, musl's asking over netlink, which
 an agent's seccomp filter refuses; the test reads `/proc/net/route` instead.
 
 ### `SKILL --from=<agent>` (D54, continued)

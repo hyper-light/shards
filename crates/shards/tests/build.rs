@@ -4710,3 +4710,51 @@ fn an_agent_reaches_nothing_past_its_grants() {
     }
     assert_eq!(tried, 2 * 8 + 4, "{all}");
 }
+
+/// A process an agent lets go as daemons are (a double fork and `setsid`) is ended with
+/// the agent (AGENTFILE_ARCH.md §9.9): it stays in the agent's PID namespace, which the
+/// kernel ends with its first process.
+#[test]
+fn an_agents_daemon_ends_with_it() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let (port, _repos) = common::writable_registry();
+    let home = TempDir::new("daemon-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let dir = TempDir::new("daemon-agent");
+    std::fs::create_dir_all(dir.join("bin")).unwrap();
+    std::fs::copy(common::test_guest(), dir.join("bin/testguest")).unwrap();
+    std::fs::write(
+        dir.join("agent.json"),
+        r#"{"name":"x","run":{"command":["bin/testguest","confined","daemonize","pause","2","end"]}}"#,
+    )
+    .unwrap();
+    let tag = format!("127.0.0.1:{port}/team/daemon-x:1");
+    let made = shards(&["build", "agent", dir.to_str().unwrap(), "-t", &tag]);
+    assert_eq!(made.status, Some(0), "{}", made.stderr);
+    let pushed = shards(&["push", "agent", &tag]);
+    assert_eq!(pushed.status, Some(0), "{}", pushed.stderr);
+    let ctx = context("daemon-ctx", &format!("FROM {image}\n"));
+    std::fs::write(
+        ctx.join("Agentfile"),
+        format!("FROM {image}\nAGENT x FROM {tag}\n"),
+    )
+    .unwrap();
+    let built = shards(&["build", "-t", "daemon:1", ctx.to_str().unwrap()]);
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    let ran = shards(&["run", "--rm", "daemon:1", "vanish", "escaped"]);
+    let all = format!("{}{}", ran.stdout, ran.stderr);
+    assert!(
+        all.lines().any(|l| l == "[agent x] confined daemonize: done"),
+        "{all}"
+    );
+    assert!(all.lines().any(|l| l == "vanish escaped: vanished"), "{all}");
+    assert_eq!(ran.status, Some(0), "{all}");
+}
