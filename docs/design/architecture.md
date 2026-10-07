@@ -3038,8 +3038,13 @@ devices, FIFOs, set-ID bits, a grant's symlink), and on real microVMs
 its `AGENT` and before it, `COPY` into its grants, all refused; `RUN` elsewhere built);
 the write rule mutation-checked.
 
-Open (§9.2): owners (a path outside a domain owned by its user), which the runtime's
-uids decide; §9.8's triggers. §9.5's transitive reach is D58.
+Owners, the last of §9.2's rules, came once the runtime decided its uids (D59): the n-th
+domain, agents in the order declared and then harnesses, runs as uid and gid 200000 + n
+(`shards_abi::DOMAIN_FIRST_ID`, init and the build reading one constant). A path whose
+uid or gid is a domain's user, outside that domain or in another's, fails the build,
+naming it (`--chown=200000` on /etc). Tested in memory (system and other domain, by uid
+and by gid, an ID past the domains' none's), mutation-checked, and on a real build
+(`a_domains_user_owns_nothing_past_its_domain`). Open: §9.8's triggers.
 
 ### The extensions expand their words; `COPY --from=<agent>` (D56)
 

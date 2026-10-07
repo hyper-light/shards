@@ -28,7 +28,7 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use crate::json::{self, Value};
 
 /// The first domain's uid and gid; the n-th's is this plus n.
-pub const FIRST_ID: u32 = 200_000;
+pub const FIRST_ID: u32 = shards_abi::DOMAIN_FIRST_ID;
 /// Where the domains' cgroups are.
 const CGROUPS: &str = "/sys/fs/cgroup/domains";
 /// The `PATH` a domain starts with: Docker's default (moby oci/defaults.go).

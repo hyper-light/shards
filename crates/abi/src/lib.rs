@@ -5,6 +5,11 @@
 
 extern crate alloc;
 
+/// The first agent's or harness's uid and gid in a microVM (D59): the n-th domain, agents
+/// first in the order the Agentfile declares them and then harnesses, runs as this plus
+/// n, and the build checks that no file outside a domain is its user's (§9.2).
+pub const DOMAIN_FIRST_ID: u32 = 200_000;
+
 pub mod build;
 pub mod changes;
 pub mod run;

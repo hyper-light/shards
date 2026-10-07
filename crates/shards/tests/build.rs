@@ -4239,3 +4239,44 @@ fn a_skill_an_agent_lists_is_taken_from_it() {
         refused.stderr
     );
 }
+
+/// A file outside an agent's domain owned by its user, which the microVM would run it as,
+/// fails the build (D55, AGENTFILE_ARCH.md §9.2): `--chown` to the agent's uid on /etc.
+#[test]
+fn a_domains_user_owns_nothing_past_its_domain() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("owners-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let ctx = context("owners-ctx", &format!("FROM {image}\n"));
+    std::fs::create_dir_all(ctx.join("agent")).unwrap();
+    std::fs::write(ctx.join("agent/run"), "run\n").unwrap();
+    std::fs::write(ctx.join("motd"), "hello\n").unwrap();
+    std::fs::write(
+        ctx.join("Agentfile"),
+        format!("FROM {image}\nAGENT main FROM ./agent\nCOPY --chown=200000:0 motd /etc/motd\n"),
+    )
+    .unwrap();
+    let out = TempDir::new("owners-out");
+    let built = shards(&[
+        "build",
+        "-o",
+        out.join("root").to_str().unwrap(),
+        ctx.to_str().unwrap(),
+    ]);
+    assert_ne!(built.status, Some(0), "{}", built.stdout);
+    assert!(
+        built.stderr.contains(
+            "/etc/motd: owned by the agent main's user (200000), in the system, outside its domain"
+        ),
+        "{}",
+        built.stderr
+    );
+}

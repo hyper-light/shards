@@ -112,6 +112,19 @@ pub fn check(fs: &Fs, domains: &[DomainDir]) -> Result<(), String> {
         ),
         None => "the system".into(),
     };
+    // Each domain's user, as the microVM's init numbers them: agents in the order
+    // declared, then harnesses (shards_abi::DOMAIN_FIRST_ID).
+    let mut users: Vec<u32> = vec![0; domains.len()];
+    let mut n = 0u32;
+    for harness in [false, true] {
+        for (i, _) in domains.iter().enumerate().filter(|(_, d)| d.harness == harness) {
+            if let Some(u) = users.get_mut(i) {
+                *u = shards_abi::DOMAIN_FIRST_ID.saturating_add(n);
+            }
+            n = n.saturating_add(1);
+        }
+    }
+    let user_of = |id: u32| users.iter().position(|&u| u == id);
     let mut findings = Vec::new();
     let mut names: BTreeMap<NodeId, Vec<Vec<Vec<u8>>>> = BTreeMap::new();
     let mut stack: Vec<(Vec<Vec<u8>>, NodeId)> = vec![(Vec::new(), Tree::ROOT)];
@@ -126,6 +139,23 @@ pub fn check(fs: &Fs, domains: &[DomainDir]) -> Result<(), String> {
             }
         } else {
             names.entry(id).or_default().push(path.clone());
+        }
+        // A path a domain's user owns, outside that domain or in another's: what its
+        // agent could change or read that no grant gives it.
+        for (what_id, owner) in [("user", node.meta.uid), ("group", node.meta.gid)] {
+            if let Some(k) = user_of(owner)
+                && domain != Some(k)
+            {
+                findings.push(format!(
+                    "{}: owned by {}'s {what_id} ({owner}), in {}",
+                    shown(&path),
+                    what(Some(k)),
+                    match domain {
+                        Some(_) => format!("{}'s domain", what(domain)),
+                        None => "the system, outside its domain".to_string(),
+                    }
+                ));
+            }
         }
         if domain.is_none() {
             continue;
@@ -277,6 +307,55 @@ mod tests {
             },
         ];
         check(&fs, &domains)
+    }
+
+    /// What a domain's user owns lies in its domain: not in the system (`--chown` to an
+    /// agent's uid on /etc), nor in another domain; by uid or by gid. main is the first
+    /// domain's user (200000), drive, the harness after the agents, the next.
+    #[test]
+    fn a_domains_user_owns_nothing_outside_it() {
+        let owned = |tree: &mut Tree, at: NodeId, name: &str, uid: u32, gid: u32| {
+            tree.insert(
+                at,
+                name.as_bytes(),
+                Node {
+                    kind: file(),
+                    meta: Meta {
+                        mode: 0o644,
+                        uid,
+                        gid,
+                        ..Meta::default()
+                    },
+                },
+            )
+            .unwrap();
+        };
+        // Its own, in its domain: kept.
+        assert_eq!(
+            checked(|t, main, _, _| owned(t, main, "mine", 200_000, 200_000)),
+            Ok(())
+        );
+        let e = checked(|t, _, _, etc| owned(t, etc, "shadow", 200_000, 0)).unwrap_err();
+        assert!(
+            e.contains(
+                "/etc/shadow: owned by the agent main's user (200000), in the system, outside its domain"
+            ),
+            "{e}"
+        );
+        let e = checked(|t, main, _, _| owned(t, main, "theirs", 200_001, 0)).unwrap_err();
+        assert!(
+            e.contains(
+                "/agents/main/theirs: owned by the harness drive's user (200001), in the agent main's domain"
+            ),
+            "{e}"
+        );
+        let e = checked(|t, _, _, etc| owned(t, etc, "group", 0, 200_000)).unwrap_err();
+        assert!(
+            e.contains("/etc/group: owned by the agent main's group (200000)"),
+            "{e}"
+        );
+        // An ID past the domains' is no domain's.
+        assert_eq!(checked(|t, _, _, etc| owned(t, etc, "other", 200_002, 0)), Ok(()));
     }
 
     #[test]
