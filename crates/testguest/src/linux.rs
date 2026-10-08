@@ -775,6 +775,7 @@ fn storm() -> Result<(), String> {
     control.write(shards_abi::control::SNAPSHOT, shards_abi::control::SNAPSHOT_NOW);
     // A restored copy continues here, as does the original, if it resumed.
     let generation = control.read(shards_abi::control::GENERATION);
+    let echoed_at = ECHOED.load(Ordering::Relaxed);
     let _ = writeln!(io::stdout(), "SHARDS-TEST INFO generation={generation}");
 
     let _ = writeln!(
@@ -855,6 +856,21 @@ fn storm() -> Result<(), String> {
         gaps(&storm, false),
         spread(&storm.late, false)
     );
+    // A machine that went on carries the host's stream on past its snapshot: two rounds'
+    // worth (the host's rounds are 4 MiB), so the round the snapshot cut through ends and
+    // another runs whole after it, however slowly a loaded host streams.
+    if generation == 0 {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while ECHOED.load(Ordering::Relaxed).saturating_sub(echoed_at) < 8 << 20 {
+            if Instant::now() > deadline {
+                return Err(format!(
+                    "the host streamed {} bytes after the snapshot in 60 s",
+                    ECHOED.load(Ordering::Relaxed).saturating_sub(echoed_at)
+                ));
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+    }
     // The verdict waits for the host to say it has stopped streaming, so every round the
     // host streamed ended with the guest alive.
     let _ = writeln!(io::stdout(), "SHARDS-TEST INFO storm checked");
