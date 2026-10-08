@@ -22,6 +22,33 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use sha2::Digest as _;
 use shards_image::erofs::{self, DataRef, Dir, Kind, Meta, Node, NodeId, Source, Tree};
 
+/// A datagram from `socket`, a signal's interruption (EINTR) waited out: `recv_from`
+/// returns it where `read_exact` would not.
+pub fn recv_from(socket: &std::net::UdpSocket, buf: &mut [u8]) -> io::Result<(usize, std::net::SocketAddr)> {
+    loop {
+        match socket.recv_from(buf) {
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            got => return got,
+        }
+    }
+}
+
+/// `command` spawned, though its program was written a moment ago: a child another
+/// thread forked meanwhile holds the file open to write until it execs, and exec says
+/// ETXTBSY until then (Linux; the fork window of every multithreaded process).
+pub fn spawn(command: &mut std::process::Command) -> io::Result<std::process::Child> {
+    let mut tries = 0;
+    loop {
+        match command.spawn() {
+            Err(e) if e.kind() == io::ErrorKind::ExecutableFileBusy && tries < 1000 => {
+                tries += 1;
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            got => return got,
+        }
+    }
+}
+
 pub fn workspace() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")

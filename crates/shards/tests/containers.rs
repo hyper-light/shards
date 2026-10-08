@@ -2293,18 +2293,20 @@ impl Gated {
     /// `shards ARGS` from this directory in `home`, whose runs boot the test kernel and
     /// init, left going.
     fn start(&self, home: &Path, args: &[&str]) -> Going {
-        let mut child = Command::new(self.dir.join("shards"))
-            .args(args)
-            .env("SHARDS_HOME", home)
-            .env("SHARDS_LOCAL_STORE", "none")
-            .env("SHARDS_KERNEL", kernel())
-            .env("SHARDS_INIT", guest_init())
-            .env("SHARDS_VM_BINARY", self.dir.join("shards-vm"))
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
+        // Its copy of shards was written a moment ago.
+        let mut child = common::spawn(
+            Command::new(self.dir.join("shards"))
+                .args(args)
+                .env("SHARDS_HOME", home)
+                .env("SHARDS_LOCAL_STORE", "none")
+                .env("SHARDS_KERNEL", kernel())
+                .env("SHARDS_INIT", guest_init())
+                .env("SHARDS_VM_BINARY", self.dir.join("shards-vm"))
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped()),
+        )
+        .unwrap();
         let collect = |mut from: Box<dyn std::io::Read + Send>| {
             std::thread::spawn(move || {
                 let mut text = String::new();
@@ -3520,7 +3522,7 @@ fn published_udp_ports_carry_datagrams_both_ways() {
         client.set_read_timeout(Some(TIMEOUT)).unwrap();
         client.send_to(payload, to).unwrap();
         let mut buf = [0u8; 2048];
-        let (len, from) = client.recv_from(&mut buf).unwrap_or_else(|e| {
+        let (len, from) = common::recv_from(client, &mut buf).unwrap_or_else(|e| {
             let log = std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default();
             let tail: Vec<&str> = log.lines().rev().take(60).collect();
             let logs = shards_in(&home, &["logs", "dns"]);

@@ -4825,7 +4825,7 @@ fn agents_reach_past_the_microvm_what_their_networks_grant() {
     let echoed = echo.local_addr().unwrap().port();
     std::thread::spawn(move || {
         let mut buf = [0u8; 64];
-        while let Ok((n, from)) = echo.recv_from(&mut buf) {
+        while let Ok((n, from)) = common::recv_from(&echo, &mut buf) {
             let _ = echo.send_to(&buf[..n], from);
         }
     });
@@ -4839,7 +4839,7 @@ fn agents_reach_past_the_microvm_what_their_networks_grant() {
     };
     std::thread::spawn(move || {
         let mut buf = [0u8; 512];
-        while let Ok((n, from)) = resolver.recv_from(&mut buf) {
+        while let Ok((n, from)) = common::recv_from(&resolver, &mut buf) {
             let q = &buf[..n];
             // The question: its name's labels, then type and class (RFC 1035 §4.1.2).
             let mut at = 12;
@@ -5131,7 +5131,7 @@ fn a_remote_mcp_server_is_a_grant_of_that_server_alone() {
     let resolver_at = format!("{host}:{}", resolver.local_addr().unwrap().port());
     std::thread::spawn(move || {
         let mut buf = [0u8; 512];
-        while let Ok((n, from)) = resolver.recv_from(&mut buf) {
+        while let Ok((n, from)) = common::recv_from(&resolver, &mut buf) {
             let q = &buf[..n];
             let mut at = 12;
             let mut name = Vec::new();
