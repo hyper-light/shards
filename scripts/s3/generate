@@ -1,0 +1,22 @@
+#!/bin/sh
+# Regenerates crates/shards/src/build/testdata/sigv4.json: what aws-sdk-go-v2's SigV4
+# signer (as BuildKit's S3 cache client configures it) adds to the requests the tests sign
+# again, run by Go 1.25.8 (D88).
+#
+#   scripts/s3/generate
+set -eu
+here=$(cd "$(dirname "$0")" && pwd)
+root=$(cd "$here/../.." && pwd)
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+cp "$here/oracle/main.go" "$work/main.go"
+cd "$work"
+cat >go.mod <<'MOD'
+module shards.dev/sigv4-oracle
+
+go 1.25
+
+require github.com/aws/aws-sdk-go-v2 v1.41.1
+MOD
+GOTOOLCHAIN=go1.25.8 GOFLAGS=-mod=mod go mod tidy >/dev/null 2>&1
+GOTOOLCHAIN=go1.25.8 GOFLAGS=-mod=mod go run . "$root/crates/shards/src/build/testdata/sigv4.json"

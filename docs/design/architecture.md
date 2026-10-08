@@ -3210,6 +3210,67 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode
 waits on the user.
 
+### D88. The S3 cache backend
+
+`--cache-to` and `--cache-from` `type=s3` write a build's cache to a bucket and read it
+back, as BuildKit v0.28.1's `cache/remotecache/s3` does.
+
+Evidence: BuildKit's s3.go, and aws-sdk-go-v2 v1.41.1's SigV4 signer, which BuildKit's
+S3 client signs with. `scripts/s3/generate` records that signer's own headers and
+signatures for seven requests (`testdata/sigv4.json`). M124 runs every request against a
+real S3 implementation that checks signatures.
+
+What it takes, read as BuildKit's `getConfig` reads it:
+- `bucket` (`$AWS_BUCKET`) and `region` (`$AWS_REGION`), refused without either, as
+  BuildKit refuses them.
+- `prefix`, `manifests_prefix` (`manifests/`), `blobs_prefix` (`blobs/`) and `name`
+  (`buildkit`, several `;` apart, each written and the first read).
+- `touch_refresh` (24h), `upload_parallelism` (4, refused unless positive),
+  `endpoint_url` and `use_path_style`, and `ignore-error`.
+- Credentials: `access_key_id` and `secret_access_key` (with `session_token`), as buildx
+  passes them; else the SDK's environment (`$AWS_ACCESS_KEY_ID`…) and shared files
+  (`$AWS_PROFILE` in `~/.aws/credentials`, then `~/.aws/config`).
+
+The bucket holds what BuildKit's does:
+- Each layer at PREFIX BLOBS_PREFIX DIGEST.
+- The records at PREFIX MANIFESTS_PREFIX NAME, as shards' own records (D62) rather than
+  BuildKit's cache config.
+- A layer already there is not sent again. One older than `touch_refresh` is copied onto
+  itself with its metadata replaced, so that a bucket's lifecycle rules count its age
+  from now.
+- Objects past S3's 5 GiB limit for one request go in 5 GiB parts: uploaded, or copied
+  for a touch, as BuildKit's touch copies them.
+- A bucket without the cache is an empty cache; one that cannot be read is said and
+  skipped.
+
+Better than BuildKit's:
+- A layer's body is signed whole: its digest is its SHA-256, so S3 checks every byte it
+  keeps, for no extra read. BuildKit's uploader sends layers unsigned.
+- A `--cache-to` that no credentials sign for is refused before the build, not after
+  it.
+- The copy source of a touch is escaped, so a prefix with spaces or other reserved
+  characters still names its object.
+
+Not yet: credentials by role (`role_arn`), SSO, `credential_process`, web identity, the
+container endpoint or instance metadata. A profile that names one is refused, saying
+which, and the user can still give keys.
+
+Tested:
+- `sigv4_is_aws_sdk_go_v2s` holds the signer to the SDK's.
+- `s3_requests_are_a_real_s3s` (M124) runs every request against versitygw: PutObject,
+  GetObject, HeadObject, a body signed wrong refused, CopyObject, and multipart upload
+  and copy with 5 MiB parts, from a file offset.
+- `builds_take_steps_from_an_s3_cache` covers the build end to end against a fake S3
+  that checks each body's signed hash:
+  - written `mode=max` under a prefix at two names;
+  - read back from another home signed by `$AWS_ACCESS_KEY_ID`, and from a third by a
+    shared credentials file's profile, every step `CACHED`, with the same layers;
+  - written again, each aged layer copied onto itself and none sent;
+  - a cache with no credentials refused before the build;
+  - a name that is not there no cache.
+- Mutation-checked: a wrong body hash fails the export; touching nothing fails the
+  touch check.
+
 ### D87. `--cache-to` of several platforms
 
 A build of several platforms exports one cache of every platform's records, as
@@ -4227,7 +4288,7 @@ control/control.go, cache/remotecache, solver/llbsolver/bridge.go).
   wrong.
 - **Refused as BuildKit refuses** before it builds: a directory without `dest`, a registry
   without `ref`, an unknown backend (`unknown cache exporter: "x"`); and, for now, the
-  `gha`, `s3` and `azblob` backends, which shards does not write yet. A failed export
+  `gha` and `azblob` backends, which shards does not write yet (`s3` is D88). A failed export
   fails the build unless `ignore-error=true`. A `gha` entry without its token and URL is
   dropped, as buildx's `isActive` drops it.
 - **`--no-cache-filter`** is the frontend's `no-cache` option, as buildx sends it

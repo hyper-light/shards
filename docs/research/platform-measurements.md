@@ -4183,3 +4183,30 @@ revision before comparing a changed API/implementation.
 - **Consequence.** x86_64's kernel keeps more than arm64's at every size (768 MiB:
   125,172 against 86,172), so each architecture sizes by its own table
   (`resources::overhead_kib`), and past 16 GiB by its own slope, 22 KiB a MiB.
+
+### M124. The S3 cache backend's requests against a real S3
+
+- **Question.** Does a real S3 that checks signatures accept every request the S3
+  cache backend (D88) makes? That means bodies signed by their hash, `UNSIGNED-PAYLOAD`
+  parts, query-signed multipart requests, copy headers and keys escaped under a prefix
+  with a space. A fake S3 only shows that the requests are made.
+- **Method.** `docs/research/measurements/s3/run.sh`:
+  - starts versitygw (`versity/versitygw@sha256:30292fc2…`, posix backend, which checks
+    SigV4) in the `shards-dind` container;
+  - reaches it on loopback through `tunnel.py`;
+  - runs `s3_requests_are_a_real_s3s` with 5 MiB parts.
+  
+  macOS 26.4 (Darwin 25.4.0), arm64, 2026-10-08.
+- **Results.**
+  - PutObject, GetObject and HeadObject pass, along with a missing key's 404 and
+    CopyObject with `REPLACE`.
+  - A 12 MiB object goes up in three parts from a file offset and is copied onto itself
+    in three `UploadPartCopy` parts; it reads back byte for byte both times.
+  - A body whose signed hash is not its own is refused.
+  - The first run found a real fault. `CompleteMultipartUpload` without S3's XML
+    namespace (`xmlns="http://s3.amazonaws.com/doc/2006-03-01/"`, which the SDK writes)
+    was refused with `InvalidPart`. The backend now writes it.
+- **Consequence.** The backend's requests are signed and shaped as S3 takes them,
+  multipart included, which the 5 GiB-part path for large layers relies on and no fake
+  covers.
+

@@ -3735,6 +3735,211 @@ fn builds_take_steps_from_caches_written_elsewhere() {
     );
 }
 
+/// The S3 cache backend (D88): `--cache-to type=s3` writes a build's layers and records
+/// to a bucket as BuildKit's does, under `prefix`, at each of `name`'s names, every
+/// request signed and each layer's body signed whole; another home's `--cache-from`
+/// takes every step from it (`mode=max`), signing with `$AWS_ACCESS_KEY_ID` or a shared
+/// credentials file's profile. Layers older than `touch_refresh` are copied onto
+/// themselves, not sent again; a cache with no credentials is refused before the build.
+#[test]
+fn builds_take_steps_from_an_s3_cache() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let (port, buckets) = common::fake_s3();
+    let homes: Vec<TempDir> = (0..3)
+        .map(|n| TempDir::new(&format!("s3-cache-home-{n}")))
+        .collect();
+    let files = TempDir::new("s3-cache-files");
+    let shared = files.join("credentials");
+    std::fs::write(&shared, "[other]\naws_access_key_id = WRONG\n\n[ci]\naws_access_key_id = FROMFILE\naws_secret_access_key = s3cr3t\n").unwrap();
+    let nowhere = files.join("none");
+    let shards_in = |home: &TempDir, args: &[&str], extra: &[(&str, &std::ffi::OsStr)]| {
+        let mut env = vec![
+            ("SHARDS_HOME", home.as_os_str()),
+            ("SHARDS_KERNEL", kernel().as_os_str()),
+            ("SHARDS_INIT", guest_init().as_os_str()),
+            // None of the host's own AWS settings.
+            ("AWS_ACCESS_KEY_ID", std::ffi::OsStr::new("")),
+            ("AWS_SECRET_ACCESS_KEY", std::ffi::OsStr::new("")),
+            ("AWS_PROFILE", std::ffi::OsStr::new("")),
+            ("AWS_ENDPOINT_URL", std::ffi::OsStr::new("")),
+            ("AWS_ENDPOINT_URL_S3", std::ffi::OsStr::new("")),
+            ("AWS_SHARED_CREDENTIALS_FILE", nowhere.as_os_str()),
+            ("AWS_CONFIG_FILE", nowhere.as_os_str()),
+        ];
+        env.extend_from_slice(extra);
+        run_shards_env(&[], args, &env, TIMEOUT)
+    };
+    let ctx = context(
+        "s3-cache-ctx",
+        &format!(
+            "FROM {image} AS build\nUSER root\nRUN [\"/bin/testguest\", \"fs\", \"write:/out=built\"]\n\
+             FROM {image}\nUSER root\nCOPY --from=build /out /out\nRUN [\"/bin/testguest\", \"fs\", \"write:/two=2\"]\n"
+        ),
+    );
+    let at = format!(
+        "type=s3,bucket=cache,region=us-east-1,endpoint_url=http://127.0.0.1:{port},use_path_style=true,prefix=team/"
+    );
+    let build = |home: &TempDir, cache: &[&str], extra: &[(&str, &std::ffi::OsStr)], tag: &str| {
+        let mut args = vec!["build", "--progress=plain"];
+        args.extend_from_slice(cache);
+        args.extend_from_slice(&["-t", tag, ctx.to_str().unwrap()]);
+        let built = shards_in(home, &args, extra);
+        assert_eq!(built.status, Some(0), "{}", built.stderr);
+        built.stderr
+    };
+    let cached = |log: &str, step: &str| -> bool {
+        let n = log
+            .lines()
+            .find_map(|l| {
+                l.strip_prefix('#')
+                    .and_then(|r| r.split_once(' '))
+                    .filter(|(_, t)| t.contains(step))
+                    .map(|(n, _)| n.to_string())
+            })
+            .unwrap_or_else(|| panic!("no step {step:?} in\n{log}"));
+        log.lines().any(|l| l == format!("#{n} CACHED"))
+    };
+    let steps = ["write:/out=built", "COPY --from=build", "write:/two=2"];
+    let layers = |home: &TempDir, tag: &str| {
+        shards_in(
+            home,
+            &["image", "inspect", "--format", "{{json .RootFS.Layers}}", tag],
+            &[],
+        )
+        .stdout
+    };
+
+    let to = format!("{at},mode=max,name=one;two,access_key_id=GIVEN,secret_access_key=s3cr3t");
+    let first = build(&homes[0], &["--cache-to", &to], &[], "made:1");
+    assert!(first.contains("exporting cache to Amazon S3"), "{first}");
+    let blobs: Vec<String> = {
+        let held = buckets.lock().unwrap();
+        for name in ["one", "two"] {
+            assert!(
+                held.objects
+                    .contains_key(&format!("/cache/team/manifests/{name}")),
+                "{held:?}"
+            );
+        }
+        assert!(held.log.iter().all(|l| l.ends_with(" GIVEN")), "{:?}", held.log);
+        held.objects
+            .keys()
+            .filter(|k| k.starts_with("/cache/team/blobs/sha256:"))
+            .cloned()
+            .collect()
+    };
+    // Each layer of the build: both stages' steps (`max`).
+    assert!(blobs.len() >= 3, "{blobs:?}");
+    for b in &blobs {
+        assert!(
+            first.contains(&format!(
+                "writing layer {} done",
+                b.trim_start_matches("/cache/team/blobs/")
+            )),
+            "{first}"
+        );
+    }
+    let made = layers(&homes[0], "made:1");
+
+    // Read back, signed with the environment's key: every step.
+    let from = format!("{at},name=two");
+    let taken = build(
+        &homes[1],
+        &["--cache-from", &from],
+        &[
+            ("AWS_ACCESS_KEY_ID", std::ffi::OsStr::new("FROMENV")),
+            ("AWS_SECRET_ACCESS_KEY", std::ffi::OsStr::new("s3cr3t")),
+        ],
+        "taken:1",
+    );
+    for step in steps {
+        assert!(cached(&taken, step), "{step} was taken\n{taken}");
+    }
+    assert_eq!(layers(&homes[1], "taken:1"), made);
+    assert!(
+        buckets
+            .lock()
+            .unwrap()
+            .log
+            .iter()
+            .any(|l| l == "GET /cache/team/manifests/two FROMENV")
+    );
+
+    // And with a shared credentials file's profile.
+    let profiled = build(
+        &homes[2],
+        &["--cache-from", &from],
+        &[
+            ("AWS_SHARED_CREDENTIALS_FILE", shared.as_os_str()),
+            ("AWS_PROFILE", std::ffi::OsStr::new("ci")),
+        ],
+        "taken:2",
+    );
+    assert!(cached(&profiled, "write:/two=2"), "{profiled}");
+    assert!(
+        buckets
+            .lock()
+            .unwrap()
+            .log
+            .iter()
+            .any(|l| l == "GET /cache/team/manifests/two FROMFILE")
+    );
+
+    // Written again, layers past touch_refresh are copied onto themselves; none is sent.
+    {
+        let mut held = buckets.lock().unwrap();
+        for b in &blobs {
+            held.objects.get_mut(b).unwrap().1 = std::time::UNIX_EPOCH;
+        }
+        held.log.clear();
+    }
+    let again = build(
+        &homes[0],
+        &["--cache-to", &format!("{to},touch_refresh=1h")],
+        &[],
+        "made:2",
+    );
+    assert!(!again.contains("writing layer"), "{again}");
+    let log = buckets.lock().unwrap().log.clone();
+    for b in &blobs {
+        assert!(
+            log.contains(&format!("PUT {b} copy GIVEN")),
+            "{b} was touched: {log:?}"
+        );
+        assert!(
+            !log.contains(&format!("PUT {b} GIVEN")),
+            "{b} was sent again: {log:?}"
+        );
+    }
+
+    // A cache nothing signs for is refused before the build; one not in the bucket is no
+    // cache.
+    let refused = shards_in(
+        &homes[1],
+        &["build", "--cache-to", &at, ctx.to_str().unwrap()],
+        &[("HOME", files.as_os_str())],
+    );
+    assert_ne!(refused.status, Some(0));
+    assert!(
+        refused.stderr.contains("no AWS credentials for the s3 cache"),
+        "{}",
+        refused.stderr
+    );
+    let missing = build(
+        &homes[1],
+        &[
+            "--cache-from",
+            &format!("{at},name=absent,access_key_id=GIVEN,secret_access_key=s3cr3t"),
+        ],
+        &[],
+        "taken:3",
+    );
+    assert!(!missing.contains("WARNING"), "{missing}");
+}
+
 /// What the build's flags give each `RUN`, as BuildKit's frontend gives them (D64):
 /// `--add-host`'s names in its `/etc/hosts`, `--shm-size`'s `/dev/shm`, and the limits of
 /// `--memory` and `--cpu-quota` (and `--resource`) in a cgroup of its own, as runc writes

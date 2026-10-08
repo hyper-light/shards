@@ -1363,6 +1363,186 @@ pub fn echo(sock: &Path, port: u32, salt: u64, len: usize) -> Result<(), String>
     Ok(())
 }
 
+/// What a fake S3 holds: each object by its path (`/BUCKET/KEY`, path-style, decoded), with
+/// when it was last written, and each request.
+#[derive(Debug, Default)]
+pub struct Buckets {
+    pub objects: std::collections::BTreeMap<String, (Vec<u8>, std::time::SystemTime)>,
+    /// Each request: its method and path, `copy` after a copy, and the access key that
+    /// signed it.
+    pub log: Vec<String>,
+}
+
+/// An S3 on loopback, path-style, as far as the S3 cache backend asks one: PutObject (its
+/// body checked against `x-amz-content-sha256` where signed), CopyObject onto a key,
+/// GetObject and HeadObject, with S3's `NoSuchKey`. A request not signed with SigV4
+/// is refused, as S3's `AccessDenied`.
+pub fn fake_s3() -> (u16, Arc<std::sync::Mutex<Buckets>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let buckets = Arc::new(std::sync::Mutex::new(Buckets::default()));
+    let held = buckets.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(stream) = stream else { return };
+            let buckets = held.clone();
+            std::thread::spawn(move || {
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut out = stream;
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                        return;
+                    }
+                    let mut headers = std::collections::HashMap::new();
+                    loop {
+                        let mut header = String::new();
+                        if reader.read_line(&mut header).unwrap_or(0) <= 2 {
+                            break;
+                        }
+                        let (name, value) = header.split_once(':').unwrap_or_default();
+                        headers.insert(name.trim().to_ascii_lowercase(), value.trim().to_string());
+                    }
+                    let length: usize = headers
+                        .get("content-length")
+                        .and_then(|l| l.parse().ok())
+                        .unwrap_or(0);
+                    let mut body = vec![0u8; length];
+                    reader.read_exact(&mut body).unwrap();
+                    let mut parts = line.split(' ');
+                    let (method, target) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""));
+                    let path = percent_decode(target.split('?').next().unwrap_or(""));
+                    let signer = headers
+                        .get("authorization")
+                        .and_then(|a| a.strip_prefix("AWS4-HMAC-SHA256 Credential="))
+                        .and_then(|c| c.split('/').next())
+                        .unwrap_or("")
+                        .to_string();
+                    let payload = headers.get("x-amz-content-sha256").cloned().unwrap_or_default();
+                    let error = |status: &str, code: &str| {
+                        (
+                            status.to_string(),
+                            vec![],
+                            format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Error><Code>{code}</Code><Message>{code}</Message></Error>")
+                                .into_bytes(),
+                        )
+                    };
+                    let mut buckets = buckets.lock().unwrap();
+                    let copy = headers
+                        .get("x-amz-copy-source")
+                        .map(|s| format!("/{}", percent_decode(s)));
+                    buckets.log.push(format!(
+                        "{method} {path}{} {signer}",
+                        if copy.is_some() { " copy" } else { "" }
+                    ));
+                    let (status, extra, reply): (String, Vec<String>, Vec<u8>) = if signer.is_empty() {
+                        error("403 Forbidden", "AccessDenied")
+                    } else if method == "PUT" {
+                        match copy {
+                            Some(from) => match buckets.objects.get(&from).cloned() {
+                                Some((b, _)) => {
+                                    buckets.objects.insert(path, (b, std::time::SystemTime::now()));
+                                    (
+                                        "200 OK".into(),
+                                        vec![],
+                                        b"<CopyObjectResult><ETag>\"e\"</ETag></CopyObjectResult>".to_vec(),
+                                    )
+                                }
+                                None => error("404 Not Found", "NoSuchKey"),
+                            },
+                            None if payload != "UNSIGNED-PAYLOAD"
+                                && payload != sha256_digest(&body).trim_start_matches("sha256:") =>
+                            {
+                                error("400 Bad Request", "XAmzContentSHA256Mismatch")
+                            }
+                            None => {
+                                buckets.objects.insert(path, (body, std::time::SystemTime::now()));
+                                ("200 OK".into(), vec!["ETag: \"e\"".into()], vec![])
+                            }
+                        }
+                    } else {
+                        match buckets.objects.get(&path) {
+                            Some((b, at)) => (
+                                "200 OK".into(),
+                                vec![format!("Last-Modified: {}", http_date(*at))],
+                                if method == "HEAD" {
+                                    b.len().to_string().into_bytes()
+                                } else {
+                                    b.clone()
+                                },
+                            ),
+                            None if method == "HEAD" => ("404 Not Found".into(), vec![], vec![]),
+                            None => error("404 Not Found", "NoSuchKey"),
+                        }
+                    };
+                    drop(buckets);
+                    let mut head = format!("HTTP/1.1 {status}\r\n");
+                    for h in extra {
+                        head.push_str(&format!("{h}\r\n"));
+                    }
+                    // A HEAD's length is the object's; it has no body.
+                    let (length, reply) = if method == "HEAD" {
+                        (String::from_utf8(reply).unwrap_or_default(), vec![])
+                    } else {
+                        (reply.len().to_string(), reply)
+                    };
+                    head.push_str(&format!(
+                        "Content-Length: {}\r\n\r\n",
+                        if length.is_empty() { "0" } else { &length }
+                    ));
+                    if out
+                        .write_all(head.as_bytes())
+                        .and_then(|()| out.write_all(&reply))
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    (port, buckets)
+}
+
+fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < b.len() {
+        if let Some(v) = s
+            .get(i + 1..i + 3)
+            .filter(|_| b[i] == b'%')
+            .and_then(|h| u8::from_str_radix(h, 16).ok())
+        {
+            out.push(v);
+            i += 3;
+        } else {
+            out.push(b[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).unwrap()
+}
+
+/// `at` as HTTP dates it (IMF-fixdate, RFC 9110 §5.6.7).
+fn http_date(at: std::time::SystemTime) -> String {
+    let secs = at.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+    let t = time::OffsetDateTime::from_unix_timestamp(secs).unwrap();
+    let day =
+        ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][t.weekday().number_days_from_monday() as usize];
+    let month = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ][u8::from(t.month()) as usize - 1];
+    format!(
+        "{day}, {:02} {month} {} {:02}:{:02}:{:02} GMT",
+        t.day(),
+        t.year(),
+        t.hour(),
+        t.minute(),
+        t.second()
+    )
+}
+
 /// What a writable test registry holds, by repository: blobs by digest, and manifests by
 /// tag and by digest, each with its media type.
 #[derive(Debug, Default)]

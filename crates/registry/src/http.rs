@@ -184,9 +184,9 @@ pub struct Request<'a> {
     /// Fields besides `Host`, `User-Agent` and `Content-Length`, which the client writes.
     pub headers: &'a [(&'a str, &'a str)],
     pub body: &'a [u8],
-    /// A body read from a file instead, so many bytes of it from its start: a blob
-    /// uploaded. Read again from its start whenever the request is sent again.
-    pub file: Option<(&'a std::fs::File, u64)>,
+    /// A body read from a file instead: so many bytes of it from an offset, a blob
+    /// uploaded or a part of one. Read again from there whenever the request is sent again.
+    pub file: Option<(&'a std::fs::File, u64, u64)>,
 }
 
 /// Shows no fields, body or query: they can carry credentials.
@@ -390,7 +390,7 @@ impl Client {
             fields.push(("Proxy-Authorization", authorization));
         }
         fields.extend(req.headers.iter().map(|(n, v)| (*n, v.to_string())));
-        if let Some((_, len)) = req.file {
+        if let Some((_, _, len)) = req.file {
             fields.push(("Content-Length", len.to_string()));
         } else if !req.body.is_empty() || req.method == "POST" || req.method == "PUT" {
             fields.push(("Content-Length", req.body.len().to_string()));
@@ -412,7 +412,7 @@ impl Client {
 
     fn exchange(&self, mut conn: Conn, req: &Request<'_>, head: &[u8]) -> Result<Response<'_>, Failure> {
         let written = conn.io.get_mut().write_all(head).and_then(|()| match req.file {
-            Some((file, len)) => send_body(&mut conn, file, len),
+            Some((file, from, len)) => send_body(&mut conn, file, from, len),
             None => conn.io.get_mut().flush().map(|()| true),
         });
         // A server may answer before it has read the whole request, then close: a 413 or a
@@ -647,7 +647,7 @@ fn tunnel(hop: &mut Hop, url: &Url, proxy: &Proxy, user_agent: &str) -> Result<(
     }
 }
 
-/// Sends `len` bytes of `file` as the request's body, watching for the server's answer
+/// Sends `len` bytes of `file`, from `from`, as the request's body, watching for the server's answer
 /// as it goes: whether all of it was sent before one came. A server may answer an upload
 /// before it has read it, a 413 or a 401, then close, resetting the connection over what
 /// it never read: Windows then discards what it had received (WSAECONNRESET), and a write
@@ -655,9 +655,9 @@ fn tunnel(hop: &mut Hop, url: &Url, proxy: &Proxy, user_agent: &str) -> Result<(
 /// only to be readable or writable, and an answer is taken as soon as it comes, as Go's
 /// transport reads a response while it writes the request (net/http transport.go,
 /// persistConn's readLoop and writeLoop).
-fn send_body(conn: &mut Conn, file: &std::fs::File, len: u64) -> io::Result<bool> {
+fn send_body(conn: &mut Conn, file: &std::fs::File, from: u64, len: u64) -> io::Result<bool> {
     conn.io.get_ref().tcp().set_nonblocking(true)?;
-    let sent = sending(conn, file, len);
+    let sent = sending(conn, file, from, len);
     let restored = conn.io.get_ref().tcp().set_nonblocking(false);
     let sent = sent?;
     restored?;
@@ -667,7 +667,7 @@ fn send_body(conn: &mut Conn, file: &std::fs::File, len: u64) -> io::Result<bool
 /// [`send_body`]'s writes: on Linux a plain connection takes the body by sendfile(2), as
 /// std copies a file to a socket; otherwise in 64 KiB writes, four TLS records each, where
 /// io::copy's 8 KiB writes make a record and a send of each.
-fn sending(conn: &mut Conn, mut file: &std::fs::File, len: u64) -> io::Result<bool> {
+fn sending(conn: &mut Conn, mut file: &std::fs::File, from: u64, len: u64) -> io::Result<bool> {
     use std::io::{BufRead as _, Seek as _, SeekFrom};
     // The server has left: what it said is read next.
     let gone = |e: &io::Error| {
@@ -678,7 +678,7 @@ fn sending(conn: &mut Conn, mut file: &std::fs::File, len: u64) -> io::Result<bo
     };
     let again = |e: &io::Error| matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted);
     let short = |sent: u64| io::Error::other(format!("{sent} of the body's {len} bytes"));
-    file.seek(SeekFrom::Start(0))?;
+    file.seek(SeekFrom::Start(from))?;
     let mut buf = vec![0u8; 64 << 10];
     let (mut at, mut end, mut sent) = (0usize, 0usize, 0u64);
     loop {
@@ -700,7 +700,7 @@ fn sending(conn: &mut Conn, mut file: &std::fs::File, len: u64) -> io::Result<bo
             if sent == len {
                 return Ok(true);
             }
-            match send_from(tcp, file, sent, len - sent) {
+            match send_from(tcp, file, from + sent, len - sent) {
                 Ok(0) => return Err(short(sent)),
                 Ok(n) => sent += n,
                 Err(e) if again(&e) => {}
@@ -1889,7 +1889,7 @@ mod tests {
                 url: &url,
                 headers: &[],
                 body: &[],
-                file: Some((&file, 64 << 20)),
+                file: Some((&file, 0, 64 << 20)),
             })
             .map(|r| r.status);
         let _ = std::fs::remove_file(&path);
@@ -1939,7 +1939,7 @@ mod tests {
                     url: &url,
                     headers: &[],
                     body: &[],
-                    file: Some((&file, 64 << 20)),
+                    file: Some((&file, 0, 64 << 20)),
                 })
                 .map(|r| r.status);
             let _ = std::fs::remove_file(&path);

@@ -1,0 +1,209 @@
+[
+ {
+  "method": "GET",
+  "url": "https://bucket.s3.us-east-1.amazonaws.com/manifests/buildkit",
+  "headers": null,
+  "length": 0,
+  "payload_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "token": "",
+  "region": "us-east-1",
+  "time": "2026-10-08T12:34:56Z",
+  "signed": [
+   {
+    "name": "authorization",
+    "value": "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20261008/us-east-1/s3/aws4_request, SignedHeaders=host;x-amz-content-sha256;x-amz-date, Signature=2fcd02d440fadf86ac8d09dda47fa6ad2523d6a64e06d9808b6b7a6955f5bfc7"
+   },
+   {
+    "name": "x-amz-content-sha256",
+    "value": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+   },
+   {
+    "name": "x-amz-date",
+    "value": "20261008T123456Z"
+   }
+  ]
+ },
+ {
+  "method": "HEAD",
+  "url": "https://bucket.s3.eu-west-1.amazonaws.com/blobs/sha256:abc",
+  "headers": null,
+  "length": 0,
+  "payload_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "token": "",
+  "region": "eu-west-1",
+  "time": "2026-10-08T12:34:56Z",
+  "signed": [
+   {
+    "name": "authorization",
+    "value": "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20261008/eu-west-1/s3/aws4_request, SignedHeaders=host;x-amz-content-sha256;x-amz-date, Signature=4193f1d207df0c35a2a2fad0187086638e976e5f664a667123ecc7727cf3620c"
+   },
+   {
+    "name": "x-amz-content-sha256",
+    "value": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+   },
+   {
+    "name": "x-amz-date",
+    "value": "20261008T123456Z"
+   }
+  ]
+ },
+ {
+  "method": "PUT",
+  "url": "https://bucket.s3.us-east-1.amazonaws.com/blobs/sha256:abc",
+  "headers": [
+   {
+    "name": "Content-Type",
+    "value": "application/octet-stream"
+   }
+  ],
+  "length": 1234,
+  "payload_hash": "UNSIGNED-PAYLOAD",
+  "token": "",
+  "region": "us-east-1",
+  "time": "2026-10-08T12:34:56Z",
+  "signed": [
+   {
+    "name": "authorization",
+    "value": "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20261008/us-east-1/s3/aws4_request, SignedHeaders=content-length;content-type;host;x-amz-content-sha256;x-amz-date, Signature=506b3ac7189d897e9bf40c59aeabbfe27ad1a4d867a611ccd703369f82a55ad8"
+   },
+   {
+    "name": "content-type",
+    "value": "application/octet-stream"
+   },
+   {
+    "name": "x-amz-content-sha256",
+    "value": "UNSIGNED-PAYLOAD"
+   },
+   {
+    "name": "x-amz-date",
+    "value": "20261008T123456Z"
+   }
+  ]
+ },
+ {
+  "method": "PUT",
+  "url": "http://127.0.0.1:9000/bucket/cache/manifests/name%20with%20space",
+  "headers": null,
+  "length": 10,
+  "payload_hash": "UNSIGNED-PAYLOAD",
+  "token": "the-session-token",
+  "region": "us-west-2",
+  "time": "2026-10-08T12:34:56Z",
+  "signed": [
+   {
+    "name": "authorization",
+    "value": "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20261008/us-west-2/s3/aws4_request, SignedHeaders=content-length;host;x-amz-content-sha256;x-amz-date;x-amz-security-token, Signature=c829911b9b87c16a2094034c468381becd524133a76526c192ff394ddadb1202"
+   },
+   {
+    "name": "x-amz-content-sha256",
+    "value": "UNSIGNED-PAYLOAD"
+   },
+   {
+    "name": "x-amz-date",
+    "value": "20261008T123456Z"
+   },
+   {
+    "name": "x-amz-security-token",
+    "value": "the-session-token"
+   }
+  ]
+ },
+ {
+  "method": "PUT",
+  "url": "https://bucket.s3.us-east-1.amazonaws.com/blobs/sha256:abc",
+  "headers": [
+   {
+    "name": "X-Amz-Copy-Source",
+    "value": "bucket/blobs/sha256:abc"
+   },
+   {
+    "name": "X-Amz-Metadata-Directive",
+    "value": "REPLACE"
+   }
+  ],
+  "length": 0,
+  "payload_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "token": "",
+  "region": "us-east-1",
+  "time": "2026-10-08T12:34:56Z",
+  "signed": [
+   {
+    "name": "authorization",
+    "value": "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20261008/us-east-1/s3/aws4_request, SignedHeaders=host;x-amz-content-sha256;x-amz-copy-source;x-amz-date;x-amz-metadata-directive, Signature=10c82e003dc8b41f58a99b77278e7feee497d8cd070b81a0e25df75d938b72c1"
+   },
+   {
+    "name": "x-amz-content-sha256",
+    "value": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+   },
+   {
+    "name": "x-amz-copy-source",
+    "value": "bucket/blobs/sha256:abc"
+   },
+   {
+    "name": "x-amz-date",
+    "value": "20261008T123456Z"
+   },
+   {
+    "name": "x-amz-metadata-directive",
+    "value": "REPLACE"
+   }
+  ]
+ },
+ {
+  "method": "GET",
+  "url": "https://bucket.s3.us-east-1.amazonaws.com/?list-type=2\u0026prefix=blobs%2F\u0026max-keys=10",
+  "headers": null,
+  "length": 0,
+  "payload_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "token": "",
+  "region": "us-east-1",
+  "time": "2026-10-08T12:34:56Z",
+  "signed": [
+   {
+    "name": "authorization",
+    "value": "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20261008/us-east-1/s3/aws4_request, SignedHeaders=host;x-amz-content-sha256;x-amz-date, Signature=4c229e4ae921ff724fdec848b5e26dcaad391be2bcb9a533d08dcca36e838707"
+   },
+   {
+    "name": "x-amz-content-sha256",
+    "value": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+   },
+   {
+    "name": "x-amz-date",
+    "value": "20261008T123456Z"
+   }
+  ]
+ },
+ {
+  "method": "GET",
+  "url": "https://bucket.s3.us-east-1.amazonaws.com/a/b~c-d_e.f/%E2%98%83",
+  "headers": [
+   {
+    "name": "Range",
+    "value": "bytes=0-99"
+   }
+  ],
+  "length": 0,
+  "payload_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "token": "",
+  "region": "us-east-1",
+  "time": "2026-10-08T12:34:56Z",
+  "signed": [
+   {
+    "name": "authorization",
+    "value": "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20261008/us-east-1/s3/aws4_request, SignedHeaders=host;range;x-amz-content-sha256;x-amz-date, Signature=6577186c03c0adfd240ad975c616706cc68ea8b5abc7f4a25afc8c39c447f525"
+   },
+   {
+    "name": "range",
+    "value": "bytes=0-99"
+   },
+   {
+    "name": "x-amz-content-sha256",
+    "value": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+   },
+   {
+    "name": "x-amz-date",
+    "value": "20261008T123456Z"
+   }
+  ]
+ }
+]

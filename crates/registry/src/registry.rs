@@ -180,7 +180,7 @@ impl Registry {
             &put,
             &[("Content-Type", "application/octet-stream")],
             &[],
-            Some((file, size)),
+            Some((file, 0, size)),
         )?;
         // As containerd's pusher takes them: 202 is not among them, as the request that
         // gets it hears (pusher.go), though `Commit` would take it.
@@ -257,7 +257,7 @@ impl Registry {
         url: &Url,
         headers: &[(&str, &str)],
         body: &[u8],
-        file: Option<(&std::fs::File, u64)>,
+        file: Option<(&std::fs::File, u64, u64)>,
     ) -> Result<(Response<'_>, &'a str), Error> {
         let mut method = method;
         let mut last: Option<u16> = None;

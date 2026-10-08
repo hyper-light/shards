@@ -47,6 +47,7 @@ mod multi;
 mod output;
 mod provenance;
 mod remote;
+mod s3;
 mod sbom;
 mod skills;
 mod ssh;
@@ -1284,7 +1285,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
             attrs: BTreeMap::new(),
         });
     }
-    remote::check(&cache_to)?;
+    remote::check(&cache_to, &env)?;
     let context_arg = parsed.args.first().cloned().unwrap_or_default();
     if context_arg == "-" || context_arg.contains("://") || context_arg.starts_with("git@") {
         return Err(format!(

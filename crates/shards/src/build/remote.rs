@@ -25,7 +25,7 @@ use shards_image::reference::{Digest, Reference};
 use shards_image::store::Store;
 use shards_registry::registry::Registry;
 
-use super::{Progress, cache, show};
+use super::{Progress, cache, s3, show};
 
 /// A cache's config: its records.
 pub const CONFIG: &str = "application/vnd.shards.buildcache.config.v1+json";
@@ -37,6 +37,7 @@ const REF_NAME: &str = "org.opencontainers.image.ref.name";
 enum Source {
     Dir(PathBuf),
     Registry(Box<Registry>),
+    S3(Box<s3::Bucket>),
 }
 
 /// The records `--cache-from` found: each body by its key, with where its layers are.
@@ -49,6 +50,9 @@ fn warn(text: &str) {
     use std::io::Write as _;
     let _ = writeln!(std::io::stderr(), "WARNING: {text}");
 }
+
+/// A cache's records: each body by its key.
+type Records = Vec<(String, String)>;
 
 /// A cache config's records, by key: `{"records": {KEY: BODY}}`.
 fn records_of(config: &[u8]) -> Result<Vec<(String, String)>, String> {
@@ -212,7 +216,19 @@ impl Imported {
                         }
                     }
                 }
-                "gha" | "s3" | "azblob" => {
+                "s3" => {
+                    // A bucket without the cache is an empty cache, as BuildKit's
+                    // `getManifest` has it; one that cannot be read is skipped.
+                    match s3_records(e, &limits, env) {
+                        Ok(Some((records, bucket))) => Some((records, Source::S3(Box::new(bucket)))),
+                        Ok(None) => None,
+                        Err(why) => {
+                            warn(&format!("s3 cache import skipped: {why}"));
+                            None
+                        }
+                    }
+                }
+                "gha" | "azblob" => {
                     warn(&format!(
                         "shards does not read the {} cache backend yet: skipped",
                         e.kind
@@ -268,6 +284,14 @@ impl Imported {
                     Source::Registry(r) => r
                         .fetch_blob(store, &desc, &limits, &|_| {})
                         .map_err(|e| e.to_string()),
+                    Source::S3(b) => match b.get(&b.blob_key(&desc.digest)) {
+                        Ok(Some(mut r)) => store
+                            .ingest(&d, l.size, &mut r)
+                            .map_err(|e| e.to_string())
+                            .map(drop),
+                        Ok(None) => Err("not in the bucket".into()),
+                        Err(why) => Err(why),
+                    },
                 };
                 if let Err(why) = fetched {
                     warn(&format!(
@@ -380,15 +404,17 @@ pub fn inline(
 
 /// What BuildKit refuses of `--cache-to` before it builds (client/solve.go
 /// `parseCacheOptions`, control.go): a directory without `dest`, a registry without
-/// `ref`, a backend it does not know; and what shards does not write yet.
-pub fn check(entries: &[CacheEntry]) -> Result<(), String> {
+/// `ref`, a bucket its attributes do not name or no credentials sign for, a backend it
+/// does not know; and what shards does not write yet.
+pub fn check(entries: &[CacheEntry], env: &dyn Fn(&str) -> Option<String>) -> Result<(), String> {
     for e in entries {
         let set = |k: &str| e.attrs.get(k).is_some_and(|v| !v.is_empty());
         match e.kind.as_str() {
             "local" if !set("dest") => return Err("local cache exporter requires dest".into()),
             "registry" if !set("ref") => return Err("registry cache exporter requires ref".into()),
             "local" | "registry" | "inline" => {}
-            "gha" | "s3" | "azblob" => {
+            "s3" => drop(s3::Bucket::of(e, env)?),
+            "gha" | "azblob" => {
                 return Err(format!("shards does not write the {} cache backend yet", e.kind));
             }
             other => {
@@ -412,12 +438,12 @@ pub fn export(
     progress: &RefCell<Progress>,
     env: &dyn Fn(&str) -> Option<String>,
 ) -> Result<(), String> {
-    check(entries)?;
+    check(entries, env)?;
     for e in entries.iter().filter(|e| e.kind != "inline") {
-        let name = if e.kind == "local" {
-            "exporting cache to client directory"
-        } else {
-            "exporting cache to registry"
+        let name = match e.kind.as_str() {
+            "local" => "exporting cache to client directory",
+            "s3" => "exporting cache to Amazon S3",
+            _ => "exporting cache to registry",
         };
         let v = progress.borrow_mut().start(name);
         match write(e, keys, store, image, progress, &v, env) {
@@ -449,6 +475,9 @@ fn write(
     let (records, layers) = chosen(keys, store, image, max(e))?;
     progress.borrow().line(v, "preparing build cache for export done");
     let config = serde_json::to_vec(&serde_json::json!({ "records": records })).map_err(|e| e.to_string())?;
+    if e.kind == "s3" {
+        return write_s3(e, &config, &layers, store, progress, v, env);
+    }
     let config_digest = super::sha256(&config);
     let manifest = serde_json::to_vec(&serde_json::json!({
         "schemaVersion": 2,
@@ -581,6 +610,137 @@ fn write(
                 .borrow()
                 .line(v, &format!("writing cache image manifest {manifest_digest} done"));
         }
+    }
+    Ok(())
+}
+
+/// The records of the s3 cache `e` names, read from its first name, with the bucket its
+/// layers are in; `None` where the bucket has no such cache.
+fn s3_records(
+    e: &CacheEntry,
+    limits: &shards_image::store::Limits,
+    env: &dyn Fn(&str) -> Option<String>,
+) -> Result<Option<(Records, s3::Bucket)>, String> {
+    use std::io::Read as _;
+    let bucket = s3::Bucket::of(e, env)?;
+    let name = bucket.names.first().map_or("", String::as_str);
+    let key = bucket.manifest_key(name);
+    let bytes = {
+        let Some(r) = bucket.get(&key)? else {
+            return Ok(None);
+        };
+        let mut bytes = Vec::new();
+        r.take(limits.metadata.saturating_add(1))
+            .read_to_end(&mut bytes)
+            .map_err(|e| format!("{key}: {e}"))?;
+        if bytes.len() as u64 > limits.metadata {
+            return Err(format!("{key}: past SHARDS_MAX_IMAGE_METADATA"));
+        }
+        bytes
+    };
+    Ok(Some((records_of(&bytes)?, bucket)))
+}
+
+/// Writes a cache to S3 as BuildKit's exporter does (`Finalize`): each layer the bucket
+/// lacks, `upload_parallelism` at once, one there touched once older than
+/// `touch_refresh`; then `config`, the records, at each of `name`'s names.
+fn write_s3(
+    e: &CacheEntry,
+    config: &[u8],
+    layers: &[Descriptor],
+    store: &Store,
+    progress: &RefCell<Progress>,
+    v: &super::Vertex,
+    env: &dyn Fn(&str) -> Option<String>,
+) -> Result<(), String> {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    let bucket = s3::Bucket::of(e, env)?;
+    // A layer's key, and whether this wrote it.
+    let one = |l: &Descriptor| -> Result<Option<String>, String> {
+        let d = l.digest().map_err(|e| e.to_string())?;
+        let key = bucket.blob_key(&l.digest);
+        match bucket
+            .head(&key)
+            .map_err(|e| format!("failed to check file presence in cache: {e}"))?
+        {
+            Some(found) => {
+                if bucket.stale(found.modified) {
+                    bucket
+                        .touch(&key, found.size)
+                        .map_err(|e| format!("failed to touch file: {e}"))?;
+                }
+                Ok(None)
+            }
+            None => {
+                let path = store.blob_path(&d);
+                let file = std::fs::File::open(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+                let len = file
+                    .metadata()
+                    .map_err(|e| format!("{}: {e}", path.display()))?
+                    .len();
+                // A sha256 digest is the body's own hash: S3 checks it.
+                let hash = if d.algorithm().name() == "sha256" {
+                    d.hex()
+                } else {
+                    s3::UNSIGNED
+                };
+                bucket
+                    .put(&key, s3::Body::File(&file, 0, len), hash)
+                    .map_err(|e| format!("error writing layer blob: {e}"))?;
+                Ok(Some(d.to_string()))
+            }
+        }
+    };
+    let next = AtomicUsize::new(0);
+    let failed = AtomicBool::new(false);
+    let threads = bucket.parallelism.min(layers.len());
+    let done: Vec<Result<Vec<String>, String>> = std::thread::scope(|s| {
+        let work = || -> Result<Vec<String>, String> {
+            let mut wrote = Vec::new();
+            while !failed.load(Ordering::Relaxed) {
+                let Some(l) = layers.get(next.fetch_add(1, Ordering::Relaxed)) else {
+                    break;
+                };
+                match one(l) {
+                    Ok(d) => wrote.extend(d),
+                    Err(why) => {
+                        failed.store(true, Ordering::Relaxed);
+                        return Err(why);
+                    }
+                }
+            }
+            Ok(wrote)
+        };
+        let spawned: Vec<_> = (0..threads)
+            .map(|_| {
+                std::thread::Builder::new()
+                    .name("s3-upload".into())
+                    .spawn_scoped(s, work)
+            })
+            .collect();
+        spawned
+            .into_iter()
+            .map(|h| match h {
+                Ok(h) => h
+                    .join()
+                    .unwrap_or_else(|_| Err("an upload ended in a panic".into())),
+                Err(e) => {
+                    failed.store(true, Ordering::Relaxed);
+                    Err(format!("starting an upload: {e}"))
+                }
+            })
+            .collect()
+    });
+    for wrote in done {
+        for d in wrote? {
+            progress.borrow().line(v, &format!("writing layer {d} done"));
+        }
+    }
+    let hash = super::sha256(config);
+    for name in &bucket.names {
+        bucket
+            .put(&bucket.manifest_key(name), s3::Body::Bytes(config), hash.hex())
+            .map_err(|e| format!("error writing manifest: {name}: {e}"))?;
     }
     Ok(())
 }
