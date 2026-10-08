@@ -3206,6 +3206,45 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode
 waits on the user.
 
+### D70. `--call`'s subrequests: outline, targets, describe
+
+`build --call=outline|targets|subrequests.describe[,format=json]`, answered as BuildKit's
+Dockerfile frontend answers each (dockerfile/1.27.1: dockerui's HandleSubrequest,
+Dockerfile2Outline, ListTargets, describe) and printed as buildx v0.37.1 prints the
+answer (commands/build.go printValue): `result.json`, as Go's `json.MarshalIndent` writes
+it, and a newline, for `format=json`; otherwise the frontend's printer of it
+(`PrintOutline`, `PrintTargets`, `PrintDescribe`, through Go's text/tabwriter, padding and
+all). Nothing is built.
+
+- **Outline**: the plan, made as a build's is up to its steps (bases resolved, the
+  file's checks applied: a violation under `error=true` fails it, as it fails BuildKit's),
+  then the target's arguments, secrets and SSH agents and those of the stages it stands
+  on and reads: an argument its FROM or an `ARG` uses, and those its default names
+  (markAllUsed), each with its doc comment, value and place; a secret's ID as
+  dispatchSecret makes it (`target`'s base name where none is given); `default` for an
+  SSH mount without an ID.
+- **Targets**: every stage as written, its doc comment, its base and platform
+  unexpanded, the last the default.
+
+Better than BuildKit's:
+
+- **The order within a line.** BuildKit sorts by line alone (`sort.Slice`, not stable)
+  over a map's order, so two arguments of one `ARG`, or two mounts of one `RUN`, come in
+  any order from one call to the next; shards gives them in the order they are written.
+- **ListTargets with a `check=` comment.** BuildKit's ListTargets parses with no linter,
+  which a stage's `# check=` comment dereferences: its frontend panics (measured, recorded
+  in the oracle). shards lists the targets.
+- A misspelt official image's suggestion names `docker.io/library/<name>` (as the plan's,
+  `testdata/deviations.json`).
+
+Tested: `subrequests_are_buildkits`, every plan of the corpus (114, with outline-specific
+cases: doc comments, arguments naming others, secrets and SSH mounts across dependent
+stages, a named target, platforms) held byte for byte to what `scripts/dockerfile/generate`
+records BuildKit answering, JSON and text, and the subrequests described;
+mutation-checked (dependencies' arguments, arguments named by defaults, doc comments). On
+a real build (`call_answers_the_frontends_subrequests`): each subrequest, text and JSON,
+nothing built.
+
 ### D69. Git over SSH
 
 `ADD ssh://…` and `ADD git@host:path` (any URL git takes for SSH: `ssh://`,
@@ -3320,9 +3359,10 @@ rule and URL, its message, its lines as `errdefs.Source` shows them), or "Check 
 no warnings found."; exit 1 for warnings, unless `ignorestatus`. With `--debug`, a build's
 warnings come in full, as buildx's `printWarnings` gives them at debug level: each
 rule's description, "More info:" and its lines, and no "use --debug to expand".
-`--call=outline`, `targets`, `subrequests.describe` and `format=json` are refused, named,
-until each is held to BuildKit's own answer (they need the frontend's oracle, which needs
-Docker). The hidden `--print` is taken as buildx takes it.
+`--call=outline`, `targets` and `subrequests.describe` are D70's; `check` with
+`format=json` is refused, named, until its LintResults (which carry the Dockerfile's
+source map and definition) are held to BuildKit's. The hidden `--print` is taken as buildx
+takes it.
 
 Tested on a real build (`check_says_the_builds_warnings_as_buildx_does`); the flags by
 the buildx oracle (a flag whose value prints as nothing, as buildx's `callAlias` does,

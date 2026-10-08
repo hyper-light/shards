@@ -7112,6 +7112,414 @@
   "warnings": null
  },
  {
+  "file": "corpus/plan/outline-args.Dockerfile",
+  "image": "{\"architecture\":\"amd64\",\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:0000000000000000000000000000000000000000000000000000000000000001\"]},\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"ARG OS=alpine\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true},{\"created_by\":\"COPY /x /x # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"RUN |1 OS=alpine /bin/sh -c true # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"}],\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"/bin/sh\"]}}",
+  "ops": [
+   {
+    "constraints": {},
+    "inputs": [],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "FROM ${BASE} AS build",
+      "llb.customname": "[build 1/2] FROM docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    },
+    "source": {
+     "identifier": "docker-image://docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+    }
+   },
+   {
+    "constraints": {},
+    "exec": {
+     "meta": {
+      "args": [
+       "/bin/sh",
+       "-c",
+       "echo $VERSION"
+      ],
+      "cwd": "/",
+      "env": [
+       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+       "VERSION=1.0",
+       "SSH_AUTH_SOCK=/run/buildkit/ssh_agent.0"
+      ],
+      "removeMountStubsRecursive": true
+     },
+     "mounts": [
+      {
+       "dest": "/"
+      },
+      {
+       "dest": "/run/secrets/token",
+       "input": "-1",
+       "mountType": "SECRET",
+       "secretOpt": {
+        "ID": "token",
+        "mode": 256
+       }
+      },
+      {
+       "SSHOpt": {
+        "mode": 384,
+        "optional": true
+       },
+       "dest": "/run/buildkit/ssh_agent.0",
+       "input": "-1",
+       "mountType": "SSH"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      0,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "RUN --mount=type=secret,id=token,required=true     --mount=type=ssh echo $VERSION",
+      "llb.customname": "[build 2/2] RUN --mount=type=secret,id=token,required=true     --mount=type=ssh echo 1.0"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    }
+   },
+   {
+    "constraints": {},
+    "exec": {
+     "meta": {
+      "args": [
+       "/bin/sh",
+       "-c",
+       "echo $TEST_FLAGS"
+      ],
+      "cwd": "/",
+      "env": [
+       "VERSION=1.0",
+       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      ],
+      "removeMountStubsRecursive": true
+     },
+     "mounts": [
+      {
+       "dest": "/"
+      },
+      {
+       "dest": "/run/secrets/npmrc",
+       "input": "-1",
+       "mountType": "SECRET",
+       "secretOpt": {
+        "ID": "npmrc",
+        "mode": 256,
+        "optional": true
+       }
+      }
+     ]
+    },
+    "inputs": [
+     [
+      1,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "RUN --mount=type=secret,id=npmrc echo $TEST_FLAGS",
+      "llb.customname": "[test 1/1] RUN --mount=type=secret,id=npmrc echo $TEST_FLAGS"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    }
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "copy": {
+        "allowEmptyWildcard": true,
+        "allowWildcard": true,
+        "createDestPath": true,
+        "dest": "/x",
+        "dirCopyContents": true,
+        "followSymlink": true,
+        "mode": -1,
+        "src": "/x",
+        "timestamp": "-1"
+       },
+       "secondaryInput": "1"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      0,
+      0
+     ],
+     [
+      2,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "llb.customname": "[final 2/3] COPY --from=test /x /x"
+     }
+    }
+   },
+   {
+    "constraints": {},
+    "exec": {
+     "meta": {
+      "args": [
+       "/bin/sh",
+       "-c",
+       "true"
+      ],
+      "cwd": "/",
+      "env": [
+       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+       "OS=alpine",
+       "SSH_AUTH_SOCK=/run/buildkit/ssh_agent.0"
+      ],
+      "removeMountStubsRecursive": true
+     },
+     "mounts": [
+      {
+       "dest": "/"
+      },
+      {
+       "dest": "/run/key",
+       "input": "-1",
+       "mountType": "SECRET",
+       "secretOpt": {
+        "ID": "key",
+        "mode": 256,
+        "optional": true
+       }
+      },
+      {
+       "SSHOpt": {
+        "ID": "gh",
+        "mode": 384
+       },
+       "dest": "/run/buildkit/ssh_agent.0",
+       "input": "-1",
+       "mountType": "SSH"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      3,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "RUN --mount=type=ssh,id=gh,required=true --mount=type=secret,target=/run/key true",
+      "llb.customname": "[final 3/3] RUN --mount=type=ssh,id=gh,required=true --mount=type=secret,target=/run/key true"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    }
+   },
+   {
+    "inputs": [
+     [
+      4,
+      0
+     ]
+    ],
+    "metadata": {}
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/outline-stages.Dockerfile",
+  "image": "{\"architecture\":\"amd64\",\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:0000000000000000000000000000000000000000000000000000000000000001\"]},\"history\":[{\"created_by\":\"base\"}],\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"/bin/sh\"]}}",
+  "ops": [
+   {
+    "constraints": {},
+    "inputs": [],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "FROM --platform=$BUILDPLATFORM alpine AS base",
+      "llb.customname": "[base 1/1] FROM docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    },
+    "source": {
+     "identifier": "docker-image://docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+    }
+   },
+   {
+    "inputs": [
+     [
+      0,
+      0
+     ]
+    ],
+    "metadata": {}
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/outline-target.Dockerfile",
+  "image": "{\"architecture\":\"amd64\",\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:0000000000000000000000000000000000000000000000000000000000000001\"]},\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"ARG VERSION=dev\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true},{\"created_by\":\"RUN |1 VERSION=dev /bin/sh -c echo $VERSION # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"ARG TEST_FLAGS\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true},{\"created_by\":\"RUN |2 VERSION=dev TEST_FLAGS= /bin/sh -c echo $TEST_FLAGS # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"}],\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"/bin/sh\"]}}",
+  "ops": [
+   {
+    "constraints": {},
+    "inputs": [],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "FROM ${BASE} AS build",
+      "llb.customname": "[build 1/2] FROM docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    },
+    "source": {
+     "identifier": "docker-image://docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+    }
+   },
+   {
+    "constraints": {},
+    "exec": {
+     "meta": {
+      "args": [
+       "/bin/sh",
+       "-c",
+       "echo $VERSION"
+      ],
+      "cwd": "/",
+      "env": [
+       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+       "VERSION=dev",
+       "SSH_AUTH_SOCK=/run/buildkit/ssh_agent.0"
+      ],
+      "removeMountStubsRecursive": true
+     },
+     "mounts": [
+      {
+       "dest": "/"
+      },
+      {
+       "dest": "/run/secrets/token",
+       "input": "-1",
+       "mountType": "SECRET",
+       "secretOpt": {
+        "ID": "token",
+        "mode": 256
+       }
+      },
+      {
+       "SSHOpt": {
+        "mode": 384,
+        "optional": true
+       },
+       "dest": "/run/buildkit/ssh_agent.0",
+       "input": "-1",
+       "mountType": "SSH"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      0,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "RUN --mount=type=secret,id=token,required=true     --mount=type=ssh echo $VERSION",
+      "llb.customname": "[build 2/2] RUN --mount=type=secret,id=token,required=true     --mount=type=ssh echo dev"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    }
+   },
+   {
+    "constraints": {},
+    "exec": {
+     "meta": {
+      "args": [
+       "/bin/sh",
+       "-c",
+       "echo $TEST_FLAGS"
+      ],
+      "cwd": "/",
+      "env": [
+       "VERSION=dev",
+       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      ],
+      "removeMountStubsRecursive": true
+     },
+     "mounts": [
+      {
+       "dest": "/"
+      },
+      {
+       "dest": "/run/secrets/npmrc",
+       "input": "-1",
+       "mountType": "SECRET",
+       "secretOpt": {
+        "ID": "npmrc",
+        "mode": 256,
+        "optional": true
+       }
+      }
+     ]
+    },
+    "inputs": [
+     [
+      1,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "RUN --mount=type=secret,id=npmrc echo $TEST_FLAGS",
+      "llb.customname": "[test 1/1] RUN --mount=type=secret,id=npmrc echo $TEST_FLAGS"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    }
+   },
+   {
+    "inputs": [
+     [
+      2,
+      0
+     ]
+    ],
+    "metadata": {}
+   }
+  ],
+  "warnings": null
+ },
+ {
   "file": "corpus/plan/platform-cross.Dockerfile",
   "image": "{\"architecture\":\"amd64\",\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:0000000000000000000000000000000000000000000000000000000000000001\"]},\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"COPY /x /x # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"}],\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"/bin/sh\"]}}",
   "ops": [

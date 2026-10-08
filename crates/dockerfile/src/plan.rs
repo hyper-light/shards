@@ -30,6 +30,7 @@ use crate::llb::{
 };
 use crate::parser;
 use crate::platform::{self, Platform};
+use crate::subrequests::{self, Arg, Outline, Target, Targets};
 use crate::url;
 
 /// What the build is asked: dockerui's `Config` as Dockerfile2LLB reads it.
@@ -271,6 +272,7 @@ struct Ds {
     domains: Vec<DomainDir>,
     /// Whether the cache is not asked for its steps (`ignoreCache`, `IsNoCache`).
     ignore_cache: bool,
+    outline: OutlineCapture,
 }
 
 impl Ds {
@@ -300,6 +302,7 @@ impl Ds {
             named: None,
             domains: Vec::new(),
             ignore_cache: false,
+            outline: OutlineCapture::default(),
             entrypoint: Tracker::default(),
             cmd: Tracker::default(),
             healthcheck: Tracker::default(),
@@ -308,10 +311,32 @@ impl Ds {
     }
 }
 
-/// An `ARG`'s value and where it was declared, for the checks.
+/// An `ARG`'s value and where it was declared, for the checks and the outline
+/// (`argInfo`): its doc comment, its value, the arguments its default named, and its
+/// place in its instruction, which settles the outline's order within a line.
 #[derive(Debug, Clone)]
 struct ArgInfo {
     key: Vec<u8>,
+    doc: Vec<u8>,
+    value: Option<Vec<u8>>,
+    deps: BTreeSet<Vec<u8>>,
+    location: Location,
+    seq: usize,
+}
+
+/// A secret or SSH agent a stage's steps mount, by its ID: whether one is required, the
+/// step that first does, and its place among that step's mounts.
+type Mounted = BTreeMap<Vec<u8>, (bool, Location, usize)>;
+
+/// What a stage's outline holds (`outlineCapture`): every argument it can see, those it
+/// uses, and the secrets and SSH agents its steps mount, each where it was first named
+/// (with its place among its step's mounts, for a line that names more than one).
+#[derive(Debug, Clone, Default)]
+struct OutlineCapture {
+    all_args: BTreeMap<Vec<u8>, ArgInfo>,
+    used: BTreeSet<Vec<u8>>,
+    secrets: Mounted,
+    ssh: Mounted,
 }
 
 struct Planner<'a> {
@@ -476,8 +501,87 @@ pub fn plan(text: &[u8], opts: &Options, resolver: &dyn Resolver) -> Result<Plan
             &linter,
         );
     }
-    let r = plan_with(text, opts, &ui, resolver, &linter);
+    let r = plan_with(text, opts, &ui, resolver, &linter, false).and_then(|p| match p {
+        Planned::Plan(p) => Ok(*p),
+        Planned::Outline(_) => Err(Fail::new(b"no plan".to_vec())),
+    });
     done(r, &linter)
+}
+
+/// The outline of the build's target, as BuildKit's frontend answers `--call=outline`
+/// (Dockerfile2Outline): planned as a build is, up to its steps, then its arguments,
+/// secrets and SSH agents, and those of the stages it stands on and reads.
+pub fn outline(text: &[u8], opts: &Options, resolver: &dyn Resolver) -> Result<Outline, Error> {
+    let fail = |message| Error {
+        message,
+        location: Vec::new(),
+        warnings: Vec::new(),
+    };
+    let mut ui = dockerui(opts).map_err(fail)?;
+    check_frontend(text, &opts.build_args).map_err(|Fail(message, location)| Error {
+        message,
+        location,
+        warnings: Vec::new(),
+    })?;
+    // The checks, as the plan's: a violation under `error=true` fails it.
+    let config = match ui.check.take() {
+        Some(config) => config,
+        None => {
+            let check = parser::directive_value(text, b"check").unwrap_or_default();
+            lint::parse_options(&check).map_err(|e| fail(errb(&[b"failed to parse check options: ", &e])))?
+        }
+    };
+    let linter = Linter::new(config);
+    if text.is_empty() {
+        return Err(fail(b"the Dockerfile cannot be empty".to_vec()));
+    }
+    match plan_with(text, opts, &ui, resolver, &linter, true) {
+        Ok(Planned::Outline(o)) => Ok(o),
+        Ok(Planned::Plan(_)) => Err(fail(b"no outline".to_vec())),
+        Err(Fail(message, location)) => Err(Error {
+            message,
+            location,
+            warnings: Vec::new(),
+        }),
+    }
+}
+
+/// The file's stages, as BuildKit's frontend answers `--call=targets` (ListTargets):
+/// each as written, its doc comment, the last the default. Unlike BuildKit's, a stage's
+/// `check=` comment does not take the frontend down (ListTargets parses with no linter,
+/// which that comment dereferences).
+pub fn targets(text: &[u8], dialect: parser::Dialect) -> Result<Targets, Error> {
+    let err = |message: Vec<u8>, location: Vec<Location>| Error {
+        message,
+        location,
+        warnings: Vec::new(),
+    };
+    let parsed = parser::parse_as(text, dialect).map_err(|e| err(e.message, e.location))?;
+    let linter = Linter::new(lint::Config::default());
+    let ins = instructions::parse(&parsed, &linter).map_err(|e| err(e.message, e.location))?;
+    let last = ins.stages.len().saturating_sub(1);
+    Ok(Targets {
+        targets: ins
+            .stages
+            .iter()
+            .enumerate()
+            .map(|(i, st)| Target {
+                name: st.name.clone(),
+                default: i == last,
+                description: st.doc_comment.clone(),
+                base: st.base_name.clone(),
+                platform: st.platform.clone(),
+                location: st.location.clone(),
+            })
+            .collect(),
+        sources: vec![text.to_vec()],
+    })
+}
+
+/// What [`plan_with`] made: the plan, or the target's outline.
+enum Planned {
+    Plan(Box<Plan>),
+    Outline(Outline),
 }
 
 fn plan_with(
@@ -486,7 +590,8 @@ fn plan_with(
     ui: &Dockerui,
     resolver: &dyn Resolver,
     linter: &Linter,
-) -> Result<Plan, Fail> {
+    outline: bool,
+) -> Result<Planned, Fail> {
     if opts.target_platform.os != b"linux" {
         return Err(Fail::new(errb(&[
             b"shards builds Linux guests: the target platform ",
@@ -592,7 +697,13 @@ fn plan_with(
     p.build_stage_dependency_graph()?;
     let reachable = p.resolve_stages(target)?;
     p.dispatch_stages(&reachable, target)?;
-    p.finalize(target)
+    if outline {
+        if p.lint.failed() {
+            return Err(Fail::new(p.lint.error_message()));
+        }
+        return Ok(Planned::Outline(p.outline_of(target, text)));
+    }
+    p.finalize(target).map(|plan| Planned::Plan(Box::new(plan)))
 }
 
 /// `getBuildArgValue`.
@@ -910,23 +1021,42 @@ fn build_meta_args(
         let Kind::Arg(defs) = &cmd.kind else {
             continue;
         };
-        for kp in defs {
+        for (seq, kp) in defs.iter().enumerate() {
+            let mut deps = BTreeSet::new();
             let value = match build_args.and_then(|b| b.get(&kp.key)) {
                 Some(v) => Some(v.clone()),
                 None => match &kp.value {
-                    Some(v) => Some(
-                        shlex
+                    Some(v) => {
+                        let processed = shlex
                             .process(v, &args)
-                            .map_err(|e| Fail::from(e).at(&cmd.location))?
-                            .word,
-                    ),
+                            .map_err(|e| Fail::from(e).at(&cmd.location))?;
+                        deps = processed.matched;
+                        // A default naming itself takes on what its earlier one named.
+                        if deps.remove(&kp.key)
+                            && let Some(old) = all.get(&kp.key)
+                        {
+                            let old: &ArgInfo = old;
+                            deps.extend(old.deps.iter().cloned());
+                        }
+                        Some(processed.word)
+                    }
                     None => None,
                 },
             };
             if let Some(v) = &value {
                 args.add(&kp.key, v);
             }
-            all.insert(kp.key.clone(), ArgInfo { key: kp.key.clone() });
+            all.insert(
+                kp.key.clone(),
+                ArgInfo {
+                    key: kp.key.clone(),
+                    doc: kp.doc_comment.clone(),
+                    value,
+                    deps,
+                    location: cmd.location.clone(),
+                    seq,
+                },
+            );
         }
     }
     Ok((args, all))
@@ -1128,9 +1258,105 @@ impl Planner<'_> {
     }
 
     /// `dispatchStates.addState`: its base is the stage its base name names.
+    /// `dispatchState.Outline`: the target's arguments, secrets and SSH agents, then its
+    /// base's and the stages' it reads, each named once, ordered by where it was first
+    /// named (within a line, by its place there, where BuildKit's order is a map's).
+    fn outline_of(&self, target: usize, text: &[u8]) -> Outline {
+        let mut args: Vec<&ArgInfo> = Vec::new();
+        self.outline_args(target, &mut BTreeSet::new(), &mut args);
+        args.sort_by_key(|a| (a.location.first().map_or(0, |r| r.0), a.seq));
+        let mounts = |pick: fn(&OutlineCapture) -> &Mounted| {
+            let mut found: Vec<(Vec<u8>, bool, Location, usize)> = Vec::new();
+            self.outline_mounts(target, pick, &mut BTreeSet::new(), &mut found);
+            found.sort_by_key(|(_, _, loc, seq)| (loc.first().map_or(0, |r| r.0), *seq));
+            found
+                .into_iter()
+                .map(|(name, required, location, _)| subrequests::Mount {
+                    name,
+                    required,
+                    location,
+                })
+                .collect()
+        };
+        let stage = self.states.get(target).map(|ds| &ds.stage);
+        Outline {
+            name: stage.map(|s| s.name.clone()).unwrap_or_default(),
+            description: stage.map(|s| s.doc_comment.clone()).unwrap_or_default(),
+            args: args
+                .into_iter()
+                .map(|a| Arg {
+                    name: a.key.clone(),
+                    description: a.doc.clone(),
+                    value: a.value.clone().unwrap_or_default(),
+                    location: a.location.clone(),
+                })
+                .collect(),
+            secrets: mounts(|o| &o.secrets),
+            ssh: mounts(|o| &o.ssh),
+            sources: vec![text.to_vec()],
+        }
+    }
+
+    /// `dispatchState.args`: the arguments stage `d` uses, those their defaults name
+    /// (markAllUsed), then its base's and its dependencies', each once.
+    fn outline_args<'s>(&'s self, d: usize, visited: &mut BTreeSet<Vec<u8>>, out: &mut Vec<&'s ArgInfo>) {
+        let Some(ds) = self.states.get(d) else { return };
+        let o = &ds.outline;
+        let mut used = o.used.clone();
+        let mut pending: Vec<Vec<u8>> = used.iter().cloned().collect();
+        while let Some(k) = pending.pop() {
+            if let Some(a) = o.all_args.get(&k) {
+                for dep in &a.deps {
+                    if used.insert(dep.clone()) {
+                        pending.push(dep.clone());
+                    }
+                }
+            }
+        }
+        for k in &used {
+            if let Some(a) = o.all_args.get(k)
+                && visited.insert(k.clone())
+            {
+                out.push(a);
+            }
+        }
+        if let Some(b) = ds.base {
+            self.outline_args(b, visited, out);
+        }
+        for (dep, _) in &ds.deps {
+            self.outline_args(*dep, visited, out);
+        }
+    }
+
+    /// `dispatchState.secrets` and `.ssh`: stage `d`'s, then its base's and its
+    /// dependencies', each once.
+    fn outline_mounts(
+        &self,
+        d: usize,
+        pick: fn(&OutlineCapture) -> &Mounted,
+        visited: &mut BTreeSet<Vec<u8>>,
+        out: &mut Vec<(Vec<u8>, bool, Location, usize)>,
+    ) {
+        let Some(ds) = self.states.get(d) else { return };
+        for (id, (required, loc, seq)) in pick(&ds.outline) {
+            if visited.insert(id.clone()) {
+                out.push((id.clone(), *required, loc.clone(), *seq));
+            }
+        }
+        if let Some(b) = ds.base {
+            self.outline_mounts(b, pick, visited, out);
+        }
+        for (dep, _) in &ds.deps {
+            self.outline_mounts(*dep, pick, visited, out);
+        }
+    }
+
     fn add_state(&mut self, mut ds: Ds) -> usize {
         if let Some(&b) = self.by_name.get(&ds.stage.base_name) {
             ds.base = Some(b);
+            if let Some(base) = self.states.get(b) {
+                ds.outline = base.outline.clone();
+            }
         }
         let name = go::to_lower(&ds.stage.name);
         let i = self.states.len();
@@ -1163,6 +1389,8 @@ impl Planner<'_> {
                 report_unused_from_args(&known, &n.unmatched, &st.location, &lint);
             }
             let name = name.map_err(|e| Fail::from(e).at(&st.location))?;
+            // The arguments its FROM names, which its outline uses.
+            let mut used = name.matched.clone();
             if name.word.is_empty() {
                 return Err(
                     Fail::new(errb(&[b"base name (", &st.base_name, b") should not be blank"]))
@@ -1173,6 +1401,7 @@ impl Planner<'_> {
             let paths = self.new_paths();
             let mut ds = Ds::new(st, paths);
             ds.epoch = self.epoch;
+            ds.outline.all_args = self.all_args.clone();
             if !ds.stage.platform.is_empty() {
                 let v = ds.stage.platform.clone();
                 let m = self.shlex.process(&v, &self.global_args);
@@ -1205,6 +1434,7 @@ impl Planner<'_> {
                         .at(&ds.stage.location)
                 })?;
                 ds.platform = Some(p);
+                used.extend(m.matched.iter().cloned());
             }
             if !ds.stage.name.is_empty() {
                 let platform = ds.platform.clone();
@@ -1225,6 +1455,7 @@ impl Planner<'_> {
                 .states
                 .get_mut(idx)
                 .ok_or_else(|| Fail::new(b"no stage".to_vec()))?;
+            ds.outline.used.extend(used);
             let mut total = usize::from(ds.stage.base_name != EMPTY_IMAGE && ds.base.is_none());
             for c in &ds.stage.commands {
                 use crate::agentfile::Directive;
@@ -2293,7 +2524,7 @@ impl Planner<'_> {
             }
             Kind::Arg(defs) => self.dispatch_arg(d, defs, &loc, &lint)?,
             Kind::Workdir(p) => self.dispatch_workdir(d, &p, true, Some((&code, &loc, &lint)))?,
-            Kind::Run(r) => self.dispatch_run(d, r, &step.sources, &code)?,
+            Kind::Run(r) => self.dispatch_run(d, r, &step.sources, &code, &loc)?,
             Kind::Add(a) => {
                 let cfg = CopyConfig {
                     sources: a.sources.clone(),
@@ -2471,16 +2702,18 @@ impl Planner<'_> {
         lint: &LinterView<'_>,
     ) -> Result<(), Fail> {
         let mut commits = Vec::new();
-        for mut arg in defs {
+        for (seq, mut arg) in defs.into_iter().enumerate() {
             validate_no_secret_key(b"ARG", &arg.key, loc, lint);
             let has_value = self.build_args.get(&arg.key).cloned();
             let has_default = arg.value.is_some();
-            // Inherited from the global scope.
+            // Inherited from the global scope, whose outline entry it keeps (skipArgInfo).
+            let mut inherited = false;
             if !has_default
                 && has_value.is_none()
                 && let Some(v) = self.global_args.get(&arg.key)
             {
                 arg.value = Some(v.to_vec());
+                inherited = true;
             }
             if let Some(v) = has_value {
                 arg.value = Some(v);
@@ -2495,6 +2728,20 @@ impl Planner<'_> {
             {
                 ds.state.env.add(&arg.key, v);
             }
+            if !inherited {
+                ds.outline.all_args.insert(
+                    arg.key.clone(),
+                    ArgInfo {
+                        key: arg.key.clone(),
+                        doc: arg.doc_comment.clone(),
+                        value: arg.value.clone(),
+                        deps: BTreeSet::new(),
+                        location: loc.clone(),
+                        seq,
+                    },
+                );
+            }
+            ds.outline.used.insert(arg.key.clone());
             let mut c = arg.key.clone();
             if let Some(v) = &arg.value {
                 c.push(b'=');
@@ -2537,6 +2784,7 @@ impl Planner<'_> {
         r: instructions::Run,
         sources: &[usize],
         code: &[u8],
+        loc: &Location,
     ) -> Result<(), Fail> {
         let multi = self.named_by_platform();
         let paths = self.ds(d)?.paths;
@@ -2627,7 +2875,7 @@ impl Planner<'_> {
             .description
             .insert(b"com.docker.dockerfile.v1.command".to_vec(), code.to_vec());
         run.mounts.extend(extra_mounts);
-        self.dispatch_run_mounts(d, &r, sources, &mut run)?;
+        self.dispatch_run_mounts(d, &r, sources, &mut run, loc)?;
         run.security = Some(match r.security.as_slice() {
             b"insecure" => Security::Insecure,
             b"sandbox" => Security::Sandbox,
@@ -2728,6 +2976,7 @@ impl Planner<'_> {
         r: &instructions::Run,
         sources: &[usize],
         run: &mut llb::Run,
+        loc: &Location,
     ) -> Result<(), Fail> {
         for (i, m0) in r.mounts.iter().enumerate() {
             let mut m = m0.clone();
@@ -2757,11 +3006,29 @@ impl Planner<'_> {
             }
             match m.kind.as_slice() {
                 b"secret" => {
-                    run.secrets.push(dispatch_secret(&m)?);
+                    let secret = dispatch_secret(&m)?;
+                    // The outline's: where each is first named (dispatchSecret).
+                    self.ds(d)?.outline.secrets.entry(secret.id.clone()).or_insert((
+                        m.required,
+                        loc.clone(),
+                        i,
+                    ));
+                    run.secrets.push(secret);
                     continue;
                 }
                 b"ssh" => {
-                    run.ssh.push(dispatch_ssh(&m)?);
+                    let ssh = dispatch_ssh(&m)?;
+                    let id = if m.id.is_empty() {
+                        b"default".to_vec()
+                    } else {
+                        m.id.clone()
+                    };
+                    self.ds(d)?
+                        .outline
+                        .ssh
+                        .entry(id)
+                        .or_insert((m.required, loc.clone(), i));
+                    run.ssh.push(ssh);
                     continue;
                 }
                 _ => {}

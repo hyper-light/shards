@@ -990,89 +990,96 @@ fn definition_v(def: &shards_dockerfile::llb::Definition) -> Value {
 /// Build plans as BuildKit's Dockerfile2LLB makes them: every file of testdata/corpus/plan
 /// with its options, against images.json's base images. The graph op by op, the image
 /// config byte for byte, the checks' warnings and any error.
+/// The options BuildKit's frontend planned `file` with: its `.opts.json`, as buildx sends
+/// them and dockerui reads them (scripts/dockerfile/oracle convertOpt).
+fn options_of(file: &str) -> shards_dockerfile::plan::Options {
+    use shards_dockerfile::plan::Options;
+    use shards_dockerfile::platform::Platform;
+    let opts_v: Value = std::fs::read(testdata().join(format!("{file}.opts.json")))
+        .map(|b| serde_json::from_slice(&b).unwrap())
+        .unwrap_or(Value::Null);
+    let map = |v: &Value| -> std::collections::BTreeMap<Vec<u8>, Vec<u8>> {
+        v.as_object()
+            .map(|o| {
+                o.iter()
+                    .map(|(k, v)| (k.as_bytes().to_vec(), v.as_str().unwrap().as_bytes().to_vec()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    // The frontend's own options, as buildx sends them: read by dockerui's parsers.
+    let frontend_map: std::collections::BTreeMap<String, String> = opts_v["frontend"]
+        .as_object()
+        .map(|o| {
+            o.iter()
+                .map(|(k, v)| (k.clone(), v.as_str().unwrap().to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+    let frontend = |k: &str| frontend_map.get(k).map_or("", String::as_str);
+    Options {
+        target_platform: Platform::new("linux", "amd64"),
+        build_platforms: vec![Platform::new("linux", "amd64")],
+        build_args: map(&opts_v["build_args"]),
+        target: opts_v["target"].as_str().unwrap_or_default().as_bytes().to_vec(),
+        labels: map(&opts_v["labels"]),
+        hostname: opts_v["hostname"]
+            .as_str()
+            .unwrap_or_default()
+            .as_bytes()
+            .to_vec(),
+        ulimits: opts_v["ulimit"]
+            .as_str()
+            .filter(|v| !v.is_empty())
+            .map(|v| {
+                shards_cmdline::go::csv_fields(v.as_bytes())
+                    .unwrap()
+                    .iter()
+                    .map(|f| {
+                        let u = shards_cmdline::buildflags::parse_ulimit(std::str::from_utf8(f).unwrap())
+                            .unwrap();
+                        shards_dockerfile::llb::Ulimit {
+                            name: u.name.into_bytes(),
+                            soft: u.soft,
+                            hard: u.hard,
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        multi_platform: false,
+        context_id: b"*".to_vec(),
+        excludes: Vec::new(),
+        dialect: shards_dockerfile::parser::Dialect::Dockerfile,
+        contexts: map(&opts_v["contexts"]),
+        context_keys: map(&opts_v["shared_keys"]),
+        context_excludes: Default::default(),
+        // dockerui: the option's comma-separated stages, every stage where it is "".
+        extra_hosts: shards_dockerfile::dockerui::extra_hosts(frontend("add-hosts")).unwrap(),
+        shm_size: shards_dockerfile::dockerui::shm_size(frontend("shm-size")).unwrap(),
+        cgroup_parent: frontend("cgroup-parent").as_bytes().to_vec(),
+        linux_resources: shards_dockerfile::dockerui::linux_resources(&frontend_map).unwrap(),
+        network_mode: shards_dockerfile::dockerui::net_mode(frontend("force-network-mode")).unwrap(),
+        no_cache: opts_v["no_cache"].as_str().map(|v| {
+            if v.is_empty() {
+                Vec::new()
+            } else {
+                v.split(',').map(|n| n.as_bytes().to_vec()).collect()
+            }
+        }),
+    }
+}
+
 #[test]
 fn plans_are_buildkits() {
-    use shards_dockerfile::plan::{Options, plan};
-    use shards_dockerfile::platform::Platform;
+    use shards_dockerfile::plan::plan;
     let images = Images(load("images.json").as_object().unwrap().clone());
     let devs = deviations("plan");
     let mut failures = Vec::new();
     for want in load("plan.json").as_array().unwrap() {
         let file = want["file"].as_str().unwrap();
         let text = std::fs::read(testdata().join(file)).unwrap();
-        let opts_v: Value = std::fs::read(testdata().join(format!("{file}.opts.json")))
-            .map(|b| serde_json::from_slice(&b).unwrap())
-            .unwrap_or(Value::Null);
-        let map = |v: &Value| -> std::collections::BTreeMap<Vec<u8>, Vec<u8>> {
-            v.as_object()
-                .map(|o| {
-                    o.iter()
-                        .map(|(k, v)| (k.as_bytes().to_vec(), v.as_str().unwrap().as_bytes().to_vec()))
-                        .collect()
-                })
-                .unwrap_or_default()
-        };
-        // The frontend's own options, as buildx sends them: read by dockerui's parsers.
-        let frontend_map: std::collections::BTreeMap<String, String> = opts_v["frontend"]
-            .as_object()
-            .map(|o| {
-                o.iter()
-                    .map(|(k, v)| (k.clone(), v.as_str().unwrap().to_string()))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let frontend = |k: &str| frontend_map.get(k).map_or("", String::as_str);
-        let opts = Options {
-            target_platform: Platform::new("linux", "amd64"),
-            build_platforms: vec![Platform::new("linux", "amd64")],
-            build_args: map(&opts_v["build_args"]),
-            target: opts_v["target"].as_str().unwrap_or_default().as_bytes().to_vec(),
-            labels: map(&opts_v["labels"]),
-            hostname: opts_v["hostname"]
-                .as_str()
-                .unwrap_or_default()
-                .as_bytes()
-                .to_vec(),
-            ulimits: opts_v["ulimit"]
-                .as_str()
-                .filter(|v| !v.is_empty())
-                .map(|v| {
-                    shards_cmdline::go::csv_fields(v.as_bytes())
-                        .unwrap()
-                        .iter()
-                        .map(|f| {
-                            let u = shards_cmdline::buildflags::parse_ulimit(std::str::from_utf8(f).unwrap())
-                                .unwrap();
-                            shards_dockerfile::llb::Ulimit {
-                                name: u.name.into_bytes(),
-                                soft: u.soft,
-                                hard: u.hard,
-                            }
-                        })
-                        .collect()
-                })
-                .unwrap_or_default(),
-            multi_platform: false,
-            context_id: b"*".to_vec(),
-            excludes: Vec::new(),
-            dialect: shards_dockerfile::parser::Dialect::Dockerfile,
-            contexts: map(&opts_v["contexts"]),
-            context_keys: map(&opts_v["shared_keys"]),
-            context_excludes: Default::default(),
-            // dockerui: the option's comma-separated stages, every stage where it is "".
-            extra_hosts: shards_dockerfile::dockerui::extra_hosts(frontend("add-hosts")).unwrap(),
-            shm_size: shards_dockerfile::dockerui::shm_size(frontend("shm-size")).unwrap(),
-            cgroup_parent: frontend("cgroup-parent").as_bytes().to_vec(),
-            linux_resources: shards_dockerfile::dockerui::linux_resources(&frontend_map).unwrap(),
-            network_mode: shards_dockerfile::dockerui::net_mode(frontend("force-network-mode")).unwrap(),
-            no_cache: opts_v["no_cache"].as_str().map(|v| {
-                if v.is_empty() {
-                    Vec::new()
-                } else {
-                    v.split(',').map(|n| n.as_bytes().to_vec()).collect()
-                }
-            }),
-        };
+        let opts = options_of(file);
         let mut got = serde_json::Map::new();
         got.insert("file".into(), file.into());
         let warnings = |ws: &[shards_dockerfile::lint::Warning]| -> Value {
@@ -1134,6 +1141,71 @@ fn plans_are_buildkits() {
     assert!(
         failures.is_empty(),
         "{} of the plans differ:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
+/// `--call`'s subrequests, as BuildKit's frontend answers them (scripts/dockerfile/oracle
+/// subrequestsFile): each plan's outline and targets, their result.json and the text
+/// buildx prints of each, byte for byte, and the subrequests described. Where BuildKit's
+/// ListTargets panics (a stage's `check=` comment, with no linter), shards lists them.
+#[test]
+fn subrequests_are_buildkits() {
+    use shards_dockerfile::plan::{outline, targets};
+    use shards_dockerfile::subrequests;
+    let images = Images(load("images.json").as_object().unwrap().clone());
+    let subs = load("subrequests.json");
+    assert_eq!(
+        quote(subrequests::DESCRIBE.as_bytes()),
+        subs["describe"]["json"].as_str().unwrap()
+    );
+    assert_eq!(
+        quote(subrequests::describe_text().as_bytes()),
+        subs["describe"]["text"].as_str().unwrap()
+    );
+    let devs = deviations("subrequests");
+    let mut failures = Vec::new();
+    let files = subs["files"].as_array().unwrap();
+    assert!(files.len() > 100);
+    for want in files {
+        let file = want["file"].as_str().unwrap();
+        let mut want = want.clone();
+        if let Some(d) = devs.iter().find(|d| d["file"] == file) {
+            for (k, v) in d["fields"].as_object().unwrap() {
+                want[k] = v.clone();
+            }
+        }
+        let text = std::fs::read(testdata().join(file)).unwrap();
+        let opts = options_of(file);
+        let mut check = |what: &str, got: String, key: &str| {
+            let want = want[key].as_str().unwrap_or("<none>");
+            if got != want {
+                failures.push(format!("{file} {what}\n  got:  {got}\n  want: {want}"));
+            }
+        };
+        match outline(&text, &opts, &images) {
+            Ok(o) => {
+                check("outline", quote(o.json().as_bytes()), "outline");
+                check("outline text", quote(o.text().as_bytes()), "outline_text");
+            }
+            Err(e) => check("outline error", quote(&e.message), "outline_error"),
+        }
+        let panicked = want["targets_error"]
+            .as_str()
+            .is_some_and(|e| e.starts_with("\"panic: "));
+        match targets(&text, shards_dockerfile::parser::Dialect::Dockerfile) {
+            Ok(_) if panicked => {}
+            Ok(t) => {
+                check("targets", quote(t.json().as_bytes()), "targets");
+                check("targets text", quote(t.text().as_bytes()), "targets_text");
+            }
+            Err(e) => check("targets error", quote(&e.message), "targets_error"),
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} answers differ:\n{}",
         failures.len(),
         failures.join("\n")
     );

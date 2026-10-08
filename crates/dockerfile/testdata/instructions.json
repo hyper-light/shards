@@ -18380,6 +18380,823 @@
   "warnings": null
  },
  {
+  "file": "corpus/plan/outline-args.Dockerfile",
+  "meta_args": [
+   {
+    "args": [
+     [
+      "\"OS\"",
+      "\"alpine\"",
+      "\"names the distribution\""
+     ]
+    ],
+    "code": "\"ARG OS=alpine\"",
+    "comments": [
+     "\"OS names the distribution\""
+    ],
+    "kind": "*instructions.ArgCommand",
+    "location": [
+     [
+      2,
+      2
+     ]
+    ],
+    "name": "\"ARG\""
+   },
+   {
+    "args": [
+     [
+      "\"BASE\"",
+      "\"${OS}\"",
+      "\"is the image every stage builds on\""
+     ]
+    ],
+    "code": "\"ARG BASE=${OS}\"",
+    "comments": [
+     "\"BASE is the image every stage builds on\""
+    ],
+    "kind": "*instructions.ArgCommand",
+    "location": [
+     [
+      4,
+      4
+     ]
+    ],
+    "name": "\"ARG\""
+   },
+   {
+    "args": [
+     [
+      "\"UNUSED\"",
+      "\"nothing\"",
+      "\"\""
+     ]
+    ],
+    "code": "\"ARG UNUSED=nothing\"",
+    "comments": [],
+    "kind": "*instructions.ArgCommand",
+    "location": [
+     [
+      5,
+      5
+     ]
+    ],
+    "name": "\"ARG\""
+   }
+  ],
+  "stages": [
+   {
+    "base_name": "\"${BASE}\"",
+    "commands": [
+     {
+      "args": [
+       [
+        "\"VERSION\"",
+        "\"dev\"",
+        "\"is stamped into the binary\""
+       ]
+      ],
+      "code": "\"ARG VERSION=dev\"",
+      "comments": [
+       "\"VERSION is stamped into the binary\""
+      ],
+      "kind": "*instructions.ArgCommand",
+      "location": [
+       [
+        10,
+        10
+       ]
+      ],
+      "name": "\"ARG\""
+     },
+     {
+      "code": "\"RUN --mount=type=secret,id=token,required=true     --mount=type=ssh echo $VERSION\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [
+       "\"mount\""
+      ],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        11,
+        11
+       ],
+       [
+        12,
+        12
+       ]
+      ],
+      "mounts": [
+       {
+        "env": null,
+        "from": "\"\"",
+        "gid": null,
+        "id": "\"\"",
+        "mode": null,
+        "read_only": true,
+        "required": false,
+        "sharing": "\"\"",
+        "size": 0,
+        "source": "\"\"",
+        "target": "\"\"",
+        "type": "\"bind\"",
+        "uid": null
+       },
+       {
+        "env": null,
+        "from": "\"\"",
+        "gid": null,
+        "id": "\"\"",
+        "mode": null,
+        "read_only": true,
+        "required": false,
+        "sharing": "\"\"",
+        "size": 0,
+        "source": "\"\"",
+        "target": "\"\"",
+        "type": "\"bind\"",
+        "uid": null
+       }
+      ],
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"echo $VERSION\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     }
+    ],
+    "comments": [
+     "\"build compiles the program\""
+    ],
+    "doc_comment": "\"compiles the program\"",
+    "location": [
+     [
+      8,
+      8
+     ]
+    ],
+    "name": "\"build\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM ${BASE} AS build\""
+   },
+   {
+    "base_name": "\"build\"",
+    "commands": [
+     {
+      "args": [
+       [
+        "\"TEST_FLAGS\"",
+        null,
+        "\"\""
+       ]
+      ],
+      "code": "\"ARG TEST_FLAGS\"",
+      "comments": [],
+      "kind": "*instructions.ArgCommand",
+      "location": [
+       [
+        15,
+        15
+       ]
+      ],
+      "name": "\"ARG\""
+     },
+     {
+      "code": "\"RUN --mount=type=secret,id=npmrc echo $TEST_FLAGS\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [
+       "\"mount\""
+      ],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        16,
+        16
+       ]
+      ],
+      "mounts": [
+       {
+        "env": null,
+        "from": "\"\"",
+        "gid": null,
+        "id": "\"\"",
+        "mode": null,
+        "read_only": true,
+        "required": false,
+        "sharing": "\"\"",
+        "size": 0,
+        "source": "\"\"",
+        "target": "\"\"",
+        "type": "\"bind\"",
+        "uid": null
+       }
+      ],
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"echo $TEST_FLAGS\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      14,
+      14
+     ]
+    ],
+    "name": "\"test\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM build AS test\""
+   },
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "args": [
+       [
+        "\"OS\"",
+        null,
+        "\"\""
+       ]
+      ],
+      "code": "\"ARG OS\"",
+      "comments": [],
+      "kind": "*instructions.ArgCommand",
+      "location": [
+       [
+        20,
+        20
+       ]
+      ],
+      "name": "\"ARG\""
+     },
+     {
+      "chmod": "\"\"",
+      "chown": "\"\"",
+      "code": "\"COPY --from=test /x /x\"",
+      "comments": [],
+      "exclude": [],
+      "from": "\"test\"",
+      "kind": "*instructions.CopyCommand",
+      "link": false,
+      "location": [
+       [
+        21,
+        21
+       ]
+      ],
+      "name": "\"COPY\"",
+      "parents": false,
+      "sources": {
+       "contents": null,
+       "dest": "\"/x\"",
+       "paths": [
+        "\"/x\""
+       ]
+      }
+     },
+     {
+      "code": "\"RUN --mount=type=ssh,id=gh,required=true --mount=type=secret,target=/run/key true\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [
+       "\"mount\""
+      ],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        22,
+        22
+       ]
+      ],
+      "mounts": [
+       {
+        "env": null,
+        "from": "\"\"",
+        "gid": null,
+        "id": "\"\"",
+        "mode": null,
+        "read_only": true,
+        "required": false,
+        "sharing": "\"\"",
+        "size": 0,
+        "source": "\"\"",
+        "target": "\"\"",
+        "type": "\"bind\"",
+        "uid": null
+       },
+       {
+        "env": null,
+        "from": "\"\"",
+        "gid": null,
+        "id": "\"\"",
+        "mode": null,
+        "read_only": true,
+        "required": false,
+        "sharing": "\"\"",
+        "size": 0,
+        "source": "\"\"",
+        "target": "\"\"",
+        "type": "\"bind\"",
+        "uid": null
+       }
+      ],
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"true\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     }
+    ],
+    "comments": [
+     "\"final is what ships\""
+    ],
+    "doc_comment": "\"is what ships\"",
+    "location": [
+     [
+      19,
+      19
+     ]
+    ],
+    "name": "\"final\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine AS final\""
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/outline-stages.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"alpine\"",
+    "commands": null,
+    "comments": [
+     "\"base is shared by all\""
+    ],
+    "doc_comment": "\"is shared by all\"",
+    "location": [
+     [
+      2,
+      2
+     ]
+    ],
+    "name": "\"base\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"$BUILDPLATFORM\"",
+    "source_code": "\"FROM --platform=$BUILDPLATFORM alpine AS base\""
+   },
+   {
+    "base_name": "\"base\"",
+    "commands": null,
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      3,
+      3
+     ]
+    ],
+    "name": "\"dev\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM base AS dev\""
+   },
+   {
+    "base_name": "\"base\"",
+    "commands": null,
+    "comments": [
+     "\"release is what \u003cships\u003e \u0026 runs\""
+    ],
+    "doc_comment": "\"is what \u003cships\u003e \u0026 runs\"",
+    "location": [
+     [
+      5,
+      5
+     ]
+    ],
+    "name": "\"release\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM base AS release\""
+   },
+   {
+    "base_name": "\"release\"",
+    "commands": null,
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      6,
+      6
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM release\""
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/outline-target.Dockerfile",
+  "meta_args": [
+   {
+    "args": [
+     [
+      "\"OS\"",
+      "\"alpine\"",
+      "\"names the distribution\""
+     ]
+    ],
+    "code": "\"ARG OS=alpine\"",
+    "comments": [
+     "\"OS names the distribution\""
+    ],
+    "kind": "*instructions.ArgCommand",
+    "location": [
+     [
+      2,
+      2
+     ]
+    ],
+    "name": "\"ARG\""
+   },
+   {
+    "args": [
+     [
+      "\"BASE\"",
+      "\"${OS}\"",
+      "\"is the image every stage builds on\""
+     ]
+    ],
+    "code": "\"ARG BASE=${OS}\"",
+    "comments": [
+     "\"BASE is the image every stage builds on\""
+    ],
+    "kind": "*instructions.ArgCommand",
+    "location": [
+     [
+      4,
+      4
+     ]
+    ],
+    "name": "\"ARG\""
+   },
+   {
+    "args": [
+     [
+      "\"UNUSED\"",
+      "\"nothing\"",
+      "\"\""
+     ]
+    ],
+    "code": "\"ARG UNUSED=nothing\"",
+    "comments": [],
+    "kind": "*instructions.ArgCommand",
+    "location": [
+     [
+      5,
+      5
+     ]
+    ],
+    "name": "\"ARG\""
+   }
+  ],
+  "stages": [
+   {
+    "base_name": "\"${BASE}\"",
+    "commands": [
+     {
+      "args": [
+       [
+        "\"VERSION\"",
+        "\"dev\"",
+        "\"is stamped into the binary\""
+       ]
+      ],
+      "code": "\"ARG VERSION=dev\"",
+      "comments": [
+       "\"VERSION is stamped into the binary\""
+      ],
+      "kind": "*instructions.ArgCommand",
+      "location": [
+       [
+        10,
+        10
+       ]
+      ],
+      "name": "\"ARG\""
+     },
+     {
+      "code": "\"RUN --mount=type=secret,id=token,required=true     --mount=type=ssh echo $VERSION\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [
+       "\"mount\""
+      ],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        11,
+        11
+       ],
+       [
+        12,
+        12
+       ]
+      ],
+      "mounts": [
+       {
+        "env": null,
+        "from": "\"\"",
+        "gid": null,
+        "id": "\"\"",
+        "mode": null,
+        "read_only": true,
+        "required": false,
+        "sharing": "\"\"",
+        "size": 0,
+        "source": "\"\"",
+        "target": "\"\"",
+        "type": "\"bind\"",
+        "uid": null
+       },
+       {
+        "env": null,
+        "from": "\"\"",
+        "gid": null,
+        "id": "\"\"",
+        "mode": null,
+        "read_only": true,
+        "required": false,
+        "sharing": "\"\"",
+        "size": 0,
+        "source": "\"\"",
+        "target": "\"\"",
+        "type": "\"bind\"",
+        "uid": null
+       }
+      ],
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"echo $VERSION\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     }
+    ],
+    "comments": [
+     "\"build compiles the program\""
+    ],
+    "doc_comment": "\"compiles the program\"",
+    "location": [
+     [
+      8,
+      8
+     ]
+    ],
+    "name": "\"build\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM ${BASE} AS build\""
+   },
+   {
+    "base_name": "\"build\"",
+    "commands": [
+     {
+      "args": [
+       [
+        "\"TEST_FLAGS\"",
+        null,
+        "\"\""
+       ]
+      ],
+      "code": "\"ARG TEST_FLAGS\"",
+      "comments": [],
+      "kind": "*instructions.ArgCommand",
+      "location": [
+       [
+        15,
+        15
+       ]
+      ],
+      "name": "\"ARG\""
+     },
+     {
+      "code": "\"RUN --mount=type=secret,id=npmrc echo $TEST_FLAGS\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [
+       "\"mount\""
+      ],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        16,
+        16
+       ]
+      ],
+      "mounts": [
+       {
+        "env": null,
+        "from": "\"\"",
+        "gid": null,
+        "id": "\"\"",
+        "mode": null,
+        "read_only": true,
+        "required": false,
+        "sharing": "\"\"",
+        "size": 0,
+        "source": "\"\"",
+        "target": "\"\"",
+        "type": "\"bind\"",
+        "uid": null
+       }
+      ],
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"echo $TEST_FLAGS\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      14,
+      14
+     ]
+    ],
+    "name": "\"test\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM build AS test\""
+   },
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "args": [
+       [
+        "\"OS\"",
+        null,
+        "\"\""
+       ]
+      ],
+      "code": "\"ARG OS\"",
+      "comments": [],
+      "kind": "*instructions.ArgCommand",
+      "location": [
+       [
+        20,
+        20
+       ]
+      ],
+      "name": "\"ARG\""
+     },
+     {
+      "chmod": "\"\"",
+      "chown": "\"\"",
+      "code": "\"COPY --from=test /x /x\"",
+      "comments": [],
+      "exclude": [],
+      "from": "\"test\"",
+      "kind": "*instructions.CopyCommand",
+      "link": false,
+      "location": [
+       [
+        21,
+        21
+       ]
+      ],
+      "name": "\"COPY\"",
+      "parents": false,
+      "sources": {
+       "contents": null,
+       "dest": "\"/x\"",
+       "paths": [
+        "\"/x\""
+       ]
+      }
+     },
+     {
+      "code": "\"RUN --mount=type=ssh,id=gh,required=true --mount=type=secret,target=/run/key true\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [
+       "\"mount\""
+      ],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        22,
+        22
+       ]
+      ],
+      "mounts": [
+       {
+        "env": null,
+        "from": "\"\"",
+        "gid": null,
+        "id": "\"\"",
+        "mode": null,
+        "read_only": true,
+        "required": false,
+        "sharing": "\"\"",
+        "size": 0,
+        "source": "\"\"",
+        "target": "\"\"",
+        "type": "\"bind\"",
+        "uid": null
+       },
+       {
+        "env": null,
+        "from": "\"\"",
+        "gid": null,
+        "id": "\"\"",
+        "mode": null,
+        "read_only": true,
+        "required": false,
+        "sharing": "\"\"",
+        "size": 0,
+        "source": "\"\"",
+        "target": "\"\"",
+        "type": "\"bind\"",
+        "uid": null
+       }
+      ],
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"true\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     }
+    ],
+    "comments": [
+     "\"final is what ships\""
+    ],
+    "doc_comment": "\"is what ships\"",
+    "location": [
+     [
+      19,
+      19
+     ]
+    ],
+    "name": "\"final\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine AS final\""
+   }
+  ],
+  "warnings": null
+ },
+ {
   "file": "corpus/plan/platform-cross.Dockerfile",
   "meta_args": null,
   "stages": [

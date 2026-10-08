@@ -12115,6 +12115,373 @@
   ]
  },
  {
+  "file": "corpus/plan/outline-args.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(arg \\\"OS=alpine\\\")\\n(arg \\\"BASE=${OS}\\\")\\n(arg \\\"UNUSED=nothing\\\")\\n(from \\\"${BASE}\\\" \\\"AS\\\" \\\"build\\\")\\n(arg \\\"VERSION=dev\\\")\\n(run [\\\"--mount=type=secret,id=token,required=true\\\" \\\"--mount=type=ssh\\\"] \\\"echo $VERSION\\\")\\n(from \\\"build\\\" \\\"AS\\\" \\\"test\\\")\\n(arg \\\"TEST_FLAGS\\\")\\n(run [\\\"--mount=type=secret,id=npmrc\\\"] \\\"echo $TEST_FLAGS\\\")\\n(from \\\"alpine\\\" \\\"AS\\\" \\\"final\\\")\\n(arg \\\"OS\\\")\\n(copy [\\\"--from=test\\\"] \\\"/x\\\" \\\"/x\\\")\\n(run [\\\"--mount=type=ssh,id=gh,required=true\\\" \\\"--mount=type=secret,target=/run/key\\\"] \\\"true\\\")\"",
+  "children": [
+   {
+    "dump": "\"arg \\\"OS=alpine\\\"\"",
+    "original": "\"ARG OS=alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [
+     "\"OS names the distribution\""
+    ],
+    "heredocs": null
+   },
+   {
+    "dump": "\"arg \\\"BASE=${OS}\\\"\"",
+    "original": "\"ARG BASE=${OS}\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [
+     "\"BASE is the image every stage builds on\""
+    ],
+    "heredocs": null
+   },
+   {
+    "dump": "\"arg \\\"UNUSED=nothing\\\"\"",
+    "original": "\"ARG UNUSED=nothing\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 5,
+    "end_line": 5,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"${BASE}\\\" \\\"AS\\\" \\\"build\\\"\"",
+    "original": "\"FROM ${BASE} AS build\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 8,
+    "end_line": 8,
+    "prev_comment": [
+     "\"build compiles the program\""
+    ],
+    "heredocs": null
+   },
+   {
+    "dump": "\"arg \\\"VERSION=dev\\\"\"",
+    "original": "\"ARG VERSION=dev\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 10,
+    "end_line": 10,
+    "prev_comment": [
+     "\"VERSION is stamped into the binary\""
+    ],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run [\\\"--mount=type=secret,id=token,required=true\\\" \\\"--mount=type=ssh\\\"] \\\"echo $VERSION\\\"\"",
+    "original": "\"RUN --mount=type=secret,id=token,required=true     --mount=type=ssh echo $VERSION\"",
+    "flags": [
+     "\"--mount=type=secret,id=token,required=true\"",
+     "\"--mount=type=ssh\""
+    ],
+    "attributes": null,
+    "start_line": 11,
+    "end_line": 12,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"build\\\" \\\"AS\\\" \\\"test\\\"\"",
+    "original": "\"FROM build AS test\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 14,
+    "end_line": 14,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"arg \\\"TEST_FLAGS\\\"\"",
+    "original": "\"ARG TEST_FLAGS\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 15,
+    "end_line": 15,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run [\\\"--mount=type=secret,id=npmrc\\\"] \\\"echo $TEST_FLAGS\\\"\"",
+    "original": "\"RUN --mount=type=secret,id=npmrc echo $TEST_FLAGS\"",
+    "flags": [
+     "\"--mount=type=secret,id=npmrc\""
+    ],
+    "attributes": null,
+    "start_line": 16,
+    "end_line": 16,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"alpine\\\" \\\"AS\\\" \\\"final\\\"\"",
+    "original": "\"FROM alpine AS final\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 19,
+    "end_line": 19,
+    "prev_comment": [
+     "\"final is what ships\""
+    ],
+    "heredocs": null
+   },
+   {
+    "dump": "\"arg \\\"OS\\\"\"",
+    "original": "\"ARG OS\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 20,
+    "end_line": 20,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy [\\\"--from=test\\\"] \\\"/x\\\" \\\"/x\\\"\"",
+    "original": "\"COPY --from=test /x /x\"",
+    "flags": [
+     "\"--from=test\""
+    ],
+    "attributes": null,
+    "start_line": 21,
+    "end_line": 21,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run [\\\"--mount=type=ssh,id=gh,required=true\\\" \\\"--mount=type=secret,target=/run/key\\\"] \\\"true\\\"\"",
+    "original": "\"RUN --mount=type=ssh,id=gh,required=true --mount=type=secret,target=/run/key true\"",
+    "flags": [
+     "\"--mount=type=ssh,id=gh,required=true\"",
+     "\"--mount=type=secret,target=/run/key\""
+    ],
+    "attributes": null,
+    "start_line": 22,
+    "end_line": 22,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/outline-stages.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from [\\\"--platform=$BUILDPLATFORM\\\"] \\\"alpine\\\" \\\"AS\\\" \\\"base\\\")\\n(from \\\"base\\\" \\\"AS\\\" \\\"dev\\\")\\n(from \\\"base\\\" \\\"AS\\\" \\\"release\\\")\\n(from \\\"release\\\")\"",
+  "children": [
+   {
+    "dump": "\"from [\\\"--platform=$BUILDPLATFORM\\\"] \\\"alpine\\\" \\\"AS\\\" \\\"base\\\"\"",
+    "original": "\"FROM --platform=$BUILDPLATFORM alpine AS base\"",
+    "flags": [
+     "\"--platform=$BUILDPLATFORM\""
+    ],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [
+     "\"base is shared by all\""
+    ],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"base\\\" \\\"AS\\\" \\\"dev\\\"\"",
+    "original": "\"FROM base AS dev\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"base\\\" \\\"AS\\\" \\\"release\\\"\"",
+    "original": "\"FROM base AS release\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 5,
+    "end_line": 5,
+    "prev_comment": [
+     "\"release is what \u003cships\u003e \u0026 runs\""
+    ],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"release\\\"\"",
+    "original": "\"FROM release\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 6,
+    "end_line": 6,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/outline-target.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(arg \\\"OS=alpine\\\")\\n(arg \\\"BASE=${OS}\\\")\\n(arg \\\"UNUSED=nothing\\\")\\n(from \\\"${BASE}\\\" \\\"AS\\\" \\\"build\\\")\\n(arg \\\"VERSION=dev\\\")\\n(run [\\\"--mount=type=secret,id=token,required=true\\\" \\\"--mount=type=ssh\\\"] \\\"echo $VERSION\\\")\\n(from \\\"build\\\" \\\"AS\\\" \\\"test\\\")\\n(arg \\\"TEST_FLAGS\\\")\\n(run [\\\"--mount=type=secret,id=npmrc\\\"] \\\"echo $TEST_FLAGS\\\")\\n(from \\\"alpine\\\" \\\"AS\\\" \\\"final\\\")\\n(arg \\\"OS\\\")\\n(copy [\\\"--from=test\\\"] \\\"/x\\\" \\\"/x\\\")\\n(run [\\\"--mount=type=ssh,id=gh,required=true\\\" \\\"--mount=type=secret,target=/run/key\\\"] \\\"true\\\")\"",
+  "children": [
+   {
+    "dump": "\"arg \\\"OS=alpine\\\"\"",
+    "original": "\"ARG OS=alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [
+     "\"OS names the distribution\""
+    ],
+    "heredocs": null
+   },
+   {
+    "dump": "\"arg \\\"BASE=${OS}\\\"\"",
+    "original": "\"ARG BASE=${OS}\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [
+     "\"BASE is the image every stage builds on\""
+    ],
+    "heredocs": null
+   },
+   {
+    "dump": "\"arg \\\"UNUSED=nothing\\\"\"",
+    "original": "\"ARG UNUSED=nothing\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 5,
+    "end_line": 5,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"${BASE}\\\" \\\"AS\\\" \\\"build\\\"\"",
+    "original": "\"FROM ${BASE} AS build\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 8,
+    "end_line": 8,
+    "prev_comment": [
+     "\"build compiles the program\""
+    ],
+    "heredocs": null
+   },
+   {
+    "dump": "\"arg \\\"VERSION=dev\\\"\"",
+    "original": "\"ARG VERSION=dev\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 10,
+    "end_line": 10,
+    "prev_comment": [
+     "\"VERSION is stamped into the binary\""
+    ],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run [\\\"--mount=type=secret,id=token,required=true\\\" \\\"--mount=type=ssh\\\"] \\\"echo $VERSION\\\"\"",
+    "original": "\"RUN --mount=type=secret,id=token,required=true     --mount=type=ssh echo $VERSION\"",
+    "flags": [
+     "\"--mount=type=secret,id=token,required=true\"",
+     "\"--mount=type=ssh\""
+    ],
+    "attributes": null,
+    "start_line": 11,
+    "end_line": 12,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"build\\\" \\\"AS\\\" \\\"test\\\"\"",
+    "original": "\"FROM build AS test\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 14,
+    "end_line": 14,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"arg \\\"TEST_FLAGS\\\"\"",
+    "original": "\"ARG TEST_FLAGS\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 15,
+    "end_line": 15,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run [\\\"--mount=type=secret,id=npmrc\\\"] \\\"echo $TEST_FLAGS\\\"\"",
+    "original": "\"RUN --mount=type=secret,id=npmrc echo $TEST_FLAGS\"",
+    "flags": [
+     "\"--mount=type=secret,id=npmrc\""
+    ],
+    "attributes": null,
+    "start_line": 16,
+    "end_line": 16,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"alpine\\\" \\\"AS\\\" \\\"final\\\"\"",
+    "original": "\"FROM alpine AS final\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 19,
+    "end_line": 19,
+    "prev_comment": [
+     "\"final is what ships\""
+    ],
+    "heredocs": null
+   },
+   {
+    "dump": "\"arg \\\"OS\\\"\"",
+    "original": "\"ARG OS\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 20,
+    "end_line": 20,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy [\\\"--from=test\\\"] \\\"/x\\\" \\\"/x\\\"\"",
+    "original": "\"COPY --from=test /x /x\"",
+    "flags": [
+     "\"--from=test\""
+    ],
+    "attributes": null,
+    "start_line": 21,
+    "end_line": 21,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run [\\\"--mount=type=ssh,id=gh,required=true\\\" \\\"--mount=type=secret,target=/run/key\\\"] \\\"true\\\"\"",
+    "original": "\"RUN --mount=type=ssh,id=gh,required=true --mount=type=secret,target=/run/key true\"",
+    "flags": [
+     "\"--mount=type=ssh,id=gh,required=true\"",
+     "\"--mount=type=secret,target=/run/key\""
+    ],
+    "attributes": null,
+    "start_line": 22,
+    "end_line": 22,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
   "file": "corpus/plan/platform-cross.Dockerfile",
   "escape": "\"\\\\\"",
   "dump": "\"(from [\\\"--platform=linux/arm64\\\"] \\\"armimg\\\" \\\"AS\\\" \\\"arm\\\")\\n(run \\\"uname -m\\\")\\n(from [\\\"--platform=$TARGETPLATFORM\\\"] \\\"alpine\\\" \\\"AS\\\" \\\"redundant\\\")\\n(from [\\\"--platform=linux/amd64\\\"] \\\"alpine\\\" \\\"AS\\\" \\\"const\\\")\\n(from [\\\"--platform=$BUILDPLATFORM\\\"] \\\"alpine\\\")\\n(copy [\\\"--from=arm\\\"] \\\"/x\\\" \\\"/x\\\")\"",

@@ -34,5 +34,6 @@ pub mod llb;
 pub mod parser;
 pub mod plan;
 pub mod platform;
+pub mod subrequests;
 mod tables;
 pub mod url;

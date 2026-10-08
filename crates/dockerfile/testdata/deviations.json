@@ -1889,5 +1889,13 @@
     }
    ]
   }
+ },
+ {
+  "kind": "subrequests",
+  "file": "corpus/plan/suggest-library.Dockerfile",
+  "reason": "As the plan's: BuildKit's commonImageNames joins docker.io/library and each name without the slash; shards suggests docker.io/library/<name>.",
+  "fields": {
+   "outline_error": "\"docker.io/library/alpne: docker.io/library/alpne:latest: not found (did you mean docker.io/library/alpine?)\""
+  }
  }
 ]

@@ -1251,6 +1251,71 @@ fn an_images_volumes_are_anonymous_volumes_at_run() {
     assert_eq!(shards(&["volume", "ls", "-q"]).stdout, "");
 }
 
+/// `--call=outline`, `targets` and `subrequests.describe`, answered as buildx prints
+/// BuildKit's frontend's answers (their every byte held to BuildKit's by the Dockerfile
+/// oracle): the target's arguments, secrets and SSH agents; the stages; the subrequests;
+/// each as text, and as result.json with `format=json`; nothing built.
+#[test]
+fn call_answers_the_frontends_subrequests() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("build-call-home");
+    let ctx = context(
+        "build-call-ctx",
+        &format!(
+            "# VERSION is stamped in\nARG VERSION=dev\n\n# app is what runs\nFROM {image} AS app\nARG VERSION\n\
+             RUN --mount=type=secret,id=token,required=true --mount=type=ssh true\n"
+        ),
+    );
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let outline = shards(&[
+        "build",
+        "--call=outline",
+        "--build-arg",
+        "VERSION=2",
+        ctx.to_str().unwrap(),
+    ]);
+    assert_eq!(outline.status, Some(0), "{}", outline.stderr);
+    // The stage's ARG, given a value, is the one listed, as BuildKit lists it: the global
+    // ARG's comment is not its.
+    assert_eq!(
+        outline.stdout,
+        "TARGET:      app\nDESCRIPTION: is what runs\n\nBUILD ARG   VALUE   DESCRIPTION\nVERSION     2       \n\n\
+         SECRET   REQUIRED\ntoken    true\n\nSSH       REQUIRED\ndefault   \n\n"
+    );
+    let json = shards(&["build", "--call=outline,format=json", ctx.to_str().unwrap()]);
+    assert_eq!(json.status, Some(0), "{}", json.stderr);
+    let v: serde_json::Value = serde_json::from_str(&json.stdout).unwrap();
+    assert_eq!(v["name"], "app");
+    // Inherited from the global ARG without a value of its own: the global's, comment and
+    // all.
+    assert_eq!(v["args"][0]["value"], "dev");
+    assert_eq!(v["args"][0]["description"], "is stamped in");
+    assert_eq!(v["secrets"][0]["required"], true);
+    let targets = shards(&["build", "--call=targets", ctx.to_str().unwrap()]);
+    assert_eq!(
+        targets.stdout,
+        "TARGET        DESCRIPTION\napp (default) is what runs\n"
+    );
+    let described = shards(&["build", "--call=subrequests.describe", ctx.to_str().unwrap()]);
+    assert!(
+        described
+            .stdout
+            .starts_with("NAME                 VERSION DESCRIPTION\noutline "),
+        "{}",
+        described.stdout
+    );
+    // Nothing was built: the one image is the base the outline resolved.
+    assert_eq!(shards(&["images", "-q"]).stdout.lines().count(), 1);
+}
+
 /// Each request a test server was sent: its path, and its fields.
 type Asked = std::sync::Arc<std::sync::Mutex<Vec<(String, Vec<String>)>>>;
 
@@ -3416,11 +3481,11 @@ fn check_says_the_builds_warnings_as_buildx_does() {
         "{}",
         debugged.stderr
     );
-    let refused = shards(&["build", "--call", "outline", ctx.to_str().unwrap()]);
+    let refused = shards(&["build", "--call", "check,format=json", ctx.to_str().unwrap()]);
     assert!(
         refused
             .stderr
-            .contains("--call=outline is not supported by shards yet"),
+            .contains("--call=check with format=json is not supported by shards yet"),
         "{}",
         refused.stderr
     );

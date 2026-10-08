@@ -35,6 +35,9 @@ import (
 	"github.com/moby/buildkit/frontend/dockerfile/dockerfile2llb"
 	"github.com/moby/buildkit/frontend/dockerfile/instructions"
 	"github.com/moby/buildkit/frontend/dockerui"
+	"github.com/moby/buildkit/frontend/subrequests"
+	"github.com/moby/buildkit/frontend/subrequests/outline"
+	"github.com/moby/buildkit/frontend/subrequests/targets"
 	gwclient "github.com/moby/buildkit/frontend/gateway/client"
 	gwpb "github.com/moby/buildkit/frontend/gateway/pb"
 	fstypes "github.com/tonistiigi/fsutil/types"
@@ -442,15 +445,14 @@ func parseUlimits(v string) ([]*pb.Ulimit, error) {
 	return out, nil
 }
 
-// What BuildKit's Dockerfile2LLB plans for a file: every operation of its graph, in an
-// order each input comes before what uses it, with inputs by that order; each op's
-// metadata; the image config; and the build checks' warnings. Or its error.
-func planFile(root, rel string, images resolver) map[string]any {
+// The options BuildKit's frontend gives Dockerfile2LLB for a file of the corpus: its
+// .opts.json read as buildx and dockerui pass them, the fake images, and `warn` for the
+// checks' warnings.
+func convertOpt(root, rel string, images resolver, warn func(string)) ([]byte, dockerfile2llb.ConvertOpt) {
 	data, err := os.ReadFile(filepath.Join(root, rel))
 	if err != nil {
 		panic(err)
 	}
-	out := map[string]any{"file": rel}
 	var opts planOpts
 	if o, err := os.ReadFile(filepath.Join(root, rel+".opts.json")); err == nil {
 		if err := json.Unmarshal(o, &opts); err != nil {
@@ -461,7 +463,6 @@ func planFile(root, rel string, images resolver) map[string]any {
 	if err != nil {
 		panic(err)
 	}
-	var warnings []string
 	platform := ocispecs.Platform{OS: "linux", Architecture: "amd64"}
 	caps := pb.Caps.CapSet(pb.Caps.All())
 	var named *dockerui.Client
@@ -500,16 +501,96 @@ func planFile(root, rel string, images resolver) map[string]any {
 		cfg.NetworkMode = named.Config.NetworkMode
 		cfg.LinuxResources = named.Config.LinuxResources
 	}
-	res, err := dockerfile2llb.Dockerfile2LLB(context.Background(), data, dockerfile2llb.ConvertOpt{
+	return data, dockerfile2llb.ConvertOpt{
 		Client:         named,
 		Config:         cfg,
 		TargetPlatform: &platform,
 		MetaResolver:   images,
 		LLBCaps:        &caps,
 		Warn: func(rule, desc, url, msg string, loc []parser.Range) {
-			warnings = append(warnings, q(fmt.Sprintf("%s|%s|%s", rule, msg, rangesText(loc))))
+			if warn != nil {
+				warn(q(fmt.Sprintf("%s|%s|%s", rule, msg, rangesText(loc))))
+			}
 		},
-	})
+	}
+}
+
+// What BuildKit's frontend answers a file's subrequests with (dockerui's
+// HandleSubrequest): the outline of its target, as Dockerfile2Outline makes it, and its
+// stages, as ListTargets lists them, each its result.json and the text buildx prints of
+// it (printValue: PrintOutline, PrintTargets), or its error.
+func subrequestsFile(root, rel string, images resolver) map[string]any {
+	out := map[string]any{"file": rel}
+	data, opt := convertOpt(root, rel, images, nil)
+	if o, err := dockerfile2llb.Dockerfile2Outline(context.Background(), data, opt); err != nil {
+		out["outline_error"] = q(err.Error())
+	} else {
+		res, err := o.ToResult()
+		if err != nil {
+			panic(err)
+		}
+		out["outline"] = q(string(res.Metadata["result.json"]))
+		b := bytes.NewBuffer(nil)
+		if err := outline.PrintOutline(res.Metadata["result.json"], b); err != nil {
+			panic(err)
+		}
+		out["outline_text"] = q(b.String())
+	}
+	// ListTargets parses with no linter, which a stage's `check=` comment dereferences:
+	// BuildKit's frontend panics there, recorded as such.
+	l, err := func() (l *targets.List, err error) {
+		defer func() {
+			if r := recover(); r != nil {
+				err = fmt.Errorf("panic: %v", r)
+			}
+		}()
+		return dockerfile2llb.ListTargets(context.Background(), data)
+	}()
+	if err != nil {
+		out["targets_error"] = q(err.Error())
+	} else {
+		res, err := l.ToResult()
+		if err != nil {
+			panic(err)
+		}
+		out["targets"] = q(string(res.Metadata["result.json"]))
+		b := bytes.NewBuffer(nil)
+		if err := targets.PrintTargets(res.Metadata["result.json"], b); err != nil {
+			panic(err)
+		}
+		out["targets_text"] = q(b.String())
+	}
+	return out
+}
+
+// The subrequests the Dockerfile frontend describes (dockerui's describe, with Outline
+// and ListTargets set, as the frontend sets them): result.json and the text buildx
+// prints of it.
+func describeFile() map[string]any {
+	all := []subrequests.Request{
+		outline.SubrequestsOutlineDefinition,
+		targets.SubrequestsTargetsDefinition,
+		subrequests.SubrequestsDescribeDefinition,
+	}
+	dt, err := json.MarshalIndent(all, "", "  ")
+	if err != nil {
+		panic(err)
+	}
+	b := bytes.NewBuffer(nil)
+	if err := subrequests.PrintDescribe(dt, b); err != nil {
+		panic(err)
+	}
+	return map[string]any{"json": q(string(dt)), "text": q(b.String())}
+}
+
+// What BuildKit's Dockerfile2LLB plans for a file: every operation of its graph, in an
+// order each input comes before what uses it, with inputs by that order; each op's
+// metadata; the image config; and the build checks' warnings. Or its error.
+func planFile(root, rel string, images resolver) map[string]any {
+	out := map[string]any{"file": rel}
+	var warnings []string
+	data, opt := convertOpt(root, rel, images, func(w string) { warnings = append(warnings, w) })
+	res, err := dockerfile2llb.Dockerfile2LLB(context.Background(), data, opt)
 	out["warnings"] = warnings
 	if err != nil {
 		out["error"] = q(err.Error())
@@ -980,6 +1061,16 @@ func main() {
 		}
 	}
 	writeJSON(filepath.Join(testdata, "plan.json"), plans)
+	var subs []map[string]any
+	for _, f := range files {
+		if strings.HasPrefix(f, "corpus/plan/") {
+			subs = append(subs, subrequestsFile(testdata, f, images))
+		}
+	}
+	writeJSON(filepath.Join(testdata, "subrequests.json"), map[string]any{
+		"describe": describeFile(),
+		"files":    subs,
+	})
 	configsFile(testdata)
 	sizesFile(testdata)
 	urlsFile(testdata)

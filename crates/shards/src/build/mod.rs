@@ -1260,6 +1260,42 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
     };
     let call = call_of(parsed)?;
     let debug = parsed.bool("debug");
+    // A subrequest, answered as buildx prints its result (commands/build.go printValue):
+    // result.json and a newline for format=json, else the text of it; nothing built.
+    let answer = |json: bool, result: String, text: String| {
+        let out = if json { format!("{result}\n") } else { text };
+        let _ = write!(std::io::stdout(), "{out}");
+    };
+    let failed = |e: plan::Error| {
+        let mut out = String::new();
+        for loc in &e.location {
+            out.push_str(&excerpt(&name, &text, loc));
+        }
+        let _ = write!(std::io::stderr(), "{out}");
+        print_warnings(&e.warnings, quiet, debug, &name, &text);
+        format!("failed to build: failed to solve: {}", show(&e.message))
+    };
+    match call {
+        Some(Call::Outline { json }) => {
+            let o = plan::outline(&text, &opts, &bases).map_err(failed)?;
+            answer(json, o.json(), o.text());
+            return Ok(());
+        }
+        Some(Call::Targets { json }) => {
+            let t = plan::targets(&text, opts.dialect).map_err(failed)?;
+            answer(json, t.json(), t.text());
+            return Ok(());
+        }
+        Some(Call::Describe { json }) => {
+            answer(
+                json,
+                shards_dockerfile::subrequests::DESCRIBE.to_string(),
+                shards_dockerfile::subrequests::describe_text(),
+            );
+            return Ok(());
+        }
+        _ => {}
+    }
     let plan = match plan::plan(&text, &opts, &bases) {
         Ok(p) => p,
         Err(e) => {
@@ -1274,7 +1310,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
     };
     // --call=check: the build's checks, said as buildx says the lint subrequest's result
     // (commands/build.go printResult), and nothing built.
-    if let Some((ignore_status, _)) = call {
+    if let Some(Call::Check { ignore_status }) = call {
         let n = plan.warnings.len();
         let mut out = String::new();
         if n > 0 {
@@ -2880,7 +2916,28 @@ fn sha256(bytes: &[u8]) -> Digest {
 /// `--call`'s method as buildx reads it (util/buildflags/callfunc.go `ParseCallFunc`,
 /// `--check` its shorthand): none to build; for a check, whether its status is ignored and
 /// its format. Methods shards does not serve yet are refused.
-fn call_of(parsed: &Parsed) -> Result<Option<(bool, String)>, String> {
+/// What `--call` (or `--check`) asks of the frontend instead of a build.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Call {
+    /// The build's checks; with `ignorestatus`, exit 0 whatever they found.
+    Check {
+        ignore_status: bool,
+    },
+    /// A subrequest: the target's outline, the targets, or the subrequests; `json` for
+    /// `format=json`.
+    Outline {
+        json: bool,
+    },
+    Targets {
+        json: bool,
+    },
+    Describe {
+        json: bool,
+    },
+}
+
+/// `--call`, as buildx v0.37.1 reads it (util/buildflags/callfunc.go ParseCallFunc).
+fn call_of(parsed: &Parsed) -> Result<Option<Call>, String> {
     let given = if parsed.bool("check") {
         "check"
     } else {
@@ -2904,12 +2961,19 @@ fn call_of(parsed: &Parsed) -> Result<Option<(bool, String)>, String> {
             None => name = f,
         }
     }
+    // printValue prints result.json for json, and the text for any other format.
+    let json = format == "json";
     match name.as_str() {
         "build" => Ok(None),
-        "check" | "lint" if format.is_empty() => Ok(Some((ignore, format))),
+        "check" | "lint" if format.is_empty() => Ok(Some(Call::Check {
+            ignore_status: ignore,
+        })),
         "check" | "lint" => Err(format!(
             "--call=check with format={format} is not supported by shards yet"
         )),
+        "outline" => Ok(Some(Call::Outline { json })),
+        "targets" => Ok(Some(Call::Targets { json })),
+        "subrequests.describe" => Ok(Some(Call::Describe { json })),
         other => Err(format!("--call={other} is not supported by shards yet")),
     }
 }
