@@ -378,6 +378,41 @@ impl Parsed {
             .map_or("", |f| f.default)
     }
 
+    /// This command line with flag `name` holding `value`, or as though it were never
+    /// given: what a part of the command is asked, such as one platform's build of
+    /// several. A flag the command does not have is left as it is.
+    fn with(&self, name: &str, value: Option<Value>) -> Parsed {
+        let mut p = self.clone();
+        if let Some(i) = p.index(name) {
+            let owner = p.owner(i);
+            let set = value.is_some();
+            if let Some(v) = p.values.get_mut(owner) {
+                *v = value;
+            }
+            for at in [i, owner] {
+                if let Some(s) = p.set.get_mut(at) {
+                    *s = set;
+                }
+            }
+        }
+        p
+    }
+
+    /// [`with`](Self::with) a list flag's values; none, as though never given.
+    pub fn with_many(&self, name: &str, values: Vec<String>) -> Parsed {
+        self.with(name, (!values.is_empty()).then_some(Value::Many(values)))
+    }
+
+    /// [`with`](Self::with) a text flag's value; empty, as though never given.
+    pub fn with_text(&self, name: &str, value: &str) -> Parsed {
+        self.with(name, (!value.is_empty()).then(|| Value::Text(value.to_string())))
+    }
+
+    /// [`with`](Self::with) a bool flag's value; false, as though never given.
+    pub fn with_bool(&self, name: &str, value: bool) -> Parsed {
+        self.with(name, value.then_some(Value::Bool(true)))
+    }
+
     /// Whether the command line set flag `name`, to anything.
     pub fn changed(&self, name: &str) -> bool {
         self.index(name)

@@ -338,7 +338,7 @@ impl<D: Disk> Daemon<D> {
             return id.trim().to_string();
         }
         let id = new_id().unwrap_or_default();
-        let _ = std::fs::create_dir_all(self.home.join("networks"));
+        let _ = crate::networks::make_dir(&self.home.join("networks"));
         let _ = std::fs::write(&path, &id);
         id
     }

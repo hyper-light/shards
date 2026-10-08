@@ -449,7 +449,10 @@ impl Store {
             return Ok((v, false));
         }
         let dir = self.root.join(&name);
-        std::fs::create_dir_all(self.data(&name))
+        // Each level made in turn, the home not among them: a removed home stays removed.
+        [&self.root, &dir, &self.data(&name)]
+            .into_iter()
+            .try_for_each(|d| crate::networks::make_dir(d))
             .map_err(|e| format!("error while creating volume root path '{}': {e}", dir.display()))?;
         let v = Volume {
             name: name.clone(),

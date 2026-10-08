@@ -117,7 +117,7 @@ impl Store {
 
     /// Keeps `n`, whole or not at all.
     pub fn put(&self, n: &Network) -> Result<(), String> {
-        std::fs::create_dir_all(&self.root).map_err(|e| format!("network {}: {e}", n.name))?;
+        make_dir(&self.root).map_err(|e| format!("network {}: {e}", n.name))?;
         let text = serde_json::to_vec(n).map_err(|e| e.to_string())?;
         let tmp = self.root.join(format!(".{}.json", n.id));
         std::fs::write(&tmp, &text).map_err(|e| format!("network {}: {e}", n.name))?;
@@ -127,6 +127,15 @@ impl Store {
 
     pub fn remove(&self, id: &str) -> Result<(), String> {
         std::fs::remove_file(self.root.join(format!("{id}.json"))).map_err(|e| e.to_string())
+    }
+}
+
+/// `dir`, made if it is not there, in a home that must be: a home that has been removed
+/// is never made again by what writes in it (a daemon going on writing as it ends).
+pub fn make_dir(dir: &std::path::Path) -> std::io::Result<()> {
+    match std::fs::create_dir(dir) {
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        r => r,
     }
 }
 

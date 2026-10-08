@@ -599,39 +599,52 @@ pub fn attestation(statement_digest: &str, statement_size: usize) -> (String, St
 
 /// The index of the image and its attestation, which the image's ID names.
 pub fn index(image: (&str, usize), platform: (&str, &str, &str), attestation: (&str, usize)) -> String {
-    let (arch, os, variant) = platform;
-    let mut p = vec![("architecture", Json::s(arch)), ("os", Json::s(os))];
-    if !variant.is_empty() {
-        p.push(("variant", Json::s(variant)));
+    index_of(
+        &[(image.0, image.1, platform)],
+        &[(attestation.0, attestation.1, image.0)],
+    )
+}
+
+/// The index of an image's `manifests` (digest, size, platform: architecture, OS,
+/// variant), then their `attestations` (digest, size, and the manifest each attests), as
+/// BuildKit's exporter writes it, platforms first (measured: Docker 29.3.1, D77).
+pub fn index_of(
+    manifests: &[(&str, usize, (&str, &str, &str))],
+    attestations: &[(&str, usize, &str)],
+) -> String {
+    let mut entries = Vec::new();
+    for &(digest, size, (arch, os, variant)) in manifests {
+        let mut p = vec![("architecture", Json::s(arch)), ("os", Json::s(os))];
+        if !variant.is_empty() {
+            p.push(("variant", Json::s(variant)));
+        }
+        entries.push(descriptor(
+            shards_image::oci::media::OCI_MANIFEST,
+            digest,
+            size,
+            &[],
+            Some(Json::obj(p)),
+        ));
+    }
+    for &(digest, size, of) in attestations {
+        entries.push(descriptor(
+            shards_image::oci::media::OCI_MANIFEST,
+            digest,
+            size,
+            &[
+                ("vnd.docker.reference.digest", of),
+                ("vnd.docker.reference.type", "attestation-manifest"),
+            ],
+            Some(Json::obj(vec![
+                ("architecture", Json::s("unknown")),
+                ("os", Json::s("unknown")),
+            ])),
+        ));
     }
     Json::obj(vec![
         ("schemaVersion", Json::Int(2)),
         ("mediaType", Json::s(shards_image::oci::media::OCI_INDEX)),
-        (
-            "manifests",
-            Json::Arr(vec![
-                descriptor(
-                    shards_image::oci::media::OCI_MANIFEST,
-                    image.0,
-                    image.1,
-                    &[],
-                    Some(Json::obj(p)),
-                ),
-                descriptor(
-                    shards_image::oci::media::OCI_MANIFEST,
-                    attestation.0,
-                    attestation.1,
-                    &[
-                        ("vnd.docker.reference.digest", image.0),
-                        ("vnd.docker.reference.type", "attestation-manifest"),
-                    ],
-                    Some(Json::obj(vec![
-                        ("architecture", Json::s("unknown")),
-                        ("os", Json::s("unknown")),
-                    ])),
-                ),
-            ]),
-        ),
+        ("manifests", Json::Arr(entries)),
     ])
     .indented(0)
 }
@@ -877,7 +890,7 @@ mod tests {
                         &[md["image.name"].as_str().unwrap().to_string()],
                     )),
                     &BTreeMap::new(),
-                    Some(&buildinfo(&capture, &run)),
+                    &[(None, &buildinfo(&capture, &run))],
                     shards_image::oci::media::OCI_INDEX,
                 );
                 assert_eq!(ours.replace("shards/shards/", "default/default/"), *recorded_md);

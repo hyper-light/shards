@@ -1375,6 +1375,8 @@ mod tests {
             // Its mount points, as the daemon registers them, its volumes in a store of
             // the test's.
             let home = std::env::temp_dir().join(format!("shards-inspect-{}", std::process::id()));
+            // A home the store writes in, as the daemon's is made before it writes there.
+            std::fs::create_dir_all(&home).unwrap();
             let store = crate::volumes::Store::new(&home);
             let mounts = crate::volumes::register(&store, &run, &run.volumes, &|_| Ok(Vec::new()))
                 .unwrap()

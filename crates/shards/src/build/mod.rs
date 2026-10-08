@@ -42,6 +42,7 @@ mod git;
 pub(crate) mod http;
 #[cfg(unix)]
 mod live;
+mod multi;
 mod output;
 mod provenance;
 mod remote;
@@ -480,7 +481,7 @@ pub(crate) fn host_memory() -> Option<u64> {
 }
 
 /// A base image as the build resolved it.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 struct Base {
     image: Image,
     layers: Vec<Layer>,
@@ -506,16 +507,30 @@ struct Bases<'a> {
     /// The build's secrets and SSH agents, for a Git source SOURCE_DATE_EPOCH names.
     secrets: &'a BTreeMap<String, buildflags::SecretBytes>,
     agents: &'a Agents,
+    /// What each name resolved to for each platform: asked again, the same, and no step
+    /// of its own, as BuildKit's resolve is one vertex for its identifier and platform
+    /// (llbsolver/bridge.go resolveSourceMetadata).
+    answered: RefCell<Answered>,
 }
+
+/// Base images as resolved, by name and platform.
+type Answered = BTreeMap<(Vec<u8>, Vec<u8>), Resolved>;
 
 impl Resolver for Bases<'_> {
     fn resolve(&self, name: &[u8], platform: &Platform, log: &[u8]) -> Result<Resolved, Vec<u8>> {
+        let key = (name.to_vec(), platform::format_all(platform));
+        if let Some(r) = self.answered.borrow().get(&key) {
+            return Ok(r.clone());
+        }
         let name = String::from_utf8_lossy(name).into_owned();
         let v = self.progress.borrow_mut().start(&String::from_utf8_lossy(log));
         let r = self.fetch(&name, platform);
         let progress = self.progress.borrow();
         match &r {
-            Ok(_) => progress.done(&v),
+            Ok(resolved) => {
+                progress.done(&v);
+                self.answered.borrow_mut().insert(key, resolved.clone());
+            }
             Err(e) => progress.error(&v, &String::from_utf8_lossy(e)),
         }
         r
@@ -1173,17 +1188,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
     let resource_attrs = buildflags::resource_attrs(&resources)?;
     // The platforms, read as buildx reads them after the resource limits.
     let target_platforms = target_platforms(parsed.many("platform"), &host_platform())?;
-    if target_platforms.len() > 1 {
-        return Err(format!(
-            "building for several platforms at once ({}) is not supported by shards yet: build each with its own --platform",
-            target_platforms
-                .iter()
-                .map(|p| show(&platform::format(p)))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ));
-    }
-    let target_platform = target_platforms.into_iter().next().unwrap_or_else(host_platform);
+    let target_platform = target_platforms.first().cloned().unwrap_or_else(host_platform);
     let mut agents: Agents = buildflags::ssh_agents(
         &buildflags::parse_ssh(parsed.many("ssh")),
         &|k| std::env::var(k).ok(),
@@ -1282,7 +1287,8 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
     let host = host_platform();
     let progress = RefCell::new(Progress {
         quiet,
-        next: 0,
+        // A platform's build of several numbers on from the one before it.
+        next: multi::with(|s| s.next).unwrap_or(0),
         // `auto` or `tty` on a colour terminal: shards' own display.
         #[cfg(unix)]
         live: if !quiet && matches!(asked, "auto" | "tty") {
@@ -1291,25 +1297,35 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
             None
         },
     });
-    progress
-        .borrow()
-        .say("#0 building with \"shards\" instance using shards driver\n");
+    // Said once of a build of several platforms, not again by each platform's.
+    if !multi::active() {
+        progress
+            .borrow()
+            .say("#0 building with \"shards\" instance using shards driver\n");
+    }
 
     let (name, text, beside) = {
         let shown = definition(parsed, &context).1;
-        let v = progress
-            .borrow_mut()
-            .start(&format!("[internal] load build definition from {shown}"));
-        match dockerfile(parsed, &context) {
-            Ok((name, text, ignore)) => {
-                let p = progress.borrow();
-                p.line(&v, &format!("read {} done", human_size(text.len() as u64)));
-                p.done(&v);
-                (name, text, ignore)
-            }
-            Err(e) => {
-                progress.borrow().error(&v, &e);
-                return Err(format!("failed to build: failed to solve: {e}"));
+        // A platform's build of several reads it again, said once by the build of them.
+        if multi::active() {
+            let (name, text, ignore) =
+                dockerfile(parsed, &context).map_err(|e| format!("failed to build: failed to solve: {e}"))?;
+            (name, text, ignore)
+        } else {
+            let v = progress
+                .borrow_mut()
+                .start(&format!("[internal] load build definition from {shown}"));
+            match dockerfile(parsed, &context) {
+                Ok((name, text, ignore)) => {
+                    let p = progress.borrow();
+                    p.line(&v, &format!("read {} done", human_size(text.len() as u64)));
+                    p.done(&v);
+                    (name, text, ignore)
+                }
+                Err(e) => {
+                    progress.borrow().error(&v, &e);
+                    return Err(format!("failed to build: failed to solve: {e}"));
+                }
             }
         }
     };
@@ -1342,7 +1358,8 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
         store: &store,
         pull: parsed.bool("pull"),
         progress: &progress,
-        resolved: RefCell::new(BTreeMap::new()),
+        resolved: RefCell::new(multi::with(|sub| std::mem::take(&mut sub.bases)).unwrap_or_default()),
+        answered: RefCell::new(multi::with(|sub| std::mem::take(&mut sub.answered)).unwrap_or_default()),
         artifacts: RefCell::new(BTreeMap::new()),
         secrets: &secrets,
         agents: &agents,
@@ -1368,7 +1385,8 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
         labels: build_args(parsed.many("label"), false),
         hostname: Vec::new(),
         ulimits,
-        multi_platform: false,
+        // One platform's build of several: its steps named with its platform.
+        multi_platform: multi::active(),
         context_id: format!("shards-{}", std::process::id()).into_bytes(),
         excludes,
         dialect: dialect_of(&name),
@@ -1480,6 +1498,19 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
         }
         _ => {}
     }
+    // Several platforms: each built as one of several, then their one image (D77).
+    if target_platforms.len() > 1 && !multi::active() {
+        return multi::run(
+            parsed,
+            status,
+            &outputs,
+            &target_platforms,
+            &progress,
+            &provenance_asked,
+            &descriptor_annotations,
+            pushes,
+        );
+    }
     let plan = match plan::plan(&text, &opts, &bases) {
         Ok(p) => p,
         Err(e) => {
@@ -1493,7 +1524,10 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
         }
     };
     {
-        if let Some(found) = &context_ignore {
+        // Said once of a build of several platforms, by its first platform's.
+        if let Some(found) = &context_ignore
+            && multi::with(|sub| sub.first).unwrap_or(true)
+        {
             let v = progress.borrow_mut().start("[internal] load .dockerignore");
             if let Some(t) = found {
                 progress
@@ -2279,6 +2313,13 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
             matches!(o.dest, buildflags::Dest::Store)
                 && matches!(o.kind.as_str(), "image" | "moby" | "docker")
         });
+    // One platform's build of several attests its layout always: the build of them
+    // decides what its image carries (D77).
+    let layout_provenance = if multi::active() {
+        Some((&capture, &everywhere_facts))
+    } else {
+        everywhere_provenance
+    };
     if !kept && !pushes {
         drop(exec);
         drop(flat);
@@ -2292,7 +2333,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
                 manifest_digest: &manifest_digest,
                 layers: &layers,
                 descriptor_annotations: &descriptor_annotations,
-                provenance: everywhere_provenance,
+                provenance: layout_provenance,
             },
             parsed.many("tag"),
             plan.epoch,
@@ -2325,13 +2366,19 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
             _ => (&manifest_digest, manifest.len(), oci::media::OCI_MANIFEST),
         };
         let info = everywhere.then(|| provenance::buildinfo(&capture, &everywhere_facts));
+        multi::with(|sub| {
+            sub.provenance = Some(provenance::buildinfo(&capture, &everywhere_facts));
+            sub.next = progress.borrow().next;
+            sub.answered = bases.answered.take();
+            sub.bases = bases.resolved.take();
+        });
         write_metadata(
             parsed,
             &metadata(
                 &invocation,
                 imaged.then_some((described, size, names.as_slice())),
                 &descriptor_annotations,
-                info.as_ref(),
+                &info.iter().map(|p| (None, p)).collect::<Vec<_>>(),
                 media,
             ),
         )?;
@@ -2529,7 +2576,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
             &invocation,
             Some((described, size, names.as_slice())),
             &descriptor_annotations,
-            attested.as_ref().map(|(_, _, p)| p),
+            &attested.iter().map(|(_, _, p)| (None, p)).collect::<Vec<_>>(),
             media,
         ),
     )?;
@@ -2576,14 +2623,19 @@ fn metadata(
     build_ref: &str,
     image: Option<(&Digest, usize, &[String])>,
     annotations: &BTreeMap<String, String>,
-    provenance: Option<&provenance::Json>,
+    provenance: &[(Option<&str>, &provenance::Json)],
     media_type: &str,
 ) -> String {
     let q = |s: &str| serde_json::Value::from(s).to_string();
     let mut out = String::from("{");
-    // buildx's provenance of the build (v0.2), first of the keys in order.
-    if let Some(p) = provenance {
-        out.push_str(&format!("\n  \"buildx.build.provenance\": {},", p.indented(1)));
+    // buildx's provenance of the build (v0.2), first of the keys in order; one for each
+    // platform of several, `buildx.build.provenance/<platform>`.
+    for (platform, p) in provenance {
+        let key = match platform {
+            Some(pl) => format!("buildx.build.provenance/{pl}"),
+            None => "buildx.build.provenance".to_string(),
+        };
+        out.push_str(&format!("\n  {}: {},", q(&key), p.indented(1)));
     }
     out.push_str(&format!(
         "\n  \"buildx.build.ref\": {}",
@@ -2705,6 +2757,10 @@ fn write_metadata(parsed: &Parsed, text: &str) -> Result<(), String> {
 }
 
 fn finish(parsed: &Parsed, id: &str) -> Result<(), String> {
+    // One platform's build of several says nothing of its own: the build of them does.
+    if multi::active() {
+        return Ok(());
+    }
     let iidfile = parsed.string("iidfile");
     if !iidfile.is_empty() {
         std::fs::write(iidfile, id).map_err(|e| format!("{iidfile}: {e}"))?;
@@ -2716,11 +2772,6 @@ fn finish(parsed: &Parsed, id: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// What BuildKit refuses of the outputs when its solve begins, before any step runs:
-/// an exporter it has none of, a `tar` attribute no bool, an epoch no number, the
-/// `docker` exporter into a directory (the moby exporter writes none), and two OCI
-/// layouts into directories (their store's key is one, `export`: buildkit
-/// client/solve.go).
 /// The compression the image's layers take (D75): what the outputs that hold an image
 /// ask, BuildKit's default where none asks; outputs that ask differently are refused,
 /// named, until each is written its own way.
@@ -2751,6 +2802,11 @@ fn compression_of(outputs: &[buildflags::Output]) -> Result<(compress::Compressi
     Ok(asked.unwrap_or_default())
 }
 
+/// What BuildKit refuses of the outputs when its solve begins, before any step runs:
+/// an exporter it has none of, a `tar` attribute no bool, an epoch no number, the
+/// `docker` exporter into a directory (the moby exporter writes none), and two OCI
+/// layouts into directories (their store's key is one, `export`: buildkit
+/// client/solve.go).
 fn check_outputs(outputs: &[buildflags::Output]) -> Result<(), String> {
     let mut layouts = 0;
     for o in outputs {
@@ -2864,6 +2920,15 @@ fn write_image_outputs(
     build_epoch: Option<i64>,
     progress: &RefCell<Progress>,
 ) -> Result<(), String> {
+    // A platform's build of several writes its layout unseen: the build of them shows
+    // its one export.
+    let hushed = RefCell::new(Progress {
+        quiet: true,
+        next: 0,
+        #[cfg(unix)]
+        live: None,
+    });
+    let progress = if multi::active() { &hushed } else { progress };
     for o in outputs.iter().filter(|o| o.kind == "oci" || o.kind == "docker") {
         if matches!(o.dest, buildflags::Dest::Store) {
             continue;
@@ -3899,7 +3964,7 @@ mod tests {
                 "r",
                 Some((&manifest, 481, &["docker.io/library/app:1".to_string()])),
                 &BTreeMap::new(),
-                None,
+                &[],
                 oci::media::OCI_MANIFEST,
             ),
             format!(
@@ -3907,7 +3972,7 @@ mod tests {
             )
         );
         assert_eq!(
-            metadata("r", None, &BTreeMap::new(), None, oci::media::OCI_MANIFEST),
+            metadata("r", None, &BTreeMap::new(), &[], oci::media::OCI_MANIFEST),
             "{\n  \"buildx.build.ref\": \"shards/shards/r\"\n}"
         );
     }

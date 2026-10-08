@@ -3210,6 +3210,44 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode
 waits on the user.
 
+### D77. `--platform` of several: one image of each platform's build
+
+`build --platform A,B,…` builds each platform as BuildKit's frontend does (dockerui
+`Build`: one result a platform), then writes one image of them, as its exporter does.
+Each platform is built by the build itself, as one of several (`build/multi.rs`): its
+steps named with its platform (the frontend's multi-platform names), into an OCI layout
+of its own, its local outputs into a directory of its platform's name (`linux_amd64`, as
+BuildKit's `platform-split`). What the builds share is said once, as BuildKit's progress
+merges a vertex by its digest: the build definition, the `.dockerignore`, and each base's
+metadata for a platform (`resolveSourceMetadata`'s vertex is its identifier and
+platform), resolved once for them all; steps the platforms share run once, the build
+cache taking each again.
+
+The image is the index of each platform's manifest, in the order asked, then their
+attestations (measured: Docker 29.3.1, two platforms: platforms first, an index of 1,607
+bytes, each manifest 668, each attestation `vnd.docker.reference.digest` its manifest's);
+it is what the names resolve to and the image's ID (the manifest the store runs being
+this host's platform's, else the first's), what `--push` pushes, what an OCI output holds,
+what the ID file and `-q` name, and the metadata file's descriptor, beside
+`buildx.build.provenance/<platform>` for each (measured: Docker's keys). Every platform's
+image is attested unless provenance is off (measured: Docker attests an image of several
+platforms in an OCI output too, where it leaves one platform's unattested, BuildKit
+filtering `inline-only` attestations only from a single platform's export).
+
+A docker archive of several platforms is refused in BuildKit's words (v0.28.1
+exporter/oci: "docker exporter does not currently support exporting manifest lists").
+Refused, named, until measured and made: a tar output of several platforms, a local
+output with `platform-split=false`, and `--cache-to`. Not measured: the
+statements of a build of several platforms against Docker's (each is a build's own, D71).
+Deliberately unlike Docker: a step of the build platform's stage shown for each target
+platform, where BuildKit merges the identical vertex.
+
+Tested: `several_platforms_make_one_image_of_their_manifests` (a cross-compiling
+Dockerfile over a two-platform test image: the order, the attestations and what they
+name, the other platform's base layer, the pushed index, the stored ID, the metadata
+file's keys, the ID file, the OCI layout, the split local output, the refusals),
+mutation-checked (no attestations, the platforms reversed, a local output not split).
+
 ### D76. `rewrite-timestamp`: a build's layers at SOURCE_DATE_EPOCH, as BuildKit writes them
 
 With `rewrite-timestamp=true` and an epoch (SOURCE_DATE_EPOCH, or the output's

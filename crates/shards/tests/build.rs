@@ -6735,8 +6735,7 @@ fn two_platform_image() -> (Vec<u8>, Vec<Vec<u8>>, String) {
 /// platform's, fetched without changing what a name in the store holds; steps for the
 /// build platform run (`FROM --platform=$BUILDPLATFORM`), and what they made is copied into
 /// the image, which is that platform's; a step for that platform is refused at its turn,
-/// before anything boots, in words that say what to do; `local` is this host's platform;
-/// several platforms at once are refused, named.
+/// before anything boots, in words that say what to do; `local` is this host's platform.
 #[test]
 fn builds_for_another_platform_run_only_the_build_platforms_steps() {
     if cannot_run_vms() {
@@ -6862,18 +6861,6 @@ fn builds_for_another_platform_run_only_the_build_platforms_steps() {
     ]);
     assert_eq!(local.status, Some(0), "{}", local.stderr);
     assert_eq!(inspect("local:1"), arch);
-
-    let several = shards(&[
-        "build",
-        "--platform",
-        &format!("linux/{arch},linux/{other}"),
-        stepped.to_str().unwrap(),
-    ]);
-    assert!(
-        several.stderr.contains("building for several platforms at once"),
-        "{}",
-        several.stderr
-    );
 }
 
 /// Layers compressed as BuildKit's exporters compress them (D75): those a build makes
@@ -7079,4 +7066,173 @@ fn rewrite_timestamp_rewrites_the_builds_layers_as_buildkit_does() {
         "{stderr}"
     );
     assert!(layers[1].0.get("annotations").is_none(), "{:?}", layers[1].0);
+}
+
+/// `--platform` of several (D77): each platform built as one of several, its steps named
+/// with it, then one image: the index of each platform's manifest, in the order asked,
+/// then their attestations, which the names resolve to, the ID is, an OCI output holds and
+/// a push sends; a local output split by platform; the metadata file names the index and
+/// each platform's provenance; a docker archive, a tar output and --cache-to refused,
+/// named.
+#[test]
+fn several_platforms_make_one_image_of_their_manifests() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (index, blobs, their_layer) = two_platform_image();
+    let (port, _) = common::registry(index, blobs);
+    let image = format!("127.0.0.1:{port}/test/image:v1");
+    let (push_port, repos) = common::writable_registry();
+    let home = TempDir::new("multi-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let (arch, other) = if cfg!(target_arch = "aarch64") {
+        ("arm64", "amd64")
+    } else {
+        ("amd64", "arm64")
+    };
+    let platforms = format!("linux/{other},linux/{arch}");
+    let ctx = context(
+        "multi-ctx",
+        &format!(
+            "FROM --platform=$BUILDPLATFORM {image} AS build\n\
+             RUN [\"/bin/testguest\", \"fs\", \"write:/work/out=built\"]\n\
+             FROM {image}\n\
+             COPY --from=build /work/out /out\n"
+        ),
+    );
+    let out = TempDir::new("multi-out");
+    let meta = out.join("meta.json");
+    let iid = out.join("iid");
+    let name = format!("127.0.0.1:{push_port}/team/multi:1");
+    let built = shards(&[
+        "build",
+        "--progress=plain",
+        "--platform",
+        &platforms,
+        "-t",
+        &name,
+        "--push",
+        "--metadata-file",
+        meta.to_str().unwrap(),
+        "--iidfile",
+        iid.to_str().unwrap(),
+        ctx.to_str().unwrap(),
+    ]);
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    assert!(
+        built.stderr.contains("] COPY --from=build /work/out /out")
+            && built.stderr.contains(&format!("[linux/{other} stage-1 2/2]")),
+        "{}",
+        built.stderr
+    );
+    assert_eq!(
+        built.stderr.matches("load build definition").count(),
+        1,
+        "{}",
+        built.stderr
+    );
+    let id = std::fs::read_to_string(&iid).unwrap();
+    let written: serde_json::Value = serde_json::from_slice(&std::fs::read(&meta).unwrap()).unwrap();
+    assert_eq!(written["containerimage.digest"], id.as_str(), "{written}");
+    assert_eq!(
+        written["containerimage.descriptor"]["mediaType"],
+        "application/vnd.oci.image.index.v1+json"
+    );
+    for p in [&other, &arch] {
+        assert!(
+            written
+                .get(format!("buildx.build.provenance/linux/{p}"))
+                .is_some(),
+            "{written}"
+        );
+    }
+    // Stored: the name resolves to the index, its ID.
+    let inspected = shards(&["image", "inspect", "--format", "{{.Id}}", &name]);
+    assert_eq!(inspected.stdout.trim(), id, "{}", inspected.stderr);
+    // Pushed: the index, each platform's manifest and its attestation, in order.
+    let repos = repos.lock().unwrap();
+    let manifests = repos.manifests.get("team/multi").expect("the repository pushed");
+    let (_, pushed) = manifests.get("1").expect("its tag pushed");
+    let pushed: serde_json::Value = serde_json::from_slice(pushed).unwrap();
+    let entries = pushed["manifests"].as_array().unwrap();
+    assert_eq!(entries.len(), 4, "{pushed}");
+    assert_eq!(entries[0]["platform"]["architecture"], other, "{pushed}");
+    assert_eq!(entries[1]["platform"]["architecture"], arch, "{pushed}");
+    for (i, of) in [(2, 0), (3, 1)] {
+        assert_eq!(
+            entries[i]["annotations"]["vnd.docker.reference.type"],
+            "attestation-manifest"
+        );
+        assert_eq!(
+            entries[i]["annotations"]["vnd.docker.reference.digest"],
+            entries[of]["digest"]
+        );
+    }
+    let theirs: serde_json::Value =
+        serde_json::from_slice(&manifests.get(entries[0]["digest"].as_str().unwrap()).unwrap().1).unwrap();
+    assert_eq!(theirs["layers"][0]["digest"], their_layer.as_str(), "{theirs}");
+    drop(repos);
+
+    // An OCI layout and a local output of the same build.
+    let layout = out.join("layout");
+    let files = out.join("files");
+    let both = shards(&[
+        "build",
+        "--platform",
+        &platforms,
+        "-o",
+        &format!("type=oci,dest={},tar=false", layout.display()),
+        "-o",
+        &format!("type=local,dest={}", files.display()),
+        ctx.to_str().unwrap(),
+    ]);
+    assert_eq!(both.status, Some(0), "{}", both.stderr);
+    let top: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(layout.join("index.json")).unwrap()).unwrap();
+    assert_eq!(
+        top["manifests"][0]["mediaType"],
+        "application/vnd.oci.image.index.v1+json"
+    );
+    let blob =
+        |d: &str| std::fs::read(layout.join("blobs/sha256").join(d.trim_start_matches("sha256:"))).unwrap();
+    let held: serde_json::Value =
+        serde_json::from_slice(&blob(top["manifests"][0]["digest"].as_str().unwrap())).unwrap();
+    for (i, p) in [other, arch].iter().enumerate() {
+        let m: serde_json::Value =
+            serde_json::from_slice(&blob(held["manifests"][i]["digest"].as_str().unwrap())).unwrap();
+        let c: serde_json::Value =
+            serde_json::from_slice(&blob(m["config"]["digest"].as_str().unwrap())).unwrap();
+        assert_eq!(c["architecture"], *p, "{c}");
+        assert_eq!(
+            std::fs::read(files.join(format!("linux_{p}")).join("out")).unwrap(),
+            b"built"
+        );
+    }
+
+    for (output, words) in [
+        (
+            "type=docker,dest=x.tar",
+            "docker exporter does not currently support exporting manifest lists",
+        ),
+        (
+            "type=tar,dest=x.tar",
+            "a tar output of several platforms is not supported by shards yet",
+        ),
+    ] {
+        let refused = shards(&[
+            "build",
+            "--platform",
+            &platforms,
+            "-o",
+            output,
+            ctx.to_str().unwrap(),
+        ]);
+        assert_eq!(refused.status, Some(1), "{}", refused.stderr);
+        assert!(refused.stderr.contains(words), "{}", refused.stderr);
+    }
 }

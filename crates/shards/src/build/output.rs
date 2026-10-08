@@ -650,122 +650,21 @@ pub fn layout_dir(
         }
     }
 
-    let index_path = dest.join("index.json");
-    let lock_path = dest.join("index.json.lock");
-    let lock = std::fs::File::create(&lock_path).map_err(|e| at(&lock_path, e))?;
-    if lock.try_lock().is_err() {
-        return Err(format!("could not lock {}", lock_path.display()));
-    }
-    let written = (|| {
-        std::fs::write(dest.join("oci-layout"), LAYOUT).map_err(|e| at(dest, e))?;
-        set_mode(&dest.join("oci-layout"), 0o644).map_err(|e| at(dest, e))?;
-        let old = match std::fs::read(&index_path) {
-            Ok(b) => b,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Vec::new(),
-            Err(e) => return Err(at(&index_path, e)),
-        };
-        let mut index: serde_json::Value = if old.is_empty() {
-            serde_json::json!({})
-        } else {
-            serde_json::from_slice(&old).map_err(|e| {
-                format!(
-                    "could not unmarshal {} ({}): {e}",
-                    index_path.display(),
-                    json_string(&old)
-                )
-            })?
-        };
-        let mut manifests: Vec<serde_json::Value> = index
-            .get_mut("manifests")
-            .and_then(|m| m.as_array_mut())
-            .map(std::mem::take)
-            .unwrap_or_default();
-        let platform: serde_json::Value =
-            serde_json::from_str(&platform(made.config)?).map_err(|e| e.to_string())?;
-        let mut base: serde_json::Map<String, serde_json::Value> = made
-            .descriptor_annotations
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone().into()))
-            .collect();
-        base.insert("org.opencontainers.image.created".into(), created.into());
-        let tagged: Vec<(String, String)> = if names.is_empty() {
-            vec![(String::new(), "latest".into())]
-        } else {
-            names.iter().map(|n| (n.to_string(), ref_name(n))).collect()
-        };
-        for (image, reference) in tagged {
-            let mut a = base.clone();
-            if !image.is_empty() {
-                a.insert("io.containerd.image.name".into(), image.clone().into());
-            }
-            a.insert(
-                "org.opencontainers.image.ref.name".into(),
-                reference.clone().into(),
-            );
-            let annotation = |m: &serde_json::Value, k: &str| {
-                m.get("annotations")
-                    .and_then(|a| a.get(k))
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or("")
-                    .to_string()
-            };
-            manifests.retain(|m| {
-                annotation(m, "org.opencontainers.image.ref.name") != reference
-                    || annotation(m, "io.containerd.image.name") != image
-            });
-            manifests.push(match &attestation {
-                Some(att) => serde_json::json!({
-                    "mediaType": OCI_INDEX,
-                    "digest": att.index.0.to_string(),
-                    "size": att.index.1,
-                    "annotations": a,
-                }),
-                None => serde_json::json!({
-                    "mediaType": manifest_type,
-                    "digest": made.manifest_digest.to_string(),
-                    "size": manifest.len(),
-                    "annotations": a,
-                    "platform": platform,
-                }),
-            });
-        }
-        let schema = index
-            .get("schemaVersion")
-            .and_then(serde_json::Value::as_i64)
-            .filter(|&v| v != 0)
-            .unwrap_or(2);
-        let media = index
-            .get("mediaType")
-            .and_then(serde_json::Value::as_str)
-            .filter(|s| !s.is_empty())
-            .unwrap_or(OCI_INDEX)
-            .to_string();
-        let mut doc = format!(
-            r#"{{"schemaVersion":{schema},"mediaType":{}"#,
-            json_string(media.as_bytes())
-        );
-        if let Some(t) = index
-            .get("artifactType")
-            .and_then(serde_json::Value::as_str)
-            .filter(|s| !s.is_empty())
-        {
-            doc.push_str(&format!(r#","artifactType":{}"#, json_string(t.as_bytes())));
-        }
-        let entries: Vec<String> = manifests.iter().map(go_descriptor).collect::<Result<_, _>>()?;
-        doc.push_str(&format!(r#","manifests":[{}]"#, entries.join(",")));
-        if let Some(a) = index
-            .get("annotations")
-            .and_then(serde_json::Value::as_object)
-            .filter(|a| !a.is_empty())
-        {
-            doc.push_str(&format!(r#","annotations":{}"#, string_map(a)));
-        }
-        doc.push('}');
-        std::fs::write(&index_path, doc).map_err(|e| at(&index_path, e))
-    })();
-    let _ = lock.unlock();
-    let _ = std::fs::remove_file(&lock_path);
-    written
+    let named = match &attestation {
+        Some(att) => serde_json::json!({
+            "mediaType": OCI_INDEX,
+            "digest": att.index.0.to_string(),
+            "size": att.index.1,
+        }),
+        None => serde_json::json!({
+            "mediaType": manifest_type,
+            "digest": made.manifest_digest.to_string(),
+            "size": manifest.len(),
+            "platform": serde_json::from_str::<serde_json::Value>(&platform(made.config)?)
+                .map_err(|e| e.to_string())?,
+        }),
+    };
+    update_index(dest, &named, made.descriptor_annotations, names, created)
 }
 
 /// An annotation map as Go marshals a map[string]string: keys in order.
@@ -832,6 +731,242 @@ fn set_mode(p: &Path, mode: u32) -> io::Result<()> {
     let mut perm = std::fs::metadata(p)?.permissions();
     perm.set_readonly(mode & 0o200 == 0);
     std::fs::set_permissions(p, perm)
+}
+
+/// An image of several platforms (D77): the index that names them and their
+/// attestations, its digest, and every blob it holds, here in the store.
+pub struct Index<'a> {
+    pub index: &'a [u8],
+    pub digest: &'a Digest,
+    pub blobs: &'a [Digest],
+}
+
+/// [`layout`]'s tar of an image of several platforms: its blobs from the store, the index
+/// named by `index.json` (no platform of its own), records as [`layout`] writes them.
+pub fn layout_index<W: Write>(
+    store: &Store,
+    image: &Index<'_>,
+    names: &[Reference],
+    created: &str,
+    out: W,
+) -> Result<(), String> {
+    let mut records: BTreeMap<String, (u32, Content)> = BTreeMap::new();
+    records.insert("blobs/".into(), (0o755, Content::Dir));
+    records.insert("blobs/sha256/".into(), (0o755, Content::Dir));
+    for d in image.blobs {
+        let path = store.blob_path(d);
+        let len = std::fs::metadata(&path).map_err(|e| format!("{d}: {e}"))?.len();
+        records.insert(blob_name(d), (0o444, Content::File(path, len)));
+    }
+    records.insert(
+        blob_name(image.digest),
+        (0o444, Content::Bytes(image.index.to_vec())),
+    );
+    let base = BTreeMap::from([(
+        "org.opencontainers.image.created".to_string(),
+        created.to_string(),
+    )]);
+    let digest = image.digest.to_string();
+    let mut entries = Vec::new();
+    if names.is_empty() {
+        entries.push(descriptor(OCI_INDEX, &digest, image.index.len(), &base, ""));
+    }
+    for name in names {
+        let mut a = base.clone();
+        a.insert("io.containerd.image.name".into(), name.to_string());
+        a.insert("org.opencontainers.image.ref.name".into(), ref_name(name));
+        entries.push(descriptor(OCI_INDEX, &digest, image.index.len(), &a, ""));
+    }
+    let index = format!(
+        r#"{{"schemaVersion":2,"mediaType":"{OCI_INDEX}","manifests":[{}]}}"#,
+        entries.join(",")
+    );
+    records.insert("index.json".into(), (0o644, Content::Bytes(index.into_bytes())));
+    records.insert("oci-layout".into(), (0o444, Content::Bytes(LAYOUT.to_vec())));
+    let mut tw = gotar::Writer::new(out);
+    for (name, (mode, content)) in &records {
+        let (typeflag, size) = match content {
+            Content::Dir => (gotar::TYPE_DIR, 0),
+            Content::Bytes(b) => (gotar::TYPE_REG, b.len() as u64),
+            Content::File(_, len) => (gotar::TYPE_REG, *len),
+        };
+        tw.write_header(&Header {
+            name: name.clone().into_bytes(),
+            typeflag,
+            mode: i64::from(*mode),
+            size: i64::try_from(size).map_err(|e| e.to_string())?,
+            mtime: gotar::Time::unix(0, 0),
+            ..Header::default()
+        })
+        .map_err(|e| e.to_string())?;
+        match content {
+            Content::Dir => {}
+            Content::Bytes(b) => tw.write_all(b).map_err(|e| e.to_string())?,
+            Content::File(path, _) => {
+                let f = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+                tw.copy_from(f).map_err(|e| e.to_string())?;
+            }
+        }
+    }
+    tw.finish()
+        .map_err(|e| e.to_string())?
+        .flush()
+        .map_err(|e| e.to_string())
+}
+
+/// [`layout_dir`] of an image of several platforms: its blobs added, `index.json`'s entry
+/// for each name the index.
+pub fn layout_index_dir(
+    store: &Store,
+    image: &Index<'_>,
+    names: &[Reference],
+    created: &str,
+    dest: &Path,
+) -> Result<(), String> {
+    let at = |p: &Path, e: io::Error| format!("{}: {e}", p.display());
+    let blobs = dest.join("blobs").join("sha256");
+    std::fs::create_dir_all(&blobs).map_err(|e| at(&blobs, e))?;
+    std::fs::create_dir_all(dest.join("ingest")).map_err(|e| at(dest, e))?;
+    let put = |d: &Digest, write: &mut dyn FnMut(&mut std::fs::File) -> io::Result<()>| {
+        let path = dest.join(blob_name(d));
+        if path.exists() {
+            return Ok(());
+        }
+        let tmp = dest.join("ingest").join(d.hex());
+        let mut f = std::fs::File::create(&tmp).map_err(|e| at(&tmp, e))?;
+        write(&mut f).map_err(|e| at(&tmp, e))?;
+        f.sync_all().map_err(|e| at(&tmp, e))?;
+        set_mode(&tmp, 0o444).map_err(|e| at(&tmp, e))?;
+        std::fs::rename(&tmp, &path).map_err(|e| at(&path, e))
+    };
+    for d in image.blobs {
+        let from = store.blob_path(d);
+        put(d, &mut |f| {
+            io::copy(&mut std::fs::File::open(&from)?, f).map(|_| ())
+        })?;
+    }
+    put(image.digest, &mut |f| f.write_all(image.index))?;
+    let named = serde_json::json!({
+        "mediaType": OCI_INDEX,
+        "digest": image.digest.to_string(),
+        "size": image.index.len(),
+    });
+    update_index(dest, &named, &BTreeMap::new(), names, created)
+}
+
+/// The `index.json` of the layout in `dest`, read and written again under a lock as
+/// buildkit's client writes it (client/ociindex): an entry per name of `named`, the
+/// descriptor's annotations `base`, `created` and the name, replacing one of the same
+/// name; `latest` its name without one.
+fn update_index(
+    dest: &Path,
+    named: &serde_json::Value,
+    base: &BTreeMap<String, String>,
+    names: &[Reference],
+    created: &str,
+) -> Result<(), String> {
+    let at = |p: &Path, e: io::Error| format!("{}: {e}", p.display());
+    let index_path = dest.join("index.json");
+    let lock_path = dest.join("index.json.lock");
+    let lock = std::fs::File::create(&lock_path).map_err(|e| at(&lock_path, e))?;
+    if lock.try_lock().is_err() {
+        return Err(format!("could not lock {}", lock_path.display()));
+    }
+    let written = (|| {
+        std::fs::write(dest.join("oci-layout"), LAYOUT).map_err(|e| at(dest, e))?;
+        set_mode(&dest.join("oci-layout"), 0o644).map_err(|e| at(dest, e))?;
+        let old = match std::fs::read(&index_path) {
+            Ok(b) => b,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Vec::new(),
+            Err(e) => return Err(at(&index_path, e)),
+        };
+        let mut index: serde_json::Value = if old.is_empty() {
+            serde_json::json!({})
+        } else {
+            serde_json::from_slice(&old).map_err(|e| {
+                format!(
+                    "could not unmarshal {} ({}): {e}",
+                    index_path.display(),
+                    json_string(&old)
+                )
+            })?
+        };
+        let mut manifests: Vec<serde_json::Value> = index
+            .get_mut("manifests")
+            .and_then(|m| m.as_array_mut())
+            .map(std::mem::take)
+            .unwrap_or_default();
+        let mut base: serde_json::Map<String, serde_json::Value> =
+            base.iter().map(|(k, v)| (k.clone(), v.clone().into())).collect();
+        base.insert("org.opencontainers.image.created".into(), created.into());
+        let tagged: Vec<(String, String)> = if names.is_empty() {
+            vec![(String::new(), "latest".into())]
+        } else {
+            names.iter().map(|n| (n.to_string(), ref_name(n))).collect()
+        };
+        for (image, reference) in tagged {
+            let mut a = base.clone();
+            if !image.is_empty() {
+                a.insert("io.containerd.image.name".into(), image.clone().into());
+            }
+            a.insert(
+                "org.opencontainers.image.ref.name".into(),
+                reference.clone().into(),
+            );
+            let annotation = |m: &serde_json::Value, k: &str| {
+                m.get("annotations")
+                    .and_then(|a| a.get(k))
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("")
+                    .to_string()
+            };
+            manifests.retain(|m| {
+                annotation(m, "org.opencontainers.image.ref.name") != reference
+                    || annotation(m, "io.containerd.image.name") != image
+            });
+            let mut entry = named.clone();
+            if let Some(fields) = entry.as_object_mut() {
+                fields.insert("annotations".into(), serde_json::Value::Object(a));
+            }
+            manifests.push(entry);
+        }
+        let schema = index
+            .get("schemaVersion")
+            .and_then(serde_json::Value::as_i64)
+            .filter(|&v| v != 0)
+            .unwrap_or(2);
+        let media = index
+            .get("mediaType")
+            .and_then(serde_json::Value::as_str)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(OCI_INDEX)
+            .to_string();
+        let mut doc = format!(
+            r#"{{"schemaVersion":{schema},"mediaType":{}"#,
+            json_string(media.as_bytes())
+        );
+        if let Some(t) = index
+            .get("artifactType")
+            .and_then(serde_json::Value::as_str)
+            .filter(|s| !s.is_empty())
+        {
+            doc.push_str(&format!(r#","artifactType":{}"#, json_string(t.as_bytes())));
+        }
+        let entries: Vec<String> = manifests.iter().map(go_descriptor).collect::<Result<_, _>>()?;
+        doc.push_str(&format!(r#","manifests":[{}]"#, entries.join(",")));
+        if let Some(a) = index
+            .get("annotations")
+            .and_then(serde_json::Value::as_object)
+            .filter(|a| !a.is_empty())
+        {
+            doc.push_str(&format!(r#","annotations":{}"#, string_map(a)));
+        }
+        doc.push('}');
+        std::fs::write(&index_path, doc).map_err(|e| at(&index_path, e))
+    })();
+    let _ = lock.unlock();
+    let _ = std::fs::remove_file(&lock_path);
+    written
 }
 
 #[cfg(test)]
