@@ -538,6 +538,13 @@ fn prune_warning(command: &'static Command, parsed: &Parsed) -> Option<String> {
     if parsed.bool("force") {
         return None;
     }
+    // buildx's prune (commands/prune.go): its warning and promptForConfirmation's ask.
+    if std::ptr::eq(command, &shards_cmdline::commands::BUILDER_PRUNE) {
+        let which = if parsed.bool("all") { "all" } else { "all dangling" };
+        return Some(format!(
+            "WARNING! This will remove {which} build cache. Are you sure you want to continue? [y/N] "
+        ));
+    }
     if std::ptr::eq(command, &shards_cmdline::commands::NETWORK_PRUNE) {
         return Some(
             "WARNING! This will remove all custom networks not used by at least one container.\nAre you sure you want to continue? [y/N] "

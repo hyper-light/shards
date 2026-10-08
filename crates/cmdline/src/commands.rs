@@ -2283,6 +2283,59 @@ sbom - s - -",
     error_prefix: "ERROR: ",
 };
 
+/// `shards builder prune` and `shards buildx prune`: buildx v0.37.1's prune
+/// (commands/prune.go), with its root's `--builder` and `--debug`, as `docker builder`
+/// runs buildx.
+pub static BUILDER_PRUNE: Command = Command {
+    usage: "",
+    about: "Remove build cache",
+    aliases: "",
+    args: Args::None,
+    flags: &[
+        Flag::bool("all", Some(b'a'), "Include internal/frontend images"),
+        Flag::string("builder", None, "", "Override the configured builder instance"),
+        Flag::bool("debug", Some(b'D'), "Enable debug logging"),
+        Flag::many("filter", None, "filter", "Provide filter values"),
+        Flag::bool("force", Some(b'f'), "Do not prompt for confirmation"),
+        Flag::value(
+            "keep-storage",
+            None,
+            "bytes",
+            "Amount of disk space to keep for cache",
+        )
+        .deprecated("keep-storage flag has been changed to reserved-space"),
+        Flag::value(
+            "max-used-space",
+            None,
+            "bytes",
+            "Maximum amount of disk space allowed to keep for cache",
+        ),
+        Flag::value(
+            "min-free-space",
+            None,
+            "bytes",
+            "Target amount of free disk space after pruning",
+        ),
+        Flag::value(
+            "reserved-space",
+            None,
+            "bytes",
+            "Amount of disk space always allowed to keep for cache",
+        ),
+        Flag::duration(
+            "timeout",
+            None,
+            "Override the default timeout for loading builder status",
+        )
+        .defaulting("20s"),
+        Flag::bool("verbose", None, "Provide a more verbose output"),
+        HELP,
+    ],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "ERROR: ",
+};
+
 /// The container command the start of `words` names, its path (`shards ps`, `shards
 /// container ls`) and how many words named it: `ps` or `container ls` (or `container ps`,
 /// `container list`), `rm` or `container rm` (or `container remove`), and the others by
@@ -2353,6 +2406,7 @@ pub fn find(words: &[&str]) -> Option<(&'static Command, &'static str, usize)> {
         ["system", "prune", ..] => (&SYSTEM_PRUNE, "shards system prune", 2),
         ["container", "prune", ..] => (&CONTAINER_PRUNE, "shards container prune", 2),
         ["image", "prune", ..] => (&IMAGE_PRUNE, "shards image prune", 2),
+        ["builder" | "buildx", "prune", ..] => (&BUILDER_PRUNE, "shards buildx prune", 2),
         ["rename", ..] => (&RENAME, "shards rename", 1),
         ["container", "rename", ..] => (&RENAME, "shards container rename", 2),
         ["image", "history", ..] => (&HISTORY, "shards image history", 2),

@@ -2654,6 +2654,74 @@ fn run_steps_take_the_builds_hosts_shm_and_limits() {
     );
 }
 
+/// `shards builder prune` (D65), as buildx's prune: a record no filter keeps goes, said in
+/// buildx's table, and the steps run again; `until` keeps what was used since; a record
+/// whose layer an image holds stays unless `--all`; the totals as buildx says them.
+#[test]
+fn builder_prune_removes_the_build_cache_as_buildx_does() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("builder-prune-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let ctx = context(
+        "builder-prune-ctx",
+        &format!("FROM {image}\nUSER root\nRUN [\"/bin/testguest\", \"fs\", \"write:/one=1\"]\n"),
+    );
+    let out = TempDir::new("builder-prune-out");
+    let to_dir = format!("type=local,dest={}", out.display());
+    let build = |tag: Option<&str>| {
+        let mut args = vec!["build", "--progress=plain"];
+        match tag {
+            Some(t) => args.extend_from_slice(&["-t", t]),
+            // Files out alone: no image, dangling or named, holds the step's layer.
+            None => args.extend_from_slice(&["-o", &to_dir]),
+        }
+        args.push(ctx.to_str().unwrap());
+        let built = shards(&args);
+        assert_eq!(built.status, Some(0), "{}", built.stderr);
+        built.stderr
+    };
+    let ran = |log: &str| !log.lines().any(|l| l.ends_with(" CACHED"));
+    // Built to a directory: its layer no image holds.
+    assert!(ran(&build(None)));
+    // A fresh record, kept by an age it has not reached.
+    let kept = shards(&["builder", "prune", "-f", "--filter", "until=24h"]);
+    assert_eq!(kept.stdout, "Total:\t0B\n", "{}", kept.stderr);
+    let pruned = shards(&["builder", "prune", "-f"]);
+    assert_eq!(pruned.status, Some(0), "{}", pruned.stderr);
+    let lines: Vec<&str> = pruned.stdout.lines().collect();
+    assert_eq!(
+        lines.first(),
+        Some(&"ID\t\t\t\t\t\tRECLAIMABLE\tSIZE\t\tLAST ACCESSED"),
+        "{}",
+        pruned.stdout
+    );
+    assert!(lines.iter().any(|l| l.contains("\ttrue \t")), "{}", pruned.stdout);
+    assert!(
+        lines
+            .last()
+            .is_some_and(|l| l.starts_with("Total:\t") && *l != "Total:\t0B"),
+        "{}",
+        pruned.stdout
+    );
+    assert!(ran(&build(None)), "the step was cached after the prune");
+
+    // Named, its layer an image's: kept without --all, removed with it.
+    build(Some("pruned:1"));
+    shards(&["builder", "prune", "-f"]);
+    assert!(!ran(&build(Some("pruned:2"))), "a shared record was pruned");
+    let all = shards(&["buildx", "prune", "-af"]);
+    assert!(all.stdout.lines().count() > 1, "{}", all.stdout);
+    assert!(ran(&build(Some("pruned:3"))), "--all kept the record");
+}
+
 /// `RUN --mount=type=ssh` reaches the client's SSH agent through the builder, as
 /// BuildKit's steps reach it (`--ssh default`, `SSH_AUTH_SOCK` in the step): the step
 /// sees the agent's keys and has it sign, and cannot have it forget them, which BuildKit's

@@ -193,6 +193,14 @@ var cases = [][]string{
 	{"--allow", "nope", "."},
 	{"--allow", "", "."},
 	{"--check", "."},
+	{"prune", "--help"},
+	{"prune", "-af", "--filter", "until=24h", "--filter", "type=regular"},
+	{"prune", "--keep-storage", "1g"},
+	{"prune", "--reserved-space", "1g", "--max-used-space", "2g", "--min-free-space", "10gb", "--verbose"},
+	{"prune", "--reserved-space", "lots"},
+	{"prune", "extra"},
+	{"prune", "--filter", "noequals"},
+	{"prune", "--timeout", "5s", "-f"},
 }
 
 type answer struct {
@@ -205,28 +213,40 @@ type answer struct {
 // ask runs buildx as the CLI runs its plugin for `docker build ARGV...`, and answers
 // what it printed and its exit status.
 func ask(t *testing.T, argv []string) answer {
+	// Each case as a new process: an earlier case's --debug sets DEBUG (debug.Enable),
+	// which the root's --debug takes as its default.
+	_ = os.Unsetenv("DEBUG")
 	var stdout, stderr bytes.Buffer
 	dockerCli, err := command.NewDockerCli(command.WithOutputStream(&stdout), command.WithErrorStream(&stderr))
 	if err != nil {
 		t.Fatal(err)
 	}
 	rootCmd := commands.NewRootCmd("buildx", true, dockerCli)
+	// A case is of `build` unless its first word names `prune`, which `docker builder
+	// prune` runs.
+	sub := "build"
+	if len(argv) > 0 && argv[0] == "prune" {
+		sub = "prune"
+		argv = argv[1:]
+	}
 	var build *cobra.Command
 	for _, c := range rootCmd.Commands() {
-		if c.Name() == "build" {
+		if c.Name() == sub {
 			build = c
 		}
 	}
 	if build == nil {
-		t.Fatal("no build command")
+		t.Fatal("no " + sub + " command")
 	}
 	hide := func(f *pflag.Flag) {
 		if !contains(served, f.Name) {
 			f.Hidden = true
 		}
 	}
-	build.Flags().VisitAll(hide)
-	rootCmd.PersistentFlags().VisitAll(hide)
+	if sub == "build" {
+		build.Flags().VisitAll(hide)
+		rootCmd.PersistentFlags().VisitAll(hide)
+	}
 	build.PreRunE, build.PreRun = nil, nil
 	build.RunE = func(c *cobra.Command, args []string) error {
 		var line strings.Builder
@@ -240,10 +260,13 @@ func ask(t *testing.T, argv []string) answer {
 			fmt.Fprintf(&line, " %q", a)
 		}
 		fmt.Fprintln(c.OutOrStdout(), line.String())
+		if sub != "build" {
+			return nil
+		}
 		return built(c)
 	}
 	// As the CLI execs a plugin: its path, then its name, then the words.
-	os.Args = append([]string{"docker-buildx", "buildx", "build"}, argv...)
+	os.Args = append([]string{"docker-buildx", "buildx", sub}, argv...)
 	err = plugin.RunPlugin(dockerCli, rootCmd, metadata.Metadata{SchemaVersion: "0.1.0", Vendor: "Docker Inc."})
 	status := 0
 	// As main does (cmd/buildx/main.go), without its debug, policy and gRPC cases.
@@ -265,6 +288,9 @@ func ask(t *testing.T, argv []string) answer {
 			fmt.Fprintf(&stderr, "ERROR: %v\n", err)
 			status = 1
 		}
+	}
+	if sub != "build" {
+		argv = append([]string{sub}, argv...)
 	}
 	return answer{argv, shards(stdout.String()), shards(stderr.String()), status}
 }

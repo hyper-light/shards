@@ -1445,5 +1445,92 @@
     "stdout": "RUN --check= \".\"\n",
     "stderr": "",
     "status": 0
+  },
+  {
+    "argv": [
+      "prune",
+      "--help"
+    ],
+    "stdout": "Usage:  shards buildx prune\n\nRemove build cache\n\nOptions:\n  -a, --all                    Include internal/frontend images\n      --builder string         Override the configured builder instance\n  -D, --debug                  Enable debug logging\n      --filter filter          Provide filter values\n  -f, --force                  Do not prompt for confirmation\n      --max-used-space bytes   Maximum amount of disk space allowed to\n                               keep for cache\n      --min-free-space bytes   Target amount of free disk space after pruning\n      --reserved-space bytes   Amount of disk space always allowed to\n                               keep for cache\n      --timeout duration       Override the default timeout for loading\n                               builder status (default 20s)\n      --verbose                Provide a more verbose output\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "prune",
+      "-af",
+      "--filter",
+      "until=24h",
+      "--filter",
+      "type=regular"
+    ],
+    "stdout": "RUN --all=true --filter={\"type\":{\"regular\":true},\"until\":{\"24h\":true}} --force=true\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "prune",
+      "--keep-storage",
+      "1g"
+    ],
+    "stdout": "Flag --keep-storage has been deprecated, keep-storage flag has been changed to reserved-space\nRUN --keep-storage=1GiB\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "prune",
+      "--reserved-space",
+      "1g",
+      "--max-used-space",
+      "2g",
+      "--min-free-space",
+      "10gb",
+      "--verbose"
+    ],
+    "stdout": "RUN --max-used-space=2GiB --min-free-space=10GiB --reserved-space=1GiB --verbose=true\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "prune",
+      "--reserved-space",
+      "lots"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"lots\" for \"--reserved-space\" flag: invalid size: 'lots'\n\nUsage:  shards buildx prune\n\nRun 'shards buildx prune --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "prune",
+      "extra"
+    ],
+    "stdout": "",
+    "stderr": "ERROR: shards: 'shards buildx prune' accepts no arguments\n\nUsage:  shards buildx prune\n\nRun 'shards buildx prune --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "prune",
+      "--filter",
+      "noequals"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"noequals\" for \"--filter\" flag: bad format of filter (expected name=value)\n\nUsage:  shards buildx prune\n\nRun 'shards buildx prune --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "prune",
+      "--timeout",
+      "5s",
+      "-f"
+    ],
+    "stdout": "RUN --force=true --timeout=5s\n",
+    "stderr": "",
+    "status": 0
   }
 ]

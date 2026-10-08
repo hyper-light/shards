@@ -7,7 +7,7 @@
 #![allow(clippy::unwrap_used, clippy::panic)]
 
 use shards_cmdline::buildflags;
-use shards_cmdline::commands::BUILD;
+use shards_cmdline::commands::{BUILD, BUILDER_PRUNE};
 use shards_cmdline::flags::{self, Outcome};
 
 /// What a build step carries at most, the run protocol's frame (shards-abi `MAX_PAYLOAD`).
@@ -155,8 +155,13 @@ fn build_answers_as_buildx() {
         if let Some(&(_, out, err, code)) = BETTER.iter().find(|(line, ..)| *line == argv.as_slice()) {
             (stdout, stderr, status) = (out, err, code);
         }
+        // `prune` first: buildx's prune, which `shards builder prune` runs.
+        let (command, path, words) = match argv.split_first() {
+            Some((first, rest)) if first == "prune" => (&BUILDER_PRUNE, "shards buildx prune", rest),
+            _ => (&BUILD, "shards buildx build", argv.as_slice()),
+        };
         let (got_out, got_err, got_status, refused) =
-            match flags::parse(&BUILD, "shards buildx build", &argv, &buildflags::validate) {
+            match flags::parse(command, path, words, &buildflags::validate) {
                 Outcome::Run(parsed) => {
                     let mut line = String::from("RUN");
                     for (name, value) in parsed.given() {
@@ -167,13 +172,18 @@ fn build_answers_as_buildx() {
                         line.push_str(&shards_cmdline::go::quote(arg));
                     }
                     let mut out = format!("{}{line}\n", parsed.notices);
-                    match built(&parsed, &mut out) {
+                    let done = if std::ptr::eq(command, &BUILD) {
+                        built(&parsed, &mut out)
+                    } else {
+                        Ok(())
+                    };
+                    match done {
                         Ok(()) => (out, String::new(), 0, false),
                         Err(e) => (out, format!("ERROR: {e}\n"), 1, false),
                     }
                 }
                 Outcome::Help { notices } => (
-                    format!("{notices}{}", flags::help(&BUILD, "shards buildx build", 80)),
+                    format!("{notices}{}", flags::help(command, path, 80)),
                     String::new(),
                     0,
                     false,

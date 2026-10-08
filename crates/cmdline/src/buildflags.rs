@@ -852,8 +852,12 @@ pub fn ulimits(values: &[String]) -> Result<Vec<Ulimit>, String> {
 pub fn validate(flag: &crate::flags::Flag, value: &str) -> Result<String, String> {
     match flag.name {
         "ulimit" => parse_ulimit(value).map(|u| u.to_string()),
-        // opts.MemBytes, as buildx takes --shm-size: go-units' RAMInBytes.
-        "shm-size" => crate::resources::ram_in_bytes(value).map(|n| n.to_string()),
+        // opts.MemBytes, as buildx takes --shm-size and prune's sizes: go-units'
+        // RAMInBytes; a filter as docker/cli's FilterOpt.
+        _ if flag.kind == crate::flags::Kind::Value("bytes") => {
+            crate::resources::ram_in_bytes(value).map(|n| n.to_string())
+        }
+        _ if flag.kind == crate::flags::Kind::Many("filter") => crate::flags::value(flag, value),
         _ => Ok(value.to_string()),
     }
 }

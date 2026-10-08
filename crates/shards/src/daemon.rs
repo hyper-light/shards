@@ -34,6 +34,7 @@ use crate::containers::{self, Container, Disk, Real, Registry, Removal, State as
 
 mod commands;
 pub(crate) use commands::COPY_STEP;
+mod builder_prune;
 mod commit;
 mod demand;
 mod events;

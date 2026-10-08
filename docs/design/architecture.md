@@ -3192,6 +3192,28 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode
 waits on the user.
 
+### D65. `builder prune`
+
+`shards builder prune` and `shards buildx prune`, as buildx v0.37.1's prune
+(commands/prune.go), which `docker builder` runs where buildx is installed: its flags,
+help and errors held to buildx's own by the buildx oracle (now running `prune` as well as
+`build`, each case with `DEBUG` cleared, which an earlier `--debug` had left set for the
+rest); its warning and `[y/N]` before it removes anything, unless `-f`; and what it
+removes as BuildKit's cache manager chooses (cache/manager.go): the records (D50) no
+filter keeps, `until` (or `unused-for`) an age a record's last use must reach, `id`
+matched as a pattern, the rest by field (`type`, `shared`, `private`, ...); a record whose
+layer an image holds is shared, and stays unless `--all`, as BuildKit keeps one an image
+shares; with `--reserved-space` (`--keep-storage`), `--max-used-space` or
+`--min-free-space`, the least recently and least often used first, one at a time, until
+what stays is what `calculateKeepBytes` allows. Said as buildx says it: a table of what
+went (or each in full with `--verbose`), padded with tabs as Go's text/tabwriter pads it
+with buildx's settings (checked against Go's own), then the total. A record's `Created
+at` is written in UTC: shards keeps its second.
+
+Tested: `builder_prune_removes_the_build_cache_as_buildx_does` on real builds (mutation-
+checked: with shared records not kept, an image's record went), the oracle's cases, and
+the filters, keep bytes, order and table as unit tests.
+
 ### D64. What the build's flags give each RUN
 
 `--add-host`, `--shm-size`, `--cgroup-parent`, `--network`, `--resource` and the legacy
