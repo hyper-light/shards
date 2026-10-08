@@ -649,7 +649,7 @@ fn failed(op: &str, mut r: Response<'_>) -> String {
 }
 
 /// The text of the first `<tag>` in `xml`, its entities read.
-fn xml_text(xml: &str, tag: &str) -> Option<String> {
+pub(super) fn xml_text(xml: &str, tag: &str) -> Option<String> {
     let open = format!("<{tag}>");
     let start = xml.find(&open)? + open.len();
     let rest = xml.get(start..)?;

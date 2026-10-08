@@ -3210,6 +3210,63 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode
 waits on the user.
 
+### D89. The Azure Blob Storage cache backend
+
+`--cache-to` and `--cache-from` `type=azblob` write a build's cache to a Blob Storage
+container and read it back, as BuildKit v0.28.1's `cache/remotecache/azblob` does.
+
+Evidence: BuildKit's azblob package, and azure-sdk-for-go's azblob v1.5.0 (BuildKit's
+pin). `scripts/azblob/generate` runs that client with a shared key against a server that
+records each request: thirteen in all, covering every operation the cache makes, a
+two-block upload, a key with a space and a non-ASCII character, and metadata headers
+whose order turns on the SDK's weighted sort. M125 runs every request against Azurite,
+Microsoft's Blob Storage emulator, which checks signatures.
+
+What it takes, read as BuildKit's `getConfig` reads it:
+- `account_url` (`$BUILDKIT_AZURE_STORAGE_ACCOUNT_URL`), refused without it.
+- `account_name` (`$BUILDKIT_AZURE_STORAGE_ACCOUNT_NAME`, else the host's first label).
+- `container` (`$BUILDKIT_AZURE_STORAGE_CONTAINER`, `buildkit-cache`) and `prefix`
+  (`$BUILDKIT_AZURE_STORAGE_PREFIX`).
+- `manifests_prefix` (`manifests`), `blobs_prefix` (`blobs`) and `name` (`buildkit`,
+  several `;` apart), joined as Go's `filepath.Join` joins them on Linux.
+- `secret_access_key`, the account's key.
+
+What it does, as BuildKit does it:
+- The container is made if it is not there; one made meanwhile by another build is
+  taken, not failed.
+- A layer the container lacks is uploaded only where none is (`If-None-Match: *`): in one
+  request below 32 MiB, else in 32 MiB blocks committed together.
+- The records go at each name, the last writer winning.
+- Every name is read back, each saying how many layers it found.
+- Requests carry the SDK's service version (2024-11-04) and its escaping of blob names,
+  `/` included.
+
+Better than BuildKit's: four layers upload at once, where BuildKit's exporter sends them
+one by one.
+
+Not yet: Azure AD identities (`DefaultAzureCredential`: environment secrets, workload and
+managed identity, the CLI), which BuildKit uses without a key. Without
+`secret_access_key` the cache is refused before the build, saying so.
+
+Tested:
+- `requests_are_azblobs` signs each recorded request again and matches the SDK's
+  signature, and escapes keys as it does.
+- `azblob_requests_are_blob_storages` (M125) runs against Azurite:
+  - the container made, then found;
+  - a missing blob is none;
+  - a manifest written, then overwritten;
+  - one-request and three-block uploads read back byte for byte, each refused again
+    where it is there;
+  - a request signed with the wrong key refused.
+- `builds_take_steps_from_an_azure_blob_cache` covers the build end to end against a
+  fake Blob Storage that requires a shared key:
+  - written `mode=max` under a prefix at two names;
+  - read back from another home, every step `CACHED`, with the layers counted and the
+    same image layers;
+  - written again, no layer sent;
+  - no key refused before the build.
+- Mutation-checked: uploading where a layer is there fails the last check.
+
 ### D88. The S3 cache backend
 
 `--cache-to` and `--cache-from` `type=s3` write a build's cache to a bucket and read it
@@ -4288,7 +4345,7 @@ control/control.go, cache/remotecache, solver/llbsolver/bridge.go).
   wrong.
 - **Refused as BuildKit refuses** before it builds: a directory without `dest`, a registry
   without `ref`, an unknown backend (`unknown cache exporter: "x"`); and, for now, the
-  `gha` and `azblob` backends, which shards does not write yet (`s3` is D88). A failed export
+  `gha` backend, which shards does not write yet (`s3` is D88, `azblob` D89). A failed export
   fails the build unless `ignore-error=true`. A `gha` entry without its token and URL is
   dropped, as buildx's `isActive` drops it.
 - **`--no-cache-filter`** is the frontend's `no-cache` option, as buildx sends it

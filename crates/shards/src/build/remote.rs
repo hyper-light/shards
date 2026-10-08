@@ -25,7 +25,7 @@ use shards_image::reference::{Digest, Reference};
 use shards_image::store::Store;
 use shards_registry::registry::Registry;
 
-use super::{Progress, cache, s3, show};
+use super::{Progress, azblob, cache, s3, show};
 
 /// A cache's config: its records.
 pub const CONFIG: &str = "application/vnd.shards.buildcache.config.v1+json";
@@ -38,6 +38,7 @@ enum Source {
     Dir(PathBuf),
     Registry(Box<Registry>),
     S3(Box<s3::Bucket>),
+    Azblob(Box<azblob::Container>),
 }
 
 /// The records `--cache-from` found: each body by its key, with where its layers are.
@@ -228,7 +229,14 @@ impl Imported {
                         }
                     }
                 }
-                "gha" | "azblob" => {
+                "azblob" => match azblob_records(e, &limits, progress, env) {
+                    Ok((records, container)) => Some((records, Source::Azblob(Box::new(container)))),
+                    Err(why) => {
+                        warn(&format!("azblob cache import skipped: {why}"));
+                        None
+                    }
+                },
+                "gha" => {
                     warn(&format!(
                         "shards does not read the {} cache backend yet: skipped",
                         e.kind
@@ -284,6 +292,14 @@ impl Imported {
                     Source::Registry(r) => r
                         .fetch_blob(store, &desc, &limits, &|_| {})
                         .map_err(|e| e.to_string()),
+                    Source::Azblob(c) => match c.get(&c.blob_key(&desc.digest)) {
+                        Ok(Some(mut r)) => store
+                            .ingest(&d, l.size, &mut r)
+                            .map_err(|e| e.to_string())
+                            .map(drop),
+                        Ok(None) => Err(format!("blob {d} not found")),
+                        Err(why) => Err(why),
+                    },
                     Source::S3(b) => match b.get(&b.blob_key(&desc.digest)) {
                         Ok(Some(mut r)) => store
                             .ingest(&d, l.size, &mut r)
@@ -414,7 +430,11 @@ pub fn check(entries: &[CacheEntry], env: &dyn Fn(&str) -> Option<String>) -> Re
             "registry" if !set("ref") => return Err("registry cache exporter requires ref".into()),
             "local" | "registry" | "inline" => {}
             "s3" => drop(s3::Bucket::of(e, env)?),
-            "gha" | "azblob" => {
+            "azblob" => drop(
+                azblob::Container::of(e, env)
+                    .map_err(|err| format!("failed to create azblob config: {err}"))?,
+            ),
+            "gha" => {
                 return Err(format!("shards does not write the {} cache backend yet", e.kind));
             }
             other => {
@@ -443,6 +463,7 @@ pub fn export(
         let name = match e.kind.as_str() {
             "local" => "exporting cache to client directory",
             "s3" => "exporting cache to Amazon S3",
+            "azblob" => "exporting cache to Azure Blob Storage",
             _ => "exporting cache to registry",
         };
         let v = progress.borrow_mut().start(name);
@@ -475,8 +496,10 @@ fn write(
     let (records, layers) = chosen(keys, store, image, max(e))?;
     progress.borrow().line(v, "preparing build cache for export done");
     let config = serde_json::to_vec(&serde_json::json!({ "records": records })).map_err(|e| e.to_string())?;
-    if e.kind == "s3" {
-        return write_s3(e, &config, &layers, store, progress, v, env);
+    match e.kind.as_str() {
+        "s3" => return write_s3(e, &config, &layers, store, progress, v, env),
+        "azblob" => return write_azblob(e, &config, &layers, store, progress, v, env),
+        _ => {}
     }
     let config_digest = super::sha256(&config);
     let manifest = serde_json::to_vec(&serde_json::json!({
@@ -653,7 +676,6 @@ fn write_s3(
     v: &super::Vertex,
     env: &dyn Fn(&str) -> Option<String>,
 ) -> Result<(), String> {
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     let bucket = s3::Bucket::of(e, env)?;
     // A layer's key, and whether this wrote it.
     let one = |l: &Descriptor| -> Result<Option<String>, String> {
@@ -691,30 +713,50 @@ fn write_s3(
             }
         }
     };
+    let done = at_once(bucket.parallelism, layers, &one);
+    for d in done? {
+        progress.borrow().line(v, &format!("writing layer {d} done"));
+    }
+    let hash = super::sha256(config);
+    for name in &bucket.names {
+        bucket
+            .put(&bucket.manifest_key(name), s3::Body::Bytes(config), hash.hex())
+            .map_err(|e| format!("error writing manifest: {name}: {e}"))?;
+    }
+    Ok(())
+}
+
+/// `f` of each of `items`, `n` at once: what each gave, or the first failure, after which
+/// no more are begun.
+fn at_once<T: Sync>(
+    n: usize,
+    items: &[T],
+    f: &(dyn Fn(&T) -> Result<Option<String>, String> + Sync),
+) -> Result<Vec<String>, String> {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     let next = AtomicUsize::new(0);
     let failed = AtomicBool::new(false);
-    let threads = bucket.parallelism.min(layers.len());
-    let done: Vec<Result<Vec<String>, String>> = std::thread::scope(|s| {
-        let work = || -> Result<Vec<String>, String> {
-            let mut wrote = Vec::new();
-            while !failed.load(Ordering::Relaxed) {
-                let Some(l) = layers.get(next.fetch_add(1, Ordering::Relaxed)) else {
-                    break;
-                };
-                match one(l) {
-                    Ok(d) => wrote.extend(d),
-                    Err(why) => {
-                        failed.store(true, Ordering::Relaxed);
-                        return Err(why);
-                    }
+    let work = || -> Result<Vec<String>, String> {
+        let mut gave = Vec::new();
+        while !failed.load(Ordering::Relaxed) {
+            let Some(item) = items.get(next.fetch_add(1, Ordering::Relaxed)) else {
+                break;
+            };
+            match f(item) {
+                Ok(d) => gave.extend(d),
+                Err(why) => {
+                    failed.store(true, Ordering::Relaxed);
+                    return Err(why);
                 }
             }
-            Ok(wrote)
-        };
-        let spawned: Vec<_> = (0..threads)
+        }
+        Ok(gave)
+    };
+    let done: Vec<Result<Vec<String>, String>> = std::thread::scope(|s| {
+        let spawned: Vec<_> = (0..n.min(items.len()))
             .map(|_| {
                 std::thread::Builder::new()
-                    .name("s3-upload".into())
+                    .name("cache-upload".into())
                     .spawn_scoped(s, work)
             })
             .collect();
@@ -731,16 +773,107 @@ fn write_s3(
             })
             .collect()
     });
-    for wrote in done {
-        for d in wrote? {
-            progress.borrow().line(v, &format!("writing layer {d} done"));
-        }
+    let mut all = Vec::new();
+    for gave in done {
+        all.extend(gave?);
     }
-    let hash = super::sha256(config);
-    for name in &bucket.names {
-        bucket
-            .put(&bucket.manifest_key(name), s3::Body::Bytes(config), hash.hex())
-            .map_err(|e| format!("error writing manifest: {name}: {e}"))?;
+    Ok(all)
+}
+
+/// The records of every name of the azblob cache `e` names, as BuildKit's importer reads
+/// them (the container made if it is not there), with the container their layers are
+/// in; a name not there is no records.
+fn azblob_records(
+    e: &CacheEntry,
+    limits: &shards_image::store::Limits,
+    progress: &RefCell<Progress>,
+    env: &dyn Fn(&str) -> Option<String>,
+) -> Result<(Records, azblob::Container), String> {
+    use std::io::Read as _;
+    let container =
+        azblob::Container::of(e, env).map_err(|err| format!("failed to create azblob config: {err}"))?;
+    container
+        .ensure()
+        .map_err(|err| format!("failed to create container client: {err}"))?;
+    let mut all = Vec::new();
+    for name in &container.names {
+        let key = container.manifest_key(name);
+        let failed = |err: String| format!("failed to load cache manifest {name}: {err}");
+        if !container.exists(&key).map_err(failed)? {
+            continue;
+        }
+        let bytes = {
+            let Some(r) = container.get(&key).map_err(failed)? else {
+                continue;
+            };
+            let mut bytes = Vec::new();
+            r.take(limits.metadata.saturating_add(1))
+                .read_to_end(&mut bytes)
+                .map_err(|err| failed(err.to_string()))?;
+            if bytes.len() as u64 > limits.metadata {
+                return Err(failed("past SHARDS_MAX_IMAGE_METADATA".into()));
+            }
+            bytes
+        };
+        let records = records_of(&bytes).map_err(failed)?;
+        // As BuildKit says what it found: each layer the records name, once.
+        let mut layers = BTreeSet::new();
+        for (_, body) in &records {
+            for l in cache::decode(body.as_bytes())?.iter().flatten() {
+                layers.insert(show(&l.digest));
+            }
+        }
+        let found = progress
+            .borrow_mut()
+            .start(&format!("found {} layers in cache", layers.len()));
+        progress.borrow().done(&found);
+        all.extend(records);
+    }
+    Ok((all, container))
+}
+
+/// Writes a cache to Azure Blob Storage as BuildKit's exporter does (`Finalize`), in the
+/// container, made if it is not there: each layer the container lacks, uploaded only
+/// where none is; then `config`, the records, at each of `name`'s names, in place of what
+/// was there. Unlike BuildKit's, four layers go at once.
+fn write_azblob(
+    e: &CacheEntry,
+    config: &[u8],
+    layers: &[Descriptor],
+    store: &Store,
+    progress: &RefCell<Progress>,
+    v: &super::Vertex,
+    env: &dyn Fn(&str) -> Option<String>,
+) -> Result<(), String> {
+    let container =
+        azblob::Container::of(e, env).map_err(|err| format!("failed to create azblob config: {err}"))?;
+    container
+        .ensure()
+        .map_err(|err| format!("failed to create container client: {err}"))?;
+    let one = |l: &Descriptor| -> Result<Option<String>, String> {
+        let d = l.digest().map_err(|e| e.to_string())?;
+        let key = container.blob_key(&l.digest);
+        if container.exists(&key)? {
+            return Ok(None);
+        }
+        let path = store.blob_path(&d);
+        let file = std::fs::File::open(&path).map_err(|e| format!("failed to get reader for {d}: {e}"))?;
+        let len = file
+            .metadata()
+            .map_err(|e| format!("{}: {e}", path.display()))?
+            .len();
+        container
+            .put_new(&key, &file, len)
+            .map_err(|e| format!("failed to upload blob {key}: {e}"))?;
+        Ok(Some(d.to_string()))
+    };
+    for d in at_once(4, layers, &one)? {
+        progress.borrow().line(v, &format!("writing layer {d} done"));
+    }
+    for name in &container.names {
+        container
+            .put(&container.manifest_key(name), azblob::Body::Bytes(config))
+            .map_err(|e| format!("error writing manifest {name}: {e}"))?;
     }
     Ok(())
 }

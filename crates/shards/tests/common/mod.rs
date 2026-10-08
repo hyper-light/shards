@@ -1543,6 +1543,159 @@ fn http_date(at: std::time::SystemTime) -> String {
     )
 }
 
+/// What a fake Blob Storage holds: containers, each blob by its path (`/ACCOUNT/CONTAINER/
+/// NAME`, the name decoded), and each request.
+#[derive(Debug, Default)]
+pub struct Blobs {
+    pub containers: std::collections::BTreeSet<String>,
+    pub blobs: std::collections::BTreeMap<String, Vec<u8>>,
+    /// Blocks staged, by blob and block ID.
+    pub blocks: std::collections::BTreeMap<(String, String), Vec<u8>>,
+    /// Each request: its method, its path and `comp=` if any, and whether it was signed
+    /// with a shared key.
+    pub log: Vec<String>,
+}
+
+/// Blob Storage on loopback, as far as the azblob cache backend asks it: a container's
+/// properties and its making, a blob's properties, download and upload (`If-None-Match:
+/// *` kept), and blocks staged and committed. A request not signed with a shared key is
+/// refused, as Blob Storage's `NoAuthenticationInformation`.
+pub fn fake_azblob() -> (u16, Arc<std::sync::Mutex<Blobs>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let held = Arc::new(std::sync::Mutex::new(Blobs::default()));
+    let shared = held.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(stream) = stream else { return };
+            let blobs = shared.clone();
+            std::thread::spawn(move || {
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut out = stream;
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                        return;
+                    }
+                    let mut headers = std::collections::HashMap::new();
+                    loop {
+                        let mut header = String::new();
+                        if reader.read_line(&mut header).unwrap_or(0) <= 2 {
+                            break;
+                        }
+                        let (name, value) = header.split_once(':').unwrap_or_default();
+                        headers.insert(name.trim().to_ascii_lowercase(), value.trim().to_string());
+                    }
+                    let length: usize = headers
+                        .get("content-length")
+                        .and_then(|l| l.parse().ok())
+                        .unwrap_or(0);
+                    let mut body = vec![0u8; length];
+                    reader.read_exact(&mut body).unwrap();
+                    let mut parts = line.split(' ');
+                    let (method, target) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""));
+                    let (raw, query) = target.split_once('?').unwrap_or((target, ""));
+                    let path = percent_decode(raw);
+                    let param = |k: &str| {
+                        query
+                            .split('&')
+                            .find_map(|p| p.strip_prefix(&format!("{k}=")))
+                            .map(percent_decode)
+                    };
+                    let signed = headers
+                        .get("authorization")
+                        .is_some_and(|a| a.starts_with("SharedKey devstoreaccount1:"));
+                    let mut blobs = blobs.lock().unwrap();
+                    blobs.log.push(format!(
+                        "{method} {path}{}{}",
+                        param("comp").map(|c| format!(" {c}")).unwrap_or_default(),
+                        if signed { "" } else { " unsigned" }
+                    ));
+                    let error = |status: &str, code: &str| {
+                        (
+                            status.to_string(),
+                            vec![format!("x-ms-error-code: {code}")],
+                            Vec::new(),
+                        )
+                    };
+                    let absent = headers.get("if-none-match").is_some_and(|v| v == "*");
+                    let (status, extra, reply): (String, Vec<String>, Vec<u8>) = if !signed {
+                        error("403 Forbidden", "NoAuthenticationInformation")
+                    } else if param("restype").as_deref() == Some("container") {
+                        if method == "PUT" {
+                            if blobs.containers.insert(path.clone()) {
+                                ("201 Created".into(), vec![], vec![])
+                            } else {
+                                error("409 Conflict", "ContainerAlreadyExists")
+                            }
+                        } else if blobs.containers.contains(&path) {
+                            ("200 OK".into(), vec![], vec![])
+                        } else {
+                            error("404 Not Found", "ContainerNotFound")
+                        }
+                    } else if param("comp").as_deref() == Some("block") {
+                        let id = param("blockid").unwrap_or_default();
+                        blobs.blocks.insert((path, id), body);
+                        ("201 Created".into(), vec![], vec![])
+                    } else if param("comp").as_deref() == Some("blocklist") {
+                        if absent && blobs.blobs.contains_key(&path) {
+                            error("409 Conflict", "BlobAlreadyExists")
+                        } else {
+                            let list = String::from_utf8(body).unwrap();
+                            let mut whole = Vec::new();
+                            for id in list.split("<Latest>").skip(1) {
+                                let id = id.split("</Latest>").next().unwrap().to_string();
+                                whole.extend(blobs.blocks[&(path.clone(), id)].clone());
+                            }
+                            blobs.blobs.insert(path, whole);
+                            ("201 Created".into(), vec![], vec![])
+                        }
+                    } else if method == "PUT" {
+                        if absent && blobs.blobs.contains_key(&path) {
+                            error("409 Conflict", "BlobAlreadyExists")
+                        } else {
+                            blobs.blobs.insert(path, body);
+                            ("201 Created".into(), vec![], vec![])
+                        }
+                    } else {
+                        match blobs.blobs.get(&path) {
+                            Some(b) if method == "HEAD" => {
+                                ("200 OK".into(), vec![], b.len().to_string().into_bytes())
+                            }
+                            Some(b) => ("200 OK".into(), vec![], b.clone()),
+                            None => error("404 Not Found", "BlobNotFound"),
+                        }
+                    };
+                    drop(blobs);
+                    let mut head = format!("HTTP/1.1 {status}\r\n");
+                    for h in extra {
+                        head.push_str(&format!("{h}\r\n"));
+                    }
+                    let (length, reply) = if method == "HEAD" {
+                        (String::from_utf8(reply).unwrap_or_default(), vec![])
+                    } else {
+                        (reply.len().to_string(), reply)
+                    };
+                    let length = if length.is_empty() {
+                        "0".to_string()
+                    } else {
+                        length
+                    };
+                    head.push_str(&format!("Content-Length: {length}\r\n\r\n"));
+                    if out
+                        .write_all(head.as_bytes())
+                        .and_then(|()| out.write_all(&reply))
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    (port, held)
+}
+
 /// What a writable test registry holds, by repository: blobs by digest, and manifests by
 /// tag and by digest, each with its media type.
 #[derive(Debug, Default)]

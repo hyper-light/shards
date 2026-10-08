@@ -3940,6 +3940,131 @@ fn builds_take_steps_from_an_s3_cache() {
     assert!(!missing.contains("WARNING"), "{missing}");
 }
 
+/// The Azure Blob Storage cache backend (D89): `--cache-to type=azblob` makes its
+/// container and writes a build's layers and records to it as BuildKit's does, under
+/// `prefix`, at each of `name`'s names, every request signed with the account's key;
+/// another home's `--cache-from` takes every step from it (`mode=max`), saying how many
+/// layers it found. Written again, no layer is sent twice; a cache with no key is refused
+/// before the build.
+#[test]
+fn builds_take_steps_from_an_azure_blob_cache() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let (port, blobs) = common::fake_azblob();
+    let homes: Vec<TempDir> = (0..2)
+        .map(|n| TempDir::new(&format!("azblob-cache-home-{n}")))
+        .collect();
+    let shards_in = |home: &TempDir, args: &[&str]| {
+        let env = [
+            ("SHARDS_HOME", home.as_os_str()),
+            ("SHARDS_KERNEL", kernel().as_os_str()),
+            ("SHARDS_INIT", guest_init().as_os_str()),
+        ];
+        run_shards_env(&[], args, &env, TIMEOUT)
+    };
+    let ctx = context(
+        "azblob-cache-ctx",
+        &format!(
+            "FROM {image} AS build\nUSER root\nRUN [\"/bin/testguest\", \"fs\", \"write:/out=built\"]\n\
+             FROM {image}\nUSER root\nCOPY --from=build /out /out\nRUN [\"/bin/testguest\", \"fs\", \"write:/two=2\"]\n"
+        ),
+    );
+    let at = format!(
+        "type=azblob,account_url=http://127.0.0.1:{port}/devstoreaccount1,account_name=devstoreaccount1,container=cache,prefix=team"
+    );
+    let key = "secret_access_key=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==";
+    let build = |home: &TempDir, cache: &[&str], tag: &str| {
+        let mut args = vec!["build", "--progress=plain"];
+        args.extend_from_slice(cache);
+        args.extend_from_slice(&["-t", tag, ctx.to_str().unwrap()]);
+        let built = shards_in(home, &args);
+        assert_eq!(built.status, Some(0), "{}", built.stderr);
+        built.stderr
+    };
+    let cached = |log: &str, step: &str| -> bool {
+        let n = log
+            .lines()
+            .find_map(|l| {
+                l.strip_prefix('#')
+                    .and_then(|r| r.split_once(' '))
+                    .filter(|(_, t)| t.contains(step))
+                    .map(|(n, _)| n.to_string())
+            })
+            .unwrap_or_else(|| panic!("no step {step:?} in\n{log}"));
+        log.lines().any(|l| l == format!("#{n} CACHED"))
+    };
+    let layers = |home: &TempDir, tag: &str| {
+        shards_in(
+            home,
+            &["image", "inspect", "--format", "{{json .RootFS.Layers}}", tag],
+        )
+        .stdout
+    };
+
+    let to = format!("{at},{key},mode=max,name=one;two");
+    let first = build(&homes[0], &["--cache-to", &to], "made:1");
+    assert!(first.contains("exporting cache to Azure Blob Storage"), "{first}");
+    let written: Vec<String> = {
+        let held = blobs.lock().unwrap();
+        assert!(held.containers.contains("/devstoreaccount1/cache"), "{held:?}");
+        for name in ["one", "two"] {
+            assert!(
+                held.blobs
+                    .contains_key(&format!("/devstoreaccount1/cache/team/manifests/{name}")),
+                "{held:?}"
+            );
+        }
+        assert!(
+            !held.log.iter().any(|l| l.ends_with(" unsigned")),
+            "{:?}",
+            held.log
+        );
+        held.blobs
+            .keys()
+            .filter_map(|k| k.strip_prefix("/devstoreaccount1/cache/team/blobs/"))
+            .map(str::to_string)
+            .collect()
+    };
+    assert!(written.len() >= 3, "{written:?}");
+    for d in &written {
+        assert!(first.contains(&format!("writing layer {d} done")), "{first}");
+    }
+    let made = layers(&homes[0], "made:1");
+
+    // Read back: every step, its layers counted.
+    let taken = build(
+        &homes[1],
+        &["--cache-from", &format!("{at},{key},name=two")],
+        "taken:1",
+    );
+    for step in ["write:/out=built", "COPY --from=build", "write:/two=2"] {
+        assert!(cached(&taken, step), "{step} was taken\n{taken}");
+    }
+    assert!(
+        taken.contains(&format!("found {} layers in cache", written.len())),
+        "{taken}"
+    );
+    assert_eq!(layers(&homes[1], "taken:1"), made);
+
+    // Written again: the layers are there, none is sent.
+    blobs.lock().unwrap().log.clear();
+    let again = build(&homes[0], &["--cache-to", &to], "made:2");
+    assert!(!again.contains("writing layer"), "{again}");
+    let log = blobs.lock().unwrap().log.clone();
+    assert!(
+        !log.iter()
+            .any(|l| l.starts_with("PUT /devstoreaccount1/cache/team/blobs/")),
+        "{log:?}"
+    );
+
+    // No key, no cache, before the build.
+    let refused = shards_in(&homes[1], &["build", "--cache-to", &at, ctx.to_str().unwrap()]);
+    assert_ne!(refused.status, Some(0));
+    assert!(refused.stderr.contains("secret_access_key"), "{}", refused.stderr);
+}
+
 /// What the build's flags give each `RUN`, as BuildKit's frontend gives them (D64):
 /// `--add-host`'s names in its `/etc/hosts`, `--shm-size`'s `/dev/shm`, and the limits of
 /// `--memory` and `--cpu-quota` (and `--resource`) in a cgroup of its own, as runc writes

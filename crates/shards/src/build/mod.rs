@@ -33,6 +33,7 @@ use shards_image::reference::{Algorithm, Digest, Reference};
 use shards_image::store::{self, Store};
 use shards_registry::pull::{self as registry_pull, Event};
 
+mod azblob;
 mod builder;
 mod cache;
 mod compress;

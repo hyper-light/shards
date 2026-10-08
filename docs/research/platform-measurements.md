@@ -4210,3 +4210,29 @@ revision before comparing a changed API/implementation.
   multipart included, which the 5 GiB-part path for large layers relies on and no fake
   covers.
 
+### M125. The azblob cache backend's requests against Azurite
+
+- **Question.** Does Blob Storage accept every request the azblob cache backend (D89)
+  makes? That means shared-key signatures over escaped names, a container's making,
+  uploads with `If-None-Match: *` in one request and in blocks, and downloads. The
+  recorded SDK requests pin the signer, not the server.
+- **Method.** `docs/research/measurements/azblob/run.sh`:
+  - starts Azurite (`mcr.microsoft.com/azure-storage/azurite@sha256:830430c1…`, blob
+    service) in the `shards-dind` container;
+  - reaches it on loopback through `../s3/tunnel.py`;
+  - runs `azblob_requests_are_blob_storages` with 1 MiB blocks, under a prefix with a
+    space.
+
+  macOS 26.4 (Darwin 25.4.0), arm64, 2026-10-08.
+- **Results.**
+  - Every request passes on the first run.
+  - The container is made, then found.
+  - A missing blob is a 404.
+  - A manifest is written and overwritten.
+  - A 1,000-byte blob in one request and a 3 MiB blob in three blocks read back byte for
+    byte, and a second upload of either is refused as `BlobAlreadyExists` and taken as
+    done.
+  - A request signed with a wrong key is refused.
+- **Consequence.** The backend's requests are signed and shaped as Blob Storage takes
+  them, blocks included, which layers past 32 MiB rely on and no fake covers.
+
