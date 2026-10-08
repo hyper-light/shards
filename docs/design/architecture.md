@@ -3206,6 +3206,45 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode
 waits on the user.
 
+### D73. `--check` as BuildKit's lint subrequest: every stage, its JSON, its error
+
+`--check` answers what BuildKit's frontend answers the lint subrequest
+(dockerfile2llb `DockerfileLint`, dockerfile/1.27.1), where D67 answered from the build's
+plan:
+
+- **Every stage.** With no target named, the planner dispatches every stage, those the
+  last does not reach too (`AllStages`: each resolved as reachable, each dispatched, ones
+  dispatched before included), so a check finds what a stage no build reaches does wrong
+  (measured on Docker's buildx v0.33.0 in `shards-dind`: an undefined variable in an
+  unreached stage is a warning there, and was none in shards). With a target, only what it
+  reaches. Planning stops where `toDispatchState` stops: no LLB is made.
+- **The error.** A failure inside `toDispatchState` (an empty file, bad check options, a
+  base image not found, a bad instruction) is the result's `buildError`: its message and
+  its locations made one as `mergeLocations` makes them (sorted by first line, ranges that
+  overlap joined). buildx then fails the call with it (`printResult`): the message and the
+  lines it names, as `errdefs.Source` shows them, after the warnings found before it, and
+  a blank line between, exit 1 whatever `ignorestatus` says. Failures before the
+  subrequest (dockerui's settings, a `# syntax=` frontend) fail it as a build's do.
+- **`format=json`.** `LintResults` as `ToResult` writes `result.json`
+  (`json.MarshalIndent`): the warnings in the order they were found (`null` for none), the
+  file (its name as given, its bytes in base64, its language), and `buildError`; then a
+  newline, as `printValue` prints it; exit 1 for warnings unless `ignorestatus`. Any other
+  format is the text, as buildx's is.
+
+Deliberately unlike BuildKit: the file carries no `definition`. BuildKit's is the
+frontend's LLB for loading the Dockerfile, which carries that build's session ID
+(`local.session`), so no two of its results are the same; the field is `omitempty`
+(solver/pb), so readers see a nil one (testdata/deviations.json, `lint-source`). An
+Agentfile's language is `Agentfile`.
+
+Tested: `subrequests_are_buildkits`, against `DockerfileLint`'s `result.json` and status
+code for every plan corpus file (`scripts/dockerfile/generate`; with an unreached stage,
+with a target, an error in an unreached stage, a base not found), mutation-checked (no
+`AllStages`; no merging); `check_says_the_builds_warnings_as_buildx_does` on a real build
+(the JSON, an unreached stage with and without a target, an error's text and JSON). Four
+files' text and JSON output was the same as Docker's buildx v0.33.0's, byte for byte, the
+`definition` aside.
+
 ### D72. `--attest`, `--provenance` and `--sbom`
 
 The flags as buildx v0.37.1 reads them (util/buildflags/attests.go: the shorthands
@@ -3439,9 +3478,8 @@ no warnings found."; exit 1 for warnings, unless `ignorestatus`. With `--debug`,
 warnings come in full, as buildx's `printWarnings` gives them at debug level: each
 rule's description, "More info:" and its lines, and no "use --debug to expand".
 `--call=outline`, `targets` and `subrequests.describe` are D70's; `check` with
-`format=json` is refused, named, until its LintResults (which carry the Dockerfile's
-source map and definition) are held to BuildKit's. The hidden `--print` is taken as buildx
-takes it.
+`format=json`, every stage checked and an error planning the build are D73's. The hidden
+`--print` is taken as buildx takes it.
 
 Tested on a real build (`check_says_the_builds_warnings_as_buildx_does`); the flags by
 the buildx oracle (a flag whose value prints as nothing, as buildx's `callAlias` does,

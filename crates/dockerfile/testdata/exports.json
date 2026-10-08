@@ -2688,6 +2688,294 @@
   "manifest": "{\n  \"schemaVersion\": 2,\n  \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\",\n  \"config\": {\n    \"mediaType\": \"application/vnd.oci.image.config.v1+json\",\n    \"digest\": \"sha256:608a79cbf5c7b3f333ff8e91a2446c186345384538e444ee5f2e114e1c6433a9\",\n    \"size\": 772\n  },\n  \"layers\": [\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:a32b217ef17069c89f5f22c5a0b1b0f1292375d7304acc3f5d8a6ecc7e0c7208\",\n      \"size\": 100,\n      \"annotations\": {\n        \"org.example.kept\": \"v0 \\u003c\\u0026\\u003e\"\n      }\n    },\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:8ea720af7d06fc784e8a1e71cf77659b56e75cbed34969abb290689af960c86d\",\n      \"size\": 101,\n      \"annotations\": {\n        \"org.example.kept\": \"v1 \\u003c\\u0026\\u003e\"\n      }\n    }\n  ]\n}"
  },
  {
+  "file": "corpus/plan/lint-unreached-error.Dockerfile",
+  "layers": 1,
+  "epoch": false,
+  "base": false,
+  "config": "{\"architecture\":\"amd64\",\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"a\"],\"ArgsEscaped\":true},\"created\":null,\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"CMD [\\\"a\\\"]\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true}],\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:10c4e94434092ec0e99162a4eccb58e012eb2a0d9d6db38372d58a84cc659612\"]}}",
+  "manifest": "{\n  \"schemaVersion\": 2,\n  \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\",\n  \"config\": {\n    \"mediaType\": \"application/vnd.oci.image.config.v1+json\",\n    \"digest\": \"sha256:0babd76ca87a8e6b237a453b79756d87a154f4bb772e371f907f197870dcabfa\",\n    \"size\": 401\n  },\n  \"layers\": [\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:a32b217ef17069c89f5f22c5a0b1b0f1292375d7304acc3f5d8a6ecc7e0c7208\",\n      \"size\": 100,\n      \"annotations\": {\n        \"org.example.kept\": \"v0 \\u003c\\u0026\\u003e\"\n      }\n    }\n  ]\n}"
+ },
+ {
+  "file": "corpus/plan/lint-unreached-error.Dockerfile",
+  "layers": 1,
+  "epoch": false,
+  "base": true,
+  "config": "{\"architecture\":\"amd64\",\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"a\"],\"ArgsEscaped\":true},\"created\":null,\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"CMD [\\\"a\\\"]\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true}],\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:10c4e94434092ec0e99162a4eccb58e012eb2a0d9d6db38372d58a84cc659612\"]}}",
+  "manifest": "{\n  \"schemaVersion\": 2,\n  \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\",\n  \"config\": {\n    \"mediaType\": \"application/vnd.oci.image.config.v1+json\",\n    \"digest\": \"sha256:0babd76ca87a8e6b237a453b79756d87a154f4bb772e371f907f197870dcabfa\",\n    \"size\": 401\n  },\n  \"layers\": [\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:a32b217ef17069c89f5f22c5a0b1b0f1292375d7304acc3f5d8a6ecc7e0c7208\",\n      \"size\": 100,\n      \"annotations\": {\n        \"org.example.kept\": \"v0 \\u003c\\u0026\\u003e\"\n      }\n    }\n  ]\n}"
+ },
+ {
+  "file": "corpus/plan/lint-unreached-error.Dockerfile",
+  "layers": 1,
+  "epoch": true,
+  "base": false,
+  "config": "{\"architecture\":\"amd64\",\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"a\"],\"ArgsEscaped\":true},\"created\":\"2023-11-14T22:13:20Z\",\"history\":[{\"created\":\"2023-11-14T22:13:20Z\",\"created_by\":\"base\"},{\"created\":\"2023-11-14T22:13:20Z\",\"created_by\":\"CMD [\\\"a\\\"]\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true}],\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:10c4e94434092ec0e99162a4eccb58e012eb2a0d9d6db38372d58a84cc659612\"]}}",
+  "manifest": "{\n  \"schemaVersion\": 2,\n  \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\",\n  \"config\": {\n    \"mediaType\": \"application/vnd.oci.image.config.v1+json\",\n    \"digest\": \"sha256:6b96d1ff9cb0f74a21ab64df8caa025c42fef6383ec65ae6e4177d85fbdc9b72\",\n    \"size\": 485\n  },\n  \"layers\": [\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:a32b217ef17069c89f5f22c5a0b1b0f1292375d7304acc3f5d8a6ecc7e0c7208\",\n      \"size\": 100,\n      \"annotations\": {\n        \"org.example.kept\": \"v0 \\u003c\\u0026\\u003e\"\n      }\n    }\n  ]\n}"
+ },
+ {
+  "file": "corpus/plan/lint-unreached-error.Dockerfile",
+  "layers": 1,
+  "epoch": true,
+  "base": true,
+  "config": "{\"architecture\":\"amd64\",\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"a\"],\"ArgsEscaped\":true},\"created\":null,\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"CMD [\\\"a\\\"]\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true}],\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:10c4e94434092ec0e99162a4eccb58e012eb2a0d9d6db38372d58a84cc659612\"]}}",
+  "manifest": "{\n  \"schemaVersion\": 2,\n  \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\",\n  \"config\": {\n    \"mediaType\": \"application/vnd.oci.image.config.v1+json\",\n    \"digest\": \"sha256:0babd76ca87a8e6b237a453b79756d87a154f4bb772e371f907f197870dcabfa\",\n    \"size\": 401\n  },\n  \"layers\": [\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:a32b217ef17069c89f5f22c5a0b1b0f1292375d7304acc3f5d8a6ecc7e0c7208\",\n      \"size\": 100,\n      \"annotations\": {\n        \"org.example.kept\": \"v0 \\u003c\\u0026\\u003e\"\n      }\n    }\n  ]\n}"
+ },
+ {
+  "file": "corpus/plan/lint-unreached-error.Dockerfile",
+  "layers": 2,
+  "epoch": false,
+  "base": false,
+  "config": "{\"architecture\":\"amd64\",\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"a\"],\"ArgsEscaped\":true},\"created\":null,\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"CMD [\\\"a\\\"]\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true},{\"comment\":\"buildkit.exporter.image.v0\"}],\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:10c4e94434092ec0e99162a4eccb58e012eb2a0d9d6db38372d58a84cc659612\",\"sha256:64e71580c2ea7aa628b77c9e993096065cf51c3e5a1dbbb112e138d5b9cc4398\"]}}",
+  "manifest": "{\n  \"schemaVersion\": 2,\n  \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\",\n  \"config\": {\n    \"mediaType\": \"application/vnd.oci.image.config.v1+json\",\n    \"digest\": \"sha256:22bf42f108b4cf76214b0125e83b6c78491288813ac38d62da5e7ce25648e5e7\",\n    \"size\": 516\n  },\n  \"layers\": [\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:a32b217ef17069c89f5f22c5a0b1b0f1292375d7304acc3f5d8a6ecc7e0c7208\",\n      \"size\": 100,\n      \"annotations\": {\n        \"org.example.kept\": \"v0 \\u003c\\u0026\\u003e\"\n      }\n    },\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:8ea720af7d06fc784e8a1e71cf77659b56e75cbed34969abb290689af960c86d\",\n      \"size\": 101,\n      \"annotations\": {\n        \"org.example.kept\": \"v1 \\u003c\\u0026\\u003e\"\n      }\n    }\n  ]\n}"
+ },
+ {
+  "file": "corpus/plan/lint-unreached-error.Dockerfile",
+  "layers": 2,
+  "epoch": false,
+  "base": true,
+  "config": "{\"architecture\":\"amd64\",\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"a\"],\"ArgsEscaped\":true},\"created\":null,\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"CMD [\\\"a\\\"]\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true},{\"comment\":\"buildkit.exporter.image.v0\"}],\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:10c4e94434092ec0e99162a4eccb58e012eb2a0d9d6db38372d58a84cc659612\",\"sha256:64e71580c2ea7aa628b77c9e993096065cf51c3e5a1dbbb112e138d5b9cc4398\"]}}",
+  "manifest": "{\n  \"schemaVersion\": 2,\n  \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\",\n  \"config\": {\n    \"mediaType\": \"application/vnd.oci.image.config.v1+json\",\n    \"digest\": \"sha256:22bf42f108b4cf76214b0125e83b6c78491288813ac38d62da5e7ce25648e5e7\",\n    \"size\": 516\n  },\n  \"layers\": [\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:a32b217ef17069c89f5f22c5a0b1b0f1292375d7304acc3f5d8a6ecc7e0c7208\",\n      \"size\": 100,\n      \"annotations\": {\n        \"org.example.kept\": \"v0 \\u003c\\u0026\\u003e\"\n      }\n    },\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:8ea720af7d06fc784e8a1e71cf77659b56e75cbed34969abb290689af960c86d\",\n      \"size\": 101,\n      \"annotations\": {\n        \"org.example.kept\": \"v1 \\u003c\\u0026\\u003e\"\n      }\n    }\n  ]\n}"
+ },
+ {
+  "file": "corpus/plan/lint-unreached-error.Dockerfile",
+  "layers": 2,
+  "epoch": true,
+  "base": false,
+  "config": "{\"architecture\":\"amd64\",\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"a\"],\"ArgsEscaped\":true},\"created\":\"2023-11-14T22:13:20Z\",\"history\":[{\"created\":\"2023-11-14T22:13:20Z\",\"created_by\":\"base\"},{\"created\":\"2023-11-14T22:13:20Z\",\"created_by\":\"CMD [\\\"a\\\"]\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true},{\"created\":\"2023-11-14T22:13:20Z\",\"comment\":\"buildkit.exporter.image.v0\"}],\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:10c4e94434092ec0e99162a4eccb58e012eb2a0d9d6db38372d58a84cc659612\",\"sha256:64e71580c2ea7aa628b77c9e993096065cf51c3e5a1dbbb112e138d5b9cc4398\"]}}",
+  "manifest": "{\n  \"schemaVersion\": 2,\n  \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\",\n  \"config\": {\n    \"mediaType\": \"application/vnd.oci.image.config.v1+json\",\n    \"digest\": \"sha256:4439baa210c687a9f7ea7c366ccf7bc18673db1f2900957f291c74e4107f0ba7\",\n    \"size\": 633\n  },\n  \"layers\": [\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:a32b217ef17069c89f5f22c5a0b1b0f1292375d7304acc3f5d8a6ecc7e0c7208\",\n      \"size\": 100,\n      \"annotations\": {\n        \"org.example.kept\": \"v0 \\u003c\\u0026\\u003e\"\n      }\n    },\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:8ea720af7d06fc784e8a1e71cf77659b56e75cbed34969abb290689af960c86d\",\n      \"size\": 101,\n      \"annotations\": {\n        \"org.example.kept\": \"v1 \\u003c\\u0026\\u003e\"\n      }\n    }\n  ]\n}"
+ },
+ {
+  "file": "corpus/plan/lint-unreached-error.Dockerfile",
+  "layers": 2,
+  "epoch": true,
+  "base": true,
+  "config": "{\"architecture\":\"amd64\",\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"a\"],\"ArgsEscaped\":true},\"created\":\"2023-11-14T22:13:20Z\",\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"CMD [\\\"a\\\"]\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true},{\"created\":\"2023-11-14T22:13:20Z\",\"comment\":\"buildkit.exporter.image.v0\"}],\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:10c4e94434092ec0e99162a4eccb58e012eb2a0d9d6db38372d58a84cc659612\",\"sha256:64e71580c2ea7aa628b77c9e993096065cf51c3e5a1dbbb112e138d5b9cc4398\"]}}",
+  "manifest": "{\n  \"schemaVersion\": 2,\n  \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\",\n  \"config\": {\n    \"mediaType\": \"application/vnd.oci.image.config.v1+json\",\n    \"digest\": \"sha256:2e545c0bb1a11682892cb3ceda9f2af483fad722760018fdb7ca398dbe71367a\",\n    \"size\": 567\n  },\n  \"layers\": [\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:a32b217ef17069c89f5f22c5a0b1b0f1292375d7304acc3f5d8a6ecc7e0c7208\",\n      \"size\": 100,\n      \"annotations\": {\n        \"org.example.kept\": \"v0 \\u003c\\u0026\\u003e\"\n      }\n    },\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:8ea720af7d06fc784e8a1e71cf77659b56e75cbed34969abb290689af960c86d\",\n      \"size\": 101,\n      \"annotations\": {\n        \"org.example.kept\": \"v1 \\u003c\\u0026\\u003e\"\n      }\n    }\n  ]\n}"
+ },
+ {
+  "file": "corpus/plan/lint-unreached-error.Dockerfile",
+  "layers": 0,
+  "epoch": false,
+  "base": false,
+  "config": "{\"architecture\":\"amd64\",\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"a\"],\"ArgsEscaped\":true},\"created\":null,\"history\":[{\"created_by\":\"base\",\"empty_layer\":true},{\"created_by\":\"CMD [\\\"a\\\"]\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true}],\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":null}}",
+  "manifest": "{\n  \"schemaVersion\": 2,\n  \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\",\n  \"config\": {\n    \"mediaType\": \"application/vnd.oci.image.config.v1+json\",\n    \"digest\": \"sha256:8a32be7eff87e029092d76cdfc9d062975bf16ae18fdefca61da6be3501eb4b5\",\n    \"size\": 349\n  },\n  \"layers\": null\n}"
+ },
+ {
+  "file": "corpus/plan/lint-unreached-error.Dockerfile",
+  "layers": 0,
+  "epoch": false,
+  "base": true,
+  "config": "{\"architecture\":\"amd64\",\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"a\"],\"ArgsEscaped\":true},\"created\":null,\"history\":[{\"created_by\":\"base\",\"empty_layer\":true},{\"created_by\":\"CMD [\\\"a\\\"]\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true}],\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":null}}",
+  "manifest": "{\n  \"schemaVersion\": 2,\n  \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\",\n  \"config\": {\n    \"mediaType\": \"application/vnd.oci.image.config.v1+json\",\n    \"digest\": \"sha256:8a32be7eff87e029092d76cdfc9d062975bf16ae18fdefca61da6be3501eb4b5\",\n    \"size\": 349\n  },\n  \"layers\": null\n}"
+ },
+ {
+  "file": "corpus/plan/lint-unreached-error.Dockerfile",
+  "layers": 0,
+  "epoch": true,
+  "base": false,
+  "config": "{\"architecture\":\"amd64\",\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"a\"],\"ArgsEscaped\":true},\"created\":\"2023-11-14T22:13:20Z\",\"history\":[{\"created\":\"2023-11-14T22:13:20Z\",\"created_by\":\"base\",\"empty_layer\":true},{\"created\":\"2023-11-14T22:13:20Z\",\"created_by\":\"CMD [\\\"a\\\"]\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true}],\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":null}}",
+  "manifest": "{\n  \"schemaVersion\": 2,\n  \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\",\n  \"config\": {\n    \"mediaType\": \"application/vnd.oci.image.config.v1+json\",\n    \"digest\": \"sha256:c24b06ab7c2b47b79254fdc329878c2415f5a57905a0001d39ab76ca555a6832\",\n    \"size\": 433\n  },\n  \"layers\": null\n}"
+ },
+ {
+  "file": "corpus/plan/lint-unreached-error.Dockerfile",
+  "layers": 0,
+  "epoch": true,
+  "base": true,
+  "config": "{\"architecture\":\"amd64\",\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"a\"],\"ArgsEscaped\":true},\"created\":\"2023-11-14T22:13:20Z\",\"history\":[{\"created\":\"2023-11-14T22:13:20Z\",\"created_by\":\"base\",\"empty_layer\":true},{\"created\":\"2023-11-14T22:13:20Z\",\"created_by\":\"CMD [\\\"a\\\"]\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true}],\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":null}}",
+  "manifest": "{\n  \"schemaVersion\": 2,\n  \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\",\n  \"config\": {\n    \"mediaType\": \"application/vnd.oci.image.config.v1+json\",\n    \"digest\": \"sha256:c24b06ab7c2b47b79254fdc329878c2415f5a57905a0001d39ab76ca555a6832\",\n    \"size\": 433\n  },\n  \"layers\": null\n}"
+ },
+ {
+  "file": "corpus/plan/lint-unreached-target.Dockerfile",
+  "layers": 3,
+  "epoch": false,
+  "base": false,
+  "config": "{\"architecture\":\"amd64\",\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"/bin/sh\"]},\"created\":null,\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"RUN /bin/sh -c echo $NOPE # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"COPY .  # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"}],\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:10c4e94434092ec0e99162a4eccb58e012eb2a0d9d6db38372d58a84cc659612\",\"sha256:64e71580c2ea7aa628b77c9e993096065cf51c3e5a1dbbb112e138d5b9cc4398\",\"sha256:7ff25f8956fcdb19b2b1b2e476773fae965ab4546912bf9a6c1c3a2bd42859d9\"]}}",
+  "manifest": "{\n  \"schemaVersion\": 2,\n  \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\",\n  \"config\": {\n    \"mediaType\": \"application/vnd.oci.image.config.v1+json\",\n    \"digest\": \"sha256:1a3e283378e794a3b10a953cad60f8000f1543fa5177d5f845ec5926ba32b5d5\",\n    \"size\": 613\n  },\n  \"layers\": [\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:a32b217ef17069c89f5f22c5a0b1b0f1292375d7304acc3f5d8a6ecc7e0c7208\",\n      \"size\": 100,\n      \"annotations\": {\n        \"org.example.kept\": \"v0 \\u003c\\u0026\\u003e\"\n      }\n    },\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:8ea720af7d06fc784e8a1e71cf77659b56e75cbed34969abb290689af960c86d\",\n      \"size\": 101,\n      \"annotations\": {\n        \"org.example.kept\": \"v1 \\u003c\\u0026\\u003e\"\n      }\n    },\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:974b8f4f45ebf7114bdbcb2e9132662134d46b6fe433660b7b2e93ce096b269a\",\n      \"size\": 102,\n      \"annotations\": {\n        \"org.example.kept\": \"v2 \\u003c\\u0026\\u003e\"\n      }\n    }\n  ]\n}"
+ },
+ {
+  "file": "corpus/plan/lint-unreached-target.Dockerfile",
+  "layers": 3,
+  "epoch": false,
+  "base": true,
+  "config": "{\"architecture\":\"amd64\",\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"/bin/sh\"]},\"created\":null,\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"RUN /bin/sh -c echo $NOPE # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"COPY .  # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"}],\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:10c4e94434092ec0e99162a4eccb58e012eb2a0d9d6db38372d58a84cc659612\",\"sha256:64e71580c2ea7aa628b77c9e993096065cf51c3e5a1dbbb112e138d5b9cc4398\",\"sha256:7ff25f8956fcdb19b2b1b2e476773fae965ab4546912bf9a6c1c3a2bd42859d9\"]}}",
+  "manifest": "{\n  \"schemaVersion\": 2,\n  \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\",\n  \"config\": {\n    \"mediaType\": \"application/vnd.oci.image.config.v1+json\",\n    \"digest\": \"sha256:1a3e283378e794a3b10a953cad60f8000f1543fa5177d5f845ec5926ba32b5d5\",\n    \"size\": 613\n  },\n  \"layers\": [\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:a32b217ef17069c89f5f22c5a0b1b0f1292375d7304acc3f5d8a6ecc7e0c7208\",\n      \"size\": 100,\n      \"annotations\": {\n        \"org.example.kept\": \"v0 \\u003c\\u0026\\u003e\"\n      }\n    },\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:8ea720af7d06fc784e8a1e71cf77659b56e75cbed34969abb290689af960c86d\",\n      \"size\": 101,\n      \"annotations\": {\n        \"org.example.kept\": \"v1 \\u003c\\u0026\\u003e\"\n      }\n    },\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:974b8f4f45ebf7114bdbcb2e9132662134d46b6fe433660b7b2e93ce096b269a\",\n      \"size\": 102,\n      \"annotations\": {\n        \"org.example.kept\": \"v2 \\u003c\\u0026\\u003e\"\n      }\n    }\n  ]\n}"
+ },
+ {
+  "file": "corpus/plan/lint-unreached-target.Dockerfile",
+  "layers": 3,
+  "epoch": true,
+  "base": false,
+  "config": "{\"architecture\":\"amd64\",\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"/bin/sh\"]},\"created\":\"2023-11-14T22:13:20Z\",\"history\":[{\"created\":\"2023-11-14T22:13:20Z\",\"created_by\":\"base\"},{\"created\":\"2023-11-14T22:13:20Z\",\"created_by\":\"RUN /bin/sh -c echo $NOPE # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created\":\"2023-11-14T22:13:20Z\",\"created_by\":\"COPY .  # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"}],\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:10c4e94434092ec0e99162a4eccb58e012eb2a0d9d6db38372d58a84cc659612\",\"sha256:64e71580c2ea7aa628b77c9e993096065cf51c3e5a1dbbb112e138d5b9cc4398\",\"sha256:7ff25f8956fcdb19b2b1b2e476773fae965ab4546912bf9a6c1c3a2bd42859d9\"]}}",
+  "manifest": "{\n  \"schemaVersion\": 2,\n  \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\",\n  \"config\": {\n    \"mediaType\": \"application/vnd.oci.image.config.v1+json\",\n    \"digest\": \"sha256:0f816a73f6b77ed480e39757987dbf8b196df4ea61bfcf167a58b59b6e2ba59d\",\n    \"size\": 730\n  },\n  \"layers\": [\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:a32b217ef17069c89f5f22c5a0b1b0f1292375d7304acc3f5d8a6ecc7e0c7208\",\n      \"size\": 100,\n      \"annotations\": {\n        \"org.example.kept\": \"v0 \\u003c\\u0026\\u003e\"\n      }\n    },\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:8ea720af7d06fc784e8a1e71cf77659b56e75cbed34969abb290689af960c86d\",\n      \"size\": 101,\n      \"annotations\": {\n        \"org.example.kept\": \"v1 \\u003c\\u0026\\u003e\"\n      }\n    },\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:974b8f4f45ebf7114bdbcb2e9132662134d46b6fe433660b7b2e93ce096b269a\",\n      \"size\": 102,\n      \"annotations\": {\n        \"org.example.kept\": \"v2 \\u003c\\u0026\\u003e\"\n      }\n    }\n  ]\n}"
+ },
+ {
+  "file": "corpus/plan/lint-unreached-target.Dockerfile",
+  "layers": 3,
+  "epoch": true,
+  "base": true,
+  "config": "{\"architecture\":\"amd64\",\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"/bin/sh\"]},\"created\":null,\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"RUN /bin/sh -c echo $NOPE # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"COPY .  # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"}],\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:10c4e94434092ec0e99162a4eccb58e012eb2a0d9d6db38372d58a84cc659612\",\"sha256:64e71580c2ea7aa628b77c9e993096065cf51c3e5a1dbbb112e138d5b9cc4398\",\"sha256:7ff25f8956fcdb19b2b1b2e476773fae965ab4546912bf9a6c1c3a2bd42859d9\"]}}",
+  "manifest": "{\n  \"schemaVersion\": 2,\n  \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\",\n  \"config\": {\n    \"mediaType\": \"application/vnd.oci.image.config.v1+json\",\n    \"digest\": \"sha256:1a3e283378e794a3b10a953cad60f8000f1543fa5177d5f845ec5926ba32b5d5\",\n    \"size\": 613\n  },\n  \"layers\": [\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:a32b217ef17069c89f5f22c5a0b1b0f1292375d7304acc3f5d8a6ecc7e0c7208\",\n      \"size\": 100,\n      \"annotations\": {\n        \"org.example.kept\": \"v0 \\u003c\\u0026\\u003e\"\n      }\n    },\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:8ea720af7d06fc784e8a1e71cf77659b56e75cbed34969abb290689af960c86d\",\n      \"size\": 101,\n      \"annotations\": {\n        \"org.example.kept\": \"v1 \\u003c\\u0026\\u003e\"\n      }\n    },\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:974b8f4f45ebf7114bdbcb2e9132662134d46b6fe433660b7b2e93ce096b269a\",\n      \"size\": 102,\n      \"annotations\": {\n        \"org.example.kept\": \"v2 \\u003c\\u0026\\u003e\"\n      }\n    }\n  ]\n}"
+ },
+ {
+  "file": "corpus/plan/lint-unreached-target.Dockerfile",
+  "layers": 4,
+  "epoch": false,
+  "base": false,
+  "config": "{\"architecture\":\"amd64\",\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"/bin/sh\"]},\"created\":null,\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"RUN /bin/sh -c echo $NOPE # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"COPY .  # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"comment\":\"buildkit.exporter.image.v0\"}],\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:10c4e94434092ec0e99162a4eccb58e012eb2a0d9d6db38372d58a84cc659612\",\"sha256:64e71580c2ea7aa628b77c9e993096065cf51c3e5a1dbbb112e138d5b9cc4398\",\"sha256:7ff25f8956fcdb19b2b1b2e476773fae965ab4546912bf9a6c1c3a2bd42859d9\",\"sha256:0dd27ff00312c12a771087123ce2e826f85622a0111d5ab81c9bbe30875f1467\"]}}",
+  "manifest": "{\n  \"schemaVersion\": 2,\n  \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\",\n  \"config\": {\n    \"mediaType\": \"application/vnd.oci.image.config.v1+json\",\n    \"digest\": \"sha256:302540ca88694ca1a21bf2c0ba18ff6cc56a5c22b0d3498c8b58ae11abae2547\",\n    \"size\": 728\n  },\n  \"layers\": [\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:a32b217ef17069c89f5f22c5a0b1b0f1292375d7304acc3f5d8a6ecc7e0c7208\",\n      \"size\": 100,\n      \"annotations\": {\n        \"org.example.kept\": \"v0 \\u003c\\u0026\\u003e\"\n      }\n    },\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:8ea720af7d06fc784e8a1e71cf77659b56e75cbed34969abb290689af960c86d\",\n      \"size\": 101,\n      \"annotations\": {\n        \"org.example.kept\": \"v1 \\u003c\\u0026\\u003e\"\n      }\n    },\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:974b8f4f45ebf7114bdbcb2e9132662134d46b6fe433660b7b2e93ce096b269a\",\n      \"size\": 102,\n      \"annotations\": {\n        \"org.example.kept\": \"v2 \\u003c\\u0026\\u003e\"\n      }\n    },\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:dc383e6cb34a818fc2f8469077cd5ff3589f0a548d2717c67d536a7dab6d5515\",\n      \"size\": 103,\n      \"annotations\": {\n        \"org.example.kept\": \"v3 \\u003c\\u0026\\u003e\"\n      }\n    }\n  ]\n}"
+ },
+ {
+  "file": "corpus/plan/lint-unreached-target.Dockerfile",
+  "layers": 4,
+  "epoch": false,
+  "base": true,
+  "config": "{\"architecture\":\"amd64\",\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"/bin/sh\"]},\"created\":null,\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"RUN /bin/sh -c echo $NOPE # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"COPY .  # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"comment\":\"buildkit.exporter.image.v0\"}],\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:10c4e94434092ec0e99162a4eccb58e012eb2a0d9d6db38372d58a84cc659612\",\"sha256:64e71580c2ea7aa628b77c9e993096065cf51c3e5a1dbbb112e138d5b9cc4398\",\"sha256:7ff25f8956fcdb19b2b1b2e476773fae965ab4546912bf9a6c1c3a2bd42859d9\",\"sha256:0dd27ff00312c12a771087123ce2e826f85622a0111d5ab81c9bbe30875f1467\"]}}",
+  "manifest": "{\n  \"schemaVersion\": 2,\n  \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\",\n  \"config\": {\n    \"mediaType\": \"application/vnd.oci.image.config.v1+json\",\n    \"digest\": \"sha256:302540ca88694ca1a21bf2c0ba18ff6cc56a5c22b0d3498c8b58ae11abae2547\",\n    \"size\": 728\n  },\n  \"layers\": [\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:a32b217ef17069c89f5f22c5a0b1b0f1292375d7304acc3f5d8a6ecc7e0c7208\",\n      \"size\": 100,\n      \"annotations\": {\n        \"org.example.kept\": \"v0 \\u003c\\u0026\\u003e\"\n      }\n    },\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:8ea720af7d06fc784e8a1e71cf77659b56e75cbed34969abb290689af960c86d\",\n      \"size\": 101,\n      \"annotations\": {\n        \"org.example.kept\": \"v1 \\u003c\\u0026\\u003e\"\n      }\n    },\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:974b8f4f45ebf7114bdbcb2e9132662134d46b6fe433660b7b2e93ce096b269a\",\n      \"size\": 102,\n      \"annotations\": {\n        \"org.example.kept\": \"v2 \\u003c\\u0026\\u003e\"\n      }\n    },\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:dc383e6cb34a818fc2f8469077cd5ff3589f0a548d2717c67d536a7dab6d5515\",\n      \"size\": 103,\n      \"annotations\": {\n        \"org.example.kept\": \"v3 \\u003c\\u0026\\u003e\"\n      }\n    }\n  ]\n}"
+ },
+ {
+  "file": "corpus/plan/lint-unreached-target.Dockerfile",
+  "layers": 4,
+  "epoch": true,
+  "base": false,
+  "config": "{\"architecture\":\"amd64\",\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"/bin/sh\"]},\"created\":\"2023-11-14T22:13:20Z\",\"history\":[{\"created\":\"2023-11-14T22:13:20Z\",\"created_by\":\"base\"},{\"created\":\"2023-11-14T22:13:20Z\",\"created_by\":\"RUN /bin/sh -c echo $NOPE # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created\":\"2023-11-14T22:13:20Z\",\"created_by\":\"COPY .  # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created\":\"2023-11-14T22:13:20Z\",\"comment\":\"buildkit.exporter.image.v0\"}],\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:10c4e94434092ec0e99162a4eccb58e012eb2a0d9d6db38372d58a84cc659612\",\"sha256:64e71580c2ea7aa628b77c9e993096065cf51c3e5a1dbbb112e138d5b9cc4398\",\"sha256:7ff25f8956fcdb19b2b1b2e476773fae965ab4546912bf9a6c1c3a2bd42859d9\",\"sha256:0dd27ff00312c12a771087123ce2e826f85622a0111d5ab81c9bbe30875f1467\"]}}",
+  "manifest": "{\n  \"schemaVersion\": 2,\n  \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\",\n  \"config\": {\n    \"mediaType\": \"application/vnd.oci.image.config.v1+json\",\n    \"digest\": \"sha256:96b500968fa13257bf829004dd92bd587d62eea2a014e8932ddab22f496183e6\",\n    \"size\": 878\n  },\n  \"layers\": [\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:a32b217ef17069c89f5f22c5a0b1b0f1292375d7304acc3f5d8a6ecc7e0c7208\",\n      \"size\": 100,\n      \"annotations\": {\n        \"org.example.kept\": \"v0 \\u003c\\u0026\\u003e\"\n      }\n    },\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:8ea720af7d06fc784e8a1e71cf77659b56e75cbed34969abb290689af960c86d\",\n      \"size\": 101,\n      \"annotations\": {\n        \"org.example.kept\": \"v1 \\u003c\\u0026\\u003e\"\n      }\n    },\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:974b8f4f45ebf7114bdbcb2e9132662134d46b6fe433660b7b2e93ce096b269a\",\n      \"size\": 102,\n      \"annotations\": {\n        \"org.example.kept\": \"v2 \\u003c\\u0026\\u003e\"\n      }\n    },\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:dc383e6cb34a818fc2f8469077cd5ff3589f0a548d2717c67d536a7dab6d5515\",\n      \"size\": 103,\n      \"annotations\": {\n        \"org.example.kept\": \"v3 \\u003c\\u0026\\u003e\"\n      }\n    }\n  ]\n}"
+ },
+ {
+  "file": "corpus/plan/lint-unreached-target.Dockerfile",
+  "layers": 4,
+  "epoch": true,
+  "base": true,
+  "config": "{\"architecture\":\"amd64\",\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"/bin/sh\"]},\"created\":\"2023-11-14T22:13:20Z\",\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"RUN /bin/sh -c echo $NOPE # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"COPY .  # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created\":\"2023-11-14T22:13:20Z\",\"comment\":\"buildkit.exporter.image.v0\"}],\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:10c4e94434092ec0e99162a4eccb58e012eb2a0d9d6db38372d58a84cc659612\",\"sha256:64e71580c2ea7aa628b77c9e993096065cf51c3e5a1dbbb112e138d5b9cc4398\",\"sha256:7ff25f8956fcdb19b2b1b2e476773fae965ab4546912bf9a6c1c3a2bd42859d9\",\"sha256:0dd27ff00312c12a771087123ce2e826f85622a0111d5ab81c9bbe30875f1467\"]}}",
+  "manifest": "{\n  \"schemaVersion\": 2,\n  \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\",\n  \"config\": {\n    \"mediaType\": \"application/vnd.oci.image.config.v1+json\",\n    \"digest\": \"sha256:cb48725e276b935741d958a744b1f4234fa5616ad0954eb9c1c438b3520c1d21\",\n    \"size\": 779\n  },\n  \"layers\": [\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:a32b217ef17069c89f5f22c5a0b1b0f1292375d7304acc3f5d8a6ecc7e0c7208\",\n      \"size\": 100,\n      \"annotations\": {\n        \"org.example.kept\": \"v0 \\u003c\\u0026\\u003e\"\n      }\n    },\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:8ea720af7d06fc784e8a1e71cf77659b56e75cbed34969abb290689af960c86d\",\n      \"size\": 101,\n      \"annotations\": {\n        \"org.example.kept\": \"v1 \\u003c\\u0026\\u003e\"\n      }\n    },\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:974b8f4f45ebf7114bdbcb2e9132662134d46b6fe433660b7b2e93ce096b269a\",\n      \"size\": 102,\n      \"annotations\": {\n        \"org.example.kept\": \"v2 \\u003c\\u0026\\u003e\"\n      }\n    },\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:dc383e6cb34a818fc2f8469077cd5ff3589f0a548d2717c67d536a7dab6d5515\",\n      \"size\": 103,\n      \"annotations\": {\n        \"org.example.kept\": \"v3 \\u003c\\u0026\\u003e\"\n      }\n    }\n  ]\n}"
+ },
+ {
+  "file": "corpus/plan/lint-unreached-target.Dockerfile",
+  "layers": 2,
+  "epoch": false,
+  "base": false,
+  "config": "{\"architecture\":\"amd64\",\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"/bin/sh\"]},\"created\":null,\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"RUN /bin/sh -c echo $NOPE # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"COPY .  # buildkit\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true}],\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:10c4e94434092ec0e99162a4eccb58e012eb2a0d9d6db38372d58a84cc659612\",\"sha256:64e71580c2ea7aa628b77c9e993096065cf51c3e5a1dbbb112e138d5b9cc4398\"]}}",
+  "manifest": "{\n  \"schemaVersion\": 2,\n  \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\",\n  \"config\": {\n    \"mediaType\": \"application/vnd.oci.image.config.v1+json\",\n    \"digest\": \"sha256:cbc2ca6b5708546ff37b36c92a593bef26edd910749a6ac8754bb81292a97f08\",\n    \"size\": 558\n  },\n  \"layers\": [\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:a32b217ef17069c89f5f22c5a0b1b0f1292375d7304acc3f5d8a6ecc7e0c7208\",\n      \"size\": 100,\n      \"annotations\": {\n        \"org.example.kept\": \"v0 \\u003c\\u0026\\u003e\"\n      }\n    },\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:8ea720af7d06fc784e8a1e71cf77659b56e75cbed34969abb290689af960c86d\",\n      \"size\": 101,\n      \"annotations\": {\n        \"org.example.kept\": \"v1 \\u003c\\u0026\\u003e\"\n      }\n    }\n  ]\n}"
+ },
+ {
+  "file": "corpus/plan/lint-unreached-target.Dockerfile",
+  "layers": 2,
+  "epoch": false,
+  "base": true,
+  "config": "{\"architecture\":\"amd64\",\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"/bin/sh\"]},\"created\":null,\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"RUN /bin/sh -c echo $NOPE # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"COPY .  # buildkit\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true}],\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:10c4e94434092ec0e99162a4eccb58e012eb2a0d9d6db38372d58a84cc659612\",\"sha256:64e71580c2ea7aa628b77c9e993096065cf51c3e5a1dbbb112e138d5b9cc4398\"]}}",
+  "manifest": "{\n  \"schemaVersion\": 2,\n  \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\",\n  \"config\": {\n    \"mediaType\": \"application/vnd.oci.image.config.v1+json\",\n    \"digest\": \"sha256:cbc2ca6b5708546ff37b36c92a593bef26edd910749a6ac8754bb81292a97f08\",\n    \"size\": 558\n  },\n  \"layers\": [\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:a32b217ef17069c89f5f22c5a0b1b0f1292375d7304acc3f5d8a6ecc7e0c7208\",\n      \"size\": 100,\n      \"annotations\": {\n        \"org.example.kept\": \"v0 \\u003c\\u0026\\u003e\"\n      }\n    },\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:8ea720af7d06fc784e8a1e71cf77659b56e75cbed34969abb290689af960c86d\",\n      \"size\": 101,\n      \"annotations\": {\n        \"org.example.kept\": \"v1 \\u003c\\u0026\\u003e\"\n      }\n    }\n  ]\n}"
+ },
+ {
+  "file": "corpus/plan/lint-unreached-target.Dockerfile",
+  "layers": 2,
+  "epoch": true,
+  "base": false,
+  "config": "{\"architecture\":\"amd64\",\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"/bin/sh\"]},\"created\":\"2023-11-14T22:13:20Z\",\"history\":[{\"created\":\"2023-11-14T22:13:20Z\",\"created_by\":\"base\"},{\"created\":\"2023-11-14T22:13:20Z\",\"created_by\":\"RUN /bin/sh -c echo $NOPE # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created\":\"2023-11-14T22:13:20Z\",\"created_by\":\"COPY .  # buildkit\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true}],\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:10c4e94434092ec0e99162a4eccb58e012eb2a0d9d6db38372d58a84cc659612\",\"sha256:64e71580c2ea7aa628b77c9e993096065cf51c3e5a1dbbb112e138d5b9cc4398\"]}}",
+  "manifest": "{\n  \"schemaVersion\": 2,\n  \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\",\n  \"config\": {\n    \"mediaType\": \"application/vnd.oci.image.config.v1+json\",\n    \"digest\": \"sha256:2c04bf443044352bed0c5502060d43010cbaeeb0289232d9931817f5bfd6123c\",\n    \"size\": 675\n  },\n  \"layers\": [\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:a32b217ef17069c89f5f22c5a0b1b0f1292375d7304acc3f5d8a6ecc7e0c7208\",\n      \"size\": 100,\n      \"annotations\": {\n        \"org.example.kept\": \"v0 \\u003c\\u0026\\u003e\"\n      }\n    },\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:8ea720af7d06fc784e8a1e71cf77659b56e75cbed34969abb290689af960c86d\",\n      \"size\": 101,\n      \"annotations\": {\n        \"org.example.kept\": \"v1 \\u003c\\u0026\\u003e\"\n      }\n    }\n  ]\n}"
+ },
+ {
+  "file": "corpus/plan/lint-unreached-target.Dockerfile",
+  "layers": 2,
+  "epoch": true,
+  "base": true,
+  "config": "{\"architecture\":\"amd64\",\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"/bin/sh\"]},\"created\":\"2023-11-14T22:13:20Z\",\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"RUN /bin/sh -c echo $NOPE # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created\":\"2023-11-14T22:13:20Z\",\"created_by\":\"COPY .  # buildkit\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true}],\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:10c4e94434092ec0e99162a4eccb58e012eb2a0d9d6db38372d58a84cc659612\",\"sha256:64e71580c2ea7aa628b77c9e993096065cf51c3e5a1dbbb112e138d5b9cc4398\"]}}",
+  "manifest": "{\n  \"schemaVersion\": 2,\n  \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\",\n  \"config\": {\n    \"mediaType\": \"application/vnd.oci.image.config.v1+json\",\n    \"digest\": \"sha256:f1a6b3aa1de5e0da6b2f9912636ed15138b960334f89e671b8d2b61986b10ba2\",\n    \"size\": 609\n  },\n  \"layers\": [\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:a32b217ef17069c89f5f22c5a0b1b0f1292375d7304acc3f5d8a6ecc7e0c7208\",\n      \"size\": 100,\n      \"annotations\": {\n        \"org.example.kept\": \"v0 \\u003c\\u0026\\u003e\"\n      }\n    },\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:8ea720af7d06fc784e8a1e71cf77659b56e75cbed34969abb290689af960c86d\",\n      \"size\": 101,\n      \"annotations\": {\n        \"org.example.kept\": \"v1 \\u003c\\u0026\\u003e\"\n      }\n    }\n  ]\n}"
+ },
+ {
+  "file": "corpus/plan/lint-unreached.Dockerfile",
+  "layers": 1,
+  "epoch": false,
+  "base": false,
+  "config": "{\"architecture\":\"amd64\",\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"a\"],\"ArgsEscaped\":true},\"created\":null,\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"CMD [\\\"a\\\"]\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true}],\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:10c4e94434092ec0e99162a4eccb58e012eb2a0d9d6db38372d58a84cc659612\"]}}",
+  "manifest": "{\n  \"schemaVersion\": 2,\n  \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\",\n  \"config\": {\n    \"mediaType\": \"application/vnd.oci.image.config.v1+json\",\n    \"digest\": \"sha256:0babd76ca87a8e6b237a453b79756d87a154f4bb772e371f907f197870dcabfa\",\n    \"size\": 401\n  },\n  \"layers\": [\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:a32b217ef17069c89f5f22c5a0b1b0f1292375d7304acc3f5d8a6ecc7e0c7208\",\n      \"size\": 100,\n      \"annotations\": {\n        \"org.example.kept\": \"v0 \\u003c\\u0026\\u003e\"\n      }\n    }\n  ]\n}"
+ },
+ {
+  "file": "corpus/plan/lint-unreached.Dockerfile",
+  "layers": 1,
+  "epoch": false,
+  "base": true,
+  "config": "{\"architecture\":\"amd64\",\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"a\"],\"ArgsEscaped\":true},\"created\":null,\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"CMD [\\\"a\\\"]\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true}],\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:10c4e94434092ec0e99162a4eccb58e012eb2a0d9d6db38372d58a84cc659612\"]}}",
+  "manifest": "{\n  \"schemaVersion\": 2,\n  \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\",\n  \"config\": {\n    \"mediaType\": \"application/vnd.oci.image.config.v1+json\",\n    \"digest\": \"sha256:0babd76ca87a8e6b237a453b79756d87a154f4bb772e371f907f197870dcabfa\",\n    \"size\": 401\n  },\n  \"layers\": [\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:a32b217ef17069c89f5f22c5a0b1b0f1292375d7304acc3f5d8a6ecc7e0c7208\",\n      \"size\": 100,\n      \"annotations\": {\n        \"org.example.kept\": \"v0 \\u003c\\u0026\\u003e\"\n      }\n    }\n  ]\n}"
+ },
+ {
+  "file": "corpus/plan/lint-unreached.Dockerfile",
+  "layers": 1,
+  "epoch": true,
+  "base": false,
+  "config": "{\"architecture\":\"amd64\",\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"a\"],\"ArgsEscaped\":true},\"created\":\"2023-11-14T22:13:20Z\",\"history\":[{\"created\":\"2023-11-14T22:13:20Z\",\"created_by\":\"base\"},{\"created\":\"2023-11-14T22:13:20Z\",\"created_by\":\"CMD [\\\"a\\\"]\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true}],\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:10c4e94434092ec0e99162a4eccb58e012eb2a0d9d6db38372d58a84cc659612\"]}}",
+  "manifest": "{\n  \"schemaVersion\": 2,\n  \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\",\n  \"config\": {\n    \"mediaType\": \"application/vnd.oci.image.config.v1+json\",\n    \"digest\": \"sha256:6b96d1ff9cb0f74a21ab64df8caa025c42fef6383ec65ae6e4177d85fbdc9b72\",\n    \"size\": 485\n  },\n  \"layers\": [\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:a32b217ef17069c89f5f22c5a0b1b0f1292375d7304acc3f5d8a6ecc7e0c7208\",\n      \"size\": 100,\n      \"annotations\": {\n        \"org.example.kept\": \"v0 \\u003c\\u0026\\u003e\"\n      }\n    }\n  ]\n}"
+ },
+ {
+  "file": "corpus/plan/lint-unreached.Dockerfile",
+  "layers": 1,
+  "epoch": true,
+  "base": true,
+  "config": "{\"architecture\":\"amd64\",\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"a\"],\"ArgsEscaped\":true},\"created\":null,\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"CMD [\\\"a\\\"]\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true}],\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:10c4e94434092ec0e99162a4eccb58e012eb2a0d9d6db38372d58a84cc659612\"]}}",
+  "manifest": "{\n  \"schemaVersion\": 2,\n  \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\",\n  \"config\": {\n    \"mediaType\": \"application/vnd.oci.image.config.v1+json\",\n    \"digest\": \"sha256:0babd76ca87a8e6b237a453b79756d87a154f4bb772e371f907f197870dcabfa\",\n    \"size\": 401\n  },\n  \"layers\": [\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:a32b217ef17069c89f5f22c5a0b1b0f1292375d7304acc3f5d8a6ecc7e0c7208\",\n      \"size\": 100,\n      \"annotations\": {\n        \"org.example.kept\": \"v0 \\u003c\\u0026\\u003e\"\n      }\n    }\n  ]\n}"
+ },
+ {
+  "file": "corpus/plan/lint-unreached.Dockerfile",
+  "layers": 2,
+  "epoch": false,
+  "base": false,
+  "config": "{\"architecture\":\"amd64\",\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"a\"],\"ArgsEscaped\":true},\"created\":null,\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"CMD [\\\"a\\\"]\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true},{\"comment\":\"buildkit.exporter.image.v0\"}],\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:10c4e94434092ec0e99162a4eccb58e012eb2a0d9d6db38372d58a84cc659612\",\"sha256:64e71580c2ea7aa628b77c9e993096065cf51c3e5a1dbbb112e138d5b9cc4398\"]}}",
+  "manifest": "{\n  \"schemaVersion\": 2,\n  \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\",\n  \"config\": {\n    \"mediaType\": \"application/vnd.oci.image.config.v1+json\",\n    \"digest\": \"sha256:22bf42f108b4cf76214b0125e83b6c78491288813ac38d62da5e7ce25648e5e7\",\n    \"size\": 516\n  },\n  \"layers\": [\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:a32b217ef17069c89f5f22c5a0b1b0f1292375d7304acc3f5d8a6ecc7e0c7208\",\n      \"size\": 100,\n      \"annotations\": {\n        \"org.example.kept\": \"v0 \\u003c\\u0026\\u003e\"\n      }\n    },\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:8ea720af7d06fc784e8a1e71cf77659b56e75cbed34969abb290689af960c86d\",\n      \"size\": 101,\n      \"annotations\": {\n        \"org.example.kept\": \"v1 \\u003c\\u0026\\u003e\"\n      }\n    }\n  ]\n}"
+ },
+ {
+  "file": "corpus/plan/lint-unreached.Dockerfile",
+  "layers": 2,
+  "epoch": false,
+  "base": true,
+  "config": "{\"architecture\":\"amd64\",\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"a\"],\"ArgsEscaped\":true},\"created\":null,\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"CMD [\\\"a\\\"]\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true},{\"comment\":\"buildkit.exporter.image.v0\"}],\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:10c4e94434092ec0e99162a4eccb58e012eb2a0d9d6db38372d58a84cc659612\",\"sha256:64e71580c2ea7aa628b77c9e993096065cf51c3e5a1dbbb112e138d5b9cc4398\"]}}",
+  "manifest": "{\n  \"schemaVersion\": 2,\n  \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\",\n  \"config\": {\n    \"mediaType\": \"application/vnd.oci.image.config.v1+json\",\n    \"digest\": \"sha256:22bf42f108b4cf76214b0125e83b6c78491288813ac38d62da5e7ce25648e5e7\",\n    \"size\": 516\n  },\n  \"layers\": [\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:a32b217ef17069c89f5f22c5a0b1b0f1292375d7304acc3f5d8a6ecc7e0c7208\",\n      \"size\": 100,\n      \"annotations\": {\n        \"org.example.kept\": \"v0 \\u003c\\u0026\\u003e\"\n      }\n    },\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:8ea720af7d06fc784e8a1e71cf77659b56e75cbed34969abb290689af960c86d\",\n      \"size\": 101,\n      \"annotations\": {\n        \"org.example.kept\": \"v1 \\u003c\\u0026\\u003e\"\n      }\n    }\n  ]\n}"
+ },
+ {
+  "file": "corpus/plan/lint-unreached.Dockerfile",
+  "layers": 2,
+  "epoch": true,
+  "base": false,
+  "config": "{\"architecture\":\"amd64\",\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"a\"],\"ArgsEscaped\":true},\"created\":\"2023-11-14T22:13:20Z\",\"history\":[{\"created\":\"2023-11-14T22:13:20Z\",\"created_by\":\"base\"},{\"created\":\"2023-11-14T22:13:20Z\",\"created_by\":\"CMD [\\\"a\\\"]\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true},{\"created\":\"2023-11-14T22:13:20Z\",\"comment\":\"buildkit.exporter.image.v0\"}],\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:10c4e94434092ec0e99162a4eccb58e012eb2a0d9d6db38372d58a84cc659612\",\"sha256:64e71580c2ea7aa628b77c9e993096065cf51c3e5a1dbbb112e138d5b9cc4398\"]}}",
+  "manifest": "{\n  \"schemaVersion\": 2,\n  \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\",\n  \"config\": {\n    \"mediaType\": \"application/vnd.oci.image.config.v1+json\",\n    \"digest\": \"sha256:4439baa210c687a9f7ea7c366ccf7bc18673db1f2900957f291c74e4107f0ba7\",\n    \"size\": 633\n  },\n  \"layers\": [\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:a32b217ef17069c89f5f22c5a0b1b0f1292375d7304acc3f5d8a6ecc7e0c7208\",\n      \"size\": 100,\n      \"annotations\": {\n        \"org.example.kept\": \"v0 \\u003c\\u0026\\u003e\"\n      }\n    },\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:8ea720af7d06fc784e8a1e71cf77659b56e75cbed34969abb290689af960c86d\",\n      \"size\": 101,\n      \"annotations\": {\n        \"org.example.kept\": \"v1 \\u003c\\u0026\\u003e\"\n      }\n    }\n  ]\n}"
+ },
+ {
+  "file": "corpus/plan/lint-unreached.Dockerfile",
+  "layers": 2,
+  "epoch": true,
+  "base": true,
+  "config": "{\"architecture\":\"amd64\",\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"a\"],\"ArgsEscaped\":true},\"created\":\"2023-11-14T22:13:20Z\",\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"CMD [\\\"a\\\"]\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true},{\"created\":\"2023-11-14T22:13:20Z\",\"comment\":\"buildkit.exporter.image.v0\"}],\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:10c4e94434092ec0e99162a4eccb58e012eb2a0d9d6db38372d58a84cc659612\",\"sha256:64e71580c2ea7aa628b77c9e993096065cf51c3e5a1dbbb112e138d5b9cc4398\"]}}",
+  "manifest": "{\n  \"schemaVersion\": 2,\n  \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\",\n  \"config\": {\n    \"mediaType\": \"application/vnd.oci.image.config.v1+json\",\n    \"digest\": \"sha256:2e545c0bb1a11682892cb3ceda9f2af483fad722760018fdb7ca398dbe71367a\",\n    \"size\": 567\n  },\n  \"layers\": [\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:a32b217ef17069c89f5f22c5a0b1b0f1292375d7304acc3f5d8a6ecc7e0c7208\",\n      \"size\": 100,\n      \"annotations\": {\n        \"org.example.kept\": \"v0 \\u003c\\u0026\\u003e\"\n      }\n    },\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:8ea720af7d06fc784e8a1e71cf77659b56e75cbed34969abb290689af960c86d\",\n      \"size\": 101,\n      \"annotations\": {\n        \"org.example.kept\": \"v1 \\u003c\\u0026\\u003e\"\n      }\n    }\n  ]\n}"
+ },
+ {
+  "file": "corpus/plan/lint-unreached.Dockerfile",
+  "layers": 0,
+  "epoch": false,
+  "base": false,
+  "config": "{\"architecture\":\"amd64\",\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"a\"],\"ArgsEscaped\":true},\"created\":null,\"history\":[{\"created_by\":\"base\",\"empty_layer\":true},{\"created_by\":\"CMD [\\\"a\\\"]\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true}],\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":null}}",
+  "manifest": "{\n  \"schemaVersion\": 2,\n  \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\",\n  \"config\": {\n    \"mediaType\": \"application/vnd.oci.image.config.v1+json\",\n    \"digest\": \"sha256:8a32be7eff87e029092d76cdfc9d062975bf16ae18fdefca61da6be3501eb4b5\",\n    \"size\": 349\n  },\n  \"layers\": null\n}"
+ },
+ {
+  "file": "corpus/plan/lint-unreached.Dockerfile",
+  "layers": 0,
+  "epoch": false,
+  "base": true,
+  "config": "{\"architecture\":\"amd64\",\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"a\"],\"ArgsEscaped\":true},\"created\":null,\"history\":[{\"created_by\":\"base\",\"empty_layer\":true},{\"created_by\":\"CMD [\\\"a\\\"]\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true}],\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":null}}",
+  "manifest": "{\n  \"schemaVersion\": 2,\n  \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\",\n  \"config\": {\n    \"mediaType\": \"application/vnd.oci.image.config.v1+json\",\n    \"digest\": \"sha256:8a32be7eff87e029092d76cdfc9d062975bf16ae18fdefca61da6be3501eb4b5\",\n    \"size\": 349\n  },\n  \"layers\": null\n}"
+ },
+ {
+  "file": "corpus/plan/lint-unreached.Dockerfile",
+  "layers": 0,
+  "epoch": true,
+  "base": false,
+  "config": "{\"architecture\":\"amd64\",\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"a\"],\"ArgsEscaped\":true},\"created\":\"2023-11-14T22:13:20Z\",\"history\":[{\"created\":\"2023-11-14T22:13:20Z\",\"created_by\":\"base\",\"empty_layer\":true},{\"created\":\"2023-11-14T22:13:20Z\",\"created_by\":\"CMD [\\\"a\\\"]\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true}],\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":null}}",
+  "manifest": "{\n  \"schemaVersion\": 2,\n  \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\",\n  \"config\": {\n    \"mediaType\": \"application/vnd.oci.image.config.v1+json\",\n    \"digest\": \"sha256:c24b06ab7c2b47b79254fdc329878c2415f5a57905a0001d39ab76ca555a6832\",\n    \"size\": 433\n  },\n  \"layers\": null\n}"
+ },
+ {
+  "file": "corpus/plan/lint-unreached.Dockerfile",
+  "layers": 0,
+  "epoch": true,
+  "base": true,
+  "config": "{\"architecture\":\"amd64\",\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"a\"],\"ArgsEscaped\":true},\"created\":\"2023-11-14T22:13:20Z\",\"history\":[{\"created\":\"2023-11-14T22:13:20Z\",\"created_by\":\"base\",\"empty_layer\":true},{\"created\":\"2023-11-14T22:13:20Z\",\"created_by\":\"CMD [\\\"a\\\"]\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true}],\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":null}}",
+  "manifest": "{\n  \"schemaVersion\": 2,\n  \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\",\n  \"config\": {\n    \"mediaType\": \"application/vnd.oci.image.config.v1+json\",\n    \"digest\": \"sha256:c24b06ab7c2b47b79254fdc329878c2415f5a57905a0001d39ab76ca555a6832\",\n    \"size\": 433\n  },\n  \"layers\": null\n}"
+ },
+ {
   "file": "corpus/plan/meta.Dockerfile",
   "layers": 1,
   "epoch": false,

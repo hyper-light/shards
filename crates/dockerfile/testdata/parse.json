@@ -10627,6 +10627,55 @@
   ]
  },
  {
+  "file": "corpus/plan/lint-build-error.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\" \\\"AS\\\" \\\"Base\\\")\\n(copy [\\\"--from=missing\\\"] \\\"/a\\\" \\\"/b\\\")\\n(from \\\"base\\\")\\n(run \\\"true\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\" \\\"AS\\\" \\\"Base\\\"\"",
+    "original": "\"FROM alpine AS Base\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy [\\\"--from=missing\\\"] \\\"/a\\\" \\\"/b\\\"\"",
+    "original": "\"COPY --from=missing /a /b\"",
+    "flags": [
+     "\"--from=missing\""
+    ],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"base\\\"\"",
+    "original": "\"FROM base\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"true\\\"\"",
+    "original": "\"RUN true\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
   "file": "corpus/plan/lint-checks.Dockerfile",
   "escape": "\"\\\\\"",
   "dump": "\"(arg \\\"BASE=\\\")\\n(arg \\\"password=secret\\\")\\n(from \\\"${BASE:-alpine}\\\" \\\"as\\\" \\\"Builder\\\")\\n(from \\\"$NOPE\\\" \\\"AS\\\" \\\"nope\\\")\\n(from \\\"alpine\\\" \\\"AS\\\" \\\"scratch\\\")\\n(from \\\"alpine\\\" \\\"AS\\\" \\\"dup\\\")\\n(from \\\"alpine\\\" \\\"AS\\\" \\\"dup\\\")\\n(from \\\"alpine\\\")\\n(run \\\"echo mixed\\\")\\n(env \\\"API_KEY\\\" \\\"x\\\" \\\"=\\\" \\\"PUBLIC_KEY\\\" \\\"y\\\" \\\"=\\\")\\n(workdir \\\"relative\\\")\\n(workdir \\\"/abs\\\")\\n(expose \\\"80/TCP\\\")\"",
@@ -10942,6 +10991,215 @@
     "prev_comment": [
      "\"check=skip=all\""
     ],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/lint-unreached-error.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\" \\\"AS\\\" \\\"unreached\\\")\\n(run [\\\"--mount=type=secret,id=a,required=maybe\\\"] \\\"true\\\")\\n(from \\\"alpine\\\")\\n(cmd \\\"a\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\" \\\"AS\\\" \\\"unreached\\\"\"",
+    "original": "\"FROM alpine AS unreached\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run [\\\"--mount=type=secret,id=a,required=maybe\\\"] \\\"true\\\"\"",
+    "original": "\"RUN --mount=type=secret,id=a,required=maybe true\"",
+    "flags": [
+     "\"--mount=type=secret,id=a,required=maybe\""
+    ],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"cmd \\\"a\\\"\"",
+    "original": "\"CMD [\\\"a\\\"]\"",
+    "flags": [],
+    "attributes": [
+     "json"
+    ],
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/lint-unreached-target.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\" \\\"AS\\\" \\\"unused\\\")\\n(run \\\"echo $NOPE\\\")\\n(copy \\\".\\\" \\\"$ALSO\\\")\\n(from \\\"alpine\\\" \\\"AS\\\" \\\"Other\\\")\\n(cmd \\\"echo hi\\\")\\n(from \\\"alpine\\\")\\n(cmd \\\"a\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\" \\\"AS\\\" \\\"unused\\\"\"",
+    "original": "\"FROM alpine AS unused\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"echo $NOPE\\\"\"",
+    "original": "\"RUN echo $NOPE\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy \\\".\\\" \\\"$ALSO\\\"\"",
+    "original": "\"COPY . $ALSO\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"alpine\\\" \\\"AS\\\" \\\"Other\\\"\"",
+    "original": "\"FROM alpine AS Other\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"cmd \\\"echo hi\\\"\"",
+    "original": "\"CMD echo hi\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 5,
+    "end_line": 5,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 6,
+    "end_line": 6,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"cmd \\\"a\\\"\"",
+    "original": "\"CMD [\\\"a\\\"]\"",
+    "flags": [],
+    "attributes": [
+     "json"
+    ],
+    "start_line": 7,
+    "end_line": 7,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/lint-unreached.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\" \\\"AS\\\" \\\"unused\\\")\\n(run \\\"echo $NOPE\\\")\\n(copy \\\".\\\" \\\"$ALSO\\\")\\n(from \\\"alpine\\\" \\\"AS\\\" \\\"Other\\\")\\n(cmd \\\"echo hi\\\")\\n(from \\\"alpine\\\")\\n(cmd \\\"a\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\" \\\"AS\\\" \\\"unused\\\"\"",
+    "original": "\"FROM alpine AS unused\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"echo $NOPE\\\"\"",
+    "original": "\"RUN echo $NOPE\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy \\\".\\\" \\\"$ALSO\\\"\"",
+    "original": "\"COPY . $ALSO\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"alpine\\\" \\\"AS\\\" \\\"Other\\\"\"",
+    "original": "\"FROM alpine AS Other\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"cmd \\\"echo hi\\\"\"",
+    "original": "\"CMD echo hi\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 5,
+    "end_line": 5,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 6,
+    "end_line": 6,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"cmd \\\"a\\\"\"",
+    "original": "\"CMD [\\\"a\\\"]\"",
+    "flags": [],
+    "attributes": [
+     "json"
+    ],
+    "start_line": 7,
+    "end_line": 7,
+    "prev_comment": [],
     "heredocs": null
    }
   ]

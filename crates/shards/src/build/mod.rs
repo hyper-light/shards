@@ -1261,6 +1261,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
         context_id: format!("shards-{}", std::process::id()).into_bytes(),
         excludes,
         dialect: dialect_of(&name),
+        all_stages: false,
         contexts: named.contexts,
         context_keys: named.keys,
         context_excludes: named.excludes,
@@ -1313,6 +1314,51 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
             answer(json, t.json(), t.text());
             return Ok(());
         }
+        // The build's checks, said as buildx says the lint subrequest's result
+        // (commands/build.go printResult): its JSON, or how many warnings, each by line,
+        // and the error that ended the planning, which fails the call; nothing built.
+        Some(Call::Check { json, ignore_status }) => {
+            let lint = plan::lint(&text, &opts, &bases).map_err(failed)?;
+            let n = lint.warnings.len();
+            let mut out = String::new();
+            if json {
+                let results = shards_dockerfile::subrequests::LintResults {
+                    warnings: &lint.warnings,
+                    filename: name.as_bytes(),
+                    data: &text,
+                    language: match opts.dialect {
+                        shards_dockerfile::parser::Dialect::Agentfile => b"Agentfile",
+                        shards_dockerfile::parser::Dialect::Dockerfile => b"Dockerfile",
+                    },
+                    error: lint.error.as_ref().map(|(m, loc)| (m.as_slice(), loc)),
+                };
+                out.push_str(&results.json());
+                out.push('\n');
+            } else if n > 0 {
+                let found = if n == 1 {
+                    "1 warning has been found!".to_string()
+                } else {
+                    format!("{n} warnings have been found!")
+                };
+                out.push_str(&format!("Check complete, {found}\n"));
+                out.push_str(&lint_text(&lint.warnings, &name, &text));
+            }
+            if let Some((message, loc)) = &lint.error {
+                if !json && n > 0 {
+                    out.push('\n');
+                }
+                let _ = write!(std::io::stdout(), "{out}");
+                return Err(format!("{}\n{}", show(message), excerpt(&name, &text, loc)));
+            }
+            if !json && n == 0 {
+                out.push_str("Check complete, no warnings found.\n");
+            }
+            let _ = write!(std::io::stdout(), "{out}");
+            if n > 0 && !ignore_status {
+                status.set(1);
+            }
+            return Ok(());
+        }
         Some(Call::Describe { json }) => {
             answer(
                 json,
@@ -1335,28 +1381,6 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
             return Err(format!("failed to build: failed to solve: {}", show(&e.message)));
         }
     };
-    // --call=check: the build's checks, said as buildx says the lint subrequest's result
-    // (commands/build.go printResult), and nothing built.
-    if let Some(Call::Check { ignore_status }) = call {
-        let n = plan.warnings.len();
-        let mut out = String::new();
-        if n > 0 {
-            let found = if n == 1 {
-                "1 warning has been found!".to_string()
-            } else {
-                format!("{n} warnings have been found!")
-            };
-            out.push_str(&format!("Check complete, {found}\n"));
-            out.push_str(&lint_text(&plan.warnings, &name, &text));
-        } else {
-            out.push_str("Check complete, no warnings found.\n");
-        }
-        let _ = write!(std::io::stdout(), "{out}");
-        if n > 0 && !ignore_status {
-            status.set(1);
-        }
-        return Ok(());
-    }
     {
         if let Some(found) = &context_ignore {
             let v = progress.borrow_mut().start("[internal] load .dockerignore");
@@ -3421,8 +3445,10 @@ fn unix_now() -> (i64, u32) {
 /// What `--call` (or `--check`) asks of the frontend instead of a build.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Call {
-    /// The build's checks; with `ignorestatus`, exit 0 whatever they found.
+    /// The build's checks; `json` for `format=json`; with `ignorestatus`, exit 0
+    /// whatever they found.
     Check {
+        json: bool,
         ignore_status: bool,
     },
     /// A subrequest: the target's outline, the targets, or the subrequests; `json` for
@@ -3467,12 +3493,10 @@ fn call_of(parsed: &Parsed) -> Result<Option<Call>, String> {
     let json = format == "json";
     match name.as_str() {
         "build" => Ok(None),
-        "check" | "lint" if format.is_empty() => Ok(Some(Call::Check {
+        "check" | "lint" => Ok(Some(Call::Check {
+            json,
             ignore_status: ignore,
         })),
-        "check" | "lint" => Err(format!(
-            "--call=check with format={format} is not supported by shards yet"
-        )),
         "outline" => Ok(Some(Call::Outline { json })),
         "targets" => Ok(Some(Call::Targets { json })),
         "subrequests.describe" => Ok(Some(Call::Describe { json })),

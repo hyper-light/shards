@@ -43,6 +43,9 @@ pub struct Options {
     pub build_args: BTreeMap<Vec<u8>, Vec<u8>>,
     /// The stage to build; the last when empty.
     pub target: Vec<u8>,
+    /// Whether every stage is planned, reached from the target or not, as the lint
+    /// subrequest plans a file with no target (`AllStages`).
+    pub all_stages: bool,
     pub labels: BTreeMap<Vec<u8>, Vec<u8>>,
     pub hostname: Vec<u8>,
     /// The ulimits every RUN takes (the frontend's `ulimit` option, `--ulimit`'s).
@@ -501,9 +504,9 @@ pub fn plan(text: &[u8], opts: &Options, resolver: &dyn Resolver) -> Result<Plan
             &linter,
         );
     }
-    let r = plan_with(text, opts, &ui, resolver, &linter, false).and_then(|p| match p {
+    let r = plan_with(text, opts, &ui, resolver, &linter, Mode::Plan).and_then(|p| match p {
         Planned::Plan(p) => Ok(*p),
-        Planned::Outline(_) => Err(Fail::new(b"no plan".to_vec())),
+        Planned::Outline(_) | Planned::Dispatched => Err(Fail::new(b"no plan".to_vec())),
     });
     done(r, &linter)
 }
@@ -535,15 +538,102 @@ pub fn outline(text: &[u8], opts: &Options, resolver: &dyn Resolver) -> Result<O
     if text.is_empty() {
         return Err(fail(b"the Dockerfile cannot be empty".to_vec()));
     }
-    match plan_with(text, opts, &ui, resolver, &linter, true) {
+    match plan_with(text, opts, &ui, resolver, &linter, Mode::Outline) {
         Ok(Planned::Outline(o)) => Ok(o),
-        Ok(Planned::Plan(_)) => Err(fail(b"no outline".to_vec())),
+        Ok(Planned::Plan(_) | Planned::Dispatched) => Err(fail(b"no outline".to_vec())),
         Err(Fail(message, location)) => Err(Error {
             message,
             location,
             warnings: Vec::new(),
         }),
     }
+}
+
+/// The build's checks, as BuildKit's frontend answers `--call=check` (DockerfileLint):
+/// every stage planned up to its steps, those the target does not reach too when no
+/// target is named, and their warnings in the order they were found, with the error that
+/// ended the planning, if one did, where its locations together say (mergeLocations).
+pub fn lint(text: &[u8], opts: &Options, resolver: &dyn Resolver) -> Result<Lint, Error> {
+    let mut opts = opts.clone();
+    opts.all_stages = opts.target.is_empty();
+    let fail = |message| Error {
+        message,
+        location: Vec::new(),
+        warnings: Vec::new(),
+    };
+    // dockerui's settings and the frontend the file names fail the request itself, before
+    // the subrequest is asked (builder.Build); what follows fails only the plan, which
+    // the result says.
+    let mut ui = dockerui(&opts).map_err(fail)?;
+    check_frontend(text, &opts.build_args).map_err(|Fail(message, location)| Error {
+        message,
+        location,
+        warnings: Vec::new(),
+    })?;
+    let failed = |message: Vec<u8>, location: &[Location], warnings| Lint {
+        warnings,
+        error: Some((message, merge_locations(location))),
+    };
+    if text.is_empty() {
+        return Ok(failed(
+            b"the Dockerfile cannot be empty".to_vec(),
+            &[],
+            Vec::new(),
+        ));
+    }
+    let config = match ui.check.take() {
+        Some(config) => config,
+        None => {
+            let check = parser::directive_value(text, b"check").unwrap_or_default();
+            match lint::parse_options(&check) {
+                Ok(config) => config,
+                Err(e) => {
+                    let message = errb(&[b"failed to parse check options: ", &e]);
+                    return Ok(failed(message, &[], Vec::new()));
+                }
+            }
+        }
+    };
+    let linter = Linter::new(config);
+    Ok(match plan_with(text, &opts, &ui, resolver, &linter, Mode::Lint) {
+        Ok(_) => Lint {
+            warnings: linter.warnings(),
+            error: None,
+        },
+        Err(Fail(message, location)) => failed(message, &location, linter.warnings()),
+    })
+}
+
+/// What [`lint`] found: the warnings, and the error that ended the planning, with its
+/// merged location.
+#[derive(Debug, Clone)]
+pub struct Lint {
+    pub warnings: Vec<lint::Warning>,
+    pub error: Option<(Vec<u8>, instructions::Location)>,
+}
+
+/// `mergeLocations`: every range of `locations`, by first line, those that overlap one
+/// another made one.
+fn merge_locations(locations: &[instructions::Location]) -> instructions::Location {
+    let mut all: instructions::Location = locations.iter().flatten().copied().collect();
+    // slices.SortFunc by first line; for the few ranges an error has, its insertion sort,
+    // which keeps ranges of one first line in their order.
+    all.sort_by_key(|r| r.0);
+    let mut merged = instructions::Location::new();
+    let mut ranges = all.into_iter();
+    let Some(mut current) = ranges.next() else {
+        return merged;
+    };
+    for r in ranges {
+        if r.0 <= current.1 {
+            current.1 = current.1.max(r.1);
+        } else {
+            merged.push(current);
+            current = r;
+        }
+    }
+    merged.push(current);
+    merged
 }
 
 /// The file's stages, as BuildKit's frontend answers `--call=targets` (ListTargets):
@@ -578,10 +668,20 @@ pub fn targets(text: &[u8], dialect: parser::Dialect) -> Result<Targets, Error> 
     })
 }
 
-/// What [`plan_with`] made: the plan, or the target's outline.
+/// How far [`plan_with`] plans: the whole plan, the target's outline, or every stage
+/// dispatched and no more, as the lint subrequest (DockerfileLint).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    Plan,
+    Outline,
+    Lint,
+}
+
+/// What [`plan_with`] made: the plan, the target's outline, or its stages dispatched.
 enum Planned {
     Plan(Box<Plan>),
     Outline(Outline),
+    Dispatched,
 }
 
 fn plan_with(
@@ -590,7 +690,7 @@ fn plan_with(
     ui: &Dockerui,
     resolver: &dyn Resolver,
     linter: &Linter,
-    outline: bool,
+    mode: Mode,
 ) -> Result<Planned, Fail> {
     if opts.target_platform.os != b"linux" {
         return Err(Fail::new(errb(&[
@@ -697,9 +797,12 @@ fn plan_with(
     p.build_stage_dependency_graph()?;
     let reachable = p.resolve_stages(target)?;
     p.dispatch_stages(&reachable, target)?;
-    if outline {
+    if mode != Mode::Plan {
         if p.lint.failed() {
             return Err(Fail::new(p.lint.error_message()));
+        }
+        if mode == Mode::Lint {
+            return Ok(Planned::Dispatched);
         }
         return Ok(Planned::Outline(p.outline_of(target, text)));
     }
@@ -1897,7 +2000,7 @@ impl Planner<'_> {
             if s.base.is_some() || s.dispatched || s.resolved {
                 continue;
             }
-            let is_reachable = reachable.contains(&d);
+            let is_reachable = self.opts.all_stages || reachable.contains(&d);
             let scratch = s.stage.base_name == EMPTY_IMAGE && s.named.is_none();
             let target = self.target_platform.clone();
             if let Some(s) = self.states.get_mut(d) {
@@ -2101,7 +2204,10 @@ impl Planner<'_> {
             self.ignore = Some(crate::glob::PatternMatcher::new(&self.opts.excludes).map_err(Fail::new)?);
         }
         for d in 0..self.states.len() {
-            if !reachable.contains(&d) || self.states.get(d).is_none_or(|s| s.dispatched) {
+            // Every stage, with all stages, dispatched before or not (convert.go).
+            if !self.opts.all_stages
+                && (!reachable.contains(&d) || self.states.get(d).is_none_or(|s| s.dispatched))
+            {
                 continue;
             }
             self.init(d);

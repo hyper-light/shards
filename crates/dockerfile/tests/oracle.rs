@@ -1051,6 +1051,7 @@ fn options_of(file: &str) -> shards_dockerfile::plan::Options {
         context_id: b"*".to_vec(),
         excludes: Vec::new(),
         dialect: shards_dockerfile::parser::Dialect::Dockerfile,
+        all_stages: false,
         contexts: map(&opts_v["contexts"]),
         context_keys: map(&opts_v["shared_keys"]),
         context_excludes: Default::default(),
@@ -1165,6 +1166,9 @@ fn subrequests_are_buildkits() {
         subs["describe"]["text"].as_str().unwrap()
     );
     let devs = deviations("subrequests");
+    // The lint results' sources carry no LLB definition, which BuildKit's record has
+    // cleared: that difference is recorded.
+    assert_eq!(deviations("lint-source").len(), 1);
     let mut failures = Vec::new();
     let files = subs["files"].as_array().unwrap();
     assert!(files.len() > 100);
@@ -1201,6 +1205,31 @@ fn subrequests_are_buildkits() {
                 check("targets text", quote(t.text().as_bytes()), "targets_text");
             }
             Err(e) => check("targets error", quote(&e.message), "targets_error"),
+        }
+        // The lint subrequest, its file named as a Dockerfile in the context's root is.
+        match shards_dockerfile::plan::lint(&text, &opts, &images) {
+            Ok(l) => {
+                let results = subrequests::LintResults {
+                    warnings: &l.warnings,
+                    filename: b"Dockerfile",
+                    data: &text,
+                    language: b"Dockerfile",
+                    error: l.error.as_ref().map(|(m, loc)| (m.as_slice(), loc)),
+                };
+                check("lint", quote(results.json().as_bytes()), "lint");
+                let status = if l.warnings.is_empty() && l.error.is_none() {
+                    "0"
+                } else {
+                    "1"
+                };
+                if want["lint_status"] != status {
+                    failures.push(format!(
+                        "{file} lint status {status}, want {}",
+                        want["lint_status"]
+                    ));
+                }
+            }
+            Err(e) => check("lint", format!("request failed: {}", quote(&e.message)), "lint"),
         }
     }
     assert!(

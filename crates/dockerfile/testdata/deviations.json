@@ -1895,7 +1895,14 @@
   "file": "corpus/plan/suggest-library.Dockerfile",
   "reason": "As the plan's: BuildKit's commonImageNames joins docker.io/library and each name without the slash; shards suggests docker.io/library/<name>.",
   "fields": {
-   "outline_error": "\"docker.io/library/alpne: docker.io/library/alpne:latest: not found (did you mean docker.io/library/alpine?)\""
+   "outline_error": "\"docker.io/library/alpne: docker.io/library/alpne:latest: not found (did you mean docker.io/library/alpine?)\"",
+   "lint": "\"{\\n  \\\"warnings\\\": null,\\n  \\\"sources\\\": [\\n    {\\n      \\\"filename\\\": \\\"Dockerfile\\\",\\n      \\\"data\\\": \\\"RlJPTSBkb2NrZXIuaW8vbGlicmFyeS9hbHBuZQpSVU4gdHJ1ZQo=\\\",\\n      \\\"language\\\": \\\"Dockerfile\\\"\\n    }\\n  ],\\n  \\\"buildError\\\": {\\n    \\\"message\\\": \\\"docker.io/library/alpne: docker.io/library/alpne:latest: not found (did you mean docker.io/library/alpine?)\\\",\\n    \\\"location\\\": {\\n      \\\"ranges\\\": [\\n        {\\n          \\\"start\\\": {\\n            \\\"line\\\": 1\\n          },\\n          \\\"end\\\": {\\n            \\\"line\\\": 1\\n          }\\n        }\\n      ]\\n    }\\n  }\\n}\""
   }
+ },
+ {
+  "kind": "lint-source",
+  "field": "sources[].definition",
+  "reason": "BuildKit's lint result names its file's LLB definition: the frontend's local source for loading it, which carries the BuildKit session of that one build (local.session), so no two builds write the same result. shards plans no such LLB and writes none; the field is omitempty in solver/pb, so readers of LintResults see a nil definition. scripts/dockerfile/generate clears it from BuildKit's record.",
+  "fields": {}
  }
 ]

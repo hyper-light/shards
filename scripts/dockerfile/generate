@@ -10,6 +10,9 @@
 # - crates/dockerfile/testdata/instructions.json and plan.json, the typed instructions and
 #   the build plan (Dockerfile2LLB's graph, image config and warnings, with the fake base
 #   images of images.json) BuildKit makes of the corpus;
+# - crates/dockerfile/testdata/subrequests.json, what the frontend answers `--call`'s
+#   subrequests with for each plan corpus file: its outline, its targets, and its lint
+#   results (DockerfileLint, the source's LLB definition cleared), and the describe;
 # - crates/dockerfile/testdata/configs-answers.json, what Go's encoding/json makes of each
 #   image config in configs.json, read into BuildKit's DockerOCIImage and written back;
 # - crates/dockerfile/testdata/sizes-answers.json and urls-answers.json, what go-units,

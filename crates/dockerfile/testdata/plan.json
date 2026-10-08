@@ -4070,6 +4070,21 @@
   "warnings": null
  },
  {
+  "error": "\"missing: docker.io/library/missing:latest: not found\"",
+  "file": "corpus/plan/lint-build-error.Dockerfile",
+  "location": [
+   [
+    [
+     2,
+     2
+    ]
+   ]
+  ],
+  "warnings": [
+   "\"StageNameCasing|Stage name 'Base' should be lowercase|1-1\""
+  ]
+ },
+ {
   "error": "\"base name ($NOPE) should not be blank\"",
   "file": "corpus/plan/lint-checks.Dockerfile",
   "location": [
@@ -4357,6 +4372,200 @@
    }
   ],
   "warnings": null
+ },
+ {
+  "file": "corpus/plan/lint-unreached-error.Dockerfile",
+  "image": "{\"architecture\":\"amd64\",\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:0000000000000000000000000000000000000000000000000000000000000001\"]},\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"CMD [\\\"a\\\"]\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true}],\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"a\"],\"ArgsEscaped\":true}}",
+  "ops": [
+   {
+    "constraints": {},
+    "inputs": [],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "FROM alpine",
+      "llb.customname": "[stage-1 1/1] FROM docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    },
+    "source": {
+     "identifier": "docker-image://docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+    }
+   },
+   {
+    "inputs": [
+     [
+      0,
+      0
+     ]
+    ],
+    "metadata": {}
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/lint-unreached-target.Dockerfile",
+  "image": "{\"architecture\":\"amd64\",\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:0000000000000000000000000000000000000000000000000000000000000001\"]},\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"RUN /bin/sh -c echo $NOPE # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"COPY .  # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"}],\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"/bin/sh\"]}}",
+  "ops": [
+   {
+    "constraints": {},
+    "inputs": [],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "FROM alpine AS unused",
+      "llb.customname": "[unused 1/3] FROM docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    },
+    "source": {
+     "identifier": "docker-image://docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+    }
+   },
+   {
+    "constraints": {},
+    "exec": {
+     "meta": {
+      "args": [
+       "/bin/sh",
+       "-c",
+       "echo $NOPE"
+      ],
+      "cwd": "/",
+      "env": [
+       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      ],
+      "removeMountStubsRecursive": true
+     },
+     "mounts": [
+      {
+       "dest": "/"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      0,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "RUN echo $NOPE",
+      "llb.customname": "[unused 2/3] RUN echo $NOPE"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    }
+   },
+   {
+    "constraints": {},
+    "inputs": [],
+    "metadata": {
+     "description": {
+      "llb.customname": "[internal] load build context"
+     }
+    },
+    "source": {
+     "attrs": {
+      "local.sharedkeyhint": "context",
+      "local.unique": "*"
+     },
+     "identifier": "local://context"
+    }
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "copy": {
+        "allowEmptyWildcard": true,
+        "allowWildcard": true,
+        "createDestPath": true,
+        "dest": "/",
+        "dirCopyContents": true,
+        "followSymlink": true,
+        "mode": -1,
+        "src": "/",
+        "timestamp": "-1"
+       },
+       "secondaryInput": "1"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      1,
+      0
+     ],
+     [
+      2,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "llb.customname": "[unused 3/3] COPY . "
+     }
+    }
+   },
+   {
+    "inputs": [
+     [
+      3,
+      0
+     ]
+    ],
+    "metadata": {}
+   }
+  ],
+  "warnings": [
+   "\"StageNameCasing|Stage name 'Other' should be lowercase|4-4\"",
+   "\"UndefinedVar|Usage of undefined variable '$ALSO'|3-3\""
+  ]
+ },
+ {
+  "file": "corpus/plan/lint-unreached.Dockerfile",
+  "image": "{\"architecture\":\"amd64\",\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:0000000000000000000000000000000000000000000000000000000000000001\"]},\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"CMD [\\\"a\\\"]\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true}],\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"a\"],\"ArgsEscaped\":true}}",
+  "ops": [
+   {
+    "constraints": {},
+    "inputs": [],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "FROM alpine",
+      "llb.customname": "[stage-2 1/1] FROM docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    },
+    "source": {
+     "identifier": "docker-image://docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+    }
+   },
+   {
+    "inputs": [
+     [
+      0,
+      0
+     ]
+    ],
+    "metadata": {}
+   }
+  ],
+  "warnings": [
+   "\"StageNameCasing|Stage name 'Other' should be lowercase|4-4\""
+  ]
  },
  {
   "file": "corpus/plan/meta.Dockerfile",

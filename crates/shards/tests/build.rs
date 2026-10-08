@@ -3652,9 +3652,10 @@ fn annotations_land_where_buildkit_puts_them() {
     );
 }
 
-/// `--check` (D67): the build's checks said as buildx says the lint subrequest's result,
-/// nothing built, exit 1 for warnings unless `ignorestatus`; with `--debug`, a build's
-/// warnings in full.
+/// `--check` (D67, D73): the build's checks said as buildx says the lint subrequest's
+/// result, as text or BuildKit's JSON, of every stage when no target is named; nothing
+/// built, exit 1 for warnings unless `ignorestatus`, and for an error planning it, said
+/// where it is; with `--debug`, a build's warnings in full.
 #[test]
 fn check_says_the_builds_warnings_as_buildx_does() {
     if cannot_run_vms() {
@@ -3718,14 +3719,81 @@ fn check_says_the_builds_warnings_as_buildx_does() {
         "{}",
         debugged.stderr
     );
-    let refused = shards(&["build", "--call", "check,format=json", ctx.to_str().unwrap()]);
+
+    // With format=json, BuildKit's LintResults: each warning as found, the file, exit 1.
+    let json = shards(&["build", "--call", "check,format=json", ctx.to_str().unwrap()]);
+    assert_eq!(json.status, Some(1), "{}", json.stderr);
+    let results: serde_json::Value = serde_json::from_str(&json.stdout).unwrap();
+    let rules: Vec<&str> = results["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|w| w["ruleName"].as_str().unwrap())
+        .collect();
+    assert_eq!(rules.len(), 2, "{}", json.stdout);
+    assert!(rules.contains(&"FromAsCasing"), "{}", json.stdout);
+    let source = &results["sources"][0];
+    assert_eq!(source["filename"], "Dockerfile");
+    assert_eq!(source["language"], "Dockerfile");
+    assert!(results.get("buildError").is_none(), "{}", json.stdout);
+    let clean_json = shards(&["build", "--call=check,format=json", clean.to_str().unwrap()]);
+    assert_eq!(clean_json.status, Some(0), "{}", clean_json.stderr);
     assert!(
-        refused
-            .stderr
-            .contains("--call=check with format=json is not supported by shards yet"),
+        clean_json.stdout.starts_with("{\n  \"warnings\": null,\n"),
         "{}",
-        refused.stderr
+        clean_json.stdout
     );
+
+    // With no target, every stage is checked, those the build would not reach too
+    // (DockerfileLint's AllStages); with one, only what it reaches.
+    let unreached = context(
+        "check-unreached",
+        &format!("FROM {image} AS unused\nCOPY . $ALSO\nFROM {image} AS last\nLABEL a=b\n"),
+    );
+    let all = shards(&["build", "--check", unreached.to_str().unwrap()]);
+    assert_eq!(all.status, Some(1), "{}", all.stderr);
+    assert!(
+        all.stdout.contains("Usage of undefined variable '$ALSO'"),
+        "{}",
+        all.stdout
+    );
+    let last = shards(&[
+        "build",
+        "--check",
+        "--target",
+        "last",
+        unreached.to_str().unwrap(),
+    ]);
+    assert_eq!(
+        (last.status, last.stdout.as_str()),
+        (Some(0), "Check complete, no warnings found.\n"),
+        "{}",
+        last.stderr
+    );
+
+    // An error planning the build fails the call, said after the warnings found before it,
+    // where it is in the file; with format=json, the result says it too.
+    let broken = context(
+        "check-broken",
+        &format!("FROM {image} AS Base\nRUN --mount=type=secret,id=a,required=maybe true\n"),
+    );
+    let failed = shards(&["build", "--check", broken.to_str().unwrap()]);
+    assert_eq!(failed.status, Some(1), "{}", failed.stderr);
+    assert!(
+        failed
+            .stderr
+            .contains("ERROR: invalid value for required: maybe\nDockerfile:2\n--------------------\n"),
+        "{}",
+        failed.stderr
+    );
+    let failed_json = shards(&["build", "--call=check,format=json", broken.to_str().unwrap()]);
+    assert_eq!(failed_json.status, Some(1), "{}", failed_json.stderr);
+    let results: serde_json::Value = serde_json::from_str(&failed_json.stdout).unwrap();
+    assert_eq!(
+        results["buildError"]["message"],
+        "invalid value for required: maybe"
+    );
+    assert_eq!(results["buildError"]["location"]["ranges"][0]["start"]["line"], 2);
 }
 
 /// `RUN --mount=type=ssh` reaches the client's SSH agent through the builder, as

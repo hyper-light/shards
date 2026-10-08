@@ -15640,6 +15640,99 @@
   "warnings": null
  },
  {
+  "file": "corpus/plan/lint-build-error.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "chmod": "\"\"",
+      "chown": "\"\"",
+      "code": "\"COPY --from=missing /a /b\"",
+      "comments": [],
+      "exclude": [],
+      "from": "\"missing\"",
+      "kind": "*instructions.CopyCommand",
+      "link": false,
+      "location": [
+       [
+        2,
+        2
+       ]
+      ],
+      "name": "\"COPY\"",
+      "parents": false,
+      "sources": {
+       "contents": null,
+       "dest": "\"/b\"",
+       "paths": [
+        "\"/a\""
+       ]
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"base\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine AS Base\""
+   },
+   {
+    "base_name": "\"base\"",
+    "commands": [
+     {
+      "code": "\"RUN true\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        4,
+        4
+       ]
+      ],
+      "mounts": null,
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"true\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      3,
+      3
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM base\""
+   }
+  ],
+  "warnings": [
+   "\"StageNameCasing|Stage names should be lowercase|https://docs.docker.com/go/dockerfile/rule/stage-name-casing/|Stage name 'Base' should be lowercase|1-1\""
+  ]
+ },
+ {
   "file": "corpus/plan/lint-checks.Dockerfile",
   "meta_args": [
    {
@@ -16218,6 +16311,410 @@
    }
   ],
   "warnings": null
+ },
+ {
+  "file": "corpus/plan/lint-unreached-error.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "code": "\"RUN --mount=type=secret,id=a,required=maybe true\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [
+       "\"mount\""
+      ],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        2,
+        2
+       ]
+      ],
+      "mounts": [
+       {
+        "env": null,
+        "from": "\"\"",
+        "gid": null,
+        "id": "\"\"",
+        "mode": null,
+        "read_only": true,
+        "required": false,
+        "sharing": "\"\"",
+        "size": 0,
+        "source": "\"\"",
+        "target": "\"\"",
+        "type": "\"bind\"",
+        "uid": null
+       }
+      ],
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"true\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"unreached\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine AS unreached\""
+   },
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "code": "\"CMD [\\\"a\\\"]\"",
+      "comments": [],
+      "kind": "*instructions.CmdCommand",
+      "location": [
+       [
+        4,
+        4
+       ]
+      ],
+      "name": "\"CMD\"",
+      "shell": {
+       "cmd_line": [
+        "\"a\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": false
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      3,
+      3
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine\""
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/lint-unreached-target.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "code": "\"RUN echo $NOPE\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        2,
+        2
+       ]
+      ],
+      "mounts": null,
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"echo $NOPE\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     },
+     {
+      "chmod": "\"\"",
+      "chown": "\"\"",
+      "code": "\"COPY . $ALSO\"",
+      "comments": [],
+      "exclude": [],
+      "from": "\"\"",
+      "kind": "*instructions.CopyCommand",
+      "link": false,
+      "location": [
+       [
+        3,
+        3
+       ]
+      ],
+      "name": "\"COPY\"",
+      "parents": false,
+      "sources": {
+       "contents": null,
+       "dest": "\"$ALSO\"",
+       "paths": [
+        "\".\""
+       ]
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"unused\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine AS unused\""
+   },
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "code": "\"CMD echo hi\"",
+      "comments": [],
+      "kind": "*instructions.CmdCommand",
+      "location": [
+       [
+        5,
+        5
+       ]
+      ],
+      "name": "\"CMD\"",
+      "shell": {
+       "cmd_line": [
+        "\"echo hi\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      4,
+      4
+     ]
+    ],
+    "name": "\"other\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine AS Other\""
+   },
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "code": "\"CMD [\\\"a\\\"]\"",
+      "comments": [],
+      "kind": "*instructions.CmdCommand",
+      "location": [
+       [
+        7,
+        7
+       ]
+      ],
+      "name": "\"CMD\"",
+      "shell": {
+       "cmd_line": [
+        "\"a\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": false
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      6,
+      6
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine\""
+   }
+  ],
+  "warnings": [
+   "\"StageNameCasing|Stage names should be lowercase|https://docs.docker.com/go/dockerfile/rule/stage-name-casing/|Stage name 'Other' should be lowercase|4-4\""
+  ]
+ },
+ {
+  "file": "corpus/plan/lint-unreached.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "code": "\"RUN echo $NOPE\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        2,
+        2
+       ]
+      ],
+      "mounts": null,
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"echo $NOPE\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     },
+     {
+      "chmod": "\"\"",
+      "chown": "\"\"",
+      "code": "\"COPY . $ALSO\"",
+      "comments": [],
+      "exclude": [],
+      "from": "\"\"",
+      "kind": "*instructions.CopyCommand",
+      "link": false,
+      "location": [
+       [
+        3,
+        3
+       ]
+      ],
+      "name": "\"COPY\"",
+      "parents": false,
+      "sources": {
+       "contents": null,
+       "dest": "\"$ALSO\"",
+       "paths": [
+        "\".\""
+       ]
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"unused\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine AS unused\""
+   },
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "code": "\"CMD echo hi\"",
+      "comments": [],
+      "kind": "*instructions.CmdCommand",
+      "location": [
+       [
+        5,
+        5
+       ]
+      ],
+      "name": "\"CMD\"",
+      "shell": {
+       "cmd_line": [
+        "\"echo hi\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      4,
+      4
+     ]
+    ],
+    "name": "\"other\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine AS Other\""
+   },
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "code": "\"CMD [\\\"a\\\"]\"",
+      "comments": [],
+      "kind": "*instructions.CmdCommand",
+      "location": [
+       [
+        7,
+        7
+       ]
+      ],
+      "name": "\"CMD\"",
+      "shell": {
+       "cmd_line": [
+        "\"a\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": false
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      6,
+      6
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine\""
+   }
+  ],
+  "warnings": [
+   "\"StageNameCasing|Stage names should be lowercase|https://docs.docker.com/go/dockerfile/rule/stage-name-casing/|Stage name 'Other' should be lowercase|4-4\""
+  ]
  },
  {
   "file": "corpus/plan/meta.Dockerfile",

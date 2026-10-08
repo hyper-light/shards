@@ -449,6 +449,85 @@ fn tabwrite(rows: &[Vec<String>], padding: usize) -> String {
     out
 }
 
+/// `lint.LintResults` of one file, as `ToResult` writes its `result.json`: the checks'
+/// warnings in the order they were found, the file, and the error that ended the
+/// planning, if one did. The file carries no `definition`: BuildKit's is the frontend's
+/// LLB for loading it, which names a session of that build alone (testdata/deviations.json).
+#[derive(Debug)]
+pub struct LintResults<'a> {
+    pub warnings: &'a [crate::lint::Warning],
+    pub filename: &'a [u8],
+    pub data: &'a [u8],
+    pub language: &'a [u8],
+    pub error: Option<(&'a [u8], &'a Location)>,
+}
+
+impl LintResults<'_> {
+    /// Its `result.json`.
+    pub fn json(&self) -> String {
+        let mut out = String::new();
+        let mut o = Object::open(&mut out, 0);
+        let w = o.key("warnings");
+        if self.warnings.is_empty() {
+            // A nil slice.
+            w.push_str("null");
+        } else {
+            array(w, 1, self.warnings, |out, depth, warning| {
+                let mut x = Object::open(out, depth);
+                x.string("ruleName", warning.rule.as_bytes());
+                for (k, v) in [
+                    ("description", warning.description.as_bytes()),
+                    ("url", warning.url.as_bytes()),
+                    ("detail", &warning.message),
+                ] {
+                    if !v.is_empty() {
+                        x.string(k, v);
+                    }
+                }
+                let l = x.key("location");
+                lint_location(l, depth + 1, &warning.location);
+                x.close();
+            });
+        }
+        let s = o.key("sources");
+        s.push_str("[\n");
+        indent(s, 2);
+        let mut f = Object::open(s, 2);
+        if !self.filename.is_empty() {
+            f.string("filename", self.filename);
+        }
+        if !self.data.is_empty() {
+            f.string("data", base64(self.data).as_bytes());
+        }
+        if !self.language.is_empty() {
+            f.string("language", self.language);
+        }
+        f.close();
+        s.push('\n');
+        indent(s, 1);
+        s.push(']');
+        if let Some((message, loc)) = self.error {
+            let e = o.key("buildError");
+            let mut x = Object::open(e, 1);
+            x.string("message", message);
+            let l = x.key("location");
+            lint_location(l, 2, loc);
+            x.close();
+        }
+        o.close();
+        out
+    }
+}
+
+/// `pb.Location` as encoding/json writes it, its ranges left out when there are none.
+fn lint_location(out: &mut String, depth: usize, loc: &Location) {
+    if loc.is_empty() {
+        out.push_str("{}");
+    } else {
+        location(out, depth, loc);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

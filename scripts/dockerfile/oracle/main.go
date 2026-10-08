@@ -560,6 +560,25 @@ func subrequestsFile(root, rel string, images resolver) map[string]any {
 		}
 		out["targets_text"] = q(b.String())
 	}
+	// The lint subrequest (DockerfileLint), its source the file as dockerui reads it, named
+	// as a Dockerfile in the context's root is; its LLB definition, which names a session
+	// of one build alone, cleared (testdata/deviations.json).
+	lopt := opt
+	lopt.SourceMap = llb.NewSourceMap(nil, "Dockerfile", "Dockerfile", data)
+	lopt.SourceMap.Definition = &llb.Definition{}
+	lr, err := dockerfile2llb.DockerfileLint(context.Background(), data, lopt)
+	if err != nil {
+		panic(err)
+	}
+	for _, s := range lr.Sources {
+		s.Definition = nil
+	}
+	res, err := lr.ToResult(nil)
+	if err != nil {
+		panic(err)
+	}
+	out["lint"] = q(string(res.Metadata["result.json"]))
+	out["lint_status"] = string(res.Metadata["result.statuscode"])
 	return out
 }
 
