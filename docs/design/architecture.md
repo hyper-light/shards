@@ -3210,6 +3210,30 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode
 waits on the user.
 
+### D92. BUILDKIT_DISABLE_FILEOP and BUILDKIT_GIT_ADVICE
+
+The last two `BUILDKIT_*` build arguments, as frontend 1.27.1's dockerui reads them
+(config.go):
+- BUILDKIT_DISABLE_FILEOP, once true (Go's `ParseBool`), is refused before anything is
+  read: "support for \"BUILDKIT_DISABLE_FILEOP\" build-arg was removed in BuildKit 0.11".
+  Measured: Docker 29.3.1 refuses it in the same words, and builds with it `false`.
+- BUILDKIT_GIT_ADVICE is read as a bool, refused otherwise ("failed to parse
+  build-arg:BUILDKIT_GIT_ADVICE: strconv.ParseBool: …"). Once true, each `ADD` of a Git
+  repository carries `git.advice=true` (convert_copy.go, `llb.GitAdvice`). The build
+  context's Git source carries none, as dockerui's `DetectGitContext` sets none.
+  - Measured: Docker 29.3.1's built-in frontend (BuildKit v0.28.1) predates the option
+    and ignores even an unreadable value. shards follows frontend 1.27.1, which its plans
+    are held to and which `# syntax=docker/dockerfile:1` runs.
+  - Not done: BuildKit's Git then lets the git CLI print its advice (`hint:` lines).
+    shards' own Git runs no git CLI and prints no advice.
+
+Tested:
+- The plan oracle: `add-git-advice` and `context-git-advice` (the scripts now pass
+  dockerui's `GitAdvice` on).
+- `dockeruis_build_args_are_read_as_it_reads_them` covers both refusals in Docker's
+  words, and builds with the arguments off and on.
+- Mutation-checked: planning no advice fails both oracle cases.
+
 ### D91. Remote build contexts: Git, HTTP(S) and stdin
 
 `shards build` takes every context `docker build` takes:

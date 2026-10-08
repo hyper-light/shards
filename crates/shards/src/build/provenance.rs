@@ -1428,6 +1428,7 @@ mod tests {
             image_resolve_mode: b"local".to_vec(),
             main_context: Default::default(),
             context_subdir: None,
+            git_advice: false,
             ..Default::default()
         };
         shards_dockerfile::plan::plan(dockerfile.as_bytes(), &opts, &AnyImage)

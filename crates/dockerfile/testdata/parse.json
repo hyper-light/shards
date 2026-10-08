@@ -7648,6 +7648,45 @@
   ]
  },
  {
+  "file": "corpus/plan/add-git-advice.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\")\\n(add \\\"https://github.com/moby/buildkit.git#v0.28.1\\\" \\\"/src\\\")\\n(add [\\\"--keep-git-dir\\\"] \\\"https://github.com/moby/buildkit.git\\\" \\\"/k\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"add \\\"https://github.com/moby/buildkit.git#v0.28.1\\\" \\\"/src\\\"\"",
+    "original": "\"ADD https://github.com/moby/buildkit.git#v0.28.1 /src\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"add [\\\"--keep-git-dir\\\"] \\\"https://github.com/moby/buildkit.git\\\" \\\"/k\\\"\"",
+    "original": "\"ADD --keep-git-dir https://github.com/moby/buildkit.git /k\"",
+    "flags": [
+     "\"--keep-git-dir\""
+    ],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
   "file": "corpus/plan/add-remote.Dockerfile",
   "escape": "\"\\\\\"",
   "dump": "\"(from \\\"alpine\\\")\\n(add \\\"https://example.com/files/app.tar.gz\\\" \\\"/opt/\\\")\\n(add [\\\"--checksum=sha256:24454f830cdb571e2c4ad15481119c43b3cafd48dd869a9b2945d1036d1dc68d\\\"] \\\"https://example.com/x\\\" \\\"/x\\\")\\n(add [\\\"--chmod=644\\\" \\\"--chown=1:1\\\"] \\\"http://example.com/\\\" \\\"/root-file\\\")\\n(add [\\\"--unpack=true\\\"] \\\"https://example.com/a.tar\\\" \\\"/a\\\")\\n(add \\\"https://github.com/moby/buildkit.git#v0.12.0:docs\\\" \\\"/docs\\\")\\n(add [\\\"--keep-git-dir=true\\\"] \\\"https://github.com/moby/buildkit.git?ref=main\u0026subdir=frontend\\\" \\\"/fe\\\")\\n(add \\\"https://example.com/r.git?branch=dev\u0026submodules=false\u0026fetch-by-commit\\\" \\\"/r\\\")\\n(add \\\"git@nonexistent.invalid:org/repo.git#main\\\" \\\"/ssh\\\")\\n(add [\\\"--checksum=0123456789abcdef\\\"] \\\"https://example.com/r.git\\\" \\\"/sum\\\")\\n(add \\\"git://example.com/r.git\\\" \\\"/plain\\\")\\n(add \\\"github.com/moby/buildkit\\\" \\\"/looks-local\\\")\"",
@@ -8302,6 +8341,45 @@
     ],
     "start_line": 13,
     "end_line": 13,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/context-git-advice.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\")\\n(add \\\"https://github.com/moby/buildkit.git#v0.28.1\\\" \\\"/src\\\")\\n(add [\\\"--keep-git-dir\\\"] \\\"https://github.com/moby/buildkit.git\\\" \\\"/k\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"add \\\"https://github.com/moby/buildkit.git#v0.28.1\\\" \\\"/src\\\"\"",
+    "original": "\"ADD https://github.com/moby/buildkit.git#v0.28.1 /src\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"add [\\\"--keep-git-dir\\\"] \\\"https://github.com/moby/buildkit.git\\\" \\\"/k\\\"\"",
+    "original": "\"ADD --keep-git-dir https://github.com/moby/buildkit.git /k\"",
+    "flags": [
+     "\"--keep-git-dir\""
+    ],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
     "prev_comment": [],
     "heredocs": null
    }

@@ -10083,6 +10083,82 @@
   "warnings": null
  },
  {
+  "file": "corpus/plan/add-git-advice.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "checksum": "\"\"",
+      "chmod": "\"\"",
+      "chown": "\"\"",
+      "code": "\"ADD https://github.com/moby/buildkit.git#v0.28.1 /src\"",
+      "comments": [],
+      "exclude": [],
+      "keep_git_dir": null,
+      "kind": "*instructions.AddCommand",
+      "link": false,
+      "location": [
+       [
+        2,
+        2
+       ]
+      ],
+      "name": "\"ADD\"",
+      "sources": {
+       "contents": null,
+       "dest": "\"/src\"",
+       "paths": [
+        "\"https://github.com/moby/buildkit.git#v0.28.1\""
+       ]
+      },
+      "unpack": null
+     },
+     {
+      "checksum": "\"\"",
+      "chmod": "\"\"",
+      "chown": "\"\"",
+      "code": "\"ADD --keep-git-dir https://github.com/moby/buildkit.git /k\"",
+      "comments": [],
+      "exclude": [],
+      "keep_git_dir": true,
+      "kind": "*instructions.AddCommand",
+      "link": false,
+      "location": [
+       [
+        3,
+        3
+       ]
+      ],
+      "name": "\"ADD\"",
+      "sources": {
+       "contents": null,
+       "dest": "\"/k\"",
+       "paths": [
+        "\"https://github.com/moby/buildkit.git\""
+       ]
+      },
+      "unpack": null
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine\""
+   }
+  ],
+  "warnings": null
+ },
+ {
   "file": "corpus/plan/add-remote.Dockerfile",
   "meta_args": null,
   "stages": [
@@ -11337,6 +11413,82 @@
   "warnings": [
    "\"MaintainerDeprecated|The MAINTAINER instruction is deprecated, use a label instead to define an image author|https://docs.docker.com/go/dockerfile/rule/maintainer-deprecated/|Maintainer instruction is deprecated in favor of using label|11-11\""
   ]
+ },
+ {
+  "file": "corpus/plan/context-git-advice.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "checksum": "\"\"",
+      "chmod": "\"\"",
+      "chown": "\"\"",
+      "code": "\"ADD https://github.com/moby/buildkit.git#v0.28.1 /src\"",
+      "comments": [],
+      "exclude": [],
+      "keep_git_dir": null,
+      "kind": "*instructions.AddCommand",
+      "link": false,
+      "location": [
+       [
+        2,
+        2
+       ]
+      ],
+      "name": "\"ADD\"",
+      "sources": {
+       "contents": null,
+       "dest": "\"/src\"",
+       "paths": [
+        "\"https://github.com/moby/buildkit.git#v0.28.1\""
+       ]
+      },
+      "unpack": null
+     },
+     {
+      "checksum": "\"\"",
+      "chmod": "\"\"",
+      "chown": "\"\"",
+      "code": "\"ADD --keep-git-dir https://github.com/moby/buildkit.git /k\"",
+      "comments": [],
+      "exclude": [],
+      "keep_git_dir": true,
+      "kind": "*instructions.AddCommand",
+      "link": false,
+      "location": [
+       [
+        3,
+        3
+       ]
+      ],
+      "name": "\"ADD\"",
+      "sources": {
+       "contents": null,
+       "dest": "\"/k\"",
+       "paths": [
+        "\"https://github.com/moby/buildkit.git\""
+       ]
+      },
+      "unpack": null
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine\""
+   }
+  ],
+  "warnings": null
  },
  {
   "file": "corpus/plan/context-git-keep.Dockerfile",

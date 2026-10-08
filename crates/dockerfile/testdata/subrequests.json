@@ -5,6 +5,15 @@
  },
  "files": [
   {
+   "file": "corpus/plan/add-git-advice.Dockerfile",
+   "lint": "\"{\\n  \\\"warnings\\\": null,\\n  \\\"sources\\\": [\\n    {\\n      \\\"filename\\\": \\\"Dockerfile\\\",\\n      \\\"data\\\": \\\"RlJPTSBhbHBpbmUKQUREIGh0dHBzOi8vZ2l0aHViLmNvbS9tb2J5L2J1aWxka2l0LmdpdCN2MC4yOC4xIC9zcmMKQUREIC0ta2VlcC1naXQtZGlyIGh0dHBzOi8vZ2l0aHViLmNvbS9tb2J5L2J1aWxka2l0LmdpdCAvawo=\\\",\\n      \\\"language\\\": \\\"Dockerfile\\\"\\n    }\\n  ]\\n}\"",
+   "lint_status": "0",
+   "outline": "\"{\\n  \\\"sources\\\": [\\n    \\\"RlJPTSBhbHBpbmUKQUREIGh0dHBzOi8vZ2l0aHViLmNvbS9tb2J5L2J1aWxka2l0LmdpdCN2MC4yOC4xIC9zcmMKQUREIC0ta2VlcC1naXQtZGlyIGh0dHBzOi8vZ2l0aHViLmNvbS9tb2J5L2J1aWxka2l0LmdpdCAvawo=\\\"\\n  ]\\n}\"",
+   "outline_text": "\"\"",
+   "targets": "\"{\\n  \\\"targets\\\": [\\n    {\\n      \\\"default\\\": true,\\n      \\\"base\\\": \\\"alpine\\\",\\n      \\\"location\\\": {\\n        \\\"ranges\\\": [\\n          {\\n            \\\"start\\\": {\\n              \\\"line\\\": 1\\n            },\\n            \\\"end\\\": {\\n              \\\"line\\\": 1\\n            }\\n          }\\n        ]\\n      }\\n    }\\n  ],\\n  \\\"sources\\\": [\\n    \\\"RlJPTSBhbHBpbmUKQUREIGh0dHBzOi8vZ2l0aHViLmNvbS9tb2J5L2J1aWxka2l0LmdpdCN2MC4yOC4xIC9zcmMKQUREIC0ta2VlcC1naXQtZGlyIGh0dHBzOi8vZ2l0aHViLmNvbS9tb2J5L2J1aWxka2l0LmdpdCAvawo=\\\"\\n  ]\\n}\"",
+   "targets_text": "\"TARGET    DESCRIPTION\\n(default) \\n\""
+  },
+  {
    "file": "corpus/plan/add-remote.Dockerfile",
    "lint": "\"{\\n  \\\"warnings\\\": null,\\n  \\\"sources\\\": [\\n    {\\n      \\\"filename\\\": \\\"Dockerfile\\\",\\n      \\\"data\\\": \\\"RlJPTSBhbHBpbmUKQUREIGh0dHBzOi8vZXhhbXBsZS5jb20vZmlsZXMvYXBwLnRhci5neiAvb3B0LwpBREQgLS1jaGVja3N1bT1zaGEyNTY6MjQ0NTRmODMwY2RiNTcxZTJjNGFkMTU0ODExMTljNDNiM2NhZmQ0OGRkODY5YTliMjk0NWQxMDM2ZDFkYzY4ZCBodHRwczovL2V4YW1wbGUuY29tL3ggL3gKQUREIC0tY2htb2Q9NjQ0IC0tY2hvd249MToxIGh0dHA6Ly9leGFtcGxlLmNvbS8gL3Jvb3QtZmlsZQpBREQgLS11bnBhY2s9dHJ1ZSBodHRwczovL2V4YW1wbGUuY29tL2EudGFyIC9hCkFERCBodHRwczovL2dpdGh1Yi5jb20vbW9ieS9idWlsZGtpdC5naXQjdjAuMTIuMDpkb2NzIC9kb2NzCkFERCAtLWtlZXAtZ2l0LWRpcj10cnVlIGh0dHBzOi8vZ2l0aHViLmNvbS9tb2J5L2J1aWxka2l0LmdpdD9yZWY9bWFpbiZzdWJkaXI9ZnJvbnRlbmQgL2ZlCkFERCBodHRwczovL2V4YW1wbGUuY29tL3IuZ2l0P2JyYW5jaD1kZXYmc3VibW9kdWxlcz1mYWxzZSZmZXRjaC1ieS1jb21taXQgL3IKQUREIGdpdEBub25leGlzdGVudC5pbnZhbGlkOm9yZy9yZXBvLmdpdCNtYWluIC9zc2gKQUREIC0tY2hlY2tzdW09MDEyMzQ1Njc4OWFiY2RlZiBodHRwczovL2V4YW1wbGUuY29tL3IuZ2l0IC9zdW0KQUREIGdpdDovL2V4YW1wbGUuY29tL3IuZ2l0IC9wbGFpbgpBREQgZ2l0aHViLmNvbS9tb2J5L2J1aWxka2l0IC9sb29rcy1sb2NhbAo=\\\",\\n      \\\"language\\\": \\\"Dockerfile\\\"\\n    }\\n  ]\\n}\"",
    "lint_status": "0",
@@ -65,6 +74,15 @@
    "outline": "\"{\\n  \\\"sources\\\": [\\n    \\\"RlJPTSBhbHBpbmUKVVNFUiBub2JvZHkKV09SS0RJUiAvaG9tZS9ub2JvZHkKRVhQT1NFIDgwIDQ0My90Y3AgNTMvVURQIDgwMDAtODAwMiAxMjcuMC4wLjE6OTAwMDo5MDAwClZPTFVNRSAvZGF0YSBbIi9sb2dzIiwgIi9jYWNoZSJdClNUT1BTSUdOQUwgU0lHSU5UCkhFQUxUSENIRUNLIC0taW50ZXJ2YWw9NXMgLS10aW1lb3V0PTFtMzBzIC0tc3RhcnQtcGVyaW9kPTUwMG1zIC0tc3RhcnQtaW50ZXJ2YWw9MnMgLS1yZXRyaWVzPTQgQ01EIGN1cmwgLWYgaHR0cDovL2xvY2FsaG9zdC8gfHwgZXhpdCAxCkxBQkVMIGE9MSAiYiBjIj0yCkxBQkVMIGxlZ2FjeSB2YWx1ZQpFTlYgbGVnYWN5IHZhbHVlCk1BSU5UQUlORVIgc29tZW9uZUBleGFtcGxlLmNvbQpFTlRSWVBPSU5UIFsiL2VudHJ5Il0KQ01EIFsiYXJnIl0K\\\"\\n  ]\\n}\"",
    "outline_text": "\"\"",
    "targets": "\"{\\n  \\\"targets\\\": [\\n    {\\n      \\\"default\\\": true,\\n      \\\"base\\\": \\\"alpine\\\",\\n      \\\"location\\\": {\\n        \\\"ranges\\\": [\\n          {\\n            \\\"start\\\": {\\n              \\\"line\\\": 1\\n            },\\n            \\\"end\\\": {\\n              \\\"line\\\": 1\\n            }\\n          }\\n        ]\\n      }\\n    }\\n  ],\\n  \\\"sources\\\": [\\n    \\\"RlJPTSBhbHBpbmUKVVNFUiBub2JvZHkKV09SS0RJUiAvaG9tZS9ub2JvZHkKRVhQT1NFIDgwIDQ0My90Y3AgNTMvVURQIDgwMDAtODAwMiAxMjcuMC4wLjE6OTAwMDo5MDAwClZPTFVNRSAvZGF0YSBbIi9sb2dzIiwgIi9jYWNoZSJdClNUT1BTSUdOQUwgU0lHSU5UCkhFQUxUSENIRUNLIC0taW50ZXJ2YWw9NXMgLS10aW1lb3V0PTFtMzBzIC0tc3RhcnQtcGVyaW9kPTUwMG1zIC0tc3RhcnQtaW50ZXJ2YWw9MnMgLS1yZXRyaWVzPTQgQ01EIGN1cmwgLWYgaHR0cDovL2xvY2FsaG9zdC8gfHwgZXhpdCAxCkxBQkVMIGE9MSAiYiBjIj0yCkxBQkVMIGxlZ2FjeSB2YWx1ZQpFTlYgbGVnYWN5IHZhbHVlCk1BSU5UQUlORVIgc29tZW9uZUBleGFtcGxlLmNvbQpFTlRSWVBPSU5UIFsiL2VudHJ5Il0KQ01EIFsiYXJnIl0K\\\"\\n  ]\\n}\"",
+   "targets_text": "\"TARGET    DESCRIPTION\\n(default) \\n\""
+  },
+  {
+   "file": "corpus/plan/context-git-advice.Dockerfile",
+   "lint": "\"{\\n  \\\"warnings\\\": null,\\n  \\\"sources\\\": [\\n    {\\n      \\\"filename\\\": \\\"Dockerfile\\\",\\n      \\\"data\\\": \\\"RlJPTSBhbHBpbmUKQUREIGh0dHBzOi8vZ2l0aHViLmNvbS9tb2J5L2J1aWxka2l0LmdpdCN2MC4yOC4xIC9zcmMKQUREIC0ta2VlcC1naXQtZGlyIGh0dHBzOi8vZ2l0aHViLmNvbS9tb2J5L2J1aWxka2l0LmdpdCAvawo=\\\",\\n      \\\"language\\\": \\\"Dockerfile\\\"\\n    }\\n  ]\\n}\"",
+   "lint_status": "0",
+   "outline": "\"{\\n  \\\"sources\\\": [\\n    \\\"RlJPTSBhbHBpbmUKQUREIGh0dHBzOi8vZ2l0aHViLmNvbS9tb2J5L2J1aWxka2l0LmdpdCN2MC4yOC4xIC9zcmMKQUREIC0ta2VlcC1naXQtZGlyIGh0dHBzOi8vZ2l0aHViLmNvbS9tb2J5L2J1aWxka2l0LmdpdCAvawo=\\\"\\n  ]\\n}\"",
+   "outline_text": "\"\"",
+   "targets": "\"{\\n  \\\"targets\\\": [\\n    {\\n      \\\"default\\\": true,\\n      \\\"base\\\": \\\"alpine\\\",\\n      \\\"location\\\": {\\n        \\\"ranges\\\": [\\n          {\\n            \\\"start\\\": {\\n              \\\"line\\\": 1\\n            },\\n            \\\"end\\\": {\\n              \\\"line\\\": 1\\n            }\\n          }\\n        ]\\n      }\\n    }\\n  ],\\n  \\\"sources\\\": [\\n    \\\"RlJPTSBhbHBpbmUKQUREIGh0dHBzOi8vZ2l0aHViLmNvbS9tb2J5L2J1aWxka2l0LmdpdCN2MC4yOC4xIC9zcmMKQUREIC0ta2VlcC1naXQtZGlyIGh0dHBzOi8vZ2l0aHViLmNvbS9tb2J5L2J1aWxka2l0LmdpdCAvawo=\\\"\\n  ]\\n}\"",
    "targets_text": "\"TARGET    DESCRIPTION\\n(default) \\n\""
   },
   {

@@ -1151,6 +1151,8 @@ fn options_of(file: &str) -> shards_dockerfile::plan::Options {
             }
         },
         context_subdir: frontend_map.get("contextsubdir").map(|s| s.as_bytes().to_vec()),
+        git_advice: shards_cmdline::go::parse_bool(frontend("build-arg:BUILDKIT_GIT_ADVICE"))
+            .unwrap_or(false),
         no_cache: opts_v["no_cache"].as_str().map(|v| {
             if v.is_empty() {
                 Vec::new()

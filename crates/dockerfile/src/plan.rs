@@ -87,6 +87,8 @@ pub struct Options {
     pub main_context: MainContext,
     /// The directory of a remote context that is the context (`contextsubdir`).
     pub context_subdir: Option<Vec<u8>>,
+    /// Whether `ADD`'s Git fetches give Git's advice (BUILDKIT_GIT_ADVICE, `git.advice`).
+    pub git_advice: bool,
 }
 
 /// What the build context is (dockerui's `initContext`).
@@ -3356,6 +3358,7 @@ impl Planner<'_> {
                     checksum = g.checksum.clone();
                 }
                 let st = self.git_source(&g, keep_git_dir == Some(true), &checksum, &pg_name);
+                let st = self.advised(st);
                 actions.push(Action::Copy {
                     from: st.output,
                     from_dir: st.dir.clone(),
@@ -3907,7 +3910,8 @@ impl Planner<'_> {
         };
         match crate::agentfile::source_of(source).map_err(Fail::new)? {
             crate::agentfile::Source::Git(g) => {
-                Ok(self.git_source(&g, g.keep_git_dir == Some(true), &g.checksum, &shown))
+                let st = self.git_source(&g, g.keep_git_dir == Some(true), &g.checksum, &shown);
+                Ok(self.advised(st))
             }
             crate::agentfile::Source::Http(url) => {
                 let name = http_filename(&url);
@@ -4244,6 +4248,19 @@ impl Planner<'_> {
 
     /// `llb.Git`: the repository as a source, its ID and attributes as BuildKit makes
     /// them ([`git_identifier`]).
+    /// An `ADD`'s Git source with `git.advice` where BUILDKIT_GIT_ADVICE asks for it
+    /// (convert_copy.go, `llb.GitAdvice`).
+    fn advised(&mut self, st: State) -> State {
+        if self.opts.git_advice
+            && let Some(out) = st.output
+            && let Some(v) = self.graph.vertices.get_mut(out.vertex)
+            && let llb::Kind::Source { attrs, .. } = &mut v.kind
+        {
+            attrs.insert(b"git.advice".to_vec(), b"true".to_vec());
+        }
+        st
+    }
+
     fn git_source(&mut self, g: &git::GitRef, keep_git_dir: bool, checksum: &[u8], name: &[u8]) -> State {
         let (identifier, attrs) = git_identifier(g, keep_git_dir, checksum);
         self.graph

@@ -535,6 +535,7 @@ func convertOpt(root, rel string, images resolver, warn func(string)) ([]byte, d
 		cfg.NetworkMode = named.Config.NetworkMode
 		cfg.LinuxResources = named.Config.LinuxResources
 		cfg.ImageResolveMode = named.Config.ImageResolveMode
+		cfg.GitAdvice = named.Config.GitAdvice
 	}
 	return data, dockerfile2llb.ConvertOpt{
 		Client:         named,

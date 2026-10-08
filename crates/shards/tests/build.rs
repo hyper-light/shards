@@ -2796,6 +2796,54 @@ fn git_http_server(root: std::path::PathBuf, accepted: Vec<String>) -> u16 {
 /// upload-pack: the default branch, an annotated tag, a subdirectory, a submodule found by
 /// its relative URL, `--keep-git-dir`; files 0644 or 0755, symlinks, all root's. Unlike
 /// BuildKit, every entry's time is the commit's, so that the same commit makes the same
+/// dockerui's build-arg options, as frontend 1.27.1 reads them (D92):
+/// BUILDKIT_DISABLE_FILEOP refused once true, in Docker's words; BUILDKIT_GIT_ADVICE read as
+/// a bool, refused otherwise; neither in the way of a build that sets them off or on.
+#[test]
+fn dockeruis_build_args_are_read_as_it_reads_them() {
+    let home = TempDir::new("dockerui-args-home");
+    let ctx = context("dockerui-args-ctx", "FROM scratch\n");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let build = |arg: &str| {
+        run_shards_env(
+            &[],
+            &[
+                "build",
+                "--progress=plain",
+                "--build-arg",
+                arg,
+                ctx.to_str().unwrap(),
+            ],
+            &env,
+            TIMEOUT,
+        )
+    };
+    let refused = build("BUILDKIT_DISABLE_FILEOP=1");
+    assert_ne!(refused.status, Some(0));
+    assert!(
+        refused.stderr.contains(
+            "ERROR: failed to build: failed to solve: support for \"BUILDKIT_DISABLE_FILEOP\" build-arg was removed in BuildKit 0.11"
+        ),
+        "{}",
+        refused.stderr
+    );
+    assert_eq!(build("BUILDKIT_DISABLE_FILEOP=false").status, Some(0));
+    let refused = build("BUILDKIT_GIT_ADVICE=x");
+    assert_ne!(refused.status, Some(0));
+    assert!(
+        refused.stderr.contains(
+            "failed to parse build-arg:BUILDKIT_GIT_ADVICE: strconv.ParseBool: parsing \"x\": invalid syntax"
+        ),
+        "{}",
+        refused.stderr
+    );
+    assert_eq!(build("BUILDKIT_GIT_ADVICE=true").status, Some(0));
+}
+
 /// A ustar archive of `files` (path, bytes), regular files mode 0644, as a client's
 /// context archive would hold them.
 fn ustar(files: &[(&str, &[u8])]) -> Vec<u8> {

@@ -1,5 +1,186 @@
 [
  {
+  "file": "corpus/plan/add-git-advice.Dockerfile",
+  "image": "{\"architecture\":\"amd64\",\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:0000000000000000000000000000000000000000000000000000000000000001\"]},\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"ADD https://github.com/moby/buildkit.git#v0.28.1 /src # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"ADD https://github.com/moby/buildkit.git /k # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"}],\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"/bin/sh\"]}}",
+  "ops": [
+   {
+    "constraints": {},
+    "inputs": [],
+    "locations": [
+     {
+      "ranges": [
+       [
+        1,
+        0,
+        1,
+        0
+       ]
+      ],
+      "source": 0
+     }
+    ],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "FROM alpine",
+      "llb.customname": "[1/3] FROM docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+     }
+    },
+    "pb": "Ug4KBWFtZDY0EgVsaW51eFoAGngKdmRvY2tlci1pbWFnZTovL2RvY2tlci5pby9saWJyYXJ5L2FscGluZTpsYXRlc3RAc2hhMjU2OmM5ZWY1YjFmMGI0NDIyNTU3NzRhZTMxYTgzOWZmNDhjZTEyMDZhNjA2YTk3MDUyZGI4YjRhMTNhZTE1M2ZiN2M=",
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    },
+    "source": {
+     "identifier": "docker-image://docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+    }
+   },
+   {
+    "constraints": {},
+    "inputs": [],
+    "locations": [],
+    "metadata": {
+     "description": {
+      "llb.customname": "[2/3] ADD https://github.com/moby/buildkit.git#v0.28.1 /src"
+     }
+    },
+    "pb": "WgAaxQEKKmdpdDovL2dpdGh1Yi5jb20vbW9ieS9idWlsZGtpdC5naXQjdjAuMjguMRISCgpnaXQuYWR2aWNlEgR0cnVlEicKFGdpdC5hdXRoaGVhZGVyc2VjcmV0Eg9HSVRfQVVUSF9IRUFERVISJQoTZ2l0LmF1dGh0b2tlbnNlY3JldBIOR0lUX0FVVEhfVE9LRU4SMwoLZ2l0LmZ1bGx1cmwSJGh0dHBzOi8vZ2l0aHViLmNvbS9tb2J5L2J1aWxka2l0LmdpdA==",
+    "source": {
+     "attrs": {
+      "git.advice": "true",
+      "git.authheadersecret": "GIT_AUTH_HEADER",
+      "git.authtokensecret": "GIT_AUTH_TOKEN",
+      "git.fullurl": "https://github.com/moby/buildkit.git"
+     },
+     "identifier": "git://github.com/moby/buildkit.git#v0.28.1"
+    }
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "copy": {
+        "createDestPath": true,
+        "dest": "/src",
+        "mode": -1,
+        "src": "/",
+        "timestamp": "-1"
+       },
+       "secondaryInput": "1"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      0,
+      0
+     ],
+     [
+      1,
+      0
+     ]
+    ],
+    "locations": [
+     {
+      "ranges": [
+       [
+        2,
+        0,
+        2,
+        0
+       ]
+      ],
+      "source": 0
+     }
+    ],
+    "metadata": {
+     "description": {
+      "llb.customname": "[2/3] ADD https://github.com/moby/buildkit.git#v0.28.1 /src"
+     }
+    },
+    "pb": "CkkKR3NoYTI1Njo5MGEwNjQ2NzJkNmI2ZjQwMzNhYjUzZmVlNjI4YzYwMGMyZTM1MGVlM2YyYmU0NGUxNGU0YWY0ZWE1OTM4MjBmCkkKR3NoYTI1Njo4M2I2ZTQ0Y2ZmOWQ4MWUyZThhOTM4YTg3MmMxMmJjZGFlOTEzZWRmM2I3ZTE5MjI3ZmJhODhiYzNhYTQyOTRjWgAiJxIlEAEiIQoBLxIEL3NyYyD///////////8BQAFY////////////AQ=="
+   },
+   {
+    "constraints": {},
+    "inputs": [],
+    "locations": [],
+    "metadata": {
+     "description": {
+      "llb.customname": "[3/3] ADD --keep-git-dir https://github.com/moby/buildkit.git /k"
+     }
+    },
+    "pb": "WgAa1QEKImdpdDovL2dpdGh1Yi5jb20vbW9ieS9idWlsZGtpdC5naXQSEgoKZ2l0LmFkdmljZRIEdHJ1ZRInChRnaXQuYXV0aGhlYWRlcnNlY3JldBIPR0lUX0FVVEhfSEVBREVSEiUKE2dpdC5hdXRodG9rZW5zZWNyZXQSDkdJVF9BVVRIX1RPS0VOEjMKC2dpdC5mdWxsdXJsEiRodHRwczovL2dpdGh1Yi5jb20vbW9ieS9idWlsZGtpdC5naXQSFgoOZ2l0LmtlZXBnaXRkaXISBHRydWU=",
+    "source": {
+     "attrs": {
+      "git.advice": "true",
+      "git.authheadersecret": "GIT_AUTH_HEADER",
+      "git.authtokensecret": "GIT_AUTH_TOKEN",
+      "git.fullurl": "https://github.com/moby/buildkit.git",
+      "git.keepgitdir": "true"
+     },
+     "identifier": "git://github.com/moby/buildkit.git"
+    }
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "copy": {
+        "createDestPath": true,
+        "dest": "/k",
+        "mode": -1,
+        "src": "/",
+        "timestamp": "-1"
+       },
+       "secondaryInput": "1"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      2,
+      0
+     ],
+     [
+      3,
+      0
+     ]
+    ],
+    "locations": [
+     {
+      "ranges": [
+       [
+        3,
+        0,
+        3,
+        0
+       ]
+      ],
+      "source": 0
+     }
+    ],
+    "metadata": {
+     "description": {
+      "llb.customname": "[3/3] ADD --keep-git-dir https://github.com/moby/buildkit.git /k"
+     }
+    },
+    "pb": "CkkKR3NoYTI1NjpkNGU2NTkyOTRmM2Y5OTA4ZWYwOWI1NTAyM2MwMjIyYzRmMzRhN2RhZjY4ZjUxYTU3NTYyMmRiMjA3MjFjNDZlCkkKR3NoYTI1NjpkNmNmNTdjZDA1OTNlYzBkMGExNjFiMWI3MmNkY2I2MjAwOTRhNzJmODZjM2QwZTM2MDNkM2Y1OWIzMTZlZWJmWgAiJRIjEAEiHwoBLxICL2sg////////////AUABWP///////////wE="
+   },
+   {
+    "inputs": [
+     [
+      4,
+      0
+     ]
+    ],
+    "metadata": {},
+    "pb": "CkkKR3NoYTI1Njo1ZDY2NWU1NmVhNjk1Y2RlMmUzY2E2ZWEwNTgzNDdmMTUwYmRjMTVhYWU4MDM3YTM5OWU4Y2IyMzE2NjZlNTkw"
+   }
+  ],
+  "warnings": null
+ },
+ {
   "file": "corpus/plan/add-remote.Dockerfile",
   "image": "{\"architecture\":\"amd64\",\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:0000000000000000000000000000000000000000000000000000000000000001\"]},\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"ADD https://example.com/files/app.tar.gz /opt/ # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"ADD https://example.com/x /x # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"ADD --chown=1:1 --chmod=644 http://example.com/ /root-file # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"ADD https://example.com/a.tar /a # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"ADD https://github.com/moby/buildkit.git#v0.12.0:docs /docs # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"ADD https://github.com/moby/buildkit.git?ref=main\\u0026subdir=frontend /fe # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"ADD https://example.com/r.git?branch=dev\\u0026submodules=false\\u0026fetch-by-commit /r # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"ADD git@nonexistent.invalid:org/repo.git#main /ssh # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"ADD https://example.com/r.git /sum # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"ADD git://example.com/r.git /plain # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"ADD github.com/moby/buildkit /looks-local # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"}],\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"/bin/sh\"]}}",
   "ops": [
@@ -1398,6 +1579,187 @@
    "\"LegacyKeyValueFormat|\\\"LABEL key=value\\\" should be used instead of legacy \\\"LABEL key value\\\" format|9-9\"",
    "\"LegacyKeyValueFormat|\\\"ENV key=value\\\" should be used instead of legacy \\\"ENV key value\\\" format|10-10\""
   ]
+ },
+ {
+  "file": "corpus/plan/context-git-advice.Dockerfile",
+  "image": "{\"architecture\":\"amd64\",\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:0000000000000000000000000000000000000000000000000000000000000001\"]},\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"ADD https://github.com/moby/buildkit.git#v0.28.1 /src # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"ADD https://github.com/moby/buildkit.git /k # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"}],\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"/bin/sh\"]}}",
+  "ops": [
+   {
+    "constraints": {},
+    "inputs": [],
+    "locations": [
+     {
+      "ranges": [
+       [
+        1,
+        0,
+        1,
+        0
+       ]
+      ],
+      "source": 0
+     }
+    ],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "FROM alpine",
+      "llb.customname": "[1/3] FROM docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+     }
+    },
+    "pb": "Ug4KBWFtZDY0EgVsaW51eFoAGngKdmRvY2tlci1pbWFnZTovL2RvY2tlci5pby9saWJyYXJ5L2FscGluZTpsYXRlc3RAc2hhMjU2OmM5ZWY1YjFmMGI0NDIyNTU3NzRhZTMxYTgzOWZmNDhjZTEyMDZhNjA2YTk3MDUyZGI4YjRhMTNhZTE1M2ZiN2M=",
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    },
+    "source": {
+     "identifier": "docker-image://docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+    }
+   },
+   {
+    "constraints": {},
+    "inputs": [],
+    "locations": [],
+    "metadata": {
+     "description": {
+      "llb.customname": "[2/3] ADD https://github.com/moby/buildkit.git#v0.28.1 /src"
+     }
+    },
+    "pb": "WgAaxQEKKmdpdDovL2dpdGh1Yi5jb20vbW9ieS9idWlsZGtpdC5naXQjdjAuMjguMRISCgpnaXQuYWR2aWNlEgR0cnVlEicKFGdpdC5hdXRoaGVhZGVyc2VjcmV0Eg9HSVRfQVVUSF9IRUFERVISJQoTZ2l0LmF1dGh0b2tlbnNlY3JldBIOR0lUX0FVVEhfVE9LRU4SMwoLZ2l0LmZ1bGx1cmwSJGh0dHBzOi8vZ2l0aHViLmNvbS9tb2J5L2J1aWxka2l0LmdpdA==",
+    "source": {
+     "attrs": {
+      "git.advice": "true",
+      "git.authheadersecret": "GIT_AUTH_HEADER",
+      "git.authtokensecret": "GIT_AUTH_TOKEN",
+      "git.fullurl": "https://github.com/moby/buildkit.git"
+     },
+     "identifier": "git://github.com/moby/buildkit.git#v0.28.1"
+    }
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "copy": {
+        "createDestPath": true,
+        "dest": "/src",
+        "mode": -1,
+        "src": "/",
+        "timestamp": "-1"
+       },
+       "secondaryInput": "1"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      0,
+      0
+     ],
+     [
+      1,
+      0
+     ]
+    ],
+    "locations": [
+     {
+      "ranges": [
+       [
+        2,
+        0,
+        2,
+        0
+       ]
+      ],
+      "source": 0
+     }
+    ],
+    "metadata": {
+     "description": {
+      "llb.customname": "[2/3] ADD https://github.com/moby/buildkit.git#v0.28.1 /src"
+     }
+    },
+    "pb": "CkkKR3NoYTI1Njo5MGEwNjQ2NzJkNmI2ZjQwMzNhYjUzZmVlNjI4YzYwMGMyZTM1MGVlM2YyYmU0NGUxNGU0YWY0ZWE1OTM4MjBmCkkKR3NoYTI1Njo4M2I2ZTQ0Y2ZmOWQ4MWUyZThhOTM4YTg3MmMxMmJjZGFlOTEzZWRmM2I3ZTE5MjI3ZmJhODhiYzNhYTQyOTRjWgAiJxIlEAEiIQoBLxIEL3NyYyD///////////8BQAFY////////////AQ=="
+   },
+   {
+    "constraints": {},
+    "inputs": [],
+    "locations": [],
+    "metadata": {
+     "description": {
+      "llb.customname": "[3/3] ADD --keep-git-dir https://github.com/moby/buildkit.git /k"
+     }
+    },
+    "pb": "WgAa1QEKImdpdDovL2dpdGh1Yi5jb20vbW9ieS9idWlsZGtpdC5naXQSEgoKZ2l0LmFkdmljZRIEdHJ1ZRInChRnaXQuYXV0aGhlYWRlcnNlY3JldBIPR0lUX0FVVEhfSEVBREVSEiUKE2dpdC5hdXRodG9rZW5zZWNyZXQSDkdJVF9BVVRIX1RPS0VOEjMKC2dpdC5mdWxsdXJsEiRodHRwczovL2dpdGh1Yi5jb20vbW9ieS9idWlsZGtpdC5naXQSFgoOZ2l0LmtlZXBnaXRkaXISBHRydWU=",
+    "source": {
+     "attrs": {
+      "git.advice": "true",
+      "git.authheadersecret": "GIT_AUTH_HEADER",
+      "git.authtokensecret": "GIT_AUTH_TOKEN",
+      "git.fullurl": "https://github.com/moby/buildkit.git",
+      "git.keepgitdir": "true"
+     },
+     "identifier": "git://github.com/moby/buildkit.git"
+    }
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "copy": {
+        "createDestPath": true,
+        "dest": "/k",
+        "mode": -1,
+        "src": "/",
+        "timestamp": "-1"
+       },
+       "secondaryInput": "1"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      2,
+      0
+     ],
+     [
+      3,
+      0
+     ]
+    ],
+    "locations": [
+     {
+      "ranges": [
+       [
+        3,
+        0,
+        3,
+        0
+       ]
+      ],
+      "source": 0
+     }
+    ],
+    "metadata": {
+     "description": {
+      "llb.customname": "[3/3] ADD --keep-git-dir https://github.com/moby/buildkit.git /k"
+     }
+    },
+    "pb": "CkkKR3NoYTI1NjpkNGU2NTkyOTRmM2Y5OTA4ZWYwOWI1NTAyM2MwMjIyYzRmMzRhN2RhZjY4ZjUxYTU3NTYyMmRiMjA3MjFjNDZlCkkKR3NoYTI1NjpkNmNmNTdjZDA1OTNlYzBkMGExNjFiMWI3MmNkY2I2MjAwOTRhNzJmODZjM2QwZTM2MDNkM2Y1OWIzMTZlZWJmWgAiJRIjEAEiHwoBLxICL2sg////////////AUABWP///////////wE="
+   },
+   {
+    "inputs": [
+     [
+      4,
+      0
+     ]
+    ],
+    "metadata": {},
+    "pb": "CkkKR3NoYTI1Njo1ZDY2NWU1NmVhNjk1Y2RlMmUzY2E2ZWEwNTgzNDdmMTUwYmRjMTVhYWU4MDM3YTM5OWU4Y2IyMzE2NjZlNTkw"
+   }
+  ],
+  "warnings": null
  },
  {
   "file": "corpus/plan/context-git-keep.Dockerfile",

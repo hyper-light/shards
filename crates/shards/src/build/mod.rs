@@ -1376,6 +1376,28 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
         });
     }
     remote::check(&cache_to, &env)?;
+    // dockerui's build-arg options (frontend 1.27.1's config.go): BUILDKIT_DISABLE_FILEOP
+    // refused, as BuildKit has refused it since 0.11; BUILDKIT_GIT_ADVICE read.
+    let frontend_args = build_args(parsed.many("build-arg"), true);
+    if frontend_args
+        .get(b"BUILDKIT_DISABLE_FILEOP".as_slice())
+        .is_some_and(|v| shards_cmdline::go::parse_bool(&show(v)).unwrap_or(false))
+    {
+        return Err(
+            "failed to build: failed to solve: support for \"BUILDKIT_DISABLE_FILEOP\" build-arg was removed in BuildKit 0.11"
+                .into(),
+        );
+    }
+    let git_advice = match frontend_args
+        .get(b"BUILDKIT_GIT_ADVICE".as_slice())
+        .map(|v| show(v))
+        .filter(|v| !v.is_empty())
+    {
+        Some(v) => shards_cmdline::go::parse_bool(&v).map_err(|e| {
+            format!("failed to build: failed to solve: failed to parse build-arg:BUILDKIT_GIT_ADVICE: {e}")
+        })?,
+        None => false,
+    };
     let context_arg = parsed.args.first().cloned().unwrap_or_default();
     // A remote context, as buildx sends one (the frontend's `context`): a Git URL, an HTTP(S)
     // URL, or stdin's archive, which buildx uploads under a URL of its own and shards names
@@ -1660,6 +1682,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
         },
         main_context: remote.clone().unwrap_or_default(),
         context_subdir: None,
+        git_advice,
     };
     let call = call_of(parsed)?;
     let debug = parsed.bool("debug");
