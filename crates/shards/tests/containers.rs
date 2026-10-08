@@ -3198,21 +3198,45 @@ fn published_ports_reach_the_guest_as_dockerd_publishes_them() {
     // The listening sockets are the run's network process's alone: the daemon lets go of
     // its copies once the VM has the run (M24), and a copy kept would hold the port after
     // the run's end is told, until the daemon had reaped both of its processes.
-    if let Ok(lsof) = std::process::Command::new("lsof")
-        .args(["-nP", &format!("-iTCP:{n}"), "-sTCP:LISTEN", "-Fp"])
-        .output()
+    // lsof's own (`-F` fields, exit 1 when nothing matches); busybox's, which Alpine has,
+    // ignores the selection and lists every file, and says nothing of this.
+    let lsof = || {
+        std::process::Command::new("lsof")
+            .args(["-nP", &format!("-iTCP:{n}"), "-sTCP:LISTEN", "-Fp"])
+            .output()
+            .ok()
+    };
+    let holders = |o: &std::process::Output| -> Vec<String> {
+        String::from_utf8_lossy(&o.stdout)
+            .lines()
+            .filter_map(|l| l.strip_prefix('p').map(String::from))
+            .collect()
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut seen = lsof();
+    while let Some(o) = &seen
+        && holders(o).is_empty()
+        && !o.status.success()
+        && std::time::Instant::now() < deadline
     {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        seen = lsof();
+    }
+    if let Some(lsof) = seen.filter(|o| !(o.status.success() && holders(o).is_empty())) {
         let log = std::fs::read_to_string(home.join("daemon.log")).unwrap();
         let daemon = log
             .lines()
             .find_map(|l| l.strip_prefix("shards daemon ")?.split(':').next())
             .unwrap()
             .to_string();
-        let holders: Vec<String> = String::from_utf8_lossy(&lsof.stdout)
-            .lines()
-            .filter_map(|l| l.strip_prefix('p').map(String::from))
-            .collect();
-        assert!(!holders.is_empty(), "nothing listens on {n}");
+        let holders = holders(&lsof);
+        assert!(
+            !holders.is_empty(),
+            "nothing listens on {n}: lsof {}\n{}{}",
+            lsof.status,
+            String::from_utf8_lossy(&lsof.stdout),
+            String::from_utf8_lossy(&lsof.stderr)
+        );
         assert!(
             !holders.contains(&daemon),
             "the daemon {daemon} holds {n}: {holders:?}"
