@@ -1,6 +1,6 @@
 [package]
 name = "shards"
-version = "0.4.0"
+version = "0.5.0"
 description = "shards: microVMs for agents, designed for home or at scale"
 edition.workspace = true
 license.workspace = true
