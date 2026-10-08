@@ -675,6 +675,25 @@ impl Bases<'_> {
             return self.foreign(name, &reference, wanted);
         }
         let limits = crate::pull::limits().map_err(fail)?;
+        // Pinned by digest: the image the store holds of that digest, whatever it is named
+        // here, the digest as asked.
+        let held = match &reference.digest {
+            Some(d) if !self.pull => self.store.holding(d).map_err(|e| fail(e.to_string()))?,
+            _ => None,
+        };
+        if let (Some(held), Some(d)) = (&held, &reference.digest)
+            && let Some(record) = self.store.tagged(held).map_err(|e| fail(e.to_string()))?
+        {
+            registry_pull::local_tagged(
+                self.store,
+                held,
+                &reference.familiar(),
+                &image_platform::guest(),
+                &limits,
+            )
+            .map_err(|e| fail(e.to_string()))?;
+            return self.base_of(name, &reference, record, d.clone(), wanted);
+        }
         let local = if self.pull {
             None
         } else {

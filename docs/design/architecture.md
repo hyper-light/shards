@@ -3210,6 +3210,37 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode
 waits on the user.
 
+### D78. An Agentfile made from an image (§10, §12.16)
+
+`shards make agentfile IMAGE [-o FILE]` (`create agentfile`, or `shards agentfile`)
+writes an Agentfile of an image, here or pulled as a run pulls it:
+
+- `FROM` the image by its manifest's digest (`name:tag@sha256:…`), so that a build of it
+  is the image's own layers, exactly, and no `--platform` constant (which the checks
+  warn of) is needed to choose among an index's platforms;
+- its config written out as the instructions that set it: `ENV`, `LABEL`, `SHELL`,
+  `WORKDIR`, `USER`, `STOPSIGNAL`, `HEALTHCHECK` (its durations as Go writes them),
+  `ONBUILD`, `EXPOSE`, `VOLUME`, `ENTRYPOINT` and `CMD`, exec forms in JSON and values
+  quoted with `\`, `"` and `$` escaped, so that nothing in them expands; a value with a
+  line break, which no Dockerfile line holds, said in a comment as left out;
+- its history as comments, a line of `created_by` each;
+- its ports and volumes as declarations, said to be granted to nothing: under default
+  deny a network grants a port and a run mounts a volume (§3).
+
+A build finds an image pinned by digest in the store whatever it is named there
+(`Store::holding`: a reference whose index or manifest is the digest), as a store keyed by
+content finds it, and resolves it to the digest asked, as BuildKit resolves a pinned
+reference; before, a pinned reference to an image built here and never pushed was pulled.
+Linux images alone (`os` other than linux refused, named). Taking in OCI layouts and
+`docker save` archives is `shards load`'s (D41); Compose files and rebuildable `RUN`
+history are later work (§12.16).
+
+Tested: `an_agentfile_made_from_an_image_builds_its_config` (an image of every setting,
+a value that would expand, the Agentfile made of it, built: the config the original's),
+mutation-checked (`$` unescaped, no lookup by digest);
+`values_are_written_so_that_nothing_in_them_expands`,
+`an_images_config_is_written_as_its_instructions`.
+
 ### D77. `--platform` of several: one image of each platform's build
 
 `build --platform A,B,…` builds each platform as BuildKit's frontend does (dockerui

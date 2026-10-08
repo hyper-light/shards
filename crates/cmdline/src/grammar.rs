@@ -32,6 +32,8 @@ pub enum Thing {
     Agent,
     Harness,
     Mcp,
+    /// An Agentfile made from an image (§10).
+    Agentfile,
 }
 
 impl Thing {
@@ -48,6 +50,7 @@ impl Thing {
             "agent" | "agents" => Some(Thing::Agent),
             "harness" | "harnesses" => Some(Thing::Harness),
             "mcp" => Some(Thing::Mcp),
+            "agentfile" | "agentfiles" => Some(Thing::Agentfile),
             _ => None,
         }
     }
@@ -71,7 +74,8 @@ pub fn rewrite(args: &[String]) -> Option<Vec<String>> {
                 | Thing::Volume
                 | Thing::Agent
                 | Thing::Harness
-                | Thing::Mcp,
+                | Thing::Mcp
+                | Thing::Agentfile,
             ),
             _,
         ) => {
@@ -96,6 +100,7 @@ pub fn rewrite(args: &[String]) -> Option<Vec<String>> {
         ("prune", Thing::System) => &["system", "prune"],
         ("list" | "ls", Thing::Volume) => &["volume", "ls"],
         ("create" | "make", Thing::Volume) => &["volume", "create"],
+        ("create" | "make", Thing::Agentfile) => &["agentfile"],
         ("remove" | "rm" | "delete", Thing::Volume) => &["volume", "rm"],
         ("inspect", Thing::Volume) => &["volume", "inspect"],
         ("prune", Thing::Volume) => &["volume", "prune"],
@@ -173,8 +178,8 @@ pub static ACTIONS: &[(&str, &str, &str, &str)] = &[
     (
         "run",
         "create",
-        "vm | volume",
-        "Make a microVM without starting it, or a volume",
+        "vm | volume | agentfile",
+        "Make a microVM without starting it, a volume, or an Agentfile of an image",
     ),
     ("run", "exec", "vm", "Run a command in a running microVM"),
     ("run", "restart", "vm", "Stop microVMs, and start them again"),

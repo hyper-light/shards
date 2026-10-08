@@ -1464,6 +1464,27 @@ impl Store {
         Ok(out)
     }
 
+    /// A reference whose image is `digest`, what it resolved to or its manifest, if one
+    /// is: the first in name order. An image pinned by digest (`name@sha256:…`) is found
+    /// here whatever it is named, as a store keyed by content finds it.
+    pub fn holding(&self, digest: &Digest) -> Result<Option<String>, Error> {
+        let want = digest.to_string();
+        let mut found = Vec::new();
+        for entry in fs::read_dir(self.root.join(format!("refs/v{REFS_VERSION}")))? {
+            let Ok(bytes) = fs::read(entry?.path()) else {
+                continue;
+            };
+            let Ok(tag) = serde_json::from_slice::<Tag>(&bytes) else {
+                continue;
+            };
+            if tag.resolved.as_deref() == Some(want.as_str()) || tag.manifest.digest == want {
+                found.push(tag.reference);
+            }
+        }
+        found.sort();
+        Ok(found.into_iter().next())
+    }
+
     /// Removes `reference`'s record, durably; what it named stays until a collection
     /// finds nothing else names it.
     pub fn untag(&self, reference: &str) -> Result<(), Error> {

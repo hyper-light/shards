@@ -16,6 +16,7 @@ mod cli;
 mod containers;
 #[cfg(unix)]
 mod daemon;
+mod from_image;
 #[cfg(target_os = "macos")]
 mod grant;
 #[cfg(target_os = "macos")]
@@ -82,6 +83,7 @@ pub(crate) fn shardsd(args: Vec<std::ffi::OsString>) -> ExitCode {
         #[cfg(unix)]
         Some("share") => share::share(args),
         Some("build") => build::build(args),
+        Some("agentfile") => from_image::command(args),
         Some("run") => usage_error("run: the `shards` command runs commands, through the daemon"),
         Some("version") => cli::version::run(&args.collect::<Vec<_>>()),
         Some("--version") => cli::version::short(),

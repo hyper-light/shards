@@ -7236,3 +7236,72 @@ fn several_platforms_make_one_image_of_their_manifests() {
         assert!(refused.stderr.contains(words), "{}", refused.stderr);
     }
 }
+
+/// An Agentfile made from an image (§10, D78): `FROM` the image by its manifest's digest,
+/// which a build finds in the store whatever the image is named here, its settings
+/// written out, quoted so that nothing in them expands, its history as comments; built,
+/// it makes an image whose config is the original's.
+#[test]
+fn an_agentfile_made_from_an_image_builds_its_config() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("from-image-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let ctx = context(
+        "from-image-ctx",
+        &format!(
+            "FROM {image}\n\
+             ENV A=\"a b\" C=\"\\$HOME and \\\"quotes\\\"\"\n\
+             LABEL org.example.k=v\n\
+             WORKDIR /w2\n\
+             USER 1000:1000\n\
+             EXPOSE 8080/udp\n\
+             VOLUME /data\n\
+             STOPSIGNAL SIGINT\n\
+             HEALTHCHECK --interval=7s --retries=3 CMD [\"/bin/testguest\", \"exit\", \"0\"]\n\
+             ENTRYPOINT [\"/bin/testguest\"]\n\
+             CMD [\"report\"]\n"
+        ),
+    );
+    let built = shards(&["build", "-t", "original:1", ctx.to_str().unwrap()]);
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    let out = TempDir::new("from-image-out");
+    let agentfile = out.join("Agentfile");
+    let made = shards(&[
+        "make",
+        "agentfile",
+        "original:1",
+        "-o",
+        agentfile.to_str().unwrap(),
+    ]);
+    assert_eq!(made.status, Some(0), "{}", made.stderr);
+    let text = std::fs::read_to_string(&agentfile).unwrap();
+    assert!(
+        text.contains("\nFROM docker.io/library/original:1@sha256:"),
+        "{text}"
+    );
+    assert!(text.contains("ENV C=\"\\$HOME and \\\"quotes\\\"\"\n"), "{text}");
+    assert!(text.contains("# How the image was made"), "{text}");
+    let rebuilt = shards(&[
+        "build",
+        "-f",
+        agentfile.to_str().unwrap(),
+        "-t",
+        "rebuilt:1",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(rebuilt.status, Some(0), "{}", rebuilt.stderr);
+    let config = |name: &str| {
+        let r = shards(&["image", "inspect", "--format", "{{json .Config}}", name]);
+        assert_eq!(r.status, Some(0), "{}", r.stderr);
+        r.stdout
+    };
+    assert_eq!(config("rebuilt:1"), config("original:1"));
+}
