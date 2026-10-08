@@ -6109,11 +6109,12 @@ fn an_agents_flood_of_flows_takes_no_others() {
 }
 
 /// One agent's flows that conntrack may not evict take no other agent's (D61): a, granted
-/// TCP 7002 to x, opens connections and holds them, each an assured entry, more than a
-/// table holds; c, meanwhile, connects to b and to x itself, and makes every connection,
-/// each given 3 s, past a SYN's first retransmission (1 s), so that what a full table
-/// refuses fails and what a busy listener drops once does not. a's entries fill a's
-/// gate's table alone; x's gate tracks none of what is opened to it.
+/// TCP 7002 to x, opens connections from several threads and holds them, each an assured
+/// entry, more than a table holds, the table full before c begins; c, meanwhile, connects
+/// to b and to x itself, and makes every connection, each given 3 s, past a SYN's first
+/// retransmission (1 s), so that what a full table refuses fails and what a busy listener
+/// drops once does not. a's entries fill a's gate's table alone; x's gate tracks none of
+/// what is opened to it.
 #[test]
 fn an_agents_assured_flows_take_no_others() {
     if cannot_run_vms() {
@@ -6183,9 +6184,19 @@ fn an_agents_assured_flows_take_no_others() {
         .lines()
         .find_map(|l| l.strip_prefix("[agent a] confined tcpflood x:7002: "))
         .unwrap_or_else(|| panic!("a did not flood:\n{all}"));
-    let (made, table) = flooded.split_once(" made, table ").unwrap();
+    let (made, rest) = flooded.split_once(" made, table ").unwrap();
+    let (table, full) = rest.split_once(", full at ").unwrap();
     let (made, table): (u64, u64) = (made.parse().unwrap(), table.parse().unwrap());
     assert!(made > table, "a made {made}, the table holds {table}:\n{all}");
+    // The table was full before c began, else c's connections prove nothing.
+    let full: u64 = full
+        .strip_suffix(" ms")
+        .and_then(|ms| ms.parse().ok())
+        .unwrap_or_else(|| panic!("a never filled the table:\n{all}"));
+    assert!(
+        full < half * 1000,
+        "the table was full at {full} ms, c began at {half} s:\n{all}"
+    );
     for target in ["b:7001", "x:7002"] {
         assert!(
             all.lines()

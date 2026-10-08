@@ -1516,28 +1516,56 @@ fn confined(args: &[String]) -> i32 {
             }
             // `ADDR,SECS`: connections to ADDR for SECS seconds, each held until then: each
             // an assured entry of conntrack's, which no full table evicts (`early_drop`).
-            // How many were made, against the table's size where it is readable.
+            // Opened from several threads at once, so that a loaded host fills the table
+            // soon all the same. How many were made, against the table's size where it is
+            // readable, and when, from the start, as many as it holds had been made.
             spec if mode == "tcpflood" => {
                 use std::net::ToSocketAddrs as _;
                 let (addr, secs) = spec.split_once(',').unwrap_or((spec, "0"));
                 let to = addr.to_socket_addrs().ok().and_then(|mut a| a.next());
-                let until =
-                    std::time::Instant::now() + std::time::Duration::from_secs(secs.parse().unwrap_or(0));
-                let mut held = Vec::new();
-                while let Some(to) = to
-                    && std::time::Instant::now() < until
-                {
-                    if let Ok(c) =
-                        std::net::TcpStream::connect_timeout(&to, std::time::Duration::from_millis(100))
-                    {
-                        held.push(c);
-                    }
-                }
-                let made = held.len();
+                let began = std::time::Instant::now();
+                let until = began + std::time::Duration::from_secs(secs.parse().unwrap_or(0));
                 let max = std::fs::read_to_string("/proc/sys/net/netfilter/nf_conntrack_max")
                     .map(|m| m.trim().to_string())
                     .unwrap_or_else(|e| errno(&e));
-                out.push_str(&format!("confined tcpflood {addr}: {made} made, table {max}\n"));
+                let table: usize = max.parse().unwrap_or(usize::MAX);
+                let held = std::sync::Mutex::new(Vec::new());
+                let full = std::sync::Mutex::new(None::<u128>);
+                if let Some(to) = to {
+                    std::thread::scope(|scope| {
+                        for _ in 0..16 {
+                            let _ = std::thread::Builder::new().spawn_scoped(scope, || {
+                                while std::time::Instant::now() < until {
+                                    let Ok(c) = std::net::TcpStream::connect_timeout(
+                                        &to,
+                                        std::time::Duration::from_millis(100),
+                                    ) else {
+                                        continue;
+                                    };
+                                    let mut held =
+                                        held.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                                    held.push(c);
+                                    if held.len() >= table {
+                                        full.lock()
+                                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                            .get_or_insert(began.elapsed().as_millis());
+                                    }
+                                }
+                            });
+                        }
+                    });
+                }
+                let made = held
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .len();
+                let full = match *full.lock().unwrap_or_else(std::sync::PoisonError::into_inner) {
+                    Some(ms) => format!("{ms} ms"),
+                    None => "never".to_string(),
+                };
+                out.push_str(&format!(
+                    "confined tcpflood {addr}: {made} made, table {max}, full at {full}\n"
+                ));
             }
             // `ADDR,N[,SECS]`: N connections to ADDR, each given SECS (1) seconds, and how
             // many were made.
