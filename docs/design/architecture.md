@@ -3363,6 +3363,18 @@ untouched, the step's rewritten and annotated, its times at most the epoch, the 
 DiffID the rewritten tar's; the warning, and nothing rewritten, without an epoch),
 mutation-checked (no clamping, the base's rewritten, the config of the unrewritten).
 
+`reproducible_builds_are_dockers` holds whole builds to Docker's own. It covers eight
+cases of `tests/repro/cases.json`: files and their modes, every `COPY` flag, every config
+directive, multi-stage builds, `--link`, heredocs, `ADD` of a tar, and `.dockerignore`.
+Each is built at SOURCE_DATE_EPOCH with `rewrite-timestamp=true` for `linux/amd64` into
+an OCI layout. Each makes the manifest digest that Docker 29.3.1's BuildKit makes, byte
+for byte; `scripts/repro/generate` records Docker's in the `shards-dind` container. The
+generator runs Docker with the frontend `crates/dockerfile` is held to
+(`BUILDKIT_SYNTAX=docker/dockerfile:1.27.1`). The one built into Docker 29.3.1 (BuildKit
+v0.28.1) is older and writes HEALTHCHECK's history as Go's `%q` of a pointer
+(`&{["CMD" "/bin/hc"] "5s" … '\x02'}`), which 1.27.1 replaced with `%+v`. Mutation-checked:
+a misnamed rewrite annotation fails it.
+
 ### D75. Layers gzipped as Docker gzips them: Go's compress/flate, ported
 
 BuildKit gzips each layer it exports with Go's own `compress/gzip`

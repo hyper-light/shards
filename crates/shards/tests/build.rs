@@ -7378,3 +7378,107 @@ fn an_agentfile_made_from_an_image_builds_its_config() {
     };
     assert_eq!(config("rebuilt:1"), config("original:1"));
 }
+/// Reproducible builds are Docker's own (D76): each case of tests/repro/cases.json (what
+/// a build copies, adds and configures, over no base), built at SOURCE_DATE_EPOCH with
+/// `rewrite-timestamp=true` for a pinned platform into an OCI archive, makes the manifest
+/// Docker 29.3.1 makes of it (`scripts/repro/generate`), byte for byte; where it does not,
+/// the manifest and config said beside Docker's.
+#[test]
+fn reproducible_builds_are_dockers() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/repro");
+    let spec: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.join("cases.json")).unwrap()).unwrap();
+    let docker: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.join("docker.json")).unwrap()).unwrap();
+    let home = TempDir::new("repro-home");
+    let env = [("SHARDS_HOME", home.as_os_str())];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let mut failures = Vec::new();
+    for (case, want) in spec["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .zip(docker["cases"].as_array().unwrap())
+    {
+        let name = case["name"].as_str().unwrap();
+        assert_eq!(want["name"], name);
+        let ctx = context(&format!("repro-{name}"), case["dockerfile"].as_str().unwrap());
+        for f in case["files"].as_array().unwrap() {
+            let path = ctx.join(f["path"].as_str().unwrap());
+            let mode = |m: &serde_json::Value| u32::from_str_radix(m.as_str().unwrap(), 8).unwrap();
+            if f["dir"] == true {
+                std::fs::create_dir_all(&path).unwrap();
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode(&f["mode"]))).unwrap();
+            } else if let Some(target) = f["symlink"].as_str() {
+                std::os::unix::fs::symlink(target, &path).unwrap();
+            } else if let Some(target) = f["hardlink"].as_str() {
+                std::fs::hard_link(ctx.join(target), &path).unwrap();
+            } else {
+                let data = match f["data_b64"].as_str() {
+                    Some(b) => base64_decode(b),
+                    None => f["data"].as_str().unwrap().as_bytes().to_vec(),
+                };
+                std::fs::write(&path, data).unwrap();
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode(&f["mode"]))).unwrap();
+            }
+        }
+        let layout = TempDir::new(&format!("repro-{name}-out"));
+        let built = shards(&[
+            "build",
+            "--platform",
+            spec["platform"].as_str().unwrap(),
+            "--build-arg",
+            &format!("SOURCE_DATE_EPOCH={}", spec["epoch"]),
+            "-o",
+            &format!(
+                "type=oci,dest={},tar=false,rewrite-timestamp=true",
+                layout.display()
+            ),
+            ctx.to_str().unwrap(),
+        ]);
+        assert_eq!(built.status, Some(0), "{name}: {}", built.stderr);
+        let top: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(layout.join("index.json")).unwrap()).unwrap();
+        let digest = top["manifests"][0]["digest"].as_str().unwrap();
+        if digest != want["manifest_digest"].as_str().unwrap() {
+            let blob = |d: &str| {
+                String::from_utf8(
+                    std::fs::read(layout.join("blobs/sha256").join(d.trim_start_matches("sha256:"))).unwrap(),
+                )
+                .unwrap()
+            };
+            let manifest = blob(digest);
+            let m: serde_json::Value = serde_json::from_str(&manifest).unwrap();
+            let config = blob(m["config"]["digest"].as_str().unwrap());
+            failures.push(format!(
+                "{name}: {digest}, Docker's {}\n  manifest: {manifest}\n  Docker's: {}\n  config:   {config}\n  Docker's: {}",
+                want["manifest_digest"], want["manifest"], want["config"]
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n\n"));
+}
+
+/// Standard base64, padded: the cases' binary files.
+fn base64_decode(s: &str) -> Vec<u8> {
+    let value = |c: u8| match c {
+        b'A'..=b'Z' => c - b'A',
+        b'a'..=b'z' => c - b'a' + 26,
+        b'0'..=b'9' => c - b'0' + 52,
+        b'+' => 62,
+        _ => 63,
+    };
+    let bytes: Vec<u8> = s.bytes().filter(|&c| c != b'=').map(value).collect();
+    let mut out = Vec::new();
+    for chunk in bytes.chunks(4) {
+        let n = chunk
+            .iter()
+            .enumerate()
+            .fold(0u32, |n, (i, &v)| n | u32::from(v) << (18 - 6 * i));
+        for i in 0..chunk.len().saturating_sub(1) {
+            out.push((n >> (16 - 8 * i)) as u8);
+        }
+    }
+    out
+}

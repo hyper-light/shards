@@ -1,0 +1,75 @@
+#!/bin/sh
+# Regenerates crates/shards/tests/repro/docker.json: what Docker 29.3.1's own BuildKit
+# (in the shards-dind container), running the Dockerfile frontend crates/dockerfile is
+# held to (docker/dockerfile:1.27.1, newer than the one Docker 29.3.1 carries), makes of
+# each case of crates/shards/tests/repro/cases.json,
+# built reproducibly (SOURCE_DATE_EPOCH, rewrite-timestamp=true, a pinned platform) into an
+# OCI archive: the manifest's digest, the manifest and the config, which
+# tests/build.rs `reproducible_builds_are_dockers` holds shards' builds to, byte for byte.
+#
+#   scripts/repro/generate
+set -eu
+here=$(cd "$(dirname "$0")" && pwd)
+root=$(cd "$here/../.." && pwd)
+cases="$root/crates/shards/tests/repro/cases.json"
+out="$root/crates/shards/tests/repro/docker.json"
+box=shards-dind
+docker exec "$box" docker version --format '{{.Server.Version}}' | grep -qx '29.3.1' || {
+	echo "$box is not Docker 29.3.1" >&2
+	exit 1
+}
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+python3 - "$cases" "$work" "$box" "$out" <<'PY'
+import base64, io, json, subprocess, sys, tarfile
+cases_path, work, box, out_path = sys.argv[1:5]
+spec = json.load(open(cases_path))
+results = []
+for n, case in enumerate(spec["cases"]):
+    # The context, as a tar: each file its mode, every time the same.
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.PAX_FORMAT) as t:
+        def info(name):
+            i = tarfile.TarInfo(name)
+            i.mtime, i.uid, i.gid, i.uname, i.gname = 1000000000, 0, 0, "", ""
+            return i
+        df = info("Dockerfile"); data = case["dockerfile"].encode(); df.mode = 0o644; df.size = len(data)
+        t.addfile(df, io.BytesIO(data))
+        for f in case["files"]:
+            i = info(f["path"])
+            if f.get("dir"):
+                i.type, i.mode = tarfile.DIRTYPE, int(f["mode"], 8)
+                t.addfile(i)
+            elif "symlink" in f:
+                i.type, i.linkname, i.mode = tarfile.SYMTYPE, f["symlink"], 0o777
+                t.addfile(i)
+            elif "hardlink" in f:
+                i.type, i.linkname, i.mode = tarfile.LNKTYPE, f["hardlink"], 0o644
+                t.addfile(i)
+            else:
+                data = base64.b64decode(f["data_b64"]) if "data_b64" in f else f["data"].encode()
+                i.mode, i.size = int(f["mode"], 8), len(data)
+                t.addfile(i, io.BytesIO(data))
+    script = (
+        'set -e; d=$(mktemp -d /tmp/shards-repro-XXXXXX); tar -x -p -C "$d"; cd "$d"; '
+        f'docker buildx build --progress=quiet --platform {spec["platform"]} '
+        f'--build-arg SOURCE_DATE_EPOCH={spec["epoch"]} '
+        f'--build-arg BUILDKIT_SYNTAX=docker/dockerfile:1.27.1 '
+        '-o type=oci,dest=-,rewrite-timestamp=true . ; cd /; rm -rf "$d"'
+    )
+    built = subprocess.run(["docker", "exec", "-i", box, "sh", "-c", script],
+                           input=buf.getvalue(), capture_output=True, timeout=600)
+    if built.returncode != 0:
+        sys.exit(f"{case['name']}: {built.stderr.decode()}")
+    layout = tarfile.open(fileobj=io.BytesIO(built.stdout))
+    blob = lambda d: layout.extractfile("blobs/sha256/" + d.split(":")[1]).read()
+    index = json.loads(layout.extractfile("index.json").read())
+    digest = index["manifests"][0]["digest"]
+    manifest = blob(digest)
+    config = blob(json.loads(manifest)["config"]["digest"])
+    results.append({"name": case["name"], "manifest_digest": digest,
+                    "manifest": manifest.decode(), "config": config.decode()})
+    print(case["name"], digest)
+json.dump({"docker": "29.3.1", "cases": results}, open(out_path, "w"), indent=1)
+open(out_path, "a").write("\n")
+PY
