@@ -64,8 +64,22 @@ docker tag busybox:1.36 localhost:5000/team/busybox:1.36
 for _ in 1 2 3 4 5 6 7 8 9 10; do docker push -q localhost:5000/team/busybox:1.36 >/dev/null 2>&1 && break; sleep 1; done
 docker image rm localhost:5000/team/busybox:1.36 >/dev/null
 case_ base-port 'FROM localhost:5000/team/busybox:1.36\nCOPY a /a\n' --provenance=mode=min
+case_ oci-named 'FROM scratch\nCOPY a /a\n' --provenance=mode=min -t shards-provenance-probe:oci
 case_ provenance-false 'FROM scratch\nCOPY a /a\n' --provenance=false
 case_ attest 'FROM scratch\nCOPY a /a\n' --attest type=provenance,mode=min
+
+# A local output given a provenance: the files it holds.
+dir="$work/local"
+mkdir -p "$dir/out"
+cp a "$dir/a"
+printf 'FROM scratch\nCOPY a /a\n' >"$dir/Dockerfile"
+(cd "$dir" && docker buildx build -q --provenance=mode=min -o "type=local,dest=$dir/out" . >/dev/null)
+say NAME local-output
+printf 'DOCKERFILE %s\n' "$(b64 "$dir/Dockerfile")"
+say FLAG "--provenance=mode=min"
+say FILES "$(cd "$dir/out" && find . | sort | tr '\n' ' ')"
+[ -f "$dir/out/provenance.json" ] && printf 'LOCALPROV %s\n' "$(b64 "$dir/out/provenance.json")"
+echo END
 
 # A build stored with no flag: the index its name resolves to, as containerd keeps it.
 store=/var/lib/docker/containerd/daemon/io.containerd.content.v1.content/blobs/sha256

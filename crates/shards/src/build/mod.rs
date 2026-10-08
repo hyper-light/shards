@@ -1095,7 +1095,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
     } = provenance_asked
         && let Some(o) = outputs
             .iter()
-            .find(|o| matches!(o.kind.as_str(), "oci" | "docker" | "local" | "tar"))
+            .find(|o| matches!(o.kind.as_str(), "docker" | "tar"))
     {
         return Err(format!(
             "a provenance attestation in a {} output is not supported by shards yet",
@@ -1900,6 +1900,56 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
     // sources and stages all go before the export stacks the layers again, so the two
     // never hold memory at once.
     drop(results);
+    // What the build's provenance says of it, where an output carries one (D71, D72):
+    // every source has resolved now.
+    let invocation = build_ref()?;
+    let capture = {
+        let mut materials = provenance::capture_images(&def);
+        for mut list in [
+            std::mem::take(&mut git_materials),
+            std::mem::take(&mut http_materials),
+        ] {
+            list.sort_by(|a, b| a.uri.cmp(&b.uri));
+            list.dedup_by(|a, b| a.uri == b.uri);
+            materials.extend(list);
+        }
+        let (secrets, ssh, network) = provenance::capture_mounts(&def);
+        provenance::Capture {
+            args: request_attrs.clone(),
+            materials,
+            locals: request_locals.clone(),
+            secrets,
+            ssh,
+            network,
+        }
+    };
+    let (builder_id, reproducible) = match &provenance_asked {
+        Provenance::Explicit {
+            builder_id,
+            reproducible,
+            ..
+        } => (builder_id.clone(), *reproducible),
+        _ => (String::new(), false),
+    };
+    let facts = |platform: &str| provenance::Run {
+        invocation_id: invocation.clone(),
+        started,
+        finished: unix_now(),
+        builder_platform: platform.to_string(),
+        builder_id: builder_id.clone(),
+        reproducible,
+    };
+    let host_platform_shown = show(&shards_dockerfile::platform::format(&host_platform()));
+    // An explicit provenance, not inline-only, goes in every output.
+    let everywhere = matches!(
+        provenance_asked,
+        Provenance::Explicit {
+            inline_only: false,
+            ..
+        }
+    );
+    let everywhere_facts = facts(&host_platform_shown);
+    let everywhere_provenance = everywhere.then_some((&capture, &everywhere_facts));
     // Each domain's isolation, before anything leaves the build (§9.2).
     if let Some(r) = &target
         && !plan.domains.is_empty()
@@ -1927,7 +1977,14 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
                 &empty
             }
         };
-        write_fs_output(o, fs, &mut exec.sources, plan.epoch, &progress)?;
+        write_fs_output(
+            o,
+            fs,
+            &mut exec.sources,
+            plan.epoch,
+            &progress,
+            everywhere_provenance,
+        )?;
     }
     let flat = target.map(|r| exec.flat(r));
     // With SHARDS_TIMING set, which way the export goes, and why, for tests and
@@ -2029,6 +2086,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
                 manifest_digest: &manifest_digest,
                 layers: &layers,
                 descriptor_annotations: &descriptor_annotations,
+                provenance: everywhere_provenance,
             },
             parsed.many("tag"),
             plan.epoch,
@@ -2038,18 +2096,41 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
         // An image in an OCI or docker archive is one; a directory or tar of files none.
         let imaged = outputs.iter().any(|o| o.kind == "oci" || o.kind == "docker");
         let names = canonical_names(parsed.many("tag"))?;
+        // An attested image in an OCI archive is named by the index the layout holds.
+        let tagged: Vec<Reference> = parsed
+            .many("tag")
+            .iter()
+            .filter_map(|t| Reference::parse(t).ok())
+            .collect();
+        let index = output::attested_index(
+            &output::Made {
+                config: &config,
+                config_digest: &config_digest,
+                manifest: &manifest,
+                manifest_digest: &manifest_digest,
+                layers: &layers,
+                descriptor_annotations: &descriptor_annotations,
+                provenance: everywhere_provenance,
+            },
+            &tagged,
+        )?;
+        let (described, size, media) = match &index {
+            Some((d, n)) if imaged => (d, *n, oci::media::OCI_INDEX),
+            _ => (&manifest_digest, manifest.len(), oci::media::OCI_MANIFEST),
+        };
+        let info = everywhere.then(|| provenance::buildinfo(&capture, &everywhere_facts));
         write_metadata(
             parsed,
             &metadata(
-                &build_ref()?,
-                imaged.then_some((&manifest_digest, manifest.len(), names.as_slice())),
+                &invocation,
+                imaged.then_some((described, size, names.as_slice())),
                 &descriptor_annotations,
-                None,
-                oci::media::OCI_MANIFEST,
+                info.as_ref(),
+                media,
             ),
         )?;
         print_warnings(&plan.warnings, quiet, debug, &name, &text);
-        return finish(parsed, &manifest_digest.to_string());
+        return finish(parsed, &described.to_string());
     }
     let v = progress.borrow_mut().start("exporting to image");
     progress.borrow().line(&v, "exporting layers done");
@@ -2093,7 +2174,6 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
     };
     let mut contents = vec![manifest_digest.clone(), config_digest.clone()];
     contents.extend(store_layers.iter().map(|l| l.blob.clone()));
-    let invocation = build_ref()?;
     // Its provenance (D71), as buildx asks BuildKit for it by default where an image is
     // stored or pushed: the statement, the attestation that holds it, and the index of
     // the image and its attestation, which the image's ID then names.
@@ -2101,14 +2181,6 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
         Provenance::Default => attests(&|k| std::env::var(k).ok())?,
         Provenance::Off => false,
         Provenance::Explicit { .. } => true,
-    };
-    let (builder_id, reproducible) = match &provenance_asked {
-        Provenance::Explicit {
-            builder_id,
-            reproducible,
-            ..
-        } => (builder_id.clone(), *reproducible),
-        _ => (String::new(), false),
     };
     let attested = if attest {
         let image_config: serde_json::Value = serde_json::from_slice(&config).map_err(|e| e.to_string())?;
@@ -2124,32 +2196,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
         if !variant.is_empty() && !(arch == "arm64" && variant == "v8") {
             platform.push_str(&format!("/{variant}"));
         }
-        let mut materials = provenance::capture_images(&def);
-        for mut list in [
-            std::mem::take(&mut git_materials),
-            std::mem::take(&mut http_materials),
-        ] {
-            list.sort_by(|a, b| a.uri.cmp(&b.uri));
-            list.dedup_by(|a, b| a.uri == b.uri);
-            materials.extend(list);
-        }
-        let (secrets, ssh, network) = provenance::capture_mounts(&def);
-        let capture = provenance::Capture {
-            args: request_attrs.clone(),
-            materials,
-            locals: request_locals.clone(),
-            secrets,
-            ssh,
-            network,
-        };
-        let facts = provenance::Run {
-            invocation_id: invocation.clone(),
-            started,
-            finished: unix_now(),
-            builder_platform: platform.clone(),
-            builder_id: builder_id.clone(),
-            reproducible,
-        };
+        let facts = facts(&platform);
         let subjects: Vec<(String, String)> = parsed
             .many("tag")
             .iter()
@@ -2253,6 +2300,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
             manifest_digest: &manifest_digest,
             layers: &layers,
             descriptor_annotations: &descriptor_annotations,
+            provenance: everywhere_provenance,
         },
         parsed.many("tag"),
         plan.epoch,
@@ -2508,6 +2556,7 @@ fn write_fs_output(
     sources: &mut shards_build::data::Sources,
     build_epoch: Option<i64>,
     progress: &RefCell<Progress>,
+    provenance: Option<(&provenance::Capture, &provenance::Run)>,
 ) -> Result<(), String> {
     let epoch =
         output::epoch(&o.attrs, build_epoch).map_err(|e| format!("failed to build: failed to solve: {e}"))?;
@@ -2522,6 +2571,9 @@ fn write_fs_output(
             .is_some_and(|m| m.trim().eq_ignore_ascii_case("delete"));
         let bytes =
             output::local(fs, sources, epoch, dest, mirror).map_err(|e| fail_export(progress, &v, &e))?;
+        if let Some((capture, run)) = provenance {
+            output::local_provenance(fs, dest, capture, run).map_err(|e| fail_export(progress, &v, &e))?;
+        }
         progress
             .borrow()
             .line(&v, &format!("copying files {} done", units_bytes(bytes)));

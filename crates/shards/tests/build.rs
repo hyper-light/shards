@@ -1467,8 +1467,8 @@ fn builds_attest_their_provenance_as_docker_does() {
             "SBOM attestations (--sbom, --attest type=sbom) are not supported by shards yet",
         ),
         (
-            vec!["--provenance=true", "-o", "type=oci,dest=out.tar"],
-            "a provenance attestation in a oci output is not supported by shards yet",
+            vec!["--provenance=true", "-o", "type=docker,dest=out.tar"],
+            "a provenance attestation in a docker output is not supported by shards yet",
         ),
     ] {
         let mut args = vec!["build"];
@@ -1478,6 +1478,58 @@ fn builds_attest_their_provenance_as_docker_does() {
         assert_ne!(refused.status, Some(0));
         assert!(refused.stderr.contains(said), "{}", refused.stderr);
     }
+    // Asked for in every output: an OCI archive names the index, its statement the name;
+    // a local output's provenance.json names its files.
+    let layout_tar = home.join("prov.tar");
+    let oci = shards(&[
+        "build",
+        "--provenance=true",
+        "-t",
+        "prov:oci",
+        "-o",
+        &format!("type=oci,dest={}", layout_tar.display()),
+        ctx.to_str().unwrap(),
+    ]);
+    assert_eq!(oci.status, Some(0), "{}", oci.stderr);
+    let entries = tar_entries(&std::fs::read(&layout_tar).unwrap());
+    let file = |name: &str| -> serde_json::Value {
+        let (_, b) = entries.iter().find(|(h, _)| h.name == name.as_bytes()).unwrap();
+        serde_json::from_slice(b).unwrap()
+    };
+    let top = file("index.json");
+    assert_eq!(
+        top["manifests"][0]["mediaType"], "application/vnd.oci.image.index.v1+json",
+        "{top}"
+    );
+    let blob_in = |d: &str| file(&format!("blobs/sha256/{}", d.trim_start_matches("sha256:")));
+    let oci_index = blob_in(top["manifests"][0]["digest"].as_str().unwrap());
+    let oci_statement = blob_in(
+        blob_in(oci_index["manifests"][1]["digest"].as_str().unwrap())["layers"][0]["digest"]
+            .as_str()
+            .unwrap(),
+    );
+    assert_eq!(
+        oci_statement["subject"][0]["name"],
+        format!("pkg:docker/prov@oci?platform=linux%2F{arch}").as_str()
+    );
+    let local = home.join("prov-local");
+    let to_local = shards(&[
+        "build",
+        "--provenance=true",
+        "-o",
+        &format!("type=local,dest={}", local.display()),
+        ctx.to_str().unwrap(),
+    ]);
+    assert_eq!(to_local.status, Some(0), "{}", to_local.stderr);
+    let local_statement: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(local.join("provenance.json")).unwrap()).unwrap();
+    let named: Vec<&str> = local_statement["subject"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["name"].as_str().unwrap())
+        .collect();
+    assert!(named.contains(&"bin/testguest"), "{named:?}");
     // Asked for none: the manifest is the ID.
     let mut plain = env.to_vec();
     plain.push(("BUILDX_NO_DEFAULT_ATTESTATIONS", std::ffi::OsStr::new("1")));

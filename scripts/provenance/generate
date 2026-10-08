@@ -53,9 +53,12 @@ for c in cases:
     blobs = c.pop("blobs")
     if "layout" in c:
         top = json.loads(c["layout"])["manifests"][0]["digest"].split(":")[1]
-    else:
+    elif "id" in c:
         top = c["id"].split(":")[1]
-    c["index"] = blobs[top]
+    else:
+        top = None
+    if top:
+        c["index"] = blobs[top]
     for d, b in blobs.items():
         if b.startswith('{"_type":"https://in-toto.io/Statement'):
             c["statement"] = b

@@ -430,6 +430,12 @@ pub fn predicate(c: &Capture, run: &Run) -> Json {
 /// BuildKit's image exporter names a stored or pushed image; none for an image of no name
 /// (an OCI or docker archive's), which the index's reference names alone.
 pub fn statement(c: &Capture, run: &Run, subjects: &[(String, String)]) -> String {
+    statement_json(c, run, subjects).compact()
+}
+
+/// [`statement`] as a value: compact in an image's attestation, indented in a local
+/// output's `provenance.json`.
+pub fn statement_json(c: &Capture, run: &Run, subjects: &[(String, String)]) -> Json {
     let subjects = subjects
         .iter()
         .map(|(name, digest)| {
@@ -446,7 +452,6 @@ pub fn statement(c: &Capture, run: &Run, subjects: &[(String, String)]) -> Strin
         ("subject", Json::Arr(subjects)),
         ("predicate", predicate(c, run)),
     ])
-    .compact()
 }
 
 /// The v0.2 provenance buildx writes in the metadata file (`buildx.build.provenance`):
@@ -659,6 +664,8 @@ mod tests {
         index: Option<String>,
         #[serde(default)]
         metadata: Option<String>,
+        #[serde(default)]
+        localprov: Option<String>,
     }
 
     /// Any image, resolved to busybox's digest with an empty config, for planning.
@@ -753,6 +760,29 @@ mod tests {
         let all = cases();
         assert!(all.len() >= 12);
         let mut checked = 0;
+        // A local output's provenance.json: the statement, indented, its files its subjects.
+        let local = all.iter().find(|c| c.name == "local-output").unwrap();
+        let text = local.localprov.as_ref().unwrap();
+        let recorded: serde_json::Value = serde_json::from_str(text).unwrap();
+        let (run, materials) = run_and_materials(&recorded);
+        let subjects: Vec<(String, String)> = recorded["subject"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| {
+                (
+                    s["name"].as_str().unwrap().to_string(),
+                    format!("sha256:{}", s["digest"]["sha256"].as_str().unwrap()),
+                )
+            })
+            .collect();
+        let capture = Capture {
+            args: super::super::buildx_attrs_of(&local.flags).unwrap(),
+            materials,
+            locals: vec!["context".into(), "dockerfile".into()],
+            ..Capture::default()
+        };
+        assert_eq!(statement_json(&capture, &run, &subjects).indented(0), *text);
         for case in &all {
             let Some(st) = &case.statement else { continue };
             let recorded: serde_json::Value = serde_json::from_str(st).unwrap();

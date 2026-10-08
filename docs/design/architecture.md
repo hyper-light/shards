@@ -3221,8 +3221,14 @@ one attests a stored or pushed image with `builder-id` as the builder's ID and
 Refused, named, until each is made and held to BuildKit's (no build is given less than it
 asked for in silence): `mode=max` (its build config is LLB's protobuf definition and
 digests), `version=v0.2`, SBOM attestations (a scanner image run over the image), other
-types, and an explicit provenance that goes in an OCI, docker, local or tar output (not
-`inline-only`).
+types, and an explicit provenance in a docker or tar output (not recorded yet).
+
+An explicit provenance (not `inline-only`) goes in every output, as BuildKit puts it
+(measured: `oci-named`, `local-output`): an OCI layout, tar or directory, holds the
+attestation and names the index (no platform of its own, the names' annotations on it),
+its statement's subjects the image's names, and the metadata file names that index with
+its provenance; a local output gets `provenance.json`, the statement indented, naming each
+regular file it holds by its path and SHA-256.
 
 Tested: the buildx oracle (shorthands, booleans, duplicates, quoting, errors);
 `builds_attest_their_provenance_as_docker_does` (builder ID, reproducible, off, the

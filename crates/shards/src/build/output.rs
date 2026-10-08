@@ -259,6 +259,114 @@ pub struct Made<'a> {
     /// `--annotation`'s for its descriptor (`manifest-descriptor`), which the exporter's
     /// own (when it was made, its names) follow.
     pub descriptor_annotations: &'a BTreeMap<String, String>,
+    /// The provenance its outputs carry, where one is asked for in every output (D72).
+    pub provenance: Option<(&'a super::provenance::Capture, &'a super::provenance::Run)>,
+}
+
+/// An image's attestation in an OCI layout (D72): its documents, by digest, and the index
+/// of the image and it, which the layout names.
+struct Attested {
+    blobs: Vec<(Digest, Vec<u8>)>,
+    index: (Digest, usize),
+}
+
+/// The platform of an image's config, as the purl and the index name it.
+fn platform_parts(config: &[u8]) -> Result<(String, String, String), String> {
+    let v: serde_json::Value = serde_json::from_slice(config).map_err(|e| e.to_string())?;
+    let s = |k: &str| {
+        v.get(k)
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .to_string()
+    };
+    let (arch, os, mut variant) = (s("architecture"), s("os"), s("variant"));
+    if arch == "arm64" && variant == "v8" {
+        variant.clear();
+    }
+    Ok((arch, os, variant))
+}
+
+/// `made`'s attestation where it carries one: its statement naming the image by each of
+/// `names` and its manifest, the attestation's config and manifest, and the index.
+fn attested(made: &Made<'_>, names: &[Reference]) -> Result<Option<Attested>, String> {
+    use super::provenance;
+    let Some((capture, run)) = made.provenance else {
+        return Ok(None);
+    };
+    let (arch, os, variant) = platform_parts(made.config)?;
+    let mut platform = format!("{os}/{arch}");
+    if !variant.is_empty() {
+        platform.push_str(&format!("/{variant}"));
+    }
+    let subjects: Vec<(String, String)> = names
+        .iter()
+        .map(|n| {
+            (
+                provenance::image_purl(n, &platform),
+                made.manifest_digest.to_string(),
+            )
+        })
+        .collect();
+    let statement = provenance::statement(capture, run, &subjects).into_bytes();
+    let statement_digest = super::sha256(&statement);
+    let (config, manifest) = provenance::attestation(&statement_digest.to_string(), statement.len());
+    let manifest_digest = super::sha256(manifest.as_bytes());
+    let index = provenance::index(
+        (&made.manifest_digest.to_string(), made.manifest.len()),
+        (&arch, &os, &variant),
+        (&manifest_digest.to_string(), manifest.len()),
+    )
+    .into_bytes();
+    let index_digest = super::sha256(&index);
+    let index_len = index.len();
+    Ok(Some(Attested {
+        blobs: vec![
+            (statement_digest, statement),
+            (super::sha256(config.as_bytes()), config.into_bytes()),
+            (manifest_digest, manifest.into_bytes()),
+            (index_digest.clone(), index),
+        ],
+        index: (index_digest, index_len),
+    }))
+}
+
+/// The index an OCI layout names `made` by, where it carries its provenance: its digest
+/// and size.
+pub fn attested_index(made: &Made<'_>, names: &[Reference]) -> Result<Option<(Digest, usize)>, String> {
+    Ok(attested(made, names)?.map(|a| a.index))
+}
+
+/// A local output's `provenance.json` (D72): the statement, indented, naming each regular
+/// file the output holds by its path and SHA-256, as BuildKit's local exporter names them.
+pub fn local_provenance(
+    fs: &Fs,
+    dest: &Path,
+    capture: &super::provenance::Capture,
+    run: &super::provenance::Run,
+) -> Result<(), String> {
+    use sha2::Digest as _;
+    let mut subjects = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    walk(fs.tree(), |path, id, node| {
+        if matches!(node.kind, Kind::File { .. }) && seen.insert(id) {
+            let rel = String::from_utf8_lossy(path).trim_start_matches('/').to_string();
+            let mut f = std::fs::File::open(dest.join(&rel)).map_err(|e| format!("{rel}: {e}"))?;
+            let mut h = sha2::Sha256::new();
+            let mut buf = vec![0u8; 64 * 1024];
+            loop {
+                let n = io::Read::read(&mut f, &mut buf).map_err(|e| format!("{rel}: {e}"))?;
+                if n == 0 {
+                    break;
+                }
+                h.update(buf.get(..n).unwrap_or_default());
+            }
+            let hex: String = h.finalize().iter().map(|b| format!("{b:02x}")).collect();
+            subjects.push((rel, format!("sha256:{hex}")));
+        }
+        Ok(())
+    })?;
+    let text = super::provenance::statement_json(capture, run, &subjects).indented(0);
+    std::fs::write(dest.join("provenance.json"), text).map_err(|e| format!("provenance.json: {e}"))
 }
 
 /// `platform` of a descriptor, as ocispec.Platform marshals: from the image's config.
@@ -316,7 +424,10 @@ fn descriptor(
             .collect();
         out.push_str(&format!(r#","annotations":{{{}}}"#, pairs.join(",")));
     }
-    out.push_str(&format!(r#","platform":{platform}}}"#));
+    if !platform.is_empty() {
+        out.push_str(&format!(r#","platform":{platform}"#));
+    }
+    out.push('}');
     out
 }
 
@@ -397,6 +508,22 @@ pub fn layout<W: Write>(
         layer_names.push(blob_name(&d));
         records.insert(blob_name(&d), (0o444, Content::File(path, len)));
     }
+    // An attested image is named by its index, which has no platform of its own.
+    let (named_type, named_digest, named_len, named_platform) =
+        match if docker { None } else { attested(made, names)? } {
+            Some(a) => {
+                for (d, b) in a.blobs {
+                    records.insert(blob_name(&d), (0o444, Content::Bytes(b)));
+                }
+                (OCI_INDEX, a.index.0.to_string(), a.index.1, String::new())
+            }
+            None => (
+                manifest_type,
+                manifest_digest.to_string(),
+                manifest.len(),
+                platform,
+            ),
+        };
     let mut entries = Vec::new();
     let mut base = made.descriptor_annotations.clone();
     base.insert(
@@ -405,11 +532,11 @@ pub fn layout<W: Write>(
     );
     if names.is_empty() {
         entries.push(descriptor(
-            manifest_type,
-            &manifest_digest.to_string(),
-            manifest.len(),
+            named_type,
+            &named_digest,
+            named_len,
             &base,
-            &platform,
+            &named_platform,
         ));
     }
     for name in names {
@@ -417,11 +544,11 @@ pub fn layout<W: Write>(
         a.insert("io.containerd.image.name".into(), name.to_string());
         a.insert("org.opencontainers.image.ref.name".into(), ref_name(name));
         entries.push(descriptor(
-            manifest_type,
-            &manifest_digest.to_string(),
-            manifest.len(),
+            named_type,
+            &named_digest,
+            named_len,
             &a,
-            &platform,
+            &named_platform,
         ));
     }
     let index = format!(
@@ -516,6 +643,12 @@ pub fn layout_dir(
     }
     put(made.config_digest, &mut |f| f.write_all(made.config))?;
     put(made.manifest_digest, &mut |f| f.write_all(&manifest))?;
+    let attestation = attested(made, names)?;
+    if let Some(a) = &attestation {
+        for (d, b) in &a.blobs {
+            put(d, &mut |f| f.write_all(b))?;
+        }
+    }
 
     let index_path = dest.join("index.json");
     let lock_path = dest.join("index.json.lock");
@@ -580,13 +713,21 @@ pub fn layout_dir(
                 annotation(m, "org.opencontainers.image.ref.name") != reference
                     || annotation(m, "io.containerd.image.name") != image
             });
-            manifests.push(serde_json::json!({
-                "mediaType": manifest_type,
-                "digest": made.manifest_digest.to_string(),
-                "size": manifest.len(),
-                "annotations": a,
-                "platform": platform,
-            }));
+            manifests.push(match &attestation {
+                Some(att) => serde_json::json!({
+                    "mediaType": OCI_INDEX,
+                    "digest": att.index.0.to_string(),
+                    "size": att.index.1,
+                    "annotations": a,
+                }),
+                None => serde_json::json!({
+                    "mediaType": manifest_type,
+                    "digest": made.manifest_digest.to_string(),
+                    "size": manifest.len(),
+                    "annotations": a,
+                    "platform": platform,
+                }),
+            });
         }
         let schema = index
             .get("schemaVersion")
