@@ -2225,6 +2225,333 @@ fn add_fetches_git_repositories() {
     );
 }
 
+/// `ADD` of a repository over SSH (D69): shards' own client against OpenSSH's sshd,
+/// three servers each taking one path (`mlkem768x25519-sha256` with
+/// `chacha20-poly1305@openssh.com` and an Ed25519 host key; `curve25519-sha256` with
+/// `aes256-gcm@openssh.com`, an ECDSA host key, and a rekeying every 256 KiB;
+/// `curve25519-sha256@libssh.org` with `aes128-gcm@openssh.com` and an RSA host key), each
+/// repository's submodule over SSH too, authenticated by a key file the build serves and
+/// by an agent's socket; refused: a host known_hosts does not know, a key the server does
+/// not take, a repository it lacks, and a build given no agent.
+#[test]
+fn add_fetches_git_over_ssh() {
+    if cannot_run_vms() {
+        return;
+    }
+    let sshd = std::path::Path::new("/usr/sbin/sshd");
+    let tools = ["git", "ssh-keygen", "ssh-agent", "ssh-add"];
+    if !sshd.exists()
+        || tools
+            .iter()
+            .any(|t| std::process::Command::new(t).arg("--help").output().is_err())
+    {
+        eprintln!("SKIP: no sshd, git or OpenSSH's tools on this host");
+        return;
+    }
+    let dir = TempDir::new("build-add-ssh");
+    let keygen = |args: &[&str], at: &std::path::Path| {
+        let made = std::process::Command::new("ssh-keygen")
+            .args(["-q", "-N", ""])
+            .args(args)
+            .arg("-f")
+            .arg(at)
+            .output()
+            .unwrap();
+        assert!(made.status.success(), "{}", String::from_utf8_lossy(&made.stderr));
+    };
+    let (client, stranger) = (dir.join("client"), dir.join("stranger"));
+    keygen(&["-t", "ed25519"], &client);
+    keygen(&["-t", "ecdsa"], &stranger);
+    std::fs::copy(dir.join("client.pub"), dir.join("authorized_keys")).unwrap();
+
+    // Each repository: a file too large for one rekeying's window, and a submodule.
+    let repos = dir.join("repos");
+    let (origin, sub) = (repos.join("repo.git"), repos.join("sub.git"));
+    std::fs::create_dir_all(&sub).unwrap();
+    git_in(&sub, &["init", "-q", "-b", "main"]);
+    std::fs::write(sub.join("subfile.txt"), "in the submodule\n").unwrap();
+    git_in(&sub, &["add", "-A"]);
+    git_in(&sub, &["commit", "-q", "-m", "sub"]);
+    std::fs::create_dir_all(&origin).unwrap();
+    git_in(&origin, &["init", "-q", "-b", "main"]);
+    std::fs::write(origin.join("a.txt"), "over ssh\n").unwrap();
+    let mut noise = vec![0u8; 3 << 20];
+    let mut x: u64 = 0x9e37_79b9_7f4a_7c15;
+    for b in noise.iter_mut() {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        *b = x as u8;
+    }
+    std::fs::write(origin.join("noise.bin"), &noise).unwrap();
+    git_in(&origin, &["add", "-A"]);
+    git_in(
+        &origin,
+        &[
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            "-q",
+            "../sub.git",
+            "mods/sub",
+        ],
+    );
+    git_in(&origin, &["commit", "-q", "-m", "one"]);
+
+    struct Ended(std::process::Child);
+    impl Drop for Ended {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let free_port = || {
+        std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port()
+    };
+    let servers = [
+        (
+            "ed25519",
+            "mlkem768x25519-sha256",
+            "chacha20-poly1305@openssh.com",
+            "",
+        ),
+        (
+            "ecdsa",
+            "curve25519-sha256",
+            "aes256-gcm@openssh.com",
+            "RekeyLimit 256K\n",
+        ),
+        (
+            "rsa",
+            "curve25519-sha256@libssh.org",
+            "aes128-gcm@openssh.com",
+            "",
+        ),
+    ];
+    let mut known = String::new();
+    let mut daemons = Vec::new();
+    let mut ports = Vec::new();
+    for (kind, kex, cipher, extra) in servers {
+        let host_key = dir.join(format!("host_{kind}"));
+        keygen(&["-t", kind], &host_key);
+        let port = free_port();
+        let config = dir.join(format!("sshd_{kind}"));
+        std::fs::write(
+            &config,
+            format!(
+                "Port {port}\nListenAddress 127.0.0.1\nHostKey {}\nAuthorizedKeysFile {}\n\
+                 PidFile {}\nUsePAM no\nStrictModes no\nPasswordAuthentication no\n\
+                 KbdInteractiveAuthentication no\nAcceptEnv GIT_PROTOCOL\nKexAlgorithms {kex}\n\
+                 Ciphers {cipher}\n{extra}",
+                host_key.display(),
+                dir.join("authorized_keys").display(),
+                dir.join(format!("sshd_{kind}.pid")).display(),
+            ),
+        )
+        .unwrap();
+        daemons.push(Ended(
+            std::process::Command::new(sshd)
+                .arg("-f")
+                .arg(&config)
+                .args(["-D", "-e"])
+                .stderr(std::fs::File::create(dir.join(format!("sshd_{kind}.log"))).unwrap())
+                .spawn()
+                .unwrap(),
+        ));
+        let public = std::fs::read_to_string(dir.join(format!("host_{kind}.pub"))).unwrap();
+        let mut fields = public.split_whitespace();
+        known.push_str(&format!(
+            "[127.0.0.1]:{port} {} {}\n",
+            fields.next().unwrap(),
+            fields.next().unwrap()
+        ));
+        ports.push(port);
+    }
+    for port in &ports {
+        for _ in 0..100 {
+            if std::net::TcpStream::connect(("127.0.0.1", *port)).is_ok() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+    // The client's known_hosts, in a home of the test's own.
+    let user_home = dir.join("home");
+    std::fs::create_dir_all(user_home.join(".ssh")).unwrap();
+    std::fs::write(user_home.join(".ssh/known_hosts"), &known).unwrap();
+    let stranger_home = dir.join("stranger-home");
+    std::fs::create_dir_all(&stranger_home).unwrap();
+
+    let (image, _) = served();
+    let home = TempDir::new("build-add-ssh-home");
+    let user = String::from_utf8(
+        std::process::Command::new("id")
+            .arg("-un")
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_string();
+    let urls: Vec<String> = ports
+        .iter()
+        .map(|p| format!("ssh://{user}@127.0.0.1:{p}{}", origin.display()))
+        .collect();
+    let mut dockerfile = format!("FROM {image}\n");
+    for (i, u) in urls.iter().enumerate() {
+        dockerfile.push_str(&format!("ADD {u}#main /s{i}\n"));
+    }
+    let ctx = context("build-add-ssh-ctx", &dockerfile);
+    let build = |user_home: &std::path::Path, ssh: &[&str]| {
+        let env = [
+            ("SHARDS_HOME", home.as_os_str()),
+            ("SHARDS_KERNEL", kernel().as_os_str()),
+            ("SHARDS_INIT", guest_init().as_os_str()),
+            ("HOME", user_home.as_os_str()),
+        ];
+        let mut args = vec!["build", "--no-cache", "-t", "sshed:1"];
+        args.extend_from_slice(ssh);
+        args.push(ctx.to_str().unwrap());
+        run_shards_env(&[], &args, &env, TIMEOUT)
+    };
+    let with_key = format!("default={}", client.display());
+    let built = build(&user_home, &["--ssh", &with_key]);
+    let logs = || {
+        servers
+            .iter()
+            .map(|(k, ..)| std::fs::read_to_string(dir.join(format!("sshd_{k}.log"))).unwrap_or_default())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    assert_eq!(built.status, Some(0), "{}\n{}", built.stderr, logs());
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let mut paths = Vec::new();
+    for i in 0..urls.len() {
+        paths.push(format!("/s{i}/a.txt"));
+        paths.push(format!("/s{i}/mods/sub/subfile.txt"));
+    }
+    let mut args = vec!["run", "--rm", "-u", "root", "sshed:1", "stat"];
+    args.extend(paths.iter().map(String::as_str));
+    let stat = run_shards_env(&[], &args, &env, TIMEOUT);
+    let mut want = String::new();
+    for i in 0..urls.len() {
+        want.push_str(&format!(
+            "/s{i}/a.txt file 644 0:0 9\n= over ssh\\n\n/s{i}/mods/sub/subfile.txt file 644 0:0 17\n= in the submodule\\n\n"
+        ));
+    }
+    assert_eq!(stat.stdout, want, "{}", stat.stderr);
+    let noise_size = run_shards_env(
+        &[],
+        &["run", "--rm", "sshed:1", "stat", "/s1/noise.bin"],
+        &env,
+        TIMEOUT,
+    );
+    assert!(
+        noise_size
+            .stdout
+            .starts_with(&format!("/s1/noise.bin file 644 0:0 {}\n", 3 << 20)),
+        "{}",
+        noise_size.stdout
+    );
+
+    // A host known_hosts does not know.
+    let unknown = build(&stranger_home, &["--ssh", &with_key]);
+    assert_ne!(unknown.status, Some(0));
+    assert!(
+        unknown
+            .stderr
+            .contains("Host key verification failed: [127.0.0.1]:")
+            && unknown.stderr.contains("is not in known_hosts"),
+        "{}",
+        unknown.stderr
+    );
+    // A key the server does not take.
+    let wrong = build(&user_home, &["--ssh", &format!("default={}", stranger.display())]);
+    assert_ne!(wrong.status, Some(0));
+    assert!(
+        wrong
+            .stderr
+            .contains(&format!("{user}@127.0.0.1: Permission denied (publickey).")),
+        "{}",
+        wrong.stderr
+    );
+    // A repository the server lacks: upload-pack's own words.
+    let missing_ctx = context(
+        "build-add-ssh-missing",
+        &format!(
+            "FROM {image}\nADD ssh://{user}@127.0.0.1:{}{}/nope.git /x\n",
+            ports[0],
+            repos.display()
+        ),
+    );
+    let env_home = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+        ("HOME", user_home.as_os_str()),
+    ];
+    let missing = run_shards_env(
+        &[],
+        &["build", "--ssh", &with_key, missing_ctx.to_str().unwrap()],
+        &env_home,
+        TIMEOUT,
+    );
+    assert_ne!(missing.status, Some(0));
+    assert!(
+        missing.stderr.contains("does not appear to be a git repository"),
+        "{}",
+        missing.stderr
+    );
+    // The same through an agent's socket the build forwards.
+    let sock = dir.join("agent.sock");
+    let mut agent = Ended(
+        std::process::Command::new("ssh-agent")
+            .args(["-D", "-a"])
+            .arg(&sock)
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    for _ in 0..100 {
+        if sock.exists() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let added = std::process::Command::new("ssh-add")
+        .arg(&client)
+        .env("SSH_AUTH_SOCK", &sock)
+        .output()
+        .unwrap();
+    assert!(
+        added.status.success(),
+        "{}",
+        String::from_utf8_lossy(&added.stderr)
+    );
+    let through_socket = build(&user_home, &["--ssh", &format!("default={}", sock.display())]);
+    assert_eq!(through_socket.status, Some(0), "{}", through_socket.stderr);
+    let _ = agent.0.kill();
+    // No agent at all.
+    let none = build(&user_home, &[]);
+    assert_ne!(none.status, Some(0));
+    assert!(
+        none.stderr
+            .contains("no SSH key \"default\" forwarded from the client"),
+        "{}",
+        none.stderr
+    );
+}
+
 /// A repository that asks for credentials is fetched with the build's secrets, as
 /// BuildKit's git source takes them: `GIT_AUTH_TOKEN` as `basic` credentials of
 /// `x-access-token`, `GIT_AUTH_HEADER.<host>` as the whole header; without them, refused.

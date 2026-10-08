@@ -3192,6 +3192,64 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode
 waits on the user.
 
+### D69. Git over SSH
+
+`ADD ssh://…` and `ADD git@host:path` (any URL git takes for SSH: `ssh://`,
+`git+ssh://`, scp's form; connect.c), fetched as git fetches over `ssh`: `git-upload-pack
+'PATH'` run on the host (the path quoted as git's `sq_quote_buf` quotes it),
+`GIT_PROTOCOL=version=2` sent as git sends it (`SendEnv`), protocol v2 over the session,
+submodules over SSH too. The agent is the one BuildKit mounts for the source
+(`git.mountsshsock`, `default`): a socket forwarded or key files served (D51, D68), "no SSH
+key "default" forwarded from the client" where the build has none. No `ssh` binary is run
+or needed: shards is its own client (`build/ssh.rs`), on AWS-LC:
+
+- **Transport** (RFC 4253): key exchange by `mlkem768x25519-sha256` (ML-KEM-768 with
+  X25519, draft-ietf-sshm-mlkem-hybrid-kex, OpenSSH 10.0's default), then
+  `curve25519-sha256` (RFC 8731); the host's signature verified (Ed25519, ECDSA P-256,
+  P-384, P-521, RSA 2048–8192 with SHA-2 alone); AEAD ciphers alone,
+  `chacha20-poly1305@openssh.com`, `aes256-gcm@openssh.com`, `aes128-gcm@openssh.com`
+  (RFC 5647); strict key exchange (OpenSSH PROTOCOL §1.10), which closes Terrapin
+  (CVE-2023-48795): a strict server's packets before its KEXINIT are refused, and sequence
+  numbers start again at each NEWKEYS; rekeying when the server asks, its host key the
+  same.
+- **Authentication** (RFC 4252 §7): `publickey`, each of the agent's keys in turn,
+  signed by the agent; RSA keys with `rsa-sha2-512` or `-256` (RFC 8332), as the
+  server's `server-sig-algs` (RFC 8308) allows.
+- **Channels** (RFC 4254): one connection for all of a fetch's requests, a session for
+  each, as git's own transport takes a connection for each: the advertisement, then each
+  command with its end (EOF) sent, so that upload-pack answers and exits. A command that
+  fails gives the server's words (`does not appear to be a git repository`).
+
+Better than BuildKit's:
+
+- **Host keys.** BuildKit scans the host's keys while planning (llb.Git,
+  `sshutil.SSHKeyScan`) and trusts whatever it is shown: whoever answers for the host's
+  name is trusted. shards trusts only the keys the user's known_hosts files hold, as
+  OpenSSH reads them (`~/.ssh/known_hosts`, `known_hosts2`, `/etc/ssh/ssh_known_hosts`,
+  `ssh_known_hosts2`; patterns, negation, hashed names, `[host]:port`, `@revoked`), and
+  offers the host key algorithms of keys it knows first, as OpenSSH orders them. A host
+  not known is refused with its key's fingerprint and how to add it after checking it; a
+  key changed, or revoked, is refused, named.
+- **Crypto.** Post-quantum key exchange first; no SHA-1, CBC, or non-AEAD cipher is
+  offered.
+
+Not taken: host certificates (`@cert-authority`), ssh_config (BuildKit's `ssh` reads none
+either), and a server that does not speak protocol v2 over SSH (`AcceptEnv
+GIT_PROTOCOL`; GitHub, GitLab and Bitbucket do).
+
+Tested on real builds against OpenSSH 10.2's sshd, run unprivileged by the test
+(`add_fetches_git_over_ssh`): three servers, each holding one path (the hybrid exchange
+with ChaCha20-Poly1305 and an Ed25519 host key; curve25519 with AES-256-GCM, an ECDSA host
+key, and rekeying every 256 KiB across a 3 MiB file; curve25519@libssh with AES-128-GCM
+and an RSA host key), each repository's submodule over SSH, a key file and an agent's
+socket; refused, each in its words: a host not known, a key not taken, a repository
+missing, no agent. Mutation-checked: rekeying refused, sequence numbers not restarted,
+the host key not checked, a failed command's end or words lost. Units:
+`host_signatures_are_verified` (each kind, tampered, mutation-checked),
+`strict_key_exchange_refuses_what_comes_before_kexinit` (a scripted server injecting a
+packet, mutation-checked), `known_hosts_are_matched_as_openssh_matches_them`,
+`urls_name_their_targets_as_git_reads_them`.
+
 ### D68. `--ssh` key files
 
 `--ssh ID=FILE[,FILE…]`, as buildx v0.37.1 takes it (vendored BuildKit v0.33.0

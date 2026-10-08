@@ -44,6 +44,7 @@ mod live;
 mod output;
 mod remote;
 mod skills;
+mod ssh;
 mod sshkey;
 
 /// The SSH agents `--ssh` gives a build's steps, by id: sockets forwarded, or keys served.
@@ -1606,7 +1607,15 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
                 let say = |line: &str| progress.borrow().line(&v, line);
                 let cancel = shards_registry::http::Cancel::new();
                 let auth = git::auth(&src, &secrets);
-                let r = match git::snapshot(&mut exec, &src, fetch_limits, &cancel, auth.as_ref(), &say) {
+                let r = match git::snapshot(
+                    &mut exec,
+                    &src,
+                    fetch_limits,
+                    &cancel,
+                    auth.as_ref(),
+                    &agents,
+                    &say,
+                ) {
                     Ok(r) => r,
                     Err(git::Failure::CacheKey(e)) => {
                         return Err(fail_in(&v, "failed to load cache key: ", &e));

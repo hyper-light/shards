@@ -13,6 +13,8 @@
 //! - what a ref checks out depends on that ref alone: BuildKit's shared repository lets a
 //!   submodule of a ref fetched before into the checkout of one that has none;
 //! - a checksum that matches neither an annotated tag nor its commit says both.
+//! - over SSH (D69), a host is trusted only by the keys the user's known_hosts holds,
+//!   where BuildKit trusts whatever keys it scans while planning.
 
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
@@ -49,6 +51,8 @@ pub struct Source {
     /// whole header's (`git.authheadersecret`).
     pub auth_token: Option<String>,
     pub auth_header: Option<String>,
+    /// The SSH agent its fetches over SSH authenticate with (`git.mountsshsock`).
+    pub ssh_agent: Option<String>,
 }
 
 /// The source `identifier` (`git://HOST/PATH[#REF[:SUBDIR]]`) and `attrs` name.
@@ -86,6 +90,7 @@ pub fn source(identifier: &[u8], attrs: &BTreeMap<Vec<u8>, Vec<u8>>) -> Result<S
         submodules: attr(b"git.skipsubmodules")?.as_deref() != Some("true"),
         auth_token: attr(b"git.authtokensecret")?,
         auth_header: attr(b"git.authheadersecret")?,
+        ssh_agent: attr(b"git.mountsshsock")?,
     })
 }
 
@@ -236,6 +241,7 @@ const DAEMON_PATIENCE: std::time::Duration = std::time::Duration::from_secs(120)
 enum Wire {
     Http(Box<Http>),
     Daemon(shards_git::daemon::Daemon),
+    Ssh(Box<super::ssh::Ssh>),
 }
 
 impl Transport for Wire {
@@ -243,6 +249,7 @@ impl Transport for Wire {
         match self {
             Wire::Http(h) => h.advertise(),
             Wire::Daemon(d) => d.advertise(),
+            Wire::Ssh(s) => s.advertise(),
         }
     }
 
@@ -250,6 +257,7 @@ impl Transport for Wire {
         match self {
             Wire::Http(h) => h.command(body),
             Wire::Daemon(d) => d.command(body),
+            Wire::Ssh(s) => s.command(body),
         }
     }
 }
@@ -309,8 +317,17 @@ fn in_scope(scope: &str, url: &str) -> bool {
     url == scope || url.strip_prefix(scope).is_some_and(|rest| rest.starts_with('/'))
 }
 
-/// The transport `url` names: smart HTTP(S), or git's own; SSH needs `--ssh`.
-fn wire(url: &str, cancel: &Cancel, auth: Option<&Auth>) -> Result<Wire, String> {
+/// The build's SSH agents, and the one a source's fetches over SSH take.
+#[derive(Clone, Copy)]
+pub struct SshAgents<'a> {
+    pub agents: &'a super::Agents,
+    pub id: Option<&'a str>,
+}
+
+/// The transport `url` names: smart HTTP(S), git's own, or SSH with the agent `ssh`
+/// names, as BuildKit's git source mounts it (`no SSH key "ID" forwarded from the
+/// client` where the build has none of that ID).
+fn wire(url: &str, cancel: &Cancel, auth: Option<&Auth>, ssh: SshAgents<'_>) -> Result<Wire, String> {
     if url.starts_with("https://") || url.starts_with("http://") {
         return Ok(Wire::Http(Box::new(Http::new(url, cancel.clone(), auth)?)));
     }
@@ -320,13 +337,24 @@ fn wire(url: &str, cancel: &Cancel, auth: Option<&Auth>) -> Result<Wire, String>
             DAEMON_PATIENCE,
         )?));
     }
-    if url.starts_with("ssh://") || !url.contains("://") {
-        return Err(format!(
-            "{url}: a Git repository over SSH needs --ssh, which shards build does not serve yet"
-        ));
+    if super::ssh::is_ssh(url) {
+        let id = ssh
+            .id
+            .ok_or_else(|| format!("{url}: a Git repository over SSH, in a source given no SSH agent"))?;
+        let agent = ssh.agents.get(id).ok_or_else(|| {
+            format!(
+                "no SSH key {} forwarded from the client",
+                shards_cmdline::go::quote(id)
+            )
+        })?;
+        return Ok(Wire::Ssh(Box::new(super::ssh::Ssh::open(
+            url,
+            agent,
+            DAEMON_PATIENCE,
+        )?)));
     }
     Err(format!(
-        "{url}: shards build fetches Git repositories over HTTP(S) and git:// only"
+        "{url}: shards build fetches Git repositories over HTTP(S), SSH and git:// only"
     ))
 }
 
@@ -338,8 +366,13 @@ pub fn snapshot(
     limits: Limits,
     cancel: &Cancel,
     auth: Option<&Auth>,
+    agents: &super::Agents,
     say: &dyn Fn(&str),
 ) -> Result<Ref, Failure> {
+    let ssh = SshAgents {
+        agents,
+        id: src.ssh_agent.as_deref(),
+    };
     let key = Failure::CacheKey;
     let snap = Failure::Snapshot;
     if let Some(c) = &src.checksum
@@ -354,7 +387,7 @@ pub fn snapshot(
     } else {
         format!("failed to fetch remote {}", src.url)
     };
-    let remote = Remote::open(wire(&src.url, cancel, auth).map_err(key)?, &agent())
+    let remote = Remote::open(wire(&src.url, cancel, auth, ssh).map_err(key)?, &agent())
         .map_err(|e| key(format!("{wrap}: {e}")))?;
     let resolved = remote
         .resolve(&src.reference)
@@ -397,6 +430,7 @@ pub fn snapshot(
             &src.subdir,
             limits,
             cancel,
+            ssh,
             say,
             keep,
             &mut modules,
@@ -728,6 +762,7 @@ impl Checkout {
         subdir: &str,
         limits: Limits,
         cancel: &Cancel,
+        ssh: SshAgents<'_>,
         say: &dyn Fn(&str),
         keep: bool,
         modules: &mut Vec<Module>,
@@ -771,7 +806,7 @@ impl Checkout {
                 "Submodule '{}' ({sub_url}) registered for path '{shown}'",
                 String::from_utf8_lossy(&name)
             ));
-            let remote = Remote::open(wire(&sub_url, cancel, self.auth.as_ref())?, &agent())?;
+            let remote = Remote::open(wire(&sub_url, cancel, self.auth.as_ref(), ssh)?, &agent())?;
             let sub_pack = remote.fetch(&[commit], limits)?;
             let sub_commit = commit_of(&sub_pack, &commit)?;
             let time = (sub_commit.committed, 0);
@@ -813,6 +848,7 @@ impl Checkout {
                 "",
                 limits,
                 cancel,
+                ssh,
                 say,
                 keep,
                 modules,

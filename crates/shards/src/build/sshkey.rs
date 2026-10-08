@@ -14,8 +14,6 @@ use zeroize::Zeroizing;
 
 /// A key an agent made of a file holds: its public blob, as SSH writes it (RFC 4253
 /// §6.6, RFC 5656 §3.1, RFC 8709 §4), and what signs with it.
-// No builder runs on Windows yet: its keys are read there, and served nowhere.
-#[cfg_attr(not(unix), allow(dead_code))]
 pub struct Key {
     blob: Vec<u8>,
     signer: Signer,
@@ -30,7 +28,6 @@ impl std::fmt::Debug for Key {
     }
 }
 
-#[cfg_attr(not(unix), allow(dead_code))]
 enum Signer {
     Ed25519(signature::Ed25519KeyPair),
     Ecdsa(signature::EcdsaKeyPair, Curve),
@@ -132,12 +129,10 @@ pub fn keyring(keys: Vec<Key>) -> Vec<Key> {
 }
 
 /// SSH_AGENT_FAILURE.
-#[cfg_attr(not(unix), allow(dead_code))]
 const FAILURE: u8 = 5;
 
 /// The agent's answer to `request` (a message's body, draft-miller-ssh-agent §3): its
 /// keys (11), or a signature by one (13); every other request refused.
-#[cfg_attr(not(unix), allow(dead_code))]
 pub fn answer(keys: &[Key], request: &[u8]) -> Vec<u8> {
     match request.first() {
         Some(11) => {
@@ -155,7 +150,6 @@ pub fn answer(keys: &[Key], request: &[u8]) -> Vec<u8> {
 }
 
 /// SSH_AGENTC_SIGN_REQUEST: the key's blob, the data, the flags, and nothing after.
-#[cfg_attr(not(unix), allow(dead_code))]
 fn sign(keys: &[Key], body: &[u8]) -> Option<Vec<u8>> {
     let mut w = Wire(body);
     let (blob, data, flags) = (w.bytes()?, w.bytes()?, w.u32()?);
