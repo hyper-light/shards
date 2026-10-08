@@ -2087,6 +2087,14 @@ fn outlive(hold: usize) -> i32 {
         seen |= filling > 0;
         if seen && filling == 0 {
             std::hint::black_box(&held);
+            // The kernel ends a domain whole (memory.oom.group) by killing its victim, then
+            // signalling the rest one by one: a holder can outlive its filler by that much.
+            // A domain not ended whole keeps its holder, which this then reports; 5 s is
+            // past that gap by orders of magnitude.
+            let settled = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while count("held") > count("fill-stopped") && std::time::Instant::now() < settled {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
             // Where each holder left is: its domain's cgroup, for a holder that outlives it.
             let held_in: Vec<String> = living("held")
                 .into_iter()
