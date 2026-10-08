@@ -3210,6 +3210,39 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode
 waits on the user.
 
+### D95. The azblob cache signed in with an Azure AD identity
+
+Without `secret_access_key`, BuildKit's azblob cache signs in with azidentity's
+DefaultAzureCredential (v1.13.1). shards now takes the first two identities that chain
+finds, in its order:
+- The environment's client secret (EnvironmentCredential): AZURE_TENANT_ID,
+  AZURE_CLIENT_ID and AZURE_CLIENT_SECRET.
+- A workload identity's federated token (WorkloadIdentityCredential): AZURE_TENANT_ID,
+  AZURE_CLIENT_ID and AZURE_FEDERATED_TOKEN_FILE, as on AKS or with a CI system's OIDC.
+
+Each asks `AZURE_AUTHORITY_HOST` (login.microsoftonline.com by default) at
+`/TENANT/oauth2/v2.0/token`, as azidentity asks. Evidence:
+`scripts/azblob/identity/generate` runs azidentity against a recording authority
+(`testdata/azidentity.json`). The form's fields are its own:
+- the scope `https://storage.azure.com/.default openid offline_access profile`;
+- `client_credentials`;
+- for a workload identity, `client_info=1` and the token file's contents, read at each
+  request, as they are renewed.
+
+The token is asked for once, at the container's first request, and each request carries
+it as `Bearer`. As azcore's bearer policy does, a token is never sent over plain HTTP:
+"authenticated requests are not permitted for non TLS protected (https) endpoints".
+Azure AD's refusal is said with its `error_description`.
+
+Not yet: managed identity (instance metadata) and the Azure CLI, the chain's later
+links. Without either identity the cache is refused before the build, saying what it
+needs.
+
+Tested:
+- `identities_ask_as_azidentity_asks`: both recorded forms, field for field.
+- `tokens_come_from_azure_ads_answer`: a token taken from an answer, a refusal's
+  description said, the form encoded as Go's `url.Values.Encode` encodes it.
+
 ### D94. Attestations in a tar output, and a local output's as BuildKit writes them
 
 `-o type=tar` carries the build's attestations, as BuildKit's tar exporter does. It
@@ -3459,9 +3492,8 @@ What it does, as BuildKit does it:
 Better than BuildKit's: four layers upload at once, where BuildKit's exporter sends them
 one by one.
 
-Not yet: Azure AD identities (`DefaultAzureCredential`: environment secrets, workload and
-managed identity, the CLI), which BuildKit uses without a key. Without
-`secret_access_key` the cache is refused before the build, saying so.
+Azure AD identities, which BuildKit uses without a key: the environment's client secret
+and workload identity since D95; managed identity and the CLI not yet.
 
 Tested:
 - `requests_are_azblobs` signs each recorded request again and matches the SDK's

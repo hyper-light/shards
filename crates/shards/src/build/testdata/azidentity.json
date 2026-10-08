@@ -1,0 +1,60 @@
+[
+  {
+    "op": "environment, a client secret",
+    "method": "POST",
+    "path": "/tenant/oauth2/v2.0/token",
+    "query": "",
+    "form": {
+      "client_id": [
+        "client"
+      ],
+      "client_secret": [
+        "s3cr3t"
+      ],
+      "grant_type": [
+        "client_credentials"
+      ],
+      "scope": [
+        "https://storage.azure.com/.default openid offline_access profile"
+      ]
+    },
+    "headers": [
+      [
+        "content-type",
+        "application/x-www-form-urlencoded; charset=utf-8"
+      ]
+    ]
+  },
+  {
+    "op": "workload identity",
+    "method": "POST",
+    "path": "/tenant/oauth2/v2.0/token",
+    "query": "",
+    "form": {
+      "client_assertion": [
+        "the-federated-token\n"
+      ],
+      "client_assertion_type": [
+        "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
+      ],
+      "client_id": [
+        "client"
+      ],
+      "client_info": [
+        "1"
+      ],
+      "grant_type": [
+        "client_credentials"
+      ],
+      "scope": [
+        "https://storage.azure.com/.default openid offline_access profile"
+      ]
+    },
+    "headers": [
+      [
+        "content-type",
+        "application/x-www-form-urlencoded; charset=utf-8"
+      ]
+    ]
+  }
+]

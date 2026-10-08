@@ -38,9 +38,138 @@ pub struct Container {
     blobs_prefix: String,
     /// `name`'s names, `;` apart: each written and read.
     pub names: Vec<String>,
-    key: Zeroizing<Vec<u8>>,
+    auth: Auth,
     /// The most uploaded at once: [`BLOCK`], less in tests.
     block: u64,
+}
+
+/// What signs a container's requests: the account's key, or an Azure AD identity's token,
+/// fetched once, at the first request.
+enum Auth {
+    Key(Zeroizing<Vec<u8>>),
+    Identity(Identity, std::sync::OnceLock<Result<Zeroizing<String>, String>>),
+}
+
+/// An Azure AD identity, as azidentity's DefaultAzureCredential (v1.13.1, BuildKit's)
+/// finds one first: the environment's client secret (EnvironmentCredential), else a
+/// workload identity's federated token (WorkloadIdentityCredential).
+struct Identity {
+    /// `AZURE_AUTHORITY_HOST`'s token endpoint for the tenant.
+    endpoint: String,
+    client: String,
+    proof: Proof,
+}
+
+enum Proof {
+    Secret(Zeroizing<String>),
+    /// The file the federated token is read from, at each request, as it is renewed.
+    Federated(std::path::PathBuf),
+}
+
+/// The identity of the environment, as DefaultAzureCredential's first two credentials read
+/// it; none, said with what each needs.
+fn identity(env: &dyn Fn(&str) -> Option<String>) -> Result<Identity, String> {
+    let var = |k: &str| env(k).filter(|v| !v.is_empty());
+    let (Some(tenant), Some(client)) = (var("AZURE_TENANT_ID"), var("AZURE_CLIENT_ID")) else {
+        return Err(
+            "no credentials for the azblob cache: give it secret_access_key, or set \
+                    AZURE_TENANT_ID and AZURE_CLIENT_ID with AZURE_CLIENT_SECRET or \
+                    AZURE_FEDERATED_TOKEN_FILE (shards does not ask managed identities or \
+                    the Azure CLI)"
+                .into(),
+        );
+    };
+    let authority =
+        var("AZURE_AUTHORITY_HOST").unwrap_or_else(|| "https://login.microsoftonline.com/".into());
+    let endpoint = format!("{}/{tenant}/oauth2/v2.0/token", authority.trim_end_matches('/'));
+    let proof = match (var("AZURE_CLIENT_SECRET"), var("AZURE_FEDERATED_TOKEN_FILE")) {
+        (Some(secret), _) => Proof::Secret(Zeroizing::new(secret)),
+        (None, Some(file)) => Proof::Federated(file.into()),
+        (None, None) => {
+            return Err(
+                "no credentials for the azblob cache: AZURE_CLIENT_ID is set, but neither \
+                        AZURE_CLIENT_SECRET nor AZURE_FEDERATED_TOKEN_FILE"
+                    .into(),
+            );
+        }
+    };
+    Ok(Identity {
+        endpoint,
+        client,
+        proof,
+    })
+}
+
+impl Identity {
+    /// The token request's form, as azidentity's confidential client sends it.
+    fn form(&self) -> Result<Vec<(&'static str, Zeroizing<String>)>, String> {
+        let z = |s: &str| Zeroizing::new(s.to_string());
+        let scope = z("https://storage.azure.com/.default openid offline_access profile");
+        Ok(match &self.proof {
+            Proof::Secret(secret) => vec![
+                ("client_id", z(&self.client)),
+                ("client_secret", secret.clone()),
+                ("grant_type", z("client_credentials")),
+                ("scope", scope),
+            ],
+            Proof::Federated(file) => {
+                let assertion = Zeroizing::new(
+                    std::fs::read_to_string(file)
+                        .map_err(|e| format!("reading the federated token {}: {e}", file.display()))?,
+                );
+                vec![
+                    ("client_assertion", assertion),
+                    (
+                        "client_assertion_type",
+                        z("urn:ietf:params:oauth:client-assertion-type:jwt-bearer"),
+                    ),
+                    ("client_id", z(&self.client)),
+                    ("client_info", z("1")),
+                    ("grant_type", z("client_credentials")),
+                    ("scope", scope),
+                ]
+            }
+        })
+    }
+
+    /// A Blob Storage token for this identity.
+    fn token(&self, http: &Client) -> Result<Zeroizing<String>, String> {
+        let form = self.form()?;
+        let body = Zeroizing::new(
+            form.iter()
+                .map(|(k, v)| format!("{k}={}", query_escape(v.as_str())))
+                .collect::<Vec<_>>()
+                .join("&"),
+        );
+        let url = Url::parse(&self.endpoint).map_err(|e| e.to_string())?;
+        let mut r = http
+            .send(&shards_registry::http::Request {
+                method: "POST",
+                url: &url,
+                headers: &[("content-type", "application/x-www-form-urlencoded; charset=utf-8")],
+                body: body.as_bytes(),
+                file: None,
+            })
+            .map_err(|e| format!("asking Azure AD for a token: {e}"))?;
+        let mut answer = Zeroizing::new(Vec::new());
+        (&mut r)
+            .take(MOST_OF_AN_ERROR)
+            .read_to_end(&mut answer)
+            .map_err(|e| format!("asking Azure AD for a token: {e}"))?;
+        let v: serde_json::Value = serde_json::from_slice(&answer).unwrap_or_default();
+        if r.status != 200 {
+            let said = v
+                .get("error_description")
+                .or_else(|| v.get("error"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            return Err(format!("Azure AD refused a token: {}: {said}", r.status_text()));
+        }
+        v.get("access_token")
+            .and_then(serde_json::Value::as_str)
+            .map(|t| Zeroizing::new(t.to_string()))
+            .ok_or_else(|| "Azure AD's answer holds no access_token".into())
+    }
 }
 
 /// A request's body.
@@ -79,13 +208,16 @@ impl Container {
         if account.is_empty() {
             return Err("unable to retrieve account name from account url or ${BUILDKIT_AZURE_STORAGE_ACCOUNT_NAME} or account_name attribute for azblob cache".into());
         }
-        let secret = e.attrs.get("secret_access_key").filter(|k| !k.is_empty()).ok_or(
-            "the azblob cache needs the account's key (secret_access_key): shards does not sign \
-             with Azure AD identities",
-        )?;
-        let key = base64::engine::general_purpose::STANDARD
-            .decode(secret.as_bytes())
-            .map_err(|err| format!("failed to create shared key: decode account key: {err}"))?;
+        // The account's key where the cache gives one; else an Azure AD identity, as
+        // BuildKit's DefaultAzureCredential finds one.
+        let auth = match e.attrs.get("secret_access_key").filter(|k| !k.is_empty()) {
+            Some(secret) => Auth::Key(Zeroizing::new(
+                base64::engine::general_purpose::STANDARD
+                    .decode(secret.as_bytes())
+                    .map_err(|err| format!("failed to create shared key: decode account key: {err}"))?,
+            )),
+            None => Auth::Identity(identity(env)?, std::sync::OnceLock::new()),
+        };
         let config = shards_registry::tls::client_config(Vec::new(), None).map_err(|e| e.to_string())?;
         let http = Client::new(
             Box::new(move |_| Ok(config.clone())),
@@ -113,7 +245,7 @@ impl Container {
                 Some(n) => n.split(';').map(str::to_string).collect(),
                 None => vec!["buildkit".into()],
             },
-            key: Zeroizing::new(key),
+            auth,
             block: BLOCK,
         })
     }
@@ -144,7 +276,22 @@ impl Container {
         all.push(("x-ms-version", VERSION));
         let target = url.target();
         let (path, query) = target.split_once('?').unwrap_or((target, ""));
-        let authorization = sign(method, path, query, &all, body.len(), &self.account, &self.key);
+        let authorization = match &self.auth {
+            Auth::Key(key) => sign(method, path, query, &all, body.len(), &self.account, key),
+            Auth::Identity(who, token) => {
+                // As azcore's bearer policy: a token goes over TLS alone.
+                if url.scheme() != shards_registry::url::Scheme::Https {
+                    return Err(format!(
+                        "{op}: authenticated requests are not permitted for non TLS protected (https) endpoints"
+                    ));
+                }
+                let token = token
+                    .get_or_init(|| who.token(&self.http))
+                    .as_ref()
+                    .map_err(|e| format!("{op}: {e}"))?;
+                format!("Bearer {}", token.as_str())
+            }
+        };
         all.push(("authorization", &authorization));
         let (bytes, file) = match body {
             Body::Bytes(b) => (b, None),
@@ -678,7 +825,116 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         // A key signed wrong is refused.
         let mut wrong = Container::of(&e, &|_| None).unwrap();
-        wrong.key = Zeroizing::new(b"not the key".to_vec());
+        wrong.auth = Auth::Key(Zeroizing::new(b"not the key".to_vec()));
         assert!(wrong.exists(&m).is_err());
+    }
+
+    /// The token requests of testdata/azidentity.json (`scripts/azblob/identity/generate`):
+    /// each form field azidentity sent, for a client secret and for a workload identity.
+    #[test]
+    fn identities_ask_as_azidentity_asks() {
+        let cases: Vec<serde_json::Value> =
+            serde_json::from_str(include_str!("testdata/azidentity.json")).unwrap();
+        let dir = std::env::temp_dir().join(format!("shards-azid-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("token");
+        std::fs::write(&file, "the-federated-token\n").unwrap();
+        let mut env: std::collections::BTreeMap<&str, String> = [
+            ("AZURE_TENANT_ID", "tenant".to_string()),
+            ("AZURE_CLIENT_ID", "client".into()),
+            ("AZURE_AUTHORITY_HOST", "https://HOST".into()),
+            ("AZURE_CLIENT_SECRET", "s3cr3t".into()),
+        ]
+        .into();
+        for c in &cases {
+            if c["op"] == "workload identity" {
+                env.remove("AZURE_CLIENT_SECRET");
+                env.insert("AZURE_FEDERATED_TOKEN_FILE", file.to_string_lossy().into_owned());
+            }
+            let who = identity(&|k| env.get(k).cloned()).unwrap();
+            assert_eq!(
+                who.endpoint,
+                format!("https://HOST{}", c["path"].as_str().unwrap())
+            );
+            let ours: std::collections::BTreeMap<String, Vec<String>> = who
+                .form()
+                .unwrap()
+                .iter()
+                .map(|(k, v)| (k.to_string(), vec![v.to_string()]))
+                .collect();
+            let theirs: std::collections::BTreeMap<String, Vec<String>> =
+                serde_json::from_value(c["form"].clone()).unwrap();
+            assert_eq!(ours, theirs, "{}", c["op"]);
+            let header = &c["headers"][0];
+            assert_eq!(header[1], "application/x-www-form-urlencoded; charset=utf-8");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(identity(&|_| None).is_err_and(|e| e.contains("no credentials for the azblob cache")));
+    }
+
+    /// A token asked for as a form, and Azure AD's answer read: its `access_token`, or its
+    /// `error_description` where it refuses.
+    #[test]
+    fn tokens_come_from_azure_ads_answer() {
+        use std::io::{BufRead as _, BufReader, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let bodies = std::sync::Mutex::new(Vec::new());
+        let answers = [
+            (
+                "200 OK",
+                r#"{"token_type":"Bearer","expires_in":3599,"access_token":"the-token"}"#,
+            ),
+            (
+                "400 Bad Request",
+                r#"{"error":"invalid_client","error_description":"AADSTS7000215: Invalid client secret provided."}"#,
+            ),
+        ];
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                for (status, answer) in answers {
+                    let (stream, _) = listener.accept().unwrap();
+                    let mut reader = BufReader::new(stream.try_clone().unwrap());
+                    let mut length = 0;
+                    loop {
+                        let mut h = String::new();
+                        reader.read_line(&mut h).unwrap();
+                        if h.trim().is_empty() {
+                            break;
+                        }
+                        if let Some(v) = h.to_ascii_lowercase().strip_prefix("content-length:") {
+                            length = v.trim().parse().unwrap();
+                        }
+                    }
+                    let mut b = vec![0u8; length];
+                    reader.read_exact(&mut b).unwrap();
+                    bodies.lock().unwrap().push(String::from_utf8(b).unwrap());
+                    let mut out = stream;
+                    write!(
+                        out,
+                        "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{answer}",
+                        answer.len()
+                    )
+                    .unwrap();
+                }
+            });
+            let who = Identity {
+                endpoint: format!("http://127.0.0.1:{port}/tenant/oauth2/v2.0/token"),
+                client: "client".into(),
+                proof: Proof::Secret(Zeroizing::new("s3cr3t&=".into())),
+            };
+            let config = shards_registry::tls::client_config(Vec::new(), None).unwrap();
+            let http = Client::new(Box::new(move |_| Ok(config.clone())), "shards-test");
+            assert_eq!(who.token(&http).unwrap().as_str(), "the-token");
+            let refused = who.token(&http).unwrap_err();
+            assert!(
+                refused.contains("AADSTS7000215: Invalid client secret provided."),
+                "{refused}"
+            );
+        });
+        assert_eq!(
+            bodies.into_inner().unwrap()[0],
+            "client_id=client&client_secret=s3cr3t%26%3D&grant_type=client_credentials&scope=https%3A%2F%2Fstorage.azure.com%2F.default+openid+offline_access+profile"
+        );
     }
 }
