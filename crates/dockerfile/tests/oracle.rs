@@ -1123,6 +1123,34 @@ fn options_of(file: &str) -> shards_dockerfile::plan::Options {
         image_resolve_mode: shards_dockerfile::dockerui::resolve_mode(frontend("image-resolve-mode"))
             .unwrap()
             .to_vec(),
+        // dockerui's initContext: the `context` option a Git or HTTP(S) URL, an HTTP
+        // download an archive by its first bytes (the oracle's `http_context`).
+        main_context: {
+            use shards_dockerfile::plan::MainContext;
+            let url = frontend("context").as_bytes().to_vec();
+            let keep = frontend("build-arg:BUILDKIT_CONTEXT_KEEP_GIT_DIR");
+            if url.is_empty() {
+                MainContext::Local
+            } else if !matches!(
+                shards_dockerfile::git::parse_git_ref(&url),
+                shards_dockerfile::git::Parsed::NotGit
+            ) {
+                MainContext::Git {
+                    url,
+                    keep_git_dir: shards_cmdline::go::parse_bool(keep).unwrap_or(false),
+                }
+            } else {
+                use base64::Engine as _;
+                let head = base64::engine::general_purpose::STANDARD
+                    .decode(opts_v["http_context"].as_str().unwrap_or_default())
+                    .unwrap();
+                MainContext::Http {
+                    url,
+                    archive: shards_dockerfile::dockerui::is_archive(head.get(..1024).unwrap_or(&head)),
+                }
+            }
+        },
+        context_subdir: frontend_map.get("contextsubdir").map(|s| s.as_bytes().to_vec()),
         no_cache: opts_v["no_cache"].as_str().map(|v| {
             if v.is_empty() {
                 Vec::new()

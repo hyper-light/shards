@@ -1904,5 +1904,169 @@
   "field": "sources[].definition",
   "reason": "BuildKit's lint result names its file's LLB definition: the frontend's local source for loading it, which carries the BuildKit session of that one build (local.session), so no two builds write the same result. shards plans no such LLB and writes none; the field is omitempty in solver/pb, so readers of LintResults see a nil definition. scripts/dockerfile/generate clears it from BuildKit's record.",
   "fields": {}
+ },
+ {
+  "kind": "plan",
+  "file": "corpus/plan/context-git-keep.Dockerfile",
+  "reason": "BuildKit's llb.Git scans the SSH host's keys over the network while planning (sshutil.SSHKeyScan) and carries them in git.knownsshhosts; shards' planning does no network I/O, and its Git fetch verifies the host's keys itself (src/plan.rs, git_source).",
+  "fields": {
+   "ops": [
+    {
+     "constraints": {},
+     "inputs": [],
+     "metadata": {
+      "description": {
+       "com.docker.dockerfile.v1.command": "FROM alpine",
+       "llb.customname": "[1/4] FROM docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+      }
+     },
+     "platform": {
+      "Architecture": "amd64",
+      "OS": "linux"
+     },
+     "source": {
+      "identifier": "docker-image://docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+     }
+    },
+    {
+     "constraints": {},
+     "inputs": [],
+     "metadata": {
+      "description": {
+       "llb.customname": "[internal] load git source git@github.com:moby/buildkit.git"
+      }
+     },
+     "source": {
+      "attrs": {
+       "git.authheadersecret": "GIT_AUTH_HEADER",
+       "git.authtokensecret": "GIT_AUTH_TOKEN",
+       "git.fullurl": "git@github.com:moby/buildkit.git",
+       "git.keepgitdir": "true",
+       "git.mountsshsock": "default"
+      },
+      "identifier": "git://github.com/moby/buildkit.git"
+     }
+    },
+    {
+     "constraints": {},
+     "file": {
+      "actions": [
+       {
+        "copy": {
+         "allowEmptyWildcard": true,
+         "allowWildcard": true,
+         "createDestPath": true,
+         "dest": "/src",
+         "dirCopyContents": true,
+         "followSymlink": true,
+         "mode": -1,
+         "src": "/",
+         "timestamp": "-1"
+        },
+        "secondaryInput": "1"
+       }
+      ]
+     },
+     "inputs": [
+      [
+       0,
+       0
+      ],
+      [
+       1,
+       0
+      ]
+     ],
+     "metadata": {
+      "description": {
+       "llb.customname": "[2/4] COPY . /src"
+      }
+     }
+    },
+    {
+     "constraints": {},
+     "file": {
+      "actions": [
+       {
+        "copy": {
+         "allowEmptyWildcard": true,
+         "allowWildcard": true,
+         "createDestPath": true,
+         "dest": "/a",
+         "dirCopyContents": true,
+         "followSymlink": true,
+         "mode": -1,
+         "src": "/a.txt",
+         "timestamp": "-1"
+        },
+        "secondaryInput": "1"
+       }
+      ]
+     },
+     "inputs": [
+      [
+       2,
+       0
+      ],
+      [
+       1,
+       0
+      ]
+     ],
+     "metadata": {
+      "description": {
+       "llb.customname": "[3/4] COPY a.txt /a"
+      }
+     }
+    },
+    {
+     "constraints": {},
+     "exec": {
+      "meta": {
+       "args": [
+        "/bin/sh",
+        "-c",
+        "ls /src"
+       ],
+       "cwd": "/",
+       "env": [
+        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+       ],
+       "removeMountStubsRecursive": true
+      },
+      "mounts": [
+       {
+        "dest": "/"
+       }
+      ]
+     },
+     "inputs": [
+      [
+       3,
+       0
+      ]
+     ],
+     "metadata": {
+      "description": {
+       "com.docker.dockerfile.v1.command": "RUN ls /src",
+       "llb.customname": "[4/4] RUN ls /src"
+      }
+     },
+     "platform": {
+      "Architecture": "amd64",
+      "OS": "linux"
+     }
+    },
+    {
+     "inputs": [
+      [
+       4,
+       0
+      ]
+     ],
+     "metadata": {}
+    }
+   ]
+  }
  }
 ]

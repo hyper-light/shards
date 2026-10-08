@@ -3210,6 +3210,77 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode
 waits on the user.
 
+### D91. Remote build contexts: Git, HTTP(S) and stdin
+
+`shards build` takes every context `docker build` takes:
+- a directory;
+- a Git URL;
+- an HTTP(S) URL;
+- `-`, stdin.
+
+It plans them as buildx and BuildKit v0.28.1's dockerui do.
+
+Evidence:
+- buildx's `LoadInputs` (stdin, `-f`, the `context` frontend option, its two refusals).
+- dockerui's `initContext`, `DetectGitContext`, `DetectHTTPContext`, `isArchive` and
+  `scopeToSubDir`.
+- The plan oracle: `scripts/dockerfile/generate` now gives dockerui the `context`,
+  `contextsubdir` and `build-arg:BUILDKIT_CONTEXT_KEEP_GIT_DIR` options, and serves an
+  HTTP download's first bytes. Seven corpus files (`corpus/plan/context-*`) cover:
+  - a Git URL with `#REF:SUBDIR`;
+  - an SSH URL kept with its `.git`;
+  - the query form (`?ref=&subdir=&keep-git-dir=&checksum=&submodules=`);
+  - `contextsubdir`;
+  - an HTTP tar, gzip and plain file.
+
+  shards plans each as BuildKit does. The SSH case differs only by
+  `git.knownsshhosts`, the recorded deviation that planning does no network I/O.
+
+What it does:
+- A Git URL is the context as `llb.Git` takes it: `[internal] load git source URL`, its
+  ref and subdirectory, its `.git` kept where the URL or BUILDKIT_CONTEXT_KEEP_GIT_DIR
+  says.
+- An HTTP(S) URL is downloaded as `context`
+  (`[internal] load remote build context`). It is unpacked onto scratch where its first
+  1024 bytes are bzip2, gzip, xz or a tar header Go reads; else it is the Dockerfile,
+  and the context holds it alone, as `context`.
+- The Dockerfile is read from the context: `-f`'s path in it, `Dockerfile` (or
+  `dockerfile`) by default. `-f -` reads stdin, and an absolute `-f` reads the host's
+  file, as buildx sends it (`dockerfilekey`). A remote context has no `.dockerignore`
+  applied, as dockerui applies none to it.
+- `-`: stdin's archive is the context, as buildx uploads it. Stdin's Dockerfile builds
+  with an empty context. `-f -` with `-` is refused: "can't use stdin for both build
+  context and dockerfile". A stdin Dockerfile with `-f` is refused: "ambiguous
+  Dockerfile source".
+- Stdin is read once, into a file in the home's `tmp`, for every platform of a
+  multi-platform build. It is removed when the build ends.
+- The provenance's request records the context's URL (`context`) and no local
+  `context`.
+
+Better than BuildKit's:
+- The context is fetched once. dockerui solves it to read the Dockerfile, then the build
+  takes the same results (`Given`): no second download, clone or unpack.
+- stdin's archive is named by its digest (`http://buildkit-session/HEX`), where buildx's
+  upload ID is random. The same archive keeps its cache.
+- A multi-platform build reads stdin once. `-f -` read it per platform before this
+  change.
+
+Tested:
+- `builds_take_remote_contexts` covers, against a local Git HTTP server and file server,
+  each context exported with `-o type=local`:
+  - a repository's tree without `.git`;
+  - `#main:app`;
+  - `.git` kept;
+  - `-f` of the repository;
+  - `-f -` over a Git context;
+  - a gzipped tar, unpacked and fetched once;
+  - a plain Dockerfile as `context`;
+  - stdin's tar;
+  - stdin's Dockerfile with an empty context;
+  - both refusals.
+- The plan oracle cases above.
+- Mutation-checked: an `is_archive` that takes no tar fails `context-http-tar`.
+
 ### D90. The GitHub Actions cache backend
 
 `--cache-to` and `--cache-from` `type=gha` keep a build's cache in GitHub Actions' cache,

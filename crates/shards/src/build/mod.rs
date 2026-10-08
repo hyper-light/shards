@@ -90,12 +90,95 @@ pub fn build(args: impl Iterator<Item = OsString>) -> ExitCode {
         }
     };
     let _ = write!(std::io::stdout(), "{}", parsed.notices);
+    // stdin, read once for every platform's build, as buildx reads it (LoadInputs).
+    let context_stdin = parsed.args.first().is_some_and(|a| a == "-");
+    if context_stdin && parsed.string("file") == "-" {
+        return failed("invalid argument: can't use stdin for both build context and dockerfile");
+    }
+    let stdin = if context_stdin || parsed.string("file") == "-" {
+        match Stdin::read() {
+            Ok(s) => Some(s),
+            Err(e) => return failed(&e),
+        }
+    } else {
+        None
+    };
+    if let Some(s) = &stdin
+        && context_stdin
+        && !shards_dockerfile::dockerui::is_archive(&s.head)
+        && !parsed.string("file").is_empty()
+    {
+        return failed("ambiguous Dockerfile source: both stdin and flag correspond to Dockerfiles");
+    }
+    let stdin = stdin.map(|s| STDIN.get_or_init(|| s));
     // What a check (`--call=check`) ends with, which says no error of its own.
     let status = std::cell::Cell::new(0u8);
-    match run(&parsed, &status) {
+    let r = run(&parsed, &status);
+    if let Some(s) = stdin {
+        let _ = std::fs::remove_file(&s.path);
+    }
+    match r {
         Ok(()) if status.get() != 0 => ExitCode::from(status.get()),
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => failed(&e),
+    }
+}
+
+/// What the build read of stdin (`-` as the context or the Dockerfile), once for every
+/// platform's build: a file in the home's `tmp`, removed when the build ends, its size, its
+/// digest, and its first 1024 bytes, which tell an archive from a Dockerfile.
+struct Stdin {
+    path: PathBuf,
+    size: u64,
+    digest: Digest,
+    head: Vec<u8>,
+}
+
+static STDIN: std::sync::OnceLock<Stdin> = std::sync::OnceLock::new();
+
+impl Stdin {
+    fn read() -> Result<Stdin, String> {
+        use sha2::Digest as _;
+        let dir = shards_ipc::home()?.join("tmp");
+        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        let path = dir.join(format!("stdin-{}", std::process::id()));
+        let mut file = std::fs::File::create(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let limit = crate::pull::limits()?.bytes;
+        let mut hash = sha2::Sha256::new();
+        let (mut size, mut head) = (0u64, Vec::new());
+        let mut buf = vec![0u8; 1 << 16];
+        let mut input = std::io::stdin().lock();
+        let read = (|| -> Result<(), String> {
+            loop {
+                let n = match input.read(&mut buf) {
+                    Ok(0) => return Ok(()),
+                    Ok(n) => n,
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(e) => return Err(format!("reading stdin: {e}")),
+                };
+                let chunk = buf.get(..n).unwrap_or_default();
+                size += n as u64;
+                if size > limit {
+                    return Err(format!("stdin passes SHARDS_MAX_IMAGE_BYTES ({limit} bytes)"));
+                }
+                if head.len() < 1024 {
+                    head.extend_from_slice(chunk.get(..(1024 - head.len()).min(n)).unwrap_or_default());
+                }
+                hash.update(chunk);
+                file.write_all(chunk)
+                    .map_err(|e| format!("{}: {e}", path.display()))?;
+            }
+        })();
+        if let Err(e) = read {
+            let _ = std::fs::remove_file(&path);
+            return Err(e);
+        }
+        Ok(Stdin {
+            path,
+            size,
+            digest: Digest::from_hash(shards_image::reference::Algorithm::Sha256, &hash.finalize()),
+            head,
+        })
     }
 }
 
@@ -1026,7 +1109,8 @@ fn dialect_of(name: &str) -> Dialect {
 /// progress shows it.
 fn definition(parsed: &Parsed, context: &Path) -> (Option<PathBuf>, String) {
     let file = parsed.string("file");
-    if file == "-" {
+    // stdin's, as `-f -` or as the context `-` that is no archive (its context empty).
+    if file == "-" || parsed.args.first().is_some_and(|a| a == "-") {
         return (None, "Dockerfile".into());
     }
     let path = if !file.is_empty() {
@@ -1054,7 +1138,11 @@ fn dockerfile(parsed: &Parsed, context: &Path) -> Result<Dockerfile, String> {
     let read_failed = |e: String| format!("failed to read dockerfile: {e}");
     let (path, name) = definition(parsed, context);
     let Some(path) = path else {
-        let text = read_whole(std::io::stdin(), "Dockerfile").map_err(read_failed)?;
+        let stdin = STDIN
+            .get()
+            .ok_or_else(|| read_failed("stdin was not read".into()))?;
+        let file = std::fs::File::open(&stdin.path).map_err(|e| read_failed(e.to_string()))?;
+        let text = read_whole(file, "Dockerfile").map_err(read_failed)?;
         return Ok(("Dockerfile".into(), text, None));
     };
     let dir = path.parent().unwrap_or(Path::new("."));
@@ -1289,13 +1377,37 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
     }
     remote::check(&cache_to, &env)?;
     let context_arg = parsed.args.first().cloned().unwrap_or_default();
-    if context_arg == "-" || context_arg.contains("://") || context_arg.starts_with("git@") {
-        return Err(format!(
-            "{context_arg:?}: shards builds from a directory context only, so far"
-        ));
-    }
-    let context = PathBuf::from(&context_arg);
-    if !context.is_dir() {
+    // A remote context, as buildx sends one (the frontend's `context`): a Git URL, an HTTP(S)
+    // URL, or stdin's archive, which buildx uploads under a URL of its own and shards names
+    // by its digest; stdin's Dockerfile has an empty context.
+    let stdin = STDIN.get();
+    let remote: Option<plan::MainContext> = if context_arg == "-" {
+        let s = stdin.ok_or("stdin was not read")?;
+        shards_dockerfile::dockerui::is_archive(&s.head).then(|| plan::MainContext::Http {
+            url: format!("http://buildkit-session/{}", s.digest.hex()).into_bytes(),
+            archive: true,
+        })
+    } else if !matches!(
+        shards_dockerfile::git::parse_git_ref(context_arg.as_bytes()),
+        shards_dockerfile::git::Parsed::NotGit
+    ) {
+        let keep = build_args(parsed.many("build-arg"), true)
+            .get(b"BUILDKIT_CONTEXT_KEEP_GIT_DIR".as_slice())
+            .is_some_and(|v| shards_cmdline::go::parse_bool(&show(v)).unwrap_or(false));
+        Some(plan::MainContext::Git {
+            url: context_arg.clone().into_bytes(),
+            keep_git_dir: keep,
+        })
+    } else if context_arg.starts_with("http://") || context_arg.starts_with("https://") {
+        Some(plan::MainContext::Http {
+            url: context_arg.clone().into_bytes(),
+            archive: false,
+        })
+    } else {
+        None
+    };
+    let empty_context = context_arg == "-" && remote.is_none();
+    if remote.is_none() && !empty_context && !Path::new(&context_arg).is_dir() {
         return Err(format!(
             "unable to prepare context: path {context_arg:?} not found"
         ));
@@ -1328,7 +1440,63 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
             .say("#0 building with \"shards\" instance using shards driver\n");
     }
 
-    let (name, text, beside) = {
+    let home = shards_ipc::home()?;
+    let store = crate::pull::store(&home)?;
+    let _lease = store.lease().map_err(|e| e.to_string())?;
+    let limits = crate::pull::limits()?;
+    let mut exec = exec::Exec::new(&store, &limits);
+    // stdin's Dockerfile has an empty directory as its context, as buildx gives it one.
+    let context = if empty_context {
+        exec.stage()?
+    } else if remote.is_some() {
+        PathBuf::new()
+    } else {
+        PathBuf::from(&context_arg)
+    };
+    // A remote context fetched now, as dockerui solves it to read the Dockerfile from it,
+    // each source's result kept for the build's own step of it.
+    let mut given: Vec<Given> = Vec::new();
+    let mut fetched_dockerfile = None;
+    let mut remote = remote;
+    if let Some(main) = &mut remote {
+        let (r, sources) = fetch_context(
+            &mut exec,
+            main,
+            &target_platform,
+            &secrets,
+            &agents,
+            &limits,
+            &progress,
+        )?;
+        given = sources;
+        // `-f` names a file of the context, unless it is stdin's or a path of the host's
+        // (buildx's `dockerfilekey`, its directory sent as `dockerfile`).
+        let file = parsed.string("file");
+        if file != "-" && !Path::new(file).is_absolute() {
+            let name = match main {
+                plan::MainContext::Http { archive: false, .. } => "context".to_string(),
+                _ if file.is_empty() => "Dockerfile".to_string(),
+                _ => file.to_string(),
+            };
+            let at = |n: &str| format!("/{}", n.trim_start_matches('/'));
+            let mut text = exec.read_file(&r, at(&name).as_bytes())?;
+            if text.is_none() && Path::new(&name).file_name().is_some_and(|b| b == "Dockerfile") {
+                let lower = Path::new(&name).with_file_name("dockerfile");
+                text = exec.read_file(&r, at(&lower.to_string_lossy()).as_bytes())?;
+            }
+            let text = text.ok_or_else(|| {
+                format!("failed to build: failed to solve: failed to read dockerfile: open {name}: no such file or directory")
+            })?;
+            let shown = Path::new(&name)
+                .file_name()
+                .map_or_else(|| name.clone(), |n| n.to_string_lossy().into_owned());
+            fetched_dockerfile = Some((shown, text));
+        }
+    }
+
+    let (name, text, beside) = if let Some((name, text)) = fetched_dockerfile {
+        (name, text, None)
+    } else {
         let shown = definition(parsed, &context).1;
         // A platform's build of several reads it again, said once by the build of them.
         if multi::active() {
@@ -1355,9 +1523,11 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
     };
 
     // The context's .dockerignore, unless one is beside the Dockerfile; its vertex shows
-    // after the metadata, as the frontend reads it once the stages are planned.
+    // after the metadata, as the frontend reads it once the stages are planned. A remote
+    // context has none: dockerui excludes nothing of it.
     let context_ignore = match &beside {
         Some(_) => None,
+        None if remote.is_some() => None,
         None => Some(
             read_if_present(&context.join(".dockerignore"), ".dockerignore").map_err(|e| {
                 format!("failed to build: failed to solve: failed to read dockerignore patterns: {e}")
@@ -1373,9 +1543,6 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
         .unwrap_or_default();
 
     let named = named_contexts(&named)?;
-    let home = shards_ipc::home()?;
-    let store = crate::pull::store(&home)?;
-    let _lease = store.lease().map_err(|e| e.to_string())?;
     let imported = remote::Imported::read(&cache_from, &store, &progress, &env)?;
     let bases = Bases {
         home: &home,
@@ -1398,7 +1565,19 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
         .file_name()
         .map_or_else(|| "Dockerfile".to_string(), |n| n.to_string_lossy().into_owned());
     let request_attrs = buildx_attrs(parsed, &filename, &add_hosts, &resource_attrs, &named)?;
-    let mut request_locals: Vec<String> = vec!["context".into(), "dockerfile".into()];
+    // A remote context is no local of the request's, and its Dockerfile none either
+    // unless it came from the host; buildx sends its URL as `context`.
+    let mut request_locals: Vec<String> = match &remote {
+        None => vec!["context".into(), "dockerfile".into()],
+        Some(_) if parsed.string("file") == "-" || Path::new(parsed.string("file")).is_absolute() => {
+            vec!["dockerfile".into()]
+        }
+        Some(_) => Vec::new(),
+    };
+    let mut request_attrs = request_attrs;
+    if remote.is_some() && context_arg != "-" {
+        request_attrs.insert("context".into(), context_arg.clone());
+    }
     request_locals.extend(named.locals.keys().map(|k| show(k)));
     request_locals.sort();
     let opts = Options {
@@ -1444,6 +1623,8 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
         } else {
             b"local".to_vec()
         },
+        main_context: remote.clone().unwrap_or_default(),
+        context_subdir: None,
     };
     let call = call_of(parsed)?;
     let debug = parsed.bool("debug");
@@ -1620,9 +1801,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
     let op_base = |op: &shards_dockerfile::llb::Op, reference: &str| {
         base_key(reference, op.platform.as_ref().unwrap_or(&opts.target_platform))
     };
-    let limits = crate::pull::limits()?;
     crate::phase("plan");
-    let mut exec = exec::Exec::new(&store, &limits);
     // The base images a RUN stands on: each a builder's pmem device, its root filesystem
     // as the store keeps it, so that nothing of it is copied into the builder.
     let mut run_images: std::collections::HashMap<usize, u32> = std::collections::HashMap::new();
@@ -1679,11 +1858,15 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
         .iter()
         .enumerate()
         .filter_map(|(i, op)| match &op.kind {
-            OpKind::Source { identifier, attrs } if is_http(identifier) => Some((
-                i,
-                show(identifier),
-                attrs.get(b"http.checksum".as_slice()).map(|c| show(c)),
-            )),
+            OpKind::Source { identifier, attrs }
+                if is_http(identifier) && !given.iter().any(|g| g.identifier == *identifier) =>
+            {
+                Some((
+                    i,
+                    show(identifier),
+                    attrs.get(b"http.checksum".as_slice()).map(|c| show(c)),
+                ))
+            }
             _ => None,
         })
         .collect();
@@ -1830,6 +2013,20 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
                 };
                 progress.borrow().done(&v);
                 vec![r]
+            }
+            // The remote context's source, fetched before planning (fetch_context).
+            OpKind::Source { identifier, .. } if given.iter().any(|g| g.identifier == *identifier) => {
+                let at = given
+                    .iter()
+                    .position(|g| g.identifier == *identifier)
+                    .ok_or("the context's source is gone")?;
+                let g = given.remove(at);
+                match g.material {
+                    Some(Material::Git(m)) => git_materials.push(m),
+                    Some(Material::Http(m)) => http_materials.push(m),
+                    None => {}
+                }
+                vec![g.result]
             }
             OpKind::Source { identifier, attrs } if identifier.starts_with(b"local://") => {
                 let v = progress.borrow_mut().start(&name);
@@ -4366,4 +4563,197 @@ mod tests {
             assert_eq!(stamp.split('.').nth(1).unwrap().len(), places, "{line}");
         }
     }
+}
+
+/// A source of the remote context, fetched before planning: its identifier, what it made,
+/// and what the build's provenance records of it.
+struct Given {
+    identifier: Vec<u8>,
+    result: exec::Ref,
+    material: Option<Material>,
+}
+
+enum Material {
+    Git(provenance::Material),
+    Http(provenance::Material),
+}
+
+/// The remote context `main`, fetched and made as dockerui solves it to read the
+/// Dockerfile (`ReadEntrypoint`): its sources, each shown as the build shows its own, and
+/// its unpacking. The context's snapshot, and each source's result for the build's step of
+/// it.
+#[allow(clippy::too_many_arguments)]
+fn fetch_context(
+    exec: &mut exec::Exec,
+    main: &mut plan::MainContext,
+    platform: &Platform,
+    secrets: &BTreeMap<String, buildflags::SecretBytes>,
+    agents: &Agents,
+    limits: &store::Limits,
+    progress: &RefCell<Progress>,
+) -> Result<(exec::Ref, Vec<Given>), String> {
+    let mut given: Vec<Given> = Vec::new();
+    loop {
+        let r = solve_context(
+            exec, main, platform, secrets, agents, limits, progress, &mut given,
+        )?;
+        // An HTTP download is unpacked where its first 1024 bytes are an archive's, as
+        // dockerui reads them; the download is not fetched again.
+        if let plan::MainContext::Http { archive: false, .. } = main {
+            let head = exec.read_head(&r, b"/context", 1024)?.unwrap_or_default();
+            if shards_dockerfile::dockerui::is_archive(&head) {
+                if let plan::MainContext::Http { archive, .. } = main {
+                    *archive = true;
+                }
+                continue;
+            }
+        }
+        return Ok((r, given));
+    }
+}
+
+/// [`fetch_context`]'s definition of `main`, solved: each source fetched unless `given`
+/// has it already.
+#[allow(clippy::too_many_arguments)]
+fn solve_context(
+    exec: &mut exec::Exec,
+    main: &plan::MainContext,
+    platform: &Platform,
+    secrets: &BTreeMap<String, buildflags::SecretBytes>,
+    agents: &Agents,
+    limits: &store::Limits,
+    progress: &RefCell<Progress>,
+    given: &mut Vec<Given>,
+) -> Result<exec::Ref, String> {
+    let opts = Options {
+        target_platform: platform.clone(),
+        main_context: main.clone(),
+        ..Options::default()
+    };
+    let def = plan::context_definition(&opts)
+        .map_err(|e| format!("failed to build: failed to solve: {}", show(&e)))?;
+    let mut results: Vec<Vec<exec::Ref>> = Vec::new();
+    for (op, meta) in def.ops.iter().zip(&def.metadata) {
+        let name = meta
+            .description
+            .get(b"llb.customname".as_slice())
+            .map(|n| show(n))
+            .unwrap_or_default();
+        let inputs = op
+            .inputs
+            .iter()
+            .map(|inp| {
+                results
+                    .get(inp.op)
+                    .and_then(|outs| outs.get(usize::try_from(inp.index).ok()?))
+                    .cloned()
+                    .ok_or_else(|| format!("input {}:{} is not ready", inp.op, inp.index))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let failed = |v: &Vertex, why: &str| {
+            progress.borrow().error(v, why);
+            format!("failed to build: failed to solve: {why}")
+        };
+        let outs = match &op.kind {
+            OpKind::Source { identifier, .. } if given.iter().any(|g| g.identifier == *identifier) => given
+                .iter()
+                .filter(|g| g.identifier == *identifier)
+                .map(|g| g.result.clone())
+                .collect(),
+            OpKind::Source { identifier, attrs } if identifier.starts_with(b"git://") => {
+                let v = progress.borrow_mut().start(&name);
+                let src = git::source(identifier, attrs).map_err(|e| failed(&v, &e))?;
+                let bound = usize::try_from(limits.bytes).unwrap_or(usize::MAX);
+                let say = |line: &str| progress.borrow().line(&v, line);
+                let auth = git::auth(&src, secrets);
+                let (r, commit) = match git::snapshot(
+                    exec,
+                    &src,
+                    shards_git::remote::Limits {
+                        pack: bound,
+                        object: bound,
+                    },
+                    &shards_registry::http::Cancel::new(),
+                    auth.as_ref(),
+                    agents,
+                    &say,
+                ) {
+                    Ok(done) => done,
+                    Err(git::Failure::CacheKey(e)) => {
+                        progress.borrow().error(&v, &e);
+                        return Err(format!(
+                            "failed to build: failed to solve: failed to load cache key: {e}"
+                        ));
+                    }
+                    Err(git::Failure::Snapshot(e)) => return Err(failed(&v, &e)),
+                };
+                let mut uri = redact_credentials(&src.url);
+                if !src.reference.is_empty() {
+                    uri.push('#');
+                    uri.push_str(&src.reference);
+                }
+                given.push(Given {
+                    identifier: identifier.clone(),
+                    result: r.clone(),
+                    material: Some(Material::Git(provenance::Material {
+                        uri,
+                        algorithm: if commit.len() == 64 { "sha256" } else { "sha1" }.into(),
+                        hex: commit,
+                    })),
+                });
+                progress.borrow().done(&v);
+                vec![r]
+            }
+            OpKind::Source { identifier, attrs } if is_http(identifier) => {
+                let v = progress.borrow_mut().start(&name);
+                let url = show(identifier);
+                let (download, material) = match (url.strip_prefix("http://buildkit-session/"), STDIN.get()) {
+                    // stdin's archive, as buildx's upload provider serves it.
+                    (Some(_), Some(stdin)) => (
+                        http::Download {
+                            path: stdin.path.clone(),
+                            size: stdin.size,
+                            digest: stdin.digest.clone(),
+                            last_modified: None,
+                        },
+                        None,
+                    ),
+                    _ => {
+                        let path = exec.stage()?.join("context");
+                        let checksum = attrs.get(b"http.checksum".as_slice()).map(|c| show(c));
+                        let d = http::fetch_now(&url, checksum.as_deref(), path, limits)
+                            .map_err(|e| failed(&v, &e))?;
+                        let pin = d.digest.to_string();
+                        let (algorithm, hex) = pin.split_once(':').unwrap_or(("sha256", pin.as_str()));
+                        let m = provenance::Material {
+                            uri: redact_credentials(&url),
+                            algorithm: algorithm.to_string(),
+                            hex: hex.to_string(),
+                        };
+                        (d, Some(Material::Http(m)))
+                    }
+                };
+                let r = exec
+                    .downloaded(download, b"context")
+                    .map_err(|e| failed(&v, &e))?;
+                given.push(Given {
+                    identifier: identifier.clone(),
+                    result: r.clone(),
+                    material,
+                });
+                progress.borrow().done(&v);
+                vec![r]
+            }
+            OpKind::File { actions } => exec.file(&inputs, actions, &name)?,
+            // The definition's root: its one input.
+            _ => inputs,
+        };
+        results.push(outs);
+    }
+    let root = def.root.as_ref().ok_or("the context's definition has no root")?;
+    results
+        .get(root.op)
+        .and_then(|outs| outs.get(usize::try_from(root.index).ok()?))
+        .cloned()
+        .ok_or_else(|| "the context's definition has no result".to_string())
 }

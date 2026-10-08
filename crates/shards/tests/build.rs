@@ -2795,6 +2795,259 @@ fn git_http_server(root: std::path::PathBuf, accepted: Vec<String>) -> u16 {
 /// upload-pack: the default branch, an annotated tag, a subdirectory, a submodule found by
 /// its relative URL, `--keep-git-dir`; files 0644 or 0755, symlinks, all root's. Unlike
 /// BuildKit, every entry's time is the commit's, so that the same commit makes the same
+/// A ustar archive of `files` (path, bytes), regular files mode 0644, as a client's
+/// context archive would hold them.
+fn ustar(files: &[(&str, &[u8])]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for (name, data) in files {
+        let mut h = [0u8; 512];
+        h[..name.len()].copy_from_slice(name.as_bytes());
+        h[100..107].copy_from_slice(b"0000644");
+        h[108..115].copy_from_slice(b"0000000");
+        h[116..123].copy_from_slice(b"0000000");
+        h[124..135].copy_from_slice(format!("{:011o}", data.len()).as_bytes());
+        h[136..147].copy_from_slice(b"00000000000");
+        h[156] = b'0';
+        h[257..263].copy_from_slice(b"ustar\0");
+        h[263..265].copy_from_slice(b"00");
+        h[148..156].copy_from_slice(b"        ");
+        let sum: u32 = h.iter().map(|&b| u32::from(b)).sum();
+        h[148..155].copy_from_slice(format!("{sum:06o}\0").as_bytes());
+        out.extend_from_slice(&h);
+        out.extend_from_slice(data);
+        out.resize(out.len().div_ceil(512) * 512, 0);
+    }
+    out.resize(out.len() + 1024, 0);
+    out
+}
+
+/// Remote build contexts, as `docker build` takes them through buildx and BuildKit's
+/// dockerui (D91): a Git URL's tree, its `#REF:SUBDIR` the context, without `.git` unless
+/// BUILDKIT_CONTEXT_KEEP_GIT_DIR keeps it, `-f` a file of it; an HTTP(S) URL's archive,
+/// unpacked, or its plain Dockerfile, alone in the context as `context`; stdin's archive,
+/// or stdin's Dockerfile with an empty context; stdin refused for both. The Dockerfile is
+/// read from the context, its source fetched once.
+#[test]
+fn builds_take_remote_contexts() {
+    use std::io::Write as _;
+    if cannot_run_vms() {
+        return;
+    }
+    if std::process::Command::new("git")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        eprintln!("SKIP: no git on this host");
+        return;
+    }
+    let repos = TempDir::new("remote-ctx-repos");
+    let origin = repos.join("repo.git");
+    std::fs::create_dir_all(origin.join("app")).unwrap();
+    git_in(&origin, &["init", "-q", "-b", "main"]);
+    std::fs::write(origin.join("Dockerfile"), "FROM scratch\nCOPY . /\n").unwrap();
+    std::fs::write(origin.join("a.txt"), "root\n").unwrap();
+    std::fs::write(origin.join("app/Dockerfile"), "FROM scratch\nCOPY . /\n").unwrap();
+    std::fs::write(origin.join("app/b.txt"), "app\n").unwrap();
+    git_in(&origin, &["add", "-A"]);
+    git_in(&origin, &["commit", "-q", "-m", "one"]);
+    let hport = git_http_server(repos.to_path_buf(), Vec::new());
+    let repo = format!("http://127.0.0.1:{hport}/repo.git");
+
+    // An HTTP server of a context archive, gzipped, and of a plain Dockerfile.
+    let archive = {
+        let tar = ustar(&[
+            ("Dockerfile", b"FROM scratch\nCOPY . /\n"),
+            ("c.txt", b"from the archive\n"),
+        ]);
+        let mut gz = shards_flate::GzipWriter::new(Vec::new(), 6).unwrap();
+        gz.write_all(&tar).unwrap();
+        gz.finish().unwrap()
+    };
+    let plain = b"FROM scratch\nCOPY context /d\n".to_vec();
+    let served: Vec<(String, Vec<u8>)> = vec![
+        ("/ctx.tar.gz".into(), archive),
+        ("/Dockerfile".into(), plain.clone()),
+    ];
+    let fetched = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let wport = listener.local_addr().unwrap().port();
+    {
+        let fetched = fetched.clone();
+        std::thread::spawn(move || {
+            use std::io::{BufRead as _, BufReader};
+            for stream in listener.incoming() {
+                let Ok(stream) = stream else { return };
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                    continue;
+                }
+                loop {
+                    let mut h = String::new();
+                    if reader.read_line(&mut h).unwrap_or(0) <= 2 {
+                        break;
+                    }
+                }
+                let path = line.split(' ').nth(1).unwrap_or("").to_string();
+                let mut out = stream;
+                match served.iter().find(|(p, _)| *p == path) {
+                    Some((_, body)) => {
+                        fetched.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        let _ = write!(
+                            out,
+                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            body.len()
+                        );
+                        let _ = out.write_all(body);
+                    }
+                    None => {
+                        let _ = write!(
+                            out,
+                            "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                        );
+                    }
+                }
+            }
+        });
+    }
+
+    let home = TempDir::new("remote-ctx-home");
+    let outs = TempDir::new("remote-ctx-out");
+    let env: Vec<(&str, std::ffi::OsString)> = vec![
+        ("SHARDS_HOME", home.as_os_str().to_owned()),
+        ("SHARDS_KERNEL", kernel().as_os_str().to_owned()),
+        ("SHARDS_INIT", guest_init().as_os_str().to_owned()),
+    ];
+    // `shards build ARGS`, `input` its stdin.
+    let build = |args: &[&str], input: Option<&[u8]>| -> (Option<i32>, String) {
+        let mut cmd = std::process::Command::new(common::shards());
+        cmd.arg("build").args(args);
+        for (k, v) in &env {
+            cmd.env(k, v);
+        }
+        cmd.stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        let mut child = cmd.spawn().unwrap();
+        let mut stdin = child.stdin.take().unwrap();
+        let input = input.unwrap_or_default().to_vec();
+        let writer = std::thread::spawn(move || {
+            let _ = stdin.write_all(&input);
+        });
+        let out = child.wait_with_output().unwrap();
+        writer.join().unwrap();
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+    let exported = |name: &str, args: &[&str], input: Option<&[u8]>| -> (std::path::PathBuf, String) {
+        let dest = outs.join(name);
+        let o = format!("type=local,dest={}", dest.display());
+        let mut a = vec!["--progress=plain", "-o", &o];
+        a.extend_from_slice(args);
+        let (code, log) = build(&a, input);
+        assert_eq!(code, Some(0), "{name}: {log}");
+        (dest, log)
+    };
+    let files = |dir: &std::path::Path| -> Vec<String> {
+        let mut all = Vec::new();
+        let mut todo = vec![dir.to_path_buf()];
+        while let Some(d) = todo.pop() {
+            for e in std::fs::read_dir(&d).unwrap() {
+                let p = e.unwrap().path();
+                if p.is_dir() {
+                    todo.push(p.clone());
+                }
+                all.push(p.strip_prefix(dir).unwrap().to_string_lossy().into_owned());
+            }
+        }
+        all.sort();
+        all
+    };
+
+    // Git: the repository's tree, its .git left out.
+    let (o, log) = exported("git", &[&repo], None);
+    assert!(
+        log.contains(&format!("[internal] load git source {repo}")),
+        "{log}"
+    );
+    assert!(!log.contains("load build definition"), "{log}");
+    assert_eq!(
+        files(&o),
+        ["Dockerfile", "a.txt", "app", "app/Dockerfile", "app/b.txt"]
+    );
+    // A ref and a directory of it.
+    let (o, _) = exported("git-sub", &[&format!("{repo}#main:app")], None);
+    assert_eq!(files(&o), ["Dockerfile", "b.txt"]);
+    // Kept with its .git.
+    let (o, _) = exported(
+        "git-keep",
+        &["--build-arg", "BUILDKIT_CONTEXT_KEEP_GIT_DIR=1", &repo],
+        None,
+    );
+    assert!(o.join(".git/HEAD").is_file(), "{:?}", files(&o));
+    // `-f` a file of the repository.
+    std::fs::write(
+        origin.join("other.Dockerfile"),
+        "FROM scratch\nCOPY app/b.txt /only\n",
+    )
+    .unwrap();
+    git_in(&origin, &["add", "-A"]);
+    git_in(&origin, &["commit", "-q", "-m", "two"]);
+    let (o, _) = exported("git-f", &["-f", "other.Dockerfile", &repo], None);
+    assert_eq!(files(&o), ["only"]);
+    // `-f -`: stdin's Dockerfile, the repository's context.
+    let (o, _) = exported(
+        "git-stdin-f",
+        &["-f", "-", &repo],
+        Some(b"FROM scratch\nCOPY a.txt /x\n"),
+    );
+    assert_eq!(files(&o), ["x"]);
+
+    // HTTP: an archive, unpacked, fetched once though the build reads it twice.
+    let before = fetched.load(std::sync::atomic::Ordering::SeqCst);
+    let (o, log) = exported(
+        "http-tgz",
+        &[&format!("http://127.0.0.1:{wport}/ctx.tar.gz")],
+        None,
+    );
+    assert!(log.contains("[internal] load remote build context"), "{log}");
+    assert_eq!(files(&o), ["Dockerfile", "c.txt"]);
+    assert_eq!(fetched.load(std::sync::atomic::Ordering::SeqCst) - before, 1);
+    // A plain Dockerfile: it is the context, as `context`.
+    let (o, _) = exported(
+        "http-plain",
+        &[&format!("http://127.0.0.1:{wport}/Dockerfile")],
+        None,
+    );
+    assert_eq!(std::fs::read(o.join("d")).unwrap(), plain);
+
+    // stdin: an archive is the context; a Dockerfile has an empty one.
+    let tar = ustar(&[
+        ("Dockerfile", b"FROM scratch\nCOPY . /\n"),
+        ("s.txt", b"from stdin\n"),
+    ]);
+    let (o, _) = exported("stdin-tar", &["-"], Some(&tar));
+    assert_eq!(files(&o), ["Dockerfile", "s.txt"]);
+    let (o, _) = exported("stdin-file", &["-"], Some(b"FROM scratch\nCOPY . /\n"));
+    assert_eq!(files(&o), Vec::<String>::new());
+    // Refused as buildx refuses them.
+    let (code, log) = build(&["-f", "-", "-"], Some(b""));
+    assert_ne!(code, Some(0));
+    assert!(
+        log.contains("can't use stdin for both build context and dockerfile"),
+        "{log}"
+    );
+    let (code, log) = build(&["-f", "x", "-"], Some(b"FROM scratch\n"));
+    assert_ne!(code, Some(0));
+    assert!(
+        log.contains("ambiguous Dockerfile source: both stdin and flag correspond to Dockerfiles"),
+        "{log}"
+    );
+}
+
 /// layer: built again without the cache, the layers are the same bytes.
 #[test]
 fn add_fetches_git_repositories() {

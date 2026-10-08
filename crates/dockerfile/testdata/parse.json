@@ -8308,6 +8308,335 @@
   ]
  },
  {
+  "file": "corpus/plan/context-git-keep.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\")\\n(copy \\\".\\\" \\\"/src\\\")\\n(copy \\\"a.txt\\\" \\\"/a\\\")\\n(run \\\"ls /src\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy \\\".\\\" \\\"/src\\\"\"",
+    "original": "\"COPY . /src\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy \\\"a.txt\\\" \\\"/a\\\"\"",
+    "original": "\"COPY a.txt /a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"ls /src\\\"\"",
+    "original": "\"RUN ls /src\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/context-git-query.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\")\\n(copy \\\".\\\" \\\"/src\\\")\\n(copy \\\"a.txt\\\" \\\"/a\\\")\\n(run \\\"ls /src\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy \\\".\\\" \\\"/src\\\"\"",
+    "original": "\"COPY . /src\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy \\\"a.txt\\\" \\\"/a\\\"\"",
+    "original": "\"COPY a.txt /a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"ls /src\\\"\"",
+    "original": "\"RUN ls /src\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/context-git-subdir-opt.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\")\\n(copy \\\".\\\" \\\"/src\\\")\\n(copy \\\"a.txt\\\" \\\"/a\\\")\\n(run \\\"ls /src\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy \\\".\\\" \\\"/src\\\"\"",
+    "original": "\"COPY . /src\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy \\\"a.txt\\\" \\\"/a\\\"\"",
+    "original": "\"COPY a.txt /a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"ls /src\\\"\"",
+    "original": "\"RUN ls /src\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/context-git.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\")\\n(copy \\\".\\\" \\\"/src\\\")\\n(copy \\\"a.txt\\\" \\\"/a\\\")\\n(run \\\"ls /src\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy \\\".\\\" \\\"/src\\\"\"",
+    "original": "\"COPY . /src\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy \\\"a.txt\\\" \\\"/a\\\"\"",
+    "original": "\"COPY a.txt /a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"ls /src\\\"\"",
+    "original": "\"RUN ls /src\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/context-http-file.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\")\\n(copy \\\".\\\" \\\"/src\\\")\\n(copy \\\"a.txt\\\" \\\"/a\\\")\\n(run \\\"ls /src\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy \\\".\\\" \\\"/src\\\"\"",
+    "original": "\"COPY . /src\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy \\\"a.txt\\\" \\\"/a\\\"\"",
+    "original": "\"COPY a.txt /a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"ls /src\\\"\"",
+    "original": "\"RUN ls /src\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/context-http-gzip.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\")\\n(copy \\\".\\\" \\\"/src\\\")\\n(copy \\\"a.txt\\\" \\\"/a\\\")\\n(run \\\"ls /src\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy \\\".\\\" \\\"/src\\\"\"",
+    "original": "\"COPY . /src\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy \\\"a.txt\\\" \\\"/a\\\"\"",
+    "original": "\"COPY a.txt /a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"ls /src\\\"\"",
+    "original": "\"RUN ls /src\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/context-http-tar.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\")\\n(copy \\\".\\\" \\\"/src\\\")\\n(copy \\\"a.txt\\\" \\\"/a\\\")\\n(run \\\"ls /src\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy \\\".\\\" \\\"/src\\\"\"",
+    "original": "\"COPY . /src\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy \\\"a.txt\\\" \\\"/a\\\"\"",
+    "original": "\"COPY a.txt /a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"ls /src\\\"\"",
+    "original": "\"RUN ls /src\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
   "file": "corpus/plan/copy-flags.Dockerfile",
   "escape": "\"\\\\\"",
   "dump": "\"(from \\\"alpine\\\")\\n(workdir \\\"/w\\\")\\n(copy [\\\"--chown=app:staff\\\" \\\"--chmod=u+rwx,g+rx\\\"] \\\"a\\\" \\\"rel/\\\")\\n(copy [\\\"--chown=1000\\\"] \\\"b\\\" \\\"./\\\")\\n(copy [\\\"--chown=root:0\\\"] \\\"c\\\" \\\".\\\")\\n(copy [\\\"--exclude=*.tmp\\\" \\\"--exclude=cache\\\"] \\\"d\\\" \\\"/d\\\")\\n(copy [\\\"--parents\\\"] \\\"x/y/./z/*.go\\\" \\\"/src/\\\")\\n(copy [\\\"--parents\\\"] \\\"p/q.txt\\\" \\\"/p/\\\")\\n(copy [\\\"--chmod=755\\\"] \\\"e\\\" \\\"/e\\\")\\n(add [\\\"--chown=1:1\\\"] \\\"f.tar.gz\\\" \\\"/f/\\\")\\n(add [\\\"--unpack=false\\\"] \\\"g.tar\\\" \\\"/g\\\")\\n(add [\\\"--link\\\"] \\\"h\\\" \\\"/h\\\")\\n(copy [\\\"--link\\\" \\\"--chown=2\\\"] \\\"i\\\" \\\"/i\\\")\\n(copy [\\\"--link\\\" \\\"--chmod=600\\\"] \\\"j\\\" \\\"/j\\\")\"",

@@ -68,6 +68,69 @@
    "targets_text": "\"TARGET    DESCRIPTION\\n(default) \\n\""
   },
   {
+   "file": "corpus/plan/context-git-keep.Dockerfile",
+   "lint": "\"{\\n  \\\"warnings\\\": null,\\n  \\\"sources\\\": [\\n    {\\n      \\\"filename\\\": \\\"Dockerfile\\\",\\n      \\\"data\\\": \\\"RlJPTSBhbHBpbmUKQ09QWSAuIC9zcmMKQ09QWSBhLnR4dCAvYQpSVU4gbHMgL3NyYwo=\\\",\\n      \\\"language\\\": \\\"Dockerfile\\\"\\n    }\\n  ]\\n}\"",
+   "lint_status": "0",
+   "outline": "\"{\\n  \\\"sources\\\": [\\n    \\\"RlJPTSBhbHBpbmUKQ09QWSAuIC9zcmMKQ09QWSBhLnR4dCAvYQpSVU4gbHMgL3NyYwo=\\\"\\n  ]\\n}\"",
+   "outline_text": "\"\"",
+   "targets": "\"{\\n  \\\"targets\\\": [\\n    {\\n      \\\"default\\\": true,\\n      \\\"base\\\": \\\"alpine\\\",\\n      \\\"location\\\": {\\n        \\\"ranges\\\": [\\n          {\\n            \\\"start\\\": {\\n              \\\"line\\\": 1\\n            },\\n            \\\"end\\\": {\\n              \\\"line\\\": 1\\n            }\\n          }\\n        ]\\n      }\\n    }\\n  ],\\n  \\\"sources\\\": [\\n    \\\"RlJPTSBhbHBpbmUKQ09QWSAuIC9zcmMKQ09QWSBhLnR4dCAvYQpSVU4gbHMgL3NyYwo=\\\"\\n  ]\\n}\"",
+   "targets_text": "\"TARGET    DESCRIPTION\\n(default) \\n\""
+  },
+  {
+   "file": "corpus/plan/context-git-query.Dockerfile",
+   "lint": "\"{\\n  \\\"warnings\\\": null,\\n  \\\"sources\\\": [\\n    {\\n      \\\"filename\\\": \\\"Dockerfile\\\",\\n      \\\"data\\\": \\\"RlJPTSBhbHBpbmUKQ09QWSAuIC9zcmMKQ09QWSBhLnR4dCAvYQpSVU4gbHMgL3NyYwo=\\\",\\n      \\\"language\\\": \\\"Dockerfile\\\"\\n    }\\n  ]\\n}\"",
+   "lint_status": "0",
+   "outline": "\"{\\n  \\\"sources\\\": [\\n    \\\"RlJPTSBhbHBpbmUKQ09QWSAuIC9zcmMKQ09QWSBhLnR4dCAvYQpSVU4gbHMgL3NyYwo=\\\"\\n  ]\\n}\"",
+   "outline_text": "\"\"",
+   "targets": "\"{\\n  \\\"targets\\\": [\\n    {\\n      \\\"default\\\": true,\\n      \\\"base\\\": \\\"alpine\\\",\\n      \\\"location\\\": {\\n        \\\"ranges\\\": [\\n          {\\n            \\\"start\\\": {\\n              \\\"line\\\": 1\\n            },\\n            \\\"end\\\": {\\n              \\\"line\\\": 1\\n            }\\n          }\\n        ]\\n      }\\n    }\\n  ],\\n  \\\"sources\\\": [\\n    \\\"RlJPTSBhbHBpbmUKQ09QWSAuIC9zcmMKQ09QWSBhLnR4dCAvYQpSVU4gbHMgL3NyYwo=\\\"\\n  ]\\n}\"",
+   "targets_text": "\"TARGET    DESCRIPTION\\n(default) \\n\""
+  },
+  {
+   "file": "corpus/plan/context-git-subdir-opt.Dockerfile",
+   "lint": "\"{\\n  \\\"warnings\\\": null,\\n  \\\"sources\\\": [\\n    {\\n      \\\"filename\\\": \\\"Dockerfile\\\",\\n      \\\"data\\\": \\\"RlJPTSBhbHBpbmUKQ09QWSAuIC9zcmMKQ09QWSBhLnR4dCAvYQpSVU4gbHMgL3NyYwo=\\\",\\n      \\\"language\\\": \\\"Dockerfile\\\"\\n    }\\n  ]\\n}\"",
+   "lint_status": "0",
+   "outline": "\"{\\n  \\\"sources\\\": [\\n    \\\"RlJPTSBhbHBpbmUKQ09QWSAuIC9zcmMKQ09QWSBhLnR4dCAvYQpSVU4gbHMgL3NyYwo=\\\"\\n  ]\\n}\"",
+   "outline_text": "\"\"",
+   "targets": "\"{\\n  \\\"targets\\\": [\\n    {\\n      \\\"default\\\": true,\\n      \\\"base\\\": \\\"alpine\\\",\\n      \\\"location\\\": {\\n        \\\"ranges\\\": [\\n          {\\n            \\\"start\\\": {\\n              \\\"line\\\": 1\\n            },\\n            \\\"end\\\": {\\n              \\\"line\\\": 1\\n            }\\n          }\\n        ]\\n      }\\n    }\\n  ],\\n  \\\"sources\\\": [\\n    \\\"RlJPTSBhbHBpbmUKQ09QWSAuIC9zcmMKQ09QWSBhLnR4dCAvYQpSVU4gbHMgL3NyYwo=\\\"\\n  ]\\n}\"",
+   "targets_text": "\"TARGET    DESCRIPTION\\n(default) \\n\""
+  },
+  {
+   "file": "corpus/plan/context-git.Dockerfile",
+   "lint": "\"{\\n  \\\"warnings\\\": null,\\n  \\\"sources\\\": [\\n    {\\n      \\\"filename\\\": \\\"Dockerfile\\\",\\n      \\\"data\\\": \\\"RlJPTSBhbHBpbmUKQ09QWSAuIC9zcmMKQ09QWSBhLnR4dCAvYQpSVU4gbHMgL3NyYwo=\\\",\\n      \\\"language\\\": \\\"Dockerfile\\\"\\n    }\\n  ]\\n}\"",
+   "lint_status": "0",
+   "outline": "\"{\\n  \\\"sources\\\": [\\n    \\\"RlJPTSBhbHBpbmUKQ09QWSAuIC9zcmMKQ09QWSBhLnR4dCAvYQpSVU4gbHMgL3NyYwo=\\\"\\n  ]\\n}\"",
+   "outline_text": "\"\"",
+   "targets": "\"{\\n  \\\"targets\\\": [\\n    {\\n      \\\"default\\\": true,\\n      \\\"base\\\": \\\"alpine\\\",\\n      \\\"location\\\": {\\n        \\\"ranges\\\": [\\n          {\\n            \\\"start\\\": {\\n              \\\"line\\\": 1\\n            },\\n            \\\"end\\\": {\\n              \\\"line\\\": 1\\n            }\\n          }\\n        ]\\n      }\\n    }\\n  ],\\n  \\\"sources\\\": [\\n    \\\"RlJPTSBhbHBpbmUKQ09QWSAuIC9zcmMKQ09QWSBhLnR4dCAvYQpSVU4gbHMgL3NyYwo=\\\"\\n  ]\\n}\"",
+   "targets_text": "\"TARGET    DESCRIPTION\\n(default) \\n\""
+  },
+  {
+   "file": "corpus/plan/context-http-file.Dockerfile",
+   "lint": "\"{\\n  \\\"warnings\\\": null,\\n  \\\"sources\\\": [\\n    {\\n      \\\"filename\\\": \\\"Dockerfile\\\",\\n      \\\"data\\\": \\\"RlJPTSBhbHBpbmUKQ09QWSAuIC9zcmMKQ09QWSBhLnR4dCAvYQpSVU4gbHMgL3NyYwo=\\\",\\n      \\\"language\\\": \\\"Dockerfile\\\"\\n    }\\n  ]\\n}\"",
+   "lint_status": "0",
+   "outline": "\"{\\n  \\\"sources\\\": [\\n    \\\"RlJPTSBhbHBpbmUKQ09QWSAuIC9zcmMKQ09QWSBhLnR4dCAvYQpSVU4gbHMgL3NyYwo=\\\"\\n  ]\\n}\"",
+   "outline_text": "\"\"",
+   "targets": "\"{\\n  \\\"targets\\\": [\\n    {\\n      \\\"default\\\": true,\\n      \\\"base\\\": \\\"alpine\\\",\\n      \\\"location\\\": {\\n        \\\"ranges\\\": [\\n          {\\n            \\\"start\\\": {\\n              \\\"line\\\": 1\\n            },\\n            \\\"end\\\": {\\n              \\\"line\\\": 1\\n            }\\n          }\\n        ]\\n      }\\n    }\\n  ],\\n  \\\"sources\\\": [\\n    \\\"RlJPTSBhbHBpbmUKQ09QWSAuIC9zcmMKQ09QWSBhLnR4dCAvYQpSVU4gbHMgL3NyYwo=\\\"\\n  ]\\n}\"",
+   "targets_text": "\"TARGET    DESCRIPTION\\n(default) \\n\""
+  },
+  {
+   "file": "corpus/plan/context-http-gzip.Dockerfile",
+   "lint": "\"{\\n  \\\"warnings\\\": null,\\n  \\\"sources\\\": [\\n    {\\n      \\\"filename\\\": \\\"Dockerfile\\\",\\n      \\\"data\\\": \\\"RlJPTSBhbHBpbmUKQ09QWSAuIC9zcmMKQ09QWSBhLnR4dCAvYQpSVU4gbHMgL3NyYwo=\\\",\\n      \\\"language\\\": \\\"Dockerfile\\\"\\n    }\\n  ]\\n}\"",
+   "lint_status": "0",
+   "outline": "\"{\\n  \\\"sources\\\": [\\n    \\\"RlJPTSBhbHBpbmUKQ09QWSAuIC9zcmMKQ09QWSBhLnR4dCAvYQpSVU4gbHMgL3NyYwo=\\\"\\n  ]\\n}\"",
+   "outline_text": "\"\"",
+   "targets": "\"{\\n  \\\"targets\\\": [\\n    {\\n      \\\"default\\\": true,\\n      \\\"base\\\": \\\"alpine\\\",\\n      \\\"location\\\": {\\n        \\\"ranges\\\": [\\n          {\\n            \\\"start\\\": {\\n              \\\"line\\\": 1\\n            },\\n            \\\"end\\\": {\\n              \\\"line\\\": 1\\n            }\\n          }\\n        ]\\n      }\\n    }\\n  ],\\n  \\\"sources\\\": [\\n    \\\"RlJPTSBhbHBpbmUKQ09QWSAuIC9zcmMKQ09QWSBhLnR4dCAvYQpSVU4gbHMgL3NyYwo=\\\"\\n  ]\\n}\"",
+   "targets_text": "\"TARGET    DESCRIPTION\\n(default) \\n\""
+  },
+  {
+   "file": "corpus/plan/context-http-tar.Dockerfile",
+   "lint": "\"{\\n  \\\"warnings\\\": null,\\n  \\\"sources\\\": [\\n    {\\n      \\\"filename\\\": \\\"Dockerfile\\\",\\n      \\\"data\\\": \\\"RlJPTSBhbHBpbmUKQ09QWSAuIC9zcmMKQ09QWSBhLnR4dCAvYQpSVU4gbHMgL3NyYwo=\\\",\\n      \\\"language\\\": \\\"Dockerfile\\\"\\n    }\\n  ]\\n}\"",
+   "lint_status": "0",
+   "outline": "\"{\\n  \\\"sources\\\": [\\n    \\\"RlJPTSBhbHBpbmUKQ09QWSAuIC9zcmMKQ09QWSBhLnR4dCAvYQpSVU4gbHMgL3NyYwo=\\\"\\n  ]\\n}\"",
+   "outline_text": "\"\"",
+   "targets": "\"{\\n  \\\"targets\\\": [\\n    {\\n      \\\"default\\\": true,\\n      \\\"base\\\": \\\"alpine\\\",\\n      \\\"location\\\": {\\n        \\\"ranges\\\": [\\n          {\\n            \\\"start\\\": {\\n              \\\"line\\\": 1\\n            },\\n            \\\"end\\\": {\\n              \\\"line\\\": 1\\n            }\\n          }\\n        ]\\n      }\\n    }\\n  ],\\n  \\\"sources\\\": [\\n    \\\"RlJPTSBhbHBpbmUKQ09QWSAuIC9zcmMKQ09QWSBhLnR4dCAvYQpSVU4gbHMgL3NyYwo=\\\"\\n  ]\\n}\"",
+   "targets_text": "\"TARGET    DESCRIPTION\\n(default) \\n\""
+  },
+  {
    "file": "corpus/plan/copy-flags.Dockerfile",
    "lint": "\"{\\n  \\\"warnings\\\": null,\\n  \\\"sources\\\": [\\n    {\\n      \\\"filename\\\": \\\"Dockerfile\\\",\\n      \\\"data\\\": \\\"RlJPTSBhbHBpbmUKV09SS0RJUiAvdwpDT1BZIC0tY2hvd249YXBwOnN0YWZmIC0tY2htb2Q9dStyd3gsZytyeCBhIHJlbC8KQ09QWSAtLWNob3duPTEwMDAgYiAuLwpDT1BZIC0tY2hvd249cm9vdDowIGMgLgpDT1BZIC0tZXhjbHVkZT0qLnRtcCAtLWV4Y2x1ZGU9Y2FjaGUgZCAvZApDT1BZIC0tcGFyZW50cyB4L3kvLi96LyouZ28gL3NyYy8KQ09QWSAtLXBhcmVudHMgcC9xLnR4dCAvcC8KQ09QWSAtLWNobW9kPTc1NSBlIC9lCkFERCAtLWNob3duPTE6MSBmLnRhci5neiAvZi8KQUREIC0tdW5wYWNrPWZhbHNlIGcudGFyIC9nCkFERCAtLWxpbmsgaCAvaApDT1BZIC0tbGluayAtLWNob3duPTIgaSAvaQpDT1BZIC0tbGluayAtLWNobW9kPTYwMCBqIC9qCg==\\\",\\n      \\\"language\\\": \\\"Dockerfile\\\"\\n    }\\n  ]\\n}\"",
    "lint_status": "0",

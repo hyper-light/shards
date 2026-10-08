@@ -1400,6 +1400,1617 @@
   ]
  },
  {
+  "file": "corpus/plan/context-git-keep.Dockerfile",
+  "image": "{\"architecture\":\"amd64\",\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:0000000000000000000000000000000000000000000000000000000000000001\"]},\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"COPY . /src # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"COPY a.txt /a # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"RUN /bin/sh -c ls /src # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"}],\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"/bin/sh\"]}}",
+  "ops": [
+   {
+    "constraints": {},
+    "inputs": [],
+    "locations": [
+     {
+      "ranges": [
+       [
+        1,
+        0,
+        1,
+        0
+       ]
+      ],
+      "source": 0
+     }
+    ],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "FROM alpine",
+      "llb.customname": "[1/4] FROM docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+     }
+    },
+    "pb": "Ug4KBWFtZDY0EgVsaW51eFoAGngKdmRvY2tlci1pbWFnZTovL2RvY2tlci5pby9saWJyYXJ5L2FscGluZTpsYXRlc3RAc2hhMjU2OmM5ZWY1YjFmMGI0NDIyNTU3NzRhZTMxYTgzOWZmNDhjZTEyMDZhNjA2YTk3MDUyZGI4YjRhMTNhZTE1M2ZiN2M=",
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    },
+    "source": {
+     "identifier": "docker-image://docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+    }
+   },
+   {
+    "constraints": {},
+    "inputs": [],
+    "locations": [],
+    "metadata": {
+     "description": {
+      "llb.customname": "[internal] load git source git@github.com:moby/buildkit.git"
+     }
+    },
+    "pb": "WgAangMKImdpdDovL2dpdGh1Yi5jb20vbW9ieS9idWlsZGtpdC5naXQSJwoUZ2l0LmF1dGhoZWFkZXJzZWNyZXQSD0dJVF9BVVRIX0hFQURFUhIlChNnaXQuYXV0aHRva2Vuc2VjcmV0Eg5HSVRfQVVUSF9UT0tFThIvCgtnaXQuZnVsbHVybBIgZ2l0QGdpdGh1Yi5jb206bW9ieS9idWlsZGtpdC5naXQSFgoOZ2l0LmtlZXBnaXRkaXISBHRydWUSwQEKEWdpdC5rbm93bnNzaGhvc3RzEqsBZ2l0aHViLmNvbSBlY2RzYS1zaGEyLW5pc3RwMjU2IEFBQUFFMlZqWkhOaExYTm9ZVEl0Ym1semRIQXlOVFlBQUFBSWJtbHpkSEF5TlRZQUFBQkJCRW1LU0VOalFFZXpPbXhrWk15N29wS2d3RkI5bmt0NVlScllNak51RzVOODd1UmdnNkNMcmJvNXdBZFQveTZ2MG1LVjBVMncwV1oyWUIvKytUcG9ja2c9EhsKEGdpdC5tb3VudHNzaHNvY2sSB2RlZmF1bHQ=",
+    "source": {
+     "attrs": {
+      "git.authheadersecret": "GIT_AUTH_HEADER",
+      "git.authtokensecret": "GIT_AUTH_TOKEN",
+      "git.fullurl": "git@github.com:moby/buildkit.git",
+      "git.keepgitdir": "true",
+      "git.knownsshhosts": "github.com ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBEmKSENjQEezOmxkZMy7opKgwFB9nkt5YRrYMjNuG5N87uRgg6CLrbo5wAdT/y6v0mKV0U2w0WZ2YB/++Tpockg=",
+      "git.mountsshsock": "default"
+     },
+     "identifier": "git://github.com/moby/buildkit.git"
+    }
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "copy": {
+        "allowEmptyWildcard": true,
+        "allowWildcard": true,
+        "createDestPath": true,
+        "dest": "/src",
+        "dirCopyContents": true,
+        "followSymlink": true,
+        "mode": -1,
+        "src": "/",
+        "timestamp": "-1"
+       },
+       "secondaryInput": "1"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      0,
+      0
+     ],
+     [
+      1,
+      0
+     ]
+    ],
+    "locations": [
+     {
+      "ranges": [
+       [
+        2,
+        0,
+        2,
+        0
+       ]
+      ],
+      "source": 0
+     }
+    ],
+    "metadata": {
+     "description": {
+      "llb.customname": "[2/4] COPY . /src"
+     }
+    },
+    "pb": "CkkKR3NoYTI1Njo5MGEwNjQ2NzJkNmI2ZjQwMzNhYjUzZmVlNjI4YzYwMGMyZTM1MGVlM2YyYmU0NGUxNGU0YWY0ZWE1OTM4MjBmCkkKR3NoYTI1NjozM2JmZTRiNTYwZWE2MjExYmUwMTE1NWNiMDU0MDQ2MjY4ZDZmNDk4MjM0YWM5YzUwODMwZGEwNzNiYTZlNTI0WgAiLxItEAEiKQoBLxIEL3NyYyD///////////8BKAEwAUABSAFQAVj///////////8B"
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "copy": {
+        "allowEmptyWildcard": true,
+        "allowWildcard": true,
+        "createDestPath": true,
+        "dest": "/a",
+        "dirCopyContents": true,
+        "followSymlink": true,
+        "mode": -1,
+        "src": "/a.txt",
+        "timestamp": "-1"
+       },
+       "secondaryInput": "1"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      2,
+      0
+     ],
+     [
+      1,
+      0
+     ]
+    ],
+    "locations": [
+     {
+      "ranges": [
+       [
+        3,
+        0,
+        3,
+        0
+       ]
+      ],
+      "source": 0
+     }
+    ],
+    "metadata": {
+     "description": {
+      "llb.customname": "[3/4] COPY a.txt /a"
+     }
+    },
+    "pb": "CkkKR3NoYTI1NjpiZmNlODhmMzkyY2ZlMjM5ZmMyMGVjNTk3Y2E1NzE5YWMwOWFmYzY0MGI3M2M4NzFlOWMxNDUwNDUwMGY0MDAzCkkKR3NoYTI1NjozM2JmZTRiNTYwZWE2MjExYmUwMTE1NWNiMDU0MDQ2MjY4ZDZmNDk4MjM0YWM5YzUwODMwZGEwNzNiYTZlNTI0WgAiMhIwEAEiLAoGL2EudHh0EgIvYSD///////////8BKAEwAUABSAFQAVj///////////8B"
+   },
+   {
+    "constraints": {},
+    "exec": {
+     "meta": {
+      "args": [
+       "/bin/sh",
+       "-c",
+       "ls /src"
+      ],
+      "cwd": "/",
+      "env": [
+       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      ],
+      "removeMountStubsRecursive": true
+     },
+     "mounts": [
+      {
+       "dest": "/"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      3,
+      0
+     ]
+    ],
+    "locations": [
+     {
+      "ranges": [
+       [
+        4,
+        0,
+        4,
+        0
+       ]
+      ],
+      "source": 0
+     }
+    ],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "RUN ls /src",
+      "llb.customname": "[4/4] RUN ls /src"
+     }
+    },
+    "pb": "CkkKR3NoYTI1NjpjYzYxZGNjZjlkODgyM2I5MjlkOTA3MjFkOTY5MGZhMDZkZWZhZThlMDIzYzgxZmQ5Mjg2ZjkxNDFkMmU4ZGEyUg4KBWFtZDY0EgVsaW51eFoAEmUKXgoHL2Jpbi9zaAoCLWMKB2xzIC9zcmMSQVBBVEg9L3Vzci9sb2NhbC9zYmluOi91c3IvbG9jYWwvYmluOi91c3Ivc2JpbjovdXNyL2Jpbjovc2JpbjovYmluGgEvWAESAxoBLw==",
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    }
+   },
+   {
+    "inputs": [
+     [
+      4,
+      0
+     ]
+    ],
+    "metadata": {},
+    "pb": "CkkKR3NoYTI1NjoxNmEyNzRjYzYwZmYxMWUzYjM1ODRjNzAwNDY5MDE5YWQ2YWYzMDE1OTgwY2NhOTcyN2JjYTUwZDMyNjRiYjMy"
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/context-git-query.Dockerfile",
+  "image": "{\"architecture\":\"amd64\",\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:0000000000000000000000000000000000000000000000000000000000000001\"]},\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"COPY . /src # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"COPY a.txt /a # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"RUN /bin/sh -c ls /src # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"}],\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"/bin/sh\"]}}",
+  "ops": [
+   {
+    "constraints": {},
+    "inputs": [],
+    "locations": [
+     {
+      "ranges": [
+       [
+        1,
+        0,
+        1,
+        0
+       ]
+      ],
+      "source": 0
+     }
+    ],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "FROM alpine",
+      "llb.customname": "[1/4] FROM docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+     }
+    },
+    "pb": "Ug4KBWFtZDY0EgVsaW51eFoAGngKdmRvY2tlci1pbWFnZTovL2RvY2tlci5pby9saWJyYXJ5L2FscGluZTpsYXRlc3RAc2hhMjU2OmM5ZWY1YjFmMGI0NDIyNTU3NzRhZTMxYTgzOWZmNDhjZTEyMDZhNjA2YTk3MDUyZGI4YjRhMTNhZTE1M2ZiN2M=",
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    },
+    "source": {
+     "identifier": "docker-image://docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+    }
+   },
+   {
+    "constraints": {},
+    "inputs": [],
+    "locations": [],
+    "metadata": {
+     "description": {
+      "llb.customname": "[internal] load git source https://github.com/moby/buildkit.git?ref=v0.28.1\u0026subdir=frontend\u0026keep-git-dir=true\u0026checksum=abcdef0123\u0026submodules=false"
+     }
+    },
+    "pb": "WgAaigIKM2dpdDovL2dpdGh1Yi5jb20vbW9ieS9idWlsZGtpdC5naXQjdjAuMjguMTpmcm9udGVuZBInChRnaXQuYXV0aGhlYWRlcnNlY3JldBIPR0lUX0FVVEhfSEVBREVSEiUKE2dpdC5hdXRodG9rZW5zZWNyZXQSDkdJVF9BVVRIX1RPS0VOEhoKDGdpdC5jaGVja3N1bRIKYWJjZGVmMDEyMxIzCgtnaXQuZnVsbHVybBIkaHR0cHM6Ly9naXRodWIuY29tL21vYnkvYnVpbGRraXQuZ2l0EhYKDmdpdC5rZWVwZ2l0ZGlyEgR0cnVlEhoKEmdpdC5za2lwc3VibW9kdWxlcxIEdHJ1ZQ==",
+    "source": {
+     "attrs": {
+      "git.authheadersecret": "GIT_AUTH_HEADER",
+      "git.authtokensecret": "GIT_AUTH_TOKEN",
+      "git.checksum": "abcdef0123",
+      "git.fullurl": "https://github.com/moby/buildkit.git",
+      "git.keepgitdir": "true",
+      "git.skipsubmodules": "true"
+     },
+     "identifier": "git://github.com/moby/buildkit.git#v0.28.1:frontend"
+    }
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "copy": {
+        "allowEmptyWildcard": true,
+        "allowWildcard": true,
+        "createDestPath": true,
+        "dest": "/src",
+        "dirCopyContents": true,
+        "followSymlink": true,
+        "mode": -1,
+        "src": "/",
+        "timestamp": "-1"
+       },
+       "secondaryInput": "1"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      0,
+      0
+     ],
+     [
+      1,
+      0
+     ]
+    ],
+    "locations": [
+     {
+      "ranges": [
+       [
+        2,
+        0,
+        2,
+        0
+       ]
+      ],
+      "source": 0
+     }
+    ],
+    "metadata": {
+     "description": {
+      "llb.customname": "[2/4] COPY . /src"
+     }
+    },
+    "pb": "CkkKR3NoYTI1Njo5MGEwNjQ2NzJkNmI2ZjQwMzNhYjUzZmVlNjI4YzYwMGMyZTM1MGVlM2YyYmU0NGUxNGU0YWY0ZWE1OTM4MjBmCkkKR3NoYTI1NjpjYmFhZWUyNzZhOWVmOGNhOTc1YmQwZGM5MTVjMDVhNGEwODRlNTk0N2U2ZmY4Mjk3MWE1MDQzYjE1OTY0YjQzWgAiLxItEAEiKQoBLxIEL3NyYyD///////////8BKAEwAUABSAFQAVj///////////8B"
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "copy": {
+        "allowEmptyWildcard": true,
+        "allowWildcard": true,
+        "createDestPath": true,
+        "dest": "/a",
+        "dirCopyContents": true,
+        "followSymlink": true,
+        "mode": -1,
+        "src": "/a.txt",
+        "timestamp": "-1"
+       },
+       "secondaryInput": "1"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      2,
+      0
+     ],
+     [
+      1,
+      0
+     ]
+    ],
+    "locations": [
+     {
+      "ranges": [
+       [
+        3,
+        0,
+        3,
+        0
+       ]
+      ],
+      "source": 0
+     }
+    ],
+    "metadata": {
+     "description": {
+      "llb.customname": "[3/4] COPY a.txt /a"
+     }
+    },
+    "pb": "CkkKR3NoYTI1NjoxOTE0ZTg3ODUwYzY4ODM4NzljNDRiNDU5MGI5OTZmNDk4Zjg3OGQ4NGU2ODM2NDZhOTAyMWQ5NjQ1MTg5OGQyCkkKR3NoYTI1NjpjYmFhZWUyNzZhOWVmOGNhOTc1YmQwZGM5MTVjMDVhNGEwODRlNTk0N2U2ZmY4Mjk3MWE1MDQzYjE1OTY0YjQzWgAiMhIwEAEiLAoGL2EudHh0EgIvYSD///////////8BKAEwAUABSAFQAVj///////////8B"
+   },
+   {
+    "constraints": {},
+    "exec": {
+     "meta": {
+      "args": [
+       "/bin/sh",
+       "-c",
+       "ls /src"
+      ],
+      "cwd": "/",
+      "env": [
+       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      ],
+      "removeMountStubsRecursive": true
+     },
+     "mounts": [
+      {
+       "dest": "/"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      3,
+      0
+     ]
+    ],
+    "locations": [
+     {
+      "ranges": [
+       [
+        4,
+        0,
+        4,
+        0
+       ]
+      ],
+      "source": 0
+     }
+    ],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "RUN ls /src",
+      "llb.customname": "[4/4] RUN ls /src"
+     }
+    },
+    "pb": "CkkKR3NoYTI1NjphMjVkMGY1MGM3ZmFmYWQxZDAzMTU1ZmE4ZTkzNGI3N2NkOGVhM2I1MjE4NTAyZGY3MTYwNDJhOWRhNzAzZTZiUg4KBWFtZDY0EgVsaW51eFoAEmUKXgoHL2Jpbi9zaAoCLWMKB2xzIC9zcmMSQVBBVEg9L3Vzci9sb2NhbC9zYmluOi91c3IvbG9jYWwvYmluOi91c3Ivc2JpbjovdXNyL2Jpbjovc2JpbjovYmluGgEvWAESAxoBLw==",
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    }
+   },
+   {
+    "inputs": [
+     [
+      4,
+      0
+     ]
+    ],
+    "metadata": {},
+    "pb": "CkkKR3NoYTI1NjpkODA4Yjg5NTMwZjA4OTU0OWE5YmZiYmQwNjgyYjVmNzVkOTdhZmY5ZjYzYTNlZjc1YWM0ODFmMjZmMWFlNjkz"
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/context-git-subdir-opt.Dockerfile",
+  "image": "{\"architecture\":\"amd64\",\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:0000000000000000000000000000000000000000000000000000000000000001\"]},\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"COPY . /src # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"COPY a.txt /a # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"RUN /bin/sh -c ls /src # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"}],\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"/bin/sh\"]}}",
+  "ops": [
+   {
+    "constraints": {},
+    "inputs": [],
+    "locations": [
+     {
+      "ranges": [
+       [
+        1,
+        0,
+        1,
+        0
+       ]
+      ],
+      "source": 0
+     }
+    ],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "FROM alpine",
+      "llb.customname": "[1/4] FROM docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+     }
+    },
+    "pb": "Ug4KBWFtZDY0EgVsaW51eFoAGngKdmRvY2tlci1pbWFnZTovL2RvY2tlci5pby9saWJyYXJ5L2FscGluZTpsYXRlc3RAc2hhMjU2OmM5ZWY1YjFmMGI0NDIyNTU3NzRhZTMxYTgzOWZmNDhjZTEyMDZhNjA2YTk3MDUyZGI4YjRhMTNhZTE1M2ZiN2M=",
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    },
+    "source": {
+     "identifier": "docker-image://docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+    }
+   },
+   {
+    "constraints": {},
+    "inputs": [],
+    "locations": [],
+    "metadata": {
+     "description": {
+      "llb.customname": "[internal] load git source https://github.com/moby/buildkit.git#v0.28.1"
+     }
+    },
+    "pb": "WgAasQEKKmdpdDovL2dpdGh1Yi5jb20vbW9ieS9idWlsZGtpdC5naXQjdjAuMjguMRInChRnaXQuYXV0aGhlYWRlcnNlY3JldBIPR0lUX0FVVEhfSEVBREVSEiUKE2dpdC5hdXRodG9rZW5zZWNyZXQSDkdJVF9BVVRIX1RPS0VOEjMKC2dpdC5mdWxsdXJsEiRodHRwczovL2dpdGh1Yi5jb20vbW9ieS9idWlsZGtpdC5naXQ=",
+    "source": {
+     "attrs": {
+      "git.authheadersecret": "GIT_AUTH_HEADER",
+      "git.authtokensecret": "GIT_AUTH_TOKEN",
+      "git.fullurl": "https://github.com/moby/buildkit.git"
+     },
+     "identifier": "git://github.com/moby/buildkit.git#v0.28.1"
+    }
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "copy": {
+        "dest": "/",
+        "dirCopyContents": true,
+        "mode": -1,
+        "src": "/frontend",
+        "timestamp": "-1"
+       },
+       "input": "-1"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      1,
+      0
+     ]
+    ],
+    "locations": [],
+    "metadata": {},
+    "pb": "CkkKR3NoYTI1NjplYTNhZmVmNzYwZGY2ODdlZThiOTFmZDAxNjA1MzI0MWMwNTA2ZTY0NmM3M2NiMDcxOTc1ZWVmNTUyZTQ1NmQxWgAiNRIzCP///////////wEiJgoJL2Zyb250ZW5kEgEvIP///////////wEwAVj///////////8B"
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "copy": {
+        "allowEmptyWildcard": true,
+        "allowWildcard": true,
+        "createDestPath": true,
+        "dest": "/src",
+        "dirCopyContents": true,
+        "followSymlink": true,
+        "mode": -1,
+        "src": "/",
+        "timestamp": "-1"
+       },
+       "secondaryInput": "1"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      0,
+      0
+     ],
+     [
+      2,
+      0
+     ]
+    ],
+    "locations": [
+     {
+      "ranges": [
+       [
+        2,
+        0,
+        2,
+        0
+       ]
+      ],
+      "source": 0
+     }
+    ],
+    "metadata": {
+     "description": {
+      "llb.customname": "[2/4] COPY . /src"
+     }
+    },
+    "pb": "CkkKR3NoYTI1Njo5MGEwNjQ2NzJkNmI2ZjQwMzNhYjUzZmVlNjI4YzYwMGMyZTM1MGVlM2YyYmU0NGUxNGU0YWY0ZWE1OTM4MjBmCkkKR3NoYTI1NjpkMWU3MzI1M2EyMzdkNzJjYjlhYzJhMTYzNDY2MGIyN2YyZDUyYmI3ODI4YTE4ODYzOWVhNGQ3NDBiOWRkYTYyWgAiLxItEAEiKQoBLxIEL3NyYyD///////////8BKAEwAUABSAFQAVj///////////8B"
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "copy": {
+        "allowEmptyWildcard": true,
+        "allowWildcard": true,
+        "createDestPath": true,
+        "dest": "/a",
+        "dirCopyContents": true,
+        "followSymlink": true,
+        "mode": -1,
+        "src": "/a.txt",
+        "timestamp": "-1"
+       },
+       "secondaryInput": "1"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      3,
+      0
+     ],
+     [
+      2,
+      0
+     ]
+    ],
+    "locations": [
+     {
+      "ranges": [
+       [
+        3,
+        0,
+        3,
+        0
+       ]
+      ],
+      "source": 0
+     }
+    ],
+    "metadata": {
+     "description": {
+      "llb.customname": "[3/4] COPY a.txt /a"
+     }
+    },
+    "pb": "CkkKR3NoYTI1Njo0ZGE3N2I3ZGE2ZmY2YWVlNTZiYTlmNDEyZTE2OGQ3NGEyNTdiZDRmODIzNjA3ZGRlZDE1NDZjM2Y2ODdjZDJiCkkKR3NoYTI1NjpkMWU3MzI1M2EyMzdkNzJjYjlhYzJhMTYzNDY2MGIyN2YyZDUyYmI3ODI4YTE4ODYzOWVhNGQ3NDBiOWRkYTYyWgAiMhIwEAEiLAoGL2EudHh0EgIvYSD///////////8BKAEwAUABSAFQAVj///////////8B"
+   },
+   {
+    "constraints": {},
+    "exec": {
+     "meta": {
+      "args": [
+       "/bin/sh",
+       "-c",
+       "ls /src"
+      ],
+      "cwd": "/",
+      "env": [
+       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      ],
+      "removeMountStubsRecursive": true
+     },
+     "mounts": [
+      {
+       "dest": "/"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      4,
+      0
+     ]
+    ],
+    "locations": [
+     {
+      "ranges": [
+       [
+        4,
+        0,
+        4,
+        0
+       ]
+      ],
+      "source": 0
+     }
+    ],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "RUN ls /src",
+      "llb.customname": "[4/4] RUN ls /src"
+     }
+    },
+    "pb": "CkkKR3NoYTI1NjozMTY4OGU4OTJiZDhlZDNlN2MyNzY0MmI5NTRlZWNiMjg5Mzc4NDQ4Nzg0YTRlOTc0OTQ5OTEyM2M0ZjAwYzUxUg4KBWFtZDY0EgVsaW51eFoAEmUKXgoHL2Jpbi9zaAoCLWMKB2xzIC9zcmMSQVBBVEg9L3Vzci9sb2NhbC9zYmluOi91c3IvbG9jYWwvYmluOi91c3Ivc2JpbjovdXNyL2Jpbjovc2JpbjovYmluGgEvWAESAxoBLw==",
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    }
+   },
+   {
+    "inputs": [
+     [
+      5,
+      0
+     ]
+    ],
+    "metadata": {},
+    "pb": "CkkKR3NoYTI1NjplMDUyYzZkODEyMjNhZWIwOWM5YjZmNDY2NDQwN2FjMjA0NmY1MzliMjg5ZmYzZDcwZDgxNDdhNDY5MDQzZDZj"
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/context-git.Dockerfile",
+  "image": "{\"architecture\":\"amd64\",\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:0000000000000000000000000000000000000000000000000000000000000001\"]},\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"COPY . /src # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"COPY a.txt /a # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"RUN /bin/sh -c ls /src # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"}],\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"/bin/sh\"]}}",
+  "ops": [
+   {
+    "constraints": {},
+    "inputs": [],
+    "locations": [
+     {
+      "ranges": [
+       [
+        1,
+        0,
+        1,
+        0
+       ]
+      ],
+      "source": 0
+     }
+    ],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "FROM alpine",
+      "llb.customname": "[1/4] FROM docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+     }
+    },
+    "pb": "Ug4KBWFtZDY0EgVsaW51eFoAGngKdmRvY2tlci1pbWFnZTovL2RvY2tlci5pby9saWJyYXJ5L2FscGluZTpsYXRlc3RAc2hhMjU2OmM5ZWY1YjFmMGI0NDIyNTU3NzRhZTMxYTgzOWZmNDhjZTEyMDZhNjA2YTk3MDUyZGI4YjRhMTNhZTE1M2ZiN2M=",
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    },
+    "source": {
+     "identifier": "docker-image://docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+    }
+   },
+   {
+    "constraints": {},
+    "inputs": [],
+    "locations": [],
+    "metadata": {
+     "description": {
+      "llb.customname": "[internal] load git source https://github.com/moby/buildkit.git#v0.28.1:frontend"
+     }
+    },
+    "pb": "WgAaugEKM2dpdDovL2dpdGh1Yi5jb20vbW9ieS9idWlsZGtpdC5naXQjdjAuMjguMTpmcm9udGVuZBInChRnaXQuYXV0aGhlYWRlcnNlY3JldBIPR0lUX0FVVEhfSEVBREVSEiUKE2dpdC5hdXRodG9rZW5zZWNyZXQSDkdJVF9BVVRIX1RPS0VOEjMKC2dpdC5mdWxsdXJsEiRodHRwczovL2dpdGh1Yi5jb20vbW9ieS9idWlsZGtpdC5naXQ=",
+    "source": {
+     "attrs": {
+      "git.authheadersecret": "GIT_AUTH_HEADER",
+      "git.authtokensecret": "GIT_AUTH_TOKEN",
+      "git.fullurl": "https://github.com/moby/buildkit.git"
+     },
+     "identifier": "git://github.com/moby/buildkit.git#v0.28.1:frontend"
+    }
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "copy": {
+        "allowEmptyWildcard": true,
+        "allowWildcard": true,
+        "createDestPath": true,
+        "dest": "/src",
+        "dirCopyContents": true,
+        "followSymlink": true,
+        "mode": -1,
+        "src": "/",
+        "timestamp": "-1"
+       },
+       "secondaryInput": "1"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      0,
+      0
+     ],
+     [
+      1,
+      0
+     ]
+    ],
+    "locations": [
+     {
+      "ranges": [
+       [
+        2,
+        0,
+        2,
+        0
+       ]
+      ],
+      "source": 0
+     }
+    ],
+    "metadata": {
+     "description": {
+      "llb.customname": "[2/4] COPY . /src"
+     }
+    },
+    "pb": "CkkKR3NoYTI1Njo5MGEwNjQ2NzJkNmI2ZjQwMzNhYjUzZmVlNjI4YzYwMGMyZTM1MGVlM2YyYmU0NGUxNGU0YWY0ZWE1OTM4MjBmCkkKR3NoYTI1NjpmM2I5NTYxZWM0OTMzMjVjMDE1ZGVhMzZkZTJkZjY0MWU2YzY1OWZkYmIyMjI5OWZlNDBjN2IzNmRkYmM2MGI3WgAiLxItEAEiKQoBLxIEL3NyYyD///////////8BKAEwAUABSAFQAVj///////////8B"
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "copy": {
+        "allowEmptyWildcard": true,
+        "allowWildcard": true,
+        "createDestPath": true,
+        "dest": "/a",
+        "dirCopyContents": true,
+        "followSymlink": true,
+        "mode": -1,
+        "src": "/a.txt",
+        "timestamp": "-1"
+       },
+       "secondaryInput": "1"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      2,
+      0
+     ],
+     [
+      1,
+      0
+     ]
+    ],
+    "locations": [
+     {
+      "ranges": [
+       [
+        3,
+        0,
+        3,
+        0
+       ]
+      ],
+      "source": 0
+     }
+    ],
+    "metadata": {
+     "description": {
+      "llb.customname": "[3/4] COPY a.txt /a"
+     }
+    },
+    "pb": "CkkKR3NoYTI1Njo0MDJlNjI5OWIwOTU3OTIzZDRlZGY4YmM1Yzk5NDI5ZDFmNDNhYWE1Yjg0YjdkMzVhMTRlODg1ZGRkMWU5NTEzCkkKR3NoYTI1NjpmM2I5NTYxZWM0OTMzMjVjMDE1ZGVhMzZkZTJkZjY0MWU2YzY1OWZkYmIyMjI5OWZlNDBjN2IzNmRkYmM2MGI3WgAiMhIwEAEiLAoGL2EudHh0EgIvYSD///////////8BKAEwAUABSAFQAVj///////////8B"
+   },
+   {
+    "constraints": {},
+    "exec": {
+     "meta": {
+      "args": [
+       "/bin/sh",
+       "-c",
+       "ls /src"
+      ],
+      "cwd": "/",
+      "env": [
+       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      ],
+      "removeMountStubsRecursive": true
+     },
+     "mounts": [
+      {
+       "dest": "/"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      3,
+      0
+     ]
+    ],
+    "locations": [
+     {
+      "ranges": [
+       [
+        4,
+        0,
+        4,
+        0
+       ]
+      ],
+      "source": 0
+     }
+    ],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "RUN ls /src",
+      "llb.customname": "[4/4] RUN ls /src"
+     }
+    },
+    "pb": "CkkKR3NoYTI1NjozOWJkZDg3ZjIxMjhjMjU0ZWI3MjdjZWRlMjhiYzlmMjMzNDYzYTcwNWE5NWM0YzEyOWE0MzkxYjVkZmM2MDZiUg4KBWFtZDY0EgVsaW51eFoAEmUKXgoHL2Jpbi9zaAoCLWMKB2xzIC9zcmMSQVBBVEg9L3Vzci9sb2NhbC9zYmluOi91c3IvbG9jYWwvYmluOi91c3Ivc2JpbjovdXNyL2Jpbjovc2JpbjovYmluGgEvWAESAxoBLw==",
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    }
+   },
+   {
+    "inputs": [
+     [
+      4,
+      0
+     ]
+    ],
+    "metadata": {},
+    "pb": "CkkKR3NoYTI1NjphYjUzZjdlMWYzY2EwNmFiOWM4Y2E2MmJlOTAzOTBmZTBiOWUxNGVlMGNiZWEyNmVkN2JlZDJmMmNhNTkxM2M5"
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/context-http-file.Dockerfile",
+  "image": "{\"architecture\":\"amd64\",\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:0000000000000000000000000000000000000000000000000000000000000001\"]},\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"COPY . /src # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"COPY a.txt /a # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"RUN /bin/sh -c ls /src # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"}],\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"/bin/sh\"]}}",
+  "ops": [
+   {
+    "constraints": {},
+    "inputs": [],
+    "locations": [
+     {
+      "ranges": [
+       [
+        1,
+        0,
+        1,
+        0
+       ]
+      ],
+      "source": 0
+     }
+    ],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "FROM alpine",
+      "llb.customname": "[1/4] FROM docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+     }
+    },
+    "pb": "Ug4KBWFtZDY0EgVsaW51eFoAGngKdmRvY2tlci1pbWFnZTovL2RvY2tlci5pby9saWJyYXJ5L2FscGluZTpsYXRlc3RAc2hhMjU2OmM5ZWY1YjFmMGI0NDIyNTU3NzRhZTMxYTgzOWZmNDhjZTEyMDZhNjA2YTk3MDUyZGI4YjRhMTNhZTE1M2ZiN2M=",
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    },
+    "source": {
+     "identifier": "docker-image://docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+    }
+   },
+   {
+    "constraints": {},
+    "inputs": [],
+    "locations": [],
+    "metadata": {
+     "description": {
+      "llb.customname": "[internal] load remote build context"
+     }
+    },
+    "pb": "WgAaOgoeaHR0cHM6Ly9leGFtcGxlLmNvbS9Eb2NrZXJmaWxlEhgKDWh0dHAuZmlsZW5hbWUSB2NvbnRleHQ=",
+    "source": {
+     "attrs": {
+      "http.filename": "context"
+     },
+     "identifier": "https://example.com/Dockerfile"
+    }
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "copy": {
+        "allowEmptyWildcard": true,
+        "allowWildcard": true,
+        "createDestPath": true,
+        "dest": "/src",
+        "dirCopyContents": true,
+        "followSymlink": true,
+        "mode": -1,
+        "src": "/",
+        "timestamp": "-1"
+       },
+       "secondaryInput": "1"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      0,
+      0
+     ],
+     [
+      1,
+      0
+     ]
+    ],
+    "locations": [
+     {
+      "ranges": [
+       [
+        2,
+        0,
+        2,
+        0
+       ]
+      ],
+      "source": 0
+     }
+    ],
+    "metadata": {
+     "description": {
+      "llb.customname": "[2/4] COPY . /src"
+     }
+    },
+    "pb": "CkkKR3NoYTI1Njo5MGEwNjQ2NzJkNmI2ZjQwMzNhYjUzZmVlNjI4YzYwMGMyZTM1MGVlM2YyYmU0NGUxNGU0YWY0ZWE1OTM4MjBmCkkKR3NoYTI1NjpmMGEwMTU1OWMzNjdkMDVkODlhNWY5NTQ3NGQwODk3ODk5MjhmOWJhZGNmNTc5YzdiNzY2NTRmMzkxYjVhNjQ0WgAiLxItEAEiKQoBLxIEL3NyYyD///////////8BKAEwAUABSAFQAVj///////////8B"
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "copy": {
+        "allowEmptyWildcard": true,
+        "allowWildcard": true,
+        "createDestPath": true,
+        "dest": "/a",
+        "dirCopyContents": true,
+        "followSymlink": true,
+        "mode": -1,
+        "src": "/a.txt",
+        "timestamp": "-1"
+       },
+       "secondaryInput": "1"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      2,
+      0
+     ],
+     [
+      1,
+      0
+     ]
+    ],
+    "locations": [
+     {
+      "ranges": [
+       [
+        3,
+        0,
+        3,
+        0
+       ]
+      ],
+      "source": 0
+     }
+    ],
+    "metadata": {
+     "description": {
+      "llb.customname": "[3/4] COPY a.txt /a"
+     }
+    },
+    "pb": "CkkKR3NoYTI1NjplYjU2MDJlYzA4ODhhNjE3MWUzNTdhMjBiZWQ5NjQ1Yjk2NjdhNzc1NDg3ZWUyOTM3NjFmOThmMTYwNzY1NzQxCkkKR3NoYTI1NjpmMGEwMTU1OWMzNjdkMDVkODlhNWY5NTQ3NGQwODk3ODk5MjhmOWJhZGNmNTc5YzdiNzY2NTRmMzkxYjVhNjQ0WgAiMhIwEAEiLAoGL2EudHh0EgIvYSD///////////8BKAEwAUABSAFQAVj///////////8B"
+   },
+   {
+    "constraints": {},
+    "exec": {
+     "meta": {
+      "args": [
+       "/bin/sh",
+       "-c",
+       "ls /src"
+      ],
+      "cwd": "/",
+      "env": [
+       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      ],
+      "removeMountStubsRecursive": true
+     },
+     "mounts": [
+      {
+       "dest": "/"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      3,
+      0
+     ]
+    ],
+    "locations": [
+     {
+      "ranges": [
+       [
+        4,
+        0,
+        4,
+        0
+       ]
+      ],
+      "source": 0
+     }
+    ],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "RUN ls /src",
+      "llb.customname": "[4/4] RUN ls /src"
+     }
+    },
+    "pb": "CkkKR3NoYTI1NjpiMzhlM2ExZjI4NmFhYzdhNTEyNDljZDZmYTcxODY4Nzk1ZGMyYzVjNDZkMjBhZjBhMGQ1ZDY0ZTU0NmE5MDkzUg4KBWFtZDY0EgVsaW51eFoAEmUKXgoHL2Jpbi9zaAoCLWMKB2xzIC9zcmMSQVBBVEg9L3Vzci9sb2NhbC9zYmluOi91c3IvbG9jYWwvYmluOi91c3Ivc2JpbjovdXNyL2Jpbjovc2JpbjovYmluGgEvWAESAxoBLw==",
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    }
+   },
+   {
+    "inputs": [
+     [
+      4,
+      0
+     ]
+    ],
+    "metadata": {},
+    "pb": "CkkKR3NoYTI1NjpiNmExY2E2YTY0OTM3YzUxYjc2MzE4NGFlMmFkMzc2ZjQ0Nzc1Y2E0NDk2MzUwNmQyZjEyZjdmMjBiZjNhNzFh"
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/context-http-gzip.Dockerfile",
+  "image": "{\"architecture\":\"amd64\",\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:0000000000000000000000000000000000000000000000000000000000000001\"]},\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"COPY . /src # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"COPY a.txt /a # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"RUN /bin/sh -c ls /src # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"}],\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"/bin/sh\"]}}",
+  "ops": [
+   {
+    "constraints": {},
+    "inputs": [],
+    "locations": [
+     {
+      "ranges": [
+       [
+        1,
+        0,
+        1,
+        0
+       ]
+      ],
+      "source": 0
+     }
+    ],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "FROM alpine",
+      "llb.customname": "[1/4] FROM docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+     }
+    },
+    "pb": "Ug4KBWFtZDY0EgVsaW51eFoAGngKdmRvY2tlci1pbWFnZTovL2RvY2tlci5pby9saWJyYXJ5L2FscGluZTpsYXRlc3RAc2hhMjU2OmM5ZWY1YjFmMGI0NDIyNTU3NzRhZTMxYTgzOWZmNDhjZTEyMDZhNjA2YTk3MDUyZGI4YjRhMTNhZTE1M2ZiN2M=",
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    },
+    "source": {
+     "identifier": "docker-image://docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+    }
+   },
+   {
+    "constraints": {},
+    "inputs": [],
+    "locations": [],
+    "metadata": {
+     "description": {
+      "llb.customname": "[internal] load remote build context"
+     }
+    },
+    "pb": "WgAaOgoeaHR0cHM6Ly9leGFtcGxlLmNvbS9jdHgudGFyLmd6EhgKDWh0dHAuZmlsZW5hbWUSB2NvbnRleHQ=",
+    "source": {
+     "attrs": {
+      "http.filename": "context"
+     },
+     "identifier": "https://example.com/ctx.tar.gz"
+    }
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "copy": {
+        "attemptUnpackDockerCompatibility": true,
+        "dest": "/",
+        "mode": -1,
+        "src": "/context",
+        "timestamp": "-1"
+       },
+       "input": "-1"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      1,
+      0
+     ]
+    ],
+    "locations": [],
+    "metadata": {},
+    "pb": "CkkKR3NoYTI1NjoxZTNiOWU3OTUwMzY4MTZlM2NiZThmZTBiYWU3ZjBlNzRhYjc5NDgwMTI5OTMyZWU4Y2Y0OWFiZGE5YTM2NmU4WgAiNBIyCP///////////wEiJQoIL2NvbnRleHQSAS8g////////////ATgBWP///////////wE="
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "copy": {
+        "allowEmptyWildcard": true,
+        "allowWildcard": true,
+        "createDestPath": true,
+        "dest": "/src",
+        "dirCopyContents": true,
+        "followSymlink": true,
+        "mode": -1,
+        "src": "/",
+        "timestamp": "-1"
+       },
+       "secondaryInput": "1"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      0,
+      0
+     ],
+     [
+      2,
+      0
+     ]
+    ],
+    "locations": [
+     {
+      "ranges": [
+       [
+        2,
+        0,
+        2,
+        0
+       ]
+      ],
+      "source": 0
+     }
+    ],
+    "metadata": {
+     "description": {
+      "llb.customname": "[2/4] COPY . /src"
+     }
+    },
+    "pb": "CkkKR3NoYTI1Njo5MGEwNjQ2NzJkNmI2ZjQwMzNhYjUzZmVlNjI4YzYwMGMyZTM1MGVlM2YyYmU0NGUxNGU0YWY0ZWE1OTM4MjBmCkkKR3NoYTI1NjpiNmQxM2FkYzVkNzMxNTMxYjhiZmYyMWI3MjQ5NzQ4ZGIxNjI1YTU4MDQyMWIzYTQzMzhkNzQ3Njc3NTYzMjg4WgAiLxItEAEiKQoBLxIEL3NyYyD///////////8BKAEwAUABSAFQAVj///////////8B"
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "copy": {
+        "allowEmptyWildcard": true,
+        "allowWildcard": true,
+        "createDestPath": true,
+        "dest": "/a",
+        "dirCopyContents": true,
+        "followSymlink": true,
+        "mode": -1,
+        "src": "/a.txt",
+        "timestamp": "-1"
+       },
+       "secondaryInput": "1"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      3,
+      0
+     ],
+     [
+      2,
+      0
+     ]
+    ],
+    "locations": [
+     {
+      "ranges": [
+       [
+        3,
+        0,
+        3,
+        0
+       ]
+      ],
+      "source": 0
+     }
+    ],
+    "metadata": {
+     "description": {
+      "llb.customname": "[3/4] COPY a.txt /a"
+     }
+    },
+    "pb": "CkkKR3NoYTI1Njo5M2U2NjViNGY1NDJhNGEwYjU0MmI3M2NhNzVkNGM5NDlhMmU5MDdjMjQyZGMwMTlhMTY4Y2FkMzA2OWU0Y2NkCkkKR3NoYTI1NjpiNmQxM2FkYzVkNzMxNTMxYjhiZmYyMWI3MjQ5NzQ4ZGIxNjI1YTU4MDQyMWIzYTQzMzhkNzQ3Njc3NTYzMjg4WgAiMhIwEAEiLAoGL2EudHh0EgIvYSD///////////8BKAEwAUABSAFQAVj///////////8B"
+   },
+   {
+    "constraints": {},
+    "exec": {
+     "meta": {
+      "args": [
+       "/bin/sh",
+       "-c",
+       "ls /src"
+      ],
+      "cwd": "/",
+      "env": [
+       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      ],
+      "removeMountStubsRecursive": true
+     },
+     "mounts": [
+      {
+       "dest": "/"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      4,
+      0
+     ]
+    ],
+    "locations": [
+     {
+      "ranges": [
+       [
+        4,
+        0,
+        4,
+        0
+       ]
+      ],
+      "source": 0
+     }
+    ],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "RUN ls /src",
+      "llb.customname": "[4/4] RUN ls /src"
+     }
+    },
+    "pb": "CkkKR3NoYTI1NjowZmNkYjBiYWZjY2E4NWI3MDlmZWRjOTk4ZmM5MmE4NTdmMDdjNjM0YmRmMzhjZDZlNmI5NTQ1YTEyOTRjOWU1Ug4KBWFtZDY0EgVsaW51eFoAEmUKXgoHL2Jpbi9zaAoCLWMKB2xzIC9zcmMSQVBBVEg9L3Vzci9sb2NhbC9zYmluOi91c3IvbG9jYWwvYmluOi91c3Ivc2JpbjovdXNyL2Jpbjovc2JpbjovYmluGgEvWAESAxoBLw==",
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    }
+   },
+   {
+    "inputs": [
+     [
+      5,
+      0
+     ]
+    ],
+    "metadata": {},
+    "pb": "CkkKR3NoYTI1NjowNDcxNDU3MzNjNmQzNjJiODgwNDc5OTU2YzdjZDBhZDNmYWU4ZjM1ZjE3NGJjOGY3MGIwM2MyMWJkMGJlMTM1"
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/context-http-tar.Dockerfile",
+  "image": "{\"architecture\":\"amd64\",\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:0000000000000000000000000000000000000000000000000000000000000001\"]},\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"COPY . /src # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"COPY a.txt /a # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"RUN /bin/sh -c ls /src # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"}],\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"/bin/sh\"]}}",
+  "ops": [
+   {
+    "constraints": {},
+    "inputs": [],
+    "locations": [
+     {
+      "ranges": [
+       [
+        1,
+        0,
+        1,
+        0
+       ]
+      ],
+      "source": 0
+     }
+    ],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "FROM alpine",
+      "llb.customname": "[1/4] FROM docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+     }
+    },
+    "pb": "Ug4KBWFtZDY0EgVsaW51eFoAGngKdmRvY2tlci1pbWFnZTovL2RvY2tlci5pby9saWJyYXJ5L2FscGluZTpsYXRlc3RAc2hhMjU2OmM5ZWY1YjFmMGI0NDIyNTU3NzRhZTMxYTgzOWZmNDhjZTEyMDZhNjA2YTk3MDUyZGI4YjRhMTNhZTE1M2ZiN2M=",
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    },
+    "source": {
+     "identifier": "docker-image://docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+    }
+   },
+   {
+    "constraints": {},
+    "inputs": [],
+    "locations": [],
+    "metadata": {
+     "description": {
+      "llb.customname": "[internal] load remote build context"
+     }
+    },
+    "pb": "WgAaNwobaHR0cHM6Ly9leGFtcGxlLmNvbS9jdHgudGFyEhgKDWh0dHAuZmlsZW5hbWUSB2NvbnRleHQ=",
+    "source": {
+     "attrs": {
+      "http.filename": "context"
+     },
+     "identifier": "https://example.com/ctx.tar"
+    }
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "copy": {
+        "attemptUnpackDockerCompatibility": true,
+        "dest": "/",
+        "mode": -1,
+        "src": "/context",
+        "timestamp": "-1"
+       },
+       "input": "-1"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      1,
+      0
+     ]
+    ],
+    "locations": [],
+    "metadata": {},
+    "pb": "CkkKR3NoYTI1NjpiNzhiMjhjZjZmN2U4NDcwMGEwMDRkZDZmZWQ5MGVkMzY3MzRmOTVkZGUyM2JiMjZkZjQxNjQyNzY2YjZiOWM1WgAiNBIyCP///////////wEiJQoIL2NvbnRleHQSAS8g////////////ATgBWP///////////wE="
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "copy": {
+        "allowEmptyWildcard": true,
+        "allowWildcard": true,
+        "createDestPath": true,
+        "dest": "/src",
+        "dirCopyContents": true,
+        "followSymlink": true,
+        "mode": -1,
+        "src": "/",
+        "timestamp": "-1"
+       },
+       "secondaryInput": "1"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      0,
+      0
+     ],
+     [
+      2,
+      0
+     ]
+    ],
+    "locations": [
+     {
+      "ranges": [
+       [
+        2,
+        0,
+        2,
+        0
+       ]
+      ],
+      "source": 0
+     }
+    ],
+    "metadata": {
+     "description": {
+      "llb.customname": "[2/4] COPY . /src"
+     }
+    },
+    "pb": "CkkKR3NoYTI1Njo5MGEwNjQ2NzJkNmI2ZjQwMzNhYjUzZmVlNjI4YzYwMGMyZTM1MGVlM2YyYmU0NGUxNGU0YWY0ZWE1OTM4MjBmCkkKR3NoYTI1NjplOWE4MmQyYzk0YTZkNjdjMmRmZDY3NDg3NzRjOWE5NWVhNjQxNzEzZjQzMGM1OTk2NTZhNmZjZDNlZjc0MDg3WgAiLxItEAEiKQoBLxIEL3NyYyD///////////8BKAEwAUABSAFQAVj///////////8B"
+   },
+   {
+    "constraints": {},
+    "file": {
+     "actions": [
+      {
+       "copy": {
+        "allowEmptyWildcard": true,
+        "allowWildcard": true,
+        "createDestPath": true,
+        "dest": "/a",
+        "dirCopyContents": true,
+        "followSymlink": true,
+        "mode": -1,
+        "src": "/a.txt",
+        "timestamp": "-1"
+       },
+       "secondaryInput": "1"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      3,
+      0
+     ],
+     [
+      2,
+      0
+     ]
+    ],
+    "locations": [
+     {
+      "ranges": [
+       [
+        3,
+        0,
+        3,
+        0
+       ]
+      ],
+      "source": 0
+     }
+    ],
+    "metadata": {
+     "description": {
+      "llb.customname": "[3/4] COPY a.txt /a"
+     }
+    },
+    "pb": "CkkKR3NoYTI1NjozNjM2NzRmZWFjMWNjYTkzZDM5MzhmZjY2OTdiZWE0ZjBiM2YyN2QyNjczYzMyZDVhZDAxYzg3Y2M5YjQ2MjMxCkkKR3NoYTI1NjplOWE4MmQyYzk0YTZkNjdjMmRmZDY3NDg3NzRjOWE5NWVhNjQxNzEzZjQzMGM1OTk2NTZhNmZjZDNlZjc0MDg3WgAiMhIwEAEiLAoGL2EudHh0EgIvYSD///////////8BKAEwAUABSAFQAVj///////////8B"
+   },
+   {
+    "constraints": {},
+    "exec": {
+     "meta": {
+      "args": [
+       "/bin/sh",
+       "-c",
+       "ls /src"
+      ],
+      "cwd": "/",
+      "env": [
+       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      ],
+      "removeMountStubsRecursive": true
+     },
+     "mounts": [
+      {
+       "dest": "/"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      4,
+      0
+     ]
+    ],
+    "locations": [
+     {
+      "ranges": [
+       [
+        4,
+        0,
+        4,
+        0
+       ]
+      ],
+      "source": 0
+     }
+    ],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "RUN ls /src",
+      "llb.customname": "[4/4] RUN ls /src"
+     }
+    },
+    "pb": "CkkKR3NoYTI1NjoyMzUyMDNkNTVhMTk0YjA0ZTk3ZmZlMzY2OTgyM2Q2NzY5MjI2MzY5ZWQ1ZDM1MDgwNmJiNmM4OTc0NmI5YWIxUg4KBWFtZDY0EgVsaW51eFoAEmUKXgoHL2Jpbi9zaAoCLWMKB2xzIC9zcmMSQVBBVEg9L3Vzci9sb2NhbC9zYmluOi91c3IvbG9jYWwvYmluOi91c3Ivc2JpbjovdXNyL2Jpbjovc2JpbjovYmluGgEvWAESAxoBLw==",
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    }
+   },
+   {
+    "inputs": [
+     [
+      5,
+      0
+     ]
+    ],
+    "metadata": {},
+    "pb": "CkkKR3NoYTI1NjpiZjgyZTJkNGY3M2MxZmJmZmRiOTNlODgwM2QzOWIzZTExYTA2NTFmZjBhODcyYWYzZGQ4MzA3ODc5ZmJlZDBh"
+   }
+  ],
+  "warnings": null
+ },
+ {
   "file": "corpus/plan/copy-flags.Dockerfile",
   "image": "{\"architecture\":\"amd64\",\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:0000000000000000000000000000000000000000000000000000000000000001\"]},\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"WORKDIR /w\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"COPY --chown=app:staff --chmod=u+rwx,g+rx a rel/ # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"COPY --chown=1000 b ./ # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"COPY --chown=root:0 c . # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"COPY d /d # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"COPY --parents x/y/./z/*.go /src/ # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"COPY --parents p/q.txt /p/ # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"COPY --chmod=755 e /e # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"ADD --chown=1:1 f.tar.gz /f/ # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"ADD g.tar /g # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"ADD h /h # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"COPY --chown=2 i /i # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"COPY --chmod=600 j /j # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"}],\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"/bin/sh\"],\"WorkingDir\":\"/w\"}}",
   "ops": [

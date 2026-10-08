@@ -8,15 +8,15 @@
 package main
 
 import (
-	"google.golang.org/protobuf/proto"
 	"bufio"
 	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"net/url"
 	"errors"
 	"fmt"
+	"google.golang.org/protobuf/proto"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -26,30 +26,30 @@ import (
 	"unicode"
 
 	"github.com/docker/go-units"
-	"github.com/tonistiigi/go-csvvalue"
-	"github.com/moby/patternmatcher"
-	"github.com/moby/patternmatcher/ignorefile"
 	"github.com/moby/buildkit/client/llb"
 	"github.com/moby/buildkit/client/llb/sourceresolver"
 	"github.com/moby/buildkit/frontend/dockerfile/dfgitutil"
-	"github.com/moby/buildkit/util/gitutil"
 	"github.com/moby/buildkit/frontend/dockerfile/dockerfile2llb"
 	"github.com/moby/buildkit/frontend/dockerfile/instructions"
-	"github.com/moby/buildkit/frontend/dockerui"
-	"github.com/moby/buildkit/frontend/subrequests"
-	"github.com/moby/buildkit/frontend/subrequests/outline"
-	"github.com/moby/buildkit/frontend/subrequests/targets"
-	gwclient "github.com/moby/buildkit/frontend/gateway/client"
-	gwpb "github.com/moby/buildkit/frontend/gateway/pb"
-	fstypes "github.com/tonistiigi/fsutil/types"
-	"github.com/moby/buildkit/solver/pb"
-	dockerspec "github.com/moby/docker-image-spec/specs-go/v1"
-	digest "github.com/opencontainers/go-digest"
-	ocispecs "github.com/opencontainers/image-spec/specs-go/v1"
-	"google.golang.org/protobuf/encoding/protojson"
 	"github.com/moby/buildkit/frontend/dockerfile/linter"
 	"github.com/moby/buildkit/frontend/dockerfile/parser"
 	"github.com/moby/buildkit/frontend/dockerfile/shell"
+	"github.com/moby/buildkit/frontend/dockerui"
+	gwclient "github.com/moby/buildkit/frontend/gateway/client"
+	gwpb "github.com/moby/buildkit/frontend/gateway/pb"
+	"github.com/moby/buildkit/frontend/subrequests"
+	"github.com/moby/buildkit/frontend/subrequests/outline"
+	"github.com/moby/buildkit/frontend/subrequests/targets"
+	"github.com/moby/buildkit/solver/pb"
+	"github.com/moby/buildkit/util/gitutil"
+	dockerspec "github.com/moby/docker-image-spec/specs-go/v1"
+	"github.com/moby/patternmatcher"
+	"github.com/moby/patternmatcher/ignorefile"
+	digest "github.com/opencontainers/go-digest"
+	ocispecs "github.com/opencontainers/image-spec/specs-go/v1"
+	fstypes "github.com/tonistiigi/fsutil/types"
+	"github.com/tonistiigi/go-csvvalue"
+	"google.golang.org/protobuf/encoding/protojson"
 )
 
 func q(s string) string { return strconv.Quote(s) }
@@ -384,8 +384,12 @@ type planOpts struct {
 	// "" for --no-cache).
 	NoCache *string `json:"no_cache"`
 	// The frontend's other options, as buildx sends them (add-hosts, shm-size,
-	// cgroup-parent, force-network-mode, memory and the like), read by dockerui.
+	// cgroup-parent, force-network-mode, memory and the like), read by dockerui; among
+	// them `context`, a Git or HTTP URL that is the build's context.
 	Frontend map[string]string `json:"frontend"`
+	// What an HTTP context's download begins with (base64), which dockerui reads to
+	// tell an archive from a Dockerfile.
+	HTTPContext string `json:"http_context"`
 }
 
 // A gateway as the frontend sees one, of a build given only named contexts: its options,
@@ -395,6 +399,8 @@ type gateway struct {
 	gwclient.Client
 	opts   gwclient.BuildOpts
 	images resolver
+	// An HTTP context's download.
+	download []byte
 }
 
 func (g *gateway) BuildOpts() gwclient.BuildOpts { return g.opts }
@@ -405,8 +411,28 @@ func (g *gateway) ResolveImageConfig(ctx context.Context, ref string, opt source
 
 func (g *gateway) Solve(context.Context, gwclient.SolveRequest) (*gwclient.Result, error) {
 	res := gwclient.NewResult()
+	if g.download != nil {
+		res.SetRef(downloaded{data: g.download})
+		return res, nil
+	}
 	res.SetRef(noFiles{})
 	return res, nil
+}
+
+// A solved HTTP source: its one file, `context`, read up to a range's length.
+type downloaded struct {
+	gwclient.Reference
+	data []byte
+}
+
+func (d downloaded) ReadFile(_ context.Context, r gwclient.ReadRequest) ([]byte, error) {
+	if r.Filename != "context" {
+		return nil, os.ErrNotExist
+	}
+	if r.Range != nil && int(r.Range.Length) < len(d.data) {
+		return d.data[:r.Range.Length], nil
+	}
+	return d.data, nil
 }
 
 // The frontend's inputs: none, as buildx gives none for these contexts.
@@ -481,7 +507,14 @@ func convertOpt(root, rel string, images resolver, warn func(string)) ([]byte, d
 		for k, v := range opts.SharedKeys {
 			bopts.Opts["sharedkey:localdir:"+k] = v
 		}
-		named, err = dockerui.NewClient(&gateway{opts: bopts, images: images})
+		var download []byte
+		if opts.HTTPContext != "" {
+			download, err = base64.StdEncoding.DecodeString(opts.HTTPContext)
+			if err != nil {
+				panic(err)
+			}
+		}
+		named, err = dockerui.NewClient(&gateway{opts: bopts, images: images, download: download})
 		if err != nil {
 			panic(err)
 		}
@@ -987,9 +1020,9 @@ func urlsFile(testdata string) {
 			r["git_ref"] = map[string]any{
 				"remote": ref.Remote, "short_name": ref.ShortName, "ref": ref.Ref, "checksum": ref.Checksum,
 				"subdir": ref.SubDir, "local": ref.IndistinguishableFromLocal, "tcp": ref.UnencryptedTCP,
-				"keep": fmt.Sprint(ref.KeepGitDir != nil && *ref.KeepGitDir, ref.KeepGitDir != nil),
+				"keep":       fmt.Sprint(ref.KeepGitDir != nil && *ref.KeepGitDir, ref.KeepGitDir != nil),
 				"submodules": fmt.Sprint(ref.Submodules != nil && *ref.Submodules, ref.Submodules != nil),
-				"mtime": ref.MTime, "fetch_by_commit": ref.FetchByCommit,
+				"mtime":      ref.MTime, "fetch_by_commit": ref.FetchByCommit,
 			}
 		}
 		out = append(out, r)

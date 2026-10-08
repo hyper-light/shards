@@ -82,6 +82,26 @@ pub struct Options {
     /// How a stage's base image is resolved (`image-resolve-mode`, dockerui.rs): its image
     /// source's `image.resolvemode`, none for the default.
     pub image_resolve_mode: Vec<u8>,
+    /// The build context: the client's directory, or a Git or HTTP(S) URL's (dockerui's
+    /// `initContext`, of the frontend's `context` option).
+    pub main_context: MainContext,
+    /// The directory of a remote context that is the context (`contextsubdir`).
+    pub context_subdir: Option<Vec<u8>>,
+}
+
+/// What the build context is (dockerui's `initContext`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum MainContext {
+    /// The client's directory, sent as `local://context`.
+    #[default]
+    Local,
+    /// A Git repository (`DetectGitContext`): its URL as written, and whether
+    /// BUILDKIT_CONTEXT_KEEP_GIT_DIR keeps its `.git`.
+    Git { url: Vec<u8>, keep_git_dir: bool },
+    /// An HTTP(S) URL's download (`DetectHTTPContext`): unpacked where it is an archive
+    /// (dockerui reads its first 1024 bytes), else it is the Dockerfile, alone in the
+    /// context.
+    Http { url: Vec<u8>, archive: bool },
 }
 
 /// A named context a stage or base name is given (dockerui's NamedContext): its name (the
@@ -771,13 +791,7 @@ fn plan_with(
     }
 
     let mut graph = Graph::default();
-    let context = graph
-        .source(
-            b"local://context".to_vec(),
-            BTreeMap::new(),
-            None,
-            Meta::default(),
-        )
+    let context = main_context(&mut graph, opts)?
         .output
         .ok_or_else(|| Fail::new(b"no build context".to_vec()))?;
     let mut p = Planner {
@@ -4314,7 +4328,9 @@ impl Planner<'_> {
                 *at = a;
             }
         }
-        if let Some(v) = self.graph.vertices.get_mut(self.context.vertex) {
+        if self.opts.main_context == MainContext::Local
+            && let Some(v) = self.graph.vertices.get_mut(self.context.vertex)
+        {
             if let llb::Kind::Source { attrs: a, .. } = &mut v.kind {
                 *a = attrs;
             }
@@ -5346,6 +5362,87 @@ impl LintError for Linter {
         }
         format!("lint violation found for rules: {}", seen.join(", ")).into_bytes()
     }
+}
+
+/// The definition of the build context alone, as dockerui solves it to read the
+/// Dockerfile from a remote context (`ReadEntrypoint`): its source, and its unpacking or
+/// `contextsubdir` where it has them.
+pub fn context_definition(opts: &Options) -> Result<llb::Definition, Vec<u8>> {
+    let mut graph = Graph::default();
+    let st = main_context(&mut graph, opts).map_err(|f| f.0)?;
+    Ok(graph.marshal(&st, &opts.target_platform))
+}
+
+/// The build context's state, as dockerui's `initContext` makes it: the client's
+/// directory; a Git repository (`DetectGitContext`); an HTTP(S) download, unpacked onto
+/// scratch where it is an archive; a remote context's `contextsubdir`, copied onto scratch
+/// (`scopeToSubDir`).
+fn main_context(graph: &mut Graph, opts: &Options) -> Result<State, Fail> {
+    let st = match &opts.main_context {
+        MainContext::Local => {
+            return Ok(graph.source(
+                b"local://context".to_vec(),
+                BTreeMap::new(),
+                None,
+                Meta::default(),
+            ));
+        }
+        MainContext::Git { url, keep_git_dir } => match git::parse_git_ref(url) {
+            git::Parsed::Git(g) => {
+                let keep = g.keep_git_dir == Some(true) || *keep_git_dir;
+                let (identifier, attrs) = git_identifier(&g, keep, &g.checksum);
+                graph.source(
+                    identifier,
+                    attrs,
+                    None,
+                    custom_name(errb(&[b"[internal] load git source ", url])),
+                )
+            }
+            git::Parsed::BadGit(e) => return Err(Fail::new(e)),
+            git::Parsed::NotGit => return Err(Fail::new(errb(&[b"invalid git context ", url]))),
+        },
+        MainContext::Http { url, archive } => {
+            let mut attrs = BTreeMap::new();
+            attrs.insert(b"http.filename".to_vec(), b"context".to_vec());
+            let st = graph.source(
+                url.clone(),
+                attrs,
+                None,
+                custom_name(b"[internal] load remote build context".to_vec()),
+            );
+            if *archive {
+                let copy = Action::Copy {
+                    from: st.output,
+                    from_dir: st.dir.clone(),
+                    src: b"/context".to_vec(),
+                    dest: b"/".to_vec(),
+                    info: CopyInfo {
+                        attempt_unpack: true,
+                        ..CopyInfo::default()
+                    },
+                };
+                graph.file(&State::scratch(), vec![copy], Meta::default())
+            } else {
+                st
+            }
+        }
+    };
+    Ok(match &opts.context_subdir {
+        Some(dir) => {
+            let copy = Action::Copy {
+                from: st.output,
+                from_dir: st.dir.clone(),
+                src: go::join(&[b"/", dir]),
+                dest: b"/".to_vec(),
+                info: CopyInfo {
+                    dir_contents_only: true,
+                    ..CopyInfo::default()
+                },
+            };
+            graph.file(&State::scratch(), vec![copy], Meta::default())
+        }
+        None => st,
+    })
 }
 
 #[cfg(test)]

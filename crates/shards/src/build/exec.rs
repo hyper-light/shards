@@ -278,6 +278,26 @@ impl<'a> Exec<'a> {
         })
     }
 
+    /// The bytes of the regular file at `path` in `r`, its links followed; `None` where
+    /// there is none.
+    pub fn read_file(&mut self, r: &Ref, path: &[u8]) -> Result<Option<Vec<u8>>, String> {
+        self.read_head(r, path, u64::MAX)
+    }
+
+    /// [`read_file`](Self::read_file), at most `most` bytes of it.
+    pub fn read_head(&mut self, r: &Ref, path: &[u8], most: u64) -> Result<Option<Vec<u8>>, String> {
+        use shards_image::erofs::Source as _;
+        let Ok(id) = r.fs.stat(path) else {
+            return Ok(None);
+        };
+        let Some(Kind::File { size, data }) = r.fs.node(id).map(|n| n.kind.clone()) else {
+            return Ok(None);
+        };
+        let mut out = vec![0u8; usize::try_from(size.min(most)).map_err(|e| e.to_string())?];
+        self.sources.read_at(data, 0, &mut out).map_err(err)?;
+        Ok(Some(out))
+    }
+
     /// A directory that lasts as long as the build, for its downloads.
     pub fn stage(&mut self) -> Result<PathBuf, String> {
         let stage = self.store.stage().map_err(err)?;

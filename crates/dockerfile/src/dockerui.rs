@@ -158,6 +158,49 @@ pub fn linux_resources(opts: &BTreeMap<String, String>) -> Result<Option<LinuxRe
     Ok((res != LinuxResources::default()).then_some(res))
 }
 
+/// Whether a download's first bytes are an archive's, as dockerui's `isArchive` reads
+/// them: bzip2, gzip or xz's magic, else a tar header Go's `tar.Reader` takes (a block
+/// whose checksum, unsigned or signed, is its own).
+pub fn is_archive(header: &[u8]) -> bool {
+    const MAGIC: [&[u8]; 3] = [
+        &[0x42, 0x5A, 0x68],
+        &[0x1F, 0x8B, 0x08],
+        &[0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00],
+    ];
+    if MAGIC.iter().any(|m| header.starts_with(m)) {
+        return true;
+    }
+    let Some(block) = header.get(..512) else {
+        return false;
+    };
+    if block.iter().all(|&b| b == 0) {
+        return false;
+    }
+    // The checksum field, octal, as Go's parseOctal reads it: spaces and NULs around it.
+    let Some(field) = block.get(148..156) else {
+        return false;
+    };
+    let digits: Vec<u8> = field
+        .iter()
+        .copied()
+        .skip_while(|&b| b == b' ' || b == 0)
+        .take_while(|&b| b != b' ' && b != 0)
+        .collect();
+    let Some(want) = std::str::from_utf8(&digits)
+        .ok()
+        .and_then(|d| i64::from_str_radix(d, 8).ok())
+    else {
+        return false;
+    };
+    let (mut unsigned, mut signed) = (0i64, 0i64);
+    for (i, &b) in block.iter().enumerate() {
+        let b = if (148..156).contains(&i) { b' ' } else { b };
+        unsigned += i64::from(b);
+        signed += i64::from(b as i8);
+    }
+    want == unsigned || want == signed
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
