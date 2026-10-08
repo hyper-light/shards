@@ -15,6 +15,8 @@ use crate::llb::{
 use crate::platform::Platform;
 
 const VARINT: u8 = 0;
+/// The field shards' own SKILL step is written in: past every `pb.Op` field.
+const SKILLS: u32 = 100;
 const LEN: u8 = 2;
 
 /// A message being written.
@@ -76,8 +78,7 @@ impl W {
     }
 }
 
-/// `op`'s bytes, its inputs named by `digests` (each input's op's digest, in order). None
-/// for shards' own steps, which BuildKit has no message for.
+/// `op`'s bytes, its inputs named by `digests` (each input's op's digest, in order).
 pub fn op(op: &Op, digests: &[Vec<u8>]) -> Option<Vec<u8>> {
     let mut w = W::default();
     for (input, digest) in op.inputs.iter().zip(digests) {
@@ -159,7 +160,13 @@ pub fn op(op: &Op, digests: &[Vec<u8>]) -> Option<Vec<u8>> {
             }
             w.message(6, m);
         }
-        OpKind::Skills { .. } => return None,
+        // shards' own step (D54), which BuildKit has no message for: in a field of no
+        // `pb.Op`'s, which a BuildKit reader skips, so that its digest is its own.
+        OpKind::Skills { name } => {
+            let mut k = W::default();
+            k.bytes(1, name);
+            w.message(SKILLS, k);
+        }
     }
     Some(w.0)
 }

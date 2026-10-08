@@ -1433,6 +1433,12 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
         linux_resources: shards_dockerfile::dockerui::linux_resources(&resource_attrs)
             .map_err(|e| format!("failed to parse resource limits: {e}"))?,
         network_mode,
+        // As buildx sends it (buildx_attrs): the moby driver resolves images it has.
+        image_resolve_mode: if parsed.bool("pull") {
+            b"pull".to_vec()
+        } else {
+            b"local".to_vec()
+        },
     };
     let call = call_of(parsed)?;
     let debug = parsed.bool("debug");
@@ -2103,6 +2109,21 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
             }
         }
     }
+    // mode=max: each step output's layers, as the build's records name them (D80).
+    let wants_max = matches!(provenance_asked, Provenance::Explicit { max: true, .. });
+    let chains: Vec<(usize, usize, Vec<Vec<u8>>)> = if wants_max {
+        results
+            .iter()
+            .enumerate()
+            .flat_map(|(op, outs)| {
+                outs.iter()
+                    .enumerate()
+                    .map(move |(i, r)| (op, i, r.layers.iter().map(|l| l.digest.clone()).collect()))
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
     // Every layer is in the store now. The root filesystem is written from the target's
     // snapshot, put in its layers' form, its files read where the build has them; the
     // other snapshots go first. Where that cannot be done exactly, the snapshots, their
@@ -2112,7 +2133,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
     // What the build's provenance says of it, where an output carries one (D71, D72):
     // every source has resolved now.
     let invocation = build_ref()?;
-    let capture = {
+    let mut capture = {
         let mut materials = provenance::capture_images(&def);
         for mut list in [
             std::mem::take(&mut git_materials),
@@ -2130,6 +2151,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
             secrets,
             ssh,
             network,
+            max: None,
         }
     };
     let (builder_id, reproducible) = match &provenance_asked {
@@ -2158,6 +2180,18 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
         }
     );
     let everywhere_facts = facts(&host_platform_shown);
+    // mode=max (D80): the definition as steps, its source map, and the layers each step's
+    // output is, so far the bases' (a local output is written before the image's).
+    if wants_max {
+        let steps = provenance::steps(&def);
+        let info_def = provenance::dockerfile_definition(&filename, "dockerfile", &invocation);
+        let info_steps = provenance::steps(&info_def);
+        capture.max = Some(provenance::Max {
+            build_config: provenance::build_config(&steps),
+            source: provenance::source(&def, &steps, (&filename, &text), &info_steps),
+            layers: step_layers(&chains, &steps, &base_layers(&bases)),
+        });
+    }
     let everywhere_provenance = everywhere.then_some((&capture, &everywhere_facts));
     // Each domain's isolation, before anything leaves the build (§9.2).
     if let Some(r) = &target
@@ -2266,6 +2300,22 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
         .zip(&held)
         .map(|(l, h)| (l.digest.clone(), h.clone()))
         .collect();
+    // mode=max, now that the image's layers are written: each step's layers again, the
+    // image's among them.
+    let capture = match &capture.max {
+        Some(m) => {
+            let mut known = base_layers(&bases);
+            known.extend(as_held.iter().map(|(k, v)| (k.clone(), v.clone())));
+            let mut c = capture.clone();
+            c.max = Some(provenance::Max {
+                layers: step_layers(&chains, &provenance::steps(&def), &known),
+                ..m.clone()
+            });
+            c
+        }
+        None => capture.clone(),
+    };
+    let everywhere_provenance = everywhere.then_some((&capture, &everywhere_facts));
     let epoch = plan.epoch.map(Time::from_unix);
     // From the layers as written: a rewrite changes their DiffIDs.
     let config = export::config(&plan.image, &held, epoch, base_image.as_ref()).map_err(|e| show(&e))?;
@@ -2606,6 +2656,54 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
 /// The build's ID where it is asked for: in `--iidfile`, and with `-q` on stdout.
 /// BuildKit's `identity.NewID`: 17 random bytes, the first's high bit set, in base 36,
 /// its first digit dropped: 25 characters.
+/// The base images' layers, by the digest the build's records name each by.
+fn base_layers(bases: &Bases) -> BTreeMap<Vec<u8>, Layer> {
+    let mut known = BTreeMap::new();
+    for b in bases.resolved.borrow().values() {
+        for l in &b.layers {
+            known.insert(l.digest.clone(), l.clone());
+        }
+    }
+    known
+}
+
+/// `buildkit_metadata.layers` (mode=max, D80): each step output's layers, said where each
+/// is a blob the build has (`known`), as BuildKit's cache exporter finds them
+/// (CacheExportModeRemoteOnly); a step whose layers were never written, as a stage only
+/// copied from, has none. Keys in order, as Go writes a map.
+fn step_layers(
+    chains: &[(usize, usize, Vec<Vec<u8>>)],
+    steps: &provenance::Steps,
+    known: &BTreeMap<Vec<u8>, Layer>,
+) -> Vec<(String, provenance::Json)> {
+    let mut out: Vec<(String, provenance::Json)> = Vec::new();
+    for (op, index, chain) in chains {
+        let Some(n) = steps.step_of.get(*op).copied().flatten() else {
+            continue;
+        };
+        if chain.is_empty() {
+            continue;
+        }
+        let descriptors: Option<Vec<provenance::Json>> = chain
+            .iter()
+            .map(|d| {
+                known
+                    .get(d)
+                    .map(|l| provenance::layer_descriptor(&show(&l.media_type), &show(&l.digest), l.size))
+            })
+            .collect();
+        if let Some(d) = descriptors {
+            out.push((
+                format!("step{n}:{index}"),
+                provenance::Json::Arr(vec![provenance::Json::Arr(d)]),
+            ));
+        }
+    }
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out.dedup_by(|a, b| a.0 == b.0);
+    out
+}
+
 fn build_ref() -> Result<String, String> {
     let mut n = [0u8; 17];
     shards_vmm::platform::fill_random(&mut n).map_err(|e| e.to_string())?;
@@ -3609,6 +3707,8 @@ enum Provenance {
         builder_id: String,
         reproducible: bool,
         inline_only: bool,
+        /// `mode=max`: the build's definition, source map and layers too (D80).
+        max: bool,
     },
 }
 
@@ -3637,16 +3737,15 @@ fn provenance_of(parsed: &Parsed) -> Result<Provenance, String> {
             }
             ("provenance", Some(attrs)) => {
                 let fields = shards_cmdline::go::csv_fields(attrs.as_bytes()).map_err(|e| show(&e))?;
-                let (mut builder_id, mut reproducible, mut inline_only) = (String::new(), false, false);
+                let (mut builder_id, mut reproducible, mut inline_only, mut max) =
+                    (String::new(), false, false, false);
                 for f in fields {
                     let f = show(&f);
                     let Some((k, v)) = f.split_once('=') else { continue };
                     match k {
                         "mode" => match v {
-                            "min" => {}
-                            "max" | "full" => {
-                                return Err("provenance mode=max is not supported by shards yet".into());
-                            }
+                            "min" => max = false,
+                            "max" | "full" => max = true,
                             _ => return Err(format!("invalid mode {}", go_quote(v))),
                         },
                         "version" => match v {
@@ -3670,6 +3769,7 @@ fn provenance_of(parsed: &Parsed) -> Result<Provenance, String> {
                     builder_id,
                     reproducible,
                     inline_only,
+                    max,
                 };
             }
             (other, Some(_)) => return Err(format!("attestation type {other} is not supported by shards")),

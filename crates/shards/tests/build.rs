@@ -1333,6 +1333,136 @@ fn call_answers_the_frontends_subrequests() {
 /// as a package URL with the digest it resolved to, and leaves out the build arguments
 /// (mode=min), which the metadata file's provenance keeps with the secrets mounted; with
 /// BUILDX_NO_DEFAULT_ATTESTATIONS, the ID is the manifest's.
+/// `--provenance=mode=max` records what BuildKit's does (D80): the request whole (its build
+/// arguments too), the LLB definition as steps with each op's digest, where in the
+/// Dockerfile each step comes from, the Dockerfile itself, and the layers each step's output
+/// is: the base's, then each layer the image is made of, and none for what is only copied
+/// from (a heredoc's file, made on scratch, which no image holds).
+#[test]
+fn provenance_max_records_a_builds_steps_and_layers() {
+    use base64::Engine as _;
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("build-max-home");
+    let dockerfile = format!("FROM {image}\nARG A\nCOPY a /a\nCOPY <<EOF /h\nhello\nEOF\n");
+    let ctx = context("build-max-ctx", &dockerfile);
+    std::fs::write(ctx.join("a"), "a\n").unwrap();
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let meta = home.join("meta.json");
+    let built = shards(&[
+        "build",
+        "-t",
+        "max:1",
+        "--provenance=mode=max",
+        "--build-arg",
+        "A=1",
+        "--metadata-file",
+        meta.to_str().unwrap(),
+        ctx.to_str().unwrap(),
+    ]);
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    let md: serde_json::Value = serde_json::from_slice(&std::fs::read(&meta).unwrap()).unwrap();
+    let blob = |d: &str| -> serde_json::Value {
+        let path = home
+            .join("images/blobs/sha256")
+            .join(d.trim_start_matches("sha256:"));
+        serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
+    };
+    let index = blob(md["containerimage.digest"].as_str().unwrap());
+    let manifest = blob(index["manifests"][0]["digest"].as_str().unwrap());
+    let attestation = blob(index["manifests"][1]["digest"].as_str().unwrap());
+    let statement = blob(attestation["layers"][0]["digest"].as_str().unwrap());
+    let p = &statement["predicate"];
+    // The request whole: its build arguments, and so complete.
+    assert_eq!(
+        p["buildDefinition"]["externalParameters"]["request"]["args"]["build-arg:A"],
+        "1"
+    );
+    assert_eq!(
+        p["runDetails"]["metadata"]["buildkit_completeness"]["request"],
+        true
+    );
+    // The steps: each op once, its inputs earlier steps, the last naming the result.
+    let config = &p["buildDefinition"]["internalParameters"]["buildConfig"];
+    let steps = config["llbDefinition"].as_array().unwrap();
+    for (n, step) in steps.iter().enumerate() {
+        assert_eq!(step["id"], format!("step{n}").as_str());
+        for input in step["inputs"].as_array().into_iter().flatten() {
+            let from: usize = input
+                .as_str()
+                .and_then(|i| i.strip_prefix("step"))
+                .and_then(|i| i.split_once(':'))
+                .map(|(n, _)| n.parse().unwrap())
+                .unwrap();
+            assert!(from < n, "{step}");
+        }
+    }
+    let last = steps.last().unwrap();
+    assert_eq!(last["op"], serde_json::json!({"Op": {}}));
+    // Each step named by one digest.
+    let mapping = config["digestMapping"].as_object().unwrap();
+    let mut named: Vec<&str> = mapping.values().map(|v| v.as_str().unwrap()).collect();
+    named.sort_unstable();
+    named.dedup();
+    assert_eq!(named.len(), steps.len(), "{mapping:?}");
+    let step_of = |pred: &dyn Fn(&serde_json::Value) -> bool| -> String {
+        steps
+            .iter()
+            .find(|s| pred(&s["op"]["Op"]))
+            .map(|s| s["id"].as_str().unwrap().to_string())
+            .unwrap_or_else(|| panic!("no such step in {steps:?}"))
+    };
+    let base = step_of(&|op| {
+        op["source"]["identifier"]
+            .as_str()
+            .is_some_and(|i| i.starts_with("docker-image://"))
+    });
+    let heredoc = step_of(&|op| op["file"]["actions"][0]["Action"]["mkfile"].is_object());
+    let result = last["inputs"][0].as_str().unwrap().to_string();
+    // Where each comes from: the base its FROM's line, the heredoc's file none.
+    let bk = &p["runDetails"]["metadata"]["buildkit_metadata"];
+    assert_eq!(
+        bk["source"]["locations"][&base],
+        serde_json::json!({"locations": [{"ranges": [{"start": {"line": 1}, "end": {"line": 1}}]}]})
+    );
+    let info = &bk["source"]["infos"][0];
+    assert_eq!(info["filename"], "Dockerfile");
+    assert_eq!(
+        info["data"],
+        base64::engine::general_purpose::STANDARD
+            .encode(&dockerfile)
+            .as_str()
+    );
+    // The layers: the base's, the result's the image's own, the heredoc's file none.
+    let layers = &bk["layers"];
+    let image_layers: Vec<&str> = manifest["layers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| l["digest"].as_str().unwrap())
+        .collect();
+    let chain = |key: &str| -> Vec<&str> {
+        layers[key][0]
+            .as_array()
+            .unwrap_or_else(|| panic!("no layers of {key} in {layers}"))
+            .iter()
+            .map(|l| l["digest"].as_str().unwrap())
+            .collect()
+    };
+    assert_eq!(chain(&result), image_layers);
+    let base_chain = chain(&format!("{base}:0"));
+    assert_eq!(base_chain, image_layers[..base_chain.len()]);
+    assert!(base_chain.len() < image_layers.len());
+    assert!(layers.get(format!("{heredoc}:0")).is_none(), "{layers}");
+}
+
 #[test]
 fn builds_attest_their_provenance_as_docker_does() {
     if cannot_run_vms() {
@@ -1458,10 +1588,6 @@ fn builds_attest_their_provenance_as_docker_does() {
         off.stderr
     );
     for (flags, said) in [
-        (
-            vec!["--provenance", "mode=max"],
-            "provenance mode=max is not supported by shards yet",
-        ),
         (
             vec!["--sbom=true"],
             "SBOM attestations (--sbom, --attest type=sbom) are not supported by shards yet",

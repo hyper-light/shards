@@ -79,6 +79,9 @@ pub struct Options {
     pub linux_resources: Option<llb::LinuxResources>,
     /// Each stage's network unless a RUN says otherwise (`force-network-mode`).
     pub network_mode: NetMode,
+    /// How a stage's base image is resolved (`image-resolve-mode`, dockerui.rs): its image
+    /// source's `image.resolvemode`, none for the default.
+    pub image_resolve_mode: Vec<u8>,
 }
 
 /// A named context a stage or base name is given (dockerui's NamedContext): its name (the
@@ -2167,9 +2170,17 @@ impl Planner<'_> {
                 ds.stage.source_code.clone(),
             );
             meta.description.insert(b"llb.customname".to_vec(), name);
+            meta.locations.push(ds.stage.location.clone());
+            let mut attrs = BTreeMap::new();
+            if !self.opts.image_resolve_mode.is_empty() {
+                attrs.insert(
+                    b"image.resolvemode".to_vec(),
+                    self.opts.image_resolve_mode.clone(),
+                );
+            }
             ds.state = self.graph.source(
                 [b"docker-image://".as_slice(), &base_name].concat(),
-                BTreeMap::new(),
+                attrs,
                 Some(platform.clone()),
                 meta,
             );
@@ -2647,6 +2658,7 @@ impl Planner<'_> {
                     unpack: a.unpack,
                     onto: None,
                     history: None,
+                    location: loc.clone(),
                 };
                 self.dispatch_copy(d, cfg, &loc, &lint)?;
                 let ds = self.ds(d)?;
@@ -2699,6 +2711,7 @@ impl Planner<'_> {
                     unpack: None,
                     onto: None,
                     history: None,
+                    location: loc.clone(),
                 };
                 self.dispatch_copy(d, cfg, &loc, &lint)?;
                 match step.sources.first() {
@@ -2790,7 +2803,11 @@ impl Planner<'_> {
                 created: epoch.map(|(s, ns)| s.wrapping_mul(1_000_000_000).wrapping_add(i64::from(ns))),
             };
             let state = ds.state.clone();
-            let next = self.graph.file(&state, vec![action], custom_name(name));
+            let mut meta = custom_name(name);
+            if let Some((_, loc, _)) = cmd {
+                meta.locations.push(loc.clone());
+            }
+            let next = self.graph.file(&state, vec![action], meta);
             let ds = self.ds(d)?;
             ds.state.output = next.output;
             with_layer = true;
@@ -3035,6 +3052,7 @@ impl Planner<'_> {
         let ds = self.ds(d)?;
         let name = prefix_command(ds, &shown, multi.as_ref(), platform.as_ref(), &env);
         run.meta.description.insert(b"llb.customname".to_vec(), name);
+        run.meta.locations.push(loc.clone());
         run.meta.ignore_cache = ds.ignore_cache;
         // AddUlimit, AddExtraHost and WithCgroupParent, options of the run alone
         // (dispatchRun): the stage's next state is its root mount's, which keeps none.
@@ -3434,7 +3452,9 @@ impl Planner<'_> {
         }
         msg.extend_from_slice(&errb(&[b" ", &cfg.sources.dest]));
         if let Some(onto) = &cfg.onto {
-            return Ok(Some(self.graph.file(onto, actions, custom_name(pg_name))));
+            let mut meta = custom_name(pg_name);
+            meta.locations.push(cfg.location.clone());
+            return Ok(Some(self.graph.file(onto, actions, meta)));
         }
         let msg = cfg.history.clone().unwrap_or(msg);
         let ds = self.ds(d)?;
@@ -3448,6 +3468,7 @@ impl Planner<'_> {
             let ignore_cache = ds.ignore_cache;
             let mut copy_meta = custom_name(pg_name.clone());
             copy_meta.ignore_cache = ignore_cache;
+            copy_meta.locations.push(cfg.location.clone());
             copy_meta.progress_group = Some(ProgressGroup {
                 id: group,
                 name: pg_name.clone(),
@@ -3464,6 +3485,7 @@ impl Planner<'_> {
             );
             let mut merge_meta = custom_name(link_name);
             merge_meta.ignore_cache = ignore_cache;
+            merge_meta.locations.push(cfg.location.clone());
             merge_meta.progress_group = Some(ProgressGroup {
                 id: group,
                 name: pg_name,
@@ -3478,6 +3500,7 @@ impl Planner<'_> {
         } else {
             let mut meta = custom_name(pg_name);
             meta.ignore_cache = ds.ignore_cache;
+            meta.locations.push(cfg.location.clone());
             let next = self.graph.file(&state, actions, meta);
             let ds = self.ds(d)?;
             ds.state.output = next.output;
@@ -3826,6 +3849,7 @@ impl Planner<'_> {
             unpack: None,
             onto: None,
             history: Some(code.to_vec()),
+            location: loc.clone(),
         };
         let first = self.graph.vertices.len();
         self.dispatch_copy(d, cfg, loc, lint)?;
@@ -3979,6 +4003,7 @@ impl Planner<'_> {
             unpack: None,
             onto: None,
             history: Some(code.to_vec()),
+            location: loc.clone(),
         };
         let first = self.graph.vertices.len();
         self.dispatch_copy(
@@ -4134,6 +4159,7 @@ impl Planner<'_> {
                     unpack: None,
                     onto: Some(scratch),
                     history: None,
+                    location: loc.clone(),
                 },
                 loc,
                 lint,
@@ -4180,6 +4206,7 @@ impl Planner<'_> {
                 unpack: None,
                 onto: None,
                 history: Some(code.to_vec()),
+                location: loc.clone(),
             };
             let first = self.graph.vertices.len();
             let mark = cfg.sources.dest.clone();
@@ -4403,6 +4430,8 @@ struct CopyConfig {
     onto: Option<State>,
     /// The history's text, where it is not `ADD`'s or `COPY`'s own.
     history: Option<Vec<u8>>,
+    /// The instruction's lines, the copy's location (D80).
+    location: Location,
 }
 
 /// `validateCopySourcePath`: a warning for a source the .dockerignore excludes. Nothing is

@@ -12915,6 +12915,82 @@
   ]
  },
  {
+  "file": "corpus/plan/resolve-local.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\" \\\"AS\\\" \\\"a\\\")\\n(run \\\"true\\\")\\n(from \\\"a\\\")\\n(copy [\\\"--from=withconfig\\\"] \\\"/\\\" \\\"/b\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\" \\\"AS\\\" \\\"a\\\"\"",
+    "original": "\"FROM alpine AS a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"true\\\"\"",
+    "original": "\"RUN true\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"a\\\"\"",
+    "original": "\"FROM a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy [\\\"--from=withconfig\\\"] \\\"/\\\" \\\"/b\\\"\"",
+    "original": "\"COPY --from=withconfig / /b\"",
+    "flags": [
+     "\"--from=withconfig\""
+    ],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/resolve-pull.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\")\\n(run \\\"true\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"true\\\"\"",
+    "original": "\"RUN true\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
   "file": "corpus/plan/run-forms.Dockerfile",
   "escape": "\"\\\\\"",
   "dump": "\"(from \\\"alpine\\\")\\n(shell \\\"/bin/bash\\\" \\\"-c\\\")\\n(run \\\"echo shell form with bash\\\")\\n(run \\\"exec\\\" \\\"form\\\")\\n(run \\\"\u003c\u003cEOF\\\")\\n(run \\\"\u003c\u003c'EOS' bash\\\")\\n(run \\\"\u003c\u003cEOF\\\")\\n(run \\\"cat \u003c\u003cA \u003c\u003cB\\\")\\n(run \\\"\u003c\u003c-EOF\\\")\"",

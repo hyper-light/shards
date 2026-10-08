@@ -48,6 +48,17 @@ pub fn shm_size(v: &str) -> Result<i64, String> {
 }
 
 /// `parseNetMode`: the network each stage's steps have unless one says otherwise.
+/// `parseResolveMode`: the frontend's `image-resolve-mode` as a stage's image source says
+/// it (`image.resolvemode`), nothing for the default.
+pub fn resolve_mode(v: &str) -> Result<&'static [u8], String> {
+    match v {
+        "" | "default" => Ok(b""),
+        "pull" => Ok(b"pull"),
+        "local" => Ok(b"local"),
+        _ => Err(format!("invalid image-resolve-mode: {v}")),
+    }
+}
+
 pub fn net_mode(v: &str) -> Result<NetMode, String> {
     match v {
         "" | "sandbox" => Ok(NetMode::Sandbox),

@@ -112,6 +112,8 @@ pub struct Capture {
     pub ssh: Vec<(String, bool)>,
     /// Whether any step had the network, which makes a build not hermetic.
     pub network: bool,
+    /// `mode=max`'s records, where it was asked for.
+    pub max: Option<Max>,
 }
 
 /// The run's own facts: its invocation's ID (the build's reference), when it started and
@@ -343,15 +345,18 @@ fn locals(c: &Capture) -> Json {
 pub fn predicate(c: &Capture, run: &Run) -> Json {
     let mut args = filter_args(&c.args);
     let filename = args.remove("filename").filter(|f| !f.is_empty());
-    // mode=min: build arguments and labels left out, and the request said incomplete.
+    // mode=min: build arguments and labels left out, and the request said incomplete;
+    // mode=max keeps them, and the secrets and SSH agents the steps mounted.
     let mut complete_request = true;
-    args.retain(|k, _| {
-        let dropped = k.starts_with("build-arg:") || k.starts_with("label:");
-        if dropped {
-            complete_request = false;
-        }
-        !dropped
-    });
+    if c.max.is_none() {
+        args.retain(|k, _| {
+            let dropped = k.starts_with("build-arg:") || k.starts_with("label:");
+            if dropped {
+                complete_request = false;
+            }
+            !dropped
+        });
+    }
     let mut config_source = Vec::new();
     if let Some(f) = filename {
         config_source.push(("path", Json::s(f)));
@@ -362,6 +367,27 @@ pub fn predicate(c: &Capture, run: &Run) -> Json {
             "args",
             Json::Obj(args.into_iter().map(|(k, v)| (k, Json::s(v))).collect()),
         ));
+    }
+    if c.max.is_some() {
+        let mounted = |list: &[(String, bool)]| {
+            Json::Arr(
+                list.iter()
+                    .map(|(id, optional)| {
+                        let mut f = vec![("id", Json::s(id.clone()))];
+                        if *optional {
+                            f.push(("optional", Json::Bool(true)));
+                        }
+                        Json::obj(f)
+                    })
+                    .collect(),
+            )
+        };
+        if !c.secrets.is_empty() {
+            request.push(("secrets", mounted(&c.secrets)));
+        }
+        if !c.ssh.is_empty() {
+            request.push(("ssh", mounted(&c.ssh)));
+        }
     }
     if !c.locals.is_empty() {
         request.push(("locals", locals(c)));
@@ -385,17 +411,20 @@ pub fn predicate(c: &Capture, run: &Run) -> Json {
             ("request", Json::obj(request)),
         ]),
     ));
-    definition.push((
-        "internalParameters",
-        Json::obj(vec![("builderPlatform", Json::s(run.builder_platform.clone()))]),
-    ));
+    // Written through a map (ProvenanceInternalParametersSLSA1.MarshalJSON): keys in order.
+    let mut internal = Vec::new();
+    if let Some(m) = &c.max {
+        internal.push(("buildConfig", m.build_config.clone()));
+    }
+    internal.push(("builderPlatform", Json::s(run.builder_platform.clone())));
+    definition.push(("internalParameters", Json::obj(internal)));
     // Locals are materials no digest pins: never complete, so never hermetic.
     let complete_materials = c.locals.is_empty();
     let mut metadata = vec![
         ("invocationId", Json::s(run.invocation_id.clone())),
         ("startedOn", Json::s(rfc3339_nano(run.started))),
         ("finishedOn", Json::s(rfc3339_nano(run.finished))),
-        ("buildkit_metadata", Json::Obj(Vec::new())),
+        ("buildkit_metadata", buildkit_metadata(c.max.as_ref())),
     ];
     if complete_materials && !c.network {
         metadata.push(("buildkit_hermetic", Json::Bool(true)));
@@ -423,6 +452,18 @@ pub fn predicate(c: &Capture, run: &Run) -> Json {
             ]),
         ),
     ])
+}
+
+/// `BuildKitMetadata`: for `mode=max`, its source map and its steps' layers.
+fn buildkit_metadata(max: Option<&Max>) -> Json {
+    let Some(m) = max else {
+        return Json::Obj(Vec::new());
+    };
+    let mut f = vec![("source", m.source.clone())];
+    if !m.layers.is_empty() {
+        f.push(("layers", Json::Obj(m.layers.clone())));
+    }
+    Json::obj(f)
 }
 
 /// The in-toto statement the attestation layer holds. Its subjects are the image's
@@ -656,6 +697,629 @@ fn sha256(b: &[u8]) -> String {
     format!("sha256:{hex}")
 }
 
+/// What `mode=max` adds to a build's provenance (D80): its LLB definition as steps
+/// (`buildConfig`), where in the Dockerfile each step comes from (`source`), and the
+/// layers each step's output is (`layers`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Max {
+    pub build_config: Json,
+    pub source: Json,
+    /// Each step's output (`stepN:I`) and its chain of layers, in key order.
+    pub layers: Vec<(String, Json)>,
+}
+
+/// A layer as the cache exporter describes it: its media type, digest and size.
+pub fn layer_descriptor(media_type: &str, digest: &str, size: u64) -> Json {
+    Json::obj(vec![
+        ("mediaType", Json::s(media_type)),
+        ("digest", Json::s(digest)),
+        ("size", Json::Int(i64::try_from(size).unwrap_or(i64::MAX))),
+    ])
+}
+
+/// `toBuildSteps` (solver/llbsolver/provenance.go): `def`'s ops from its last back, each
+/// after its inputs, each a step named by its place, its inputs named `stepN:I`, a local
+/// source's session and unique ID left out; the digest of each op's bytes to its step; and
+/// each op's step, by its index in `def`.
+pub struct Steps {
+    pub steps: Vec<Json>,
+    pub mapping: Vec<(String, String)>,
+    pub step_of: Vec<Option<usize>>,
+}
+
+pub fn steps(def: &shards_dockerfile::llb::Definition) -> Steps {
+    // Each op's digest, its inputs before it (the marshal's order).
+    let mut digests: Vec<Vec<u8>> = Vec::with_capacity(def.ops.len());
+    for op in &def.ops {
+        let inputs: Vec<Vec<u8>> = op
+            .inputs
+            .iter()
+            .map(|i| digests.get(i.op).cloned().unwrap_or_default())
+            .collect();
+        let bytes = shards_dockerfile::pb::op(op, &inputs).unwrap_or_default();
+        digests.push(sha256(&bytes).into_bytes());
+    }
+    let mut out = Steps {
+        steps: Vec::new(),
+        mapping: Vec::new(),
+        step_of: vec![None; def.ops.len()],
+    };
+    let Some(root) = def.root else {
+        return out;
+    };
+    // walkDigests from the last op, the root, which names `root`: depth first, each input
+    // before what reads it, without recursion.
+    let mut order: Vec<usize> = Vec::new();
+    let mut stack = vec![(root.op, false)];
+    while let Some((at, ready)) = stack.pop() {
+        if out.step_of.get(at).copied().flatten().is_some() {
+            continue;
+        }
+        let Some(op) = def.ops.get(at) else { continue };
+        if ready {
+            if let Some(s) = out.step_of.get_mut(at) {
+                *s = Some(order.len());
+            }
+            order.push(at);
+            continue;
+        }
+        stack.push((at, true));
+        for i in op.inputs.iter().rev() {
+            if out.step_of.get(i.op).copied().flatten().is_none() {
+                stack.push((i.op, false));
+            }
+        }
+    }
+    let input_names = |inputs: &[shards_dockerfile::llb::Input], step_of: &[Option<usize>]| -> Vec<Json> {
+        inputs
+            .iter()
+            .map(|i| {
+                let n = step_of.get(i.op).copied().flatten().unwrap_or(0);
+                Json::s(format!("step{n}:{}", i.index))
+            })
+            .collect()
+    };
+    for (n, &at) in order.iter().enumerate() {
+        let Some(op) = def.ops.get(at) else { continue };
+        let mut step = vec![("id", Json::s(format!("step{n}")))];
+        step.push(("op", op_json(op)));
+        if !op.inputs.is_empty() {
+            step.push(("inputs", Json::Arr(input_names(&op.inputs, &out.step_of))));
+        }
+        out.steps.push(Json::obj(step));
+        if let Some(d) = digests.get(at) {
+            out.mapping
+                .push((String::from_utf8_lossy(d).into_owned(), format!("step{n}")));
+        }
+    }
+    // The root: an op of no kind, its one input the result.
+    let n = order.len();
+    let root_digest = digests
+        .get(root.op)
+        .map(|d| sha256(&shards_dockerfile::pb::root(d, root.index)))
+        .unwrap_or_default();
+    let root_step = out.step_of.get(root.op).copied().flatten().unwrap_or(0);
+    out.steps.push(Json::obj(vec![
+        ("id", Json::s(format!("step{n}"))),
+        ("op", Json::obj(vec![("Op", Json::Obj(Vec::new()))])),
+        (
+            "inputs",
+            Json::Arr(vec![Json::s(format!("step{root_step}:{}", root.index))]),
+        ),
+    ]));
+    out.mapping.push((root_digest, format!("step{n}")));
+    out
+}
+
+/// `json.Marshal` of a Go map's keys: every object's fields in key order, as BuildKit's
+/// internal parameters are written (their MarshalJSON goes through a map).
+pub fn sorted(j: Json) -> Json {
+    match j {
+        Json::Obj(mut fields) => {
+            fields.sort_by(|a, b| a.0.cmp(&b.0));
+            Json::Obj(fields.into_iter().map(|(k, v)| (k, sorted(v))).collect())
+        }
+        Json::Arr(items) => Json::Arr(items.into_iter().map(sorted).collect()),
+        other => other,
+    }
+}
+
+/// `buildConfig`: the steps and the digest mapping, keys in order.
+pub fn build_config(s: &Steps) -> Json {
+    let mut mapping = s.mapping.clone();
+    mapping.sort();
+    sorted(Json::obj(vec![
+        ("llbDefinition", Json::Arr(s.steps.clone())),
+        (
+            "digestMapping",
+            Json::Obj(mapping.into_iter().map(|(d, n)| (d, Json::s(n))).collect()),
+        ),
+    ]))
+}
+
+/// The Dockerfile's own definition, as dockerui loads it (`load build definition from`):
+/// a local source of the Dockerfile and its `.dockerignore` (and `dockerfile`, Docker's
+/// other casing, beside a `Dockerfile`), for a session of the build's.
+pub fn dockerfile_definition(
+    filename: &str,
+    local: &str,
+    session: &str,
+) -> shards_dockerfile::llb::Definition {
+    use shards_dockerfile::llb::{Definition, Input, Meta, Op, OpKind};
+    let mut paths = vec![filename.to_string(), format!("{filename}.dockerignore")];
+    let (dir, base) = filename.rsplit_once('/').unwrap_or(("", filename));
+    if base == "Dockerfile" {
+        paths.push(if dir.is_empty() {
+            "dockerfile".to_string()
+        } else {
+            format!("{dir}/dockerfile")
+        });
+    }
+    let follow = Json::Arr(paths.into_iter().map(Json::s).collect()).compact();
+    let mut attrs = BTreeMap::new();
+    attrs.insert(b"local.differ".to_vec(), b"none".to_vec());
+    attrs.insert(b"local.followpaths".to_vec(), follow.into_bytes());
+    attrs.insert(b"local.session".to_vec(), session.as_bytes().to_vec());
+    attrs.insert(b"local.sharedkeyhint".to_vec(), local.as_bytes().to_vec());
+    Definition {
+        ops: vec![Op {
+            inputs: Vec::new(),
+            kind: OpKind::Source {
+                identifier: format!("local://{local}").into_bytes(),
+                attrs,
+            },
+            platform: None,
+        }],
+        metadata: vec![Meta::default()],
+        root: Some(Input { op: 0, index: 0 }),
+    }
+}
+
+/// `buildkit_metadata.source`: each step's locations in the Dockerfile (its lines, the
+/// source map's first source), and the Dockerfile itself with its own definition's steps.
+pub fn source(
+    def: &shards_dockerfile::llb::Definition,
+    s: &Steps,
+    info: (&str, &[u8]),
+    info_def: &Steps,
+) -> Json {
+    use base64::Engine as _;
+    let mut locations: Vec<(String, Json)> = Vec::new();
+    for (at, md) in def.metadata.iter().enumerate() {
+        let Some(n) = s.step_of.get(at).copied().flatten() else {
+            continue;
+        };
+        let locs: Vec<Json> = md
+            .locations
+            .iter()
+            .map(|l| {
+                let ranges = l
+                    .iter()
+                    .map(|&(a, b)| {
+                        let line =
+                            |l: usize| Json::obj(vec![("line", Json::Int(i64::try_from(l).unwrap_or(0)))]);
+                        Json::obj(vec![("start", line(a)), ("end", line(b))])
+                    })
+                    .collect();
+                Json::obj(vec![("ranges", Json::Arr(ranges))])
+            })
+            .collect();
+        let entry = if locs.is_empty() {
+            Json::Obj(Vec::new())
+        } else {
+            Json::obj(vec![("locations", Json::Arr(locs))])
+        };
+        locations.push((format!("step{n}"), entry));
+    }
+    locations.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut mapping = info_def.mapping.clone();
+    mapping.sort();
+    let (filename, data) = info;
+    let info = Json::obj(vec![
+        ("filename", Json::s(filename)),
+        ("language", Json::s("Dockerfile")),
+        (
+            "data",
+            Json::s(base64::engine::general_purpose::STANDARD.encode(data)),
+        ),
+        (
+            "llbDefinition",
+            Json::Arr(info_def.steps.iter().cloned().map(declared).collect()),
+        ),
+        (
+            "digestMapping",
+            Json::Obj(mapping.into_iter().map(|(d, n)| (d, Json::s(n))).collect()),
+        ),
+    ]);
+    Json::obj(vec![
+        ("locations", Json::Obj(locations)),
+        ("infos", Json::Arr(vec![info])),
+    ])
+}
+
+/// A step as Go writes `BuildStep` where no map reorders it: its ID, op and inputs.
+fn declared(step: Json) -> Json {
+    let Json::Obj(fields) = step else { return step };
+    let get = |k: &str| fields.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
+    let mut out = Vec::new();
+    for k in ["id", "op", "inputs"] {
+        if let Some(v) = get(k) {
+            out.push((k.to_string(), v));
+        }
+    }
+    Json::Obj(out)
+}
+
+/// `pb.Op` as Go's encoding/json writes it (solver/pb/json.go): what it does under `Op`,
+/// its platform and its constraints, every field left out at its zero value; its inputs
+/// left out, as the steps name them. Fields in the structs' order.
+pub fn op_json(op: &shards_dockerfile::llb::Op) -> Json {
+    use shards_dockerfile::llb::{NetMode, OpKind, Security};
+    let kind = match &op.kind {
+        OpKind::Exec {
+            process,
+            mounts,
+            network,
+            security,
+            secret_env,
+            devices,
+        } => {
+            let mut e = vec![("meta", meta_json(process))];
+            if !mounts.is_empty() {
+                e.push(("mounts", Json::Arr(mounts.iter().map(mount_json).collect())));
+            }
+            match network {
+                NetMode::Sandbox => {}
+                NetMode::Host => e.push(("network", Json::Int(1))),
+                NetMode::None => e.push(("network", Json::Int(2))),
+            }
+            if *security == Security::Insecure {
+                e.push(("security", Json::Int(1)));
+            }
+            if !secret_env.is_empty() {
+                let se = secret_env
+                    .iter()
+                    .map(|(id, name, optional)| {
+                        let mut f = Vec::new();
+                        put_str(&mut f, "ID", id);
+                        put_str(&mut f, "name", name);
+                        put_bool(&mut f, "optional", *optional);
+                        Json::obj(f)
+                    })
+                    .collect();
+                e.push(("secretenv", Json::Arr(se)));
+            }
+            if !devices.is_empty() {
+                let dv = devices
+                    .iter()
+                    .map(|d| {
+                        let mut f = Vec::new();
+                        put_str(&mut f, "name", &d.name);
+                        put_bool(&mut f, "optional", d.optional);
+                        Json::obj(f)
+                    })
+                    .collect();
+                e.push(("cdiDevices", Json::Arr(dv)));
+            }
+            vec![("exec", Json::obj(e))]
+        }
+        OpKind::Source { identifier, attrs } => {
+            let mut s = Vec::new();
+            put_str(&mut s, "identifier", identifier);
+            let shown: Vec<(String, Json)> = attrs
+                .iter()
+                .filter(|(k, _)| k.as_slice() != b"local.session" && k.as_slice() != b"local.unique")
+                .map(|(k, v)| {
+                    (
+                        String::from_utf8_lossy(k).into_owned(),
+                        Json::s(String::from_utf8_lossy(v)),
+                    )
+                })
+                .collect();
+            if !shown.is_empty() {
+                s.push(("attrs", Json::Obj(shown)));
+            }
+            vec![("source", Json::obj(s))]
+        }
+        OpKind::File { actions } => {
+            let acts = actions.iter().map(action_json).collect();
+            vec![("file", Json::obj(vec![("actions", Json::Arr(acts))]))]
+        }
+        OpKind::Merge => {
+            let ins = (0..op.inputs.len())
+                .map(|i| {
+                    let mut f = Vec::new();
+                    put_int(&mut f, "input", i64::try_from(i).unwrap_or(0));
+                    Json::obj(f)
+                })
+                .collect();
+            vec![("merge", Json::obj(vec![("inputs", Json::Arr(ins))]))]
+        }
+        // shards' own step (D54), which BuildKit has no op for: under its own name.
+        OpKind::Skills { name } => {
+            vec![(
+                "skills",
+                Json::obj(vec![("name", Json::s(String::from_utf8_lossy(name)))]),
+            )]
+        }
+    };
+    let mut out = vec![("Op", Json::obj(kind))];
+    if let Some(p) = &op.platform {
+        let mut f = Vec::new();
+        put_str(&mut f, "Architecture", &p.architecture);
+        put_str(&mut f, "OS", &p.os);
+        put_str(&mut f, "Variant", &p.variant);
+        put_str(&mut f, "OSVersion", &p.os_version);
+        if !p.os_features.is_empty() {
+            f.push((
+                "OSFeatures",
+                Json::Arr(
+                    p.os_features
+                        .iter()
+                        .map(|x| Json::s(String::from_utf8_lossy(x)))
+                        .collect(),
+                ),
+            ));
+        }
+        out.push(("platform", Json::obj(f)));
+    }
+    out.push(("constraints", Json::Obj(Vec::new())));
+    Json::obj(out)
+}
+
+fn put_str(f: &mut Vec<(&'static str, Json)>, k: &'static str, v: &[u8]) {
+    if !v.is_empty() {
+        f.push((k, Json::s(String::from_utf8_lossy(v))));
+    }
+}
+
+fn put_bool(f: &mut Vec<(&'static str, Json)>, k: &'static str, v: bool) {
+    if v {
+        f.push((k, Json::Bool(true)));
+    }
+}
+
+fn put_int(f: &mut Vec<(&'static str, Json)>, k: &'static str, v: i64) {
+    if v != 0 {
+        f.push((k, Json::Int(v)));
+    }
+}
+
+fn strs(v: &[Vec<u8>]) -> Json {
+    Json::Arr(v.iter().map(|s| Json::s(String::from_utf8_lossy(s))).collect())
+}
+
+fn meta_json(p: &shards_dockerfile::llb::Process) -> Json {
+    let mut m = Vec::new();
+    if !p.args.is_empty() {
+        m.push(("args", strs(&p.args)));
+    }
+    if !p.env.is_empty() {
+        m.push(("env", strs(&p.env)));
+    }
+    put_str(&mut m, "cwd", &p.cwd);
+    put_str(&mut m, "user", &p.user);
+    if let Some(x) = &p.proxy {
+        let mut f = Vec::new();
+        put_str(&mut f, "http_proxy", &x.http);
+        put_str(&mut f, "https_proxy", &x.https);
+        put_str(&mut f, "ftp_proxy", &x.ftp);
+        put_str(&mut f, "no_proxy", &x.no);
+        put_str(&mut f, "all_proxy", &x.all);
+        m.push(("proxy_env", Json::obj(f)));
+    }
+    if !p.extra_hosts.is_empty() {
+        let hosts = p
+            .extra_hosts
+            .iter()
+            .map(|h| {
+                let mut f = Vec::new();
+                put_str(&mut f, "Host", &h.host);
+                put_str(&mut f, "IP", &h.ip);
+                Json::obj(f)
+            })
+            .collect();
+        m.push(("extraHosts", Json::Arr(hosts)));
+    }
+    put_str(&mut m, "hostname", &p.hostname);
+    if !p.ulimits.is_empty() {
+        let us = p
+            .ulimits
+            .iter()
+            .map(|u| {
+                let mut f = Vec::new();
+                put_str(&mut f, "Name", &u.name);
+                put_int(&mut f, "Soft", u.soft);
+                put_int(&mut f, "Hard", u.hard);
+                Json::obj(f)
+            })
+            .collect();
+        m.push(("ulimit", Json::Arr(us)));
+    }
+    put_str(&mut m, "cgroupParent", &p.cgroup_parent);
+    m.push(("removeMountStubsRecursive", Json::Bool(true)));
+    Json::obj(m)
+}
+
+fn mount_json(mt: &shards_dockerfile::llb::OpMount) -> Json {
+    use shards_dockerfile::llb::{OpMountKind, Sharing};
+    let mut x = Vec::new();
+    put_int(&mut x, "input", mt.input);
+    put_str(&mut x, "selector", &mt.selector);
+    put_str(&mut x, "dest", &mt.dest);
+    put_int(&mut x, "output", mt.output);
+    put_bool(&mut x, "readonly", mt.readonly);
+    match &mt.kind {
+        OpMountKind::Bind => {}
+        OpMountKind::Tmpfs { size } => {
+            x.push(("mountType", Json::Int(4)));
+            let mut t = Vec::new();
+            put_int(&mut t, "size", *size);
+            x.push(("TmpfsOpt", Json::obj(t)));
+        }
+        OpMountKind::Cache { id, sharing } => {
+            x.push(("mountType", Json::Int(3)));
+            let mut c = Vec::new();
+            put_str(&mut c, "ID", id);
+            match sharing {
+                Sharing::Shared => {}
+                Sharing::Private => c.push(("sharing", Json::Int(1))),
+                Sharing::Locked => c.push(("sharing", Json::Int(2))),
+            }
+            x.push(("cacheOpt", Json::obj(c)));
+        }
+        OpMountKind::Secret {
+            id,
+            uid,
+            gid,
+            mode,
+            optional,
+        }
+        | OpMountKind::Ssh {
+            id,
+            uid,
+            gid,
+            mode,
+            optional,
+        } => {
+            let secret = matches!(mt.kind, OpMountKind::Secret { .. });
+            x.push(("mountType", Json::Int(if secret { 1 } else { 2 })));
+            let mut s = Vec::new();
+            put_str(&mut s, "ID", id);
+            put_int(&mut s, "uid", i64::from(*uid));
+            put_int(&mut s, "gid", i64::from(*gid));
+            put_int(&mut s, "mode", i64::from(*mode));
+            put_bool(&mut s, "optional", *optional);
+            x.push((if secret { "secretOpt" } else { "SSHOpt" }, Json::obj(s)));
+        }
+    }
+    Json::obj(x)
+}
+
+fn chown_json(o: &shards_dockerfile::llb::OpChown) -> Json {
+    use shards_dockerfile::llb::OpUser;
+    let user = |u: &OpUser| {
+        let inner = match u {
+            OpUser::Name { name, input } => {
+                let mut n = Vec::new();
+                put_str(&mut n, "name", name);
+                put_int(&mut n, "input", *input);
+                vec![("byName", Json::obj(n))]
+            }
+            OpUser::Id(id) => {
+                let mut f = Vec::new();
+                put_int(&mut f, "byId", i64::from(*id));
+                f
+            }
+        };
+        Json::obj(vec![("User", Json::obj(inner))])
+    };
+    let mut f = Vec::new();
+    if let Some(u) = &o.user {
+        f.push(("user", user(u)));
+    }
+    if let Some(g) = &o.group {
+        f.push(("group", user(g)));
+    }
+    Json::obj(f)
+}
+
+fn action_json(a: &shards_dockerfile::llb::OpAction) -> Json {
+    use base64::Engine as _;
+    use shards_dockerfile::llb::OpActionKind;
+    let (key, body) = match &a.action {
+        OpActionKind::Copy {
+            src,
+            dest,
+            owner,
+            mode,
+            mode_str,
+            follow_symlink,
+            dir_copy_contents,
+            attempt_unpack,
+            create_dest_path,
+            allow_wildcard,
+            allow_empty_wildcard,
+            timestamp,
+            include_patterns,
+            exclude_patterns,
+            required_paths,
+        } => {
+            let mut c = Vec::new();
+            put_str(&mut c, "src", src);
+            put_str(&mut c, "dest", dest);
+            if let Some(o) = owner {
+                c.push(("owner", chown_json(o)));
+            }
+            put_int(&mut c, "mode", i64::from(*mode));
+            put_bool(&mut c, "followSymlink", *follow_symlink);
+            put_bool(&mut c, "dirCopyContents", *dir_copy_contents);
+            put_bool(&mut c, "attemptUnpackDockerCompatibility", *attempt_unpack);
+            put_bool(&mut c, "createDestPath", *create_dest_path);
+            put_bool(&mut c, "allowWildcard", *allow_wildcard);
+            put_bool(&mut c, "allowEmptyWildcard", *allow_empty_wildcard);
+            put_int(&mut c, "timestamp", *timestamp);
+            if !include_patterns.is_empty() {
+                c.push(("include_patterns", strs(include_patterns)));
+            }
+            if !exclude_patterns.is_empty() {
+                c.push(("exclude_patterns", strs(exclude_patterns)));
+            }
+            put_str(&mut c, "modeStr", mode_str);
+            if !required_paths.is_empty() {
+                c.push(("required_paths", strs(required_paths)));
+            }
+            ("copy", c)
+        }
+        OpActionKind::Mkfile {
+            path,
+            mode,
+            data,
+            owner,
+            timestamp,
+        } => {
+            let mut f = Vec::new();
+            put_str(&mut f, "path", path);
+            put_int(&mut f, "mode", i64::from(*mode));
+            if !data.is_empty() {
+                f.push((
+                    "data",
+                    Json::s(base64::engine::general_purpose::STANDARD.encode(data)),
+                ));
+            }
+            if let Some(o) = owner {
+                f.push(("owner", chown_json(o)));
+            }
+            put_int(&mut f, "timestamp", *timestamp);
+            ("mkfile", f)
+        }
+        OpActionKind::Mkdir {
+            path,
+            mode,
+            make_parents,
+            owner,
+            timestamp,
+        } => {
+            let mut f = Vec::new();
+            put_str(&mut f, "path", path);
+            put_int(&mut f, "mode", i64::from(*mode));
+            put_bool(&mut f, "makeParents", *make_parents);
+            if let Some(o) = owner {
+                f.push(("owner", chown_json(o)));
+            }
+            put_int(&mut f, "timestamp", *timestamp);
+            ("mkdir", f)
+        }
+    };
+    // jsonFileAction: its indexes always, then the action.
+    Json::obj(vec![
+        ("input", Json::Int(a.input)),
+        ("secondaryInput", Json::Int(a.secondary_input)),
+        ("output", Json::Int(a.output)),
+        ("Action", Json::obj(vec![(key, Json::obj(body))])),
+    ])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -700,7 +1364,8 @@ mod tests {
             Ok(shards_dockerfile::plan::Resolved {
                 reference,
                 digest: Some(b"sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662".to_vec()),
-                config: br#"{"architecture":"arm64","os":"linux","config":{},"rootfs":{"type":"layers","diff_ids":[]}}"#.to_vec(),
+                // A layer, as busybox has: an image of none is planned as scratch.
+                config: br#"{"architecture":"arm64","os":"linux","config":{},"rootfs":{"type":"layers","diff_ids":["sha256:0000000000000000000000000000000000000000000000000000000000000001"]}}"#.to_vec(),
             })
         }
 
@@ -713,11 +1378,36 @@ mod tests {
         let opts = shards_dockerfile::plan::Options {
             target_platform: shards_dockerfile::platform::Platform::new("linux", "arm64"),
             build_platforms: vec![shards_dockerfile::platform::Platform::new("linux", "arm64")],
+            // As buildx asks Docker's builder (buildx_attrs).
+            image_resolve_mode: b"local".to_vec(),
             ..Default::default()
         };
         shards_dockerfile::plan::plan(dockerfile.as_bytes(), &opts, &AnyImage)
             .unwrap()
             .definition()
+    }
+
+    /// `s` with each `"digestMapping":{...}` as its steps, sorted: what a digest maps to,
+    /// not the digests, which cover a session's random IDs.
+    fn steps_only(s: &str) -> String {
+        let key = "\"digestMapping\":{";
+        let mut out = String::new();
+        let mut rest = s;
+        while let Some((before, after)) = rest.split_once(key) {
+            out.push_str(before);
+            out.push_str(key);
+            let (body, tail) = after.split_once('}').unwrap();
+            let mut steps: Vec<&str> = body
+                .split(',')
+                .filter_map(|kv| kv.rsplit_once(':').map(|(_, v)| v))
+                .collect();
+            steps.sort_unstable();
+            out.push_str(&steps.join(","));
+            out.push('}');
+            rest = tail;
+        }
+        out.push_str(rest);
+        out
     }
 
     fn cases() -> Vec<Case> {
@@ -818,7 +1508,52 @@ mod tests {
                 secrets,
                 ssh,
                 network,
+                max: None,
             };
+            // mode=max (D80): the plan's steps and source map; the layers are a real
+            // build's (`provenance_max_records_a_builds_steps_and_layers`), so the recording's.
+            if case.flags.iter().any(|f| f == "--provenance=mode=max") {
+                let dockerfile = case.dockerfile.as_ref().unwrap();
+                let def = plan_of(dockerfile);
+                let s = steps(&def);
+                let info = steps(&dockerfile_definition("Dockerfile", "dockerfile", "session"));
+                let md = &recorded["predicate"]["runDetails"]["metadata"]["buildkit_metadata"];
+                let layers = md["layers"]
+                    .as_object()
+                    .map(|o| {
+                        o.iter()
+                            .map(|(k, chains)| {
+                                let chains = chains
+                                    .as_array()
+                                    .unwrap()
+                                    .iter()
+                                    .map(|c| {
+                                        Json::Arr(
+                                            c.as_array()
+                                                .unwrap()
+                                                .iter()
+                                                .map(|d| {
+                                                    layer_descriptor(
+                                                        d["mediaType"].as_str().unwrap(),
+                                                        d["digest"].as_str().unwrap(),
+                                                        d["size"].as_u64().unwrap(),
+                                                    )
+                                                })
+                                                .collect(),
+                                        )
+                                    })
+                                    .collect();
+                                (k.clone(), Json::Arr(chains))
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                capture.max = Some(Max {
+                    build_config: build_config(&s),
+                    source: source(&def, &s, ("Dockerfile", dockerfile.as_bytes()), &info),
+                    layers,
+                });
+            }
             // The shared key's node ID is the recording builder's.
             for (k, v) in capture.args.iter_mut() {
                 if k.starts_with("sharedkey:localdir:") {
@@ -842,7 +1577,9 @@ mod tests {
                 ));
             }
             let ours = statement(&capture, &run, &subjects);
-            assert_eq!(ours, *st, "{}", case.name);
+            // Ops' digests cover a session's IDs: each digest mapping as its steps alone.
+            assert_eq!(steps_only(&ours), steps_only(st), "{}", case.name);
+            assert_eq!(ours.len(), st.len(), "{}", case.name);
             let digest = sha256(st.as_bytes());
             let (config, manifest) = attestation(&digest, st.len());
             assert_eq!(Some(&config), case.attestation_config.as_ref(), "{}", case.name);

@@ -3210,7 +3210,41 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode
 waits on the user.
 
-### D80. LLB operations as BuildKit marshals them, for mode=max provenance
+### D80. Provenance `mode=max`: the LLB definition, its source map, each step's layers
+
+`--provenance=mode=max` (and `--attest type=provenance,mode=max`) is made as BuildKit
+v0.28.1 makes it (solver/llbsolver/provenance.go):
+- **The request whole**: its build arguments and labels kept (the request said complete),
+  and the secrets and SSH agents the steps mount, each `optional` where it is.
+- **`buildConfig`** (internal parameters, written through a map, so every key in order):
+  `llbDefinition`, each op a step (`toBuildSteps`). Steps go depth first from the last op
+  back, each after its inputs, which are named `stepN:I`. A local source's session and
+  unique ID are left out. Each op is written as Go's encoding/json writes `pb.Op`
+  (solver/pb/json.go): the oneof under `Op`, a file action's indexes always, a user ID
+  under `User.byId`, enums as numbers, zero values left out, and the root `{"Op":{}}`.
+  `digestMapping` maps each op's digest, the SHA-256 of its bytes (below), to its step.
+- **`buildkit_metadata.source`**: each step's locations in the Dockerfile, one entry for
+  every op (empty where it has none, as `sourceMapCollector` writes them), and the
+  Dockerfile itself: its name, its bytes and its own definition. That is dockerui's local
+  source of the Dockerfile, its `.dockerignore`, and `dockerfile` beside a `Dockerfile`,
+  with no differ.
+- **`buildkit_metadata.layers`**: each step output's chain of layers, given where every
+  layer in it is a blob the build has: a base's, or one the image is written with. That
+  is what BuildKit's cache exporter finds in `CacheExportModeRemoteOnly`. A step whose
+  layers were never written, such as a stage only copied from or a heredoc's file made on
+  scratch, has none, as measured. A local output, written before the image's layers, says
+  the bases' alone.
+
+Planning was given what this needs:
+- **Locations.** Each vertex now carries its Dockerfile lines, set where Dockerfile2LLB
+  sets them: a stage's base image, RUN, WORKDIR's mkdir, and COPY and ADD (with
+  `--link`'s merge too). An op made of several vertices has all of theirs, in the order
+  they were marshalled.
+- **`image-resolve-mode`.** buildx sends `local` to Docker's builder (`pull` with
+  `--pull`), and the frontend writes it into each stage's base image source
+  (`image.resolvemode`). shards' plan dropped it, so its ops were not Docker's; now they
+  are. A SKILL step, shards' own, is written in a field no `pb.Op` has, which a BuildKit
+  reader skips, so that its digest is its own.
 
 Provenance's `mode=max` records the build's LLB definition: each operation, and a mapping
 from each operation's digest to its step. BuildKit names each operation by the SHA-256 of
@@ -3230,7 +3264,23 @@ dockerfile/1.27.1:
 No protobuf library is taken for it: the messages are few, and a library's own
 serializer would still have to be held to protobuf-go's order and choices.
 
-Tested: `plans_are_buildkits` holds every op of the 117 plans BuildKit makes of
+Tested:
+- `plans_are_buildkits` holds every op's locations to BuildKit's (the oracle now gives
+  the plan a source map, as dockerui does), and `resolve-local` and `resolve-pull` hold
+  `image-resolve-mode` to it. Mutation-checked: an op made of several vertices keeping
+  only the first's locations changes 7 plans.
+- `provenance_is_buildkits` holds three mode=max builds Docker made (`max-base`;
+  `max-mounts`, every mount kind with `--network=none`, a secret, an SSH agent, a build
+  argument and a label; `max-stages`, a stage copied from, WORKDIR, `--link`, `--chown`
+  and a heredoc) to their statements byte for byte, each digest mapping as its steps
+  alone (the digests cover a session's random IDs), the layers as recorded.
+- `provenance_max_records_a_builds_steps_and_layers` checks a real build: the request
+  whole, steps each after its inputs, one digest for each, the base's location, the
+  Dockerfile, the result's layers the image's, the base's a prefix of them, and none for
+  a heredoc's file. Mutation-checked: without the image's own layers, the result has
+  none.
+
+The encoder's own tests: `plans_are_buildkits` holds every op of the 117 plans BuildKit makes of
 `testdata/corpus/plan` to BuildKit's own bytes. `scripts/dockerfile/generate` records
 them (`pb`), with a local source's unique ID as `*` and each input named by its own op's
 normalized digest. The one plan whose ops are a recorded deviation (`named-git-ssh`,
@@ -3561,8 +3611,7 @@ one attests a stored or pushed image with `builder-id` as the builder's ID and
 `mode`, `version` or `reproducible` refused in BuildKit's words.
 
 Refused, named, until each is made and held to BuildKit's (no build is given less than it
-asked for in silence): `mode=max` (its build config is LLB's protobuf definition and
-digests), `version=v0.2`, SBOM attestations (a scanner image run over the image), other
+asked for in silence): `version=v0.2`, SBOM attestations (a scanner image run over the image), other
 types, and an explicit provenance in a docker or tar output (not recorded yet).
 
 An explicit provenance (not `inline-only`) goes in every output, as BuildKit puts it

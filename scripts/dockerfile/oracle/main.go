@@ -501,6 +501,7 @@ func convertOpt(root, rel string, images resolver, warn func(string)) ([]byte, d
 		cfg.CgroupParent = named.Config.CgroupParent
 		cfg.NetworkMode = named.Config.NetworkMode
 		cfg.LinuxResources = named.Config.LinuxResources
+		cfg.ImageResolveMode = named.Config.ImageResolveMode
 	}
 	return data, dockerfile2llb.ConvertOpt{
 		Client:         named,
@@ -610,6 +611,8 @@ func planFile(root, rel string, images resolver) map[string]any {
 	out := map[string]any{"file": rel}
 	var warnings []string
 	data, opt := convertOpt(root, rel, images, func(w string) { warnings = append(warnings, w) })
+	// The Dockerfile's source map, as dockerui gives a build one: each op's locations.
+	opt.SourceMap = llb.NewSourceMap(nil, "Dockerfile", "Dockerfile", data)
 	res, err := dockerfile2llb.Dockerfile2LLB(context.Background(), data, opt)
 	out["warnings"] = warnings
 	if err != nil {
@@ -725,6 +728,21 @@ func planFile(root, rel string, images resolver) map[string]any {
 				pg["id"] = "*"
 			}
 			v["metadata"] = mv
+		}
+		// Where in the Dockerfile the op comes from (the source map, D80): each of its
+		// locations, the source's index and its ranges, start and end line and character.
+		if def.Source != nil {
+			if ls, ok := def.Source.Locations[d.String()]; ok {
+				locs := []any{}
+				for _, l := range ls.Locations {
+					rs := []any{}
+					for _, r := range l.Ranges {
+						rs = append(rs, []int32{r.Start.Line, r.Start.Character, r.End.Line, r.End.Character})
+					}
+					locs = append(locs, map[string]any{"source": l.SourceIndex, "ranges": rs})
+				}
+				v["locations"] = locs
+			}
 		}
 		list = append(list, v)
 	}

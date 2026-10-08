@@ -56,6 +56,12 @@ case_ base-digest 'FROM busybox@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2f
 case_ base-untagged 'FROM busybox\nCOPY a /a\n' --provenance=mode=min
 case_ named-context 'FROM scratch\nCOPY --from=extra a /b\n' --provenance=mode=min --build-context "extra=$work"
 case_ filename 'FROM scratch\nCOPY a /a\n' --provenance=mode=min -f Dockerfile
+# mode=max: the LLB definition, its source map and each step's layers (D80).
+case_ max-base 'FROM busybox:1.36\nCOPY a /a\nRUN echo x > /b\n' --provenance=mode=max
+case_ max-mounts 'FROM busybox:1.36\nRUN --mount=type=secret,id=s --mount=type=ssh --mount=type=cache,target=/c,sharing=locked --mount=type=tmpfs,target=/t,size=64m --network=none true\n' \
+	--provenance=mode=max --secret "id=s,src=$work/secret.txt" --ssh "default=$work/key" --build-arg A=1 --label l=m
+case_ max-stages 'FROM busybox:1.36 AS b\nRUN echo x > /x\nFROM scratch\nWORKDIR /w\nCOPY --from=b /x /y\nCOPY --link a /l\nCOPY --chown=1:2 a /o\nCOPY <<EOF /h\nhello\nEOF\n' \
+	--provenance=mode=max
 # A base image from a registry with a port: a registry of the run's own, inside.
 docker run -d --rm --name shards-provenance-registry -p 127.0.0.1:5000:5000 registry:2 >/dev/null
 trap 'docker rm -f shards-provenance-registry >/dev/null 2>&1; rm -rf "$work"' EXIT

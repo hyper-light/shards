@@ -891,6 +891,17 @@ fn op_v(op: &shards_dockerfile::llb::Op, md: &shards_dockerfile::llb::Meta, orde
         }
     }
     o.insert("metadata".into(), meta_v(md));
+    // Every op has its source map entry, the Dockerfile's (source 0), each location
+    // its lines (D80).
+    let locations: Vec<Value> = md
+        .locations
+        .iter()
+        .map(|l| {
+            let ranges: Vec<Value> = l.iter().map(|&(a, b)| serde_json::json!([a, 0, b, 0])).collect();
+            serde_json::json!({ "source": 0, "ranges": ranges })
+        })
+        .collect();
+    o.insert("locations".into(), Value::Array(locations));
     Value::Object(o)
 }
 
@@ -1083,6 +1094,9 @@ fn options_of(file: &str) -> shards_dockerfile::plan::Options {
         cgroup_parent: frontend("cgroup-parent").as_bytes().to_vec(),
         linux_resources: shards_dockerfile::dockerui::linux_resources(&frontend_map).unwrap(),
         network_mode: shards_dockerfile::dockerui::net_mode(frontend("force-network-mode")).unwrap(),
+        image_resolve_mode: shards_dockerfile::dockerui::resolve_mode(frontend("image-resolve-mode"))
+            .unwrap()
+            .to_vec(),
         no_cache: opts_v["no_cache"].as_str().map(|v| {
             if v.is_empty() {
                 Vec::new()
@@ -1154,7 +1168,7 @@ fn plans_are_buildkits() {
         }
         let mut got = Value::Object(got);
         // A deviation's ops are shards' own, as the reason it gives says, which no
-        // protobuf of BuildKit's records.
+        // protobuf or source map of BuildKit's records.
         if devs
             .iter()
             .any(|d| d["file"] == file && d["fields"].get("ops").is_some())
@@ -1163,6 +1177,7 @@ fn plans_are_buildkits() {
             for op in ops {
                 if let Some(o) = op.as_object_mut() {
                     o.remove("pb");
+                    o.remove("locations");
                 }
             }
         }

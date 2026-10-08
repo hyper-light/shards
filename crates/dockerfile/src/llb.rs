@@ -59,6 +59,9 @@ pub struct Meta {
     pub description: BTreeMap<Vec<u8>, Vec<u8>>,
     pub progress_group: Option<ProgressGroup>,
     pub linux_resources: Option<LinuxResources>,
+    /// Where in the Dockerfile it comes from (`llb.SourceMap.Location`): each a set of
+    /// lines, of every vertex marshalled to the op, in the order they were (D80).
+    pub locations: Vec<crate::instructions::Location>,
 }
 
 impl Meta {
@@ -74,6 +77,8 @@ impl Meta {
         if other.linux_resources.is_some() {
             self.linux_resources.clone_from(&other.linux_resources);
         }
+        // sourceMapCollector.Add: each vertex's locations, appended.
+        self.locations.extend(other.locations.iter().cloned());
     }
 }
 
