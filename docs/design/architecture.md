@@ -1980,7 +1980,7 @@ containers. Evidence: docs/research/image-build.md (§3 ranks the choices below)
          2026-10-08: this said a push compresses; only a pull's transfer is compressed,
          by content encoding). Since D75, the image and its outputs name a
          layer the build made gzipped, as Docker's do, and the store keeps it both ways;
-         `oci-mediatypes` and `rewrite-timestamp` are open.
+         `rewrite-timestamp` is D76's; `oci-mediatypes` is open.
        - Refs record what a reference resolved to, so a stored image reports the index
          digest Docker reports, as a fresh pull does.
        - The root filesystem is written from the target's last snapshot, not stacked
@@ -3209,6 +3209,35 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 2026-10-07): every path between domains is a grant, and the build refuses any that joins
 an internal-only domain to the world (D58), so there is no data to label. Code mode
 waits on the user.
+
+### D76. `rewrite-timestamp`: a build's layers at SOURCE_DATE_EPOCH, as BuildKit writes them
+
+With `rewrite-timestamp=true` and an epoch (SOURCE_DATE_EPOCH, or the output's
+`source-date-epoch`), each layer past the base's own, from the first that is not the base's
+layer at its place, is read and written again by Go's archive/tar (shards_archive's port),
+each modification, access and change time past the epoch set to it, then compressed as
+D75 compresses (BuildKit's `rewriteRemoteWithEpoch`, converter.go
+`rewriteTimestampInTarHeader`, tarconverter). Its descriptor carries
+`buildkit/rewritten-timestamp` (the epoch), the config's DiffID is the rewritten tar's,
+and the root filesystem the image keeps is built from those layers, not from the
+snapshot's later times. Each rewrite is written once, its record (layer, kind, level,
+epoch) in the build cache. The option is read as BuildKit reads it (`parseBool`, its
+words); outputs must ask it alike, as D75's compression.
+
+Deliberately unlike BuildKit: without an epoch the warning BuildKit leaves in its daemon's
+log is said to the build ("rewrite-timestamp is specified, but no source-date-epoch was
+found"); and an image the build stores is rewritten too, where Docker's exporter refuses
+it with its store ("exporter option \"rewrite-timestamp\" conflicts with \"unpack\"",
+an implementation's limit, not a rule).
+
+Measured: the cross-compiling Dockerfile of D74, built for `linux/amd64` on this arm64
+host with SOURCE_DATE_EPOCH=0 and `rewrite-timestamp=true` into an OCI archive, is the
+manifest Docker 29.3.1 makes of it (`sha256:58e07991…`, 744 bytes), byte for byte.
+
+Tested: `rewrite_timestamp_rewrites_the_builds_layers_as_buildkit_does` (the base's layer
+untouched, the step's rewritten and annotated, its times at most the epoch, the config's
+DiffID the rewritten tar's; the warning, and nothing rewritten, without an epoch),
+mutation-checked (no clamping, the base's rewritten, the config of the unrewritten).
 
 ### D75. Layers gzipped as Docker gzips them: Go's compress/flate, ported
 

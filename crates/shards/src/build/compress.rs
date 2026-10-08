@@ -87,45 +87,93 @@ fn kind_of(media_type: &[u8]) -> Option<Kind> {
     }
 }
 
-/// The build cache's record of a layer written with a compression: one record a layer,
-/// level and kind, which a later build of the same layer takes instead of compressing
-/// it again.
+/// `rewrite-timestamp` (BuildKit's `rewriteRemoteWithEpoch`): every layer after the
+/// base's own, from the first that is not the base's layer at its place, read and written
+/// again by Go's archive/tar with each time past `epoch` set to it, then compressed.
+#[derive(Debug, Clone, Copy)]
+pub struct Rewrite<'a> {
+    /// SOURCE_DATE_EPOCH, in seconds.
+    pub epoch: i64,
+    /// The base image's DiffIDs.
+    pub base: &'a [Vec<u8>],
+}
+
+/// The annotation a rewritten layer's descriptor carries (converter.go
+/// `labelRewrittenTimestamp`).
+const REWRITTEN: &str = "buildkit/rewritten-timestamp";
+
+/// What becomes of a layer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Job {
+    Keep,
+    Compress,
+    Rewrite,
+}
+
+/// The build cache's record of a layer written with a compression (and an epoch): one
+/// record a layer, level, kind and epoch, which a later build of the same layer takes
+/// instead of writing it again.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Written {
     digest: String,
     size: u64,
+    /// The DiffID of what was written, where a rewrite changed it.
+    #[serde(default)]
+    diff_id: Option<String>,
 }
 
-fn record_key(diff_id: &[u8], kind: Kind, level: Option<i32>) -> String {
-    let name = format!(
+fn record_key(diff_id: &[u8], kind: Kind, level: Option<i32>, epoch: Option<i64>) -> String {
+    let mut name = format!(
         "compressed layer\0{}\0{kind:?}\0{}",
         String::from_utf8_lossy(diff_id),
         level.map_or("default".to_string(), |l| l.to_string())
     );
+    if let Some(e) = epoch {
+        name.push_str(&format!("\0rewritten {e}"));
+    }
     super::sha256(name.as_bytes()).hex().to_string()
 }
 
-/// `layers` as an image exporter writes them with `c`: those of `existing` (a base's, a
-/// named context's, an artifact's: blobs that were there before the build) kept as they
-/// are unless `c.force`, every other written with `c`'s compression, on as many threads
-/// as the host has cores; each written once, its record kept in the build cache.
+/// `layers` as an image exporter writes them with `c` and, if given, `rewrite`: those of
+/// `existing` (a base's, a named context's, an artifact's: blobs that were there before
+/// the build) kept as they are unless `c.force`, every other written with `c`'s
+/// compression; with `rewrite`, every layer past the base's own rewritten. On as many
+/// threads as the host has cores; each written once, its record kept in the build cache.
 pub fn layers(
     store: &Store,
     layers: &[Layer],
     existing: &BTreeSet<Vec<u8>>,
     c: Compression,
+    rewrite: Option<Rewrite<'_>>,
     limits: &Limits,
 ) -> Result<Vec<Layer>, String> {
-    let todo: Vec<usize> = layers
+    let mut diverged = false;
+    let jobs: Vec<Job> = layers
         .iter()
         .enumerate()
-        .filter(|(_, l)| (c.force || !existing.contains(&l.digest)) && kind_of(&l.media_type) != Some(c.kind))
-        .map(|(i, _)| i)
+        .map(|(i, l)| {
+            let compress =
+                (c.force || !existing.contains(&l.digest)) && kind_of(&l.media_type) != Some(c.kind);
+            let Some(r) = rewrite else {
+                return if compress { Job::Compress } else { Job::Keep };
+            };
+            if !diverged && let Some(base) = r.base.get(i) {
+                if *base == l.diff_id {
+                    return if compress { Job::Compress } else { Job::Keep };
+                }
+                diverged = true;
+            }
+            Job::Rewrite
+        })
+        .collect();
+    let todo: Vec<usize> = (0..layers.len())
+        .filter(|&i| jobs.get(i).is_some_and(|j| *j != Job::Keep))
         .collect();
     let mut out = layers.to_vec();
     if todo.is_empty() {
         return Ok(out);
     }
+    let epoch = rewrite.map(|r| r.epoch);
     let threads = std::thread::available_parallelism()
         .map_or(1, |n| n.get())
         .min(todo.len());
@@ -135,8 +183,11 @@ pub fn layers(
         let work = || loop {
             let n = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let Some(&i) = todo.get(n) else { break };
-            let Some(layer) = layers.get(i) else { break };
-            let r = written(store, layer, c, limits);
+            let (Some(layer), Some(job)) = (layers.get(i), jobs.get(i)) else {
+                break;
+            };
+            let at = if *job == Job::Rewrite { epoch } else { None };
+            let r = written(store, layer, c, at, limits);
             results
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -163,14 +214,77 @@ pub fn layers(
     Ok(out)
 }
 
-/// `layer` written with `c`: from the build cache's record if it has one whose blob is
-/// here, else compressed now and recorded.
-fn written(store: &Store, layer: &Layer, c: Compression, limits: &Limits) -> Result<Layer, String> {
+/// A writer that hashes what passes through it: a rewritten layer's DiffID.
+struct Hashing<W> {
+    inner: W,
+    hash: sha2::Sha256,
+}
+
+impl<W: std::io::Write> std::io::Write for Hashing<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        use sha2::Digest as _;
+        let n = self.inner.write(buf)?;
+        self.hash.update(buf.get(..n).unwrap_or_default());
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+/// tarconverter.NewReader with converter.go's `rewriteTimestampInTarHeader`: each entry
+/// read and written again by Go's archive/tar, its modification, access and change times
+/// past `epoch` set to it, then the end of the archive; `out` and the DiffID of what was
+/// written.
+fn rewrite_into<W: std::io::Write>(
+    tar: &mut dyn std::io::Read,
+    out: W,
+    epoch: i64,
+) -> Result<(W, Digest), shards_image::Error> {
+    use sha2::Digest as _;
+    let io = |e: shards_archive::Error| shards_image::Error::from(std::io::Error::other(e.to_string()));
+    let at = shards_archive::tar::Time::unix(epoch, 0);
+    let mut reader = shards_archive::tar::Reader::new(tar);
+    let mut writer = shards_archive::tar::Writer::new(Hashing {
+        inner: out,
+        hash: sha2::Sha256::new(),
+    });
+    while let Some(mut h) = reader.next_header().map_err(io)? {
+        for t in [&mut h.mtime, &mut h.atime, &mut h.ctime] {
+            if *t > at {
+                *t = at;
+            }
+        }
+        writer.write_header(&h).map_err(io)?;
+        writer.copy_from(&mut reader).map_err(io)?;
+    }
+    let hashing = writer.finish().map_err(io)?;
+    let digest = Digest::from_hash(
+        shards_image::reference::Algorithm::Sha256,
+        &hashing.hash.finalize(),
+    );
+    Ok((hashing.inner, digest))
+}
+
+/// `layer` written with `c`, rewritten at `epoch` if given: from the build cache's record
+/// if it has one whose blob is here, else written now and recorded.
+fn written(
+    store: &Store,
+    layer: &Layer,
+    c: Compression,
+    epoch: Option<i64>,
+    limits: &Limits,
+) -> Result<Layer, String> {
     let media_type = match c.kind {
         Kind::Gzip => OCI_LAYER_GZIP,
         Kind::Uncompressed => OCI_LAYER,
     };
-    let key = record_key(&layer.diff_id, c.kind, c.level);
+    let annotations: BTreeMap<Vec<u8>, Vec<u8>> = epoch
+        .map(|e| (REWRITTEN.as_bytes().to_vec(), e.to_string().into_bytes()))
+        .into_iter()
+        .collect();
+    let key = record_key(&layer.diff_id, c.kind, c.level, epoch);
     if let Some(body) = store.cache_get(&key).map_err(|e| e.to_string())?
         && let Ok(w) = serde_json::from_slice::<Written>(&body)
     {
@@ -179,7 +293,10 @@ fn written(store: &Store, layer: &Layer, c: Compression, limits: &Limits) -> Res
             media_type: media_type.as_bytes().to_vec(),
             digest: w.digest.into_bytes(),
             size: w.size,
-            annotations: BTreeMap::new(),
+            diff_id: w
+                .diff_id
+                .map_or_else(|| layer.diff_id.clone(), String::into_bytes),
+            annotations,
             ..layer.clone()
         });
     }
@@ -189,21 +306,31 @@ fn written(store: &Store, layer: &Layer, c: Compression, limits: &Limits) -> Res
         diff_id: Digest::parse(&String::from_utf8_lossy(&layer.diff_id)).map_err(|e| e.to_string())?,
     };
     let blob = store.writer().map_err(|e| e.to_string())?;
-    let (digest, size) = store
+    let ((digest, size), diff_id) = store
         .with_layer_tar(&source, limits, |tar| {
             let io = shards_image::Error::from;
-            match c.kind {
-                Kind::Gzip => {
-                    let level = c.level.unwrap_or(shards_flate::DEFAULT_COMPRESSION);
+            let level = c.level.unwrap_or(shards_flate::DEFAULT_COMPRESSION);
+            match (c.kind, epoch) {
+                (Kind::Gzip, None) => {
                     let mut gz = shards_flate::GzipWriter::new(blob, level).map_err(io)?;
                     std::io::copy(tar, &mut gz).map_err(io)?;
-                    gz.finish().map_err(io)?.commit()
+                    Ok((gz.finish().map_err(io)?.commit()?, None))
                 }
-                Kind::Uncompressed => {
+                (Kind::Uncompressed, None) => {
                     let mut blob = blob;
                     std::io::copy(tar, &mut blob).map_err(io)?;
                     blob.flush().map_err(io)?;
-                    blob.commit()
+                    Ok((blob.commit()?, None))
+                }
+                (Kind::Gzip, Some(e)) => {
+                    let gz = shards_flate::GzipWriter::new(blob, level).map_err(io)?;
+                    let (gz, diff_id) = rewrite_into(tar, gz, e)?;
+                    Ok((gz.finish().map_err(io)?.commit()?, Some(diff_id)))
+                }
+                (Kind::Uncompressed, Some(e)) => {
+                    let (mut blob, diff_id) = rewrite_into(tar, blob, e)?;
+                    blob.flush().map_err(io)?;
+                    Ok((blob.commit()?, Some(diff_id)))
                 }
             }
         })
@@ -211,6 +338,7 @@ fn written(store: &Store, layer: &Layer, c: Compression, limits: &Limits) -> Res
     let body = serde_json::to_vec(&Written {
         digest: digest.to_string(),
         size,
+        diff_id: diff_id.as_ref().map(ToString::to_string),
     })
     .map_err(|e| e.to_string())?;
     store
@@ -225,7 +353,8 @@ fn written(store: &Store, layer: &Layer, c: Compression, limits: &Limits) -> Res
         media_type: media_type.as_bytes().to_vec(),
         digest: digest.to_string().into_bytes(),
         size,
-        annotations: BTreeMap::new(),
+        diff_id: diff_id.map_or_else(|| layer.diff_id.clone(), |d| d.to_string().into_bytes()),
+        annotations,
         ..layer.clone()
     })
 }

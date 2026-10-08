@@ -6981,3 +6981,102 @@ fn layers_are_compressed_as_buildkit_compresses_them() {
         assert!(refused.stderr.contains(words), "{opts}: {}", refused.stderr);
     }
 }
+
+/// `rewrite-timestamp` (D76): with SOURCE_DATE_EPOCH, every layer past the base's own is
+/// read and written again by Go's archive/tar, each time past the epoch set to it, its
+/// descriptor annotated with the epoch, the config's DiffID its own; the base's layer is
+/// left as it came; without an epoch, BuildKit's warning, and nothing rewritten.
+#[test]
+fn rewrite_timestamp_rewrites_the_builds_layers_as_buildkit_does() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("rewrite-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let ctx = context(
+        "rewrite-ctx",
+        &format!("FROM {image}\nRUN [\"/bin/testguest\", \"fs\", \"write:/work/made=made now\"]\n"),
+    );
+    let out = TempDir::new("rewrite-out");
+    let build = |dir: &std::path::Path, epoch: Option<&str>| {
+        let mut args = vec!["build".to_string()];
+        if let Some(e) = epoch {
+            args.extend(["--build-arg".into(), format!("SOURCE_DATE_EPOCH={e}")]);
+        }
+        args.extend([
+            "-o".into(),
+            format!("type=oci,dest={},tar=false,rewrite-timestamp=true", dir.display()),
+            ctx.to_str().unwrap().into(),
+        ]);
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let built = shards(&args);
+        assert_eq!(built.status, Some(0), "{}", built.stderr);
+        let blob =
+            |d: &str| std::fs::read(dir.join("blobs/sha256").join(d.trim_start_matches("sha256:"))).unwrap();
+        let top: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(dir.join("index.json")).unwrap()).unwrap();
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&blob(top["manifests"][0]["digest"].as_str().unwrap())).unwrap();
+        let config: serde_json::Value =
+            serde_json::from_slice(&blob(manifest["config"]["digest"].as_str().unwrap())).unwrap();
+        let layers: Vec<(serde_json::Value, Vec<u8>)> = manifest["layers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|l| (l.clone(), blob(l["digest"].as_str().unwrap())))
+            .collect();
+        (built.stderr, config, layers)
+    };
+    let gunzip = |b: &[u8]| {
+        let mut out = Vec::new();
+        std::io::Read::read_to_end(&mut flate2::read::GzDecoder::new(b), &mut out).unwrap();
+        out
+    };
+    let sha = |b: &[u8]| {
+        use sha2::Digest as _;
+        let hex: String = sha2::Sha256::digest(b)
+            .iter()
+            .map(|x| format!("{x:02x}"))
+            .collect();
+        format!("sha256:{hex}")
+    };
+
+    let (_, config, layers) = build(&out.join("at-1000"), Some("1000"));
+    // The base's layer as it came: not annotated.
+    assert!(layers[0].0.get("annotations").is_none(), "{:?}", layers[0].0);
+    let (desc, blob) = &layers[1];
+    assert_eq!(
+        desc["annotations"]["buildkit/rewritten-timestamp"], "1000",
+        "{desc}"
+    );
+    let tar = gunzip(blob);
+    assert_eq!(config["rootfs"]["diff_ids"][1], sha(&tar).as_str(), "{config}");
+    let entries = tar_entries(&tar);
+    assert!(!entries.is_empty());
+    for (h, _) in &entries {
+        assert!(
+            h.mtime.sec <= 1000,
+            "{:?} at {:?}",
+            String::from_utf8_lossy(&h.name),
+            h.mtime
+        );
+    }
+    assert!(
+        entries
+            .iter()
+            .any(|(h, d)| h.name == b"work/made" && d == b"made now")
+    );
+
+    let (stderr, _, layers) = build(&out.join("no-epoch"), None);
+    assert!(
+        stderr.contains("WARNING: rewrite-timestamp is specified, but no source-date-epoch was found"),
+        "{stderr}"
+    );
+    assert!(layers[1].0.get("annotations").is_none(), "{:?}", layers[1].0);
+}

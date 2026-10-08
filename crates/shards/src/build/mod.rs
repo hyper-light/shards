@@ -1210,7 +1210,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
     )
     .map_err(|e| format!("failed to build: {e}"))?;
     check_outputs(&outputs)?;
-    let compression = compression_of(&outputs)?;
+    let (compression, rewrite_timestamp) = compression_of(&outputs)?;
     // A provenance asked for (not inline-only) goes in every output, which shards makes
     // in an image it stores or pushes alone yet.
     if let Provenance::Explicit {
@@ -2181,7 +2181,32 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
                 .map(|l| l.digest.clone()),
         )
         .collect();
-    let held = compress::layers(&store, &layers, &existing, compression, &limits)?;
+    // rewrite-timestamp, at the build's SOURCE_DATE_EPOCH or the outputs' own; without
+    // one, BuildKit's warning, which its daemon's log alone shows.
+    let rewrite_epoch = if rewrite_timestamp {
+        let at = outputs
+            .iter()
+            .find_map(|o| output::epoch(&o.attrs, plan.epoch).ok().flatten())
+            .or(plan.epoch);
+        if at.is_none() {
+            let _ = writeln!(
+                std::io::stderr(),
+                "WARNING: rewrite-timestamp is specified, but no source-date-epoch was found"
+            );
+        }
+        at
+    } else {
+        None
+    };
+    let base_diff_ids: Vec<Vec<u8>> = base_image
+        .as_ref()
+        .and_then(|b| b.rootfs.diff_ids.clone())
+        .unwrap_or_default();
+    let rewrite = rewrite_epoch.map(|epoch| compress::Rewrite {
+        epoch,
+        base: &base_diff_ids,
+    });
+    let held = compress::layers(&store, &layers, &existing, compression, rewrite, &limits)?;
     // Each layer the image holds by the digest the build's records name it by.
     let as_held: BTreeMap<Vec<u8>, Layer> = layers
         .iter()
@@ -2189,7 +2214,8 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
         .map(|(l, h)| (l.digest.clone(), h.clone()))
         .collect();
     let epoch = plan.epoch.map(Time::from_unix);
-    let config = export::config(&plan.image, &layers, epoch, base_image.as_ref()).map_err(|e| show(&e))?;
+    // From the layers as written: a rewrite changes their DiffIDs.
+    let config = export::config(&plan.image, &held, epoch, base_image.as_ref()).map_err(|e| show(&e))?;
     // The build's records, for --cache-to, and the image's layers, which `min` and an
     // inline cache keep to.
     let used: Vec<String> = keys.iter().flatten().cloned().collect();
@@ -2335,6 +2361,11 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
         .collect::<Result<_, String>>()?;
     match (flat, exec.as_mut()) {
         _ if store_layers.is_empty() => {}
+        // Rewritten layers are not the snapshot's times: the root filesystem is theirs.
+        _ if rewrite_epoch.is_some() => {
+            store.rootfs(&store_layers, &limits).map_err(|e| e.to_string())?;
+            crate::phase("rootfs-from-layers");
+        }
         (Some(Ok(flat)), Some(exec)) => {
             exec.rootfs(flat, &store_layers)?;
             crate::phase("rootfs-from-snapshot");
@@ -2693,18 +2724,24 @@ fn finish(parsed: &Parsed, id: &str) -> Result<(), String> {
 /// The compression the image's layers take (D75): what the outputs that hold an image
 /// ask, BuildKit's default where none asks; outputs that ask differently are refused,
 /// named, until each is written its own way.
-fn compression_of(outputs: &[buildflags::Output]) -> Result<compress::Compression, String> {
-    let mut asked: Option<compress::Compression> = None;
+fn compression_of(outputs: &[buildflags::Output]) -> Result<(compress::Compression, bool), String> {
+    let mut asked: Option<(compress::Compression, bool)> = None;
     for o in outputs
         .iter()
         .filter(|o| matches!(o.kind.as_str(), "image" | "moby" | "docker" | "oci"))
     {
-        let c = compress::Compression::of(&o.attrs)
-            .map_err(|e| format!("failed to build: failed to solve: {e}"))?;
+        let solve = |e: String| format!("failed to build: failed to solve: {e}");
+        // ImageCommitOpts.Load's parseBool, in its words.
+        let rewrite = match o.attrs.get("rewrite-timestamp") {
+            None => false,
+            Some(v) => shards_cmdline::go::parse_bool(v)
+                .map_err(|e| solve(format!("non-bool value specified for rewrite-timestamp: {e}")))?,
+        };
+        let c = (compress::Compression::of(&o.attrs).map_err(solve)?, rewrite);
         match asked {
             Some(a) if a != c => {
                 return Err(
-                    "outputs that compress their layers differently are not supported by shards yet: ask each the same"
+                    "outputs that compress or rewrite their layers differently are not supported by shards yet: ask each the same"
                         .into(),
                 );
             }
