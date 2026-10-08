@@ -2162,6 +2162,20 @@ pub static BUILD: Command = Command {
             "Shared memory size for build containers",
         ),
         Flag::many("annotation", None, "stringArray", "Add annotation to the image"),
+        Flag::string(
+            "call",
+            None,
+            "build",
+            "Set method for evaluating build (\"check\", \"outline\", \"targets\")",
+        ),
+        Flag::bool("check", None, "Shorthand for \"--call=check\"").unshown(),
+        Flag::string(
+            "print",
+            None,
+            "",
+            "Print result of information request (e.g., outline, targets)",
+        )
+        .hidden(),
         // buildx's root flags.
         Flag::string("builder", None, "", "Override the configured builder instance"),
         Flag::bool("debug", Some(b'D'), "Enable debug logging"),
@@ -2274,10 +2288,7 @@ pub static BUILD: Command = Command {
     ],
     unserved: "\
 attest - m - -\n\
-call - s build -\n\
-check - b - -\n\
 policy - m - -\n\
-print - s - -\n\
 provenance - s - -\n\
 sbom - s - -",
     interspersed: true,

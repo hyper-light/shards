@@ -2826,6 +2826,82 @@ fn annotations_land_where_buildkit_puts_them() {
     );
 }
 
+/// `--check` (D67): the build's checks said as buildx says the lint subrequest's result,
+/// nothing built, exit 1 for warnings unless `ignorestatus`; with `--debug`, a build's
+/// warnings in full.
+#[test]
+fn check_says_the_builds_warnings_as_buildx_does() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("check-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let ctx = context("check-ctx", &format!("FROM {image} as Build\nLABEL a=b\n"));
+    let checked = shards(&["build", "--check", ctx.to_str().unwrap()]);
+    assert_eq!(checked.status, Some(1), "{}", checked.stderr);
+    let out = &checked.stdout;
+    assert!(
+        out.starts_with("Check complete, 2 warnings have been found!\n\nWARNING: "),
+        "{out}"
+    );
+    assert!(
+        out.contains(
+            "\nWARNING: FromAsCasing - https://docs.docker.com/go/dockerfile/rule/from-as-casing/\n"
+        ),
+        "{out}"
+    );
+    assert!(
+        out.contains("Dockerfile:1\n--------------------\n   1 | >>> FROM "),
+        "{out}"
+    );
+    assert!(!checked.stderr.contains("exporting"), "{}", checked.stderr);
+    let ignored = shards(&[
+        "build",
+        "--call",
+        "check,ignorestatus=true",
+        ctx.to_str().unwrap(),
+    ]);
+    assert_eq!(ignored.status, Some(0), "{}", ignored.stderr);
+
+    let clean = context("check-clean", &format!("FROM {image}\n"));
+    let fine = shards(&["build", "--check", clean.to_str().unwrap()]);
+    assert_eq!(
+        (fine.status, fine.stdout.as_str()),
+        (Some(0), "Check complete, no warnings found.\n"),
+        "{}",
+        fine.stderr
+    );
+
+    let debugged = shards(&["build", "--debug", "--progress=plain", ctx.to_str().unwrap()]);
+    assert_eq!(debugged.status, Some(0), "{}", debugged.stderr);
+    assert!(
+        !debugged.stderr.contains("use shards --debug"),
+        "{}",
+        debugged.stderr
+    );
+    assert!(
+        debugged
+            .stderr
+            .contains("More info: https://docs.docker.com/go/dockerfile/rule/from-as-casing/\n"),
+        "{}",
+        debugged.stderr
+    );
+    let refused = shards(&["build", "--call", "outline", ctx.to_str().unwrap()]);
+    assert!(
+        refused
+            .stderr
+            .contains("--call=outline is not supported by shards yet"),
+        "{}",
+        refused.stderr
+    );
+}
+
 /// `RUN --mount=type=ssh` reaches the client's SSH agent through the builder, as
 /// BuildKit's steps reach it (`--ssh default`, `SSH_AUTH_SOCK` in the step): the step
 /// sees the agent's keys and has it sign, and cannot have it forget them, which BuildKit's

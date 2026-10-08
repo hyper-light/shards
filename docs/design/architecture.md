@@ -3192,6 +3192,25 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode
 waits on the user.
 
+### D67. `--check`, `--call` and `--debug`'s warnings
+
+`--check` (`--call=check`, and `check,ignorestatus=true`), as buildx v0.37.1 reads and
+answers it (util/buildflags/callfunc.go, commands/build.go `printResult`), over the
+checks the plan already makes as BuildKit's frontend does (held by the Dockerfile
+oracle): nothing built; "Check complete, N warnings have been found!" and each warning as
+BuildKit's lint subrequest prints it (frontend/subrequests/lint `PrintTo`: by line, its
+rule and URL, its message, its lines as `errdefs.Source` shows them), or "Check complete,
+no warnings found."; exit 1 for warnings, unless `ignorestatus`. With `--debug`, a build's
+warnings come in full, as buildx's `printWarnings` gives them at debug level: each
+rule's description, "More info:" and its lines, and no "use --debug to expand".
+`--call=outline`, `targets`, `subrequests.describe` and `format=json` are refused, named,
+until each is held to BuildKit's own answer (they need the frontend's oracle, which needs
+Docker). The hidden `--print` is taken as buildx takes it.
+
+Tested on a real build (`check_says_the_builds_warnings_as_buildx_does`); the flags by
+the buildx oracle (a flag whose value prints as nothing, as buildx's `callAlias` does,
+now said so: `Flag::unshown`).
+
 ### D66. `--annotation`
 
 As buildx v0.37.1 reads it (util/buildflags/export.go `ParseAnnotations`, held to buildx

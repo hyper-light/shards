@@ -77,7 +77,10 @@ pub fn build(args: impl Iterator<Item = OsString>) -> ExitCode {
         }
     };
     let _ = write!(std::io::stdout(), "{}", parsed.notices);
-    match run(&parsed) {
+    // What a check (`--call=check`) ends with, which says no error of its own.
+    let status = std::cell::Cell::new(0u8);
+    match run(&parsed, &status) {
+        Ok(()) if status.get() != 0 => ExitCode::from(status.get()),
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => failed(&e),
     }
@@ -933,7 +936,7 @@ fn excerpt(file: &str, text: &[u8], ranges: &[(usize, usize)]) -> String {
     out
 }
 
-fn run(parsed: &Parsed) -> Result<(), String> {
+fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
     crate::phase("start");
     // What the build is given, in the order buildx's runBuild meets it: its secrets, read
     // now and once, each as large as a step carries; then its entitlements; its ulimits
@@ -1223,6 +1226,8 @@ fn run(parsed: &Parsed) -> Result<(), String> {
             .map_err(|e| format!("failed to parse resource limits: {e}"))?,
         network_mode,
     };
+    let call = call_of(parsed)?;
+    let debug = parsed.bool("debug");
     let plan = match plan::plan(&text, &opts, &bases) {
         Ok(p) => p,
         Err(e) => {
@@ -1231,10 +1236,32 @@ fn run(parsed: &Parsed) -> Result<(), String> {
                 out.push_str(&excerpt(&name, &text, loc));
             }
             let _ = write!(std::io::stderr(), "{out}");
-            print_warnings(&e.warnings, quiet);
+            print_warnings(&e.warnings, quiet, debug, &name, &text);
             return Err(format!("failed to build: failed to solve: {}", show(&e.message)));
         }
     };
+    // --call=check: the build's checks, said as buildx says the lint subrequest's result
+    // (commands/build.go printResult), and nothing built.
+    if let Some((ignore_status, _)) = call {
+        let n = plan.warnings.len();
+        let mut out = String::new();
+        if n > 0 {
+            let found = if n == 1 {
+                "1 warning has been found!".to_string()
+            } else {
+                format!("{n} warnings have been found!")
+            };
+            out.push_str(&format!("Check complete, {found}\n"));
+            out.push_str(&lint_text(&plan.warnings, &name, &text));
+        } else {
+            out.push_str("Check complete, no warnings found.\n");
+        }
+        let _ = write!(std::io::stdout(), "{out}");
+        if n > 0 && !ignore_status {
+            status.set(1);
+        }
+        return Ok(());
+    }
     {
         if let Some(found) = &context_ignore {
             let v = progress.borrow_mut().start("[internal] load .dockerignore");
@@ -1359,7 +1386,7 @@ fn run(parsed: &Parsed) -> Result<(), String> {
         // doing when it failed.
         let fail_in = |v: &Vertex, stage: &str, why: &str| {
             progress.borrow().error(v, why);
-            print_warnings(&plan.warnings, quiet);
+            print_warnings(&plan.warnings, quiet, debug, &name, &text);
             format!("failed to build: failed to solve: {stage}{why}")
         };
         let fail = |v: &Vertex, why: &str| fail_in(v, "", why);
@@ -1892,7 +1919,7 @@ fn run(parsed: &Parsed) -> Result<(), String> {
                 &descriptor_annotations,
             ),
         )?;
-        print_warnings(&plan.warnings, quiet);
+        print_warnings(&plan.warnings, quiet, debug, &name, &text);
         return finish(parsed, &manifest_digest.to_string());
     }
     let v = progress.borrow_mut().start("exporting to image");
@@ -2003,7 +2030,7 @@ fn run(parsed: &Parsed) -> Result<(), String> {
             &descriptor_annotations,
         ),
     )?;
-    print_warnings(&plan.warnings, quiet);
+    print_warnings(&plan.warnings, quiet, debug, &name, &text);
     finish(parsed, &manifest_digest.to_string())
 }
 
@@ -2810,7 +2837,74 @@ fn sha256(bytes: &[u8]) -> Digest {
 }
 
 /// buildx's warnings after a build (commands/build.go printWarnings).
-fn print_warnings(warnings: &[shards_dockerfile::lint::Warning], quiet: bool) {
+/// `--call`'s method as buildx reads it (util/buildflags/callfunc.go `ParseCallFunc`,
+/// `--check` its shorthand): none to build; for a check, whether its status is ignored and
+/// its format. Methods shards does not serve yet are refused.
+fn call_of(parsed: &Parsed) -> Result<Option<(bool, String)>, String> {
+    let given = if parsed.bool("check") {
+        "check"
+    } else {
+        parsed.string("call")
+    };
+    if given.is_empty() {
+        return Ok(None);
+    }
+    let fields = shards_cmdline::go::csv_fields(given.as_bytes()).map_err(|e| show(&e))?;
+    let (mut name, mut format, mut ignore) = (String::new(), String::new(), false);
+    for f in fields {
+        let f = show(&f);
+        match f.split_once('=') {
+            Some(("format", v)) => format = v.to_string(),
+            Some(("ignorestatus", v)) => {
+                ignore = shards_cmdline::go::parse_bool(v)
+                    .map_err(|e| format!("invalid ignorestatus print value: {v}: {e}"))?;
+            }
+            Some(_) => return Err(format!("invalid print field: {f}")),
+            None if !name.is_empty() => return Err(format!("invalid print value: {given}")),
+            None => name = f,
+        }
+    }
+    match name.as_str() {
+        "build" => Ok(None),
+        "check" | "lint" if format.is_empty() => Ok(Some((ignore, format))),
+        "check" | "lint" => Err(format!(
+            "--call=check with format={format} is not supported by shards yet"
+        )),
+        other => Err(format!("--call={other} is not supported by shards yet")),
+    }
+}
+
+/// The build's checks as BuildKit's lint subrequest prints them (frontend/subrequests/lint
+/// `LintResults.PrintTo`): by line, each its rule, URL, message and lines.
+fn lint_text(warnings: &[shards_dockerfile::lint::Warning], file: &str, text: &[u8]) -> String {
+    let mut sorted: Vec<&shards_dockerfile::lint::Warning> = warnings.iter().collect();
+    sorted.sort_by(|a, b| match (a.location.first(), b.location.first()) {
+        (None, None) => a.rule.cmp(b.rule),
+        (None, Some(_)) => std::cmp::Ordering::Less,
+        (Some(_), None) => std::cmp::Ordering::Greater,
+        (Some(x), Some(y)) => x.0.cmp(&y.0),
+    });
+    let mut out = String::new();
+    for w in sorted {
+        out.push_str(&format!("\nWARNING: {}", w.rule));
+        if !w.url.is_empty() {
+            out.push_str(&format!(" - {}", w.url));
+        }
+        out.push_str(&format!("\n{}\n", show(&w.message)));
+        if !w.location.is_empty() {
+            out.push_str(&excerpt(file, text, &w.location));
+        }
+    }
+    out
+}
+
+fn print_warnings(
+    warnings: &[shards_dockerfile::lint::Warning],
+    quiet: bool,
+    debug: bool,
+    file: &str,
+    text: &[u8],
+) {
     if warnings.is_empty() || quiet {
         return;
     }
@@ -2819,7 +2913,14 @@ fn print_warnings(warnings: &[shards_dockerfile::lint::Warning], quiet: bool) {
     } else {
         format!("{} warnings found", warnings.len())
     };
-    let mut out = format!("\n {YELLOW}{count} (use shards --debug to expand):\n{RESET}");
+    // With --debug, each in full (commands/build.go printWarnings): its description,
+    // its URL, and its lines.
+    let hint = if debug {
+        ""
+    } else {
+        " (use shards --debug to expand)"
+    };
+    let mut out = format!("\n {YELLOW}{count}{hint}:\n{RESET}");
     for w in warnings {
         let line = w.location.first().map_or(0, |r| r.0);
         let mut short = format!("{}: {}", w.rule, show(&w.message));
@@ -2827,6 +2928,17 @@ fn print_warnings(warnings: &[shards_dockerfile::lint::Warning], quiet: bool) {
             short.push_str(&format!(" (line {line})"));
         }
         out.push_str(&format!(" - {short}\n"));
+        if !debug {
+            continue;
+        }
+        out.push_str(&format!("{}\n", w.description));
+        if !w.url.is_empty() {
+            out.push_str(&format!("More info: {}\n", w.url));
+        }
+        if !w.location.is_empty() {
+            out.push_str(&excerpt(file, text, &w.location));
+        }
+        out.push('\n');
     }
     let _ = write!(std::io::stderr(), "{out}");
 }

@@ -53,6 +53,9 @@ pub struct Flag {
     /// One of shards' own, which `docker` does not have: `--help` lists it apart, after
     /// `docker`'s, whose text stays the CLI's.
     pub extension: bool,
+    /// Its value shows as nothing, whatever it holds (a pflag Value whose `String` is
+    /// empty: buildx's `--check`).
+    pub unshown: bool,
 }
 
 impl Flag {
@@ -75,6 +78,7 @@ impl Flag {
             supported: true,
             shares: None,
             extension: false,
+            unshown: false,
         }
     }
 
@@ -149,6 +153,12 @@ impl Flag {
 
     pub const fn hidden(mut self) -> Flag {
         self.hidden = true;
+        self
+    }
+
+    /// The flag with its value shown as nothing ([`Flag::unshown`]).
+    pub const fn unshown(mut self) -> Flag {
+        self.unshown = true;
         self
     }
 
@@ -385,6 +395,7 @@ impl Parsed {
             .filter(|f| self.changed(f.name))
             .map(|f| {
                 let shown = match self.value(f.name) {
+                    _ if f.unshown => String::new(),
                     Some(Value::Bool(b)) => b.to_string(),
                     Some(Value::Int(n)) if f.kind == Kind::Duration => crate::gotime::format_duration(*n),
                     Some(Value::Int(n)) => n.to_string(),

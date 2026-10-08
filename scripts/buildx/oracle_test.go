@@ -37,7 +37,7 @@ import (
 
 // The flags shards serves.
 var served = []string{
-	"add-host", "allow", "annotation", "build-arg", "build-context", "builder", "cache-from", "cache-to", "cgroup-parent", "debug",
+	"add-host", "allow", "annotation", "build-arg", "build-context", "builder", "cache-from", "cache-to", "call", "cgroup-parent", "check", "debug",
 	"file", "help",
 	"iidfile", "label", "load", "metadata-file", "network", "no-cache", "no-cache-filter", "platform", "resource",
 	"shm-size",
@@ -89,6 +89,8 @@ var cases = [][]string{
 	{"--metadata-file", "meta.json", "."},
 	{"--add-host", "db:10.0.0.2", "--add-host", "a=1.2.3.4,b:5.6.7.8", "."},
 	{"--builder", "default", "-D", "."},
+	{"--call", "check,ignorestatus=true", "."},
+	{"--call=outline", "."},
 	{"--annotation", "org.opencontainers.image.title=app", "--annotation", "manifest,manifest-descriptor:a=b", ".",},
 	{"--annotation", "index:k=v", "--annotation", "manifest[linux/amd64]:p=q", "."},
 	{"--annotation", "noequals", "."},
