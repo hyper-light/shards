@@ -2869,6 +2869,8 @@ fn builds_take_remote_contexts() {
     let served: Vec<(String, Vec<u8>)> = vec![
         ("/ctx.tar.gz".into(), archive),
         ("/Dockerfile".into(), plain.clone()),
+        ("/f.Dockerfile".into(), b"FROM scratch\nCOPY f.txt /f\n".to_vec()),
+        ("/big".into(), vec![b'#'; 2 * 1024 * 1024 + 1]),
     ];
     let fetched = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -3024,6 +3026,39 @@ fn builds_take_remote_contexts() {
         None,
     );
     assert_eq!(std::fs::read(o.join("d")).unwrap(), plain);
+
+    // `-f` a URL: fetched as buildx fetches it, at most 2 MiB, over a local directory.
+    let local = context("remote-ctx-local", "FROM scratch\n");
+    std::fs::write(local.join("f.txt"), "local\n").unwrap();
+    let (o, log) = exported(
+        "f-url",
+        &[
+            "-f",
+            &format!("http://127.0.0.1:{wport}/f.Dockerfile"),
+            local.to_str().unwrap(),
+        ],
+        None,
+    );
+    assert!(
+        log.contains(&format!("[internal] load http://127.0.0.1:{wport}/f.Dockerfile")),
+        "{log}"
+    );
+    assert_eq!(files(&o), ["f"]);
+    let (code, log) = build(
+        &[
+            "-f",
+            &format!("http://127.0.0.1:{wport}/big"),
+            local.to_str().unwrap(),
+        ],
+        None,
+    );
+    assert_ne!(code, Some(0));
+    assert!(
+        log.contains(&format!(
+            "Dockerfile http://127.0.0.1:{wport}/big bigger than allowed max size (2.097MB)"
+        )),
+        "{log}"
+    );
 
     // stdin: an archive is the context; a Dockerfile has an empty one.
     let tar = ustar(&[

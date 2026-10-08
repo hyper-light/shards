@@ -1472,7 +1472,8 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
         // `-f` names a file of the context, unless it is stdin's or a path of the host's
         // (buildx's `dockerfilekey`, its directory sent as `dockerfile`).
         let file = parsed.string("file");
-        if file != "-" && !Path::new(file).is_absolute() {
+        let from_url = file.starts_with("http://") || file.starts_with("https://");
+        if file != "-" && !from_url && !Path::new(file).is_absolute() {
             let name = match main {
                 plan::MainContext::Http { archive: false, .. } => "context".to_string(),
                 _ if file.is_empty() => "Dockerfile".to_string(),
@@ -1492,6 +1493,35 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
                 .map_or_else(|| name.clone(), |n| n.to_string_lossy().into_owned());
             fetched_dockerfile = Some((shown, text));
         }
+    }
+
+    // `-f` an HTTP(S) URL: fetched as buildx fetches it (createTempDockerfileFromURL), at
+    // most 2 MiB, and read as the Dockerfile.
+    let file_flag = parsed.string("file");
+    if file_flag.starts_with("http://") || file_flag.starts_with("https://") {
+        let v = progress
+            .borrow_mut()
+            .start(&format!("[internal] load {file_flag}"));
+        let fetched = http::fetch_now(file_flag, None, exec.stage()?.join("Dockerfile"), &limits);
+        let d = match fetched {
+            Ok(d) => d,
+            Err(e) => {
+                progress.borrow().error(&v, &e);
+                return Err(format!("failed to build: {e}"));
+            }
+        };
+        const MOST: u64 = 2 * 1024 * 1024;
+        if d.size > MOST {
+            let e = format!(
+                "Dockerfile {file_flag} bigger than allowed max size ({})",
+                human_size(MOST)
+            );
+            progress.borrow().error(&v, &e);
+            return Err(format!("failed to build: {e}"));
+        }
+        let text = std::fs::read(&d.path).map_err(|e| format!("{}: {e}", d.path.display()))?;
+        progress.borrow().done(&v);
+        fetched_dockerfile = Some(("Dockerfile".to_string(), text));
     }
 
     let (name, text, beside) = if let Some((name, text)) = fetched_dockerfile {
@@ -1569,7 +1599,12 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
     // unless it came from the host; buildx sends its URL as `context`.
     let mut request_locals: Vec<String> = match &remote {
         None => vec!["context".into(), "dockerfile".into()],
-        Some(_) if parsed.string("file") == "-" || Path::new(parsed.string("file")).is_absolute() => {
+        Some(_)
+            if parsed.string("file") == "-"
+                || parsed.string("file").starts_with("http://")
+                || parsed.string("file").starts_with("https://")
+                || Path::new(parsed.string("file")).is_absolute() =>
+        {
             vec!["dockerfile".into()]
         }
         Some(_) => Vec::new(),

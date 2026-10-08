@@ -3248,6 +3248,9 @@ What it does:
   `dockerfile`) by default. `-f -` reads stdin, and an absolute `-f` reads the host's
   file, as buildx sends it (`dockerfilekey`). A remote context has no `.dockerignore`
   applied, as dockerui applies none to it.
+- `-f` an HTTP(S) URL is fetched as buildx fetches it (`createTempDockerfileFromURL`):
+  `[internal] load URL`, at most 2 MiB ("Dockerfile URL bigger than allowed max size
+  (2.097MB)"), whatever the context.
 - `-`: stdin's archive is the context, as buildx uploads it. Stdin's Dockerfile builds
   with an empty context. `-f -` with `-` is refused: "can't use stdin for both build
   context and dockerfile". A stdin Dockerfile with `-f` is refused: "ambiguous
@@ -3277,7 +3280,8 @@ Tested:
   - a plain Dockerfile as `context`;
   - stdin's tar;
   - stdin's Dockerfile with an empty context;
-  - both refusals.
+  - both refusals;
+  - `-f` a URL over a local directory, and one past 2 MiB refused.
 - The plan oracle cases above.
 - Mutation-checked: an `is_archive` that takes no tar fails `context-http-tar`.
 
