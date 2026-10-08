@@ -2638,6 +2638,21 @@ fn run_steps_take_the_builds_hosts_shm_and_limits() {
         "{}",
         refused.stderr
     );
+    let refused = shards(&["build", "--builder", "nope", ctx.to_str().unwrap()]);
+    assert!(
+        refused.stderr.contains("no builder \"nope\" found"),
+        "{}",
+        refused.stderr
+    );
+    let taken = shards(&[
+        "build",
+        "-q",
+        "--builder",
+        "default",
+        "-D",
+        hungry.to_str().unwrap(),
+    ]);
+    assert_eq!(taken.status, Some(0), "{}", taken.stderr);
     let refused = shards(&["build", "--resource", "gpu=1", ctx.to_str().unwrap()]);
     assert!(
         refused.stderr.contains("unknown resource \"gpu\""),
@@ -4904,7 +4919,9 @@ fn an_agents_flood_of_flows_takes_no_others() {
     for (name, verbs) in [
         ("b", "\"listen\",\"7001\"".to_string()),
         ("a", format!("\"udpflood\",\"b:7000,{flood}\"")),
-        ("c", "\"pause\",\"2\",\"reachmany\",\"b:7001,200\"".to_string()),
+        // Each given 3 s, past a SYN's first retransmission (1 s): the flood's packets may
+        // cost one connection its first SYN, which the table taking it would cost them all.
+        ("c", "\"pause\",\"2\",\"reachmany\",\"b:7001,200,3\"".to_string()),
     ] {
         let dir = TempDir::new(&format!("flood-agent-{name}"));
         std::fs::create_dir_all(dir.join("bin")).unwrap();

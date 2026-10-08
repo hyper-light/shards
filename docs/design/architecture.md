@@ -3404,6 +3404,13 @@ Tested, each guard mutation-checked:
 - `an_agents_own_flows_take_no_port_it_accepts`: c, which b may open 32768 to 60999
   to, reaches x. Without `local_ports`, c's connection timed out.
 
+Open: packet-rate fairness. A flood's packets themselves can delay another agent's:
+`an_agents_flood_of_flows_takes_no_others` saw, on x86_64 CI, c make 199 of 200
+connections with 1 s each while a sent 1,068,575 datagrams, the one SYN lost recovered by
+TCP's retransmission; the test now gives each connection 3 s, past it, so that it holds
+the table to account, which would refuse them all. Per-agent packet rates are not
+bounded yet.
+
 Found on the way: a domain's first process took its IDs through musl's `setgroups`,
 `setresgid` and `setresuid`. Each changes every thread of a process (`__synccall`) and
 finds the others in its thread list unless `gettid()` differs from the caller's recorded

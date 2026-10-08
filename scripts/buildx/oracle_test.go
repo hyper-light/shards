@@ -36,7 +36,8 @@ import (
 
 // The flags shards serves.
 var served = []string{
-	"add-host", "allow", "build-arg", "build-context", "cache-from", "cache-to", "cgroup-parent", "file", "help",
+	"add-host", "allow", "build-arg", "build-context", "builder", "cache-from", "cache-to", "cgroup-parent", "debug",
+	"file", "help",
 	"iidfile", "label", "load", "metadata-file", "network", "no-cache", "no-cache-filter", "platform", "resource",
 	"shm-size",
 	"output", "progress", "pull", "push", "quiet", "secret", "ssh", "tag", "target", "ulimit",
@@ -86,6 +87,7 @@ var cases = [][]string{
 	{"--no-cache-filter", "build", "--no-cache-filter", "a,b", "."},
 	{"--metadata-file", "meta.json", "."},
 	{"--add-host", "db:10.0.0.2", "--add-host", "a=1.2.3.4,b:5.6.7.8", "."},
+	{"--builder", "default", "-D", "."},
 	{"--shm-size", "64m", "--cgroup-parent", "/x", "--network", "none", "."},
 	{"--shm-size", "lots", "."},
 	{"--resource", "memory=2g", "--resource", "cpu-quota=50000", "."},

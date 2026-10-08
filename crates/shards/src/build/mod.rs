@@ -953,6 +953,19 @@ fn run(parsed: &Parsed) -> Result<(), String> {
         &env,
         u64::from(shards_abi::run::MAX_PAYLOAD),
     )?;
+    // --builder, or BUILDX_BUILDER: shards' own builder, or Docker's default context's,
+    // which here is the same one; any other, as buildx refuses a name it does not know
+    // (storeutil.GetNodeGroup).
+    let builder_name = match parsed.string("builder") {
+        "" => std::env::var("BUILDX_BUILDER").unwrap_or_default(),
+        b => b.to_string(),
+    };
+    if !matches!(builder_name.as_str(), "" | "shards" | "default") {
+        return Err(format!(
+            "no builder {} found",
+            shards_cmdline::go::quote(&builder_name)
+        ));
+    }
     let mut allowed = buildflags::parse_entitlements(parsed.many("allow"))?;
     // The flags buildx takes and BuildKit ignores, some said so (build.go checkWarnedFlags,
     // logrus as buildx formats it).

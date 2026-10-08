@@ -2161,6 +2161,9 @@ pub static BUILD: Command = Command {
             "bytes",
             "Shared memory size for build containers",
         ),
+        // buildx's root flags.
+        Flag::string("builder", None, "", "Override the configured builder instance"),
+        Flag::bool("debug", Some(b'D'), "Enable debug logging"),
         // Hidden in buildx: the legacy resource flags, which --resource supersedes, and
         // the classic builder's, which BuildKit ignores, some with a warning.
         Flag::string("memory", Some(b'm'), "", "Memory limit").hidden(),
@@ -2271,10 +2274,8 @@ pub static BUILD: Command = Command {
     unserved: "\
 annotation - m - -\n\
 attest - m - -\n\
-builder - s - -\n\
 call - s build -\n\
 check - b - -\n\
-debug D b false -\n\
 policy - m - -\n\
 print - s - -\n\
 provenance - s - -\n\
