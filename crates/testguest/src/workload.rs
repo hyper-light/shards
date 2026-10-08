@@ -2054,14 +2054,32 @@ fn outlive(hold: usize) -> i32 {
     let held: Vec<u8> = vec![1; hold << 20];
     let _ = writeln!(io::stdout(), "outlive holding {hold}");
     let _ = io::stdout().flush();
-    let count = |name: &str| {
+    // A process going: a zombie, or one with SIGKILL pending, as a domain the kernel ends
+    // whole (memory.oom.group) has each of its processes until each is gone; one at a time,
+    // so the last may be seen after the first is gone.
+    let going = |p: &std::path::Path| {
+        let status = std::fs::read_to_string(p.join("status")).unwrap_or_default();
+        let field = |k: &str| status.lines().find_map(|l| l.strip_prefix(k)).map(str::trim);
+        let killed = |k: &str| {
+            field(k)
+                .and_then(|v| u64::from_str_radix(v, 16).ok())
+                .is_some_and(|m| m & (1 << (libc::SIGKILL - 1)) != 0)
+        };
+        field("State:").is_some_and(|s| s.starts_with('Z') || s.starts_with('X'))
+            || killed("SigPnd:")
+            || killed("ShdPnd:")
+    };
+    let living = |name: &str| -> Vec<std::path::PathBuf> {
         std::fs::read_dir("/proc")
             .into_iter()
             .flatten()
             .flatten()
-            .filter(|e| std::fs::read_to_string(e.path().join("comm")).is_ok_and(|c| c.trim_end() == name))
-            .count()
+            .map(|e| e.path())
+            .filter(|p| std::fs::read_to_string(p.join("comm")).is_ok_and(|c| c.trim_end() == name))
+            .filter(|p| !going(p))
+            .collect()
     };
+    let count = |name: &str| living(name).len();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     let mut seen = false;
     while std::time::Instant::now() < deadline {
@@ -2070,15 +2088,10 @@ fn outlive(hold: usize) -> i32 {
         if seen && filling == 0 {
             std::hint::black_box(&held);
             // Where each holder left is: its domain's cgroup, for a holder that outlives it.
-            let held_in: Vec<String> = std::fs::read_dir("/proc")
+            let held_in: Vec<String> = living("held")
                 .into_iter()
-                .flatten()
-                .flatten()
-                .filter(|e| {
-                    std::fs::read_to_string(e.path().join("comm")).is_ok_and(|c| c.trim_end() == "held")
-                })
-                .map(|e| {
-                    std::fs::read_to_string(e.path().join("cgroup"))
+                .map(|p| {
+                    std::fs::read_to_string(p.join("cgroup"))
                         .unwrap_or_default()
                         .trim()
                         .replace(' ', "_")
