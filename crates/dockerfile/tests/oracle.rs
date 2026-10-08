@@ -657,6 +657,19 @@ fn op_v(op: &shards_dockerfile::llb::Op, md: &shards_dockerfile::llb::Meta, orde
                 put(&mut pe, "all_proxy", ustr(&p.all));
                 m.insert("proxy_env".into(), Value::Object(pe));
             }
+            if !process.extra_hosts.is_empty() {
+                let hosts = process
+                    .extra_hosts
+                    .iter()
+                    .map(|h| {
+                        let mut o = serde_json::Map::new();
+                        put(&mut o, "Host", ustr(&h.host));
+                        put(&mut o, "IP", ustr(&h.ip));
+                        Value::Object(o)
+                    })
+                    .collect();
+                m.insert("extraHosts".into(), Value::Array(hosts));
+            }
             put(&mut m, "hostname", ustr(&process.hostname));
             if !process.ulimits.is_empty() {
                 // protojson: zero fields left out, 64-bit integers as strings.

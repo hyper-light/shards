@@ -10539,6 +10539,67 @@
   ]
  },
  {
+  "file": "corpus/plan/frontend-run.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\" \\\"AS\\\" \\\"base\\\")\\n(run \\\"echo one\\\")\\n(run [\\\"--network=default\\\"] \\\"echo two\\\")\\n(from \\\"base\\\")\\n(run [\\\"--mount=type=tmpfs,target=/scratch\\\"] \\\"echo three\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\" \\\"AS\\\" \\\"base\\\"\"",
+    "original": "\"FROM alpine AS base\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"echo one\\\"\"",
+    "original": "\"RUN echo one\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run [\\\"--network=default\\\"] \\\"echo two\\\"\"",
+    "original": "\"RUN --network=default echo two\"",
+    "flags": [
+     "\"--network=default\""
+    ],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"base\\\"\"",
+    "original": "\"FROM base\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 5,
+    "end_line": 5,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run [\\\"--mount=type=tmpfs,target=/scratch\\\"] \\\"echo three\\\"\"",
+    "original": "\"RUN --mount=type=tmpfs,target=/scratch echo three\"",
+    "flags": [
+     "\"--mount=type=tmpfs,target=/scratch\""
+    ],
+    "attributes": null,
+    "start_line": 6,
+    "end_line": 6,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
   "file": "corpus/plan/labels.Dockerfile",
   "escape": "\"\\\\\"",
   "dump": "\"(from \\\"alpine\\\")\\n(label \\\"x\\\" \\\"1\\\" \\\"=\\\")\"",

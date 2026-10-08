@@ -3799,6 +3799,244 @@
   "warnings": null
  },
  {
+  "file": "corpus/plan/frontend-run.Dockerfile",
+  "image": "{\"architecture\":\"amd64\",\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:0000000000000000000000000000000000000000000000000000000000000001\"]},\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"RUN /bin/sh -c echo one # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"RUN /bin/sh -c echo two # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created_by\":\"RUN /bin/sh -c echo three # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"}],\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"/bin/sh\"]}}",
+  "ops": [
+   {
+    "constraints": {},
+    "inputs": [],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "FROM alpine AS base",
+      "llb.customname": "[base 1/3] FROM docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    },
+    "source": {
+     "identifier": "docker-image://docker.io/library/alpine:latest@sha256:c9ef5b1f0b442255774ae31a839ff48ce1206a606a97052db8b4a13ae153fb7c"
+    }
+   },
+   {
+    "constraints": {},
+    "exec": {
+     "meta": {
+      "args": [
+       "/bin/sh",
+       "-c",
+       "echo one"
+      ],
+      "cgroupParent": "/shards/build",
+      "cwd": "/",
+      "env": [
+       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      ],
+      "extraHosts": [
+       {
+        "Host": "db",
+        "IP": "10.0.0.2"
+       },
+       {
+        "Host": "cache",
+        "IP": "10.0.0.3"
+       }
+      ],
+      "removeMountStubsRecursive": true
+     },
+     "mounts": [
+      {
+       "dest": "/"
+      },
+      {
+       "TmpfsOpt": {
+        "size": "67108864"
+       },
+       "dest": "/dev/shm",
+       "input": "-1",
+       "mountType": "TMPFS",
+       "output": "-1"
+      }
+     ],
+     "network": "NONE"
+    },
+    "inputs": [
+     [
+      0,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "RUN echo one",
+      "llb.customname": "[base 2/3] RUN echo one"
+     },
+     "linux_resources": {
+      "cpuQuota": "50000",
+      "cpuShares": "512",
+      "cpusetCpus": "0-1",
+      "memory": "1073741824",
+      "memorySwap": "-1"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    }
+   },
+   {
+    "constraints": {},
+    "exec": {
+     "meta": {
+      "args": [
+       "/bin/sh",
+       "-c",
+       "echo two"
+      ],
+      "cgroupParent": "/shards/build",
+      "cwd": "/",
+      "env": [
+       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      ],
+      "extraHosts": [
+       {
+        "Host": "db",
+        "IP": "10.0.0.2"
+       },
+       {
+        "Host": "cache",
+        "IP": "10.0.0.3"
+       }
+      ],
+      "removeMountStubsRecursive": true
+     },
+     "mounts": [
+      {
+       "dest": "/"
+      },
+      {
+       "TmpfsOpt": {
+        "size": "67108864"
+       },
+       "dest": "/dev/shm",
+       "input": "-1",
+       "mountType": "TMPFS",
+       "output": "-1"
+      }
+     ],
+     "network": "NONE"
+    },
+    "inputs": [
+     [
+      1,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "RUN --network=default echo two",
+      "llb.customname": "[base 3/3] RUN --network=default echo two"
+     },
+     "linux_resources": {
+      "cpuQuota": "50000",
+      "cpuShares": "512",
+      "cpusetCpus": "0-1",
+      "memory": "1073741824",
+      "memorySwap": "-1"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    }
+   },
+   {
+    "constraints": {},
+    "exec": {
+     "meta": {
+      "args": [
+       "/bin/sh",
+       "-c",
+       "echo three"
+      ],
+      "cgroupParent": "/shards/build",
+      "cwd": "/",
+      "env": [
+       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      ],
+      "extraHosts": [
+       {
+        "Host": "db",
+        "IP": "10.0.0.2"
+       },
+       {
+        "Host": "cache",
+        "IP": "10.0.0.3"
+       }
+      ],
+      "removeMountStubsRecursive": true
+     },
+     "mounts": [
+      {
+       "dest": "/"
+      },
+      {
+       "TmpfsOpt": {
+        "size": "67108864"
+       },
+       "dest": "/dev/shm",
+       "input": "-1",
+       "mountType": "TMPFS",
+       "output": "-1"
+      },
+      {
+       "TmpfsOpt": {},
+       "dest": "/scratch",
+       "input": "-1",
+       "mountType": "TMPFS",
+       "output": "-1"
+      }
+     ],
+     "network": "NONE"
+    },
+    "inputs": [
+     [
+      2,
+      0
+     ]
+    ],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "RUN --mount=type=tmpfs,target=/scratch echo three",
+      "llb.customname": "[stage-1 1/1] RUN --mount=type=tmpfs,target=/scratch echo three"
+     },
+     "linux_resources": {
+      "cpuQuota": "50000",
+      "cpuShares": "512",
+      "cpusetCpus": "0-1",
+      "memory": "1073741824",
+      "memorySwap": "-1"
+     }
+    },
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    }
+   },
+   {
+    "inputs": [
+     [
+      3,
+      0
+     ]
+    ],
+    "metadata": {}
+   }
+  ],
+  "warnings": null
+ },
+ {
   "file": "corpus/plan/labels.Dockerfile",
   "image": "{\"architecture\":\"amd64\",\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:0000000000000000000000000000000000000000000000000000000000000001\"]},\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"LABEL x=1\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true}],\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Cmd\":[\"/bin/sh\"],\"Labels\":{\"cli\":\"label\",\"x\":\"over\"}}}",
   "ops": [

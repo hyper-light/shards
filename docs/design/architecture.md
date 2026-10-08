@@ -3404,10 +3404,9 @@ Tested on real builds (`run_steps_take_the_builds_hosts_shm_and_limits`): a step
 past `--memory` it is ended (137) and the build fails in BuildKit's words; without, it
 runs. Mutation-checked: without the step's cgroup files, and without the hosts in the
 plan, it fails. The flags are held to buildx's command line by the buildx oracle;
-dockerui's parsing by `options_read_as_dockerui_reads_them`. Open: the plan of these
-options against BuildKit's own (`corpus/plan/frontend-run.Dockerfile`), whose answers
-`scripts/dockerfile/generate` records once Docker answers again (it stopped answering
-while this was made).
+dockerui's parsing by `options_read_as_dockerui_reads_them`. The plan of these options
+is held to BuildKit's own by the Dockerfile oracle (`corpus/plan/frontend-run.Dockerfile`:
+hosts, `/dev/shm`, the cgroup parent, the network mode and the limits on every step).
 
 ### D63. `--metadata-file`
 

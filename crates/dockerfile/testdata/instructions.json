@@ -15461,6 +15461,142 @@
   "warnings": null
  },
  {
+  "file": "corpus/plan/frontend-run.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "code": "\"RUN echo one\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        2,
+        2
+       ]
+      ],
+      "mounts": null,
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"echo one\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     },
+     {
+      "code": "\"RUN --network=default echo two\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [
+       "\"network\""
+      ],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        3,
+        3
+       ]
+      ],
+      "mounts": null,
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"echo two\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"base\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine AS base\""
+   },
+   {
+    "base_name": "\"base\"",
+    "commands": [
+     {
+      "code": "\"RUN --mount=type=tmpfs,target=/scratch echo three\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [
+       "\"mount\""
+      ],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        6,
+        6
+       ]
+      ],
+      "mounts": [
+       {
+        "env": null,
+        "from": "\"\"",
+        "gid": null,
+        "id": "\"\"",
+        "mode": null,
+        "read_only": true,
+        "required": false,
+        "sharing": "\"\"",
+        "size": 0,
+        "source": "\"\"",
+        "target": "\"\"",
+        "type": "\"bind\"",
+        "uid": null
+       }
+      ],
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"echo three\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      5,
+      5
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM base\""
+   }
+  ],
+  "warnings": null
+ },
+ {
   "file": "corpus/plan/labels.Dockerfile",
   "meta_args": null,
   "stages": [
