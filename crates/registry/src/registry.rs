@@ -1063,7 +1063,19 @@ mod tests {
                                 let mut sink = [0u8; 4096];
                                 while matches!(tcp.read(&mut sink), Ok(n) if n > 0) {}
                             } else {
+                                // Go's server reads what it is sent before it answers, and
+                                // so is not reset: Winsock resets a socket closed with bytes
+                                // unread, and its peer may then lose the answer.
+                                let mut header = [0u8; 5];
+                                if tcp.read_exact(&mut header).is_ok() {
+                                    let len = usize::from(u16::from_be_bytes([header[3], header[4]]));
+                                    let mut record = vec![0u8; len];
+                                    let _ = tcp.read_exact(&mut record);
+                                }
                                 let _ = tcp.write_all(crate::testing::GO_BAD_REQUEST);
+                                let _ = tcp.shutdown(std::net::Shutdown::Write);
+                                let mut sink = [0u8; 4096];
+                                while matches!(tcp.read(&mut sink), Ok(n) if n > 0) {}
                             }
                             return;
                         }

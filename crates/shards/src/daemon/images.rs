@@ -1592,7 +1592,7 @@ fn unpublish(name: &str, env: &[String]) {
 /// dockerd's words for an image it cannot find (moby daemon/images/image.go,
 /// ErrImageDoesNotExist): the reference as given, with `latest` if it names no tag; a
 /// digest as it is.
-pub(super) fn not_found(given: &str) -> String {
+pub(crate) fn not_found(given: &str) -> String {
     use shards_image::reference::AnyReference;
     match AnyReference::parse(given) {
         Ok(AnyReference::Digest(d)) => format!("No such image: {d}"),
@@ -1605,7 +1605,7 @@ pub(super) fn not_found(given: &str) -> String {
 /// daemon/containerd/image.go, resolveImage): by digest, its ID, and a name with a digest
 /// only in that repository; else by name, with `latest` if it names no tag; else by a
 /// prefix of its ID of 4 to 64 hex digits, refused if more than one image has it.
-pub(super) fn resolve<'a>(
+pub(crate) fn resolve<'a>(
     images: &'a [shards_image::store::Named],
     given: &str,
 ) -> Result<&'a shards_image::store::Named, String> {
@@ -1645,7 +1645,7 @@ pub(super) fn resolve<'a>(
 }
 
 /// checkTruncatedID: `given`, without `sha256:`, if it is 4 to 64 lowercase hex digits.
-pub(super) fn truncated_id(given: &str) -> Option<&str> {
+pub(crate) fn truncated_id(given: &str) -> Option<&str> {
     let id = given.strip_prefix("sha256:").unwrap_or(given);
     ((4..=64).contains(&id.len())
         && id

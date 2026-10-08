@@ -468,7 +468,9 @@ pub fn stop(home: &Path) -> ExitCode {
                 return failed(&format!("the daemon's connection: {e}"));
             }
             match shards_ipc::recv(&conn) {
+                // Stepping aside for another build's client, it exits all the same.
                 Ok(None) => ExitCode::SUCCESS,
+                Ok(Some(m)) if m.kind == kind::RESTART => ExitCode::SUCCESS,
                 Err(e) if !matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) => {
                     ExitCode::SUCCESS
                 }

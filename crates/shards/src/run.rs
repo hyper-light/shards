@@ -124,9 +124,16 @@ pub fn find_image(
     say: &(dyn Fn(&str) + Sync),
     cancel: &Cancel,
 ) -> Result<(shards_registry::pull::Pulled, Lease), String> {
-    let reference = Reference::parse(name).map_err(|e| e.to_string())?;
     let store = crate::pull::store(home)?;
     let lease = store.lease().map_err(|e| e.to_string())?;
+    // An image named by its ID, or a prefix of it, as dockerd's resolveImage takes one: a
+    // name tagged here first, then the ID.
+    if pull != Pull::Always
+        && let Some(found) = by_id(&store, name, targets)?
+    {
+        return Ok((found, lease));
+    }
+    let reference = Reference::parse(name).map_err(|e| e.to_string())?;
     let mut changed = false;
     let found = match pull {
         Pull::Always => None,
@@ -187,6 +194,48 @@ pub fn find_image(
         }
     };
     Ok((image, lease))
+}
+
+/// The image here `given` names by its ID (`sha256:` and 64 hex digits, or 4 to 64 of
+/// them) where no image is tagged by that name, as dockerd's containerd store resolves one
+/// (moby daemon/containerd/image.go, resolveImage). None where it names none: the name is
+/// a reference, to find or pull.
+#[cfg(unix)]
+fn by_id(
+    store: &shards_image::store::Store,
+    given: &str,
+    targets: &[shards_image::platform::Target],
+) -> Result<Option<shards_registry::pull::Pulled>, String> {
+    use shards_image::reference::AnyReference;
+    let digest = matches!(AnyReference::parse(given), Ok(AnyReference::Digest(_)));
+    if !digest && crate::daemon::images::truncated_id(given).is_none() {
+        return Ok(None);
+    }
+    let named = store.named().map_err(|e| e.to_string())?;
+    if !digest
+        && let Ok(r) = Reference::parse(given)
+        && named.iter().any(|i| i.references.contains(&r.to_string()))
+    {
+        return Ok(None);
+    }
+    let Ok(image) = crate::daemon::images::resolve(&named, given) else {
+        return Ok(None);
+    };
+    let Some(tagged) = image.references.first() else {
+        return Ok(None);
+    };
+    let limits = crate::pull::limits()?;
+    shards_registry::pull::local_tagged(store, tagged, given, targets, &limits).map_err(|e| e.to_string())
+}
+
+/// Where no daemon serves, none: an image is found by its reference.
+#[cfg(not(unix))]
+fn by_id(
+    _: &shards_image::store::Store,
+    _: &str,
+    _: &[shards_image::platform::Target],
+) -> Result<Option<shards_registry::pull::Pulled>, String> {
+    Ok(None)
 }
 
 /// The daemon's half: finds the request's image in `home`, pulling it as `docker run`

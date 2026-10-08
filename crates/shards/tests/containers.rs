@@ -2345,7 +2345,7 @@ impl Going {
 }
 
 /// The ID of the one container in `home`, once it is there: created, its run pending.
-fn created(gated: &Gated, home: &Path) -> String {
+fn created(gated: &Gated, home: &Path, run: &mut Going) -> String {
     let id = std::cell::RefCell::new(String::new());
     let last = std::cell::RefCell::new(String::new());
     let deadline = Instant::now() + TIMEOUT;
@@ -2371,8 +2371,20 @@ fn created(gated: &Gated, home: &Path) -> String {
                         .collect::<String>()
                 })
                 .unwrap_or_default();
+            // The run's client, if it has ended: what it said.
+            let client = match run.child.try_wait() {
+                Ok(Some(status)) => {
+                    // Its output is whole once it has ended.
+                    let err = std::mem::replace(&mut run.err, std::thread::spawn(String::new))
+                        .join()
+                        .unwrap_or_default();
+                    format!("ended {status}, saying: {err}")
+                }
+                Ok(None) => "still going".to_string(),
+                Err(e) => format!("unknown: {e}"),
+            };
             panic!(
-                "the run's container never showed in {TIMEOUT:?}; the last ps: {}\ndaemon.log, last first:\n{}\nprocesses:\n{procs}",
+                "the run's container never showed in {TIMEOUT:?}; the last ps: {}\nthe run's client: {client}\ndaemon.log, last first:\n{}\nprocesses:\n{procs}",
                 last.borrow(),
                 tail.join("\n")
             );
@@ -2399,8 +2411,8 @@ fn rm_cancels_a_run_whose_vm_is_not_ready() {
     let gated = Gated::new("cancel-bin");
     let args = run_args(&image, &["--name", "racer"], &["exit", "7"]);
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
-    let run = gated.start(&home, &args);
-    let id = created(&gated, &home);
+    let mut run = gated.start(&home, &args);
+    let id = created(&gated, &home, &mut run);
     let waiting = gated.start(&home, &["wait", "racer"]);
     let removed = gated.shards(&home, &["rm", "racer"]);
     assert_eq!(
@@ -2444,8 +2456,8 @@ fn a_container_outlives_a_daemon_that_dies() {
     let gated = Gated::new("crash-bin");
     let args = run_args(&image, &["--name", "racer"], &["exit", "7"]);
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
-    let run = gated.start(&home, &args);
-    let id = created(&gated, &home);
+    let mut run = gated.start(&home, &args);
+    let id = created(&gated, &home, &mut run);
     let pid: i32 = std::fs::read_to_string(home.join("daemon.pid"))
         .unwrap()
         .trim()
@@ -2492,8 +2504,8 @@ fn a_stopping_daemon_starts_no_pending_run() {
     let gated = Gated::new("stop-pending-bin");
     let args = run_args(&image, &["--name", "racer"], &["exit", "7"]);
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
-    let run = gated.start(&home, &args);
-    let id = created(&gated, &home);
+    let mut run = gated.start(&home, &args);
+    let id = created(&gated, &home, &mut run);
     // Every VM still waits at the gate.
     let stopping = gated.start(&home, &["daemon", "stop"]);
     let run = run.finish();

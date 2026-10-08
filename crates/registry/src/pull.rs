@@ -452,23 +452,31 @@ pub fn local(
     targets: &[Target],
     limits: &Limits,
 ) -> Result<Option<Pulled>, Error> {
-    // A root filesystem it builds again is its reference's: no collection runs meanwhile.
-    let _lease = store.lease()?;
-    let Some(manifest_desc) = store.tagged(&reference.to_string())? else {
-        return Ok(None);
-    };
-    let resolved = store
-        .resolved(&reference.to_string())?
-        .unwrap_or(manifest_desc.digest()?);
-    unpack(
+    local_tagged(
         store,
+        &reference.to_string(),
         &reference.familiar(),
-        &manifest_desc,
-        resolved,
         targets,
         limits,
     )
-    .map(Some)
+}
+
+/// [`local`] of the image stored under the name `tagged` (a reference in full, or a
+/// dangling image's), shown as `shown`.
+pub fn local_tagged(
+    store: &Store,
+    tagged: &str,
+    shown: &str,
+    targets: &[Target],
+    limits: &Limits,
+) -> Result<Option<Pulled>, Error> {
+    // A root filesystem it builds again is its reference's: no collection runs meanwhile.
+    let _lease = store.lease()?;
+    let Some(manifest_desc) = store.tagged(tagged)? else {
+        return Ok(None);
+    };
+    let resolved = store.resolved(tagged)?.unwrap_or(manifest_desc.digest()?);
+    unpack(store, shown, &manifest_desc, resolved, targets, limits).map(Some)
 }
 
 /// The image whose manifest for one of `targets` `manifest_desc` describes, here in the

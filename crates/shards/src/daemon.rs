@@ -41,7 +41,7 @@ mod files;
 mod filters;
 mod follow;
 mod health;
-mod images;
+pub(crate) mod images;
 mod import;
 mod info;
 mod inspect;
@@ -579,6 +579,10 @@ struct Daemon<D: Disk = Real> {
     /// number: those still sending their request, and those of container commands. A run's
     /// connection is its command's once its request is read, and leaves here then.
     clients: Mutex<HashMap<u64, Arc<UnixStream>>>,
+    /// The clients whose request no thread has taken yet: one is answered either by its
+    /// thread, which takes it from here once it has read the request, or, as the daemon
+    /// steps aside first, with RESTART (`end_clients`), never both nor neither.
+    unread: Mutex<std::collections::HashSet<u64>>,
     next_client: AtomicU64,
     /// Written to wake the listener: a client left, a run ended (`wake_listener`). Its
     /// other end, which the listener waits on, read.
@@ -1129,6 +1133,7 @@ impl<D: Disk> Daemon<D> {
             max_clients: settings.max_clients,
             long_waits: Mutex::default(),
             clients: Mutex::default(),
+            unread: Mutex::default(),
             next_client: AtomicU64::new(0),
             listener_wake: {
                 let (tell, heard) = UnixStream::pair()?;
@@ -1415,6 +1420,7 @@ impl<D: Disk> Daemon<D> {
         // Shared rather than duplicated: a descriptor short, the daemon would drop
         // clients it could otherwise take.
         let conn = Arc::new(conn);
+        lock(&self.unread).insert(number);
         lock(&self.clients).insert(number, conn.clone());
         self.busy.fetch_add(1, Ordering::SeqCst);
         let spawned = std::thread::Builder::new()
@@ -1434,6 +1440,7 @@ impl<D: Disk> Daemon<D> {
                 }
             });
         if let Err(e) = spawned {
+            lock(&self.unread).remove(&number);
             lock(&self.clients).remove(&number);
             self.busy.fetch_sub(1, Ordering::SeqCst);
             log(format!("a client's thread: {e}"));
@@ -1461,7 +1468,13 @@ impl<D: Disk> Daemon<D> {
     /// Ends the clients in hand that a shutdown would otherwise wait for: shut down, their
     /// connections fail every read and write, and their threads return (audit A07).
     fn end_clients(&self) {
-        for conn in lock(&self.clients).values() {
+        for (number, conn) in lock(&self.clients).iter() {
+            // One whose request no thread has taken asks again, of the daemon that comes
+            // next, as it would have had its request been the first read: shut out, it
+            // would take the closed connection for its command's end.
+            if lock(&self.unread).remove(number) {
+                let _ = shards_ipc::send(conn, kind::RESTART, &[], &[]);
+            }
             let _ = conn.shutdown(std::net::Shutdown::Both);
         }
         for cancel in lock(&self.preparing).values() {
@@ -1561,6 +1574,13 @@ impl<D: Disk> Daemon<D> {
                 return None;
             }
         };
+        // Answered already, with RESTART, as the daemon stepped aside: it asks the next.
+        // `unread`'s lock is let go first: `end_clients` takes `clients`' before it.
+        let taken = lock(&self.unread).remove(&number);
+        if !taken {
+            self.release_client(number);
+            return None;
+        }
         match message.kind {
             // Its connection is its run's from here, and passes to the VM.
             kind::START => self.release_client(number),
@@ -5499,10 +5519,12 @@ mod tests {
                 // macOS refuses options on a socket shut down both ways (EINVAL): this one's
                 // end has nothing more to wait for anyway.
                 let _ = client.set_read_timeout(Some(PATIENCE));
-                assert!(
-                    matches!(shards_ipc::recv(client), Ok(None)),
-                    "a client was not let go"
-                );
+                // One that asked nothing yet is told to ask the next daemon first.
+                let mut got = shards_ipc::recv(client);
+                if matches!(&got, Ok(Some(m)) if m.kind == kind::RESTART) {
+                    got = shards_ipc::recv(client);
+                }
+                assert!(matches!(got, Ok(None)), "a client was not let go");
             }
             assert!(!lock(&t.daemon.waiters).contains_key(&id), "a waiter left behind");
             say(&vm, kind::DONE, &[143]);
@@ -5700,6 +5722,27 @@ mod tests {
         assert_eq!(busy(), 0);
         assert!(lock(&t.daemon.long_waits).is_empty());
         assert!(lock(&t.daemon.clients).is_empty());
+    }
+
+    /// A daemon ending its clients tells one whose request no thread has taken to ask
+    /// the next daemon (RESTART), and that thread then answers nothing; one whose request
+    /// a thread holds is shut out, as before. A client of another build that its peer's
+    /// request made step aside so asks again, and takes no closed connection for its
+    /// command's end (x86_64 CI, a gated run that never showed).
+    #[test]
+    fn a_daemon_stepping_aside_sends_unread_clients_on() {
+        let t = Test::new("step-aside");
+        let (unread, unread_peer) = UnixStream::pair().unwrap();
+        let (taken, taken_peer) = UnixStream::pair().unwrap();
+        lock(&t.daemon.clients).insert(1, Arc::new(unread));
+        lock(&t.daemon.unread).insert(1);
+        lock(&t.daemon.clients).insert(2, Arc::new(taken));
+        t.daemon.end_clients();
+        let told = shards_ipc::recv(&unread_peer).unwrap().map(|m| m.kind);
+        assert_eq!(told, Some(kind::RESTART));
+        assert!(shards_ipc::recv(&taken_peer).unwrap().is_none());
+        // Its thread, reading the request after, finds it answered.
+        assert!(!lock(&t.daemon.unread).remove(&1));
     }
 
     /// The listener's duty for a pool is when `age_pools` first finds it expired: its

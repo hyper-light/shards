@@ -103,7 +103,8 @@ fn an_image_built_of_settings_runs_as_built() {
         "{shown}"
     );
 
-    // The same build is the same image: the config's digest is its ID.
+    // The same build is the same image: its manifest's digest is its ID, the one every
+    // command names it by.
     let id = |r: &common::Run| r.stdout.trim().to_string();
     let q1 = run_shards_env(&["build"], &["-q", ctx.to_str().unwrap()], &env, TIMEOUT);
     let q2 = run_shards_env(&["image", "build"], &["-q", ctx.to_str().unwrap()], &env, TIMEOUT);
@@ -521,6 +522,16 @@ fn a_build_given_no_name_is_kept_dangling() {
     assert_eq!(built.status, Some(0), "{}", built.stderr);
     let listed = shards(&["images", "-a"]);
     assert_eq!(untagged(&listed.stdout), 1, "{}", listed.stdout);
+    // The ID it printed names it, as `docker run $(docker build -q .)` has it.
+    let id = built.stdout.trim();
+    let inspected = shards(&["image", "inspect", "--format", "{{.Id}}", id]);
+    assert_eq!(inspected.status, Some(0), "{id}: {}", inspected.stderr);
+    let ran = shards(&["run", "--rm", id, "exit", "0"]);
+    assert_eq!(ran.status, Some(0), "{id}: {}", ran.stderr);
+    // And by its short ID, as `images` shows it.
+    let short: String = id.trim_start_matches("sha256:").chars().take(12).collect();
+    let ran = shards(&["run", "--rm", &short, "exit", "0"]);
+    assert_eq!(ran.status, Some(0), "{short}: {}", ran.stderr);
     // A pull marks a collection due; the next command's runs it.
     let pulled = shards(&["pull", "-q", &image]);
     assert_eq!(pulled.status, Some(0), "{}", pulled.stderr);
@@ -2497,12 +2508,7 @@ fn builds_take_steps_from_caches_written_elsewhere() {
         Some(id.trim()),
         "{written}"
     );
-    assert!(
-        written["containerimage.config.digest"]
-            .as_str()
-            .is_some_and(|d| d.starts_with("sha256:") && d != id.trim()),
-        "{written}"
-    );
+    assert!(written.get("containerimage.config.digest").is_none(), "{written}");
     assert_eq!(
         written["image.name"].as_str(),
         Some("docker.io/library/made:3"),

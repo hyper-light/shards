@@ -1980,12 +1980,28 @@ fn outlive(hold: usize) -> i32 {
         seen |= filling > 0;
         if seen && filling == 0 {
             std::hint::black_box(&held);
+            // Where each holder left is: its domain's cgroup, for a holder that outlives it.
+            let held_in: Vec<String> = std::fs::read_dir("/proc")
+                .into_iter()
+                .flatten()
+                .flatten()
+                .filter(|e| {
+                    std::fs::read_to_string(e.path().join("comm")).is_ok_and(|c| c.trim_end() == "held")
+                })
+                .map(|e| {
+                    std::fs::read_to_string(e.path().join("cgroup"))
+                        .unwrap_or_default()
+                        .trim()
+                        .replace(' ', "_")
+                })
+                .collect();
             let _ = writeln!(
                 io::stdout(),
-                "outlived held={} stopped={} innocent={}",
+                "outlived held={} stopped={} innocent={} held_in={}",
                 count("held"),
                 count("fill-stopped"),
-                count("innocent")
+                count("innocent"),
+                held_in.join(",")
             );
             return 0;
         }

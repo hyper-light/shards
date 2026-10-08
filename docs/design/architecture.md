@@ -3195,12 +3195,19 @@ waits on the user.
 ### D63. `--metadata-file`
 
 What buildx v0.37.1 writes (commands/build.go `decodeExporterResponse`,
-`writeMetadataFile`): BuildKit's exporter response, decoded, with the build's
-reference, as Go's `MarshalIndent` writes the map (keys sorted, two spaces), whole or not
-at all. For an image, BuildKit's image exporter's answer (exporter/containerimage/
-export.go): `containerimage.config.digest`, `containerimage.descriptor` (its
-`config.digest` annotation moved out, as there), `containerimage.digest` and
-`image.name`, each tag in full; for files (`local`, `tar`), none. `buildx.build.ref` is
+`writeMetadataFile`): the exporter's response, decoded, with the build's reference, as
+Go's `MarshalIndent` writes the map (keys sorted, two spaces), whole or not at all. For
+an image, what Docker's exporter answers with its containerd store, which names an image
+by its manifest's (or index's) digest, as shards' store does (measured below):
+`containerimage.descriptor`, `containerimage.digest` and `image.name`, each tag in full,
+and no `containerimage.config.digest`; for files (`local`, `tar`), none.
+
+Found with it, and fixed: `build -q`, `--iidfile` and the `writing image` line gave the
+config's digest, which moby's classic store names an image by (BuildKit's image exporter
+answers it, and buildx's `getImageID` prefers it), while shards' store names it by its
+manifest's digest: `shards run $(shards build -q .)` found no such image. Now each gives
+the manifest's digest, as Docker with its containerd store gives its image's
+(`a_build_given_no_name_is_kept_dangling` runs the image by the ID `-q` printed). `buildx.build.ref` is
 `shards/shards/` and an ID made as BuildKit's `identity.NewID` makes one.
 
 Measured beside it (Docker 29.3.1, containerd store, `docker:29.3.1-dind`, 2026-10-07):

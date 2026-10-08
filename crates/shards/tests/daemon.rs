@@ -827,12 +827,12 @@ fn a_client_that_says_nothing_holds_up_no_stop() {
     assert_eq!(stopped.status, Some(0), "{stopped}");
     assert!(t0.elapsed() < Duration::from_secs(5), "{:?}", t0.elapsed());
     eventually("the daemon outlived its stop", || !alive(daemon));
-    let mut byte = [0u8; 1];
-    assert_eq!(
-        (&silent).read(&mut byte).unwrap_or(0),
-        0,
-        "the client was not let go"
-    );
+    // Let go: told, as it asked nothing yet, to ask the next daemon (RESTART), and shut.
+    let mut got = shards_ipc::recv(&silent).map(|m| m.map(|m| m.kind));
+    if matches!(got, Ok(Some(k)) if k == shards_ipc::kind::RESTART) {
+        got = shards_ipc::recv(&silent).map(|m| m.map(|m| m.kind));
+    }
+    assert!(matches!(got, Ok(None)), "the client was not let go: {got:?}");
 }
 
 /// Past its cap of clients in hand, here 16 (`SHARDS_MAX_CLIENTS`), the daemon leaves

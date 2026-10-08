@@ -1796,11 +1796,11 @@ fn run(parsed: &Parsed) -> Result<(), String> {
             parsed,
             &metadata(
                 &build_ref()?,
-                imaged.then_some((&config_digest, &manifest_digest, manifest.len(), names.as_slice())),
+                imaged.then_some((&manifest_digest, manifest.len(), names.as_slice())),
             ),
         )?;
         print_warnings(&plan.warnings, quiet);
-        return finish(parsed, &config_digest.to_string());
+        return finish(parsed, &manifest_digest.to_string());
     }
     let v = progress.borrow_mut().start("exporting to image");
     progress.borrow().line(&v, "exporting layers done");
@@ -1812,7 +1812,7 @@ fn run(parsed: &Parsed) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     progress
         .borrow()
-        .line(&v, &format!("writing image {config_digest} done"));
+        .line(&v, &format!("writing image {manifest_digest} done"));
     let store_layers: Vec<store::Layer> = layers
         .iter()
         .map(|l| {
@@ -1905,11 +1905,11 @@ fn run(parsed: &Parsed) -> Result<(), String> {
         parsed,
         &metadata(
             &build_ref()?,
-            Some((&config_digest, &manifest_digest, manifest.len(), names.as_slice())),
+            Some((&manifest_digest, manifest.len(), names.as_slice())),
         ),
     )?;
     print_warnings(&plan.warnings, quiet);
-    finish(parsed, &config_digest.to_string())
+    finish(parsed, &manifest_digest.to_string())
 }
 
 /// The build's ID where it is asked for: in `--iidfile`, and with `-q` on stdout.
@@ -1943,19 +1943,19 @@ fn build_ref() -> Result<String, String> {
 
 /// What `--metadata-file` holds, as buildx writes it (commands/build.go
 /// `decodeExporterResponse`, `writeMetadataFile`): the build's reference, and for an image
-/// what BuildKit's image exporter answers (exporter/containerimage/export.go): its
-/// config's digest, its manifest's descriptor and digest, and its names. Keys in order, as
-/// Go's `MarshalIndent` writes a map.
-fn metadata(build_ref: &str, image: Option<(&Digest, &Digest, usize, &[String])>) -> String {
+/// what Docker's image exporter answers with its containerd store, which names an image by
+/// its manifest's digest, as shards' store does: the manifest's descriptor and digest, and
+/// the image's names, and no config digest, so that the ID buildx takes of it
+/// (`getImageID`) is the image's. Keys in order, as Go's `MarshalIndent` writes a map.
+fn metadata(build_ref: &str, image: Option<(&Digest, usize, &[String])>) -> String {
     let q = |s: &str| serde_json::Value::from(s).to_string();
     let mut out = format!(
         "{{\n  \"buildx.build.ref\": {}",
         q(&format!("shards/shards/{build_ref}"))
     );
-    if let Some((config, manifest, size, names)) = image {
+    if let Some((manifest, size, names)) = image {
         out.push_str(&format!(
-            ",\n  \"containerimage.config.digest\": {},\n  \"containerimage.descriptor\": {{\n    \"mediaType\": {},\n    \"digest\": {},\n    \"size\": {size}\n  }},\n  \"containerimage.digest\": {}",
-            q(&config.to_string()),
+            ",\n  \"containerimage.descriptor\": {{\n    \"mediaType\": {},\n    \"digest\": {},\n    \"size\": {size}\n  }},\n  \"containerimage.digest\": {}",
             q(oci::media::OCI_MANIFEST),
             q(&manifest.to_string()),
             q(&manifest.to_string()),
@@ -2762,17 +2762,16 @@ mod tests {
 
     #[test]
     fn metadata_is_written_as_buildx_writes_it() {
-        let config = Digest::parse(&format!("sha256:{}", "a".repeat(64))).unwrap();
         let manifest = Digest::parse(&format!("sha256:{}", "b".repeat(64))).unwrap();
         // As Go's MarshalIndent writes buildx's map: keys sorted, two spaces, the
         // descriptor's fields in its own order.
         assert_eq!(
             metadata(
                 "r",
-                Some((&config, &manifest, 481, &["docker.io/library/app:1".to_string()]))
+                Some((&manifest, 481, &["docker.io/library/app:1".to_string()]))
             ),
             format!(
-                "{{\n  \"buildx.build.ref\": \"shards/shards/r\",\n  \"containerimage.config.digest\": \"{config}\",\n  \"containerimage.descriptor\": {{\n    \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\",\n    \"digest\": \"{manifest}\",\n    \"size\": 481\n  }},\n  \"containerimage.digest\": \"{manifest}\",\n  \"image.name\": \"docker.io/library/app:1\"\n}}"
+                "{{\n  \"buildx.build.ref\": \"shards/shards/r\",\n  \"containerimage.descriptor\": {{\n    \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\",\n    \"digest\": \"{manifest}\",\n    \"size\": 481\n  }},\n  \"containerimage.digest\": \"{manifest}\",\n  \"image.name\": \"docker.io/library/app:1\"\n}}"
             )
         );
         assert_eq!(
