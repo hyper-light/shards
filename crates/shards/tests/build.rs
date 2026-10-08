@@ -1453,6 +1453,7 @@ fn sboms_are_scanned_as_buildkit_scans_them() {
     // Each names the image; its predicate as Go writes it, `<`, `>` and `&` escaped.
     let arch = match std::env::consts::ARCH {
         "aarch64" => "arm64",
+        "x86_64" => "amd64",
         other => other,
     };
     assert_eq!(
