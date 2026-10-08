@@ -2111,6 +2111,7 @@ pub static BUILD: Command = Command {
         Flag::string("iidfile", None, "", "Write the image ID to a file"),
         Flag::many("label", None, "stringArray", "Set metadata for an image"),
         Flag::bool("load", None, "Shorthand for \"--output=type=docker\""),
+        Flag::string("metadata-file", None, "", "Write build result metadata to a file"),
         Flag::bool("no-cache", None, "Do not use cache when building the image"),
         Flag::many(
             "cache-from",
@@ -2199,7 +2200,6 @@ force-rm - b false -\n\
 isolation - s - -\n\
 memory m s - -\n\
 memory-swap - s - -\n\
-metadata-file - s - -\n\
 network - s default -\n\
 policy - m - -\n\
 print - s - -\n\

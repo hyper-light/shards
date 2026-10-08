@@ -2485,6 +2485,40 @@ fn builds_take_steps_from_caches_written_elsewhere() {
     assert!(cached(&from_image, "write:/two=2"), "{from_image}");
     assert_eq!(layers(&homes[3], "taken:3"), made);
 
+    // --metadata-file: the image's config and manifest digests, and its name, as buildx
+    // writes them.
+    let meta = dir.join("meta.json");
+    build(&homes[0], &["--metadata-file", meta.to_str().unwrap()], "made:3");
+    let written: serde_json::Value = serde_json::from_slice(&std::fs::read(&meta).unwrap()).unwrap();
+    let id = shards_in(&homes[0], &["image", "inspect", "--format", "{{.Id}}", "made:3"]).stdout;
+    // The image's ID is its manifest's digest, as with Docker's containerd store.
+    assert_eq!(
+        written["containerimage.digest"].as_str(),
+        Some(id.trim()),
+        "{written}"
+    );
+    assert!(
+        written["containerimage.config.digest"]
+            .as_str()
+            .is_some_and(|d| d.starts_with("sha256:") && d != id.trim()),
+        "{written}"
+    );
+    assert_eq!(
+        written["image.name"].as_str(),
+        Some("docker.io/library/made:3"),
+        "{written}"
+    );
+    assert_eq!(
+        written["containerimage.digest"], written["containerimage.descriptor"]["digest"],
+        "{written}"
+    );
+    assert!(
+        written["buildx.build.ref"]
+            .as_str()
+            .is_some_and(|r| r.starts_with("shards/shards/")),
+        "{written}"
+    );
+
     // --no-cache-filter: its stage's step runs, the rest are the cache's.
     let filtered = build(&homes[0], &["--no-cache-filter", "build"], "made:2");
     assert!(!cached(&filtered, "write:/out=built"), "{filtered}");

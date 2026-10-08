@@ -3192,6 +3192,27 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode
 waits on the user.
 
+### D63. `--metadata-file`
+
+What buildx v0.37.1 writes (commands/build.go `decodeExporterResponse`,
+`writeMetadataFile`): BuildKit's exporter response, decoded, with the build's
+reference, as Go's `MarshalIndent` writes the map (keys sorted, two spaces), whole or not
+at all. For an image, BuildKit's image exporter's answer (exporter/containerimage/
+export.go): `containerimage.config.digest`, `containerimage.descriptor` (its
+`config.digest` annotation moved out, as there), `containerimage.digest` and
+`image.name`, each tag in full; for files (`local`, `tar`), none. `buildx.build.ref` is
+`shards/shards/` and an ID made as BuildKit's `identity.NewID` makes one.
+
+Measured beside it (Docker 29.3.1, containerd store, `docker:29.3.1-dind`, 2026-10-07):
+Docker's adds `buildx.build.provenance`, the provenance attestation it records by
+default, and names an index of the image and that attestation. shards records no
+attestation yet (`--provenance`, `--sbom`, `--attest` unserved), so it writes no
+provenance and names the image's manifest.
+
+Tested: `metadata_is_written_as_buildx_writes_it`, `build_refs_are_buildkits_ids`, and
+on a real build (`builds_take_steps_from_caches_written_elsewhere`): the digest is the
+image's ID, the name the tag in full.
+
 ### D62. Build caches kept elsewhere, and stages built without the cache
 
 `--cache-to`, `--cache-from` and `--no-cache-filter`, as buildx v0.37.1 takes them

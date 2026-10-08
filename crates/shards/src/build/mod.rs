@@ -1789,6 +1789,16 @@ fn run(parsed: &Parsed) -> Result<(), String> {
             &progress,
         )?;
         remote::export(&cache_to, &used, &store, &image_layers, &progress, &env)?;
+        // An image in an OCI or docker archive is one; a directory or tar of files none.
+        let imaged = outputs.iter().any(|o| o.kind == "oci" || o.kind == "docker");
+        let names = canonical_names(parsed.many("tag"))?;
+        write_metadata(
+            parsed,
+            &metadata(
+                &build_ref()?,
+                imaged.then_some((&config_digest, &manifest_digest, manifest.len(), names.as_slice())),
+            ),
+        )?;
         print_warnings(&plan.warnings, quiet);
         return finish(parsed, &config_digest.to_string());
     }
@@ -1890,11 +1900,103 @@ fn run(parsed: &Parsed) -> Result<(), String> {
         &progress,
     )?;
     remote::export(&cache_to, &used, &store, &image_layers, &progress, &env)?;
+    let names = canonical_names(parsed.many("tag"))?;
+    write_metadata(
+        parsed,
+        &metadata(
+            &build_ref()?,
+            Some((&config_digest, &manifest_digest, manifest.len(), names.as_slice())),
+        ),
+    )?;
     print_warnings(&plan.warnings, quiet);
     finish(parsed, &config_digest.to_string())
 }
 
 /// The build's ID where it is asked for: in `--iidfile`, and with `-q` on stdout.
+/// BuildKit's `identity.NewID`: 17 random bytes, the first's high bit set, in base 36,
+/// its first digit dropped: 25 characters.
+fn build_ref() -> Result<String, String> {
+    let mut n = [0u8; 17];
+    shards_vmm::platform::fill_random(&mut n).map_err(|e| e.to_string())?;
+    if let Some(b) = n.first_mut() {
+        *b |= 0x80;
+    }
+    let mut digits = Vec::new();
+    let mut rest: Vec<u8> = n.to_vec();
+    while rest.iter().any(|&b| b != 0) {
+        let mut carry = 0u32;
+        for b in &mut rest {
+            let cur = (carry << 8) | u32::from(*b);
+            *b = u8::try_from(cur / 36).unwrap_or(0);
+            carry = cur % 36;
+        }
+        digits.push(
+            b"0123456789abcdefghijklmnopqrstuvwxyz"
+                .get(carry as usize)
+                .copied()
+                .unwrap_or(b'0'),
+        );
+    }
+    digits.reverse();
+    Ok(String::from_utf8_lossy(digits.get(1..26).unwrap_or_default()).into_owned())
+}
+
+/// What `--metadata-file` holds, as buildx writes it (commands/build.go
+/// `decodeExporterResponse`, `writeMetadataFile`): the build's reference, and for an image
+/// what BuildKit's image exporter answers (exporter/containerimage/export.go): its
+/// config's digest, its manifest's descriptor and digest, and its names. Keys in order, as
+/// Go's `MarshalIndent` writes a map.
+fn metadata(build_ref: &str, image: Option<(&Digest, &Digest, usize, &[String])>) -> String {
+    let q = |s: &str| serde_json::Value::from(s).to_string();
+    let mut out = format!(
+        "{{\n  \"buildx.build.ref\": {}",
+        q(&format!("shards/shards/{build_ref}"))
+    );
+    if let Some((config, manifest, size, names)) = image {
+        out.push_str(&format!(
+            ",\n  \"containerimage.config.digest\": {},\n  \"containerimage.descriptor\": {{\n    \"mediaType\": {},\n    \"digest\": {},\n    \"size\": {size}\n  }},\n  \"containerimage.digest\": {}",
+            q(&config.to_string()),
+            q(oci::media::OCI_MANIFEST),
+            q(&manifest.to_string()),
+            q(&manifest.to_string()),
+        ));
+        if !names.is_empty() {
+            out.push_str(&format!(",\n  \"image.name\": {}", q(&names.join(","))));
+        }
+    }
+    out.push_str("\n}");
+    out
+}
+
+/// The image's names as BuildKit's exporter has them: each tag in full.
+fn canonical_names(tags: &[String]) -> Result<Vec<String>, String> {
+    tags.iter()
+        .map(|t| {
+            Reference::parse(t)
+                .map(|r| r.to_string())
+                .map_err(|e| format!("invalid tag {t:?}: {e}"))
+        })
+        .collect()
+}
+
+/// Writes `--metadata-file`, whole or not at all, as buildx's atomic writer does.
+fn write_metadata(parsed: &Parsed, text: &str) -> Result<(), String> {
+    let path = parsed.string("metadata-file");
+    if path.is_empty() {
+        return Ok(());
+    }
+    let path = Path::new(path);
+    let tmp = path.with_file_name(format!(
+        ".{}.{}.tmp",
+        path.file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+        std::process::id()
+    ));
+    std::fs::write(&tmp, text).map_err(|e| format!("{}: {e}", tmp.display()))?;
+    std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
+}
+
 fn finish(parsed: &Parsed, id: &str) -> Result<(), String> {
     let iidfile = parsed.string("iidfile");
     if !iidfile.is_empty() {
@@ -2647,6 +2749,38 @@ mod tests {
 
     /// Lines are stamped when they begin, to 3 places, 2 past 10 s and 1 past 100; a
     /// line not ended is printed as far as it goes and continued as the rest comes.
+    #[test]
+    fn build_refs_are_buildkits_ids() {
+        let r = build_ref().unwrap();
+        assert_eq!(r.len(), 25, "{r}");
+        assert!(
+            r.bytes().all(|b| b.is_ascii_digit() || b.is_ascii_lowercase()),
+            "{r}"
+        );
+        assert_ne!(r, build_ref().unwrap());
+    }
+
+    #[test]
+    fn metadata_is_written_as_buildx_writes_it() {
+        let config = Digest::parse(&format!("sha256:{}", "a".repeat(64))).unwrap();
+        let manifest = Digest::parse(&format!("sha256:{}", "b".repeat(64))).unwrap();
+        // As Go's MarshalIndent writes buildx's map: keys sorted, two spaces, the
+        // descriptor's fields in its own order.
+        assert_eq!(
+            metadata(
+                "r",
+                Some((&config, &manifest, 481, &["docker.io/library/app:1".to_string()]))
+            ),
+            format!(
+                "{{\n  \"buildx.build.ref\": \"shards/shards/r\",\n  \"containerimage.config.digest\": \"{config}\",\n  \"containerimage.descriptor\": {{\n    \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\",\n    \"digest\": \"{manifest}\",\n    \"size\": 481\n  }},\n  \"containerimage.digest\": \"{manifest}\",\n  \"image.name\": \"docker.io/library/app:1\"\n}}"
+            )
+        );
+        assert_eq!(
+            metadata("r", None),
+            "{\n  \"buildx.build.ref\": \"shards/shards/r\"\n}"
+        );
+    }
+
     #[test]
     fn lines_print_as_progressui_prints_them() {
         let mut log = StepLog::new(LogLimits { size: -1, speed: -1 });
