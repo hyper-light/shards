@@ -248,6 +248,65 @@ pub fn resource_attrs(entries: &[String]) -> Result<BTreeMap<String, String>, St
     Ok(attrs)
 }
 
+/// An annotation `--annotation` asks for (exptypes.AnnotationKey): its type (empty for
+/// the default, the manifest), the platform it is for, as written, and its key and value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Annotation {
+    pub kind: String,
+    pub platform: Option<String>,
+    pub key: String,
+    pub value: String,
+}
+
+/// `--annotation`'s values as buildx reads them (util/buildflags/export.go
+/// `ParseAnnotations`): `key=value`, or `type[,type...]:key=value`, each type one of
+/// `manifest`, `manifest-descriptor`, `index`, `index-descriptor`, perhaps with a platform
+/// in brackets; a key given twice, its last value.
+pub fn parse_annotations(values: &[String]) -> Result<Vec<Annotation>, String> {
+    let type_re = regex::Regex::new(r"^([a-z-]+)(?:\[([A-Za-z0-9_/-]+)\])?$").map_err(|e| e.to_string())?;
+    let mut out: Vec<Annotation> = Vec::new();
+    let mut put = |a: Annotation| {
+        out.retain(|o| (&o.kind, &o.platform, &o.key) != (&a.kind, &a.platform, &a.key));
+        out.push(a);
+    };
+    for inp in values.iter().filter(|v| !v.is_empty()) {
+        let (k, v) = inp
+            .split_once('=')
+            .ok_or_else(|| format!("invalid annotation {}, expected key=value", go::quote(inp)))?;
+        let Some((types, key)) = k.split_once(':') else {
+            put(Annotation {
+                kind: String::new(),
+                platform: None,
+                key: k.to_string(),
+                value: v.to_string(),
+            });
+            continue;
+        };
+        for type_and_platform in types.split(',') {
+            let groups = type_re.captures(type_and_platform).ok_or_else(|| {
+                format!(
+                    "invalid annotation type {}, expected type and optional platform in square brackets",
+                    go::quote(type_and_platform)
+                )
+            })?;
+            let kind = groups.get(1).map_or("", |m| m.as_str());
+            if !matches!(
+                kind,
+                "" | "index" | "index-descriptor" | "manifest" | "manifest-descriptor"
+            ) {
+                return Err(format!("unknown annotation type {}", go::quote(kind)));
+            }
+            put(Annotation {
+                kind: kind.to_string(),
+                platform: groups.get(2).map(|m| m.as_str().to_string()),
+                key: key.to_string(),
+                value: v.to_string(),
+            });
+        }
+    }
+    Ok(out)
+}
+
 /// Where an output goes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Dest {

@@ -256,6 +256,9 @@ pub struct Made<'a> {
     pub manifest: &'a [u8],
     pub manifest_digest: &'a Digest,
     pub layers: &'a [Layer],
+    /// `--annotation`'s for its descriptor (`manifest-descriptor`), which the exporter's
+    /// own (when it was made, its names) follow.
+    pub descriptor_annotations: &'a BTreeMap<String, String>,
 }
 
 /// `platform` of a descriptor, as ocispec.Platform marshals: from the image's config.
@@ -395,7 +398,7 @@ pub fn layout<W: Write>(
         records.insert(blob_name(&d), (0o444, Content::File(path, len)));
     }
     let mut entries = Vec::new();
-    let mut base = BTreeMap::new();
+    let mut base = made.descriptor_annotations.clone();
     base.insert(
         "org.opencontainers.image.created".to_string(),
         created.to_string(),
@@ -546,7 +549,11 @@ pub fn layout_dir(
             .unwrap_or_default();
         let platform: serde_json::Value =
             serde_json::from_str(&platform(made.config)?).map_err(|e| e.to_string())?;
-        let mut base = serde_json::Map::new();
+        let mut base: serde_json::Map<String, serde_json::Value> = made
+            .descriptor_annotations
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone().into()))
+            .collect();
         base.insert("org.opencontainers.image.created".into(), created.into());
         let tagged: Vec<(String, String)> = if names.is_empty() {
             vec![(String::new(), "latest".into())]

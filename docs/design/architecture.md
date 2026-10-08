@@ -3192,6 +3192,26 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode
 waits on the user.
 
+### D66. `--annotation`
+
+As buildx v0.37.1 reads it (util/buildflags/export.go `ParseAnnotations`, held to buildx
+by the buildx oracle) and BuildKit's image exporter applies it to an image of one platform
+(exporter/containerimage/writer.go, annotations.go): `key=value` and `manifest:` into the
+manifest, `manifest-descriptor:` onto the descriptor that names it (an OCI layout's
+`index.json`, the metadata file's `containerimage.descriptor`), before the exporter's own
+(when it was made, its names); an output's `annotation…` attributes (`-o
+type=oci,annotation.KEY=…`) as well; `index:` and `index-descriptor:` refused, "index
+annotations not supported for single platform export". An Agentfile's own annotations
+(D57) follow, so that none asked for replaces its digest.
+
+- **Better than BuildKit's:** an annotation for a platform (`manifest[linux/arm64]:`)
+  applies where it is the image's platform, which BuildKit's single-platform export drops
+  without a word (`Platform(nil)`), and one for another is refused in the words BuildKit
+  refuses a platform the build lacks ("invalid annotation: no platform … found in source").
+
+Tested on a real build (`annotations_land_where_buildkit_puts_them`, mutation-checked:
+without the manifest's annotations, it fails).
+
 ### D65. `builder prune`
 
 `shards builder prune` and `shards buildx prune`, as buildx v0.37.1's prune

@@ -1050,6 +1050,7 @@ fn run(parsed: &Parsed) -> Result<(), String> {
     )
     .map_err(|e| format!("failed to build: {e}"))?;
     check_outputs(&outputs)?;
+    let (manifest_annotations, descriptor_annotations) = annotations_of(parsed, &outputs)?;
     // toSolveOpt: an image pushed must have a name.
     let pushes = outputs.iter().any(|o| {
         o.kind == "image"
@@ -1810,7 +1811,11 @@ fn run(parsed: &Parsed) -> Result<(), String> {
     };
     let config_digest = sha256(&config);
     // An Agentfile's image: findable by its manifest's annotations (D57).
-    let mut annotations = BTreeMap::new();
+    // --annotation's, then the Agentfile's own, which no annotation asked for replaces.
+    let mut annotations: BTreeMap<Vec<u8>, Vec<u8>> = manifest_annotations
+        .iter()
+        .map(|(k, v)| (k.as_bytes().to_vec(), v.as_bytes().to_vec()))
+        .collect();
     if let Some(digest) = plan
         .image
         .config
@@ -1869,6 +1874,7 @@ fn run(parsed: &Parsed) -> Result<(), String> {
                 manifest: &manifest,
                 manifest_digest: &manifest_digest,
                 layers: &layers,
+                descriptor_annotations: &descriptor_annotations,
             },
             parsed.many("tag"),
             plan.epoch,
@@ -1883,6 +1889,7 @@ fn run(parsed: &Parsed) -> Result<(), String> {
             &metadata(
                 &build_ref()?,
                 imaged.then_some((&manifest_digest, manifest.len(), names.as_slice())),
+                &descriptor_annotations,
             ),
         )?;
         print_warnings(&plan.warnings, quiet);
@@ -1980,6 +1987,7 @@ fn run(parsed: &Parsed) -> Result<(), String> {
             manifest: &manifest,
             manifest_digest: &manifest_digest,
             layers: &layers,
+            descriptor_annotations: &descriptor_annotations,
         },
         parsed.many("tag"),
         plan.epoch,
@@ -1992,6 +2000,7 @@ fn run(parsed: &Parsed) -> Result<(), String> {
         &metadata(
             &build_ref()?,
             Some((&manifest_digest, manifest.len(), names.as_slice())),
+            &descriptor_annotations,
         ),
     )?;
     print_warnings(&plan.warnings, quiet);
@@ -2033,7 +2042,11 @@ fn build_ref() -> Result<String, String> {
 /// its manifest's digest, as shards' store does: the manifest's descriptor and digest, and
 /// the image's names, and no config digest, so that the ID buildx takes of it
 /// (`getImageID`) is the image's. Keys in order, as Go's `MarshalIndent` writes a map.
-fn metadata(build_ref: &str, image: Option<(&Digest, usize, &[String])>) -> String {
+fn metadata(
+    build_ref: &str,
+    image: Option<(&Digest, usize, &[String])>,
+    annotations: &BTreeMap<String, String>,
+) -> String {
     let q = |s: &str| serde_json::Value::from(s).to_string();
     let mut out = format!(
         "{{\n  \"buildx.build.ref\": {}",
@@ -2041,9 +2054,19 @@ fn metadata(build_ref: &str, image: Option<(&Digest, usize, &[String])>) -> Stri
     );
     if let Some((manifest, size, names)) = image {
         out.push_str(&format!(
-            ",\n  \"containerimage.descriptor\": {{\n    \"mediaType\": {},\n    \"digest\": {},\n    \"size\": {size}\n  }},\n  \"containerimage.digest\": {}",
+            ",\n  \"containerimage.descriptor\": {{\n    \"mediaType\": {},\n    \"digest\": {},\n    \"size\": {size}{}\n  }},\n  \"containerimage.digest\": {}",
             q(oci::media::OCI_MANIFEST),
             q(&manifest.to_string()),
+            // ocispec.Descriptor's annotations, after its size, keys in order.
+            if annotations.is_empty() {
+                String::new()
+            } else {
+                let pairs: Vec<String> = annotations
+                    .iter()
+                    .map(|(k, v)| format!("\n      {}: {}", q(k), q(v)))
+                    .collect();
+                format!(",\n    \"annotations\": {{{}\n    }}", pairs.join(","))
+            },
             q(&manifest.to_string()),
         ));
         if !names.is_empty() {
@@ -2052,6 +2075,65 @@ fn metadata(build_ref: &str, image: Option<(&Digest, usize, &[String])>) -> Stri
     }
     out.push_str("\n}");
     out
+}
+
+/// Annotations by key.
+type Annotations = BTreeMap<String, String>;
+
+/// The annotations asked for, by `--annotation` and by an image output's `annotation…`
+/// attributes (exptypes `ParseAnnotationKey`), as BuildKit's image exporter applies them to
+/// an image of one platform (exporter/containerimage/writer.go): the manifest's and its
+/// descriptor's; an index's refused, as there. One for a platform applies where it is the
+/// image's, which BuildKit leaves out of a single platform's export (`Platform(nil)`), and
+/// one for another is refused in the words BuildKit refuses a platform the build lacks.
+fn annotations_of(
+    parsed: &Parsed,
+    outputs: &[buildflags::Output],
+) -> Result<(Annotations, Annotations), String> {
+    let mut all = buildflags::parse_annotations(parsed.many("annotation"))?;
+    let key_re = regex::Regex::new(r"^annotation(?:-([a-z-]+))?(?:\[([A-Za-z0-9_/-]+)\])?\.(\S+)$")
+        .map_err(|e| e.to_string())?;
+    for o in outputs
+        .iter()
+        .filter(|o| matches!(o.kind.as_str(), "image" | "moby" | "oci" | "docker"))
+    {
+        for (k, v) in &o.attrs {
+            let Some(g) = key_re.captures(k) else { continue };
+            let kind = g.get(1).map_or("", |m| m.as_str());
+            if !matches!(
+                kind,
+                "" | "index" | "index-descriptor" | "manifest" | "manifest-descriptor"
+            ) {
+                return Err(format!("unrecognized annotation type {kind}"));
+            }
+            all.push(buildflags::Annotation {
+                kind: kind.to_string(),
+                platform: g.get(2).map(|m| m.as_str().to_string()),
+                key: g.get(3).map_or("", |m| m.as_str()).to_string(),
+                value: v.clone(),
+            });
+        }
+    }
+    let host = host_platform();
+    let (mut manifest, mut descriptor) = (BTreeMap::new(), BTreeMap::new());
+    for a in all {
+        if let Some(p) = &a.platform {
+            let wanted = platform::parse(p.as_bytes(), &host).map_err(|e| show(&e))?;
+            if wanted.os != host.os || wanted.architecture != host.architecture {
+                return Err(format!("invalid annotation: no platform {p} found in source"));
+            }
+        }
+        match a.kind.as_str() {
+            "" | "manifest" => {
+                manifest.insert(a.key, a.value);
+            }
+            "manifest-descriptor" => {
+                descriptor.insert(a.key, a.value);
+            }
+            _ => return Err("index annotations not supported for single platform export".into()),
+        }
+    }
+    Ok((manifest, descriptor))
 }
 
 /// The image's names as BuildKit's exporter has them: each tag in full.
@@ -2854,14 +2936,15 @@ mod tests {
         assert_eq!(
             metadata(
                 "r",
-                Some((&manifest, 481, &["docker.io/library/app:1".to_string()]))
+                Some((&manifest, 481, &["docker.io/library/app:1".to_string()])),
+                &BTreeMap::new(),
             ),
             format!(
                 "{{\n  \"buildx.build.ref\": \"shards/shards/r\",\n  \"containerimage.descriptor\": {{\n    \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\",\n    \"digest\": \"{manifest}\",\n    \"size\": 481\n  }},\n  \"containerimage.digest\": \"{manifest}\",\n  \"image.name\": \"docker.io/library/app:1\"\n}}"
             )
         );
         assert_eq!(
-            metadata("r", None),
+            metadata("r", None, &BTreeMap::new()),
             "{\n  \"buildx.build.ref\": \"shards/shards/r\"\n}"
         );
     }

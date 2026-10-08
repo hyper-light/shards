@@ -2737,6 +2737,95 @@ fn builder_prune_removes_the_build_cache_as_buildx_does() {
     assert!(ran(&build(Some("pruned:3"))), "--all kept the record");
 }
 
+/// `--annotation` (D66): the manifest's in the manifest, the descriptor's on the
+/// descriptor (an OCI layout's index, the metadata file), as BuildKit's image exporter puts
+/// them; an index's, and another platform's, refused in its words.
+#[test]
+fn annotations_land_where_buildkit_puts_them() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("annotate-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let ctx = context("annotate-ctx", &format!("FROM {image}\nLABEL a=b\n"));
+    let out = TempDir::new("annotate-out");
+    let meta = out.join("meta.json");
+    let layout = out.join("layout");
+    let built = shards(&[
+        "build",
+        "--annotation",
+        "org.opencontainers.image.title=app",
+        "--annotation",
+        "manifest-descriptor:org.example.where=index",
+        "--metadata-file",
+        meta.to_str().unwrap(),
+        "-o",
+        &format!(
+            "type=oci,dest={},tar=false,annotation.org.example.from=output",
+            layout.display()
+        ),
+        ctx.to_str().unwrap(),
+    ]);
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    let index: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(layout.join("index.json")).unwrap()).unwrap();
+    let desc = &index["manifests"][0];
+    assert_eq!(desc["annotations"]["org.example.where"], "index", "{index}");
+    let digest = desc["digest"].as_str().unwrap().trim_start_matches("sha256:");
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(layout.join("blobs/sha256").join(digest)).unwrap()).unwrap();
+    assert_eq!(
+        manifest["annotations"]["org.opencontainers.image.title"], "app",
+        "{manifest}"
+    );
+    assert_eq!(
+        manifest["annotations"]["org.example.from"], "output",
+        "{manifest}"
+    );
+    assert!(
+        manifest["annotations"].get("org.example.where").is_none(),
+        "{manifest}"
+    );
+    let written: serde_json::Value = serde_json::from_slice(&std::fs::read(&meta).unwrap()).unwrap();
+    assert_eq!(
+        written["containerimage.descriptor"]["annotations"]["org.example.where"], "index",
+        "{written}"
+    );
+
+    let refused = shards(&["build", "--annotation", "index:k=v", ctx.to_str().unwrap()]);
+    assert!(
+        refused
+            .stderr
+            .contains("index annotations not supported for single platform export"),
+        "{}",
+        refused.stderr
+    );
+    let other = if cfg!(target_arch = "aarch64") {
+        "linux/amd64"
+    } else {
+        "linux/arm64"
+    };
+    let refused = shards(&[
+        "build",
+        "--annotation",
+        &format!("manifest[{other}]:k=v"),
+        ctx.to_str().unwrap(),
+    ]);
+    assert!(
+        refused.stderr.contains(&format!(
+            "invalid annotation: no platform {other} found in source"
+        )),
+        "{}",
+        refused.stderr
+    );
+}
+
 /// `RUN --mount=type=ssh` reaches the client's SSH agent through the builder, as
 /// BuildKit's steps reach it (`--ssh default`, `SSH_AUTH_SOCK` in the step): the step
 /// sees the agent's keys and has it sign, and cannot have it forget them, which BuildKit's

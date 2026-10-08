@@ -125,6 +125,15 @@ fn built(parsed: &flags::Parsed, out: &mut String) -> Result<(), String> {
             .collect();
         out.push_str(&format!("ULIMIT {}\n", list.join(",")));
     }
+    let mut lines: Vec<String> = buildflags::parse_annotations(parsed.many("annotation"))?
+        .into_iter()
+        .map(|a| {
+            let p = a.platform.map(|p| format!("[{p}]")).unwrap_or_default();
+            format!("ANNOTATION {}{p} {}={}\n", a.kind, a.key, a.value)
+        })
+        .collect();
+    lines.sort();
+    out.push_str(&lines.concat());
     Ok(())
 }
 

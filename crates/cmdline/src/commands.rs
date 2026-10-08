@@ -2161,6 +2161,7 @@ pub static BUILD: Command = Command {
             "bytes",
             "Shared memory size for build containers",
         ),
+        Flag::many("annotation", None, "stringArray", "Add annotation to the image"),
         // buildx's root flags.
         Flag::string("builder", None, "", "Override the configured builder instance"),
         Flag::bool("debug", Some(b'D'), "Enable debug logging"),
@@ -2272,7 +2273,6 @@ pub static BUILD: Command = Command {
         Flag::many("ulimit", None, "ulimit", "Ulimit options").defaulting("[]"),
     ],
     unserved: "\
-annotation - m - -\n\
 attest - m - -\n\
 call - s build -\n\
 check - b - -\n\

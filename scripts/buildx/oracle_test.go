@@ -8,6 +8,7 @@ package main
 // serve are hidden, and the build replaced by a line that says what it was asked.
 
 import (
+	"github.com/containerd/platforms"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -36,7 +37,7 @@ import (
 
 // The flags shards serves.
 var served = []string{
-	"add-host", "allow", "build-arg", "build-context", "builder", "cache-from", "cache-to", "cgroup-parent", "debug",
+	"add-host", "allow", "annotation", "build-arg", "build-context", "builder", "cache-from", "cache-to", "cgroup-parent", "debug",
 	"file", "help",
 	"iidfile", "label", "load", "metadata-file", "network", "no-cache", "no-cache-filter", "platform", "resource",
 	"shm-size",
@@ -88,6 +89,11 @@ var cases = [][]string{
 	{"--metadata-file", "meta.json", "."},
 	{"--add-host", "db:10.0.0.2", "--add-host", "a=1.2.3.4,b:5.6.7.8", "."},
 	{"--builder", "default", "-D", "."},
+	{"--annotation", "org.opencontainers.image.title=app", "--annotation", "manifest,manifest-descriptor:a=b", ".",},
+	{"--annotation", "index:k=v", "--annotation", "manifest[linux/amd64]:p=q", "."},
+	{"--annotation", "noequals", "."},
+	{"--annotation", "bogus:k=v", "."},
+	{"--annotation", "Manifest:k=v", "."},
 	{"--shm-size", "64m", "--cgroup-parent", "/x", "--network", "none", "."},
 	{"--shm-size", "lots", "."},
 	{"--resource", "memory=2g", "--resource", "cpu-quota=50000", "."},
@@ -440,6 +446,24 @@ func built(c *cobra.Command) error {
 			list = append(list, u.String())
 		}
 		fmt.Fprintf(out, "ULIMIT %s\n", strings.Join(list, ","))
+	}
+	// The annotations (ParseAnnotations), each type[platform] key=value, sorted.
+	annArgs, _ := c.Flags().GetStringArray("annotation")
+	anns, err := buildflags.ParseAnnotations(annArgs)
+	if err != nil {
+		return err
+	}
+	var annLines []string
+	for k, v := range anns {
+		p := ""
+		if k.Platform != nil {
+			p = "[" + platforms.Format(*k.Platform) + "]"
+		}
+		annLines = append(annLines, fmt.Sprintf("ANNOTATION %s%s %s=%s", k.Type, p, k.Key, v))
+	}
+	sort.Strings(annLines)
+	for _, l := range annLines {
+		fmt.Fprintln(out, l)
 	}
 	return nil
 }
