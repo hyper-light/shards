@@ -78,6 +78,7 @@ pub struct Index {
     pub schema_version: u32,
     #[serde(default)]
     pub media_type: Option<String>,
+    #[serde(default, deserialize_with = "list")]
     pub manifests: Vec<Descriptor>,
 }
 
@@ -91,6 +92,9 @@ pub struct Manifest {
     #[serde(default)]
     pub artifact_type: Option<String>,
     pub config: Descriptor,
+    /// `null` where an image has none, as BuildKit writes a layerless image's (measured,
+    /// BuildKit v0.28.1: `FROM scratch` and `LABEL`).
+    #[serde(default, deserialize_with = "list")]
     pub layers: Vec<Descriptor>,
 }
 
@@ -158,6 +162,12 @@ pub struct RunConfig {
     pub labels: Option<std::collections::BTreeMap<String, String>>,
 }
 
+/// A list, or none for `null`, as Go reads a slice.
+fn list<'de, D: serde::Deserializer<'de>, T: serde::Deserialize<'de>>(d: D) -> Result<Vec<T>, D::Error> {
+    let v: Option<Vec<T>> = serde::Deserialize::deserialize(d)?;
+    Ok(v.unwrap_or_default())
+}
+
 /// An object's keys, or none for `null`.
 fn keys<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
     let map: Option<std::collections::BTreeMap<String, serde::de::IgnoredAny>> =
@@ -188,6 +198,8 @@ pub struct HealthConfig {
 pub struct RootFs {
     #[serde(rename = "type")]
     pub kind: String,
+    /// `null` where an image has no layers, as BuildKit writes it.
+    #[serde(default, deserialize_with = "list")]
     pub diff_ids: Vec<String>,
 }
 
@@ -322,6 +334,21 @@ pub fn chain_id(diff_ids: &[Digest]) -> Option<Digest> {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
+
+    /// A layerless image as BuildKit v0.28.1 writes it (`FROM scratch`, `LABEL`; measured
+    /// in Docker 29.3.1): `layers` and `diff_ids` null, read as none, as Go reads them.
+    #[test]
+    fn a_layerless_image_reads_as_go_reads_it() {
+        let manifest = br#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"sha256:38f5d4340455270de28be24536c9342bdb1b430bdb62347e2ddb601edd3e7db0","size":321},"layers":null}"#;
+        let Document::Manifest(m) = parse_document(manifest, media::OCI_MANIFEST).unwrap() else {
+            panic!("not a manifest");
+        };
+        assert!(m.layers.is_empty());
+        let config = br#"{"architecture":"arm64","config":{"Env":["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"],"WorkingDir":"/","Labels":{"tier":"web"}},"created":null,"history":[{"created_by":"LABEL tier=web","comment":"buildkit.dockerfile.v0","empty_layer":true}],"os":"linux","rootfs":{"type":"layers","diff_ids":null}}"#;
+        let c = parse_config(config).unwrap();
+        assert!(c.rootfs.diff_ids.is_empty());
+    }
+
     use super::*;
 
     const A: &str = "sha256:6c3c624b58dbbcd3c0dd82b4c53f04194d1247c6eebdaab7c610cf7d66709b3b";
