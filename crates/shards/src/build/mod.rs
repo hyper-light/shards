@@ -37,6 +37,7 @@ mod builder;
 mod cache;
 mod compress;
 mod domains;
+mod estargz;
 mod exec;
 mod git;
 pub(crate) mod http;

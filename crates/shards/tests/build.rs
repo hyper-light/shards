@@ -7311,6 +7311,94 @@ fn layers_are_compressed_as_buildkit_compresses_them() {
     assert_eq!((forced[0].0.as_str(), forced[1].0.as_str()), (GZIP, GZIP));
     assert_eq!(gunzip(&forced[0].1), default[0].1);
 
+    // eStargz (D82): the step's layer an eStargz blob, its descriptor naming its TOC's
+    // digest and its tar's size; the config's DiffID that tar's, the TOC entry's too; the
+    // footer naming where the TOC starts; the base kept, unless forced.
+    let esgz = |opts: &str| -> (serde_json::Value, serde_json::Value, std::path::PathBuf) {
+        let dir = out.join(format!("esgz-{}", opts.len()));
+        let built = shards(&[
+            "build",
+            "-o",
+            &format!(
+                "type=oci,dest={},tar=false,compression=estargz{opts}",
+                dir.display()
+            ),
+            ctx.to_str().unwrap(),
+        ]);
+        assert_eq!(built.status, Some(0), "{}", built.stderr);
+        let read =
+            |d: &str| std::fs::read(dir.join("blobs/sha256").join(d.trim_start_matches("sha256:"))).unwrap();
+        let top: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(dir.join("index.json")).unwrap()).unwrap();
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&read(top["manifests"][0]["digest"].as_str().unwrap())).unwrap();
+        let config: serde_json::Value =
+            serde_json::from_slice(&read(manifest["config"]["digest"].as_str().unwrap())).unwrap();
+        (manifest, config, dir)
+    };
+    let all_members = |b: &[u8]| {
+        let mut out = Vec::new();
+        std::io::Read::read_to_end(&mut flate2::read::MultiGzDecoder::new(b), &mut out).unwrap();
+        out
+    };
+    let sha = |b: &[u8]| {
+        use sha2::Digest as _;
+        let hex: String = sha2::Sha256::digest(b)
+            .iter()
+            .map(|x| format!("{x:02x}"))
+            .collect();
+        format!("sha256:{hex}")
+    };
+    let (manifest, config, dir) = esgz("");
+    let layers = manifest["layers"].as_array().unwrap();
+    assert_eq!(layers[0]["mediaType"], TAR);
+    assert!(layers[0]["annotations"].is_null(), "{manifest}");
+    let step = &layers[1];
+    assert_eq!(step["mediaType"], GZIP);
+    let blob = std::fs::read(
+        dir.join("blobs/sha256")
+            .join(step["digest"].as_str().unwrap().trim_start_matches("sha256:")),
+    )
+    .unwrap();
+    let tar = all_members(&blob);
+    assert_eq!(config["rootfs"]["diff_ids"][1], sha(&tar).as_str());
+    assert_eq!(
+        step["annotations"]["io.containers.estargz.uncompressed-size"],
+        tar.len().to_string().as_str()
+    );
+    // The footer: an empty gzip member whose extra field says where the TOC starts.
+    let footer = &blob[blob.len() - 51..];
+    // XLEN 26: `SG`, the subfield's length 22, then the offset and `STARGZ`.
+    assert_eq!(&footer[10..16], &[26, 0, b'S', b'G', 22, 0]);
+    let at = u64::from_str_radix(std::str::from_utf8(&footer[16..32]).unwrap(), 16).unwrap();
+    assert_eq!(&footer[32..38], b"STARGZ");
+    let toc_tar = all_members(&blob[at as usize..blob.len() - 51]);
+    let (h, toc) = tar_entries(&toc_tar).into_iter().next().unwrap();
+    assert_eq!(h.name, b"stargz.index.json");
+    assert_eq!(
+        step["annotations"]["containerd.io/snapshot/stargz/toc.digest"],
+        sha(&toc).as_str()
+    );
+    let toc: serde_json::Value = serde_json::from_slice(&toc).unwrap();
+    let made_entry = toc["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["name"] == "work/made")
+        .unwrap_or_else(|| panic!("{toc}"));
+    assert_eq!(made_entry["type"], "reg");
+    assert_eq!(made_entry["digest"], sha(b"some bytes made by a step").as_str());
+    assert!(
+        tar_entries(&tar)
+            .iter()
+            .any(|(h, d)| h.name == b"work/made" && d == b"some bytes made by a step")
+    );
+    let (forced, _, _) = esgz(",force-compression=true");
+    assert!(
+        forced["layers"][0]["annotations"]["containerd.io/snapshot/stargz/toc.digest"].is_string(),
+        "{forced}"
+    );
+
     for (opts, words) in [
         ("compression=zstd", "shards does not write zstd layers yet"),
         ("compression=lz4", "unsupported compression type lz4"),

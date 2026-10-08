@@ -3210,6 +3210,62 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode
 waits on the user.
 
+### D82. eStargz layers, as stargz-snapshotter writes them
+
+`compression=estargz` writes a build's layers as BuildKit v0.28.1 does
+(util/compression/estargz.go): stargz-snapshotter v0.18.2's `estargz.Writer`, made by
+`NewWriterLevel` at the gzip level asked for (Go's default otherwise), then
+`AppendTarLossLess` and `Close` (`crates/shards/src/build/estargz.rs`).
+
+**The stream.**
+- The tar passes through unchanged. Each header's raw bytes are taken as Go's
+  `RawAccounting` takes them, through a tee the tar reader records into only while it
+  reads a header.
+- Each regular file's data goes in 4 MiB chunks, each chunk starting a gzip member of
+  its own. With `MinChunkSize` 0, the open member is sync-flushed and closed first, as Go
+  does.
+- The TOC is a tar of one entry, `stargz.index.json`: Go's `MarshalIndent` with tabs,
+  fields in `TOCEntry`'s order, user and group names only where they change, mtimes
+  rounded to the second, xattrs in base64, a file's digest once its chunks are read. It
+  goes in a member of its own, its tar part of the DiffID's.
+- Last comes the 51-byte footer, a stored empty member whose extra field says where the
+  TOC starts.
+
+The gzip port (D75) gained what this needs: `Flush`'s sync marker, the header's extra
+field, and the stored level.
+
+**The descriptor** carries `containerd.io/snapshot/stargz/toc.digest` and
+`io.containers.estargz.uncompressed-size`, and the config's DiffID is the eStargz tar's
+(measured: Docker's build does both). A base's layer is kept unless
+`force-compression`, and one already eStargz (its TOC annotation) is never written again.
+With `rewrite-timestamp`, the rewritten tar streams into the writer on a thread of its
+own, through a pipe.
+
+Better than Docker: BuildKit gives a new layer whatever blob its cache already holds for
+it, so `compression=estargz` can export a plain gzip layer when an earlier build made one
+(measured: a layer built before came back gzip, a new one eStargz). shards writes what
+was asked for, every time.
+
+Not yet: `oci-mediatypes`, which shards does not read; it writes OCI types always, which
+eStargz requires anyway (`OnlySupportOCITypes`).
+
+Tested:
+- `estargz_is_stargz_snapshotters` holds 12 cases, three tars at four levels, byte for
+  byte to what `scripts/estargz/generate` records stargz-snapshotter v0.18.2 writing:
+  - the tars themselves, built again by shards' port of Go's archive/tar;
+  - each blob, its TOC digest, DiffID and size.
+
+  The tars cover:
+  - directories, small and empty files, symlinks and hardlinks;
+  - xattrs, a long name, sub-second and epoch mtimes;
+  - changing users, a FIFO, a device, a unicode name;
+  - a 9 MiB file across three chunks.
+
+  Mutation-checked: without the sync flush before a chunk, it fails.
+- `layers_are_compressed_as_buildkit_compresses_them` checks a real build's eStargz
+  layer: its annotations, the config's DiffID, the footer's TOC offset, the TOC's digest
+  and its entry for the step's file. `force-compression` converts the base too.
+
 ### D81. SBOM attestations: the scanner run over the result, as BuildKit runs it
 
 `--sbom` (and `--attest type=sbom`) attests the image's SBOMs as BuildKit v0.28.1 does
@@ -3560,7 +3616,7 @@ own.
   default, or `uncompressed`), `compression-level` and `force-compression` are read as
   BuildKit reads them (`ParseAttributes`, its words); a layer the build made takes them,
   a layer that came with a base, a named context or an artifact stays as it came unless
-  `force-compression` (BuildKit's `Compression.Force`). `estargz` and `zstd` are refused,
+  `force-compression` (BuildKit's `Compression.Force`). `zstd` is refused (eStargz is D82),
   named; so are outputs that ask different compressions, until each is written its own
   way. Layers compress on as many threads as the host has cores, and each once: the
   build cache keeps a record of each layer, level and kind, its blob held by it.

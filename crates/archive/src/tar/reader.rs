@@ -80,6 +80,12 @@ impl<R: Read> Reader<R> {
         }
     }
 
+    /// What it reads from, as `RawAccounting` needs it: what `next_header` reads, and only
+    /// that, is a header's raw bytes and the padding before it.
+    pub fn get_mut(&mut self) -> &mut R {
+        &mut self.r
+    }
+
     /// The next entry's header, or None at the end of the archive (Go's io.EOF).
     pub fn next_header(&mut self) -> Result<Option<Header>, Error> {
         if let Some(e) = &self.err {

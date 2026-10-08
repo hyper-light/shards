@@ -19,6 +19,9 @@ const OCI_LAYER_GZIP: &str = "application/vnd.oci.image.layer.v1.tar+gzip";
 pub enum Kind {
     Uncompressed,
     Gzip,
+    /// eStargz: gzip, each file's chunks a member of their own, and a table of contents
+    /// (D82).
+    Estargz,
 }
 
 /// An exporter's `compression`, `compression-level` and `force-compression`.
@@ -46,7 +49,8 @@ impl Compression {
         let kind = match attrs.get("compression").map(String::as_str) {
             None | Some("gzip") => Kind::Gzip,
             Some("uncompressed") => Kind::Uncompressed,
-            Some(t @ ("estargz" | "zstd")) => {
+            Some("estargz") => Kind::Estargz,
+            Some(t @ "zstd") => {
                 return Err(format!("shards does not write {t} layers yet"));
             }
             Some(t) => return Err(format!("unsupported compression type {t}")),
@@ -75,9 +79,16 @@ impl Compression {
     }
 }
 
-/// What a layer's media type says it is compressed with, if it is gzip or nothing.
-fn kind_of(media_type: &[u8]) -> Option<Kind> {
-    match media_type {
+/// What a layer is compressed with, as its media type and annotations say, if gzip,
+/// eStargz or nothing (`estargzType.NeedsConversion`: one with a TOC is eStargz already).
+fn kind_of(layer: &Layer) -> Option<Kind> {
+    if layer
+        .annotations
+        .contains_key(super::estargz::TOC_DIGEST.as_bytes())
+    {
+        return Some(Kind::Estargz);
+    }
+    match layer.media_type.as_slice() {
         b"application/vnd.oci.image.layer.v1.tar" | b"application/vnd.docker.image.rootfs.diff.tar" => {
             Some(Kind::Uncompressed)
         }
@@ -117,9 +128,12 @@ enum Job {
 struct Written {
     digest: String,
     size: u64,
-    /// The DiffID of what was written, where a rewrite changed it.
+    /// The DiffID of what was written, where a rewrite or eStargz's TOC changed it.
     #[serde(default)]
     diff_id: Option<String>,
+    /// An eStargz layer's annotations: its TOC's digest and its tar's size.
+    #[serde(default)]
+    annotations: BTreeMap<String, String>,
 }
 
 fn record_key(diff_id: &[u8], kind: Kind, level: Option<i32>, epoch: Option<i64>) -> String {
@@ -152,8 +166,7 @@ pub fn layers(
         .iter()
         .enumerate()
         .map(|(i, l)| {
-            let compress =
-                (c.force || !existing.contains(&l.digest)) && kind_of(&l.media_type) != Some(c.kind);
+            let compress = (c.force || !existing.contains(&l.digest)) && kind_of(l) != Some(c.kind);
             let Some(r) = rewrite else {
                 return if compress { Job::Compress } else { Job::Keep };
             };
@@ -277,10 +290,10 @@ fn written(
     limits: &Limits,
 ) -> Result<Layer, String> {
     let media_type = match c.kind {
-        Kind::Gzip => OCI_LAYER_GZIP,
+        Kind::Gzip | Kind::Estargz => OCI_LAYER_GZIP,
         Kind::Uncompressed => OCI_LAYER,
     };
-    let annotations: BTreeMap<Vec<u8>, Vec<u8>> = epoch
+    let mut annotations: BTreeMap<Vec<u8>, Vec<u8>> = epoch
         .map(|e| (REWRITTEN.as_bytes().to_vec(), e.to_string().into_bytes()))
         .into_iter()
         .collect();
@@ -289,6 +302,11 @@ fn written(
         && let Ok(w) = serde_json::from_slice::<Written>(&body)
     {
         store.cache_used(&key).map_err(|e| e.to_string())?;
+        annotations.extend(
+            w.annotations
+                .into_iter()
+                .map(|(k, v)| (k.into_bytes(), v.into_bytes())),
+        );
         return Ok(Layer {
             media_type: media_type.as_bytes().to_vec(),
             digest: w.digest.into_bytes(),
@@ -306,11 +324,45 @@ fn written(
         diff_id: Digest::parse(&String::from_utf8_lossy(&layer.diff_id)).map_err(|e| e.to_string())?,
     };
     let blob = store.writer().map_err(|e| e.to_string())?;
+    let mut esgz: Option<super::estargz::Written> = None;
     let ((digest, size), diff_id) = store
         .with_layer_tar(&source, limits, |tar| {
             let io = shards_image::Error::from;
             let level = c.level.unwrap_or(shards_flate::DEFAULT_COMPRESSION);
+            let esgz_err = |e: String| shards_image::Error::from(std::io::Error::other(e));
             match (c.kind, epoch) {
+                (Kind::Estargz, None) => {
+                    let (blob, w) = super::estargz::write(tar, blob, level).map_err(esgz_err)?;
+                    let diff = Digest::parse(&w.diff_id).map_err(|e| esgz_err(e.to_string()))?;
+                    esgz = Some(w);
+                    Ok((blob.commit()?, Some(diff)))
+                }
+                (Kind::Estargz, Some(e)) => {
+                    // The rewritten tar streamed into the eStargz writer, on a thread of
+                    // its own, through a pipe.
+                    let (reader, writer) = std::io::pipe().map_err(io)?;
+                    let (written, rewritten) = std::thread::scope(|scope| {
+                        let esgz_thread = std::thread::Builder::new()
+                            .name("estargz".into())
+                            .spawn_scoped(scope, move || super::estargz::write(reader, blob, level));
+                        let rewritten = rewrite_into(tar, writer, e).map(|(w, d)| {
+                            drop(w);
+                            d
+                        });
+                        let written = match esgz_thread {
+                            Ok(t) => t
+                                .join()
+                                .unwrap_or_else(|_| Err("the eStargz writer failed".into())),
+                            Err(e) => Err(e.to_string()),
+                        };
+                        (written, rewritten)
+                    });
+                    let _ = rewritten?;
+                    let (blob, w) = written.map_err(esgz_err)?;
+                    let diff = Digest::parse(&w.diff_id).map_err(|e| esgz_err(e.to_string()))?;
+                    esgz = Some(w);
+                    Ok((blob.commit()?, Some(diff)))
+                }
                 (Kind::Gzip, None) => {
                     let mut gz = shards_flate::GzipWriter::new(blob, level).map_err(io)?;
                     std::io::copy(tar, &mut gz).map_err(io)?;
@@ -335,10 +387,27 @@ fn written(
             }
         })
         .map_err(|e| e.to_string())?;
+    // eStargz's annotations (`EStargzAnnotations`): its TOC's digest and its tar's size.
+    let made: BTreeMap<String, String> = esgz
+        .map(|w| {
+            BTreeMap::from([
+                (super::estargz::TOC_DIGEST.to_string(), w.toc_digest),
+                (
+                    super::estargz::UNCOMPRESSED_SIZE.to_string(),
+                    w.uncompressed.to_string(),
+                ),
+            ])
+        })
+        .unwrap_or_default();
+    annotations.extend(
+        made.iter()
+            .map(|(k, v)| (k.as_bytes().to_vec(), v.as_bytes().to_vec())),
+    );
     let body = serde_json::to_vec(&Written {
         digest: digest.to_string(),
         size,
         diff_id: diff_id.as_ref().map(ToString::to_string),
+        annotations: made,
     })
     .map_err(|e| e.to_string())?;
     store

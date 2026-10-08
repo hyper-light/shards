@@ -501,6 +501,19 @@ impl<W: Write> Compressor<W> {
         Ok(())
     }
 
+    /// `syncFlush`: what is pending compressed, and an empty stored block, not the last,
+    /// that ends on a byte (`Flush`; estargz flushes before each chunk, D82).
+    pub fn sync_flush(&mut self) -> io::Result<()> {
+        self.failed()?;
+        self.sync = true;
+        self.step()?;
+        self.failed()?;
+        self.w.write_stored_header(0, false);
+        self.w.flush();
+        self.sync = false;
+        self.failed()
+    }
+
     /// `close`: what is left compressed, and the final, empty, stored block.
     pub fn close(&mut self) -> io::Result<()> {
         if self.closed {

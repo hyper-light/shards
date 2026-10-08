@@ -123,12 +123,17 @@ const END: &[u8] = b"unexpected end of JSON input";
 /// `MarshalIndent` writes a value: each member and element on a line of its own, `": "`
 /// after a key, an empty object or array as it is.
 pub fn indent(text: &[u8]) -> Vec<u8> {
+    indent_with(text, b"  ")
+}
+
+/// [`indent`] with `unit` for each level (`MarshalIndent(v, "", unit)`).
+pub fn indent_with(text: &[u8], unit: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(text.len() * 2);
     let (mut depth, mut in_string, mut escaped, mut need_indent) = (0usize, false, false, false);
     let newline = |out: &mut Vec<u8>, depth: usize| {
         out.push(b'\n');
         for _ in 0..depth {
-            out.extend_from_slice(b"  ");
+            out.extend_from_slice(unit);
         }
     };
     for &c in text {

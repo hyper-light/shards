@@ -29,6 +29,7 @@ pub mod instructions;
 pub(crate) mod json;
 pub use json::compact as json_compact;
 pub use json::indent as json_indent;
+pub use json::indent_with as json_indent_with;
 pub mod lex;
 pub mod lint;
 pub mod llb;

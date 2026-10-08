@@ -55,11 +55,13 @@ impl<W: Write> Write for DeflateWriter<W> {
     }
 }
 
-/// `gzip.Writer` as BuildKit makes it: no name, comment, extra field or time; the OS
-/// unknown (255); XFL 2 at level 9, 4 at level 1, else 0 (RFC 1952).
+/// `gzip.Writer` as BuildKit makes it: no name, comment or time, and an extra field only
+/// where one is set (estargz's footer); the OS unknown (255); XFL 2 at level 9, 4 at level
+/// 1, else 0 (RFC 1952).
 #[derive(Debug)]
 pub struct GzipWriter<W: Write> {
     level: i32,
+    extra: Option<Vec<u8>>,
     out: Option<W>,
     d: Option<Compressor<W>>,
     crc: u32,
@@ -77,6 +79,7 @@ impl<W: Write> GzipWriter<W> {
         }
         Ok(GzipWriter {
             level,
+            extra: None,
             out: Some(writer),
             d: None,
             crc: 0,
@@ -96,12 +99,30 @@ impl<W: Write> GzipWriter<W> {
                 BEST_SPEED => 4,
                 _ => 0,
             };
-            w.write_all(&[0x1f, 0x8b, 8, 0, 0, 0, 0, 0, xfl, 255])?;
+            let flg = if self.extra.is_some() { 0x04 } else { 0 };
+            w.write_all(&[0x1f, 0x8b, 8, flg, 0, 0, 0, 0, xfl, 255])?;
+            if let Some(extra) = &self.extra {
+                let len = u16::try_from(extra.len())
+                    .map_err(|_| io::Error::other("gzip.Write: Extra data is too large"))?;
+                w.write_all(&len.to_le_bytes())?;
+                w.write_all(extra)?;
+            }
             self.d = Some(Compressor::new(w, self.level)?);
         }
         self.d
             .as_mut()
             .ok_or_else(|| io::Error::other("gzip: closed writer"))
+    }
+
+    /// `Writer.Extra`: the header's extra field (RFC 1952 §2.3.1.1), set before any byte.
+    pub fn set_extra(&mut self, extra: Vec<u8>) {
+        self.extra = Some(extra);
+    }
+
+    /// `Flush`: the header if not yet written, then what is pending compressed and a sync
+    /// marker, an empty stored block, so that all written so far can be read.
+    pub fn sync_flush(&mut self) -> io::Result<()> {
+        self.started()?.sync_flush()
     }
 
     /// `Close`: the deflate stream ended, then its CRC-32 and size; the writer.
