@@ -2335,7 +2335,7 @@ fn add_fetches_git_over_ssh() {
         return;
     }
     let sshd = std::path::Path::new("/usr/sbin/sshd");
-    let tools = ["git", "ssh-keygen", "ssh-agent", "ssh-add"];
+    let tools = ["git", "ssh", "ssh-keygen", "ssh-agent", "ssh-add"];
     if !sshd.exists()
         || tools
             .iter()
@@ -2409,13 +2409,23 @@ fn add_fetches_git_over_ssh() {
             .unwrap()
             .port()
     };
+    // The hybrid exchange where this host's OpenSSH has it (9.9 and later; Ubuntu 24.04's
+    // 9.6 does not), curve25519 where not.
+    let kexes = std::process::Command::new("ssh")
+        .args(["-Q", "kex"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default();
+    let hybrid = if kexes.lines().any(|k| k == "mlkem768x25519-sha256") {
+        "mlkem768x25519-sha256"
+    } else {
+        eprintln!(
+            "NOTE: this host's OpenSSH has no mlkem768x25519-sha256: the hybrid exchange is not exercised"
+        );
+        "curve25519-sha256"
+    };
     let servers = [
-        (
-            "ed25519",
-            "mlkem768x25519-sha256",
-            "chacha20-poly1305@openssh.com",
-            "",
-        ),
+        ("ed25519", hybrid, "chacha20-poly1305@openssh.com", ""),
         (
             "ecdsa",
             "curve25519-sha256",

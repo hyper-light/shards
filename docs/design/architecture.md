@@ -3251,9 +3251,11 @@ Not taken: host certificates (`@cert-authority`), ssh_config (BuildKit's `ssh` r
 either), and a server that does not speak protocol v2 over SSH (`AcceptEnv
 GIT_PROTOCOL`; GitHub, GitLab and Bitbucket do).
 
-Tested on real builds against OpenSSH 10.2's sshd, run unprivileged by the test
-(`add_fetches_git_over_ssh`): three servers, each holding one path (the hybrid exchange
-with ChaCha20-Poly1305 and an Ed25519 host key; curve25519 with AES-256-GCM, an ECDSA host
+Tested on real builds against OpenSSH's sshd (10.2 here; the CI hosts' own), run
+unprivileged by the test (`add_fetches_git_over_ssh`): three servers, each holding one
+path (the hybrid exchange, where the host's OpenSSH has it (9.9 and later: here and on
+the macOS runners, not Ubuntu 24.04's 9.6, where curve25519 stands in), with
+ChaCha20-Poly1305 and an Ed25519 host key; curve25519 with AES-256-GCM, an ECDSA host
 key, and rekeying every 256 KiB across a 3 MiB file; curve25519@libssh with AES-128-GCM
 and an RSA host key), each repository's submodule over SSH, a key file and an agent's
 socket; refused, each in its words: a host not known, a key not taken, a repository
