@@ -3206,6 +3206,28 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode
 waits on the user.
 
+### D72. `--attest`, `--provenance` and `--sbom`
+
+The flags as buildx v0.37.1 reads them (util/buildflags/attests.go: the shorthands
+canonicalized, `ParseAttests`, `ToMap`, each type's first; held to buildx by the buildx
+oracle, `ATTEST` lines, with an empty value none at all as buildx's flag leaves it), read
+before the named contexts as toBuildOptions reads them, and the provenance's attributes
+as BuildKit takes them (NewProvenanceCreator): `--provenance=false` (or
+`disabled=true`) turns it off, even where Docker would attest by default; an explicit
+one attests a stored or pushed image with `builder-id` as the builder's ID and
+`reproducible` as `buildkit_reproducible`, `mode=min` and `version=v1` as given; a bad
+`mode`, `version` or `reproducible` refused in BuildKit's words.
+
+Refused, named, until each is made and held to BuildKit's (no build is given less than it
+asked for in silence): `mode=max` (its build config is LLB's protobuf definition and
+digests), `version=v0.2`, SBOM attestations (a scanner image run over the image), other
+types, and an explicit provenance that goes in an OCI, docker, local or tar output (not
+`inline-only`).
+
+Tested: the buildx oracle (shorthands, booleans, duplicates, quoting, errors);
+`builds_attest_their_provenance_as_docker_does` (builder ID, reproducible, off, the
+refusals).
+
 ### D71. Provenance, as Docker attests a build by default
 
 A build whose image is stored or pushed carries its SLSA provenance, as `docker build`
@@ -3239,9 +3261,8 @@ true, so an image in an OCI or docker archive carries none, as there):
 Each build's index is its own (its invocation and times are), as Docker's is: two
 identical builds have one manifest and two IDs, the manifest's being the content's.
 
-Not yet: `--provenance`, `--attest` and `--sbom` (their flags, `mode=max`, whose build
-config needs LLB's protobuf digests, and SBOM scanning). A local named context's shared
-key carries no node identifier (buildx appends its own; shards has one builder).
+The flags are D72's. A local named context's shared key carries no node identifier
+(buildx appends its own; shards has one builder).
 
 Tested: `provenance_is_buildkits`, against what `scripts/provenance/generate` records
 Docker's own builds making in `shards-dind` (18 builds: no flag to an OCI layout, min,

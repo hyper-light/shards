@@ -2162,6 +2162,19 @@ pub static BUILD: Command = Command {
             "Shared memory size for build containers",
         ),
         Flag::many("annotation", None, "stringArray", "Add annotation to the image"),
+        Flag::many(
+            "attest",
+            None,
+            "stringArray",
+            "Attestation parameters (format: \"type=sbom,generator=image\")",
+        ),
+        Flag::string(
+            "provenance",
+            None,
+            "",
+            "Shorthand for \"--attest=type=provenance\"",
+        ),
+        Flag::string("sbom", None, "", "Shorthand for \"--attest=type=sbom\""),
         Flag::string(
             "call",
             None,
@@ -2287,10 +2300,7 @@ pub static BUILD: Command = Command {
         Flag::many("ulimit", None, "ulimit", "Ulimit options").defaulting("[]"),
     ],
     unserved: "\
-attest - m - -\n\
-policy - m - -\n\
-provenance - s - -\n\
-sbom - s - -",
+policy - m - -",
     interspersed: true,
     error_prefix: "ERROR: ",
 };

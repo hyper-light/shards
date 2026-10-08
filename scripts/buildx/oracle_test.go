@@ -8,6 +8,7 @@ package main
 // serve are hidden, and the build replaced by a line that says what it was asked.
 
 import (
+	"slices"
 	"github.com/containerd/platforms"
 	"bytes"
 	"context"
@@ -37,15 +38,27 @@ import (
 
 // The flags shards serves.
 var served = []string{
-	"add-host", "allow", "annotation", "build-arg", "build-context", "builder", "cache-from", "cache-to", "call", "cgroup-parent", "check", "debug",
+	"add-host", "allow", "annotation", "attest", "build-arg", "build-context", "builder", "cache-from", "cache-to", "call", "cgroup-parent", "check", "debug",
 	"file", "help",
-	"iidfile", "label", "load", "metadata-file", "network", "no-cache", "no-cache-filter", "platform", "resource",
-	"shm-size",
+	"iidfile", "label", "load", "metadata-file", "network", "no-cache", "no-cache-filter", "platform", "provenance", "resource",
+	"sbom", "shm-size",
 	"output", "progress", "pull", "push", "quiet", "secret", "ssh", "tag", "target", "ulimit",
 }
 
 // The command lines asked, each the words after `buildx build`.
 var cases = [][]string{
+	{"--provenance", "mode=max", "."},
+	{"--provenance=false", "."},
+	{"--provenance=true", "--sbom=false", "."},
+	{"--sbom", "true", "--provenance", "builder-id=x,reproducible=true", "."},
+	{"--attest", "type=provenance,mode=min", "--attest", "type=sbom,disabled=true", "."},
+	{"--attest", "type=provenance,mode=min", "--attest", "type=provenance,mode=max", "."},
+	{"--attest", "TYPE=sbom,DISABLED=true", "."},
+	{"--attest", "type=provenance,a=\"b,c\"", "."},
+	{"--attest", "mode=min", "."},
+	{"--attest", "nokey", "."},
+	{"--attest", "type=provenance,disabled=maybe", "."},
+	{"--attest", "", "."},
 	{"--build-context", "base=docker-image://alpine:3.22", "--build-context", "src=./dir", "."},
 	{"--build-context", "Alpine:latest=x", "."},
 	{"--build-context", "docker.io/library/alpine:latest=x", "--build-context", "alpine=y", "."},
@@ -311,6 +324,33 @@ func ask(t *testing.T, argv []string) answer {
 // (ParseEntitlements); the ulimits as the frontend's `ulimit` option carries them.
 func built(c *cobra.Command) error {
 	out := c.OutOrStdout()
+	// The attestations, as toBuildOptions reads them first (the shorthands canonicalized,
+	// ParseAttests), and as the build hands them on (ToMap).
+	attestArgs, _ := c.Flags().GetStringArray("attest")
+	inAttests := slices.Clone(attestArgs)
+	if v, _ := c.Flags().GetString("provenance"); v != "" {
+		inAttests = append(inAttests, buildflags.CanonicalizeAttest("provenance", v))
+	}
+	if v, _ := c.Flags().GetString("sbom"); v != "" {
+		inAttests = append(inAttests, buildflags.CanonicalizeAttest("sbom", v))
+	}
+	attests, err := buildflags.ParseAttests(inAttests)
+	if err != nil {
+		return err
+	}
+	attestMap := attests.ToMap()
+	var attestKeys []string
+	for k := range attestMap {
+		attestKeys = append(attestKeys, k)
+	}
+	sort.Strings(attestKeys)
+	for _, k := range attestKeys {
+		if v := attestMap[k]; v == nil {
+			fmt.Fprintf(out, "ATTEST %s disabled\n", k)
+		} else {
+			fmt.Fprintf(out, "ATTEST %s %q\n", k, *v)
+		}
+	}
 	// The named contexts (ParseContextNames), as toBuildOptions reads them before the
 	// outputs; then the outputs' check against an image ID file.
 	ctxArgs, _ := c.Flags().GetStringArray("build-context")

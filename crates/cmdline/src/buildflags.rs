@@ -500,6 +500,91 @@ pub fn parse_contexts(
     Ok(out)
 }
 
+/// An attestation asked for (`--attest`, or `--provenance` and `--sbom`), as buildx v0.37.1
+/// reads one (util/buildflags/attests.go): its type, whether it is turned off, and its
+/// other attributes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Attest {
+    pub kind: String,
+    pub disabled: bool,
+    pub attrs: BTreeMap<String, String>,
+}
+
+/// `CanonicalizeAttest`: `--provenance`'s or `--sbom`'s value as an `--attest`: a boolean
+/// turns it on or off; anything else is its attributes.
+pub fn canonicalize_attest(kind: &str, value: &str) -> String {
+    if value.is_empty() {
+        return String::new();
+    }
+    match go::parse_bool(value) {
+        Ok(b) => format!("type={kind},disabled={}", !b),
+        Err(_) => format!("type={kind},{value}"),
+    }
+}
+
+/// `ParseAttests`: each a CSV of `key=value`, `type` and `disabled` its own (any case),
+/// the rest its attributes; a type required; an empty one none at all, as buildx's flag
+/// leaves it.
+pub fn parse_attests(values: &[String]) -> Result<Vec<Attest>, String> {
+    let mut out = Vec::new();
+    for v in values.iter().filter(|v| !v.is_empty()) {
+        let fields = go::csv_fields(v.as_bytes()).map_err(|e| String::from_utf8_lossy(&e).into_owned())?;
+        let mut a = Attest {
+            kind: String::new(),
+            disabled: false,
+            attrs: BTreeMap::new(),
+        };
+        for field in fields {
+            let field = String::from_utf8_lossy(&field).into_owned();
+            let Some((key, value)) = field.split_once('=') else {
+                return Err(format!("invalid value {field}"));
+            };
+            match key.trim().to_lowercase().as_str() {
+                "type" => a.kind = value.to_string(),
+                "disabled" => {
+                    a.disabled = go::parse_bool(value).map_err(|e| format!("invalid value {field}: {e}"))?;
+                }
+                _ => {
+                    a.attrs.insert(key.to_string(), value.to_string());
+                }
+            }
+        }
+        if a.kind.is_empty() {
+            return Err("attestation type not specified".into());
+        }
+        out.push(a);
+    }
+    Ok(out)
+}
+
+/// `Attests.ToMap`: each type's first, as the frontend's `attest:TYPE` option: none where
+/// it is turned off, else `type=TYPE` and its attributes in key order, each written as
+/// buildx's csvBuilder writes a pair (quoted where it holds a comma or a quote).
+pub fn attests_map(attests: &[Attest]) -> BTreeMap<String, Option<String>> {
+    let pair = |k: &str, v: &str| {
+        let p = format!("{k}={v}");
+        if p.contains(',') || p.contains('"') {
+            format!("\"{}\"", p.replace('"', "\"\""))
+        } else {
+            p
+        }
+    };
+    let mut out = BTreeMap::new();
+    for a in attests {
+        if out.contains_key(&a.kind) {
+            continue;
+        }
+        if a.disabled {
+            out.insert(a.kind.clone(), None);
+            continue;
+        }
+        let mut parts = vec![pair("type", &a.kind)];
+        parts.extend(a.attrs.iter().map(|(k, v)| pair(k, v)));
+        out.insert(a.kind.clone(), Some(parts.join(",")));
+    }
+    out
+}
+
 /// An `--ssh` spec, as buildx's ParseSSHSpecs reads one (util/buildflags/ssh.go,
 /// v0.37.1): `ID[=PATH,...]`, the paths sockets or keys, none for `SSH_AUTH_SOCK`'s.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

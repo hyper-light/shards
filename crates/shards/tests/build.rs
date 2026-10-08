@@ -1431,6 +1431,53 @@ fn builds_attest_their_provenance_as_docker_does() {
     let info = &md["buildx.build.provenance"]["invocation"]["parameters"];
     assert_eq!(info["args"]["build-arg:A"], "1", "{info}");
     assert_eq!(info["secrets"][0]["id"], "tok");
+    // Asked for by its attributes: the builder's ID, reproducible (D72).
+    let asked = shards(&[
+        "build",
+        "-q",
+        "--provenance",
+        "builder-id=https://example.com/builder,reproducible=true",
+        ctx.to_str().unwrap(),
+    ]);
+    assert_eq!(asked.status, Some(0), "{}", asked.stderr);
+    let asked_index = blob(asked.stdout.trim());
+    let asked_statement = blob(
+        blob(asked_index["manifests"][1]["digest"].as_str().unwrap())["layers"][0]["digest"]
+            .as_str()
+            .unwrap(),
+    );
+    let run_details = &asked_statement["predicate"]["runDetails"];
+    assert_eq!(run_details["builder"]["id"], "https://example.com/builder");
+    assert_eq!(run_details["metadata"]["buildkit_reproducible"], true);
+    // Turned off, and what shards does not make yet, refused by name.
+    let off = shards(&["build", "-q", "--provenance=false", ctx.to_str().unwrap()]);
+    assert_eq!(
+        blob(off.stdout.trim())["mediaType"],
+        "application/vnd.oci.image.manifest.v1+json",
+        "{}",
+        off.stderr
+    );
+    for (flags, said) in [
+        (
+            vec!["--provenance", "mode=max"],
+            "provenance mode=max is not supported by shards yet",
+        ),
+        (
+            vec!["--sbom=true"],
+            "SBOM attestations (--sbom, --attest type=sbom) are not supported by shards yet",
+        ),
+        (
+            vec!["--provenance=true", "-o", "type=oci,dest=out.tar"],
+            "a provenance attestation in a oci output is not supported by shards yet",
+        ),
+    ] {
+        let mut args = vec!["build"];
+        args.extend(flags);
+        args.push(ctx.to_str().unwrap());
+        let refused = shards(&args);
+        assert_ne!(refused.status, Some(0));
+        assert!(refused.stderr.contains(said), "{}", refused.stderr);
+    }
     // Asked for none: the manifest is the ID.
     let mut plain = env.to_vec();
     plain.push(("BUILDX_NO_DEFAULT_ATTESTATIONS", std::ffi::OsStr::new("1")));

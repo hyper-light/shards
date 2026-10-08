@@ -123,6 +123,8 @@ pub struct Run {
     pub finished: (i64, u32),
     pub builder_platform: String,
     pub builder_id: String,
+    /// `reproducible=true`, as the request said it.
+    pub reproducible: bool,
 }
 
 pub const BUILD_TYPE_V1: &str =
@@ -405,6 +407,9 @@ pub fn predicate(c: &Capture, run: &Run) -> Json {
             ("resolvedDependencies", Json::Bool(complete_materials)),
         ]),
     ));
+    if run.reproducible {
+        metadata.push(("buildkit_reproducible", Json::Bool(true)));
+    }
     Json::obj(vec![
         ("buildDefinition", Json::obj(definition)),
         (
@@ -734,6 +739,7 @@ mod tests {
                     .unwrap()
                     .to_string(),
                 builder_id: p["runDetails"]["builder"]["id"].as_str().unwrap().to_string(),
+                reproducible: md["buildkit_reproducible"].as_bool().unwrap_or(false),
             },
             materials,
         )

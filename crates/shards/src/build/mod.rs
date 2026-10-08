@@ -973,6 +973,8 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
             .map(|r| r.familiar())
             .map_err(|e| e.to_string())
     };
+    // The attestations asked for, read as buildx reads them, before the contexts.
+    let provenance_asked = provenance_of(parsed)?;
     let named = buildflags::parse_contexts(parsed.many("build-context"), &familiar)?;
     let exports = buildflags::parse_exports(parsed.many("output"))?;
     buildflags::check_iidfile(&exports, parsed.string("iidfile"))?;
@@ -1086,6 +1088,20 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
     )
     .map_err(|e| format!("failed to build: {e}"))?;
     check_outputs(&outputs)?;
+    // A provenance asked for (not inline-only) goes in every output, which shards makes
+    // in an image it stores or pushes alone yet.
+    if let Provenance::Explicit {
+        inline_only: false, ..
+    } = provenance_asked
+        && let Some(o) = outputs
+            .iter()
+            .find(|o| matches!(o.kind.as_str(), "oci" | "docker" | "local" | "tar"))
+    {
+        return Err(format!(
+            "a provenance attestation in a {} output is not supported by shards yet",
+            o.kind
+        ));
+    }
     let (manifest_annotations, descriptor_annotations) = annotations_of(parsed, &outputs)?;
     // toSolveOpt: an image pushed must have a name.
     let pushes = outputs.iter().any(|o| {
@@ -2081,7 +2097,20 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
     // Its provenance (D71), as buildx asks BuildKit for it by default where an image is
     // stored or pushed: the statement, the attestation that holds it, and the index of
     // the image and its attestation, which the image's ID then names.
-    let attested = if attests(&|k| std::env::var(k).ok())? {
+    let attest = match &provenance_asked {
+        Provenance::Default => attests(&|k| std::env::var(k).ok())?,
+        Provenance::Off => false,
+        Provenance::Explicit { .. } => true,
+    };
+    let (builder_id, reproducible) = match &provenance_asked {
+        Provenance::Explicit {
+            builder_id,
+            reproducible,
+            ..
+        } => (builder_id.clone(), *reproducible),
+        _ => (String::new(), false),
+    };
+    let attested = if attest {
         let image_config: serde_json::Value = serde_json::from_slice(&config).map_err(|e| e.to_string())?;
         let field = |k: &str| {
             image_config
@@ -2118,7 +2147,8 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
             started,
             finished: unix_now(),
             builder_platform: platform.clone(),
-            builder_id: String::new(),
+            builder_id: builder_id.clone(),
+            reproducible,
         };
         let subjects: Vec<(String, String)> = parsed
             .many("tag")
@@ -3185,6 +3215,88 @@ fn buildx_attrs_of(flags: &[String]) -> Result<BTreeMap<String, String>, String>
         file.rsplit('/').next().unwrap_or(file)
     };
     buildx_attrs(&parsed, filename, &add_hosts, &resources, &named)
+}
+
+/// What a build asks of its provenance (D71, D72).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Provenance {
+    /// Nothing: BuildKit's default where an image is stored or pushed.
+    Default,
+    /// `--provenance=false`, or `--attest type=provenance,disabled=true`.
+    Off,
+    /// Its attributes: the builder's ID, whether it says it is reproducible, and whether it
+    /// goes in an image alone (`inline-only`).
+    Explicit {
+        builder_id: String,
+        reproducible: bool,
+        inline_only: bool,
+    },
+}
+
+/// `--attest`, `--provenance` and `--sbom`, as buildx reads them (toBuildOptions,
+/// ParseAttests, ToMap) and BuildKit takes the provenance's attributes
+/// (NewProvenanceCreator): `mode`, `version`, `builder-id`, `reproducible`,
+/// `inline-only`. What shards does not make yet it refuses, named.
+fn provenance_of(parsed: &Parsed) -> Result<Provenance, String> {
+    let mut asked: Vec<String> = parsed.many("attest").to_vec();
+    for kind in ["provenance", "sbom"] {
+        let v = parsed.string(kind);
+        if !v.is_empty() {
+            asked.push(buildflags::canonicalize_attest(kind, v));
+        }
+    }
+    let map = buildflags::attests_map(&buildflags::parse_attests(&asked)?);
+    let mut out = Provenance::Default;
+    for (kind, value) in map {
+        match (kind.as_str(), value) {
+            (_, None) if kind == "provenance" => out = Provenance::Off,
+            (_, None) => {}
+            ("sbom", Some(_)) => {
+                return Err(
+                    "SBOM attestations (--sbom, --attest type=sbom) are not supported by shards yet".into(),
+                );
+            }
+            ("provenance", Some(attrs)) => {
+                let fields = shards_cmdline::go::csv_fields(attrs.as_bytes()).map_err(|e| show(&e))?;
+                let (mut builder_id, mut reproducible, mut inline_only) = (String::new(), false, false);
+                for f in fields {
+                    let f = show(&f);
+                    let Some((k, v)) = f.split_once('=') else { continue };
+                    match k {
+                        "mode" => match v {
+                            "min" => {}
+                            "max" | "full" => {
+                                return Err("provenance mode=max is not supported by shards yet".into());
+                            }
+                            _ => return Err(format!("invalid mode {}", go_quote(v))),
+                        },
+                        "version" => match v {
+                            "v1" => {}
+                            "v0.2" => {
+                                return Err("provenance version=v0.2 is not supported by shards yet".into());
+                            }
+                            _ => return Err(format!("invalid provenance SLSA version: {v}")),
+                        },
+                        "builder-id" => builder_id = v.to_string(),
+                        "reproducible" => {
+                            reproducible = shards_cmdline::go::parse_bool(v).map_err(|e| {
+                                format!("failed to parse reproducible flag {}: {e}", go_quote(v))
+                            })?;
+                        }
+                        "inline-only" => inline_only = shards_cmdline::go::parse_bool(v).unwrap_or(false),
+                        _ => {}
+                    }
+                }
+                out = Provenance::Explicit {
+                    builder_id,
+                    reproducible,
+                    inline_only,
+                };
+            }
+            (other, Some(_)) => return Err(format!("attestation type {other} is not supported by shards")),
+        }
+    }
+    Ok(out)
 }
 
 /// Whether an image the build stores or pushes carries its provenance, as buildx asks

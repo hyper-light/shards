@@ -35,6 +35,20 @@ const BETTER: &[(&[&str], &str, &str, u8)] = &[
 /// What buildx's build is given, as oracle_test.go's `built` says it, from shards'
 /// reading of the same flags: stdout's lines, or the error.
 fn built(parsed: &flags::Parsed, out: &mut String) -> Result<(), String> {
+    // The attestations, first, as toBuildOptions reads them.
+    let mut attests: Vec<String> = parsed.many("attest").to_vec();
+    for kind in ["provenance", "sbom"] {
+        let v = parsed.string(kind);
+        if !v.is_empty() {
+            attests.push(buildflags::canonicalize_attest(kind, v));
+        }
+    }
+    for (kind, value) in buildflags::attests_map(&buildflags::parse_attests(&attests)?) {
+        match value {
+            None => out.push_str(&format!("ATTEST {kind} disabled\n")),
+            Some(v) => out.push_str(&format!("ATTEST {kind} {}\n", shards_cmdline::go::quote(&v))),
+        }
+    }
     let familiar = |n: &str| {
         shards_image::reference::Reference::parse_normalized(n)
             .map(|r| r.familiar())
