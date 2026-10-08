@@ -1891,6 +1891,15 @@ impl Store {
             };
             let diff_ids: Result<Vec<Digest>, _> =
                 config.rootfs.diff_ids.iter().map(|d| Digest::parse(d)).collect();
+            // A layer's uncompressed blob, its digest its DiffID, where the store has one
+            // (a layer a build made and then compressed, D75), as Docker keeps a layer's
+            // blob and its snapshot both.
+            for d in diff_ids.iter().flatten() {
+                let path = self.blob_path(d);
+                if path.exists() {
+                    blobs.insert(path);
+                }
+            }
             if let Ok(path) = diff_ids
                 .map_err(|e| Error(e.to_string()))
                 .and_then(|d| self.rootfs_path(&d))
@@ -1958,6 +1967,22 @@ impl Store {
             )));
         }
         Ok(Held::Whole(bytes))
+    }
+
+    /// `f` given the uncompressed tar of `layer`, a blob here: the blob itself where it is
+    /// uncompressed, else decompressed into `ingest/` for as long as `f` runs; checked
+    /// against its DiffID and `limits` as an unpack checks it.
+    pub fn with_layer_tar<T>(
+        &self,
+        layer: &Layer,
+        limits: &Limits,
+        f: impl FnOnce(&mut dyn Read) -> Result<T, Error>,
+    ) -> Result<T, Error> {
+        let room = Room::new(&self.root.join("ingest"), limits)?;
+        let bytes = AtomicU64::new(0);
+        let tar = self.unpack(layer, &bytes, limits, &room)?;
+        let mut file = File::open(tar.path())?;
+        f(&mut file)
     }
 
     /// Decompresses a layer's blob into a file under `ingest/`, removed when dropped. Its

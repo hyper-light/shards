@@ -19,6 +19,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
 use shards_cmdline::buildflags::CacheEntry;
+use shards_dockerfile::export::Layer;
 use shards_image::oci::{self, Descriptor, Document};
 use shards_image::reference::{Digest, Reference};
 use shards_image::store::Store;
@@ -333,14 +334,37 @@ fn chosen(
 }
 
 /// The image config `config` with the records an inline cache carries: those of `keys`
-/// whose layers are the image's own, in [`INLINE`], every other byte as it was.
+/// whose layers are the image's own, in [`INLINE`], every other byte as it was. Each
+/// layer is named as the image holds it (`held`, by the digest the records name it by:
+/// compressed, D75), so that an importer fetches what the image pushed.
 pub fn inline(
     config: &[u8],
     keys: &[String],
     store: &Store,
     image: &BTreeSet<String>,
+    held: &BTreeMap<Vec<u8>, Layer>,
 ) -> Result<Vec<u8>, String> {
-    let (records, _) = chosen(keys, store, image, false)?;
+    let (mut records, _) = chosen(keys, store, image, false)?;
+    for record in records.values_mut() {
+        for layer in record
+            .as_array_mut()
+            .into_iter()
+            .flatten()
+            .filter_map(serde_json::Value::as_array_mut)
+            .flatten()
+        {
+            let Some(h) = layer
+                .get("digest")
+                .and_then(serde_json::Value::as_str)
+                .and_then(|d| held.get(d.as_bytes()))
+            else {
+                continue;
+            };
+            layer["mediaType"] = String::from_utf8_lossy(&h.media_type).into_owned().into();
+            layer["digest"] = String::from_utf8_lossy(&h.digest).into_owned().into();
+            layer["size"] = h.size.into();
+        }
+    }
     let value = serde_json::json!({ "records": records });
     let end = config
         .iter()

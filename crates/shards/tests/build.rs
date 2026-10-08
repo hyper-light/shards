@@ -6792,7 +6792,18 @@ fn builds_for_another_platform_run_only_the_build_platforms_steps() {
     let layers = manifest["layers"].as_array().unwrap();
     assert_eq!(layers.len(), 2, "{manifest}");
     assert_eq!(layers[0]["digest"], their_layer.as_str(), "{manifest}");
-    let copied = tar_entries(&blob(layers[1]["digest"].as_str().unwrap()));
+    // Gzipped, as BuildKit writes a layer the build made (D75).
+    assert_eq!(
+        layers[1]["mediaType"], "application/vnd.oci.image.layer.v1.tar+gzip",
+        "{manifest}"
+    );
+    let mut tar = Vec::new();
+    std::io::Read::read_to_end(
+        &mut flate2::read::GzDecoder::new(&blob(layers[1]["digest"].as_str().unwrap())[..]),
+        &mut tar,
+    )
+    .unwrap();
+    let copied = tar_entries(&tar);
     assert!(
         copied
             .iter()
@@ -6863,4 +6874,110 @@ fn builds_for_another_platform_run_only_the_build_platforms_steps() {
         "{}",
         several.stderr
     );
+}
+
+/// Layers compressed as BuildKit's exporters compress them (D75): those a build makes
+/// gzipped by default, each its DiffID once decompressed, a base's kept as it came;
+/// `compression=uncompressed`; `force-compression` writing the base's too;
+/// `compression-level` (9: the gzip header's XFL 2, as Go writes it); zstd refused, named;
+/// a type BuildKit does not know refused in its words. That the bytes are Go's own is
+/// crates/flate's oracle.
+#[test]
+fn layers_are_compressed_as_buildkit_compresses_them() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("compress-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let ctx = context(
+        "compress-ctx",
+        &format!(
+            "FROM {image}\nRUN [\"/bin/testguest\", \"fs\", \"write:/work/made=some bytes made by a step\"]\n"
+        ),
+    );
+    let out = TempDir::new("compress-out");
+    // The layout's manifest's layers: each media type and its blob.
+    let layers_of = |opts: &str| -> Vec<(String, Vec<u8>)> {
+        let dir = out.join(format!("layout-{}", opts.len()));
+        let built = shards(&[
+            "build",
+            "-o",
+            &format!("type=oci,dest={},tar=false{opts}", dir.display()),
+            ctx.to_str().unwrap(),
+        ]);
+        assert_eq!(built.status, Some(0), "{}", built.stderr);
+        let blob =
+            |d: &str| std::fs::read(dir.join("blobs/sha256").join(d.trim_start_matches("sha256:"))).unwrap();
+        let top: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(dir.join("index.json")).unwrap()).unwrap();
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&blob(top["manifests"][0]["digest"].as_str().unwrap())).unwrap();
+        manifest["layers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|l| {
+                (
+                    l["mediaType"].as_str().unwrap().to_string(),
+                    blob(l["digest"].as_str().unwrap()),
+                )
+            })
+            .collect()
+    };
+    const TAR: &str = "application/vnd.oci.image.layer.v1.tar";
+    const GZIP: &str = "application/vnd.oci.image.layer.v1.tar+gzip";
+    let gunzip = |b: &[u8]| {
+        let mut out = Vec::new();
+        std::io::Read::read_to_end(&mut flate2::read::GzDecoder::new(b), &mut out).unwrap();
+        out
+    };
+
+    // The base's layer (the test image's, uncompressed) as it came; the step's gzipped,
+    // at Go's default level (XFL 0, OS 255).
+    let default = layers_of("");
+    assert_eq!(default.len(), 2);
+    assert_eq!(default[0].0, TAR);
+    assert_eq!(default[1].0, GZIP);
+    assert_eq!(&default[1].1[..10], &[0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 255]);
+    let made = gunzip(&default[1].1);
+    assert!(
+        tar_entries(&made)
+            .iter()
+            .any(|(h, d)| h.name == b"work/made" && d == b"some bytes made by a step")
+    );
+    let level9 = layers_of(",compression-level=9");
+    assert_eq!(level9[1].1[8], 2, "XFL of level 9");
+    assert_eq!(gunzip(&level9[1].1), made);
+
+    let plain = layers_of(",compression=uncompressed");
+    assert_eq!((plain[0].0.as_str(), plain[1].0.as_str()), (TAR, TAR));
+    assert_eq!(plain[1].1, made);
+
+    let forced = layers_of(",force-compression=true");
+    assert_eq!((forced[0].0.as_str(), forced[1].0.as_str()), (GZIP, GZIP));
+    assert_eq!(gunzip(&forced[0].1), default[0].1);
+
+    for (opts, words) in [
+        ("compression=zstd", "shards does not write zstd layers yet"),
+        ("compression=lz4", "unsupported compression type lz4"),
+        (
+            "compression-level=high",
+            "non-integer value high specified for compression-level",
+        ),
+    ] {
+        let refused = shards(&[
+            "build",
+            "-o",
+            &format!("type=oci,dest={},{opts}", out.join("refused.tar").display()),
+            ctx.to_str().unwrap(),
+        ]);
+        assert_eq!(refused.status, Some(1), "{}", refused.stderr);
+        assert!(refused.stderr.contains(words), "{opts}: {}", refused.stderr);
+    }
 }

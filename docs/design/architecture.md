@@ -1978,9 +1978,9 @@ containers. Evidence: docs/research/image-build.md (§3 ranks the choices below)
          no build or run spends time compressing or decompressing them; the diff ID is the
          digest. A push and an archive send them as stored, uncompressed (corrected
          2026-10-08: this said a push compresses; only a pull's transfer is compressed,
-         by content encoding). BuildKit's exporters gzip by default and take
-         `compression`, `compression-level`, `force-compression`, `oci-mediatypes` and
-         `rewrite-timestamp`, which shards does not yet apply: open.
+         by content encoding). Since D75, the image and its outputs name a
+         layer the build made gzipped, as Docker's do, and the store keeps it both ways;
+         `oci-mediatypes` and `rewrite-timestamp` are open.
        - Refs record what a reference resolved to, so a stored image reports the index
          digest Docker reports, as a fresh pull does.
        - The root filesystem is written from the target's last snapshot, not stacked
@@ -3239,7 +3239,35 @@ own.
   so they count no bits) and skipping the hash offset's rebase (it only keeps positions
   in 32 bits, which 20 MiB does not reach).
 
-Where the layers are compressed, and what that changes in the store, comes next.
+- **Where layers are compressed.** As Docker's do: the image a build stores names its
+  layers compressed, and so does every output that holds an image (OCI and docker
+  archives and layouts, pushes), so that the image's ID, what `--push` pushes, what
+  `save` and a later `push` send are Docker's. The exporter's `compression` (gzip by
+  default, or `uncompressed`), `compression-level` and `force-compression` are read as
+  BuildKit reads them (`ParseAttributes`, its words); a layer the build made takes them,
+  a layer that came with a base, a named context or an artifact stays as it came unless
+  `force-compression` (BuildKit's `Compression.Force`). `estargz` and `zstd` are refused,
+  named; so are outputs that ask different compressions, until each is written its own
+  way. Layers compress on as many threads as the host has cores, and each once: the
+  build cache keeps a record of each layer, level and kind, its blob held by it.
+- **The store keeps both forms.** A layer the build made stays uncompressed beside its
+  compressed blob, as Docker keeps a layer's blob and its snapshot: builds, the build
+  cache and runs read it as before, and an image holds it (`Store::roots`: the blob
+  whose digest is a DiffID of the image's config, where there is one), so a step whose
+  layer an image holds stays shared in `builder prune`.
+- **Inline caches** name the layers as the image holds them, compressed, so that an
+  importer fetches what the image pushed.
+
+Measured: a layer Docker 29.3.1 built (`shards-dind`, a `RUN` of 132,761 bytes gzipped),
+decompressed and gzipped again by `shards_flate`, has Docker's digest
+(`sha256:032be73f…`); a build's layers from shards, decompressed and gzipped again by Go
+1.25.8, have shards' digests. Not measured yet: what compressing costs a build.
+
+Tested: `layers_are_compressed_as_buildkit_compresses_them` (the default, a base's layer
+kept, `uncompressed`, `force-compression`, `compression-level=9`'s header, the refusals),
+mutation-checked (none compressed, a base's compressed unforced, force ignored);
+`builder_prune_removes_the_build_cache_as_buildx_does` (a step an image holds stays
+shared, which failed until the store held the uncompressed form).
 
 ### D74. `--platform` for another platform: its bases, the build platform's steps
 

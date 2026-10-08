@@ -31,6 +31,7 @@ shards-template = { path = "../template" }
 shards-build = { path = "../build" }
 shards-cmdline = { path = "../cmdline" }
 shards-dockerfile = { path = "../dockerfile" }
+shards-flate = { path = "../flate" }
 shards-git = { path = "../git" }
 shards-seccomp = { path = "../seccomp" }
 shards-image = { path = "../image" }
@@ -67,6 +68,8 @@ shards-testguest = { path = "../testguest" }
 bzip2 = "0.6"
 lzma-rust2 = { version = "0.21", default-features = false, features = ["std", "xz", "encoder"] }
 ruzstd = "0.9"
+# Built layers, gzipped (D75), read back (tests/build.rs).
+flate2 = { version = "1", default-features = false, features = ["zlib-rs", "runtime_detection"] }
 
 [[bench]]
 name = "boot"

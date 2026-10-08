@@ -35,6 +35,7 @@ use shards_registry::pull::{self as registry_pull, Event};
 
 mod builder;
 mod cache;
+mod compress;
 mod domains;
 mod exec;
 mod git;
@@ -1209,6 +1210,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
     )
     .map_err(|e| format!("failed to build: {e}"))?;
     check_outputs(&outputs)?;
+    let compression = compression_of(&outputs)?;
     // A provenance asked for (not inline-only) goes in every output, which shards makes
     // in an image it stores or pushes alone yet.
     if let Provenance::Explicit {
@@ -2163,6 +2165,29 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
     };
     crate::phase("drop");
 
+    // The layers as the image holds them: those the build made compressed as its
+    // exporter asks (D75), the config naming them uncompressed, by DiffID, as ever.
+    let existing: std::collections::BTreeSet<Vec<u8>> = bases
+        .resolved
+        .borrow()
+        .values()
+        .flat_map(|b| b.layers.iter().map(|l| l.digest.clone()))
+        .chain(
+            bases
+                .artifacts
+                .borrow()
+                .values()
+                .flatten()
+                .map(|l| l.digest.clone()),
+        )
+        .collect();
+    let held = compress::layers(&store, &layers, &existing, compression, &limits)?;
+    // Each layer the image holds by the digest the build's records name it by.
+    let as_held: BTreeMap<Vec<u8>, Layer> = layers
+        .iter()
+        .zip(&held)
+        .map(|(l, h)| (l.digest.clone(), h.clone()))
+        .collect();
     let epoch = plan.epoch.map(Time::from_unix);
     let config = export::config(&plan.image, &layers, epoch, base_image.as_ref()).map_err(|e| show(&e))?;
     // The build's records, for --cache-to, and the image's layers, which `min` and an
@@ -2170,7 +2195,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
     let used: Vec<String> = keys.iter().flatten().cloned().collect();
     let image_layers: std::collections::BTreeSet<String> = layers.iter().map(|l| show(&l.digest)).collect();
     let config = if cache_to.iter().any(|e| e.kind == "inline") {
-        remote::inline(&config, &used, &store, &image_layers)?
+        remote::inline(&config, &used, &store, &image_layers, &as_held)?
     } else {
         config
     };
@@ -2212,6 +2237,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
             }
         }
     }
+    let layers = held;
     let manifest = export::manifest_annotated(
         &config,
         config_digest.to_string().as_bytes(),
@@ -2664,6 +2690,30 @@ fn finish(parsed: &Parsed, id: &str) -> Result<(), String> {
 /// `docker` exporter into a directory (the moby exporter writes none), and two OCI
 /// layouts into directories (their store's key is one, `export`: buildkit
 /// client/solve.go).
+/// The compression the image's layers take (D75): what the outputs that hold an image
+/// ask, BuildKit's default where none asks; outputs that ask differently are refused,
+/// named, until each is written its own way.
+fn compression_of(outputs: &[buildflags::Output]) -> Result<compress::Compression, String> {
+    let mut asked: Option<compress::Compression> = None;
+    for o in outputs
+        .iter()
+        .filter(|o| matches!(o.kind.as_str(), "image" | "moby" | "docker" | "oci"))
+    {
+        let c = compress::Compression::of(&o.attrs)
+            .map_err(|e| format!("failed to build: failed to solve: {e}"))?;
+        match asked {
+            Some(a) if a != c => {
+                return Err(
+                    "outputs that compress their layers differently are not supported by shards yet: ask each the same"
+                        .into(),
+                );
+            }
+            _ => asked = Some(c),
+        }
+    }
+    Ok(asked.unwrap_or_default())
+}
+
 fn check_outputs(outputs: &[buildflags::Output]) -> Result<(), String> {
     let mut layouts = 0;
     for o in outputs {
