@@ -3726,6 +3726,15 @@ fn agents_reach_past_the_microvm_what_their_networks_grant() {
         port
     };
     let (granted, other) = (serve(), serve());
+    // And one answering UDP, which only e's network grants.
+    let echo = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
+    let echoed = echo.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 64];
+        while let Ok((n, from)) = echo.recv_from(&mut buf) {
+            let _ = echo.send_to(&buf[..n], from);
+        }
+    });
     // The host's resolver, as the daemon is told to ask (SHARDS_DNS): `api.example` is
     // this host; any other question has no answer.
     let resolver = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
@@ -3806,6 +3815,9 @@ fn agents_reach_past_the_microvm_what_their_networks_grant() {
             by_name.clone(),
             "unreach".into(),
             to(other),
+            // As though answering a flow opened to it on its ingress port: to e's port.
+            "udpaskfrom".into(),
+            format!("7300,{}", to(echoed)),
         ],
     );
     let b = agent(
@@ -3818,12 +3830,15 @@ fn agents_reach_past_the_microvm_what_their_networks_grant() {
         ],
     );
     let c = agent("c", &["listen".into(), "7000".into()]);
+    let e = agent("e", &["udpask".into(), to(echoed)]);
     let ctx = context("egress-ctx", &format!("FROM {image}\n"));
     std::fs::write(
         ctx.join("Agentfile"),
         format!(
-            "FROM {image}\nAGENT a FROM {a}\nAGENT b FROM {b}\nAGENT c FROM {c}\n\
-             NETWORK --dns --egress={granted} --egress={other} out\nEXPOSE {granted} AS egress FOR out\n\
+            "FROM {image}\nAGENT a FROM {a}\nAGENT b FROM {b}\nAGENT c FROM {c}\nAGENT e FROM {e}\n\
+             NETWORK --dns --egress={granted} --egress={other} --ingress=7300/udp out\n\
+             EXPOSE {granted} AS egress FOR out\nEXPOSE 7300/udp AS ingress FOR out\n\
+             NETWORK --egress={echoed}/udp side\nEXPOSE {echoed}/udp AS egress FOR side\nCONNECT e WITH e ON side\n\
              NETWORK --internal --egress={granted} --ingress=7000 inner\nEXPOSE {granted} FOR inner\n\
              CONNECT a WITH a ON out\nCONNECT --port=7000 b WITH c ON inner\n"
         ),
@@ -3837,7 +3852,7 @@ fn agents_reach_past_the_microvm_what_their_networks_grant() {
         "egress:1",
         "await",
         "confined-ready",
-        "3",
+        "4",
         &to(granted),
     ]);
     assert_eq!(ran.status, Some(0), "{}{}", ran.stdout, ran.stderr);
@@ -3857,6 +3872,10 @@ fn agents_reach_past_the_microvm_what_their_networks_grant() {
         // A port its network grants, but not the microVM's boundary: a flow crossing both
         // needs both (§12 answer 6), and the switch lets nothing else up.
         ("a", format!("confined unreach {}: timeout", to(other))),
+        // e's port, which its network grants, answers it; a, sending to it from the port
+        // it is reached on, opens nothing (D61).
+        ("e", format!("confined udpask {}: reply", to(echoed))),
+        ("a", format!("confined udpaskfrom 7300 {}: none", to(echoed))),
         // On an internal network: nothing past the microVM.
         ("b", format!("confined unreach {}: timeout", to(granted))),
     ] {
@@ -4590,6 +4609,154 @@ fn an_agents_flood_of_flows_takes_no_others() {
     );
 }
 
+/// One agent's flows that conntrack may not evict take no other agent's (D61): a, granted
+/// TCP 7002 to x, opens connections and holds them, each an assured entry, more than a
+/// table holds; c, meanwhile, connects to b and to x itself, and makes every connection,
+/// each given 3 s, past a SYN's first retransmission (1 s), so that what a full table
+/// refuses fails and what a busy listener drops once does not. a's entries fill a's
+/// gate's table alone; x's gate tracks none of what is opened to it.
+#[test]
+fn an_agents_assured_flows_take_no_others() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let (port, _repos) = common::writable_registry();
+    let home = TempDir::new("assured-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let flood: u64 = std::env::var("SHARDS_FLOOD_SECS").map_or(10, |s| s.parse().unwrap());
+    let half = flood / 2;
+    let mut agents = String::new();
+    for (name, verbs) in [
+        ("b", "\"listen\",\"7001\"".to_string()),
+        ("x", "\"listen\",\"7002\"".to_string()),
+        ("a", format!("\"tcpflood\",\"x:7002,{flood}\"")),
+        (
+            "c",
+            format!("\"pause\",\"{half}\",\"reachmany\",\"b:7001,50,3\",\"reachmany\",\"x:7002,50,3\""),
+        ),
+    ] {
+        let dir = TempDir::new(&format!("assured-agent-{name}"));
+        std::fs::create_dir_all(dir.join("bin")).unwrap();
+        std::fs::copy(common::test_guest(), dir.join("bin/testguest")).unwrap();
+        std::fs::write(
+            dir.join("agent.json"),
+            format!(r#"{{"name":"{name}","run":{{"command":["bin/testguest","confined",{verbs}]}}}}"#),
+        )
+        .unwrap();
+        let tag = format!("127.0.0.1:{port}/team/assured-{name}:1");
+        let made = shards(&["build", "agent", dir.to_str().unwrap(), "-t", &tag]);
+        assert_eq!(made.status, Some(0), "{}", made.stderr);
+        let pushed = shards(&["push", "agent", &tag]);
+        assert_eq!(pushed.status, Some(0), "{}", pushed.stderr);
+        agents.push_str(&format!("AGENT {name} FROM {tag}\n"));
+    }
+    let ctx = context("assured-ctx", &format!("FROM {image}\n"));
+    std::fs::write(
+        ctx.join("Agentfile"),
+        format!(
+            "FROM {image}\n{agents}\
+             NETWORK --ingress=7001-7002 n\n\
+             CONNECT --port=7002 a TO x ON n\n\
+             CONNECT --port=7001 c TO b ON n\n\
+             CONNECT --port=7002 c TO x ON n\n"
+        ),
+    )
+    .unwrap();
+    let built = shards(&["build", "-t", "assured:1", ctx.to_str().unwrap()]);
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    let ran = shards(&["run", "--rm", "assured:1", "await", "confined-ready", "4"]);
+    let all = format!("{}{}", ran.stdout, ran.stderr);
+    assert_eq!(ran.status, Some(0), "{all}");
+    for l in all
+        .lines()
+        .filter(|l| l.contains("tcpflood") || l.contains("reachmany"))
+    {
+        eprintln!("{l}");
+    }
+    // a made more connections than a table holds, each an entry that stays.
+    let flooded = all
+        .lines()
+        .find_map(|l| l.strip_prefix("[agent a] confined tcpflood x:7002: "))
+        .unwrap_or_else(|| panic!("a did not flood:\n{all}"));
+    let (made, table) = flooded.split_once(" made, table ").unwrap();
+    let (made, table): (u64, u64) = (made.parse().unwrap(), table.parse().unwrap());
+    assert!(made > table, "a made {made}, the table holds {table}:\n{all}");
+    for target in ["b:7001", "x:7002"] {
+        assert!(
+            all.lines()
+                .any(|l| l.starts_with(&format!("[agent c] confined reachmany {target}: 50 of 50"))),
+            "c's connections to {target} were taken:\n{all}"
+        );
+    }
+}
+
+/// An agent that accepts the ports its connections would come from still connects (D61):
+/// c, to which b may open 32768 to 60999 (the kernel's own range for them, net/ipv4/
+/// af_inet.c), reaches x, its connections taking ports it does not accept, whose answers
+/// its gate tracks.
+#[test]
+fn an_agents_own_flows_take_no_port_it_accepts() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let (port, _repos) = common::writable_registry();
+    let home = TempDir::new("ports-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let mut agents = String::new();
+    for (name, verbs) in [
+        ("x", "\"listen\",\"7002\""),
+        ("b", "\"pause\",\"1\""),
+        ("c", "\"reach\",\"x:7002\""),
+    ] {
+        let dir = TempDir::new(&format!("ports-agent-{name}"));
+        std::fs::create_dir_all(dir.join("bin")).unwrap();
+        std::fs::copy(common::test_guest(), dir.join("bin/testguest")).unwrap();
+        std::fs::write(
+            dir.join("agent.json"),
+            format!(r#"{{"name":"{name}","run":{{"command":["bin/testguest","confined",{verbs}]}}}}"#),
+        )
+        .unwrap();
+        let tag = format!("127.0.0.1:{port}/team/ports-{name}:1");
+        let made = shards(&["build", "agent", dir.to_str().unwrap(), "-t", &tag]);
+        assert_eq!(made.status, Some(0), "{}", made.stderr);
+        let pushed = shards(&["push", "agent", &tag]);
+        assert_eq!(pushed.status, Some(0), "{}", pushed.stderr);
+        agents.push_str(&format!("AGENT {name} FROM {tag}\n"));
+    }
+    let ctx = context("ports-ctx", &format!("FROM {image}\n"));
+    std::fs::write(
+        ctx.join("Agentfile"),
+        format!(
+            "FROM {image}\n{agents}\
+             NETWORK --ingress=7002-60999 n\n\
+             CONNECT --port=32768-60999 b TO c ON n\n\
+             CONNECT --port=7002 c TO x ON n\n"
+        ),
+    )
+    .unwrap();
+    let built = shards(&["build", "-t", "ports:1", ctx.to_str().unwrap()]);
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    let ran = shards(&["run", "--rm", "ports:1", "await", "confined-ready", "3"]);
+    let all = format!("{}{}", ran.stdout, ran.stderr);
+    assert_eq!(ran.status, Some(0), "{all}");
+    assert!(
+        all.lines().any(|l| l == "[agent c] confined reach x:7002: ok"),
+        "{all}"
+    );
+}
+
 /// What an agent reaches past its grants (AGENTFILE_ARCH.md §9.10, D59; default deny):
 /// d, granted TCP 7000 to b alone, and e, granted nothing, each try TCP and UDP to the
 /// run's own command, listening on 7100 at every address of the microVM's; to the
@@ -4624,7 +4791,9 @@ fn an_agent_reaches_nothing_past_its_grants() {
     let (own, gw) = where_(&format!("{}{}", probe.stdout, probe.stderr));
     let mut targets = Vec::new();
     for host in [own.as_str(), "169.254.77.1", "169.254.77.2", gw.as_str()] {
-        targets.push(format!("\"unreach\",\"{host}:7100\",\"udpask\",\"{host}:7100\""));
+        targets.push(format!(
+            "\"unreach\",\"{host}:7100\",\"udpask\",\"{host}:7100\",\"udpaskfrom\",\"7300,{host}:7100\""
+        ));
     }
     let sweep = targets.join(",");
     // d's own network's gateway, the switch's end of its link: TCP and UDP, DNS among it.
@@ -4657,7 +4826,9 @@ fn an_agent_reaches_nothing_past_its_grants() {
         format!(
             "FROM {image}\n{agents}\
              NETWORK --ingress=7000 n\n\
-             CONNECT --port=7000 d TO b ON n\n"
+             NETWORK --ingress=7300/udp --egress=7400 front\n\
+             EXPOSE 7300/udp AS ingress FOR front\nEXPOSE 7400 AS egress FOR front\n\
+             CONNECT --port=7000 d TO b ON n\nCONNECT d WITH d ON front\n"
         ),
     )
     .unwrap();
@@ -4699,7 +4870,7 @@ fn an_agent_reaches_nothing_past_its_grants() {
                     ["timeout", "errno 101", "errno 113", "errno 13"].contains(&said),
                     "{agent} {line}\n{all}"
                 );
-            } else if what.starts_with("udpask ") {
+            } else if what.starts_with("udpask ") || what.starts_with("udpaskfrom ") {
                 tried += 1;
                 assert!(
                     ["none", "errno 101", "errno 113"].contains(&said),
@@ -4708,7 +4879,7 @@ fn an_agent_reaches_nothing_past_its_grants() {
             }
         }
     }
-    assert_eq!(tried, 2 * 8 + 4, "{all}");
+    assert_eq!(tried, 3 * 8 + 4, "{all}");
 }
 
 /// A process an agent lets go as daemons are (a double fork and `setsid`) is ended with

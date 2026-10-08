@@ -3192,6 +3192,80 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode
 waits on the user.
 
+### D61. A table for each agent: its gate
+
+Decided by the user on 2026-10-07 ("A table per agent"), after D59 part nine's record of
+flows through the switch proved wrong for flows conntrack may not evict (below). One
+switch tracked every agent's flows in one table, of `nf_conntrack_max` entries (2048 in a
+237 MB microVM), counted per network namespace (net/netfilter/nf_conntrack_core.c,
+`__nf_conntrack_alloc`). A full table evicts only entries not yet assured (`early_drop`).
+So one agent holding connections fills it, and every other agent's new flows fail.
+
+- **A gate for each linked domain.** A network namespace of its own between the domain
+  and the switch: `in0` to the domain (its gateways' addresses), `out0` to the switch
+  (an address of its own on the transit link, 169.254.128.0/17, `transit_gate`). It has
+  forwarding on, strict reverse-path filtering (RFC 3704 §2.2), and its own conntrack
+  table. The switch, holding `169.254.78.1` on every `d<n>`, routes each domain's
+  addresses through that domain's gate. Each gate needs a transit address of its own: the
+  switch's reverse-path filter drops ARP from one address seen on two links.
+- **What the domain opens is tracked in its gate alone.** Its `forward` chain accepts the
+  domain's new flows as its grants allow, and their answers by conntrack. Its `raw` chain
+  (priority −300, before tracking) gives what others open to the domain, and the domain's
+  answers to them, `notrack`. A peer opening many flows takes none of the receiver's
+  table. Those flows are accepted by their ports, from the peers granted them.
+- **The switch keeps no state for agents.** Its rules are stateless, both ways of each
+  grant; it has no conntrack expression, so the kernel tracks nothing it forwards.
+- **The stateful point for what leaves the microVM is init.** The gates and the switch let
+  a domain's answers out by their ports alone. A domain sending *from* a port it is
+  reached on, to anything, would pass them. Before D61 the switch's conntrack refused
+  that; now init does. Its `forward` from `agents0` to eth0 accepts answers, each
+  domain's new flows from its own addresses on its egress grants, and the agents'
+  resolver's questions; its `in` drops all but answers from `agents0`. Between peers,
+  the opener's gate holds the state, so to it a forged answer is a new flow, and it is
+  refused.
+- **A domain's own connections take no port it accepts** (`local_ports`, its
+  `ip_local_port_range`): their answers would otherwise arrive on a port its gate leaves
+  untracked, and be dropped.
+- **A gate serves nothing.** Its `input` and `output` drop: a probe of a domain's
+  gateway is dropped, not refused.
+
+Measured on this host (MacBook arm64, macOS 26.4.1, from 915f67b), n = 1 each, on real
+microVMs (`an_agents_assured_flows_take_no_others`): a, granted TCP 7002 to x, opens
+connections for 10 s and holds them; c, after 5 s, makes 50 connections to b and 50 to x,
+each given 3 s, past a SYN's first retransmission.
+
+| build | a's flows (table) | c to b | c to x |
+| --- | --- | --- | --- |
+| 915f67b (one switch, one table) | 2108 (2048) | 46 of 50, 16118 ms | 50 of 50 |
+| D61 | 2177 (2048) | 50 of 50, 0 ms | 50 of 50, 0 ms |
+| D61 without the gates' `notrack` | 2075 (2048) | 50 of 50 | 45 of 50, 16054 ms |
+
+Tested, each guard mutation-checked:
+
+- `an_agents_assured_flows_take_no_others`, the table above.
+- `an_agent_reaches_nothing_past_its_grants`, now with d given egress (7400) and ingress
+  (7300/udp) on a network of its own, asking every address from 7300. Without init's
+  `in` drop, the run's own command answered it. Without the gate's `input` drop, its
+  gateway refused d's connection (`ECONNREFUSED`), an answer.
+- `agents_reach_past_the_microvm_what_their_networks_grant`, now with a, given ingress
+  7300/udp, asking from 7300 a host port only e's network grants: e is answered, a is
+  not. With init's egress rules matching no source, a was answered.
+- `an_agents_own_flows_take_no_port_it_accepts`: c, which b may open 32768 to 60999
+  to, reaches x. Without `local_ports`, c's connection timed out.
+
+Found on the way: a domain's first process took its IDs through musl's `setgroups`,
+`setresgid` and `setresuid`. Each changes every thread of a process (`__synccall`) and
+finds the others in its thread list unless `gettid()` differs from the caller's recorded
+tid (src/thread/synccall.c). A child of init's in a PID namespace of its own is tid 1, as
+init is. So with any thread of init's alive at `clone3`, the child looked for threads it
+does not have, and failed ("taking its own IDs", `ENOENT`). Seen with a diagnostic thread
+in init; none of init's own threads outlives the call that spawns it. The children of
+`clone` and `clone3` (domains and build steps) now make the system calls themselves
+(`defaults::take_ids`, `defaults::rlimit`).
+
+Next: egress without init's NAT (the network process taking the agents' addresses), and
+ingress straight to an agent's address, so that init tracks no agent's flow either.
+
 ### Agents run in their domains (D59, part one)
 
 When a microVM runs an image whose normalized Agentfile (`/.agentfile.json`) declares
@@ -3639,7 +3713,9 @@ in it, init (PID 1, whose end is the microVM's) and the run's own command includ
   microVM as init's Linux tests are on this host, mutation-checked: with no share, one
   asker took every ID).
 
-- **Flows through the switch, measured: no change needed.** Conntrack's table holds 2048
+- **Flows through the switch, measured: no change needed. Wrong, corrected by D61:** the
+  flood measured was of flows conntrack evicts; flows it may not, held, fill one table
+  for every agent. As first recorded: Conntrack's table holds 2048
   entries in a 237 MB microVM (`nf_conntrack_max`, sized by the kernel from memory), a
   count kept per network namespace against that one limit (net/netfilter/
   nf_conntrack_core.c, `__nf_conntrack_alloc`), and an unanswered UDP flow stays 30 s: one
@@ -3724,7 +3800,9 @@ egress having only its network's route (via the switch), so every address past i
 network is `ENETUNREACH`, and its gateway drops all (timeouts); e has its loopback alone,
 so UDP has no route and TCP is refused by Landlock before it leaves (`EACCES`). d still
 reaches b on 7000. Mutation-checked: with the switch's `input` chain accepting, d's
-connection to its gateway is refused by it (`ECONNREFUSED`), an answer.
+connection to its gateway is refused by it (`ECONNREFUSED`), an answer. Since D61, d has
+egress and ingress on a network of its own, so it has a route past its network, and
+every probe times out; its gateway is its gate's.
 
 §9.9's double fork, on a real microVM (`an_agents_daemon_ends_with_it`): an agent lets a
 grandchild go as daemons are (fork, `setsid`, fork), waits until the run's command has

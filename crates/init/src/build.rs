@@ -455,7 +455,8 @@ impl Builder {
             | net
             | libc::CLONE_NEWCGROUP;
         // SAFETY: clone(2) as fork(2) with new namespaces: no new stack, so the child runs
-        // on a copy of this one, as fork's does. init is single-threaded.
+        // on a copy of this one, as fork's does. The child calls the kernel for its IDs and
+        // limits (`defaults::take_ids`), not musl, whose thread list is init's.
         let pid = unsafe {
             libc::syscall(
                 libc::SYS_clone,
@@ -943,12 +944,7 @@ fn setup(step: &Step, root: &Path, files: &Path, sources: &[Option<PathBuf>], wo
         loopback_up()?;
     }
     for &(resource, soft, hard) in &step.rlimits {
-        let limit = libc::rlimit {
-            rlim_cur: soft,
-            rlim_max: hard,
-        };
-        // SAFETY: setrlimit(2) with a resource number the host gave and a limit struct.
-        if unsafe { libc::setrlimit(resource as _, &limit) } != 0 {
+        if !defaults::rlimit(resource as _, soft, hard) {
             return Err(os_err("setting a ulimit"));
         }
     }
@@ -1115,20 +1111,11 @@ fn identity(step: &Step) -> io::Result<()> {
     if unsafe { libc::prctl(libc::PR_SET_KEEPCAPS, 1, 0, 0, 0) } != 0 {
         return Err(os_err("keeping capabilities"));
     }
-    // SAFETY: a list of the length given.
-    if unsafe { libc::setgroups(step.groups.len(), step.groups.as_ptr()) } != 0 {
-        return Err(os_err("setgroups"));
+    if !defaults::take_ids(&step.groups, step.gid, step.uid) {
+        return Err(os_err("taking the step's IDs"));
     }
-    // SAFETY: setresgid(2) and setresuid(2) with values.
-    unsafe {
-        if libc::setresgid(step.gid, step.gid, step.gid) != 0 {
-            return Err(os_err("setgid"));
-        }
-        if libc::setresuid(step.uid, step.uid, step.uid) != 0 {
-            return Err(os_err("setuid"));
-        }
-        libc::prctl(libc::PR_SET_KEEPCAPS, 0, 0, 0, 0);
-    }
+    // SAFETY: prctl(2) with constant arguments.
+    unsafe { libc::prctl(libc::PR_SET_KEEPCAPS, 0, 0, 0, 0) };
     // For any user but root, execve then leaves none but the bounding set, there being no
     // file or ambient capabilities (capabilities(7)): as BuildKit's steps have it (CapPrm
     // and CapEff 0 for USER 1000:1000 and for nobody, Docker Desktop's BuildKit,

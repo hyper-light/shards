@@ -107,6 +107,41 @@ pub fn set(last: u32, keep: impl Fn(u32) -> bool) -> bool {
     unsafe { libc::syscall(libc::SYS_capset, &raw mut header, data.as_ptr()) == 0 }
 }
 
+/// Takes `groups`, `gid` and `uid` (setgroups(2), setresgid(2), setresuid(2)); whether it
+/// could. Async-signal-safe: the system calls alone, for a child of `clone`. musl's
+/// wrappers change every thread of a process (`__synccall`), finding the others in its
+/// thread list unless `gettid()` differs from the caller's recorded tid
+/// (src/thread/synccall.c); a child of init's in a PID namespace of its own is tid 1, as
+/// init is, so it would look for init's threads, which it does not have, and fail.
+pub fn take_ids(groups: &[libc::gid_t], gid: libc::gid_t, uid: libc::uid_t) -> bool {
+    // SAFETY: setgroups(2) with a list of the length given, then setresgid(2) and
+    // setresuid(2) with values; each changes the calling thread, the child's only one.
+    unsafe {
+        libc::syscall(libc::SYS_setgroups, groups.len(), groups.as_ptr()) == 0
+            && libc::syscall(libc::SYS_setresgid, gid, gid, gid) == 0
+            && libc::syscall(libc::SYS_setresuid, uid, uid, uid) == 0
+    }
+}
+
+/// Sets a resource limit (prlimit(2) of the caller), not through musl's setrlimit, which
+/// applies it as `take_ids` says its ID calls do; whether it could.
+pub fn rlimit(resource: libc::c_int, cur: libc::rlim_t, max: libc::rlim_t) -> bool {
+    let limit = libc::rlimit {
+        rlim_cur: cur,
+        rlim_max: max,
+    };
+    // SAFETY: prlimit64(2) of this process, with a limit struct and no old one.
+    unsafe {
+        libc::syscall(
+            libc::SYS_prlimit64,
+            0,
+            resource,
+            &raw const limit,
+            std::ptr::null::<libc::rlimit>(),
+        ) == 0
+    }
+}
+
 /// The resource limits a container's process starts with, as Docker's runtime gives them,
 /// which it inherits from containerd's (its systemd unit's LimitNOFILE and LimitNPROC
 /// infinity; measured on Docker Desktop 29.3.1, `cat /proc/self/limits`, 2026-10-05):

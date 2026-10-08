@@ -160,13 +160,15 @@ pub fn read() -> Result<Read, String> {
         }
     }
     for (d, link) in out.iter_mut().zip(plan.links) {
-        // A resolver only where a grant names one (`--dns`, a remote MCP server): its own
-        // gateway, the agents' resolver, which holds it to what it may ask.
+        // A resolver only where a grant names one (`--dns`, a remote MCP server): the
+        // agents' resolver, at the switch's end of its gate's link (D61), which holds it to
+        // what it may ask.
         if let Some(l) = &link
             && (l.dns || !l.mcp.is_empty())
-            && let Some(a) = l.addresses.first()
+            && !l.addresses.is_empty()
         {
-            d.resolv = Some(format!("nameserver {}\noptions ndots:0\n", a.gateway).into_bytes());
+            d.resolv =
+                Some(format!("nameserver {}\noptions ndots:0\n", crate::links::TRANSIT_SWITCH).into_bytes());
         }
         d.link = link;
     }
@@ -755,6 +757,41 @@ pub type Filter = (u32, Vec<libc::sock_filter>);
 /// process holds lives while a descriptor of it does.
 static SWITCH: std::sync::OnceLock<crate::links::Switch> = std::sync::OnceLock::new();
 
+/// What the `i`-th domain's gate lets through (D61): its addresses; to each peer a pair
+/// lets it open flows to, at the peer's addresses, the ports granted; from each that may
+/// open flows to it, likewise; its ports past the microVM; and the agents' resolver where
+/// a grant gives it names.
+fn gate_of(
+    domains: &[Domain],
+    pairs: &[(usize, usize, Vec<crate::netplan::Egress>)],
+    i: usize,
+    link: &crate::netplan::Link,
+) -> crate::links::Gate {
+    let addrs = |j: usize| -> Vec<std::net::Ipv4Addr> {
+        domains
+            .get(j)
+            .and_then(|d| d.link.as_ref())
+            .map(|l| l.addresses.iter().map(|a| a.addr).collect())
+            .unwrap_or_default()
+    };
+    crate::links::Gate {
+        own: link.addresses.iter().map(|a| a.addr).collect(),
+        opens: pairs
+            .iter()
+            .filter(|(from, _, _)| *from == i)
+            .map(|(_, to, ports)| (addrs(*to), ports.clone()))
+            .collect(),
+        accepts: pairs
+            .iter()
+            .filter(|(_, to, _)| *to == i)
+            .map(|(from, _, ports)| (addrs(*from), ports.clone()))
+            .collect(),
+        egress: link.egress.clone(),
+        ingress: link.ingress.clone(),
+        dns: link.dns || !link.mcp.is_empty(),
+    }
+}
+
 /// The switch `domains` link to: `pairs` of them allowed to open connections to each
 /// other, and those with egress grants up through init's namespace and eth0.
 fn switch(
@@ -811,8 +848,24 @@ fn switch(
                     Some((at, ranges.clone()))
                 })
                 .collect();
+            let from_domain = egress
+                .iter()
+                .filter_map(|(i, ranges)| {
+                    let from = domains
+                        .get(*i)?
+                        .link
+                        .as_ref()?
+                        .addresses
+                        .iter()
+                        .map(|a| a.addr)
+                        .collect();
+                    Some((from, ranges.clone()))
+                })
+                .collect();
             Some(crate::links::Uplink {
                 ingress: to_domain,
+                egress: from_domain,
+                resolver: !dns.is_empty(),
                 subnets,
                 eth0: (addr, std::net::Ipv4Addr::from(u32::from(addr) & mask), prefix),
             })
@@ -1115,7 +1168,8 @@ pub fn start(
                 Some(s) => Ok(s),
                 None => switch(domains, pairs).map(|s| SWITCH.get_or_init(|| s)),
             };
-            let linked = switch.and_then(|s| s.attach(i, pid as libc::pid_t, link));
+            let gate = gate_of(domains, pairs, i, link);
+            let linked = switch.and_then(|s| s.attach(i, pid as libc::pid_t, link, &gate));
             if let Err(e) = linked {
                 // SAFETY: kill(2) of the child just made, which waits for its link.
                 unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
@@ -1679,10 +1733,7 @@ fn child(d: &Domain, p: &Prepared, out: RawFd, flags: u32, program: &libc::sock_
         if !crate::defaults::bound(p.last_cap, |_| false) {
             fail(out, c"dropping its capabilities");
         }
-        if libc::setgroups(0, std::ptr::null()) != 0
-            || libc::setresgid(d.id, d.id, d.id) != 0
-            || libc::setresuid(d.id, d.id, d.id) != 0
-        {
+        if !crate::defaults::take_ids(&[], d.id, d.id) {
             fail(out, c"taking its own IDs");
         }
         if !crate::defaults::set(p.last_cap, |_| false)

@@ -1232,7 +1232,8 @@ fn confined(args: &[String]) -> i32 {
         match a.as_str() {
             "see" | "write" | "bind" | "connect" | "call" | "listen" | "reach" | "unreach" | "cat"
             | "resolve" | "dnsprobe" | "unix" | "abstract" | "unix-serve" | "pause" | "udpflood"
-            | "reachmany" | "udpask" | "srv-send" | "srv-receive" | "srv-answer" => mode = a.as_str(),
+            | "tcpflood" | "udpaskfrom" | "reachmany" | "udpask" | "srv-send" | "srv-receive"
+            | "srv-answer" => mode = a.as_str(),
             "srv-mcp" => {
                 let said = match server_call("mcp", "{}") {
                     Ok((t, false)) => t,
@@ -1398,6 +1399,24 @@ fn confined(args: &[String]) -> i32 {
                 out.push_str(&format!("confined unix tried {}\n", monotonic_ns()));
             }
             // A datagram to ADDR, and whether anything answered in 2 s.
+            // `PORT,ADDR`: a question to ADDR from the agent's PORT, as an answer to a flow
+            // opened to it on PORT would be sent, and whether ADDR answers.
+            spec if mode == "udpaskfrom" => {
+                let (from, addr) = spec.split_once(',').unwrap_or(("0", spec));
+                let said = match std::net::UdpSocket::bind(format!("0.0.0.0:{from}")).and_then(|s| {
+                    s.set_read_timeout(Some(std::time::Duration::from_secs(2)))?;
+                    s.send_to(b"ask", addr)?;
+                    let mut b = [0u8; 64];
+                    s.recv_from(&mut b).map(drop)
+                }) {
+                    Ok(()) => "reply".to_string(),
+                    Err(e) if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) => {
+                        "none".to_string()
+                    }
+                    Err(e) => errno(&e),
+                };
+                out.push_str(&format!("confined udpaskfrom {from} {addr}: {said}\n"));
+            }
             addr if mode == "udpask" => {
                 // `NET1` is the first address of its own network, its gateway there.
                 let addr = addr.replace("NET1", &first_of_own());
@@ -1495,18 +1514,45 @@ fn confined(args: &[String]) -> i32 {
                 }
                 out.push_str(&format!("confined udpflood {addr}: {sent} sent\n"));
             }
-            // `ADDR,N`: N connections to ADDR, each given 1 s, and how many were made.
+            // `ADDR,SECS`: connections to ADDR for SECS seconds, each held until then: each
+            // an assured entry of conntrack's, which no full table evicts (`early_drop`).
+            // How many were made, against the table's size where it is readable.
+            spec if mode == "tcpflood" => {
+                use std::net::ToSocketAddrs as _;
+                let (addr, secs) = spec.split_once(',').unwrap_or((spec, "0"));
+                let to = addr.to_socket_addrs().ok().and_then(|mut a| a.next());
+                let until =
+                    std::time::Instant::now() + std::time::Duration::from_secs(secs.parse().unwrap_or(0));
+                let mut held = Vec::new();
+                while let Some(to) = to
+                    && std::time::Instant::now() < until
+                {
+                    if let Ok(c) =
+                        std::net::TcpStream::connect_timeout(&to, std::time::Duration::from_millis(100))
+                    {
+                        held.push(c);
+                    }
+                }
+                let made = held.len();
+                let max = std::fs::read_to_string("/proc/sys/net/netfilter/nf_conntrack_max")
+                    .map(|m| m.trim().to_string())
+                    .unwrap_or_else(|e| errno(&e));
+                out.push_str(&format!("confined tcpflood {addr}: {made} made, table {max}\n"));
+            }
+            // `ADDR,N[,SECS]`: N connections to ADDR, each given SECS (1) seconds, and how
+            // many were made.
             spec if mode == "reachmany" => {
                 use std::net::ToSocketAddrs as _;
-                let (addr, n) = spec.split_once(',').unwrap_or((spec, "0"));
+                let (addr, rest) = spec.split_once(',').unwrap_or((spec, "0"));
+                let (n, secs) = rest.split_once(',').unwrap_or((rest, "1"));
                 let n: u32 = n.parse().unwrap_or(0);
+                let wait = std::time::Duration::from_secs(secs.parse().unwrap_or(1));
                 let to = addr.to_socket_addrs().ok().and_then(|mut a| a.next());
                 let mut made = 0u32;
                 let began = std::time::Instant::now();
                 for _ in 0..n {
                     if let Some(to) = to
-                        && std::net::TcpStream::connect_timeout(&to, std::time::Duration::from_secs(1))
-                            .is_ok()
+                        && std::net::TcpStream::connect_timeout(&to, wait).is_ok()
                     {
                         made += 1;
                     }

@@ -1,9 +1,17 @@
-//! The links between domains (docs/design/architecture.md D59; AGENTFILE_ARCH.md §9.7): a
-//! switch, a network namespace of no process's that init holds, and for each domain with
-//! a grant one veth link, `eth0` in the domain's namespace and `d<n>` in the switch's. The
-//! switch routes between links and its nftables decide by link, never by address: what
-//! the Agentfile's `CONNECT`s allow ([`crate::netplan`]), and the answers to it, and
-//! nothing else, the switch itself included. No link reaches the microVM's own network.
+//! The links between domains (docs/design/architecture.md D59, D61; AGENTFILE_ARCH.md
+//! §9.7): a switch, a network namespace of no process's that init holds, and for each
+//! domain with a grant a gate, a namespace of its own between the domain and the switch:
+//! `eth0` in the domain's namespace and `in0` in the gate's, `out0` in the gate's and
+//! `d<n>` in the switch's.
+//!
+//! Each domain's connection tracking is its gate's alone (D61): a gate tracks the flows
+//! its domain opens, and takes those others open to it, and its answers to them, past
+//! tracking (`notrack`), by what the Agentfile grants: the sender's gate holds every
+//! address it sends from to its own. The switch tracks nothing: it routes, and its
+//! nftables, stateless, decide by link what may cross it, each grant's ports one way and
+//! answers back. So no domain's flows, however many it opens, take room in another's
+//! table: a full table drops what its own domain opens. No link reaches the microVM's own
+//! network.
 
 use std::io;
 use std::net::Ipv4Addr;
@@ -42,6 +50,25 @@ const RTNH_F_ONLINK: u32 = 4;
 
 /// A domain's link, in its own namespace: `eth0`, after `lo`.
 const DOMAIN_IFINDEX: i32 = 2;
+/// A gate's links: `in0` to its domain, `out0` to the switch.
+const GATE_IN: i32 = 2;
+const GATE_OUT: i32 = 3;
+/// The switch's end of every gate's link, link-local (RFC 3927): the same on each, where
+/// the agents' resolver answers.
+pub const TRANSIT_SWITCH: Ipv4Addr = Ipv4Addr::new(169, 254, 78, 1);
+
+/// The n-th gate's end of its link to the switch: one address each, from link-local
+/// 169.254.128.0/17, so that the switch routes each down its own link and its strict
+/// reverse-path filtering, which checks ARP's senders too (net/ipv4/arp.c, `arp_process`),
+/// holds for all. None past the 32,512th.
+fn transit_gate(n: usize) -> io::Result<Ipv4Addr> {
+    let n = u32::try_from(n)
+        .ok()
+        .filter(|n| *n < 127 * 256)
+        .ok_or_else(|| io::Error::other("too many domains"))?;
+    let at = n + 1;
+    Ok(Ipv4Addr::new(169, 254, 128 + (at >> 8) as u8, (at & 0xff) as u8))
+}
 /// The n-th domain's link in the switch: `d<n>`, index this plus n.
 const SWITCH_IFINDEX: i32 = 100;
 /// The switch's link to init's namespace, past which the microVM's eth0 is: `up0` in the
@@ -62,6 +89,10 @@ pub struct Uplink {
     pub eth0: (Ipv4Addr, Ipv4Addr, u8),
     /// The ports let in, each to the address of the domain they are for.
     pub ingress: Vec<(Ipv4Addr, Vec<crate::netplan::Egress>)>,
+    /// The ports each domain opens flows to past the microVM, from its addresses.
+    pub egress: Vec<(Vec<Ipv4Addr>, Vec<crate::netplan::Egress>)>,
+    /// Whether the agents' resolver asks the microVM's.
+    pub resolver: bool,
 }
 
 /// nfnetlink and nf_tables (include/uapi/linux/netfilter/nfnetlink.h, nf_tables.h).
@@ -140,6 +171,8 @@ mod nft {
     pub const NF_INET_PRE_ROUTING: u32 = 0;
     /// NF_IP_PRI_NAT_DST, -100, as the u32 nf_tables reads a priority as.
     pub const PRIORITY_DNAT: u32 = (-100i32) as u32;
+    /// NF_IP_PRI_RAW, -300: before connection tracking, which `notrack` keeps a packet from.
+    pub const PRIORITY_RAW: u32 = (-300i32) as u32;
 }
 
 const TABLE: &[u8] = b"shards\0";
@@ -304,6 +337,33 @@ pub struct Switch {
     here: OwnedFd,
     /// Whether it has a link past the microVM, which every domain's default route takes.
     uplink: bool,
+    /// The gates' namespaces, which nothing else holds.
+    gates: std::sync::Mutex<Vec<OwnedFd>>,
+}
+
+/// What a domain's gate lets through (D61): its domain's addresses; the flows it opens, to
+/// each peer's addresses on the ports the peer accepts; those opened to it, from each
+/// peer's addresses on its own; its ports past the microVM, out and in; and whether it
+/// asks the agents' resolver.
+#[derive(Debug, Clone, Default)]
+pub struct Gate {
+    pub own: Vec<Ipv4Addr>,
+    pub opens: Vec<(Vec<Ipv4Addr>, Vec<crate::netplan::Egress>)>,
+    pub accepts: Vec<(Vec<Ipv4Addr>, Vec<crate::netplan::Egress>)>,
+    pub egress: Vec<crate::netplan::Egress>,
+    pub ingress: Vec<crate::netplan::Egress>,
+    pub dns: bool,
+}
+
+impl Gate {
+    /// Every port others open flows to it on, of each protocol.
+    fn accepted(&self) -> Vec<crate::netplan::Egress> {
+        let mut out: Vec<crate::netplan::Egress> = self.ingress.clone();
+        for (_, ranges) in &self.accepts {
+            out.extend(ranges.iter().copied());
+        }
+        out
+    }
 }
 
 impl Switch {
@@ -342,6 +402,7 @@ impl Switch {
             route,
             here: netlink_socket(libc::NETLINK_ROUTE)?,
             uplink: uplink.is_some(),
+            gates: std::sync::Mutex::new(Vec::new()),
         };
         if let Some(u) = uplink {
             switch.up(u)?;
@@ -414,12 +475,7 @@ impl Switch {
         if eth0 == 0 {
             return Err(io::Error::other("the microVM has no eth0 for its agents' egress"));
         }
-        outside(
-            &netlink_socket(libc::NETLINK_NETFILTER)?,
-            eth0,
-            u.eth0,
-            &u.ingress,
-        )
+        outside(&netlink_socket(libc::NETLINK_NETFILTER)?, eth0, u)
     }
 
     /// The agents' resolver's sockets, of the switch's namespace (`agentdns`): port 53 of
@@ -437,43 +493,73 @@ impl Switch {
         })
     }
 
-    /// Links the `n`-th domain, its first process `pid`, as `link` says.
-    pub fn attach(&self, n: usize, pid: libc::pid_t, link: &Link) -> io::Result<()> {
-        let index = SWITCH_IFINDEX
-            .checked_add(i32::try_from(n).map_err(|_| io::Error::other("too many domains"))?)
-            .ok_or_else(|| io::Error::other("too many domains"))?;
+    /// Links the `n`-th domain, its first process `pid`, as `link` says, through a gate
+    /// of its own that lets through what `gate` says.
+    pub fn attach(&self, n: usize, pid: libc::pid_t, link: &Link, gate: &Gate) -> io::Result<()> {
+        let index =
+            link_index(n).and_then(|i| i32::try_from(i).map_err(|_| io::Error::other("too many domains")))?;
+        let transit = transit_gate(n)?;
         let domain_ns = open_ns(&format!("/proc/{pid}/ns/net"))?;
-        // The veth: eth0 in the domain's namespace, d<n> in the switch's.
-        let mut m = ifinfomsg(DOMAIN_IFINDEX, 0, 0);
-        attr(&mut m, IFLA_IFNAME, b"eth0\0");
-        attr(
-            &mut m,
-            IFLA_NET_NS_FD,
-            &(domain_ns.as_raw_fd() as u32).to_ne_bytes(),
-        );
-        let peer_name = format!("d{n}\0");
-        let switch_fd = self.ns.as_raw_fd() as u32;
-        nested(&mut m, IFLA_LINKINFO, |li| {
-            attr(li, IFLA_INFO_KIND, b"veth");
-            nested(li, IFLA_INFO_DATA, |data| {
-                nested(data, VETH_INFO_PEER, |peer| {
-                    peer.extend_from_slice(&ifinfomsg(index, 0, 0));
-                    attr(peer, IFLA_IFNAME, peer_name.as_bytes());
-                    attr(peer, IFLA_NET_NS_FD, &switch_fd.to_ne_bytes());
+        // The gate's namespace: forwarding on, strict reverse-path filtering, its own
+        // tables, and loopback.
+        let (gate_ns, gate_route, gate_nft) = in_netns(None, || {
+            let ns = open_ns("/proc/thread-self/ns/net")?;
+            let route = netlink_socket(libc::NETLINK_ROUTE)?;
+            let nftables = netlink_socket(libc::NETLINK_NETFILTER)?;
+            crate::run::loopback_up()?;
+            crate::setup::write_sysctl("net.ipv4.ip_forward", "1").map_err(io::Error::other)?;
+            for scope in ["all", "default"] {
+                crate::setup::write_sysctl(&format!("net.ipv4.conf.{scope}.rp_filter"), "1")
+                    .map_err(io::Error::other)?;
+            }
+            Ok((ns, route, nftables))
+        })?;
+        let create = NLM_F_REQUEST | NLM_F_ACK | NLM_F_CREATE | NLM_F_EXCL;
+        // A veth whose ends are `a` (index `ai`) in namespace `an` and `b` in `bn`.
+        let veth = |ai: i32, a: &[u8], an: RawFd, bi: i32, b: &[u8], bn: RawFd| {
+            let mut m = ifinfomsg(ai, 0, 0);
+            attr(&mut m, IFLA_IFNAME, a);
+            attr(&mut m, IFLA_NET_NS_FD, &(an as u32).to_ne_bytes());
+            nested(&mut m, IFLA_LINKINFO, |li| {
+                attr(li, IFLA_INFO_KIND, b"veth");
+                nested(li, IFLA_INFO_DATA, |data| {
+                    nested(data, VETH_INFO_PEER, |peer| {
+                        peer.extend_from_slice(&ifinfomsg(bi, 0, 0));
+                        attr(peer, IFLA_IFNAME, b);
+                        attr(peer, IFLA_NET_NS_FD, &(bn as u32).to_ne_bytes());
+                    });
                 });
             });
-        });
-        let create = NLM_F_REQUEST | NLM_F_ACK | NLM_F_CREATE | NLM_F_EXCL;
-        exchange(&self.here, &[(RTM_NEWLINK, create, m)])?;
-        // The domain's side: its addresses, each a host's, and its subnets through their
-        // gateways, on the link.
+            (RTM_NEWLINK, create, m)
+        };
+        let switch_name = format!("d{n}\0");
+        exchange(
+            &self.here,
+            &[
+                veth(
+                    DOMAIN_IFINDEX,
+                    b"eth0\0",
+                    domain_ns.as_raw_fd(),
+                    GATE_IN,
+                    b"in0\0",
+                    gate_ns.as_raw_fd(),
+                ),
+                veth(
+                    GATE_OUT,
+                    b"out0\0",
+                    gate_ns.as_raw_fd(),
+                    index,
+                    switch_name.as_bytes(),
+                    self.ns.as_raw_fd(),
+                ),
+            ],
+        )?;
         let up = libc::IFF_UP as u32;
-        let mut ours = vec![(
-            RTM_NEWLINK,
-            NLM_F_REQUEST | NLM_F_ACK,
-            ifinfomsg(DOMAIN_IFINDEX, up, up),
-        )];
-        let mut theirs = vec![(RTM_NEWLINK, NLM_F_REQUEST | NLM_F_ACK, ifinfomsg(index, up, up))];
+        let link_up = |i| (RTM_NEWLINK, NLM_F_REQUEST | NLM_F_ACK, ifinfomsg(i, up, up));
+        // The domain's side: its addresses, each a host's, and its subnets through their
+        // gateways, which are its gate's; past the microVM through its first one, where
+        // there is a way; the agents' resolver through it, where a grant gives it names.
+        let mut ours = vec![link_up(DOMAIN_IFINDEX)];
         let mut gateways: Vec<Ipv4Addr> = Vec::new();
         for a in &link.addresses {
             ours.push((RTM_NEWADDR, create, addr_msg(DOMAIN_IFINDEX, a.addr)));
@@ -484,38 +570,106 @@ impl Switch {
             ));
             if !gateways.contains(&a.gateway) {
                 gateways.push(a.gateway);
-                theirs.push((RTM_NEWADDR, create, addr_msg(index, a.gateway)));
             }
-            theirs.push((RTM_NEWROUTE, create, route_msg(index, a.addr, 32, None, None)));
         }
-        // Past the microVM, through its first network's gateway, where there is a way:
-        // after its addresses, as a route's preferred source must be one.
-        if self.uplink
-            && let Some(a) = link.addresses.first()
-        {
-            ours.push((
+        if let Some(a) = link.addresses.first() {
+            if self.uplink {
+                ours.push((
+                    RTM_NEWROUTE,
+                    create,
+                    route_msg(
+                        DOMAIN_IFINDEX,
+                        Ipv4Addr::UNSPECIFIED,
+                        0,
+                        Some(a.gateway),
+                        Some(a.addr),
+                    ),
+                ));
+            } else if gate.dns {
+                ours.push((
+                    RTM_NEWROUTE,
+                    create,
+                    route_msg(DOMAIN_IFINDEX, TRANSIT_SWITCH, 32, Some(a.gateway), Some(a.addr)),
+                ));
+            }
+        }
+        // The gate's: the gateways on in0, its end of the transit on out0; its domain's
+        // addresses down in0, everything else up out0 to the switch.
+        let mut gates = vec![link_up(GATE_IN), link_up(GATE_OUT)];
+        for g in &gateways {
+            gates.push((RTM_NEWADDR, create, addr_msg(GATE_IN, *g)));
+        }
+        gates.push((RTM_NEWADDR, create, addr_msg(GATE_OUT, transit)));
+        for a in &link.addresses {
+            gates.push((RTM_NEWROUTE, create, route_msg(GATE_IN, a.addr, 32, None, None)));
+        }
+        gates.push((
+            RTM_NEWROUTE,
+            create,
+            route_msg(GATE_OUT, Ipv4Addr::UNSPECIFIED, 0, Some(TRANSIT_SWITCH), None),
+        ));
+        // The switch's: its end of the transit on d<n>, and the domain's addresses through
+        // the gate.
+        let mut theirs = vec![
+            link_up(index),
+            (RTM_NEWADDR, create, addr_msg(index, TRANSIT_SWITCH)),
+            (RTM_NEWROUTE, create, route_msg(index, transit, 32, None, None)),
+        ];
+        for a in &link.addresses {
+            theirs.push((
                 RTM_NEWROUTE,
                 create,
-                route_msg(
-                    DOMAIN_IFINDEX,
-                    Ipv4Addr::UNSPECIFIED,
-                    0,
-                    Some(a.gateway),
-                    Some(a.addr),
-                ),
+                route_msg(index, a.addr, 32, Some(transit), None),
             ));
         }
         // Up before its routes: a route through a link that is down is refused.
-        let (up_ours, rest_ours) = ours.split_at(1);
-        let (up_theirs, rest_theirs) = theirs.split_at(1);
         let domain_route = in_netns(Some(domain_ns.as_raw_fd()), || {
+            // Its own connections' ports none of those it accepts, so that what answers
+            // them is tracked by its gate (D61).
+            if let Some((lo, hi)) = local_ports(&gate.accepted()) {
+                crate::setup::write_sysctl("net.ipv4.ip_local_port_range", &format!("{lo} {hi}"))
+                    .map_err(io::Error::other)?;
+            }
             netlink_socket(libc::NETLINK_ROUTE)
         })?;
+        let (up_ours, rest_ours) = ours.split_at(1);
+        let (up_gates, rest_gates) = gates.split_at(2);
+        let (up_theirs, rest_theirs) = theirs.split_at(1);
         exchange(&domain_route, up_ours)?;
+        exchange(&gate_route, up_gates)?;
         exchange(&self.route, up_theirs)?;
+        exchange(&gate_route, rest_gates)?;
         exchange(&self.route, rest_theirs)?;
-        exchange(&domain_route, rest_ours)
+        exchange(&domain_route, rest_ours)?;
+        gate_policy(&gate_nft, gate)?;
+        match self.gates.lock() {
+            Ok(mut g) => g.push(gate_ns),
+            Err(poisoned) => poisoned.into_inner().push(gate_ns),
+        }
+        Ok(())
     }
+}
+
+/// The ports a domain's own connections may take, none of `accepted`: the kernel's default
+/// range (32768 to 60999, net/ipv4/af_inet.c) where none falls in it, else the widest run
+/// past 1023 that none does. None where the default stands.
+fn local_ports(accepted: &[crate::netplan::Egress]) -> Option<(u16, u16)> {
+    let clear = |lo: u16, hi: u16| accepted.iter().all(|&(_, a, b)| b < lo || a > hi);
+    if clear(32768, 60999) {
+        return None;
+    }
+    let mut taken: Vec<(u16, u16)> = accepted.iter().map(|&(_, a, b)| (a, b)).collect();
+    taken.sort_unstable();
+    let mut best: Option<(u16, u16)> = None;
+    let mut from: u32 = 1024;
+    for (a, b) in taken.iter().copied().chain([(u16::MAX, u16::MAX)]) {
+        let to = u32::from(a).saturating_sub(1).min(65535);
+        if to >= from && best.is_none_or(|(l, h)| to - from > u32::from(h - l)) {
+            best = Some((u16::try_from(from).ok()?, u16::try_from(to).ok()?));
+        }
+        from = from.max(u32::from(b) + 1);
+    }
+    best
 }
 
 fn addr_msg(index: i32, addr: Ipv4Addr) -> Vec<u8> {
@@ -667,6 +821,18 @@ impl Batch {
 }
 
 /// `ct state established,related accept`.
+/// The verdict drop.
+fn drop_verdict(list: &mut Vec<u8>) {
+    expr(list, b"immediate\0", |d| {
+        be32(d, nft::NFTA_IMMEDIATE_DREG, nft::NFT_REG_VERDICT);
+        nested(d, nft::NFTA_IMMEDIATE_DATA, |v| {
+            nested(v, nft::NFTA_DATA_VERDICT, |c| {
+                be32(c, nft::NFTA_VERDICT_CODE, nft::NF_DROP)
+            });
+        });
+    });
+}
+
 fn answers() -> Vec<u8> {
     let mut e = Vec::new();
     expr(&mut e, b"ct\0", |d| {
@@ -731,11 +897,37 @@ pub(crate) fn link_index(n: usize) -> io::Result<u32> {
         .ok_or_else(|| io::Error::other("too many domains"))
 }
 
-/// The switch's nf_tables, in one transaction: chain `input`, which drops all, so no
-/// domain reaches the switch; chain `forward`, which drops all but the answers of
-/// connections (conntrack's established and related), new ones from each pair's first
-/// link to its second, and from each domain's link up to the microVM's, to the ports its
-/// networks grant.
+/// A protocol's source ports, as [`ports`] the destination's: at offset 0 of TCP's
+/// header and UDP's alike.
+fn source_ports(list: &mut Vec<u8>, (proto, lo, hi): crate::netplan::Egress) {
+    meta(list, nft::NFT_META_L4PROTO);
+    compare(list, nft::NFT_CMP_EQ, &[proto]);
+    payload(list, nft::NFT_PAYLOAD_TRANSPORT_HEADER, 0, 2);
+    compare(list, nft::NFT_CMP_GTE, &lo.to_be_bytes());
+    compare(list, nft::NFT_CMP_LTE, &hi.to_be_bytes());
+}
+
+/// The packet's source (offset 12 of IPv4's header) or destination (16) address, `addr`.
+fn address(list: &mut Vec<u8>, offset: u32, addr: Ipv4Addr) {
+    payload(list, nft::NFT_PAYLOAD_NETWORK_HEADER, offset, 4);
+    compare(list, nft::NFT_CMP_EQ, &addr.octets());
+}
+const SOURCE: u32 = 12;
+const DESTINATION: u32 = 16;
+
+/// The arriving (`NFT_META_IIF`) or leaving (`NFT_META_OIF`) link, `index`.
+fn on(list: &mut Vec<u8>, key: u32, index: u32) {
+    meta(list, key);
+    compare(list, nft::NFT_CMP_EQ, &index.to_ne_bytes());
+}
+
+/// The switch's nf_tables, in one transaction, and none of them tracking anything
+/// (D61): chain `input`, which drops all but the agents' questions to its resolver, from
+/// each domain granted names, and its resolver's answers from the microVM's; chain
+/// `forward`, which drops all but, for each grant, its flows one way on its ports and
+/// their answers the other: each pair's, from the first's link to the second's; each
+/// domain's past the microVM, up to the microVM's link; and what comes in to each, down.
+/// Who opened a flow, and whether an answer answers one, each domain's gate knows.
 fn policy(
     sock: &OwnedFd,
     pairs: &[(usize, usize, Vec<crate::netplan::Egress>)],
@@ -743,66 +935,152 @@ fn policy(
     ingress: &[(usize, Vec<crate::netplan::Egress>)],
     dns: &[usize],
 ) -> io::Result<()> {
+    let up = UPLINK_IFINDEX as u32;
     let mut b = Batch::new();
     b.chain(b"input\0", b"filter\0", nft::NF_INET_LOCAL_IN, 0, nft::NF_DROP);
-    // The answers to what the switch itself asks: the agents' resolver's, upstream.
-    b.rule(b"input\0", answers());
-    b.chain(b"forward\0", b"filter\0", nft::NF_INET_FORWARD, 0, nft::NF_DROP);
-    b.rule(b"forward\0", answers());
-    // What comes in past the microVM, down to the domain it is for, on its ports alone.
-    for (n, ranges) in ingress {
-        for &range in ranges {
-            let mut e = Vec::new();
-            meta(&mut e, nft::NFT_META_IIF);
-            compare(&mut e, nft::NFT_CMP_EQ, &(UPLINK_IFINDEX as u32).to_ne_bytes());
-            meta(&mut e, nft::NFT_META_OIF);
-            compare(&mut e, nft::NFT_CMP_EQ, &link_index(*n)?.to_ne_bytes());
-            ports(&mut e, range);
-            accept(&mut e);
-            b.rule(b"forward\0", e);
-        }
-    }
-    // Each flow a CONNECT names, on its ports alone: networks are default deny.
-    for (from, to, ranges) in pairs {
-        for &range in ranges {
-            let mut e = Vec::new();
-            meta(&mut e, nft::NFT_META_IIF);
-            compare(&mut e, nft::NFT_CMP_EQ, &link_index(*from)?.to_ne_bytes());
-            meta(&mut e, nft::NFT_META_OIF);
-            compare(&mut e, nft::NFT_CMP_EQ, &link_index(*to)?.to_ne_bytes());
-            ports(&mut e, range);
-            accept(&mut e);
-            b.rule(b"forward\0", e);
-        }
-    }
-    for (n, ranges) in egress {
-        for &(proto, lo, hi) in ranges {
-            let mut e = Vec::new();
-            meta(&mut e, nft::NFT_META_IIF);
-            compare(&mut e, nft::NFT_CMP_EQ, &link_index(*n)?.to_ne_bytes());
-            meta(&mut e, nft::NFT_META_OIF);
-            compare(&mut e, nft::NFT_CMP_EQ, &(UPLINK_IFINDEX as u32).to_ne_bytes());
-            meta(&mut e, nft::NFT_META_L4PROTO);
-            compare(&mut e, nft::NFT_CMP_EQ, &[proto]);
-            // The destination port, at offset 2 of TCP's header and UDP's alike, compared
-            // as the network-order bytes it is.
-            payload(&mut e, nft::NFT_PAYLOAD_TRANSPORT_HEADER, 2, 2);
-            compare(&mut e, nft::NFT_CMP_GTE, &lo.to_be_bytes());
-            compare(&mut e, nft::NFT_CMP_LTE, &hi.to_be_bytes());
-            accept(&mut e);
-            b.rule(b"forward\0", e);
-        }
-    }
-    // Names past the microVM, for each domain granted them (`--dns`, or a remote MCP
-    // server's): its queries, by UDP, to the switch's own resolver (`agentdns`), which asks
-    // the microVM's for what its grant names alone.
+    // What the microVM's resolver answers the agents' resolver.
+    let mut e = Vec::new();
+    on(&mut e, nft::NFT_META_IIF, up);
+    source_ports(&mut e, (17, 53, 53));
+    accept(&mut e);
+    b.rule(b"input\0", e);
     for n in dns {
         let mut e = Vec::new();
-        meta(&mut e, nft::NFT_META_IIF);
-        compare(&mut e, nft::NFT_CMP_EQ, &link_index(*n)?.to_ne_bytes());
+        on(&mut e, nft::NFT_META_IIF, link_index(*n)?);
         ports(&mut e, (17, 53, 53));
         accept(&mut e);
         b.rule(b"input\0", e);
+    }
+    b.chain(b"forward\0", b"filter\0", nft::NF_INET_FORWARD, 0, nft::NF_DROP);
+    // A flow from `from` to `to` on `range`, and its answers back.
+    let both = |b: &mut Batch, from: u32, to: u32, range: crate::netplan::Egress| {
+        let mut e = Vec::new();
+        on(&mut e, nft::NFT_META_IIF, from);
+        on(&mut e, nft::NFT_META_OIF, to);
+        ports(&mut e, range);
+        accept(&mut e);
+        b.rule(b"forward\0", e);
+        let mut e = Vec::new();
+        on(&mut e, nft::NFT_META_IIF, to);
+        on(&mut e, nft::NFT_META_OIF, from);
+        source_ports(&mut e, range);
+        accept(&mut e);
+        b.rule(b"forward\0", e);
+    };
+    for (from, to, ranges) in pairs {
+        for &range in ranges {
+            both(&mut b, link_index(*from)?, link_index(*to)?, range);
+        }
+    }
+    for (n, ranges) in egress {
+        for &range in ranges {
+            both(&mut b, link_index(*n)?, up, range);
+        }
+    }
+    for (n, ranges) in ingress {
+        for &range in ranges {
+            both(&mut b, up, link_index(*n)?, range);
+        }
+    }
+    b.commit(sock)
+}
+
+/// A domain's gate's nf_tables (D61), in one transaction:
+///
+/// - `raw`, before tracking: the flows others open to the domain, and its answers to them,
+///   kept from its gate's table (`notrack`), so that a peer opening many takes none of its
+///   room;
+/// - `forward`, which drops all but the answers of what the domain opened (tracked here
+///   alone); what it opens, from its own addresses: to each peer on the ports the peer
+///   accepts, past the microVM on its egress ports, and to the agents' resolver where
+///   granted; what peers open to it on its ports, from their own addresses, and from past
+///   the microVM on its ingress ports; and its answers to those.
+fn gate_policy(sock: &OwnedFd, g: &Gate) -> io::Result<()> {
+    let (inside, outside) = (GATE_IN as u32, GATE_OUT as u32);
+    let mut b = Batch::new();
+    b.chain(
+        b"raw\0",
+        b"filter\0",
+        nft::NF_INET_PRE_ROUTING,
+        nft::PRIORITY_RAW,
+        nft::NF_ACCEPT,
+    );
+    for range in g.accepted() {
+        let mut e = Vec::new();
+        on(&mut e, nft::NFT_META_IIF, outside);
+        ports(&mut e, range);
+        expr(&mut e, b"notrack\0", |_| {});
+        b.rule(b"raw\0", e);
+        let mut e = Vec::new();
+        on(&mut e, nft::NFT_META_IIF, inside);
+        source_ports(&mut e, range);
+        expr(&mut e, b"notrack\0", |_| {});
+        b.rule(b"raw\0", e);
+    }
+    // The gate itself serves nothing and says nothing: what is addressed to its gateways
+    // is dropped, not refused, which would answer.
+    b.chain(b"input\0", b"filter\0", nft::NF_INET_LOCAL_IN, 0, nft::NF_DROP);
+    b.chain(b"output\0", b"filter\0", nft::NF_INET_LOCAL_OUT, 0, nft::NF_DROP);
+    b.chain(b"forward\0", b"filter\0", nft::NF_INET_FORWARD, 0, nft::NF_DROP);
+    b.rule(b"forward\0", answers());
+    for &own in &g.own {
+        // What it opens: from its own address, in from its domain.
+        let opens = |b: &mut Batch, to: Option<Ipv4Addr>, range: crate::netplan::Egress| {
+            let mut e = Vec::new();
+            on(&mut e, nft::NFT_META_IIF, inside);
+            address(&mut e, SOURCE, own);
+            if let Some(to) = to {
+                address(&mut e, DESTINATION, to);
+            }
+            ports(&mut e, range);
+            accept(&mut e);
+            b.rule(b"forward\0", e);
+        };
+        for (peer, ranges) in &g.opens {
+            for &to in peer {
+                for &range in ranges {
+                    opens(&mut b, Some(to), range);
+                }
+            }
+        }
+        for &range in &g.egress {
+            opens(&mut b, None, range);
+        }
+        if g.dns {
+            opens(&mut b, Some(TRANSIT_SWITCH), (17, 53, 53));
+        }
+        // What is opened to it, from a peer's address or past the microVM, and its answers
+        // back, untracked.
+        let opened = |b: &mut Batch, from: Option<Ipv4Addr>, range: crate::netplan::Egress| {
+            let mut e = Vec::new();
+            on(&mut e, nft::NFT_META_IIF, outside);
+            if let Some(from) = from {
+                address(&mut e, SOURCE, from);
+            }
+            address(&mut e, DESTINATION, own);
+            ports(&mut e, range);
+            accept(&mut e);
+            b.rule(b"forward\0", e);
+            let mut e = Vec::new();
+            on(&mut e, nft::NFT_META_IIF, inside);
+            address(&mut e, SOURCE, own);
+            if let Some(from) = from {
+                address(&mut e, DESTINATION, from);
+            }
+            source_ports(&mut e, range);
+            accept(&mut e);
+            b.rule(b"forward\0", e);
+        };
+        for (peer, ranges) in &g.accepts {
+            for &from in peer {
+                for &range in ranges {
+                    opened(&mut b, Some(from), range);
+                }
+            }
+        }
+        for &range in &g.ingress {
+            opened(&mut b, None, range);
+        }
     }
     b.commit(sock)
 }
@@ -810,19 +1088,27 @@ fn policy(
 /// Init's own namespace's nf_tables, once agents reach past the microVM:
 ///
 /// - `forward` drops all but answers, and what comes up from the switch (`agents0`) to
-///   eth0, which it marks;
+///   eth0 as a domain's egress grants it, from its addresses, or as the agents' resolver
+///   asks, which it marks: the one stateful point on the way, as the gates and the switch
+///   let a domain's answers out by their ports alone (D61), so that one sending from a
+///   port it is reached on as though answering opens nothing;
+/// - `in` drops what comes up from the switch but answers: the run's own processes serve
+///   no domain;
 /// - `post` gives what is marked eth0's address, so that the network process, which takes
 ///   frames from the guest's address alone, takes it;
 /// - `out` keeps the run's own processes to what they reached before: the default deny
 ///   held them at the host, which now opens the agents' ports to the whole microVM, so
 ///   no new flow leaves eth0 but to eth0's own subnet (its network's members, D46).
-fn outside(
-    sock: &OwnedFd,
-    eth0: u32,
-    (addr, subnet, prefix): (Ipv4Addr, Ipv4Addr, u8),
-    ingress: &[(Ipv4Addr, Vec<crate::netplan::Egress>)],
-) -> io::Result<()> {
+fn outside(sock: &OwnedFd, eth0: u32, u: &Uplink) -> io::Result<()> {
+    let ((addr, subnet, prefix), ingress) = (u.eth0, &u.ingress);
     let mut b = Batch::new();
+    b.chain(b"in\0", b"filter\0", nft::NF_INET_LOCAL_IN, 0, nft::NF_ACCEPT);
+    b.rule(b"in\0", answers());
+    let mut e = Vec::new();
+    meta(&mut e, nft::NFT_META_IIF);
+    compare(&mut e, nft::NFT_CMP_EQ, &(UPLINK_IFINDEX as u32).to_ne_bytes());
+    drop_verdict(&mut e);
+    b.rule(b"in\0", e);
     b.chain(b"forward\0", b"filter\0", nft::NF_INET_FORWARD, 0, nft::NF_DROP);
     b.rule(b"forward\0", answers());
     // What is let in: from eth0 to the agents' link, on its ports, once `pre` has given it
@@ -863,18 +1149,34 @@ fn outside(
             }
         }
     }
-    let mut e = Vec::new();
-    meta(&mut e, nft::NFT_META_IIF);
-    compare(&mut e, nft::NFT_CMP_EQ, &(UPLINK_IFINDEX as u32).to_ne_bytes());
-    meta(&mut e, nft::NFT_META_OIF);
-    compare(&mut e, nft::NFT_CMP_EQ, &eth0.to_ne_bytes());
-    load(&mut e, &MARK_AGENTS.to_ne_bytes());
-    expr(&mut e, b"meta\0", |d| {
-        be32(d, nft::NFTA_META_KEY, nft::NFT_META_MARK);
-        be32(d, nft::NFTA_META_SREG, nft::NFT_REG_1);
-    });
-    accept(&mut e);
-    b.rule(b"forward\0", e);
+    // New flows up from the switch: each domain's, from its own addresses on the ports
+    // it is granted; the agents' resolver's, from the switch's end of the uplink.
+    let up = |b: &mut Batch, from: Ipv4Addr, range: crate::netplan::Egress| {
+        let mut e = Vec::new();
+        meta(&mut e, nft::NFT_META_IIF);
+        compare(&mut e, nft::NFT_CMP_EQ, &(UPLINK_IFINDEX as u32).to_ne_bytes());
+        meta(&mut e, nft::NFT_META_OIF);
+        compare(&mut e, nft::NFT_CMP_EQ, &eth0.to_ne_bytes());
+        address(&mut e, SOURCE, from);
+        ports(&mut e, range);
+        load(&mut e, &MARK_AGENTS.to_ne_bytes());
+        expr(&mut e, b"meta\0", |d| {
+            be32(d, nft::NFTA_META_KEY, nft::NFT_META_MARK);
+            be32(d, nft::NFTA_META_SREG, nft::NFT_REG_1);
+        });
+        accept(&mut e);
+        b.rule(b"forward\0", e);
+    };
+    for (from, ranges) in &u.egress {
+        for &a in from {
+            for &range in ranges {
+                up(&mut b, a, range);
+            }
+        }
+    }
+    if u.resolver {
+        up(&mut b, UPLINK_SWITCH, (17, 53, 53));
+    }
     b.chain(
         b"post\0",
         b"nat\0",
@@ -907,14 +1209,7 @@ fn outside(
     let mut e = Vec::new();
     meta(&mut e, nft::NFT_META_OIF);
     compare(&mut e, nft::NFT_CMP_EQ, &eth0.to_ne_bytes());
-    expr(&mut e, b"immediate\0", |d| {
-        be32(d, nft::NFTA_IMMEDIATE_DREG, nft::NFT_REG_VERDICT);
-        nested(d, nft::NFTA_IMMEDIATE_DATA, |v| {
-            nested(v, nft::NFTA_DATA_VERDICT, |c| {
-                be32(c, nft::NFTA_VERDICT_CODE, nft::NF_DROP)
-            });
-        });
-    });
+    drop_verdict(&mut e);
     b.rule(b"out\0", e);
     b.commit(sock)
 }
