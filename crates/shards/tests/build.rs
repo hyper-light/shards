@@ -4065,6 +4065,256 @@ fn builds_take_steps_from_an_azure_blob_cache() {
     assert!(refused.stderr.contains("secret_access_key"), "{}", refused.stderr);
 }
 
+/// The GitHub Actions cache backend (D90): `--cache-to type=gha` saves a build's layers
+/// and records in GitHub's cache as BuildKit's does through go-actions-cache, the records
+/// numbered anew each export; another home's `--cache-from` takes every step from it.
+/// Both protocols: v2 (twirp, signed blob URLs), named by `url_v2` or by the runner's
+/// environment as buildx reads it, and the legacy v1 (`version=1`). Each request has the
+/// shape go-actions-cache's has (testdata/gha.json, `scripts/gha/generate`). A token past
+/// its time is refused before the build.
+#[test]
+fn builds_take_steps_from_a_github_actions_cache() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let token = common::actions_token(
+        r#"[{"Scope":"refs/heads/main","Permission":3},{"Scope":"refs/heads/feature","Permission":1}]"#,
+    );
+    let (port, actions) = common::fake_gha(token.clone());
+    let homes: Vec<TempDir> = (0..4)
+        .map(|n| TempDir::new(&format!("gha-cache-home-{n}")))
+        .collect();
+    let shards_in = |home: &TempDir, args: &[&str], extra: &[(&str, &std::ffi::OsStr)]| {
+        let mut env = vec![
+            ("SHARDS_HOME", home.as_os_str()),
+            ("SHARDS_KERNEL", kernel().as_os_str()),
+            ("SHARDS_INIT", guest_init().as_os_str()),
+            ("ACTIONS_RUNTIME_TOKEN", std::ffi::OsStr::new("")),
+            ("ACTIONS_RESULTS_URL", std::ffi::OsStr::new("")),
+            ("ACTIONS_CACHE_URL", std::ffi::OsStr::new("")),
+            ("ACTIONS_CACHE_SERVICE_V2", std::ffi::OsStr::new("")),
+        ];
+        env.extend_from_slice(extra);
+        run_shards_env(&[], args, &env, TIMEOUT)
+    };
+    let ctx = context(
+        "gha-cache-ctx",
+        &format!(
+            "FROM {image} AS build\nUSER root\nRUN [\"/bin/testguest\", \"fs\", \"write:/out=built\"]\n\
+             FROM {image}\nUSER root\nCOPY --from=build /out /out\nRUN [\"/bin/testguest\", \"fs\", \"write:/two=2\"]\n"
+        ),
+    );
+    let build = |home: &TempDir, cache: &[&str], extra: &[(&str, &std::ffi::OsStr)], tag: &str| {
+        let mut args = vec!["build", "--progress=plain"];
+        args.extend_from_slice(cache);
+        args.extend_from_slice(&["-t", tag, ctx.to_str().unwrap()]);
+        let built = shards_in(home, &args, extra);
+        assert_eq!(built.status, Some(0), "{}", built.stderr);
+        built.stderr
+    };
+    let cached = |log: &str, step: &str| -> bool {
+        let n = log
+            .lines()
+            .find_map(|l| {
+                l.strip_prefix('#')
+                    .and_then(|r| r.split_once(' '))
+                    .filter(|(_, t)| t.contains(step))
+                    .map(|(n, _)| n.to_string())
+            })
+            .unwrap_or_else(|| panic!("no step {step:?} in\n{log}"));
+        log.lines().any(|l| l == format!("#{n} CACHED"))
+    };
+    let steps = ["write:/out=built", "COPY --from=build", "write:/two=2"];
+    let layers = |home: &TempDir, tag: &str| {
+        shards_in(
+            home,
+            &["image", "inspect", "--format", "{{json .RootFS.Layers}}", tag],
+            &[],
+        )
+        .stdout
+    };
+    // The records' key: the written scope's hash, as BuildKit's indexKey makes it.
+    let index = format!(
+        "index-buildkit-1-{}",
+        common::sha256_digest(b"refs/heads/main").get(7..15).unwrap()
+    );
+
+    // v2, named by url_v2.
+    let v2 = format!("type=gha,url_v2=http://127.0.0.1:{port}/,token={token}");
+    let first = build(
+        &homes[0],
+        &["--cache-to", &format!("{v2},mode=max")],
+        &[],
+        "made:1",
+    );
+    assert!(first.contains("exporting to GitHub Actions Cache"), "{first}");
+    let blobs: Vec<String> = {
+        let a = actions.lock().unwrap();
+        assert!(
+            a.entries.contains_key(&format!("{index}#1")),
+            "{:?}",
+            a.entries.keys()
+        );
+        a.entries
+            .keys()
+            .filter(|k| k.starts_with("buildkit-blob-1-sha256:"))
+            .cloned()
+            .collect()
+    };
+    assert!(blobs.len() >= 3, "{blobs:?}");
+    for b in &blobs {
+        assert!(
+            first.contains(&format!(
+                "writing layer {} done",
+                b.trim_start_matches("buildkit-blob-1-")
+            )),
+            "{first}"
+        );
+    }
+    // Each call has go-actions-cache's shape: its fields, its version, its headers.
+    let oracle: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/build/testdata/gha.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let shape = |path: &str| -> Option<(Vec<String>, serde_json::Value)> {
+        oracle["requests"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["path"] == path)
+            .map(|r| {
+                let names = r["headers"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|h| h[0].as_str().unwrap().to_string())
+                    .filter(|n| !["user-agent", "content-length", "accept-encoding"].contains(&n.as_str()))
+                    .collect();
+                (
+                    names,
+                    serde_json::from_str(r["body"].as_str().unwrap_or("null")).unwrap_or_default(),
+                )
+            })
+    };
+    for (method, path, names, body) in actions.lock().unwrap().log.clone() {
+        let Some((want, oracle_body)) = shape(&path) else {
+            continue;
+        };
+        for n in &want {
+            assert!(names.contains(n), "{method} {path}: no {n} among {names:?}");
+        }
+        if let (Some(got), Some(want)) = (
+            serde_json::from_str::<serde_json::Value>(&body)
+                .ok()
+                .and_then(|v| v.as_object().cloned()),
+            oracle_body.as_object(),
+        ) {
+            assert_eq!(
+                got.keys().collect::<Vec<_>>(),
+                want.keys().collect::<Vec<_>>(),
+                "{path}"
+            );
+            assert_eq!(got.get("version"), want.get("version"), "{path}");
+        }
+    }
+    let made = layers(&homes[0], "made:1");
+
+    // Read back from the runner's environment, as buildx reads it.
+    let runner = [
+        ("ACTIONS_RUNTIME_TOKEN", std::ffi::OsStr::new(token.as_str())),
+        ("ACTIONS_CACHE_SERVICE_V2", std::ffi::OsStr::new("true")),
+    ];
+    let url = format!("http://127.0.0.1:{port}/");
+    let mut env = runner.to_vec();
+    env.push(("ACTIONS_RESULTS_URL", std::ffi::OsStr::new(url.as_str())));
+    let taken = build(&homes[1], &["--cache-from", "type=gha"], &env, "taken:1");
+    for step in steps {
+        assert!(cached(&taken, step), "{step} was taken\n{taken}");
+    }
+    assert_eq!(layers(&homes[1], "taken:1"), made);
+
+    // Written again: the next number, no layer sent.
+    let again = build(
+        &homes[0],
+        &["--cache-to", &format!("{v2},mode=max")],
+        &[],
+        "made:2",
+    );
+    assert!(!again.contains("writing layer"), "{again}");
+    assert!(
+        actions
+            .lock()
+            .unwrap()
+            .entries
+            .contains_key(&format!("{index}#2"))
+    );
+
+    // The legacy service.
+    let v1 = format!("type=gha,url=http://127.0.0.1:{port}/,token={token},version=1,scope=legacy");
+    build(
+        &homes[0],
+        &["--cache-to", &format!("{v1},mode=max")],
+        &[],
+        "made:3",
+    );
+    let legacy = format!(
+        "index-legacy-1-{}",
+        common::sha256_digest(b"refs/heads/main").get(7..15).unwrap()
+    );
+    assert!(
+        actions
+            .lock()
+            .unwrap()
+            .entries
+            .contains_key(&format!("{legacy}#1"))
+    );
+    assert!(
+        actions
+            .lock()
+            .unwrap()
+            .log
+            .iter()
+            .any(|(m, p, _, _)| m == "PATCH" && p.starts_with("/_apis/artifactcache/caches/"))
+    );
+    let taken = build(&homes[2], &["--cache-from", &v1], &[], "taken:2");
+    for step in steps {
+        assert!(cached(&taken, step), "{step} was taken\n{taken}");
+    }
+
+    // A token past its time, before the build.
+    let old = {
+        use base64::Engine as _;
+        let enc = |b: &[u8]| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b);
+        format!(
+            "{}.{}.x",
+            enc(b"{}"),
+            enc(br#"{"ac":"[]","exp":1600000000,"nbf":1500000000}"#)
+        )
+    };
+    let refused = shards_in(
+        &homes[3],
+        &[
+            "build",
+            "--cache-to",
+            &format!("type=gha,url_v2={url},token={old}"),
+            ctx.to_str().unwrap(),
+        ],
+        &[],
+    );
+    assert_ne!(refused.status, Some(0));
+    assert!(
+        refused
+            .stderr
+            .contains("cache token expired at 2020-09-13T12:26:40Z"),
+        "{}",
+        refused.stderr
+    );
+}
+
 /// What the build's flags give each `RUN`, as BuildKit's frontend gives them (D64):
 /// `--add-host`'s names in its `/etc/hosts`, `--shm-size`'s `/dev/shm`, and the limits of
 /// `--memory` and `--cpu-quota` (and `--resource`) in a cgroup of its own, as runc writes

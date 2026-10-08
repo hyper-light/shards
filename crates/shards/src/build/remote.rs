@@ -25,7 +25,7 @@ use shards_image::reference::{Digest, Reference};
 use shards_image::store::Store;
 use shards_registry::registry::Registry;
 
-use super::{Progress, azblob, cache, s3, show};
+use super::{Progress, azblob, cache, gha, s3, show};
 
 /// A cache's config: its records.
 pub const CONFIG: &str = "application/vnd.shards.buildcache.config.v1+json";
@@ -39,6 +39,7 @@ enum Source {
     Registry(Box<Registry>),
     S3(Box<s3::Bucket>),
     Azblob(Box<azblob::Container>),
+    Gha(Box<gha::Cache>),
 }
 
 /// The records `--cache-from` found: each body by its key, with where its layers are.
@@ -236,13 +237,13 @@ impl Imported {
                         None
                     }
                 },
-                "gha" => {
-                    warn(&format!(
-                        "shards does not read the {} cache backend yet: skipped",
-                        e.kind
-                    ));
-                    None
-                }
+                "gha" => match gha_records(e, &limits, env) {
+                    Ok((records, cache)) => Some((records, Source::Gha(Box::new(cache)))),
+                    Err(why) => {
+                        warn(&format!("gha cache import skipped: {why}"));
+                        None
+                    }
+                },
                 other => {
                     warn(&format!(
                         "unknown cache importer: {}",
@@ -292,6 +293,14 @@ impl Imported {
                     Source::Registry(r) => r
                         .fetch_blob(store, &desc, &limits, &|_| {})
                         .map_err(|e| e.to_string()),
+                    Source::Gha(c) => match c.load(&[&gha::blob_key(&desc.digest)]) {
+                        Ok(Some(entry)) => c
+                            .download(&entry)
+                            .and_then(|mut r| store.ingest(&d, l.size, &mut r).map_err(|e| e.to_string()))
+                            .map(drop),
+                        Ok(None) => Err(format!("blob {d} not found")),
+                        Err(why) => Err(why),
+                    },
                     Source::Azblob(c) => match c.get(&c.blob_key(&desc.digest)) {
                         Ok(Some(mut r)) => store
                             .ingest(&d, l.size, &mut r)
@@ -434,9 +443,7 @@ pub fn check(entries: &[CacheEntry], env: &dyn Fn(&str) -> Option<String>) -> Re
                 azblob::Container::of(e, env)
                     .map_err(|err| format!("failed to create azblob config: {err}"))?,
             ),
-            "gha" => {
-                return Err(format!("shards does not write the {} cache backend yet", e.kind));
-            }
+            "gha" => drop(gha::Cache::of(e, env)?),
             other => {
                 return Err(format!(
                     "unknown cache exporter: {}",
@@ -464,6 +471,7 @@ pub fn export(
             "local" => "exporting cache to client directory",
             "s3" => "exporting cache to Amazon S3",
             "azblob" => "exporting cache to Azure Blob Storage",
+            "gha" => "exporting to GitHub Actions Cache",
             _ => "exporting cache to registry",
         };
         let v = progress.borrow_mut().start(name);
@@ -499,6 +507,7 @@ fn write(
     match e.kind.as_str() {
         "s3" => return write_s3(e, &config, &layers, store, progress, v, env),
         "azblob" => return write_azblob(e, &config, &layers, store, progress, v, env),
+        "gha" => return write_gha(e, &config, &layers, store, progress, v, env),
         _ => {}
     }
     let config_digest = super::sha256(&config);
@@ -876,4 +885,71 @@ fn write_azblob(
             .map_err(|e| format!("error writing manifest {name}: {e}"))?;
     }
     Ok(())
+}
+
+/// The records of every scope the gha cache's token may read, as BuildKit's importer
+/// reads them (`loadScope`), with the cache their layers are in; a scope without them is
+/// no records.
+fn gha_records(
+    e: &CacheEntry,
+    limits: &shards_image::store::Limits,
+    env: &dyn Fn(&str) -> Option<String>,
+) -> Result<(Records, gha::Cache), String> {
+    use std::io::Read as _;
+    let cache = gha::Cache::of(e, env)?;
+    let mut all = Vec::new();
+    for scope in &cache.scopes {
+        let key = cache.index_key(&scope.scope);
+        let Some(entry) = cache.load(&[&key])? else {
+            continue;
+        };
+        let mut bytes = Vec::new();
+        cache
+            .download(&entry)?
+            .take(limits.metadata.saturating_add(1))
+            .read_to_end(&mut bytes)
+            .map_err(|err| format!("{}: {err}", entry.key))?;
+        if bytes.len() as u64 > limits.metadata {
+            return Err(format!("{}: past SHARDS_MAX_IMAGE_METADATA", entry.key));
+        }
+        all.extend(records_of(&bytes)?);
+    }
+    Ok((all, cache))
+}
+
+/// Writes a cache to GitHub's as BuildKit's exporter does (`Finalize`): each layer the
+/// cache lacks, an entry of its own (one another export saved meanwhile is the one); then
+/// `config`, the records, as the next number of the written scope's index. Unlike
+/// BuildKit's, four layers go at once.
+fn write_gha(
+    e: &CacheEntry,
+    config: &[u8],
+    layers: &[Descriptor],
+    store: &Store,
+    progress: &RefCell<Progress>,
+    v: &super::Vertex,
+    env: &dyn Fn(&str) -> Option<String>,
+) -> Result<(), String> {
+    let cache = gha::Cache::of(e, env)?;
+    let one = |l: &Descriptor| -> Result<Option<String>, String> {
+        let d = l.digest().map_err(|e| e.to_string())?;
+        let key = gha::blob_key(&l.digest);
+        if cache.load(&[&key])?.is_some() {
+            return Ok(None);
+        }
+        let path = store.blob_path(&d);
+        let file = std::fs::File::open(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let len = file
+            .metadata()
+            .map_err(|e| format!("{}: {e}", path.display()))?
+            .len();
+        match cache.save(&key, gha::Body::File(&file, 0, len)) {
+            Ok(()) | Err(gha::Unsaved::Exists) => Ok(Some(d.to_string())),
+            Err(gha::Unsaved::Failed(why)) => Err(format!("error writing layer blob: {why}")),
+        }
+    };
+    for d in at_once(4, layers, &one)? {
+        progress.borrow().line(v, &format!("writing layer {d} done"));
+    }
+    cache.save_mutable(&cache.index_key(cache.write_scope()), config)
 }

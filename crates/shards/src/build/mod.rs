@@ -40,6 +40,7 @@ mod compress;
 mod domains;
 mod estargz;
 mod exec;
+mod gha;
 mod git;
 pub(crate) mod http;
 #[cfg(unix)]

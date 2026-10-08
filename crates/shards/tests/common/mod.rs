@@ -1696,6 +1696,229 @@ pub fn fake_azblob() -> (u16, Arc<std::sync::Mutex<Blobs>>) {
     (port, held)
 }
 
+/// What a fake GitHub Actions cache holds: each committed entry by key, and each request
+/// (method, path, header names and, for the service's own calls, the JSON body).
+#[derive(Debug, Default)]
+pub struct Actions {
+    pub entries: std::collections::BTreeMap<String, Vec<u8>>,
+    reserved: std::collections::BTreeSet<String>,
+    staged: std::collections::BTreeMap<String, Vec<u8>>,
+    ids: Vec<String>,
+    pub log: Vec<(String, String, Vec<String>, String)>,
+}
+
+/// GitHub's cache service on loopback, as go-actions-cache asks it: v2 (twirp, entries
+/// uploaded to and downloaded from signed blob URLs here, single or in blocks) and the
+/// legacy v1 (`_apis/artifactcache`, chunks by `Content-Range`). A key is taken once; a
+/// lookup answers the newest key beginning with the first restore key any begins with.
+/// The service's calls without `Authorization: Bearer TOKEN` are refused.
+pub fn fake_gha(token: String) -> (u16, Arc<std::sync::Mutex<Actions>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let held = Arc::new(std::sync::Mutex::new(Actions::default()));
+    let shared = held.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(stream) = stream else { return };
+            let actions = shared.clone();
+            let token = token.clone();
+            std::thread::spawn(move || {
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut out = stream;
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                        return;
+                    }
+                    let mut headers = std::collections::BTreeMap::new();
+                    loop {
+                        let mut header = String::new();
+                        if reader.read_line(&mut header).unwrap_or(0) <= 2 {
+                            break;
+                        }
+                        let (name, value) = header.split_once(':').unwrap_or_default();
+                        headers.insert(name.trim().to_ascii_lowercase(), value.trim().to_string());
+                    }
+                    let length: usize = headers
+                        .get("content-length")
+                        .and_then(|l| l.parse().ok())
+                        .unwrap_or(0);
+                    let mut body = vec![0u8; length];
+                    reader.read_exact(&mut body).unwrap();
+                    let mut parts = line.split(' ');
+                    let (method, target) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""));
+                    let (raw, query) = target.split_once('?').unwrap_or((target, ""));
+                    let path = percent_decode(raw);
+                    let param = |k: &str| {
+                        query
+                            .split('&')
+                            .find_map(|p| p.strip_prefix(&format!("{k}=")))
+                            .map(percent_decode)
+                    };
+                    let service = path.starts_with("/twirp/") || path.starts_with("/_apis/");
+                    let json: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
+                    let mut a = actions.lock().unwrap();
+                    a.log.push((
+                        method.to_string(),
+                        path.clone(),
+                        headers.keys().cloned().collect(),
+                        if service {
+                            String::from_utf8_lossy(&body).into_owned()
+                        } else {
+                            String::new()
+                        },
+                    ));
+                    let ok = |v: serde_json::Value| ("200 OK".to_string(), serde_json::to_vec(&v).unwrap());
+                    let newest = |a: &Actions, keys: &[String]| {
+                        keys.iter().find_map(|p| {
+                            a.entries
+                                .keys()
+                                .filter(|k| k.starts_with(p.as_str()))
+                                .max()
+                                .cloned()
+                        })
+                    };
+                    let base = format!("http://127.0.0.1:{port}");
+                    let escaped = |k: &str| k.replace('%', "%25").replace('#', "%23");
+                    let (status, reply): (String, Vec<u8>) = if service
+                        && headers.get("authorization").map(String::as_str)
+                            != Some(&format!("Bearer {token}"))
+                    {
+                        (
+                            "401 Unauthorized".into(),
+                            br#"{"code":"unauthenticated","msg":"no token"}"#.to_vec(),
+                        )
+                    } else if path
+                        == "/twirp/github.actions.results.api.v1.CacheService/GetCacheEntryDownloadURL"
+                    {
+                        let keys: Vec<String> =
+                            serde_json::from_value(json["restore_keys"].clone()).unwrap_or_default();
+                        match newest(&a, &keys) {
+                            Some(k) => ok(
+                                serde_json::json!({"ok": true, "matched_key": k, "signed_download_url": format!("{base}/blob/{}?sig=read", escaped(&k))}),
+                            ),
+                            None => ok(serde_json::json!({"ok": false})),
+                        }
+                    } else if path == "/twirp/github.actions.results.api.v1.CacheService/CreateCacheEntry" {
+                        let key = json["key"].as_str().unwrap_or_default().to_string();
+                        if a.reserved.insert(key.clone()) {
+                            ok(
+                                serde_json::json!({"ok": true, "signed_upload_url": format!("{base}/blob/{}?sig=write", escaped(&key))}),
+                            )
+                        } else {
+                            ("409 Conflict".into(), br#"{"code":"already_exists","msg":"cache entry with the same key, version, and scope already exists"}"#.to_vec())
+                        }
+                    } else if path
+                        == "/twirp/github.actions.results.api.v1.CacheService/FinalizeCacheEntryUpload"
+                    {
+                        let key = json["key"].as_str().unwrap_or_default().to_string();
+                        let b = a.staged.remove(&key).unwrap_or_default();
+                        assert_eq!(b.len() as u64, json["size_bytes"].as_u64().unwrap(), "{key}");
+                        a.entries.insert(key, b);
+                        ok(serde_json::json!({"ok": true, "entry_id": "1"}))
+                    } else if path == "/_apis/artifactcache/cache" {
+                        let keys: Vec<String> = param("keys")
+                            .unwrap_or_default()
+                            .split(',')
+                            .map(str::to_string)
+                            .collect();
+                        match newest(&a, &keys) {
+                            Some(k) => ok(
+                                serde_json::json!({"cacheKey": k, "scope": "refs/heads/main", "archiveLocation": format!("{base}/blob/{}", escaped(&k))}),
+                            ),
+                            None => ("204 No Content".into(), vec![]),
+                        }
+                    } else if path == "/_apis/artifactcache/caches" {
+                        let key = json["key"].as_str().unwrap_or_default().to_string();
+                        if a.reserved.insert(key.clone()) {
+                            a.ids.push(key);
+                            ok(serde_json::json!({"cacheId": a.ids.len()}))
+                        } else {
+                            ("409 Conflict".into(), br#"{"message":"Cache already exists.","typeName":"x","typeKey":"ArtifactCacheItemAlreadyExistsException","errorCode":0}"#.to_vec())
+                        }
+                    } else if let Some(n) = path.strip_prefix("/_apis/artifactcache/caches/") {
+                        let key = a.ids[n.parse::<usize>().unwrap() - 1].clone();
+                        if method == "PATCH" {
+                            let range = headers["content-range"]
+                                .trim_start_matches("bytes ")
+                                .trim_end_matches("/*")
+                                .to_string();
+                            let (from, to) = range.split_once('-').unwrap();
+                            let (from, to): (usize, usize) = (from.parse().unwrap(), to.parse().unwrap());
+                            let b = a.staged.entry(key).or_default();
+                            if b.len() < to + 1 {
+                                b.resize(to + 1, 0);
+                            }
+                            b[from..=to].copy_from_slice(&body);
+                        } else {
+                            let b = a.staged.remove(&key).unwrap_or_default();
+                            assert_eq!(b.len() as u64, json["size"].as_u64().unwrap(), "{key}");
+                            a.entries.insert(key, b);
+                        }
+                        ("204 No Content".into(), vec![])
+                    } else if let Some(key) = path.strip_prefix("/blob/") {
+                        let key = key.to_string();
+                        match (method, param("comp").as_deref()) {
+                            ("PUT", Some("block")) => {
+                                let id = param("blockid").unwrap_or_default();
+                                a.staged.insert(format!("{key}\u{0}{id}"), body);
+                                ("201 Created".into(), vec![])
+                            }
+                            ("PUT", Some("blocklist")) => {
+                                let list = String::from_utf8(body).unwrap();
+                                let mut whole = Vec::new();
+                                for id in list.split("<Latest>").skip(1) {
+                                    let id = id.split("</Latest>").next().unwrap();
+                                    whole.extend(a.staged.remove(&format!("{key}\u{0}{id}")).unwrap());
+                                }
+                                a.staged.insert(key, whole);
+                                ("201 Created".into(), vec![])
+                            }
+                            ("PUT", _) => {
+                                a.staged.insert(key, body);
+                                ("201 Created".into(), vec![])
+                            }
+                            _ => match a.entries.get(&key) {
+                                Some(b) => ("200 OK".into(), b.clone()),
+                                None => ("404 Not Found".into(), vec![]),
+                            },
+                        }
+                    } else {
+                        ("404 Not Found".into(), vec![])
+                    };
+                    drop(a);
+                    let head = format!(
+                        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+                        reply.len()
+                    );
+                    if out
+                        .write_all(head.as_bytes())
+                        .and_then(|()| out.write_all(&reply))
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    (port, held)
+}
+
+/// A runtime token as the cache service's: its scopes (`ac`), in force from 2020 to 2100,
+/// its signature the service's own to check.
+pub fn actions_token(scopes: &str) -> String {
+    use base64::Engine as _;
+    let enc = |b: &[u8]| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b);
+    let claims = serde_json::json!({"ac": scopes, "exp": 4102444800i64, "nbf": 1577836800i64});
+    format!(
+        "{}.{}.{}",
+        enc(br#"{"alg":"HS256","typ":"JWT"}"#),
+        enc(&serde_json::to_vec(&claims).unwrap()),
+        enc(b"signature")
+    )
+}
+
 /// What a writable test registry holds, by repository: blobs by digest, and manifests by
 /// tag and by digest, each with its media type.
 #[derive(Debug, Default)]

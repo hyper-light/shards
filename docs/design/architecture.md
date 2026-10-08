@@ -3210,6 +3210,73 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode
 waits on the user.
 
+### D90. The GitHub Actions cache backend
+
+`--cache-to` and `--cache-from` `type=gha` keep a build's cache in GitHub Actions' cache,
+as BuildKit v0.28.1's `cache/remotecache/gha` does through go-actions-cache (BuildKit's
+pin, 54bc28c).
+
+Evidence: BuildKit's gha.go and go-actions-cache's own code. `scripts/gha/generate`
+runs that library against a server that records each request, under both of the
+service's protocols (`testdata/gha.json`):
+- v2, GitHub's own: twirp calls, entries uploaded to Blob Storage by signed URL;
+- v1, the legacy `_apis/artifactcache` that GitHub Enterprise Server keeps: chunks by
+  `Content-Range`.
+
+What it takes:
+- BuildKit's attributes: `scope` (`buildkit`), `token`, `url` and `url_v2`, `version`
+  (v2 when `url_v2` is given or the URL is GitHub's results service), and `timeout`
+  (10m).
+- Without `token` and a URL the entry is dropped, as buildx drops it. buildx fills both
+  from the runner's environment (`ACTIONS_RUNTIME_TOKEN`, `ACTIONS_RESULTS_URL`,
+  `ACTIONS_CACHE_URL`, `ACTIONS_CACHE_SERVICE_V2`), as D62 already does.
+- The token's scopes (`ac`) and its time in force (`nbf`, `exp`), read as
+  go-actions-cache reads them. A token past its time is refused before the build.
+
+The cache holds what BuildKit's does:
+- Each layer is an entry `buildkit-blob-1-DIGEST`, saved unless one is there. One saved
+  meanwhile by another export is the one.
+- The records are an entry `index-SCOPE-1-HASH#N`. HASH is the first 8 hex of the SHA-256
+  of the scope the token last grants writing. N is the next number after the newest,
+  as go-actions-cache's `SaveMutable` numbers it, waiting up to 15 s on a number
+  another export holds, then passing it.
+- Import reads the newest index of every scope the token may read.
+- Requests carry go-actions-cache's version (the SHA-256 of `|go-actionscache-1.0`) and
+  its headers.
+- Rate limits (429) are waited out, by `Retry-After` or a 1 s to 90 s backoff, within
+  `timeout`.
+- Refusals carry the service's own message.
+
+Better than BuildKit's:
+- Four layers go at once, where BuildKit's exporter saves them one by one ("TODO: push
+  parallel").
+- Entries go to Blob Storage in 32 MiB blocks, BuildKit's azblob block, not
+  go-actions-cache's 1 MiB default. That is 32 times fewer requests, and the default
+  caps an entry at 50,000 MiB (Blob Storage's 50,000 blocks).
+- A failed upload in SaveMutable fails the export. go-actions-cache returns success
+  there (`return nil` after `upload`).
+
+Not yet:
+- buildkitd's signing and verifying of the index (its TOML `Sign`/`Verify`), which no
+  build flag reaches.
+- The REST listing of keys by `ghtoken` and `repository`, which BuildKit uses in place
+  of one lookup per layer. shards does the lookups.
+
+Tested:
+- `builds_take_steps_from_a_github_actions_cache` covers the build end to end against a
+  fake service, both protocols:
+  - written `mode=max` through `url_v2`, with each layer an entry and the index `#1`;
+  - each call matched against the oracle's fields, version and headers;
+  - read back from another home from the runner's environment, every step `CACHED`,
+    with the same layers;
+  - written again as `#2` with no layer sent;
+  - written and read through the legacy protocol (`version=1`, chunks by PATCH);
+  - an expired token refused before the build, with its time.
+- `entries_go_to_blob_storage_in_blocks` checks an entry past a chunk: three blocks to
+  the signed URL, its query kept, committed in order; a smaller entry goes in one
+  request.
+- Mutation-checked: a wrong version hash fails the oracle check.
+
 ### D89. The Azure Blob Storage cache backend
 
 `--cache-to` and `--cache-from` `type=azblob` write a build's cache to a Blob Storage
@@ -4345,7 +4412,7 @@ control/control.go, cache/remotecache, solver/llbsolver/bridge.go).
   wrong.
 - **Refused as BuildKit refuses** before it builds: a directory without `dest`, a registry
   without `ref`, an unknown backend (`unknown cache exporter: "x"`); and, for now, the
-  `gha` backend, which shards does not write yet (`s3` is D88, `azblob` D89). A failed export
+  backends shards did not write then (`s3` is D88, `azblob` D89, `gha` D90). A failed export
   fails the build unless `ignore-error=true`. A `gha` entry without its token and URL is
   dropped, as buildx's `isActive` drops it.
 - **`--no-cache-filter`** is the frontend's `no-cache` option, as buildx sends it
