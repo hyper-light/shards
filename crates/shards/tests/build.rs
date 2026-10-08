@@ -7546,7 +7546,8 @@ fn an_agents_flood_of_flows_takes_no_others() {
 
 /// One agent's flows that conntrack may not evict take no other agent's (D61): a, granted
 /// TCP 7002 to x, opens connections from several threads and holds them, each an assured
-/// entry, more than a table holds, the table full before c begins; c, meanwhile, connects
+/// entry, until its table is full, before c begins (past full, a few more come as the
+/// table's unanswered entries go: 64 more in 9 s here, none in CI's 2 s); c, meanwhile, connects
 /// to b and to x itself, and makes every connection, each given 3 s, past a SYN's first
 /// retransmission (1 s), so that what a full table refuses fails and what a busy listener
 /// drops once does not. a's entries fill a's gate's table alone; x's gate tracks none of
@@ -7615,7 +7616,7 @@ fn an_agents_assured_flows_take_no_others() {
     {
         eprintln!("{l}");
     }
-    // a made more connections than a table holds, each an entry that stays.
+    // a filled its table, each connection an entry that stays.
     let flooded = all
         .lines()
         .find_map(|l| l.strip_prefix("[agent a] confined tcpflood x:7002: "))
@@ -7623,7 +7624,7 @@ fn an_agents_assured_flows_take_no_others() {
     let (made, rest) = flooded.split_once(" made, table ").unwrap();
     let (table, full) = rest.split_once(", full at ").unwrap();
     let (made, table): (u64, u64) = (made.parse().unwrap(), table.parse().unwrap());
-    assert!(made > table, "a made {made}, the table holds {table}:\n{all}");
+    assert!(made >= table, "a made {made}, the table holds {table}:\n{all}");
     // The table was full before c began, else c's connections prove nothing.
     let full: u64 = full
         .strip_suffix(" ms")
