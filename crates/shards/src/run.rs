@@ -430,6 +430,11 @@ impl Origin {
         serde_json::from_slice(&bytes).ok()
     }
 
+    /// The root filesystem the template was saved from.
+    pub fn rootfs(&self) -> &Path {
+        &self.rootfs
+    }
+
     pub fn live(&self, guest: Option<&Guest>) -> bool {
         self.rootfs.is_file()
             && guest

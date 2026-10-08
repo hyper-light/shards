@@ -13,14 +13,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Condvar, Mutex, PoisonError};
 use std::time::Instant;
 
-use super::{Daemon, For, MAX_FAILURES, State, Threads, lock, log};
+use super::{Daemon, For, MAX_FAILURES, State, Threads, lock, log, resolved};
 use crate::containers::Disk;
 
 /// Warm VMs of one pool to start, counted as starting already
 /// ([`Daemon::plan_refill`]), for [`Daemon::start_planned`] to start.
 pub(super) struct Planned {
     dir: PathBuf,
-    args: Vec<OsString>,
+    pub(super) args: Vec<OsString>,
     /// Its template's network device's MAC, if read already.
     net: Option<Option<[u8; 6]>>,
     /// Whether the most bytes its working sets may take has been read.
@@ -122,6 +122,20 @@ impl<D: Disk> Daemon<D> {
         let (for_runs, more) = {
             let pool = state.pools.entry(dir.to_path_buf()).or_default();
             if pool.failures >= MAX_FAILURES {
+                return None;
+            }
+            // A pool forgotten (age_pools) before its refill comes is made again here,
+            // knowing its root filesystem only as its template records it. Its VMs are
+            // given that or none start: the file a restore names is never what the VM
+            // saving the template happened to write.
+            if pool.rootfs.is_none() {
+                pool.rootfs = crate::run::Origin::read(dir).map(|o| resolved(o.rootfs()));
+            }
+            if pool.rootfs.is_none() {
+                log(format!(
+                    "{}: no root filesystem recorded; no warm VM restores it",
+                    dir.display()
+                ));
                 return None;
             }
             let now = Instant::now();

@@ -512,9 +512,13 @@ impl Waiter {
 /// saving the template recorded it: resolved, links and all (vmm platform::input_path).
 fn pool_of<'s>(state: &'s mut State, dir: &Path, rootfs: &Path) -> &'s mut Pool {
     let pool = state.pools.entry(dir.to_path_buf()).or_default();
-    pool.rootfs
-        .get_or_insert_with(|| std::fs::canonicalize(rootfs).unwrap_or_else(|_| rootfs.to_path_buf()));
+    pool.rootfs.get_or_insert_with(|| resolved(rootfs));
     pool
+}
+
+/// `rootfs` as the VM saving a template records it: resolved, links and all.
+fn resolved(rootfs: &Path) -> PathBuf {
+    std::fs::canonicalize(rootfs).unwrap_or_else(|_| rootfs.to_path_buf())
 }
 
 /// A run's stop as the daemon stops, once begun ([`Daemon::stop_each`]): SIGKILL at
@@ -5547,9 +5551,7 @@ mod tests {
             // Templates of their own, so their pools refill.
             let (cold, hot) = (t.home.join("cold"), t.home.join("hot"));
             for dir in [&cold, &hot] {
-                std::fs::create_dir_all(dir.join("g-1")).unwrap();
-                std::fs::write(dir.join("current"), b"g-1\n").unwrap();
-                std::fs::write(dir.join("g-1").join("state"), b"").unwrap();
+                template(dir);
             }
             assert!(
                 shards_vmm::snapshot::exists(&cold),
@@ -7125,6 +7127,46 @@ mod tests {
         std::fs::create_dir_all(dir.join("g-1")).unwrap();
         std::fs::write(dir.join("current"), b"g-1\n").unwrap();
         std::fs::write(dir.join("g-1").join("state"), b"").unwrap();
+        let rootfs = dir.with_extension("erofs");
+        std::fs::write(&rootfs, b"").unwrap();
+        let origin = serde_json::json!({"rootfs": rootfs, "kernel_digest": "", "init_digest": ""});
+        std::fs::write(dir.join("origin.json"), origin.to_string()).unwrap();
+    }
+
+    /// A pool forgotten before its refill comes, made before its first claim and so
+    /// unclaimed past any keep-alive, is made again by the refill, which gives its VMs
+    /// the root filesystem its template records; a template that records none has no warm
+    /// VM restore it with whatever its saving VM wrote.
+    #[test]
+    fn a_pool_made_again_restores_its_templates_root_filesystem() {
+        let mut t = Test::new("made-again");
+        t.daemon.target = 2;
+        t.daemon.warm_max = 8;
+        t.run(|t| {
+            let dir = t.home.join("template");
+            template(&dir);
+            let rootfs = dir.with_extension("erofs");
+            pool_of(&mut lock(&t.daemon.state), &dir, &rootfs);
+            t.daemon.age_pools();
+            assert!(!lock(&t.daemon.state).pools.contains_key(&dir), "the pool kept");
+            let planned = t.t.daemon.plan_refill(&mut lock(&t.daemon.state), &dir, true);
+            let args = planned.expect("VMs planned").args;
+            let mut backing = std::fs::canonicalize(&rootfs).unwrap().into_os_string();
+            backing.push(":ro");
+            assert!(
+                args.windows(2).any(|w| w[0] == "--backing" && w[1] == backing),
+                "{args:?}"
+            );
+
+            let bare = t.home.join("bare");
+            template(&bare);
+            std::fs::remove_file(bare.join("origin.json")).unwrap();
+            assert!(
+                t.daemon
+                    .plan_refill(&mut lock(&t.daemon.state), &bare, true)
+                    .is_none()
+            );
+        });
     }
 
     /// The warm VMs a refill plans count as starting at once, before any is started, so
