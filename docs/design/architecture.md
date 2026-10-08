@@ -1976,7 +1976,11 @@ containers. Evidence: docs/research/image-build.md (§3 ranks the choices below)
          collected with the store's other leftovers.
        - Layers are stored uncompressed (`application/vnd.oci.image.layer.v1.tar`), so
          no build or run spends time compressing or decompressing them; the diff ID is the
-         digest. A push compresses.
+         digest. A push and an archive send them as stored, uncompressed (corrected
+         2026-10-08: this said a push compresses; only a pull's transfer is compressed,
+         by content encoding). BuildKit's exporters gzip by default and take
+         `compression`, `compression-level`, `force-compression`, `oci-mediatypes` and
+         `rewrite-timestamp`, which shards does not yet apply: open.
        - Refs record what a reference resolved to, so a stored image reports the index
          digest Docker reports, as a fresh pull does.
        - The root filesystem is written from the target's last snapshot, not stacked
