@@ -2736,9 +2736,23 @@ microVMs, from a git daemon and from smart HTTP served by git's own upload-pack.
   scopes `http.<url>.extraheader` (urlmatch.c), so a submodule elsewhere is not sent them
   (tested: `add_fetches_git_with_the_builds_secrets`, refused without them).
 
-Open: SSH remotes and `--ssh`; `SOURCE_DATE_EPOCH` taken from a Git stage (the commit's committer time, as BuildKit
-takes it); servers that refuse a commit not at a ref's tip ("not our ref"), which BuildKit
-fetches whole.
+- **SOURCE_DATE_EPOCH from a Git stage**, as dockerfile/1.27.1 takes it (epoch.go,
+  `sourceDateEpochFromMetadata`): the stage's ADD made the source `llb.Git` makes
+  (`plan::git_identifier`, which planning shares), its ref resolved and checked as a fetch
+  resolves it, the commit fetched with the build's secrets and SSH agent, and its
+  committer's time, not its author's (tested: `source_date_epoch_is_taken_from_a_source_stage`,
+  mutation-checked; a ref the repository lacks fails the build).
+
+- **A commit a server will not send alone** ("not our ref": a commit asked for by its
+  name, or a submodule's pinned commit, that is no ref's tip, from a server that keeps
+  `uploadpack.allowReachableSHA1InWant` off): every ref's history fetched whole, as BuildKit
+  then fetches it (`git fetch --tags origin`), and a kept repository not shallow, its
+  history whole; a commit in no ref's history refused in the server's words (tested:
+  `add_fetches_a_commit_a_server_will_not_send_alone`, against a server that refuses as
+  such hosts do; mutation-checked). git's own upload-pack, speaking protocol v2, sends
+  such a commit (measured, git 2.50.1), so the fallback is for hosts that do not.
+
+SSH remotes: D69.
 
 ### RUN steps under Docker's default seccomp profile (D49)
 

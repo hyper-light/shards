@@ -358,6 +358,36 @@ fn wire(url: &str, cancel: &Cancel, auth: Option<&Auth>, ssh: SshAgents<'_>) -> 
     ))
 }
 
+/// When `src`'s commit was made, as BuildKit takes a Git source's SOURCE_DATE_EPOCH
+/// (dockerfile/1.27.1 epoch.go, sourceDateEpochFromMetadata): the ref resolved and
+/// checked as a fetch resolves it, the commit fetched, its committer's time.
+pub fn commit_time(
+    src: &Source,
+    limits: Limits,
+    cancel: &Cancel,
+    auth: Option<&Auth>,
+    agents: &super::Agents,
+) -> Result<(i64, u32), String> {
+    let ssh = SshAgents {
+        agents,
+        id: src.ssh_agent.as_deref(),
+    };
+    let wrap = if src.reference.is_empty() {
+        format!("error fetching default branch for repository {}", src.url)
+    } else {
+        format!("failed to fetch remote {}", src.url)
+    };
+    let remote =
+        Remote::open(wire(&src.url, cancel, auth, ssh)?, &agent()).map_err(|e| format!("{wrap}: {e}"))?;
+    let resolved = remote
+        .resolve(&src.reference)
+        .map_err(|e| format!("{wrap}: {e}"))?
+        .ok_or_else(|| format!("repository does not contain ref {}, output: \"\"", src.reference))?;
+    check(src.checksum.as_deref(), &resolved)?;
+    let (pack, _) = fetch_commits(&remote, &[resolved.commit], limits).map_err(|e| format!("{wrap}: {e}"))?;
+    Ok((commit_of(&pack, &resolved.commit)?.committed, 0))
+}
+
 /// The snapshot of `src`: resolved, fetched within `limits`, checked out; each line git's
 /// commands would print through `say`.
 pub fn snapshot(
@@ -407,9 +437,7 @@ pub fn snapshot(
     if keep && let Some(tag) = resolved.tag {
         wants.push(tag);
     }
-    let pack = remote
-        .fetch(&wants, limits)
-        .map_err(|e| snap(format!("{wrap}: {e}")))?;
+    let (pack, shallow) = fetch_commits(&remote, &wants, limits).map_err(|e| snap(format!("{wrap}: {e}")))?;
     let commit = commit_of(&pack, &resolved.commit).map_err(snap)?;
     let stage = exec.stage().map_err(snap)?;
     let mut out = Checkout::new(
@@ -450,6 +478,7 @@ pub fn snapshot(
         let files = repo::git_dir(
             &pack,
             &resolved.commit,
+            shallow,
             &shown,
             kept.as_ref(),
             index,
@@ -463,6 +492,29 @@ pub fn snapshot(
         }
     }
     out.finish(exec, time).map_err(snap)
+}
+
+/// The pack of `wants`, one commit deep; from a server that will not send a commit that
+/// is no ref's tip by its name alone ("not our ref": `uploadpack.allowReachableSHA1InWant`
+/// off, as some hosts keep it), every ref's history whole, as BuildKit then fetches it
+/// (source/git `git fetch --tags origin`). Whether what it holds is shallow.
+fn fetch_commits<T: Transport>(
+    remote: &Remote<T>,
+    wants: &[Oid],
+    limits: Limits,
+) -> Result<(Pack, bool), String> {
+    match remote.fetch(wants, limits) {
+        Ok(pack) => Ok((pack, true)),
+        Err(refused) if refused.starts_with("remote error:") => {
+            let pack = remote.fetch_whole(limits)?;
+            if wants.iter().all(|w| pack.has(w)) {
+                Ok((pack, false))
+            } else {
+                Err(refused)
+            }
+        }
+        Err(e) => Err(e),
+    }
 }
 
 /// The ref a kept repository keeps: the branch or tag asked for, by its full name; none
@@ -807,7 +859,7 @@ impl Checkout {
                 String::from_utf8_lossy(&name)
             ));
             let remote = Remote::open(wire(&sub_url, cancel, self.auth.as_ref(), ssh)?, &agent())?;
-            let sub_pack = remote.fetch(&[commit], limits)?;
+            let (sub_pack, sub_shallow) = fetch_commits(&remote, &[commit], limits)?;
             let sub_commit = commit_of(&sub_pack, &commit)?;
             let time = (sub_commit.committed, 0);
             let tracked = self.walk(&sub_pack, &sub_commit.tree, &local, time)?;
@@ -832,7 +884,16 @@ impl Checkout {
                 )?;
                 let worktree = format!("{}{}", up(&git_dir), String::from_utf8_lossy(&local));
                 let index = repo::index(&tracked)?;
-                let files = repo::git_dir(&sub_pack, &commit, &sub_url, None, index, &[], Some(&worktree))?;
+                let files = repo::git_dir(
+                    &sub_pack,
+                    &commit,
+                    sub_shallow,
+                    &sub_url,
+                    None,
+                    index,
+                    &[],
+                    Some(&worktree),
+                )?;
                 modules.push(Module {
                     name: name.clone(),
                     url: sub_url.clone(),

@@ -647,6 +647,62 @@ fn resolve_epoch(
     resolver.epoch(&source).map_err(Fail::new)
 }
 
+/// `llb.Git`'s identifier (`git://HOST/PATH[#REF[:SUBDIR]]`) and attributes for `g`, as
+/// BuildKit makes them. Unlike BuildKit, no SSH host keys are scanned while planning: they
+/// are the fetch's to verify.
+pub fn git_identifier(
+    g: &git::GitRef,
+    keep_git_dir: bool,
+    checksum: &[u8],
+) -> (Vec<u8>, BTreeMap<Vec<u8>, Vec<u8>>) {
+    let mut full = g.remote.clone();
+    let mut remote = git::parse_url(&full);
+    if remote == Err(git::UrlError::UnknownProtocol) {
+        full = [b"https://".as_slice(), &full].concat();
+        remote = git::parse_url(&full);
+    }
+    if let Ok(r) = &remote {
+        full = r.remote.clone();
+    }
+    let id = match &remote {
+        Err(_) => full.clone(),
+        Ok(r) => {
+            let mut id = [r.host.as_slice(), &go::join(&[b"/", &r.path])].concat();
+            if !g.reference.is_empty() || !g.subdir.is_empty() {
+                id.push(b'#');
+                id.extend_from_slice(&g.reference);
+                if !g.subdir.is_empty() {
+                    id.push(b':');
+                    id.extend_from_slice(&g.subdir);
+                }
+            }
+            id
+        }
+    };
+    let mut attrs = BTreeMap::new();
+    if keep_git_dir {
+        attrs.insert(b"git.keepgitdir".to_vec(), b"true".to_vec());
+    }
+    if !full.is_empty() {
+        attrs.insert(b"git.fullurl".to_vec(), full);
+    }
+    attrs.insert(b"git.authtokensecret".to_vec(), b"GIT_AUTH_TOKEN".to_vec());
+    attrs.insert(b"git.authheadersecret".to_vec(), b"GIT_AUTH_HEADER".to_vec());
+    if remote.as_ref().is_ok_and(|r| r.scheme == b"ssh") {
+        attrs.insert(b"git.mountsshsock".to_vec(), b"default".to_vec());
+    }
+    if !checksum.is_empty() {
+        attrs.insert(b"git.checksum".to_vec(), checksum.to_vec());
+    }
+    if g.submodules == Some(false) {
+        attrs.insert(b"git.skipsubmodules".to_vec(), b"true".to_vec());
+    }
+    if g.fetch_by_commit {
+        attrs.insert(b"git.fetchbycommit".to_vec(), b"true".to_vec());
+    }
+    ([b"git://".as_slice(), &id].concat(), attrs)
+}
+
 /// `resolveSourceDateEpochState`. shards takes no named contexts (`--build-context`), so
 /// the name is the context's or a stage's.
 fn epoch_source(
@@ -3761,60 +3817,11 @@ impl Planner<'_> {
     }
 
     /// `llb.Git`: the repository as a source, its ID and attributes as BuildKit makes
-    /// them. Unlike BuildKit, no SSH host keys are scanned while planning: they are the
-    /// fetch's to verify.
+    /// them ([`git_identifier`]).
     fn git_source(&mut self, g: &git::GitRef, keep_git_dir: bool, checksum: &[u8], name: &[u8]) -> State {
-        let mut full = g.remote.clone();
-        let mut remote = git::parse_url(&full);
-        if remote == Err(git::UrlError::UnknownProtocol) {
-            full = [b"https://".as_slice(), &full].concat();
-            remote = git::parse_url(&full);
-        }
-        if let Ok(r) = &remote {
-            full = r.remote.clone();
-        }
-        let id = match &remote {
-            Err(_) => full.clone(),
-            Ok(r) => {
-                let mut id = [r.host.as_slice(), &go::join(&[b"/", &r.path])].concat();
-                if !g.reference.is_empty() || !g.subdir.is_empty() {
-                    id.push(b'#');
-                    id.extend_from_slice(&g.reference);
-                    if !g.subdir.is_empty() {
-                        id.push(b':');
-                        id.extend_from_slice(&g.subdir);
-                    }
-                }
-                id
-            }
-        };
-        let mut attrs = BTreeMap::new();
-        if keep_git_dir {
-            attrs.insert(b"git.keepgitdir".to_vec(), b"true".to_vec());
-        }
-        if !full.is_empty() {
-            attrs.insert(b"git.fullurl".to_vec(), full);
-        }
-        attrs.insert(b"git.authtokensecret".to_vec(), b"GIT_AUTH_TOKEN".to_vec());
-        attrs.insert(b"git.authheadersecret".to_vec(), b"GIT_AUTH_HEADER".to_vec());
-        if remote.as_ref().is_ok_and(|r| r.scheme == b"ssh") {
-            attrs.insert(b"git.mountsshsock".to_vec(), b"default".to_vec());
-        }
-        if !checksum.is_empty() {
-            attrs.insert(b"git.checksum".to_vec(), checksum.to_vec());
-        }
-        if g.submodules == Some(false) {
-            attrs.insert(b"git.skipsubmodules".to_vec(), b"true".to_vec());
-        }
-        if g.fetch_by_commit {
-            attrs.insert(b"git.fetchbycommit".to_vec(), b"true".to_vec());
-        }
-        self.graph.source(
-            [b"git://".as_slice(), &id].concat(),
-            attrs,
-            None,
-            custom_name(name.to_vec()),
-        )
+        let (identifier, attrs) = git_identifier(g, keep_git_dir, checksum);
+        self.graph
+            .source(identifier, attrs, None, custom_name(name.to_vec()))
     }
 
     fn finalize(mut self, target: usize) -> Result<Plan, Fail> {

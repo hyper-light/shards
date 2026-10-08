@@ -500,6 +500,9 @@ struct Bases<'a> {
     /// The OSI artifacts the build takes, by what the planner names their sources: their
     /// content layers, read as image layers.
     artifacts: RefCell<BTreeMap<String, Vec<Layer>>>,
+    /// The build's secrets and SSH agents, for a Git source SOURCE_DATE_EPOCH names.
+    secrets: &'a BTreeMap<String, buildflags::SecretBytes>,
+    agents: &'a Agents,
 }
 
 impl Resolver for Bases<'_> {
@@ -618,8 +621,23 @@ impl Bases<'_> {
                 let file = std::fs::File::open(&fetched.path).map_err(|e| e.to_string())?;
                 shards_build::archive::newest_file(file, &limits).map_err(|e| e.0)
             }
-            EpochSource::Git { .. } => {
-                Err("taking SOURCE_DATE_EPOCH from a Git source is not supported yet".into())
+            EpochSource::Git { git: g, .. } => {
+                let (identifier, attrs) = plan::git_identifier(g, false, &g.checksum);
+                let src = git::source(&identifier, &attrs)?;
+                let bound = usize::try_from(crate::pull::limits()?.bytes).unwrap_or(usize::MAX);
+                let limits = shards_git::remote::Limits {
+                    pack: bound,
+                    object: bound,
+                };
+                let auth = git::auth(&src, self.secrets);
+                git::commit_time(
+                    &src,
+                    limits,
+                    &shards_registry::http::Cancel::new(),
+                    auth.as_ref(),
+                    self.agents,
+                )
+                .map(Some)
             }
         }
     }
@@ -1196,6 +1214,8 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
         progress: &progress,
         resolved: RefCell::new(BTreeMap::new()),
         artifacts: RefCell::new(BTreeMap::new()),
+        secrets: &secrets,
+        agents: &agents,
         layouts: named
             .layouts
             .iter()

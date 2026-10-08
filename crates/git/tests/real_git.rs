@@ -405,6 +405,7 @@ fn a_kept_git_dir_is_one_git_reads_as_its_own() {
     let files = repo::git_dir(
         &pack,
         &head,
+        true,
         "http://h/repo.git",
         Some(&kept),
         repo::index(&tracked).unwrap(),

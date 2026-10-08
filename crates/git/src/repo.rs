@@ -107,13 +107,16 @@ pub struct KeptRef {
     pub oid: Oid,
 }
 
-/// The files of a `.git` holding `pack` with HEAD detached at `head`, shallow there,
-/// `origin` at `url`, the ref asked for, `index`, each submodule's `(name, url)` in its
-/// config, and, for a submodule's own repository, the path back to its work tree: each
-/// path relative to the `.git` and its bytes. Objects are read-only, as git writes them.
+/// The files of a `.git` holding `pack` with HEAD detached at `head`, shallow there when
+/// `shallow` (fetched one deep, as git marks even a root commit so fetched), `origin` at
+/// `url`, the ref asked for, `index`, each submodule's `(name, url)` in its config, and,
+/// for a submodule's own repository, the path back to its work tree: each path relative
+/// to the `.git` and its bytes. Objects are read-only, as git writes them.
+#[allow(clippy::too_many_arguments)]
 pub fn git_dir(
     pack: &Pack,
     head: &Oid,
+    shallow: bool,
     url: &str,
     kept: Option<&KeptRef>,
     index: Vec<u8>,
@@ -152,11 +155,6 @@ pub fn git_dir(
             0o644,
         ),
         ("config".to_string(), config.into_bytes(), 0o644),
-        (
-            "shallow".to_string(),
-            format!("{}\n", head.hex()).into_bytes(),
-            0o644,
-        ),
         ("index".to_string(), index, 0o644),
         (
             format!("objects/pack/pack-{pack_name}.pack"),
@@ -169,6 +167,13 @@ pub fn git_dir(
             0o444,
         ),
     ];
+    if shallow {
+        files.push((
+            "shallow".to_string(),
+            format!("{}\n", head.hex()).into_bytes(),
+            0o644,
+        ));
+    }
     if let Some(r) = kept {
         files.push((
             String::from_utf8_lossy(&r.name).into_owned(),

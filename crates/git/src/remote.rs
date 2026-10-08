@@ -118,6 +118,23 @@ impl<T: Transport> Remote<T> {
         let got = protocol::fetched(self.transport.command(&body)?, limits.pack)?;
         Pack::read(got.pack, limits.object)
     }
+
+    /// The pack of every ref's history, whole, as BuildKit's `git fetch --tags origin`
+    /// takes a repository whose server will not send a commit by its name alone.
+    pub fn fetch_whole(&self, limits: Limits) -> Result<Pack, String> {
+        let mut wants: Vec<Oid> = Vec::new();
+        for r in self.refs()? {
+            if !wants.contains(&r.oid) {
+                wants.push(r.oid);
+            }
+        }
+        if wants.is_empty() {
+            return Err("the repository has no refs".into());
+        }
+        let body = protocol::fetch(&self.agent, &wants, 0, &self.caps)?;
+        let got = protocol::fetched(self.transport.command(&body)?, limits.pack)?;
+        Pack::read(got.pack, limits.object)
+    }
 }
 
 /// IsCommitSHA (util/gitutil/git_commit.go): exactly 40 (SHA-1) or 64 (SHA-256)

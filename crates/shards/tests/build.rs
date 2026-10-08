@@ -1345,8 +1345,9 @@ fn crafted(name: &str) -> Vec<u8> {
 /// SOURCE_DATE_EPOCH naming a stage that only fetches a source takes the build's time
 /// from it, as dockerfile/1.27.1 takes it (epoch.go): a URL's Last-Modified when it was
 /// fetched without a checksum, else the newest regular file in what it fetched, when
-/// that is an archive; none for what is neither, nor for `context`, a local directory;
-/// and a source that cannot be fetched fails the build, in BuildKit's words.
+/// that is an archive; a Git repository's commit, its committer's time; none for what is
+/// neither, nor for `context`, a local directory; and a source that cannot be fetched
+/// fails the build, in BuildKit's words.
 #[test]
 fn source_date_epoch_is_taken_from_a_source_stage() {
     if cannot_run_vms() {
@@ -1354,6 +1355,18 @@ fn source_date_epoch_is_taken_from_a_source_stage() {
     }
     use sha2::Digest as _;
     let url = format!("http://127.0.0.1:{}", epoch_server());
+    // A repository whose commit's committer time (git_in's) is not its author's.
+    let repos = TempDir::new("build-epoch-repos");
+    let origin = repos.join("repo.git");
+    std::fs::create_dir_all(&origin).unwrap();
+    git_in(&origin, &["init", "-q", "-b", "main"]);
+    std::fs::write(origin.join("f"), "f\n").unwrap();
+    git_in(&origin, &["add", "-A"]);
+    git_in(&origin, &["commit", "-q", "-m", "one"]);
+    let git_url = format!(
+        "http://127.0.0.1:{}/repo.git",
+        git_http_server(repos.to_path_buf(), Vec::new())
+    );
     let home = TempDir::new("build-epoch-home");
     let env = [
         ("SHARDS_HOME", home.as_os_str()),
@@ -1394,6 +1407,7 @@ fn source_date_epoch_is_taken_from_a_source_stage() {
             "2027-01-15T08:00:00Z",
         ),
         (3, format!("{url}/nsec.tar"), "src", "2023-11-14T22:13:20Z"),
+        (9, format!("{git_url}#main"), "src", "2020-09-13T12:26:40Z"),
     ] {
         let (built, inspected) = build(n, &add, epoch);
         assert_eq!(built.status, Some(0), "{add}: {}", built.stderr);
@@ -1438,8 +1452,8 @@ fn source_date_epoch_is_taken_from_a_source_stage() {
         ),
         (
             7,
-            "https://github.com/moby/buildkit.git#v0.20.0".to_string(),
-            "failed to solve: taking SOURCE_DATE_EPOCH from a Git source is not supported yet",
+            format!("{git_url}#nope"),
+            "repository does not contain ref nope",
         ),
         (
             8,
@@ -2004,6 +2018,34 @@ fn git_http_server(root: std::path::PathBuf, accepted: Vec<String>) -> u16 {
                         continue;
                     };
                     let dir = root.join(repo.trim_start_matches('/'));
+                    // A strict server (under /strict/) sends no commit by its name alone
+                    // that is no ref's tip, as hosts that keep allowReachableSHA1InWant off.
+                    if path.starts_with("/strict/") && !advertise {
+                        let tips = std::process::Command::new("git")
+                            .arg("-C")
+                            .arg(&dir)
+                            .args(["for-each-ref", "--format=%(objectname)"])
+                            .output()
+                            .unwrap()
+                            .stdout;
+                        let tips = String::from_utf8_lossy(&tips).into_owned();
+                        let text = String::from_utf8_lossy(&body).into_owned();
+                        let refused = text.split("want ").skip(1).find_map(|w| {
+                            let sha = w.get(..40)?;
+                            (!tips.contains(sha)).then(|| sha.to_string())
+                        });
+                        if let Some(sha) = refused {
+                            let line = format!("ERR upload-pack: not our ref {sha}\n");
+                            let out = format!("{:04x}{line}", line.len() + 4);
+                            let head = format!(
+                                "HTTP/1.1 200 OK\r\nContent-Type: {kind}\r\nContent-Length: {}\r\n\r\n",
+                                out.len()
+                            );
+                            let _ = conn.write_all(head.as_bytes());
+                            let _ = conn.write_all(out.as_bytes());
+                            continue;
+                        }
+                    }
                     let mut cmd = std::process::Command::new("git");
                     cmd.args(["upload-pack", "--stateless-rpc"]);
                     if advertise {
@@ -2549,6 +2591,97 @@ fn add_fetches_git_over_ssh() {
             .contains("no SSH key \"default\" forwarded from the client"),
         "{}",
         none.stderr
+    );
+}
+
+/// A commit that is no ref's tip, asked for by its name or pinned by a submodule, from a
+/// server that will not send it alone ("not our ref"): its refs' history fetched whole, as
+/// BuildKit fetches it, and the kept repository not shallow; and a commit that is in no
+/// ref's history at all, refused in the server's words.
+#[test]
+fn add_fetches_a_commit_a_server_will_not_send_alone() {
+    if cannot_run_vms() {
+        return;
+    }
+    if std::process::Command::new("git")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        eprintln!("SKIP: no git on this host");
+        return;
+    }
+    let repos = TempDir::new("build-add-git-strict-repos");
+    let (origin, sub) = (repos.join("strict/repo.git"), repos.join("strict/sub.git"));
+    std::fs::create_dir_all(&sub).unwrap();
+    git_in(&sub, &["init", "-q", "-b", "main"]);
+    std::fs::write(sub.join("v.txt"), "pinned\n").unwrap();
+    git_in(&sub, &["add", "-A"]);
+    git_in(&sub, &["commit", "-q", "-m", "pinned"]);
+    std::fs::create_dir_all(&origin).unwrap();
+    git_in(&origin, &["init", "-q", "-b", "main"]);
+    std::fs::write(origin.join("a.txt"), "first\n").unwrap();
+    git_in(&origin, &["submodule", "add", "-q", "../sub.git", "mods/sub"]);
+    git_in(&origin, &["add", "-A"]);
+    git_in(&origin, &["commit", "-q", "-m", "first"]);
+    let first = git_in(&origin, &["rev-parse", "HEAD"]).trim().to_string();
+    std::fs::write(origin.join("a.txt"), "second\n").unwrap();
+    git_in(&origin, &["commit", "-q", "-am", "second"]);
+    // The submodule moves on: its pinned commit is no longer its tip.
+    std::fs::write(sub.join("v.txt"), "moved on\n").unwrap();
+    git_in(&sub, &["commit", "-q", "-am", "moved on"]);
+    let port = git_http_server(repos.to_path_buf(), Vec::new());
+    let url = format!("http://127.0.0.1:{port}/strict/repo.git");
+
+    let (image, _) = served();
+    let home = TempDir::new("build-add-git-strict-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let ctx = context(
+        "build-add-git-strict-ctx",
+        &format!("FROM {image}\nADD --keep-git-dir=true {url}#{first} /r\n"),
+    );
+    let built = shards(&["build", "-t", "strict:1", ctx.to_str().unwrap()]);
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    let stat = shards(&[
+        "run",
+        "--rm",
+        "-u",
+        "root",
+        "strict:1",
+        "stat",
+        "/r/a.txt",
+        "/r/mods/sub/v.txt",
+        "/r/.git/HEAD",
+        "/r/.git/shallow",
+    ]);
+    assert_eq!(
+        stat.stdout,
+        format!(
+            "/r/a.txt file 644 0:0 6\n= first\\n\n/r/mods/sub/v.txt file 644 0:0 7\n= pinned\\n\n\
+             /r/.git/HEAD file 644 0:0 41\n= {first}\\n\n/r/.git/shallow missing No such file or directory (os error 2)\n"
+        ),
+        "{}",
+        stat.stderr
+    );
+    // A commit in no ref's history: the server's refusal.
+    let nowhere = "0123456789abcdef0123456789abcdef01234567";
+    let bad = context(
+        "build-add-git-strict-bad",
+        &format!("FROM {image}\nADD {url}#{nowhere} /x\n"),
+    );
+    let refused = shards(&["build", bad.to_str().unwrap()]);
+    assert_ne!(refused.status, Some(0));
+    assert!(
+        refused
+            .stderr
+            .contains(&format!("remote error: upload-pack: not our ref {nowhere}")),
+        "{}",
+        refused.stderr
     );
 }
 
