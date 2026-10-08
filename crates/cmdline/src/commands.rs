@@ -2131,6 +2131,92 @@ pub static BUILD: Command = Command {
             "stringArray",
             "Do not cache specified stages",
         ),
+        Flag::many(
+            "add-host",
+            None,
+            "strings",
+            "Add a custom host-to-IP mapping (format: \"host:ip\")",
+        ),
+        Flag::string(
+            "cgroup-parent",
+            None,
+            "",
+            "Set the parent cgroup for the \"RUN\" instructions during build",
+        ),
+        Flag::string(
+            "network",
+            None,
+            "default",
+            "Set the networking mode for the \"RUN\" instructions during build",
+        ),
+        Flag::many(
+            "resource",
+            None,
+            "stringArray",
+            "Resource limits for build containers (format: \"memory=2g\", \"cpu-quota=50000\")",
+        ),
+        Flag::value(
+            "shm-size",
+            None,
+            "bytes",
+            "Shared memory size for build containers",
+        ),
+        // Hidden in buildx: the legacy resource flags, which --resource supersedes, and
+        // the classic builder's, which BuildKit ignores, some with a warning.
+        Flag::string("memory", Some(b'm'), "", "Memory limit").hidden(),
+        Flag::string(
+            "memory-swap",
+            None,
+            "",
+            "Swap limit equal to memory plus swap: \"-1\" to enable unlimited swap",
+        )
+        .hidden(),
+        Flag::string("cpu-shares", Some(b'c'), "", "CPU shares (relative weight)").hidden(),
+        Flag::string(
+            "cpu-period",
+            None,
+            "",
+            "Limit the CPU CFS (Completely Fair Scheduler) period",
+        )
+        .hidden(),
+        Flag::string(
+            "cpu-quota",
+            None,
+            "",
+            "Limit the CPU CFS (Completely Fair Scheduler) quota",
+        )
+        .hidden(),
+        Flag::string(
+            "cpuset-cpus",
+            None,
+            "",
+            "CPUs in which to allow execution (\"0-3\", \"0,1\")",
+        )
+        .hidden(),
+        Flag::string(
+            "cpuset-mems",
+            None,
+            "",
+            "MEMs in which to allow execution (\"0-3\", \"0,1\")",
+        )
+        .hidden(),
+        Flag::bool("compress", None, "Compress the build context using gzip").hidden(),
+        Flag::string("isolation", None, "", "Container isolation technology").hidden(),
+        Flag::many("security-opt", None, "strings", "Security options").hidden(),
+        Flag::bool(
+            "squash",
+            None,
+            "Squash newly built layers into a single new layer",
+        )
+        .hidden(),
+        Flag::bool(
+            "rm",
+            None,
+            "Remove intermediate containers after a successful build",
+        )
+        .defaulting("true")
+        .hidden(),
+        Flag::bool("force-rm", None, "Always remove intermediate containers").hidden(),
         Flag::many("platform", None, "stringArray", "Set target platform for build"),
         Flag::string(
             "progress",
@@ -2183,33 +2269,16 @@ pub static BUILD: Command = Command {
         Flag::many("ulimit", None, "ulimit", "Ulimit options").defaulting("[]"),
     ],
     unserved: "\
-add-host - m - -\n\
 annotation - m - -\n\
 attest - m - -\n\
 builder - s - -\n\
 call - s build -\n\
-cgroup-parent - s - -\n\
 check - b - -\n\
-compress - b false -\n\
-cpu-period - s - -\n\
-cpu-quota - s - -\n\
-cpu-shares c s - -\n\
-cpuset-mems - s - -\n\
 debug D b false -\n\
-force-rm - b false -\n\
-isolation - s - -\n\
-memory m s - -\n\
-memory-swap - s - -\n\
-network - s default -\n\
 policy - m - -\n\
 print - s - -\n\
 provenance - s - -\n\
-resource - m - -\n\
-rm - b true -\n\
-sbom - s - -\n\
-security-opt - m - -\n\
-shm-size - s 0 -\n\
-squash - b false -",
+sbom - s - -",
     interspersed: true,
     error_prefix: "ERROR: ",
 };

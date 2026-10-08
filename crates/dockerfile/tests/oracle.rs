@@ -896,6 +896,30 @@ fn meta_v(md: &shards_dockerfile::llb::Meta) -> Value {
         put(&mut p, "weak", Value::Bool(pg.weak));
         m.insert("progress_group".into(), Value::Object(p));
     }
+    // protojson: 64-bit numbers as strings, zero fields left out.
+    if let Some(r) = &md.linux_resources {
+        let mut l = serde_json::Map::new();
+        for (k, n) in [
+            ("memory", r.memory),
+            ("memorySwap", r.memory_swap),
+            ("cpuQuota", r.cpu_quota),
+        ] {
+            if n != 0 {
+                l.insert(k.into(), n.to_string().into());
+            }
+        }
+        for (k, n) in [("cpuShares", r.cpu_shares), ("cpuPeriod", r.cpu_period)] {
+            if n != 0 {
+                l.insert(k.into(), n.to_string().into());
+            }
+        }
+        for (k, v) in [("cpusetCpus", &r.cpuset_cpus), ("cpusetMems", &r.cpuset_mems)] {
+            if !v.is_empty() {
+                l.insert(k.into(), ustr(v));
+            }
+        }
+        m.insert("linux_resources".into(), Value::Object(l));
+    }
     Value::Object(m)
 }
 
@@ -975,6 +999,16 @@ fn plans_are_buildkits() {
                 })
                 .unwrap_or_default()
         };
+        // The frontend's own options, as buildx sends them: read by dockerui's parsers.
+        let frontend_map: std::collections::BTreeMap<String, String> = opts_v["frontend"]
+            .as_object()
+            .map(|o| {
+                o.iter()
+                    .map(|(k, v)| (k.clone(), v.as_str().unwrap().to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let frontend = |k: &str| frontend_map.get(k).map_or("", String::as_str);
         let opts = Options {
             target_platform: Platform::new("linux", "amd64"),
             build_platforms: vec![Platform::new("linux", "amd64")],
@@ -1013,6 +1047,11 @@ fn plans_are_buildkits() {
             context_keys: map(&opts_v["shared_keys"]),
             context_excludes: Default::default(),
             // dockerui: the option's comma-separated stages, every stage where it is "".
+            extra_hosts: shards_dockerfile::dockerui::extra_hosts(frontend("add-hosts")).unwrap(),
+            shm_size: shards_dockerfile::dockerui::shm_size(frontend("shm-size")).unwrap(),
+            cgroup_parent: frontend("cgroup-parent").as_bytes().to_vec(),
+            linux_resources: shards_dockerfile::dockerui::linux_resources(&frontend_map).unwrap(),
+            network_mode: shards_dockerfile::dockerui::net_mode(frontend("force-network-mode")).unwrap(),
             no_cache: opts_v["no_cache"].as_str().map(|v| {
                 if v.is_empty() {
                     Vec::new()

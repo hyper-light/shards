@@ -180,8 +180,12 @@ fn serve(
             unsafe { BorrowedFd::borrow_raw(fd) }
         });
         let stdio = [stdin.as_fd(), out, err];
-        if let Err(e) = shards_ipc::send(&conn, request.kind, &request.payload, &stdio) {
-            return failed(&format!("asking the daemon: {e}"));
+        match shards_ipc::send(&conn, request.kind, &request.payload, &stdio) {
+            // Shut before it read the request, as a daemon of another build steps aside:
+            // the next one is asked.
+            Err(e) if unread(&e) => continue,
+            Err(e) => return failed(&format!("asking the daemon: {e}")),
+            Ok(()) => {}
         }
         if let Some((signals, filler, proxy)) = threads.take() {
             if let Err(e) = forward(signals, current) {
@@ -286,8 +290,10 @@ pub fn container(home: &Path, daemon: &Path, command: &Command, fds: &[std::os::
             Ok(conn) => conn,
             Err(e) => return failed(&e),
         };
-        if let Err(e) = shards_ipc::send(&conn, kind::CONTAINER, &command.encode(), fds) {
-            return failed(&format!("asking the daemon: {e}"));
+        match shards_ipc::send(&conn, kind::CONTAINER, &command.encode(), fds) {
+            Err(e) if unread(&e) => continue,
+            Err(e) => return failed(&format!("asking the daemon: {e}")),
+            Ok(()) => {}
         }
         let answered = std::thread::scope(|scope| answer(scope, &conn, home, command.east_asian));
         if let Some(status) = answered {
@@ -309,8 +315,11 @@ pub fn ask(
     // A daemon from another build answers RESTART once it has stepped aside.
     for _ in 0..2 {
         let conn = connect(home, daemon, &mut started)?;
-        shards_ipc::send(&conn, kind::CONTAINER, &command.encode(), fds)
-            .map_err(|e| format!("asking the daemon: {e}"))?;
+        match shards_ipc::send(&conn, kind::CONTAINER, &command.encode(), fds) {
+            Err(e) if unread(&e) => continue,
+            Err(e) => return Err(format!("asking the daemon: {e}")),
+            Ok(()) => {}
+        }
         let (mut out, mut err) = (Vec::new(), Vec::new());
         loop {
             match shards_ipc::recv(&conn) {
@@ -445,6 +454,15 @@ fn answer<'s>(
             }
         }
     }
+}
+
+/// Whether a request's send failed as on a connection the daemon shut without reading
+/// it: it steps aside for another build's client, and the next daemon takes the request.
+fn unread(e: &io::Error) -> bool {
+    matches!(
+        e.kind(),
+        io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset
+    )
 }
 
 /// How long `stop` waits for the daemon to hand over the runs in hand and exit.

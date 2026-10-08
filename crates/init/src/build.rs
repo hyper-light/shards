@@ -454,17 +454,26 @@ impl Builder {
             | libc::CLONE_NEWIPC
             | net
             | libc::CLONE_NEWCGROUP;
-        // SAFETY: clone(2) as fork(2) with new namespaces: no new stack, so the child runs
+        // Its limits, where it has any: a cgroup of its own it starts in, whose namespace
+        // is rooted there, as a container's is.
+        let cgroup = step_cgroup(&step.cgroup)?;
+        let mut args = crate::domains::CloneArgs {
+            flags: flags as u64,
+            exit_signal: libc::SIGCHLD as u64,
+            ..Default::default()
+        };
+        if let Some((fd, _)) = &cgroup {
+            args.flags |= crate::domains::CLONE_INTO_CGROUP;
+            args.cgroup = fd.as_raw_fd() as u64;
+        }
+        // SAFETY: clone3(2) as fork(2) with new namespaces: no new stack, so the child runs
         // on a copy of this one, as fork's does. The child calls the kernel for its IDs and
         // limits (`defaults::take_ids`), not musl, whose thread list is init's.
         let pid = unsafe {
             libc::syscall(
-                libc::SYS_clone,
-                (flags | libc::SIGCHLD) as libc::c_ulong,
-                0,
-                0,
-                0,
-                0,
+                libc::SYS_clone3,
+                &raw mut args,
+                std::mem::size_of::<crate::domains::CloneArgs>(),
             )
         };
         if pid < 0 {
@@ -508,6 +517,11 @@ impl Builder {
         })?;
         if waited < 0 {
             return Err(os_err("waiting for the step"));
+        }
+        // Its cgroup, empty once it is reaped.
+        if let Some((fd, dir)) = cgroup {
+            drop(fd);
+            let _ = std::fs::remove_dir(&dir);
         }
         let mut msg = Vec::new();
         File::from(fail_r).read_to_end(&mut msg)?;
@@ -1240,4 +1254,73 @@ fn find_executable(file: &[u8]) -> Result<(), String> {
         Some(libc::ENOSYS | libc::EPERM) => Err(shards_cmdline::go::linux_error(libc::EACCES)),
         _ => Err(go(&e)),
     }
+}
+
+/// A step's own cgroup, under the builder's `steps`, with its limits written in order
+/// (`Step::cgroup`, runc's files): open, and where it is; none for a step without limits.
+/// The controllers its files need are enabled on the way down. A swap file absent, as
+/// where the kernel has no swap, is skipped for "max" or "0", as runc skips it.
+fn step_cgroup(files: &[(Vec<u8>, Vec<u8>)]) -> io::Result<Option<(OwnedFd, PathBuf)>> {
+    use std::os::unix::fs::OpenOptionsExt;
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    if files.is_empty() {
+        return Ok(None);
+    }
+    let root = Path::new("/sys/fs/cgroup");
+    // The builder's own cgroup2, mounted by the first step with limits.
+    if !root.join("cgroup.controllers").exists() {
+        std::fs::create_dir_all(root)?;
+        // SAFETY: mount(2) of cgroup2 with NUL-terminated literals.
+        let rc = unsafe {
+            libc::mount(
+                c"cgroup2".as_ptr(),
+                c"/sys/fs/cgroup".as_ptr(),
+                c"cgroup2".as_ptr(),
+                libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC,
+                std::ptr::null(),
+            )
+        };
+        if rc != 0 {
+            return Err(err(format!(
+                "mounting the builder's cgroup2: {}",
+                io::Error::last_os_error()
+            )));
+        }
+    }
+    let steps = root.join("steps");
+    let enable = |dir: &Path| std::fs::write(dir.join("cgroup.subtree_control"), "+memory +cpu +cpuset");
+    enable(root).map_err(|e| err(format!("enabling the builder's cgroup controllers: {e}")))?;
+    match std::fs::create_dir(&steps) {
+        Ok(()) => {}
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+        Err(e) => return Err(err(format!("{}: {e}", steps.display()))),
+    }
+    enable(&steps).map_err(|e| err(format!("{}: enabling controllers: {e}", steps.display())))?;
+    let dir = steps.join(
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            .to_string(),
+    );
+    std::fs::create_dir(&dir).map_err(|e| err(format!("{}: {e}", dir.display())))?;
+    for (file, value) in files {
+        let name = String::from_utf8_lossy(file).into_owned();
+        match std::fs::write(dir.join(&name), value) {
+            Ok(()) => {}
+            Err(e)
+                if e.kind() == io::ErrorKind::NotFound
+                    && name == "memory.swap.max"
+                    && matches!(value.as_slice(), b"max" | b"0") => {}
+            Err(e) => {
+                let _ = std::fs::remove_dir(&dir);
+                return Err(Executor::wrap(format!(
+                    "failed to write {}: {e}",
+                    String::from_utf8_lossy(value)
+                )));
+            }
+        }
+    }
+    let fd = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_CLOEXEC)
+        .open(&dir)?;
+    Ok(Some((OwnedFd::from(fd), dir)))
 }

@@ -124,6 +124,9 @@ pub struct Step {
     /// The seccomp filter it runs under, as a run's `seccomp=` setup entry holds one (its
     /// seccomp(2) flags, little-endian, then its `struct sock_filter`s); empty for none.
     pub seccomp: Vec<u8>,
+    /// Its limits, as cgroup v2 files and what each holds, in the order written; where
+    /// any, it runs in a cgroup of its own.
+    pub cgroup: Vec<(Vec<u8>, Vec<u8>)>,
 }
 
 fn put_u32(out: &mut Vec<u8>, n: u32) {
@@ -243,6 +246,11 @@ impl Step {
             out.extend_from_slice(&hard.to_be_bytes());
         }
         put_bytes(&mut out, &self.seccomp);
+        put_len(&mut out, self.cgroup.len());
+        for (file, value) in &self.cgroup {
+            put_bytes(&mut out, file);
+            put_bytes(&mut out, value);
+        }
         out
     }
 
@@ -317,6 +325,11 @@ impl Step {
             rlimits.push((resource, soft, hard));
         }
         let seccomp = r.bytes()?;
+        let n = r.count(8)?;
+        let mut cgroup = Vec::with_capacity(n);
+        for _ in 0..n {
+            cgroup.push((r.bytes()?, r.bytes()?));
+        }
         r.0.is_empty().then_some(Step {
             root,
             upper,
@@ -334,6 +347,7 @@ impl Step {
             mounts,
             rlimits,
             seccomp,
+            cgroup,
         })
     }
 }
@@ -473,6 +487,7 @@ mod tests {
             ],
             rlimits: vec![(7, 1024, 4096)],
             seccomp: vec![0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 255, 127],
+            cgroup: vec![(b"memory.max".to_vec(), b"67108864".to_vec())],
         };
         let bytes = step.encode();
         assert_eq!(Step::decode(&bytes), Some(step));

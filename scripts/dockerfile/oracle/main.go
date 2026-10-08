@@ -379,6 +379,9 @@ type planOpts struct {
 	// The frontend's `no-cache` option, as buildx sends --no-cache-filter's stages (or
 	// "" for --no-cache).
 	NoCache *string `json:"no_cache"`
+	// The frontend's other options, as buildx sends them (add-hosts, shm-size,
+	// cgroup-parent, force-network-mode, memory and the like), read by dockerui.
+	Frontend map[string]string `json:"frontend"`
 }
 
 // A gateway as the frontend sees one, of a build given only named contexts: its options,
@@ -462,8 +465,11 @@ func planFile(root, rel string, images resolver) map[string]any {
 	platform := ocispecs.Platform{OS: "linux", Architecture: "amd64"}
 	caps := pb.Caps.CapSet(pb.Caps.All())
 	var named *dockerui.Client
-	if len(opts.Contexts) > 0 || opts.NoCache != nil {
+	if len(opts.Contexts) > 0 || opts.NoCache != nil || len(opts.Frontend) > 0 {
 		bopts := gwclient.BuildOpts{Opts: map[string]string{}, LLBCaps: caps, Caps: gwpb.Caps.CapSet(gwpb.Caps.All())}
+		for k, v := range opts.Frontend {
+			bopts.Opts[k] = v
+		}
 		if opts.NoCache != nil {
 			bopts.Opts["no-cache"] = *opts.NoCache
 		}
@@ -478,16 +484,25 @@ func planFile(root, rel string, images resolver) map[string]any {
 			panic(err)
 		}
 	}
+	cfg := dockerui.Config{
+		BuildArgs:      opts.BuildArgs,
+		Target:         opts.Target,
+		Labels:         opts.Labels,
+		Hostname:       opts.Hostname,
+		Ulimits:        ulimits,
+		BuildPlatforms: []ocispecs.Platform{platform},
+	}
+	// What dockerui made of the frontend's options.
+	if named != nil {
+		cfg.ExtraHosts = named.Config.ExtraHosts
+		cfg.ShmSize = named.Config.ShmSize
+		cfg.CgroupParent = named.Config.CgroupParent
+		cfg.NetworkMode = named.Config.NetworkMode
+		cfg.LinuxResources = named.Config.LinuxResources
+	}
 	res, err := dockerfile2llb.Dockerfile2LLB(context.Background(), data, dockerfile2llb.ConvertOpt{
 		Client:         named,
-		Config: dockerui.Config{
-			BuildArgs:      opts.BuildArgs,
-			Target:         opts.Target,
-			Labels:         opts.Labels,
-			Hostname:       opts.Hostname,
-			Ulimits:        ulimits,
-			BuildPlatforms: []ocispecs.Platform{platform},
-		},
+		Config:         cfg,
 		TargetPlatform: &platform,
 		MetaResolver:   images,
 		LLBCaps:        &caps,

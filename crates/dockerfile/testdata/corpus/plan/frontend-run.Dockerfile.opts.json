@@ -1,0 +1,1 @@
+{"frontend": {"add-hosts": "db=10.0.0.2,Cache=::ffff:10.0.0.3", "shm-size": "67108864", "cgroup-parent": "/shards/build", "force-network-mode": "none", "memory": "1073741824", "memswap": "-1", "cpushares": "512", "cpuquota": "50000", "cpusetcpus": "0-1"}}

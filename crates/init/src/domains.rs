@@ -367,22 +367,22 @@ pub struct Started {
 /// `struct clone_args` (include/uapi/linux/sched.h), as `clone3` reads it.
 #[repr(C)]
 #[derive(Default)]
-struct CloneArgs {
-    flags: u64,
-    pidfd: u64,
-    child_tid: u64,
-    parent_tid: u64,
-    exit_signal: u64,
-    stack: u64,
-    stack_size: u64,
-    tls: u64,
-    set_tid: u64,
-    set_tid_size: u64,
-    cgroup: u64,
+pub(crate) struct CloneArgs {
+    pub(crate) flags: u64,
+    pub(crate) pidfd: u64,
+    pub(crate) child_tid: u64,
+    pub(crate) parent_tid: u64,
+    pub(crate) exit_signal: u64,
+    pub(crate) stack: u64,
+    pub(crate) stack_size: u64,
+    pub(crate) tls: u64,
+    pub(crate) set_tid: u64,
+    pub(crate) set_tid_size: u64,
+    pub(crate) cgroup: u64,
 }
 
 /// include/uapi/linux/sched.h.
-const CLONE_INTO_CGROUP: u64 = 0x2_0000_0000;
+pub(crate) const CLONE_INTO_CGROUP: u64 = 0x2_0000_0000;
 
 /// Landlock (include/uapi/linux/landlock.h; Documentation/userspace-api/landlock.rst).
 mod landlock {

@@ -39,12 +39,26 @@ pub enum Security {
     Insecure,
 }
 
+/// `pb.LinuxResources`: a step's limits (the frontend's `memory`, `cpushares` and the
+/// like); zero, or empty, where unset.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LinuxResources {
+    pub memory: i64,
+    pub memory_swap: i64,
+    pub cpu_shares: u64,
+    pub cpu_period: u64,
+    pub cpu_quota: i64,
+    pub cpuset_cpus: Vec<u8>,
+    pub cpuset_mems: Vec<u8>,
+}
+
 /// A vertex's metadata: what progress shows for it, and how the cache treats it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Meta {
     pub ignore_cache: bool,
     pub description: BTreeMap<Vec<u8>, Vec<u8>>,
     pub progress_group: Option<ProgressGroup>,
+    pub linux_resources: Option<LinuxResources>,
 }
 
 impl Meta {
@@ -56,6 +70,9 @@ impl Meta {
         }
         if other.progress_group.is_some() {
             self.progress_group.clone_from(&other.progress_group);
+        }
+        if other.linux_resources.is_some() {
+            self.linux_resources.clone_from(&other.linux_resources);
         }
     }
 }

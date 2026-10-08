@@ -3192,6 +3192,47 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode
 waits on the user.
 
+### D64. What the build's flags give each RUN
+
+`--add-host`, `--shm-size`, `--cgroup-parent`, `--network`, `--resource` and the legacy
+`--memory`, `--memory-swap`, `--cpu-shares`, `--cpu-period`, `--cpu-quota`,
+`--cpuset-cpus` and `--cpuset-mems`, as buildx v0.37.1 sends them (build/opt.go,
+build/utils.go `toBuildkitExtraHosts`, `ParseResourceLimits`), dockerui reads them
+(frontend/dockerui/attr.go, ported in `shards_dockerfile::dockerui` with its errors) and
+Dockerfile2LLB applies them (convert.go `dispatchRun`): each RUN's hosts, its `/dev/shm`
+tmpfs, its cgroup's parent and its op's `linux_resources`, the stage's next state keeping
+none of them; `--network` the network each stage's steps have unless one says otherwise,
+`host` granting itself `network.host` as buildx's does. `host-gateway` is the builder's
+gateway on the bridge it is elected on; reaching the host stays refused (D31).
+
+- **Limits, as Docker's runc applies them.** BuildKit puts them in the OCI spec, and runc
+  converts them for cgroup v2. Docker 29.3.1 ships runc v1.3.4 (moby `Dockerfile`
+  `RUNC_VERSION`), whose opencontainers/cgroups v0.0.4 writes `memory.swap.max` (the swap
+  limit less the memory's, `max` for -1, a missing file ignored for `max` or `0`),
+  `memory.max`, `cpu.weight` (`ConvertCPUSharesToCgroupV2Value`, a quadratic of the shares'
+  logarithm), `cpu.max` (the quota, or `max`, and the period, 100000 by default) and the
+  cpusets (`build::exec::cgroup_files`). The builder's init starts such a step with
+  `clone3` into a cgroup of its own under `steps/`, its namespace rooted there, so that the
+  step sees its own limits as a container does, and removes it once the step is reaped.
+  `cpu.weight` is held to Go's own answers for every share value (`cpu_weights_are_runcs`,
+  `testdata/cpu-weight.txt`, made by runc's function run in Go 1.26.1): Go's `math.Pow` is
+  its own, and the platform's libm may not agree, so each CI target checks its own.
+- **The classic builder's flags**, which buildx takes and BuildKit ignores: `--rm`,
+  `--force-rm` and `--compress` silently, `--isolation`, `--security-opt` and `--squash`
+  with buildx's warnings, as its logrus formatter writes them.
+- **`--cgroup-parent`** is carried in the plan as BuildKit's; the builder microVM has no
+  host's cgroups to place steps under, so each limited step's cgroup is the builder's own.
+
+Tested on real builds (`run_steps_take_the_builds_hosts_shm_and_limits`): a step sees
+`--add-host`'s name, a 32 MiB `/dev/shm`, `memory.max` and `cpu.max` as runc writes them;
+past `--memory` it is ended (137) and the build fails in BuildKit's words; without, it
+runs. Mutation-checked: without the step's cgroup files, and without the hosts in the
+plan, it fails. The flags are held to buildx's command line by the buildx oracle;
+dockerui's parsing by `options_read_as_dockerui_reads_them`. Open: the plan of these
+options against BuildKit's own (`corpus/plan/frontend-run.Dockerfile`), whose answers
+`scripts/dockerfile/generate` records once Docker answers again (it stopped answering
+while this was made).
+
 ### D63. `--metadata-file`
 
 What buildx v0.37.1 writes (commands/build.go `decodeExporterResponse`,

@@ -167,6 +167,87 @@ pub fn cache_entries(
     Ok(out)
 }
 
+/// `--add-host`'s values as buildx sends them (build/utils.go `toBuildkitExtraHosts`): each
+/// `host=ip` or `host:ip`, its IPs a comma list, each perhaps in brackets; `host-gateway`
+/// the address `gateway` gives; joined `host=ip,...` for the frontend's `add-hosts`.
+pub fn add_hosts(values: &[String], gateway: &dyn Fn() -> Result<String, String>) -> Result<String, String> {
+    let mut hosts = Vec::new();
+    for h in values {
+        let (host, ip) = h
+            .split_once('=')
+            .or_else(|| h.split_once(':'))
+            .filter(|(host, ip)| !host.is_empty() && !ip.is_empty())
+            .ok_or_else(|| format!("invalid host {h}"))?;
+        if ip == "host-gateway" {
+            let g = gateway().map_err(|e| format!("unable to derive the IP value for host-gateway: {e}"))?;
+            hosts.push(format!("{host}={g}"));
+            continue;
+        }
+        for v in ip.split(',') {
+            let v = v
+                .strip_prefix('[')
+                .and_then(|v| v.strip_suffix(']'))
+                .filter(|_| v.len() > 2)
+                .unwrap_or(v);
+            if v.parse::<std::net::IpAddr>().is_err() {
+                return Err(format!("invalid host {h}"));
+            }
+            hosts.push(format!("{host}={v}"));
+        }
+    }
+    Ok(hosts.join(","))
+}
+
+/// `--resource`'s entries, and the legacy flags' as buildx makes them (`key=value`, the
+/// legacy first), as the frontend's attributes (build/utils.go `ParseResourceLimits`,
+/// `addResourceLimits`): non-zero values alone.
+pub fn resource_attrs(entries: &[String]) -> Result<BTreeMap<String, String>, String> {
+    let (mut memory, mut swap, mut shares, mut period, mut quota) = (0i64, 0i64, 0i64, 0i64, 0i64);
+    let (mut cpus, mut mems) = (String::new(), String::new());
+    for entry in entries {
+        let (k, v) = entry
+            .split_once('=')
+            .ok_or_else(|| format!("invalid resource {}, expected key=value", go::quote(entry)))?;
+        let (k, v) = (k.trim(), v.trim());
+        let wrap = |e: String| format!("invalid value {} for resource {k}: {e}", go::quote(v));
+        match k {
+            "memory" => memory = crate::resources::ram_in_bytes(v).map_err(wrap)?,
+            // MemSwapBytes takes -1 as itself.
+            "memory-swap" if v == "-1" => swap = -1,
+            "memory-swap" => swap = crate::resources::ram_in_bytes(v).map_err(wrap)?,
+            "cpu-shares" | "cpu-period" | "cpu-quota" => {
+                let n = go::parse_int10(v).map_err(|e| wrap(e.to_string()))?;
+                match k {
+                    "cpu-shares" => shares = n,
+                    "cpu-period" => period = n,
+                    _ => quota = n,
+                }
+            }
+            "cpuset-cpus" => cpus = v.to_string(),
+            "cpuset-mems" => mems = v.to_string(),
+            _ => return Err(format!("unknown resource {}", go::quote(k))),
+        }
+    }
+    let mut attrs = BTreeMap::new();
+    if memory > 0 {
+        attrs.insert("memory".into(), memory.to_string());
+    }
+    if swap != 0 {
+        attrs.insert("memswap".into(), swap.to_string());
+    }
+    for (k, n) in [("cpushares", shares), ("cpuperiod", period), ("cpuquota", quota)] {
+        if n > 0 {
+            attrs.insert(k.into(), n.to_string());
+        }
+    }
+    for (k, v) in [("cpusetcpus", cpus), ("cpusetmems", mems)] {
+        if !v.is_empty() {
+            attrs.insert(k.into(), v);
+        }
+    }
+    Ok(attrs)
+}
+
 /// Where an output goes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Dest {
@@ -771,12 +852,51 @@ pub fn ulimits(values: &[String]) -> Result<Vec<Ulimit>, String> {
 pub fn validate(flag: &crate::flags::Flag, value: &str) -> Result<String, String> {
     match flag.name {
         "ulimit" => parse_ulimit(value).map(|u| u.to_string()),
+        // opts.MemBytes, as buildx takes --shm-size: go-units' RAMInBytes.
+        "shm-size" => crate::resources::ram_in_bytes(value).map(|n| n.to_string()),
         _ => Ok(value.to_string()),
     }
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn hosts_and_resources_are_sent_as_buildx_sends_them() {
+        let gw = || Ok("172.17.0.1".to_string());
+        let v = |a: &[&str]| a.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            add_hosts(&v(&["db:10.0.0.2", "a=1.2.3.4,[::1]", "h:host-gateway"]), &gw).unwrap(),
+            "db=10.0.0.2,a=1.2.3.4,a=::1,h=172.17.0.1"
+        );
+        assert_eq!(add_hosts(&v(&["db"]), &gw).unwrap_err(), "invalid host db");
+        assert_eq!(add_hosts(&v(&["db:x"]), &gw).unwrap_err(), "invalid host db:x");
+        let attrs = resource_attrs(&v(&[
+            "memory=2g",
+            "memory-swap=-1",
+            "cpu-shares=512",
+            "cpuset-cpus=0-1",
+        ]))
+        .unwrap();
+        assert_eq!(
+            attrs.into_iter().collect::<Vec<_>>(),
+            [
+                ("cpusetcpus", "0-1"),
+                ("cpushares", "512"),
+                ("memory", "2147483648"),
+                ("memswap", "-1")
+            ]
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+        );
+        assert_eq!(
+            resource_attrs(&v(&["gpu=1"])).unwrap_err(),
+            "unknown resource \"gpu\""
+        );
+        assert_eq!(
+            resource_attrs(&v(&["memory"])).unwrap_err(),
+            "invalid resource \"memory\", expected key=value"
+        );
+    }
+
     #[test]
     fn cache_entries_are_read_as_buildx_reads_them() {
         let none = |_: &str| None;

@@ -66,6 +66,15 @@ pub struct Options {
     /// The frontend's `no-cache` option (dockerui's `ignoreCache`): the stages whose steps
     /// the cache is not asked for, every stage where it is empty, none where it is absent.
     pub no_cache: Option<Vec<Vec<u8>>>,
+    /// Each RUN's, as the frontend's options give them (dockerui.rs): hosts added to its
+    /// `/etc/hosts` (`add-hosts`), its `/dev/shm`'s size (`shm-size`, none if 0), its
+    /// cgroup's parent (`cgroup-parent`) and its limits (`memory` and the like).
+    pub extra_hosts: Vec<llb::HostIp>,
+    pub shm_size: i64,
+    pub cgroup_parent: Vec<u8>,
+    pub linux_resources: Option<llb::LinuxResources>,
+    /// Each stage's network unless a RUN says otherwise (`force-network-mode`).
+    pub network_mode: NetMode,
 }
 
 /// A named context a stage or base name is given (dockerui's NamedContext): its name (the
@@ -1858,6 +1867,8 @@ impl Planner<'_> {
             if !user.is_empty() {
                 self.dispatch_user(d, &user, false);
             }
+            let network = self.opts.network_mode;
+            self.ds(d)?.state.network = network;
             let steps = self.states.get(d).map(|s| s.steps.clone()).unwrap_or_default();
             let first = self.graph.vertices.len();
             for step in steps {
@@ -2615,13 +2626,34 @@ impl Planner<'_> {
         let name = prefix_command(ds, &shown, multi.as_ref(), platform.as_ref(), &env);
         run.meta.description.insert(b"llb.customname".to_vec(), name);
         run.meta.ignore_cache = ds.ignore_cache;
-        // AddUlimit, an option of the run alone (dispatchRun): the stage's next state is
-        // its root mount's, which keeps none of it.
+        // AddUlimit, AddExtraHost and WithCgroupParent, options of the run alone
+        // (dispatchRun): the stage's next state is its root mount's, which keeps none.
         let mut state = ds.state.clone();
-        let kept = state.ulimits.clone();
+        let kept = (
+            state.ulimits.clone(),
+            state.extra_hosts.clone(),
+            state.cgroup_parent.clone(),
+        );
         state.ulimits.extend(opts.ulimits.iter().cloned());
+        state.extra_hosts.extend(opts.extra_hosts.iter().cloned());
+        if !opts.cgroup_parent.is_empty() {
+            state.cgroup_parent.clone_from(&opts.cgroup_parent);
+        }
+        if opts.shm_size > 0 {
+            run.mounts.push(Mount {
+                target: b"/dev/shm".to_vec(),
+                source: None,
+                readonly: false,
+                selector: Vec::new(),
+                kind: MountKind::Tmpfs { size: opts.shm_size },
+                no_output: false,
+            });
+        }
+        if opts.linux_resources.is_some() {
+            run.meta.linux_resources.clone_from(&opts.linux_resources);
+        }
         let mut next = self.graph.run(&state, run);
-        next.ulimits = kept;
+        (next.ulimits, next.extra_hosts, next.cgroup_parent) = kept;
         let build_args = self
             .states
             .get(d)

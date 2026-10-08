@@ -755,6 +755,81 @@ pub struct RunOp<'o> {
     pub seccomp: &'o [u8],
     /// The SSH agents `--ssh` forwards, by id.
     pub agents: &'o BTreeMap<String, PathBuf>,
+    /// Its limits, its op's (`--memory`, `--cpu-shares` and the like).
+    pub resources: Option<&'o shards_dockerfile::llb::LinuxResources>,
+}
+
+/// Cgroup v2 files and what each holds, in the order written.
+pub type CgroupFiles = Vec<(Vec<u8>, Vec<u8>)>;
+
+/// runc's `ConvertCPUSharesToCgroupV2Value`, as the runc Docker 29.3.1 ships converts
+/// `--cpu-shares` (runc v1.3.4, opencontainers/cgroups v0.0.4 utils.go): 1 to 10000 on a
+/// quadratic of the shares' logarithm, 100 for the default 1024; 0 unset.
+pub fn cpu_weight(shares: u64) -> u64 {
+    match shares {
+        0 => 0,
+        1..=2 => 1,
+        262_144.. => 10_000,
+        _ => {
+            #[allow(clippy::cast_precision_loss)]
+            let l = (shares as f64).log2();
+            let exponent = (l * l + 125.0 * l) / 612.0 - 7.0 / 34.0;
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let w = 10f64.powf(exponent).ceil() as u64;
+            w
+        }
+    }
+}
+
+/// The cgroup v2 files a step's limits are, as runc writes them (opencontainers/cgroups
+/// v0.0.4 fs2/memory.go `setMemory`, fs2/cpu.go `setCPU`, fs2/cpuset.go): the swap first,
+/// memory, the CPU's weight and maximum, the CPUs and memory nodes. A swap past the
+/// memory alone is refused as runc refuses it.
+pub fn cgroup_files(r: &shards_dockerfile::llb::LinuxResources) -> Result<CgroupFiles, String> {
+    let mut out: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+    let mut put = |k: &str, v: String| out.push((k.as_bytes().to_vec(), v.into_bytes()));
+    // ConvertMemorySwapToCgroupV2Value, memory never -1 here (dockerui takes it > 0).
+    let swap = match (r.memory_swap, r.memory) {
+        (-1 | 0, _) => r.memory_swap,
+        (_, 0) => return Err("unable to set swap limit without memory limit".into()),
+        (s, m) if s < m => return Err("memory+swap limit should be >= memory limit".into()),
+        (s, m) => s - m,
+    };
+    match swap {
+        -1 => put("memory.swap.max", "max".into()),
+        0 if r.memory_swap > 0 => put("memory.swap.max", "0".into()),
+        0 => {}
+        n => put("memory.swap.max", n.to_string()),
+    }
+    if r.memory > 0 {
+        put("memory.max", r.memory.to_string());
+    }
+    let weight = cpu_weight(r.cpu_shares);
+    if weight != 0 {
+        put("cpu.weight", weight.to_string());
+    }
+    if r.cpu_quota != 0 || r.cpu_period != 0 {
+        let quota = if r.cpu_quota > 0 {
+            r.cpu_quota.to_string()
+        } else {
+            "max".into()
+        };
+        let period = if r.cpu_period == 0 { 100_000 } else { r.cpu_period };
+        put("cpu.max", format!("{quota} {period}"));
+    }
+    if !r.cpuset_cpus.is_empty() {
+        put(
+            "cpuset.cpus",
+            String::from_utf8_lossy(&r.cpuset_cpus).into_owned(),
+        );
+    }
+    if !r.cpuset_mems.is_empty() {
+        put(
+            "cpuset.mems",
+            String::from_utf8_lossy(&r.cpuset_mems).into_owned(),
+        );
+    }
+    Ok(out)
 }
 
 /// An SSH mount's agent id: `default` where it names none, as BuildKit's sshforward
@@ -1043,6 +1118,10 @@ impl Exec<'_> {
             insecure: op.security == Security::Insecure,
             mounts,
             rlimits,
+            cgroup: match op.resources {
+                Some(r) => cgroup_files(r)?,
+                None => Vec::new(),
+            },
             // BuildKit leaves an insecure step unconfined, as runc does a privileged
             // container (oci/spec.go: WithDefaultSeccomp unless insecure).
             seccomp: if op.security == Security::Insecure {
@@ -1076,6 +1155,101 @@ impl Exec<'_> {
 
 #[cfg(test)]
 mod tests {
+    /// runc's cpu.weight for every --cpu-shares value, on this platform's floating point:
+    /// Go's math is its own, this one's the platform's.
+    #[test]
+    fn cpu_weights_are_runcs() {
+        let table = include_str!("testdata/cpu-weight.txt");
+        let points: Vec<(u64, u64)> = table
+            .lines()
+            .filter(|l| !l.starts_with('#'))
+            .map(|l| {
+                let (s, w) = l.split_once(' ').unwrap();
+                (s.parse().unwrap(), w.parse().unwrap())
+            })
+            .collect();
+        assert_eq!(cpu_weight(0), 0);
+        for (i, &(from, weight)) in points.iter().enumerate() {
+            let to = points.get(i + 1).map_or(262_145, |p| p.0 - 1);
+            for shares in from..=to {
+                assert_eq!(cpu_weight(shares), weight, "shares {shares}");
+            }
+        }
+    }
+
+    #[test]
+    fn limits_are_written_as_runc_writes_them() {
+        use shards_dockerfile::llb::LinuxResources;
+        let files = |r: LinuxResources| {
+            cgroup_files(&r).map(|f| {
+                f.into_iter()
+                    .map(|(k, v)| format!("{}={}", String::from_utf8_lossy(&k), String::from_utf8_lossy(&v)))
+                    .collect::<Vec<_>>()
+            })
+        };
+        assert_eq!(
+            files(LinuxResources {
+                memory: 64 << 20,
+                memory_swap: 96 << 20,
+                cpu_shares: 512,
+                cpu_quota: 50_000,
+                cpuset_cpus: b"0-1".to_vec(),
+                ..Default::default()
+            })
+            .unwrap(),
+            [
+                "memory.swap.max=33554432",
+                "memory.max=67108864",
+                "cpu.weight=59",
+                "cpu.max=50000 100000",
+                "cpuset.cpus=0-1"
+            ]
+        );
+        assert_eq!(
+            files(LinuxResources {
+                memory: 64 << 20,
+                memory_swap: -1,
+                ..Default::default()
+            })
+            .unwrap(),
+            ["memory.swap.max=max", "memory.max=67108864"]
+        );
+        assert_eq!(
+            files(LinuxResources {
+                memory: 64 << 20,
+                memory_swap: 64 << 20,
+                ..Default::default()
+            })
+            .unwrap(),
+            ["memory.swap.max=0", "memory.max=67108864"]
+        );
+        assert_eq!(
+            files(LinuxResources {
+                cpu_period: 50_000,
+                ..Default::default()
+            })
+            .unwrap(),
+            ["cpu.max=max 50000"]
+        );
+        assert_eq!(
+            files(LinuxResources {
+                memory: 64 << 20,
+                memory_swap: 32 << 20,
+                ..Default::default()
+            })
+            .unwrap_err(),
+            "memory+swap limit should be >= memory limit"
+        );
+        assert_eq!(
+            files(LinuxResources {
+                memory_swap: 32 << 20,
+                ..Default::default()
+            })
+            .unwrap_err(),
+            "unable to set swap limit without memory limit"
+        );
+    }
+
     use super::*;
 
     /// Every resource `--ulimit` takes is one the builder can set, by Linux's number for

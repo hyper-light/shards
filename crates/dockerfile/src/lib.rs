@@ -18,6 +18,7 @@
 
 pub mod agentfile;
 pub mod commit;
+pub mod dockerui;
 pub mod export;
 pub mod git;
 pub mod glob;

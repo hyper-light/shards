@@ -953,7 +953,71 @@ fn run(parsed: &Parsed) -> Result<(), String> {
         &env,
         u64::from(shards_abi::run::MAX_PAYLOAD),
     )?;
-    let allowed = buildflags::parse_entitlements(parsed.many("allow"))?;
+    let mut allowed = buildflags::parse_entitlements(parsed.many("allow"))?;
+    // The flags buildx takes and BuildKit ignores, some said so (build.go checkWarnedFlags,
+    // logrus as buildx formats it).
+    for (flag, said) in [
+        ("isolation", "isolation flag is deprecated with BuildKit."),
+        (
+            "security-opt",
+            "security-opt flag is deprecated. \"RUN --security=insecure\" should be used with BuildKit.",
+        ),
+        (
+            "squash",
+            "experimental flag squash is removed with BuildKit. You should squash inside build using a multi-stage Dockerfile for efficiency.",
+        ),
+    ] {
+        if parsed.changed(flag) {
+            let _ = writeln!(std::io::stderr(), "WARNING: {said}");
+        }
+    }
+    // --network: the frontend's force-network-mode; host grants itself (build/opt.go).
+    let network_mode = match parsed.string("network") {
+        "host" => {
+            if !allowed.grants(buildflags::NETWORK_HOST) {
+                allowed.granted.push(buildflags::NETWORK_HOST.to_string());
+            }
+            shards_dockerfile::llb::NetMode::Host
+        }
+        "none" => shards_dockerfile::llb::NetMode::None,
+        "" | "default" => shards_dockerfile::llb::NetMode::Sandbox,
+        other => {
+            return Err(format!(
+                "network mode {} not supported by buildkit - you can define a custom network for your builder using the network driver-opt in buildx create",
+                shards_cmdline::go::quote(other)
+            ));
+        }
+    };
+    // --add-host: host-gateway is the builder's gateway, on the bridge it is elected.
+    let gateway = || -> Result<String, String> {
+        #[cfg(unix)]
+        {
+            shards_net::bridge::elected_here(&mut |_| {})
+                .map(|b| b.gateway().to_string())
+                .ok_or_else(|| shards_net::bridge::NO_SUBNET.to_string())
+        }
+        #[cfg(not(unix))]
+        {
+            Err("the builder has no network on this platform yet".to_string())
+        }
+    };
+    let add_hosts = buildflags::add_hosts(parsed.many("add-host"), &gateway)?;
+    // --resource, after the legacy flags as buildx gathers them.
+    let mut resources: Vec<String> = [
+        ("memory", "memory"),
+        ("memory-swap", "memory-swap"),
+        ("cpu-shares", "cpu-shares"),
+        ("cpu-period", "cpu-period"),
+        ("cpu-quota", "cpu-quota"),
+        ("cpuset-cpus", "cpuset-cpus"),
+        ("cpuset-mems", "cpuset-mems"),
+    ]
+    .iter()
+    .filter(|(flag, _)| parsed.changed(flag))
+    .map(|(flag, key)| format!("{key}={}", parsed.string(flag)))
+    .collect();
+    resources.extend(parsed.many("resource").iter().cloned());
+    let resource_attrs = buildflags::resource_attrs(&resources)?;
     let agents = buildflags::ssh_agents(&buildflags::parse_ssh(parsed.many("ssh")), &|k| {
         std::env::var(k).ok()
     })?;
@@ -1136,6 +1200,14 @@ fn run(parsed: &Parsed) -> Result<(), String> {
                 .collect();
             (!names.is_empty()).then_some(names)
         },
+        extra_hosts: shards_dockerfile::dockerui::extra_hosts(&add_hosts)
+            .map_err(|e| format!("failed to parse additional hosts: {e}"))?,
+        shm_size: shards_dockerfile::dockerui::shm_size(parsed.string("shm-size"))
+            .map_err(|e| format!("failed to parse shm size: {e}"))?,
+        cgroup_parent: parsed.string("cgroup-parent").as_bytes().to_vec(),
+        linux_resources: shards_dockerfile::dockerui::linux_resources(&resource_attrs)
+            .map_err(|e| format!("failed to parse resource limits: {e}"))?,
+        network_mode,
     };
     let plan = match plan::plan(&text, &opts, &bases) {
         Ok(p) => p,
@@ -1561,6 +1633,7 @@ fn run(parsed: &Parsed) -> Result<(), String> {
                     network_host: allowed.grants(buildflags::NETWORK_HOST),
                     seccomp: &step_filter,
                     agents: &agents,
+                    resources: meta.linux_resources.as_ref(),
                 };
                 let mut log = StepLog::new(log_limits);
                 let r = exec.run(b, &inputs, &op, &name, &mut |which, bytes| {

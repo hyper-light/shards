@@ -2554,6 +2554,106 @@ fn builds_take_steps_from_caches_written_elsewhere() {
     );
 }
 
+/// What the build's flags give each `RUN`, as BuildKit's frontend gives them (D64):
+/// `--add-host`'s names in its `/etc/hosts`, `--shm-size`'s `/dev/shm`, and the limits of
+/// `--memory` and `--cpu-quota` (and `--resource`) in a cgroup of its own, as runc writes
+/// them; a step past its memory is ended (137), and the build fails as BuildKit's does.
+#[test]
+fn run_steps_take_the_builds_hosts_shm_and_limits() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("build-limits-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let ctx = context(
+        "build-limits-ctx",
+        &format!(
+            "FROM {image}\nUSER root\nRUN [\"/bin/testguest\", \"fs\", \"print:/etc/hosts\", \"print:/proc/self/mounts\", \
+             \"print:/sys/fs/cgroup/memory.max\", \"print:/sys/fs/cgroup/cpu.max\"]\n"
+        ),
+    );
+    let built = shards(&[
+        "build",
+        "--progress=plain",
+        "--no-cache",
+        "--add-host",
+        "db:10.9.8.7",
+        "--shm-size",
+        "32m",
+        "-m",
+        "96m",
+        "--resource",
+        "cpu-quota=50000",
+        ctx.to_str().unwrap(),
+    ]);
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    let log = &built.stderr;
+    assert!(log.lines().any(|l| l.ends_with("10.9.8.7\tdb")), "{log}");
+    assert!(
+        log.lines()
+            .any(|l| l.contains(" /dev/shm tmpfs ") && l.contains("size=32768k")),
+        "{log}"
+    );
+    assert!(log.lines().any(|l| l.ends_with(" 100663296")), "{log}");
+    assert!(log.lines().any(|l| l.ends_with(" 50000 100000")), "{log}");
+
+    // Past its memory, the step is ended, as runc's container would be.
+    let hungry = context(
+        "build-limits-hungry",
+        &format!("FROM {image}\nUSER root\nRUN [\"/bin/testguest\", \"alloc\", \"256\"]\n"),
+    );
+    let ended = shards(&[
+        "build",
+        "--progress=plain",
+        "-m",
+        "64m",
+        "--memory-swap",
+        "64m",
+        hungry.to_str().unwrap(),
+    ]);
+    assert_eq!(ended.status, Some(1), "{}", ended.stderr);
+    assert!(
+        ended
+            .stderr
+            .contains("did not complete successfully: exit code: 137"),
+        "{}",
+        ended.stderr
+    );
+    // Without a limit, the same step runs.
+    let fed = shards(&["build", "--progress=plain", hungry.to_str().unwrap()]);
+    assert_eq!(fed.status, Some(0), "{}", fed.stderr);
+
+    // What BuildKit and buildx refuse, in their words.
+    let refused = shards(&["build", "--network", "bridge", ctx.to_str().unwrap()]);
+    assert!(
+        refused
+            .stderr
+            .contains("network mode \"bridge\" not supported by buildkit"),
+        "{}",
+        refused.stderr
+    );
+    let refused = shards(&["build", "--resource", "gpu=1", ctx.to_str().unwrap()]);
+    assert!(
+        refused.stderr.contains("unknown resource \"gpu\""),
+        "{}",
+        refused.stderr
+    );
+    let warned = shards(&["build", "--squash", "-q", ctx.to_str().unwrap()]);
+    assert!(
+        warned
+            .stderr
+            .contains("WARNING: experimental flag squash is removed with BuildKit."),
+        "{}",
+        warned.stderr
+    );
+}
+
 /// `RUN --mount=type=ssh` reaches the client's SSH agent through the builder, as
 /// BuildKit's steps reach it (`--ssh default`, `SSH_AUTH_SOCK` in the step): the step
 /// sees the agent's keys and has it sign, and cannot have it forget them, which BuildKit's
