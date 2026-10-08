@@ -1,0 +1,17 @@
+[package]
+name = "shards-flate"
+version = "0.1.0"
+description = "Go's compress/flate and compress/gzip writers, byte for byte, as BuildKit compresses layers"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+
+[dev-dependencies]
+serde_json = "1"
+sha2 = "0.11"

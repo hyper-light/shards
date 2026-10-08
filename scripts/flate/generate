@@ -1,0 +1,18 @@
+#!/bin/sh
+# Regenerates crates/flate/testdata/gzip.json: what Go's compress/gzip writer makes of
+# the corpus crates/flate/tests/oracle.rs makes again, run by Go 1.25.8, the Go Docker
+# 29.3.1 (moby docker-v29.3.1 Dockerfile GO_VERSION) and so its BuildKit are built with
+# (GOTOOLCHAIN fetches it). scripts/flate/generate
+set -eu
+here=$(cd "$(dirname "$0")" && pwd)
+root=$(cd "$here/../.." && pwd)
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+cp "$here/oracle/main.go" "$work/main.go"
+cd "$work"
+cat >go.mod <<'MOD'
+module shards.dev/flate-oracle
+
+go 1.25
+MOD
+GOTOOLCHAIN=go1.25.8 GOFLAGS=-mod=mod go run . "$root/crates/flate/testdata/gzip.json"

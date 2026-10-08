@@ -3210,6 +3210,37 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode
 waits on the user.
 
+### D75. Layers gzipped as Docker gzips them: Go's compress/flate, ported
+
+BuildKit gzips each layer it exports with Go's own `compress/gzip`
+(util/compression/gzip.go: `gzip.NewWriterLevel`, `DefaultCompression` unless
+`compression-level` says, the layer copied in and the writer closed, never flushed), so a
+layer's digest, and every manifest and image ID above it, is Go's deflate output's. No
+other deflate makes those bytes: Go's matcher (hash chains of 4-byte hashes, lazy
+matching with Go's own good/lazy/nice/chain table, 16384 tokens a block), its Huffman
+code lengths (`bitCounts`) and its choice among stored, fixed and dynamic blocks are its
+own.
+
+- **`crates/flate`** ports the writers of Go 1.26.1's compress/flate and compress/gzip
+  (deflate.go, deflatefast.go, huffman_bit_writer.go, huffman_code.go, token.go,
+  gzip.go): every level, -2 (HuffmanOnly) to 9, and the gzip header Go writes (no name,
+  time or extra, XFL 2 at level 9 and 4 at level 1, OS 255). Docker 29.3.1 is built with
+  Go 1.25.8 (moby docker-v29.3.1 Dockerfile `GO_VERSION`), whose writers differ from
+  1.26.1's only in the order of a struct's fields (compared file by file). Panic-free:
+  no indexing, Go's wrapping arithmetic explicit; tables computed at compile time.
+- **Held to Go:** `scripts/flate/generate` runs Go 1.25.8 itself (`GOTOOLCHAIN`) over a
+  generated corpus (zeros, random, text, runs and a mix; 27 sizes across the 4-byte
+  minimum, 128, 258, the 32 KiB window and 64 KiB store limits, to 1 MiB, at every
+  level; and 20 MiB at -1, 1 and 9, past the hash offset's rebase), and
+  `crates/flate/tests/oracle.rs` makes the same inputs and matches all 1626 outputs byte
+  for byte. Mutation-checked: a nil window taken as storable fails 130, a lazy match
+  that does not prefer the earlier fails 184. Two mutants pass, as they must: clearing
+  the offset frequencies `writeBlockHuff` leaves (codes past the first have no length,
+  so they count no bits) and skipping the hash offset's rebase (it only keeps positions
+  in 32 bits, which 20 MiB does not reach).
+
+Where the layers are compressed, and what that changes in the store, comes next.
+
 ### D74. `--platform` for another platform: its bases, the build platform's steps
 
 `build --platform P` makes an image for P where this host's microVMs run another
