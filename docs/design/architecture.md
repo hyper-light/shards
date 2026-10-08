@@ -3192,6 +3192,49 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode
 waits on the user.
 
+### D68. `--ssh` key files
+
+`--ssh ID=FILE[,FILE…]`, as buildx v0.37.1 takes it (vendored BuildKit v0.33.0
+session/sshforward/sshprovider/agentprovider.go `toDialer`): each file's first 100 KiB
+read and parsed as golang.org/x/crypto v0.55.0's `ssh.ParseRawPrivateKey` parses it (the
+first PEM block as Go's `pem.Decode` finds it; OpenSSH's format unencrypted, PKCS#1,
+PKCS#8, SEC 1; Ed25519, ECDSA on P-256, P-384 and P-521, RSA), the keys put in a keyring
+as x/crypto's `agent.NewKeyring` puts them (in order, a key given twice kept where it was
+first), and a step's requests answered as `agent.ServeAgent` answers them: its keys
+(comments dropped, as x/crypto drops them), and signatures. The client answers them, over
+the relay a forwarded agent's requests take (D51, token-gated): the keys never enter the
+microVM. Each refusal in buildx's words: a socket beside keys ("invalid combination of
+keys and sockets"), a passphrase ("ssh: this private key is passphrase protected"), a
+file that is no key, and x/crypto's own refusals of malformed keys.
+
+Signed by AWS-LC (`aws-lc-rs`, which shards already links for TLS): Ed25519, ECDSA with
+the hash RFC 5656 §6.2.1 gives each curve, RSA PKCS#1 v1.5 with SHA-256 or SHA-512 as
+RFC 8332 §3.2's flags ask. The OpenSSH format carries no RSA CRT exponents, which AWS-LC
+takes: shards works them out (`d mod (p-1)`, bit by bit, the same work whatever the bits),
+and AWS-LC checks every part against the others (`RSA_check_key`). Key material lives in
+buffers overwritten when dropped.
+
+- **Better than buildx's:** the agent is read-only, as BuildKit's forwarded agent is:
+  where buildx serves a key file's keyring as it is, so that a step can add keys to it,
+  remove them, or lock it with a passphrase of its own for the steps after it, shards
+  refuses each.
+- **Refused, where x/crypto takes them:** DSA keys (FIPS 186-5 withdrew DSA; OpenSSH 10.0
+  removed it); RSA keys outside 2048–8192 bits (NIST SP 800-131A Rev. 2 allows none
+  shorter for signatures; AWS-LC signs none longer); and RSA's SHA-1 signatures
+  (`ssh-rsa`, asked for with no flags), which RFC 8332 replaces (§1) and OpenSSH 8.8
+  stopped accepting by default; a client that asks for one is refused it.
+- Malformed DER inside a PEM block is refused in shards' words, not x509's.
+
+Tested: `key_files_are_served_as_buildx_serves_them`, against what
+`scripts/sshkey/generate` records x/crypto making of 35 cases (keys of every kind and
+form, Go's PEM skips, malformed, encrypted, a keyring of four with one again): each
+refusal word for word, each answer byte for byte (Ed25519's and RSA's signatures are
+deterministic), each ECDSA signature verified; mutation-checked (the keyring's order,
+mpints, the RSA hash, two PEM skips). `the_key_agent_is_read_only`,
+`crt_exponents_are_the_remainders`. On a real build (`run_steps_reach_the_clients_ssh_agent`,
+mutation-checked): a step lists the key file's key and has it sign, and is refused the
+agent's forgetting; a passphrase and a socket beside keys refused in buildx's words.
+
 ### D67. `--check`, `--call` and `--debug`'s warnings
 
 `--check` (`--call=check`, and `check,ignorestatus=true`), as buildx v0.37.1 reads and

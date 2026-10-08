@@ -754,7 +754,7 @@ pub struct RunOp<'o> {
     /// (crate::setup::step_seccomp).
     pub seccomp: &'o [u8],
     /// The SSH agents `--ssh` forwards, by id.
-    pub agents: &'o BTreeMap<String, PathBuf>,
+    pub agents: &'o super::Agents,
     /// Its limits, its op's (`--memory`, `--cpu-shares` and the like).
     pub resources: Option<&'o shards_dockerfile::llb::LinuxResources>,
 }

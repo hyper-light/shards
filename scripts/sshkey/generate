@@ -1,0 +1,27 @@
+#!/bin/sh
+# Regenerates crates/shards/src/build/testdata/sshkey.json: what buildx v0.37.1's
+# `--ssh ID=KEYFILE` agent makes of key files (golang.org/x/crypto v0.55.0, which buildx
+# pins: ssh.ParseRawPrivateKey, then agent.NewKeyring, served by agent.ServeAgent), and
+# how it answers a step's requests, which crates/shards/src/build/sshkey.rs is held to.
+# The keys are made fresh on each run, for these tests alone, and used nowhere else.
+#
+#   scripts/sshkey/generate
+set -eu
+
+here=$(cd "$(dirname "$0")" && pwd)
+root=$(cd "$here/../.." && pwd)
+case $(go env GOVERSION) in
+go1.26 | go1.26.*) ;;
+*)
+	echo "Go 1.26 builds buildx v0.37.1; this is $(go env GOVERSION)" >&2
+	exit 1
+	;;
+esac
+
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+printf 'module shards.oracle\n\ngo 1.26\n' >"$work/go.mod"
+cp "$here/oracle_test.go" "$work/oracle_test.go"
+cd "$work"
+go get golang.org/x/crypto@v0.55.0 >/dev/null 2>&1
+SHARDS_SSHKEY_OUT="$root/crates/shards/src/build/testdata/sshkey.json" go test -count=1 -run '^TestShardsSSHKey$' .

@@ -33,6 +33,8 @@ use shards_abi::run;
 use shards_build::sync::{self, Scope};
 use shards_build::upper::Applier;
 use shards_build::vfs::Fs;
+#[cfg(unix)]
+use shards_cmdline::buildflags::Agent;
 use shards_image::erofs::Source;
 
 /// How long a builder may take to boot and dial back.
@@ -123,7 +125,7 @@ impl Builder {
         _: Step,
         _: &mut dyn FnMut(u8, &[u8]),
         _: &mut Applier<'_>,
-        _: &std::collections::BTreeMap<String, PathBuf>,
+        _: &super::Agents,
     ) -> Result<(Ended, u32), String> {
         Err("no builder".into())
     }
@@ -448,7 +450,7 @@ impl Builder {
         mut step: Step,
         out: &mut dyn FnMut(u8, &[u8]),
         applier: &mut Applier<'_>,
-        agents: &std::collections::BTreeMap<String, PathBuf>,
+        agents: &super::Agents,
     ) -> Result<(Ended, u32), String> {
         step.upper = self.layer_id();
         self.frame(kind::STEP, &step.encode())?;
@@ -538,7 +540,7 @@ fn accept_agents<'s, 'e>(
     scope: &'s std::thread::Scope<'s, 'e>,
     ssh: &'e UnixListener,
     grants: &'e [([u8; 16], Vec<u8>)],
-    agents: &'e std::collections::BTreeMap<String, PathBuf>,
+    agents: &'e super::Agents,
     woken: &'e UnixStream,
 ) {
     use std::os::fd::AsRawFd as _;
@@ -574,7 +576,7 @@ fn accept_agents<'s, 'e>(
 fn serve_agent(
     mut conn: UnixStream,
     grants: &[([u8; 16], Vec<u8>)],
-    agents: &std::collections::BTreeMap<String, PathBuf>,
+    agents: &super::Agents,
 ) -> std::io::Result<()> {
     use std::io::{Read as _, Write as _};
     conn.set_nonblocking(false)?;
@@ -587,10 +589,9 @@ fn serve_agent(
     if !grants.iter().any(|(t, i)| *t == token && *i == id) {
         return Ok(());
     }
-    let Some(path) = agents.get(&*String::from_utf8_lossy(&id)) else {
+    let Some(agent) = agents.get(&*String::from_utf8_lossy(&id)) else {
         return Ok(());
     };
-    let mut agent = UnixStream::connect(path)?;
     let read_msg = |from: &mut UnixStream| -> std::io::Result<Option<Vec<u8>>> {
         let mut n = [0u8; 4];
         match from.read_exact(&mut n) {
@@ -606,19 +607,32 @@ fn serve_agent(
         from.read_exact(&mut body)?;
         Ok(Some(body))
     };
+    let write_msg = |to: &mut UnixStream, body: &[u8]| -> std::io::Result<()> {
+        to.write_all(&u32::try_from(body.len()).unwrap_or(0).to_be_bytes())?;
+        to.write_all(body)
+    };
+    let path = match agent {
+        Agent::Socket(path) => path,
+        // The keys of files: answered here, as BuildKit's keyring answers, read-only.
+        Agent::Keys(keys) => {
+            while let Some(request) = read_msg(&mut conn)? {
+                write_msg(&mut conn, &super::sshkey::answer(keys, &request))?;
+            }
+            return Ok(());
+        }
+    };
+    let mut agent = UnixStream::connect(path)?;
     while let Some(request) = read_msg(&mut conn)? {
         let allowed = request.first().is_some_and(|t| AGENT_ALLOWED.contains(t));
         if !allowed {
             conn.write_all(&[0, 0, 0, 1, 5])?;
             continue;
         }
-        agent.write_all(&u32::try_from(request.len()).unwrap_or(0).to_be_bytes())?;
-        agent.write_all(&request)?;
+        write_msg(&mut agent, &request)?;
         let Some(answer) = read_msg(&mut agent)? else {
             return Ok(());
         };
-        conn.write_all(&u32::try_from(answer.len()).unwrap_or(0).to_be_bytes())?;
-        conn.write_all(&answer)?;
+        write_msg(&mut conn, &answer)?;
     }
     Ok(())
 }

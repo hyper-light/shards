@@ -44,6 +44,10 @@ mod live;
 mod output;
 mod remote;
 mod skills;
+mod sshkey;
+
+/// The SSH agents `--ssh` gives a build's steps, by id: sockets forwarded, or keys served.
+pub(crate) type Agents = BTreeMap<String, buildflags::Agent<sshkey::Key>>;
 pub(crate) mod step;
 
 const PATH: &str = "shards buildx build";
@@ -1034,9 +1038,16 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
     .collect();
     resources.extend(parsed.many("resource").iter().cloned());
     let resource_attrs = buildflags::resource_attrs(&resources)?;
-    let agents = buildflags::ssh_agents(&buildflags::parse_ssh(parsed.many("ssh")), &|k| {
-        std::env::var(k).ok()
-    })?;
+    let mut agents: Agents = buildflags::ssh_agents(
+        &buildflags::parse_ssh(parsed.many("ssh")),
+        &|k| std::env::var(k).ok(),
+        &sshkey::parse,
+    )?;
+    for agent in agents.values_mut() {
+        if let buildflags::Agent::Keys(keys) = agent {
+            *keys = sshkey::keyring(std::mem::take(keys));
+        }
+    }
     let outputs = buildflags::create_exports(
         &exports,
         parsed.bool("push"),

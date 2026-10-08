@@ -898,6 +898,8 @@ dependencies = [
 name = "shards"
 version = "0.3.0"
 dependencies = [
+ "aws-lc-rs",
+ "base64",
  "bzip2",
  "libc",
  "lzma-rust2",
@@ -925,6 +927,7 @@ dependencies = [
  "shards-user",
  "shards-vmm",
  "windows-sys 0.61.2",
+ "zeroize",
 ]
 
 [[package]]

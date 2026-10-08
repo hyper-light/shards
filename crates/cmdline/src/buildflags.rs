@@ -527,21 +527,50 @@ pub fn parse_ssh(specs: &[String]) -> Vec<Ssh> {
         .collect()
 }
 
+/// An agent a build's steps reach: a socket forwarded, or the keys of files, which the
+/// client serves as an agent of its own (BuildKit's keyring).
+#[derive(Debug)]
+pub enum Agent<K> {
+    Socket(std::path::PathBuf),
+    Keys(Vec<K>),
+}
+
+/// Why a key file is not taken: where buildx's agent parses it (`failed to parse FILE`),
+/// or where its keyring takes the key (`failed to add FILE to agent`).
+#[derive(Debug, PartialEq, Eq)]
+pub enum KeyRefused {
+    Parse(String),
+    Add(String),
+}
+
+/// The most of a key file read, as BuildKit reads one.
+const KEY_FILE_MAX: u64 = 100 * 1024;
+
 /// The SSH agents `specs` forward, by id, as BuildKit's sshprovider takes them
-/// (v0.28.1 session/sshforward/sshprovider/agentprovider.go, NewSSHAgentProvider): an id
-/// `default` where none is given; no path, `SSH_AUTH_SOCK`'s (`env`); one socket. A key
-/// file is not forwarded yet: BuildKit loads it into an agent of its own, which signs
-/// with it.
-pub fn ssh_agents(
+/// (v0.33.0 session/sshforward/sshprovider/agentprovider.go, NewSSHAgentProvider and
+/// toDialer): an id `default` where none is given; no path, `SSH_AUTH_SOCK`'s (`env`);
+/// one socket, or key files, each read (its first 100 KiB) and made a key by `key`.
+pub fn ssh_agents<K>(
     specs: &[Ssh],
     env: &dyn Fn(&str) -> Option<String>,
-) -> Result<std::collections::BTreeMap<String, std::path::PathBuf>, String> {
+    key: &dyn Fn(&[u8]) -> Result<K, KeyRefused>,
+) -> Result<BTreeMap<String, Agent<K>>, String> {
     #[cfg(unix)]
     let is_socket = |m: &std::fs::Metadata| std::os::unix::fs::FileTypeExt::is_socket(&m.file_type());
     // No builder runs on Windows yet, nor does a socket there say what it is.
     #[cfg(not(unix))]
     let is_socket = |_: &std::fs::Metadata| true;
-    let mut out = std::collections::BTreeMap::new();
+    // An error of a path, as Go's *PathError says it.
+    let os_err = |op: &str, p: &str, e: &std::io::Error| {
+        let why = match e.kind() {
+            std::io::ErrorKind::NotFound => "no such file or directory".to_string(),
+            std::io::ErrorKind::PermissionDenied => "permission denied".to_string(),
+            std::io::ErrorKind::IsADirectory => "is a directory".to_string(),
+            _ => e.to_string(),
+        };
+        format!("{op} {p}: {why}")
+    };
+    let mut out = BTreeMap::new();
     for spec in specs {
         let id = if spec.id.is_empty() {
             "default"
@@ -563,37 +592,43 @@ pub fn ssh_agents(
                 "invalid empty ssh agent socket: make sure SSH_AUTH_SOCK is set".into(),
             ));
         }
+        let wrap = |why: String| {
+            fail(format!(
+                "failed to convert agent config for ID: {}: {why}",
+                go::quote(id)
+            ))
+        };
         let mut socket = None;
+        let mut keys = Vec::new();
         for p in &paths {
-            let wrap = |why: String| {
-                fail(format!(
-                    "failed to convert agent config for ID: {}: {why}",
-                    go::quote(id)
-                ))
-            };
             if socket.is_some() {
                 return Err(wrap("only single socket allowed".into()));
             }
-            let meta = std::fs::metadata(p).map_err(|e| {
-                wrap(format!(
-                    "stat {p}: {}",
-                    match e.kind() {
-                        std::io::ErrorKind::NotFound => "no such file or directory".to_string(),
-                        std::io::ErrorKind::PermissionDenied => "permission denied".to_string(),
-                        _ => e.to_string(),
-                    }
-                ))
-            })?;
-            if !is_socket(&meta) {
-                return Err(wrap(format!(
-                    "{p}: a key file, which shards build does not forward yet; forward an agent holding it"
-                )));
+            let meta = std::fs::metadata(p).map_err(|e| wrap(os_err("stat", p, &e)))?;
+            if is_socket(&meta) {
+                socket = Some(std::path::PathBuf::from(p));
+                continue;
             }
-            socket = Some(std::path::PathBuf::from(p));
+            let file = std::fs::File::open(p)
+                .map_err(|e| wrap(format!("failed to open {p}: {}", os_err("open", p, &e))))?;
+            let mut bytes = SecretBytes(Vec::new());
+            std::io::Read::read_to_end(&mut std::io::Read::take(file, KEY_FILE_MAX), &mut bytes.0)
+                .map_err(|e| wrap(format!("failed to read {p}: {}", os_err("read", p, &e))))?;
+            keys.push(key(bytes.bytes()).map_err(|e| {
+                wrap(match e {
+                    KeyRefused::Parse(why) => format!("failed to parse {p}: {why}"),
+                    KeyRefused::Add(why) => format!("failed to add {p} to agent: {why}"),
+                })
+            })?);
         }
-        if let Some(s) = socket {
-            out.insert(id.to_string(), s);
-        }
+        let agent = match socket {
+            Some(_) if !keys.is_empty() => {
+                return Err(wrap("invalid combination of keys and sockets".into()));
+            }
+            Some(s) => Agent::Socket(s),
+            None => Agent::Keys(keys),
+        };
+        out.insert(id.to_string(), agent);
     }
     Ok(out)
 }
@@ -1014,6 +1049,7 @@ mod tests {
         assert_eq!(s(&["a=/x,/y", "", "b"]), [ssh("a", &["/x", "/y"]), ssh("b", &[])]);
         assert_eq!(s(&["c="]), [ssh("c", &[""])]);
         let none = |_: &str| None;
+        let key = |b: &[u8]| Ok::<_, KeyRefused>(String::from_utf8_lossy(b).into_owned());
         // A duplicate is met once the first of its id resolves: a socket here.
         #[cfg(unix)]
         {
@@ -1023,26 +1059,68 @@ mod tests {
             let sock = dir.join("agent");
             let _listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
             let at = sock.to_string_lossy().into_owned();
-            let agents = ssh_agents(&s(&["a"]), &|_| Some(at.clone())).unwrap();
-            assert_eq!(agents.get("a"), Some(&sock));
+            let agents = ssh_agents(&s(&["a"]), &|_| Some(at.clone()), &key).unwrap();
+            assert!(matches!(agents.get("a"), Some(Agent::Socket(p)) if *p == sock));
             assert_eq!(
-                ssh_agents(&s(&["a", "a"]), &|_| Some(at.clone())).unwrap_err(),
+                ssh_agents(&s(&["a", "a"]), &|_| Some(at.clone()), &key).unwrap_err(),
                 "duplicate agent ID \"a\""
             );
             assert_eq!(
-                ssh_agents(&s(&[&format!("b={at},{at}")]), &none).unwrap_err(),
+                ssh_agents(&s(&[&format!("b={at},{at}")]), &none, &key).unwrap_err(),
                 format!(
                     "failed to convert agent config {{b [{at} {at}] false}}: failed to convert agent config for ID: \"b\": only single socket allowed"
                 )
             );
+            // Key files: each made a key, in order; never beside a socket.
+            let (k1, k2) = (dir.join("k1"), dir.join("k2"));
+            std::fs::write(&k1, "one").unwrap();
+            std::fs::write(&k2, "two").unwrap();
+            let (k1, k2) = (
+                k1.to_string_lossy().into_owned(),
+                k2.to_string_lossy().into_owned(),
+            );
+            let agents = ssh_agents(&s(&[&format!("k={k1},{k2}")]), &none, &key).unwrap();
+            assert!(matches!(agents.get("k"), Some(Agent::Keys(v)) if *v == ["one", "two"]));
+            let conf = |paths: &str, why: &str| {
+                format!(
+                    "failed to convert agent config {{k [{paths}] false}}: failed to convert agent config for ID: \"k\": {why}"
+                )
+            };
+            assert_eq!(
+                ssh_agents(&s(&[&format!("k={k1},{at}")]), &none, &key).unwrap_err(),
+                conf(&format!("{k1} {at}"), "invalid combination of keys and sockets")
+            );
+            let refused = |b: &[u8]| -> Result<String, KeyRefused> {
+                Err(if b == b"one" {
+                    KeyRefused::Parse("ssh: no key found".into())
+                } else {
+                    KeyRefused::Add("ssh: unsupported key type *ecdh.PrivateKey".into())
+                })
+            };
+            assert_eq!(
+                ssh_agents(&s(&[&format!("k={k1}")]), &none, &refused).unwrap_err(),
+                conf(&k1, &format!("failed to parse {k1}: ssh: no key found"))
+            );
+            assert_eq!(
+                ssh_agents(&s(&[&format!("k={k2}")]), &none, &refused).unwrap_err(),
+                conf(
+                    &k2,
+                    &format!("failed to add {k2} to agent: ssh: unsupported key type *ecdh.PrivateKey")
+                )
+            );
+            let d = dir.to_string_lossy().into_owned();
+            assert_eq!(
+                ssh_agents(&s(&[&format!("k={d}")]), &none, &key).unwrap_err(),
+                conf(&d, &format!("failed to read {d}: read {d}: is a directory"))
+            );
             let _ = std::fs::remove_dir_all(&dir);
         }
         assert_eq!(
-            ssh_agents(&s(&["default"]), &none).unwrap_err(),
+            ssh_agents(&s(&["default"]), &none, &key).unwrap_err(),
             "failed to convert agent config {default [] false}: invalid empty ssh agent socket: make sure SSH_AUTH_SOCK is set"
         );
         assert_eq!(
-            ssh_agents(&s(&["k=/no/such"]), &none).unwrap_err(),
+            ssh_agents(&s(&["k=/no/such"]), &none, &key).unwrap_err(),
             "failed to convert agent config {k [/no/such] false}: failed to convert agent config for ID: \"k\": stat /no/such: no such file or directory"
         );
     }

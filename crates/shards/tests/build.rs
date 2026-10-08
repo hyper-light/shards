@@ -2905,7 +2905,8 @@ fn check_says_the_builds_warnings_as_buildx_does() {
 /// `RUN --mount=type=ssh` reaches the client's SSH agent through the builder, as
 /// BuildKit's steps reach it (`--ssh default`, `SSH_AUTH_SOCK` in the step): the step
 /// sees the agent's keys and has it sign, and cannot have it forget them, which BuildKit's
-/// read-only agent refuses; without `--ssh`, BuildKit's refusal.
+/// read-only agent refuses; the same of a key file the client serves (D68); without
+/// `--ssh`, BuildKit's refusal.
 #[test]
 fn run_steps_reach_the_clients_ssh_agent() {
     if cannot_run_vms() {
@@ -3003,6 +3004,64 @@ fn run_steps_reach_the_clients_ssh_agent() {
         .output()
         .unwrap();
     assert!(String::from_utf8_lossy(&listed.stdout).contains("shards-test-key"));
+
+    // The key file itself, served by the client as BuildKit's keyring serves it: the
+    // step sees the key (its comment dropped, as x/crypto drops it) and has it sign, and
+    // is refused what a read-only agent refuses.
+    let from_file = shards(&[
+        "build",
+        "--progress=plain",
+        "--no-cache",
+        "--ssh",
+        &format!("default={}", key.display()),
+        "--allow",
+        "security.insecure",
+        ctx.to_str().unwrap(),
+    ]);
+    assert_eq!(from_file.status, Some(0), "{}", from_file.stderr);
+    for line in [
+        " agent keys 1 \n",
+        " agent signed\n",
+        " agent remove refused\n",
+        " vsock-agent refused\n",
+    ] {
+        assert!(from_file.stderr.contains(line), "{line:?}\n{}", from_file.stderr);
+    }
+    // A key file locked by a passphrase, and keys beside a socket: buildx's refusals.
+    let locked = keys.join("locked");
+    let made = std::process::Command::new("ssh-keygen")
+        .args(["-q", "-t", "ed25519", "-N", "a passphrase", "-f"])
+        .arg(&locked)
+        .output()
+        .unwrap();
+    assert!(made.status.success(), "{}", String::from_utf8_lossy(&made.stderr));
+    let refused = shards(&[
+        "build",
+        "--ssh",
+        &format!("k={}", locked.display()),
+        ctx.to_str().unwrap(),
+    ]);
+    assert_ne!(refused.status, Some(0));
+    assert!(
+        refused.stderr.contains(&format!(
+            "failed to parse {}: ssh: this private key is passphrase protected",
+            locked.display()
+        )),
+        "{}",
+        refused.stderr
+    );
+    let mixed = shards(&[
+        "build",
+        "--ssh",
+        &format!("k={},{}", key.display(), sock.display()),
+        ctx.to_str().unwrap(),
+    ]);
+    assert_ne!(mixed.status, Some(0));
+    assert!(
+        mixed.stderr.contains("invalid combination of keys and sockets"),
+        "{}",
+        mixed.stderr
+    );
 
     // Without --ssh, an optional mount (BuildKit's default) is left out, and a required
     // one refused in BuildKit's words.
