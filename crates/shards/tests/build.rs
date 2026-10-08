@@ -132,9 +132,15 @@ fn an_image_built_of_settings_runs_as_built() {
         "-q prints no progress: {}",
         q1.stderr
     );
+    // The manifest an unattested build writes is the ID its -q prints (Docker's types,
+    // D83); an attested build's manifest is OCI's, and another.
+    let shown_plain = run_shards_env(&["build"], &[ctx.to_str().unwrap()], &plain, TIMEOUT);
     assert!(
-        built.stderr.contains(&format!("writing image {} done", id(&q1))),
-        "{shown}"
+        shown_plain
+            .stderr
+            .contains(&format!("writing image {} done", id(&q1))),
+        "{}",
+        shown_plain.stderr
     );
 
     if cannot_run_vms() {
@@ -1625,6 +1631,27 @@ fn provenance_max_records_a_builds_steps_and_layers() {
     assert_eq!(base_chain, image_layers[..base_chain.len()]);
     assert!(base_chain.len() < image_layers.len());
     assert!(layers.get(format!("{heredoc}:0")).is_none(), "{layers}");
+    // Asked for by a build argument (`BUILDKIT_ATTEST_PROVENANCE`), as BuildKit reads one.
+    let by_arg = shards(&[
+        "build",
+        "-t",
+        "max:2",
+        "--build-arg",
+        "BUILDKIT_ATTEST_PROVENANCE=mode=max",
+        "--metadata-file",
+        meta.to_str().unwrap(),
+        ctx.to_str().unwrap(),
+    ]);
+    assert_eq!(by_arg.status, Some(0), "{}", by_arg.stderr);
+    let md: serde_json::Value = serde_json::from_slice(&std::fs::read(&meta).unwrap()).unwrap();
+    let index = blob(md["containerimage.digest"].as_str().unwrap());
+    let attestation = blob(index["manifests"][1]["digest"].as_str().unwrap());
+    let statement = blob(attestation["layers"][0]["digest"].as_str().unwrap());
+    assert!(
+        statement["predicate"]["buildDefinition"]["internalParameters"]["buildConfig"]["llbDefinition"]
+            .is_array(),
+        "{statement}"
+    );
 }
 
 #[test]
@@ -1744,10 +1771,12 @@ fn builds_attest_their_provenance_as_docker_does() {
     assert_eq!(run_details["builder"]["id"], "https://example.com/builder");
     assert_eq!(run_details["metadata"]["buildkit_reproducible"], true);
     // Turned off, and what shards does not make yet, refused by name.
+    // Unattested, the stored image is Docker's types, as Docker's image exporter stores
+    // one (D83).
     let off = shards(&["build", "-q", "--provenance=false", ctx.to_str().unwrap()]);
     assert_eq!(
         blob(off.stdout.trim())["mediaType"],
-        "application/vnd.oci.image.manifest.v1+json",
+        "application/vnd.docker.distribution.manifest.v2+json",
         "{}",
         off.stderr
     );
@@ -1818,14 +1847,52 @@ fn builds_attest_their_provenance_as_docker_does() {
         .map(|s| s["name"].as_str().unwrap())
         .collect();
     assert!(named.contains(&"bin/testguest"), "{named:?}");
-    // Asked for none: the manifest is the ID.
+    // Asked for none: the manifest is the ID, in Docker's types (D83); in OCI's where
+    // the image output asks for them.
     let mut plain = env.to_vec();
     plain.push(("BUILDX_NO_DEFAULT_ATTESTATIONS", std::ffi::OsStr::new("1")));
     let quiet = run_shards_env(&[], &["build", "-q", ctx.to_str().unwrap()], &plain, TIMEOUT);
     assert_eq!(quiet.status, Some(0), "{}", quiet.stderr);
     assert_eq!(
         blob(quiet.stdout.trim())["mediaType"],
+        "application/vnd.docker.distribution.manifest.v2+json"
+    );
+    let asked = run_shards_env(
+        &[],
+        &[
+            "build",
+            "-q",
+            "-o",
+            "type=image,oci-mediatypes=true",
+            ctx.to_str().unwrap(),
+        ],
+        &plain,
+        TIMEOUT,
+    );
+    assert_eq!(asked.status, Some(0), "{}", asked.stderr);
+    assert_eq!(
+        blob(asked.stdout.trim())["mediaType"],
         "application/vnd.oci.image.manifest.v1+json"
+    );
+    // eStargz, OCI's alone, refused in Docker's types, in BuildKit's words.
+    let refused = run_shards_env(
+        &[],
+        &[
+            "build",
+            "-o",
+            "type=oci,dest=never.tar,compression=estargz,oci-mediatypes=false",
+            ctx.to_str().unwrap(),
+        ],
+        &plain,
+        TIMEOUT,
+    );
+    assert_ne!(refused.status, Some(0));
+    assert!(
+        refused
+            .stderr
+            .contains("exporter option \"compression=estargz\" conflicts with \"oci-mediatypes=false\""),
+        "{}",
+        refused.stderr
     );
 }
 
@@ -7227,7 +7294,7 @@ fn builds_for_another_platform_run_only_the_build_platforms_steps() {
 /// Layers compressed as BuildKit's exporters compress them (D75): those a build makes
 /// gzipped by default, each its DiffID once decompressed, a base's kept as it came;
 /// `compression=uncompressed`; `force-compression` writing the base's too;
-/// `compression-level` (9: the gzip header's XFL 2, as Go writes it); zstd refused, named;
+/// `compression-level` (9: the gzip header's XFL 2, as Go writes it); eStargz and zstd;
 /// a type BuildKit does not know refused in its words. That the bytes are Go's own is
 /// crates/flate's oracle.
 #[test]
@@ -7393,6 +7460,68 @@ fn layers_are_compressed_as_buildkit_compresses_them() {
             .iter()
             .any(|(h, d)| h.name == b"work/made" && d == b"some bytes made by a step")
     );
+    // zstd (D84): the step's layer klauspost's zstd of its tar, at the default level and
+    // at one asked for; the base kept.
+    let unzstd = |b: &[u8]| {
+        let mut out = Vec::new();
+        std::io::Read::read_to_end(&mut ruzstd::decoding::StreamingDecoder::new(b).unwrap(), &mut out)
+            .unwrap();
+        out
+    };
+    for opts in [",compression=zstd", ",compression=zstd,compression-level=19"] {
+        let z = layers_of(opts);
+        assert_eq!(z[0].0, TAR, "{opts}");
+        assert_eq!(z[1].0, "application/vnd.oci.image.layer.v1.tar+zstd", "{opts}");
+        assert_eq!(unzstd(&z[1].1), made, "{opts}");
+    }
+    // Each output its own compression (D85): one build, a zstd layout and a gzip archive,
+    // each holding the step's layer as it asked, the same tar in both.
+    let both_dir = out.join("both-zstd");
+    let both_tar = out.join("both-gzip.tar");
+    let both = shards(&[
+        "build",
+        "-o",
+        &format!("type=oci,dest={},tar=false,compression=zstd", both_dir.display()),
+        "-o",
+        &format!("type=oci,dest={}", both_tar.display()),
+        ctx.to_str().unwrap(),
+    ]);
+    assert_eq!(both.status, Some(0), "{}", both.stderr);
+    let read_dir = |d: &str| {
+        std::fs::read(
+            both_dir
+                .join("blobs/sha256")
+                .join(d.trim_start_matches("sha256:")),
+        )
+        .unwrap()
+    };
+    let top: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(both_dir.join("index.json")).unwrap()).unwrap();
+    let zm: serde_json::Value =
+        serde_json::from_slice(&read_dir(top["manifests"][0]["digest"].as_str().unwrap())).unwrap();
+    assert_eq!(
+        zm["layers"][1]["mediaType"],
+        "application/vnd.oci.image.layer.v1.tar+zstd"
+    );
+    assert_eq!(
+        unzstd(&read_dir(zm["layers"][1]["digest"].as_str().unwrap())),
+        made
+    );
+    let archive = std::fs::read(&both_tar).unwrap();
+    let files: std::collections::BTreeMap<Vec<u8>, Vec<u8>> = tar_entries(&archive)
+        .into_iter()
+        .map(|(h, d)| (h.name, d))
+        .collect();
+    let blob_of =
+        |d: &str| files[format!("blobs/sha256/{}", d.trim_start_matches("sha256:")).as_bytes()].clone();
+    let top: serde_json::Value = serde_json::from_slice(&files[b"index.json".as_slice()]).unwrap();
+    let gm: serde_json::Value =
+        serde_json::from_slice(&blob_of(top["manifests"][0]["digest"].as_str().unwrap())).unwrap();
+    assert_eq!(gm["layers"][1]["mediaType"], GZIP);
+    assert_eq!(
+        gunzip(&blob_of(gm["layers"][1]["digest"].as_str().unwrap())),
+        made
+    );
     let (forced, _, _) = esgz(",force-compression=true");
     assert!(
         forced["layers"][0]["annotations"]["containerd.io/snapshot/stargz/toc.digest"].is_string(),
@@ -7400,7 +7529,6 @@ fn layers_are_compressed_as_buildkit_compresses_them() {
     );
 
     for (opts, words) in [
-        ("compression=zstd", "shards does not write zstd layers yet"),
         ("compression=lz4", "unsupported compression type lz4"),
         (
             "compression-level=high",
@@ -7663,27 +7791,108 @@ fn several_platforms_make_one_image_of_their_manifests() {
         );
     }
 
-    for (output, words) in [
-        (
-            "type=docker,dest=x.tar",
-            "docker exporter does not currently support exporting manifest lists",
-        ),
-        (
-            "type=tar,dest=x.tar",
-            "a tar output of several platforms is not supported by shards yet",
-        ),
-    ] {
-        let refused = shards(&[
+    // A tar of several platforms (D86): each platform's files in a directory of its name,
+    // the platforms in name order, as BuildKit's tar exporter writes one.
+    let joined = out.join("several.tar");
+    let tarred = shards(&[
+        "build",
+        "--platform",
+        &platforms,
+        "-o",
+        &format!("type=tar,dest={}", joined.display()),
+        ctx.to_str().unwrap(),
+    ]);
+    assert_eq!(tarred.status, Some(0), "{}", tarred.stderr);
+    let entries = tar_entries(&std::fs::read(&joined).unwrap());
+    let mut dirs: Vec<String> = [other, arch].iter().map(|p| format!("linux_{p}")).collect();
+    dirs.sort();
+    let names: Vec<String> = entries
+        .iter()
+        .map(|(h, _)| String::from_utf8(h.name.clone()).unwrap())
+        .collect();
+    for d in &dirs {
+        let at = names
+            .iter()
+            .position(|n| *n == format!("{d}/"))
+            .unwrap_or_else(|| panic!("{names:?}"));
+        assert_eq!(entries[at].0.mode, 0o755);
+        let built = entries
+            .iter()
+            .find(|(h, _)| h.name == format!("{d}/out").into_bytes())
+            .unwrap_or_else(|| panic!("{names:?}"));
+        assert_eq!(built.1, b"built");
+    }
+    let order: Vec<usize> = dirs
+        .iter()
+        .map(|d| names.iter().position(|n| *n == format!("{d}/")).unwrap())
+        .collect();
+    assert!(order.windows(2).all(|w| w[0] < w[1]), "{names:?}");
+
+    // One cache of every platform's records (D87): written by a build of both, it gives
+    // a fresh home each platform's step.
+    let cache = out.join("cache");
+    let cached = shards(&[
+        "build",
+        "--platform",
+        &platforms,
+        "--cache-to",
+        &format!("type=local,dest={}", cache.display()),
+        ctx.to_str().unwrap(),
+    ]);
+    assert_eq!(cached.status, Some(0), "{}", cached.stderr);
+    let fresh = TempDir::new("multi-fresh-home");
+    let fresh_env = [
+        ("SHARDS_HOME", fresh.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let again = run_shards_env(
+        &[],
+        &[
             "build",
+            "--progress=plain",
             "--platform",
             &platforms,
-            "-o",
-            output,
+            "--cache-from",
+            &format!("type=local,src={}", cache.display()),
             ctx.to_str().unwrap(),
-        ]);
-        assert_eq!(refused.status, Some(1), "{}", refused.stderr);
-        assert!(refused.stderr.contains(words), "{}", refused.stderr);
+        ],
+        &fresh_env,
+        TIMEOUT,
+    );
+    assert_eq!(again.status, Some(0), "{}", again.stderr);
+    for p in [other, arch] {
+        let n = again
+            .stderr
+            .lines()
+            .find_map(|l| {
+                l.contains(&format!("[linux/{p} stage-1 2/2] COPY"))
+                    .then(|| l.split(' ').next().unwrap().to_string())
+            })
+            .unwrap_or_else(|| panic!("no COPY of linux/{p}:\n{}", again.stderr));
+        assert!(
+            again.stderr.lines().any(|l| l == format!("{n} CACHED")),
+            "linux/{p}'s COPY not cached:\n{}",
+            again.stderr
+        );
     }
+
+    let refused = shards(&[
+        "build",
+        "--platform",
+        &platforms,
+        "-o",
+        "type=docker,dest=x.tar",
+        ctx.to_str().unwrap(),
+    ]);
+    assert_eq!(refused.status, Some(1), "{}", refused.stderr);
+    assert!(
+        refused
+            .stderr
+            .contains("docker exporter does not currently support exporting manifest lists"),
+        "{}",
+        refused.stderr
+    );
 }
 
 /// An Agentfile made from an image (§10, D78): `FROM` the image by its manifest's digest,

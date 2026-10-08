@@ -3210,6 +3210,126 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode
 waits on the user.
 
+### D87. `--cache-to` of several platforms
+
+A build of several platforms exports one cache of every platform's records, as
+BuildKit's does: its solve exports the whole build's graph.
+
+How:
+- Each platform's build records the cache keys it used and its image's layers, instead
+  of exporting.
+- An inline cache stays with each platform's own image, whose config carries it (D62).
+- Once every platform is built, the local and registry caches are written once, of the
+  union: `mode=min` keeps the records whose layers are some platform's image's, `max`
+  keeps every one.
+
+Tested: `several_platforms_make_one_image_of_their_manifests` writes a local cache of a
+two-platform build. A fresh home building both platforms from it (`--cache-from`) finds
+each platform's own `COPY` step `CACHED`.
+
+### D86. A tar output of several platforms
+
+`--platform a,b -o type=tar` writes one tar of every platform's files, as BuildKit's tar
+exporter writes a file system split by platform. Measured: Docker 29.3.1's has, per
+platform in name order, a directory `linux_amd64/` (mode 0755, owner 0, time 0), then
+that platform's entries within it. A provenance asked for goes in each platform's
+directory as `provenance.json`.
+
+shards builds each platform into a tar of its own in the build's stage, then joins them:
+each platform's directory first, then each entry with its name, and a hardlink's target,
+within it. Each header is written by Go's archive/tar as a new one is (its format the
+writer's to choose, as fsutil's are), and each body is copied as it is.
+
+Still refused, named: a local output with `platform-split=false`, whose platforms' files
+would land on one another; and an explicit provenance in a tar output (D72).
+
+Tested: `several_platforms_make_one_image_of_their_manifests` builds two platforms into
+one tar. Each platform's directory is 0755, in name order, and holds its step's file.
+
+### D85. Each image output compresses its layers as it asks
+
+BuildKit gives each exporter its own compression, `compression-level`,
+`force-compression` and `rewrite-timestamp`. A build with an OCI layout in zstd and a
+gzip archive writes each its own layers. shards refused outputs that asked differently.
+
+Now:
+- The stored and pushed image uses the image output's settings, else the first image
+  output's.
+- Each `oci` or `docker` output that asks otherwise gets its own layers, from the build's
+  uncompressed layers, written by the same `compress::layers`. Each blob is written once
+  and kept in the build cache's records. The output also gets its own config, whose
+  DiffIDs a rewrite changes, and its own manifest; its attestation's subjects name that
+  manifest.
+
+Every output's attributes are checked before the build runs, as before.
+
+Tested: `layers_are_compressed_as_buildkit_compresses_them` runs one build with a zstd
+layout and a gzip archive. Each holds the step's layer in its own compression, and both
+decode to the same tar. Mutation-checked: with no output given its own layers, the zstd
+layout holds gzip and the test fails.
+
+### D84. zstd layers, as klauspost/compress writes them
+
+`compression=zstd` writes a build's layers as BuildKit v0.28.1 does
+(util/compression/zstd.go): `zstd.NewWriter` of klauspost/compress v1.19.2, with
+`WithEncoderLevel(EncoderLevelFromZstd(level))` only where `compression-level` is given.
+It is ported to Rust as `crates/zstd` (`shards_zstd`), no library taken: a library's
+encoder makes other bytes, and a layer's digest is its bytes.
+
+The port covers klauspost's encoder path, generic Go (no assembly, which produces the
+same output):
+- the stream writer and frame header;
+- the four match finders: fastest, default (double fast), better and best;
+- block encoding with its sequence and literal coders: FSE, huff0;
+- xxhash64 for the frame checksum;
+- Go's pure-Go `Log2` for the best encoder.
+
+klauspost writes the same bytes with one block at a time as with its concurrent default
+(measured over the whole corpus), so the port writes one at a time. zstd does not force
+OCI's types, so an unattested `type=docker` or stored image names its layers
+`application/vnd.docker.image.rootfs.diff.tar.zstd`, as Docker's does (measured).
+
+Measured (Apple M5 Max, macOS 26.4.1, 9 MiB mixed input written in 32 KiB pieces, n=15,
+medians): with one block at a time, the port takes 15.4 ms against Go's 18.9 ms at the
+default level, and 156.7 ms against 222.4 ms at level 19. It is slower only at level 7
+(41.1 ms against 39.4 ms). Go's concurrent writer is 12-16% faster than the port at
+levels 1-7. The port compresses each layer on one thread; several layers are compressed
+in parallel (D75).
+
+Tested:
+- `crates/zstd/tests/oracle.rs` holds 856 cases to what `scripts/zstd/generate` records
+  Go 1.25.8 writing with klauspost v1.19.2: 5 kinds of input, 21 sizes up to 9 MiB, and 8
+  settings (default; levels 1, 3, 5, 7, 11, 19, 22), every encoder. Two 20 MiB inputs go
+  past the history's shift. Every output round-trips through ruzstd.
+- The generator built for amd64 and run under Rosetta, where Go's `Log` is its assembly,
+  writes the same 856 results as arm64's pure Go.
+- `layers_are_compressed_as_buildkit_compresses_them` checks a real build's zstd layer,
+  at the default level and level 19, decoding to the step's tar, with the base kept.
+
+### D83. Media types: `oci-mediatypes`, and Docker's where BuildKit defaults to them
+
+A build's image is written in the media types Docker 29.3.1's BuildKit (v0.28.1) uses
+(`ImageCommitOpts.OCITypes`, `DefaultOCITypes`). Measured in `shards-dind`:
+- `type=oci` writes OCI's types; `type=docker` writes Docker's.
+- A stored image written with `--provenance=false` has a Docker manifest. With its
+  default attestation, it is an OCI index.
+- `oci-mediatypes` overrides either way.
+
+So:
+- **The stored and pushed image** uses OCI's types where the image output asks for them,
+  or where it is attested (provenance, SBOMs) or annotated; Docker's otherwise. Its ID
+  is then that manifest's digest, as Docker's is. Before this, shards wrote OCI's always,
+  so an unattested build's ID was not Docker's.
+- **Each `oci` or `docker` file output** uses its own `oci-mediatypes`, else its exporter's
+  default: OCI's for `oci`, Docker's for `docker` unless it carries an attestation.
+- A non-bool value is refused in BuildKit's words, as is `compression=estargz` with
+  `oci-mediatypes=false` (`Validate`).
+
+Tested: `builds_attest_their_provenance_as_docker_does` checks:
+- an unattested build is stored in Docker's types;
+- `type=image,oci-mediatypes=true` stores OCI's;
+- the eStargz conflict is refused.
+
 ### D82. eStargz layers, as stargz-snapshotter writes them
 
 `compression=estargz` writes a build's layers as BuildKit v0.28.1 does
@@ -3616,7 +3736,7 @@ own.
   default, or `uncompressed`), `compression-level` and `force-compression` are read as
   BuildKit reads them (`ParseAttributes`, its words); a layer the build made takes them,
   a layer that came with a base, a named context or an artifact stays as it came unless
-  `force-compression` (BuildKit's `Compression.Force`). `zstd` is refused (eStargz is D82),
+  `force-compression` (BuildKit's `Compression.Force`). zstd is D84 and eStargz D82,
   named; so are outputs that ask different compressions, until each is written its own
   way. Layers compress on as many threads as the host has cores, and each once: the
   build cache keeps a record of each layer, level and kind, its blob held by it.

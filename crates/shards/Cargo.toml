@@ -32,6 +32,7 @@ shards-build = { path = "../build" }
 shards-cmdline = { path = "../cmdline" }
 shards-dockerfile = { path = "../dockerfile" }
 shards-flate = { path = "../flate" }
+shards-zstd = { path = "../zstd" }
 shards-git = { path = "../git" }
 shards-seccomp = { path = "../seccomp" }
 shards-image = { path = "../image" }

@@ -928,6 +928,7 @@ dependencies = [
  "shards-tui",
  "shards-user",
  "shards-vmm",
+ "shards-zstd",
  "windows-sys 0.61.2",
  "zeroize",
 ]
@@ -1154,6 +1155,15 @@ dependencies = [
  "shards-abi",
  "shards-netring",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "shards-zstd"
+version = "0.1.0"
+dependencies = [
+ "ruzstd",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]

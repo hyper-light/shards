@@ -2397,6 +2397,11 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
     // inline cache keep to.
     let used: Vec<String> = keys.iter().flatten().cloned().collect();
     let image_layers: std::collections::BTreeSet<String> = layers.iter().map(|l| show(&l.digest)).collect();
+    // One platform's build of several: what the builds of them all export (D87).
+    multi::with(|sub| {
+        sub.keys.extend(used.iter().cloned());
+        sub.image_layers.extend(image_layers.iter().cloned());
+    });
     let config = if cache_to.iter().any(|e| e.kind == "inline") {
         remote::inline(&config, &used, &store, &image_layers, &as_held)?
     } else {
@@ -2440,14 +2445,76 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
             }
         }
     }
+    let raw_layers = layers;
     let layers = held;
-    let manifest = export::manifest_annotated(
+    // The manifest in OCI's types, which layouts name; and the stored and pushed image's,
+    // in the types its output asks for (`oci-mediatypes`), else OCI's where it is attested
+    // or annotated and Docker's otherwise, as BuildKit v0.28.1's image exporter defaults
+    // (DefaultOCITypes; measured: a stored build with --provenance=false has Docker's, D83).
+    let oci_manifest = export::manifest_annotated(
         &config,
         config_digest.to_string().as_bytes(),
         &layers,
         &annotations,
     );
+    let oci_manifest_digest = sha256(&oci_manifest);
+    let stored_oci = match outputs
+        .iter()
+        .filter(|o| matches!(o.kind.as_str(), "image" | "moby"))
+        .find_map(|o| o.attrs.get("oci-mediatypes"))
+    {
+        Some(v) => oci_types_attr(v)?,
+        None => provenance_on || !capture.sboms.is_empty() || !annotations.is_empty(),
+    };
+    let (manifest, manifest_type) = if stored_oci {
+        (oci_manifest.clone(), oci::media::OCI_MANIFEST)
+    } else {
+        (
+            export::docker_manifest(&config, config_digest.to_string().as_bytes(), &layers),
+            "application/vnd.docker.distribution.manifest.v2+json",
+        )
+    };
     let manifest_digest = sha256(&manifest);
+    // Each file output that compresses or rewrites its layers otherwise than the image
+    // (D85): its own layers, written as it asks (each once, the build cache's records
+    // kept), its config and its manifest.
+    let mut variants: Vec<(usize, Variant)> = Vec::new();
+    for (i, o) in outputs.iter().enumerate() {
+        if !matches!(o.kind.as_str(), "oci" | "docker") || matches!(o.dest, buildflags::Dest::Store) {
+            continue;
+        }
+        let (c, rw) = output_compression(o)?;
+        if (c, rw) == (compression, rewrite_timestamp) {
+            continue;
+        }
+        let at = if rw {
+            output::epoch(&o.attrs, plan.epoch)
+                .map_err(|e| format!("failed to build: failed to solve: {e}"))?
+                .or(plan.epoch)
+        } else {
+            None
+        };
+        let rewrite = at.map(|epoch| compress::Rewrite {
+            epoch,
+            base: &base_diff_ids,
+        });
+        let held = compress::layers(&store, &raw_layers, &existing, c, rewrite, &limits)?;
+        let config = export::config(&plan.image, &held, epoch, base_image.as_ref()).map_err(|e| show(&e))?;
+        let config_digest = sha256(&config);
+        let manifest =
+            export::manifest_annotated(&config, config_digest.to_string().as_bytes(), &held, &annotations);
+        let manifest_digest = sha256(&manifest);
+        variants.push((
+            i,
+            Variant {
+                layers: held,
+                config,
+                config_digest,
+                manifest,
+                manifest_digest,
+            },
+        ));
+    }
     // Named and kept where an output loads it (the image exporter, `--load`'s docker one,
     // or none asked for, docker build's own); an output to a file or directory alone
     // leaves no image, as BuildKit's exporters leave none.
@@ -2472,13 +2539,14 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
             &output::Made {
                 config: &config,
                 config_digest: &config_digest,
-                manifest: &manifest,
-                manifest_digest: &manifest_digest,
+                manifest: &oci_manifest,
+                manifest_digest: &oci_manifest_digest,
                 layers: &layers,
                 descriptor_annotations: &descriptor_annotations,
                 provenance: layout_provenance,
                 provenance_in: multi::active() || everywhere || provenance_on,
             },
+            &variants,
             parsed.many("tag"),
             plan.epoch,
             &progress,
@@ -2497,8 +2565,8 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
             &output::Made {
                 config: &config,
                 config_digest: &config_digest,
-                manifest: &manifest,
-                manifest_digest: &manifest_digest,
+                manifest: &oci_manifest,
+                manifest_digest: &oci_manifest_digest,
                 layers: &layers,
                 descriptor_annotations: &descriptor_annotations,
                 provenance: everywhere_provenance,
@@ -2508,7 +2576,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
         )?;
         let (described, size, media) = match &index {
             Some((d, n)) if imaged => (d, *n, oci::media::OCI_INDEX),
-            _ => (&manifest_digest, manifest.len(), oci::media::OCI_MANIFEST),
+            _ => (&oci_manifest_digest, oci_manifest.len(), oci::media::OCI_MANIFEST),
         };
         let info = everywhere.then(|| provenance::buildinfo(&capture, &everywhere_facts));
         multi::with(|sub| {
@@ -2569,7 +2637,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
     }
     drop(exec);
     let desc = Descriptor {
-        media_type: "application/vnd.oci.image.manifest.v1+json".into(),
+        media_type: manifest_type.into(),
         digest: manifest_digest.to_string(),
         size: i64::try_from(manifest.len()).map_err(|e| e.to_string())?,
         platform: None,
@@ -2699,13 +2767,14 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
         &output::Made {
             config: &config,
             config_digest: &config_digest,
-            manifest: &manifest,
-            manifest_digest: &manifest_digest,
+            manifest: &oci_manifest,
+            manifest_digest: &oci_manifest_digest,
             layers: &layers,
             descriptor_annotations: &descriptor_annotations,
             provenance: everywhere_provenance,
             provenance_in: everywhere || provenance_on,
         },
+        &variants,
         parsed.many("tag"),
         plan.epoch,
         &progress,
@@ -2969,31 +3038,55 @@ fn finish(parsed: &Parsed, id: &str) -> Result<(), String> {
 /// The compression the image's layers take (D75): what the outputs that hold an image
 /// ask, BuildKit's default where none asks; outputs that ask differently are refused,
 /// named, until each is written its own way.
+/// `oci-mediatypes`, read as ImageCommitOpts.Load reads it.
+fn oci_types_attr(v: &str) -> Result<bool, String> {
+    shards_cmdline::go::parse_bool(v).map_err(|e| {
+        format!("failed to build: failed to solve: non-bool value specified for oci-mediatypes: {e}")
+    })
+}
+
+/// An image output's compression and whether it rewrites its layers' times, as BuildKit
+/// reads them (`ParseAttributes`; ImageCommitOpts.Load's parseBool, in its words).
+fn output_compression(o: &buildflags::Output) -> Result<(compress::Compression, bool), String> {
+    let solve = |e: String| format!("failed to build: failed to solve: {e}");
+    let rewrite = match o.attrs.get("rewrite-timestamp") {
+        None => false,
+        Some(v) => shards_cmdline::go::parse_bool(v)
+            .map_err(|e| solve(format!("non-bool value specified for rewrite-timestamp: {e}")))?,
+    };
+    let c = compress::Compression::of(&o.attrs).map_err(solve)?;
+    // `Validate`: eStargz is OCI's alone.
+    if c.kind == compress::Kind::Estargz
+        && let Some(v) = o.attrs.get("oci-mediatypes")
+        && !oci_types_attr(v)?
+    {
+        return Err(solve(
+            "exporter option \"compression=estargz\" conflicts with \"oci-mediatypes=false\"".into(),
+        ));
+    }
+    Ok((c, rewrite))
+}
+
+/// The image's compression and rewrite: the stored image's output's, else the first image
+/// output's; every image output's checked. Each output writes its layers as it asks
+/// (D85): one asking otherwise is given its own.
 fn compression_of(outputs: &[buildflags::Output]) -> Result<(compress::Compression, bool), String> {
-    let mut asked: Option<(compress::Compression, bool)> = None;
+    let mut asked = Vec::new();
     for o in outputs
         .iter()
         .filter(|o| matches!(o.kind.as_str(), "image" | "moby" | "docker" | "oci"))
     {
-        let solve = |e: String| format!("failed to build: failed to solve: {e}");
-        // ImageCommitOpts.Load's parseBool, in its words.
-        let rewrite = match o.attrs.get("rewrite-timestamp") {
-            None => false,
-            Some(v) => shards_cmdline::go::parse_bool(v)
-                .map_err(|e| solve(format!("non-bool value specified for rewrite-timestamp: {e}")))?,
-        };
-        let c = (compress::Compression::of(&o.attrs).map_err(solve)?, rewrite);
-        match asked {
-            Some(a) if a != c => {
-                return Err(
-                    "outputs that compress or rewrite their layers differently are not supported by shards yet: ask each the same"
-                        .into(),
-                );
-            }
-            _ => asked = Some(c),
-        }
+        asked.push((
+            matches!(o.kind.as_str(), "image" | "moby"),
+            output_compression(o)?,
+        ));
     }
-    Ok(asked.unwrap_or_default())
+    Ok(asked
+        .iter()
+        .find(|(stored, _)| *stored)
+        .or(asked.first())
+        .map(|(_, c)| *c)
+        .unwrap_or_default())
 }
 
 /// What BuildKit refuses of the outputs when its solve begins, before any step runs:
@@ -3108,10 +3201,21 @@ fn create_dest_file(path: &Path) -> Result<std::fs::File, String> {
 /// The `oci` and `docker` outputs to a file, stdout or (`oci` with `tar=false`) a
 /// directory, each named by its `name` attribute or the build's tags, as buildx names
 /// them (build/opt.go).
+/// An image output's own layers, config and manifest, where it compresses or rewrites
+/// them otherwise than the image (D85).
+struct Variant {
+    layers: Vec<Layer>,
+    config: Vec<u8>,
+    config_digest: Digest,
+    manifest: Vec<u8>,
+    manifest_digest: Digest,
+}
+
 fn write_image_outputs(
     outputs: &[buildflags::Output],
     store: &Store,
-    made: &output::Made<'_>,
+    image: &output::Made<'_>,
+    variants: &[(usize, Variant)],
     tags: &[String],
     build_epoch: Option<i64>,
     progress: &RefCell<Progress>,
@@ -3125,11 +3229,28 @@ fn write_image_outputs(
         live: None,
     });
     let progress = if multi::active() { &hushed } else { progress };
-    for o in outputs.iter().filter(|o| o.kind == "oci" || o.kind == "docker") {
-        if matches!(o.dest, buildflags::Dest::Store) {
+    for (i, o) in outputs.iter().enumerate() {
+        if !matches!(o.kind.as_str(), "oci" | "docker") || matches!(o.dest, buildflags::Dest::Store) {
             continue;
         }
-        let docker = o.kind == "docker";
+        let own = variants
+            .iter()
+            .find(|(at, _)| *at == i)
+            .map(|(_, v)| output::Made {
+                config: &v.config,
+                config_digest: &v.config_digest,
+                manifest: &v.manifest,
+                manifest_digest: &v.manifest_digest,
+                layers: &v.layers,
+                ..*image
+            });
+        let made = own.as_ref().unwrap_or(image);
+        // Docker's types unless `oci-mediatypes` asks for OCI's, or (the `docker` exporter's
+        // default) the output carries an attestation (D83).
+        let docker = match o.attrs.get("oci-mediatypes") {
+            Some(v) => !oci_types_attr(v)?,
+            None => o.kind == "docker" && made.provenance.is_none(),
+        };
         let v = progress
             .borrow_mut()
             .start(&format!("exporting to {} image format", o.kind));
@@ -3805,7 +3926,24 @@ fn provenance_of(parsed: &Parsed) -> Result<(Provenance, Option<sbom::Asked>), S
             asked.push(buildflags::canonicalize_attest(kind, v));
         }
     }
-    let map = buildflags::attests_map(&buildflags::parse_attests(&asked)?);
+    let mut map = buildflags::attests_map(&buildflags::parse_attests(&asked)?);
+    // `BUILDKIT_ATTEST_<TYPE>` build arguments, as BuildKit's `attestations.Parse` reads
+    // them: the type lowercased, the value its attributes (no `type` among them); where a
+    // flag asks for the same type, the flag (BuildKit takes whichever its map yields).
+    for (k, v) in build_args(parsed.many("build-arg"), true) {
+        let Some(kind) = show(&k).strip_prefix("BUILDKIT_ATTEST_").map(str::to_lowercase) else {
+            continue;
+        };
+        if map.contains_key(&kind) {
+            continue;
+        }
+        let v = show(&v);
+        let off = shards_cmdline::go::csv_fields(v.as_bytes())
+            .unwrap_or_default()
+            .iter()
+            .any(|f| show(f) == "disabled=true");
+        map.insert(kind, (!off).then_some(v));
+    }
     let mut out = Provenance::Default;
     let mut sbom_asked = None;
     for (kind, value) in map {

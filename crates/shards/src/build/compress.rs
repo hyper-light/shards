@@ -13,6 +13,7 @@ use shards_image::store::{self, Limits, Store};
 
 const OCI_LAYER: &str = "application/vnd.oci.image.layer.v1.tar";
 const OCI_LAYER_GZIP: &str = "application/vnd.oci.image.layer.v1.tar+gzip";
+const OCI_LAYER_ZSTD: &str = "application/vnd.oci.image.layer.v1.tar+zstd";
 
 /// What a layer is compressed with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,6 +23,8 @@ pub enum Kind {
     /// eStargz: gzip, each file's chunks a member of their own, and a table of contents
     /// (D82).
     Estargz,
+    /// zstd, as klauspost/compress writes it (`shards_zstd`, D84).
+    Zstd,
 }
 
 /// An exporter's `compression`, `compression-level` and `force-compression`.
@@ -50,9 +53,7 @@ impl Compression {
             None | Some("gzip") => Kind::Gzip,
             Some("uncompressed") => Kind::Uncompressed,
             Some("estargz") => Kind::Estargz,
-            Some(t @ "zstd") => {
-                return Err(format!("shards does not write {t} layers yet"));
-            }
+            Some("zstd") => Kind::Zstd,
             Some(t) => return Err(format!("unsupported compression type {t}")),
         };
         let force = match attrs.get("force-compression").map(String::as_str) {
@@ -94,6 +95,8 @@ fn kind_of(layer: &Layer) -> Option<Kind> {
         }
         b"application/vnd.oci.image.layer.v1.tar+gzip"
         | b"application/vnd.docker.image.rootfs.diff.tar.gzip" => Some(Kind::Gzip),
+        b"application/vnd.oci.image.layer.v1.tar+zstd"
+        | b"application/vnd.docker.image.rootfs.diff.tar.zstd" => Some(Kind::Zstd),
         _ => None,
     }
 }
@@ -291,6 +294,7 @@ fn written(
 ) -> Result<Layer, String> {
     let media_type = match c.kind {
         Kind::Gzip | Kind::Estargz => OCI_LAYER_GZIP,
+        Kind::Zstd => OCI_LAYER_ZSTD,
         Kind::Uncompressed => OCI_LAYER,
     };
     let mut annotations: BTreeMap<Vec<u8>, Vec<u8>> = epoch
@@ -331,6 +335,18 @@ fn written(
             let level = c.level.unwrap_or(shards_flate::DEFAULT_COMPRESSION);
             let esgz_err = |e: String| shards_image::Error::from(std::io::Error::other(e));
             match (c.kind, epoch) {
+                // zstd at the level asked for, else klauspost's default (`Compress`: the
+                // level through EncoderLevelFromZstd only where one is given).
+                (Kind::Zstd, None) => {
+                    let mut z = shards_zstd::Writer::new(blob, c.level);
+                    std::io::copy(tar, &mut z).map_err(io)?;
+                    Ok((z.finish().map_err(io)?.commit()?, None))
+                }
+                (Kind::Zstd, Some(e)) => {
+                    let z = shards_zstd::Writer::new(blob, c.level);
+                    let (z, diff_id) = rewrite_into(tar, z, e)?;
+                    Ok((z.finish().map_err(io)?.commit()?, Some(diff_id)))
+                }
                 (Kind::Estargz, None) => {
                     let (blob, w) = super::estargz::write(tar, blob, level).map_err(esgz_err)?;
                     let diff = Digest::parse(&w.diff_id).map_err(|e| esgz_err(e.to_string()))?;

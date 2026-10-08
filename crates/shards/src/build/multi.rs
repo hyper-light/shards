@@ -38,6 +38,10 @@ pub(super) struct Sub {
     pub answered: super::Answered,
     /// The bases those resolved, by what the planner names them (`Bases::resolved`).
     pub bases: BTreeMap<String, super::Base>,
+    /// The build cache's records the platform's build used, and its image's layers: what
+    /// `--cache-to` exports of the builds of them all (D87).
+    pub keys: Vec<String>,
+    pub image_layers: std::collections::BTreeSet<String>,
 }
 
 /// Whether this build is one platform's of several.
@@ -54,6 +58,45 @@ pub(super) fn with<T>(f: impl FnOnce(&mut Sub) -> T) -> Option<T> {
 /// `platforms.Format`, `/` as `_`): `linux_amd64`, `linux_arm_v7`.
 fn dir_name(p: &Platform) -> String {
     show(&platform::format(p)).replace('/', "_")
+}
+
+/// Where a tar output's part for platform `p` is written in `stage`.
+fn tar_part(stage: &Path, output: usize, p: &Platform) -> PathBuf {
+    stage.join(format!("tar-{output}-{}.tar", dir_name(p)))
+}
+
+/// A tar output of several platforms, as BuildKit's tar exporter writes one (its file
+/// system split by platform): for each platform, in name order, a directory of its name
+/// (0755, owner 0, time 0), then each entry of its own tar within it, hardlinks' targets
+/// too, each header written as Go's archive/tar writes a new one (D86).
+fn join_tars(parts: &[(String, PathBuf)], out: impl std::io::Write) -> Result<(), String> {
+    use shards_archive::tar::{self as gotar, Header, TYPE_DIR, TYPE_LINK};
+    let err = |e: shards_archive::Error| e.to_string();
+    let mut w = gotar::Writer::new(out);
+    for (dir, path) in parts {
+        w.write_header(&Header {
+            typeflag: TYPE_DIR,
+            name: format!("{dir}/").into_bytes(),
+            mode: 0o755,
+            mtime: gotar::Time::unix(0, 0),
+            ..Header::default()
+        })
+        .map_err(err)?;
+        let f = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let mut r = gotar::Reader::new(std::io::BufReader::new(f));
+        let within = |name: &[u8]| [format!("{dir}/").as_bytes(), name].concat();
+        while let Some(mut h) = r.next_header().map_err(err)? {
+            h.name = within(&h.name);
+            if h.typeflag == TYPE_LINK {
+                h.linkname = within(&h.linkname);
+            }
+            h.format = gotar::Format::UNKNOWN;
+            w.write_header(&h).map_err(err)?;
+            w.copy_from(&mut r).map_err(err)?;
+        }
+    }
+    let mut out = w.finish().map_err(err)?;
+    out.flush().map_err(|e| e.to_string())
 }
 
 /// One field of a CSV record as Go's encoding/csv writes it.
@@ -179,7 +222,6 @@ pub(super) fn run(
             );
         }
         let why = match (o.kind.as_str(), o.attrs.get("platform-split").map(String::as_str)) {
-            ("tar", _) => "a tar output",
             ("local", Some(v)) if shards_cmdline::go::parse_bool(v) == Ok(false) => {
                 "a local output not split by platform"
             }
@@ -189,9 +231,22 @@ pub(super) fn run(
             "{why} of several platforms is not supported by shards yet: build each platform for it"
         ));
     }
-    if !parsed.many("cache-to").is_empty() {
-        return Err("--cache-to with several platforms is not supported by shards yet".into());
+    // `--cache-to`: an inline cache in each platform's image, as its own config carries
+    // it; every other written once, of the records of every platform's build (D87).
+    let env = |k: &str| std::env::var(k).ok();
+    let mut inline_raw = Vec::new();
+    let mut exported = Vec::new();
+    for raw in parsed.many("cache-to") {
+        for e in buildflags::cache_entries(std::slice::from_ref(raw), &env)? {
+            if e.kind == "inline" {
+                inline_raw.push(raw.clone());
+            } else {
+                exported.push(e);
+            }
+        }
     }
+    let mut keys: Vec<String> = Vec::new();
+    let mut image_layers: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     let home = shards_ipc::home()?;
     let store = crate::pull::store(&home)?;
     let _lease = store.lease().map_err(|e| e.to_string())?;
@@ -232,6 +287,13 @@ pub(super) fn run(
                 format!(",{}", csv_field(&format!("name={}", tags.join(","))))
             }
         )];
+        // Each tar output's part: the platform's own tar, joined after (D86).
+        for (i, _) in outputs.iter().enumerate().filter(|(_, o)| o.kind == "tar") {
+            outs.push(format!(
+                "type=tar,{}",
+                csv_field(&format!("dest={}", tar_part(stage.path(), i, p).display()))
+            ));
+        }
         for o in outputs.iter().filter(|o| o.kind == "local") {
             let buildflags::Dest::Dir(dest) = &o.dest else {
                 continue;
@@ -247,6 +309,7 @@ pub(super) fn run(
             .with_bool("push", false)
             .with_bool("load", false)
             .with_many("tag", Vec::new())
+            .with_many("cache-to", inline_raw.clone())
             .with_text("metadata-file", "")
             .with_text("iidfile", "");
         SUB.with(|s| {
@@ -256,6 +319,7 @@ pub(super) fn run(
                 first: n == 0,
                 answered: std::mem::take(&mut answered),
                 bases: std::mem::take(&mut bases),
+                ..Sub::default()
             })
         });
         let r = super::run(&sub, status);
@@ -263,6 +327,12 @@ pub(super) fn run(
         progress.borrow_mut().next = given.next;
         answered = given.answered;
         bases = given.bases;
+        for k in given.keys {
+            if !keys.contains(&k) {
+                keys.push(k);
+            }
+        }
+        image_layers.extend(given.image_layers);
         r?;
         let held = read_layout(&store, &layout)?;
         built.push(Built {
@@ -273,6 +343,26 @@ pub(super) fn run(
             attestation_blobs: held.attestation_blobs,
             provenance: given.provenance,
         });
+    }
+    // The external caches, once, of every platform's records.
+    super::remote::export(&exported, &keys, &store, &image_layers, progress, &env)?;
+    // Each tar output: its platforms' tars, each in a directory of its platform's name.
+    for (i, o) in outputs.iter().enumerate().filter(|(_, o)| o.kind == "tar") {
+        let mut parts: Vec<(String, PathBuf)> = platforms
+            .iter()
+            .map(|p| (dir_name(p), tar_part(stage.path(), i, p)))
+            .collect();
+        parts.sort();
+        match &o.dest {
+            buildflags::Dest::Stdout => join_tars(&parts, std::io::BufWriter::new(std::io::stdout().lock()))?,
+            buildflags::Dest::File(path) => join_tars(
+                &parts,
+                std::io::BufWriter::new(
+                    std::fs::File::create(path).map_err(|e| format!("{}: {e}", path.display()))?,
+                ),
+            )?,
+            _ => {}
+        }
     }
     // The index: the platforms' manifests, then their attestations where the build
     // attests (D71: by default, unless BUILDX_NO_DEFAULT_ATTESTATIONS; Docker attests every
