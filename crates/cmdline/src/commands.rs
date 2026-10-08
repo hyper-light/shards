@@ -2112,6 +2112,24 @@ pub static BUILD: Command = Command {
         Flag::many("label", None, "stringArray", "Set metadata for an image"),
         Flag::bool("load", None, "Shorthand for \"--output=type=docker\""),
         Flag::bool("no-cache", None, "Do not use cache when building the image"),
+        Flag::many(
+            "cache-from",
+            None,
+            "stringArray",
+            "External cache sources (e.g., \"user/app:cache\", \"type=local,src=path/to/dir\")",
+        ),
+        Flag::many(
+            "cache-to",
+            None,
+            "stringArray",
+            "Cache export destinations (e.g., \"user/app:cache\", \"type=local,dest=path/to/dir\")",
+        ),
+        Flag::many(
+            "no-cache-filter",
+            None,
+            "stringArray",
+            "Do not cache specified stages",
+        ),
         Flag::many("platform", None, "stringArray", "Set target platform for build"),
         Flag::string(
             "progress",
@@ -2168,8 +2186,6 @@ add-host - m - -\n\
 annotation - m - -\n\
 attest - m - -\n\
 builder - s - -\n\
-cache-from - m - -\n\
-cache-to - m - -\n\
 call - s build -\n\
 cgroup-parent - s - -\n\
 check - b - -\n\
@@ -2185,7 +2201,6 @@ memory m s - -\n\
 memory-swap - s - -\n\
 metadata-file - s - -\n\
 network - s default -\n\
-no-cache-filter - m - -\n\
 policy - m - -\n\
 print - s - -\n\
 provenance - s - -\n\

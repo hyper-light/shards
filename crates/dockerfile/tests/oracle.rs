@@ -1012,6 +1012,14 @@ fn plans_are_buildkits() {
             contexts: map(&opts_v["contexts"]),
             context_keys: map(&opts_v["shared_keys"]),
             context_excludes: Default::default(),
+            // dockerui: the option's comma-separated stages, every stage where it is "".
+            no_cache: opts_v["no_cache"].as_str().map(|v| {
+                if v.is_empty() {
+                    Vec::new()
+                } else {
+                    v.split(',').map(|n| n.as_bytes().to_vec()).collect()
+                }
+            }),
         };
         let mut got = serde_json::Map::new();
         got.insert("file".into(), file.into());

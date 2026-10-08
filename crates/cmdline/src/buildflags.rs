@@ -74,6 +74,99 @@ pub fn parse_exports(specs: &[String]) -> Result<Vec<Export>, String> {
     Ok(out)
 }
 
+/// A `--cache-from` or `--cache-to` entry: its backend and attributes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CacheEntry {
+    pub kind: String,
+    pub attrs: BTreeMap<String, String>,
+}
+
+/// One entry's text (`CacheOptionsEntry.UnmarshalText`): a lone field without `=` is a
+/// registry reference; else CSV fields `type=` and attributes, keys lowercased.
+fn cache_entry(text: &str) -> Result<CacheEntry, String> {
+    let fields = go::csv_fields(text.as_bytes()).map_err(|e| String::from_utf8_lossy(&e).into_owned())?;
+    if let [only] = fields.as_slice()
+        && !only.contains(&b'=')
+    {
+        return Ok(CacheEntry {
+            kind: "registry".into(),
+            attrs: BTreeMap::from([("ref".into(), String::from_utf8_lossy(only).into_owned())]),
+        });
+    }
+    let mut e = CacheEntry {
+        kind: String::new(),
+        attrs: BTreeMap::new(),
+    };
+    for field in &fields {
+        let field = String::from_utf8_lossy(field);
+        let Some((k, v)) = field.split_once('=') else {
+            return Err(format!("invalid value {field}"));
+        };
+        match k.to_lowercase().as_str() {
+            "type" => e.kind = v.to_string(),
+            key => {
+                e.attrs.insert(key.to_string(), v.to_string());
+            }
+        }
+    }
+    if e.kind.is_empty() {
+        return Err(format!("type required for {}", go::quote(text)));
+    }
+    Ok(e)
+}
+
+/// `--cache-from` or `--cache-to`'s values, as buildx reads them (`ParseCacheEntry`, then
+/// `CreateCaches`): empty ones skipped; one without `=` a CSV list of registry
+/// references; a GitHub Actions entry given its token and URLs from the environment
+/// (`ACTIONS_RUNTIME_TOKEN`, `ACTIONS_CACHE_URL`, `ACTIONS_RESULTS_URL`, with
+/// `ACTIONS_CACHE_SERVICE_V2`) and dropped without them (`isActive`).
+pub fn cache_entries(
+    values: &[String],
+    env: &dyn Fn(&str) -> Option<String>,
+) -> Result<Vec<CacheEntry>, String> {
+    let mut out = Vec::new();
+    for v in values.iter().filter(|v| !v.is_empty()) {
+        if v.contains('=') {
+            out.push(cache_entry(v)?);
+        } else {
+            let fields =
+                go::csv_fields(v.as_bytes()).map_err(|e| String::from_utf8_lossy(&e).into_owned())?;
+            for f in fields {
+                out.push(cache_entry(&String::from_utf8_lossy(&f))?);
+            }
+        }
+    }
+    for e in out.iter_mut().filter(|e| e.kind == "gha") {
+        let v2 = e.attrs.get("version").cloned().or_else(|| {
+            env("ACTIONS_CACHE_SERVICE_V2")
+                .and_then(|v| go::parse_bool(&v).ok())
+                .filter(|b| *b)
+                .map(|_| "2".to_string())
+        });
+        if !e.attrs.contains_key("token")
+            && let Some(t) = env("ACTIONS_RUNTIME_TOKEN")
+        {
+            e.attrs.insert("token".into(), t);
+        }
+        if !e.attrs.contains_key("url_v2")
+            && v2.as_deref() == Some("2")
+            && let Some(u) = env("ACTIONS_RESULTS_URL")
+        {
+            e.attrs.insert("url_v2".into(), u);
+        }
+        if !e.attrs.contains_key("url")
+            && let Some(u) = env("ACTIONS_CACHE_URL").or_else(|| env("ACTIONS_RESULTS_URL"))
+        {
+            e.attrs.insert("url".into(), u);
+        }
+    }
+    out.retain(|e| {
+        let set = |k: &str| e.attrs.get(k).is_some_and(|v| !v.is_empty());
+        e.kind != "gha" || (set("token") && (set("url") || set("url_v2")))
+    });
+    Ok(out)
+}
+
 /// Where an output goes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Dest {
@@ -684,6 +777,46 @@ pub fn validate(flag: &crate::flags::Flag, value: &str) -> Result<String, String
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cache_entries_are_read_as_buildx_reads_them() {
+        let none = |_: &str| None;
+        let one = |v: &str| cache_entries(&[v.to_string()], &none);
+        let entry = |kind: &str, attrs: &[(&str, &str)]| CacheEntry {
+            kind: kind.into(),
+            attrs: attrs.iter().map(|(k, v)| ((*k).into(), (*v).into())).collect(),
+        };
+        assert_eq!(
+            one("user/app:cache").unwrap(),
+            vec![entry("registry", &[("ref", "user/app:cache")])]
+        );
+        assert_eq!(
+            one("a,b").unwrap(),
+            vec![
+                entry("registry", &[("ref", "a")]),
+                entry("registry", &[("ref", "b")])
+            ]
+        );
+        assert_eq!(
+            one("Type=local,Dest=out,mode=max").unwrap(),
+            vec![entry("local", &[("dest", "out"), ("mode", "max")])]
+        );
+        assert_eq!(one("mode=max").unwrap_err(), "type required for \"mode=max\"");
+        assert_eq!(one("type=local,src").unwrap_err(), "invalid value src");
+        assert!(one("").unwrap().is_empty());
+        // GitHub Actions: active only with a token and a URL, from the environment.
+        assert!(one("type=gha").unwrap().is_empty());
+        let ci = |k: &str| match k {
+            "ACTIONS_RUNTIME_TOKEN" => Some("t".to_string()),
+            "ACTIONS_RESULTS_URL" => Some("u".to_string()),
+            "ACTIONS_CACHE_SERVICE_V2" => Some("true".to_string()),
+            _ => None,
+        };
+        assert_eq!(
+            cache_entries(&["type=gha".to_string()], &ci).unwrap(),
+            vec![entry("gha", &[("token", "t"), ("url", "u"), ("url_v2", "u")])]
+        );
+    }
+
     use super::*;
 
     /// buildx's: `ID[=PATH,...]`, each kept; BuildKit's provider's refusals.

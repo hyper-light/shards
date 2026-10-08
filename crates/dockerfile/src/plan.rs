@@ -63,6 +63,9 @@ pub struct Options {
     pub context_keys: BTreeMap<Vec<u8>, Vec<u8>>,
     /// Each local named context's `.dockerignore` patterns, by its local name.
     pub context_excludes: BTreeMap<Vec<u8>, Vec<Vec<u8>>>,
+    /// The frontend's `no-cache` option (dockerui's `ignoreCache`): the stages whose steps
+    /// the cache is not asked for, every stage where it is empty, none where it is absent.
+    pub no_cache: Option<Vec<Vec<u8>>>,
 }
 
 /// A named context a stage or base name is given (dockerui's NamedContext): its name (the
@@ -257,6 +260,8 @@ struct Ds {
     named: Option<Named>,
     /// The agents' and harnesses' domains in its lineage.
     domains: Vec<DomainDir>,
+    /// Whether the cache is not asked for its steps (`ignoreCache`, `IsNoCache`).
+    ignore_cache: bool,
 }
 
 impl Ds {
@@ -285,6 +290,7 @@ impl Ds {
             epoch: None,
             named: None,
             domains: Vec::new(),
+            ignore_cache: false,
             entrypoint: Tracker::default(),
             cmd: Tracker::default(),
             healthcheck: Tracker::default(),
@@ -1180,6 +1186,11 @@ impl Planner<'_> {
                 };
             }
             ds.cmd_total = total;
+            // dockerui's IsNoCache: by the stage's name, any case; every stage where the
+            // option names none.
+            ds.ignore_cache = self.opts.no_cache.as_ref().is_some_and(|names| {
+                names.is_empty() || names.iter().any(|n| n.eq_ignore_ascii_case(&ds.stage.name))
+            });
         }
         Ok(())
     }
@@ -2603,6 +2614,7 @@ impl Planner<'_> {
         let ds = self.ds(d)?;
         let name = prefix_command(ds, &shown, multi.as_ref(), platform.as_ref(), &env);
         run.meta.description.insert(b"llb.customname".to_vec(), name);
+        run.meta.ignore_cache = ds.ignore_cache;
         // AddUlimit, an option of the run alone (dispatchRun): the stage's next state is
         // its root mount's, which keeps none of it.
         let mut state = ds.state.clone();
@@ -2972,7 +2984,9 @@ impl Planner<'_> {
             let ds = self.ds(d)?;
             ds.cmd_index -= 1;
             let pg_name = prefix_command(ds, &name, multi.as_ref(), Some(&platform), &env);
+            let ignore_cache = ds.ignore_cache;
             let mut copy_meta = custom_name(pg_name.clone());
+            copy_meta.ignore_cache = ignore_cache;
             copy_meta.progress_group = Some(ProgressGroup {
                 id: group,
                 name: pg_name.clone(),
@@ -2988,6 +3002,7 @@ impl Planner<'_> {
                 &env,
             );
             let mut merge_meta = custom_name(link_name);
+            merge_meta.ignore_cache = ignore_cache;
             merge_meta.progress_group = Some(ProgressGroup {
                 id: group,
                 name: pg_name,
@@ -3000,7 +3015,9 @@ impl Planner<'_> {
             let ds = self.ds(d)?;
             ds.state.output = out;
         } else {
-            let next = self.graph.file(&state, actions, custom_name(pg_name));
+            let mut meta = custom_name(pg_name);
+            meta.ignore_cache = ds.ignore_cache;
+            let next = self.graph.file(&state, actions, meta);
             let ds = self.ds(d)?;
             ds.state.output = next.output;
         }

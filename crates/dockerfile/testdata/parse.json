@@ -11697,6 +11697,232 @@
   ]
  },
  {
+  "file": "corpus/plan/no-cache-all.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\" \\\"AS\\\" \\\"build\\\")\\n(run \\\"echo built \u003e /out\\\")\\n(copy \\\".\\\" \\\"/src\\\")\\n(copy [\\\"--link\\\"] \\\"a.txt\\\" \\\"/linked\\\")\\n(from \\\"alpine\\\" \\\"AS\\\" \\\"Other\\\")\\n(run \\\"echo other\\\")\\n(from \\\"alpine\\\")\\n(copy [\\\"--from=build\\\"] \\\"/out\\\" \\\"/out\\\")\\n(copy [\\\"--from=other\\\"] \\\"/etc/os-release\\\" \\\"/os\\\")\\n(run \\\"echo final\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\" \\\"AS\\\" \\\"build\\\"\"",
+    "original": "\"FROM alpine AS build\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"echo built \u003e /out\\\"\"",
+    "original": "\"RUN echo built \u003e /out\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy \\\".\\\" \\\"/src\\\"\"",
+    "original": "\"COPY . /src\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy [\\\"--link\\\"] \\\"a.txt\\\" \\\"/linked\\\"\"",
+    "original": "\"COPY --link a.txt /linked\"",
+    "flags": [
+     "\"--link\""
+    ],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"alpine\\\" \\\"AS\\\" \\\"Other\\\"\"",
+    "original": "\"FROM alpine AS Other\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 6,
+    "end_line": 6,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"echo other\\\"\"",
+    "original": "\"RUN echo other\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 7,
+    "end_line": 7,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 9,
+    "end_line": 9,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy [\\\"--from=build\\\"] \\\"/out\\\" \\\"/out\\\"\"",
+    "original": "\"COPY --from=build /out /out\"",
+    "flags": [
+     "\"--from=build\""
+    ],
+    "attributes": null,
+    "start_line": 10,
+    "end_line": 10,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy [\\\"--from=other\\\"] \\\"/etc/os-release\\\" \\\"/os\\\"\"",
+    "original": "\"COPY --from=other /etc/os-release /os\"",
+    "flags": [
+     "\"--from=other\""
+    ],
+    "attributes": null,
+    "start_line": 11,
+    "end_line": 11,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"echo final\\\"\"",
+    "original": "\"RUN echo final\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 12,
+    "end_line": 12,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/no-cache-filter.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\" \\\"AS\\\" \\\"build\\\")\\n(run \\\"echo built \u003e /out\\\")\\n(copy \\\".\\\" \\\"/src\\\")\\n(copy [\\\"--link\\\"] \\\"a.txt\\\" \\\"/linked\\\")\\n(from \\\"alpine\\\" \\\"AS\\\" \\\"Other\\\")\\n(run \\\"echo other\\\")\\n(from \\\"alpine\\\")\\n(copy [\\\"--from=build\\\"] \\\"/out\\\" \\\"/out\\\")\\n(copy [\\\"--from=other\\\"] \\\"/etc/os-release\\\" \\\"/os\\\")\\n(run \\\"echo final\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\" \\\"AS\\\" \\\"build\\\"\"",
+    "original": "\"FROM alpine AS build\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"echo built \u003e /out\\\"\"",
+    "original": "\"RUN echo built \u003e /out\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy \\\".\\\" \\\"/src\\\"\"",
+    "original": "\"COPY . /src\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy [\\\"--link\\\"] \\\"a.txt\\\" \\\"/linked\\\"\"",
+    "original": "\"COPY --link a.txt /linked\"",
+    "flags": [
+     "\"--link\""
+    ],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"alpine\\\" \\\"AS\\\" \\\"Other\\\"\"",
+    "original": "\"FROM alpine AS Other\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 6,
+    "end_line": 6,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"echo other\\\"\"",
+    "original": "\"RUN echo other\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 7,
+    "end_line": 7,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 9,
+    "end_line": 9,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy [\\\"--from=build\\\"] \\\"/out\\\" \\\"/out\\\"\"",
+    "original": "\"COPY --from=build /out /out\"",
+    "flags": [
+     "\"--from=build\""
+    ],
+    "attributes": null,
+    "start_line": 10,
+    "end_line": 10,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy [\\\"--from=other\\\"] \\\"/etc/os-release\\\" \\\"/os\\\"\"",
+    "original": "\"COPY --from=other /etc/os-release /os\"",
+    "flags": [
+     "\"--from=other\""
+    ],
+    "attributes": null,
+    "start_line": 11,
+    "end_line": 11,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"echo final\\\"\"",
+    "original": "\"RUN echo final\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 12,
+    "end_line": 12,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
   "file": "corpus/plan/nopath.Dockerfile",
   "escape": "\"\\\\\"",
   "dump": "\"(from \\\"nopath\\\")\\n(run \\\"echo hi\\\")\"",

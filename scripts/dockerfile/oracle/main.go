@@ -376,6 +376,9 @@ type planOpts struct {
 	// --build-context's) and their `sharedkey:localdir:NAME` keys.
 	Contexts   map[string]string `json:"contexts"`
 	SharedKeys map[string]string `json:"shared_keys"`
+	// The frontend's `no-cache` option, as buildx sends --no-cache-filter's stages (or
+	// "" for --no-cache).
+	NoCache *string `json:"no_cache"`
 }
 
 // A gateway as the frontend sees one, of a build given only named contexts: its options,
@@ -459,8 +462,11 @@ func planFile(root, rel string, images resolver) map[string]any {
 	platform := ocispecs.Platform{OS: "linux", Architecture: "amd64"}
 	caps := pb.Caps.CapSet(pb.Caps.All())
 	var named *dockerui.Client
-	if len(opts.Contexts) > 0 {
+	if len(opts.Contexts) > 0 || opts.NoCache != nil {
 		bopts := gwclient.BuildOpts{Opts: map[string]string{}, LLBCaps: caps, Caps: gwpb.Caps.CapSet(gwpb.Caps.All())}
+		if opts.NoCache != nil {
+			bopts.Opts["no-cache"] = *opts.NoCache
+		}
 		for k, v := range opts.Contexts {
 			bopts.Opts["context:"+k] = v
 		}

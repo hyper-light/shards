@@ -3192,6 +3192,66 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode
 waits on the user.
 
+### D62. Build caches kept elsewhere, and stages built without the cache
+
+`--cache-to`, `--cache-from` and `--no-cache-filter`, as buildx v0.37.1 takes them
+(util/buildflags/cache.go `ParseCacheEntry`, build/opt.go `CreateCaches`), and as
+BuildKit dockerfile/1.27.1 serves them (client/solve.go `parseCacheOptions`,
+control/control.go, cache/remotecache, solver/llbsolver/bridge.go).
+
+- **No driver to switch.** buildx refuses every cache export but `inline` on a `docker`
+  driver whose engine keeps images in its classic store ("Cache export is not supported
+  for the docker driver", build/opt.go `notSupported`); with the containerd image store
+  (Docker 29's default for a new engine) it exports them (measured: Docker 29.3.1 in
+  `docker:29.3.1-dind`, `--cache-to type=local` written, 2026-10-07). shards writes
+  `type=local` and `type=registry` with any store.
+- **What is written.** The build cache's records (D50) that the build used or made, by
+  their keys: `mode=max` every one, `min` (the default, and what an unknown mode is, as
+  `parseCacheExportMode` has it) those whose layers the image holds, as BuildKit's `min`
+  keeps to the image's chain. A cache is an OCI image manifest whose config, of type
+  `application/vnd.shards.buildcache.config.v1+json`, holds each record's body by key, and
+  whose layers are every layer a record names (`build/remote.rs`). A directory holds it as
+  an OCI layout found by its `index.json`'s `org.opencontainers.image.ref.name` (`tag`,
+  `latest` by default; `reset=true` empties it first), as BuildKit's client finds its
+  own; a registry by its reference. `type=inline`, or the build argument
+  `BUILDKIT_INLINE_CACHE` as buildx reads it, puts the image's own records in the image's
+  config, field `vnd.shards.buildcache.v1`, the config's other bytes as BuildKit writes
+  them. The progress is BuildKit's: `exporting cache to client directory` or `to
+  registry`, `preparing build cache for export`, `writing layer`, `writing config`,
+  `writing cache image manifest`.
+- **What is read.** Every `--cache-from`: a directory's, a registry's, or an image's
+  inline records. A step that misses in the store takes an imported record, its layers
+  fetched only then, and is `CACHED`. A cache that cannot be read is skipped, as BuildKit
+  skips one (bridge.go: its `importing cache manifest from` vertex fails, the build goes
+  on); a layer that cannot be had leaves its step to run.
+- **Not BuildKit's records.** shards' keys are not BuildKit's (D50 keys definitions and
+  inputs as shards plans them), so neither can use the other's caches. None is passed off
+  as BuildKit's (`application/vnd.buildkit.cacheconfig.v0`): a BuildKit cache given to
+  shards, or shards' to BuildKit, is read as no cache, which costs a rebuild and is never
+  wrong.
+- **Refused as BuildKit refuses** before it builds: a directory without `dest`, a registry
+  without `ref`, an unknown backend (`unknown cache exporter: "x"`); and, for now, the
+  `gha`, `s3` and `azblob` backends, which shards does not write yet. A failed export
+  fails the build unless `ignore-error=true`. A `gha` entry without its token and URL is
+  dropped, as buildx's `isActive` drops it.
+- **`--no-cache-filter`** is the frontend's `no-cache` option, as buildx sends it
+  (`--no-cache` sends it empty, every stage): dockerui's `IsNoCache` by stage name, any
+  case, marks each `RUN` and `COPY`/`ADD` of those stages, and `--link`'s merge, with
+  `IgnoreCache` (convert.go, convert_copy.go). The plan is held to BuildKit's own by
+  the Dockerfile oracle (`corpus/plan/no-cache-*.Dockerfile`). The solver runs such a step
+  without asking the cache, and keeps its result, as BuildKit's does; `IgnoreCache` is
+  metadata, no part of a key.
+
+Tested on real builds (`builds_take_steps_from_caches_written_elsewhere`), each guard
+mutation-checked: a two-stage build writes its cache to a directory (`max`) and a
+registry (`min`); fresh homes take every step from the directory, and from the registry
+the final stage's steps, the build stage's running again; an image pushed with
+`type=inline` gives its own steps to a third home; every image's layers the same.
+`--no-cache-filter build` runs that stage's step alone. Without taking imported records,
+nothing was cached; with `min` taking every record, the build stage's step was; without
+inline records, the image gave none; with the solver asking the cache for `IgnoreCache`
+steps, the filtered stage's step was cached.
+
 ### D61. A table for each agent: its gate
 
 Decided by the user on 2026-10-07 ("A table per agent"), after D59 part nine's record of

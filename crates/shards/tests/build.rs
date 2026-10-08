@@ -2381,6 +2381,139 @@ fn builds_reuse_the_steps_they_have_run() {
     }
 }
 
+/// External build caches (D62): a build's records, written by `--cache-to` to a
+/// directory (`mode=max`), a registry (`min`) and the image itself (`inline`), answer
+/// another home's build from `--cache-from`, as BuildKit's remote caches do: from the
+/// directory every step, from the registry and the image those of the image's own
+/// layers alone, the build stage's step running again; the image's layers the same.
+/// `--no-cache-filter` runs its stages' steps again and no others.
+#[test]
+fn builds_take_steps_from_caches_written_elsewhere() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let (port, _repos) = common::writable_registry();
+    let homes: Vec<TempDir> = (0..4)
+        .map(|n| TempDir::new(&format!("remote-cache-home-{n}")))
+        .collect();
+    let shards_in = |home: &TempDir, args: &[&str]| {
+        let env = [
+            ("SHARDS_HOME", home.as_os_str()),
+            ("SHARDS_KERNEL", kernel().as_os_str()),
+            ("SHARDS_INIT", guest_init().as_os_str()),
+        ];
+        run_shards_env(&[], args, &env, TIMEOUT)
+    };
+    let ctx = context(
+        "remote-cache-ctx",
+        &format!(
+            "FROM {image} AS build\nUSER root\nRUN [\"/bin/testguest\", \"fs\", \"write:/out=built\"]\n\
+             FROM {image}\nUSER root\nCOPY --from=build /out /out\nRUN [\"/bin/testguest\", \"fs\", \"write:/two=2\"]\n"
+        ),
+    );
+    let build = |home: &TempDir, extra: &[&str], tag: &str| {
+        let mut args = vec!["build", "--progress=plain"];
+        args.extend_from_slice(extra);
+        args.extend_from_slice(&["-t", tag, ctx.to_str().unwrap()]);
+        let built = shards_in(home, &args);
+        assert_eq!(built.status, Some(0), "{}", built.stderr);
+        built.stderr
+    };
+    let cached = |log: &str, step: &str| -> bool {
+        let n = log
+            .lines()
+            .find_map(|l| {
+                l.strip_prefix('#')
+                    .and_then(|r| r.split_once(' '))
+                    .filter(|(_, t)| t.contains(step))
+                    .map(|(n, _)| n.to_string())
+            })
+            .unwrap_or_else(|| panic!("no step {step:?} in\n{log}"));
+        log.lines().any(|l| l == format!("#{n} CACHED"))
+    };
+    let steps = ["write:/out=built", "COPY --from=build", "write:/two=2"];
+    let layers = |home: &TempDir, tag: &str| {
+        shards_in(
+            home,
+            &["image", "inspect", "--format", "{{json .RootFS.Layers}}", tag],
+        )
+        .stdout
+    };
+    let dir = TempDir::new("remote-cache-dir");
+    let dest = format!("type=local,dest={},mode=max", dir.display());
+    let src = format!("type=local,src={}", dir.display());
+    let cache_ref = format!("127.0.0.1:{port}/team/cache:1");
+    let image_ref = format!("127.0.0.1:{port}/team/app:1");
+    let first = build(
+        &homes[0],
+        &[
+            "--cache-to",
+            &dest,
+            "--cache-to",
+            &format!("type=registry,ref={cache_ref}"),
+        ],
+        "made:1",
+    );
+    for step in steps {
+        assert!(!cached(&first, step), "{step} ran\n{first}");
+    }
+    assert!(first.contains("exporting cache to client directory"), "{first}");
+    assert!(first.contains("exporting cache to registry"), "{first}");
+    assert!(dir.join("index.json").exists() && dir.join("oci-layout").exists());
+    let made = layers(&homes[0], "made:1");
+
+    // From the directory, everything (`max`).
+    let from_dir = build(&homes[1], &["--cache-from", &src], "taken:1");
+    for step in steps {
+        assert!(cached(&from_dir, step), "{step} was taken\n{from_dir}");
+    }
+    assert_eq!(layers(&homes[1], "taken:1"), made);
+
+    // From the registry, the image's own steps (`min`): the build stage's runs.
+    let from_registry = build(&homes[2], &["--cache-from", &cache_ref], "taken:2");
+    assert!(from_registry.contains(&format!("importing cache manifest from {cache_ref}")));
+    assert!(!cached(&from_registry, "write:/out=built"), "{from_registry}");
+    assert!(cached(&from_registry, "COPY --from=build"), "{from_registry}");
+    assert!(cached(&from_registry, "write:/two=2"), "{from_registry}");
+    assert_eq!(layers(&homes[2], "taken:2"), made);
+
+    // Inline: the image, pushed, carries its own steps' records.
+    let pushed = build(&homes[0], &["--cache-to", "type=inline", "--push"], &image_ref);
+    assert!(!pushed.contains("ERROR"), "{pushed}");
+    let from_image = build(&homes[3], &["--cache-from", &image_ref], "taken:3");
+    assert!(cached(&from_image, "write:/two=2"), "{from_image}");
+    assert_eq!(layers(&homes[3], "taken:3"), made);
+
+    // --no-cache-filter: its stage's step runs, the rest are the cache's.
+    let filtered = build(&homes[0], &["--no-cache-filter", "build"], "made:2");
+    assert!(!cached(&filtered, "write:/out=built"), "{filtered}");
+    assert!(cached(&filtered, "COPY --from=build"), "{filtered}");
+    assert!(cached(&filtered, "write:/two=2"), "{filtered}");
+
+    // A cache that is not there is skipped, as BuildKit's are; one asked to be written
+    // nowhere is refused.
+    let missing = build(
+        &homes[1],
+        &["--cache-from", "type=local,src=/nonexistent"],
+        "taken:4",
+    );
+    assert!(
+        missing.contains("WARNING: local cache import at /nonexistent skipped"),
+        "{missing}"
+    );
+    let refused = shards_in(
+        &homes[1],
+        &["build", "--cache-to", "type=local", ctx.to_str().unwrap()],
+    );
+    assert_ne!(refused.status, Some(0));
+    assert!(
+        refused.stderr.contains("local cache exporter requires dest"),
+        "{}",
+        refused.stderr
+    );
+}
+
 /// `RUN --mount=type=ssh` reaches the client's SSH agent through the builder, as
 /// BuildKit's steps reach it (`--ssh default`, `SSH_AUTH_SOCK` in the step): the step
 /// sees the agent's keys and has it sign, and cannot have it forget them, which BuildKit's

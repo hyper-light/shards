@@ -42,6 +42,7 @@ pub(crate) mod http;
 #[cfg(unix)]
 mod live;
 mod output;
+mod remote;
 mod skills;
 pub(crate) mod step;
 
@@ -990,6 +991,21 @@ fn run(parsed: &Parsed) -> Result<(), String> {
             hard: u.hard,
         })
         .collect();
+    // The external caches (D62), read as buildx reads them; BUILDKIT_INLINE_CACHE, a
+    // true build argument, asks for an inline one (build/opt.go).
+    let env = |k: &str| std::env::var(k).ok();
+    let cache_from = buildflags::cache_entries(parsed.many("cache-from"), &env)?;
+    let mut cache_to = buildflags::cache_entries(parsed.many("cache-to"), &env)?;
+    if build_args(parsed.many("build-arg"), true)
+        .get(b"BUILDKIT_INLINE_CACHE".as_slice())
+        .is_some_and(|v| shards_cmdline::go::parse_bool(&show(v)).unwrap_or(false))
+    {
+        cache_to.push(buildflags::CacheEntry {
+            kind: "inline".into(),
+            attrs: BTreeMap::new(),
+        });
+    }
+    remote::check(&cache_to)?;
     let context_arg = parsed.args.first().cloned().unwrap_or_default();
     if context_arg == "-" || context_arg.contains("://") || context_arg.starts_with("git@") {
         return Err(format!(
@@ -1079,6 +1095,7 @@ fn run(parsed: &Parsed) -> Result<(), String> {
     let home = shards_ipc::home()?;
     let store = crate::pull::store(&home)?;
     let _lease = store.lease().map_err(|e| e.to_string())?;
+    let imported = remote::Imported::read(&cache_from, &store, &progress, &env)?;
     let bases = Bases {
         home: &home,
         store: &store,
@@ -1107,6 +1124,18 @@ fn run(parsed: &Parsed) -> Result<(), String> {
         contexts: named.contexts,
         context_keys: named.keys,
         context_excludes: named.excludes,
+        // buildx's `no-cache` option: every stage with --no-cache, else --no-cache-filter's.
+        no_cache: if parsed.bool("no-cache") {
+            Some(Vec::new())
+        } else {
+            let names: Vec<Vec<u8>> = parsed
+                .many("no-cache-filter")
+                .iter()
+                .flat_map(|v| v.split(','))
+                .map(|n| n.as_bytes().to_vec())
+                .collect();
+            (!names.is_empty()).then_some(names)
+        },
     };
     let plan = match plan::plan(&text, &opts, &bases) {
         Ok(p) => p,
@@ -1280,9 +1309,16 @@ fn run(parsed: &Parsed) -> Result<(), String> {
         } else {
             None
         };
+        // A step marked IgnoreCache (--no-cache-filter's stages) is run, and its result
+        // kept, as BuildKit's solver does: the cache is not asked for it.
         if !no_cache
+            && !meta.ignore_cache
             && let Some(k) = key.as_deref()
-            && let Some(body) = store.cache_get(k).map_err(|e| e.to_string())?
+            && let Some(body) = match store.cache_get(k).map_err(|e| e.to_string())? {
+                // Not here: from a --cache-from cache, its layers fetched now.
+                None if imported.take(k, &store)? => store.cache_get(k).map_err(|e| e.to_string())?,
+                held => held,
+            }
         {
             let v = progress.borrow_mut().start(&name);
             let outs: Vec<exec::Ref> = cache::decode(&body)
@@ -1677,6 +1713,15 @@ fn run(parsed: &Parsed) -> Result<(), String> {
 
     let epoch = plan.epoch.map(Time::from_unix);
     let config = export::config(&plan.image, &layers, epoch, base_image.as_ref()).map_err(|e| show(&e))?;
+    // The build's records, for --cache-to, and the image's layers, which `min` and an
+    // inline cache keep to.
+    let used: Vec<String> = keys.iter().flatten().cloned().collect();
+    let image_layers: std::collections::BTreeSet<String> = layers.iter().map(|l| show(&l.digest)).collect();
+    let config = if cache_to.iter().any(|e| e.kind == "inline") {
+        remote::inline(&config, &used, &store, &image_layers)?
+    } else {
+        config
+    };
     let config_digest = sha256(&config);
     // An Agentfile's image: findable by its manifest's annotations (D57).
     let mut annotations = BTreeMap::new();
@@ -1743,6 +1788,7 @@ fn run(parsed: &Parsed) -> Result<(), String> {
             plan.epoch,
             &progress,
         )?;
+        remote::export(&cache_to, &used, &store, &image_layers, &progress, &env)?;
         print_warnings(&plan.warnings, quiet);
         return finish(parsed, &config_digest.to_string());
     }
@@ -1843,6 +1889,7 @@ fn run(parsed: &Parsed) -> Result<(), String> {
         plan.epoch,
         &progress,
     )?;
+    remote::export(&cache_to, &used, &store, &image_layers, &progress, &env)?;
     print_warnings(&plan.warnings, quiet);
     finish(parsed, &config_digest.to_string())
 }
