@@ -295,6 +295,68 @@ fn pulled(
     })
 }
 
+/// The image `reference` names for one of `targets`, its manifest, config and layers
+/// fetched into `store` and checked as [`pull`] checks them, but no name recorded, no root
+/// filesystem built and no attestation fetched: a build's base for a platform other than
+/// its guests', which BuildKit pulls without touching the names an image store keeps.
+/// What the reference resolved to, and the manifest chosen. The caller holds the store's
+/// lease until it records what it fetched.
+pub fn fetch_untagged(
+    registry: &Registry,
+    store: &Store,
+    reference: &Reference,
+    targets: &[Target],
+    limits: &Limits,
+) -> Result<(Digest, Descriptor), Error> {
+    let name = reference.familiar();
+    let top = registry
+        .resolve(store, reference)
+        .map_err(|e| resolving(e, reference))?;
+    let resolved = top.digest()?;
+    let (manifest_desc, manifest) = match document(registry, store, &top)? {
+        Document::Manifest(m) => (top, m),
+        Document::Index(index) => {
+            let chosen = platform::select(&index, targets).ok_or_else(|| {
+                Error::of(
+                    ErrorKind::NotFound,
+                    format!(
+                        "no matching manifest for {} in the manifest list entries: no match for platform in manifest: not found",
+                        pulling_for(targets)
+                    ),
+                )
+            })?;
+            match document(registry, store, chosen)? {
+                Document::Manifest(m) => (chosen.clone(), m),
+                Document::Index(_) => {
+                    return Err(Error::new(format!("{name}: an index inside an index")));
+                }
+            }
+        }
+    };
+    contents(&name, &manifest)?;
+    let compressed = manifest
+        .layers
+        .iter()
+        .try_fold(0u64, |n, l| l.size().map(|s| n.saturating_add(s)))?;
+    if compressed > limits.bytes {
+        return Err(Error::new(format!(
+            "{name}: its layers are {compressed} bytes, more than the {} it may take (SHARDS_MAX_IMAGE_BYTES)",
+            limits.bytes
+        )));
+    }
+    registry.fetch_blob(store, &manifest.config, limits, &|_| {})?;
+    let config = match stored(store, &name, &manifest.config, oci::MAX_CONFIG) {
+        Err(e) if e.kind() == ErrorKind::Changed => {
+            registry.fetch_blob_again(store, &manifest.config, limits, &|_| {})?;
+            stored(store, &name, &manifest.config, oci::MAX_CONFIG)?
+        }
+        read => read?,
+    };
+    checked(&name, &manifest_desc, &manifest, &config, targets)?;
+    crate::fetch::layers(registry, store, &manifest, limits, &|_| {}, &|_| {}, false)?;
+    Ok((resolved, manifest_desc))
+}
+
 /// Downloads the layers `manifest` names that are not here, and builds the image's root
 /// filesystem from `layers` as they come: each layer is unpacked once its blob is stored,
 /// while the rest download, so that a pull takes what the longer of the two does, not

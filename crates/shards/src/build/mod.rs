@@ -492,8 +492,9 @@ struct Bases<'a> {
     store: &'a Store,
     pull: bool,
     progress: &'a RefCell<Progress>,
-    /// Each base, by what the planner names its source: the name it resolved, without
-    /// any digest it carried, then `@` and the digest it resolved to.
+    /// Each base, by what the planner names its source and the platform it was resolved
+    /// for ([`base_key`]): the name it resolved, without any digest it carried, then `@`
+    /// and the digest it resolved to, which an index's platforms share.
     resolved: RefCell<BTreeMap<String, Base>>,
     /// The manifests of OCI layouts named contexts name, imported into the store: by the
     /// digest the context names, the manifest for this platform.
@@ -647,20 +648,15 @@ impl Bases<'_> {
 impl Bases<'_> {
     fn fetch(&self, name: &str, wanted: &Platform) -> Result<Resolved, Vec<u8>> {
         let fail = |e: String| e.into_bytes();
-        let host = host_platform();
-        if wanted.os != host.os || wanted.architecture != host.architecture {
-            return Err(fail(format!(
-                "shards builds for {} only, the platform its microVMs run: not {}",
-                show(&platform::format(&host)),
-                show(&platform::format(wanted)),
-            )));
-        }
         let reference = Reference::parse(name).map_err(|e| fail(e.to_string()))?;
         // An OCI layout's image, imported already: no registry is asked.
         if let Some(d) = &reference.digest
             && let Some(record) = self.layouts.get(&d.to_string())
         {
-            return self.base_of(name, &reference, record.clone(), d.clone());
+            return self.base_of(name, &reference, record.clone(), d.clone(), wanted);
+        }
+        if !ours(wanted) {
+            return self.foreign(name, &reference, wanted);
         }
         let limits = crate::pull::limits().map_err(fail)?;
         let local = if self.pull {
@@ -693,7 +689,65 @@ impl Bases<'_> {
             .tagged(&reference.to_string())
             .map_err(|e| fail(e.to_string()))?
             .ok_or_else(|| fail(format!("{name}: not in the store after its pull")))?;
-        self.base_of(name, &reference, record, pulled.resolved.clone())
+        self.base_of(name, &reference, record, pulled.resolved.clone(), wanted)
+    }
+
+    /// A base for a platform this host's microVMs do not run: its manifest for that
+    /// platform, config and layers fetched into the store with no name recorded, so that
+    /// the image a name holds stays the guests' (BuildKit's pull leaves an image store's
+    /// names be), and kept as the build cache keeps what it made, until `builder prune`.
+    /// Found there again unless `--pull`, as a guest's base is found in the store.
+    fn foreign(&self, name: &str, reference: &Reference, wanted: &Platform) -> Result<Resolved, Vec<u8>> {
+        let fail = |e: String| e.into_bytes();
+        let target = image_platform::normalize(&oci::Platform {
+            os: show(&wanted.os),
+            architecture: show(&wanted.architecture),
+            variant: (!wanted.variant.is_empty()).then(|| show(&wanted.variant)),
+            os_features: Vec::new(),
+        });
+        let key = sha256(format!("foreign base\0{reference}\0{}", base_platform(wanted)).as_bytes())
+            .hex()
+            .to_string();
+        if !self.pull
+            && let Some(body) = self.store.cache_get(&key).map_err(|e| fail(e.to_string()))?
+            && let Ok(held) = serde_json::from_slice::<ForeignBase>(&body)
+            && let Ok(resolved) = Digest::parse(&held.resolved)
+        {
+            self.store.cache_used(&key).map_err(|e| fail(e.to_string()))?;
+            return self.base_of(name, reference, held.manifest, resolved, wanted);
+        }
+        let limits = crate::pull::limits().map_err(fail)?;
+        let registry = crate::pull::registry(reference, None, &|k| std::env::var(k).ok()).map_err(fail)?;
+        let (resolved, manifest) =
+            shards_registry::pull::fetch_untagged(&registry, self.store, reference, &[target], &limits)
+                .map_err(|e| fail(e.to_string()))?;
+        let out = self.base_of(name, reference, manifest.clone(), resolved.clone(), wanted)?;
+        // Its blobs, kept while the record is: the manifest, the config, the layers.
+        let bytes = self
+            .store
+            .content(&manifest, oci::MAX_MANIFEST)
+            .map_err(|e| fail(e.to_string()))?
+            .ok_or_else(|| fail(format!("{name}: its manifest is missing")))?;
+        let Document::Manifest(m) =
+            oci::parse_document(&bytes, &manifest.media_type).map_err(|e| fail(e.to_string()))?
+        else {
+            return Err(fail(format!("{name}: its manifest is an index")));
+        };
+        let mut blobs = vec![manifest.digest().map_err(|e| fail(e.to_string()))?];
+        let mut size = u64::try_from(manifest.size).unwrap_or(0);
+        for d in std::iter::once(&m.config).chain(&m.layers) {
+            blobs.push(d.digest().map_err(|e| fail(e.to_string()))?);
+            size = size.saturating_add(u64::try_from(d.size).unwrap_or(0));
+        }
+        let held = ForeignBase {
+            resolved: resolved.to_string(),
+            manifest,
+        };
+        let body = serde_json::to_string(&held).map_err(|e| fail(e.to_string()))?;
+        self.store
+            .cache_put(&key, &blobs, size, &body)
+            .map_err(|e| fail(e.to_string()))?;
+        Ok(out)
     }
 
     /// The base `record` names, a manifest the store holds, as `name` resolved to
@@ -704,6 +758,7 @@ impl Bases<'_> {
         reference: &Reference,
         record: Descriptor,
         resolved: Digest,
+        platform: &Platform,
     ) -> Result<Resolved, Vec<u8>> {
         let fail = |e: String| e.into_bytes();
         let manifest_bytes = self
@@ -749,13 +804,40 @@ impl Bases<'_> {
         // A named context's image is its source by the reference alone, as BuildKit's
         // NamedContext names it (no digest).
         if !name.contains('@') {
-            self.resolved.borrow_mut().insert(name.to_string(), base.clone());
+            self.resolved
+                .borrow_mut()
+                .insert(base_key(name, platform), base.clone());
         }
         self.resolved
             .borrow_mut()
-            .insert(format!("{bare}@{resolved}"), base);
+            .insert(base_key(&format!("{bare}@{resolved}"), platform), base);
         Ok(out)
     }
+}
+
+/// A foreign base as the build cache keeps it: what its name resolved to, and the
+/// manifest chosen for its platform.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct ForeignBase {
+    resolved: String,
+    manifest: Descriptor,
+}
+
+/// Whether this host's microVMs run `p`: its OS and architecture are theirs.
+fn ours(p: &Platform) -> bool {
+    let host = host_platform();
+    p.os == host.os && p.architecture == host.architecture
+}
+
+/// A platform as a base's key names it: in full, variant and all.
+fn base_platform(p: &Platform) -> String {
+    show(&platform::format_all(p))
+}
+
+/// The key [`Bases::resolved`] keeps a base under: the source's reference, and the
+/// platform it was resolved for, which an index's platforms share the digest of.
+fn base_key(reference: &str, p: &Platform) -> String {
+    format!("{reference} {}", base_platform(p))
 }
 
 /// Each layer's annotations, from the manifest's own JSON.
@@ -801,6 +883,32 @@ fn is_http(identifier: &[u8]) -> bool {
 
 fn show(b: &[u8]) -> String {
     String::from_utf8_lossy(b).into_owned()
+}
+
+/// The platforms `--platform` names, as buildx reads them (util/platformutil Parse): each
+/// value a comma-separated list, each normalized, and the same platform once, as
+/// `Dedupe` keeps it, where BuildKit would build and export it twice. `local` is the
+/// platform this host's microVMs run, where buildx takes its client's own, which on a
+/// Mac is no platform a Linux build makes.
+fn target_platforms(given: &[String], host: &Platform) -> Result<Vec<Platform>, String> {
+    let mut out: Vec<Platform> = Vec::new();
+    for value in given {
+        for one in value.split(',') {
+            let one = one.trim();
+            let p = if one.eq_ignore_ascii_case("local") {
+                host.clone()
+            } else {
+                platform::normalize(&platform::parse(one.as_bytes(), host).map_err(|e| show(&e))?)
+            };
+            if !out
+                .iter()
+                .any(|o| platform::format_all(o) == platform::format_all(&p))
+            {
+                out.push(p);
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// The platform this host's microVMs run.
@@ -1062,6 +1170,19 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
     .collect();
     resources.extend(parsed.many("resource").iter().cloned());
     let resource_attrs = buildflags::resource_attrs(&resources)?;
+    // The platforms, read as buildx reads them after the resource limits.
+    let target_platforms = target_platforms(parsed.many("platform"), &host_platform())?;
+    if target_platforms.len() > 1 {
+        return Err(format!(
+            "building for several platforms at once ({}) is not supported by shards yet: build each with its own --platform",
+            target_platforms
+                .iter()
+                .map(|p| show(&platform::format(p)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    let target_platform = target_platforms.into_iter().next().unwrap_or_else(host_platform);
     let mut agents: Agents = buildflags::ssh_agents(
         &buildflags::parse_ssh(parsed.many("ssh")),
         &|k| std::env::var(k).ok(),
@@ -1102,7 +1223,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
             o.kind
         ));
     }
-    let (manifest_annotations, descriptor_annotations) = annotations_of(parsed, &outputs)?;
+    let (manifest_annotations, descriptor_annotations) = annotations_of(parsed, &outputs, &target_platform)?;
     // toSolveOpt: an image pushed must have a name.
     let pushes = outputs.iter().any(|o| {
         o.kind == "image"
@@ -1157,18 +1278,6 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
     };
     let quiet = parsed.bool("quiet") || mode == "quiet";
     let host = host_platform();
-    for p in parsed.many("platform") {
-        for one in p.split(',') {
-            let wanted = platform::parse(one.trim().as_bytes(), &host).map_err(|e| show(&e))?;
-            if wanted.os != host.os || wanted.architecture != host.architecture {
-                return Err(format!(
-                    "shards builds for {} only, the platform its microVMs run: not {}",
-                    show(&platform::format(&host)),
-                    show(&platform::format(&wanted)),
-                ));
-            }
-        }
-    }
     let progress = RefCell::new(Progress {
         quiet,
         next: 0,
@@ -1250,7 +1359,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
     request_locals.extend(named.locals.keys().map(|k| show(k)));
     request_locals.sort();
     let opts = Options {
-        target_platform: host.clone(),
+        target_platform: target_platform.clone(),
         build_platforms: vec![host],
         build_args: build_args(parsed.many("build-arg"), true),
         target: parsed.string("target").as_bytes().to_vec(),
@@ -1396,6 +1505,10 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
     // The steps, each after what it reads: base images and the context as snapshots,
     // file operations and merges run here; RUN is for the steps to come.
     let def = plan.definition();
+    // The base a source op names, as it was resolved for the op's platform.
+    let op_base = |op: &shards_dockerfile::llb::Op, reference: &str| {
+        base_key(reference, op.platform.as_ref().unwrap_or(&opts.target_platform))
+    };
     let limits = crate::pull::limits()?;
     crate::phase("plan");
     let mut exec = exec::Exec::new(&store, &limits);
@@ -1408,7 +1521,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
             .ops
             .iter()
             .enumerate()
-            .filter(|(_, op)| matches!(op.kind, OpKind::Exec { .. }))
+            .filter(|(_, op)| matches!(op.kind, OpKind::Exec { .. }) && op.platform.as_ref().is_none_or(ours))
             .map(|(i, _)| i)
             .collect();
         let mut seen = std::collections::HashSet::new();
@@ -1423,7 +1536,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
                     let layers = bases
                         .resolved
                         .borrow()
-                        .get(&reference)
+                        .get(&op_base(op, &reference))
                         .map(|b| b.layers.clone())
                         .ok_or_else(|| format!("{reference}: not resolved"))?;
                     if !layers.is_empty() {
@@ -1587,7 +1700,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
                 let base = bases
                     .resolved
                     .borrow()
-                    .get(&reference)
+                    .get(&op_base(op, &reference))
                     .map(|b| b.layers.clone())
                     .ok_or_else(|| format!("{reference}: not resolved"))?;
                 let r = if read.contains(&i) {
@@ -1773,6 +1886,19 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
                 devices,
             } => {
                 let v = progress.borrow_mut().start(&name);
+                // A step for a platform this host's microVMs do not run is refused here, at
+                // its turn and before a builder boots: shards emulates no other CPU, where
+                // BuildKit runs it under an emulator if one is installed, or fails with
+                // the kernel's "exec format error" once it has started.
+                if let Some(p) = op.platform.as_ref().filter(|p| !ours(p)) {
+                    let why = format!(
+                        "shards runs steps for {} only, the platform its microVMs run, not {}: build what runs on the build platform (FROM --platform=$BUILDPLATFORM) and copy it into the {} stage",
+                        show(&platform::format(&host_platform())),
+                        show(&platform::format(p)),
+                        show(&platform::format(p)),
+                    );
+                    return Err(fail(&v, &why));
+                }
                 // No CDI devices reach a builder: an optional one is left out, a required
                 // one fails as BuildKit fails it without CDI (solver/llbsolver/vertex.go).
                 if let Some(d) = devices.iter().find(|d| !d.optional) {
@@ -1907,7 +2033,11 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
                 OpKind::Source { identifier, .. } => {
                     if let Some(reference) = identifier.strip_prefix(b"docker-image://") {
                         let reference = show(reference);
-                        base_image = bases.resolved.borrow().get(&reference).map(|b| b.image.clone());
+                        base_image = bases
+                            .resolved
+                            .borrow()
+                            .get(&op_base(op, &reference))
+                            .map(|b| b.image.clone());
                     }
                     break;
                 }
@@ -2439,6 +2569,7 @@ type Annotations = BTreeMap<String, String>;
 fn annotations_of(
     parsed: &Parsed,
     outputs: &[buildflags::Output],
+    target: &Platform,
 ) -> Result<(Annotations, Annotations), String> {
     let mut all = buildflags::parse_annotations(parsed.many("annotation"))?;
     let key_re = regex::Regex::new(r"^annotation(?:-([a-z-]+))?(?:\[([A-Za-z0-9_/-]+)\])?\.(\S+)$")
@@ -2468,8 +2599,9 @@ fn annotations_of(
     let (mut manifest, mut descriptor) = (BTreeMap::new(), BTreeMap::new());
     for a in all {
         if let Some(p) = &a.platform {
-            let wanted = platform::parse(p.as_bytes(), &host).map_err(|e| show(&e))?;
-            if wanted.os != host.os || wanted.architecture != host.architecture {
+            // The platform's ID, as BuildKit finds a ref by it (FindRef): normalized, in full.
+            let wanted = platform::normalize(&platform::parse(p.as_bytes(), &host).map_err(|e| show(&e))?);
+            if platform::format_all(&wanted) != platform::format_all(target) {
                 return Err(format!("invalid annotation: no platform {p} found in source"));
             }
         }

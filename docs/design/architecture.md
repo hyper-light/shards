@@ -3206,6 +3206,48 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode
 waits on the user.
 
+### D74. `--platform` for another platform: its bases, the build platform's steps
+
+`build --platform P` makes an image for P where this host's microVMs run another
+platform, without emulating P's CPU:
+
+- **The platforms**, read as buildx reads them (util/platformutil `Parse`): each value a
+  comma-separated list, each normalized, before the outputs and annotations are. The
+  same platform named twice is built once, as buildx's `Dedupe` keeps it (measured on
+  Docker 29.3.1 in `shards-dind`: `linux/amd64,linux/amd64` exports each manifest and
+  attestation twice). `local` is the platform this host's microVMs run; buildx takes its
+  client's default, which on a Mac is `darwin/arm64`, no platform a Linux build makes.
+  Several platforms at once are refused, named, until their export is made (an index of
+  one manifest each; measured: Docker attests each, and splits a local output by
+  platform).
+- **Its bases** are P's: the manifest the name's index has for P, its config and layers
+  fetched and checked as a pull checks them (`shards_registry::pull::fetch_untagged`),
+  but no name recorded, no root filesystem built and no attestation fetched, so that what
+  a name holds in the store stays the guests' image, as BuildKit's pulls leave an image
+  store's names. Each is kept as the build cache keeps what it made (its blobs the
+  record's roots), found there again unless `--pull`, and gone with `builder prune`.
+  Bases are resolved for each stage's own platform: one name can be two bases in a build
+  (`FROM --platform=$BUILDPLATFORM alpine` and `FROM alpine`), so the build keeps each by
+  its reference and platform, the index's digest being both platforms'.
+- **Its steps.** A step for the build platform runs as any does; one for P is refused at
+  its turn, before a builder boots, in words that say to build on the build platform and
+  copy into P's stage. BuildKit runs it under an emulator where one is installed, else
+  fails once it starts, with the kernel's "exec format error". Docker's own pattern for
+  several platforms (`FROM --platform=$BUILDPLATFORM`, cross-compile, `COPY --from`)
+  needs none.
+- **The image** is P's: its config's platform, each output's descriptor, and annotations
+  for a platform matched against P (BuildKit's `FindRef`), not this host's.
+
+Measured: the same Dockerfile built for `linux/amd64` on this arm64 host and on Docker
+29.3.1 (`shards-dind`, `SOURCE_DATE_EPOCH=0`, `rewrite-timestamp=true`) has the same base
+layer; the copied layer differs as every shards build's does, uncompressed and not
+rewritten (output options shards does not yet apply).
+
+Tested: `builds_for_another_platform_run_only_the_build_platforms_steps` (an index of
+two platforms in a test registry: the other platform's layer and config in the image, the
+build platform's step's file copied in, the names in the store unchanged, a step for the
+other platform refused before boot, `local`, several refused).
+
 ### D73. `--check` as BuildKit's lint subrequest: every stage, its JSON, its error
 
 `--check` answers what BuildKit's frontend answers the lint subrequest

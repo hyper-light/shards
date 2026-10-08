@@ -6692,3 +6692,175 @@ fn mcp_servers_are_offered_to_those_in_scope() {
         assert!(all.lines().any(|l| l == want), "no {want:?} in\n{all}");
     }
 }
+
+/// The test image behind an index of two platforms: this host's, and another
+/// architecture's whose one layer holds `/arch`, its name. The index, its blobs, and that
+/// layer's digest.
+fn two_platform_image() -> (Vec<u8>, Vec<Vec<u8>>, String) {
+    let (ours, mut blobs) = common::test_image();
+    let (arch, other) = if cfg!(target_arch = "aarch64") {
+        ("arm64", "amd64")
+    } else {
+        ("amd64", "arm64")
+    };
+    let layer = common::tar(&[("arch", 0o644, 0, Some(other.as_bytes()))]);
+    let config = format!(
+        r#"{{"architecture":"{other}","os":"linux","config":{{"Env":["PATH=/bin"]}},"rootfs":{{"type":"layers","diff_ids":["{}"]}}}}"#,
+        common::sha256_digest(&layer)
+    )
+    .into_bytes();
+    let theirs = format!(
+        r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"{}","size":{}}},"layers":[{{"mediaType":"application/vnd.oci.image.layer.v1.tar","digest":"{}","size":{}}}]}}"#,
+        common::sha256_digest(&config),
+        config.len(),
+        common::sha256_digest(&layer),
+        layer.len()
+    )
+    .into_bytes();
+    let index = format!(
+        r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[{{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"{}","size":{},"platform":{{"architecture":"{arch}","os":"linux"}}}},{{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"{}","size":{},"platform":{{"architecture":"{other}","os":"linux"}}}}]}}"#,
+        common::sha256_digest(&ours),
+        ours.len(),
+        common::sha256_digest(&theirs),
+        theirs.len(),
+    )
+    .into_bytes();
+    let layer_digest = common::sha256_digest(&layer);
+    blobs.push(ours);
+    blobs.extend([config, layer, theirs]);
+    (index, blobs, layer_digest)
+}
+
+/// `--platform` for a platform this host's microVMs do not run (D74): its bases are that
+/// platform's, fetched without changing what a name in the store holds; steps for the
+/// build platform run (`FROM --platform=$BUILDPLATFORM`), and what they made is copied into
+/// the image, which is that platform's; a step for that platform is refused at its turn,
+/// before anything boots, in words that say what to do; `local` is this host's platform;
+/// several platforms at once are refused, named.
+#[test]
+fn builds_for_another_platform_run_only_the_build_platforms_steps() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (index, blobs, their_layer) = two_platform_image();
+    let (port, _) = common::registry(index, blobs);
+    let image = format!("127.0.0.1:{port}/test/image:v1");
+    let home = TempDir::new("foreign-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let (arch, other) = if cfg!(target_arch = "aarch64") {
+        ("arm64", "amd64")
+    } else {
+        ("amd64", "arm64")
+    };
+    let ctx = context(
+        "foreign-ctx",
+        &format!(
+            "FROM --platform=$BUILDPLATFORM {image} AS build\n\
+             RUN [\"/bin/testguest\", \"fs\", \"write:/work/out=built\"]\n\
+             FROM {image}\n\
+             COPY --from=build /work/out /out\n"
+        ),
+    );
+    let out = TempDir::new("foreign-out");
+    let layout = out.join("layout");
+    let built = shards(&[
+        "build",
+        "--platform",
+        &format!("linux/{other}"),
+        "-o",
+        &format!("type=oci,dest={},tar=false", layout.display()),
+        ctx.to_str().unwrap(),
+    ]);
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    let top: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(layout.join("index.json")).unwrap()).unwrap();
+    let desc = &top["manifests"][0];
+    assert_eq!(desc["platform"]["architecture"], other, "{top}");
+    let blob =
+        |d: &str| std::fs::read(layout.join("blobs/sha256").join(d.trim_start_matches("sha256:"))).unwrap();
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&blob(desc["digest"].as_str().unwrap())).unwrap();
+    let config: serde_json::Value =
+        serde_json::from_slice(&blob(manifest["config"]["digest"].as_str().unwrap())).unwrap();
+    assert_eq!(config["architecture"], other, "{config}");
+    // The other platform's base layer, then what the build platform's step made.
+    let layers = manifest["layers"].as_array().unwrap();
+    assert_eq!(layers.len(), 2, "{manifest}");
+    assert_eq!(layers[0]["digest"], their_layer.as_str(), "{manifest}");
+    let copied = tar_entries(&blob(layers[1]["digest"].as_str().unwrap()));
+    assert!(
+        copied
+            .iter()
+            .any(|(h, data)| h.name == b"out" && data == b"built"),
+        "{manifest}"
+    );
+    // Stored, the image is the other platform's; the base's name holds this host's.
+    let stored = shards(&[
+        "build",
+        "--platform",
+        &format!("linux/{other}"),
+        "-t",
+        "foreign:1",
+        ctx.to_str().unwrap(),
+    ]);
+    assert_eq!(stored.status, Some(0), "{}", stored.stderr);
+    let inspect = |name: &str| {
+        let r = shards(&["image", "inspect", "--format", "{{.Architecture}}", name]);
+        assert_eq!(r.status, Some(0), "{}", r.stderr);
+        r.stdout.trim().to_string()
+    };
+    assert_eq!(inspect("foreign:1"), other);
+    assert_eq!(inspect(&image), arch);
+
+    let stepped = context(
+        "foreign-step",
+        &format!("FROM {image}\nRUN [\"/bin/testguest\", \"exit\", \"0\"]\n"),
+    );
+    let refused = shards(&[
+        "build",
+        "--platform",
+        &format!("linux/{other}"),
+        stepped.to_str().unwrap(),
+    ]);
+    assert_eq!(refused.status, Some(1), "{}", refused.stderr);
+    assert!(
+        refused.stderr.contains(&format!(
+            "shards runs steps for linux/{arch} only, the platform its microVMs run, not linux/{other}"
+        )),
+        "{}",
+        refused.stderr
+    );
+    assert!(
+        refused.stderr.contains("FROM --platform=$BUILDPLATFORM"),
+        "{}",
+        refused.stderr
+    );
+
+    let local = shards(&[
+        "build",
+        "--platform",
+        "local",
+        "-t",
+        "local:1",
+        stepped.to_str().unwrap(),
+    ]);
+    assert_eq!(local.status, Some(0), "{}", local.stderr);
+    assert_eq!(inspect("local:1"), arch);
+
+    let several = shards(&[
+        "build",
+        "--platform",
+        &format!("linux/{arch},linux/{other}"),
+        stepped.to_str().unwrap(),
+    ]);
+    assert!(
+        several.stderr.contains("building for several platforms at once"),
+        "{}",
+        several.stderr
+    );
+}
