@@ -3210,6 +3210,55 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode
 waits on the user.
 
+### D94. Attestations in a tar output, and a local output's as BuildKit writes them
+
+`-o type=tar` carries the build's attestations, as BuildKit's tar exporter does. It
+shares the local exporter's file system: `provenance.json` and each SBOM's file sit among
+the output's files.
+
+Measured, Docker 29.3.1, `--provenance=mode=min`:
+- The tar holds them in name order with the files, mode 0600, owner 0. Their time is the
+  export's, or SOURCE_DATE_EPOCH's where the build has one, as every entry's is.
+- A multi-platform tar holds them inside each `<os>_<arch>/`.
+- The local output writes them mode 0600, their time SOURCE_DATE_EPOCH's where set.
+  shards wrote them 0644 with the time they were written; now as measured.
+
+The statement is the local output's (D72): each regular file named by its path and
+SHA-256. The digests are now read from the snapshot rather than from the files written,
+so a tar's statement names exactly the bytes the tar holds.
+
+Tested: `builds_attest_their_provenance_as_docker_does` covers:
+- the local `provenance.json` at 0600 with SOURCE_DATE_EPOCH's time;
+- the tar's entry among the files in name order, 0600, owner 0, time 1000;
+- the tar's `bin/testguest` subject digest matching the tar's own bytes.
+
+A provenance in a `docker` output stays refused for now.
+
+Also (test only): the snapshot storm's guest now carries 8 MiB of the host's stream past
+a snapshot it goes on from, before its verdict. That is two of the host's 4 MiB rounds,
+so the round the snapshot cut through and one whole round after it are seen whatever the
+host's load. It had failed with one round while the host compiled in parallel. With
+every core busy (`yes` on each), it passed twice.
+
+### D93. A layerless image's `null` lists, read as Go reads them
+
+BuildKit writes a layerless image (`FROM scratch` with only `LABEL`, `ENV` and the like)
+with its manifest's `layers` and its config's `rootfs.diff_ids` `null`. Measured in
+Docker 29.3.1 (BuildKit v0.28.1), `-o type=oci`. shards' exporter writes the same bytes.
+
+shards' image reader took only lists. Such an image's manifest did not parse, so the
+store left its config out. `image inspect` showed `"Config": {}` with no `Os` or
+`Architecture`, and `images --filter label=` missed it.
+
+Now a `null` or missing list is none, as Go's `encoding/json` reads a nil slice: an
+index's `manifests`, a manifest's `layers`, a config's `diff_ids`.
+
+Tested:
+- `a_layerless_image_reads_as_go_reads_it`, the measured manifest and config.
+- `a_layerless_image_inspects_as_docker_shows_it`: built, it inspects with its labels,
+  `linux` and `layers`, and `images --filter label=tier=web` lists it.
+- Before the change, the same build inspected as `"Config": {}`.
+
 ### D92. BUILDKIT_DISABLE_FILEOP and BUILDKIT_GIT_ADVICE
 
 The last two `BUILDKIT_*` build arguments, as frontend 1.27.1's dockerui reads them

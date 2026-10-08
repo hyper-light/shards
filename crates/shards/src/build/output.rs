@@ -352,53 +352,118 @@ pub fn attested_index(made: &Made<'_>, names: &[Reference]) -> Result<Option<(Di
     Ok(attested(made, names)?.map(|a| a.index))
 }
 
-/// A local output's attestations: each SBOM at its file's name in the scan (D81), and
-/// `provenance.json` where `provenance` (D72); each statement indented, naming each
-/// regular file the output holds by its path and SHA-256, as BuildKit's local exporter
-/// names them.
-pub fn local_attestations(
+/// A local or tar output's attestations, as BuildKit's local exporter makes them: each
+/// SBOM at its file's name in the scan (D81), and `provenance.json` where `provenance`
+/// (D72); each statement indented, naming each regular file `fs` holds by its path and
+/// SHA-256.
+pub fn attestations(
     fs: &Fs,
-    dest: &Path,
+    sources: &mut Sources,
     capture: &super::provenance::Capture,
     run: &super::provenance::Run,
     provenance: bool,
-) -> Result<(), String> {
+) -> Result<Vec<(String, Vec<u8>)>, String> {
     if capture.sboms.is_empty() && !provenance {
-        return Ok(());
+        return Ok(Vec::new());
     }
     use sha2::Digest as _;
+    use shards_image::erofs::Source as _;
     let mut subjects = Vec::new();
     let mut seen = std::collections::HashSet::new();
     walk(fs.tree(), |path, id, node| {
-        if matches!(node.kind, Kind::File { .. }) && seen.insert(id) {
+        if let Kind::File { size, data } = node.kind
+            && seen.insert(id)
+        {
             let rel = String::from_utf8_lossy(path).trim_start_matches('/').to_string();
-            let mut f = std::fs::File::open(dest.join(&rel)).map_err(|e| format!("{rel}: {e}"))?;
             let mut h = sha2::Sha256::new();
             let mut buf = vec![0u8; 64 * 1024];
-            loop {
-                let n = io::Read::read(&mut f, &mut buf).map_err(|e| format!("{rel}: {e}"))?;
-                if n == 0 {
-                    break;
-                }
-                h.update(buf.get(..n).unwrap_or_default());
+            let mut at = 0u64;
+            while at < size {
+                let n = usize::try_from((size - at).min(buf.len() as u64)).map_err(|e| e.to_string())?;
+                let chunk = buf.get_mut(..n).unwrap_or_default();
+                sources
+                    .read_at(data, at, chunk)
+                    .map_err(|e| format!("{rel}: {e}"))?;
+                h.update(&*chunk);
+                at += n as u64;
             }
             let hex: String = h.finalize().iter().map(|b| format!("{b:02x}")).collect();
             subjects.push((rel, format!("sha256:{hex}")));
         }
         Ok(())
     })?;
+    let mut files = Vec::new();
     for s in &capture.sboms {
         let text = shards_dockerfile::json_indent(super::sbom::intoto(s, &subjects).as_bytes());
         let name = Path::new(&s.path)
             .file_name()
-            .ok_or_else(|| format!("{}: no file name", s.path))?;
-        std::fs::write(dest.join(name), text).map_err(|e| format!("{}: {e}", s.path))?;
+            .ok_or_else(|| format!("{}: no file name", s.path))?
+            .to_string_lossy()
+            .into_owned();
+        files.push((name, text));
     }
-    if !provenance {
-        return Ok(());
+    if provenance {
+        let text = super::provenance::statement_json(capture, run, &subjects).indented(0);
+        files.push(("provenance.json".to_string(), text.into_bytes()));
     }
-    let text = super::provenance::statement_json(capture, run, &subjects).indented(0);
-    std::fs::write(dest.join("provenance.json"), text).map_err(|e| format!("provenance.json: {e}"))
+    Ok(files)
+}
+
+/// A local output's attestations written beside its files, as BuildKit's local exporter
+/// writes them: mode 0600, their time the build's SOURCE_DATE_EPOCH where it has one, else
+/// now (measured, Docker 29.3.1).
+pub fn local_attestations(
+    dest: &Path,
+    files: &[(String, Vec<u8>)],
+    epoch: Option<i64>,
+) -> Result<(), String> {
+    for (name, text) in files {
+        let path = dest.join(name);
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut opts, 0o600);
+        let mut f = opts.open(&path).map_err(|e| format!("{name}: {e}"))?;
+        f.write_all(text).map_err(|e| format!("{name}: {e}"))?;
+        if let Some(sec) = epoch {
+            let when = u64::try_from(sec)
+                .ok()
+                .and_then(|s| std::time::UNIX_EPOCH.checked_add(std::time::Duration::from_secs(s)))
+                .unwrap_or(std::time::UNIX_EPOCH);
+            f.set_modified(when).map_err(|e| format!("{name}: {e}"))?;
+        }
+    }
+    Ok(())
+}
+
+/// `fs` with a tar output's attestations at its root, as BuildKit's tar exporter adds them
+/// to what it writes: mode 0600, owner 0, their time now (the tar's SOURCE_DATE_EPOCH
+/// applies to them as to every entry).
+pub fn with_attestations(
+    fs: &Fs,
+    sources: &mut Sources,
+    files: Vec<(String, Vec<u8>)>,
+) -> Result<Fs, String> {
+    let mut out = fs.clone();
+    let (sec, nsec) = super::exec::now();
+    for (name, text) in files {
+        let size = text.len() as u64;
+        let data = sources.bytes(text).map_err(|e| e.to_string())?;
+        out.put(
+            name.as_bytes(),
+            Node {
+                kind: Kind::File { size, data },
+                meta: shards_image::erofs::Meta {
+                    mode: 0o600,
+                    mtime: sec,
+                    mtime_nsec: nsec,
+                    ..shards_image::erofs::Meta::default()
+                },
+            },
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(out)
 }
 
 /// `platform` of a descriptor, as ocispec.Platform marshals: from the image's config.

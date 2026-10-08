@@ -1329,13 +1329,11 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
     check_outputs(&outputs)?;
     let (compression, rewrite_timestamp) = compression_of(&outputs)?;
     // A provenance asked for (not inline-only) goes in every output, which shards makes
-    // in an image it stores or pushes alone yet.
+    // in every output but a docker archive yet.
     if let Provenance::Explicit {
         inline_only: false, ..
     } = provenance_asked
-        && let Some(o) = outputs
-            .iter()
-            .find(|o| matches!(o.kind.as_str(), "docker" | "tar"))
+        && let Some(o) = outputs.iter().find(|o| o.kind == "docker")
     {
         return Err(format!(
             "a provenance attestation in a {} output is not supported by shards yet",
@@ -3417,8 +3415,9 @@ fn write_fs_output(
         let bytes =
             output::local(fs, sources, epoch, dest, mirror).map_err(|e| fail_export(progress, &v, &e))?;
         if let Some((capture, run)) = provenance {
-            output::local_attestations(fs, dest, capture, run, explicit)
+            let files = output::attestations(fs, sources, capture, run, explicit)
                 .map_err(|e| fail_export(progress, &v, &e))?;
+            output::local_attestations(dest, &files, epoch).map_err(|e| fail_export(progress, &v, &e))?;
         }
         progress
             .borrow()
@@ -3427,6 +3426,22 @@ fn write_fs_output(
         return Ok(());
     }
     let v = progress.borrow_mut().start("exporting to client tarball");
+    // Its attestations among its files, as BuildKit's tar exporter writes them.
+    let attested;
+    let fs = match provenance {
+        Some((capture, run)) => {
+            let files = output::attestations(fs, sources, capture, run, explicit)
+                .map_err(|e| fail_export(progress, &v, &e))?;
+            if files.is_empty() {
+                fs
+            } else {
+                attested = output::with_attestations(fs, sources, files)
+                    .map_err(|e| fail_export(progress, &v, &e))?;
+                &attested
+            }
+        }
+        None => fs,
+    };
     let written = match &o.dest {
         buildflags::Dest::Stdout => {
             let out = std::io::BufWriter::new(std::io::stdout().lock());

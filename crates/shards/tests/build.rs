@@ -1848,6 +1848,64 @@ fn builds_attest_their_provenance_as_docker_does() {
         .map(|s| s["name"].as_str().unwrap())
         .collect();
     assert!(named.contains(&"bin/testguest"), "{named:?}");
+    // As BuildKit writes it (measured, Docker 29.3.1): mode 0600, its time the build's
+    // SOURCE_DATE_EPOCH (D94).
+    let local_epoch = home.join("prov-local-epoch");
+    let to_local = shards(&[
+        "build",
+        "--provenance=true",
+        "--build-arg",
+        "SOURCE_DATE_EPOCH=1000",
+        "-o",
+        &format!("type=local,dest={}", local_epoch.display()),
+        ctx.to_str().unwrap(),
+    ]);
+    assert_eq!(to_local.status, Some(0), "{}", to_local.stderr);
+    let meta = std::fs::metadata(local_epoch.join("provenance.json")).unwrap();
+    #[cfg(unix)]
+    assert_eq!(
+        std::os::unix::fs::PermissionsExt::mode(&meta.permissions()) & 0o777,
+        0o600
+    );
+    assert_eq!(
+        meta.modified().unwrap(),
+        std::time::UNIX_EPOCH + std::time::Duration::from_secs(1000)
+    );
+    // A tar output holds it among its files, in name order, 0600, owner 0, the epoch's
+    // time, naming each file by the bytes the tar holds (D94).
+    let tar_out = home.join("prov.out.tar");
+    let to_tar = shards(&[
+        "build",
+        "--provenance=true",
+        "--build-arg",
+        "SOURCE_DATE_EPOCH=1000",
+        "-o",
+        &format!("type=tar,dest={}", tar_out.display()),
+        ctx.to_str().unwrap(),
+    ]);
+    assert_eq!(to_tar.status, Some(0), "{}", to_tar.stderr);
+    let entries = tar_entries(&std::fs::read(&tar_out).unwrap());
+    let names: Vec<String> = entries
+        .iter()
+        .map(|(h, _)| String::from_utf8_lossy(&h.name).into_owned())
+        .collect();
+    let at = names
+        .iter()
+        .position(|n| n == "provenance.json")
+        .unwrap_or_else(|| panic!("{names:?}"));
+    let mut sorted = names.clone();
+    sorted.sort();
+    assert_eq!(names, sorted, "in name order");
+    let (h, body) = &entries[at];
+    assert_eq!((h.mode, h.uid, h.gid, h.mtime.sec), (0o600, 0, 0, 1000));
+    let statement: serde_json::Value = serde_json::from_slice(body).unwrap();
+    let subjects = statement["subject"].as_array().unwrap();
+    let testguest = subjects.iter().find(|s| s["name"] == "bin/testguest").unwrap();
+    let (_, bytes) = entries.iter().find(|(h, _)| h.name == b"bin/testguest").unwrap();
+    assert_eq!(
+        format!("sha256:{}", testguest["digest"]["sha256"].as_str().unwrap()),
+        common::sha256_digest(bytes)
+    );
     // Asked for none: the manifest is the ID, in Docker's types (D83); in OCI's where
     // the image output asks for them.
     let mut plain = env.to_vec();
@@ -2796,6 +2854,39 @@ fn git_http_server(root: std::path::PathBuf, accepted: Vec<String>) -> u16 {
 /// upload-pack: the default branch, an annotated tag, a subdirectory, a submodule found by
 /// its relative URL, `--keep-git-dir`; files 0644 or 0755, symlinks, all root's. Unlike
 /// BuildKit, every entry's time is the commit's, so that the same commit makes the same
+/// A layerless image (`FROM scratch` and `LABEL`), its manifest's `layers` and its
+/// config's `diff_ids` null as BuildKit writes them, inspects and filters as Docker shows
+/// it: its labels, platform and config, behind the index its provenance makes.
+#[test]
+fn a_layerless_image_inspects_as_docker_shows_it() {
+    let home = TempDir::new("layerless-home");
+    let ctx = context("layerless-ctx", "FROM scratch\nLABEL tier=web\n");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let built = shards(&["build", "-q", "-t", "layerless:1", ctx.to_str().unwrap()]);
+    assert_eq!(built.status, Some(0), "{built}");
+    let shown = shards(&[
+        "image",
+        "inspect",
+        "--format",
+        "{{json .Config.Labels}} {{.Os}} {{.RootFS.Type}}",
+        "layerless:1",
+    ]);
+    assert_eq!(shown.stdout, "{\"tier\":\"web\"} linux layers\n", "{shown}");
+    let listed = shards(&[
+        "images",
+        "--filter",
+        "label=tier=web",
+        "--format",
+        "{{.Repository}}:{{.Tag}}",
+    ]);
+    assert_eq!(listed.stdout, "layerless:1\n", "{listed}");
+}
+
 /// dockerui's build-arg options, as frontend 1.27.1 reads them (D92):
 /// BUILDKIT_DISABLE_FILEOP refused once true, in Docker's words; BUILDKIT_GIT_ADVICE read as
 /// a bool, refused otherwise; neither in the way of a build that sets them off or on.
