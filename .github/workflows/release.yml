@@ -1,0 +1,124 @@
+# Release: `shards`, the one binary (CLAUDE.md), built for every platform of the matrix CI
+# tests (ci.yml) and attached to the GitHub Release as it is: one raw binary per OS and
+# architecture, named `shards-<os>-<arch>` with OCI's architecture names (`amd64`, `arm64`),
+# `-musl` for static Linux, `.exe` on Windows. Nothing is archived, and nothing ships beside
+# it: the VM and network processes, shards-init and the in-VM server are carried inside.
+#
+# Pushing a tag `v<version>` releases; workflow_dispatch builds the matrix alone.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  TOOLCHAIN: 1.98.0 # keep in sync with rust-toolchain.toml and ci.yml
+  MUSL_IMAGE: rust:1.98.0-alpine@sha256:a10e64dd139b7387337c7fbe8aca31b959b57b2fd4c8ae20a02cf1d6ea424dce
+
+jobs:
+  guard:
+    name: The tag is the version
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          version=$(grep -m1 '^version' crates/shards/Cargo.toml | cut -d'"' -f2)
+          test "v$version" = "$GITHUB_REF_NAME" \
+            || { echo "tag $GITHUB_REF_NAME is not crates/shards' version v$version"; exit 1; }
+
+  build:
+    name: ${{ matrix.asset }}
+    needs: guard
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: aarch64-apple-darwin, runner: macos-15, asset: shards-darwin-arm64 }
+          - { target: x86_64-apple-darwin, runner: macos-15, asset: shards-darwin-amd64 }
+          - { target: x86_64-unknown-linux-gnu, runner: ubuntu-24.04, asset: shards-linux-amd64 }
+          - { target: aarch64-unknown-linux-gnu, runner: ubuntu-24.04-arm, asset: shards-linux-arm64 }
+          - { target: x86_64-unknown-linux-musl, runner: ubuntu-24.04, asset: shards-linux-amd64-musl, musl: true }
+          - { target: aarch64-unknown-linux-musl, runner: ubuntu-24.04-arm, asset: shards-linux-arm64-musl, musl: true }
+          - { target: x86_64-pc-windows-msvc, runner: windows-2025, asset: shards-windows-amd64.exe }
+          - { target: aarch64-pc-windows-msvc, runner: windows-2025, asset: shards-windows-arm64.exe }
+    runs-on: ${{ matrix.runner }}
+    env:
+      TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Install pinned Rust
+        if: ${{ !matrix.musl }}
+        shell: bash
+        # The guest binaries shards carries build for the host architecture's musl target.
+        run: |
+          rustup toolchain install "$TOOLCHAIN" --profile minimal \
+            --target "$TARGET" --target x86_64-unknown-linux-musl --target aarch64-unknown-linux-musl
+      - name: zig
+        if: ${{ !matrix.musl }}
+        shell: bash
+        run: scripts/install-zig
+      - name: NASM (Windows x64)
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        shell: bash
+        run: |
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 10 -o "$RUNNER_TEMP/nasm.zip" https://www.nasm.us/pub/nasm/releasebuilds/3.02/win64/nasm-3.02-win64.zip
+          echo "161d0bfaff53c2f9e9f3e69fd0672323ebabafd1268976a5cec11be92a19aee7  $RUNNER_TEMP/nasm.zip" | sha256sum -c
+          unzip -q "$RUNNER_TEMP/nasm.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/nasm-3.02" >> "$GITHUB_PATH"
+      - name: Build
+        if: ${{ !matrix.musl }}
+        shell: bash
+        run: cargo build --locked --release -p shards --target "$TARGET"
+      - name: Build on the native architecture, in Alpine
+        if: matrix.musl
+        run: |
+          docker run --rm -v "$PWD:/work" -w /work -e TARGET -e MUSL_CI=build \
+            -e CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=cc \
+            -e CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=cc \
+            "$MUSL_IMAGE" scripts/musl-ci
+          bin="target/$TARGET/release/shards"
+          if readelf --program-headers "$bin" | grep -q INTERP; then
+            echo "$bin requests a program interpreter"; exit 1
+          fi
+          if readelf --dynamic "$bin" | grep -q NEEDED; then
+            echo "$bin needs shared libraries"; exit 1
+          fi
+      - name: Stage
+        shell: bash
+        run: |
+          exe=""
+          case "$TARGET" in *windows*) exe=.exe ;; esac
+          cp "target/$TARGET/release/shards$exe" "${{ matrix.asset }}"
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: ${{ matrix.asset }}
+          path: ${{ matrix.asset }}
+          if-no-files-found: error
+
+  release:
+    name: GitHub Release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Checksums
+        run: cd artifacts && sha256sum shards-* > SHA256SUMS
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --title "$GITHUB_REF_NAME" --generate-notes artifacts/*

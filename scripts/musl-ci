@@ -1,6 +1,7 @@
 #!/bin/sh
 # CI's musl job, inside its pinned rust:alpine image on the runner's own architecture
-# (.github/workflows/ci.yml, `musl`): lints, tests and builds $TARGET. Packages are added
+# (.github/workflows/ci.yml, `musl`): lints, tests and builds $TARGET; with MUSL_CI=build
+# (.github/workflows/release.yml), builds it alone. Packages are added
 # as root; everything else runs as the user that owns the checkout, as shards runs: never
 # as root, which permission bits and much else do not stop.
 #
@@ -23,7 +24,9 @@ adduser -D -u "$uid" -h /home/shards shards
 exec su -m shards -s /bin/sh -c '
 	set -eu
 	export HOME=/home/shards CARGO_HOME=/home/shards/.cargo
-	cargo clippy --locked --workspace --all-targets --target "$TARGET" -- -D warnings
-	cargo test --locked --workspace --release --no-fail-fast --target "$TARGET"
+	if [ "${MUSL_CI:-}" != build ]; then
+		cargo clippy --locked --workspace --all-targets --target "$TARGET" -- -D warnings
+		cargo test --locked --workspace --release --no-fail-fast --target "$TARGET"
+	fi
 	cargo build --locked --release -p shards --target "$TARGET"
 '
