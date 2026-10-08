@@ -1197,6 +1197,60 @@ fn an_images_exposed_ports_publish_with_publish_all() {
     assert_eq!(waited.stdout, "0\n", "{}", waited.stderr);
 }
 
+/// An image's `VOLUME`s, as `docker run` mounts them: an anonymous volume at each, filled
+/// from the image where it is empty, listed with the run's mounts, kept by `rm` and
+/// removed by `rm -v`.
+#[test]
+fn an_images_volumes_are_anonymous_volumes_at_run() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("build-volume-home");
+    let ctx = context(
+        "build-volume-ctx",
+        &format!("FROM {image}\nCOPY seed /data/seed\nVOLUME /data\n"),
+    );
+    std::fs::write(ctx.join("seed"), "from the image\n").unwrap();
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let built = shards(&["build", "-t", "volumed:1", ctx.to_str().unwrap()]);
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    let ran = shards(&[
+        "run",
+        "--name",
+        "vol",
+        "-u",
+        "root",
+        "volumed:1",
+        "stat",
+        "/data/seed",
+    ]);
+    assert_eq!(ran.status, Some(0), "{}", ran.stderr);
+    assert!(
+        ran.stdout
+            .starts_with("/data/seed file 644 0:0 15\n= from the image\\n\n"),
+        "{}",
+        ran.stdout
+    );
+    let mounts = shards(&[
+        "inspect",
+        "--format",
+        "{{range .Mounts}}{{.Type}} {{.Destination}} {{.Driver}} {{.RW}};{{end}}",
+        "vol",
+    ]);
+    assert_eq!(mounts.stdout, "volume /data local true;\n", "{}", mounts.stderr);
+    let listed = shards(&["volume", "ls", "-q"]);
+    assert_eq!(listed.stdout.lines().count(), 1, "{}", listed.stdout);
+    let removed = shards(&["rm", "-v", "vol"]);
+    assert_eq!(removed.status, Some(0), "{}", removed.stderr);
+    assert_eq!(shards(&["volume", "ls", "-q"]).stdout, "");
+}
+
 /// Each request a test server was sent: its path, and its fields.
 type Asked = std::sync::Arc<std::sync::Mutex<Vec<(String, Vec<String>)>>>;
 
