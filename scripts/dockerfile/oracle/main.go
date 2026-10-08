@@ -8,6 +8,7 @@
 package main
 
 import (
+	"google.golang.org/protobuf/proto"
 	"bufio"
 	"bytes"
 	"context"
@@ -663,6 +664,28 @@ func planFile(root, rel string, images resolver) map[string]any {
 		visit(last)
 	}
 	list := []any{}
+	// Each op as BuildKit marshals it (client/llb deterministicMarshal), its local
+	// source's unique ID as "*" and its inputs named by their own ops so marshalled: the
+	// bytes crates/dockerfile's protobuf encoding is held to (D80).
+	norm := map[digest.Digest]digest.Digest{}
+	pbOf := map[digest.Digest][]byte{}
+	for _, d := range order {
+		op := proto.Clone(ops[d]).(*pb.Op)
+		if src := op.GetSource(); src != nil {
+			if _, ok := src.Attrs["local.unique"]; ok {
+				src.Attrs["local.unique"] = "*"
+			}
+		}
+		for _, in := range op.Inputs {
+			in.Digest = string(norm[digest.Digest(in.Digest)])
+		}
+		b, err := proto.MarshalOptions{Deterministic: true}.Marshal(op)
+		if err != nil {
+			panic(err)
+		}
+		norm[d] = digest.FromBytes(b)
+		pbOf[d] = b
+	}
 	for _, d := range order {
 		op := ops[d]
 		inputs := []any{}
@@ -679,6 +702,7 @@ func planFile(root, rel string, images resolver) map[string]any {
 			panic(err)
 		}
 		v["inputs"] = inputs
+		v["pb"] = base64.StdEncoding.EncodeToString(pbOf[d])
 		// A local source's unique ID and a progress group's ID are random.
 		if src, ok := v["source"].(map[string]any); ok {
 			if attrs, ok := src["attrs"].(map[string]any); ok {

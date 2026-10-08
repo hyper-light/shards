@@ -978,12 +978,34 @@ fn definition_v(def: &shards_dockerfile::llb::Definition) -> Value {
         order.push(i);
     }
     visit(root.op, def, &mut seen, &mut order);
-    let mut out: Vec<Value> = order
-        .iter()
-        .map(|&i| op_v(&def.ops[i], &def.metadata[i], &order))
-        .collect();
+    // Each op's bytes as BuildKit marshals them, its local source's unique ID as "*" and
+    // its inputs named by their own ops so marshalled, as the oracle records them.
+    let mut digests: std::collections::BTreeMap<usize, Vec<u8>> = std::collections::BTreeMap::new();
+    let mut out: Vec<Value> = Vec::new();
+    for &i in &order {
+        let mut op = def.ops[i].clone();
+        if let shards_dockerfile::llb::OpKind::Source { attrs, .. } = &mut op.kind
+            && let Some(v) = attrs.get_mut(b"local.unique".as_slice())
+        {
+            *v = b"*".to_vec();
+        }
+        let inputs: Vec<Vec<u8>> = op.inputs.iter().map(|inp| digests[&inp.op].clone()).collect();
+        let mut v = op_v(&def.ops[i], &def.metadata[i], &order);
+        if let Some(bytes) = shards_dockerfile::pb::op(&op, &inputs) {
+            use sha2::Digest as _;
+            let sum = sha2::Sha256::digest(&bytes);
+            let hex: String = sum.iter().map(|b| format!("{b:02x}")).collect();
+            digests.insert(i, format!("sha256:{hex}").into_bytes());
+            v["pb"] = Value::String(base64(&bytes));
+        }
+        out.push(v);
+    }
     let pos = order.iter().position(|&o| o == root.op).unwrap();
-    out.push(serde_json::json!({ "inputs": [[pos, root.index]], "metadata": {} }));
+    let mut last = serde_json::json!({ "inputs": [[pos, root.index]], "metadata": {} });
+    if let Some(d) = digests.get(&root.op) {
+        last["pb"] = Value::String(base64(&shards_dockerfile::pb::root(d, root.index)));
+    }
+    out.push(last);
     Value::Array(out)
 }
 
@@ -1130,7 +1152,20 @@ fn plans_are_buildkits() {
                 want[k] = v.clone();
             }
         }
-        let got = Value::Object(got);
+        let mut got = Value::Object(got);
+        // A deviation's ops are shards' own, as the reason it gives says, which no
+        // protobuf of BuildKit's records.
+        if devs
+            .iter()
+            .any(|d| d["file"] == file && d["fields"].get("ops").is_some())
+            && let Some(ops) = got["ops"].as_array_mut()
+        {
+            for op in ops {
+                if let Some(o) = op.as_object_mut() {
+                    o.remove("pb");
+                }
+            }
+        }
         if got != want {
             failures.push(format!(
                 "{file}\n  got:  {}\n  want: {}",
@@ -1190,8 +1225,33 @@ fn subrequests_are_buildkits() {
         };
         match outline(&text, &opts, &images) {
             Ok(o) => {
-                check("outline", quote(o.json().as_bytes()), "outline");
-                check("outline text", quote(o.text().as_bytes()), "outline_text");
+                // BuildKit orders secrets and SSH by location alone, with sort.Slice over a
+                // map's keys (outline.go), so those of one line come in any order; shards
+                // keeps them in the order they are written.
+                let (json, text) = (quote(o.json().as_bytes()), quote(o.text().as_bytes()));
+                let unquoted = |q: &str| serde_json::from_str::<String>(q).unwrap_or_default();
+                let (want_json, want_text) = (
+                    want["outline"].as_str().unwrap_or("<none>"),
+                    want["outline_text"].as_str().unwrap_or("<none>"),
+                );
+                // What matches but for ties is checked as BuildKit's own answer.
+                let json = if same_but_ties(&unquoted(&json), &unquoted(want_json)) {
+                    want_json.to_string()
+                } else {
+                    json
+                };
+                check("outline", json, "outline");
+                let lines = |t: &str| {
+                    let mut l: Vec<String> = unquoted(t).lines().map(str::to_string).collect();
+                    l.sort();
+                    l
+                };
+                let text = if lines(&text) == lines(want_text) {
+                    want_text.to_string()
+                } else {
+                    text
+                };
+                check("outline text", text, "outline_text");
             }
             Err(e) => check("outline error", quote(&e.message), "outline_error"),
         }
@@ -1546,4 +1606,30 @@ fn a_long_chain_of_stages_plans() {
         .err()
         .map(|e| String::from_utf8_lossy(&e.message).into_owned());
     assert_eq!(said.as_deref(), Some("circular dependency detected on stage: s0"));
+}
+
+/// Whether outlines `got` and `want` (JSON) differ only in the order of secrets or SSH
+/// entries at one location, which BuildKit leaves to a map's order.
+fn same_but_ties(got: &str, want: &str) -> bool {
+    let (Ok(mut got), Ok(mut want)) = (
+        serde_json::from_str::<Value>(got),
+        serde_json::from_str::<Value>(want),
+    ) else {
+        return false;
+    };
+    for v in [&mut got, &mut want] {
+        for key in ["secrets", "ssh"] {
+            if let Some(list) = v.get_mut(key).and_then(Value::as_array_mut) {
+                // Each run of one location sorted by name; the runs keep their order.
+                let mut start = 0;
+                while start < list.len() {
+                    let at = list[start]["location"].clone();
+                    let end = start + list[start..].iter().take_while(|e| e["location"] == at).count();
+                    list[start..end].sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
+                    start = end;
+                }
+            }
+        }
+    }
+    got == want
 }

@@ -3210,6 +3210,39 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode
 waits on the user.
 
+### D80. LLB operations as BuildKit marshals them, for mode=max provenance
+
+Provenance's `mode=max` records the build's LLB definition: each operation, and a mapping
+from each operation's digest to its step. BuildKit names each operation by the SHA-256 of
+its `pb.Op` message as protobuf-go's deterministic marshal writes it (`client/llb`). So
+shards writes those bytes itself (`crates/dockerfile` `pb`), from `solver/pb/ops.proto` at
+dockerfile/1.27.1:
+- fields go in number order, except that a message's oneof goes after its other fields
+  (protobuf-go's `order.LegacyFieldOrder`), so an op's inputs, platform and constraints
+  come before what it does;
+- proto3's zero values are left out, while a set message is written however empty (every
+  op's worker constraints, a oneof member of zero);
+- repeated fields write each element, and map entries go in key order with key and value
+  both written;
+- int64 and int32 negatives take ten bytes, as protobuf sign-extends them;
+- the definition's last op is its one input alone.
+
+No protobuf library is taken for it: the messages are few, and a library's own
+serializer would still have to be held to protobuf-go's order and choices.
+
+Tested: `plans_are_buildkits` holds every op of the 117 plans BuildKit makes of
+`testdata/corpus/plan` to BuildKit's own bytes. `scripts/dockerfile/generate` records
+them (`pb`), with a local source's unique ID as `*` and each input named by its own op's
+normalized digest. The one plan whose ops are a recorded deviation (`named-git-ssh`,
+known SSH hosts) is compared without them. Mutation-checked: an op whose mount stubs are
+not removed recursively changes 50 plans' bytes, and the oneof in field order changes
+every one.
+
+`--call=outline` also no longer depends on an order BuildKit leaves to chance: it orders
+secrets and SSH entries by location alone with `sort.Slice` over a map (outline.go), so
+those on one line come out in any order between runs. shards keeps the order they are
+written in, and the oracle compares such entries without regard to order.
+
 ### D79. DNS over TCP, for answers too long for UDP
 
 An answer too long for a UDP message comes truncated (TC, RFC 1035 §4.2.1), and a

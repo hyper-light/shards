@@ -32,6 +32,7 @@ pub mod lex;
 pub mod lint;
 pub mod llb;
 pub mod parser;
+pub mod pb;
 pub mod plan;
 pub mod platform;
 pub mod subrequests;
