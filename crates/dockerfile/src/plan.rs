@@ -162,6 +162,10 @@ pub struct Plan {
     pub epoch: Option<i64>,
     /// The domains the target's agents and harnesses make, for the export's checks.
     pub domains: Vec<DomainDir>,
+    /// What an SBOM scanner is given beside the target (`SBOMTargets.Extras`), by name:
+    /// the build context where the target's `BUILDKIT_SBOM_SCAN_CONTEXT` says so, and each
+    /// stage it reaches whose `BUILDKIT_SBOM_SCAN_STAGE` names it (D81).
+    pub sbom_extras: Vec<(Vec<u8>, State)>,
 }
 
 impl Plan {
@@ -185,6 +189,14 @@ const HISTORY_COMMENT: &[u8] = b"buildkit.dockerfile.v0";
 const DEFAULT_PATH: &[u8] = b"/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 const SBOM_SCAN_CONTEXT: &[u8] = b"BUILDKIT_SBOM_SCAN_CONTEXT";
 const SBOM_SCAN_STAGE: &[u8] = b"BUILDKIT_SBOM_SCAN_STAGE";
+
+/// `isEnabledForStage`: a boolean for every stage, else a list of the stages' names.
+fn enabled_for_stage(stage: &[u8], value: &[u8]) -> bool {
+    match go::parse_bool(value) {
+        Some(b) => b,
+        None => value.split(|&c| c == b',').any(|s| s == stage),
+    }
+}
 
 /// Arguments that set no variable in a step's environment.
 fn non_env_arg(key: &[u8]) -> bool {
@@ -4308,6 +4320,41 @@ impl Planner<'_> {
             }
             v.meta = custom_name(b"[internal] load build context".to_vec());
         }
+        // The SBOM scanner's other targets: each stage's own `ARG` overriding the global one.
+        let scans = |ds: &Ds, name: &[u8]| -> bool {
+            let mut on = self
+                .global_args
+                .get(name)
+                .is_some_and(|v| enabled_for_stage(&ds.stage_name, v));
+            for a in &ds.build_args {
+                if a.key == name
+                    && let Some(v) = &a.value
+                {
+                    on = enabled_for_stage(&ds.stage_name, v);
+                }
+            }
+            on
+        };
+        let mut sbom_extras: BTreeMap<Vec<u8>, State> = BTreeMap::new();
+        if let Some(t) = self.states.get(target)
+            && scans(t, SBOM_SCAN_CONTEXT)
+        {
+            sbom_extras.insert(
+                b"context".to_vec(),
+                State {
+                    output: Some(self.context),
+                    ..State::scratch()
+                },
+            );
+        }
+        for i in self.reachable(target) {
+            if let Some(ds) = self.states.get(i)
+                && i != target
+                && scans(ds, SBOM_SCAN_STAGE)
+            {
+                sbom_extras.insert(ds.stage_name.clone(), ds.state.clone());
+            }
+        }
         let platform = self.target_platform.clone();
         let t = self
             .states
@@ -4399,6 +4446,7 @@ impl Planner<'_> {
                 .get(target)
                 .map(|t| t.domains.clone())
                 .unwrap_or_default(),
+            sbom_extras: sbom_extras.into_iter().collect(),
         })
     }
 }

@@ -957,15 +957,6 @@ impl Exec<'_> {
             .iter()
             .find(|m| m.dest == b"/")
             .ok_or("a command with no root mount")?;
-        // Only a bind mount has an output: a secret's, a cache's or a tmpfs's index is
-        // protobuf's default 0, which BuildKit's solver never reads (exec.go, Marshal).
-        if op
-            .mounts
-            .iter()
-            .any(|m| m.dest != b"/" && m.output >= 0 && matches!(m.kind, OpMountKind::Bind))
-        {
-            return Err("a command's output other than its root".into());
-        }
         let root = input(root_mount.input)?;
         let fail = |why: &str| super::step::failure(&p.args, why);
         if op.security == Security::Insecure && !op.insecure {
@@ -1006,11 +997,21 @@ impl Exec<'_> {
         };
         let resolv = super::step::resolv(&super::step::host_resolv(), true);
         let mut mounts = Vec::new();
+        // The bind mounts whose changes are outputs of the step's (an SBOM scan's
+        // `/run/out`, D81): each its index among the step's mounts, its output's number,
+        // and what it mounts. Only a writable bind mount has one: a secret's, a cache's or
+        // a tmpfs's index is protobuf's default 0, which BuildKit's solver never reads
+        // (exec.go, Marshal).
+        let mut outputs: Vec<(u32, i64, Ref)> = Vec::new();
         for m in op.mounts.iter().filter(|m| m.dest != b"/") {
             let mount = match &m.kind {
                 OpMountKind::Bind => {
                     let r = input(m.input)?;
                     self.checksummed(&r.fs, &m.selector, false)?;
+                    if m.output >= 0 && !m.readonly {
+                        let at = u32::try_from(mounts.len()).map_err(|_| "too many mounts")?;
+                        outputs.push((at, m.output, r.clone()));
+                    }
                     Mount::Tree {
                         tree: builder.tree(&r.origin, &mut self.sources)?,
                         subpath: m.selector.clone(),
@@ -1129,13 +1130,14 @@ impl Exec<'_> {
             } else {
                 op.seccomp.to_vec()
             },
+            outputs: outputs.iter().map(|(at, _, _)| (*at, 0)).collect(),
         };
         let mut fs = (*root.fs).clone();
         fs.begin();
         fs.now = now();
         let (mut staging, source, at) = self.staging()?;
         let mut applier = shards_build::upper::Applier::new(&mut fs, &mut staging, source, at);
-        let (ended, layer) = builder.run(step, out, &mut applier, op.agents)?;
+        let (ended, layer, mounted) = builder.run(step, out, &mut applier, op.agents, self.limits.bytes)?;
         match ended {
             super::builder::Ended::Status(0) => {}
             super::builder::Ended::Status(n) => return Err(fail(&format!("exit code: {n}"))),
@@ -1149,7 +1151,48 @@ impl Exec<'_> {
             parent: root.origin.clone(),
             layer,
         };
-        Ok(vec![self.commit(Some(root), fs, description, Some(origin))?])
+        // Each output by its number: the root's, then each output mount's, its changes on
+        // what it mounted.
+        let count = outputs
+            .iter()
+            .map(|(_, n, _)| *n)
+            .chain([root_mount.output])
+            .max()
+            .and_then(|n| usize::try_from(n + 1).ok())
+            .unwrap_or(1);
+        let mut results: Vec<Option<Ref>> = vec![None; count];
+        let root_at = usize::try_from(root_mount.output).unwrap_or(0);
+        let committed = self.commit(Some(root.clone()), fs, description, Some(origin))?;
+        if let Some(slot) = results.get_mut(root_at) {
+            *slot = Some(committed);
+        }
+        for ((_, n, base), (layer, stream)) in outputs.into_iter().zip(mounted) {
+            let mut fs = (*base.fs).clone();
+            fs.begin();
+            fs.now = now();
+            let (mut staging, source, at) = self.staging()?;
+            let mut applier = shards_build::upper::Applier::new(&mut fs, &mut staging, source, at);
+            applier.feed(&stream).map_err(|e| e.0)?;
+            if !applier.ended() {
+                return Err("an output mount's changes ended early".into());
+            }
+            let at = applier.finish().map_err(|e| e.0)?;
+            if let Some((_, _, end)) = &mut self.run_staging {
+                *end = at;
+            }
+            let origin = Origin::Run {
+                parent: base.origin.clone(),
+                layer,
+            };
+            let made = self.commit(Some(base), fs, description, Some(origin))?;
+            if let Some(slot) = usize::try_from(n).ok().and_then(|i| results.get_mut(i)) {
+                *slot = Some(made);
+            }
+        }
+        results
+            .into_iter()
+            .map(|r| r.ok_or_else(|| "a command's outputs are not numbered in order".to_string()))
+            .collect()
     }
 }
 

@@ -101,6 +101,8 @@ pub fn main() -> ! {
             }
         }
         "confined" => confined(args.get(1..).unwrap_or_default()),
+        // An SBOM generator, as BuildKit's protocol runs one (D81).
+        "sbomscan" => sbom_scan(),
         "await" => await_process(arg(1), arg(2).parse().unwrap_or(1), arg(3)),
         // A workload's own Unix sockets, open to anyone: a pathname one at arg 1, mode
         // 0777, and an abstract one named arg 2; held while it awaits arg 3's processes.
@@ -2297,4 +2299,85 @@ fn quote_json(s: &str) -> String {
     }
     out.push('"');
     out
+}
+
+/// An SBOM generator of BuildKit's protocol (docs/attestations/sbom-protocol.md): for
+/// `BUILDKIT_SCAN_SOURCE` and each directory in `BUILDKIT_SCAN_SOURCE_EXTRAS`, a statement
+/// in `BUILDKIT_SCAN_DESTINATION/<name>.spdx.json` of an SPDX document naming the target,
+/// listing its regular files, and the `BUILDKIT_SCAN_*` parameters it was given; with a
+/// note of characters Go escapes, written as they are.
+fn sbom_scan() -> i32 {
+    fn quote(s: &str) -> String {
+        let mut out = String::from("\"");
+        for c in s.chars() {
+            match c {
+                '"' => out.push_str("\\\""),
+                '\\' => out.push_str("\\\\"),
+                c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+                c => out.push(c),
+            }
+        }
+        out.push('"');
+        out
+    }
+    fn files(root: &std::path::Path, dir: &std::path::Path, out: &mut Vec<String>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for e in entries.flatten() {
+            let Ok(t) = e.file_type() else { continue };
+            let p = e.path();
+            if t.is_dir() {
+                files(root, &p, out);
+            } else if t.is_file()
+                && let Ok(rel) = p.strip_prefix(root)
+            {
+                out.push(rel.to_string_lossy().into_owned());
+            }
+        }
+    }
+    let var = |k: &str| std::env::var(k).unwrap_or_default();
+    let dest = var("BUILDKIT_SCAN_DESTINATION");
+    let mut targets = vec![std::path::PathBuf::from(var("BUILDKIT_SCAN_SOURCE"))];
+    let extras = var("BUILDKIT_SCAN_SOURCE_EXTRAS");
+    if !extras.is_empty()
+        && let Ok(entries) = std::fs::read_dir(&extras)
+    {
+        let mut more: Vec<std::path::PathBuf> = entries.flatten().map(|e| e.path()).collect();
+        more.sort();
+        targets.extend(more);
+    }
+    let mut params: Vec<(String, String)> = std::env::vars()
+        .filter(|(k, _)| k.starts_with("BUILDKIT_SCAN_"))
+        .collect();
+    params.sort();
+    let params: Vec<String> = params
+        .iter()
+        .map(|(k, v)| format!("{}:{}", quote(k), quote(v)))
+        .collect();
+    for t in targets {
+        let name = t
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let mut list = Vec::new();
+        files(&t, &t, &mut list);
+        list.sort();
+        let list: Vec<String> = list.iter().map(|f| quote(f)).collect();
+        let text = format!(
+            "{{\n  \"_type\": \"https://in-toto.io/Statement/v0.1\",\n  \"predicateType\": \"https://spdx.dev/Document\",\n  \"predicate\": {{\"name\": {}, \"files\": [{}], \"params\": {{{}}}, \"note\": \"a<b & c>d\"}}\n}}\n",
+            quote(&name),
+            list.join(", "),
+            params.join(", ")
+        );
+        if std::fs::write(
+            std::path::Path::new(&dest).join(format!("{name}.spdx.json")),
+            text,
+        )
+        .is_err()
+        {
+            return 1;
+        }
+    }
+    0
 }

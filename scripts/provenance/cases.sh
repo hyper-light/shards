@@ -62,6 +62,9 @@ case_ max-mounts 'FROM busybox:1.36\nRUN --mount=type=secret,id=s --mount=type=s
 	--provenance=mode=max --secret "id=s,src=$work/secret.txt" --ssh "default=$work/key" --build-arg A=1 --label l=m
 case_ max-stages 'FROM busybox:1.36 AS b\nRUN echo x > /x\nFROM scratch\nWORKDIR /w\nCOPY --from=b /x /y\nCOPY --link a /l\nCOPY --chown=1:2 a /o\nCOPY <<EOF /h\nhello\nEOF\n' \
 	--provenance=mode=max
+# SBOMs (D81): the scanner run over the image, and over a stage and the context.
+case_ sbom-base 'FROM busybox:1.36\nCOPY a /a\n' --sbom=true
+case_ sbom-extras 'FROM busybox:1.36 AS deps\nARG BUILDKIT_SBOM_SCAN_STAGE=true\nRUN echo x > /x\nFROM busybox:1.36\nARG BUILDKIT_SBOM_SCAN_CONTEXT=true\nCOPY --from=deps /x /x\nCOPY a /a\n' --sbom=true --provenance=mode=min
 # A base image from a registry with a port: a registry of the run's own, inside.
 docker run -d --rm --name shards-provenance-registry -p 127.0.0.1:5000:5000 registry:2 >/dev/null
 trap 'docker rm -f shards-provenance-registry >/dev/null 2>&1; rm -rf "$work"' EXIT
@@ -85,6 +88,20 @@ printf 'DOCKERFILE %s\n' "$(b64 "$dir/Dockerfile")"
 say FLAG "--provenance=mode=min"
 say FILES "$(cd "$dir/out" && find . | sort | tr '\n' ' ')"
 [ -f "$dir/out/provenance.json" ] && printf 'LOCALPROV %s\n' "$(b64 "$dir/out/provenance.json")"
+echo END
+
+# A local output given an SBOM: the files it holds.
+dir="$work/local-sbom"
+mkdir -p "$dir/out"
+cp a "$dir/a"
+printf 'FROM busybox:1.36\nCOPY a /a\n' >"$dir/Dockerfile"
+(cd "$dir" && docker buildx build -q --sbom=true -o "type=local,dest=$dir/out" . >/dev/null)
+say NAME sbom-local
+printf 'DOCKERFILE %s\n' "$(b64 "$dir/Dockerfile")"
+say FLAG "--sbom=true"
+say FILES "$(cd "$dir/out" && find . -maxdepth 1 | sort | tr '\n' ' ')"
+[ -f "$dir/out/provenance.json" ] && printf 'LOCALPROV %s\n' "$(b64 "$dir/out/provenance.json")"
+[ -f "$dir/out/sbom.spdx.json" ] && printf 'LOCALSBOM %s\n' "$(b64 "$dir/out/sbom.spdx.json")"
 echo END
 
 # A build stored with no flag: the index its name resolves to, as containerd keeps it.

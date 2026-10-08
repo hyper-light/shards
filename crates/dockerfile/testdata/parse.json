@@ -13474,6 +13474,216 @@
   ]
  },
  {
+  "file": "corpus/plan/sbom-global.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(arg \\\"BUILDKIT_SBOM_SCAN_STAGE=lib\\\")\\n(from \\\"alpine\\\" \\\"AS\\\" \\\"lib\\\")\\n(run \\\"echo lib\\\")\\n(from \\\"alpine\\\" \\\"AS\\\" \\\"skipped\\\")\\n(run \\\"echo skipped\\\")\\n(from \\\"alpine\\\")\\n(arg \\\"BUILDKIT_SBOM_SCAN_STAGE\\\")\\n(copy [\\\"--from=lib\\\"] \\\"/\\\" \\\"/l\\\")\"",
+  "children": [
+   {
+    "dump": "\"arg \\\"BUILDKIT_SBOM_SCAN_STAGE=lib\\\"\"",
+    "original": "\"ARG BUILDKIT_SBOM_SCAN_STAGE=lib\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"alpine\\\" \\\"AS\\\" \\\"lib\\\"\"",
+    "original": "\"FROM alpine AS lib\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"echo lib\\\"\"",
+    "original": "\"RUN echo lib\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"alpine\\\" \\\"AS\\\" \\\"skipped\\\"\"",
+    "original": "\"FROM alpine AS skipped\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"echo skipped\\\"\"",
+    "original": "\"RUN echo skipped\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 5,
+    "end_line": 5,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 6,
+    "end_line": 6,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"arg \\\"BUILDKIT_SBOM_SCAN_STAGE\\\"\"",
+    "original": "\"ARG BUILDKIT_SBOM_SCAN_STAGE\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 7,
+    "end_line": 7,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy [\\\"--from=lib\\\"] \\\"/\\\" \\\"/l\\\"\"",
+    "original": "\"COPY --from=lib / /l\"",
+    "flags": [
+     "\"--from=lib\""
+    ],
+    "attributes": null,
+    "start_line": 8,
+    "end_line": 8,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/sbom-scan.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"alpine\\\" \\\"AS\\\" \\\"deps\\\")\\n(arg \\\"BUILDKIT_SBOM_SCAN_STAGE=true\\\")\\n(run \\\"echo deps\\\")\\n(from \\\"alpine\\\" \\\"AS\\\" \\\"other\\\")\\n(run \\\"echo other\\\")\\n(from \\\"alpine\\\")\\n(arg \\\"BUILDKIT_SBOM_SCAN_CONTEXT=true\\\")\\n(arg \\\"BUILDKIT_SBOM_SCAN_STAGE=other\\\")\\n(copy [\\\"--from=deps\\\"] \\\"/\\\" \\\"/d\\\")\\n(copy [\\\"--from=other\\\"] \\\"/\\\" \\\"/o\\\")\\n(copy \\\"a\\\" \\\"/a\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"alpine\\\" \\\"AS\\\" \\\"deps\\\"\"",
+    "original": "\"FROM alpine AS deps\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"arg \\\"BUILDKIT_SBOM_SCAN_STAGE=true\\\"\"",
+    "original": "\"ARG BUILDKIT_SBOM_SCAN_STAGE=true\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"echo deps\\\"\"",
+    "original": "\"RUN echo deps\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 3,
+    "end_line": 3,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"alpine\\\" \\\"AS\\\" \\\"other\\\"\"",
+    "original": "\"FROM alpine AS other\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 4,
+    "end_line": 4,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"echo other\\\"\"",
+    "original": "\"RUN echo other\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 5,
+    "end_line": 5,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"from \\\"alpine\\\"\"",
+    "original": "\"FROM alpine\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 6,
+    "end_line": 6,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"arg \\\"BUILDKIT_SBOM_SCAN_CONTEXT=true\\\"\"",
+    "original": "\"ARG BUILDKIT_SBOM_SCAN_CONTEXT=true\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 7,
+    "end_line": 7,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"arg \\\"BUILDKIT_SBOM_SCAN_STAGE=other\\\"\"",
+    "original": "\"ARG BUILDKIT_SBOM_SCAN_STAGE=other\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 8,
+    "end_line": 8,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy [\\\"--from=deps\\\"] \\\"/\\\" \\\"/d\\\"\"",
+    "original": "\"COPY --from=deps / /d\"",
+    "flags": [
+     "\"--from=deps\""
+    ],
+    "attributes": null,
+    "start_line": 9,
+    "end_line": 9,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy [\\\"--from=other\\\"] \\\"/\\\" \\\"/o\\\"\"",
+    "original": "\"COPY --from=other / /o\"",
+    "flags": [
+     "\"--from=other\""
+    ],
+    "attributes": null,
+    "start_line": 10,
+    "end_line": 10,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"copy \\\"a\\\" \\\"/a\\\"\"",
+    "original": "\"COPY a /a\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 11,
+    "end_line": 11,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
   "file": "corpus/plan/scratch-meta.Dockerfile",
   "escape": "\"\\\\\"",
   "dump": "\"(from \\\"scratch\\\")\\n(env \\\"A\\\" \\\"1\\\" \\\"=\\\")\\n(cmd \\\"/app\\\")\"",

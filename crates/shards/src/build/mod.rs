@@ -46,6 +46,7 @@ mod multi;
 mod output;
 mod provenance;
 mod remote;
+mod sbom;
 mod skills;
 mod ssh;
 mod sshkey;
@@ -1117,7 +1118,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
             .map_err(|e| e.to_string())
     };
     // The attestations asked for, read as buildx reads them, before the contexts.
-    let provenance_asked = provenance_of(parsed)?;
+    let (provenance_asked, sbom_asked) = provenance_of(parsed)?;
     let named = buildflags::parse_contexts(parsed.many("build-context"), &familiar)?;
     let exports = buildflags::parse_exports(parsed.many("output"))?;
     buildflags::check_iidfile(&exports, parsed.string("iidfile"))?;
@@ -1536,7 +1537,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
             pushes,
         );
     }
-    let plan = match plan::plan(&text, &opts, &bases) {
+    let mut plan = match plan::plan(&text, &opts, &bases) {
         Ok(p) => p,
         Err(e) => {
             let mut out = String::new();
@@ -1565,7 +1566,52 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
 
     // The steps, each after what it reads: base images and the context as snapshots,
     // file operations and merges run here; RUN is for the steps to come.
-    let def = plan.definition();
+    // An SBOM asked for (D81): its scanner resolved for the builder's own platform, as
+    // BuildKit resolves it with no platform of its own, and run over the build's result
+    // and its extra targets after the build's steps.
+    let scan = match &sbom_asked {
+        Some(asked) => {
+            let host = host_platform();
+            let resolved = bases
+                .resolve(
+                    asked.generator.as_bytes(),
+                    &host,
+                    format!("[internal] load metadata for {}", asked.generator).as_bytes(),
+                )
+                .map_err(|e| format!("failed to build: failed to solve: {}", show(&e)))?;
+            let config =
+                shards_dockerfile::image::Image::from_json(&resolved.config).map_err(|e| show(&e))?;
+            let id = show(&shards_dockerfile::platform::format_all(&plan.platform));
+            let state = plan.state.clone();
+            let extras = plan.sbom_extras.clone();
+            let pin = resolved.digest.clone().unwrap_or_default();
+            let out = sbom::plan(
+                &mut plan.graph,
+                &resolved.reference,
+                &pin,
+                &config,
+                &host,
+                &id,
+                &state,
+                &extras,
+                &asked.params,
+            )?;
+            let identifier = if resolved.reference.contains(&b'@') || pin.is_empty() {
+                [b"docker-image://".as_slice(), &resolved.reference].concat()
+            } else {
+                [b"docker-image://".as_slice(), &resolved.reference, b"@", &pin].concat()
+            };
+            Some((out, identifier))
+        }
+        None => None,
+    };
+    let (def, scan_at) = match &scan {
+        Some((s, _)) => {
+            let (def, found) = plan.graph.marshal_with(&plan.state, &[s], &plan.platform);
+            (def, found.first().copied().flatten())
+        }
+        None => (plan.definition(), None),
+    };
     // The base a source op names, as it was resolved for the op's platform.
     let op_base = |op: &shards_dockerfile::llb::Op, reference: &str| {
         base_key(reference, op.platform.as_ref().unwrap_or(&opts.target_platform))
@@ -2109,6 +2155,18 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
             }
         }
     }
+    // The SBOMs the scan wrote (D81), each a statement, the core target's first.
+    let sboms: Vec<sbom::Scanned> = match scan_at {
+        Some(at) => {
+            let r = usize::try_from(at.index)
+                .ok()
+                .and_then(|i| results.get(at.op).and_then(|outs| outs.get(i)))
+                .ok_or("the SBOM scan has no output")?;
+            sbom::read(r.fs.tree(), &mut exec.sources, limits.bytes)
+                .map_err(|e| format!("failed to build: failed to solve: {e}"))?
+        }
+        None => Vec::new(),
+    };
     // mode=max: each step output's layers, as the build's records name them (D80).
     let wants_max = matches!(provenance_asked, Provenance::Explicit { max: true, .. });
     let chains: Vec<(usize, usize, Vec<Vec<u8>>)> = if wants_max {
@@ -2134,7 +2192,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
     // every source has resolved now.
     let invocation = build_ref()?;
     let mut capture = {
-        let mut materials = provenance::capture_images(&def);
+        let mut materials = provenance::capture_images(&def, scan.as_ref().map(|(_, id)| id.as_slice()));
         for mut list in [
             std::mem::take(&mut git_materials),
             std::mem::take(&mut http_materials),
@@ -2152,7 +2210,15 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
             ssh,
             network,
             max: None,
+            sboms,
         }
+    };
+    // Whether the image's attestation holds its provenance: by default where an image is
+    // stored or pushed (unless BUILDX_NO_DEFAULT_ATTESTATIONS), always where asked for.
+    let provenance_on = match &provenance_asked {
+        Provenance::Default => attests(&|k| std::env::var(k).ok())?,
+        Provenance::Off => false,
+        Provenance::Explicit { .. } => true,
     };
     let (builder_id, reproducible) = match &provenance_asked {
         Provenance::Explicit {
@@ -2192,7 +2258,10 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
             layers: step_layers(&chains, &steps, &base_layers(&bases)),
         });
     }
-    let everywhere_provenance = everywhere.then_some((&capture, &everywhere_facts));
+    // What every output's attestation is made of: an explicit provenance not inline-only,
+    // or an SBOM, beside which a default provenance goes too (D81).
+    let everywhere_provenance =
+        (everywhere || !capture.sboms.is_empty()).then_some((&capture, &everywhere_facts));
     // Each domain's isolation, before anything leaves the build (§9.2).
     if let Some(r) = &target
         && !plan.domains.is_empty()
@@ -2227,6 +2296,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
             plan.epoch,
             &progress,
             everywhere_provenance,
+            everywhere,
         )?;
     }
     let flat = target.map(|r| exec.flat(r));
@@ -2315,7 +2385,10 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
         }
         None => capture.clone(),
     };
-    let everywhere_provenance = everywhere.then_some((&capture, &everywhere_facts));
+    // What every output's attestation is made of: an explicit provenance not inline-only,
+    // or an SBOM, beside which a default provenance goes too (D81).
+    let everywhere_provenance =
+        (everywhere || !capture.sboms.is_empty()).then_some((&capture, &everywhere_facts));
     let epoch = plan.epoch.map(Time::from_unix);
     // From the layers as written: a rewrite changes their DiffIDs.
     let config = export::config(&plan.image, &held, epoch, base_image.as_ref()).map_err(|e| show(&e))?;
@@ -2403,6 +2476,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
                 layers: &layers,
                 descriptor_annotations: &descriptor_annotations,
                 provenance: layout_provenance,
+                provenance_in: multi::active() || everywhere || provenance_on,
             },
             parsed.many("tag"),
             plan.epoch,
@@ -2427,6 +2501,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
                 layers: &layers,
                 descriptor_annotations: &descriptor_annotations,
                 provenance: everywhere_provenance,
+                provenance_in: everywhere || provenance_on,
             },
             &tagged,
         )?;
@@ -2504,12 +2579,8 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
     // Its provenance (D71), as buildx asks BuildKit for it by default where an image is
     // stored or pushed: the statement, the attestation that holds it, and the index of
     // the image and its attestation, which the image's ID then names.
-    let attest = match &provenance_asked {
-        Provenance::Default => attests(&|k| std::env::var(k).ok())?,
-        Provenance::Off => false,
-        Provenance::Explicit { .. } => true,
-    };
-    let attested = if attest {
+    let attest = provenance_on;
+    let attested = if attest || !capture.sboms.is_empty() {
         let image_config: serde_json::Value = serde_json::from_slice(&config).map_err(|e| e.to_string())?;
         let field = |k: &str| {
             image_config
@@ -2530,10 +2601,17 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
             .filter_map(|t| Reference::parse(t).ok())
             .map(|r| (provenance::image_purl(&r, &platform), manifest_digest.to_string()))
             .collect();
-        let statement = provenance::statement(&capture, &facts, &subjects);
-        let statement_digest = sha256(statement.as_bytes());
-        let (att_config, att_manifest) =
-            provenance::attestation(&statement_digest.to_string(), statement.len());
+        let statements = provenance::image_statements(&capture, &facts, &subjects, attest);
+        let digests: Vec<String> = statements
+            .iter()
+            .map(|(st, _)| sha256(st.as_bytes()).to_string())
+            .collect();
+        let listed: Vec<(&str, usize, &str)> = statements
+            .iter()
+            .zip(&digests)
+            .map(|((st, kind), d)| (d.as_str(), st.len(), kind.as_str()))
+            .collect();
+        let (att_config, att_manifest) = provenance::attestation_of(&listed);
         let att_manifest_digest = sha256(att_manifest.as_bytes());
         let index = provenance::index(
             (&manifest_digest.to_string(), manifest.len()),
@@ -2549,12 +2627,9 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
             (&att_manifest_digest.to_string(), att_manifest.len()),
         );
         let index_digest = sha256(index.as_bytes());
-        for blob in [
-            statement.as_bytes(),
-            att_config.as_bytes(),
-            att_manifest.as_bytes(),
-            index.as_bytes(),
-        ] {
+        let mut blobs: Vec<&[u8]> = statements.iter().map(|(st, _)| st.as_bytes()).collect();
+        blobs.extend([att_config.as_bytes(), att_manifest.as_bytes(), index.as_bytes()]);
+        for blob in blobs {
             let digest = sha256(blob);
             store
                 .ingest(&digest, blob.len() as u64, &mut &blob[..])
@@ -2628,6 +2703,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
             layers: &layers,
             descriptor_annotations: &descriptor_annotations,
             provenance: everywhere_provenance,
+            provenance_in: everywhere || provenance_on,
         },
         parsed.many("tag"),
         plan.epoch,
@@ -2973,6 +3049,7 @@ fn write_fs_output(
     build_epoch: Option<i64>,
     progress: &RefCell<Progress>,
     provenance: Option<(&provenance::Capture, &provenance::Run)>,
+    explicit: bool,
 ) -> Result<(), String> {
     let epoch =
         output::epoch(&o.attrs, build_epoch).map_err(|e| format!("failed to build: failed to solve: {e}"))?;
@@ -2988,7 +3065,8 @@ fn write_fs_output(
         let bytes =
             output::local(fs, sources, epoch, dest, mirror).map_err(|e| fail_export(progress, &v, &e))?;
         if let Some((capture, run)) = provenance {
-            output::local_provenance(fs, dest, capture, run).map_err(|e| fail_export(progress, &v, &e))?;
+            output::local_attestations(fs, dest, capture, run, explicit)
+                .map_err(|e| fail_export(progress, &v, &e))?;
         }
         progress
             .borrow()
@@ -3715,8 +3793,10 @@ enum Provenance {
 /// `--attest`, `--provenance` and `--sbom`, as buildx reads them (toBuildOptions,
 /// ParseAttests, ToMap) and BuildKit takes the provenance's attributes
 /// (NewProvenanceCreator): `mode`, `version`, `builder-id`, `reproducible`,
-/// `inline-only`. What shards does not make yet it refuses, named.
-fn provenance_of(parsed: &Parsed) -> Result<Provenance, String> {
+/// `inline-only`; and the SBOM's (attestations.Parse, dockerui): its generator, and every
+/// other attribute a parameter of the scanner's (D81). What shards does not make yet it
+/// refuses, named.
+fn provenance_of(parsed: &Parsed) -> Result<(Provenance, Option<sbom::Asked>), String> {
     let mut asked: Vec<String> = parsed.many("attest").to_vec();
     for kind in ["provenance", "sbom"] {
         let v = parsed.string(kind);
@@ -3726,14 +3806,30 @@ fn provenance_of(parsed: &Parsed) -> Result<Provenance, String> {
     }
     let map = buildflags::attests_map(&buildflags::parse_attests(&asked)?);
     let mut out = Provenance::Default;
+    let mut sbom_asked = None;
     for (kind, value) in map {
         match (kind.as_str(), value) {
             (_, None) if kind == "provenance" => out = Provenance::Off,
             (_, None) => {}
-            ("sbom", Some(_)) => {
-                return Err(
-                    "SBOM attestations (--sbom, --attest type=sbom) are not supported by shards yet".into(),
-                );
+            ("sbom", Some(attrs)) => {
+                let fields = shards_cmdline::go::csv_fields(attrs.as_bytes()).map_err(|e| show(&e))?;
+                let mut generator = sbom::DEFAULT_GENERATOR.to_string();
+                let mut params = BTreeMap::new();
+                for f in fields {
+                    let f = show(&f);
+                    let (k, v) = f.split_once('=').unwrap_or((f.as_str(), ""));
+                    if k == "generator" {
+                        generator = v.to_string();
+                    } else {
+                        params.insert(k.to_string(), v.to_string());
+                    }
+                }
+                let named = Reference::parse(&generator)
+                    .map_err(|e| format!("failed to parse sbom scanner {generator}: {e}"))?;
+                sbom_asked = Some(sbom::Asked {
+                    generator: named.to_string(),
+                    params,
+                });
             }
             ("provenance", Some(attrs)) => {
                 let fields = shards_cmdline::go::csv_fields(attrs.as_bytes()).map_err(|e| show(&e))?;
@@ -3775,7 +3871,7 @@ fn provenance_of(parsed: &Parsed) -> Result<Provenance, String> {
             (other, Some(_)) => return Err(format!("attestation type {other} is not supported by shards")),
         }
     }
-    Ok(out)
+    Ok((out, sbom_asked))
 }
 
 /// Whether an image the build stores or pushes carries its provenance, as buildx asks

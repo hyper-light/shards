@@ -60,7 +60,9 @@ for c in cases:
     if top:
         c["index"] = blobs[top]
     for d, b in blobs.items():
-        if b.startswith('{"_type":"https://in-toto.io/Statement'):
+        if b.startswith('{"_type":"https://in-toto.io/Statement') and '"predicateType":"https://spdx.dev/Document"' in b:
+            c.setdefault("sboms", []).append(b)
+        elif b.startswith('{"_type":"https://in-toto.io/Statement'):
             c["statement"] = b
         elif '"application/vnd.in-toto+json"' in b:
             c["attestation_manifest"] = b

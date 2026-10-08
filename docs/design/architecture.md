@@ -3210,6 +3210,72 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode
 waits on the user.
 
+### D81. SBOM attestations: the scanner run over the result, as BuildKit runs it
+
+`--sbom` (and `--attest type=sbom`) attests the image's SBOMs as BuildKit v0.28.1 does
+(frontend/attestations/sbom, exporter/attestation).
+
+**What is asked for.**
+- The generator is `docker/buildkit-syft-scanner:stable-1` unless named
+  (`generator=`), normalized as `ParseNormalizedNamed` and `TagNameOnly` normalize it.
+- Every other attribute is a parameter the scanner gets as `BUILDKIT_SCAN_<KEY>`. That
+  includes `type`, since buildx sends `type=sbom` in the attribute and dockerui passes it
+  on (measured: Docker's scanner sees `BUILDKIT_SCAN_type=sbom`).
+
+**What it scans.** The plan says what the scanner is given beside the target
+(`SBOMTargets`): the build context, where the target's `BUILDKIT_SBOM_SCAN_CONTEXT`
+says so, and each stage the target reaches whose `BUILDKIT_SBOM_SCAN_STAGE` names it.
+Each stage's own ARG overrides the global one, a boolean or a list of stage names, as
+`isEnabledForStage` reads it.
+
+**The scan.**
+- It is a step of the build's own definition, after the target's ops; the root stays the
+  target's, so the image and mode=max's steps are unchanged.
+- It runs the scanner's entrypoint and command, with its environment and working
+  directory, in a builder microVM like any RUN. The scanner is resolved for the
+  builder's platform, as BuildKit resolves it with no platform.
+- The result is mounted read-only at `/run/src/core/sbom` and each extra at
+  `/run/src/extras/sbom-<name>`, with a tmpfs at `/tmp`.
+- What it writes in `/run/out` is the step's second output: the output of a writable
+  bind mount, which shards' builder now returns as LLB defines it. The guest sends each
+  output mount's changes after the root's, and keeps each as a layer of its own, so a
+  later step can mount it.
+
+**The statements.** Each file the scan wrote is read as one in-toto statement of an
+SPDX document (`unbundle`):
+- the predicate as Go writes a raw message: compact, with `<`, `>`, `&` and
+  U+2028/2029 escaped;
+- the statement's own subjects, else the image's;
+- the core target's first, then the rest by file name.
+
+They go in the image's attestation before its provenance, each layer annotated with its
+predicate type, and the scanner is among the provenance's materials with no platform.
+
+**Where they go.**
+- An image that is stored or pushed holds them.
+- An OCI layout holds them together with a default provenance: inline-only attestations
+  go where another makes the index (writer.go).
+- A local output holds each as its own file (`sbom.spdx.json`), indented, naming the
+  output's files, with no inline-only provenance.
+
+Better than Docker: the scanner runs in a microVM, as every step does, so a scanner image
+is held to the build's isolation. A scan's output larger than the build's byte limit is
+refused rather than held.
+
+Tested:
+- `plans_are_buildkits` holds the scan targets to BuildKit's: the context and a stage,
+  and a global ARG naming a stage. Mutation-checked: a list of stage names read as false
+  fails.
+- `provenance_is_buildkits` holds two SBOM builds Docker made with its real scanner
+  (`sbom-base`; `sbom-extras`, with a stage and the context) to their statements byte
+  for byte, the attestation manifest and its config, and a local output's
+  `sbom.spdx.json`.
+- `sboms_are_scanned_as_buildkit_scans_them` builds with a scanner of the test guest's
+  (`sbomscan`, the protocol's), over a stage and the context. It checks the layers'
+  order and kinds, each target's files, the parameters (`mode`, `type`), Go's escaping,
+  the image as the subject, the scanner as a material, and a local output's files.
+  Mutation-checked: without the core first, and without the escaping, it fails.
+
 ### D80. Provenance `mode=max`: the LLB definition, its source map, each step's layers
 
 `--provenance=mode=max` (and `--attest type=provenance,mode=max`) is made as BuildKit
@@ -3611,8 +3677,8 @@ one attests a stored or pushed image with `builder-id` as the builder's ID and
 `mode`, `version` or `reproducible` refused in BuildKit's words.
 
 Refused, named, until each is made and held to BuildKit's (no build is given less than it
-asked for in silence): `version=v0.2`, SBOM attestations (a scanner image run over the image), other
-types, and an explicit provenance in a docker or tar output (not recorded yet).
+asked for in silence): `version=v0.2`, other types, and an explicit provenance in a docker or
+tar output (not recorded yet). SBOMs are D81.
 
 An explicit provenance (not `inline-only`) goes in every output, as BuildKit puts it
 (measured: `oci-named`, `local-output`): an OCI layout, tar or directory, holds the

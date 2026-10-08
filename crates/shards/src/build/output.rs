@@ -261,6 +261,9 @@ pub struct Made<'a> {
     pub descriptor_annotations: &'a BTreeMap<String, String>,
     /// The provenance its outputs carry, where one is asked for in every output (D72).
     pub provenance: Option<(&'a super::provenance::Capture, &'a super::provenance::Run)>,
+    /// Whether its attestation holds the provenance beside its SBOMs, as a default one
+    /// (`inline-only`) is held where another attestation makes the index (D81).
+    pub provenance_in: bool,
 }
 
 /// An image's attestation in an OCI layout (D72): its documents, by digest, and the index
@@ -307,9 +310,20 @@ fn attested(made: &Made<'_>, names: &[Reference]) -> Result<Option<Attested>, St
             )
         })
         .collect();
-    let statement = provenance::statement(capture, run, &subjects).into_bytes();
-    let statement_digest = super::sha256(&statement);
-    let (config, manifest) = provenance::attestation(&statement_digest.to_string(), statement.len());
+    let statements = provenance::image_statements(capture, run, &subjects, made.provenance_in);
+    if statements.is_empty() {
+        return Ok(None);
+    }
+    let digests: Vec<String> = statements
+        .iter()
+        .map(|(s, _)| super::sha256(s.as_bytes()).to_string())
+        .collect();
+    let listed: Vec<(&str, usize, &str)> = statements
+        .iter()
+        .zip(&digests)
+        .map(|((s, kind), d)| (d.as_str(), s.len(), kind.as_str()))
+        .collect();
+    let (config, manifest) = provenance::attestation_of(&listed);
     let manifest_digest = super::sha256(manifest.as_bytes());
     let index = provenance::index(
         (&made.manifest_digest.to_string(), made.manifest.len()),
@@ -319,13 +333,15 @@ fn attested(made: &Made<'_>, names: &[Reference]) -> Result<Option<Attested>, St
     .into_bytes();
     let index_digest = super::sha256(&index);
     let index_len = index.len();
+    let mut blobs: Vec<(Digest, Vec<u8>)> = statements
+        .into_iter()
+        .map(|(s, _)| (super::sha256(s.as_bytes()), s.into_bytes()))
+        .collect();
+    blobs.push((super::sha256(config.as_bytes()), config.into_bytes()));
+    blobs.push((manifest_digest, manifest.into_bytes()));
+    blobs.push((index_digest.clone(), index));
     Ok(Some(Attested {
-        blobs: vec![
-            (statement_digest, statement),
-            (super::sha256(config.as_bytes()), config.into_bytes()),
-            (manifest_digest, manifest.into_bytes()),
-            (index_digest.clone(), index),
-        ],
+        blobs,
         index: (index_digest, index_len),
     }))
 }
@@ -336,14 +352,20 @@ pub fn attested_index(made: &Made<'_>, names: &[Reference]) -> Result<Option<(Di
     Ok(attested(made, names)?.map(|a| a.index))
 }
 
-/// A local output's `provenance.json` (D72): the statement, indented, naming each regular
-/// file the output holds by its path and SHA-256, as BuildKit's local exporter names them.
-pub fn local_provenance(
+/// A local output's attestations: each SBOM at its file's name in the scan (D81), and
+/// `provenance.json` where `provenance` (D72); each statement indented, naming each
+/// regular file the output holds by its path and SHA-256, as BuildKit's local exporter
+/// names them.
+pub fn local_attestations(
     fs: &Fs,
     dest: &Path,
     capture: &super::provenance::Capture,
     run: &super::provenance::Run,
+    provenance: bool,
 ) -> Result<(), String> {
+    if capture.sboms.is_empty() && !provenance {
+        return Ok(());
+    }
     use sha2::Digest as _;
     let mut subjects = Vec::new();
     let mut seen = std::collections::HashSet::new();
@@ -365,6 +387,16 @@ pub fn local_provenance(
         }
         Ok(())
     })?;
+    for s in &capture.sboms {
+        let text = shards_dockerfile::json_indent(super::sbom::intoto(s, &subjects).as_bytes());
+        let name = Path::new(&s.path)
+            .file_name()
+            .ok_or_else(|| format!("{}: no file name", s.path))?;
+        std::fs::write(dest.join(name), text).map_err(|e| format!("{}: {e}", s.path))?;
+    }
+    if !provenance {
+        return Ok(());
+    }
     let text = super::provenance::statement_json(capture, run, &subjects).indented(0);
     std::fs::write(dest.join("provenance.json"), text).map_err(|e| format!("provenance.json: {e}"))
 }

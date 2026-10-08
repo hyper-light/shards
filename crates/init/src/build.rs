@@ -341,6 +341,13 @@ impl Builder {
             let conn = &self.conn;
             send_upper(&upper, &mut |chunk| send(conn, kind::CHANGES, chunk))?;
             std::fs::rename(&upper, Path::new(LAYERS).join(layer_name(step.upper)))?;
+            // Each output mount's changes, in order, each kept as its layer (D81).
+            for &(i, layer) in &step.outputs {
+                let up = work.join(format!("m{i}.upper"));
+                send_upper(&up, &mut |chunk| send(conn, kind::MOUNT_CHANGES, chunk))?;
+                send(conn, kind::MOUNT_END, &[])?;
+                std::fs::rename(&up, Path::new(LAYERS).join(layer_name(layer)))?;
+            }
         }
         let _ = std::fs::remove_dir_all(&work);
         Ok(())

@@ -772,6 +772,36 @@ impl Graph {
         }
         m.def
     }
+
+    /// [`Graph::marshal`] of `state`, and after its operations those `also` needs, which
+    /// the build runs beside it (an SBOM scan of its result, D81): its root is `state`'s,
+    /// and each of `also`'s outputs is where it is in the definition.
+    pub fn marshal_with(
+        &self,
+        state: &State,
+        also: &[&State],
+        platform: &Platform,
+    ) -> (Definition, Vec<Option<Input>>) {
+        let mut m = Marshal {
+            graph: self,
+            platform,
+            def: Definition::default(),
+            by_content: HashMap::new(),
+            of_vertex: HashMap::new(),
+        };
+        if let Some(out) = state.output {
+            m.visit(out.vertex);
+            m.def.root = m.input(out);
+        }
+        let mut found = Vec::with_capacity(also.len());
+        for s in also {
+            found.push(s.output.and_then(|out| {
+                m.visit(out.vertex);
+                m.input(out)
+            }));
+        }
+        (m.def, found)
+    }
 }
 
 struct Marshal<'g> {

@@ -1333,6 +1333,170 @@ fn call_answers_the_frontends_subrequests() {
 /// as a package URL with the digest it resolved to, and leaves out the build arguments
 /// (mode=min), which the metadata file's provenance keeps with the secrets mounted; with
 /// BUILDX_NO_DEFAULT_ATTESTATIONS, the ID is the manifest's.
+/// `--sbom` runs the scanner it names over the build's result as BuildKit runs one (D81):
+/// the image's attestation holds a statement of each target it wrote, the result's first,
+/// then the context's and each stage's that asked to be scanned, then the provenance; each
+/// names the image, its predicate as the scanner wrote it (Go's escaping); the scanner is
+/// given its parameters, and is among the provenance's materials. A local output holds the
+/// SBOM beside its files, and no provenance (inline-only).
+#[test]
+fn sboms_are_scanned_as_buildkit_scans_them() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let (port, _repos) = common::writable_registry();
+    let home = TempDir::new("build-sbom-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    // The scanner: the test guest's, as an image of its own.
+    let scanner_ctx = context(
+        "build-sbom-scanner",
+        "FROM scratch\nCOPY testguest /bin/testguest\nENTRYPOINT [\"/bin/testguest\", \"sbomscan\"]\n",
+    );
+    std::fs::copy(common::test_guest(), scanner_ctx.join("testguest")).unwrap();
+    let scanner = format!("127.0.0.1:{port}/test/scanner:1");
+    let made = shards(&["build", "-t", &scanner, scanner_ctx.to_str().unwrap()]);
+    assert_eq!(made.status, Some(0), "{}", made.stderr);
+    let pushed = shards(&["push", &scanner]);
+    assert_eq!(pushed.status, Some(0), "{}", pushed.stderr);
+    let ctx = context(
+        "build-sbom-ctx",
+        &format!(
+            "FROM {image} AS deps\nARG BUILDKIT_SBOM_SCAN_STAGE=true\nCOPY a /from-deps\n\
+             FROM {image}\nARG BUILDKIT_SBOM_SCAN_CONTEXT=true\nCOPY --from=deps /from-deps /d\nCOPY a /a\n"
+        ),
+    );
+    std::fs::write(ctx.join("a"), "a\n").unwrap();
+    let sbom_flag = format!("--sbom=generator={scanner},mode=fast");
+    let meta = home.join("meta.json");
+    let built = shards(&[
+        "build",
+        "-t",
+        "sbom:1",
+        &sbom_flag,
+        "--metadata-file",
+        meta.to_str().unwrap(),
+        ctx.to_str().unwrap(),
+    ]);
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    let md: serde_json::Value = serde_json::from_slice(&std::fs::read(&meta).unwrap()).unwrap();
+    let raw = |d: &str| -> Vec<u8> {
+        std::fs::read(
+            home.join("images/blobs/sha256")
+                .join(d.trim_start_matches("sha256:")),
+        )
+        .unwrap()
+    };
+    let blob = |d: &str| -> serde_json::Value { serde_json::from_slice(&raw(d)).unwrap() };
+    let index = blob(md["containerimage.digest"].as_str().unwrap());
+    let manifest_digest = index["manifests"][0]["digest"].as_str().unwrap().to_string();
+    let attestation = blob(index["manifests"][1]["digest"].as_str().unwrap());
+    let layers = attestation["layers"].as_array().unwrap();
+    let kinds: Vec<&str> = layers
+        .iter()
+        .map(|l| l["annotations"]["in-toto.io/predicate-type"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            "https://spdx.dev/Document",
+            "https://spdx.dev/Document",
+            "https://spdx.dev/Document",
+            "https://slsa.dev/provenance/v1"
+        ]
+    );
+    let statements: Vec<serde_json::Value> = layers
+        .iter()
+        .map(|l| blob(l["digest"].as_str().unwrap()))
+        .collect();
+    let names: Vec<&str> = statements[..3]
+        .iter()
+        .map(|s| s["predicate"]["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["sbom", "sbom-context", "sbom-deps"]);
+    let files = |i: usize| -> Vec<String> {
+        statements[i]["predicate"]["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| f.as_str().unwrap().to_string())
+            .collect()
+    };
+    // The result, with what it copied; the context as the build read it; the stage.
+    let result = files(0);
+    assert!(
+        result.contains(&"a".to_string()) && result.contains(&"d".to_string()),
+        "{result:?}"
+    );
+    assert!(result.contains(&"bin/testguest".to_string()), "{result:?}");
+    assert_eq!(files(1), ["a"]);
+    assert!(files(2).contains(&"from-deps".to_string()), "{:?}", files(2));
+    // Its parameters: the protocol's, and each attribute but the generator, `type` too, as
+    // BuildKit passes them.
+    let params = &statements[0]["predicate"]["params"];
+    assert_eq!(params["BUILDKIT_SCAN_SOURCE"], "/run/src/core/sbom");
+    assert_eq!(params["BUILDKIT_SCAN_DESTINATION"], "/run/out/");
+    assert_eq!(params["BUILDKIT_SCAN_SOURCE_EXTRAS"], "/run/src/extras/");
+    assert_eq!(params["BUILDKIT_SCAN_mode"], "fast");
+    assert_eq!(params["BUILDKIT_SCAN_type"], "sbom");
+    // Each names the image; its predicate as Go writes it, `<`, `>` and `&` escaped.
+    let arch = match std::env::consts::ARCH {
+        "aarch64" => "arm64",
+        other => other,
+    };
+    assert_eq!(
+        statements[0]["subject"][0]["name"],
+        format!("pkg:docker/sbom@1?platform=linux%2F{arch}").as_str()
+    );
+    assert_eq!(
+        format!(
+            "sha256:{}",
+            statements[0]["subject"][0]["digest"]["sha256"].as_str().unwrap()
+        ),
+        manifest_digest
+    );
+    let text = String::from_utf8(raw(layers[0]["digest"].as_str().unwrap())).unwrap();
+    assert!(text.contains(r#""note":"a\u003cb \u0026 c\u003ed""#), "{text}");
+    // The scanner among the provenance's materials, with no platform, as BuildKit
+    // resolves it.
+    let deps: Vec<&str> = statements[3]["predicate"]["buildDefinition"]["resolvedDependencies"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["uri"].as_str().unwrap())
+        .collect();
+    assert!(
+        deps.contains(&format!("pkg:docker/127.0.0.1%3A{port}/test/scanner@1").as_str()),
+        "{deps:?}"
+    );
+    // A local output: the SBOM beside the files, naming them; no provenance.
+    let out = home.join("local-out");
+    let local = shards(&[
+        "build",
+        &sbom_flag,
+        "-o",
+        &format!("type=local,dest={}", out.display()),
+        ctx.to_str().unwrap(),
+    ]);
+    assert_eq!(local.status, Some(0), "{}", local.stderr);
+    assert!(!out.join("provenance.json").exists());
+    let sbom: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(out.join("sbom.spdx.json")).unwrap()).unwrap();
+    let named: Vec<&str> = sbom["subject"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["name"].as_str().unwrap())
+        .collect();
+    assert!(named.contains(&"a") && named.contains(&"d"), "{named:?}");
+    assert!(out.join("sbom-context.spdx.json").exists());
+}
+
 /// `--provenance=mode=max` records what BuildKit's does (D80): the request whole (its build
 /// arguments too), the LLB definition as steps with each op's digest, where in the
 /// Dockerfile each step comes from, the Dockerfile itself, and the layers each step's output
@@ -1587,23 +1751,21 @@ fn builds_attest_their_provenance_as_docker_does() {
         "{}",
         off.stderr
     );
-    for (flags, said) in [
-        (
-            vec!["--sbom=true"],
-            "SBOM attestations (--sbom, --attest type=sbom) are not supported by shards yet",
-        ),
-        (
-            vec!["--provenance=true", "-o", "type=docker,dest=out.tar"],
-            "a provenance attestation in a docker output is not supported by shards yet",
-        ),
-    ] {
-        let mut args = vec!["build"];
-        args.extend(flags);
-        args.push(ctx.to_str().unwrap());
-        let refused = shards(&args);
-        assert_ne!(refused.status, Some(0));
-        assert!(refused.stderr.contains(said), "{}", refused.stderr);
-    }
+    let refused = shards(&[
+        "build",
+        "--provenance=true",
+        "-o",
+        "type=docker,dest=out.tar",
+        ctx.to_str().unwrap(),
+    ]);
+    assert_ne!(refused.status, Some(0));
+    assert!(
+        refused
+            .stderr
+            .contains("a provenance attestation in a docker output is not supported by shards yet"),
+        "{}",
+        refused.stderr
+    );
     // Asked for in every output: an OCI archive names the index, its statement the name;
     // a local output's provenance.json names its files.
     let layout_tar = home.join("prov.tar");

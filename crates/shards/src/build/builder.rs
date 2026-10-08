@@ -75,6 +75,9 @@ pub fn origin_id() -> u64 {
     NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
+/// A step's output mounts' changes: each the layer it became and its changes' stream.
+pub type Outputs = Vec<(u32, Vec<u8>)>;
+
 /// How a step's process ended.
 #[derive(Debug)]
 #[cfg_attr(not(unix), allow(dead_code))]
@@ -126,7 +129,8 @@ impl Builder {
         _: &mut dyn FnMut(u8, &[u8]),
         _: &mut Applier<'_>,
         _: &super::Agents,
-    ) -> Result<(Ended, u32), String> {
+        _: u64,
+    ) -> Result<(Ended, u32, Outputs), String> {
         Err("no builder".into())
     }
 }
@@ -445,14 +449,21 @@ impl Builder {
     /// Runs `step` (its `upper` set here), passing its output to `out` as it comes; once
     /// it succeeds, puts what it changed into `applier`. How it ended, and the layer its
     /// changes are in the guest.
+    /// Runs `step`, its root's changes to `applier` and each output mount's (`outputs`'
+    /// indexes, at most `max` bytes each) returned with the layer it became.
     pub fn run(
         &mut self,
         mut step: Step,
         out: &mut dyn FnMut(u8, &[u8]),
         applier: &mut Applier<'_>,
         agents: &super::Agents,
-    ) -> Result<(Ended, u32), String> {
+        max: u64,
+    ) -> Result<(Ended, u32, Outputs), String> {
         step.upper = self.layer_id();
+        for o in &mut step.outputs {
+            o.1 = self.layer_id();
+        }
+        let layers: Vec<u32> = step.outputs.iter().map(|o| o.1).collect();
         self.frame(kind::STEP, &step.encode())?;
         // The SSH agents this step may reach: each mount's token and the agent's id.
         let grants: Vec<([u8; 16], Vec<u8>)> = step
@@ -476,7 +487,7 @@ impl Builder {
             let _ = std::thread::Builder::new()
                 .name("ssh agents".into())
                 .spawn_scoped(scope, move || accept_agents(scope, ssh, grants, agents, woken));
-            let r = self.frames(step.upper, out, applier);
+            let r = self.frames(step.upper, out, applier, &layers, max);
             drop(wake);
             r
         })
@@ -488,7 +499,9 @@ impl Builder {
         upper: u32,
         out: &mut dyn FnMut(u8, &[u8]),
         applier: &mut Applier<'_>,
-    ) -> Result<(Ended, u32), String> {
+        layers: &[u32],
+        max: u64,
+    ) -> Result<(Ended, u32, Outputs), String> {
         let mut buf = Vec::new();
         let mut not_run: Option<String> = None;
         let status = loop {
@@ -506,7 +519,7 @@ impl Builder {
             }
         };
         if let Some(why) = not_run {
-            return Ok((Ended::NotRun(why), upper));
+            return Ok((Ended::NotRun(why), upper, Vec::new()));
         }
         if status == 0 {
             loop {
@@ -519,7 +532,27 @@ impl Builder {
                 }
             }
         }
-        Ok((Ended::Status(status), upper))
+        // Each output mount's changes, whole, in order.
+        let mut outputs = Vec::new();
+        if status == 0 {
+            for &layer in layers {
+                let mut stream = Vec::new();
+                loop {
+                    match self.read_frame(&mut buf)? {
+                        kind::MOUNT_CHANGES => {
+                            if (stream.len() + buf.len()) as u64 > max {
+                                return Err(format!("an output mount's changes past {max} bytes"));
+                            }
+                            stream.extend_from_slice(&buf);
+                        }
+                        kind::MOUNT_END => break,
+                        other => return Err(format!("the builder sent frame {other} for a mount's changes")),
+                    }
+                }
+                outputs.push((layer, stream));
+            }
+        }
+        Ok((Ended::Status(status), upper, outputs))
     }
 }
 

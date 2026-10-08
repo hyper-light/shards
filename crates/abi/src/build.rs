@@ -33,6 +33,11 @@ pub mod kind {
     pub const CHANGES: u8 = 34;
     /// Guest to host: the layer whose stream just ended is written.
     pub const LAYERED: u8 = 35;
+    /// Guest to host, after a step's `CHANGES`: the next bytes of what it changed in its
+    /// next output mount (`Step::outputs`, in order), as a stream that `MOUNT_END` ends.
+    pub const MOUNT_CHANGES: u8 = 36;
+    /// Guest to host: the output mount's changes are all sent.
+    pub const MOUNT_END: u8 = 37;
 }
 
 /// A tree: layers stacked over a base image, the last layer on top.
@@ -127,6 +132,10 @@ pub struct Step {
     /// Its limits, as cgroup v2 files and what each holds, in the order written; where
     /// any, it runs in a cgroup of its own.
     pub cgroup: Vec<(Vec<u8>, Vec<u8>)>,
+    /// The writable tree mounts whose changes are outputs of the step's, as LLB's a bind
+    /// mount's can be (an SBOM scan's `/run/out`, D81): each its index in `mounts` and the
+    /// layer its changes become.
+    pub outputs: Vec<(u32, u32)>,
 }
 
 fn put_u32(out: &mut Vec<u8>, n: u32) {
@@ -251,6 +260,11 @@ impl Step {
             put_bytes(&mut out, file);
             put_bytes(&mut out, value);
         }
+        put_len(&mut out, self.outputs.len());
+        for &(mount, layer) in &self.outputs {
+            put_u32(&mut out, mount);
+            put_u32(&mut out, layer);
+        }
         out
     }
 
@@ -330,6 +344,11 @@ impl Step {
         for _ in 0..n {
             cgroup.push((r.bytes()?, r.bytes()?));
         }
+        let n = r.count(8)?;
+        let mut outputs = Vec::with_capacity(n);
+        for _ in 0..n {
+            outputs.push((r.u32()?, r.u32()?));
+        }
         r.0.is_empty().then_some(Step {
             root,
             upper,
@@ -348,6 +367,7 @@ impl Step {
             rlimits,
             seccomp,
             cgroup,
+            outputs,
         })
     }
 }
@@ -488,6 +508,7 @@ mod tests {
             rlimits: vec![(7, 1024, 4096)],
             seccomp: vec![0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 255, 127],
             cgroup: vec![(b"memory.max".to_vec(), b"67108864".to_vec())],
+            outputs: vec![(1, 9)],
         };
         let bytes = step.encode();
         assert_eq!(Step::decode(&bytes), Some(step));

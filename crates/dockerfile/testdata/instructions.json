@@ -21325,6 +21325,418 @@
   "warnings": null
  },
  {
+  "file": "corpus/plan/sbom-global.Dockerfile",
+  "meta_args": [
+   {
+    "args": [
+     [
+      "\"BUILDKIT_SBOM_SCAN_STAGE\"",
+      "\"lib\"",
+      "\"\""
+     ]
+    ],
+    "code": "\"ARG BUILDKIT_SBOM_SCAN_STAGE=lib\"",
+    "comments": [],
+    "kind": "*instructions.ArgCommand",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"ARG\""
+   }
+  ],
+  "stages": [
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "code": "\"RUN echo lib\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        3,
+        3
+       ]
+      ],
+      "mounts": null,
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"echo lib\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      2,
+      2
+     ]
+    ],
+    "name": "\"lib\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine AS lib\""
+   },
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "code": "\"RUN echo skipped\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        5,
+        5
+       ]
+      ],
+      "mounts": null,
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"echo skipped\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      4,
+      4
+     ]
+    ],
+    "name": "\"skipped\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine AS skipped\""
+   },
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "args": [
+       [
+        "\"BUILDKIT_SBOM_SCAN_STAGE\"",
+        null,
+        "\"\""
+       ]
+      ],
+      "code": "\"ARG BUILDKIT_SBOM_SCAN_STAGE\"",
+      "comments": [],
+      "kind": "*instructions.ArgCommand",
+      "location": [
+       [
+        7,
+        7
+       ]
+      ],
+      "name": "\"ARG\""
+     },
+     {
+      "chmod": "\"\"",
+      "chown": "\"\"",
+      "code": "\"COPY --from=lib / /l\"",
+      "comments": [],
+      "exclude": [],
+      "from": "\"lib\"",
+      "kind": "*instructions.CopyCommand",
+      "link": false,
+      "location": [
+       [
+        8,
+        8
+       ]
+      ],
+      "name": "\"COPY\"",
+      "parents": false,
+      "sources": {
+       "contents": null,
+       "dest": "\"/l\"",
+       "paths": [
+        "\"/\""
+       ]
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      6,
+      6
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine\""
+   }
+  ],
+  "warnings": null
+ },
+ {
+  "file": "corpus/plan/sbom-scan.Dockerfile",
+  "meta_args": null,
+  "stages": [
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "args": [
+       [
+        "\"BUILDKIT_SBOM_SCAN_STAGE\"",
+        "\"true\"",
+        "\"\""
+       ]
+      ],
+      "code": "\"ARG BUILDKIT_SBOM_SCAN_STAGE=true\"",
+      "comments": [],
+      "kind": "*instructions.ArgCommand",
+      "location": [
+       [
+        2,
+        2
+       ]
+      ],
+      "name": "\"ARG\""
+     },
+     {
+      "code": "\"RUN echo deps\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        3,
+        3
+       ]
+      ],
+      "mounts": null,
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"echo deps\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      1,
+      1
+     ]
+    ],
+    "name": "\"deps\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine AS deps\""
+   },
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "code": "\"RUN echo other\"",
+      "comments": [],
+      "devices": null,
+      "flags_used": [],
+      "kind": "*instructions.RunCommand",
+      "location": [
+       [
+        5,
+        5
+       ]
+      ],
+      "mounts": null,
+      "name": "\"RUN\"",
+      "network": "\"default\"",
+      "security": "\"sandbox\"",
+      "shell": {
+       "cmd_line": [
+        "\"echo other\""
+       ],
+       "cmd_line_nil": false,
+       "files": null,
+       "prepend_shell": true
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      4,
+      4
+     ]
+    ],
+    "name": "\"other\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine AS other\""
+   },
+   {
+    "base_name": "\"alpine\"",
+    "commands": [
+     {
+      "args": [
+       [
+        "\"BUILDKIT_SBOM_SCAN_CONTEXT\"",
+        "\"true\"",
+        "\"\""
+       ]
+      ],
+      "code": "\"ARG BUILDKIT_SBOM_SCAN_CONTEXT=true\"",
+      "comments": [],
+      "kind": "*instructions.ArgCommand",
+      "location": [
+       [
+        7,
+        7
+       ]
+      ],
+      "name": "\"ARG\""
+     },
+     {
+      "args": [
+       [
+        "\"BUILDKIT_SBOM_SCAN_STAGE\"",
+        "\"other\"",
+        "\"\""
+       ]
+      ],
+      "code": "\"ARG BUILDKIT_SBOM_SCAN_STAGE=other\"",
+      "comments": [],
+      "kind": "*instructions.ArgCommand",
+      "location": [
+       [
+        8,
+        8
+       ]
+      ],
+      "name": "\"ARG\""
+     },
+     {
+      "chmod": "\"\"",
+      "chown": "\"\"",
+      "code": "\"COPY --from=deps / /d\"",
+      "comments": [],
+      "exclude": [],
+      "from": "\"deps\"",
+      "kind": "*instructions.CopyCommand",
+      "link": false,
+      "location": [
+       [
+        9,
+        9
+       ]
+      ],
+      "name": "\"COPY\"",
+      "parents": false,
+      "sources": {
+       "contents": null,
+       "dest": "\"/d\"",
+       "paths": [
+        "\"/\""
+       ]
+      }
+     },
+     {
+      "chmod": "\"\"",
+      "chown": "\"\"",
+      "code": "\"COPY --from=other / /o\"",
+      "comments": [],
+      "exclude": [],
+      "from": "\"other\"",
+      "kind": "*instructions.CopyCommand",
+      "link": false,
+      "location": [
+       [
+        10,
+        10
+       ]
+      ],
+      "name": "\"COPY\"",
+      "parents": false,
+      "sources": {
+       "contents": null,
+       "dest": "\"/o\"",
+       "paths": [
+        "\"/\""
+       ]
+      }
+     },
+     {
+      "chmod": "\"\"",
+      "chown": "\"\"",
+      "code": "\"COPY a /a\"",
+      "comments": [],
+      "exclude": [],
+      "from": "\"\"",
+      "kind": "*instructions.CopyCommand",
+      "link": false,
+      "location": [
+       [
+        11,
+        11
+       ]
+      ],
+      "name": "\"COPY\"",
+      "parents": false,
+      "sources": {
+       "contents": null,
+       "dest": "\"/a\"",
+       "paths": [
+        "\"a\""
+       ]
+      }
+     }
+    ],
+    "comments": [],
+    "doc_comment": "\"\"",
+    "location": [
+     [
+      6,
+      6
+     ]
+    ],
+    "name": "\"\"",
+    "orig_cmd": "\"FROM\"",
+    "platform": "\"\"",
+    "source_code": "\"FROM alpine\""
+   }
+  ],
+  "warnings": null
+ },
+ {
   "file": "corpus/plan/scratch-meta.Dockerfile",
   "meta_args": null,
   "stages": [

@@ -627,6 +627,19 @@ func planFile(root, rel string, images resolver) map[string]any {
 		}
 		return out
 	}
+	// What an SBOM scanner is given beside the target (D81): each extra by name, as the
+	// normalized digest of its definition's root.
+	if res.SBOM != nil && len(res.SBOM.Extras) > 0 {
+		extras := map[string]any{}
+		for name, st := range res.SBOM.Extras {
+			d, err := st.Marshal(context.Background())
+			if err != nil {
+				panic(err)
+			}
+			extras[name] = normalizedRoot(d.Def)
+		}
+		out["sbom_extras"] = extras
+	}
 	img, err := json.Marshal(res.Image)
 	if err != nil {
 		panic(err)
@@ -1183,4 +1196,32 @@ func main() {
 	if err := os.WriteFile(filepath.Join(testdata, "../src/tables.rs"), []byte(tables), 0o644); err != nil {
 		panic(err)
 	}
+}
+
+// normalizedRoot is the digest of a definition's root as the plan's ops are recorded (a
+// local source's unique ID as "*", each input named by its own op's normalized digest).
+func normalizedRoot(defs [][]byte) string {
+	norm := map[digest.Digest]digest.Digest{}
+	var last digest.Digest
+	for _, dt := range defs {
+		var op pb.Op
+		if err := op.UnmarshalVT(dt); err != nil {
+			panic(err)
+		}
+		if src := op.GetSource(); src != nil {
+			if _, ok := src.Attrs["local.unique"]; ok {
+				src.Attrs["local.unique"] = "*"
+			}
+		}
+		for _, in := range op.Inputs {
+			in.Digest = string(norm[digest.Digest(in.Digest)])
+		}
+		b, err := proto.MarshalOptions{Deterministic: true}.Marshal(&op)
+		if err != nil {
+			panic(err)
+		}
+		last = digest.FromBytes(dt)
+		norm[last] = digest.FromBytes(b)
+	}
+	return string(norm[last])
 }

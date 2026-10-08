@@ -119,6 +119,63 @@ enum Open {
 /// The message of Go's `SyntaxError` for running out of input.
 const END: &[u8] = b"unexpected end of JSON input";
 
+/// encoding/json's Indent of compact `text` (prefix none, indent two spaces), as
+/// `MarshalIndent` writes a value: each member and element on a line of its own, `": "`
+/// after a key, an empty object or array as it is.
+pub fn indent(text: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(text.len() * 2);
+    let (mut depth, mut in_string, mut escaped, mut need_indent) = (0usize, false, false, false);
+    let newline = |out: &mut Vec<u8>, depth: usize| {
+        out.push(b'\n');
+        for _ in 0..depth {
+            out.extend_from_slice(b"  ");
+        }
+    };
+    for &c in text {
+        if in_string {
+            out.push(c);
+            match c {
+                _ if escaped => escaped = false,
+                b'\\' => escaped = true,
+                b'"' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+        if need_indent && c != b']' && c != b'}' {
+            need_indent = false;
+            depth += 1;
+            newline(&mut out, depth);
+        }
+        match c {
+            b'"' => {
+                in_string = true;
+                out.push(c);
+            }
+            b'{' | b'[' => {
+                need_indent = true;
+                out.push(c);
+            }
+            b',' => {
+                out.push(c);
+                newline(&mut out, depth);
+            }
+            b':' => out.extend_from_slice(b": "),
+            b'}' | b']' => {
+                if need_indent {
+                    need_indent = false;
+                } else {
+                    depth = depth.saturating_sub(1);
+                    newline(&mut out, depth);
+                }
+                out.push(c);
+            }
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
 /// encoding/json's Compact: `text`, one JSON value as Go's scanner reads one, with the
 /// whitespace between its tokens taken out and nothing else changed; else the scanner's
 /// message for what it refuses. docker/cli sends a seccomp profile's file so.

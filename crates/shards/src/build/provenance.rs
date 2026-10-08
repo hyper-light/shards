@@ -114,6 +114,8 @@ pub struct Capture {
     pub network: bool,
     /// `mode=max`'s records, where it was asked for.
     pub max: Option<Max>,
+    /// The SBOMs the build's scanner wrote (D81), the core target's first.
+    pub sboms: Vec<super::sbom::Scanned>,
 }
 
 /// The run's own facts: its invocation's ID (the build's reference), when it started and
@@ -266,7 +268,10 @@ pub fn capture_mounts(def: &shards_dockerfile::llb::Definition) -> Mounts {
 /// The base images the build read (ImageIdentifier.Capture): each source's reference,
 /// its pin (the digest it resolved to) dropped where it has a tag, its platform; each
 /// once, by reference.
-pub fn capture_images(def: &shards_dockerfile::llb::Definition) -> Vec<Material> {
+pub fn capture_images(
+    def: &shards_dockerfile::llb::Definition,
+    unplatformed: Option<&[u8]>,
+) -> Vec<Material> {
     use shards_dockerfile::llb::OpKind;
     let mut out: Vec<(String, Material)> = Vec::new();
     for op in &def.ops {
@@ -286,9 +291,11 @@ pub fn capture_images(def: &shards_dockerfile::llb::Definition) -> Vec<Material>
         if reference.tag.is_some() {
             reference.digest = None;
         }
+        // An SBOM's scanner, resolved with no platform (`CreateSBOMScanner`), says none.
         let platform = op
             .platform
             .as_ref()
+            .filter(|_| unplatformed != Some(identifier.as_slice()))
             .map(|p| String::from_utf8_lossy(&shards_dockerfile::platform::format(p)).into_owned())
             .unwrap_or_default();
         let key = format!("{reference} {platform}");
@@ -454,6 +461,26 @@ pub fn predicate(c: &Capture, run: &Run) -> Json {
     ])
 }
 
+/// The statements an image's attestation holds, each with its predicate type: its SBOMs,
+/// then its provenance where it carries one (exporter/attestation `Unbundle`'s order,
+/// then the solver's provenance).
+pub fn image_statements(
+    c: &Capture,
+    run: &Run,
+    subjects: &[(String, String)],
+    provenance: bool,
+) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = c
+        .sboms
+        .iter()
+        .map(|s| (super::sbom::intoto(s, subjects), s.predicate_type.clone()))
+        .collect();
+    if provenance {
+        out.push((statement(c, run, subjects), PREDICATE_TYPE.to_string()));
+    }
+    out
+}
+
 /// `BuildKitMetadata`: for `mode=max`, its source map and its steps' layers.
 fn buildkit_metadata(max: Option<&Max>) -> Json {
     let Some(m) = max else {
@@ -599,9 +626,10 @@ fn descriptor(
     Json::obj(f)
 }
 
-/// What holds a statement: its config (an image config of no platform whose one diff ID
-/// is the statement's own digest) and its manifest, as BuildKit's exporter writes them.
-pub fn attestation(statement_digest: &str, statement_size: usize) -> (String, String) {
+/// The attestation manifest of several statements (each its digest, size and predicate
+/// type), in the order given, and its config, whose diff IDs they are: an image's SBOMs,
+/// then its provenance (D81).
+pub fn attestation_of(statements: &[(&str, usize, &str)]) -> (String, String) {
     let config = Json::obj(vec![
         ("architecture", Json::s("unknown")),
         ("os", Json::s("unknown")),
@@ -610,7 +638,10 @@ pub fn attestation(statement_digest: &str, statement_size: usize) -> (String, St
             "rootfs",
             Json::obj(vec![
                 ("type", Json::s("layers")),
-                ("diff_ids", Json::Arr(vec![Json::s(statement_digest)])),
+                (
+                    "diff_ids",
+                    Json::Arr(statements.iter().map(|(d, _, _)| Json::s(*d)).collect()),
+                ),
             ]),
         ),
     ])
@@ -625,13 +656,14 @@ pub fn attestation(statement_digest: &str, statement_size: usize) -> (String, St
         ),
         (
             "layers",
-            Json::Arr(vec![descriptor(
-                IN_TOTO,
-                statement_digest,
-                statement_size,
-                &[("in-toto.io/predicate-type", PREDICATE_TYPE)],
-                None,
-            )]),
+            Json::Arr(
+                statements
+                    .iter()
+                    .map(|(d, size, kind)| {
+                        descriptor(IN_TOTO, d, *size, &[("in-toto.io/predicate-type", kind)], None)
+                    })
+                    .collect(),
+            ),
         ),
     ])
     .indented(0);
@@ -1343,6 +1375,20 @@ mod tests {
         metadata: Option<String>,
         #[serde(default)]
         localprov: Option<String>,
+        /// Its SBOMs' statements, as the image holds them (D81).
+        #[serde(default)]
+        sboms: Vec<String>,
+        /// A local output's `sbom.spdx.json`.
+        #[serde(default)]
+        localsbom: Option<String>,
+    }
+
+    /// A recorded SBOM statement as its scanner's file: named for its document, as
+    /// buildkit-syft-scanner names each scan.
+    fn scanned(text: &str) -> super::super::sbom::Scanned {
+        let v: serde_json::Value = serde_json::from_str(text).unwrap();
+        let path = format!("{}.spdx.json", v["predicate"]["name"].as_str().unwrap());
+        super::super::sbom::statement(&path, text.as_bytes()).unwrap()
     }
 
     /// Any image, resolved to busybox's digest with an empty config, for planning.
@@ -1486,6 +1532,32 @@ mod tests {
             ..Capture::default()
         };
         assert_eq!(statement_json(&capture, &run, &subjects).indented(0), *text);
+        // A local output's SBOM: the statement, indented, its files its subjects (D81).
+        let local_sbom = all.iter().find(|c| c.name == "sbom-local").unwrap();
+        let text = local_sbom.localsbom.as_ref().unwrap();
+        let recorded: serde_json::Value = serde_json::from_str(text).unwrap();
+        let files: Vec<(String, String)> = recorded["subject"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| {
+                (
+                    s["name"].as_str().unwrap().to_string(),
+                    format!("sha256:{}", s["digest"]["sha256"].as_str().unwrap()),
+                )
+            })
+            .collect();
+        // As its scanner wrote it: the statement with no subjects of its own.
+        let mut bare = recorded.clone();
+        bare["subject"] = serde_json::json!([]);
+        let s = super::super::sbom::statement("sbom.spdx.json", bare.to_string().as_bytes()).unwrap();
+        assert_eq!(
+            String::from_utf8(shards_dockerfile::json_indent(
+                super::super::sbom::intoto(&s, &files).as_bytes()
+            ))
+            .unwrap(),
+            *text
+        );
         for case in &all {
             let Some(st) = &case.statement else { continue };
             let recorded: serde_json::Value = serde_json::from_str(st).unwrap();
@@ -1509,7 +1581,15 @@ mod tests {
                 ssh,
                 network,
                 max: None,
+                sboms: Vec::new(),
             };
+            // Its SBOMs (D81), the core target's first, then by name.
+            let mut sboms: Vec<super::super::sbom::Scanned> = case.sboms.iter().map(|t| scanned(t)).collect();
+            sboms.sort_by(|a, b| {
+                let core = |s: &super::super::sbom::Scanned| s.path.split('.').next() != Some("sbom");
+                (core(a), &a.path).cmp(&(core(b), &b.path))
+            });
+            capture.sboms = sboms;
             // mode=max (D80): the plan's steps and source map; the layers are a real
             // build's (`provenance_max_records_a_builds_steps_and_layers`), so the recording's.
             if case.flags.iter().any(|f| f == "--provenance=mode=max") {
@@ -1580,8 +1660,25 @@ mod tests {
             // Ops' digests cover a session's IDs: each digest mapping as its steps alone.
             assert_eq!(steps_only(&ours), steps_only(st), "{}", case.name);
             assert_eq!(ours.len(), st.len(), "{}", case.name);
-            let digest = sha256(st.as_bytes());
-            let (config, manifest) = attestation(&digest, st.len());
+            // The attestation: its SBOMs, as the image holds them, then its provenance.
+            // The provenance as recorded: compared above but for its digests, which a
+            // session's IDs make (mode=max).
+            let mut statements = image_statements(&capture, &run, &subjects, false);
+            statements.push((st.clone(), PREDICATE_TYPE.to_string()));
+            // Each SBOM statement byte for byte as the image holds it; their order the
+            // manifest's, below.
+            for (text, kind) in &statements {
+                if kind == super::super::sbom::PREDICATE {
+                    assert!(case.sboms.contains(text), "{}: {text}", case.name);
+                }
+            }
+            let digests: Vec<String> = statements.iter().map(|(t, _)| sha256(t.as_bytes())).collect();
+            let listed: Vec<(&str, usize, &str)> = statements
+                .iter()
+                .zip(&digests)
+                .map(|((t, kind), d)| (d.as_str(), t.len(), kind.as_str()))
+                .collect();
+            let (config, manifest) = attestation_of(&listed);
             assert_eq!(Some(&config), case.attestation_config.as_ref(), "{}", case.name);
             assert_eq!(
                 Some(&manifest),

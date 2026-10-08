@@ -968,6 +968,32 @@ fn base64(b: &[u8]) -> String {
 
 /// A definition as the oracle lists it: depth first from the end, each input before what
 /// reads it, then the end itself, which reads the target's output.
+/// The digest of `def`'s root as the oracle records it: each op's bytes, its local source's
+/// unique ID as "*" and its inputs named by their own ops so marshalled.
+fn normalized_root(def: &shards_dockerfile::llb::Definition) -> String {
+    use sha2::Digest as _;
+    let sha = |b: &[u8]| -> Vec<u8> {
+        let hex: String = sha2::Sha256::digest(b)
+            .iter()
+            .map(|x| format!("{x:02x}"))
+            .collect();
+        format!("sha256:{hex}").into_bytes()
+    };
+    let mut digests: Vec<Vec<u8>> = Vec::new();
+    for op in &def.ops {
+        let mut op = op.clone();
+        if let shards_dockerfile::llb::OpKind::Source { attrs, .. } = &mut op.kind
+            && let Some(v) = attrs.get_mut(b"local.unique".as_slice())
+        {
+            *v = b"*".to_vec();
+        }
+        let inputs: Vec<Vec<u8>> = op.inputs.iter().map(|i| digests[i.op].clone()).collect();
+        digests.push(sha(&shards_dockerfile::pb::op(&op, &inputs).unwrap()));
+    }
+    let root = def.root.unwrap();
+    String::from_utf8(sha(&shards_dockerfile::pb::root(&digests[root.op], root.index))).unwrap()
+}
+
 fn definition_v(def: &shards_dockerfile::llb::Definition) -> Value {
     let Some(root) = def.root else {
         return Value::Array(Vec::new());
@@ -1153,6 +1179,20 @@ fn plans_are_buildkits() {
                 got.insert("warnings".into(), warnings(&p.warnings));
                 got.insert("image".into(), p.image.to_json().unwrap().into());
                 got.insert("ops".into(), definition_v(&p.definition()));
+                if !p.sbom_extras.is_empty() {
+                    let extras = p
+                        .sbom_extras
+                        .iter()
+                        .map(|(name, st)| {
+                            let def = p.graph.marshal(st, &p.platform);
+                            (
+                                String::from_utf8(name.clone()).unwrap(),
+                                normalized_root(&def).into(),
+                            )
+                        })
+                        .collect();
+                    got.insert("sbom_extras".into(), Value::Object(extras));
+                }
             }
         }
         let mut want = want.clone();
