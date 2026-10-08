@@ -1253,13 +1253,19 @@ mod usage_tests {
     fn a_process_is_measured_as_it_runs() {
         let me = std::process::id();
         let before = process_usage(me).unwrap();
-        // Some CPU time, spent here.
+        // CPU time, spent here until it shows (10 s at most): Linux counts it in clock
+        // ticks (proc(5), `utime`), so work shorter than one may not; the work is opaque to
+        // the optimizer, which would otherwise fold the loop away.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut after = process_usage(me).unwrap();
         let mut x = 0u64;
-        for i in 0..50_000_000u64 {
-            x = x.wrapping_add(i * i);
+        while after.cpu_ns <= before.cpu_ns && std::time::Instant::now() < deadline {
+            for i in 0..1_000_000u64 {
+                x = std::hint::black_box(x.wrapping_add(i.wrapping_mul(i)));
+            }
+            after = process_usage(me).unwrap();
         }
-        assert!(x > 0);
-        let after = process_usage(me).unwrap();
+        std::hint::black_box(x);
         assert!(after.resident > 0);
         assert!(after.cpu_ns > before.cpu_ns, "{before:?} {after:?}");
     }

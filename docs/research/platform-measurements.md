@@ -4149,3 +4149,37 @@ revision before comparing a changed API/implementation.
   maps from the device rather than copying into the page cache (M74).
 - **Consequence.** The server is a binary of its own, on a device of its own attached only
   to microVMs whose image has agents; a microVM without agents pays nothing for it.
+
+### M123. What the guest kernel keeps of an x86_64 microVM's memory
+
+- **Question.** M117's, for x86_64: shards sizes a microVM so that `-m` fits beside what
+  its kernel keeps, and with arm64's table `-m 700m` left an x86_64 guest 679,348 KiB
+  (CI, 2026-10-07), less than the limit.
+- **Method.** `docs/research/measurements/guest-memory/measure-direct.sh`, which boots each
+  size exactly from an unchanged shards (`run --kernel … --rootfs … --memory`), three runs
+  a size, in CI's `firecracker comparison (x86_64)` job (GitHub's ubuntu-24.04 runner with
+  KVM), guest kernel 6.18.48 x86_64 (sha256 f54407e5…), run 37696057174, revision 2e7b0ef,
+  2026-10-07. The largest overhead of a size's three is taken, as M117 took it.
+- **Results** (KiB: the VM's size less MemAvailable).
+
+  | VM (MiB) | runs | largest |
+  |---:|---|---:|
+  | 256 | 50,176; 48,564; 48,916 | 50,176 |
+  | 384 | 53,096; 53,488; 53,996 | 53,996 |
+  | 512 | 57,504; 58,780; 67,588 | 67,588 |
+  | 768 | 124,044; 124,696; 125,172 | 125,172 |
+  | 1,024 | 141,456; 141,892; 141,416 | 141,892 |
+  | 1,536 | 155,724; 155,932; 155,288 | 155,932 |
+  | 2,048 | 166,364; 165,400; 165,708 | 166,364 |
+  | 3,072 | 190,308; 190,728; 190,532 | 190,728 |
+  | 3,584 | 308,956; 306,736; 304,880 | 308,956 |
+  | 4,096 | 312,308; 313,512; 313,972 | 313,972 |
+  | 4,608 | 337,788; 337,324; 337,324 | 337,788 |
+  | 6,144 | 371,536; 368,020; 367,816 | 371,536 |
+  | 8,192 | 417,128; 409,532; 417,136 | 417,136 |
+  | 12,288 | 503,656; 511,692; 512,184 | 512,184 |
+  | 16,384 | 586,356; 585,116; 592,948 | 592,948 |
+
+- **Consequence.** x86_64's kernel keeps more than arm64's at every size (768 MiB:
+  125,172 against 86,172), so each architecture sizes by its own table
+  (`resources::overhead_kib`), and past 16 GiB by its own slope, 22 KiB a MiB.

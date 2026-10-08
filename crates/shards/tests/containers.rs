@@ -5980,7 +5980,17 @@ fn stats_read_the_guest_as_docker_reads_a_container() {
         .trim_end_matches('%')
         .parse()
         .unwrap();
-    assert!(cpu > 50.0, "a spinning workload's CPU: {shown}");
+    // What the host gives its vCPU, measured from the guest: on a busy host less than a
+    // CPU (14.44% on a shared CI runner, 2026-10-07), so it is set against a microVM
+    // asleep, which uses next to none.
+    let asleep = run_in(&home, &image, &["-d", "--name", "asleep"], &["sleep"]);
+    assert_eq!(asleep.status, Some(0), "{asleep}");
+    let still = shards(&["stats", "--no-stream", "--format", "{{.CPUPerc}}", "asleep"]);
+    let sleeping: f64 = still.stdout.trim().trim_end_matches('%').parse().unwrap();
+    assert!(
+        cpu > 10.0 * sleeping.max(1.0),
+        "a spinning workload's CPU, against {sleeping}% asleep: {shown}"
+    );
     let mem = v["MemUsage"].as_str().unwrap();
     assert!(mem.ends_with(" / 64MiB"), "its limit: {shown}");
     assert_eq!(v["PIDs"], "1", "{shown}");
@@ -6000,7 +6010,7 @@ fn stats_read_the_guest_as_docker_reads_a_container() {
         "{{.Name}} {{.CPUPerc}} {{.MemUsage}} {{.PIDs}}",
     ]);
     assert!(all.stdout.lines().any(|l| l == "idle 0.00% 0B / 0B 0"), "{all}");
-    assert_eq!(shards(&["rm", "-f", "busy", "idle"]).status, Some(0));
+    assert_eq!(shards(&["rm", "-f", "busy", "idle", "asleep"]).status, Some(0));
 }
 
 /// D44: a container reaches Docker's devices and those it is given, as dockerd and runc

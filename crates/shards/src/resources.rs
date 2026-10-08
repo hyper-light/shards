@@ -288,10 +288,33 @@ pub fn memory_mib(limit: i64, default_mib: u64, host: Option<u64>) -> u64 {
     }
 }
 
-/// What the guest kernel keeps for itself of a VM of `mib` MiB, in KiB, as measured
-/// (platform-measurements.md M117): the overhead of the next measured size up, and past
-/// the last, its slope from 8 to 16 GiB.
+/// What the guest kernel keeps for itself of a VM of `mib` MiB, in KiB, as measured on
+/// this architecture's guest kernel (platform-measurements.md M117 for arm64, M123 for
+/// x86_64): the overhead of the next measured size up, and past the last, its slope from
+/// 8 to 16 GiB.
 fn overhead_kib(mib: u64) -> u64 {
+    #[cfg(target_arch = "x86_64")]
+    const MEASURED: [(u64, u64); 15] = [
+        (256, 50_176),
+        (384, 53_996),
+        (512, 67_588),
+        (768, 125_172),
+        (1024, 141_892),
+        (1536, 155_932),
+        (2048, 166_364),
+        (3072, 190_728),
+        (3584, 308_956),
+        (4096, 313_972),
+        (4608, 337_788),
+        (6144, 371_536),
+        (8192, 417_136),
+        (12_288, 512_184),
+        (16_384, 592_948),
+    ];
+    /// KiB a MiB past the last size: (592,948 − 417,136) / 8,192 is 21.5.
+    #[cfg(target_arch = "x86_64")]
+    const SLOPE: u64 = 22;
+    #[cfg(not(target_arch = "x86_64"))]
     const MEASURED: [(u64, u64); 15] = [
         (256, 43_216),
         (384, 47_004),
@@ -310,6 +333,7 @@ fn overhead_kib(mib: u64) -> u64 {
         (16_384, 575_192),
     ];
     /// KiB a MiB past the last size: (575,192 − 367,200) / 8,192 is 25.4.
+    #[cfg(not(target_arch = "x86_64"))]
     const SLOPE: u64 = 26;
     let past = |&(size, kib): &(u64, u64)| kib.saturating_add(mib.saturating_sub(size).saturating_mul(SLOPE));
     match MEASURED.iter().find(|(size, _)| *size >= mib) {
