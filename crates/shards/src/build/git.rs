@@ -398,7 +398,7 @@ pub fn snapshot(
     auth: Option<&Auth>,
     agents: &super::Agents,
     say: &dyn Fn(&str),
-) -> Result<Ref, Failure> {
+) -> Result<(Ref, String), Failure> {
     let ssh = SshAgents {
         agents,
         id: src.ssh_agent.as_deref(),
@@ -491,7 +491,9 @@ pub fn snapshot(
             out.git_files(&m.git_dir, m.files, time).map_err(snap)?;
         }
     }
-    out.finish(exec, time).map_err(snap)
+    out.finish(exec, time)
+        .map(|r| (r, resolved.commit.hex()))
+        .map_err(snap)
 }
 
 /// The pack of `wants`, one commit deep; from a server that will not send a commit that

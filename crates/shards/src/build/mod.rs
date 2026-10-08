@@ -42,6 +42,7 @@ pub(crate) mod http;
 #[cfg(unix)]
 mod live;
 mod output;
+mod provenance;
 mod remote;
 mod skills;
 mod ssh;
@@ -961,6 +962,8 @@ fn excerpt(file: &str, text: &[u8], ranges: &[(usize, usize)]) -> String {
 
 fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
     crate::phase("start");
+    // When the build began, as its provenance says it (D71).
+    let started = unix_now();
     // What the build is given, in the order buildx's runBuild meets it: its secrets, read
     // now and once, each as large as a step carries; then its entitlements; its ulimits
     // were read with its flags (shards_cmdline::buildflags).
@@ -1222,6 +1225,14 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
             .map(|(dir, digest)| import_layout(&store, dir, digest).map(|d| (digest.to_string(), d)))
             .collect::<Result<_, String>>()?,
     };
+    // What the build's provenance records of its request, as buildx sends it (D71).
+    let filename = Path::new(&name)
+        .file_name()
+        .map_or_else(|| "Dockerfile".to_string(), |n| n.to_string_lossy().into_owned());
+    let request_attrs = buildx_attrs(parsed, &filename, &add_hosts, &resource_attrs, &named)?;
+    let mut request_locals: Vec<String> = vec!["context".into(), "dockerfile".into()];
+    request_locals.extend(named.locals.keys().map(|k| show(k)));
+    request_locals.sort();
     let opts = Options {
         target_platform: host.clone(),
         build_platforms: vec![host],
@@ -1423,6 +1434,10 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
     // Its steps' seccomp filter, compiled once for the kernel the builder boots.
     let mut step_filter: Vec<u8> = Vec::new();
     let mut results: Vec<Vec<exec::Ref>> = Vec::with_capacity(def.ops.len());
+    // The Git and HTTP sources the build read, with what each resolved to, for its
+    // provenance.
+    let (mut git_materials, mut http_materials): (Vec<provenance::Material>, Vec<provenance::Material>) =
+        (Vec::new(), Vec::new());
     // Each operation's cache key (D50), where it has one: none where an input has none.
     let mut keys: Vec<Option<String>> = Vec::with_capacity(def.ops.len());
     let no_cache = parsed.bool("no-cache");
@@ -1602,6 +1617,13 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
                 let file = attrs
                     .get(b"http.filename".as_slice())
                     .ok_or_else(|| fail(&v, "an HTTP source without a file name"))?;
+                let pin = download.digest.to_string();
+                let (algorithm, hex) = pin.split_once(':').unwrap_or(("sha256", pin.as_str()));
+                http_materials.push(provenance::Material {
+                    uri: redact_credentials(&show(identifier)),
+                    algorithm: algorithm.to_string(),
+                    hex: hex.to_string(),
+                });
                 let r = exec.downloaded(download, file).map_err(|e| fail(&v, &e))?;
                 progress.borrow().done(&v);
                 vec![r]
@@ -1672,7 +1694,20 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
                     &agents,
                     &say,
                 ) {
-                    Ok(r) => r,
+                    Ok((r, commit)) => {
+                        // GitIdentifier.Capture: the remote, its ref after a `#`, the commit.
+                        let mut uri = redact_credentials(&src.url);
+                        if !src.reference.is_empty() {
+                            uri.push('#');
+                            uri.push_str(&src.reference);
+                        }
+                        git_materials.push(provenance::Material {
+                            uri,
+                            algorithm: if commit.len() == 64 { "sha256" } else { "sha1" }.into(),
+                            hex: commit,
+                        });
+                        r
+                    }
                     Err(git::Failure::CacheKey(e)) => {
                         return Err(fail_in(&v, "failed to load cache key: ", &e));
                     }
@@ -1993,6 +2028,8 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
                 &build_ref()?,
                 imaged.then_some((&manifest_digest, manifest.len(), names.as_slice())),
                 &descriptor_annotations,
+                None,
+                oci::media::OCI_MANIFEST,
             ),
         )?;
         print_warnings(&plan.warnings, quiet, debug, &name, &text);
@@ -2040,11 +2077,97 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
     };
     let mut contents = vec![manifest_digest.clone(), config_digest.clone()];
     contents.extend(store_layers.iter().map(|l| l.blob.clone()));
+    let invocation = build_ref()?;
+    // Its provenance (D71), as buildx asks BuildKit for it by default where an image is
+    // stored or pushed: the statement, the attestation that holds it, and the index of
+    // the image and its attestation, which the image's ID then names.
+    let attested = if attests(&|k| std::env::var(k).ok())? {
+        let image_config: serde_json::Value = serde_json::from_slice(&config).map_err(|e| e.to_string())?;
+        let field = |k: &str| {
+            image_config
+                .get(k)
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string()
+        };
+        let (arch, os, variant) = (field("architecture"), field("os"), field("variant"));
+        let mut platform = format!("{os}/{arch}");
+        if !variant.is_empty() && !(arch == "arm64" && variant == "v8") {
+            platform.push_str(&format!("/{variant}"));
+        }
+        let mut materials = provenance::capture_images(&def);
+        for mut list in [
+            std::mem::take(&mut git_materials),
+            std::mem::take(&mut http_materials),
+        ] {
+            list.sort_by(|a, b| a.uri.cmp(&b.uri));
+            list.dedup_by(|a, b| a.uri == b.uri);
+            materials.extend(list);
+        }
+        let (secrets, ssh, network) = provenance::capture_mounts(&def);
+        let capture = provenance::Capture {
+            args: request_attrs.clone(),
+            materials,
+            locals: request_locals.clone(),
+            secrets,
+            ssh,
+            network,
+        };
+        let facts = provenance::Run {
+            invocation_id: invocation.clone(),
+            started,
+            finished: unix_now(),
+            builder_platform: platform.clone(),
+            builder_id: String::new(),
+        };
+        let subjects: Vec<(String, String)> = parsed
+            .many("tag")
+            .iter()
+            .filter_map(|t| Reference::parse(t).ok())
+            .map(|r| (provenance::image_purl(&r, &platform), manifest_digest.to_string()))
+            .collect();
+        let statement = provenance::statement(&capture, &facts, &subjects);
+        let statement_digest = sha256(statement.as_bytes());
+        let (att_config, att_manifest) =
+            provenance::attestation(&statement_digest.to_string(), statement.len());
+        let att_manifest_digest = sha256(att_manifest.as_bytes());
+        let index = provenance::index(
+            (&manifest_digest.to_string(), manifest.len()),
+            (
+                &arch,
+                &os,
+                if arch == "arm64" && variant == "v8" {
+                    ""
+                } else {
+                    &variant
+                },
+            ),
+            (&att_manifest_digest.to_string(), att_manifest.len()),
+        );
+        let index_digest = sha256(index.as_bytes());
+        for blob in [
+            statement.as_bytes(),
+            att_config.as_bytes(),
+            att_manifest.as_bytes(),
+            index.as_bytes(),
+        ] {
+            let digest = sha256(blob);
+            store
+                .ingest(&digest, blob.len() as u64, &mut &blob[..])
+                .map_err(|e| e.to_string())?;
+            contents.push(digest);
+        }
+        Some((index_digest, index.len(), provenance::buildinfo(&capture, &facts)))
+    } else {
+        None
+    };
+    // What the image's names resolve to, and its ID: the index where it is attested.
+    let id = attested.as_ref().map_or(&manifest_digest, |(d, _, _)| d).clone();
     let tags: &[String] = if kept { parsed.many("tag") } else { &[] };
     for tag in tags {
         let reference = Reference::parse(tag).map_err(|e| format!("invalid tag {tag:?}: {e}"))?;
         store
-            .tag(&reference.to_string(), &desc, &manifest_digest, &contents)
+            .tag(&reference.to_string(), &desc, &id, &contents)
             .map_err(|e| e.to_string())?;
         progress.borrow().line(&v, &format!("naming to {reference} done"));
     }
@@ -2052,14 +2175,24 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
     // name for (moby daemon/containerd/image_builder.go): `images -a` lists it, and a
     // collection leaves it.
     if kept && tags.is_empty() {
-        let dangling = format!("{}{manifest_digest}", store::DANGLING);
+        let dangling = format!("{}{id}", store::DANGLING);
         store
-            .tag(&dangling, &desc, &manifest_digest, &contents)
+            .tag(&dangling, &desc, &id, &contents)
             .map_err(|e| e.to_string())?;
     }
     // An image output that pushes: each of its names, as BuildKit's exporter pushes
-    // them (util/push): its layers, then its manifest.
+    // them (util/push): its layers, then its manifest, then the index that names it.
     if pushes {
+        let pushed = match &attested {
+            Some((index_digest, size, _)) => Descriptor {
+                media_type: oci::media::OCI_INDEX.into(),
+                digest: index_digest.to_string(),
+                size: i64::try_from(*size).map_err(|e| e.to_string())?,
+                platform: None,
+                annotations: Default::default(),
+            },
+            None => desc.clone(),
+        };
         for tag in parsed.many("tag") {
             let reference = Reference::parse(tag).map_err(|e| format!("invalid tag {tag:?}: {e}"))?;
             progress.borrow().line(&v, "pushing layers");
@@ -2068,16 +2201,15 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
             shards_registry::push::push(
                 &registry,
                 &store,
-                &desc,
+                &pushed,
                 reference.tag.as_deref(),
                 None,
                 &|_, _| {},
             )
             .map_err(|e| fail_export(&progress, &v, &e.to_string()))?;
-            progress.borrow().line(
-                &v,
-                &format!("pushing manifest for {reference}@{manifest_digest} done"),
-            );
+            progress
+                .borrow()
+                .line(&v, &format!("pushing manifest for {reference}@{id} done"));
         }
     }
     progress.borrow().done(&v);
@@ -2098,16 +2230,22 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
     )?;
     remote::export(&cache_to, &used, &store, &image_layers, &progress, &env)?;
     let names = canonical_names(parsed.many("tag"))?;
+    let (described, size, media) = match &attested {
+        Some((d, size, _)) => (d, *size, oci::media::OCI_INDEX),
+        None => (&manifest_digest, manifest.len(), oci::media::OCI_MANIFEST),
+    };
     write_metadata(
         parsed,
         &metadata(
-            &build_ref()?,
-            Some((&manifest_digest, manifest.len(), names.as_slice())),
+            &invocation,
+            Some((described, size, names.as_slice())),
             &descriptor_annotations,
+            attested.as_ref().map(|(_, _, p)| p),
+            media,
         ),
     )?;
     print_warnings(&plan.warnings, quiet, debug, &name, &text);
-    finish(parsed, &manifest_digest.to_string())
+    finish(parsed, &id.to_string())
 }
 
 /// The build's ID where it is asked for: in `--iidfile`, and with `-q` on stdout.
@@ -2149,16 +2287,23 @@ fn metadata(
     build_ref: &str,
     image: Option<(&Digest, usize, &[String])>,
     annotations: &BTreeMap<String, String>,
+    provenance: Option<&provenance::Json>,
+    media_type: &str,
 ) -> String {
     let q = |s: &str| serde_json::Value::from(s).to_string();
-    let mut out = format!(
-        "{{\n  \"buildx.build.ref\": {}",
+    let mut out = String::from("{");
+    // buildx's provenance of the build (v0.2), first of the keys in order.
+    if let Some(p) = provenance {
+        out.push_str(&format!("\n  \"buildx.build.provenance\": {},", p.indented(1)));
+    }
+    out.push_str(&format!(
+        "\n  \"buildx.build.ref\": {}",
         q(&format!("shards/shards/{build_ref}"))
-    );
+    ));
     if let Some((manifest, size, names)) = image {
         out.push_str(&format!(
             ",\n  \"containerimage.descriptor\": {{\n    \"mediaType\": {},\n    \"digest\": {},\n    \"size\": {size}{}\n  }},\n  \"containerimage.digest\": {}",
-            q(oci::media::OCI_MANIFEST),
+            q(media_type),
             q(&manifest.to_string()),
             // ocispec.Descriptor's annotations, after its size, keys in order.
             if annotations.is_empty() {
@@ -2916,6 +3061,199 @@ fn sha256(bytes: &[u8]) -> Digest {
 /// `--call`'s method as buildx reads it (util/buildflags/callfunc.go `ParseCallFunc`,
 /// `--check` its shorthand): none to build; for a check, whether its status is ignored and
 /// its format. Methods shards does not serve yet are refused.
+/// The frontend's options buildx sends for a build (build/opt.go toSolveOpt and
+/// loadInputs, v0.37.1), which its provenance records as the request: build arguments
+/// and labels, the target, the cache's and network's settings, hosts, `/dev/shm`, ulimits,
+/// limits, the Dockerfile's name, and the named contexts.
+fn buildx_attrs(
+    parsed: &Parsed,
+    filename: &str,
+    add_hosts: &str,
+    resources: &BTreeMap<String, String>,
+    named: &NamedContexts,
+) -> Result<BTreeMap<String, String>, String> {
+    let mut a = BTreeMap::new();
+    let cgroup = parsed.string("cgroup-parent");
+    if !cgroup.is_empty() {
+        a.insert("cgroup-parent".into(), cgroup.to_string());
+    }
+    let args = build_args(parsed.many("build-arg"), true);
+    if args
+        .get(b"BUILDKIT_MULTI_PLATFORM".as_slice())
+        .is_some_and(|v| shards_cmdline::go::parse_bool(&show(v)).unwrap_or(false))
+    {
+        a.insert("multi-platform".into(), "true".into());
+    }
+    for (k, v) in &args {
+        a.insert(format!("build-arg:{}", show(k)), show(v));
+    }
+    for (k, v) in build_args(parsed.many("label"), false) {
+        a.insert(format!("label:{}", show(&k)), show(&v));
+    }
+    // The moby driver resolves images it has by default.
+    a.insert(
+        "image-resolve-mode".into(),
+        if parsed.bool("pull") { "pull" } else { "local" }.into(),
+    );
+    let target = parsed.string("target");
+    if !target.is_empty() {
+        a.insert("target".into(), target.to_string());
+    }
+    let filters = parsed.many("no-cache-filter");
+    if parsed.bool("no-cache") {
+        a.insert("no-cache".into(), String::new());
+    } else if !filters.is_empty() {
+        a.insert("no-cache".into(), filters.join(","));
+    }
+    let platforms = parsed.many("platform");
+    if !platforms.is_empty() {
+        a.insert("platform".into(), platforms.join(","));
+    }
+    if let mode @ ("host" | "none") = parsed.string("network") {
+        a.insert("force-network-mode".into(), mode.to_string());
+    }
+    if !add_hosts.is_empty() {
+        a.insert("add-hosts".into(), add_hosts.to_string());
+    }
+    let shm = shards_dockerfile::dockerui::shm_size(parsed.string("shm-size")).unwrap_or(0);
+    if shm > 0 {
+        a.insert("shm-size".into(), shm.to_string());
+    }
+    let ulimits: Vec<String> = buildflags::ulimits(parsed.many("ulimit"))?
+        .iter()
+        .map(|u| format!("{}={}:{}", u.name, u.soft, u.hard))
+        .collect();
+    if !ulimits.is_empty() {
+        a.insert("ulimit".into(), ulimits.join(","));
+    }
+    a.extend(resources.iter().map(|(k, v)| (k.clone(), v.clone())));
+    a.insert("filename".into(), filename.to_string());
+    for (k, v) in &named.contexts {
+        a.insert(format!("context:{}", show(k)), show(v));
+    }
+    for (k, v) in &named.keys {
+        a.insert(format!("sharedkey:localdir:{}", show(k)), show(v));
+    }
+    if !named.contexts.is_empty() {
+        a.insert(
+            "frontend.caps".into(),
+            "moby.buildkit.frontend.contexts+forward".into(),
+        );
+    }
+    Ok(a)
+}
+
+/// [`buildx_attrs`] of a build given `flags` alone: a named context's directory taken
+/// as one, by its name, wherever it is.
+#[cfg(test)]
+fn buildx_attrs_of(flags: &[String]) -> Result<BTreeMap<String, String>, String> {
+    // The attestations' own flags are none of the request's (FilterArgs).
+    let mut argv: Vec<String> = Vec::new();
+    let mut skip = false;
+    for f in flags {
+        if skip {
+            skip = false;
+            continue;
+        }
+        if f.starts_with("--provenance") || f.starts_with("--attest") || f.starts_with("--sbom") {
+            skip = !f.contains('=');
+            continue;
+        }
+        argv.push(f.clone());
+    }
+    argv.push(".".into());
+    let parsed = match flags::parse(&BUILD, PATH, &argv, &buildflags::validate) {
+        Outcome::Run(p) => p,
+        _ => return Err(format!("{argv:?}: not parsed")),
+    };
+    let add_hosts = buildflags::add_hosts(parsed.many("add-host"), &|| Err("no gateway".into()))?;
+    let resources = buildflags::resource_attrs(parsed.many("resource"))?;
+    let mut named = NamedContexts::default();
+    for v in parsed.many("build-context") {
+        if let Some((k, dir)) = v.split_once('=') {
+            named
+                .contexts
+                .insert(k.as_bytes().to_vec(), format!("local:{k}").into_bytes());
+            let base = dir.rsplit('/').next().unwrap_or(dir);
+            named.keys.insert(k.as_bytes().to_vec(), base.as_bytes().to_vec());
+        }
+    }
+    let file = parsed.string("file");
+    let filename = if file.is_empty() {
+        "Dockerfile"
+    } else {
+        file.rsplit('/').next().unwrap_or(file)
+    };
+    buildx_attrs(&parsed, filename, &add_hosts, &resources, &named)
+}
+
+/// Whether an image the build stores or pushes carries its provenance, as buildx asks
+/// for it by default (`attest:provenance=mode=min,inline-only=true`), unless
+/// BUILDX_NO_DEFAULT_ATTESTATIONS says not.
+fn attests(env: &dyn Fn(&str) -> Option<String>) -> Result<bool, String> {
+    match env("BUILDX_NO_DEFAULT_ATTESTATIONS") {
+        None => Ok(true),
+        Some(v) => shards_cmdline::go::parse_bool(&v)
+            .map(|off| !off)
+            .map_err(|e| format!("invalid BUILDX_NO_DEFAULT_ATTESTATIONS: {e}")),
+    }
+}
+
+/// `urlutil.RedactCredentials` (BuildKit v0.28.1): a URL's user and password each said as
+/// `xxxxx` where given; what is no URL (scp's `user@host:path`) as it is.
+fn redact_credentials(url: &str) -> String {
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return url.to_string();
+    };
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let (authority, path) = rest.split_at(authority_end);
+    let Some((userinfo, host)) = authority.rsplit_once('@') else {
+        return url.to_string();
+    };
+    let (user, password) = match userinfo.split_once(':') {
+        Some((u, p)) => (u, Some(p)),
+        None => (userinfo, None),
+    };
+    let masked = match (user.is_empty(), password) {
+        (false, Some(_)) => "xxxxx:xxxxx".to_string(),
+        (false, None) => "xxxxx".to_string(),
+        (true, Some(_)) => ":xxxxx".to_string(),
+        (true, None) => String::new(),
+    };
+    if masked.is_empty() {
+        format!("{scheme}://@{host}{path}")
+    } else {
+        format!("{scheme}://{masked}@{host}{path}")
+    }
+}
+
+#[cfg(test)]
+mod redact_tests {
+    #[test]
+    fn credentials_are_redacted_as_buildkit_redacts_them() {
+        let r = super::redact_credentials;
+        assert_eq!(
+            r("https://user:pw@host.tld/path.git"),
+            "https://xxxxx:xxxxx@host.tld/path.git"
+        );
+        assert_eq!(
+            r("ssh://git@github.com/o/r.git"),
+            "ssh://xxxxx@github.com/o/r.git"
+        );
+        assert_eq!(r("https://:pw@h/p"), "https://:xxxxx@h/p");
+        assert_eq!(r("https://h/p?a=b@c"), "https://h/p?a=b@c");
+        assert_eq!(r("git@github.com:o/r.git"), "git@github.com:o/r.git");
+    }
+}
+
+/// Now, as seconds and nanoseconds since 1970.
+fn unix_now() -> (i64, u32) {
+    let d = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    (i64::try_from(d.as_secs()).unwrap_or(i64::MAX), d.subsec_nanos())
+}
+
 /// What `--call` (or `--check`) asks of the frontend instead of a build.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Call {
@@ -3154,13 +3492,15 @@ mod tests {
                 "r",
                 Some((&manifest, 481, &["docker.io/library/app:1".to_string()])),
                 &BTreeMap::new(),
+                None,
+                oci::media::OCI_MANIFEST,
             ),
             format!(
                 "{{\n  \"buildx.build.ref\": \"shards/shards/r\",\n  \"containerimage.descriptor\": {{\n    \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\",\n    \"digest\": \"{manifest}\",\n    \"size\": 481\n  }},\n  \"containerimage.digest\": \"{manifest}\",\n  \"image.name\": \"docker.io/library/app:1\"\n}}"
             )
         );
         assert_eq!(
-            metadata("r", None, &BTreeMap::new()),
+            metadata("r", None, &BTreeMap::new(), None, oci::media::OCI_MANIFEST),
             "{\n  \"buildx.build.ref\": \"shards/shards/r\"\n}"
         );
     }

@@ -1,0 +1,70 @@
+#!/bin/sh
+# Regenerates crates/shards/src/build/testdata/provenance.json: what Docker's own BuildKit
+# (Docker 29.3.1, its BuildKit v0.28.1, buildx in its image) records of real builds' SLSA
+# provenance, which crates/shards/src/build/provenance.rs is held to: for each case its
+# flags, the in-toto statement the attestation layer holds, the attestation manifest and
+# its config, the index the image's ID names, and the metadata file buildx writes.
+#
+# Run in the `shards-dind` container (docker:29.3.1-dind), which the probes use and no
+# one else: every build and file is its own, removed after.
+#
+#   scripts/provenance/generate
+set -eu
+
+here=$(cd "$(dirname "$0")" && pwd)
+root=$(cd "$here/../.." && pwd)
+out="$root/crates/shards/src/build/testdata/provenance.json"
+box=shards-dind
+docker exec "$box" docker version --format '{{.Server.Version}}' | grep -qx '29.3.1' || {
+	echo "$box is not Docker 29.3.1" >&2
+	exit 1
+}
+docker exec "$box" sh -c 'command -v ssh-keygen >/dev/null || apk add --no-cache openssh-client >/dev/null'
+docker exec -i "$box" sh -s <"$here/cases.sh" >"$out.raw"
+# Each case: its name, Dockerfile, flags, the layout's index.json, the metadata file, and
+# every blob of the layout by its digest; the statement, the attestation manifest and its
+# config, and the index the image's ID names, picked out.
+python3 - "$out.raw" "$out" <<'PY'
+import base64, json, sys
+cases, case = [], None
+for line in open(sys.argv[1]):
+    parts = line.split()
+    if not parts:
+        continue
+    if parts[0] == "END":
+        cases.append(case)
+        case = None
+        continue
+    case = case or {"flags": [], "blobs": {}}
+    if parts[0] == "BLOB":
+        # Documents alone: layers are gzip.
+        try:
+            case["blobs"][parts[1]] = base64.b64decode(parts[2]).decode()
+        except UnicodeDecodeError:
+            pass
+        continue
+    value = base64.b64decode(parts[1] if len(parts) > 1 else "").decode()
+    if parts[0] == "FLAG":
+        case["flags"].append(value)
+    else:
+        case[parts[0].lower()] = value
+out = []
+for c in cases:
+    blobs = c.pop("blobs")
+    if "layout" in c:
+        top = json.loads(c["layout"])["manifests"][0]["digest"].split(":")[1]
+    else:
+        top = c["id"].split(":")[1]
+    c["index"] = blobs[top]
+    for d, b in blobs.items():
+        if b.startswith('{"_type":"https://in-toto.io/Statement'):
+            c["statement"] = b
+        elif '"application/vnd.in-toto+json"' in b:
+            c["attestation_manifest"] = b
+        elif '"architecture":"unknown"' in b:
+            c["attestation_config"] = b
+    out.append(c)
+json.dump(out, open(sys.argv[2], "w"), indent=1, ensure_ascii=False)
+open(sys.argv[2], "a").write("\n")
+PY
+rm -f "$out.raw"

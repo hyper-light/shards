@@ -3206,6 +3206,58 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode
 waits on the user.
 
+### D71. Provenance, as Docker attests a build by default
+
+A build whose image is stored or pushed carries its SLSA provenance, as `docker build`
+does with Docker 29.3.1 (its BuildKit v0.28.1; buildx asks for
+`attest:provenance=mode=min,inline-only=true` unless BUILDX_NO_DEFAULT_ATTESTATIONS is
+true, so an image in an OCI or docker archive carries none, as there):
+
+- **The statement** (in-toto Statement v0.1, SLSA provenance v1, `mode=min`): the
+  request as buildx sends it (`buildx_attrs`: the frontend's options for every flag, its
+  host's filtered out as FilterArgs does, build arguments and labels then dropped and the
+  request said incomplete, as min does; the Dockerfile's name as the config source's path;
+  the locals, named contexts' too); the materials, sorted as Capture.Sort sorts them: base
+  images as package URLs (purl.RefToPURL: the familiar name's path, its tag, or its digest
+  as a qualifier where it has no tag, its platform, a registry's port escaped) with the
+  digest each resolved to, Git sources (the remote, `#` and the ref, its commit, `sha1`
+  or `sha256`), HTTP sources (their SHA-256), each URL's credentials masked as
+  RedactCredentials masks them; the builder's platform; the run's invocation (the build's
+  reference), its start and end; completeness; and, for an image with names, a subject
+  for each (its purl and the manifest's digest).
+- **The documents**: the statement as an `application/vnd.in-toto+json` layer of an
+  attestation manifest whose config is an image config of no platform with the
+  statement's digest as its one diff ID, and the index of the image's manifest (its
+  platform) and the attestation's (`unknown/unknown`, the reference annotations), each
+  written as BuildKit's exporter writes it.
+- **What names it**: the index is what the image's names resolve to and its ID
+  (`image inspect`, `-q`, `--iidfile`, a dangling build's record), what `--push` pushes
+  after its manifests, and what the metadata file's `containerimage.descriptor` and
+  `.digest` name, beside `buildx.build.provenance`, the v0.2 form buildx writes there
+  (every argument, the secrets and SSH agents mounted, no run metadata).
+
+Each build's index is its own (its invocation and times are), as Docker's is: two
+identical builds have one manifest and two IDs, the manifest's being the content's.
+
+Not yet: `--provenance`, `--attest` and `--sbom` (their flags, `mode=max`, whose build
+config needs LLB's protobuf digests, and SBOM scanning). A local named context's shared
+key carries no node identifier (buildx appends its own; shards has one builder).
+
+Tested: `provenance_is_buildkits`, against what `scripts/provenance/generate` records
+Docker's own builds making in `shards-dind` (18 builds: no flag to an OCI layout, min,
+build arguments, labels and every frontend option, secret and SSH mounts, base images of
+Docker Hub, another registry, a registry with a port, by digest and untagged, HTTP and Git
+sources, a named context, `--provenance=false`, `--attest`, and a build stored with no
+flag): each statement, attestation config and manifest, and index byte for byte given
+what the builder alone decides (its time, its IDs, what it resolved), the metadata file's
+provenance, and a stored build's whole metadata file. `images_are_package_urls_as_buildkit_writes_them`,
+`credentials_are_redacted_as_buildkit_redacts_them`. On a real build
+(`builds_attest_their_provenance_as_docker_does`, mutation-checked: no default, no
+materials): the ID, `image inspect` and the metadata file name the index; the statement
+names the image and its base; mode=min's request; the metadata file's provenance; no
+attestation asked for, the manifest is the ID. `builds_push_what_they_build` follows the
+pushed index to the image and the statement.
+
 ### D70. `--call`'s subrequests: outline, targets, describe
 
 `build --call=outline|targets|subrequests.describe[,format=json]`, answered as BuildKit's
@@ -3470,9 +3522,8 @@ the manifest's digest, as Docker with its containerd store gives its image's
 
 Measured beside it (Docker 29.3.1, containerd store, `docker:29.3.1-dind`, 2026-10-07):
 Docker's adds `buildx.build.provenance`, the provenance attestation it records by
-default, and names an index of the image and that attestation. shards records no
-attestation yet (`--provenance`, `--sbom`, `--attest` unserved), so it writes no
-provenance and names the image's manifest.
+default, and names an index of the image and that attestation. So does shards now
+(D71); with BUILDX_NO_DEFAULT_ATTESTATIONS it names the image's manifest.
 
 Tested: `metadata_is_written_as_buildx_writes_it`, `build_refs_are_buildkits_ids`, and
 on a real build (`builds_take_steps_from_caches_written_elsewhere`): the digest is the

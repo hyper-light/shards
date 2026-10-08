@@ -34,6 +34,8 @@ use shards_registry::url::Url;
 pub struct Download {
     pub path: PathBuf,
     pub size: u64,
+    /// What it hashed to, by the checksum's algorithm, or SHA-256 (BuildKit's pin).
+    pub digest: Digest,
     /// Its Last-Modified, as `http.ParseTime` reads it, if it has one Go can read.
     pub last_modified: Option<(i64, u32)>,
 }
@@ -264,6 +266,7 @@ pub fn fetch(
     Ok(Download {
         path,
         size,
+        digest: got,
         last_modified,
     })
 }

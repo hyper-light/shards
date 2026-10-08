@@ -104,10 +104,21 @@ fn an_image_built_of_settings_runs_as_built() {
     );
 
     // The same build is the same image: its manifest's digest is its ID, the one every
-    // command names it by.
+    // command names it by, where it carries no provenance; with it, each build's index
+    // is its own (its invocation and times are), as Docker's is.
     let id = |r: &common::Run| r.stdout.trim().to_string();
-    let q1 = run_shards_env(&["build"], &["-q", ctx.to_str().unwrap()], &env, TIMEOUT);
-    let q2 = run_shards_env(&["image", "build"], &["-q", ctx.to_str().unwrap()], &env, TIMEOUT);
+    let mut plain = env.to_vec();
+    plain.push(("BUILDX_NO_DEFAULT_ATTESTATIONS", std::ffi::OsStr::new("1")));
+    let q1 = run_shards_env(&["build"], &["-q", ctx.to_str().unwrap()], &plain, TIMEOUT);
+    let q2 = run_shards_env(
+        &["image", "build"],
+        &["-q", ctx.to_str().unwrap()],
+        &plain,
+        TIMEOUT,
+    );
+    let attested = run_shards_env(&["build"], &["-q", ctx.to_str().unwrap()], &env, TIMEOUT);
+    assert_eq!(attested.status, Some(0), "{}", attested.stderr);
+    assert_ne!(id(&attested), id(&q1));
     assert_eq!(q1.status, Some(0), "{}", q1.stderr);
     assert!(
         id(&q1).starts_with("sha256:") && id(&q1).len() == 71,
@@ -1314,6 +1325,121 @@ fn call_answers_the_frontends_subrequests() {
     );
     // Nothing was built: the one image is the base the outline resolved.
     assert_eq!(shards(&["images", "-q"]).stdout.lines().count(), 1);
+}
+
+/// A stored build carries its provenance as Docker's does by default (D71): the index of
+/// the image and its attestation is its ID, in `image inspect` and the metadata file;
+/// the attestation's statement names the image by its tag and manifest, its base image
+/// as a package URL with the digest it resolved to, and leaves out the build arguments
+/// (mode=min), which the metadata file's provenance keeps with the secrets mounted; with
+/// BUILDX_NO_DEFAULT_ATTESTATIONS, the ID is the manifest's.
+#[test]
+fn builds_attest_their_provenance_as_docker_does() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("build-provenance-home");
+    let ctx = context(
+        "build-provenance-ctx",
+        &format!(
+            "FROM {image}\nARG A\nRUN --mount=type=secret,id=tok [\"/bin/testguest\", \"exit\", \"0\"]\n"
+        ),
+    );
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let meta = home.join("meta.json");
+    let built = shards(&[
+        "build",
+        "-t",
+        "prov:1",
+        "--build-arg",
+        "A=1",
+        "--metadata-file",
+        meta.to_str().unwrap(),
+        ctx.to_str().unwrap(),
+    ]);
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    let md: serde_json::Value = serde_json::from_slice(&std::fs::read(&meta).unwrap()).unwrap();
+    let index_digest = md["containerimage.digest"].as_str().unwrap().to_string();
+    assert_eq!(
+        md["containerimage.descriptor"]["mediaType"],
+        "application/vnd.oci.image.index.v1+json"
+    );
+    let id = shards(&["image", "inspect", "--format", "{{.Id}}", "prov:1"]);
+    assert_eq!(id.stdout.trim(), index_digest, "{}", id.stderr);
+    let blob = |d: &str| -> serde_json::Value {
+        let path = home
+            .join("images/blobs/sha256")
+            .join(d.trim_start_matches("sha256:"));
+        serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
+    };
+    let index = blob(&index_digest);
+    let image_manifest = index["manifests"][0]["digest"].as_str().unwrap().to_string();
+    let att = &index["manifests"][1];
+    assert_eq!(
+        att["annotations"]["vnd.docker.reference.digest"],
+        image_manifest.as_str()
+    );
+    assert_eq!(att["platform"]["os"], "unknown");
+    let attestation = blob(att["digest"].as_str().unwrap());
+    let statement = blob(attestation["layers"][0]["digest"].as_str().unwrap());
+    let arch = match std::env::consts::ARCH {
+        "aarch64" => "arm64",
+        "x86_64" => "amd64",
+        other => other,
+    };
+    assert_eq!(statement["predicateType"], "https://slsa.dev/provenance/v1");
+    assert_eq!(
+        statement["subject"][0]["name"],
+        format!("pkg:docker/prov@1?platform=linux%2F{arch}").as_str()
+    );
+    assert_eq!(
+        format!(
+            "sha256:{}",
+            statement["subject"][0]["digest"]["sha256"].as_str().unwrap()
+        ),
+        image_manifest
+    );
+    let p = &statement["predicate"];
+    let base = p["buildDefinition"]["resolvedDependencies"][0]["uri"]
+        .as_str()
+        .unwrap();
+    assert!(
+        base.starts_with("pkg:docker/127.0.0.1%3A")
+            && base.ends_with(&format!("/test/image@v1?platform=linux%2F{arch}")),
+        "{base}"
+    );
+    // mode=min: no build arguments, and the request said incomplete.
+    assert!(
+        p["buildDefinition"]["externalParameters"]["request"]["args"].is_null(),
+        "{p}"
+    );
+    assert_eq!(
+        p["runDetails"]["metadata"]["buildkit_completeness"]["request"],
+        false
+    );
+    assert_eq!(
+        p["buildDefinition"]["internalParameters"]["builderPlatform"],
+        format!("linux/{arch}").as_str()
+    );
+    // The metadata file's provenance keeps them, with the secrets mounted.
+    let info = &md["buildx.build.provenance"]["invocation"]["parameters"];
+    assert_eq!(info["args"]["build-arg:A"], "1", "{info}");
+    assert_eq!(info["secrets"][0]["id"], "tok");
+    // Asked for none: the manifest is the ID.
+    let mut plain = env.to_vec();
+    plain.push(("BUILDX_NO_DEFAULT_ATTESTATIONS", std::ffi::OsStr::new("1")));
+    let quiet = run_shards_env(&[], &["build", "-q", ctx.to_str().unwrap()], &plain, TIMEOUT);
+    assert_eq!(quiet.status, Some(0), "{}", quiet.stderr);
+    assert_eq!(
+        blob(quiet.stdout.trim())["mediaType"],
+        "application/vnd.oci.image.manifest.v1+json"
+    );
 }
 
 /// Each request a test server was sent: its path, and its fields.
@@ -3713,9 +3839,32 @@ fn builds_push_what_they_build() {
     assert_eq!(built.status, Some(0), "{}", built.stderr);
     let repos = repos.lock().unwrap();
     let manifests = repos.manifests.get("team/built").expect("the repository pushed");
-    let (_, manifest) = manifests.get("1").expect("its tag pushed");
-    let manifest: serde_json::Value = serde_json::from_slice(manifest).unwrap();
+    // The tag names the index of the image and its provenance; each pushed by its digest.
+    let (_, index) = manifests.get("1").expect("its tag pushed");
+    let index: serde_json::Value = serde_json::from_slice(index).unwrap();
+    assert_eq!(
+        index["mediaType"], "application/vnd.oci.image.index.v1+json",
+        "{index}"
+    );
+    let child = |i: usize| -> serde_json::Value {
+        let d = index["manifests"][i]["digest"].as_str().unwrap();
+        serde_json::from_slice(&manifests.get(d).expect("each manifest pushed").1).unwrap()
+    };
+    assert_eq!(
+        index["manifests"][1]["annotations"]["vnd.docker.reference.type"],
+        "attestation-manifest"
+    );
+    let attestation = child(1);
+    assert_eq!(
+        attestation["layers"][0]["mediaType"],
+        "application/vnd.in-toto+json"
+    );
+    let manifest = child(0);
     let blobs = repos.blobs.get("team/built").expect("its blobs pushed");
+    assert!(
+        blobs.contains_key(attestation["layers"][0]["digest"].as_str().unwrap()),
+        "the statement pushed"
+    );
     let config = manifest["config"]["digest"].as_str().unwrap();
     assert!(blobs.contains_key(config), "the config pushed");
     for layer in manifest["layers"].as_array().unwrap() {
