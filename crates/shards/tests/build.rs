@@ -1474,18 +1474,28 @@ fn source_date_epoch_is_taken_from_a_source_stage() {
     }
     use sha2::Digest as _;
     let url = format!("http://127.0.0.1:{}", epoch_server());
-    // A repository whose commit's committer time (git_in's) is not its author's.
+    // A repository whose commit's committer time (git_in's) is not its author's, where
+    // this host has git (the Alpine CI container has none).
     let repos = TempDir::new("build-epoch-repos");
-    let origin = repos.join("repo.git");
-    std::fs::create_dir_all(&origin).unwrap();
-    git_in(&origin, &["init", "-q", "-b", "main"]);
-    std::fs::write(origin.join("f"), "f\n").unwrap();
-    git_in(&origin, &["add", "-A"]);
-    git_in(&origin, &["commit", "-q", "-m", "one"]);
-    let git_url = format!(
-        "http://127.0.0.1:{}/repo.git",
-        git_http_server(repos.to_path_buf(), Vec::new())
-    );
+    let git_url = if std::process::Command::new("git")
+        .arg("--version")
+        .output()
+        .is_ok()
+    {
+        let origin = repos.join("repo.git");
+        std::fs::create_dir_all(&origin).unwrap();
+        git_in(&origin, &["init", "-q", "-b", "main"]);
+        std::fs::write(origin.join("f"), "f\n").unwrap();
+        git_in(&origin, &["add", "-A"]);
+        git_in(&origin, &["commit", "-q", "-m", "one"]);
+        Some(format!(
+            "http://127.0.0.1:{}/repo.git",
+            git_http_server(repos.to_path_buf(), Vec::new())
+        ))
+    } else {
+        eprintln!("NOTE: no git on this host: a Git source stage is not exercised");
+        None
+    };
     let home = TempDir::new("build-epoch-home");
     let env = [
         ("SHARDS_HOME", home.as_os_str()),
@@ -1517,7 +1527,7 @@ fn source_date_epoch_is_taken_from_a_source_stage() {
         let created = shards(&["image", "inspect", &tag]).stdout;
         (built, created)
     };
-    for (n, add, epoch, created) in [
+    let mut made = vec![
         (1, format!("{url}/lm.tar"), "src", "1994-11-06T08:49:37Z"),
         (
             2,
@@ -1526,8 +1536,11 @@ fn source_date_epoch_is_taken_from_a_source_stage() {
             "2027-01-15T08:00:00Z",
         ),
         (3, format!("{url}/nsec.tar"), "src", "2023-11-14T22:13:20Z"),
-        (9, format!("{git_url}#main"), "src", "2020-09-13T12:26:40Z"),
-    ] {
+    ];
+    if let Some(g) = &git_url {
+        made.push((9, format!("{g}#main"), "src", "2020-09-13T12:26:40Z"));
+    }
+    for (n, add, epoch, created) in made {
         let (built, inspected) = build(n, &add, epoch);
         assert_eq!(built.status, Some(0), "{add}: {}", built.stderr);
         assert!(
@@ -1563,23 +1576,22 @@ fn source_date_epoch_is_taken_from_a_source_stage() {
             assert!(!inspected.contains(time), "{add}: {inspected}");
         }
     }
-    for (n, add, said) in [
+    let mut refused = vec![
         (
             6,
             format!("{url}/missing"),
             "failed to solve: invalid response status 404",
         ),
         (
-            7,
-            format!("{git_url}#nope"),
-            "repository does not contain ref nope",
-        ),
-        (
             8,
             format!("{url}/plain"),
             "failed to solve: invalid SOURCE_DATE_EPOCH: nosuch",
         ),
-    ] {
+    ];
+    if let Some(g) = &git_url {
+        refused.push((7, format!("{g}#nope"), "repository does not contain ref nope"));
+    }
+    for (n, add, said) in refused {
         let epoch = if n == 8 { "nosuch" } else { "src" };
         let (built, _) = build(n, &add, epoch);
         assert_ne!(built.status, Some(0), "{add}");
