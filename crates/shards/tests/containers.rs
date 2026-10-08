@@ -2347,10 +2347,38 @@ impl Going {
 /// The ID of the one container in `home`, once it is there: created, its run pending.
 fn created(gated: &Gated, home: &Path) -> String {
     let id = std::cell::RefCell::new(String::new());
-    eventually("the run's container never showed", || {
-        *id.borrow_mut() = gated.shards(home, &["ps", "-a", "-q", "--no-trunc"]).stdout;
-        !id.borrow().is_empty()
-    });
+    let last = std::cell::RefCell::new(String::new());
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+        let listed = gated.shards(home, &["ps", "-a", "-q", "--no-trunc"]);
+        *id.borrow_mut() = listed.stdout.clone();
+        if !id.borrow().is_empty() {
+            break;
+        }
+        *last.borrow_mut() = listed.to_string();
+        if Instant::now() >= deadline {
+            // Where the run stands: what the daemon said, and every shards process.
+            let log = std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default();
+            let tail: Vec<&str> = log.lines().rev().take(40).collect();
+            let procs = Command::new("ps")
+                .args(["-eo", "pid,ppid,stat,etime,args"])
+                .output()
+                .map(|o| {
+                    String::from_utf8_lossy(&o.stdout)
+                        .lines()
+                        .filter(|l| l.contains("shards"))
+                        .map(|l| format!("{l}\n"))
+                        .collect::<String>()
+                })
+                .unwrap_or_default();
+            panic!(
+                "the run's container never showed in {TIMEOUT:?}; the last ps: {}\ndaemon.log, last first:\n{}\nprocesses:\n{procs}",
+                last.borrow(),
+                tail.join("\n")
+            );
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
     let all = gated.shards(home, &["ps", "-a"]).stdout;
     assert!(
         all.lines().nth(1).is_some_and(|l| l.contains(" Created ")),
@@ -3124,11 +3152,10 @@ fn exec_runs_commands_in_a_running_container_as_docker_exec_does() {
 /// Who holds TCP port `port`, as lsof lists them: each process's ID, command and
 /// sockets, for a test to say whose a port it found taken is.
 fn holders_of(port: u16) -> String {
-    let owned = std::process::Command::new("lsof")
-        .args(["-nP", &format!("-iTCP:{port}"), "-Fpcn"])
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).replace('\n', " "))
-        .unwrap_or_else(|e| format!("(lsof: {e})"));
+    let owned = lsof(&["-nP", &format!("-iTCP:{port}"), "-Fpcn"]).map_or_else(
+        || "(no lsof)".into(),
+        |o| String::from_utf8_lossy(&o.stdout).replace('\n', " "),
+    );
     // And what no process owns, which lsof cannot see: connections in TIME_WAIT, say.
     let kernel: String = std::process::Command::new("netstat")
         .args(["-an", "-p", "tcp"])
@@ -3144,12 +3171,26 @@ fn holders_of(port: u16) -> String {
     format!("[{owned}] netstat: [{kernel}]")
 }
 
+/// lsof's answer to `args`, where the host's lsof is lsof's own, which `-v` names: none
+/// where it has none, or busybox's (Alpine's), which ignores what it is asked and lists
+/// every open file.
+fn lsof(args: &[&str]) -> Option<std::process::Output> {
+    let v = std::process::Command::new("lsof").arg("-v").output().ok()?;
+    let said = format!(
+        "{}{}",
+        String::from_utf8_lossy(&v.stdout),
+        String::from_utf8_lossy(&v.stderr)
+    );
+    if !said.contains("lsof version") {
+        return None;
+    }
+    std::process::Command::new("lsof").args(args).output().ok()
+}
+
 /// The processes listening on TCP port `port`, as lsof lists them: empty where none does
-/// (or where the host has no lsof).
+/// (or where the host has no lsof of its own).
 fn listeners_of(port: u16) -> String {
-    std::process::Command::new("lsof")
-        .args(["-nP", &format!("-iTCP:{port}"), "-sTCP:LISTEN", "-Fpcn"])
-        .output()
+    lsof(&["-nP", &format!("-iTCP:{port}"), "-sTCP:LISTEN", "-Fpcn"])
         .map(|o| {
             String::from_utf8_lossy(&o.stdout)
                 .replace('\n', " ")
@@ -3198,14 +3239,8 @@ fn published_ports_reach_the_guest_as_dockerd_publishes_them() {
     // The listening sockets are the run's network process's alone: the daemon lets go of
     // its copies once the VM has the run (M24), and a copy kept would hold the port after
     // the run's end is told, until the daemon had reaped both of its processes.
-    // lsof's own (`-F` fields, exit 1 when nothing matches); busybox's, which Alpine has,
-    // ignores the selection and lists every file, and says nothing of this.
-    let lsof = || {
-        std::process::Command::new("lsof")
-            .args(["-nP", &format!("-iTCP:{n}"), "-sTCP:LISTEN", "-Fp"])
-            .output()
-            .ok()
-    };
+    // lsof's own (`-F` fields, exit 1 when nothing matches), where the host has it.
+    let lsof = || lsof(&["-nP", &format!("-iTCP:{n}"), "-sTCP:LISTEN", "-Fp"]);
     let holders = |o: &std::process::Output| -> Vec<String> {
         String::from_utf8_lossy(&o.stdout)
             .lines()
@@ -3222,7 +3257,7 @@ fn published_ports_reach_the_guest_as_dockerd_publishes_them() {
         std::thread::sleep(std::time::Duration::from_millis(100));
         seen = lsof();
     }
-    if let Some(lsof) = seen.filter(|o| !(o.status.success() && holders(o).is_empty())) {
+    if let Some(lsof) = seen {
         let log = std::fs::read_to_string(home.join("daemon.log")).unwrap();
         let daemon = log
             .lines()
