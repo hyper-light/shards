@@ -3210,6 +3210,61 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode
 waits on the user.
 
+### D79. DNS over TCP, for answers too long for UDP
+
+An answer too long for a UDP message comes truncated (TC, RFC 1035 §4.2.1), and a
+resolver asks again over TCP, which every DNS server must answer (RFC 7766 §5). Agents'
+names were asked by UDP alone, so a long answer stayed truncated. Now every hop that
+carries a question by UDP also carries it by TCP, under the same grants (default deny):
+
+- **The agents' resolver** (`agentdns`) also listens on TCP port 53 of the switch.
+  - It knows a TCP asker by its source address. The switch's strict reverse-path filter
+    holds each address to its own link, and a connection is made only where its answers
+    come back, so no agent can ask as another.
+  - Each question is checked as by UDP (any name with `--dns`, else its MCP servers'
+    hosts) and answered REFUSED otherwise. A granted question is relayed upstream over a
+    TCP connection of the connection's own.
+  - The relay joins the switch's namespace, so that connection leaves the way its UDP
+    questions do.
+  - Each asker may hold an equal share of the descriptors the relay has to spare
+    (RLIMIT_NOFILE less those open, two to a connection). The limit is derived from the
+    process's own limit, not chosen.
+- **The switch, the gates and the uplink** open TCP 53 wherever they open UDP 53. An
+  agent granted names may connect, which Landlock allows; its gate lets it reach only the
+  switch's port 53.
+- **The network process** serves TCP at the gateway's port 53 as it serves UDP: it opens
+  a connection to the host's resolver.
+  - A filter on the connection (`dns::Stream`) passes each question on only when it is
+    whole and its grants name it. Any other question is REFUSED.
+  - A refusal goes to the guest where no answer is part way, since RFC 7766 §7 lets
+    answers come in any order.
+  - Each answer is held until whole (at most 65,537 bytes) and read for its A records, so
+    that an MCP host resolved by TCP is learned as one resolved by UDP. A resolver that
+    stops part way holds no more than any connection may (`TO_GUEST`), or the connection
+    is reset.
+- **The workload's relay** at 127.0.0.11 asks the gateway by UDP, which answers the
+  network's own names, and asks again by TCP when that answer comes truncated. If TCP
+  cannot be had, the truncated answer stands, as before.
+
+Better than Docker: Docker's embedded DNS forwards TCP too (moby libnetwork resolver.go),
+but grants nothing per name. Here a question over TCP is held to exactly the names its
+asker may ask over UDP, at both the agents' resolver and the microVM's boundary.
+
+Tested: `a_remote_mcp_server_is_a_grant_of_that_server_alone` sets up a host resolver that
+answers by UDP and by TCP, with a `big.example` of 64 A records.
+- m, granted one MCP server, is answered for that server's name over TCP and is REFUSED
+  for another over TCP.
+- g, granted any name, gets `big.example` truncated by UDP, then all 64 records by TCP.
+
+The network process's filter has unit tests: questions split across segments, refusals,
+a refusal waiting for an answer's end, and learned addresses.
+
+Mutation-checked:
+- The agents' resolver granting any name fails the E2E test: m's TCP question is
+  answered.
+- The network process's filter granting any question fails its unit tests.
+- Without the Landlock grant, g's TCP question fails with EACCES.
+
 ### D78. An Agentfile made from an image (§10, §12.16)
 
 `shards make agentfile IMAGE [-o FILE]` (`create agentfile`, or `shards agentfile`)
@@ -4208,8 +4263,8 @@ and 7200, which nothing lets in, does not reach it. The build's refusal of a net
 two members has a unit test. Mutation-checked: no DNAT, and no switch rule, each leave
 7100 unanswered.
 
-Open: DNS over TCP, for answers too long for UDP; ingress to a network of several members
-(which one a connection is for).
+Open: ingress to a network of several members (which one a connection is for). DNS over
+TCP is D79.
 
 A port the Agentfile declares `EXPOSE … AS egress`, and nowhere both ways or for ingress,
 is named in the image's label `vnd.osi.agentfile.egress-declared` (ranges as Docker writes
@@ -4298,7 +4353,8 @@ grants, MCP scope) have unit tests. Mutation-checked: the relay granting any nam
 network process passing a named port without a learned address, and the switch ignoring
 a pair's ports, each fail their test.
 
-Open: DNS over TCP; IPv6; process events; ingress to a network of several members.
+Open: IPv6; process events; ingress to a network of several members. DNS over TCP is
+D79.
 
 ### A domain sees the image as built (D59, part eight)
 

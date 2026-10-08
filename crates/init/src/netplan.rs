@@ -395,7 +395,9 @@ pub fn plan(spec: &Value, names: &[Name], own: Option<(Ipv4Addr, u8)>) -> Result
                 egress.push((6, *port, *port));
             }
         }
-        let connects = pairs.iter().any(|(x, _, _)| *x == d) || !egress.is_empty();
+        // Asking names connects too, by TCP for answers too long for UDP (RFC 7766): to its
+        // resolver alone, which its gate lets it reach and nothing else.
+        let connects = pairs.iter().any(|(x, _, _)| *x == d) || !egress.is_empty() || dns;
         let accepts = pairs.iter().any(|(_, y, _)| *y == d) || !ingress.is_empty();
         if let Some(Some(link)) = links.get_mut(d) {
             link.hosts = [HOSTS, hosts.as_bytes()].concat();

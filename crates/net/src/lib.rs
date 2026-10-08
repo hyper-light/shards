@@ -1489,7 +1489,14 @@ impl<'r> Stack<'r> {
                 }
                 return;
             }
-            if !self.cfg.allows(ip.dst, Proto::Tcp, seg.dst_port) {
+            // DNS over TCP past the microVM, for agents granted egress (D59), as by UDP: to
+            // the host's resolver, each question as its grants say.
+            let resolver = (ip.dst == self.cfg.gateway_ip
+                && seg.dst_port == 53
+                && matches!(self.cfg.policy, Policy::Ports(_)))
+            .then(|| self.cfg.resolvers.first().copied())
+            .flatten();
+            if resolver.is_none() && !self.cfg.allows(ip.dst, Proto::Tcp, seg.dst_port) {
                 let mut o = self.out();
                 o.segment(
                     &key,
@@ -1502,7 +1509,20 @@ impl<'r> Stack<'r> {
                 );
                 return;
             }
-            match Conn::open(key, &seg, self.isn(&key)) {
+            let opened = match resolver {
+                Some(to) => Conn::open_to(key, to, &seg, self.isn(&key)).map(|mut c| {
+                    let names = self
+                        .cfg
+                        .named
+                        .iter()
+                        .map(|(h, _)| h.to_ascii_lowercase())
+                        .collect();
+                    c.dns = Some(dns::Stream::new(self.cfg.dns_all, names));
+                    c
+                }),
+                None => Conn::open(key, &seg, self.isn(&key)),
+            };
+            match opened {
                 Ok(c) => (self.tcp.reserve(key), c),
                 Err(_) => {
                     let mut o = self.out();
@@ -1620,6 +1640,16 @@ impl<'r> Stack<'r> {
             }
         }
         self.buf = buf;
+        // What answers of the guest's DNS over TCP resolved granted names to.
+        if let Some(d) = c.dns.as_mut() {
+            for (name, addrs) in d.learned.drain(..) {
+                for (host, port) in &self.cfg.named {
+                    if host.eq_ignore_ascii_case(&name) {
+                        self.cfg.learned.extend(addrs.iter().map(|a| (*a, *port)));
+                    }
+                }
+            }
+        }
         self.settle(slot, c);
     }
 

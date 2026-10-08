@@ -885,11 +885,12 @@ fn switch(
             link: crate::links::link_index(i)?,
             any: l.dns,
             names: l.mcp.iter().map(|(h, _)| h.clone()).collect(),
+            addrs: l.addresses.iter().map(|a| a.addr).collect(),
         });
     }
     if let (false, Some(up)) = (askers.is_empty(), resolver) {
-        let (listen, upstream) = switch.resolver_sockets(std::net::SocketAddr::from((up, 53)))?;
-        crate::agentdns::start(listen, upstream, askers).map_err(io::Error::other)?;
+        let sockets = switch.resolver_sockets(std::net::SocketAddr::from((up, 53)))?;
+        crate::agentdns::start(sockets, askers).map_err(io::Error::other)?;
     }
     Ok(switch)
 }

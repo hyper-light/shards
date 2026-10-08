@@ -479,17 +479,21 @@ impl Switch {
     }
 
     /// The agents' resolver's sockets, of the switch's namespace (`agentdns`): port 53 of
-    /// every switch address, which each agent asks at its gateway, and one connected to
-    /// `upstream`, the microVM's resolver.
-    pub fn resolver_sockets(
-        &self,
-        upstream: std::net::SocketAddr,
-    ) -> io::Result<(std::net::UdpSocket, std::net::UdpSocket)> {
+    /// every switch address, which each agent asks at its gateway, by UDP and by TCP; one
+    /// connected to `upstream`, the microVM's resolver; and the namespace, which its TCP
+    /// connections upstream are made in.
+    pub fn resolver_sockets(&self, upstream: std::net::SocketAddr) -> io::Result<crate::agentdns::Sockets> {
         in_netns(Some(self.ns.as_raw_fd()), || {
             let listen = std::net::UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 53))?;
             let up = std::net::UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))?;
             up.connect(upstream)?;
-            Ok((listen, up))
+            let tcp = std::net::TcpListener::bind((Ipv4Addr::UNSPECIFIED, 53))?;
+            Ok(crate::agentdns::Sockets {
+                listen,
+                upstream: up,
+                tcp,
+                ns: self.ns.try_clone()?,
+            })
         })
     }
 
@@ -938,18 +942,21 @@ fn policy(
     let up = UPLINK_IFINDEX as u32;
     let mut b = Batch::new();
     b.chain(b"input\0", b"filter\0", nft::NF_INET_LOCAL_IN, 0, nft::NF_DROP);
-    // What the microVM's resolver answers the agents' resolver.
-    let mut e = Vec::new();
-    on(&mut e, nft::NFT_META_IIF, up);
-    source_ports(&mut e, (17, 53, 53));
-    accept(&mut e);
-    b.rule(b"input\0", e);
-    for n in dns {
+    // What the microVM's resolver answers the agents' resolver, and the agents'
+    // questions, by UDP and by TCP, for answers too long for UDP (RFC 7766).
+    for proto in [17, 6] {
         let mut e = Vec::new();
-        on(&mut e, nft::NFT_META_IIF, link_index(*n)?);
-        ports(&mut e, (17, 53, 53));
+        on(&mut e, nft::NFT_META_IIF, up);
+        source_ports(&mut e, (proto, 53, 53));
         accept(&mut e);
         b.rule(b"input\0", e);
+        for n in dns {
+            let mut e = Vec::new();
+            on(&mut e, nft::NFT_META_IIF, link_index(*n)?);
+            ports(&mut e, (proto, 53, 53));
+            accept(&mut e);
+            b.rule(b"input\0", e);
+        }
     }
     b.chain(b"forward\0", b"filter\0", nft::NF_INET_FORWARD, 0, nft::NF_DROP);
     // A flow from `from` to `to` on `range`, and its answers back.
@@ -1048,6 +1055,7 @@ fn gate_policy(sock: &OwnedFd, g: &Gate) -> io::Result<()> {
         }
         if g.dns {
             opens(&mut b, Some(TRANSIT_SWITCH), (17, 53, 53));
+            opens(&mut b, Some(TRANSIT_SWITCH), (6, 53, 53));
         }
         // What is opened to it, from a peer's address or past the microVM, and its answers
         // back, untracked.
@@ -1176,6 +1184,7 @@ fn outside(sock: &OwnedFd, eth0: u32, u: &Uplink) -> io::Result<()> {
     }
     if u.resolver {
         up(&mut b, UPLINK_SWITCH, (17, 53, 53));
+        up(&mut b, UPLINK_SWITCH, (6, 53, 53));
     }
     b.chain(
         b"post\0",

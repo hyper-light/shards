@@ -255,6 +255,99 @@ fn ptr_addr(name: &str) -> Option<Ipv4Addr> {
     Some(Ipv4Addr::new(*a, *b, *c, *d))
 }
 
+/// One DNS-over-TCP connection between the guest and the host's resolver (RFC 7766), as
+/// a guest's UDP questions are (D59): each whole question (RFC 1035 §4.2.2, its length's
+/// two bytes first) goes to the host's resolver only if a grant names it, and is REFUSED
+/// otherwise; each answer goes to the guest once it is whole, its A records learned. A
+/// refusal goes where no answer is part way, as RFC 7766 §7 lets answers come in any order.
+#[derive(Debug)]
+pub struct Stream {
+    /// Whether any name may be asked; else these alone, lowered.
+    any: bool,
+    names: Vec<String>,
+    /// The guest's bytes of a question not yet whole, and the host's of an answer.
+    asked: Vec<u8>,
+    answer: Vec<u8>,
+    /// Refusals, framed, waiting for no answer to be part way.
+    refusals: Vec<u8>,
+    /// What answers of granted names resolved to, for the stack to learn.
+    pub learned: Vec<(String, Vec<Ipv4Addr>)>,
+}
+
+/// The whole messages at the front of `buf`, taken from it, each with its length's bytes.
+fn framed(buf: &mut Vec<u8>) -> Vec<Vec<u8>> {
+    let mut out = Vec::new();
+    while let Some(&[a, b]) = buf.first_chunk::<2>() {
+        let end = 2 + usize::from(u16::from_be_bytes([a, b]));
+        if buf.len() < end {
+            break;
+        }
+        out.push(buf.drain(..end).collect());
+    }
+    out
+}
+
+impl Stream {
+    pub fn new(any: bool, names: Vec<String>) -> Stream {
+        Stream {
+            any,
+            names,
+            asked: Vec::new(),
+            answer: Vec::new(),
+            refusals: Vec::new(),
+            learned: Vec::new(),
+        }
+    }
+
+    /// The guest's `bytes`: what of them goes to the host, whole granted questions.
+    pub fn from_guest(&mut self, bytes: &[u8]) -> Vec<u8> {
+        self.asked.extend_from_slice(bytes);
+        let mut out = Vec::new();
+        for m in framed(&mut self.asked) {
+            let q = m.get(2..).unwrap_or_default();
+            let granted = self.any || query_name(q).is_some_and(|n| self.names.contains(&n));
+            if granted {
+                out.extend_from_slice(&m);
+            } else if let Some(no) = refused(q)
+                && let Ok(len) = u16::try_from(no.len())
+            {
+                self.refusals.extend_from_slice(&len.to_be_bytes());
+                self.refusals.extend_from_slice(&no);
+            }
+        }
+        out
+    }
+
+    /// The host's `bytes`, to the guest: each answer whole, once it is, read for what it
+    /// resolved, then the refusals that waited for its end.
+    pub fn from_host(&mut self, bytes: &[u8]) -> Vec<u8> {
+        self.answer.extend_from_slice(bytes);
+        let mut out = Vec::new();
+        for m in framed(&mut self.answer) {
+            if let Some(found) = a_records(m.get(2..).unwrap_or_default()) {
+                self.learned.push(found);
+            }
+            out.extend_from_slice(&m);
+            out.append(&mut self.refusals);
+        }
+        out
+    }
+
+    /// The bytes held for the guest: refusals, and an answer not yet whole.
+    pub fn held(&self) -> usize {
+        self.refusals.len() + self.answer.len()
+    }
+
+    /// The refusals that may go now: none while an answer is part way.
+    pub fn refusals(&mut self) -> Vec<u8> {
+        if !self.answer.is_empty() {
+            Vec::new()
+        } else {
+            std::mem::take(&mut self.refusals)
+        }
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::indexing_slicing)]
 mod tests {
@@ -338,5 +431,60 @@ mod tests {
         assert!(a.ends_with(b"\x03web\x04net1\x00"), "{a:?}");
         assert_eq!(n.answer(&a), None, "a response is not answered");
         assert!(n.answer(&[1, 2]).is_none());
+    }
+
+    fn framed_msg(m: &[u8]) -> Vec<u8> {
+        [&(m.len() as u16).to_be_bytes()[..], m].concat()
+    }
+
+    /// An answer to `q` of one A record, `ip`.
+    fn answered(q: &[u8], ip: [u8; 4]) -> Vec<u8> {
+        let mut r = q.to_vec();
+        r[2] |= 0x80;
+        r[7] = 1;
+        r.extend_from_slice(&[0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4]);
+        r.extend_from_slice(&ip);
+        r
+    }
+
+    #[test]
+    fn tcp_questions_go_on_whole_and_only_as_granted() {
+        let mut s = Stream::new(false, vec!["mcp.example".into()]);
+        let granted = framed_msg(&query("MCP.example", TYPE_A));
+        let other = framed_msg(&query("api.example", TYPE_A));
+        // A question split across segments goes on once it is whole.
+        assert!(s.from_guest(&granted[..5]).is_empty());
+        assert_eq!(s.from_guest(&granted[5..]), granted);
+        // Another name: not to the host; REFUSED, at once, with nothing part way.
+        assert!(s.from_guest(&other).is_empty());
+        let no = s.refusals();
+        assert_eq!(no, framed_msg(&refused(&query("api.example", TYPE_A)).unwrap()));
+        assert_eq!(no[2 + 3] & 0x0f, 5);
+        assert!(s.refusals().is_empty());
+        // Any name, granted any.
+        let mut any = Stream::new(true, Vec::new());
+        assert_eq!(any.from_guest(&other), other);
+    }
+
+    #[test]
+    fn tcp_refusals_wait_for_an_answer_to_end_and_answers_are_learned() {
+        let mut s = Stream::new(false, vec!["mcp.example".into()]);
+        let q = query("mcp.example", TYPE_A);
+        s.from_guest(&framed_msg(&q));
+        let answer = framed_msg(&answered(&q, [192, 0, 2, 7]));
+        // Part of the answer: held, whole messages alone go to the guest.
+        assert!(s.from_host(&answer[..10]).is_empty());
+        assert_eq!(s.held(), 10);
+        // A refusal now waits for the answer's end, then follows it.
+        s.from_guest(&framed_msg(&query("api.example", TYPE_A)));
+        assert!(s.refusals().is_empty());
+        let out = s.from_host(&answer[10..]);
+        let no = framed_msg(&refused(&query("api.example", TYPE_A)).unwrap());
+        assert_eq!(out, [answer.clone(), no].concat());
+        assert_eq!(s.held(), 0);
+        assert_eq!(
+            s.learned,
+            vec![("mcp.example".to_string(), vec![Ipv4Addr::new(192, 0, 2, 7)])]
+        );
     }
 }

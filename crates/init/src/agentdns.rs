@@ -8,10 +8,17 @@
 //! resolver, the network process at eth0's gateway, which holds the microVM to the union
 //! of its agents' grants; the rest is REFUSED at once. Queries wait on no other query: each
 //! is sent upstream under an ID of the relay's, and answered as its answer comes.
+//!
+//! It answers over TCP too, for answers too long for UDP (RFC 7766): a resolver asks again
+//! over TCP when a UDP answer comes truncated. A TCP asker is known by its address, which
+//! the switch's strict reverse-path filter holds to its link and which no agent can use
+//! without the answers coming to it (a connection is made only where its answers arrive).
+//! Each connection is relayed over a TCP connection of its own to the microVM's resolver;
+//! each asker may hold an equal share of the descriptors the relay has to spare.
 
 use std::collections::HashMap;
 use std::io;
-use std::net::UdpSocket;
+use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream, UdpSocket};
 use std::os::fd::AsRawFd;
 use std::time::{Duration, Instant};
 
@@ -29,12 +36,39 @@ pub struct Asker {
     pub any: bool,
     /// Else these alone, lowered: its remote MCP servers' hosts.
     pub names: Vec<String>,
+    /// Its link's addresses, which a TCP question comes from.
+    pub addrs: Vec<Ipv4Addr>,
+}
+
+impl Asker {
+    /// Whether it may ask the question `q`.
+    fn may_ask(&self, q: &[u8]) -> bool {
+        self.any || query_name(q).is_some_and(|name| self.names.contains(&name))
+    }
 }
 
 /// Starts the relay on `listen` (port 53 of every switch address) and `upstream`
 /// (connected to the microVM's resolver), both of the switch's namespace, in a process of
 /// its own.
-pub fn start(listen: UdpSocket, upstream: UdpSocket, askers: Vec<Asker>) -> Result<(), String> {
+/// The relay's sockets, of the switch's namespace (`links::Switch::resolver_sockets`).
+pub struct Sockets {
+    /// Port 53 of every switch address, by UDP and by TCP.
+    pub listen: UdpSocket,
+    pub tcp: TcpListener,
+    /// Connected to the microVM's resolver.
+    pub upstream: UdpSocket,
+    /// The switch's namespace, which the relay joins, so that its connections upstream
+    /// leave the way its UDP questions do.
+    pub ns: std::os::fd::OwnedFd,
+}
+
+pub fn start(sockets: Sockets, askers: Vec<Asker>) -> Result<(), String> {
+    let Sockets {
+        listen,
+        tcp,
+        upstream,
+        ns,
+    } = sockets;
     for s in [&listen, &upstream] {
         s.set_nonblocking(true)
             .map_err(|e| format!("the agents' resolver: {e}"))?;
@@ -65,7 +99,24 @@ pub fn start(listen: UdpSocket, upstream: UdpSocket, askers: Vec<Asker>) -> Resu
             io::Error::last_os_error()
         )),
         0 => {
-            crate::dnsrelay::keep_only(&[listen.as_raw_fd(), upstream.as_raw_fd()]);
+            crate::dnsrelay::keep_only(&[
+                listen.as_raw_fd(),
+                upstream.as_raw_fd(),
+                tcp.as_raw_fd(),
+                ns.as_raw_fd(),
+            ]);
+            // SAFETY: setns(2) of the switch's namespace, a descriptor this process owns,
+            // before it has another thread; closed after.
+            let joined = unsafe { libc::setns(ns.as_raw_fd(), libc::CLONE_NEWNET) } == 0;
+            drop(ns);
+            if joined && let Ok(to) = upstream.peer_addr() {
+                let askers = askers.clone();
+                // A thread of the relay's own: what it cannot start leaves TCP unanswered,
+                // and UDP as it was.
+                let _ = std::thread::Builder::new()
+                    .name("agentdns-tcp".into())
+                    .spawn(move || serve_tcp(&tcp, to, &askers));
+            }
             relay(&listen, &upstream, &askers);
             // SAFETY: _exit(2) of the child, which owns nothing to flush.
             unsafe { libc::_exit(0) }
@@ -256,6 +307,100 @@ impl<T> Flight<T> {
     }
 }
 
+/// The descriptors each TCP asker may hold: an equal share of those the process may open
+/// (RLIMIT_NOFILE) beyond those it has open, two to a connection (the asker's and the
+/// upstream one).
+fn tcp_share(askers: usize) -> usize {
+    // SAFETY: an all-zero rlimit, filled by getrlimit(2).
+    let mut lim: libc::rlimit = unsafe { std::mem::zeroed() };
+    // SAFETY: getrlimit(2) into the struct just made.
+    let soft = if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &raw mut lim) } == 0 {
+        usize::try_from(lim.rlim_cur).unwrap_or(usize::MAX)
+    } else {
+        0
+    };
+    let open = std::fs::read_dir("/proc/self/fd").map_or(0, Iterator::count);
+    soft.saturating_sub(open) / 2 / askers.max(1)
+}
+
+/// The TCP questions: each connection on a thread of its own, its asker known by its
+/// address, each question answered REFUSED or relayed to the microVM's resolver `to` over a
+/// connection of its own; idle for `WAIT`, it is closed.
+fn serve_tcp(listener: &TcpListener, to: SocketAddr, askers: &[Asker]) {
+    let share = tcp_share(askers.len());
+    let held: std::sync::Mutex<HashMap<usize, usize>> = std::sync::Mutex::new(HashMap::new());
+    std::thread::scope(|scope| {
+        for conn in listener.incoming() {
+            let Ok(mut conn) = conn else { continue };
+            let Ok(SocketAddr::V4(from)) = conn.peer_addr() else {
+                continue;
+            };
+            let Some(at) = askers.iter().position(|a| a.addrs.contains(from.ip())) else {
+                continue;
+            };
+            {
+                let mut h = held.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                let n = h.entry(at).or_insert(0);
+                if *n >= share {
+                    continue;
+                }
+                *n += 1;
+            }
+            let held = &held;
+            let asker = askers.get(at);
+            let served = std::thread::Builder::new()
+                .name("agentdns-conn".into())
+                .spawn_scoped(scope, move || {
+                    if let Some(asker) = asker {
+                        let _ = serve_connection(&mut conn, to, asker);
+                    }
+                    if let Some(n) = held
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .get_mut(&at)
+                    {
+                        *n = n.saturating_sub(1);
+                    }
+                });
+            if served.is_err()
+                && let Some(n) = held
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .get_mut(&at)
+            {
+                *n = n.saturating_sub(1);
+            }
+        }
+    });
+}
+
+fn serve_connection(conn: &mut TcpStream, to: SocketAddr, asker: &Asker) -> io::Result<()> {
+    conn.set_read_timeout(Some(WAIT))?;
+    conn.set_write_timeout(Some(WAIT))?;
+    let mut upstream: Option<TcpStream> = None;
+    while let Some(q) = crate::dnsrelay::read_message(conn)? {
+        if !asker.may_ask(&q) {
+            if let Some(no) = refused(&q) {
+                crate::dnsrelay::write_message(conn, &no)?;
+            }
+            continue;
+        }
+        if upstream.is_none() {
+            let up = TcpStream::connect_timeout(&to, WAIT)?;
+            up.set_read_timeout(Some(WAIT))?;
+            up.set_write_timeout(Some(WAIT))?;
+            upstream = Some(up);
+        }
+        let Some(up) = upstream.as_mut() else { break };
+        crate::dnsrelay::write_message(up, &q)?;
+        match crate::dnsrelay::read_message(up)? {
+            Some(answer) => crate::dnsrelay::write_message(conn, &answer)?,
+            None => break,
+        }
+    }
+    Ok(())
+}
+
 fn relay(listen: &UdpSocket, upstream: &UdpSocket, askers: &[Asker]) {
     let mut flight: Flight<(Arrival, [u8; 2])> = Flight::new(askers.len());
     let mut next: u16 = 0;
@@ -287,7 +432,7 @@ fn relay(listen: &UdpSocket, upstream: &UdpSocket, askers: &[Asker]) {
             let granted = askers
                 .iter()
                 .find(|a| a.link == from.link)
-                .is_some_and(|a| a.any || query_name(q).is_some_and(|name| a.names.contains(&name)));
+                .is_some_and(|a| a.may_ask(q));
             if !granted || !flight.admits(from.link) {
                 if let Some(no) = refused(q) {
                     let _ = answer_to(listen, &no, &from);

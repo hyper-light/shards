@@ -5528,31 +5528,70 @@ fn a_remote_mcp_server_is_a_grant_of_that_server_alone() {
         port
     };
     let (mcp_port, other) = (serve(), serve());
-    // The host's resolver: mcp.example and api.example are this host, so that a name
-    // refused is shards' refusal, not the resolver's.
+    // The host's resolver, by UDP and by TCP: mcp.example and api.example are this host,
+    // so that a name refused is shards' refusal, not the resolver's; big.example has an
+    // answer too long for UDP, which comes truncated by UDP (RFC 1035 §4.2.1) and whole by
+    // TCP.
     let resolver = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
-    let resolver_at = format!("{host}:{}", resolver.local_addr().unwrap().port());
+    let resolver_port = resolver.local_addr().unwrap().port();
+    let resolver_tcp = std::net::TcpListener::bind(("0.0.0.0", resolver_port)).unwrap();
+    let resolver_at = format!("{host}:{resolver_port}");
+    let answer = move |q: &[u8]| -> Vec<u8> {
+        let mut at = 12;
+        let mut name = Vec::new();
+        while at < q.len() && q[at] != 0 {
+            let len = usize::from(q[at]);
+            name.push(String::from_utf8_lossy(&q[at + 1..at + 1 + len]).to_lowercase());
+            at += 1 + len;
+        }
+        let qtype = u16::from_be_bytes([q[at + 1], q[at + 2]]);
+        let count: u8 = match name.join(".").as_str() {
+            "mcp.example" | "api.example" if qtype == 1 => 1,
+            "big.example" if qtype == 1 => 64,
+            _ => 0,
+        };
+        let mut r = q[..2].to_vec();
+        r.extend_from_slice(&[0x81, 0x80, 0, 1, 0, count, 0, 0, 0, 0]);
+        r.extend_from_slice(&q[12..at + 5]);
+        for i in 0..count {
+            r.extend_from_slice(&[0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4]);
+            if count == 1 {
+                r.extend_from_slice(&address.octets());
+            } else {
+                r.extend_from_slice(&[192, 0, 2, i]);
+            }
+        }
+        r
+    };
     std::thread::spawn(move || {
         let mut buf = [0u8; 512];
         while let Ok((n, from)) = common::recv_from(&resolver, &mut buf) {
-            let q = &buf[..n];
-            let mut at = 12;
-            let mut name = Vec::new();
-            while at < q.len() && q[at] != 0 {
-                let len = usize::from(q[at]);
-                name.push(String::from_utf8_lossy(&q[at + 1..at + 1 + len]).to_lowercase());
-                at += 1 + len;
-            }
-            let qtype = u16::from_be_bytes([q[at + 1], q[at + 2]]);
-            let answer = matches!(name.join(".").as_str(), "mcp.example" | "api.example") && qtype == 1;
-            let mut r = q[..2].to_vec();
-            r.extend_from_slice(&[0x81, 0x80, 0, 1, 0, u8::from(answer), 0, 0, 0, 0]);
-            r.extend_from_slice(&q[12..at + 5]);
-            if answer {
-                r.extend_from_slice(&[0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4]);
-                r.extend_from_slice(&address.octets());
+            let mut r = answer(&buf[..n]);
+            if r.len() > 512 {
+                // Truncated: the header and question, TC set, no answers.
+                let question_end = 12 + buf[12..n].iter().position(|&b| b == 0).unwrap() + 5;
+                r.truncate(question_end);
+                r[2] |= 0x02;
+                r[6..8].copy_from_slice(&[0, 0]);
             }
             let _ = resolver.send_to(&r, from);
+        }
+    });
+    std::thread::spawn(move || {
+        use std::io::{Read as _, Write as _};
+        for c in resolver_tcp.incoming() {
+            let Ok(mut c) = c else { continue };
+            std::thread::spawn(move || {
+                let mut len = [0u8; 2];
+                while c.read_exact(&mut len).is_ok() {
+                    let mut q = vec![0u8; usize::from(u16::from_be_bytes(len))];
+                    if c.read_exact(&mut q).is_err() {
+                        return;
+                    }
+                    let r = answer(&q);
+                    let _ = c.write_all(&[&u16::try_from(r.len()).unwrap().to_be_bytes()[..], &r].concat());
+                }
+            });
         }
     });
     let (image, _) = served();
@@ -5607,15 +5646,30 @@ fn a_remote_mcp_server_is_a_grant_of_that_server_alone() {
             "call".into(),
             "socket-raw".into(),
             "unshare-net".into(),
-            // A name its grant does not name: refused, though the resolver upstream holds it.
+            // A name its grant does not name: refused, though the resolver upstream holds it,
+            // by UDP and by TCP; its server's name, by TCP too.
             "dnsprobe".into(),
             "resolver".into(),
+            "dnsask".into(),
+            "tcp,api.example".into(),
+            "tcp,mcp.example".into(),
         ],
     );
     let n = agent("n", &["unreach".into(), to(mcp_port)]);
     // g's network grants it any name: the host then asks any of its resolver for the
     // microVM, and only the agents' resolver keeps m to its server's.
-    let g = agent("g", &["resolve".into(), "api.example".into()]);
+    // An answer too long for UDP comes truncated by UDP, as the resolver sent it, and
+    // whole by TCP.
+    let g = agent(
+        "g",
+        &[
+            "resolve".into(),
+            "api.example".into(),
+            "dnsask".into(),
+            "udp,big.example".into(),
+            "tcp,big.example".into(),
+        ],
+    );
     let ctx = context("mcp-ctx", &format!("FROM {image}\n"));
     std::fs::write(
         ctx.join("Agentfile"),
@@ -5661,6 +5715,25 @@ fn a_remote_mcp_server_is_a_grant_of_that_server_alone() {
         // g, granted any name, resolves the one m may not: the host asks it for the
         // microVM, and the agents' resolver alone keeps m from it.
         ("g", "confined resolve api.example: 0,0".to_string()),
+        // By TCP as by UDP: m's own server's name answered, the other refused.
+        (
+            "m",
+            "confined dnsask tcp mcp.example: rcode 0 tc 0 answers 1".to_string(),
+        ),
+        (
+            "m",
+            "confined dnsask tcp api.example: rcode 5 tc 0 answers 0".to_string(),
+        ),
+        // An answer too long for UDP: truncated, as the resolver sent it, then whole by
+        // TCP (RFC 7766).
+        (
+            "g",
+            "confined dnsask udp big.example: rcode 0 tc 1 answers 0".to_string(),
+        ),
+        (
+            "g",
+            "confined dnsask tcp big.example: rcode 0 tc 0 answers 64".to_string(),
+        ),
         // Not named: no link, and Landlock lets it connect nowhere.
         ("n", format!("confined unreach {}: errno 13", to(mcp_port))),
     ] {

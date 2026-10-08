@@ -113,6 +113,9 @@ pub struct Conn {
     resend: bool,
     recover: u32,
     repair: Option<u32>,
+    /// A connection to the host's resolver for the guest's DNS over TCP: its questions and
+    /// answers read, as the guest's by UDP are.
+    pub dns: Option<crate::dns::Stream>,
 }
 
 /// A segment's bytes, as they lie in a queue that may wrap: one part, then the other.
@@ -161,7 +164,13 @@ pub trait ToGuest {
 impl Conn {
     /// A connection for the guest's SYN: its host socket connecting, without blocking.
     pub fn open(key: Key, seg: &wire::Tcp<'_>, isn: u32) -> io::Result<Conn> {
-        let sock = connect(key.remote)?;
+        Conn::open_to(key, key.remote, seg, isn)
+    }
+
+    /// A connection for the guest's SYN to `key`'s remote end, its host socket connecting
+    /// to `to` instead.
+    pub fn open_to(key: Key, to: (Ipv4Addr, u16), seg: &wire::Tcp<'_>, isn: u32) -> io::Result<Conn> {
+        let sock = connect(to)?;
         Ok(Conn {
             key,
             sock,
@@ -190,6 +199,7 @@ impl Conn {
             resend: false,
             recover: isn,
             repair: None,
+            dns: None,
         })
     }
 
@@ -225,6 +235,7 @@ impl Conn {
             resend: false,
             recover: isn,
             repair: None,
+            dns: None,
         };
         c.send_syn(out);
         c
@@ -451,7 +462,21 @@ impl Conn {
                     self.host_eof = true;
                     break;
                 }
-                Ok(n) => self.to_guest.extend(buf.get(..n).unwrap_or_default()),
+                Ok(n) => {
+                    let got = buf.get(..n).unwrap_or_default();
+                    match self.dns.as_mut() {
+                        Some(d) => {
+                            self.to_guest.extend(d.from_host(got));
+                            // A resolver that stops part way through an answer holds no
+                            // more than this side holds for any host.
+                            if d.held() > TO_GUEST {
+                                self.reset(out);
+                                return;
+                            }
+                        }
+                        None => self.to_guest.extend(got),
+                    }
+                }
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
                 Err(_) => {
@@ -732,9 +757,21 @@ impl Conn {
         if seq == self.rcv_nxt && !data.is_empty() && !self.guest_fin {
             let room = TO_HOST.saturating_sub(self.to_host.len());
             let taken = data.get(..data.len().min(room)).unwrap_or_default();
+            if let Some(d) = self.dns.as_mut() {
+                // Questions go whole, if granted; refusals where no answer is part way.
+                let granted = d.from_guest(taken);
+                self.to_host.extend(granted);
+                self.to_guest.extend(d.refusals());
+                if d.held() > TO_GUEST {
+                    self.reset(out);
+                    return;
+                }
+            }
             // Straight from the frame to the host's socket while nothing waits before them;
             // what it has no room for now waits in `to_host`.
-            let written = if self.to_host.is_empty() {
+            let written = if self.dns.is_some() {
+                0
+            } else if self.to_host.is_empty() {
                 match write_now(&self.sock, [taken, &[]]) {
                     Ok(n) => n,
                     Err(_) => {
@@ -745,7 +782,9 @@ impl Conn {
             } else {
                 0
             };
-            self.to_host.extend(taken.get(written..).unwrap_or_default());
+            if self.dns.is_none() {
+                self.to_host.extend(taken.get(written..).unwrap_or_default());
+            }
             self.rcv_nxt = self.rcv_nxt.wrapping_add(taken.len() as u32);
             answer = true;
         } else if !seg.payload.is_empty() {

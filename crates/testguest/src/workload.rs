@@ -1231,9 +1231,9 @@ fn confined(args: &[String]) -> i32 {
     for a in args {
         match a.as_str() {
             "see" | "write" | "bind" | "connect" | "call" | "listen" | "reach" | "unreach" | "cat"
-            | "resolve" | "dnsprobe" | "unix" | "abstract" | "unix-serve" | "pause" | "udpflood"
-            | "tcpflood" | "udpaskfrom" | "reachmany" | "udpask" | "srv-send" | "srv-receive"
-            | "srv-answer" => mode = a.as_str(),
+            | "resolve" | "dnsprobe" | "dnsask" | "unix" | "abstract" | "unix-serve" | "pause"
+            | "udpflood" | "tcpflood" | "udpaskfrom" | "reachmany" | "udpask" | "srv-send"
+            | "srv-receive" | "srv-answer" => mode = a.as_str(),
             "srv-mcp" => {
                 let said = match server_call("mcp", "{}") {
                     Ok((t, false)) => t,
@@ -1645,6 +1645,65 @@ fn confined(args: &[String]) -> i32 {
                         _ => errno(&e),
                     });
                 out.push_str(&format!("confined dnsprobe {addr}: {said}\n"));
+            }
+            asked if mode == "dnsask" => {
+                // `udp,NAME` or `tcp,NAME`: its A records asked of the resolver
+                // /etc/resolv.conf names, by hand, by that protocol: the answer's code,
+                // whether it came truncated, and how many answers it holds.
+                let (proto, name) = asked.split_once(',').unwrap_or(("udp", asked));
+                let server = std::fs::read_to_string("/etc/resolv.conf")
+                    .unwrap_or_default()
+                    .lines()
+                    .find_map(|l| l.strip_prefix("nameserver ").map(|a| a.trim().to_string()))
+                    .unwrap_or_default();
+                let mut q = vec![0x52, 0x7b, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0];
+                for label in name.split('.') {
+                    q.push(u8::try_from(label.len()).unwrap_or(0));
+                    q.extend_from_slice(label.as_bytes());
+                }
+                q.extend_from_slice(&[0, 0, 1, 0, 1]);
+                let wait = Some(std::time::Duration::from_secs(3));
+                let answer = if proto == "tcp" {
+                    std::net::TcpStream::connect_timeout(
+                        &std::net::SocketAddr::new(
+                            server.parse().unwrap_or(std::net::Ipv4Addr::UNSPECIFIED.into()),
+                            53,
+                        ),
+                        std::time::Duration::from_secs(3),
+                    )
+                    .and_then(|mut s| {
+                        s.set_read_timeout(wait)?;
+                        let len = u16::try_from(q.len()).unwrap_or(0).to_be_bytes();
+                        s.write_all(&[&len[..], &q].concat())?;
+                        let mut len = [0u8; 2];
+                        s.read_exact(&mut len)?;
+                        let mut a = vec![0u8; usize::from(u16::from_be_bytes(len))];
+                        s.read_exact(&mut a)?;
+                        Ok(a)
+                    })
+                } else {
+                    std::net::UdpSocket::bind("0.0.0.0:0").and_then(|s| {
+                        s.set_read_timeout(wait)?;
+                        s.send_to(&q, (server.as_str(), 53))?;
+                        let mut buf = vec![0u8; 65535];
+                        let n = s.recv(&mut buf)?;
+                        buf.truncate(n);
+                        Ok(buf)
+                    })
+                };
+                let said = match answer {
+                    Ok(a) => format!(
+                        "rcode {} tc {} answers {}",
+                        a.get(3).map_or(0, |b| b & 0x0f),
+                        a.get(2).map_or(0, |b| (b >> 1) & 1),
+                        u16::from_be_bytes([a.get(6).copied().unwrap_or(0), a.get(7).copied().unwrap_or(0)])
+                    ),
+                    Err(e) => match e.kind() {
+                        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut => "timeout".to_string(),
+                        _ => errno(&e),
+                    },
+                };
+                out.push_str(&format!("confined dnsask {proto} {name}: {said}\n"));
             }
             name if mode == "resolve" => {
                 let c = std::ffi::CString::new(name).unwrap_or_default();

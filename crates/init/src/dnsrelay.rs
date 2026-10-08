@@ -104,19 +104,61 @@ fn ask(gateway: SocketAddr, query: &[u8]) -> Option<Vec<u8>> {
 }
 
 /// One TCP connection's queries (RFC 1035 §4.2.2: each its length's two bytes first),
-/// each asked of the gateway by UDP, until it closes.
+/// each asked of the gateway by UDP, which answers the network's names, and again by TCP
+/// where its answer came truncated (RFC 7766 §5), until it closes.
 fn serve_tcp(mut conn: TcpStream, gateway: SocketAddr) -> io::Result<()> {
     conn.set_read_timeout(Some(WAIT))?;
-    loop {
-        let mut len = [0u8; 2];
-        conn.read_exact(&mut len)?;
-        let mut query = vec![0u8; usize::from(u16::from_be_bytes(len))];
-        conn.read_exact(&mut query)?;
-        let Some(answer) = ask(gateway, &query) else {
+    conn.set_write_timeout(Some(WAIT))?;
+    let mut by_tcp: Option<TcpStream> = None;
+    while let Some(query) = read_message(&mut conn)? {
+        let Some(mut answer) = ask(gateway, &query) else {
             return Ok(());
         };
-        let len = u16::try_from(answer.len()).map_err(|_| io::Error::other("an answer too long"))?;
-        conn.write_all(&len.to_be_bytes())?;
-        conn.write_all(&answer)?;
+        // TC (RFC 1035 §4.1.1): asked again by TCP, the truncated answer kept where that
+        // cannot be.
+        if answer.get(2).is_some_and(|f| f & 0x02 != 0)
+            && let Ok(Some(whole)) = ask_tcp(&mut by_tcp, gateway, &query)
+        {
+            answer = whole;
+        }
+        write_message(&mut conn, &answer)?;
     }
+    Ok(())
+}
+
+/// The gateway's answer to `query` by TCP, on the connection `held`, made where there is
+/// none, and dropped where it fails.
+fn ask_tcp(held: &mut Option<TcpStream>, gateway: SocketAddr, query: &[u8]) -> io::Result<Option<Vec<u8>>> {
+    if held.is_none() {
+        let s = TcpStream::connect_timeout(&gateway, WAIT)?;
+        s.set_read_timeout(Some(WAIT))?;
+        s.set_write_timeout(Some(WAIT))?;
+        *held = Some(s);
+    }
+    let Some(s) = held.as_mut() else { return Ok(None) };
+    let answer = write_message(s, query).and_then(|()| read_message(s));
+    if !matches!(answer, Ok(Some(_))) {
+        *held = None;
+    }
+    answer
+}
+
+/// One length-prefixed DNS message on `s` (RFC 7766 §8), or none at its end.
+pub(crate) fn read_message(s: &mut TcpStream) -> io::Result<Option<Vec<u8>>> {
+    let mut len = [0u8; 2];
+    match s.read_exact(&mut len) {
+        Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
+        r => r?,
+    }
+    let mut msg = vec![0u8; usize::from(u16::from_be_bytes(len))];
+    s.read_exact(&mut msg)?;
+    Ok(Some(msg))
+}
+
+pub(crate) fn write_message(s: &mut TcpStream, msg: &[u8]) -> io::Result<()> {
+    let len = u16::try_from(msg.len()).map_err(|_| io::Error::other("an answer over 65535 bytes"))?;
+    let mut out = Vec::with_capacity(msg.len() + 2);
+    out.extend_from_slice(&len.to_be_bytes());
+    out.extend_from_slice(msg);
+    s.write_all(&out)
 }
