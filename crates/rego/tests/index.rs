@@ -7,6 +7,8 @@
 //! every distinct answer OPA gave over 100 compilers, and the index's answer must be one
 //! of them (where OPA gave one answer, that one).
 
+#![allow(clippy::unwrap_used, clippy::indexing_slicing)]
+
 use std::collections::BTreeMap;
 
 use serde_json::{Value as Json, json};
