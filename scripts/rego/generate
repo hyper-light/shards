@@ -32,6 +32,10 @@ fetch() {
 }
 fetch builtins.go "$builtins_go"
 fetch builtins.rego "$builtins_rego"
+if ! cmp -s "$work/builtins.rego" "$root/crates/rego/src/buildx_defaults.rego"; then
+	echo "crates/rego/src/buildx_defaults.rego is not buildx $tag policy/builtins.rego" >&2
+	exit 1
+fi
 sed -i.orig 's/^package policy$/package oracle/' "$work/builtins.go"
 rm "$work/builtins.go.orig"
 printf 'module shards.oracle\n\ngo 1.26\n' >"$work/go.mod"
@@ -50,3 +54,6 @@ SHARDS_BUILTINS_OUT="$root/crates/rego/src/builtins.json" \
 SHARDS_PARSE="$root/crates/rego/testdata/parse.json" \
 	SHARDS_PARSE_OUT="$root/crates/rego/testdata/parse-oracle.json" \
 	go test -count=1 -run '^TestShardsParse$' .
+SHARDS_REGO_CASES="$root/crates/rego/testdata/cases.json" \
+	SHARDS_COMPILE_OUT="$root/crates/rego/testdata/compile-oracle.json" \
+	go test -count=1 -run '^TestShardsCompile$' .

@@ -641,5 +641,681 @@
    "input.image.signatures",
    "input.image.hasProvenance"
   ]
+ },
+ {
+  "name": "c-some-vars",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := [i, x] if {\n\tsome i, x\n\tx := input.a[i]\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "a": [
+    5
+   ]
+  }
+ },
+ {
+  "name": "c-some-in-key",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := {k | some k, _ in input}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "a": 1,
+   "b": 2
+  }
+ },
+ {
+  "name": "c-every-nested",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery x in input.a {\n\t\tevery y in x { y > 0 }\n\t}\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "a": [
+    [
+     1
+    ],
+    [
+     2,
+     3
+    ]
+   ]
+  }
+ },
+ {
+  "name": "c-nested-compr",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := [[y | some y in x] | some x in input.a]\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "a": [
+    [
+     1
+    ],
+    [
+     2,
+     3
+    ]
+   ]
+  }
+ },
+ {
+  "name": "c-with-input",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nx := input.v\n\ndecision := y if {\n\ty := x with input.v as 7\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "v": 1
+  }
+ },
+ {
+  "name": "c-with-data",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nx := 1\n\ny := x\n\ndecision := z if {\n\tz := y with data.docker.x as 2\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-with-builtin",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := x if {\n\tx := count([1, 2]) with count as 9\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-with-function",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nf(x) := x\n\ng(x) := 2 * x\n\ndecision := y if {\n\ty := f(3) with f as g\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-with-bad-target",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := x if {\n\tx := 1 with foo as 2\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-with-partial",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\na.b := 1\n\ndecision := x if {\n\tx := a.b with data.docker.a.b.c as 2\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-with-eq",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := x if {\n\tx := 1 with eq as 2\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-with-internal",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := x if {\n\tx := 1 with internal.print as 2\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-else-chain",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nf(x) := \"a\" if x == 1\nelse := \"b\" if x == 2\nelse := \"c\"\n\ndecision := [f(1), f(2), f(3)]\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-ref-head-var",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\na.b[x] := y if {\n\tsome x, y in input\n}\n\ndecision := a\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "p": 1,
+   "q": 2
+  }
+ },
+ {
+  "name": "c-ref-head-nested",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\na.b.c[x].d := 1 if {\n\tsome x in [\"u\", \"v\"]\n}\n\ndecision := a\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-partial-object-multi",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nm[k] := v if {\n\tsome k, v in input.a\n}\n\nm[k] := v if {\n\tsome k, v in input.b\n}\n\ndecision := m\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "a": {
+    "x": 1
+   },
+   "b": {
+    "y": 2
+   }
+  }
+ },
+ {
+  "name": "c-multi-body",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np if {\n\tinput.a\n} {\n\tinput.b\n}\n\ndecision := p\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "b": true
+  }
+ },
+ {
+  "name": "c-fn-object-args",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nf({\"a\": x}) := x\n\ndecision := f({\"a\": 7})\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-fn-array-args",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nf([x, y]) := x + y\n\ndecision := f([3, 4])\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-print-in-compr",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := [x | some x in [1, 2]; print(\"x\", x)]\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-print-every",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery x in [1] {\n\t\tprint(x)\n\t}\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-template-undeclared",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := $\"a {nope}\"\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-template-compr",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := [$\"v {x}\" | some x in [1, 2]]\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-assigned-above",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := x if {\n\tx := 1\n\tx := 2\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-referenced-above",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := x if {\n\ty := x\n\tx := 1\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-declared-unused",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tsome x\n\ttrue\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-cannot-assign",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\t1 := 2\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-assign-negated",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tnot x := 1\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-arity",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := count([1], [2])\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-fn-arity",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nf(x) := x\n\ndecision := f(1, 2, 3)\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-conflict-kinds",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np := 1\n\np contains 2\n\ndecision := p\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-multiple-defaults",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault p := 1\n\ndefault p := 2\n\ndecision := p\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-conflict-child",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\na := 1\n\na.b := 2\n\ndecision := a\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-recursion",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np if q\n\nq if p\n\ndecision := p\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-shadow-input",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tinput := 1\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-rule-named-input",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ninput := 1\n\ndecision := 1\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-unsafe-generated",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := y if {\n\ty := [x | x := z]\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-unsafe-in-compr",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := [1 | count(y) > 0]\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-unsafe-negation",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tnot x\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-type-error",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := count(1)\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-type-error-str",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := lower(1)\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-void-call",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := print(\"a\")\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-reorder",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := y if {\n\ty := x + 1\n\tx := 2\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-reorder-compr",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := z if {\n\tz := [w | w := q]\n\tq := 3\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-eq-rewrite",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tinput.a == 1\n\t1 == 1\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "a": 1
+  }
+ },
+ {
+  "name": "c-dynamic-terms",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := [input.a[input.i], {input.k: input.v}]\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "a": [
+    9
+   ],
+   "i": 0,
+   "k": "key",
+   "v": "val"
+  }
+ },
+ {
+  "name": "c-not-call",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tnot startswith(\"ab\", \"x\")\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-import-alias",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nimport input.image as img\n\ndecision := img.repo\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "repo": "r"
+   }
+  }
+ },
+ {
+  "name": "c-import-data",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nimport data.docker.x\n\nx := 1\n\ndecision := x\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-dup-import",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nimport input.a\nimport input.b as a\n\ndecision := 1\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-set-ops-compr",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := {x | some x in input.a} | {y | some y in input.b}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "a": [
+    1
+   ],
+   "b": [
+    2
+   ]
+  }
+ },
+ {
+  "name": "c-obj-compr-ref",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := {k: input[k] | some k, _ in input}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "a": 1
+  }
+ },
+ {
+  "name": "c-head-ref-var-key",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndeny contains msg if {\n\tsome m in input\n\tmsg := sprintf(\"%v\", [m])\n}\n\ndecision := deny\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": [
+   "a"
+  ]
+ },
+ {
+  "name": "c-default-fn-call",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault f(_) := 0\n\nf(x) := 1 if x > 5\n\ndecision := [f(1), f(9)]\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-wildcards",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := [x | [x, _] := [1, 2]]\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-call-in-ref",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := split(\"a.b\", \".\")[1]\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-membership-with",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\t\"a\" in input.list with input.list as [\"a\"]\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-every-key",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery k, v in {\"a\": 1} { k == \"a\"; v == 1 }\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-some-in-ref",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := [v | some v in input.a.b]\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "a": {
+    "b": [
+     1
+    ]
+   }
+  }
  }
 ]

@@ -390,3 +390,65 @@ func TestShardsParse(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// What OPA's compiler, set up as buildx's (capabilities, modules kept, print
+// statements on), makes of each case's modules beside buildx's builtins.rego: each
+// compiled module's text, by name, or the compile errors.
+func TestShardsCompile(t *testing.T) {
+	dt, err := os.ReadFile(os.Getenv("SHARDS_REGO_CASES"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cases []Case
+	if err := json.Unmarshal(dt, &cases); err != nil {
+		t.Fatal(err)
+	}
+	caps := &ast.Capabilities{Builtins: builtins(), Features: slices.Clone(ast.Features)}
+	for _, h := range hostDecls {
+		caps.Builtins = append(caps.Builtins, &ast.Builtin{Name: h.name, Decl: h.decl})
+	}
+	type result struct {
+		Name    string            `json:"name"`
+		Modules map[string]string `json:"modules,omitempty"`
+		Error   string            `json:"error,omitempty"`
+	}
+	var out []result
+	for _, c := range cases {
+		r := result{Name: c.Name}
+		popts := ast.ParserOptions{RegoVersion: ast.RegoV1, Capabilities: caps}
+		mods := map[string]*ast.Module{}
+		srcs := append([][2]string{{"builtin/buildx_defaults.rego", builtinsRego}}, c.Modules...)
+		var perr error
+		for _, m := range srcs {
+			mod, err := ast.ParseModuleWithOpts(m[0], m[1], popts)
+			if err != nil {
+				perr = err
+				break
+			}
+			mods[m[0]] = mod
+		}
+		if perr != nil {
+			r.Error = "parse: " + perr.Error()
+			out = append(out, r)
+			continue
+		}
+		comp := ast.NewCompiler().WithCapabilities(caps).WithKeepModules(true).WithEnablePrintStatements(true)
+		comp.Compile(mods)
+		if comp.Failed() {
+			r.Error = comp.Errors.Error()
+		} else {
+			r.Modules = map[string]string{}
+			for name, m := range comp.Modules {
+				r.Modules[name] = m.String()
+			}
+		}
+		out = append(out, r)
+	}
+	res, err := json.MarshalIndent(out, "", " ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(os.Getenv("SHARDS_COMPILE_OUT"), append(res, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}

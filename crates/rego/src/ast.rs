@@ -120,7 +120,8 @@ impl Term {
         match &self.value {
             TermValue::Null | TermValue::Bool(_) | TermValue::Number(_) | TermValue::String(_) => true,
             TermValue::Var(_) => false,
-            TermValue::Ref(r) => r.iter().all(Term::is_ground),
+            // A ref's head is a variable naming a document; only the rest counts.
+            TermValue::Ref(r) => r.iter().skip(1).all(Term::is_ground),
             TermValue::Array(a) | TermValue::Set(a) | TermValue::Call(a) => a.iter().all(Term::is_ground),
             TermValue::Object(o) => o.iter().all(|(k, v)| k.is_ground() && v.is_ground()),
             TermValue::ArrayCompr(..) | TermValue::SetCompr(..) | TermValue::ObjectCompr(..) => false,
