@@ -1136,6 +1136,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "shards-rego"
+version = "0.1.0"
+dependencies = [
+ "num-bigint",
+ "serde_json",
+]
+
+[[package]]
 name = "shards-seccomp"
 version = "0.1.0"
 dependencies = [

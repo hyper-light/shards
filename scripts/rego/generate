@@ -1,0 +1,52 @@
+#!/bin/sh
+# Regenerates crates/rego/testdata/oracle.json: what OPA v1.14.1, set up as buildx
+# v0.37.1's policy package sets it up (policy/builtins.go and policy/builtins.rego,
+# fetched at that tag and checked against their SHA-256), makes of the corpus in
+# crates/rego/testdata/cases.json, which crates/rego/tests/oracle.rs expects shards-rego
+# to make. Run with the Go release that builds that buildx (1.26).
+#
+#   scripts/rego/generate
+set -eu
+
+here=$(cd "$(dirname "$0")" && pwd)
+root=$(cd "$here/../.." && pwd)
+tag=v0.37.1
+builtins_go=3864f6ebfc6eb97ddbc05bef8f380db30b54a81b4359cad23ba5bf06f56f26c2
+builtins_rego=8990a878e2fa88b07ff2da57f2476bb79953d50f17823298d541f1d86761c8e2
+case $(go env GOVERSION) in
+go1.26 | go1.26.*) ;;
+*)
+	echo "Go 1.26 builds buildx $tag; this is $(go env GOVERSION)" >&2
+	exit 1
+	;;
+esac
+
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+fetch() {
+	curl -fsSL -A shards-dev -o "$work/$1" "https://raw.githubusercontent.com/docker/buildx/$tag/policy/$1"
+	if [ "$(shasum -a 256 "$work/$1" | cut -d' ' -f1)" != "$2" ]; then
+		echo "buildx $tag policy/$1 is not the file pinned ($2)" >&2
+		exit 1
+	fi
+}
+fetch builtins.go "$builtins_go"
+fetch builtins.rego "$builtins_rego"
+sed -i.orig 's/^package policy$/package oracle/' "$work/builtins.go"
+rm "$work/builtins.go.orig"
+printf 'module shards.oracle\n\ngo 1.26\n' >"$work/go.mod"
+cp "$here/oracle_test.go" "$work/oracle_test.go"
+cd "$work"
+go get github.com/open-policy-agent/opa@v1.14.1 >/dev/null 2>&1
+go mod tidy >/dev/null 2>&1
+SHARDS_REGO_CASES="$root/crates/rego/testdata/cases.json" \
+	SHARDS_REGO_OUT="$root/crates/rego/testdata/oracle.json" \
+	go test -count=1 -run '^TestShardsRego$' .
+SHARDS_NUMBERS="$root/crates/rego/testdata/numbers.json" \
+	SHARDS_NUMBERS_OUT="$root/crates/rego/testdata/numbers-oracle.json" \
+	go test -count=1 -run '^TestShardsNumbers$' .
+SHARDS_BUILTINS_OUT="$root/crates/rego/src/builtins.json" \
+	go test -count=1 -run '^TestShardsBuiltins$' .
+SHARDS_PARSE="$root/crates/rego/testdata/parse.json" \
+	SHARDS_PARSE_OUT="$root/crates/rego/testdata/parse-oracle.json" \
+	go test -count=1 -run '^TestShardsParse$' .
