@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 use shards_dockerfile::platform::{self, Platform};
 use shards_image::reference::Reference;
 
+use super::gitobject::{self, Actor, Commit, Tag};
 use super::{Meta, Source};
 
 /// A JSON document as encoding/json writes Go's values: an object's fields in the order
@@ -240,12 +241,164 @@ impl Image {
     }
 }
 
+/// `HTTP`: an `http://` or `https://` source.
+#[derive(Debug, Clone, Default)]
+pub struct Http {
+    pub url: String,
+    pub schema: String,
+    pub host: String,
+    pub path: String,
+    pub query: BTreeMap<String, Vec<String>>,
+    pub has_auth: bool,
+    pub checksum: String,
+    /// The digest of the content and a signature's hash suffix, and that suffix, where
+    /// `verify_http_pgp_signature` asked for them (checksumResponseForSignature).
+    pub signature_checksum: Option<(String, Vec<u8>)>,
+}
+
+impl Http {
+    pub fn json(&self) -> Json {
+        let mut f = Fields::default()
+            .str("url", &self.url)
+            .str("schema", &self.schema)
+            .str("host", &self.host)
+            .str("path", &self.path);
+        if !self.query.is_empty() {
+            let q = self
+                .query
+                .iter()
+                .map(|(k, v)| {
+                    (
+                        k.clone(),
+                        Json::Arr(v.iter().map(|x| Json::Str(x.clone())).collect()),
+                    )
+                })
+                .collect();
+            f.0.push(("query".into(), Json::Obj(q)));
+        }
+        f.flag("hasAuth", self.has_auth)
+            .str("checksum", &self.checksum)
+            .done()
+    }
+}
+
+/// `Actor`, `omitzero` where empty.
+fn actor_json(a: &Actor) -> Option<Json> {
+    let j = Fields::default()
+        .str("name", &a.name)
+        .str("email", &a.email)
+        .str("when", a.when.as_deref().unwrap_or_default())
+        .done();
+    (!matches!(&j, Json::Obj(o) if o.is_empty())).then_some(j)
+}
+
+/// A Git object's signature, as buildx summarizes it.
+fn signature_json(f: Fields, s: &shards_gitsign::Summary) -> Fields {
+    match s {
+        shards_gitsign::Summary::None => f,
+        shards_gitsign::Summary::Pgp { version, key_id } => {
+            let mut sig = Fields::default();
+            if *version != 0 {
+                sig.0.push(("version".into(), Json::Int(i64::from(*version))));
+            }
+            let sig = sig.str("keyID", &key_id.map(|k| format!("{k:016x}")).unwrap_or_default());
+            f.json("pgpSignature", Some(sig.done()))
+        }
+        shards_gitsign::Summary::Ssh { version, fingerprint } => {
+            let mut sig = Fields::default();
+            if *version != 0 {
+                sig.0.push(("version".into(), Json::Int(i64::from(*version))));
+            }
+            let sig = sig.str("pubKey", fingerprint);
+            f.json("sshSignature", Some(sig.done()))
+        }
+    }
+}
+
+/// `Commit`, and the object it was read from, which `verify_git_signature` verifies.
+#[derive(Debug, Clone)]
+pub struct CommitInput {
+    pub commit: Commit,
+    pub signature: shards_gitsign::Summary,
+    pub object: gitobject::GitObject,
+}
+
+/// `Tag`, and the object it was read from.
+#[derive(Debug, Clone)]
+pub struct TagInput {
+    pub tag: Tag,
+    pub signature: shards_gitsign::Summary,
+    pub object: gitobject::GitObject,
+}
+
+/// `Git`: a `git://` source.
+#[derive(Debug, Clone, Default)]
+pub struct Git {
+    pub schema: String,
+    pub host: String,
+    pub remote: String,
+    pub full_url: String,
+    pub tag_name: String,
+    pub branch: String,
+    pub reference: String,
+    pub subdir: String,
+    pub is_commit_ref: bool,
+    pub is_sha256: bool,
+    pub checksum: String,
+    pub commit_checksum: String,
+    pub is_annotated_tag: bool,
+    pub tag: Option<TagInput>,
+    pub commit: Option<CommitInput>,
+}
+
+impl Git {
+    pub fn json(&self) -> Json {
+        let tag = self.tag.as_ref().map(|t| {
+            let f = Fields::default()
+                .str("object", &t.tag.object)
+                .str("type", &t.tag.kind)
+                .str("tag", &t.tag.tag)
+                .json("tagger", actor_json(&t.tag.tagger))
+                .str("message", &t.tag.message);
+            signature_json(f, &t.signature).done()
+        });
+        let commit = self.commit.as_ref().map(|c| {
+            let f = Fields::default()
+                .str("tree", &c.commit.tree)
+                .strs("parents", &c.commit.parents)
+                .json("author", actor_json(&c.commit.author))
+                .json("committer", actor_json(&c.commit.committer))
+                .str("message", &c.commit.message);
+            signature_json(f, &c.signature).done()
+        });
+        Fields::default()
+            .str("schema", &self.schema)
+            .str("host", &self.host)
+            .str("remote", &self.remote)
+            .str("fullURL", &self.full_url)
+            .str("tagName", &self.tag_name)
+            .str("branch", &self.branch)
+            .str("ref", &self.reference)
+            .str("subDir", &self.subdir)
+            .flag("isCommitRef", self.is_commit_ref)
+            .flag("isSHA256", self.is_sha256)
+            .str("checksum", &self.checksum)
+            .str("commitChecksum", &self.commit_checksum)
+            .flag("isAnnotatedTag", self.is_annotated_tag)
+            .json("tag", tag)
+            .json("commit", commit)
+            .done()
+    }
+}
+
 /// `Input`: the source, and the build's own `Env`.
 #[derive(Debug, Clone, Default)]
 pub struct Input {
     pub env: Env,
     pub local: Option<String>,
     pub image: Option<Image>,
+    pub http: Option<Http>,
+    pub git: Option<Git>,
     /// The fields not known yet, as `input.`-less refs (`image.checksum`).
     pub unknowns: Vec<String>,
 }
@@ -261,6 +414,8 @@ impl Input {
                     .map(|name| Fields::default().str("name", name).done()),
             )
             .json("image", self.image.as_ref().map(Image::json))
+            .json("http", self.http.as_ref().map(Http::json))
+            .json("git", self.git.as_ref().map(Git::json))
             .done()
     }
 
@@ -327,6 +482,38 @@ pub fn of_source(source: &Source, meta: &Meta, wanted: Option<&Platform>) -> Res
             }
             inp.image = Some(img);
         }
+        "http" | "https" => {
+            let u = shards_dockerfile::url::parse(source.identifier.as_bytes())
+                .map_err(|e| format!("failed to parse http source url: {}", String::from_utf8_lossy(&e)))?;
+            let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
+            let mut http = Http {
+                url: source.identifier.clone(),
+                schema: scheme.to_string(),
+                host: text(&u.host),
+                path: text(&u.path),
+                query: u
+                    .query()
+                    .iter()
+                    .map(|(k, v)| (text(k), v.iter().map(|x| text(x)).collect()))
+                    .collect(),
+                ..Http::default()
+            };
+            if let Some(m) = &meta.http {
+                http.checksum = m.checksum.clone();
+                http.signature_checksum = m.signature_checksum.clone();
+            }
+            if http.checksum.is_empty() {
+                inp.unknowns.push("http.checksum".into());
+            }
+            http.has_auth = source.attrs.contains_key("http.authheadersecret");
+            inp.http = Some(http);
+        }
+        "git" => {
+            let (git, unknowns) = git_input(source, rest, meta)?;
+            inp.unknowns
+                .extend(unknowns.into_iter().map(|u| format!("git.{u}")));
+            inp.git = Some(git);
+        }
         "local" => inp.local = Some(rest.to_string()),
         _ => return Err(format!("unsupported source scheme: {scheme}")),
     }
@@ -383,4 +570,127 @@ fn rfc3339(t: &shards_dockerfile::go::Time) -> String {
     let mut whole = *t;
     whole.nanosecond = 0;
     whole.rfc3339_nano().unwrap_or_default()
+}
+
+/// gitutil.ParseURL of a git source's URL, a transport's or else `https://`'s.
+fn parse_git_url(url: &str) -> Result<shards_dockerfile::git::GitUrl, String> {
+    let url = if shards_dockerfile::git::is_git_transport(url.as_bytes()) {
+        url.to_string()
+    } else {
+        format!("https://{url}")
+    };
+    shards_dockerfile::git::parse_url(url.as_bytes()).map_err(|e| match e {
+        shards_dockerfile::git::UrlError::UnknownProtocol => "unknown protocol".to_string(),
+        shards_dockerfile::git::UrlError::Other(e) => String::from_utf8_lossy(&e).into_owned(),
+    })
+}
+
+/// sourceToInput's `git` case: what the identifier, its full URL and the metadata say,
+/// and the fields left unknown.
+fn git_input(source: &Source, rest: &str, meta: &Meta) -> Result<(Git, Vec<&'static str>), String> {
+    let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
+    let u = parse_git_url(rest)?;
+    let mut g = Git {
+        schema: text(&u.scheme),
+        remote: text(&u.remote),
+        host: text(&u.host),
+        ..Git::default()
+    };
+    let mut reference = String::new();
+    let mut full_ref = false;
+    if let Some((r, sub)) = &u.opts {
+        reference = text(r);
+        g.subdir = text(sub);
+        let cleaned = String::from_utf8_lossy(&shards_dockerfile::go::clean(sub)).into_owned();
+        if cleaned == "/" || cleaned == "." {
+            g.subdir.clear();
+        }
+    }
+    if let Some(full) = source.attrs.get("git.fullurl") {
+        let v = if shards_dockerfile::git::is_git_transport(full.as_bytes()) {
+            full.clone()
+        } else {
+            format!("https://{full}")
+        };
+        let f = parse_git_url(&v)?;
+        g.schema = text(&f.scheme);
+        g.remote = text(&f.remote);
+        g.host = text(&f.host);
+        g.full_url = v;
+    }
+    if let Some(t) = reference.strip_prefix("refs/tags/") {
+        g.tag_name = t.to_string();
+        full_ref = true;
+    }
+    if let Some(b) = reference.strip_prefix("refs/heads/") {
+        g.branch = b.to_string();
+        full_ref = true;
+    }
+    if shards_git::remote::is_commit_name(&reference) {
+        g.is_commit_ref = true;
+        g.checksum = reference.clone();
+        g.commit_checksum = reference.clone();
+        full_ref = true;
+    }
+    let mut unknowns: Vec<&'static str> = Vec::new();
+    match &meta.git {
+        None => {
+            if !full_ref {
+                unknowns.extend(["tagName", "branch", "ref"]);
+            } else {
+                g.reference = reference;
+            }
+            if g.checksum.is_empty() {
+                unknowns.extend(["checksum", "isAnnotatedTag", "commitChecksum", "isSHA256"]);
+            }
+            unknowns.extend(["tag", "commit"]);
+        }
+        Some(m) => {
+            g.reference = m.reference.clone();
+            if let Some(t) = g.reference.strip_prefix("refs/tags/") {
+                g.tag_name = t.to_string();
+            }
+            if let Some(b) = g.reference.strip_prefix("refs/heads/") {
+                g.branch = b.to_string();
+            }
+            g.checksum = m.checksum.clone();
+            g.commit_checksum = if m.commit_checksum.is_empty() {
+                g.checksum.clone()
+            } else {
+                m.commit_checksum.clone()
+            };
+            if g.checksum != g.commit_checksum {
+                g.is_annotated_tag = true;
+            }
+            match &m.commit_object {
+                None => unknowns.extend(["commit", "tag"]),
+                Some(raw) => {
+                    let obj = gitobject::parse(raw)?;
+                    obj.verify_checksum(&g.commit_checksum)?;
+                    let commit = obj.to_commit()?;
+                    let signature = shards_gitsign::summary(&obj.signature);
+                    g.commit = Some(CommitInput {
+                        commit,
+                        signature,
+                        object: obj,
+                    });
+                    if let Some(raw) = m.tag_object.as_ref().filter(|t| !t.is_empty()) {
+                        let obj = gitobject::parse(raw)?;
+                        obj.verify_checksum(&g.checksum)?;
+                        let tag = obj.to_tag()?;
+                        let signature = shards_gitsign::summary(&obj.signature);
+                        g.tag = Some(TagInput {
+                            tag,
+                            signature,
+                            object: obj,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    if g.checksum.len() == 64 {
+        g.is_sha256 = true;
+    }
+    Ok((g, unknowns))
 }

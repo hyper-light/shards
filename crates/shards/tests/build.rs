@@ -2036,7 +2036,9 @@ fn url_server(log: Asked, release: std::sync::mpsc::Receiver<()>) -> u16 {
                     31, 139, 8, 0, 0, 0, 0, 0, 2, 255, 171, 202, 44, 40, 72, 77, 225, 2, 0, 172, 0, 58, 199,
                     7, 0, 0, 0,
                 ];
-                let (head, body): (&str, &[u8]) = match path.as_str() {
+                // Routed by the path alone, its query aside.
+                let route = path.split('?').next().unwrap_or_default();
+                let (head, body): (&str, &[u8]) = match route {
                     "/file.txt" => (
                         "200 OK\r\nLast-Modified: Sun, 06 Nov 1994 08:49:37 GMT",
                         b"hello\n",
@@ -9880,5 +9882,222 @@ fn builds_heed_their_policies_as_buildx_does() {
     assert!(
         log.contains("policy input: {\n  \"env\": {\n    \"args\": {\n      \"A\": \"1\"\n    },\n    \"filename\": \"Dockerfile\",\n    \"depth\": 0\n  },\n  \"local\": {\n    \"name\": \"dockerfile\"\n  }\n}"),
         "{log}"
+    );
+}
+
+/// Policies over Git and HTTP sources (D102): each source's input as buildx v0.37.1 gives
+/// it (measured against github.com's in `shards-dind`): a tag's ref resolved, its
+/// annotated tag's object and the commit's, their actors and messages; an HTTP source's
+/// URL, query and digest, resolved by fetching it.
+#[test]
+fn policies_read_git_and_http_sources_as_buildx_does() {
+    if cannot_run_vms() {
+        return;
+    }
+    if std::process::Command::new("git")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        eprintln!("NOTE: no git on this host: Git sources in policies are not exercised");
+        return;
+    }
+    let repos = TempDir::new("policy-git-repos");
+    let origin = repos.join("repo.git");
+    std::fs::create_dir_all(&origin).unwrap();
+    git_in(&origin, &["init", "-q", "-b", "main"]);
+    std::fs::write(origin.join("f"), "f\n").unwrap();
+    git_in(&origin, &["add", "-A"]);
+    git_in(&origin, &["commit", "-q", "-m", "one\n\nbody"]);
+    git_in(&origin, &["tag", "-a", "v1", "-m", "release one"]);
+    let commit = git_in(&origin, &["rev-parse", "HEAD"]).trim().to_string();
+    let tag = git_in(&origin, &["rev-parse", "v1"]).trim().to_string();
+    let git_port = git_http_server(repos.to_path_buf(), Vec::new());
+    let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (_release, held) = std::sync::mpsc::channel();
+    let url_port = url_server(log, held);
+    let home = TempDir::new("policy-git-home");
+    let env = [("SHARDS_HOME", home.as_os_str())];
+    let ctx = context(
+        "policy-git-ctx",
+        &format!(
+            "FROM scratch\nADD http://127.0.0.1:{git_port}/repo.git#v1 /g\nADD http://127.0.0.1:{url_port}/plain?b=2&a=1&a=0 /p\n"
+        ),
+    );
+    std::fs::write(
+        ctx.join("Dockerfile.rego"),
+        "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if {\n  input.git.commit.tree != \"\"\n  print(\"git\", input.git)\n}\n\nallow if {\n  input.http.checksum != \"\"\n  print(\"http\", input.http)\n}\n\ndecision := {\"allow\": allow}\n",
+    )
+    .unwrap();
+    let built = common::run_shards_env_in(&ctx, &[], &["build", "--progress=plain", "."], &env, TIMEOUT);
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    let log = policy_log(&built.stderr);
+    let git_src = format!("git://127.0.0.1:{git_port}/repo.git#v1");
+    let at = log
+        .iter()
+        .position(|l| *l == format!("checking policy for source {git_src}"))
+        .unwrap_or_else(|| panic!("{log:#?}"));
+    let tree = git_in(&origin, &["rev-parse", "HEAD^{tree}"]).trim().to_string();
+    let remote = format!("http://127.0.0.1:{git_port}/repo.git");
+    assert_eq!(
+        log.get(at..at + 4).unwrap_or_default(),
+        [
+            format!("checking policy for source {git_src}"),
+            format!("policy decision for source {git_src}: resolve missing fields [git.commit]"),
+            format!("checking policy for source {git_src}"),
+            format!(
+                "Dockerfile.rego:9: git {{\"checksum\": \"{tag}\", \"commit\": {{\"author\": {{\"email\": \"t@t\", \"name\": \"t\", \"when\": \"2017-07-14T02:40:00Z\"}}, \"committer\": {{\"email\": \"t@t\", \"name\": \"t\", \"when\": \"2020-09-13T12:26:40Z\"}}, \"message\": \"one\\n\\nbody\", \"tree\": \"{tree}\"}}, \"commitChecksum\": \"{commit}\", \"fullURL\": \"{remote}\", \"host\": \"127.0.0.1:{git_port}\", \"isAnnotatedTag\": true, \"ref\": \"refs/tags/v1\", \"remote\": \"{remote}\", \"schema\": \"http\", \"tag\": {{\"message\": \"release one\", \"object\": \"{commit}\", \"tag\": \"v1\", \"tagger\": {{\"email\": \"t@t\", \"name\": \"t\", \"when\": \"2020-09-13T12:26:40Z\"}}, \"type\": \"commit\"}}, \"tagName\": \"v1\"}}"
+            ),
+        ],
+        "{log:#?}"
+    );
+    let http_src = format!("http://127.0.0.1:{url_port}/plain?b=2&a=1&a=0");
+    let at = log
+        .iter()
+        .rposition(|l| *l == format!("checking policy for source {http_src}"))
+        .unwrap_or_else(|| panic!("{log:#?}"));
+    assert_eq!(
+        log.get(at..at + 3).unwrap_or_default(),
+        [
+            format!("checking policy for source {http_src}"),
+            format!(
+                "Dockerfile.rego:14: http {{\"checksum\": \"sha256:2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881\", \"host\": \"127.0.0.1:{url_port}\", \"path\": \"/plain\", \"query\": {{\"a\": [\"1\", \"0\"], \"b\": [\"2\"]}}, \"schema\": \"http\", \"url\": \"{http_src}\"}}"
+            ),
+            format!("policy decision for source {http_src}: ALLOW"),
+        ],
+        "{log:#?}"
+    );
+}
+
+/// `verify_http_pgp_signature`'s fixtures: an Ed25519 key's public block, its detached
+/// signature of `/plain`'s body (`x`, SHA-256), and another key's block.
+const PLAIN_KEY: &str = "-----BEGIN PGP PUBLIC KEY BLOCK-----\n\nmDMEaskNERYJKwYBBAHaRw8BAQdACUgsSo7n1tJYcS6/908EH1nMRMNEgwuA4nKR\n2pB696G0IXNoYXJkcy10ZXN0IDx0ZXN0QHNoYXJkcy5pbnZhbGlkPoivBBMWCgBX\nFiEEgzO11gNSeUYfRSis6qt7fzg138oFAmrJDREbFIAAAAAABAAObWFudTIsMi41\nKzEuMTIsMCwzAhsDBQsJCAcCAiICBhUKCQgLAgQWAgMBAh4HAheAAAoJEOqre384\nNd/KCnMBALk2ducicDKI1xW09aTj6lrz/xtlJF3J/2kir5mDa4g+AP9OpZ9UIgXd\nDA/FAJy6KJzVRUiIEnT2Z10q6zFxxIr1BA==\n=dwZg\n-----END PGP PUBLIC KEY BLOCK-----\n";
+const PLAIN_SIGNATURE: &str = "-----BEGIN PGP SIGNATURE-----\n\niKYEABYIAE4WIQSDM7XWA1J5Rh9FKKzqq3t/ODXfygUCaskNERsUgAAAAAAEAA5t\nYW51MiwyLjUrMS4xMiwwLDMUHHRlc3RAc2hhcmRzLmludmFsaWQACgkQ6qt7fzg1\n38ozhAEA/hBRDJnv8fnPgR6g+hQal71AtWkCxbuCegjgh6NMrpwBAN5cDFthW9pr\nhQbn/RcLu8nCl08Ek7cgvWvMw5zWCnMJ\n=FGhd\n-----END PGP SIGNATURE-----\n";
+const OTHER_KEY: &str = "-----BEGIN PGP PUBLIC KEY BLOCK-----\n\nmDMEaskNERYJKwYBBAHaRw8BAQdAl4zNkBEdNizcxF9lYqt9XJC6zZE0Kq7lT0BC\niFlYXhW0I3NoYXJkcy1vdGhlciA8b3RoZXJAc2hhcmRzLmludmFsaWQ+iK8EExYK\nAFcWIQRfvs3uwqa0nRus8Otf0NV8Yk2TPQUCaskNERsUgAAAAAAEAA5tYW51Miwy\nLjUrMS4xMiwwLDMCGwMFCwkIBwICIgIGFQoJCAsCBBYCAwECHgcCF4AACgkQX9DV\nfGJNkz3vNQD/Wts1530geucKfgFEdqdR1F93F9cu4rAgy63uPIE/ppAA/1AFTPOE\nB4sxLmvSX0NaawVXFf1j0VxyxxhXwGZQaBsF\n=6v3O\n-----END PGP PUBLIC KEY BLOCK-----\n";
+
+/// Policies that verify signatures (D103): a commit signed with an SSH key, as
+/// `gpg.format=ssh` signs it, by `verify_git_signature` and an allowed-signers key; an
+/// HTTP download by `verify_http_pgp_signature`, over the digest of its content and the
+/// signature's hash suffix that the source is fetched for. With the wrong keys, each
+/// source is refused.
+#[test]
+fn policies_verify_git_and_http_signatures() {
+    if cannot_run_vms() {
+        return;
+    }
+    let has = |tool: &str, arg: &str| std::process::Command::new(tool).arg(arg).output().is_ok();
+    if !has("git", "--version") || !has("ssh-keygen", "-?") {
+        eprintln!(
+            "NOTE: no git or ssh-keygen on this host: signed Git sources in policies are not exercised"
+        );
+        return;
+    }
+    let repos = TempDir::new("policy-sig-repos");
+    let origin = repos.join("repo.git");
+    std::fs::create_dir_all(&origin).unwrap();
+    let keys = TempDir::new("policy-sig-keys");
+    let ssh_key = |name: &str| {
+        let path = keys.join(name);
+        let out = std::process::Command::new("ssh-keygen")
+            .args(["-q", "-t", "ed25519", "-N", "", "-C", "t@t", "-f"])
+            .arg(&path)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        (
+            path.clone(),
+            std::fs::read_to_string(path.with_extension("pub")).unwrap(),
+        )
+    };
+    let (signer, signer_pub) = ssh_key("signer");
+    let (_, other_pub) = ssh_key("other");
+    git_in(&origin, &["init", "-q", "-b", "main"]);
+    std::fs::write(origin.join("f"), "f\n").unwrap();
+    git_in(&origin, &["add", "-A"]);
+    let signing_key = format!("user.signingkey={}", signer.display());
+    git_in(
+        &origin,
+        &[
+            "-c",
+            "gpg.format=ssh",
+            "-c",
+            &signing_key,
+            "commit",
+            "-q",
+            "-S",
+            "-m",
+            "signed",
+        ],
+    );
+    let git_port = git_http_server(repos.to_path_buf(), Vec::new());
+    let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (_release, held) = std::sync::mpsc::channel();
+    let url_port = url_server(log, held);
+    let home = TempDir::new("policy-sig-home");
+    let env = [("SHARDS_HOME", home.as_os_str())];
+    let ctx = context(
+        "policy-sig-ctx",
+        &format!(
+            "FROM scratch\nADD http://127.0.0.1:{git_port}/repo.git#main /g\nADD http://127.0.0.1:{url_port}/plain /p\n"
+        ),
+    );
+    std::fs::write(
+        ctx.join("Dockerfile.rego"),
+        "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if verify_git_signature(input.git.commit, \"signer.pub\")\n\nallow if verify_http_pgp_signature(input.http, \"plain.asc\", \"key.asc\")\n\ndecision := {\"allow\": allow}\n",
+    )
+    .unwrap();
+    std::fs::write(ctx.join("plain.asc"), PLAIN_SIGNATURE).unwrap();
+    let git_src = format!("git://127.0.0.1:{git_port}/repo.git#main");
+    let http_src = format!("http://127.0.0.1:{url_port}/plain");
+    let build = |signer: &str, key: &str| {
+        std::fs::write(ctx.join("signer.pub"), signer).unwrap();
+        std::fs::write(ctx.join("key.asc"), key).unwrap();
+        common::run_shards_env_in(
+            &ctx,
+            &[],
+            &["build", "--progress=plain", "--no-cache", "."],
+            &env,
+            TIMEOUT,
+        )
+    };
+    let decisions = |stderr: &str, src: &str| -> Vec<String> {
+        policy_log(stderr)
+            .into_iter()
+            .filter(|l| l.starts_with(&format!("policy decision for source {src}:")))
+            .collect()
+    };
+
+    let built = build(&signer_pub, PLAIN_KEY);
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    assert_eq!(
+        decisions(&built.stderr, &git_src),
+        [
+            format!("policy decision for source {git_src}: resolve missing fields [git.commit]"),
+            format!("policy decision for source {git_src}: ALLOW"),
+        ],
+        "{}",
+        built.stderr
+    );
+    assert_eq!(
+        decisions(&built.stderr, &http_src),
+        // Its digest is known from the first check, as BuildKit fetches the source for
+        // it; the signature's digest is not, and asks for no field of the input.
+        [
+            format!("policy decision for source {http_src}: resolve missing fields []"),
+            format!("policy decision for source {http_src}: ALLOW"),
+        ],
+        "{}",
+        built.stderr
+    );
+
+    // Signed by another key: each source refused.
+    let refused = build(&other_pub, OTHER_KEY);
+    assert_ne!(refused.status, Some(0), "{}", refused.stderr);
+    assert!(
+        decisions(&refused.stderr, &git_src)
+            .last()
+            .is_some_and(|l| l.ends_with(": DENY")),
+        "{}",
+        refused.stderr
     );
 }

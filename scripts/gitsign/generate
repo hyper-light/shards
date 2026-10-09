@@ -1,0 +1,59 @@
+#!/bin/sh
+# Regenerates crates/gitsign/testdata: corpus.json (real signatures by gpg with a key of each
+# algorithm, those of a buildx checkout's signed objects, and crafted ones) and
+# answers.json, what go-crypto v1.4.1 makes of each as buildx v0.37.1 vendors it; and
+# verify.json, signatures checked against data and keys (verify.py's, made by gpg and
+# ssh-keygen, and oracle_test.go's, made by go-crypto) with what buildx's builtins answer.
+#
+#   scripts/gitsign/generate BUILDX_V0.37.1_CHECKOUT
+set -eu
+here=$(cd "$(dirname "$0")" && pwd)
+root=$(cd "$here/../.." && pwd)
+bx=$1
+work=$(mktemp -d)
+trap 'rm -rf "$work"; rm -f "$bx/cmd/buildx/zz_shards_gitsign_test.go"' EXIT
+export GNUPGHOME="$work/gnupg"
+mkdir -m 700 "$GNUPGHOME"
+printf 'signed data\n' > "$work/data"
+printf '{' > "$work/sigs.json"
+first=1
+for pair in rsa2048:SHA256 rsa2048:SHA512 rsa2048:SHA1 ed25519:SHA256 ed25519:SHA512 \
+	nistp256:SHA256 nistp384:SHA384 nistp521:SHA512; do
+	algo=${pair%%:*}
+	digest=${pair#*:}
+	gpg --list-keys "$algo@shards.invalid" >/dev/null 2>&1 ||
+		gpg --batch --quiet --passphrase '' --quick-gen-key "shards-$algo <$algo@shards.invalid>" "$algo" sign never
+	gpg --batch --quiet --yes --local-user "$algo@shards.invalid" --digest-algo "$digest" \
+		--armor --detach-sign --output "$work/sig" "$work/data"
+	name=$(printf '%s %s' "$algo" "$digest" | tr 'A-Z' 'a-z' | sed 's/^rsa2048/rsa/')
+	[ $first = 1 ] || printf ',' >> "$work/sigs.json"
+	first=0
+	python3 -c 'import json,sys; print(json.dumps(sys.argv[1]) + ":" + json.dumps(open(sys.argv[2]).read()), end="")' \
+		"$name" "$work/sig" >> "$work/sigs.json"
+done
+# SSH signatures, as git's gpg.format=ssh makes them (ssh-keygen -Y sign -n git).
+for key in ed25519 ecdsa:256 ecdsa:384 ecdsa:521 rsa:2048; do
+	type=${key%%:*}
+	bits=${key#*:}
+	file="$work/id_$type$bits"
+	if [ "$type" = "$bits" ]; then
+		ssh-keygen -q -t "$type" -N '' -f "$file"
+	else
+		ssh-keygen -q -t "$type" -b "$bits" -N '' -f "$file"
+	fi
+	ssh-keygen -q -Y sign -n git -f "$file" "$work/data"
+	printf ',' >> "$work/sigs.json"
+	python3 -c 'import json,sys; print(json.dumps(sys.argv[1]) + ":" + json.dumps(open(sys.argv[2]).read()), end="")' \
+		"ssh $type$( [ "$type" = "$bits" ] || printf ' %s' "$bits")" "$work/data.sig" >> "$work/sigs.json"
+	rm -f "$work/data.sig"
+done
+printf '}' >> "$work/sigs.json"
+python3 "$here/corpus.py" "$root/crates/gitsign/testdata/corpus.json" "$work/sigs.json" "$bx"
+python3 "$here/verify.py" "$work/verify.json" "$work"
+cp "$here/oracle_test.go" "$bx/cmd/buildx/zz_shards_gitsign_test.go"
+cd "$bx"
+SHARDS_PGP_CORPUS="$root/crates/gitsign/testdata/corpus.json" SHARDS_PGP_OUT="$root/crates/gitsign/testdata/answers.json" \
+	go test -mod=vendor -count=1 -run '^TestShardsPGPOracle$' ./cmd/buildx/
+# Times in errors as Go writes them in UTC.
+TZ=UTC SHARDS_VERIFY_CASES="$work/verify.json" SHARDS_VERIFY_OUT="$root/crates/gitsign/testdata/verify.json" \
+	go test -mod=vendor -count=1 -run '^TestShardsVerifyOracle$' ./cmd/buildx/

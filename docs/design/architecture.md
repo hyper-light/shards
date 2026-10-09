@@ -3210,6 +3210,172 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode
 waits on the user.
 
+### D103. Signatures verified in build policies: OpenPGP and SSH
+
+`verify_git_signature(commit or tag, key file)` and `verify_http_pgp_signature(http,
+signature file, key file)` answer as buildx v0.37.1's builtins answer (policy/funcs.go),
+through `shards-gitsign`.
+
+**What is verified, and how.**
+- **Key rings**, as go-crypto v1.4.1's ReadKeyRing reads them (`keyring`): entities of a
+  primary key, identities and their certifications, subkeys and their bindings. Each
+  self-signature is verified as it is read, a signing subkey's cross-signature included,
+  and an entity that fails is skipped to the next public key. Several armored blocks are
+  read as BuildKit's ReadAllArmoredKeyRings reads them. A fresh 100-byte `bufio.Reader`
+  for each block loses what it read past the block before, so the next block is found,
+  or lost, where Go finds or loses it (`armor::Bufio`, measured: two blocks with no line
+  between them lose the second).
+- **Keys** (`key`): v4 and v6 (v5 refused, as go-crypto is built), every algorithm's
+  fields and checks, each point on its curve, fingerprints and key IDs. Secret-key
+  packets are read for their form only (D103's difference, below).
+- **Detached signatures**, as CheckDetachedSignature checks them: the first signature
+  whose issuer has a signing key, binary or canonical text, each candidate key tried as
+  go-crypto tries it (the same hash, its suffix written again for each). Then
+  checkMessageSignatureDetails: unknown critical notations, revocations, key expiry and
+  signature expiry, at the signature's own creation time as BuildKit configures it.
+  Then BuildKit's rules: SHA-256, -384 or -512; RSA, ECDSA or EdDSA; any key revocation;
+  RSA under 2048 bits; a creation time over five minutes ahead.
+- **Over a digest** (`verify_http_pgp_signature`): the source fetched again, and its
+  content and the signature's hash suffix hashed as BuildKit's ChecksumRequest asks. The
+  policy is asked again with that digest, as buildx's loop asks it
+  (checksumNeededForSignature).
+- **SSH** (`ssh::verify`): sshsig's checks (version 1, SHA-256 or SHA-512, namespace
+  `git`, the signature's key that of the file), the first key of an authorized_keys file
+  as ParseAuthorizedKey reads it (options, quotes, the declared type matched), and each
+  key type's Verify: RSA's three formats and short signatures, DSA, ECDSA, Ed25519, and
+  the security-key types with their user-presence flag.
+- **A commit or tag not yet fetched** makes the builtin ask for `git.commit`
+  (runtimeUnknownInputRefs), and the policy is asked again with it.
+
+**How each is checked.** Only public values are computed with, so none needs constant
+time:
+- **Through AWS-LC:** ECDSA on P-256, P-384, P-521 and secp256k1. ECDSA reads a digest
+  only as an integer cut to the order's bits, so any hash is given to the curve's own
+  algorithm, cut to the order's octets and padded with leading zeros. This keeps Go's
+  hashToInt exactly. Also Ed25519, legacy and native.
+- **Safe Rust over `num-bigint` (`arith`):**
+  - RSA PKCS #1 v1.5 as Go's crypto/rsa checks it: the encoded message rebuilt and
+    compared octet for octet (RFC 8017 §8.2.2), for every hash Go names, with Go's key
+    checks and their words.
+  - DSA as crypto/dsa.
+  - ECDSA on the brainpool curves, on the twisted curve go-crypto's rcurve computes on.
+  - Ed448 (RFC 8032 §5.2, cofactorless, R compared by its encoding as circl compares it;
+    SHAKE256 from RustCrypto's `sha3`).
+  - Its constants are pinned by tests to their definitions (the prime, the order, B from
+    RFC 8032's decimals). The first draft's prime was two hex digits short, which
+    RFC 8032's vectors caught.
+
+**Held to the originals** by `tests/verify.rs` against `scripts/gitsign/generate`, which
+now also runs `verify.py` and `TestShardsVerifyOracle` over 170 cases:
+- **gpg 2.5.20's keys:** RSA 1024 to 4096, Ed25519, NIST P-256/384/521, brainpool
+  P-256/384/512, secp256k1, DSA 2048/3072, Ed448 (v5, refused), with SHA-1, -224, -256,
+  -384 and -512. Each as a Git object's signature and over its digest, with the right
+  data and the wrong.
+- **Key files:** unknown keys, several blocks with and without text between, private key
+  blocks, no keys, not armor, a signature block.
+- **Signatures:** text-mode signatures with LF and CRLF data, critical and plain
+  notations, an expiring signature.
+- **Subkeys, revocation, expiry:** a signing subkey under a certify-only key, a revoked
+  key, a revoked user ID, a key expired since it signed.
+- **ssh-keygen's signatures:** with Ed25519, ECDSA and RSA keys, by SHA-256 and SHA-512;
+  the wrong namespace, key and data; options, quoted commas, comments, CRLF, tabs, type
+  mismatches, bad base64.
+- **go-crypto's own keys:** v6 Ed25519, Ed448, RSA and ECDSA; native Ed25519 and Ed448
+  in v4; SHA3 self-signatures; brainpool; secp256k1. Also a key expired when it signed, a
+  signature before its key, and signing subkeys without their cross-signature or with
+  another key's.
+- **Every key ring read compared:** each entity's key, version, algorithm, fingerprint,
+  identities, subkeys and revocations.
+- **Mutation-checked:** without the bufio carry-over, the cross-signature check, the
+  revocation check, the key-expiry check.
+
+**Different on purpose:**
+- **A revoked key's digest signature.** BuildKit's VerifySignatureWithDigest checks no
+  revocation, so buildx accepts an HTTP download signed by a revoked key. shards refuses
+  a key whose primary key is revoked, and a revoked subkey. This is the one case of the
+  oracle where shards answers otherwise (`DEVIATIONS`).
+- **Secret keys** in a key file are read for their form exactly as go-crypto reads it:
+  S2K and its parameters, cipher and AEAD, IV, checksum, each algorithm's fields, a GNU
+  dummy key's parse ended where go-crypto ends it. Their octets are zeroed and never
+  computed with: go-crypto checks a secret against its public key with arithmetic on the
+  secret, and shards does no arithmetic on secrets it does not need. A key file whose
+  secret part fails only that check is read by shards as the public key it carries, and
+  refused by buildx. Every signature it verifies is still verified with that public key.
+- **Where go-crypto would panic**, dereferencing an identity whose only self-signature is
+  a revocation, shards reads it as absent and errors with "the signing key has no
+  self-signature".
+- **Message packets** (encrypted, compressed and literal data) in a key file are refused
+  by name. go-crypto reads only their headers and then reads the rest of each such
+  packet as packets.
+
+**Not yet:** SSH certificates as keys, the attestation functions
+(`artifact_attestation`, `github_attestation`), and an image's provenance and signatures.
+On Windows, a signature dated ahead is named in UTC, not in Windows' local zone as Go
+names it (shards reads the local zone through the C library elsewhere).
+
+Tested:
+- **`policies_verify_git_and_http_signatures`:** a commit signed with an SSH key by
+  `git -c gpg.format=ssh commit -S`, and `/plain` signed by an Ed25519 key, each allowed
+  after the round trips buildx makes. With other keys, refused. Mutation-checked: a
+  verification failure ignored.
+- **The verification oracle; RFC 8032's Ed448 vectors; the constants' tests.**
+
+### D102. Build policies over Git and HTTP sources, and Git's signatures read
+
+A policy is asked of Git and HTTP sources too, with buildx v0.37.1's input
+(policy/validate.go sourceToInput).
+
+**Measured** in `shards-dind` with buildx v0.37.1 against github.com: an annotated tag with a
+subdirectory, a commit's name, the default branch, an HTTP source with a query, and one
+with `--checksum`. shards gives every input byte for byte as buildx did for the same
+repositories and URLs:
+- **Git.** `schema`, `host` and `remote` come from the URL, `gitutil.ParseURL` (shards'
+  port in `shards_dockerfile::git`), and from the `git.fullurl` attribute where it is set.
+  The ref is resolved as BuildKit resolves it, and `checksum` is the object the ref names:
+  an annotated tag's own object, with `commitChecksum`, `isAnnotatedTag` and `tagName`. A
+  commit's name stays its `ref`, with `isCommitRef`.
+- **Git objects.** Asked for `commit` or `tag`, the commit and the tag are fetched one
+  commit deep (`git::metadata`). They are read as BuildKit's gitobject package reads them
+  (`policy/gitobject.rs`): checked against their checksums, their actors' times written
+  in their own offsets.
+- **HTTP.** `http.checksum` is the content's digest, resolved by fetching the file, as
+  BuildKit resolves an HTTP source; `--checksum` does not fill it (measured). The query is
+  a map of lists, in key order.
+
+**Git's signatures** are summarized as buildx summarizes them
+(policy/git.go parseGitSignature): an OpenPGP signature's version and issuer key ID, or an
+SSH signature's version and its key's SHA256 fingerprint. The new crate `shards-gitsign`
+reads both:
+- **OpenPGP**, as go-crypto v1.4.1 reads it: armor, packets with old-format, partial and
+  indeterminate lengths, and signature packets with every subpacket go-crypto checks. It
+  skips what go-crypto skips: v5 signatures (built without its `v5` tag), unknown
+  algorithms, hashes and critical subpackets, marker, trust and unknown packets.
+- **SSH**, as hiddeco/sshsig and x/crypto/ssh v0.55.0 read it: each key type's checks
+  (RSA's exponent and modulus, DSA's parameters, ECDSA's point on its curve through
+  AWS-LC, Ed25519's length), each key marshaled again for its fingerprint.
+- **Held to the originals** by `tests/oracle.rs` against `scripts/gitsign/generate`. The
+  generator runs go-crypto, BuildKit's pgpsign and gitsign, and buildx's summary over 79
+  cases:
+  - gpg's signatures with RSA, Ed25519 and ECDSA P-256, P-384 and P-521 keys, by SHA-1 and
+    SHA-2;
+  - `ssh-keygen -Y sign` with every key type;
+  - the buildx tag's and commit's own signatures;
+  - each taken apart: versions, algorithms, subpackets, truncations, headers, armor, keys
+    off their curve, junk.
+- **Go's `encoding/pem`** moved from `build/sshkey.rs` into the crate (`pem`), shared by
+  both.
+
+**Not yet.** SSH certificates are summarized as none. Signature verification
+(`verify_git_signature`, `verify_http_pgp_signature`) is D103's; the attestation functions
+still halt with "… is not supported by shards yet".
+
+Tested:
+- **`policies_read_git_and_http_sources_as_buildx_does`:** a local repository's annotated
+  tag over smart HTTP, and a URL with a repeated query key, each input in full.
+  Mutation-checked: without the Git objects asked for.
+- **`actors_read_as_gitobject_reads_them`**.
+- **The gitsign oracle.**
+
 ### D101. Build policies: `--policy` and `Dockerfile.rego`, asked of every source
 
 `shards build` heeds build policies as buildx v0.37.1 sets them up (build/opt.go

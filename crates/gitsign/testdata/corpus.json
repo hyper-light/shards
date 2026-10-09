@@ -1,0 +1,330 @@
+[
+ {
+  "name": "gpg rsa sha256",
+  "armored": "-----BEGIN PGP SIGNATURE-----\n\niQFnBAABCABRFiEEbAgrPtd/+RWsqzo7jEGmqP4drd8FAmrJC5EbFIAAAAAABAAO\nbWFudTIsMi41KzEuMTIsMCwzFxxyc2EyMDQ4QHNoYXJkcy5pbnZhbGlkAAoJEIxB\npqj+Ha3f7U8IAJmZNy9BHChXZEgej1Emg9yAC1vRkFhyGZQF9+jGT7nqrhT+LW9g\nCAB5LfixuBkep8XiLu9u4lcn7hoPiDrByp9QnKqwYm2PcvdWPVZIEVTnzqqtiNIU\nubKFvpI/LLT/qlmluOgksz9NffmH9uzoroJyUeWdXj36yt/YHDy1qfh0aBenwnzW\nfQ8xnnKvBxL382MX9oybIY5Wvw80CO4AseskOOtLHIjDTotoh0DQ/cktuRP5qqxO\nZiiYl69ElkNEEwRT4Mgtbu/jbf5cWpYWdda4x56OjCgY0tFDjXBZ9oDmolBZS/wh\n8p3yKrEReR1m3fc5RJ1r7w6SdjzuESH/Ebs=\n=IpMb\n-----END PGP SIGNATURE-----\n"
+ },
+ {
+  "name": "gpg rsa sha512",
+  "armored": "-----BEGIN PGP SIGNATURE-----\n\niQFnBAABCgBRFiEEbAgrPtd/+RWsqzo7jEGmqP4drd8FAmrJC5IbFIAAAAAABAAO\nbWFudTIsMi41KzEuMTIsMCwzFxxyc2EyMDQ4QHNoYXJkcy5pbnZhbGlkAAoJEIxB\npqj+Ha3fzCYH+gOFfu9M1mJ/aGlMVss8Kk0NOfdL5C+FIHAjzzv/lZCULCsVAI3v\nW9LBKXe9k0j+q3rGAUsZ0YAb5pfNh+K8S8aCZRAE3pwTcC9qB0zj5iO31UmJgjZ6\nelSQ1C8lF002BaYZTp1Xi76AvFjJx8UXRbcgXkYxZS7YW0shn9A37bZnjZTDwczD\nqv6MJ1c/wjqKpwD/1gT69pTuQZQW9OC2yrwHHDAz43kaTPN+gwshNp9X3Pv8LhZM\nsOyevQnZWRpMnY+zx1wAIQot0GU8WOSO3KuNTfdZn2uN4/O4GL9p5DdScOUnHJJ4\nicRrIw8QUYfpZUbRFe+H3OYoBId+G+hpnpw=\n=P7xC\n-----END PGP SIGNATURE-----\n"
+ },
+ {
+  "name": "gpg rsa sha1",
+  "armored": "-----BEGIN PGP SIGNATURE-----\n\niQFnBAABAgBRFiEEbAgrPtd/+RWsqzo7jEGmqP4drd8FAmrJC5IbFIAAAAAABAAO\nbWFudTIsMi41KzEuMTIsMCwzFxxyc2EyMDQ4QHNoYXJkcy5pbnZhbGlkAAoJEIxB\npqj+Ha3fa40H+wW0Qkaxhe2swXyytFkz86aox7YS5S0rhygyjNVts20cZtnJ8XHO\nu7cWoFIxjLMDMHs86HAwT6gXmxWyA2h6QbzTlOZq+BQYzDD6J116dEyUmwe54v+Z\ndiY4+YMiTyvQjT80kkw50Zq3MnP5HaIpeHfGllSIR/fADU6cKLAmYotWHHuD32XX\nIER+cS0er4Qn5w6/4VTr3+htgEksouKM+suJcN3VuArux+QBGeZ6dKSPRdvga1zX\nJCaSTBUXYfMomkN4ayyZz0HMKpbCvzs9NeOpBbhs5lRSap7QYvKt51M6xcpQjjh5\nqptQXXN0hlhNEb/AxJtOsjVv8R3mqXiSHOE=\n=Q51T\n-----END PGP SIGNATURE-----\n"
+ },
+ {
+  "name": "gpg ed25519 sha256",
+  "armored": "-----BEGIN PGP SIGNATURE-----\n\niKkEABYIAFEWIQTT8JbpZGjTvK6seziwllElkOV44wUCaskLkhsUgAAAAAAEAA5t\nYW51MiwyLjUrMS4xMiwwLDMXHGVkMjU1MTlAc2hhcmRzLmludmFsaWQACgkQsJZR\nJZDleON/QgEAy31mjIt+bbB7q3TtfuUZSF5L9TKvaveFKfv1DZ36odUBANBwP21m\nk9MvqqcaXDt9POfEBczfLw45mbnNhrvkEkYB\n=8jKs\n-----END PGP SIGNATURE-----\n"
+ },
+ {
+  "name": "gpg ed25519 sha512",
+  "armored": "-----BEGIN PGP SIGNATURE-----\n\niKkEABYKAFEWIQTT8JbpZGjTvK6seziwllElkOV44wUCaskLkhsUgAAAAAAEAA5t\nYW51MiwyLjUrMS4xMiwwLDMXHGVkMjU1MTlAc2hhcmRzLmludmFsaWQACgkQsJZR\nJZDleOO7pAEAjqTLFtaEWbf91q2mWIzE1EX2VTJ3iNMEjKjP85z9lIcBAM13nF28\njisJYwe+7vG85G60WdMB3cGB6f+kiBgZFhYA\n=aE1M\n-----END PGP SIGNATURE-----\n"
+ },
+ {
+  "name": "gpg nistp256 sha256",
+  "armored": "-----BEGIN PGP SIGNATURE-----\n\niKoEABMIAFIWIQSmRT3xmqsFMIz11dQKYCM8q1Pa9AUCaskLkhsUgAAAAAAEAA5t\nYW51MiwyLjUrMS4xMiwwLDMYHG5pc3RwMjU2QHNoYXJkcy5pbnZhbGlkAAoJEApg\nIzyrU9r0RJgBANw28iQ6hrzOWnIZXGsU5z69qEK9ns7pCkTLGK+J4rBUAQDTAzV0\njMbo4INt5VvGjO5BQojtR6DPaEJIVkFTvyyQOA==\n=G2v1\n-----END PGP SIGNATURE-----\n"
+ },
+ {
+  "name": "gpg nistp384 sha384",
+  "armored": "-----BEGIN PGP SIGNATURE-----\n\niMoEABMJAFIWIQTF17yTMdlCAo0UM8cFNhEVfCVlHwUCaskLkhsUgAAAAAAEAA5t\nYW51MiwyLjUrMS4xMiwwLDMYHG5pc3RwMzg0QHNoYXJkcy5pbnZhbGlkAAoJEAU2\nERV8JWUfv3IBf07xMY4oO5RnRRVnHBWa3dWiutvYbdexXLSde6pyKfGUADr3pMih\nU+I/g6bulxfKbgGAxQuUxU53LBlzKMw8qCF/t6447W6ab4wxemYtRwe2CxlhGVOx\nl4gibspSQqVUD6CE\n=4PtZ\n-----END PGP SIGNATURE-----\n"
+ },
+ {
+  "name": "gpg nistp521 sha512",
+  "armored": "-----BEGIN PGP SIGNATURE-----\n\niO4EABMKAFIWIQRojyihhHRBHOu2zORSpX216poefgUCaskLkhsUgAAAAAAEAA5t\nYW51MiwyLjUrMS4xMiwwLDMYHG5pc3RwNTIxQHNoYXJkcy5pbnZhbGlkAAoJEFKl\nfbXqmh5+0C4CCQEi+CAYlToBvOLinjhaKaNffM+QL3+AHUXohybsl2qzZQlFwLf7\nzexaJQDoCm9VdhGIwf0WM+AKaeV1NlDjzz5g3gIJAe8My/5FbNCMV5dshB8TRNlq\npS91w8/yR1JYORuZcU2wEq+MMdPD+7eV0HwKJnUdU9c+PBdYrC2oCd3LIGsrjUy9\n=SVYN\n-----END PGP SIGNATURE-----\n"
+ },
+ {
+  "name": "gpg ssh ed25519",
+  "armored": "-----BEGIN SSH SIGNATURE-----\nU1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAgKmhZbD2Fwddl+f4Viodaf4vx3S\nk6nsjLJOnhdRBXAqsAAAADZ2l0AAAAAAAAAAZzaGE1MTIAAABTAAAAC3NzaC1lZDI1NTE5\nAAAAQFLZ34fEAII87lwXcSYx1wHz6Mz9OIQthbKBOBJm6NptfjlmghSuAVjpXyfJPrrZeG\nAdltzSL2UwmDQ9ulfRGg8=\n-----END SSH SIGNATURE-----\n"
+ },
+ {
+  "name": "gpg ssh ecdsa 256",
+  "armored": "-----BEGIN SSH SIGNATURE-----\nU1NIU0lHAAAAAQAAAGgAAAATZWNkc2Etc2hhMi1uaXN0cDI1NgAAAAhuaXN0cDI1NgAAAE\nEEWQ6j4IKFr+2eEmp2lGsxZIxWb/juTRz20nsgUN2X6UAmGmFMWbgDTrcMPJ7rJpqs9DXu\nFgTWqvBrOzQ2DL/ubwAAAANnaXQAAAAAAAAABnNoYTUxMgAAAGQAAAATZWNkc2Etc2hhMi\n1uaXN0cDI1NgAAAEkAAAAgNGLxESofVO14xpzLtK0UfPvnUBN07H0I/FBAv/FhIpUAAAAh\nAPvo4HA2bHFKidzeEkAPbWzDsDw4ZDCSpmGNiClI2gu3\n-----END SSH SIGNATURE-----\n"
+ },
+ {
+  "name": "gpg ssh ecdsa 384",
+  "armored": "-----BEGIN SSH SIGNATURE-----\nU1NIU0lHAAAAAQAAAIgAAAATZWNkc2Etc2hhMi1uaXN0cDM4NAAAAAhuaXN0cDM4NAAAAG\nEEzZAy6Apon712NTVz0Y2sx00rqGWcQWaSApgQ0V2GnPRIa9nLmhbxfkhZ6lnO9Ijh/Fki\nyDNLIcgE5GawcDM8l9J6gRXxtg/X5CHVeqi/ge1olS0nzNsUOFi4FPVYr4KRAAAAA2dpdA\nAAAAAAAAAGc2hhNTEyAAAAhAAAABNlY2RzYS1zaGEyLW5pc3RwMzg0AAAAaQAAADEAh9MO\nT17FV6kP+BBMM9v57x9tW9ACTJlz8wWdA7WPanCxjVlkdWWkBuw97dgazJm8AAAAMAKpSk\ngItfXS2WnMw75QtbqhxLiJrk7jsw1RrTyOy+67ktku8vMVfRKMSlVbpSTvgw==\n-----END SSH SIGNATURE-----\n"
+ },
+ {
+  "name": "gpg ssh ecdsa 521",
+  "armored": "-----BEGIN SSH SIGNATURE-----\nU1NIU0lHAAAAAQAAAKwAAAATZWNkc2Etc2hhMi1uaXN0cDUyMQAAAAhuaXN0cDUyMQAAAI\nUEAZbiWvFPzUFABasnKU8IIG9lw9eEjijZYL+gbGkeJiSNDqZGXs0oBwsxT3P0xvck1kqe\nz21n8Noc4/sUQBG5vEDgABtbVeVhrQjp9ThIlRVVhSNOnWRgKfztnpjL+2OrQUsakbt7LX\neuIWw7iKOe9vYohKtXLYfkgstlNa65EBobFnGIAAAAA2dpdAAAAAAAAAAGc2hhNTEyAAAA\npwAAABNlY2RzYS1zaGEyLW5pc3RwNTIxAAAAjAAAAEIBJs97yikI+Dtl0emxkj8BQgXQHk\n/sbqKIY+U5gV/ME1Qy4typrfRH7uwkV2WrHXix6DaL3URPrBSy3FH2rUiaw2oAAABCAMcH\n+B6g5bEeaUgboZ6G67gfyRGCzC4OVM+l/ARFwNcmqyBgP7n8LKKyDCQ8PFgy4bkx+Mi3NQ\neMBSGdO4UHoNbj\n-----END SSH SIGNATURE-----\n"
+ },
+ {
+  "name": "gpg ssh rsa 2048",
+  "armored": "-----BEGIN SSH SIGNATURE-----\nU1NIU0lHAAAAAQAAARcAAAAHc3NoLXJzYQAAAAMBAAEAAAEBAK2wjDK/hCwQ9Z/9sYJH1O\nlT6CrED+qrpMEXoma/fkMQqYcdWgJAWPTeWtfLc/x52y54S/zwwjEuOxn6IyYjPNqM0CFu\n02Ht9sVnwtFizgAX5YUDrGC4LCjXaFGfWH/XoJqqp+jqqfDsDIWeIr3M8xRKX4OnWwlzGj\nzu0WHjVXCx8e/uigzwm3R7VkGbJ8ox78xKc012Csjf1nvNKqOCw5g7UJEw0JxweK33kv1b\nnF5itAl7LSLS/wnXc3WApSeBZc/tnjXvC/9/U/PfYxuA9gN+taLIn3Y0OEBOxibeuIKzJN\nrk+z8T/y6xxtlCOpq1dYSyw5MAh9K2zkSnu6cejlkAAAADZ2l0AAAAAAAAAAZzaGE1MTIA\nAAEUAAAADHJzYS1zaGEyLTUxMgAAAQCJLwKxoiJysek2D9pJoRlzvaLBRlhZK0PrDNYOHN\nGmWuNZ0eMMECaIFVNM1btPf89pX0/nQ6kOQNrl0COISGclacxUmllHuNR04I4GwDIM6cT5\nHt4dfJPFTvRqgv8oYi/xdTjffU/spsqkVluRsSddaJVFRos1udaPmT25FEqM17dFQfGZjK\nfKmE4X7m44pBRlxEX+eT4Dabj5aSxt9Xpda6H0TMyU5Fs85yFM9vqiCIm2O077BcTeTNZR\nTmsMioo6ch5cR++P7XoXq8c8R2ZHHzdeBjIwn6smAEMTUhZCZ+eMdSkCbOYatNmh7zAEwz\n5UL8j6QQuXbS1wT1GGR6dZ\n-----END SSH SIGNATURE-----\n"
+ },
+ {
+  "name": "git v0.37.1",
+  "armored": "-----BEGIN PGP SIGNATURE-----\n\niQIzBAABCAAdFiEEy3PwZINDLpSJL9jhreRNjJ1E++QFAmqkHFEACgkQreRNjJ1E\n++Q1rhAApl9Mr9WhK9nmrenQcw0EtGGEa1GjrYwIKhpzQw5WvwYWttlhXWFIky7V\nUsPzhuXeQKDtmTem98S2NNLDI1fcWH/N5jM4xw8ZqwSvoZsDIP9SbRS5nJ5UA2s0\niZmKGWgGbQszCoG9wpbzATEqkMPcBF8HESAB9/OWXcmLHYMiG/90EZZAAnJYHDFU\nsUUfye0VS5TzNRxoXGI2SaSLgZfwxcCt7NKY0kWGfUPmelV6N2XTeqx1YRLRoT7z\nZmsaclLGaeeVE3HIih5NZoSNA4NM6S7Cw779NDJ9rwFyj1W6ShOkCLy8x/uuC3DZ\nLIpLowj+5c7x5GEI+9vQZPHPMfqaMp/NUjHAo4ml6dDgd9AELdHq4ipsBZY4rsUn\nFbCSi0HTlnU6V41s9vZbdERLTunVp/220hIQwSA0teMYnhPFpSm6b5CBZ4SnwC4f\nZ4x7I8GA76upzb9jqJJo0UW6TGSLdoFZNpxLmDLeLdzbHVbhnaTQGMak3BNYNYlx\ntDsOZYwDe4MrvHB6UYioMDlauifAUDWBSp2+jb8zwBLgU5Mc2ldd3lAoIDqulOE2\nlP6yp+l6l3d5XofCeHoXfSi5qJcc5+P5U/DcNxg5LRQMd5vSWTcqkbsNBZHrb3Ub\ne744pqZdEjHzxMS7W/RJ22l4y6HOcGClpGW/jpHTDPoHqe9Y49g=\n=jZBS\n-----END PGP SIGNATURE-----\n"
+ },
+ {
+  "name": "git HEAD",
+  "armored": "-----BEGIN PGP SIGNATURE-----\n\nwsFcBAABCAAQBQJqpBUiCRC1aQ7uu5UhlAAAfJUQAGUscfjn4NuZJtZKP0hFkjj6\nr1fh64LENnjWG/HMeqEMesjmOXLeZRpAmEoNJvq7Z5OktG5ytcxdqPd353uipmVk\nKt9evcY/93kqQLKhHKNHg9d1X9HQZZ672HSlikZq1/DLK3sL+RAChhCBEt0e+7lM\nfi2LElHcd16HH+N3n6IplmSlmGfNbe9yVFvy/AMPL5MqLzoKRZEPCviZr17mLHuc\nVE2DqR7G2crPQjlWUrUUIWjpCTaZECp0FcMrRfBec5v1o+Flu3mujQHq2/gYRfGW\nUJX09r2hbUPUADS5m+8gLYqdL1yYyfz80mPaTAa5Jvz4b8DyuYxRPvMO6bzTvOVA\nTAF0/4w9hVwEzyX8qGnLLScDALoDrOk31wBKZA7j3zsPpazYdOUwMIqxdZhoaiXh\n8C34FAgNCvfQPzw1mRVcYMCKjASoJlwZRRmJFCPhBFkglBtPearAzGM4Z7O6VGHd\nAB4cQ5P7qLIUczZKsR+14tPTX7uE1KS586BeO7D5AZYqa0U4MJmax/T/utZfcGSF\npxONcrpxB68v939E4u4nOJhcLi2w7i/N5SIPOrwmFOJpLcKRA0NGAZb3RH1XXdqr\nKY895qYKr61/lBkNBLVLAAlAiiZ9fi90cPLK8WpYEM3qO3evNQ26n3rBINdfAZE6\nOGiWvyzG+R7GkM+pIQsh\n=x/OG\n-----END PGP SIGNATURE-----\n"
+ },
+ {
+  "name": "rebuilt",
+  "armored": "-----BEGIN PGP SIGNATURE-----\n\nwsCnBAABCABRFiEEbAgrPtd/+RWsqzo7jEGmqP4drd8FAmrJC5EbFIAAAAAABAAO\nbWFudTIsMi41KzEuMTIsMCwzFxxyc2EyMDQ4QHNoYXJkcy5pbnZhbGlkAAoJEIxB\npqj+Ha3f7U8IAJmZNy9BHChXZEgej1Emg9yAC1vRkFhyGZQF9+jGT7nqrhT+LW9g\nCAB5LfixuBkep8XiLu9u4lcn7hoPiDrByp9QnKqwYm2PcvdWPVZIEVTnzqqtiNIU\nubKFvpI/LLT/qlmluOgksz9NffmH9uzoroJyUeWdXj36yt/YHDy1qfh0aBenwnzW\nfQ8xnnKvBxL382MX9oybIY5Wvw80CO4AseskOOtLHIjDTotoh0DQ/cktuRP5qqxO\nZiiYl69ElkNEEwRT4Mgtbu/jbf5cWpYWdda4x56OjCgY0tFDjXBZ9oDmolBZS/wh\n8p3yKrEReR1m3fc5RJ1r7w6SdjzuESH/Ebs=\n=E6DU\n-----END PGP SIGNATURE-----\n"
+ },
+ {
+  "name": "version 3",
+  "armored": "-----BEGIN PGP SIGNATURE-----\n\nwsCnAwABCABRFiEEbAgrPtd/+RWsqzo7jEGmqP4drd8FAmrJC5EbFIAAAAAABAAO\nbWFudTIsMi41KzEuMTIsMCwzFxxyc2EyMDQ4QHNoYXJkcy5pbnZhbGlkAAoJEIxB\npqj+Ha3f7U8IAJmZNy9BHChXZEgej1Emg9yAC1vRkFhyGZQF9+jGT7nqrhT+LW9g\nCAB5LfixuBkep8XiLu9u4lcn7hoPiDrByp9QnKqwYm2PcvdWPVZIEVTnzqqtiNIU\nubKFvpI/LLT/qlmluOgksz9NffmH9uzoroJyUeWdXj36yt/YHDy1qfh0aBenwnzW\nfQ8xnnKvBxL382MX9oybIY5Wvw80CO4AseskOOtLHIjDTotoh0DQ/cktuRP5qqxO\nZiiYl69ElkNEEwRT4Mgtbu/jbf5cWpYWdda4x56OjCgY0tFDjXBZ9oDmolBZS/wh\n8p3yKrEReR1m3fc5RJ1r7w6SdjzuESH/Ebs=\n=lFJ+\n-----END PGP SIGNATURE-----\n"
+ },
+ {
+  "name": "version 5",
+  "armored": "-----BEGIN PGP SIGNATURE-----\n\nwsCnBQABCABRFiEEbAgrPtd/+RWsqzo7jEGmqP4drd8FAmrJC5EbFIAAAAAABAAO\nbWFudTIsMi41KzEuMTIsMCwzFxxyc2EyMDQ4QHNoYXJkcy5pbnZhbGlkAAoJEIxB\npqj+Ha3f7U8IAJmZNy9BHChXZEgej1Emg9yAC1vRkFhyGZQF9+jGT7nqrhT+LW9g\nCAB5LfixuBkep8XiLu9u4lcn7hoPiDrByp9QnKqwYm2PcvdWPVZIEVTnzqqtiNIU\nubKFvpI/LLT/qlmluOgksz9NffmH9uzoroJyUeWdXj36yt/YHDy1qfh0aBenwnzW\nfQ8xnnKvBxL382MX9oybIY5Wvw80CO4AseskOOtLHIjDTotoh0DQ/cktuRP5qqxO\nZiiYl69ElkNEEwRT4Mgtbu/jbf5cWpYWdda4x56OjCgY0tFDjXBZ9oDmolBZS/wh\n8p3yKrEReR1m3fc5RJ1r7w6SdjzuESH/Ebs=\n=ync1\n-----END PGP SIGNATURE-----\n"
+ },
+ {
+  "name": "pubkey algorithm 99",
+  "armored": "-----BEGIN PGP SIGNATURE-----\n\nwsCnBABjCABRFiEEbAgrPtd/+RWsqzo7jEGmqP4drd8FAmrJC5EbFIAAAAAABAAO\nbWFudTIsMi41KzEuMTIsMCwzFxxyc2EyMDQ4QHNoYXJkcy5pbnZhbGlkAAoJEIxB\npqj+Ha3f7U8IAJmZNy9BHChXZEgej1Emg9yAC1vRkFhyGZQF9+jGT7nqrhT+LW9g\nCAB5LfixuBkep8XiLu9u4lcn7hoPiDrByp9QnKqwYm2PcvdWPVZIEVTnzqqtiNIU\nubKFvpI/LLT/qlmluOgksz9NffmH9uzoroJyUeWdXj36yt/YHDy1qfh0aBenwnzW\nfQ8xnnKvBxL382MX9oybIY5Wvw80CO4AseskOOtLHIjDTotoh0DQ/cktuRP5qqxO\nZiiYl69ElkNEEwRT4Mgtbu/jbf5cWpYWdda4x56OjCgY0tFDjXBZ9oDmolBZS/wh\n8p3yKrEReR1m3fc5RJ1r7w6SdjzuESH/Ebs=\n=eod5\n-----END PGP SIGNATURE-----\n"
+ },
+ {
+  "name": "hash md5",
+  "armored": "-----BEGIN PGP SIGNATURE-----\n\nwsCnBAABAQBRFiEEbAgrPtd/+RWsqzo7jEGmqP4drd8FAmrJC5EbFIAAAAAABAAO\nbWFudTIsMi41KzEuMTIsMCwzFxxyc2EyMDQ4QHNoYXJkcy5pbnZhbGlkAAoJEIxB\npqj+Ha3f7U8IAJmZNy9BHChXZEgej1Emg9yAC1vRkFhyGZQF9+jGT7nqrhT+LW9g\nCAB5LfixuBkep8XiLu9u4lcn7hoPiDrByp9QnKqwYm2PcvdWPVZIEVTnzqqtiNIU\nubKFvpI/LLT/qlmluOgksz9NffmH9uzoroJyUeWdXj36yt/YHDy1qfh0aBenwnzW\nfQ8xnnKvBxL382MX9oybIY5Wvw80CO4AseskOOtLHIjDTotoh0DQ/cktuRP5qqxO\nZiiYl69ElkNEEwRT4Mgtbu/jbf5cWpYWdda4x56OjCgY0tFDjXBZ9oDmolBZS/wh\n8p3yKrEReR1m3fc5RJ1r7w6SdjzuESH/Ebs=\n=riWG\n-----END PGP SIGNATURE-----\n"
+ },
+ {
+  "name": "hash sha1",
+  "armored": "-----BEGIN PGP SIGNATURE-----\n\nwsCnBAABAgBRFiEEbAgrPtd/+RWsqzo7jEGmqP4drd8FAmrJC5EbFIAAAAAABAAO\nbWFudTIsMi41KzEuMTIsMCwzFxxyc2EyMDQ4QHNoYXJkcy5pbnZhbGlkAAoJEIxB\npqj+Ha3f7U8IAJmZNy9BHChXZEgej1Emg9yAC1vRkFhyGZQF9+jGT7nqrhT+LW9g\nCAB5LfixuBkep8XiLu9u4lcn7hoPiDrByp9QnKqwYm2PcvdWPVZIEVTnzqqtiNIU\nubKFvpI/LLT/qlmluOgksz9NffmH9uzoroJyUeWdXj36yt/YHDy1qfh0aBenwnzW\nfQ8xnnKvBxL382MX9oybIY5Wvw80CO4AseskOOtLHIjDTotoh0DQ/cktuRP5qqxO\nZiiYl69ElkNEEwRT4Mgtbu/jbf5cWpYWdda4x56OjCgY0tFDjXBZ9oDmolBZS/wh\n8p3yKrEReR1m3fc5RJ1r7w6SdjzuESH/Ebs=\n=fzgv\n-----END PGP SIGNATURE-----\n"
+ },
+ {
+  "name": "hash unknown",
+  "armored": "-----BEGIN PGP SIGNATURE-----\n\nwsCnBAABZABRFiEEbAgrPtd/+RWsqzo7jEGmqP4drd8FAmrJC5EbFIAAAAAABAAO\nbWFudTIsMi41KzEuMTIsMCwzFxxyc2EyMDQ4QHNoYXJkcy5pbnZhbGlkAAoJEIxB\npqj+Ha3f7U8IAJmZNy9BHChXZEgej1Emg9yAC1vRkFhyGZQF9+jGT7nqrhT+LW9g\nCAB5LfixuBkep8XiLu9u4lcn7hoPiDrByp9QnKqwYm2PcvdWPVZIEVTnzqqtiNIU\nubKFvpI/LLT/qlmluOgksz9NffmH9uzoroJyUeWdXj36yt/YHDy1qfh0aBenwnzW\nfQ8xnnKvBxL382MX9oybIY5Wvw80CO4AseskOOtLHIjDTotoh0DQ/cktuRP5qqxO\nZiiYl69ElkNEEwRT4Mgtbu/jbf5cWpYWdda4x56OjCgY0tFDjXBZ9oDmolBZS/wh\n8p3yKrEReR1m3fc5RJ1r7w6SdjzuESH/Ebs=\n=luAb\n-----END PGP SIGNATURE-----\n"
+ },
+ {
+  "name": "truncated at 1",
+  "armored": "-----BEGIN PGP SIGNATURE-----\n\nwgEE\n=hXle\n-----END PGP SIGNATURE-----\n"
+ },
+ {
+  "name": "truncated at 3",
+  "armored": "-----BEGIN PGP SIGNATURE-----\n\nwgMEAAE=\n=u/Mq\n-----END PGP SIGNATURE-----\n"
+ },
+ {
+  "name": "truncated at 5",
+  "armored": "-----BEGIN PGP SIGNATURE-----\n\nwgUEAAEIAA==\n=yOKU\n-----END PGP SIGNATURE-----\n"
+ },
+ {
+  "name": "truncated at 7",
+  "armored": "-----BEGIN PGP SIGNATURE-----\n\nwgcEAAEIAFEW\n=Jc9W\n-----END PGP SIGNATURE-----\n"
+ },
+ {
+  "name": "truncated at 356",
+  "armored": "-----BEGIN PGP SIGNATURE-----\n\nwsCkBAABCABRFiEEbAgrPtd/+RWsqzo7jEGmqP4drd8FAmrJC5EbFIAAAAAABAAO\nbWFudTIsMi41KzEuMTIsMCwzFxxyc2EyMDQ4QHNoYXJkcy5pbnZhbGlkAAoJEIxB\npqj+Ha3f7U8IAJmZNy9BHChXZEgej1Emg9yAC1vRkFhyGZQF9+jGT7nqrhT+LW9g\nCAB5LfixuBkep8XiLu9u4lcn7hoPiDrByp9QnKqwYm2PcvdWPVZIEVTnzqqtiNIU\nubKFvpI/LLT/qlmluOgksz9NffmH9uzoroJyUeWdXj36yt/YHDy1qfh0aBenwnzW\nfQ8xnnKvBxL382MX9oybIY5Wvw80CO4AseskOOtLHIjDTotoh0DQ/cktuRP5qqxO\nZiiYl69ElkNEEwRT4Mgtbu/jbf5cWpYWdda4x56OjCgY0tFDjXBZ9oDmolBZS/wh\n8p3yKrEReR1m3fc5RJ1r7w6SdjzuESE=\n=LwLV\n-----END PGP SIGNATURE-----\n"
+ },
+ {
+  "name": "truncated at 358",
+  "armored": "-----BEGIN PGP SIGNATURE-----\n\nwsCmBAABCABRFiEEbAgrPtd/+RWsqzo7jEGmqP4drd8FAmrJC5EbFIAAAAAABAAO\nbWFudTIsMi41KzEuMTIsMCwzFxxyc2EyMDQ4QHNoYXJkcy5pbnZhbGlkAAoJEIxB\npqj+Ha3f7U8IAJmZNy9BHChXZEgej1Emg9yAC1vRkFhyGZQF9+jGT7nqrhT+LW9g\nCAB5LfixuBkep8XiLu9u4lcn7hoPiDrByp9QnKqwYm2PcvdWPVZIEVTnzqqtiNIU\nubKFvpI/LLT/qlmluOgksz9NffmH9uzoroJyUeWdXj36yt/YHDy1qfh0aBenwnzW\nfQ8xnnKvBxL382MX9oybIY5Wvw80CO4AseskOOtLHIjDTotoh0DQ/cktuRP5qqxO\nZiiYl69ElkNEEwRT4Mgtbu/jbf5cWpYWdda4x56OjCgY0tFDjXBZ9oDmolBZS/wh\n8p3yKrEReR1m3fc5RJ1r7w6SdjzuESH/EQ==\n=mwD3\n-----END PGP SIGNATURE-----\n"
+ },
+ {
+  "name": "no creation time",
+  "armored": "-----BEGIN PGP SIGNATURE-----\n\nwsChBAABCABLFiEEbAgrPtd/+RWsqzo7jEGmqP4drd8bFIAAAAAABAAObWFudTIs\nMi41KzEuMTIsMCwzFxxyc2EyMDQ4QHNoYXJkcy5pbnZhbGlkAAoJEIxBpqj+Ha3f\n7U8IAJmZNy9BHChXZEgej1Emg9yAC1vRkFhyGZQF9+jGT7nqrhT+LW9gCAB5Lfix\nuBkep8XiLu9u4lcn7hoPiDrByp9QnKqwYm2PcvdWPVZIEVTnzqqtiNIUubKFvpI/\nLLT/qlmluOgksz9NffmH9uzoroJyUeWdXj36yt/YHDy1qfh0aBenwnzWfQ8xnnKv\nBxL382MX9oybIY5Wvw80CO4AseskOOtLHIjDTotoh0DQ/cktuRP5qqxOZiiYl69E\nlkNEEwRT4Mgtbu/jbf5cWpYWdda4x56OjCgY0tFDjXBZ9oDmolBZS/wh8p3yKrER\neR1m3fc5RJ1r7w6SdjzuESH/Ebs=\n=Sxps\n-----END PGP SIGNATURE-----\n"
+ },
+ {
+  "name": "unknown critical subpacket",
+  "armored": "-----BEGIN PGP SIGNATURE-----\n\nwsCqBAABCABUFiEEbAgrPtd/+RWsqzo7jEGmqP4drd8FAmrJC5EbFIAAAAAABAAO\nbWFudTIsMi41KzEuMTIsMCwzFxxyc2EyMDQ4QHNoYXJkcy5pbnZhbGlkAuR4AAoJ\nEIxBpqj+Ha3f7U8IAJmZNy9BHChXZEgej1Emg9yAC1vRkFhyGZQF9+jGT7nqrhT+\nLW9gCAB5LfixuBkep8XiLu9u4lcn7hoPiDrByp9QnKqwYm2PcvdWPVZIEVTnzqqt\niNIUubKFvpI/LLT/qlmluOgksz9NffmH9uzoroJyUeWdXj36yt/YHDy1qfh0aBen\nwnzWfQ8xnnKvBxL382MX9oybIY5Wvw80CO4AseskOOtLHIjDTotoh0DQ/cktuRP5\nqqxOZiiYl69ElkNEEwRT4Mgtbu/jbf5cWpYWdda4x56OjCgY0tFDjXBZ9oDmolBZ\nS/wh8p3yKrEReR1m3fc5RJ1r7w6SdjzuESH/Ebs=\n=B+TM\n-----END PGP SIGNATURE-----\n"
+ },
+ {
+  "name": "unknown subpacket",
+  "armored": "-----BEGIN PGP SIGNATURE-----\n\nwsCqBAABCABUFiEEbAgrPtd/+RWsqzo7jEGmqP4drd8FAmrJC5EbFIAAAAAABAAO\nbWFudTIsMi41KzEuMTIsMCwzFxxyc2EyMDQ4QHNoYXJkcy5pbnZhbGlkAmR4AAoJ\nEIxBpqj+Ha3f7U8IAJmZNy9BHChXZEgej1Emg9yAC1vRkFhyGZQF9+jGT7nqrhT+\nLW9gCAB5LfixuBkep8XiLu9u4lcn7hoPiDrByp9QnKqwYm2PcvdWPVZIEVTnzqqt\niNIUubKFvpI/LLT/qlmluOgksz9NffmH9uzoroJyUeWdXj36yt/YHDy1qfh0aBen\nwnzWfQ8xnnKvBxL382MX9oybIY5Wvw80CO4AseskOOtLHIjDTotoh0DQ/cktuRP5\nqqxOZiiYl69ElkNEEwRT4Mgtbu/jbf5cWpYWdda4x56OjCgY0tFDjXBZ9oDmolBZ\nS/wh8p3yKrEReR1m3fc5RJ1r7w6SdjzuESH/Ebs=\n=3gTf\n-----END PGP SIGNATURE-----\n"
+ },
+ {
+  "name": "bad creation time",
+  "armored": "-----BEGIN PGP SIGNATURE-----\n\nwsCsBAABCABWFiEEbAgrPtd/+RWsqzo7jEGmqP4drd8FAmrJC5EbFIAAAAAABAAO\nbWFudTIsMi41KzEuMTIsMCwzFxxyc2EyMDQ4QHNoYXJkcy5pbnZhbGlkBAJhYmMA\nCgkQjEGmqP4drd/tTwgAmZk3L0EcKFdkSB6PUSaD3IALW9GQWHIZlAX36MZPuequ\nFP4tb2AIAHkt+LG4GR6nxeIu727iVyfuGg+IOsHKn1CcqrBibY9y91Y9VkgRVOfO\nqq2I0hS5soW+kj8stP+qWaW46CSzP019+Yf27OiugnJR5Z1ePfrK39gcPLWp+HRo\nF6fCfNZ9DzGecq8HEvfzYxf2jJshjla/DzQI7gCx6yQ460sciMNOi2iHQND9yS25\nE/mqrE5mKJiXr0SWQ0QTBFPgyC1u7+Nt/lxalhZ11rjHno6MKBjS0UONcFn2gOai\nUFlL/CHynfIqsRF5HWbd9zlEnWvvDpJ2PO4RIf8Ruw==\n=04GH\n-----END PGP SIGNATURE-----\n"
+ },
+ {
+  "name": "issuer in unhashed only",
+  "armored": "-----BEGIN PGP SIGNATURE-----\n\nwsCnBAABCABRFiEEbAgrPtd/+RWsqzo7jEGmqP4drd8FAmrJC5EbFIAAAAAABAAO\nbWFudTIsMi41KzEuMTIsMCwzFxxyc2EyMDQ4QHNoYXJkcy5pbnZhbGlkAAoJEAEC\nAwQFBgcI7U8IAJmZNy9BHChXZEgej1Emg9yAC1vRkFhyGZQF9+jGT7nqrhT+LW9g\nCAB5LfixuBkep8XiLu9u4lcn7hoPiDrByp9QnKqwYm2PcvdWPVZIEVTnzqqtiNIU\nubKFvpI/LLT/qlmluOgksz9NffmH9uzoroJyUeWdXj36yt/YHDy1qfh0aBenwnzW\nfQ8xnnKvBxL382MX9oybIY5Wvw80CO4AseskOOtLHIjDTotoh0DQ/cktuRP5qqxO\nZiiYl69ElkNEEwRT4Mgtbu/jbf5cWpYWdda4x56OjCgY0tFDjXBZ9oDmolBZS/wh\n8p3yKrEReR1m3fc5RJ1r7w6SdjzuESH/Ebs=\n=eN1F\n-----END PGP SIGNATURE-----\n"
+ },
+ {
+  "name": "issuer bad length",
+  "armored": "-----BEGIN PGP SIGNATURE-----\n\nwsCrBAABCABVFiEEbAgrPtd/+RWsqzo7jEGmqP4drd8FAmrJC5EbFIAAAAAABAAO\nbWFudTIsMi41KzEuMTIsMCwzFxxyc2EyMDQ4QHNoYXJkcy5pbnZhbGlkAxABAgAK\nCRCMQaao/h2t3+1PCACZmTcvQRwoV2RIHo9RJoPcgAtb0ZBYchmUBffoxk+56q4U\n/i1vYAgAeS34sbgZHqfF4i7vbuJXJ+4aD4g6wcqfUJyqsGJtj3L3Vj1WSBFU586q\nrYjSFLmyhb6SPyy0/6pZpbjoJLM/TX35h/bs6K6CclHlnV49+srf2Bw8tan4dGgX\np8J81n0PMZ5yrwcS9/NjF/aMmyGOVr8PNAjuALHrJDjrSxyIw06LaIdA0P3JLbkT\n+aqsTmYomJevRJZDRBMEU+DILW7v423+XFqWFnXWuMeejowoGNLRQ41wWfaA5qJQ\nWUv8IfKd8iqxEXkdZt33OUSda+8OknY87hEh/xG7\n=2f0C\n-----END PGP SIGNATURE-----\n"
+ },
+ {
+  "name": "fingerprint v4",
+  "armored": "-----BEGIN PGP SIGNATURE-----\n\nwsC0BAABCABoFiEEbAgrPtd/+RWsqzo7jEGmqP4drd8FAmrJC5EbFIAAAAAABAAO\nbWFudTIsMi41KzEuMTIsMCwzFxxyc2EyMDQ4QHNoYXJkcy5pbnZhbGlkFiEEAAEC\nAwQFBgcICQoLDA0ODxAREhMAAO1PCACZmTcvQRwoV2RIHo9RJoPcgAtb0ZBYchmU\nBffoxk+56q4U/i1vYAgAeS34sbgZHqfF4i7vbuJXJ+4aD4g6wcqfUJyqsGJtj3L3\nVj1WSBFU586qrYjSFLmyhb6SPyy0/6pZpbjoJLM/TX35h/bs6K6CclHlnV49+srf\n2Bw8tan4dGgXp8J81n0PMZ5yrwcS9/NjF/aMmyGOVr8PNAjuALHrJDjrSxyIw06L\naIdA0P3JLbkT+aqsTmYomJevRJZDRBMEU+DILW7v423+XFqWFnXWuMeejowoGNLR\nQ41wWfaA5qJQWUv8IfKd8iqxEXkdZt33OUSda+8OknY87hEh/xG7\n=xJm/\n-----END PGP SIGNATURE-----\n"
+ },
+ {
+  "name": "fingerprint v5",
+  "armored": "-----BEGIN PGP SIGNATURE-----\n\nwsDABAABCAB0FiEEbAgrPtd/+RWsqzo7jEGmqP4drd8FAmrJC5EbFIAAAAAABAAO\nbWFudTIsMi41KzEuMTIsMCwzFxxyc2EyMDQ4QHNoYXJkcy5pbnZhbGlkIiEFAAEC\nAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8AAO1PCACZmTcvQRwoV2RIHo9R\nJoPcgAtb0ZBYchmUBffoxk+56q4U/i1vYAgAeS34sbgZHqfF4i7vbuJXJ+4aD4g6\nwcqfUJyqsGJtj3L3Vj1WSBFU586qrYjSFLmyhb6SPyy0/6pZpbjoJLM/TX35h/bs\n6K6CclHlnV49+srf2Bw8tan4dGgXp8J81n0PMZ5yrwcS9/NjF/aMmyGOVr8PNAju\nALHrJDjrSxyIw06LaIdA0P3JLbkT+aqsTmYomJevRJZDRBMEU+DILW7v423+XFqW\nFnXWuMeejowoGNLRQ41wWfaA5qJQWUv8IfKd8iqxEXkdZt33OUSda+8OknY87hEh\n/xG7\n=fUMM\n-----END PGP SIGNATURE-----\n"
+ },
+ {
+  "name": "fingerprint bad length",
+  "armored": "-----BEGIN PGP SIGNATURE-----\n\nwsC9BAABCABnFiEEbAgrPtd/+RWsqzo7jEGmqP4drd8FAmrJC5EbFIAAAAAABAAO\nbWFudTIsMi41KzEuMTIsMCwzFxxyc2EyMDQ4QHNoYXJkcy5pbnZhbGlkFSEEAAEC\nAwQFBgcICQoLDA0ODxAREgAKCRCMQaao/h2t3+1PCACZmTcvQRwoV2RIHo9RJoPc\ngAtb0ZBYchmUBffoxk+56q4U/i1vYAgAeS34sbgZHqfF4i7vbuJXJ+4aD4g6wcqf\nUJyqsGJtj3L3Vj1WSBFU586qrYjSFLmyhb6SPyy0/6pZpbjoJLM/TX35h/bs6K6C\nclHlnV49+srf2Bw8tan4dGgXp8J81n0PMZ5yrwcS9/NjF/aMmyGOVr8PNAjuALHr\nJDjrSxyIw06LaIdA0P3JLbkT+aqsTmYomJevRJZDRBMEU+DILW7v423+XFqWFnXW\nuMeejowoGNLRQ41wWfaA5qJQWUv8IfKd8iqxEXkdZt33OUSda+8OknY87hEh/xG7\n=HX9I\n-----END PGP SIGNATURE-----\n"
+ },
+ {
+  "name": "non-exportable",
+  "armored": "-----BEGIN PGP SIGNATURE-----\n\nwsCqBAABCABUFiEEbAgrPtd/+RWsqzo7jEGmqP4drd8FAmrJC5EbFIAAAAAABAAO\nbWFudTIsMi41KzEuMTIsMCwzFxxyc2EyMDQ4QHNoYXJkcy5pbnZhbGlkAgQAAAoJ\nEIxBpqj+Ha3f7U8IAJmZNy9BHChXZEgej1Emg9yAC1vRkFhyGZQF9+jGT7nqrhT+\nLW9gCAB5LfixuBkep8XiLu9u4lcn7hoPiDrByp9QnKqwYm2PcvdWPVZIEVTnzqqt\niNIUubKFvpI/LLT/qlmluOgksz9NffmH9uzoroJyUeWdXj36yt/YHDy1qfh0aBen\nwnzWfQ8xnnKvBxL382MX9oybIY5Wvw80CO4AseskOOtLHIjDTotoh0DQ/cktuRP5\nqqxOZiiYl69ElkNEEwRT4Mgtbu/jbf5cWpYWdda4x56OjCgY0tFDjXBZ9oDmolBZ\nS/wh8p3yKrEReR1m3fc5RJ1r7w6SdjzuESH/Ebs=\n=FvUa\n-----END PGP SIGNATURE-----\n"
+ },
+ {
+  "name": "notation",
+  "armored": "-----BEGIN PGP SIGNATURE-----\n\nwsC2BAABCABgFiEEbAgrPtd/+RWsqzo7jEGmqP4drd8FAmrJC5EbFIAAAAAABAAO\nbWFudTIsMi41KzEuMTIsMCwzFxxyc2EyMDQ4QHNoYXJkcy5pbnZhbGlkDhSAAAAA\nAAMAAmFiY3h5AAoJEIxBpqj+Ha3f7U8IAJmZNy9BHChXZEgej1Emg9yAC1vRkFhy\nGZQF9+jGT7nqrhT+LW9gCAB5LfixuBkep8XiLu9u4lcn7hoPiDrByp9QnKqwYm2P\ncvdWPVZIEVTnzqqtiNIUubKFvpI/LLT/qlmluOgksz9NffmH9uzoroJyUeWdXj36\nyt/YHDy1qfh0aBenwnzWfQ8xnnKvBxL382MX9oybIY5Wvw80CO4AseskOOtLHIjD\nTotoh0DQ/cktuRP5qqxOZiiYl69ElkNEEwRT4Mgtbu/jbf5cWpYWdda4x56OjCgY\n0tFDjXBZ9oDmolBZS/wh8p3yKrEReR1m3fc5RJ1r7w6SdjzuESH/Ebs=\n=gMiE\n-----END PGP SIGNATURE-----\n"
+ },
+ {
+  "name": "notation bad length",
+  "armored": "-----BEGIN PGP SIGNATURE-----\n\nwsC2BAABCABgFiEEbAgrPtd/+RWsqzo7jEGmqP4drd8FAmrJC5EbFIAAAAAABAAO\nbWFudTIsMi41KzEuMTIsMCwzFxxyc2EyMDQ4QHNoYXJkcy5pbnZhbGlkDhSAAAAA\nAAMACWFiY3h5AAoJEIxBpqj+Ha3f7U8IAJmZNy9BHChXZEgej1Emg9yAC1vRkFhy\nGZQF9+jGT7nqrhT+LW9gCAB5LfixuBkep8XiLu9u4lcn7hoPiDrByp9QnKqwYm2P\ncvdWPVZIEVTnzqqtiNIUubKFvpI/LLT/qlmluOgksz9NffmH9uzoroJyUeWdXj36\nyt/YHDy1qfh0aBenwnzWfQ8xnnKvBxL382MX9oybIY5Wvw80CO4AseskOOtLHIjD\nTotoh0DQ/cktuRP5qqxOZiiYl69ElkNEEwRT4Mgtbu/jbf5cWpYWdda4x56OjCgY\n0tFDjXBZ9oDmolBZS/wh8p3yKrEReR1m3fc5RJ1r7w6SdjzuESH/Ebs=\n=IcQY\n-----END PGP SIGNATURE-----\n"
+ },
+ {
+  "name": "embedded wrong type",
+  "armored": "-----BEGIN PGP SIGNATURE-----\n\nwsIRBAABCAG7FiEEbAgrPtd/+RWsqzo7jEGmqP4drd8FAmrJC5EbFIAAAAAABAAO\nbWFudTIsMi41KzEuMTIsMCwzFxxyc2EyMDQ4QHNoYXJkcy5pbnZhbGlkwKggBAAB\nCABRFiEEbAgrPtd/+RWsqzo7jEGmqP4drd8FAmrJC5EbFIAAAAAABAAObWFudTIs\nMi41KzEuMTIsMCwzFxxyc2EyMDQ4QHNoYXJkcy5pbnZhbGlkAAoJEIxBpqj+Ha3f\n7U8IAJmZNy9BHChXZEgej1Emg9yAC1vRkFhyGZQF9+jGT7nqrhT+LW9gCAB5Lfix\nuBkep8XiLu9u4lcn7hoPiDrByp9QnKqwYm2PcvdWPVZIEVTnzqqtiNIUubKFvpI/\nLLT/qlmluOgksz9NffmH9uzoroJyUeWdXj36yt/YHDy1qfh0aBenwnzWfQ8xnnKv\nBxL382MX9oybIY5Wvw80CO4AseskOOtLHIjDTotoh0DQ/cktuRP5qqxOZiiYl69E\nlkNEEwRT4Mgtbu/jbf5cWpYWdda4x56OjCgY0tFDjXBZ9oDmolBZS/wh8p3yKrER\neR1m3fc5RJ1r7w6SdjzuESH/EbsACgkQjEGmqP4drd/tTwgAmZk3L0EcKFdkSB6P\nUSaD3IALW9GQWHIZlAX36MZPuequFP4tb2AIAHkt+LG4GR6nxeIu727iVyfuGg+I\nOsHKn1CcqrBibY9y91Y9VkgRVOfOqq2I0hS5soW+kj8stP+qWaW46CSzP019+Yf2\n7OiugnJR5Z1ePfrK39gcPLWp+HRoF6fCfNZ9DzGecq8HEvfzYxf2jJshjla/DzQI\n7gCx6yQ460sciMNOi2iHQND9yS25E/mqrE5mKJiXr0SWQ0QTBFPgyC1u7+Nt/lxa\nlhZ11rjHno6MKBjS0UONcFn2gOaiUFlL/CHynfIqsRF5HWbd9zlEnWvvDpJ2PO4R\nIf8Ruw==\n=rjLJ\n-----END PGP SIGNATURE-----\n"
+ },
+ {
+  "name": "zero length subpacket",
+  "armored": "-----BEGIN PGP SIGNATURE-----\n\nwsCoBAABCABSFiEEbAgrPtd/+RWsqzo7jEGmqP4drd8FAmrJC5EbFIAAAAAABAAO\nbWFudTIsMi41KzEuMTIsMCwzFxxyc2EyMDQ4QHNoYXJkcy5pbnZhbGlkAAAKCRCM\nQaao/h2t3+1PCACZmTcvQRwoV2RIHo9RJoPcgAtb0ZBYchmUBffoxk+56q4U/i1v\nYAgAeS34sbgZHqfF4i7vbuJXJ+4aD4g6wcqfUJyqsGJtj3L3Vj1WSBFU586qrYjS\nFLmyhb6SPyy0/6pZpbjoJLM/TX35h/bs6K6CclHlnV49+srf2Bw8tan4dGgXp8J8\n1n0PMZ5yrwcS9/NjF/aMmyGOVr8PNAjuALHrJDjrSxyIw06LaIdA0P3JLbkT+aqs\nTmYomJevRJZDRBMEU+DILW7v423+XFqWFnXWuMeejowoGNLRQ41wWfaA5qJQWUv8\nIfKd8iqxEXkdZt33OUSda+8OknY87hEh/xG7\n=xSlB\n-----END PGP SIGNATURE-----\n"
+ },
+ {
+  "name": "subpacket truncated",
+  "armored": "-----BEGIN PGP SIGNATURE-----\n\nwsCpBAABCABTFiEEbAgrPtd/+RWsqzo7jEGmqP4drd8FAmrJC5EbFIAAAAAABAAO\nbWFudTIsMi41KzEuMTIsMCwzFxxyc2EyMDQ4QHNoYXJkcy5pbnZhbGlkEBAACgkQ\njEGmqP4drd/tTwgAmZk3L0EcKFdkSB6PUSaD3IALW9GQWHIZlAX36MZPuequFP4t\nb2AIAHkt+LG4GR6nxeIu727iVyfuGg+IOsHKn1CcqrBibY9y91Y9VkgRVOfOqq2I\n0hS5soW+kj8stP+qWaW46CSzP019+Yf27OiugnJR5Z1ePfrK39gcPLWp+HRoF6fC\nfNZ9DzGecq8HEvfzYxf2jJshjla/DzQI7gCx6yQ460sciMNOi2iHQND9yS25E/mq\nrE5mKJiXr0SWQ0QTBFPgyC1u7+Nt/lxalhZ11rjHno6MKBjS0UONcFn2gOaiUFlL\n/CHynfIqsRF5HWbd9zlEnWvvDpJ2PO4RIf8Ruw==\n=K6LF\n-----END PGP SIGNATURE-----\n"
+ },
+ {
+  "name": "rest garbage",
+  "armored": "-----BEGIN PGP SIGNATURE-----\n\nwsCpBAABCABRFiEEbAgrPtd/+RWsqzo7jEGmqP4drd8FAmrJC5EbFIAAAAAABAAO\nbWFudTIsMi41KzEuMTIsMCwzFxxyc2EyMDQ4QHNoYXJkcy5pbnZhbGlkAAoJEIxB\npqj+Ha3f7U8IAJmZNy9BHChXZEgej1Emg9yAC1vRkFhyGZQF9+jGT7nqrhT+LW9g\nCAB5LfixuBkep8XiLu9u4lcn7hoPiDrByp9QnKqwYm2PcvdWPVZIEVTnzqqtiNIU\nubKFvpI/LLT/qlmluOgksz9NffmH9uzoroJyUeWdXj36yt/YHDy1qfh0aBenwnzW\nfQ8xnnKvBxL382MX9oybIY5Wvw80CO4AseskOOtLHIjDTotoh0DQ/cktuRP5qqxO\nZiiYl69ElkNEEwRT4Mgtbu/jbf5cWpYWdda4x56OjCgY0tFDjXBZ9oDmolBZS/wh\n8p3yKrEReR1m3fc5RJ1r7w6SdjzuESH/EbsAAQ==\n=mgH2\n-----END PGP SIGNATURE-----\n"
+ },
+ {
+  "name": "old format header",
+  "armored": "-----BEGIN PGP SIGNATURE-----\n\niQFnBAABCABRFiEEbAgrPtd/+RWsqzo7jEGmqP4drd8FAmrJC5EbFIAAAAAABAAO\nbWFudTIsMi41KzEuMTIsMCwzFxxyc2EyMDQ4QHNoYXJkcy5pbnZhbGlkAAoJEIxB\npqj+Ha3f7U8IAJmZNy9BHChXZEgej1Emg9yAC1vRkFhyGZQF9+jGT7nqrhT+LW9g\nCAB5LfixuBkep8XiLu9u4lcn7hoPiDrByp9QnKqwYm2PcvdWPVZIEVTnzqqtiNIU\nubKFvpI/LLT/qlmluOgksz9NffmH9uzoroJyUeWdXj36yt/YHDy1qfh0aBenwnzW\nfQ8xnnKvBxL382MX9oybIY5Wvw80CO4AseskOOtLHIjDTotoh0DQ/cktuRP5qqxO\nZiiYl69ElkNEEwRT4Mgtbu/jbf5cWpYWdda4x56OjCgY0tFDjXBZ9oDmolBZS/wh\n8p3yKrEReR1m3fc5RJ1r7w6SdjzuESH/Ebs=\n=IpMb\n-----END PGP SIGNATURE-----\n"
+ },
+ {
+  "name": "old format indeterminate",
+  "armored": "-----BEGIN PGP SIGNATURE-----\n\niwQAAQgAURYhBGwIKz7Xf/kVrKs6O4xBpqj+Ha3fBQJqyQuRGxSAAAAAAAQADm1h\nbnUyLDIuNSsxLjEyLDAsMxcccnNhMjA0OEBzaGFyZHMuaW52YWxpZAAKCRCMQaao\n/h2t3+1PCACZmTcvQRwoV2RIHo9RJoPcgAtb0ZBYchmUBffoxk+56q4U/i1vYAgA\neS34sbgZHqfF4i7vbuJXJ+4aD4g6wcqfUJyqsGJtj3L3Vj1WSBFU586qrYjSFLmy\nhb6SPyy0/6pZpbjoJLM/TX35h/bs6K6CclHlnV49+srf2Bw8tan4dGgXp8J81n0P\nMZ5yrwcS9/NjF/aMmyGOVr8PNAjuALHrJDjrSxyIw06LaIdA0P3JLbkT+aqsTmYo\nmJevRJZDRBMEU+DILW7v423+XFqWFnXWuMeejowoGNLRQ41wWfaA5qJQWUv8IfKd\n8iqxEXkdZt33OUSda+8OknY87hEh/xG7\n=71JG\n-----END PGP SIGNATURE-----\n"
+ },
+ {
+  "name": "partial lengths",
+  "armored": "-----BEGIN PGP SIGNATURE-----\n\nwuUEAAEIAFEWIQRsCCs+13/5FayrOjuMQaao/h2t3wUCasCHyQuRGxSAAAAAAAQA\nDm1hbnUyLDIuNSsxLjEyLDAsMxcccnNhMjA0OEBzaGFyZHMuaW52YWxpZAAKCRCM\nQaao/h2t3+1PCACZmTcvQRwoV2RIHo9RJoPcgAtb0ZBYchmUBffoxk+56q4U/i1v\nYAgAeS34sbgZHqfF4i7vbuJXJ+4aD4g6wcqfUJyqsGJtj3L3Vj1WSBFU586qrYjS\nFLmyhb6SPyy0/6pZpbjoJLM/TX35h/bs6K6CclHlnV49+srf2Bw8tan4dGgXp8J8\n1n0PMZ5yrwcS9/NjF/aMmyGOVr8PNAjuALHrJDjrSxyIw06LaIdA0P3JLbkT+aqs\nTmYomJevRJZDRBMEU+DILW7v423+XFqWFnXWuMeejowoGNLRQ41wWfaA5qJQWUv8\nIfKd8iqxEXkdZt33OUSda+8OknY87hEh/xG7\n=yx4/\n-----END PGP SIGNATURE-----\n"
+ },
+ {
+  "name": "marker first",
+  "armored": "-----BEGIN PGP SIGNATURE-----\n\nygNQR1CJAWcEAAEIAFEWIQRsCCs+13/5FayrOjuMQaao/h2t3wUCaskLkRsUgAAA\nAAAEAA5tYW51MiwyLjUrMS4xMiwwLDMXHHJzYTIwNDhAc2hhcmRzLmludmFsaWQA\nCgkQjEGmqP4drd/tTwgAmZk3L0EcKFdkSB6PUSaD3IALW9GQWHIZlAX36MZPuequ\nFP4tb2AIAHkt+LG4GR6nxeIu727iVyfuGg+IOsHKn1CcqrBibY9y91Y9VkgRVOfO\nqq2I0hS5soW+kj8stP+qWaW46CSzP019+Yf27OiugnJR5Z1ePfrK39gcPLWp+HRo\nF6fCfNZ9DzGecq8HEvfzYxf2jJshjla/DzQI7gCx6yQ460sciMNOi2iHQND9yS25\nE/mqrE5mKJiXr0SWQ0QTBFPgyC1u7+Nt/lxalhZ11rjHno6MKBjS0UONcFn2gOai\nUFlL/CHynfIqsRF5HWbd9zlEnWvvDpJ2PO4RIf8Ruw==\n=ViDg\n-----END PGP SIGNATURE-----\n"
+ },
+ {
+  "name": "unknown tag first",
+  "armored": "-----BEGIN PGP SIGNATURE-----\n\n/AJ4eIkBZwQAAQgAURYhBGwIKz7Xf/kVrKs6O4xBpqj+Ha3fBQJqyQuRGxSAAAAA\nAAQADm1hbnUyLDIuNSsxLjEyLDAsMxcccnNhMjA0OEBzaGFyZHMuaW52YWxpZAAK\nCRCMQaao/h2t3+1PCACZmTcvQRwoV2RIHo9RJoPcgAtb0ZBYchmUBffoxk+56q4U\n/i1vYAgAeS34sbgZHqfF4i7vbuJXJ+4aD4g6wcqfUJyqsGJtj3L3Vj1WSBFU586q\nrYjSFLmyhb6SPyy0/6pZpbjoJLM/TX35h/bs6K6CclHlnV49+srf2Bw8tan4dGgX\np8J81n0PMZ5yrwcS9/NjF/aMmyGOVr8PNAjuALHrJDjrSxyIw06LaIdA0P3JLbkT\n+aqsTmYomJevRJZDRBMEU+DILW7v423+XFqWFnXWuMeejowoGNLRQ41wWfaA5qJQ\nWUv8IfKd8iqxEXkdZt33OUSda+8OknY87hEh/xG7\n=wkkN\n-----END PGP SIGNATURE-----\n"
+ },
+ {
+  "name": "critical unknown tag first",
+  "armored": "-----BEGIN PGP SIGNATURE-----\n\n3gJ4eIkBZwQAAQgAURYhBGwIKz7Xf/kVrKs6O4xBpqj+Ha3fBQJqyQuRGxSAAAAA\nAAQADm1hbnUyLDIuNSsxLjEyLDAsMxcccnNhMjA0OEBzaGFyZHMuaW52YWxpZAAK\nCRCMQaao/h2t3+1PCACZmTcvQRwoV2RIHo9RJoPcgAtb0ZBYchmUBffoxk+56q4U\n/i1vYAgAeS34sbgZHqfF4i7vbuJXJ+4aD4g6wcqfUJyqsGJtj3L3Vj1WSBFU586q\nrYjSFLmyhb6SPyy0/6pZpbjoJLM/TX35h/bs6K6CclHlnV49+srf2Bw8tan4dGgX\np8J81n0PMZ5yrwcS9/NjF/aMmyGOVr8PNAjuALHrJDjrSxyIw06LaIdA0P3JLbkT\n+aqsTmYomJevRJZDRBMEU+DILW7v423+XFqWFnXWuMeejowoGNLRQ41wWfaA5qJQ\nWUv8IfKd8iqxEXkdZt33OUSda+8OknY87hEh/xG7\n=DR/s\n-----END PGP SIGNATURE-----\n"
+ },
+ {
+  "name": "trust first",
+  "armored": "-----BEGIN PGP SIGNATURE-----\n\nzAJ4eIkBZwQAAQgAURYhBGwIKz7Xf/kVrKs6O4xBpqj+Ha3fBQJqyQuRGxSAAAAA\nAAQADm1hbnUyLDIuNSsxLjEyLDAsMxcccnNhMjA0OEBzaGFyZHMuaW52YWxpZAAK\nCRCMQaao/h2t3+1PCACZmTcvQRwoV2RIHo9RJoPcgAtb0ZBYchmUBffoxk+56q4U\n/i1vYAgAeS34sbgZHqfF4i7vbuJXJ+4aD4g6wcqfUJyqsGJtj3L3Vj1WSBFU586q\nrYjSFLmyhb6SPyy0/6pZpbjoJLM/TX35h/bs6K6CclHlnV49+srf2Bw8tan4dGgX\np8J81n0PMZ5yrwcS9/NjF/aMmyGOVr8PNAjuALHrJDjrSxyIw06LaIdA0P3JLbkT\n+aqsTmYomJevRJZDRBMEU+DILW7v423+XFqWFnXWuMeejowoGNLRQ41wWfaA5qJQ\nWUv8IfKd8iqxEXkdZt33OUSda+8OknY87hEh/xG7\n=4qI8\n-----END PGP SIGNATURE-----\n"
+ },
+ {
+  "name": "two signatures",
+  "armored": "-----BEGIN PGP SIGNATURE-----\n\niQFnBAABCABRFiEEbAgrPtd/+RWsqzo7jEGmqP4drd8FAmrJC5EbFIAAAAAABAAO\nbWFudTIsMi41KzEuMTIsMCwzFxxyc2EyMDQ4QHNoYXJkcy5pbnZhbGlkAAoJEIxB\npqj+Ha3f7U8IAJmZNy9BHChXZEgej1Emg9yAC1vRkFhyGZQF9+jGT7nqrhT+LW9g\nCAB5LfixuBkep8XiLu9u4lcn7hoPiDrByp9QnKqwYm2PcvdWPVZIEVTnzqqtiNIU\nubKFvpI/LLT/qlmluOgksz9NffmH9uzoroJyUeWdXj36yt/YHDy1qfh0aBenwnzW\nfQ8xnnKvBxL382MX9oybIY5Wvw80CO4AseskOOtLHIjDTotoh0DQ/cktuRP5qqxO\nZiiYl69ElkNEEwRT4Mgtbu/jbf5cWpYWdda4x56OjCgY0tFDjXBZ9oDmolBZS/wh\n8p3yKrEReR1m3fc5RJ1r7w6SdjzuESH/EbuJAWcEAAEIAFEWIQRsCCs+13/5Fayr\nOjuMQaao/h2t3wUCaskLkRsUgAAAAAAEAA5tYW51MiwyLjUrMS4xMiwwLDMXHHJz\nYTIwNDhAc2hhcmRzLmludmFsaWQACgkQjEGmqP4drd/tTwgAmZk3L0EcKFdkSB6P\nUSaD3IALW9GQWHIZlAX36MZPuequFP4tb2AIAHkt+LG4GR6nxeIu727iVyfuGg+I\nOsHKn1CcqrBibY9y91Y9VkgRVOfOqq2I0hS5soW+kj8stP+qWaW46CSzP019+Yf2\n7OiugnJR5Z1ePfrK39gcPLWp+HRoF6fCfNZ9DzGecq8HEvfzYxf2jJshjla/DzQI\n7gCx6yQ460sciMNOi2iHQND9yS25E/mqrE5mKJiXr0SWQ0QTBFPgyC1u7+Nt/lxa\nlhZ11rjHno6MKBjS0UONcFn2gOaiUFlL/CHynfIqsRF5HWbd9zlEnWvvDpJ2PO4R\nIf8Ruw==\n=Q0fp\n-----END PGP SIGNATURE-----\n"
+ },
+ {
+  "name": "no msb",
+  "armored": "-----BEGIN PGP SIGNATURE-----\n\nAokBZwQAAQgAURYhBGwIKz7Xf/kVrKs6O4xBpqj+Ha3fBQJqyQuRGxSAAAAAAAQA\nDm1hbnUyLDIuNSsxLjEyLDAsMxcccnNhMjA0OEBzaGFyZHMuaW52YWxpZAAKCRCM\nQaao/h2t3+1PCACZmTcvQRwoV2RIHo9RJoPcgAtb0ZBYchmUBffoxk+56q4U/i1v\nYAgAeS34sbgZHqfF4i7vbuJXJ+4aD4g6wcqfUJyqsGJtj3L3Vj1WSBFU586qrYjS\nFLmyhb6SPyy0/6pZpbjoJLM/TX35h/bs6K6CclHlnV49+srf2Bw8tan4dGgXp8J8\n1n0PMZ5yrwcS9/NjF/aMmyGOVr8PNAjuALHrJDjrSxyIw06LaIdA0P3JLbkT+aqs\nTmYomJevRJZDRBMEU+DILW7v423+XFqWFnXWuMeejowoGNLRQ41wWfaA5qJQWUv8\nIfKd8iqxEXkdZt33OUSda+8OknY87hEh/xG7\n=Fq2e\n-----END PGP SIGNATURE-----\n"
+ },
+ {
+  "name": "empty",
+  "armored": "-----BEGIN PGP SIGNATURE-----\n\n\n=twTO\n-----END PGP SIGNATURE-----\n"
+ },
+ {
+  "name": "headers",
+  "armored": "-----BEGIN PGP SIGNATURE-----\nVersion: x\nComment: y\n\niQFnBAABCABRFiEEbAgrPtd/+RWsqzo7jEGmqP4drd8FAmrJC5EbFIAAAAAABAAO\nbWFudTIsMi41KzEuMTIsMCwzFxxyc2EyMDQ4QHNoYXJkcy5pbnZhbGlkAAoJEIxB\npqj+Ha3f7U8IAJmZNy9BHChXZEgej1Emg9yAC1vRkFhyGZQF9+jGT7nqrhT+LW9g\nCAB5LfixuBkep8XiLu9u4lcn7hoPiDrByp9QnKqwYm2PcvdWPVZIEVTnzqqtiNIU\nubKFvpI/LLT/qlmluOgksz9NffmH9uzoroJyUeWdXj36yt/YHDy1qfh0aBenwnzW\nfQ8xnnKvBxL382MX9oybIY5Wvw80CO4AseskOOtLHIjDTotoh0DQ/cktuRP5qqxO\nZiiYl69ElkNEEwRT4Mgtbu/jbf5cWpYWdda4x56OjCgY0tFDjXBZ9oDmolBZS/wh\n8p3yKrEReR1m3fc5RJ1r7w6SdjzuESH/Ebs=\n=IpMb\n-----END PGP SIGNATURE-----\n"
+ },
+ {
+  "name": "crlf",
+  "armored": "-----BEGIN PGP SIGNATURE-----\r\n\r\niQFnBAABCABRFiEEbAgrPtd/+RWsqzo7jEGmqP4drd8FAmrJC5EbFIAAAAAABAAO\r\nbWFudTIsMi41KzEuMTIsMCwzFxxyc2EyMDQ4QHNoYXJkcy5pbnZhbGlkAAoJEIxB\r\npqj+Ha3f7U8IAJmZNy9BHChXZEgej1Emg9yAC1vRkFhyGZQF9+jGT7nqrhT+LW9g\r\nCAB5LfixuBkep8XiLu9u4lcn7hoPiDrByp9QnKqwYm2PcvdWPVZIEVTnzqqtiNIU\r\nubKFvpI/LLT/qlmluOgksz9NffmH9uzoroJyUeWdXj36yt/YHDy1qfh0aBenwnzW\r\nfQ8xnnKvBxL382MX9oybIY5Wvw80CO4AseskOOtLHIjDTotoh0DQ/cktuRP5qqxO\r\nZiiYl69ElkNEEwRT4Mgtbu/jbf5cWpYWdda4x56OjCgY0tFDjXBZ9oDmolBZS/wh\r\n8p3yKrEReR1m3fc5RJ1r7w6SdjzuESH/Ebs=\r\n=IpMb\r\n-----END PGP SIGNATURE-----\r\n"
+ },
+ {
+  "name": "no crc",
+  "armored": "-----BEGIN PGP SIGNATURE-----\n\niQFnBAABCABRFiEEbAgrPtd/+RWsqzo7jEGmqP4drd8FAmrJC5EbFIAAAAAABAAO\nbWFudTIsMi41KzEuMTIsMCwzFxxyc2EyMDQ4QHNoYXJkcy5pbnZhbGlkAAoJEIxB\npqj+Ha3f7U8IAJmZNy9BHChXZEgej1Emg9yAC1vRkFhyGZQF9+jGT7nqrhT+LW9g\nCAB5LfixuBkep8XiLu9u4lcn7hoPiDrByp9QnKqwYm2PcvdWPVZIEVTnzqqtiNIU\nubKFvpI/LLT/qlmluOgksz9NffmH9uzoroJyUeWdXj36yt/YHDy1qfh0aBenwnzW\nfQ8xnnKvBxL382MX9oybIY5Wvw80CO4AseskOOtLHIjDTotoh0DQ/cktuRP5qqxO\nZiiYl69ElkNEEwRT4Mgtbu/jbf5cWpYWdda4x56OjCgY0tFDjXBZ9oDmolBZS/wh\n8p3yKrEReR1m3fc5RJ1r7w6SdjzuESH/Ebs=\n-----END PGP SIGNATURE-----\n"
+ },
+ {
+  "name": "no end",
+  "armored": "-----BEGIN PGP SIGNATURE-----\n\niQFnBAABCABRFiEEbAgrPtd/+RWsqzo7jEGmqP4drd8FAmrJC5EbFIAAAAAABAAO\nbWFudTIsMi41KzEuMTIsMCwzFxxyc2EyMDQ4QHNoYXJkcy5pbnZhbGlkAAoJEIxB\npqj+Ha3f7U8IAJmZNy9BHChXZEgej1Emg9yAC1vRkFhyGZQF9+jGT7nqrhT+LW9g\nCAB5LfixuBkep8XiLu9u4lcn7hoPiDrByp9QnKqwYm2PcvdWPVZIEVTnzqqtiNIU\nubKFvpI/LLT/qlmluOgksz9NffmH9uzoroJyUeWdXj36yt/YHDy1qfh0aBenwnzW\nfQ8xnnKvBxL382MX9oybIY5Wvw80CO4AseskOOtLHIjDTotoh0DQ/cktuRP5qqxO\nZiiYl69ElkNEEwRT4Mgtbu/jbf5cWpYWdda4x56OjCgY0tFDjXBZ9oDmolBZS/wh\n8p3yKrEReR1m3fc5RJ1r7w6SdjzuESH/Ebs=\n=IpMb\n"
+ },
+ {
+  "name": "line of 97",
+  "armored": "-----BEGIN PGP SIGNATURE-----\n\niQFnBAABCABRFiEEbAgrPtd/+RWsqzo7jEGmqP4drd8FAmrJC5EbFIAAAAAABAAObWFudTIsMi41KzEuMTIsMCwzFxxyc2EyM\nDQ4QHNoYXJkcy5pbnZhbGlkAAoJEIxBpqj+Ha3f7U8IAJmZNy9BHChXZEgej1Emg9yAC1vRkFhyGZQF9+jGT7nqrhT+LW9gCA\nB5LfixuBkep8XiLu9u4lcn7hoPiDrByp9QnKqwYm2PcvdWPVZIEVTnzqqtiNIUubKFvpI/LLT/qlmluOgksz9NffmH9uzoroJ\nyUeWdXj36yt/YHDy1qfh0aBenwnzWfQ8xnnKvBxL382MX9oybIY5Wvw80CO4AseskOOtLHIjDTotoh0DQ/cktuRP5qqxOZiiY\nl69ElkNEEwRT4Mgtbu/jbf5cWpYWdda4x56OjCgY0tFDjXBZ9oDmolBZS/wh8p3yKrEReR1m3fc5RJ1r7w6SdjzuESH/Ebs=\n=IpMb\n-----END PGP SIGNATURE-----\n"
+ },
+ {
+  "name": "line of 96",
+  "armored": "-----BEGIN PGP SIGNATURE-----\n\niQFnBAABCABRFiEEbAgrPtd/+RWsqzo7jEGmqP4drd8FAmrJC5EbFIAAAAAABAAObWFudTIsMi41KzEuMTIsMCwzFxxyc2Ey\nMDQ4QHNoYXJkcy5pbnZhbGlkAAoJEIxBpqj+Ha3f7U8IAJmZNy9BHChXZEgej1Emg9yAC1vRkFhyGZQF9+jGT7nqrhT+LW9g\nCAB5LfixuBkep8XiLu9u4lcn7hoPiDrByp9QnKqwYm2PcvdWPVZIEVTnzqqtiNIUubKFvpI/LLT/qlmluOgksz9NffmH9uzo\nroJyUeWdXj36yt/YHDy1qfh0aBenwnzWfQ8xnnKvBxL382MX9oybIY5Wvw80CO4AseskOOtLHIjDTotoh0DQ/cktuRP5qqxO\nZiiYl69ElkNEEwRT4Mgtbu/jbf5cWpYWdda4x56OjCgY0tFDjXBZ9oDmolBZS/wh8p3yKrEReR1m3fc5RJ1r7w6SdjzuESH/\nEbs=\n=IpMb\n-----END PGP SIGNATURE-----\n"
+ },
+ {
+  "name": "bad base64",
+  "armored": "-----BEGIN PGP SIGNATURE-----\n\n!!!!BAABCABRFiEEbAgrPtd/+RWsqzo7jEGmqP4drd8FAmrJC5EbFIAAAAAABAAO\nbWFudTIsMi41KzEuMTIsMCwzFxxyc2EyMDQ4QHNoYXJkcy5pbnZhbGlkAAoJEIxB\npqj+Ha3f7U8IAJmZNy9BHChXZEgej1Emg9yAC1vRkFhyGZQF9+jGT7nqrhT+LW9g\nCAB5LfixuBkep8XiLu9u4lcn7hoPiDrByp9QnKqwYm2PcvdWPVZIEVTnzqqtiNIU\nubKFvpI/LLT/qlmluOgksz9NffmH9uzoroJyUeWdXj36yt/YHDy1qfh0aBenwnzW\nfQ8xnnKvBxL382MX9oybIY5Wvw80CO4AseskOOtLHIjDTotoh0DQ/cktuRP5qqxO\nZiiYl69ElkNEEwRT4Mgtbu/jbf5cWpYWdda4x56OjCgY0tFDjXBZ9oDmolBZS/wh\n8p3yKrEReR1m3fc5RJ1r7w6SdjzuESH/Ebs=\n=IpMb\n-----END PGP SIGNATURE-----\n"
+ },
+ {
+  "name": "text before",
+  "armored": "hello\n-----BEGIN PGP SIGNATURE-----\n\niQFnBAABCABRFiEEbAgrPtd/+RWsqzo7jEGmqP4drd8FAmrJC5EbFIAAAAAABAAO\nbWFudTIsMi41KzEuMTIsMCwzFxxyc2EyMDQ4QHNoYXJkcy5pbnZhbGlkAAoJEIxB\npqj+Ha3f7U8IAJmZNy9BHChXZEgej1Emg9yAC1vRkFhyGZQF9+jGT7nqrhT+LW9g\nCAB5LfixuBkep8XiLu9u4lcn7hoPiDrByp9QnKqwYm2PcvdWPVZIEVTnzqqtiNIU\nubKFvpI/LLT/qlmluOgksz9NffmH9uzoroJyUeWdXj36yt/YHDy1qfh0aBenwnzW\nfQ8xnnKvBxL382MX9oybIY5Wvw80CO4AseskOOtLHIjDTotoh0DQ/cktuRP5qqxO\nZiiYl69ElkNEEwRT4Mgtbu/jbf5cWpYWdda4x56OjCgY0tFDjXBZ9oDmolBZS/wh\n8p3yKrEReR1m3fc5RJ1r7w6SdjzuESH/Ebs=\n=IpMb\n-----END PGP SIGNATURE-----\n"
+ },
+ {
+  "name": "public key block",
+  "armored": "-----BEGIN PGP PUBLIC KEY BLOCK-----\n\niQFnBAABCABRFiEEbAgrPtd/+RWsqzo7jEGmqP4drd8FAmrJC5EbFIAAAAAABAAO\nbWFudTIsMi41KzEuMTIsMCwzFxxyc2EyMDQ4QHNoYXJkcy5pbnZhbGlkAAoJEIxB\npqj+Ha3f7U8IAJmZNy9BHChXZEgej1Emg9yAC1vRkFhyGZQF9+jGT7nqrhT+LW9g\nCAB5LfixuBkep8XiLu9u4lcn7hoPiDrByp9QnKqwYm2PcvdWPVZIEVTnzqqtiNIU\nubKFvpI/LLT/qlmluOgksz9NffmH9uzoroJyUeWdXj36yt/YHDy1qfh0aBenwnzW\nfQ8xnnKvBxL382MX9oybIY5Wvw80CO4AseskOOtLHIjDTotoh0DQ/cktuRP5qqxO\nZiiYl69ElkNEEwRT4Mgtbu/jbf5cWpYWdda4x56OjCgY0tFDjXBZ9oDmolBZS/wh\n8p3yKrEReR1m3fc5RJ1r7w6SdjzuESH/Ebs=\n=IpMb\n-----END PGP PUBLIC KEY BLOCK-----\n"
+ },
+ {
+  "name": "not armored",
+  "armored": "iQFnBAABCABRFiEEbAgrPtd/+RWsqzo7jEGmqP4drd8FAmrJC5EbFIAAAAAABAAObWFudTIsMi41KzEuMTIsMCwzFxxyc2EyMDQ4QHNoYXJkcy5pbnZhbGlkAAoJEIxBpqj+Ha3f7U8IAJmZNy9BHChXZEgej1Emg9yAC1vRkFhyGZQF9+jGT7nqrhT+LW9gCAB5LfixuBkep8XiLu9u4lcn7hoPiDrByp9QnKqwYm2PcvdWPVZIEVTnzqqtiNIUubKFvpI/LLT/qlmluOgksz9NffmH9uzoroJyUeWdXj36yt/YHDy1qfh0aBenwnzWfQ8xnnKvBxL382MX9oybIY5Wvw80CO4AseskOOtLHIjDTotoh0DQ/cktuRP5qqxOZiiYl69ElkNEEwRT4Mgtbu/jbf5cWpYWdda4x56OjCgY0tFDjXBZ9oDmolBZS/wh8p3yKrEReR1m3fc5RJ1r7w6SdjzuESH/Ebs="
+ },
+ {
+  "name": "ssh rebuilt",
+  "armored": "-----BEGIN SSH SIGNATURE-----\nU1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAgKmhZbD2Fwddl+f4Viodaf4vx3S\nk6nsjLJOnhdRBXAqsAAAADZ2l0AAAAAAAAAAZzaGE1MTIAAABTAAAAC3NzaC1lZDI1NTE5\nAAAAQFLZ34fEAII87lwXcSYx1wHz6Mz9OIQthbKBOBJm6NptfjlmghSuAVjpXyfJPrrZeG\nAdltzSL2UwmDQ9ulfRGg8=\n-----END SSH SIGNATURE-----\n"
+ },
+ {
+  "name": "ssh bad magic",
+  "armored": "-----BEGIN SSH SIGNATURE-----\nU1NIU0lYAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAgKmhZbD2Fwddl+f4Viodaf4vx3S\nk6nsjLJOnhdRBXAqsAAAADZ2l0AAAAAAAAAAZzaGE1MTIAAABTAAAAC3NzaC1lZDI1NTE5\nAAAAQFLZ34fEAII87lwXcSYx1wHz6Mz9OIQthbKBOBJm6NptfjlmghSuAVjpXyfJPrrZeG\nAdltzSL2UwmDQ9ulfRGg8=\n-----END SSH SIGNATURE-----\n"
+ },
+ {
+  "name": "ssh version 2",
+  "armored": "-----BEGIN SSH SIGNATURE-----\nU1NIU0lHAAAAAgAAADMAAAALc3NoLWVkMjU1MTkAAAAgKmhZbD2Fwddl+f4Viodaf4vx3S\nk6nsjLJOnhdRBXAqsAAAADZ2l0AAAAAAAAAAZzaGE1MTIAAABTAAAAC3NzaC1lZDI1NTE5\nAAAAQFLZ34fEAII87lwXcSYx1wHz6Mz9OIQthbKBOBJm6NptfjlmghSuAVjpXyfJPrrZeG\nAdltzSL2UwmDQ9ulfRGg8=\n-----END SSH SIGNATURE-----\n"
+ },
+ {
+  "name": "ssh hash sha1",
+  "armored": "-----BEGIN SSH SIGNATURE-----\nU1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAgKmhZbD2Fwddl+f4Viodaf4vx3S\nk6nsjLJOnhdRBXAqsAAAADZ2l0AAAAAAAAAARzaGExAAAAUwAAAAtzc2gtZWQyNTUxOQAA\nAEBS2d+HxACCPO5cF3EmMdcB8+jM/TiELYWygTgSZujabX45ZoIUrgFY6V8nyT662XhgHZ\nbc0i9lMJg0PbpX0RoP\n-----END SSH SIGNATURE-----\n"
+ },
+ {
+  "name": "ssh trailing",
+  "armored": "-----BEGIN SSH SIGNATURE-----\nU1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAgKmhZbD2Fwddl+f4Viodaf4vx3S\nk6nsjLJOnhdRBXAqsAAAADZ2l0AAAAAAAAAAZzaGE1MTIAAABTAAAAC3NzaC1lZDI1NTE5\nAAAAQFLZ34fEAII87lwXcSYx1wHz6Mz9OIQthbKBOBJm6NptfjlmghSuAVjpXyfJPrrZeG\nAdltzSL2UwmDQ9ulfRGg94\n-----END SSH SIGNATURE-----\n"
+ },
+ {
+  "name": "ssh short key",
+  "armored": "-----BEGIN SSH SIGNATURE-----\nU1NIU0lHAAAAAQAAADIAAAALc3NoLWVkMjU1MTkAAAAfAAAAAAAAAAAAAAAAAAAAAAAAAA\nAAAAAAAAAAAAAAAAAAAANnaXQAAAAAAAAABnNoYTUxMgAAAFMAAAALc3NoLWVkMjU1MTkA\nAABAUtnfh8QAgjzuXBdxJjHXAfPozP04hC2FsoE4Embo2m1+OWaCFK4BWOlfJ8k+utl4YB\n2W3NIvZTCYND26V9EaDw==\n-----END SSH SIGNATURE-----\n"
+ },
+ {
+  "name": "ssh key junk",
+  "armored": "-----BEGIN SSH SIGNATURE-----\nU1NIU0lHAAAAAQAAADQAAAALc3NoLWVkMjU1MTkAAAAgKmhZbD2Fwddl+f4Viodaf4vx3S\nk6nsjLJOnhdRBXAqt4AAAAA2dpdAAAAAAAAAAGc2hhNTEyAAAAUwAAAAtzc2gtZWQyNTUx\nOQAAAEBS2d+HxACCPO5cF3EmMdcB8+jM/TiELYWygTgSZujabX45ZoIUrgFY6V8nyT662X\nhgHZbc0i9lMJg0PbpX0RoP\n-----END SSH SIGNATURE-----\n"
+ },
+ {
+  "name": "ssh unknown key",
+  "armored": "-----BEGIN SSH SIGNATURE-----\nU1NIU0lHAAAAAQAAAC8AAAAHc3NoLWZvbwAAACAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\nAAAAAAAAAAAAAAAANnaXQAAAAAAAAABnNoYTUxMgAAAFMAAAALc3NoLWVkMjU1MTkAAABA\nUtnfh8QAgjzuXBdxJjHXAfPozP04hC2FsoE4Embo2m1+OWaCFK4BWOlfJ8k+utl4YB2W3N\nIvZTCYND26V9EaDw==\n-----END SSH SIGNATURE-----\n"
+ },
+ {
+  "name": "ssh rsa-sha2 as key",
+  "armored": "-----BEGIN SSH SIGNATURE-----\nU1NIU0lHAAAAAQAAADQAAAAMcnNhLXNoYTItMjU2AAAAIAAAAAAAAAAAAAAAAAAAAAAAAA\nAAAAAAAAAAAAAAAAAAAAAAA2dpdAAAAAAAAAAGc2hhNTEyAAAAUwAAAAtzc2gtZWQyNTUx\nOQAAAEBS2d+HxACCPO5cF3EmMdcB8+jM/TiELYWygTgSZujabX45ZoIUrgFY6V8nyT662X\nhgHZbc0i9lMJg0PbpX0RoP\n-----END SSH SIGNATURE-----\n"
+ },
+ {
+  "name": "ssh namespace file",
+  "armored": "-----BEGIN SSH SIGNATURE-----\nU1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAgKmhZbD2Fwddl+f4Viodaf4vx3S\nk6nsjLJOnhdRBXAqsAAAAEZmlsZQAAAAAAAAAGc2hhNTEyAAAAUwAAAAtzc2gtZWQyNTUx\nOQAAAEBS2d+HxACCPO5cF3EmMdcB8+jM/TiELYWygTgSZujabX45ZoIUrgFY6V8nyT662X\nhgHZbc0i9lMJg0PbpX0RoP\n-----END SSH SIGNATURE-----\n"
+ },
+ {
+  "name": "ssh truncated",
+  "armored": "-----BEGIN SSH SIGNATURE-----\nU1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAgKmhZbD2Fwddl+f4Viodaf4vx3S\nk6nsjLJOnhdRBXAqsAAAADZ2l0AAAAAAAAAAZzaGE1MTIAAAAA\n-----END SSH SIGNATURE-----\n"
+ },
+ {
+  "name": "ssh rsa format ssh-rsa",
+  "armored": "-----BEGIN SSH SIGNATURE-----\nU1NIU0lHAAAAAQAAARcAAAAHc3NoLXJzYQAAAAMBAAEAAAEBAK2wjDK/hCwQ9Z/9sYJH1O\nlT6CrED+qrpMEXoma/fkMQqYcdWgJAWPTeWtfLc/x52y54S/zwwjEuOxn6IyYjPNqM0CFu\n02Ht9sVnwtFizgAX5YUDrGC4LCjXaFGfWH/XoJqqp+jqqfDsDIWeIr3M8xRKX4OnWwlzGj\nzu0WHjVXCx8e/uigzwm3R7VkGbJ8ox78xKc012Csjf1nvNKqOCw5g7UJEw0JxweK33kv1b\nnF5itAl7LSLS/wnXc3WApSeBZc/tnjXvC/9/U/PfYxuA9gN+taLIn3Y0OEBOxibeuIKzJN\nrk+z8T/y6xxtlCOpq1dYSyw5MAh9K2zkSnu6cejlkAAAADZ2l0AAAAAAAAAAZzaGE1MTIA\nAAEPAAAAB3NzaC1yc2EAAAEAiS8CsaIicrHpNg/aSaEZc72iwUZYWStD6wzWDhzRplrjWd\nHjDBAmiBVTTNW7T3/PaV9P50OpDkDa5dAjiEhnJWnMVJpZR7jUdOCOBsAyDOnE+R7eHXyT\nxU70aoL/KGIv8XU4331P7KbKpFZbkbEnXWiVRUaLNbnWj5k9uRRKjNe3RUHxmYynyphOF+\n5uOKQUZcRF/nk+A2m4+WksbfV6XWuh9EzMlORbPOchTPb6ogiJtjtO+wXE3kzWUU5rDIqK\nOnIeXEfvj+16F6vHPEdmRx83XgYyMJ+rJgBDE1IWQmfnjHUpAmzmGrTZoe8wBMM+VC/I+k\nELl20tcE9RhkenWQ==\n-----END SSH SIGNATURE-----\n"
+ },
+ {
+  "name": "ssh rsa padded modulus",
+  "armored": "-----BEGIN SSH SIGNATURE-----\nU1NIU0lHAAAAAQAAARgAAAAHc3NoLXJzYQAAAAMBAAEAAAECAACtsIwyv4QsEPWf/bGCR9\nTpU+gqxA/qq6TBF6Jmv35DEKmHHVoCQFj03lrXy3P8edsueEv88MIxLjsZ+iMmIzzajNAh\nbtNh7fbFZ8LRYs4AF+WFA6xguCwo12hRn1h/16Caqqfo6qnw7AyFniK9zPMUSl+Dp1sJcx\no87tFh41VwsfHv7ooM8Jt0e1ZBmyfKMe/MSnNNdgrI39Z7zSqjgsOYO1CRMNCccHit95L9\nW5xeYrQJey0i0v8J13N1gKUngWXP7Z417wv/f1Pz32MbgPYDfrWiyJ92NDhATsYm3riCsy\nTa5Ps/E/8uscbZQjqatXWEssOTAIfSts5Ep7unHo5ZAAAAA2dpdAAAAAAAAAAGc2hhNTEy\nAAABFAAAAAxyc2Etc2hhMi01MTIAAAEAiS8CsaIicrHpNg/aSaEZc72iwUZYWStD6wzWDh\nzRplrjWdHjDBAmiBVTTNW7T3/PaV9P50OpDkDa5dAjiEhnJWnMVJpZR7jUdOCOBsAyDOnE\n+R7eHXyTxU70aoL/KGIv8XU4331P7KbKpFZbkbEnXWiVRUaLNbnWj5k9uRRKjNe3RUHxmY\nynyphOF+5uOKQUZcRF/nk+A2m4+WksbfV6XWuh9EzMlORbPOchTPb6ogiJtjtO+wXE3kzW\nUU5rDIqKOnIeXEfvj+16F6vHPEdmRx83XgYyMJ+rJgBDE1IWQmfnjHUpAmzmGrTZoe8wBM\nM+VC/I+kELl20tcE9RhkenWQ==\n-----END SSH SIGNATURE-----\n"
+ },
+ {
+  "name": "ssh rsa even exponent",
+  "armored": "-----BEGIN SSH SIGNATURE-----\nU1NIU0lHAAAAAQAAARUAAAAHc3NoLXJzYQAAAAEEAAABAQCtsIwyv4QsEPWf/bGCR9TpU+\ngqxA/qq6TBF6Jmv35DEKmHHVoCQFj03lrXy3P8edsueEv88MIxLjsZ+iMmIzzajNAhbtNh\n7fbFZ8LRYs4AF+WFA6xguCwo12hRn1h/16Caqqfo6qnw7AyFniK9zPMUSl+Dp1sJcxo87t\nFh41VwsfHv7ooM8Jt0e1ZBmyfKMe/MSnNNdgrI39Z7zSqjgsOYO1CRMNCccHit95L9W5xe\nYrQJey0i0v8J13N1gKUngWXP7Z417wv/f1Pz32MbgPYDfrWiyJ92NDhATsYm3riCsyTa5P\ns/E/8uscbZQjqatXWEssOTAIfSts5Ep7unHo5ZAAAAA2dpdAAAAAAAAAAGc2hhNTEyAAAB\nFAAAAAxyc2Etc2hhMi01MTIAAAEAiS8CsaIicrHpNg/aSaEZc72iwUZYWStD6wzWDhzRpl\nrjWdHjDBAmiBVTTNW7T3/PaV9P50OpDkDa5dAjiEhnJWnMVJpZR7jUdOCOBsAyDOnE+R7e\nHXyTxU70aoL/KGIv8XU4331P7KbKpFZbkbEnXWiVRUaLNbnWj5k9uRRKjNe3RUHxmYynyp\nhOF+5uOKQUZcRF/nk+A2m4+WksbfV6XWuh9EzMlORbPOchTPb6ogiJtjtO+wXE3kzWUU5r\nDIqKOnIeXEfvj+16F6vHPEdmRx83XgYyMJ+rJgBDE1IWQmfnjHUpAmzmGrTZoe8wBMM+VC\n/I+kELl20tcE9RhkenWQ==\n-----END SSH SIGNATURE-----\n"
+ },
+ {
+  "name": "ssh ecdsa off curve",
+  "armored": "-----BEGIN SSH SIGNATURE-----\nU1NIU0lHAAAAAQAAAGgAAAATZWNkc2Etc2hhMi1uaXN0cDI1NgAAAAhuaXN0cDI1NgAAAE\nEEWQ6j4IKFr+2eEmp2lGsxZIxWb/juTRz20nsgUN2X6UAmGmFMWbgDTrcMPJ7rJpqs9DXu\nFgTWqvBrOzQ2DL/ubgAAAANnaXQAAAAAAAAABnNoYTUxMgAAAGQAAAATZWNkc2Etc2hhMi\n1uaXN0cDI1NgAAAEkAAAAgNGLxESofVO14xpzLtK0UfPvnUBN07H0I/FBAv/FhIpUAAAAh\nAPvo4HA2bHFKidzeEkAPbWzDsDw4ZDCSpmGNiClI2gu3\n-----END SSH SIGNATURE-----\n"
+ },
+ {
+  "name": "ssh ecdsa compressed",
+  "armored": "-----BEGIN SSH SIGNATURE-----\nU1NIU0lHAAAAAQAAAEgAAAATZWNkc2Etc2hhMi1uaXN0cDI1NgAAAAhuaXN0cDI1NgAAAC\nECWQ6j4IKFr+2eEmp2lGsxZIxWb/juTRz20nsgUN2X6UAAAAADZ2l0AAAAAAAAAAZzaGE1\nMTIAAABkAAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAABJAAAAIDRi8REqH1TteMacy7StFH\nz751ATdOx9CPxQQL/xYSKVAAAAIQD76OBwNmxxSonc3hJAD21sw7A8OGQwkqZhjYgpSNoL\ntw==\n-----END SSH SIGNATURE-----\n"
+ },
+ {
+  "name": "ssh ecdsa curve mismatch",
+  "armored": "-----BEGIN SSH SIGNATURE-----\nU1NIU0lHAAAAAQAAAGgAAAATZWNkc2Etc2hhMi1uaXN0cDI1NgAAAAhuaXN0cDM4NAAAAE\nEEWQ6j4IKFr+2eEmp2lGsxZIxWb/juTRz20nsgUN2X6UAmGmFMWbgDTrcMPJ7rJpqs9DXu\nFgTWqvBrOzQ2DL/ubwAAAANnaXQAAAAAAAAABnNoYTUxMgAAAGQAAAATZWNkc2Etc2hhMi\n1uaXN0cDI1NgAAAEkAAAAgNGLxESofVO14xpzLtK0UfPvnUBN07H0I/FBAv/FhIpUAAAAh\nAPvo4HA2bHFKidzeEkAPbWzDsDw4ZDCSpmGNiClI2gu3\n-----END SSH SIGNATURE-----\n"
+ },
+ {
+  "name": "ssh pem other type",
+  "armored": "-----BEGIN SSH SIGNATURE-----\nU1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAgKmhZbD2Fwddl+f4Viodaf4vx3S\nk6nsjLJOnhdRBXAqsAAAADZ2l0AAAAAAAAAAZzaGE1MTIAAABTAAAAC3NzaC1lZDI1NTE5\nAAAAQFLZ34fEAII87lwXcSYx1wHz6Mz9OIQthbKBOBJm6NptfjlmghSuAVjpXyfJPrrZeG\nAdltzSL2UwmDQ9ulfRGg8=\n-----END SSH SIGNATUREX-----\n"
+ }
+]

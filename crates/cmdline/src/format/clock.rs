@@ -60,7 +60,7 @@ impl Clock<'_> {
 
     /// `time.Unix(sec, nsec).String()`: `2006-01-02 15:04:05.999999999 -0700 MST` in the
     /// local zone.
-    pub(super) fn string(&self, t: i128) -> String {
+    pub fn string(&self, t: i128) -> String {
         let (sec, nsec) = split(t);
         let zone = (self.zone)(sec);
         let mut out = date_time(sec, zone.offset, ' ');

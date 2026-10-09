@@ -369,7 +369,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let vsock = dir.join("v");
-        drop(UnixListener::bind(&vsock).unwrap());
+        // Bound, never listened on: a copy another test's spawn may inherit (std's
+        // sockets are close-on-exec only after they are made, on macOS) answers nothing
+        // either, so the path stays stale whoever holds it.
+        drop(bind(&vsock).unwrap());
         assert!(vsock.exists(), "a socket file left behind");
         let host = UnixListener::bind(dir.join("v_5000")).unwrap();
         let (vm, spawner) = UnixStream::pair().unwrap();

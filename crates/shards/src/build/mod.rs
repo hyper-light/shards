@@ -1184,6 +1184,31 @@ impl Bases<'_> {
     }
 }
 
+/// The digest of a file's content followed by a suffix, by the algorithm asked for:
+/// `ALGORITHM:HEX`.
+fn suffixed_digest(path: &Path, c: &policy::ChecksumRequest) -> Result<String, String> {
+    let algorithm = match c.algorithm {
+        "sha384" => &aws_lc_rs::digest::SHA384,
+        "sha512" => &aws_lc_rs::digest::SHA512,
+        _ => &aws_lc_rs::digest::SHA256,
+    };
+    let mut file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut ctx = aws_lc_rs::digest::Context::new(algorithm);
+    let mut buf = vec![0u8; 1 << 16];
+    loop {
+        let n = file
+            .read(&mut buf)
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        if n == 0 {
+            break;
+        }
+        ctx.update(buf.get(..n).unwrap_or_default());
+    }
+    ctx.update(&c.suffix);
+    let hex: String = ctx.finish().as_ref().iter().map(|b| format!("{b:02x}")).collect();
+    Ok(format!("{}:{hex}", c.algorithm))
+}
+
 /// What answers a policy's questions of a source: a base image's digest and config.
 struct PolicyMeta<'a, 'b> {
     bases: &'a Bases<'b>,
@@ -1195,6 +1220,52 @@ impl policy::Resolve for PolicyMeta<'_, '_> {
         source: &policy::Source,
         request: &policy::MetaRequest,
     ) -> Result<policy::Meta, String> {
+        let id = source.identifier.as_bytes();
+        if id.starts_with(b"git://") {
+            let attrs = source
+                .attrs
+                .iter()
+                .map(|(k, v)| (k.clone().into_bytes(), v.clone().into_bytes()))
+                .collect();
+            let src = git::source(id, &attrs)?;
+            let bound = usize::try_from(crate::pull::limits()?.bytes).unwrap_or(usize::MAX);
+            let limits = shards_git::remote::Limits {
+                pack: bound,
+                object: bound,
+            };
+            let auth = git::auth(&src, self.bases.secrets);
+            let objects = request.git.as_ref().is_some_and(|g| g.return_object);
+            let meta = git::metadata(
+                &src,
+                objects,
+                limits,
+                &shards_registry::http::Cancel::new(),
+                auth.as_ref(),
+                self.bases.agents,
+            )?;
+            return Ok(policy::Meta {
+                git: Some(meta),
+                ..policy::Meta::default()
+            });
+        }
+        if id.starts_with(b"http://") || id.starts_with(b"https://") {
+            // BuildKit resolves an HTTP source's metadata by fetching it: its digest.
+            let limits = crate::pull::limits()?;
+            let stage = self.bases.store.stage().map_err(|e| e.to_string())?;
+            let fetched = http::fetch_now(&source.identifier, None, stage.path().join("source"), &limits)?;
+            // A ChecksumRequest: the content, then the suffix, hashed as asked.
+            let signature_checksum = match &request.http_checksum {
+                None => None,
+                Some(c) => Some((suffixed_digest(&fetched.path, c)?, c.suffix.clone())),
+            };
+            return Ok(policy::Meta {
+                http: Some(policy::HttpMeta {
+                    checksum: fetched.digest.to_string(),
+                    signature_checksum,
+                }),
+                ..policy::Meta::default()
+            });
+        }
         let Some(image) = &request.image else {
             return Ok(policy::Meta::default());
         };
@@ -1214,6 +1285,7 @@ impl policy::Resolve for PolicyMeta<'_, '_> {
                 digest,
                 config: (!image.no_config).then_some(config),
             }),
+            ..policy::Meta::default()
         })
     }
 }
@@ -2392,14 +2464,6 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
                 continue;
             };
             let id = show(identifier);
-            if ["git://", "http://", "https://"]
-                .iter()
-                .any(|s| id.starts_with(s))
-            {
-                return Err(format!(
-                    "failed to build: a build policy over {id}: Git and HTTP sources in policies are not supported by shards yet"
-                ));
-            }
             let image = id.starts_with("docker-image://");
             let platform = image.then(|| op.platform.clone().unwrap_or_else(|| target_platform.clone()));
             let source = policy::Source {

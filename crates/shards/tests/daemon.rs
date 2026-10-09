@@ -1320,8 +1320,9 @@ fn pools_keep_what_their_runs_need_while_they_come() {
         while !want(warm()) {
             assert!(
                 Instant::now() < deadline,
-                "{what}: {} warm\n{}",
+                "{what}: {} warm: {:#?}\n{}",
                 warm(),
+                commands_with(&templates.to_string_lossy()),
                 std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default()
             );
             std::thread::sleep(Duration::from_millis(20));

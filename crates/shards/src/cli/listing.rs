@@ -31,7 +31,7 @@ pub fn ask(asked: Asked) {
 
 /// The zone at `secs` seconds since the epoch, as Go's `time.Local` has it: the C
 /// library's, which reads `TZ` as Go does.
-fn local(secs: i64) -> Zone {
+pub(crate) fn local(secs: i64) -> Zone {
     #[cfg(unix)]
     {
         // A 64-bit time_t on every target shards builds for, which libc's alias, deprecated

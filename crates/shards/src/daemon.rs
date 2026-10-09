@@ -2395,6 +2395,10 @@ impl<D: Disk> Daemon<D> {
     /// segment, and the request it was made by; none if it runs, or is starting, already.
     /// From here until its run is handed over or abandoned, it is starting.
     fn again(&self, given: &str) -> Result<Option<(String, Log, Run)>, String> {
+        // What any client has seen of its last run first, as every command takes it
+        // (`settle`): a `run` that has just returned its status may have sent a DONE not
+        // yet taken, and the container would read as running still.
+        self.settle();
         let id = self.resolve(given)?;
         if lock(&self.removing).contains(&id) {
             return Err(
@@ -5231,6 +5235,60 @@ mod tests {
             drop(state);
             assert!(lock(&t.daemon.runs).is_empty());
             assert_eq!(t.ask(&["ps", "-a", "-q"]), (0, String::new(), String::new()));
+        });
+    }
+
+    /// `start` of a container whose last run told its client it ended, though the daemon
+    /// has not yet taken that run's DONE, starts it again: `again` first takes what every
+    /// run has sent, as `docker start` right after `docker run` finds the container exited.
+    #[test]
+    fn start_takes_the_end_a_run_s_client_has_seen() {
+        let t = Test::new("start-after-done");
+        t.run(|t| {
+            let id = t.create("again");
+            let dir = lock(&t.daemon.containers).dir(&id);
+            std::fs::write(dir.join(REQUEST), Run::default().encode()).unwrap();
+            let (ready, vm) = t.warm_vm(None);
+            let (warm, offered) = mpsc::channel::<Ready>();
+            warm.send(ready).unwrap();
+            let (daemon, threads, id2) = (&t.t.daemon, t.threads, id.clone());
+            // Its run started, and not followed: nothing takes what its VM sends but the
+            // command that asks.
+            let running = threads.spawn(move || {
+                let null = File::open("/dev/null").unwrap();
+                daemon
+                    .start_run(
+                        threads,
+                        &id2,
+                        b"run",
+                        &[null.as_fd()],
+                        Keep {
+                            detached: None,
+                            options: crate::spec::Options::default(),
+                            health: None,
+                            published: Vec::new(),
+                            named: None,
+                            layer_pending: false,
+                            visit: false,
+                            egress: None,
+                        },
+                        || {
+                            offered
+                                .recv_timeout(PATIENCE)
+                                .map_err(|_| "no warm VM".to_string())
+                        },
+                    )
+                    .map(|_| ())
+            });
+            assert_eq!(heard(&vm).0, kind::RUN);
+            say(&vm, kind::TAKEN, &[]);
+            running.join().unwrap().unwrap();
+            say_together(&vm, &[(kind::STARTED, &[]), (kind::DONE, &[0])]);
+            match t.daemon.again("again") {
+                Ok(Some((again, _, _))) => assert_eq!(again, id),
+                Ok(None) => panic!("its ended run read as running"),
+                Err(e) => panic!("{e}"),
+            }
         });
     }
 

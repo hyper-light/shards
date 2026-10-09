@@ -1,0 +1,23 @@
+[package]
+name = "shards-gitsign"
+version = "0.1.0"
+description = "Git's signatures, OpenPGP and SSH, read and verified as go-crypto v1.4.1, BuildKit and x/crypto/ssh read and verify them, for build policies"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+aws-lc-rs = { version = "1.18.1", default-features = false, features = ["aws-lc-sys"] }
+sha2 = "0.11"
+sha3 = "0.11"
+num-bigint = "0.4.8"
+base64 = "0.23.1"
+zeroize = "1"
+
+[dev-dependencies]
+serde_json = "1"
+shards-dockerfile = { path = "../dockerfile" }

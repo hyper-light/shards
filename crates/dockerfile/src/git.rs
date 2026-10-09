@@ -66,6 +66,37 @@ pub fn parse_url(remote: &[u8]) -> Result<GitUrl, UrlError> {
     }
 }
 
+/// `gitutil.IsGitTransport`: a protocol git speaks, or an scp-style `user@host:path`
+/// (sshutil.IsImplicitSSHTransport).
+pub fn is_git_transport(remote: &[u8]) -> bool {
+    match protocol(remote) {
+        Some(proto) => matches!(proto.as_slice(), b"http" | b"https" | b"ssh" | b"git"),
+        None => implicit_ssh(remote),
+    }
+}
+
+/// sshutil.IsImplicitSSHTransport: `^[a-zA-Z0-9-_]+@[a-zA-Z0-9-.]+:.*$`.
+fn implicit_ssh(raw: &[u8]) -> bool {
+    let Some(at) = raw.iter().position(|&b| b == b'@') else {
+        return false;
+    };
+    let user = go::head(raw, at);
+    let rest = go::tail(raw, at + 1);
+    let Some(colon) = rest.iter().position(|&b| b == b':') else {
+        return false;
+    };
+    let host = go::head(rest, colon);
+    !user.is_empty()
+        && user
+            .iter()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_'))
+        && !host.is_empty()
+        && host
+            .iter()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'.'))
+        && !go::tail(rest, colon + 1).contains(&b'\n')
+}
+
 /// `gitutil.FromURL`.
 pub fn from_url(u: &url::Url) -> GitUrl {
     let mut without = u.clone();

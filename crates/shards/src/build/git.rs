@@ -388,6 +388,58 @@ pub fn commit_time(
     Ok((commit_of(&pack, &resolved.commit)?.committed, 0))
 }
 
+/// What a build policy asks of `src` (D102), as BuildKit's git source resolves its
+/// metadata: the ref its name resolves to (a commit's name as it is), the object that ref
+/// names (an annotated tag's own) and the commit; and where `objects`, the commit's and
+/// the tag's raw objects, fetched one commit deep.
+pub fn metadata(
+    src: &Source,
+    objects: bool,
+    limits: Limits,
+    cancel: &Cancel,
+    auth: Option<&Auth>,
+    agents: &super::Agents,
+) -> Result<super::policy::GitMeta, String> {
+    let ssh = SshAgents {
+        agents,
+        id: src.ssh_agent.as_deref(),
+    };
+    let wrap = if src.reference.is_empty() {
+        format!("error fetching default branch for repository {}", src.url)
+    } else {
+        format!("failed to fetch remote {}", src.url)
+    };
+    let remote =
+        Remote::open(wire(&src.url, cancel, auth, ssh)?, &agent()).map_err(|e| format!("{wrap}: {e}"))?;
+    let resolved = remote
+        .resolve(&src.reference)
+        .map_err(|e| format!("{wrap}: {e}"))?
+        .ok_or_else(|| format!("repository does not contain ref {}, output: \"\"", src.reference))?;
+    let reference = match &resolved.name {
+        Some(n) => String::from_utf8_lossy(n).into_owned(),
+        None => src.reference.clone(),
+    };
+    let mut meta = super::policy::GitMeta {
+        reference,
+        checksum: resolved.tag.unwrap_or(resolved.commit).hex(),
+        commit_checksum: resolved.commit.hex(),
+        commit_object: None,
+        tag_object: None,
+    };
+    if objects {
+        let mut wants = vec![resolved.commit];
+        if let Some(tag) = resolved.tag {
+            wants.push(tag);
+        }
+        let (pack, _) = fetch_commits(&remote, &wants, limits).map_err(|e| format!("{wrap}: {e}"))?;
+        meta.commit_object = Some(pack.get(&resolved.commit)?.1);
+        if let Some(tag) = resolved.tag {
+            meta.tag_object = Some(pack.get(&tag)?.1);
+        }
+    }
+    Ok(meta)
+}
+
 /// The snapshot of `src`: resolved, fetched within `limits`, checked out; each line git's
 /// commands would print through `say`.
 pub fn snapshot(

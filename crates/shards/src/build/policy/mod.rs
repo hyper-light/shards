@@ -7,6 +7,7 @@
 //! resolved for it, and the policy asked again. One policy's denial stops the build in
 //! BuildKit's words; every policy must allow a source for the build to load it.
 
+mod gitobject;
 mod input;
 
 use std::cell::RefCell;
@@ -243,6 +244,28 @@ impl Source {
 #[derive(Debug, Clone, Default)]
 pub struct Meta {
     pub image: Option<ImageMeta>,
+    pub git: Option<GitMeta>,
+    pub http: Option<HttpMeta>,
+}
+
+/// A Git source's metadata (ResolveSourceGitResponse): the ref its name resolves to, the
+/// object that ref names (an annotated tag's own), the commit, and their raw objects
+/// where asked for.
+#[derive(Debug, Clone, Default)]
+pub struct GitMeta {
+    pub reference: String,
+    pub checksum: String,
+    pub commit_checksum: String,
+    pub commit_object: Option<Vec<u8>>,
+    pub tag_object: Option<Vec<u8>>,
+}
+
+/// An HTTP source's metadata: its content's digest, and where asked for, the digest of
+/// its content and a suffix (ChecksumResponse), and that suffix.
+#[derive(Debug, Clone, Default)]
+pub struct HttpMeta {
+    pub checksum: String,
+    pub signature_checksum: Option<(String, Vec<u8>)>,
 }
 
 /// An image's metadata: the digest its name resolves to, and its config where asked for.
@@ -258,6 +281,33 @@ pub struct ImageMeta {
 pub struct MetaRequest {
     pub platform: Option<Platform>,
     pub image: Option<ImageRequest>,
+    /// A Git source's, its raw objects too where `return_object`.
+    pub git: Option<GitRequest>,
+    /// An HTTP source's, resolved by fetching it.
+    pub http: bool,
+    /// The digest of an HTTP source's content followed by a suffix (ChecksumRequest).
+    pub http_checksum: Option<ChecksumRequest>,
+}
+
+/// ChecksumRequest: a digest, by SHA-256, -384 or -512, of an HTTP source's content
+/// followed by `suffix` (a signature's hash suffix).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChecksumRequest {
+    pub algorithm: &'static str,
+    pub suffix: Vec<u8>,
+}
+
+/// ResolveSourceGitRequest.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GitRequest {
+    pub return_object: bool,
+}
+
+impl MetaRequest {
+    /// Whether it asks for anything (sourceResolveRequest's nil request otherwise).
+    fn asks(&self) -> bool {
+        self.image.is_some() || self.git.is_some() || self.http || self.http_checksum.is_some()
+    }
 }
 
 /// ResolveSourceImageRequest.
@@ -383,21 +433,74 @@ fn input_ref(path: &str) -> Term {
 
 /// What evaluating a policy once tells (a rego.New's Partial or Eval): its decision, or
 /// for a partial one the unknown fields its decision reads; what print printed; the
-/// image pins `pin_image` set.
+/// image pins `pin_image` set; the fields the functions found missing
+/// (runtimeUnknownInputRefs), and the digest `verify_http_pgp_signature` asked for.
 struct Run {
     decision: Result<Option<Decision>, String>,
     unknown: Vec<String>,
     prints: Vec<String>,
     pins: Vec<String>,
+    runtime: Vec<String>,
+    checksum: Option<ChecksumRequest>,
 }
 
 /// The functions' state for one evaluation (policy `state`): the input they compare
-/// their operands to, the digests `pin_image` pinned.
+/// their operands to, the digests `pin_image` pinned, the functions that could not
+/// answer yet (`Unknowns`), and the digest a signature needs
+/// (checksumNeededForSignature).
 struct Funcs<'a> {
     input: &'a Input,
     input_value: Value,
     fs: &'a Fs,
     pins: Vec<String>,
+    unknowns: Vec<&'static str>,
+    checksum: Option<ChecksumRequest>,
+}
+
+/// Go's %T of an OPA value.
+fn ast_type(v: &Value) -> &'static str {
+    match v {
+        Value::Null => "ast.Null",
+        Value::Bool(_) => "ast.Boolean",
+        Value::Number(_) => "ast.Number",
+        Value::String(_) => "ast.String",
+        Value::Array(_) => "*ast.Array",
+        Value::Object(_) => "*ast.object",
+        Value::Set(_) => "*ast.set",
+    }
+}
+
+/// `time.Unix(secs, 0).String()` in this process's zone: the C library's where there is
+/// one, UTC elsewhere (D103).
+fn local_time(secs: i64) -> String {
+    #[cfg(unix)]
+    let zone = |s: i64| crate::cli::listing::local(s);
+    #[cfg(not(unix))]
+    let zone = shards_cmdline::format::utc;
+    shards_cmdline::format::Clock { now: 0, zone: &zone }.string(i128::from(secs) * 1_000_000_000)
+}
+
+impl Funcs<'_> {
+    fn add_unknown(&mut self, name: &'static str) {
+        if !self.unknowns.contains(&name) {
+            self.unknowns.push(name);
+        }
+    }
+
+    /// Policy.readFile: the file of the policy's FS, its first `limit` bytes.
+    fn read_file(&self, path: &str, limit: usize) -> Result<Vec<u8>, HostError> {
+        let mut data = self.fs.read(path).map_err(|e| {
+            HostError::Undefined(match e {
+                Missing::NotFound => format!(
+                    "failed opening file {}: open {path}: file does not exist",
+                    shards_cmdline::go::quote(path)
+                ),
+                Missing::Failed(m) => m,
+            })
+        })?;
+        data.truncate(limit);
+        Ok(data)
+    }
 }
 
 impl Host for Funcs<'_> {
@@ -445,7 +548,7 @@ impl Host for Funcs<'_> {
                 if !matches!(arg, Value::Object(_)) {
                     return Err(undefined(format!(
                         "pin_image: expected object, got {}",
-                        arg.type_name()
+                        ast_type(arg)
                     )));
                 }
                 if self.input_value.get(&Value::string("image")) != Some(arg) {
@@ -462,6 +565,140 @@ impl Host for Funcs<'_> {
                     self.pins.push(d.to_string());
                 }
                 Ok(Some(Value::Bool(true)))
+            }
+            // builtinVerifyGitSignatureImpl: the commit's or tag's signature, by the
+            // keys of a file of the policy's FS; false where the source is not Git, and
+            // unknown until its objects are fetched.
+            "verify_git_signature" => {
+                const NAME: &str = "verify_git_signature";
+                let Some(git) = &self.input.git else {
+                    return Ok(Some(Value::Bool(false)));
+                };
+                let Some(commit) = &git.commit else {
+                    self.add_unknown(NAME);
+                    return Ok(Some(Value::Bool(false)));
+                };
+                let arg = args.first().unwrap_or(&Value::Null);
+                if !matches!(arg, Value::Object(_)) {
+                    return Err(undefined(format!(
+                        "{NAME}: expected object, got {}",
+                        ast_type(arg)
+                    )));
+                }
+                let git_value = self.input_value.get(&Value::string("git"));
+                let field = |k: &str| git_value.and_then(|g| g.get(&Value::string(k)));
+                let object = if field("commit") == Some(arg) {
+                    &commit.object
+                } else if let Some(tag) = git.tag.as_ref().filter(|_| field("tag") == Some(arg)) {
+                    &tag.object
+                } else {
+                    return Err(undefined(format!("{NAME}: object is neither commit nor tag")));
+                };
+                let path = match args.get(1) {
+                    Some(Value::String(p)) => p,
+                    other => {
+                        return Err(undefined(format!(
+                            "{NAME}: expected string path, got {}",
+                            other.map_or("<nil>", ast_type)
+                        )));
+                    }
+                };
+                let keys = self.read_file(path, 128 * 1024)?;
+                let quote = |b: &[u8]| shards_dockerfile::go::quote(b);
+                let formats = shards_gitsign::pgpsign::Formats {
+                    quote: &quote,
+                    time: &local_time,
+                };
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
+                shards_gitsign::pgpsign::verify_git_signature(
+                    &object.signature,
+                    &object.signed_data,
+                    &keys,
+                    now,
+                    &formats,
+                )
+                .map_err(|e| undefined(format!("{NAME}: verification failes: {e}")))?;
+                Ok(Some(Value::Bool(true)))
+            }
+            // builtinVerifyHTTPPGPSignatureImpl: a detached signature of the download, by
+            // the keys of a file, checked over the digest of the content and the
+            // signature's hash suffix, which the source is fetched again for.
+            "verify_http_pgp_signature" => {
+                const NAME: &str = "verify_http_pgp_signature";
+                let Some(http) = &self.input.http else {
+                    return Ok(Some(Value::Bool(false)));
+                };
+                let arg = args.first().unwrap_or(&Value::Null);
+                if !matches!(arg, Value::Object(_)) {
+                    return Err(undefined(format!(
+                        "{NAME}: expected object, got {}",
+                        ast_type(arg)
+                    )));
+                }
+                if self.input_value.get(&Value::string("http")) != Some(arg) {
+                    return Err(undefined(format!(
+                        "{NAME}: first argument is not the same as input http"
+                    )));
+                }
+                let (sig_path, key_path) = match (args.get(1), args.get(2)) {
+                    (Some(Value::String(s)), Some(Value::String(k))) => (s, k),
+                    (Some(Value::String(_)), other) => {
+                        return Err(undefined(format!(
+                            "{NAME}: expected string pubkey path, got {}",
+                            other.map_or("<nil>", ast_type)
+                        )));
+                    }
+                    (other, _) => {
+                        return Err(undefined(format!(
+                            "{NAME}: expected string signature path, got {}",
+                            other.map_or("<nil>", ast_type)
+                        )));
+                    }
+                };
+                let signature = self.read_file(sig_path, 512 * 1024)?;
+                let keys = self.read_file(key_path, 512 * 1024)?;
+                let (sig, _) = shards_gitsign::parse_armored_detached_signature(&signature)
+                    .map_err(|e| undefined(format!("{NAME}: failed to parse detached signature: {e}")))?;
+                let ring = shards_gitsign::pgpsign::read_all_armored_key_rings(&keys)
+                    .map_err(|e| undefined(format!("{NAME}: failed to read armored keyring: {e}")))?;
+                use shards_gitsign::signature::Hash;
+                let algorithm = match sig.hash {
+                    Some(Hash::Sha256) => "sha256",
+                    Some(Hash::Sha384) => "sha384",
+                    Some(Hash::Sha512) => "sha512",
+                    _ => {
+                        return Err(undefined(format!(
+                            "{NAME}: unsupported signature hash: unsupported signature hash algorithm {}",
+                            shards_gitsign::pgpsign::hash_name(sig.hash)
+                        )));
+                    }
+                };
+                let request = ChecksumRequest {
+                    algorithm,
+                    suffix: sig.hash_suffix.clone(),
+                };
+                let answered = http
+                    .signature_checksum
+                    .as_ref()
+                    .filter(|(d, suffix)| !d.is_empty() && *suffix == request.suffix);
+                let Some((digest, _)) = answered else {
+                    self.checksum = Some(request);
+                    self.add_unknown(NAME);
+                    return Ok(Some(Value::Bool(false)));
+                };
+                shards_image::reference::Digest::parse(digest)
+                    .map_err(|e| undefined(format!("{NAME}: invalid checksum digest: {e}")))?;
+                let (got, hex) = digest.split_once(':').unwrap_or_default();
+                if got != algorithm {
+                    self.checksum = Some(request);
+                    self.add_unknown(NAME);
+                    return Ok(Some(Value::Bool(false)));
+                }
+                Ok(Some(Value::Bool(
+                    shards_gitsign::pgpsign::verify_signature_with_digest(&sig, &ring, got, hex).is_ok(),
+                )))
             }
             other => Err(HostError::Halt(format!(
                 "{other} in a policy is not supported by shards yet"
@@ -511,6 +748,8 @@ impl Policy {
             unknown: Vec::new(),
             prints: Vec::new(),
             pins: Vec::new(),
+            runtime: Vec::new(),
+            checksum: None,
         };
         let program = match self.compile() {
             Ok(p) => p,
@@ -525,6 +764,8 @@ impl Policy {
             input_value: value.clone(),
             fs: &self.fs,
             pins: Vec::new(),
+            unknowns: Vec::new(),
+            checksum: None,
         };
         let unknowns = input.unknown_refs();
         let mut m = Machine::new(&program, &mut host, context());
@@ -535,6 +776,9 @@ impl Policy {
                 Err(e) => out.decision = Err(e.to_string()),
             }
             out.prints = std::mem::take(&mut m.prints);
+            drop(m);
+            out.runtime = runtime_refs(&host.unknowns);
+            out.checksum = host.checksum;
             return out;
         }
         out.decision = eval_query(&mut m, &query(), Some(value))
@@ -546,8 +790,22 @@ impl Policy {
         let mut pins = host.pins;
         pins.sort();
         out.pins = pins;
+        out.runtime = runtime_refs(&host.unknowns);
+        out.checksum = host.checksum;
         out
     }
+}
+
+/// runtimeUnknownInputRefs: the input a function that could not answer needs.
+fn runtime_refs(unknowns: &[&str]) -> Vec<String> {
+    let mut out = Vec::new();
+    if unknowns.contains(&"verify_git_signature") {
+        out.push("git.commit".to_string());
+    }
+    if unknowns.contains(&"artifact_attestation") || unknowns.contains(&"github_attestation") {
+        out.push("http.checksum".to_string());
+    }
+    out
 }
 
 /// A query's context: its time now, and randomness from the system.
@@ -760,7 +1018,20 @@ fn request_for(unknowns: &[String], request: &mut MetaRequest) -> Result<(), Str
             | "image.env" => {
                 request.image.get_or_insert_with(ImageRequest::default).no_config = false;
             }
+            // Resolved by BuildKit for the HTTP source itself.
+            "http.checksum" => {}
+            "git.ref" | "git.checksum" | "git.commitChecksum" | "git.isAnnotatedTag" | "git.isSHA256"
+            | "git.tagName" | "git.branch" => {
+                request.git.get_or_insert_with(GitRequest::default);
+            }
+            "git.commit" | "git.tag" => {
+                request.git.get_or_insert_with(GitRequest::default).return_object = true
+            }
             _ => return Err(format!("unhandled unknown property {u}")),
+        }
+        // hasHTTPUnknowns: any of an HTTP source's asks for it.
+        if u.starts_with("http.") {
+            request.http = true;
         }
     }
     Ok(())
@@ -966,6 +1237,54 @@ impl Policies {
         Ok(Answer::Allow)
     }
 
+    /// resolveUnknowns: the request for what `unk` and a signature's digest need of the
+    /// source, where they need anything.
+    fn resolve(
+        &self,
+        p: &Policy,
+        platform: &Platform,
+        name: &str,
+        unk: &[String],
+        checksum: Option<ChecksumRequest>,
+        log: &dyn Log,
+    ) -> Result<Option<Answer>, String> {
+        let collected: Vec<String> = unk
+            .iter()
+            .filter(|u| !matches!(u.as_str(), "image" | "git" | "http" | "local"))
+            .cloned()
+            .collect();
+        if !collected.is_empty() {
+            self.say(
+                p,
+                LogLevel::Debug,
+                log,
+                &format!("collected unknowns: {}", summarize(&collected)),
+            );
+        }
+        let mut request = MetaRequest {
+            platform: Some(platform.clone()),
+            ..MetaRequest::default()
+        };
+        request_for(unk, &mut request)?;
+        if let Some(c) = checksum {
+            request.http = true;
+            request.http_checksum = Some(c);
+        }
+        if !request.asks() {
+            return Ok(None);
+        }
+        self.say(
+            p,
+            LogLevel::Info,
+            log,
+            &format!(
+                "policy decision for source {name}: resolve missing fields {}",
+                summarize(unk)
+            ),
+        );
+        Ok(Some(Answer::Resolve(request)))
+    }
+
     /// CheckPolicy: one policy's answer for `source`.
     fn check(
         &self,
@@ -1006,42 +1325,26 @@ impl Policies {
                 self.say(p, LogLevel::Info, log, line);
             }
             run.decision?;
-            let unk: Vec<String> = run
+            let mut unk: Vec<String> = run
                 .unknown
                 .iter()
                 .map(|u| u.strip_prefix("input.").unwrap_or(u).to_string())
                 .collect();
-            if !unk.is_empty() {
-                self.say(
-                    p,
-                    LogLevel::Debug,
-                    log,
-                    &format!("collected unknowns: {}", summarize(&unk)),
-                );
-            }
-            let mut request = MetaRequest {
-                platform: Some(wanted.clone()),
-                image: None,
-            };
-            request_for(&unk, &mut request)?;
-            if request.image.is_some() {
-                self.say(
-                    p,
-                    LogLevel::Info,
-                    log,
-                    &format!(
-                        "policy decision for source {name}: resolve missing fields {}",
-                        summarize(&unk)
-                    ),
-                );
-                return Ok(Answer::Resolve(request));
+            unk.extend(run.runtime);
+            if let Some(answer) = self.resolve(p, wanted, &name, &unk, run.checksum, log)? {
+                return Ok(answer);
             }
         }
         let run = with_stack(|| p.run(&input, false))?;
         for line in &run.prints {
             self.say(p, LogLevel::Info, log, line);
         }
-        let decision = run.decision?.ok_or("policy returned zero result")?;
+        let decision = run.decision?;
+        // What the functions could not answer is fetched, and the policy run again.
+        if let Some(answer) = self.resolve(p, wanted, &name, &run.runtime, run.checksum, log)? {
+            return Ok(answer);
+        }
+        let decision = decision.ok_or("policy returned zero result")?;
         self.say(
             p,
             LogLevel::Debug,
