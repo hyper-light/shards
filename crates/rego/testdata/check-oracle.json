@@ -661,5 +661,352 @@
     ]
    }
   ]
+ },
+ {
+  "name": "tree-ref-heads",
+  "answers": [
+   {
+    "error": "1 error occurred: policy.rego:7: rego_type_error: undefined ref: data.docker.p.q.z\n\tdata.docker.p.q.z\n\t^^^^^^^^^^^^^^^\n\thave: number"
+   }
+  ]
+ },
+ {
+  "name": "tree-ref-heads-object",
+  "answers": [
+   {
+    "error": "1 error occurred: policy.rego:3: rego_type_error: rule data.docker.p.q conflicts with [data.docker.p.q.b]"
+   }
+  ]
+ },
+ {
+  "name": "tree-package-extent",
+  "answers": [
+   {
+    "passes": [
+     false,
+     false,
+     true,
+     true
+    ]
+   }
+  ]
+ },
+ {
+  "name": "tree-partial-objects",
+  "answers": [
+   {}
+  ]
+ },
+ {
+  "name": "tree-partial-nested",
+  "answers": [
+   {
+    "error": "1 error occurred: policy.rego:8: rego_type_error: undefined ref: data.docker.m.a.b.c\n\tdata.docker.m.a.b.c\n\t^^^^^^^^^^^^^^^^^\n\thave: number"
+   }
+  ]
+ },
+ {
+  "name": "tree-other-package",
+  "answers": [
+   {
+    "error": "1 error occurred: policy.rego:3: rego_type_error: undefined ref: data.lib.n.y\n\tdata.lib.n.y\n\t^^^^^^^^^^\n\thave: number"
+   }
+  ]
+ },
+ {
+  "name": "tree-other-package-ok",
+  "answers": [
+   {
+    "passes": [
+     false,
+     true,
+     true
+    ]
+   }
+  ]
+ },
+ {
+  "name": "tree-function-in-package",
+  "answers": [
+   {
+    "error": "1 error occurred: policy.rego:3: rego_type_error: undefined ref: __local31__.y\n\t__local31__.y\n\t^^^^^^^^^^^\n\thave: number"
+   }
+  ]
+ },
+ {
+  "name": "fn-array-args",
+  "answers": [
+   {
+    "error": "1 error occurred: policy.rego:5: rego_type_error: data.docker.f: invalid argument(s)\n\thave: (string, ???)\n\twant: (array\u003cnumber, number\u003e, number)"
+   }
+  ]
+ },
+ {
+  "name": "fn-object-args",
+  "answers": [
+   {
+    "error": "1 error occurred: policy.rego:5: rego_type_error: data.docker.f: invalid argument(s)\n\thave: (object\u003ca: number\u003e, ???)\n\twant: (object\u003ca: string\u003e, string)"
+   }
+  ]
+ },
+ {
+  "name": "fn-unused-arg",
+  "answers": [
+   {
+    "error": "1 error occurred: policy.rego:5: rego_type_error: data.docker.f: invalid argument(s)\n\thave: (object[any: any], string, ???)\n\twant: (any, number, number)"
+   }
+  ]
+ },
+ {
+  "name": "compr-object-type",
+  "answers": [
+   {
+    "error": "1 error occurred: policy.rego:5: rego_type_error: upper: invalid argument(s)\n\thave: (number, ???)\n\twant: (x: string, y: string)"
+   }
+  ]
+ },
+ {
+  "name": "compr-set-type",
+  "answers": [
+   {
+    "error": "1 error occurred: policy.rego:5: rego_type_error: upper: invalid argument(s)\n\thave: (number)\n\twant: (x: string, y: string)"
+   }
+  ]
+ },
+ {
+  "name": "compr-array-type",
+  "answers": [
+   {
+    "error": "1 error occurred: policy.rego:5: rego_type_error: plus: invalid argument(s)\n\thave: (string, number, ???)\n\twant: (x: number, y: number, z: number)"
+   }
+  ]
+ },
+ {
+  "name": "compr-nested-error",
+  "answers": [
+   {
+    "error": "1 error occurred: policy.rego:3: rego_type_error: lower: invalid argument(s)\n\thave: (number, ???)\n\twant: (x: string, y: string)"
+   }
+  ]
+ },
+ {
+  "name": "array-dynamic-index",
+  "answers": [
+   {
+    "error": "1 error occurred: policy.rego:7: rego_type_error: upper: invalid argument(s)\n\thave: (number)\n\twant: (x: string, y: string)"
+   }
+  ]
+ },
+ {
+  "name": "array-index-var-string",
+  "answers": [
+   {
+    "error": "1 error occurred: policy.rego:7: rego_type_error: undefined ref: data.docker.a[i]\n\tdata.docker.a[i]\n\t              ^\n\t              have (type): string\n\t              want (type): number"
+   }
+  ]
+ },
+ {
+  "name": "object-dynamic",
+  "answers": [
+   {
+    "error": "1 error occurred: policy.rego:5: rego_type_error: undefined ref: data.docker.o.a.b\n\tdata.docker.o.a.b\n\t^^^^^^^^^^^^^^^\n\thave: number"
+   }
+  ]
+ },
+ {
+  "name": "set-member-type",
+  "answers": [
+   {
+    "error": "1 error occurred: policy.rego:5: rego_type_error: undefined ref: data.docker.s[1]\n\tdata.docker.s[1]\n\t              ^\n\t              have: 1\n\t              want (type): string"
+   }
+  ]
+ },
+ {
+  "name": "set-composite-index",
+  "answers": [
+   {
+    "error": "1 error occurred: policy.rego:5: rego_type_error: undefined ref: data.docker.s[[1]]\n\tdata.docker.s[[1]]\n\t              ^\n\t              have (type): array\u003cnumber\u003e\n\t              want (type): string"
+   }
+  ]
+ },
+ {
+  "name": "ref-composite-index",
+  "answers": [
+   {
+    "error": "1 error occurred: policy.rego:5: rego_type_error: undefined ref: data.docker.o[[1]]\n\tdata.docker.o[[1]]\n\t              ^\n\t              have (type): array\u003cnumber\u003e\n\t              want (type): string"
+   }
+  ]
+ },
+ {
+  "name": "unify-var-var",
+  "answers": [
+   {
+    "error": "1 error occurred: policy.rego:5: rego_compile_error: var b referenced above"
+   }
+  ]
+ },
+ {
+  "name": "unify-object-var",
+  "answers": [
+   {}
+  ]
+ },
+ {
+  "name": "unify-nested-arrays",
+  "answers": [
+   {
+    "error": "1 error occurred: policy.rego:5: rego_type_error: upper: invalid argument(s)\n\thave: (number)\n\twant: (x: string, y: string)"
+   }
+  ]
+ },
+ {
+  "name": "unify-object-missing",
+  "answers": [
+   {
+    "error": "1 error occurred: policy.rego:5: rego_type_error: match error\n\tleft  : object\u003ca: number\u003e\n\tright : object\u003cb: number\u003e"
+   }
+  ]
+ },
+ {
+  "name": "template-string",
+  "answers": [
+   {
+    "error": "1 error occurred: policy.rego:5: rego_type_error: plus: invalid argument(s)\n\thave: (string, number, ???)\n\twant: (x: number, y: number, z: number)"
+   }
+  ]
+ },
+ {
+  "name": "with-input-value",
+  "answers": [
+   {}
+  ]
+ },
+ {
+  "name": "with-function-value",
+  "answers": [
+   {}
+  ]
+ },
+ {
+  "name": "with-data-value",
+  "answers": [
+   {}
+  ]
+ },
+ {
+  "name": "every-domain-ref",
+  "answers": [
+   {
+    "error": "1 error occurred: policy.rego:5: rego_type_error: undefined ref: data.docker.o.b\n\tdata.docker.o.b\n\t              ^\n\t              have: \"b\"\n\t              want (one of): [\"a\"]"
+   }
+  ]
+ },
+ {
+  "name": "every-key-value",
+  "answers": [
+   {
+    "error": "1 error occurred: policy.rego:3: rego_compile_error: declared var v unused"
+   }
+  ]
+ },
+ {
+  "name": "membership-types",
+  "answers": [
+   {}
+  ]
+ },
+ {
+  "name": "membership-three",
+  "answers": [
+   {}
+  ]
+ },
+ {
+  "name": "print-values",
+  "answers": [
+   {}
+  ]
+ },
+ {
+  "name": "builtin-variadic",
+  "answers": [
+   {
+    "error": "1 error occurred: policy.rego:3: rego_type_error: concat: arity mismatch\n\thave: (string, array\u003cstring\u003e, string, ???)\n\twant: (delimiter: string, collection: any\u003carray[string], set[string]\u003e)"
+   }
+  ]
+ },
+ {
+  "name": "builtin-too-few-generated",
+  "answers": [
+   {
+    "error": "1 error occurred: policy.rego:4: rego_type_error: sprintf: arity mismatch\n\thave: (string, ???)\n\twant: (format: string, values: array[any])"
+   }
+  ]
+ },
+ {
+  "name": "default-function",
+  "answers": [
+   {}
+  ]
+ },
+ {
+  "name": "rule-else-object",
+  "answers": [
+   {
+    "error": "1 error occurred: policy.rego:7: rego_type_error: undefined ref: data.docker.o.c\n\tdata.docker.o.c\n\t              ^\n\t              have: \"c\"\n\t              want (one of): [\"a\" \"b\"]"
+   }
+  ]
+ },
+ {
+  "name": "negated-ref",
+  "answers": [
+   {
+    "error": "1 error occurred: policy.rego:5: rego_type_error: undefined ref: data.docker.o.b\n\tdata.docker.o.b\n\t              ^\n\t              have: \"b\"\n\t              want (one of): [\"a\"]"
+   }
+  ]
+ },
+ {
+  "name": "ref-number-head",
+  "answers": [
+   {
+    "error": "1 error occurred: policy.rego:5: rego_type_error: undefined ref: data.docker.n[0]\n\tdata.docker.n[0]\n\t^^^^^^^^^^^^^\n\thave: number"
+   }
+  ]
+ },
+ {
+  "name": "bx-full-policy",
+  "answers": [
+   {
+    "passes": [
+     true,
+     false,
+     true,
+     false
+    ]
+   }
+  ]
+ },
+ {
+  "name": "bx-http-policy",
+  "answers": [
+   {}
+  ]
+ },
+ {
+  "name": "bx-git-policy",
+  "answers": [
+   {}
+  ]
+ },
+ {
+  "name": "bx-load-json-shape",
+  "answers": [
+   {
+    "passes": [
+     true,
+     true
+    ]
+   }
+  ]
  }
 ]
