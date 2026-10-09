@@ -1317,5 +1317,325 @@
     ]
    }
   }
+ },
+ {
+  "name": "e-index-input",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np if {\n\tprint(\"a\")\n\tinput.x == 1\n}\n\np if {\n\tprint(\"b\")\n\tinput.x == 2\n}\n\ndecision := p\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "x": 1
+  }
+ },
+ {
+  "name": "e-index-input-none",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np if {\n\tprint(\"a\")\n\tinput.x == 1\n}\n\np if {\n\tprint(\"b\")\n\tinput.x == 2\n}\n\ndefault p := false\n\ndecision := p\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "x": 3
+  }
+ },
+ {
+  "name": "e-index-missing",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np if {\n\tprint(\"a\")\n\tinput.x == 1\n}\n\ndefault p := false\n\ndecision := p\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {}
+ },
+ {
+  "name": "e-early-exit",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np if print(\"1\")\n\np if print(\"2\")\n\ndecision := p\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "e-no-early-exit",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np := 1 if print(\"1\")\n\np := 1 if print(\"2\")\n\ndecision := p\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "e-cache-complete",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nq := 1 if print(\"q\")\n\ndecision := [q, q]\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "e-cache-function",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nf(x) := x if print(\"f\", x)\n\ndecision := [f(1), f(1), f(2)]\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "e-partial-set-key",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndeny contains m if {\n\tsome m in [\"a\", \"b\"]\n\tprint(\"deny\", m)\n}\n\ndecision := deny[\"a\"]\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "e-partial-set-full",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndeny contains m if {\n\tsome m in [\"a\", \"b\"]\n\tprint(\"deny\", m)\n}\n\ndecision := [deny[\"a\"], count(deny)]\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "e-partial-obj-key",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nm[k] := v if {\n\tsome k, v in {\"a\": 1, \"b\": 2}\n\tprint(\"m\", k)\n}\n\ndecision := m.a\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "e-else-print",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nf(x) := 1 if {\n\tprint(\"one\")\n\tx == 1\n} else := 2 if {\n\tprint(\"two\")\n\tx == 2\n} else := 3\n\ndecision := [f(1), f(2), f(5)]\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "e-not-print",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tnot q\n}\n\nq if {\n\tprint(\"q\")\n\tfalse\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "e-every-print",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery x in [1, 2, 3] {\n\t\tprint(\"x\", x)\n\t\tx < 3\n\t}\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "e-compr-index",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := [r | some y in [1, 2, 1]; r := [x | some x in input.a; print(\"c\", x); x == y]]\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "a": [
+    1,
+    2,
+    3
+   ]
+  }
+ },
+ {
+  "name": "e-some-iter-print",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := [x | some x in input.a; print(\"v\", x)]\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "a": [
+    3,
+    1,
+    2
+   ]
+  }
+ },
+ {
+  "name": "e-obj-iter-print",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := {k | some k, _ in input; print(\"k\", k)}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "b": 1,
+   "a": 2,
+   "c": 3
+  }
+ },
+ {
+  "name": "e-index-fn-arg",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nf(x) := \"one\" if {\n\tprint(\"f1\")\n\tx == 1\n}\n\nf(x) := \"two\" if {\n\tprint(\"f2\")\n\tx == 2\n}\n\ndecision := f(2)\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "e-glob-index",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np if {\n\tprint(\"a\")\n\tglob.match(\"a.*\", [\".\"], input.s)\n}\n\np if {\n\tprint(\"b\")\n\tglob.match(\"b.*\", [\".\"], input.s)\n}\n\ndecision := p\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "s": "a.x"
+  }
+ },
+ {
+  "name": "e-conflict",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np := 1 if true\n\np := 2 if input.x\n\ndecision := p\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "x": true
+  }
+ },
+ {
+  "name": "e-obj-conflict",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nm[\"a\"] := 1 if true\n\nm[\"a\"] := 2 if true\n\ndecision := m\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "e-fn-conflict",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nf(x) := 1 if true\n\nf(x) := 2 if true\n\ndecision := f(1)\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "e-builtin-error",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := x if {\n\tprint(\"before\")\n\tx := to_number(\"abc\")\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "e-undefined-index",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := input.a[5]\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "a": [
+    1
+   ]
+  }
+ },
+ {
+  "name": "e-ref-iter-data",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nr := {\"a\": 1, \"b\": 2}\n\ndecision := [k | some k; r[k] > 0; print(\"r\", k)]\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "e-multi-print-cross",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if print({x | some x in [1, 2]}, [3])\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "e-with-cache",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nq := input.v if print(\"q\", input.v)\n\ndecision := [q, x] if {\n\tx := q with input.v as 9\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "v": 1
+  }
+ },
+ {
+  "name": "e-default-fn",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault f(_) := \"d\"\n\nf(x) := \"one\" if {\n\tprint(\"f\")\n\tx == 1\n}\n\ndecision := [f(1), f(2)]\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "e-rule-ref-head",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\na.b[x] := y if {\n\tsome x, y in {\"p\": 1, \"q\": 2}\n\tprint(\"ab\", x)\n}\n\ndecision := a.b.q\n"
+   ]
+  ],
+  "query": "data.docker.decision"
  }
 ]

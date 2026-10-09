@@ -108,6 +108,17 @@ impl TreeNode {
 pub struct Program {
     pub root: TreeNode,
     host_names: Vec<String>,
+    /// Comprehensions evaluated once and indexed by these variables
+    /// (buildComprehensionIndices), by the comprehension's key.
+    compr_index: HashMap<String, Vec<Term>>,
+}
+
+/// A comprehension's identity: where it is and what it says.
+fn compr_key(t: &Term) -> String {
+    match &t.loc {
+        Some(l) => format!("{}:{}:{}:{t}", l.file, l.row, l.col),
+        None => format!("-:{t}"),
+    }
 }
 
 impl Program {
@@ -117,7 +128,22 @@ impl Program {
             add_module(&mut root, m);
         }
         sort_tree(&mut root);
-        Program { root, host_names }
+        let mut compr_index = HashMap::new();
+        let arity = |r: &[Term]| c.arity(r);
+        for m in c.modules.values() {
+            for rule in &m.rules {
+                let mut x = Some(rule);
+                while let Some(r) = x {
+                    let mut candidates: crate::compile::vars::VarSet = ["data", "input"].iter().map(|v| Rc::from(*v)).collect();
+                    let mut v = crate::compile::vars::VarVisitor::default();
+                    v.args(&r.head.args);
+                    candidates.extend(v.vars);
+                    build_compr_indices(&arity, &mut candidates, &r.body, &mut compr_index);
+                    x = r.else_.as_deref();
+                }
+            }
+        }
+        Program { root, host_names, compr_index }
     }
 
     fn rules_at(&self, r: &[Term]) -> Vec<Rc<RuleRec>> {
@@ -153,6 +179,129 @@ fn add_module(root: &mut TreeNode, m: &Module) {
         }
         node.values.push(rec);
     }
+}
+
+use crate::compile::vars::{self as cvars, VarSet};
+
+/// buildComprehensionIndices over a body and the bodies nested in it (WalkBodies order),
+/// the candidates growing with each expression met.
+fn build_compr_indices(arity: crate::compile::safety::Arity<'_>, candidates: &mut VarSet, body: &Body, out: &mut HashMap<String, Vec<Term>>) {
+    for e in body {
+        if let Some((t, keys)) = compr_index(arity, candidates, e) {
+            out.insert(compr_key(&t), keys);
+        }
+        let p = cvars::Params { skip_closures: true, skip_ref_call_head: true, ..cvars::Params::default() };
+        candidates.extend(cvars::expr_vars(e, p));
+    }
+    for e in body {
+        for nested in nested_bodies(e) {
+            build_compr_indices(arity, candidates, &nested, out);
+        }
+    }
+}
+
+/// The bodies directly nested in an expression's terms (comprehensions, every).
+fn nested_bodies(e: &Expr) -> Vec<Body> {
+    let mut out = Vec::new();
+    if let ExprTerms::Every(ev) = &e.terms {
+        out.push(ev.body.clone());
+    }
+    crate::compile::safety::walk_terms_expr(e, &mut |t: &Term| match &t.value {
+        TermValue::ArrayCompr(_, b) | TermValue::SetCompr(_, b) | TermValue::ObjectCompr(_, _, b) => {
+            out.push(b.clone());
+            true
+        }
+        _ => false,
+    });
+    out
+}
+
+/// getComprehensionIndex.
+fn compr_index(arity: crate::compile::safety::Arity<'_>, candidates: &VarSet, e: &Expr) -> Option<(Term, Vec<Term>)> {
+    if !e.is_equality() || e.negated || !e.with.is_empty() {
+        return None;
+    }
+    let (lhs, rhs) = (e.operand(0)?, e.operand(1)?);
+    let term = if is_var(lhs) && is_compr(rhs) {
+        rhs
+    } else if is_var(rhs) && is_compr(lhs) {
+        lhs
+    } else {
+        return None;
+    };
+    let body = match &term.value {
+        TermValue::ArrayCompr(_, b) | TermValue::SetCompr(_, b) | TermValue::ObjectCompr(_, _, b) => b,
+        _ => return None,
+    };
+    let reserved: VarSet = ["data", "input"].iter().map(|v| Rc::from(*v)).collect();
+    let outputs = crate::compile::safety::output_vars_for_body(body, arity, &reserved);
+    let all = cvars::body_vars(body, cvars::SAFETY);
+    if all.iter().any(|v| !outputs.contains(v) && !reserved.contains(v)) {
+        return None;
+    }
+    if compr_regression(candidates, body) || compr_nested_candidate(candidates, body) {
+        return None;
+    }
+    let mut keys: Vec<Term> = candidates.intersection(&outputs).map(|v| var_term(v)).collect();
+    if keys.is_empty() {
+        return None;
+    }
+    keys.sort_by(term_compare);
+    Some((term.clone(), keys))
+}
+
+/// The comprehension index's regression check: a candidate a ref would bind before
+/// the body has seen it.
+fn compr_regression(candidates: &VarSet, body: &Body) -> bool {
+    let mut seen = VarSet::new();
+    let mut worse = false;
+    for e in body {
+        crate::compile::safety::walk_terms_expr(e, &mut |t: &Term| {
+            if worse {
+                return true;
+            }
+            match &t.value {
+                TermValue::Ref(r) => {
+                    for x in r.iter().skip(1) {
+                        if let TermValue::Var(v) = &x.value
+                            && candidates.contains(v)
+                            && !seen.contains(v)
+                        {
+                            worse = true;
+                        }
+                    }
+                    false
+                }
+                TermValue::Var(v) => {
+                    seen.insert(v.clone());
+                    false
+                }
+                TermValue::ArrayCompr(..) | TermValue::SetCompr(..) | TermValue::ObjectCompr(..) => true,
+                _ => false,
+            }
+        });
+    }
+    worse
+}
+
+/// The nested-candidate check: a comprehension in the body over a candidate.
+fn compr_nested_candidate(candidates: &VarSet, body: &Body) -> bool {
+    let mut found = false;
+    for e in body {
+        crate::compile::safety::walk_terms_expr(e, &mut |t: &Term| {
+            if found {
+                return true;
+            }
+            if is_compr(t) {
+                let mut v = cvars::VarVisitor::new(cvars::Params { skip_ref_head: true, ..cvars::Params::default() });
+                v.term(t);
+                found = v.vars.iter().any(|x| candidates.contains(x));
+                return true;
+            }
+            false
+        });
+    }
+    found
 }
 
 fn sort_tree(n: &mut TreeNode) {
@@ -208,7 +357,11 @@ pub struct Machine<'p> {
     mocks: Vec<Vec<(String, Term)>>,
     /// The documents `with` replaced, a scope per `with` (targetStack).
     targets: Vec<Vec<Vec<Term>>>,
+    /// Indexed comprehensions' values by their keys, a scope per `with`.
+    ccache: Vec<HashMap<String, HashMap<String, Term>>>,
     pub prints: Vec<String>,
+    /// Builtins' errors: recorded, the call undefined, as OPA does without strict errors.
+    pub builtin_errors: Vec<EvalError>,
     pub ctx: funcs::Context,
     host: &'p mut dyn Host,
     genvar: u64,
@@ -286,7 +439,9 @@ impl<'p> Machine<'p> {
             vcache: vec![HashMap::new()],
             mocks: vec![Vec::new()],
             targets: Vec::new(),
+            ccache: vec![HashMap::new()],
             prints: Vec::new(),
+            builtin_errors: Vec::new(),
             ctx,
             host,
             genvar: 0,
@@ -590,11 +745,13 @@ fn eval_with(m: &mut Machine<'_>, f: &Frame, iter: I<'_>) -> R {
         m.vcache.push(HashMap::new());
         m.mocks.push(mocks.clone());
         m.targets.push(targets.clone());
+        m.ccache.push(HashMap::new());
     };
     let pop = |m: &mut Machine<'_>| {
         m.vcache.pop();
         m.mocks.pop();
         m.targets.pop();
+        m.ccache.pop();
     };
     push(m);
     let r = eval_step(m, &g, &mut |m, _| {
@@ -1361,8 +1518,78 @@ fn insert_nested(obj: Term, path: &[Term], leaf_key: &Term, leaf: &Leaf, exists:
     Ok(Term::new(TermValue::Object(o), None))
 }
 
+/// buildComprehensionCache: an indexed comprehension's values for the current keys,
+/// its body evaluated once for every key.
+fn compr_cached(m: &mut Machine<'_>, f: &Frame, a: &Term, b1: usize) -> Result<Option<Term>, Flow> {
+    let ck = compr_key(a);
+    let Some(keys) = m.p.compr_index.get(&ck).cloned() else { return Ok(None) };
+    if m.ccache.last().is_none_or(|c| !c.contains_key(&ck)) {
+        let body = match &a.value {
+            TermValue::ArrayCompr(_, b) | TermValue::SetCompr(_, b) | TermValue::ObjectCompr(_, _, b) => b.clone(),
+            _ => return Ok(None),
+        };
+        let cf = child(m, f, body);
+        let mut groups: HashMap<String, Term> = HashMap::new();
+        let loc = a.loc.clone();
+        eval_expr(m, &cf, &mut |m, cf| {
+            let kv: Vec<Term> = keys.iter().map(|x| m.plug(x, cf.b)).collect();
+            let gk = Term::new(TermValue::Array(kv), None).to_string();
+            let entry = groups.get(&gk).cloned();
+            let next = match &a.value {
+                TermValue::ArrayCompr(h, _) => {
+                    let v = m.plug(h, cf.b);
+                    let mut items = match entry.map(|t| t.value) {
+                        Some(TermValue::Array(xs)) => xs,
+                        _ => Vec::new(),
+                    };
+                    items.push(v);
+                    Term::new(TermValue::Array(items), None)
+                }
+                TermValue::SetCompr(h, _) => {
+                    let v = m.plug(h, cf.b);
+                    let mut items = match entry.map(|t| t.value) {
+                        Some(TermValue::Set(xs)) => xs,
+                        _ => Vec::new(),
+                    };
+                    if !items.iter().any(|x| x.equal(&v)) {
+                        items.push(v);
+                    }
+                    Term::new(TermValue::Set(items), None)
+                }
+                TermValue::ObjectCompr(kk, vv, _) => {
+                    let key = m.plug(kk, cf.b);
+                    let val = m.plug(vv, cf.b);
+                    let mut items = match entry.map(|t| t.value) {
+                        Some(TermValue::Object(xs)) => xs,
+                        _ => Vec::new(),
+                    };
+                    match items.iter().position(|(x, _)| x.equal(&key)) {
+                        Some(i) => items[i].1 = val,
+                        None => items.push((key, val)),
+                    }
+                    let _ = &loc;
+                    Term::new(TermValue::Object(items), None)
+                }
+                _ => return Ok(()),
+            };
+            groups.insert(gk, next);
+            Ok(())
+        })?;
+        if let Some(c) = m.ccache.last_mut() {
+            c.insert(ck.clone(), groups);
+        }
+    }
+    let kv: Vec<Term> = keys.iter().map(|x| m.plug(x, b1)).collect();
+    let gk = Term::new(TermValue::Array(kv), None).to_string();
+    Ok(m.ccache.last().and_then(|c| c.get(&ck)).and_then(|g| g.get(&gk)).cloned())
+}
+
 /// Comprehensions: their values, then unified.
 fn unify_comprehension(m: &mut Machine<'_>, f: &Frame, a: &Term, b: &Term, b1: usize, b2: usize, k: K<'_>) -> R {
+    if let Some(v) = compr_cached(m, f, a, b1)? {
+        let tmp = m.new_bindings();
+        return unify(m, f, &v, b, tmp, b2, k);
+    }
     let value = match &a.value {
         TermValue::ArrayCompr(head, body) => {
             let c = closure(m, f, body.clone());
@@ -1462,21 +1689,30 @@ fn eval_call(m: &mut Machine<'_>, f: &Frame, terms: &[Term], k: K<'_>) -> R {
             None => return Ok(()),
         }
     }
+    // A builtin's error makes its call undefined and is recorded; a halt stops the query
+    // (evalBuiltin.eval).
     let result = if m.p.host_names.contains(&name) {
-        m.host.call(&name, &args).map_err(|e| err(BUILTIN_ERR, loc.clone(), format!("{name}: {e}")))?
+        match m.host.call(&name, &args) {
+            Ok(v) => v,
+            Err(e) => {
+                m.builtin_errors.push(EvalError { code: BUILTIN_ERR, message: format!("{name}: {e}"), loc });
+                return Ok(());
+            }
+        }
     } else {
         let Some(bf) = funcs::lookup(&name) else {
             return Err(err(INTERNAL_ERR, loc, format!("unsupported built-in: {name}")));
         };
         match bf(&mut m.ctx, &args) {
             Ok(v) => v,
+            Err(BuiltinError::Halt(msg)) => return Err(err(INTERNAL_ERR, loc, msg)),
             Err(e) => {
                 let (code, msg) = match &e {
                     BuiltinError::Operand(msg) => (TYPE_ERR, format!("{name}: {msg}")),
-                    BuiltinError::Other(msg) => (BUILTIN_ERR, format!("{name}: {msg}")),
-                    BuiltinError::Halt(msg) => (BUILTIN_ERR, msg.clone()),
+                    BuiltinError::Other(msg) | BuiltinError::Halt(msg) => (BUILTIN_ERR, format!("{name}: {msg}")),
                 };
-                return Err(err(code, loc, msg));
+                m.builtin_errors.push(EvalError { code, message: msg, loc });
+                return Ok(());
             }
         }
     };

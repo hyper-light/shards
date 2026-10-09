@@ -109,9 +109,19 @@ fn policies_evaluate_as_opa_evaluates_them() {
                 format!("results {results:?} prints {prints:?}")
             }
         };
-        if got != wanted {
+        if normalize(&got) != normalize(&wanted) {
             failed.push(format!("--- {name}\n  got  {got}\n  OPA  {wanted}"));
         }
     }
     assert!(failed.is_empty(), "{} of {total} differ:\n{}", failed.len(), failed.join("\n"));
+}
+
+/// OPA orders unsafe-variable errors of one location at random (measured): compare
+/// those as sets.
+fn normalize(text: &str) -> String {
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    if lines.iter().all(|l| l.contains("rego_unsafe_var_error") || l.contains("errors occurred")) {
+        lines.sort();
+    }
+    lines.join("\n")
 }
