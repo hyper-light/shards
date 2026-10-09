@@ -6,6 +6,8 @@ name: boot preempt
 # experiment changes, or when asked.
 on:
   push:
+    # Branches alone: a tag's push is not filtered by paths, so every release ran it.
+    branches: ['**']
     paths:
       - docs/research/measurements/boot-preempt/**
       - .github/workflows/boot-preempt.yml
@@ -18,7 +20,9 @@ jobs:
   build:
     strategy:
       matrix:
-        variant: [preempt, hz]
+        # hz.config's 1,000 Hz is the pinned arm64 kernel's since M66
+        # (resources/kernel/shards-aarch64.config), which the build refuses to name twice.
+        variant: [preempt]
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 90
     steps:

@@ -66,6 +66,19 @@ fn env_u64(name: &str) -> Result<u64, String> {
         .map_err(|e| format!("{name}: {e}"))
 }
 
+/// Waits until `done` is `Ok`, with no deadline of its own (the host bounds the test),
+/// reporting every 5 s what is awaited and `done`'s account of where it stands.
+fn waiting(what: &str, mut done: impl FnMut() -> Result<(), String>) {
+    let mut report = Instant::now() + Duration::from_secs(5);
+    while let Err(state) = done() {
+        if Instant::now() >= report {
+            let _ = writeln!(io::stdout(), "SHARDS-TEST INFO waiting for {what}: {state}");
+            report += Duration::from_secs(5);
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
+}
+
 fn sysfs(path: &str) -> Result<String, String> {
     std::fs::read_to_string(path)
         .map(|s| s.trim().to_string())
@@ -753,14 +766,14 @@ fn storm() -> Result<(), String> {
     let _ = writeln!(io::stdout(), "SHARDS-TEST READY");
 
     // The snapshot lands in the thick of it: after the storm is up and the host's stream is.
-    let deadline = Instant::now() + Duration::from_secs(20);
+    // No deadline of the guest's own: a busy host may be slow to stream, and the host's
+    // wait for the verdict bounds the test. What it waits on is reported as it waits.
     thread::sleep(Duration::from_millis(50));
-    while ECHOED.load(Ordering::Relaxed) < 1 << 20 {
-        if Instant::now() > deadline {
-            return Err("the host never streamed through the echo".into());
-        }
-        thread::sleep(Duration::from_millis(1));
-    }
+    waiting("the host's stream through the echo", || {
+        (ECHOED.load(Ordering::Relaxed) >= 1 << 20)
+            .then_some(())
+            .ok_or_else(|| format!("{} bytes echoed", ECHOED.load(Ordering::Relaxed)))
+    });
     // The storm in its steady state, for `shards_storm_ms`, with nothing paused.
     gaps(&storm, true);
     thread::sleep(Duration::from_millis(env_u64("shards_storm_ms").unwrap_or(0)));
@@ -818,13 +831,24 @@ fn storm() -> Result<(), String> {
         }
     }
     stop(&storm);
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while threads.iter().any(|t| !t.is_finished()) {
-        if Instant::now() > deadline {
-            return Err("a worker never finished its round".into());
+    // A lost completion never ends, a slow one does: only the host's bound tells them
+    // apart, so the guest waits, saying which workers are still in their rounds.
+    waiting("the workers' last rounds", || {
+        let left: Vec<usize> = threads
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| !t.is_finished())
+            .map(|(i, _)| i)
+            .collect();
+        if left.is_empty() {
+            return Ok(());
         }
-        thread::sleep(Duration::from_millis(1));
-    }
+        Err(format!(
+            "workers {left:?} still in theirs; in flight (reads writes): vda {}, vdb {}",
+            sysfs("/sys/block/vda/inflight").unwrap_or_default(),
+            sysfs("/sys/block/vdb/inflight").unwrap_or_default()
+        ))
+    });
     if let Some(e) = storm
         .failure
         .lock()
