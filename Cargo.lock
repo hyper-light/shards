@@ -1215,6 +1215,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "shards-tuf"
+version = "0.1.0"
+dependencies = [
+ "aws-lc-rs",
+ "base64",
+ "num-bigint",
+ "serde_json",
+ "shards-dockerfile",
+ "shards-gitsign",
+]
+
+[[package]]
 name = "shards-tui"
 version = "0.1.0"
 

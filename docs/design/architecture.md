@@ -3210,6 +3210,89 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode
 waits on the user.
 
+### D104. Sigstore's trusted root, by The Update Framework
+
+Verifying Sigstore signatures (D105) starts from Sigstore's trusted root
+(`trusted_root.json`): the Fulcio certificate authorities, the Rekor transparency logs,
+the timestamp authorities and the certificate transparency logs to trust. buildx v0.37.1
+has it as BuildKit's policy helpers get it: from Sigstore's public-good TUF repository
+(`tuf-repo-cdn.sigstore.dev`) through go-tuf v2.4.2, seeded with a root the binary
+carries. The new crate `shards-tuf` does the same.
+
+**The client** (`updater`, `trusted`): go-tuf's workflow and its trust rules.
+- Root versions are taken in turn, each signed by its predecessor's root keys and its
+  own.
+- Then the timestamp, the snapshot, and targets. Each is taken from the cache while still
+  trusted, else from the repository, and each is checked for rollback, expiry, length and
+  hashes.
+- A target is found by preorder depth-first search of delegations: path globs (Go's
+  `filepath.Match`), path-hash prefixes, terminating roles, and succinct hash bins.
+- Thresholds count distinct keys, not key IDs.
+
+**What a signature covers**: go-tuf checks it over canonical JSON (securesystemslib's
+cjson) of its own re-encoding of the metadata, not of the bytes served. shards
+reproduces that re-encoding:
+- Go's decoding: names matched without regard to case, the last of a name winning,
+  `null` keeping a value, invalid UTF-8 replaced (`gojson`).
+- Unrecognized fields kept, their numbers by way of float64, as Go's `map[string]any`
+  holds them. An integer written `1e3` signs as `1000`; `1.5` fails canonicalization in
+  cjson's words.
+- Fields absent re-encoded as go-tuf writes them: `consistent_snapshot: false`, Go's zero
+  time, `null` maps.
+- Times re-encoded as Go's `Time.MarshalJSON` writes them, with their offsets.
+
+**Keys** (`keys`): `ecdsa`/`ecdsa-sha2-nistp256` and `rsa` PEM keys parsed as Go's
+x509 parses them, and Ed25519 in hex. The hash is chosen by scheme.
+- ECDSA and Ed25519 are verified through AWS-LC.
+- RSASSA-PSS, with the salt length found as Go's `PSSSaltLengthAuto` finds it, has no
+  AWS-LC algorithm. It is verified in safe Rust over public values (RFC 8017 §9.1.2).
+
+**The provider** (`client`), as policy-helpers' TrustProvider runs it:
+- A cache under the state directory, seeded from the carried repository (moby/policy-helpers'
+  `roots/tuf-root`, `crates/tuf/roots/`) and locked while used.
+- The cache read first, then the repository read again. A failure is the trust root's
+  status and the cache serves.
+- Every root version downloaded is kept, so a later offline start can rotate through them
+  (the airgapped fetcher).
+
+**Measured**:
+- The carried timestamp expired on 2026-09-07. Since then neither buildx nor shards can
+  verify a Sigstore signature without reaching the repository. Offline, both say "failed
+  to load metadata: tuf refresh failed: failed to download , http status code: 404",
+  go-tuf's own words for the snapshot the offline fetcher cannot serve.
+- Sigstore's live repository (2026-10-09) still has the carried root, version 15 (it
+  expires 2026-11-20), and serves a timestamp current again.
+
+**Held to go-tuf** by `tests/oracle.rs` against `scripts/tuf/generate`. The generator
+builds repositories with go-tuf's own metadata API and runs go-tuf's updater over each
+at a fixed time. The 36 cases:
+- Every key type: P-256, P-384, Ed25519, RSA-PSS.
+- Each role's expiry, including at the very instant.
+- A root rotated twice; a rotation the old root did not sign; a skipped version.
+- Thresholds: met, and one key under two IDs counted once.
+- Duplicate signatures.
+- Tampering: a snapshot and a target that do not match; a timestamp too long.
+- A rollback of the cached timestamp.
+- Repositories without consistent snapshots.
+- Delegations by path and terminating; succinct hash bins.
+- Unrecognized fields, a name in another case, numbers written `1e3` and `1.5`, an
+  `expires` with a fraction and an offset, a root without `consistent_snapshot`.
+- Sigstore's live repository as fetched by the generator.
+
+Every case gives the same error or the same target, and the same root version.
+Mutation-checked: thresholds counted by key ID; expiry at the instant; unrecognized
+fields dropped from what is signed; root versions out of turn.
+
+**Different on purpose:**
+- **No five-second cut-off.** buildx serves from the cache when its update takes more
+  than five seconds. shards waits for the update to end, as its fetcher bounds it, rather
+  than racing a timer (robust externals).
+- **Panics.** A key or role that is `null` would panic go-tuf (a nil dereference); here it
+  is an error naming the key.
+- **P-224 ECDSA keys** are refused: go-tuf takes them, and no Sigstore key is one.
+- **Several hashes of one file** are checked in the metadata's order, where go-tuf's map
+  order is random. The verdict is the same, though which mismatch is named may differ.
+
 ### D103. Signatures verified in build policies: OpenPGP and SSH
 
 `verify_git_signature(commit or tag, key file)` and `verify_http_pgp_signature(http,

@@ -1,0 +1,22 @@
+[package]
+name = "shards-tuf"
+version = "0.1.0"
+description = "The Update Framework's client as go-tuf v2 runs it, for Sigstore's trusted root in build policies"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+aws-lc-rs = { version = "1.18.1", default-features = false, features = ["aws-lc-sys"] }
+base64 = "0.23.1"
+num-bigint = "0.4.8"
+shards-dockerfile = { path = "../dockerfile" }
+shards-gitsign = { path = "../gitsign" }
+
+[dev-dependencies]
+serde_json = "1"
+base64 = "0.23.1"
