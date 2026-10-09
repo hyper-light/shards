@@ -46,7 +46,11 @@ impl YamlError {
         } else {
             &self.problem
         };
-        if line != 0 { format!("line {line}: {msg}") } else { msg.to_string() }
+        if line != 0 {
+            format!("line {line}: {msg}")
+        } else {
+            msg.to_string()
+        }
     }
 }
 
@@ -54,7 +58,6 @@ pub type Result<T> = std::result::Result<T, YamlError>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TokenType {
-    NoToken,
     StreamStart,
     StreamEnd,
     VersionDirective,
@@ -163,10 +166,6 @@ fn as_hex(b: &[u8], i: usize) -> u32 {
         b'a'..=b'f' => u32::from(c - b'a') + 10,
         _ => u32::from(c.wrapping_sub(b'0')),
     }
-}
-
-pub fn is_ascii(b: &[u8], i: usize) -> bool {
-    at(b, i) <= 0x7F
 }
 
 pub fn is_printable(b: &[u8], i: usize) -> bool {
@@ -317,7 +316,11 @@ impl<'a> Scanner<'a> {
             return;
         }
         if self.raw_pos > 0 {
-            let keep = self.raw.get(self.raw_pos..).map(<[u8]>::to_vec).unwrap_or_default();
+            let keep = self
+                .raw
+                .get(self.raw_pos..)
+                .map(<[u8]>::to_vec)
+                .unwrap_or_default();
             self.raw = keep;
         }
         self.raw_pos = 0;
@@ -432,7 +435,11 @@ impl<'a> Scanner<'a> {
     }
 
     fn cache(&mut self, length: usize) -> Result<()> {
-        if self.unread >= length { Ok(()) } else { self.update_buffer(length) }
+        if self.unread >= length {
+            Ok(())
+        } else {
+            self.update_buffer(length)
+        }
     }
 
     // ---- low-level reading (scannerc.go) ----
@@ -526,7 +533,10 @@ impl<'a> Scanner<'a> {
     pub fn skip_token(&mut self) {
         self.token_available = false;
         self.tokens_parsed += 1;
-        self.stream_end_produced = self.tokens.get(self.head).is_some_and(|t| t.typ == TokenType::StreamEnd);
+        self.stream_end_produced = self
+            .tokens
+            .get(self.head)
+            .is_some_and(|t| t.typ == TokenType::StreamEnd);
         self.head += 1;
         if self.head == self.tokens.len() {
             self.tokens.clear();
@@ -824,7 +834,10 @@ impl<'a> Scanner<'a> {
     fn fetch_block_entry(&mut self) -> Result<()> {
         if self.flow_level == 0 {
             if !self.simple_key_allowed {
-                return Err(self.error(self.mark, "block sequence entries are not allowed in this context"));
+                return Err(self.error(
+                    self.mark,
+                    "block sequence entries are not allowed in this context",
+                ));
             }
             self.roll_indent(self.mark.column, None, TokenType::BlockSequenceStart, self.mark)?;
         }
@@ -859,7 +872,12 @@ impl<'a> Scanner<'a> {
             let key = self.simple_keys.get(idx).copied().unwrap_or_default();
             let pos = key.token_number.saturating_sub(self.tokens_parsed);
             self.insert_token(Some(pos), Token::new(TokenType::Key, key.mark, key.mark));
-            self.roll_indent(key.mark.column, Some(key.token_number), TokenType::BlockMappingStart, key.mark)?;
+            self.roll_indent(
+                key.mark.column,
+                Some(key.token_number),
+                TokenType::BlockMappingStart,
+                key.mark,
+            )?;
             if let Some(k) = self.simple_keys.get_mut(idx) {
                 k.possible = false;
             }
@@ -928,7 +946,9 @@ impl<'a> Scanner<'a> {
                 self.skip();
             }
             self.cache(1)?;
-            while self.c(0) == b' ' || ((self.flow_level > 0 || !self.simple_key_allowed) && self.c(0) == b'\t') {
+            while self.c(0) == b' '
+                || ((self.flow_level > 0 || !self.simple_key_allowed) && self.c(0) == b'\t')
+            {
                 self.skip();
                 self.cache(1)?;
             }
@@ -1268,7 +1288,11 @@ impl<'a> Scanner<'a> {
         let mut end = self.mark;
         let mut indent: i64 = 0;
         if increment > 0 {
-            indent = if self.indent >= 0 { self.indent + increment } else { increment };
+            indent = if self.indent >= 0 {
+                self.indent + increment
+            } else {
+                increment
+            };
         }
         let mut s = Vec::new();
         let mut leading_break = Vec::new();
@@ -1305,7 +1329,11 @@ impl<'a> Scanner<'a> {
         }
         let mut token = Token::new(TokenType::Scalar, start, end);
         token.value = s;
-        token.style = if literal { ScalarStyle::Literal } else { ScalarStyle::Folded };
+        token.style = if literal {
+            ScalarStyle::Literal
+        } else {
+            ScalarStyle::Folded
+        };
         Ok(token)
     }
 
@@ -1328,7 +1356,10 @@ impl<'a> Scanner<'a> {
                 max_indent = self.mark.column;
             }
             if (*indent == 0 || self.mark.column < *indent) && is_tab(self.b(), 0) {
-                return Err(self.error(start, "found a tab character where an indentation space is expected"));
+                return Err(self.error(
+                    start,
+                    "found a tab character where an indentation space is expected",
+                ));
             }
             if !is_break(self.b(), 0) {
                 break;
@@ -1375,9 +1406,7 @@ impl<'a> Scanner<'a> {
                     s.push(b'\'');
                     self.skip();
                     self.skip();
-                } else if single && c0 == b'\'' {
-                    break;
-                } else if !single && c0 == b'"' {
+                } else if (single && c0 == b'\'') || (!single && c0 == b'"') {
                     break;
                 } else if !single && c0 == b'\\' && is_break(self.b(), 1) {
                     self.cache(3)?;
@@ -1479,7 +1508,11 @@ impl<'a> Scanner<'a> {
         self.skip();
         let mut token = Token::new(TokenType::Scalar, start, self.mark);
         token.value = s;
-        token.style = if single { ScalarStyle::SingleQuoted } else { ScalarStyle::DoubleQuoted };
+        token.style = if single {
+            ScalarStyle::SingleQuoted
+        } else {
+            ScalarStyle::DoubleQuoted
+        };
         Ok(token)
     }
 

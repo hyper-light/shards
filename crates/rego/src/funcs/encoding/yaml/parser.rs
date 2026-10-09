@@ -39,7 +39,6 @@ impl EventType {
 #[derive(Debug, Clone)]
 pub struct Event {
     pub typ: EventType,
-    pub start_mark: Mark,
     pub anchor: Option<Vec<u8>>,
     pub tag: Vec<u8>,
     pub value: Vec<u8>,
@@ -47,10 +46,9 @@ pub struct Event {
 }
 
 impl Event {
-    fn new(typ: EventType, start_mark: Mark) -> Event {
+    fn new(typ: EventType, _start_mark: Mark) -> Event {
         Event {
             typ,
-            start_mark,
             anchor: None,
             tag: Vec::new(),
             value: Vec::new(),
@@ -67,8 +65,6 @@ enum State {
     DocumentContent,
     DocumentEnd,
     BlockNode,
-    BlockNodeOrIndentlessSequence,
-    FlowNode,
     BlockSequenceFirstEntry,
     BlockSequenceEntry,
     IndentlessSequenceEntry,
@@ -162,8 +158,6 @@ impl<'a> Parser<'a> {
             State::DocumentContent => self.parse_document_content(),
             State::DocumentEnd => self.parse_document_end(),
             State::BlockNode => self.parse_node(true, false),
-            State::BlockNodeOrIndentlessSequence => self.parse_node(true, true),
-            State::FlowNode => self.parse_node(false, false),
             State::BlockSequenceFirstEntry => self.parse_block_sequence_entry(true),
             State::BlockSequenceEntry => self.parse_block_sequence_entry(false),
             State::IndentlessSequenceEntry => self.parse_indentless_sequence_entry(),
@@ -186,7 +180,10 @@ impl<'a> Parser<'a> {
     fn parse_stream_start(&mut self) -> Result<Event> {
         let token = self.peek()?;
         if token.typ != TokenType::StreamStart {
-            return Err(parser_error("did not find expected <stream-start>", token.start_mark));
+            return Err(parser_error(
+                "did not find expected <stream-start>",
+                token.start_mark,
+            ));
         }
         self.state = State::ImplicitDocumentStart;
         self.skip();
@@ -204,7 +201,10 @@ impl<'a> Parser<'a> {
         if implicit
             && !matches!(
                 token.typ,
-                TokenType::VersionDirective | TokenType::TagDirective | TokenType::DocumentStart | TokenType::StreamEnd
+                TokenType::VersionDirective
+                    | TokenType::TagDirective
+                    | TokenType::DocumentStart
+                    | TokenType::StreamEnd
             )
         {
             self.process_directives()?;
@@ -216,7 +216,10 @@ impl<'a> Parser<'a> {
             self.process_directives()?;
             let token = self.peek()?;
             if token.typ != TokenType::DocumentStart {
-                return Err(parser_error("did not find expected <document start>", token.start_mark));
+                return Err(parser_error(
+                    "did not find expected <document start>",
+                    token.start_mark,
+                ));
             }
             self.states.push(State::DocumentEnd);
             self.state = State::DocumentContent;
@@ -311,7 +314,11 @@ impl<'a> Parser<'a> {
                     }
                 }
                 if tag.is_empty() {
-                    return Err(parser_error_context(start_mark, "found undefined tag handle", tag_mark));
+                    return Err(parser_error_context(
+                        start_mark,
+                        "found undefined tag handle",
+                        tag_mark,
+                    ));
                 }
             }
         }
@@ -328,8 +335,8 @@ impl<'a> Parser<'a> {
             return Ok(node_event(EventType::SequenceStart, tag, anchor));
         }
         if token.typ == TokenType::Scalar {
-            let plain_implicit =
-                (tag.is_empty() && token.style == ScalarStyle::Plain) || (tag.len() == 1 && tag.first() == Some(&b'!'));
+            let plain_implicit = (tag.is_empty() && token.style == ScalarStyle::Plain)
+                || (tag.len() == 1 && tag.first() == Some(&b'!'));
             self.pop_state();
             let mut e = node_event(EventType::Scalar, tag, anchor);
             e.value = token.value;
@@ -357,7 +364,11 @@ impl<'a> Parser<'a> {
             self.pop_state();
             return Ok(node_event(EventType::Scalar, tag, anchor));
         }
-        Err(parser_error_context(start_mark, "did not find expected node content", token.start_mark))
+        Err(parser_error_context(
+            start_mark,
+            "did not find expected node content",
+            token.start_mark,
+        ))
     }
 
     fn parse_block_sequence_entry(&mut self, first: bool) -> Result<Event> {
@@ -385,7 +396,11 @@ impl<'a> Parser<'a> {
             return Ok(Event::new(EventType::SequenceEnd, token.start_mark));
         }
         let context_mark = self.marks.pop().unwrap_or_default();
-        Err(parser_error_context(context_mark, "did not find expected '-' indicator", token.start_mark))
+        Err(parser_error_context(
+            context_mark,
+            "did not find expected '-' indicator",
+            token.start_mark,
+        ))
     }
 
     fn parse_indentless_sequence_entry(&mut self) -> Result<Event> {
@@ -432,7 +447,11 @@ impl<'a> Parser<'a> {
             return Ok(Event::new(EventType::MappingEnd, token.start_mark));
         }
         let context_mark = self.marks.pop().unwrap_or_default();
-        Err(parser_error_context(context_mark, "did not find expected key", token.start_mark))
+        Err(parser_error_context(
+            context_mark,
+            "did not find expected key",
+            token.start_mark,
+        ))
     }
 
     fn parse_block_mapping_value(&mut self) -> Result<Event> {
@@ -492,7 +511,10 @@ impl<'a> Parser<'a> {
 
     fn parse_flow_sequence_entry_mapping_key(&mut self) -> Result<Event> {
         let token = self.peek()?;
-        if !matches!(token.typ, TokenType::Value | TokenType::FlowEntry | TokenType::FlowSequenceEnd) {
+        if !matches!(
+            token.typ,
+            TokenType::Value | TokenType::FlowEntry | TokenType::FlowSequenceEnd
+        ) {
             self.states.push(State::FlowSequenceEntryMappingValue);
             return self.parse_node(false, false);
         }
@@ -546,7 +568,10 @@ impl<'a> Parser<'a> {
             if token.typ == TokenType::Key {
                 self.skip();
                 token = self.peek()?;
-                if !matches!(token.typ, TokenType::Value | TokenType::FlowEntry | TokenType::FlowMappingEnd) {
+                if !matches!(
+                    token.typ,
+                    TokenType::Value | TokenType::FlowEntry | TokenType::FlowMappingEnd
+                ) {
                     self.states.push(State::FlowMappingValue);
                     return self.parse_node(false, false);
                 }
@@ -594,17 +619,33 @@ impl<'a> Parser<'a> {
                 }
                 version_seen = true;
             } else {
-                self.append_tag_directive(token.value.clone(), token.prefix.clone(), false, token.start_mark)?;
+                self.append_tag_directive(
+                    token.value.clone(),
+                    token.prefix.clone(),
+                    false,
+                    token.start_mark,
+                )?;
             }
             self.skip();
             token = self.peek()?;
         }
         self.append_tag_directive(b"!".to_vec(), b"!".to_vec(), true, token.start_mark)?;
-        self.append_tag_directive(b"!!".to_vec(), b"tag:yaml.org,2002:".to_vec(), true, token.start_mark)?;
+        self.append_tag_directive(
+            b"!!".to_vec(),
+            b"tag:yaml.org,2002:".to_vec(),
+            true,
+            token.start_mark,
+        )?;
         Ok(())
     }
 
-    fn append_tag_directive(&mut self, handle: Vec<u8>, prefix: Vec<u8>, allow_duplicates: bool, mark: Mark) -> Result<()> {
+    fn append_tag_directive(
+        &mut self,
+        handle: Vec<u8>,
+        prefix: Vec<u8>,
+        allow_duplicates: bool,
+        mark: Mark,
+    ) -> Result<()> {
         if self.tag_directives.iter().any(|(h, _)| *h == handle) {
             if allow_duplicates {
                 return Ok(());

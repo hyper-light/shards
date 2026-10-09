@@ -7,7 +7,7 @@
 #
 #   scripts/rego/generate [STEP...]
 #
-# With STEPs (rego, numbers, builtins, parse, compile, index), regenerates only those.
+# With STEPs (rego, numbers, builtins, parse, compile, index, calls), regenerates only those.
 set -eu
 steps=" $* "
 want() {
@@ -77,4 +77,14 @@ if want index; then
 	SHARDS_INDEX="$root/crates/rego/testdata/index.json" \
 		SHARDS_INDEX_OUT="$root/crates/rego/testdata/index-oracle.json" \
 		go test -count=1 -run '^TestShardsIndex$' .
+fi
+if want calls; then
+	for cases in "$root"/crates/rego/testdata/calls-*.json; do
+		case $cases in *-oracle.json) continue ;; esac
+		# Go's own zone database, the one OPA's time/tzdata compiles in, and no local zone:
+		# what shards uses on every host.
+		TZ= ZONEINFO="$(go env GOROOT)/lib/time/zoneinfo.zip" \
+			SHARDS_CALLS="$cases" SHARDS_CALLS_OUT="${cases%.json}-oracle.json" \
+			go test -count=1 -timeout 30m -run '^TestShardsBuiltinCalls$' .
+	done
 fi

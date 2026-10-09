@@ -415,15 +415,14 @@ fn template_match(_: &mut Context, args: &[Value]) -> Result<Option<Value>, Buil
     let s = string_operand(arg(args, 1)?, 2)?;
     let start = string_operand(arg(args, 2)?, 3)?;
     let end = string_operand(arg(args, 3)?, 4)?;
-    let (&[ds], end_len) = (start.as_bytes(), end.len()) else {
+    let &[ds] = start.as_bytes() else {
         return Err(BuiltinError::Other(format!(
             "start delimiter has to be exactly one character long but is {} long",
             start.len()
         )));
     };
+    // OPA reports the start delimiter's length for the end delimiter too.
     let &[de] = end.as_bytes() else {
-        // OPA reports the start delimiter's length here.
-        let _ = end_len;
         return Err(BuiltinError::Other(format!(
             "end delimiter has to be exactly one character long but is {} long",
             start.len()
@@ -483,4 +482,22 @@ fn glob_match(_: &mut Context, args: &[Value]) -> Result<Option<Value>, BuiltinE
 fn glob_quote_meta(_: &mut Context, args: &[Value]) -> Result<Option<Value>, BuiltinError> {
     let pattern = string_operand(arg(args, 0)?, 1)?;
     Ok(Some(Value::string(glob::quote_meta(pattern))))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn glob(pattern: &str, s: &str) -> Result<Option<Value>, BuiltinError> {
+        let args = [Value::string(pattern), Value::array(Vec::new()), Value::string(s)];
+        glob_match(&mut Context::default(), &args)
+    }
+
+    #[test]
+    fn glob_fails_where_go_panics() {
+        // gobwas/glob slices out of range on these, which ends OPA's process.
+        assert!(glob("a{}", "a").is_err());
+        assert!(glob("b{b{", "bb").is_err());
+        assert_eq!(glob("a{}b", "ab"), Ok(Some(Value::Bool(false))));
+    }
 }

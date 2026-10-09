@@ -5,10 +5,10 @@
 
 use std::sync::OnceLock;
 
-use super::scanner::{
-    ScalarStyle, at, is_blank, is_blankz, is_bom, is_break, is_printable, is_space, width,
-};
-use super::{GoVal, gofmt, needs_quotes};
+use super::scanner::{ScalarStyle, at, is_blank, is_blankz, is_bom, is_break, is_printable, is_space, width};
+use std::rc::Rc;
+
+use super::{Arena, GoVal, Id, gofmt, needs_quotes};
 
 #[derive(Debug, Default, Clone)]
 struct ScalarData {
@@ -62,7 +62,9 @@ fn analyze_scalar(value: &[u8]) -> ScalarData {
     let c0 = at(value, 0);
     let c1 = at(value, 1);
     let c2 = at(value, 2);
-    if value.len() >= 3 && ((c0 == b'-' && c1 == b'-' && c2 == b'-') || (c0 == b'.' && c1 == b'.' && c2 == b'.')) {
+    if value.len() >= 3
+        && ((c0 == b'-' && c1 == b'-' && c2 == b'-') || (c0 == b'.' && c1 == b'.' && c2 == b'.'))
+    {
         block_indicators = true;
         flow_indicators = true;
     }
@@ -74,8 +76,8 @@ fn analyze_scalar(value: &[u8]) -> ScalarData {
         let c = at(value, i);
         if i == 0 {
             match c {
-                b'#' | b',' | b'[' | b']' | b'{' | b'}' | b'&' | b'*' | b'!' | b'|' | b'>' | b'\'' | b'"' | b'%'
-                | b'@' | b'`' => {
+                b'#' | b',' | b'[' | b']' | b'{' | b'}' | b'&' | b'*' | b'!' | b'|' | b'>' | b'\'' | b'"'
+                | b'%' | b'@' | b'`' => {
                     flow_indicators = true;
                     block_indicators = true;
                 }
@@ -85,11 +87,9 @@ fn analyze_scalar(value: &[u8]) -> ScalarData {
                         block_indicators = true;
                     }
                 }
-                b'-' => {
-                    if followed_by_whitespace {
-                        flow_indicators = true;
-                        block_indicators = true;
-                    }
+                b'-' if followed_by_whitespace => {
+                    flow_indicators = true;
+                    block_indicators = true;
                 }
                 _ => {}
             }
@@ -102,11 +102,9 @@ fn analyze_scalar(value: &[u8]) -> ScalarData {
                         block_indicators = true;
                     }
                 }
-                b'#' => {
-                    if preceded_by_whitespace {
-                        flow_indicators = true;
-                        block_indicators = true;
-                    }
+                b'#' if preceded_by_whitespace => {
+                    flow_indicators = true;
+                    block_indicators = true;
                 }
                 _ => {}
             }
@@ -218,7 +216,10 @@ fn scalar_of(v: &GoVal) -> Option<Scalar> {
             } else {
                 ScalarStyle::DoubleQuoted
             };
-            Scalar { value: s.clone(), style }
+            Scalar {
+                value: s.clone(),
+                style,
+            }
         }
         GoVal::Seq(_) | GoVal::Map(_) => return None,
     })
@@ -274,6 +275,7 @@ impl Emitter {
         self.indent = self.indents.pop().unwrap_or(-1);
     }
 
+    #[inline(never)]
     fn write_indent(&mut self) {
         let indent = self.indent.max(0);
         if !self.indention || self.column > indent || (self.column == indent && !self.whitespace) {
@@ -286,7 +288,14 @@ impl Emitter {
         self.indention = true;
     }
 
-    fn write_indicator(&mut self, indicator: &[u8], need_whitespace: bool, is_whitespace: bool, is_indention: bool) {
+    #[inline(never)]
+    fn write_indicator(
+        &mut self,
+        indicator: &[u8],
+        need_whitespace: bool,
+        is_whitespace: bool,
+        is_indention: bool,
+    ) {
         if need_whitespace && !self.whitespace {
             self.put(b' ');
         }
@@ -297,7 +306,9 @@ impl Emitter {
     }
 
     /// yaml_emitter_check_simple_key, for the node about to be emitted.
-    fn check_simple_key(v: &GoVal) -> bool {
+    /// yaml_emitter_check_simple_key, for the node about to be emitted.
+    fn check_simple_key(a: &Arena, id: Id) -> bool {
+        let v = a.get(id);
         match v {
             GoVal::Seq(items) => items.is_empty(),
             GoVal::Map(m) => m.entries.is_empty(),
@@ -311,101 +322,132 @@ impl Emitter {
         }
     }
 
-    fn emit_node(&mut self, v: &GoVal, root: bool, mapping: bool, simple_key: bool) {
-        self.root_context = root;
-        self.mapping_context = mapping;
-        self.simple_key_context = simple_key;
-        match v {
-            GoVal::Seq(items) => self.emit_sequence(items),
-            GoVal::Map(m) => {
-                let keys = sorted_keys(&m.entries);
-                let entries: Vec<&(GoVal, GoVal)> = keys.iter().filter_map(|&i| m.entries.get(i)).collect();
-                self.emit_mapping(&entries);
-            }
-            _ => {
-                if let Some(s) = scalar_of(v) {
-                    self.emit_scalar(&s);
-                }
-            }
+    /// The emitter's state machine over a value's events, its nesting on a stack of
+    /// its own (go-yaml's encoder recurses; the emitter's states are a stack).
+    fn emit_doc(&mut self, a: &Arena, root: Id) {
+        enum T {
+            /// emit_node with its root, mapping and simple-key contexts.
+            Node(Id, bool, bool, bool),
+            SeqItem(Id, usize, bool),
+            SeqEnd(bool),
+            MapEntry(Rc<Vec<(Id, Id)>>, usize, bool),
+            MapValue(Id, bool, bool),
+            MapEnd(bool),
         }
-    }
-
-    fn emit_sequence(&mut self, items: &[GoVal]) {
-        if self.flow_level > 0 || items.is_empty() {
-            self.write_indicator(b"[", true, true, false);
-            self.increase_indent(true, false);
-            self.flow_level += 1;
-            for (n, item) in items.iter().enumerate() {
-                if n > 0 {
-                    self.write_indicator(b",", false, false, false);
+        let mut stack = vec![T::Node(root, true, false, false)];
+        while let Some(t) = stack.pop() {
+            match t {
+                T::Node(id, root, mapping, simple_key) => {
+                    self.root_context = root;
+                    self.mapping_context = mapping;
+                    self.simple_key_context = simple_key;
+                    match a.get(id) {
+                        GoVal::Seq(items) => {
+                            let flow = self.flow_level > 0 || items.is_empty();
+                            if flow {
+                                self.write_indicator(b"[", true, true, false);
+                                self.increase_indent(true, false);
+                                self.flow_level += 1;
+                            } else {
+                                let indentless = self.mapping_context && !self.indention;
+                                self.increase_indent(false, indentless);
+                            }
+                            stack.push(T::SeqEnd(flow));
+                            stack.push(T::SeqItem(id, 0, flow));
+                        }
+                        GoVal::Map(m) => {
+                            let flow = self.flow_level > 0 || m.entries.is_empty();
+                            if flow {
+                                self.write_indicator(b"{", true, true, false);
+                                self.increase_indent(true, false);
+                                self.flow_level += 1;
+                            } else {
+                                self.increase_indent(false, false);
+                            }
+                            stack.push(T::MapEnd(flow));
+                            stack.push(T::MapEntry(Rc::new(sorted_entries(a, &m.entries)), 0, flow));
+                        }
+                        v => {
+                            if let Some(s) = scalar_of(v) {
+                                self.emit_scalar(&s);
+                            }
+                        }
+                    }
                 }
-                if self.column > self.best_width {
-                    self.write_indent();
+                T::SeqItem(seq, i, flow) => {
+                    let GoVal::Seq(items) = a.get(seq) else { continue };
+                    let Some(&item) = items.get(i) else { continue };
+                    if flow {
+                        if i > 0 {
+                            self.write_indicator(b",", false, false, false);
+                        }
+                        if self.column > self.best_width {
+                            self.write_indent();
+                        }
+                    } else {
+                        self.write_indent();
+                        self.write_indicator(b"-", true, false, true);
+                    }
+                    stack.push(T::SeqItem(seq, i + 1, flow));
+                    stack.push(T::Node(item, false, false, false));
                 }
-                self.emit_node(item, false, false, false);
-            }
-            self.flow_level -= 1;
-            self.pop_indent();
-            self.write_indicator(b"]", false, false, false);
-            return;
-        }
-        let indentless = self.mapping_context && !self.indention;
-        self.increase_indent(false, indentless);
-        for item in items {
-            self.write_indent();
-            self.write_indicator(b"-", true, false, true);
-            self.emit_node(item, false, false, false);
-        }
-        self.pop_indent();
-    }
-
-    fn emit_mapping(&mut self, entries: &[&(GoVal, GoVal)]) {
-        if self.flow_level > 0 || entries.is_empty() {
-            self.write_indicator(b"{", true, true, false);
-            self.increase_indent(true, false);
-            self.flow_level += 1;
-            for (n, (k, v)) in entries.iter().map(|e| (&e.0, &e.1)).enumerate() {
-                if n > 0 {
-                    self.write_indicator(b",", false, false, false);
+                T::SeqEnd(flow) => {
+                    if flow {
+                        self.flow_level -= 1;
+                        self.pop_indent();
+                        self.write_indicator(b"]", false, false, false);
+                    } else {
+                        self.pop_indent();
+                    }
                 }
-                if self.column > self.best_width {
-                    self.write_indent();
-                }
-                if Self::check_simple_key(k) {
-                    self.emit_node(k, false, true, true);
-                    self.write_indicator(b":", false, false, false);
-                } else {
-                    self.write_indicator(b"?", true, false, false);
-                    self.emit_node(k, false, true, false);
-                    if self.column > self.best_width {
+                T::MapEntry(entries, i, flow) => {
+                    let Some(&(k, v)) = entries.get(i) else { continue };
+                    if flow {
+                        if i > 0 {
+                            self.write_indicator(b",", false, false, false);
+                        }
+                        if self.column > self.best_width {
+                            self.write_indent();
+                        }
+                    } else {
                         self.write_indent();
                     }
-                    self.write_indicator(b":", true, false, false);
+                    let simple = Self::check_simple_key(a, k);
+                    if !simple {
+                        self.write_indicator(b"?", true, false, !flow);
+                    }
+                    stack.push(T::MapEntry(entries, i + 1, flow));
+                    stack.push(T::MapValue(v, simple, flow));
+                    stack.push(T::Node(k, false, true, simple));
                 }
-                self.emit_node(v, false, true, false);
+                T::MapValue(v, simple, flow) => {
+                    if simple {
+                        self.write_indicator(b":", false, false, false);
+                    } else if flow {
+                        if self.column > self.best_width {
+                            self.write_indent();
+                        }
+                        self.write_indicator(b":", true, false, false);
+                    } else {
+                        self.write_indent();
+                        self.write_indicator(b":", true, false, true);
+                    }
+                    stack.push(T::Node(v, false, true, false));
+                }
+                T::MapEnd(flow) => {
+                    if flow {
+                        self.flow_level -= 1;
+                        self.pop_indent();
+                        self.write_indicator(b"}", false, false, false);
+                    } else {
+                        self.pop_indent();
+                    }
+                }
             }
-            self.flow_level -= 1;
-            self.pop_indent();
-            self.write_indicator(b"}", false, false, false);
-            return;
         }
-        self.increase_indent(false, false);
-        for (k, v) in entries.iter().map(|e| (&e.0, &e.1)) {
-            self.write_indent();
-            if Self::check_simple_key(k) {
-                self.emit_node(k, false, true, true);
-                self.write_indicator(b":", false, false, false);
-            } else {
-                self.write_indicator(b"?", true, false, true);
-                self.emit_node(k, false, true, false);
-                self.write_indent();
-                self.write_indicator(b":", true, false, true);
-            }
-            self.emit_node(v, false, true, false);
-        }
-        self.pop_indent();
     }
 
+    #[inline(never)]
     fn emit_scalar(&mut self, s: &Scalar) {
         let d = analyze_scalar(&s.value);
         // yaml_emitter_select_scalar_style (implicit, untagged scalars).
@@ -417,7 +459,9 @@ impl Emitter {
             style = ScalarStyle::DoubleQuoted;
         }
         if style == ScalarStyle::Plain {
-            if (self.flow_level > 0 && !d.flow_plain_allowed) || (self.flow_level == 0 && !d.block_plain_allowed) {
+            if (self.flow_level > 0 && !d.flow_plain_allowed)
+                || (self.flow_level == 0 && !d.block_plain_allowed)
+            {
                 style = ScalarStyle::SingleQuoted;
             }
             if s.value.is_empty() && (self.flow_level > 0 || self.simple_key_context) {
@@ -534,12 +578,7 @@ impl Emitter {
         let mut i = 0;
         while i < value.len() {
             let c = at(value, i);
-            if !is_printable(value, i)
-                || is_bom(value, i)
-                || is_break(value, i)
-                || c == b'"'
-                || c == b'\\'
-            {
+            if !is_printable(value, i) || is_bom(value, i) || is_break(value, i) || c == b'"' || c == b'\\' {
                 let (mut w, mut v): (usize, u32) = if c & 0x80 == 0 {
                     (1, u32::from(c & 0x7F))
                 } else if c & 0xE0 == 0xC0 {
@@ -586,7 +625,11 @@ impl Emitter {
                         let mut k = i64::try_from((w - 1) * 4).unwrap_or(0);
                         while k >= 0 {
                             let digit = u8::try_from((v >> k) & 0x0F).unwrap_or(0);
-                            self.put(if digit < 10 { digit + b'0' } else { digit + b'A' - 10 });
+                            self.put(if digit < 10 {
+                                digit + b'0'
+                            } else {
+                                digit + b'A' - 10
+                            });
                             k -= 4;
                         }
                     }
@@ -805,11 +848,11 @@ fn key_less(a: &GoVal, b: &GoVal) -> bool {
     ar.len() < br.len()
 }
 
-/// The entries' indexes in keyList order (a merge sort: no comparator can make it fail).
-fn sorted_keys(entries: &[(GoVal, GoVal)]) -> Vec<usize> {
+/// The entries in keyList order (a merge sort: no comparator can make it fail).
+fn sorted_entries(a: &Arena, entries: &[(Id, Id)]) -> Vec<(Id, Id)> {
     let mut idx: Vec<usize> = (0..entries.len()).collect();
     let less = |x: usize, y: usize| match (entries.get(x), entries.get(y)) {
-        (Some(a), Some(b)) => key_less(&a.0, &b.0),
+        (Some(x), Some(y)) => key_less(a.get(x.0), a.get(y.0)),
         _ => false,
     };
     let mut buf = idx.clone();
@@ -841,11 +884,11 @@ fn sorted_keys(entries: &[(GoVal, GoVal)]) -> Vec<usize> {
         std::mem::swap(&mut idx, &mut buf);
         width *= 2;
     }
-    idx
+    idx.iter().filter_map(|&i| entries.get(i).copied()).collect()
 }
 
 /// yaml.Marshal of a decoded value: one implicit document.
-pub fn encode(v: &GoVal) -> Result<String, String> {
+pub fn encode(a: &Arena, root: Id) -> Result<String, String> {
     let mut e = Emitter {
         out: Vec::new(),
         best_indent: 2,
@@ -861,7 +904,7 @@ pub fn encode(v: &GoVal) -> Result<String, String> {
         indention: true,
         open_ended: false,
     };
-    e.emit_node(v, true, false, false);
+    e.emit_doc(a, root);
     // DOCUMENT-END, implicit.
     e.write_indent();
     String::from_utf8(e.out).map_err(|_| "yaml: invalid UTF-8 output".to_string())

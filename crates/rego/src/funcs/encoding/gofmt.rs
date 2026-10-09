@@ -23,7 +23,11 @@ fn shortest(f: f64, bits32: bool) -> (Vec<u8>, i64) {
 }
 
 fn fmt_e(out: &mut String, digits: &[u8], dp: i64, prec: i64, zero: bool) {
-    out.push(char::from(if zero { b'0' } else { digits.first().copied().unwrap_or(b'0') }));
+    out.push(char::from(if zero {
+        b'0'
+    } else {
+        digits.first().copied().unwrap_or(b'0')
+    }));
     if prec > 0 {
         out.push('.');
         let mut i = 1usize;
@@ -51,7 +55,11 @@ fn fmt_f(out: &mut String, digits: &[u8], dp: i64, prec: i64) {
     if dp > 0 {
         let mut m = 0i64;
         while m < dp {
-            let d = usize::try_from(m).ok().and_then(|i| digits.get(i)).copied().unwrap_or(b'0');
+            let d = usize::try_from(m)
+                .ok()
+                .and_then(|i| digits.get(i))
+                .copied()
+                .unwrap_or(b'0');
             out.push(char::from(d));
             m += 1;
         }
@@ -65,7 +73,11 @@ fn fmt_f(out: &mut String, digits: &[u8], dp: i64, prec: i64) {
             let d = if j < 0 {
                 b'0'
             } else {
-                usize::try_from(j).ok().and_then(|j| digits.get(j)).copied().unwrap_or(b'0')
+                usize::try_from(j)
+                    .ok()
+                    .and_then(|j| digits.get(j))
+                    .copied()
+                    .unwrap_or(b'0')
             };
             out.push(char::from(d));
         }
@@ -92,14 +104,18 @@ pub fn format_float(f: f64, fmt: u8, bits32: bool) -> String {
         out.push('-');
     }
     let zero = f == 0.0;
-    let (digits, dp) = if zero { (Vec::new(), 0) } else { shortest(f, bits32) };
+    let (digits, dp) = if zero {
+        (Vec::new(), 0)
+    } else {
+        shortest(f, bits32)
+    };
     let nd = i64::try_from(digits.len()).unwrap_or(0);
     match fmt {
         b'e' => fmt_e(&mut out, &digits, dp, (nd - 1).max(0), zero),
         b'f' => fmt_f(&mut out, &digits, dp, (nd - dp).max(0)),
         _ => {
             let exp = dp - 1;
-            if exp < -4 || exp >= 6 {
+            if !(-4..6).contains(&exp) {
                 fmt_e(&mut out, &digits, dp, nd - 1, zero);
             } else {
                 fmt_f(&mut out, &digits, dp, (nd - dp).max(0));
@@ -112,13 +128,18 @@ pub fn format_float(f: f64, fmt: u8, bits32: bool) -> String {
 /// encoding/json's float64 text (floatEncoder), for a finite f.
 pub fn json_float(f: f64) -> String {
     let abs = f.abs();
-    let fmt = if abs != 0.0 && (abs < 1e-6 || abs >= 1e21) { b'e' } else { b'f' };
+    let fmt = if abs != 0.0 && (abs < 1e-6 || abs >= 1e21) {
+        b'e'
+    } else {
+        b'f'
+    };
     let mut s = format_float(f, fmt, false);
     if fmt == b'e' {
         // e-09 to e-9
         let b = s.as_bytes();
         let n = b.len();
-        if n >= 4 && b.get(n - 4) == Some(&b'e') && b.get(n - 3) == Some(&b'-') && b.get(n - 2) == Some(&b'0') {
+        if n >= 4 && b.get(n - 4) == Some(&b'e') && b.get(n - 3) == Some(&b'-') && b.get(n - 2) == Some(&b'0')
+        {
             let last = b.get(n - 1).copied().unwrap_or(b'0');
             s.truncate(n - 2);
             s.push(char::from(last));
@@ -166,7 +187,10 @@ pub fn quote_bytes(b: &[u8]) -> String {
                 let mut tmp = String::new();
                 goquote::quote(&mut tmp, c.encode_utf8(&mut [0; 4]));
                 // Drop the quotes around the one character.
-                let inner = tmp.strip_prefix('"').and_then(|t| t.strip_suffix('"')).unwrap_or(&tmp);
+                let inner = tmp
+                    .strip_prefix('"')
+                    .and_then(|t| t.strip_suffix('"'))
+                    .unwrap_or(&tmp);
                 out.push_str(inner);
             }
             None => out.push_str(&format!("\\x{:02x}", b.get(i).copied().unwrap_or(0))),

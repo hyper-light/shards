@@ -26,6 +26,7 @@ import (
 
 	"github.com/open-policy-agent/opa/v1/ast"
 	"github.com/open-policy-agent/opa/v1/rego"
+	"github.com/open-policy-agent/opa/v1/topdown"
 	opabuiltins "github.com/open-policy-agent/opa/v1/topdown/builtins"
 	"github.com/open-policy-agent/opa/v1/topdown/print"
 	"github.com/open-policy-agent/opa/v1/types"
@@ -722,4 +723,187 @@ func TestShardsIndex(t *testing.T) {
 	if err := os.WriteFile(os.Getenv("SHARDS_INDEX_OUT"), append(res, '\n'), 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// What each OPA builtin returns for each call in builtin-calls.json, called as the
+// evaluator calls it (topdown.GetBuiltin, a context of a fixed time and seed): its
+// result, undefined, or its error. Values are JSON with sets as {"$set": [...]}.
+func TestShardsBuiltinCalls(t *testing.T) {
+	dt, err := os.ReadFile(os.Getenv("SHARDS_CALLS"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var in []struct {
+		Name string            `json:"name"`
+		Args []json.RawMessage `json:"args"`
+	}
+	if err := json.Unmarshal(dt, &in); err != nil {
+		t.Fatal(err)
+	}
+	type result struct {
+		Name      string            `json:"name"`
+		Args      []json.RawMessage `json:"args"`
+		Result    json.RawMessage   `json:"result,omitempty"`
+		Undefined bool              `json:"undefined,omitempty"`
+		// Error is the error's text, as the evaluator surfaces it.
+		Error string `json:"error,omitempty"`
+	}
+	var out []result
+	for _, c := range in {
+		r := result{Name: c.Name, Args: c.Args}
+		f := topdown.GetBuiltin(c.Name)
+		if f == nil {
+			t.Fatalf("no builtin %s", c.Name)
+		}
+		operands := make([]*ast.Term, 0, len(c.Args))
+		for _, a := range c.Args {
+			v, err := ast.ValueFromReader(bytes.NewReader(a))
+			if err != nil {
+				t.Fatalf("%s: %v", c.Name, err)
+			}
+			operands = append(operands, ast.NewTerm(withSets(v)))
+		}
+		bctx := topdown.BuiltinContext{
+			Context:  context.Background(),
+			Time:     ast.NumberTerm("1700000000000000000"),
+			Seed:     bytes.NewReader(make([]byte, 1024)),
+			Cache:    opabuiltins.Cache{},
+			Location: &ast.Location{File: "p.rego", Row: 1, Col: 1},
+		}
+		var got *ast.Term
+		err := f(bctx, operands, func(t *ast.Term) error {
+			got = t
+			return nil
+		})
+		// The error as the evaluator surfaces it (topdown.handleBuiltinErr).
+		switch e := err.(type) {
+		case nil:
+			if got == nil {
+				r.Undefined = true
+			} else {
+				r.Result = encode(got.Value)
+			}
+		case *topdown.Error:
+			r.Error = e.Error()
+		case topdown.Halt:
+			r.Error = e.Error()
+		case opabuiltins.ErrOperand:
+			r.Error = (&topdown.Error{Code: topdown.TypeErr, Message: c.Name + ": " + e.Error(), Location: bctx.Location}).Error()
+		default:
+			r.Error = (&topdown.Error{Code: topdown.BuiltinErr, Message: c.Name + ": " + e.Error(), Location: bctx.Location}).Error()
+		}
+		out = append(out, r)
+	}
+	res, err := json.MarshalIndent(out, "", " ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(os.Getenv("SHARDS_CALLS_OUT"), append(res, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// withSets turns each {"$set": [...]} object into a set.
+func withSets(v ast.Value) ast.Value {
+	switch x := v.(type) {
+	case *ast.Array:
+		out := make([]*ast.Term, 0, x.Len())
+		x.Foreach(func(t *ast.Term) { out = append(out, ast.NewTerm(withSets(t.Value))) })
+		return ast.NewArray(out...)
+	case ast.Object:
+		if x.Len() == 1 {
+			if s := x.Get(ast.StringTerm("$set")); s != nil {
+				if arr, ok := s.Value.(*ast.Array); ok {
+					set := ast.NewSet()
+					arr.Foreach(func(t *ast.Term) { set.Add(ast.NewTerm(withSets(t.Value))) })
+					return set
+				}
+			}
+		}
+		out := ast.NewObject()
+		x.Foreach(func(k, val *ast.Term) { out.Insert(ast.NewTerm(withSets(k.Value)), ast.NewTerm(withSets(val.Value))) })
+		return out
+	}
+	return v
+}
+
+// encode writes a value as JSON, sets as {"$set": [...]} in their order, objects with
+// any keys as {"$object": [[k, v], ...]} when a key is not a string.
+func encode(v ast.Value) json.RawMessage {
+	var buf bytes.Buffer
+	encodeTo(&buf, v)
+	return buf.Bytes()
+}
+
+func encodeTo(buf *bytes.Buffer, v ast.Value) {
+	switch x := v.(type) {
+	case ast.Null, ast.Boolean, ast.Number, ast.String:
+		dt, _ := json.Marshal(mustJSON(x))
+		if n, ok := x.(ast.Number); ok {
+			dt = []byte(n)
+		}
+		buf.Write(dt)
+	case *ast.Array:
+		buf.WriteByte('[')
+		for i := 0; i < x.Len(); i++ {
+			if i > 0 {
+				buf.WriteByte(',')
+			}
+			encodeTo(buf, x.Elem(i).Value)
+		}
+		buf.WriteByte(']')
+	case ast.Set:
+		buf.WriteString(`{"$set":[`)
+		i := 0
+		x.Sorted().Foreach(func(t *ast.Term) {
+			if i > 0 {
+				buf.WriteByte(',')
+			}
+			encodeTo(buf, t.Value)
+			i++
+		})
+		buf.WriteString("]}")
+	case ast.Object:
+		allStrings := true
+		x.Foreach(func(k, _ *ast.Term) {
+			if _, ok := k.Value.(ast.String); !ok {
+				allStrings = false
+			}
+		})
+		if allStrings {
+			buf.WriteByte('{')
+			for i, k := range x.Keys() {
+				if i > 0 {
+					buf.WriteByte(',')
+				}
+				encodeTo(buf, k.Value)
+				buf.WriteByte(':')
+				encodeTo(buf, x.Get(k).Value)
+			}
+			buf.WriteByte('}')
+			return
+		}
+		buf.WriteString(`{"$object":[`)
+		for i, k := range x.Keys() {
+			if i > 0 {
+				buf.WriteByte(',')
+			}
+			buf.WriteByte('[')
+			encodeTo(buf, k.Value)
+			buf.WriteByte(',')
+			encodeTo(buf, x.Get(k).Value)
+			buf.WriteByte(']')
+		}
+		buf.WriteString("]}")
+	default:
+		buf.WriteString(`"<non-value>"`)
+	}
+}
+
+func mustJSON(v ast.Value) any {
+	j, err := ast.JSON(v)
+	if err != nil {
+		return nil
+	}
+	return j
 }

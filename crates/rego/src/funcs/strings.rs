@@ -1614,6 +1614,48 @@ fn fmt_x(out: &mut String, prec: i64, fmt: u8, neg: bool, mut mant: u64, mut exp
     let _ = write!(out, "{exp}");
 }
 
+/// The shortest digits of `a` (positive, finite) as Go's Dragonbox picks them: Rust's
+/// shortest digits are Go's but where `a` lies exactly halfway between two shortest
+/// candidates, where Go takes the one whose last digit is even (ftoadbox.go) and Rust
+/// may not.
+fn shortest_even(a: f64, d: Decimal) -> Decimal {
+    let Some(&last) = d.d.last() else { return d };
+    if last % 2 == 0 {
+        return d;
+    }
+    // The exact value, 0.EXACT × 10^dp (an f64's expansion ends within 1100 digits).
+    let exact = Decimal::from_exp(&format!("{a:.1100e}"));
+    let to_int = |digits: &[u8]| -> BigInt {
+        std::str::from_utf8(digits)
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or_default()
+    };
+    // Both as integers × 10^c.
+    let (ed, dd) = (exact.dp - exact.nd(), d.dp - d.nd());
+    let c = ed.min(dd);
+    let pow10 = |n: i64| -> BigInt { BigInt::from(10u32).pow(u32::try_from(n).unwrap_or(0)) };
+    let ie = to_int(&exact.d) * pow10(ed - c);
+    let id = to_int(&d.d) * pow10(dd - c);
+    let unit = pow10(dd - c);
+    let diff = &ie - &id;
+    let twice: BigInt = &diff * 2;
+    if twice.magnitude() != unit.magnitude() {
+        return d;
+    }
+    let alt: BigInt = if diff.sign() == Sign::Minus {
+        to_int(&d.d) - 1u32
+    } else {
+        to_int(&d.d) + 1u32
+    };
+    let text = alt.to_string();
+    if format!("{text}e{dd}").parse::<f64>().ok() != Some(a) {
+        return d;
+    }
+    let n = len_i64(text.len());
+    Decimal::trimmed(text.into_bytes(), dd + n)
+}
+
 /// `strconv.FormatFloat(v, fmt, prec, 64)` for the formats b, e, E, f, g, G, x and X.
 fn format_float(v: f64, fmt: u8, prec: i64) -> String {
     let mut out = String::new();
@@ -1656,7 +1698,7 @@ fn format_float(v: f64, fmt: u8, prec: i64) -> String {
         return out;
     }
     if prec < 0 {
-        let d = Decimal::from_exp(&format!("{a:e}"));
+        let d = shortest_even(a, Decimal::from_exp(&format!("{a:e}")));
         let prec = match fmt {
             b'e' | b'E' => (d.nd() - 1).max(0),
             b'f' => (d.nd() - d.dp).max(0),

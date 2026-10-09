@@ -1,0 +1,9622 @@
+[
+ {
+  "name": "contains",
+  "args": [
+   1,
+   "a"
+  ],
+  "error": "p.rego:1: eval_type_error: contains: operand 1 must be string but got number"
+ },
+ {
+  "name": "contains",
+  "args": [
+   "a",
+   1
+  ],
+  "error": "p.rego:1: eval_type_error: contains: operand 2 must be string but got number"
+ },
+ {
+  "name": "contains",
+  "args": [
+   null,
+   "a"
+  ],
+  "error": "p.rego:1: eval_type_error: contains: operand 1 must be string but got null"
+ },
+ {
+  "name": "contains",
+  "args": [
+   "a",
+   null
+  ],
+  "error": "p.rego:1: eval_type_error: contains: operand 2 must be string but got null"
+ },
+ {
+  "name": "contains",
+  "args": [
+   [
+    "a"
+   ],
+   "a"
+  ],
+  "error": "p.rego:1: eval_type_error: contains: operand 1 must be string but got array"
+ },
+ {
+  "name": "contains",
+  "args": [
+   "a",
+   [
+    "a"
+   ]
+  ],
+  "error": "p.rego:1: eval_type_error: contains: operand 2 must be string but got array"
+ },
+ {
+  "name": "contains",
+  "args": [
+   {
+    "$set": []
+   },
+   "a"
+  ],
+  "error": "p.rego:1: eval_type_error: contains: operand 1 must be string but got set"
+ },
+ {
+  "name": "contains",
+  "args": [
+   "a",
+   {
+    "$set": []
+   }
+  ],
+  "error": "p.rego:1: eval_type_error: contains: operand 2 must be string but got set"
+ },
+ {
+  "name": "contains",
+  "args": [
+   2,
+   null
+  ],
+  "error": "p.rego:1: eval_type_error: contains: operand 1 must be string but got number"
+ },
+ {
+  "name": "endswith",
+  "args": [
+   1,
+   "a"
+  ],
+  "error": "p.rego:1: eval_type_error: endswith: operand 1 must be string but got number"
+ },
+ {
+  "name": "endswith",
+  "args": [
+   "a",
+   1
+  ],
+  "error": "p.rego:1: eval_type_error: endswith: operand 2 must be string but got number"
+ },
+ {
+  "name": "endswith",
+  "args": [
+   null,
+   "a"
+  ],
+  "error": "p.rego:1: eval_type_error: endswith: operand 1 must be string but got null"
+ },
+ {
+  "name": "endswith",
+  "args": [
+   "a",
+   null
+  ],
+  "error": "p.rego:1: eval_type_error: endswith: operand 2 must be string but got null"
+ },
+ {
+  "name": "endswith",
+  "args": [
+   [
+    "a"
+   ],
+   "a"
+  ],
+  "error": "p.rego:1: eval_type_error: endswith: operand 1 must be string but got array"
+ },
+ {
+  "name": "endswith",
+  "args": [
+   "a",
+   [
+    "a"
+   ]
+  ],
+  "error": "p.rego:1: eval_type_error: endswith: operand 2 must be string but got array"
+ },
+ {
+  "name": "endswith",
+  "args": [
+   {
+    "$set": []
+   },
+   "a"
+  ],
+  "error": "p.rego:1: eval_type_error: endswith: operand 1 must be string but got set"
+ },
+ {
+  "name": "endswith",
+  "args": [
+   "a",
+   {
+    "$set": []
+   }
+  ],
+  "error": "p.rego:1: eval_type_error: endswith: operand 2 must be string but got set"
+ },
+ {
+  "name": "endswith",
+  "args": [
+   2,
+   null
+  ],
+  "error": "p.rego:1: eval_type_error: endswith: operand 1 must be string but got number"
+ },
+ {
+  "name": "startswith",
+  "args": [
+   1,
+   "a"
+  ],
+  "error": "p.rego:1: eval_type_error: startswith: operand 1 must be string but got number"
+ },
+ {
+  "name": "startswith",
+  "args": [
+   "a",
+   1
+  ],
+  "error": "p.rego:1: eval_type_error: startswith: operand 2 must be string but got number"
+ },
+ {
+  "name": "startswith",
+  "args": [
+   null,
+   "a"
+  ],
+  "error": "p.rego:1: eval_type_error: startswith: operand 1 must be string but got null"
+ },
+ {
+  "name": "startswith",
+  "args": [
+   "a",
+   null
+  ],
+  "error": "p.rego:1: eval_type_error: startswith: operand 2 must be string but got null"
+ },
+ {
+  "name": "startswith",
+  "args": [
+   [
+    "a"
+   ],
+   "a"
+  ],
+  "error": "p.rego:1: eval_type_error: startswith: operand 1 must be string but got array"
+ },
+ {
+  "name": "startswith",
+  "args": [
+   "a",
+   [
+    "a"
+   ]
+  ],
+  "error": "p.rego:1: eval_type_error: startswith: operand 2 must be string but got array"
+ },
+ {
+  "name": "startswith",
+  "args": [
+   {
+    "$set": []
+   },
+   "a"
+  ],
+  "error": "p.rego:1: eval_type_error: startswith: operand 1 must be string but got set"
+ },
+ {
+  "name": "startswith",
+  "args": [
+   "a",
+   {
+    "$set": []
+   }
+  ],
+  "error": "p.rego:1: eval_type_error: startswith: operand 2 must be string but got set"
+ },
+ {
+  "name": "startswith",
+  "args": [
+   2,
+   null
+  ],
+  "error": "p.rego:1: eval_type_error: startswith: operand 1 must be string but got number"
+ },
+ {
+  "name": "indexof",
+  "args": [
+   1,
+   "a"
+  ],
+  "error": "p.rego:1: eval_type_error: indexof: operand 1 must be string but got number"
+ },
+ {
+  "name": "indexof",
+  "args": [
+   "a",
+   1
+  ],
+  "error": "p.rego:1: eval_type_error: indexof: operand 2 must be string but got number"
+ },
+ {
+  "name": "indexof",
+  "args": [
+   null,
+   "a"
+  ],
+  "error": "p.rego:1: eval_type_error: indexof: operand 1 must be string but got null"
+ },
+ {
+  "name": "indexof",
+  "args": [
+   "a",
+   null
+  ],
+  "error": "p.rego:1: eval_type_error: indexof: operand 2 must be string but got null"
+ },
+ {
+  "name": "indexof",
+  "args": [
+   [
+    "a"
+   ],
+   "a"
+  ],
+  "error": "p.rego:1: eval_type_error: indexof: operand 1 must be string but got array"
+ },
+ {
+  "name": "indexof",
+  "args": [
+   "a",
+   [
+    "a"
+   ]
+  ],
+  "error": "p.rego:1: eval_type_error: indexof: operand 2 must be string but got array"
+ },
+ {
+  "name": "indexof",
+  "args": [
+   {
+    "$set": []
+   },
+   "a"
+  ],
+  "error": "p.rego:1: eval_type_error: indexof: operand 1 must be string but got set"
+ },
+ {
+  "name": "indexof",
+  "args": [
+   "a",
+   {
+    "$set": []
+   }
+  ],
+  "error": "p.rego:1: eval_type_error: indexof: operand 2 must be string but got set"
+ },
+ {
+  "name": "indexof",
+  "args": [
+   2,
+   null
+  ],
+  "error": "p.rego:1: eval_type_error: indexof: operand 1 must be string but got number"
+ },
+ {
+  "name": "indexof_n",
+  "args": [
+   1,
+   "a"
+  ],
+  "error": "p.rego:1: eval_type_error: indexof_n: operand 1 must be string but got number"
+ },
+ {
+  "name": "indexof_n",
+  "args": [
+   "a",
+   1
+  ],
+  "error": "p.rego:1: eval_type_error: indexof_n: operand 2 must be string but got number"
+ },
+ {
+  "name": "indexof_n",
+  "args": [
+   null,
+   "a"
+  ],
+  "error": "p.rego:1: eval_type_error: indexof_n: operand 1 must be string but got null"
+ },
+ {
+  "name": "indexof_n",
+  "args": [
+   "a",
+   null
+  ],
+  "error": "p.rego:1: eval_type_error: indexof_n: operand 2 must be string but got null"
+ },
+ {
+  "name": "indexof_n",
+  "args": [
+   [
+    "a"
+   ],
+   "a"
+  ],
+  "error": "p.rego:1: eval_type_error: indexof_n: operand 1 must be string but got array"
+ },
+ {
+  "name": "indexof_n",
+  "args": [
+   "a",
+   [
+    "a"
+   ]
+  ],
+  "error": "p.rego:1: eval_type_error: indexof_n: operand 2 must be string but got array"
+ },
+ {
+  "name": "indexof_n",
+  "args": [
+   {
+    "$set": []
+   },
+   "a"
+  ],
+  "error": "p.rego:1: eval_type_error: indexof_n: operand 1 must be string but got set"
+ },
+ {
+  "name": "indexof_n",
+  "args": [
+   "a",
+   {
+    "$set": []
+   }
+  ],
+  "error": "p.rego:1: eval_type_error: indexof_n: operand 2 must be string but got set"
+ },
+ {
+  "name": "indexof_n",
+  "args": [
+   2,
+   null
+  ],
+  "error": "p.rego:1: eval_type_error: indexof_n: operand 1 must be string but got number"
+ },
+ {
+  "name": "strings.count",
+  "args": [
+   1,
+   "a"
+  ],
+  "error": "p.rego:1: eval_type_error: strings.count: operand 1 must be string but got number"
+ },
+ {
+  "name": "strings.count",
+  "args": [
+   "a",
+   1
+  ],
+  "error": "p.rego:1: eval_type_error: strings.count: operand 2 must be string but got number"
+ },
+ {
+  "name": "strings.count",
+  "args": [
+   null,
+   "a"
+  ],
+  "error": "p.rego:1: eval_type_error: strings.count: operand 1 must be string but got null"
+ },
+ {
+  "name": "strings.count",
+  "args": [
+   "a",
+   null
+  ],
+  "error": "p.rego:1: eval_type_error: strings.count: operand 2 must be string but got null"
+ },
+ {
+  "name": "strings.count",
+  "args": [
+   [
+    "a"
+   ],
+   "a"
+  ],
+  "error": "p.rego:1: eval_type_error: strings.count: operand 1 must be string but got array"
+ },
+ {
+  "name": "strings.count",
+  "args": [
+   "a",
+   [
+    "a"
+   ]
+  ],
+  "error": "p.rego:1: eval_type_error: strings.count: operand 2 must be string but got array"
+ },
+ {
+  "name": "strings.count",
+  "args": [
+   {
+    "$set": []
+   },
+   "a"
+  ],
+  "error": "p.rego:1: eval_type_error: strings.count: operand 1 must be string but got set"
+ },
+ {
+  "name": "strings.count",
+  "args": [
+   "a",
+   {
+    "$set": []
+   }
+  ],
+  "error": "p.rego:1: eval_type_error: strings.count: operand 2 must be string but got set"
+ },
+ {
+  "name": "strings.count",
+  "args": [
+   2,
+   null
+  ],
+  "error": "p.rego:1: eval_type_error: strings.count: operand 1 must be string but got number"
+ },
+ {
+  "name": "trim",
+  "args": [
+   1,
+   "a"
+  ],
+  "error": "p.rego:1: eval_type_error: trim: operand 1 must be string but got number"
+ },
+ {
+  "name": "trim",
+  "args": [
+   "a",
+   1
+  ],
+  "error": "p.rego:1: eval_type_error: trim: operand 2 must be string but got number"
+ },
+ {
+  "name": "trim",
+  "args": [
+   null,
+   "a"
+  ],
+  "error": "p.rego:1: eval_type_error: trim: operand 1 must be string but got null"
+ },
+ {
+  "name": "trim",
+  "args": [
+   "a",
+   null
+  ],
+  "error": "p.rego:1: eval_type_error: trim: operand 2 must be string but got null"
+ },
+ {
+  "name": "trim",
+  "args": [
+   [
+    "a"
+   ],
+   "a"
+  ],
+  "error": "p.rego:1: eval_type_error: trim: operand 1 must be string but got array"
+ },
+ {
+  "name": "trim",
+  "args": [
+   "a",
+   [
+    "a"
+   ]
+  ],
+  "error": "p.rego:1: eval_type_error: trim: operand 2 must be string but got array"
+ },
+ {
+  "name": "trim",
+  "args": [
+   {
+    "$set": []
+   },
+   "a"
+  ],
+  "error": "p.rego:1: eval_type_error: trim: operand 1 must be string but got set"
+ },
+ {
+  "name": "trim",
+  "args": [
+   "a",
+   {
+    "$set": []
+   }
+  ],
+  "error": "p.rego:1: eval_type_error: trim: operand 2 must be string but got set"
+ },
+ {
+  "name": "trim",
+  "args": [
+   2,
+   null
+  ],
+  "error": "p.rego:1: eval_type_error: trim: operand 1 must be string but got number"
+ },
+ {
+  "name": "trim_left",
+  "args": [
+   1,
+   "a"
+  ],
+  "error": "p.rego:1: eval_type_error: trim_left: operand 1 must be string but got number"
+ },
+ {
+  "name": "trim_left",
+  "args": [
+   "a",
+   1
+  ],
+  "error": "p.rego:1: eval_type_error: trim_left: operand 2 must be string but got number"
+ },
+ {
+  "name": "trim_left",
+  "args": [
+   null,
+   "a"
+  ],
+  "error": "p.rego:1: eval_type_error: trim_left: operand 1 must be string but got null"
+ },
+ {
+  "name": "trim_left",
+  "args": [
+   "a",
+   null
+  ],
+  "error": "p.rego:1: eval_type_error: trim_left: operand 2 must be string but got null"
+ },
+ {
+  "name": "trim_left",
+  "args": [
+   [
+    "a"
+   ],
+   "a"
+  ],
+  "error": "p.rego:1: eval_type_error: trim_left: operand 1 must be string but got array"
+ },
+ {
+  "name": "trim_left",
+  "args": [
+   "a",
+   [
+    "a"
+   ]
+  ],
+  "error": "p.rego:1: eval_type_error: trim_left: operand 2 must be string but got array"
+ },
+ {
+  "name": "trim_left",
+  "args": [
+   {
+    "$set": []
+   },
+   "a"
+  ],
+  "error": "p.rego:1: eval_type_error: trim_left: operand 1 must be string but got set"
+ },
+ {
+  "name": "trim_left",
+  "args": [
+   "a",
+   {
+    "$set": []
+   }
+  ],
+  "error": "p.rego:1: eval_type_error: trim_left: operand 2 must be string but got set"
+ },
+ {
+  "name": "trim_left",
+  "args": [
+   2,
+   null
+  ],
+  "error": "p.rego:1: eval_type_error: trim_left: operand 1 must be string but got number"
+ },
+ {
+  "name": "trim_right",
+  "args": [
+   1,
+   "a"
+  ],
+  "error": "p.rego:1: eval_type_error: trim_right: operand 1 must be string but got number"
+ },
+ {
+  "name": "trim_right",
+  "args": [
+   "a",
+   1
+  ],
+  "error": "p.rego:1: eval_type_error: trim_right: operand 2 must be string but got number"
+ },
+ {
+  "name": "trim_right",
+  "args": [
+   null,
+   "a"
+  ],
+  "error": "p.rego:1: eval_type_error: trim_right: operand 1 must be string but got null"
+ },
+ {
+  "name": "trim_right",
+  "args": [
+   "a",
+   null
+  ],
+  "error": "p.rego:1: eval_type_error: trim_right: operand 2 must be string but got null"
+ },
+ {
+  "name": "trim_right",
+  "args": [
+   [
+    "a"
+   ],
+   "a"
+  ],
+  "error": "p.rego:1: eval_type_error: trim_right: operand 1 must be string but got array"
+ },
+ {
+  "name": "trim_right",
+  "args": [
+   "a",
+   [
+    "a"
+   ]
+  ],
+  "error": "p.rego:1: eval_type_error: trim_right: operand 2 must be string but got array"
+ },
+ {
+  "name": "trim_right",
+  "args": [
+   {
+    "$set": []
+   },
+   "a"
+  ],
+  "error": "p.rego:1: eval_type_error: trim_right: operand 1 must be string but got set"
+ },
+ {
+  "name": "trim_right",
+  "args": [
+   "a",
+   {
+    "$set": []
+   }
+  ],
+  "error": "p.rego:1: eval_type_error: trim_right: operand 2 must be string but got set"
+ },
+ {
+  "name": "trim_right",
+  "args": [
+   2,
+   null
+  ],
+  "error": "p.rego:1: eval_type_error: trim_right: operand 1 must be string but got number"
+ },
+ {
+  "name": "trim_prefix",
+  "args": [
+   1,
+   "a"
+  ],
+  "error": "p.rego:1: eval_type_error: trim_prefix: operand 1 must be string but got number"
+ },
+ {
+  "name": "trim_prefix",
+  "args": [
+   "a",
+   1
+  ],
+  "error": "p.rego:1: eval_type_error: trim_prefix: operand 2 must be string but got number"
+ },
+ {
+  "name": "trim_prefix",
+  "args": [
+   null,
+   "a"
+  ],
+  "error": "p.rego:1: eval_type_error: trim_prefix: operand 1 must be string but got null"
+ },
+ {
+  "name": "trim_prefix",
+  "args": [
+   "a",
+   null
+  ],
+  "error": "p.rego:1: eval_type_error: trim_prefix: operand 2 must be string but got null"
+ },
+ {
+  "name": "trim_prefix",
+  "args": [
+   [
+    "a"
+   ],
+   "a"
+  ],
+  "error": "p.rego:1: eval_type_error: trim_prefix: operand 1 must be string but got array"
+ },
+ {
+  "name": "trim_prefix",
+  "args": [
+   "a",
+   [
+    "a"
+   ]
+  ],
+  "error": "p.rego:1: eval_type_error: trim_prefix: operand 2 must be string but got array"
+ },
+ {
+  "name": "trim_prefix",
+  "args": [
+   {
+    "$set": []
+   },
+   "a"
+  ],
+  "error": "p.rego:1: eval_type_error: trim_prefix: operand 1 must be string but got set"
+ },
+ {
+  "name": "trim_prefix",
+  "args": [
+   "a",
+   {
+    "$set": []
+   }
+  ],
+  "error": "p.rego:1: eval_type_error: trim_prefix: operand 2 must be string but got set"
+ },
+ {
+  "name": "trim_prefix",
+  "args": [
+   2,
+   null
+  ],
+  "error": "p.rego:1: eval_type_error: trim_prefix: operand 1 must be string but got number"
+ },
+ {
+  "name": "trim_suffix",
+  "args": [
+   1,
+   "a"
+  ],
+  "error": "p.rego:1: eval_type_error: trim_suffix: operand 1 must be string but got number"
+ },
+ {
+  "name": "trim_suffix",
+  "args": [
+   "a",
+   1
+  ],
+  "error": "p.rego:1: eval_type_error: trim_suffix: operand 2 must be string but got number"
+ },
+ {
+  "name": "trim_suffix",
+  "args": [
+   null,
+   "a"
+  ],
+  "error": "p.rego:1: eval_type_error: trim_suffix: operand 1 must be string but got null"
+ },
+ {
+  "name": "trim_suffix",
+  "args": [
+   "a",
+   null
+  ],
+  "error": "p.rego:1: eval_type_error: trim_suffix: operand 2 must be string but got null"
+ },
+ {
+  "name": "trim_suffix",
+  "args": [
+   [
+    "a"
+   ],
+   "a"
+  ],
+  "error": "p.rego:1: eval_type_error: trim_suffix: operand 1 must be string but got array"
+ },
+ {
+  "name": "trim_suffix",
+  "args": [
+   "a",
+   [
+    "a"
+   ]
+  ],
+  "error": "p.rego:1: eval_type_error: trim_suffix: operand 2 must be string but got array"
+ },
+ {
+  "name": "trim_suffix",
+  "args": [
+   {
+    "$set": []
+   },
+   "a"
+  ],
+  "error": "p.rego:1: eval_type_error: trim_suffix: operand 1 must be string but got set"
+ },
+ {
+  "name": "trim_suffix",
+  "args": [
+   "a",
+   {
+    "$set": []
+   }
+  ],
+  "error": "p.rego:1: eval_type_error: trim_suffix: operand 2 must be string but got set"
+ },
+ {
+  "name": "trim_suffix",
+  "args": [
+   2,
+   null
+  ],
+  "error": "p.rego:1: eval_type_error: trim_suffix: operand 1 must be string but got number"
+ },
+ {
+  "name": "split",
+  "args": [
+   1,
+   "a"
+  ],
+  "error": "p.rego:1: eval_type_error: split: operand 1 must be string but got number"
+ },
+ {
+  "name": "split",
+  "args": [
+   "a",
+   1
+  ],
+  "error": "p.rego:1: eval_type_error: split: operand 2 must be string but got number"
+ },
+ {
+  "name": "split",
+  "args": [
+   null,
+   "a"
+  ],
+  "error": "p.rego:1: eval_type_error: split: operand 1 must be string but got null"
+ },
+ {
+  "name": "split",
+  "args": [
+   "a",
+   null
+  ],
+  "error": "p.rego:1: eval_type_error: split: operand 2 must be string but got null"
+ },
+ {
+  "name": "split",
+  "args": [
+   [
+    "a"
+   ],
+   "a"
+  ],
+  "error": "p.rego:1: eval_type_error: split: operand 1 must be string but got array"
+ },
+ {
+  "name": "split",
+  "args": [
+   "a",
+   [
+    "a"
+   ]
+  ],
+  "error": "p.rego:1: eval_type_error: split: operand 2 must be string but got array"
+ },
+ {
+  "name": "split",
+  "args": [
+   {
+    "$set": []
+   },
+   "a"
+  ],
+  "error": "p.rego:1: eval_type_error: split: operand 1 must be string but got set"
+ },
+ {
+  "name": "split",
+  "args": [
+   "a",
+   {
+    "$set": []
+   }
+  ],
+  "error": "p.rego:1: eval_type_error: split: operand 2 must be string but got set"
+ },
+ {
+  "name": "split",
+  "args": [
+   2,
+   null
+  ],
+  "error": "p.rego:1: eval_type_error: split: operand 1 must be string but got number"
+ },
+ {
+  "name": "lower",
+  "args": [
+   1
+  ],
+  "error": "p.rego:1: eval_type_error: lower: operand 1 must be string but got number"
+ },
+ {
+  "name": "lower",
+  "args": [
+   1.5
+  ],
+  "error": "p.rego:1: eval_type_error: lower: operand 1 must be string but got number"
+ },
+ {
+  "name": "lower",
+  "args": [
+   null
+  ],
+  "error": "p.rego:1: eval_type_error: lower: operand 1 must be string but got null"
+ },
+ {
+  "name": "lower",
+  "args": [
+   true
+  ],
+  "error": "p.rego:1: eval_type_error: lower: operand 1 must be string but got boolean"
+ },
+ {
+  "name": "lower",
+  "args": [
+   [
+    1
+   ]
+  ],
+  "error": "p.rego:1: eval_type_error: lower: operand 1 must be string but got array"
+ },
+ {
+  "name": "lower",
+  "args": [
+   {
+    "a": 1
+   }
+  ],
+  "error": "p.rego:1: eval_type_error: lower: operand 1 must be string but got object"
+ },
+ {
+  "name": "lower",
+  "args": [
+   {
+    "$set": [
+     "a"
+    ]
+   }
+  ],
+  "error": "p.rego:1: eval_type_error: lower: operand 1 must be string but got set"
+ },
+ {
+  "name": "upper",
+  "args": [
+   1
+  ],
+  "error": "p.rego:1: eval_type_error: upper: operand 1 must be string but got number"
+ },
+ {
+  "name": "upper",
+  "args": [
+   1.5
+  ],
+  "error": "p.rego:1: eval_type_error: upper: operand 1 must be string but got number"
+ },
+ {
+  "name": "upper",
+  "args": [
+   null
+  ],
+  "error": "p.rego:1: eval_type_error: upper: operand 1 must be string but got null"
+ },
+ {
+  "name": "upper",
+  "args": [
+   true
+  ],
+  "error": "p.rego:1: eval_type_error: upper: operand 1 must be string but got boolean"
+ },
+ {
+  "name": "upper",
+  "args": [
+   [
+    1
+   ]
+  ],
+  "error": "p.rego:1: eval_type_error: upper: operand 1 must be string but got array"
+ },
+ {
+  "name": "upper",
+  "args": [
+   {
+    "a": 1
+   }
+  ],
+  "error": "p.rego:1: eval_type_error: upper: operand 1 must be string but got object"
+ },
+ {
+  "name": "upper",
+  "args": [
+   {
+    "$set": [
+     "a"
+    ]
+   }
+  ],
+  "error": "p.rego:1: eval_type_error: upper: operand 1 must be string but got set"
+ },
+ {
+  "name": "trim_space",
+  "args": [
+   1
+  ],
+  "error": "p.rego:1: eval_type_error: trim_space: operand 1 must be string but got number"
+ },
+ {
+  "name": "trim_space",
+  "args": [
+   1.5
+  ],
+  "error": "p.rego:1: eval_type_error: trim_space: operand 1 must be string but got number"
+ },
+ {
+  "name": "trim_space",
+  "args": [
+   null
+  ],
+  "error": "p.rego:1: eval_type_error: trim_space: operand 1 must be string but got null"
+ },
+ {
+  "name": "trim_space",
+  "args": [
+   true
+  ],
+  "error": "p.rego:1: eval_type_error: trim_space: operand 1 must be string but got boolean"
+ },
+ {
+  "name": "trim_space",
+  "args": [
+   [
+    1
+   ]
+  ],
+  "error": "p.rego:1: eval_type_error: trim_space: operand 1 must be string but got array"
+ },
+ {
+  "name": "trim_space",
+  "args": [
+   {
+    "a": 1
+   }
+  ],
+  "error": "p.rego:1: eval_type_error: trim_space: operand 1 must be string but got object"
+ },
+ {
+  "name": "trim_space",
+  "args": [
+   {
+    "$set": [
+     "a"
+    ]
+   }
+  ],
+  "error": "p.rego:1: eval_type_error: trim_space: operand 1 must be string but got set"
+ },
+ {
+  "name": "strings.reverse",
+  "args": [
+   1
+  ],
+  "error": "p.rego:1: eval_type_error: strings.reverse: operand 1 must be string but got number"
+ },
+ {
+  "name": "strings.reverse",
+  "args": [
+   1.5
+  ],
+  "error": "p.rego:1: eval_type_error: strings.reverse: operand 1 must be string but got number"
+ },
+ {
+  "name": "strings.reverse",
+  "args": [
+   null
+  ],
+  "error": "p.rego:1: eval_type_error: strings.reverse: operand 1 must be string but got null"
+ },
+ {
+  "name": "strings.reverse",
+  "args": [
+   true
+  ],
+  "error": "p.rego:1: eval_type_error: strings.reverse: operand 1 must be string but got boolean"
+ },
+ {
+  "name": "strings.reverse",
+  "args": [
+   [
+    1
+   ]
+  ],
+  "error": "p.rego:1: eval_type_error: strings.reverse: operand 1 must be string but got array"
+ },
+ {
+  "name": "strings.reverse",
+  "args": [
+   {
+    "a": 1
+   }
+  ],
+  "error": "p.rego:1: eval_type_error: strings.reverse: operand 1 must be string but got object"
+ },
+ {
+  "name": "strings.reverse",
+  "args": [
+   {
+    "$set": [
+     "a"
+    ]
+   }
+  ],
+  "error": "p.rego:1: eval_type_error: strings.reverse: operand 1 must be string but got set"
+ },
+ {
+  "name": "contains",
+  "args": [
+   "abc",
+   "b"
+  ],
+  "result": true
+ },
+ {
+  "name": "contains",
+  "args": [
+   "abc",
+   "a"
+  ],
+  "result": true
+ },
+ {
+  "name": "contains",
+  "args": [
+   "abc",
+   "c"
+  ],
+  "result": true
+ },
+ {
+  "name": "contains",
+  "args": [
+   "abc",
+   ""
+  ],
+  "result": true
+ },
+ {
+  "name": "contains",
+  "args": [
+   "",
+   ""
+  ],
+  "result": true
+ },
+ {
+  "name": "contains",
+  "args": [
+   "",
+   "a"
+  ],
+  "result": false
+ },
+ {
+  "name": "contains",
+  "args": [
+   "héllo",
+   "é"
+  ],
+  "result": true
+ },
+ {
+  "name": "contains",
+  "args": [
+   "héllo",
+   "llo"
+  ],
+  "result": true
+ },
+ {
+  "name": "contains",
+  "args": [
+   "héllo",
+   "hé"
+  ],
+  "result": true
+ },
+ {
+  "name": "contains",
+  "args": [
+   "abc",
+   "abcd"
+  ],
+  "result": false
+ },
+ {
+  "name": "contains",
+  "args": [
+   "日本語",
+   "本"
+  ],
+  "result": true
+ },
+ {
+  "name": "contains",
+  "args": [
+   "日本語",
+   "語"
+  ],
+  "result": true
+ },
+ {
+  "name": "startswith",
+  "args": [
+   "abc",
+   "b"
+  ],
+  "result": false
+ },
+ {
+  "name": "startswith",
+  "args": [
+   "abc",
+   "a"
+  ],
+  "result": true
+ },
+ {
+  "name": "startswith",
+  "args": [
+   "abc",
+   "c"
+  ],
+  "result": false
+ },
+ {
+  "name": "startswith",
+  "args": [
+   "abc",
+   ""
+  ],
+  "result": true
+ },
+ {
+  "name": "startswith",
+  "args": [
+   "",
+   ""
+  ],
+  "result": true
+ },
+ {
+  "name": "startswith",
+  "args": [
+   "",
+   "a"
+  ],
+  "result": false
+ },
+ {
+  "name": "startswith",
+  "args": [
+   "héllo",
+   "é"
+  ],
+  "result": false
+ },
+ {
+  "name": "startswith",
+  "args": [
+   "héllo",
+   "llo"
+  ],
+  "result": false
+ },
+ {
+  "name": "startswith",
+  "args": [
+   "héllo",
+   "hé"
+  ],
+  "result": true
+ },
+ {
+  "name": "startswith",
+  "args": [
+   "abc",
+   "abcd"
+  ],
+  "result": false
+ },
+ {
+  "name": "startswith",
+  "args": [
+   "日本語",
+   "本"
+  ],
+  "result": false
+ },
+ {
+  "name": "startswith",
+  "args": [
+   "日本語",
+   "語"
+  ],
+  "result": false
+ },
+ {
+  "name": "endswith",
+  "args": [
+   "abc",
+   "b"
+  ],
+  "result": false
+ },
+ {
+  "name": "endswith",
+  "args": [
+   "abc",
+   "a"
+  ],
+  "result": false
+ },
+ {
+  "name": "endswith",
+  "args": [
+   "abc",
+   "c"
+  ],
+  "result": true
+ },
+ {
+  "name": "endswith",
+  "args": [
+   "abc",
+   ""
+  ],
+  "result": true
+ },
+ {
+  "name": "endswith",
+  "args": [
+   "",
+   ""
+  ],
+  "result": true
+ },
+ {
+  "name": "endswith",
+  "args": [
+   "",
+   "a"
+  ],
+  "result": false
+ },
+ {
+  "name": "endswith",
+  "args": [
+   "héllo",
+   "é"
+  ],
+  "result": false
+ },
+ {
+  "name": "endswith",
+  "args": [
+   "héllo",
+   "llo"
+  ],
+  "result": true
+ },
+ {
+  "name": "endswith",
+  "args": [
+   "héllo",
+   "hé"
+  ],
+  "result": false
+ },
+ {
+  "name": "endswith",
+  "args": [
+   "abc",
+   "abcd"
+  ],
+  "result": false
+ },
+ {
+  "name": "endswith",
+  "args": [
+   "日本語",
+   "本"
+  ],
+  "result": false
+ },
+ {
+  "name": "endswith",
+  "args": [
+   "日本語",
+   "語"
+  ],
+  "result": true
+ },
+ {
+  "name": "indexof",
+  "args": [
+   "abcabc",
+   "b"
+  ],
+  "result": 1
+ },
+ {
+  "name": "indexof",
+  "args": [
+   "abcabc",
+   "c"
+  ],
+  "result": 2
+ },
+ {
+  "name": "indexof",
+  "args": [
+   "abcabc",
+   "x"
+  ],
+  "result": -1
+ },
+ {
+  "name": "indexof",
+  "args": [
+   "abc",
+   ""
+  ],
+  "error": "p.rego:1: eval_builtin_error: indexof: empty search character"
+ },
+ {
+  "name": "indexof",
+  "args": [
+   "",
+   ""
+  ],
+  "error": "p.rego:1: eval_builtin_error: indexof: empty search character"
+ },
+ {
+  "name": "indexof",
+  "args": [
+   "",
+   "a"
+  ],
+  "result": -1
+ },
+ {
+  "name": "indexof",
+  "args": [
+   "aaaa",
+   "aa"
+  ],
+  "result": 0
+ },
+ {
+  "name": "indexof",
+  "args": [
+   "héllo wörld",
+   "ö"
+  ],
+  "result": 7
+ },
+ {
+  "name": "indexof",
+  "args": [
+   "héllo wörld",
+   "l"
+  ],
+  "result": 2
+ },
+ {
+  "name": "indexof",
+  "args": [
+   "日本語日本",
+   "本"
+  ],
+  "result": 1
+ },
+ {
+  "name": "indexof",
+  "args": [
+   "日本語日本",
+   "日本"
+  ],
+  "result": 0
+ },
+ {
+  "name": "indexof",
+  "args": [
+   "ab",
+   "abc"
+  ],
+  "result": -1
+ },
+ {
+  "name": "indexof",
+  "args": [
+   "é",
+   "é"
+  ],
+  "result": 0
+ },
+ {
+  "name": "indexof",
+  "args": [
+   "xéx",
+   "x"
+  ],
+  "result": 0
+ },
+ {
+  "name": "indexof",
+  "args": [
+   "aéaéa",
+   "aéa"
+  ],
+  "result": 0
+ },
+ {
+  "name": "indexof",
+  "args": [
+   "🙂a🙂",
+   "a"
+  ],
+  "result": 1
+ },
+ {
+  "name": "indexof_n",
+  "args": [
+   "abcabc",
+   "b"
+  ],
+  "result": [
+   1,
+   4
+  ]
+ },
+ {
+  "name": "indexof_n",
+  "args": [
+   "abcabc",
+   "c"
+  ],
+  "result": [
+   2,
+   5
+  ]
+ },
+ {
+  "name": "indexof_n",
+  "args": [
+   "abcabc",
+   "x"
+  ],
+  "result": []
+ },
+ {
+  "name": "indexof_n",
+  "args": [
+   "abc",
+   ""
+  ],
+  "error": "p.rego:1: eval_builtin_error: indexof_n: empty search character"
+ },
+ {
+  "name": "indexof_n",
+  "args": [
+   "",
+   ""
+  ],
+  "error": "p.rego:1: eval_builtin_error: indexof_n: empty search character"
+ },
+ {
+  "name": "indexof_n",
+  "args": [
+   "",
+   "a"
+  ],
+  "result": []
+ },
+ {
+  "name": "indexof_n",
+  "args": [
+   "aaaa",
+   "aa"
+  ],
+  "result": [
+   0,
+   1,
+   2
+  ]
+ },
+ {
+  "name": "indexof_n",
+  "args": [
+   "héllo wörld",
+   "ö"
+  ],
+  "result": [
+   7
+  ]
+ },
+ {
+  "name": "indexof_n",
+  "args": [
+   "héllo wörld",
+   "l"
+  ],
+  "result": [
+   2,
+   3,
+   9
+  ]
+ },
+ {
+  "name": "indexof_n",
+  "args": [
+   "日本語日本",
+   "本"
+  ],
+  "result": [
+   1,
+   4
+  ]
+ },
+ {
+  "name": "indexof_n",
+  "args": [
+   "日本語日本",
+   "日本"
+  ],
+  "result": [
+   0,
+   3
+  ]
+ },
+ {
+  "name": "indexof_n",
+  "args": [
+   "ab",
+   "abc"
+  ],
+  "result": []
+ },
+ {
+  "name": "indexof_n",
+  "args": [
+   "é",
+   "é"
+  ],
+  "result": [
+   0
+  ]
+ },
+ {
+  "name": "indexof_n",
+  "args": [
+   "xéx",
+   "x"
+  ],
+  "result": [
+   0,
+   2
+  ]
+ },
+ {
+  "name": "indexof_n",
+  "args": [
+   "aéaéa",
+   "aéa"
+  ],
+  "result": [
+   0,
+   2
+  ]
+ },
+ {
+  "name": "indexof_n",
+  "args": [
+   "🙂a🙂",
+   "a"
+  ],
+  "result": [
+   1
+  ]
+ },
+ {
+  "name": "strings.count",
+  "args": [
+   "cheese",
+   "e"
+  ],
+  "result": 3
+ },
+ {
+  "name": "strings.count",
+  "args": [
+   "five",
+   ""
+  ],
+  "result": 5
+ },
+ {
+  "name": "strings.count",
+  "args": [
+   "",
+   ""
+  ],
+  "result": 1
+ },
+ {
+  "name": "strings.count",
+  "args": [
+   "héllo",
+   ""
+  ],
+  "result": 6
+ },
+ {
+  "name": "strings.count",
+  "args": [
+   "aaaa",
+   "aa"
+  ],
+  "result": 2
+ },
+ {
+  "name": "strings.count",
+  "args": [
+   "abc",
+   "x"
+  ],
+  "result": 0
+ },
+ {
+  "name": "strings.count",
+  "args": [
+   "ééé",
+   "é"
+  ],
+  "result": 3
+ },
+ {
+  "name": "strings.count",
+  "args": [
+   "日本日本",
+   "日本"
+  ],
+  "result": 2
+ },
+ {
+  "name": "substring",
+  "args": [
+   "abcdef",
+   0,
+   3
+  ],
+  "result": "abc"
+ },
+ {
+  "name": "substring",
+  "args": [
+   "abcdef",
+   2,
+   2
+  ],
+  "result": "cd"
+ },
+ {
+  "name": "substring",
+  "args": [
+   "abcdef",
+   2,
+   -1
+  ],
+  "result": "cdef"
+ },
+ {
+  "name": "substring",
+  "args": [
+   "abcdef",
+   2,
+   100
+  ],
+  "result": "cdef"
+ },
+ {
+  "name": "substring",
+  "args": [
+   "abcdef",
+   6,
+   1
+  ],
+  "result": ""
+ },
+ {
+  "name": "substring",
+  "args": [
+   "abcdef",
+   10,
+   1
+  ],
+  "result": ""
+ },
+ {
+  "name": "substring",
+  "args": [
+   "abcdef",
+   0,
+   0
+  ],
+  "result": ""
+ },
+ {
+  "name": "substring",
+  "args": [
+   "abcdef",
+   0,
+   6
+  ],
+  "result": "abcdef"
+ },
+ {
+  "name": "substring",
+  "args": [
+   "abcdef",
+   0,
+   7
+  ],
+  "result": "abcdef"
+ },
+ {
+  "name": "substring",
+  "args": [
+   "abcdef",
+   3,
+   0
+  ],
+  "result": ""
+ },
+ {
+  "name": "substring",
+  "args": [
+   "",
+   0,
+   1
+  ],
+  "result": ""
+ },
+ {
+  "name": "substring",
+  "args": [
+   "",
+   5,
+   -1
+  ],
+  "result": ""
+ },
+ {
+  "name": "substring",
+  "args": [
+   "héllo",
+   1,
+   3
+  ],
+  "result": "éll"
+ },
+ {
+  "name": "substring",
+  "args": [
+   "héllo",
+   0,
+   5
+  ],
+  "result": "héllo"
+ },
+ {
+  "name": "substring",
+  "args": [
+   "héllo",
+   0,
+   100
+  ],
+  "result": "héllo"
+ },
+ {
+  "name": "substring",
+  "args": [
+   "héllo",
+   4,
+   10
+  ],
+  "result": "o"
+ },
+ {
+  "name": "substring",
+  "args": [
+   "héllo",
+   5,
+   1
+  ],
+  "result": ""
+ },
+ {
+  "name": "substring",
+  "args": [
+   "héllo",
+   2,
+   -1
+  ],
+  "result": "llo"
+ },
+ {
+  "name": "substring",
+  "args": [
+   "日本語",
+   1,
+   1
+  ],
+  "result": "本"
+ },
+ {
+  "name": "substring",
+  "args": [
+   "abc",
+   -1,
+   1
+  ],
+  "error": "p.rego:1: eval_builtin_error: substring: negative offset"
+ },
+ {
+  "name": "substring",
+  "args": [
+   "abc",
+   0,
+   -5
+  ],
+  "result": "abc"
+ },
+ {
+  "name": "substring",
+  "args": [
+   "abc",
+   1.0,
+   1
+  ],
+  "error": "p.rego:1: eval_type_error: substring: operand 2 must be integer number but got floating-point number"
+ },
+ {
+  "name": "substring",
+  "args": [
+   "abc",
+   1,
+   2.0
+  ],
+  "error": "p.rego:1: eval_type_error: substring: operand 3 must be integer number but got floating-point number"
+ },
+ {
+  "name": "substring",
+  "args": [
+   "abc",
+   "1",
+   1
+  ],
+  "error": "p.rego:1: eval_type_error: substring: operand 2 must be number but got string"
+ },
+ {
+  "name": "substring",
+  "args": [
+   "abc",
+   1,
+   null
+  ],
+  "error": "p.rego:1: eval_type_error: substring: operand 3 must be number but got null"
+ },
+ {
+  "name": "substring",
+  "args": [
+   "",
+   -1,
+   1
+  ],
+  "error": "p.rego:1: eval_builtin_error: substring: negative offset"
+ },
+ {
+  "name": "substring",
+  "args": [
+   1,
+   0,
+   1
+  ],
+  "error": "p.rego:1: eval_type_error: substring: operand 1 must be string but got number"
+ },
+ {
+  "name": "substring",
+  "args": [
+   "abc",
+   1.5,
+   1
+  ],
+  "error": "p.rego:1: eval_type_error: substring: operand 2 must be integer number but got floating-point number"
+ },
+ {
+  "name": "substring",
+  "args": [
+   "abc",
+   1,
+   1.5
+  ],
+  "error": "p.rego:1: eval_type_error: substring: operand 3 must be integer number but got floating-point number"
+ },
+ {
+  "name": "substring",
+  "args": [
+   "abc",
+   1e2,
+   1
+  ],
+  "error": "p.rego:1: eval_type_error: substring: operand 2 must be integer number but got floating-point number"
+ },
+ {
+  "name": "substring",
+  "args": [
+   "abc",
+   0,
+   1e2
+  ],
+  "error": "p.rego:1: eval_type_error: substring: operand 3 must be integer number but got floating-point number"
+ },
+ {
+  "name": "lower",
+  "args": [
+   ""
+  ],
+  "result": ""
+ },
+ {
+  "name": "upper",
+  "args": [
+   ""
+  ],
+  "result": ""
+ },
+ {
+  "name": "lower",
+  "args": [
+   "abc"
+  ],
+  "result": "abc"
+ },
+ {
+  "name": "upper",
+  "args": [
+   "abc"
+  ],
+  "result": "ABC"
+ },
+ {
+  "name": "lower",
+  "args": [
+   "ABC"
+  ],
+  "result": "abc"
+ },
+ {
+  "name": "upper",
+  "args": [
+   "ABC"
+  ],
+  "result": "ABC"
+ },
+ {
+  "name": "lower",
+  "args": [
+   "MiXeD 123"
+  ],
+  "result": "mixed 123"
+ },
+ {
+  "name": "upper",
+  "args": [
+   "MiXeD 123"
+  ],
+  "result": "MIXED 123"
+ },
+ {
+  "name": "lower",
+  "args": [
+   "HÉLLO"
+  ],
+  "result": "héllo"
+ },
+ {
+  "name": "upper",
+  "args": [
+   "HÉLLO"
+  ],
+  "result": "HÉLLO"
+ },
+ {
+  "name": "lower",
+  "args": [
+   "héllo"
+  ],
+  "result": "héllo"
+ },
+ {
+  "name": "upper",
+  "args": [
+   "héllo"
+  ],
+  "result": "HÉLLO"
+ },
+ {
+  "name": "lower",
+  "args": [
+   "ΣΑΣ"
+  ],
+  "result": "σασ"
+ },
+ {
+  "name": "upper",
+  "args": [
+   "ΣΑΣ"
+  ],
+  "result": "ΣΑΣ"
+ },
+ {
+  "name": "lower",
+  "args": [
+   "σας"
+  ],
+  "result": "σας"
+ },
+ {
+  "name": "upper",
+  "args": [
+   "σας"
+  ],
+  "result": "ΣΑΣ"
+ },
+ {
+  "name": "lower",
+  "args": [
+   "İstanbul"
+  ],
+  "result": "istanbul"
+ },
+ {
+  "name": "upper",
+  "args": [
+   "İstanbul"
+  ],
+  "result": "İSTANBUL"
+ },
+ {
+  "name": "lower",
+  "args": [
+   "ß"
+  ],
+  "result": "ß"
+ },
+ {
+  "name": "upper",
+  "args": [
+   "ß"
+  ],
+  "result": "ß"
+ },
+ {
+  "name": "lower",
+  "args": [
+   "straße"
+  ],
+  "result": "straße"
+ },
+ {
+  "name": "upper",
+  "args": [
+   "straße"
+  ],
+  "result": "STRAßE"
+ },
+ {
+  "name": "lower",
+  "args": [
+   "ǅ"
+  ],
+  "result": "ǆ"
+ },
+ {
+  "name": "upper",
+  "args": [
+   "ǅ"
+  ],
+  "result": "Ǆ"
+ },
+ {
+  "name": "lower",
+  "args": [
+   "ǆ"
+  ],
+  "result": "ǆ"
+ },
+ {
+  "name": "upper",
+  "args": [
+   "ǆ"
+  ],
+  "result": "Ǆ"
+ },
+ {
+  "name": "lower",
+  "args": [
+   "Ǆ"
+  ],
+  "result": "ǆ"
+ },
+ {
+  "name": "upper",
+  "args": [
+   "Ǆ"
+  ],
+  "result": "Ǆ"
+ },
+ {
+  "name": "lower",
+  "args": [
+   "ﬃ"
+  ],
+  "result": "ﬃ"
+ },
+ {
+  "name": "upper",
+  "args": [
+   "ﬃ"
+  ],
+  "result": "ﬃ"
+ },
+ {
+  "name": "lower",
+  "args": [
+   "ᾀ"
+  ],
+  "result": "ᾀ"
+ },
+ {
+  "name": "upper",
+  "args": [
+   "ᾀ"
+  ],
+  "result": "ᾈ"
+ },
+ {
+  "name": "lower",
+  "args": [
+   "ᾈ"
+  ],
+  "result": "ᾀ"
+ },
+ {
+  "name": "upper",
+  "args": [
+   "ᾈ"
+  ],
+  "result": "ᾈ"
+ },
+ {
+  "name": "lower",
+  "args": [
+   "ᾳ"
+  ],
+  "result": "ᾳ"
+ },
+ {
+  "name": "upper",
+  "args": [
+   "ᾳ"
+  ],
+  "result": "ᾼ"
+ },
+ {
+  "name": "lower",
+  "args": [
+   "ῼ"
+  ],
+  "result": "ῳ"
+ },
+ {
+  "name": "upper",
+  "args": [
+   "ῼ"
+  ],
+  "result": "ῼ"
+ },
+ {
+  "name": "lower",
+  "args": [
+   "ŉ"
+  ],
+  "result": "ŉ"
+ },
+ {
+  "name": "upper",
+  "args": [
+   "ŉ"
+  ],
+  "result": "ŉ"
+ },
+ {
+  "name": "lower",
+  "args": [
+   "K"
+  ],
+  "result": "k"
+ },
+ {
+  "name": "upper",
+  "args": [
+   "K"
+  ],
+  "result": "K"
+ },
+ {
+  "name": "lower",
+  "args": [
+   "ſ"
+  ],
+  "result": "ſ"
+ },
+ {
+  "name": "upper",
+  "args": [
+   "ſ"
+  ],
+  "result": "S"
+ },
+ {
+  "name": "lower",
+  "args": [
+   "ı"
+  ],
+  "result": "ı"
+ },
+ {
+  "name": "upper",
+  "args": [
+   "ı"
+  ],
+  "result": "I"
+ },
+ {
+  "name": "lower",
+  "args": [
+   "ΐ"
+  ],
+  "result": "ΐ"
+ },
+ {
+  "name": "upper",
+  "args": [
+   "ΐ"
+  ],
+  "result": "ΐ"
+ },
+ {
+  "name": "lower",
+  "args": [
+   "Ⅻ"
+  ],
+  "result": "ⅻ"
+ },
+ {
+  "name": "upper",
+  "args": [
+   "Ⅻ"
+  ],
+  "result": "Ⅻ"
+ },
+ {
+  "name": "lower",
+  "args": [
+   "ⓐ"
+  ],
+  "result": "ⓐ"
+ },
+ {
+  "name": "upper",
+  "args": [
+   "ⓐ"
+  ],
+  "result": "Ⓐ"
+ },
+ {
+  "name": "lower",
+  "args": [
+   "𐐨"
+  ],
+  "result": "𐐨"
+ },
+ {
+  "name": "upper",
+  "args": [
+   "𐐨"
+  ],
+  "result": "𐐀"
+ },
+ {
+  "name": "lower",
+  "args": [
+   "𐐀"
+  ],
+  "result": "𐐨"
+ },
+ {
+  "name": "upper",
+  "args": [
+   "𐐀"
+  ],
+  "result": "𐐀"
+ },
+ {
+  "name": "lower",
+  "args": [
+   "ꞔ"
+  ],
+  "result": "ꞔ"
+ },
+ {
+  "name": "upper",
+  "args": [
+   "ꞔ"
+  ],
+  "result": "Ꞔ"
+ },
+ {
+  "name": "lower",
+  "args": [
+   "ǰ"
+  ],
+  "result": "ǰ"
+ },
+ {
+  "name": "upper",
+  "args": [
+   "ǰ"
+  ],
+  "result": "ǰ"
+ },
+ {
+  "name": "lower",
+  "args": [
+   "ͅ"
+  ],
+  "result": "ͅ"
+ },
+ {
+  "name": "upper",
+  "args": [
+   "ͅ"
+  ],
+  "result": "Ι"
+ },
+ {
+  "name": "lower",
+  "args": [
+   "ẞ"
+  ],
+  "result": "ß"
+ },
+ {
+  "name": "upper",
+  "args": [
+   "ẞ"
+  ],
+  "result": "ẞ"
+ },
+ {
+  "name": "split",
+  "args": [
+   "a,b,c",
+   ","
+  ],
+  "result": [
+   "a",
+   "b",
+   "c"
+  ]
+ },
+ {
+  "name": "split",
+  "args": [
+   "abc",
+   ","
+  ],
+  "result": [
+   "abc"
+  ]
+ },
+ {
+  "name": "split",
+  "args": [
+   "",
+   ","
+  ],
+  "result": [
+   ""
+  ]
+ },
+ {
+  "name": "split",
+  "args": [
+   "",
+   ""
+  ],
+  "result": []
+ },
+ {
+  "name": "split",
+  "args": [
+   "abc",
+   ""
+  ],
+  "result": [
+   "a",
+   "b",
+   "c"
+  ]
+ },
+ {
+  "name": "split",
+  "args": [
+   "héllo",
+   ""
+  ],
+  "result": [
+   "h",
+   "é",
+   "l",
+   "l",
+   "o"
+  ]
+ },
+ {
+  "name": "split",
+  "args": [
+   ",a,,b,",
+   ","
+  ],
+  "result": [
+   "",
+   "a",
+   "",
+   "b",
+   ""
+  ]
+ },
+ {
+  "name": "split",
+  "args": [
+   "a--b--c",
+   "--"
+  ],
+  "result": [
+   "a",
+   "b",
+   "c"
+  ]
+ },
+ {
+  "name": "split",
+  "args": [
+   "aaa",
+   "a"
+  ],
+  "result": [
+   "",
+   "",
+   "",
+   ""
+  ]
+ },
+ {
+  "name": "split",
+  "args": [
+   "aaa",
+   "aa"
+  ],
+  "result": [
+   "",
+   "a"
+  ]
+ },
+ {
+  "name": "split",
+  "args": [
+   "日本語",
+   "本"
+  ],
+  "result": [
+   "日",
+   "語"
+  ]
+ },
+ {
+  "name": "split",
+  "args": [
+   "abc",
+   "abc"
+  ],
+  "result": [
+   "",
+   ""
+  ]
+ },
+ {
+  "name": "replace",
+  "args": [
+   "abcabc",
+   "b",
+   "x"
+  ],
+  "result": "axcaxc"
+ },
+ {
+  "name": "replace",
+  "args": [
+   "abcabc",
+   "b",
+   ""
+  ],
+  "result": "acac"
+ },
+ {
+  "name": "replace",
+  "args": [
+   "abc",
+   "",
+   "-"
+  ],
+  "result": "-a-b-c-"
+ },
+ {
+  "name": "replace",
+  "args": [
+   "",
+   "",
+   "-"
+  ],
+  "result": "-"
+ },
+ {
+  "name": "replace",
+  "args": [
+   "",
+   "a",
+   "b"
+  ],
+  "result": ""
+ },
+ {
+  "name": "replace",
+  "args": [
+   "aaaa",
+   "aa",
+   "b"
+  ],
+  "result": "bb"
+ },
+ {
+  "name": "replace",
+  "args": [
+   "héllo",
+   "é",
+   "e"
+  ],
+  "result": "hello"
+ },
+ {
+  "name": "replace",
+  "args": [
+   "héllo",
+   "",
+   "-"
+  ],
+  "result": "-h-\ufffd-\ufffd-l-l-o-"
+ },
+ {
+  "name": "replace",
+  "args": [
+   "日本",
+   "",
+   "|"
+  ],
+  "result": "|\ufffd|\ufffd|\ufffd|\ufffd|\ufffd|\ufffd|"
+ },
+ {
+  "name": "replace",
+  "args": [
+   "abc",
+   "abc",
+   "xyz"
+  ],
+  "result": "xyz"
+ },
+ {
+  "name": "replace",
+  "args": [
+   "abc",
+   "x",
+   "y"
+  ],
+  "result": "abc"
+ },
+ {
+  "name": "replace",
+  "args": [
+   "aaa",
+   "a",
+   "aa"
+  ],
+  "result": "aaaaaa"
+ },
+ {
+  "name": "replace",
+  "args": [
+   "a.b.c",
+   ".",
+   ".."
+  ],
+  "result": "a..b..c"
+ },
+ {
+  "name": "replace",
+  "args": [
+   1,
+   "a",
+   "b"
+  ],
+  "error": "p.rego:1: eval_type_error: replace: operand 1 must be string but got number"
+ },
+ {
+  "name": "replace",
+  "args": [
+   "a",
+   1,
+   "b"
+  ],
+  "error": "p.rego:1: eval_type_error: replace: operand 2 must be string but got number"
+ },
+ {
+  "name": "replace",
+  "args": [
+   "a",
+   "b",
+   1
+  ],
+  "error": "p.rego:1: eval_type_error: replace: operand 3 must be string but got number"
+ },
+ {
+  "name": "replace",
+  "args": [
+   null,
+   "a",
+   "b"
+  ],
+  "error": "p.rego:1: eval_type_error: replace: operand 1 must be string but got null"
+ },
+ {
+  "name": "replace",
+  "args": [
+   "a",
+   null,
+   "b"
+  ],
+  "error": "p.rego:1: eval_type_error: replace: operand 2 must be string but got null"
+ },
+ {
+  "name": "replace",
+  "args": [
+   "a",
+   "b",
+   null
+  ],
+  "error": "p.rego:1: eval_type_error: replace: operand 3 must be string but got null"
+ },
+ {
+  "name": "replace",
+  "args": [
+   [
+    "a"
+   ],
+   "a",
+   "b"
+  ],
+  "error": "p.rego:1: eval_type_error: replace: operand 1 must be string but got array"
+ },
+ {
+  "name": "replace",
+  "args": [
+   "a",
+   [
+    "a"
+   ],
+   "b"
+  ],
+  "error": "p.rego:1: eval_type_error: replace: operand 2 must be string but got array"
+ },
+ {
+  "name": "replace",
+  "args": [
+   "a",
+   "b",
+   [
+    "a"
+   ]
+  ],
+  "error": "p.rego:1: eval_type_error: replace: operand 3 must be string but got array"
+ },
+ {
+  "name": "strings.replace_n",
+  "args": [
+   {
+    "a": "1",
+    "b": "2"
+   },
+   "abcab"
+  ],
+  "result": "12c12"
+ },
+ {
+  "name": "strings.replace_n",
+  "args": [
+   {
+    "a": "x",
+    "ab": "y"
+   },
+   "abab"
+  ],
+  "result": "xbxb"
+ },
+ {
+  "name": "strings.replace_n",
+  "args": [
+   {
+    "ab": "y",
+    "abc": "z"
+   },
+   "abcab"
+  ],
+  "result": "ycy"
+ },
+ {
+  "name": "strings.replace_n",
+  "args": [
+   {
+    "": "-",
+    "a": "x"
+   },
+   "abc"
+  ],
+  "result": "-x-b-c-"
+ },
+ {
+  "name": "strings.replace_n",
+  "args": [
+   {
+    "": "-"
+   },
+   "ab"
+  ],
+  "result": "-a-b-"
+ },
+ {
+  "name": "strings.replace_n",
+  "args": [
+   {
+    "": "-"
+   },
+   "é"
+  ],
+  "result": "-\ufffd-\ufffd-"
+ },
+ {
+  "name": "strings.replace_n",
+  "args": [
+   {
+    "b": "-",
+    "": "+"
+   },
+   "abc"
+  ],
+  "result": "+a+-+c+"
+ },
+ {
+  "name": "strings.replace_n",
+  "args": [
+   {},
+   "abc"
+  ],
+  "result": "abc"
+ },
+ {
+  "name": "strings.replace_n",
+  "args": [
+   {
+    "x": "y"
+   },
+   ""
+  ],
+  "result": ""
+ },
+ {
+  "name": "strings.replace_n",
+  "args": [
+   {
+    "é": "e",
+    "ö": "o"
+   },
+   "héllo wörld"
+  ],
+  "result": "hello world"
+ },
+ {
+  "name": "strings.replace_n",
+  "args": [
+   {
+    "a": "b",
+    "b": "a"
+   },
+   "abba"
+  ],
+  "result": "baab"
+ },
+ {
+  "name": "strings.replace_n",
+  "args": [
+   {
+    "aaa": "3",
+    "aa": "2",
+    "a": "1"
+   },
+   "aaaaaa"
+  ],
+  "result": "111111"
+ },
+ {
+  "name": "strings.replace_n",
+  "args": [
+   {
+    "a": 1
+   },
+   "abc"
+  ],
+  "error": "p.rego:1: eval_type_error: strings.replace_n: operand 1 non-string value found in pattern object"
+ },
+ {
+  "name": "strings.replace_n",
+  "args": [
+   {
+    "a": "1",
+    "b": null
+   },
+   "abc"
+  ],
+  "error": "p.rego:1: eval_type_error: strings.replace_n: operand 1 non-string value found in pattern object"
+ },
+ {
+  "name": "strings.replace_n",
+  "args": [
+   "x",
+   "abc"
+  ],
+  "error": "p.rego:1: eval_type_error: strings.replace_n: operand 1 must be object but got string"
+ },
+ {
+  "name": "strings.replace_n",
+  "args": [
+   {
+    "a": "b"
+   },
+   1
+  ],
+  "error": "p.rego:1: eval_type_error: strings.replace_n: operand 2 must be string but got number"
+ },
+ {
+  "name": "strings.replace_n",
+  "args": [
+   [
+    "a"
+   ],
+   1
+  ],
+  "error": "p.rego:1: eval_type_error: strings.replace_n: operand 1 must be object but got array"
+ },
+ {
+  "name": "trim",
+  "args": [
+   "  abc  ",
+   " "
+  ],
+  "result": "abc"
+ },
+ {
+  "name": "trim",
+  "args": [
+   "xxabcxx",
+   "x"
+  ],
+  "result": "abc"
+ },
+ {
+  "name": "trim",
+  "args": [
+   "abc",
+   ""
+  ],
+  "result": "abc"
+ },
+ {
+  "name": "trim",
+  "args": [
+   "",
+   "x"
+  ],
+  "result": ""
+ },
+ {
+  "name": "trim",
+  "args": [
+   "abcba",
+   "ab"
+  ],
+  "result": "c"
+ },
+ {
+  "name": "trim",
+  "args": [
+   "ééaéé",
+   "é"
+  ],
+  "result": "a"
+ },
+ {
+  "name": "trim",
+  "args": [
+   "aaa",
+   "a"
+  ],
+  "result": ""
+ },
+ {
+  "name": "trim",
+  "args": [
+   "日本日",
+   "日"
+  ],
+  "result": "本"
+ },
+ {
+  "name": "trim_left",
+  "args": [
+   "xxabcxx",
+   "x"
+  ],
+  "result": "abcxx"
+ },
+ {
+  "name": "trim_left",
+  "args": [
+   "abc",
+   "cba"
+  ],
+  "result": ""
+ },
+ {
+  "name": "trim_left",
+  "args": [
+   "abc",
+   ""
+  ],
+  "result": "abc"
+ },
+ {
+  "name": "trim_left",
+  "args": [
+   "éab",
+   "é"
+  ],
+  "result": "ab"
+ },
+ {
+  "name": "trim_right",
+  "args": [
+   "xxabcxx",
+   "x"
+  ],
+  "result": "xxabc"
+ },
+ {
+  "name": "trim_right",
+  "args": [
+   "abc",
+   "cba"
+  ],
+  "result": ""
+ },
+ {
+  "name": "trim_right",
+  "args": [
+   "abé",
+   "é"
+  ],
+  "result": "ab"
+ },
+ {
+  "name": "trim_right",
+  "args": [
+   "",
+   ""
+  ],
+  "result": ""
+ },
+ {
+  "name": "trim_prefix",
+  "args": [
+   "abcabc",
+   "abc"
+  ],
+  "result": "abc"
+ },
+ {
+  "name": "trim_prefix",
+  "args": [
+   "abc",
+   "x"
+  ],
+  "result": "abc"
+ },
+ {
+  "name": "trim_prefix",
+  "args": [
+   "abc",
+   ""
+  ],
+  "result": "abc"
+ },
+ {
+  "name": "trim_prefix",
+  "args": [
+   "abc",
+   "abc"
+  ],
+  "result": ""
+ },
+ {
+  "name": "trim_prefix",
+  "args": [
+   "ab",
+   "abc"
+  ],
+  "result": "ab"
+ },
+ {
+  "name": "trim_prefix",
+  "args": [
+   "éa",
+   "é"
+  ],
+  "result": "a"
+ },
+ {
+  "name": "trim_suffix",
+  "args": [
+   "abcabc",
+   "abc"
+  ],
+  "result": "abc"
+ },
+ {
+  "name": "trim_suffix",
+  "args": [
+   "abc",
+   "x"
+  ],
+  "result": "abc"
+ },
+ {
+  "name": "trim_suffix",
+  "args": [
+   "abc",
+   ""
+  ],
+  "result": "abc"
+ },
+ {
+  "name": "trim_suffix",
+  "args": [
+   "abc",
+   "abc"
+  ],
+  "result": ""
+ },
+ {
+  "name": "trim_suffix",
+  "args": [
+   "aé",
+   "é"
+  ],
+  "result": "a"
+ },
+ {
+  "name": "trim_space",
+  "args": [
+   ""
+  ],
+  "result": ""
+ },
+ {
+  "name": "trim_space",
+  "args": [
+   "  "
+  ],
+  "result": ""
+ },
+ {
+  "name": "trim_space",
+  "args": [
+   " a b "
+  ],
+  "result": "a b"
+ },
+ {
+  "name": "trim_space",
+  "args": [
+   "\t\n\u000b\f\r a \r\n"
+  ],
+  "result": "a"
+ },
+ {
+  "name": "trim_space",
+  "args": [
+   "a "
+  ],
+  "result": "a"
+ },
+ {
+  "name": "trim_space",
+  "args": [
+   "　a "
+  ],
+  "result": "a"
+ },
+ {
+  "name": "trim_space",
+  "args": [
+   "​a​"
+  ],
+  "result": "​a​"
+ },
+ {
+  "name": "trim_space",
+  "args": [
+   "᠎a"
+  ],
+  "result": "᠎a"
+ },
+ {
+  "name": "trim_space",
+  "args": [
+   "a\u2028\u2029"
+  ],
+  "result": "a"
+ },
+ {
+  "name": "trim_space",
+  "args": [
+   " a  "
+  ],
+  "result": "a"
+ },
+ {
+  "name": "trim_space",
+  "args": [
+   "abc"
+  ],
+  "result": "abc"
+ },
+ {
+  "name": "strings.reverse",
+  "args": [
+   ""
+  ],
+  "result": ""
+ },
+ {
+  "name": "strings.reverse",
+  "args": [
+   "a"
+  ],
+  "result": "a"
+ },
+ {
+  "name": "strings.reverse",
+  "args": [
+   "abc"
+  ],
+  "result": "cba"
+ },
+ {
+  "name": "strings.reverse",
+  "args": [
+   "héllo"
+  ],
+  "result": "olléh"
+ },
+ {
+  "name": "strings.reverse",
+  "args": [
+   "日本語"
+  ],
+  "result": "語本日"
+ },
+ {
+  "name": "strings.reverse",
+  "args": [
+   "🙂👍"
+  ],
+  "result": "👍🙂"
+ },
+ {
+  "name": "strings.reverse",
+  "args": [
+   "é"
+  ],
+  "result": "́e"
+ },
+ {
+  "name": "concat",
+  "args": [
+   ",",
+   [
+    "a",
+    "b",
+    "c"
+   ]
+  ],
+  "result": "a,b,c"
+ },
+ {
+  "name": "concat",
+  "args": [
+   "",
+   [
+    "a",
+    "b"
+   ]
+  ],
+  "result": "ab"
+ },
+ {
+  "name": "concat",
+  "args": [
+   "--",
+   [
+    "a",
+    "b",
+    "c"
+   ]
+  ],
+  "result": "a--b--c"
+ },
+ {
+  "name": "concat",
+  "args": [
+   ",",
+   []
+  ],
+  "result": ""
+ },
+ {
+  "name": "concat",
+  "args": [
+   ",",
+   [
+    "a"
+   ]
+  ],
+  "result": "a"
+ },
+ {
+  "name": "concat",
+  "args": [
+   ",",
+   {
+    "$set": []
+   }
+  ],
+  "result": ""
+ },
+ {
+  "name": "concat",
+  "args": [
+   ",",
+   {
+    "$set": [
+     "b",
+     "a",
+     "c"
+    ]
+   }
+  ],
+  "result": "a,b,c"
+ },
+ {
+  "name": "concat",
+  "args": [
+   ",",
+   {
+    "$set": [
+     "x"
+    ]
+   }
+  ],
+  "result": "x"
+ },
+ {
+  "name": "concat",
+  "args": [
+   "é",
+   [
+    "a",
+    "b"
+   ]
+  ],
+  "result": "aéb"
+ },
+ {
+  "name": "concat",
+  "args": [
+   ",",
+   [
+    1
+   ]
+  ],
+  "error": "p.rego:1: eval_type_error: concat: operand 2 must be array of strings but got array containing number"
+ },
+ {
+  "name": "concat",
+  "args": [
+   ",",
+   [
+    "a",
+    1
+   ]
+  ],
+  "error": "p.rego:1: eval_type_error: concat: operand 2 must be array of strings but got array containing number"
+ },
+ {
+  "name": "concat",
+  "args": [
+   ",",
+   {
+    "$set": [
+     1,
+     "a"
+    ]
+   }
+  ],
+  "error": "p.rego:1: eval_type_error: concat: operand 2 must be set of strings but got set containing number"
+ },
+ {
+  "name": "concat",
+  "args": [
+   ",",
+   [
+    null,
+    "a"
+   ]
+  ],
+  "error": "p.rego:1: eval_type_error: concat: operand 2 must be array of strings but got array containing null"
+ },
+ {
+  "name": "concat",
+  "args": [
+   1,
+   [
+    "a"
+   ]
+  ],
+  "error": "p.rego:1: eval_type_error: concat: operand 1 must be string but got number"
+ },
+ {
+  "name": "concat",
+  "args": [
+   ",",
+   "abc"
+  ],
+  "error": "p.rego:1: eval_type_error: concat: operand 2 must be one of {set, array} but got string"
+ },
+ {
+  "name": "concat",
+  "args": [
+   ",",
+   {
+    "a": "b"
+   }
+  ],
+  "error": "p.rego:1: eval_type_error: concat: operand 2 must be one of {set, array} but got object"
+ },
+ {
+  "name": "concat",
+  "args": [
+   null,
+   null
+  ],
+  "error": "p.rego:1: eval_type_error: concat: operand 1 must be string but got null"
+ },
+ {
+  "name": "concat",
+  "args": [
+   ",",
+   {
+    "$set": [
+     {
+      "$set": [
+       "a"
+      ]
+     }
+    ]
+   }
+  ],
+  "error": "p.rego:1: eval_type_error: concat: operand 2 must be set of strings but got set containing set"
+ },
+ {
+  "name": "concat",
+  "args": [
+   ",",
+   [
+    [
+     "a"
+    ]
+   ]
+  ],
+  "error": "p.rego:1: eval_type_error: concat: operand 2 must be array of strings but got array containing array"
+ },
+ {
+  "name": "strings.any_prefix_match",
+  "args": [
+   "foobar",
+   "foo"
+  ],
+  "result": true
+ },
+ {
+  "name": "strings.any_prefix_match",
+  "args": [
+   "foobar",
+   "bar"
+  ],
+  "result": false
+ },
+ {
+  "name": "strings.any_prefix_match",
+  "args": [
+   "foobar",
+   ""
+  ],
+  "result": true
+ },
+ {
+  "name": "strings.any_prefix_match",
+  "args": [
+   "",
+   ""
+  ],
+  "result": true
+ },
+ {
+  "name": "strings.any_prefix_match",
+  "args": [
+   "",
+   "a"
+  ],
+  "result": false
+ },
+ {
+  "name": "strings.any_prefix_match",
+  "args": [
+   [
+    "foobar",
+    "baz"
+   ],
+   "ba"
+  ],
+  "result": true
+ },
+ {
+  "name": "strings.any_prefix_match",
+  "args": [
+   [
+    "foobar",
+    "baz"
+   ],
+   [
+    "x",
+    "fo"
+   ]
+  ],
+  "result": true
+ },
+ {
+  "name": "strings.any_prefix_match",
+  "args": [
+   {
+    "$set": [
+     "foobar",
+     "baz"
+    ]
+   },
+   {
+    "$set": [
+     "az",
+     "x"
+    ]
+   }
+  ],
+  "result": false
+ },
+ {
+  "name": "strings.any_prefix_match",
+  "args": [
+   [],
+   "a"
+  ],
+  "result": false
+ },
+ {
+  "name": "strings.any_prefix_match",
+  "args": [
+   "a",
+   []
+  ],
+  "result": false
+ },
+ {
+  "name": "strings.any_prefix_match",
+  "args": [
+   [],
+   []
+  ],
+  "result": false
+ },
+ {
+  "name": "strings.any_prefix_match",
+  "args": [
+   [
+    ""
+   ],
+   [
+    ""
+   ]
+  ],
+  "result": true
+ },
+ {
+  "name": "strings.any_prefix_match",
+  "args": [
+   [
+    "abc"
+   ],
+   [
+    ""
+   ]
+  ],
+  "result": true
+ },
+ {
+  "name": "strings.any_prefix_match",
+  "args": [
+   [
+    ""
+   ],
+   [
+    "a"
+   ]
+  ],
+  "result": false
+ },
+ {
+  "name": "strings.any_prefix_match",
+  "args": [
+   [
+    "a",
+    "b"
+   ],
+   [
+    "c",
+    "d"
+   ]
+  ],
+  "result": false
+ },
+ {
+  "name": "strings.any_prefix_match",
+  "args": [
+   "héllo",
+   "hé"
+  ],
+  "result": true
+ },
+ {
+  "name": "strings.any_prefix_match",
+  "args": [
+   "héllo",
+   "lo"
+  ],
+  "result": false
+ },
+ {
+  "name": "strings.any_prefix_match",
+  "args": [
+   [
+    "日本語"
+   ],
+   [
+    "日",
+    "語"
+   ]
+  ],
+  "result": true
+ },
+ {
+  "name": "strings.any_prefix_match",
+  "args": [
+   [
+    "abcdefghijklmnopqrstuvwxyz",
+    "abcdefghijklmnopqrstuvwxyz0"
+   ],
+   [
+    "abcdefghijklmnopqrstuvwxyz0"
+   ]
+  ],
+  "result": true
+ },
+ {
+  "name": "strings.any_prefix_match",
+  "args": [
+   [
+    "abcdefghijklmnopqrstuvwxyz",
+    "abcdefghijklmnop"
+   ],
+   [
+    "abcdefghijklmnopq",
+    "zz"
+   ]
+  ],
+  "result": true
+ },
+ {
+  "name": "strings.any_prefix_match",
+  "args": [
+   1,
+   "a"
+  ],
+  "error": "p.rego:1: eval_type_error: strings.any_prefix_match: operand 1 must be one of {string, set, array} but got number"
+ },
+ {
+  "name": "strings.any_prefix_match",
+  "args": [
+   "a",
+   1
+  ],
+  "error": "p.rego:1: eval_type_error: strings.any_prefix_match: operand 2 must be one of {string, set, array} but got number"
+ },
+ {
+  "name": "strings.any_prefix_match",
+  "args": [
+   null,
+   null
+  ],
+  "error": "p.rego:1: eval_type_error: strings.any_prefix_match: operand 1 must be one of {string, set, array} but got null"
+ },
+ {
+  "name": "strings.any_prefix_match",
+  "args": [
+   [
+    1
+   ],
+   "a"
+  ],
+  "error": "p.rego:1: eval_type_error: strings.any_prefix_match: operand 1 must be array of strings but got array containing number"
+ },
+ {
+  "name": "strings.any_prefix_match",
+  "args": [
+   "a",
+   [
+    "a",
+    1
+   ]
+  ],
+  "error": "p.rego:1: eval_type_error: strings.any_prefix_match: operand 2 must be array of strings but got array containing number"
+ },
+ {
+  "name": "strings.any_prefix_match",
+  "args": [
+   {
+    "$set": [
+     1
+    ]
+   },
+   "a"
+  ],
+  "error": "p.rego:1: eval_type_error: strings.any_prefix_match: operand 1 must be set of strings but got set containing number"
+ },
+ {
+  "name": "strings.any_prefix_match",
+  "args": [
+   {
+    "a": "b"
+   },
+   "a"
+  ],
+  "error": "p.rego:1: eval_type_error: strings.any_prefix_match: operand 1 must be one of {string, set, array} but got object"
+ },
+ {
+  "name": "strings.any_prefix_match",
+  "args": [
+   "a",
+   {
+    "a": "b"
+   }
+  ],
+  "error": "p.rego:1: eval_type_error: strings.any_prefix_match: operand 2 must be one of {string, set, array} but got object"
+ },
+ {
+  "name": "strings.any_suffix_match",
+  "args": [
+   "foobar",
+   "foo"
+  ],
+  "result": false
+ },
+ {
+  "name": "strings.any_suffix_match",
+  "args": [
+   "foobar",
+   "bar"
+  ],
+  "result": true
+ },
+ {
+  "name": "strings.any_suffix_match",
+  "args": [
+   "foobar",
+   ""
+  ],
+  "result": true
+ },
+ {
+  "name": "strings.any_suffix_match",
+  "args": [
+   "",
+   ""
+  ],
+  "result": true
+ },
+ {
+  "name": "strings.any_suffix_match",
+  "args": [
+   "",
+   "a"
+  ],
+  "result": false
+ },
+ {
+  "name": "strings.any_suffix_match",
+  "args": [
+   [
+    "foobar",
+    "baz"
+   ],
+   "ba"
+  ],
+  "result": false
+ },
+ {
+  "name": "strings.any_suffix_match",
+  "args": [
+   [
+    "foobar",
+    "baz"
+   ],
+   [
+    "x",
+    "fo"
+   ]
+  ],
+  "result": false
+ },
+ {
+  "name": "strings.any_suffix_match",
+  "args": [
+   {
+    "$set": [
+     "foobar",
+     "baz"
+    ]
+   },
+   {
+    "$set": [
+     "az",
+     "x"
+    ]
+   }
+  ],
+  "result": true
+ },
+ {
+  "name": "strings.any_suffix_match",
+  "args": [
+   [],
+   "a"
+  ],
+  "result": false
+ },
+ {
+  "name": "strings.any_suffix_match",
+  "args": [
+   "a",
+   []
+  ],
+  "result": false
+ },
+ {
+  "name": "strings.any_suffix_match",
+  "args": [
+   [],
+   []
+  ],
+  "result": false
+ },
+ {
+  "name": "strings.any_suffix_match",
+  "args": [
+   [
+    ""
+   ],
+   [
+    ""
+   ]
+  ],
+  "result": true
+ },
+ {
+  "name": "strings.any_suffix_match",
+  "args": [
+   [
+    "abc"
+   ],
+   [
+    ""
+   ]
+  ],
+  "result": true
+ },
+ {
+  "name": "strings.any_suffix_match",
+  "args": [
+   [
+    ""
+   ],
+   [
+    "a"
+   ]
+  ],
+  "result": false
+ },
+ {
+  "name": "strings.any_suffix_match",
+  "args": [
+   [
+    "a",
+    "b"
+   ],
+   [
+    "c",
+    "d"
+   ]
+  ],
+  "result": false
+ },
+ {
+  "name": "strings.any_suffix_match",
+  "args": [
+   "héllo",
+   "hé"
+  ],
+  "result": false
+ },
+ {
+  "name": "strings.any_suffix_match",
+  "args": [
+   "héllo",
+   "lo"
+  ],
+  "result": true
+ },
+ {
+  "name": "strings.any_suffix_match",
+  "args": [
+   [
+    "日本語"
+   ],
+   [
+    "日",
+    "語"
+   ]
+  ],
+  "result": true
+ },
+ {
+  "name": "strings.any_suffix_match",
+  "args": [
+   [
+    "abcdefghijklmnopqrstuvwxyz",
+    "abcdefghijklmnopqrstuvwxyz0"
+   ],
+   [
+    "abcdefghijklmnopqrstuvwxyz0"
+   ]
+  ],
+  "result": true
+ },
+ {
+  "name": "strings.any_suffix_match",
+  "args": [
+   [
+    "abcdefghijklmnopqrstuvwxyz",
+    "abcdefghijklmnop"
+   ],
+   [
+    "abcdefghijklmnopq",
+    "zz"
+   ]
+  ],
+  "result": false
+ },
+ {
+  "name": "strings.any_suffix_match",
+  "args": [
+   1,
+   "a"
+  ],
+  "error": "p.rego:1: eval_type_error: strings.any_suffix_match: operand 1 must be one of {string, set, array} but got number"
+ },
+ {
+  "name": "strings.any_suffix_match",
+  "args": [
+   "a",
+   1
+  ],
+  "error": "p.rego:1: eval_type_error: strings.any_suffix_match: operand 2 must be one of {string, set, array} but got number"
+ },
+ {
+  "name": "strings.any_suffix_match",
+  "args": [
+   null,
+   null
+  ],
+  "error": "p.rego:1: eval_type_error: strings.any_suffix_match: operand 1 must be one of {string, set, array} but got null"
+ },
+ {
+  "name": "strings.any_suffix_match",
+  "args": [
+   [
+    1
+   ],
+   "a"
+  ],
+  "error": "p.rego:1: eval_type_error: strings.any_suffix_match: operand 1 must be array of strings but got array containing number"
+ },
+ {
+  "name": "strings.any_suffix_match",
+  "args": [
+   "a",
+   [
+    "a",
+    1
+   ]
+  ],
+  "error": "p.rego:1: eval_type_error: strings.any_suffix_match: operand 2 must be array of strings but got array containing number"
+ },
+ {
+  "name": "strings.any_suffix_match",
+  "args": [
+   {
+    "$set": [
+     1
+    ]
+   },
+   "a"
+  ],
+  "error": "p.rego:1: eval_type_error: strings.any_suffix_match: operand 1 must be set of strings but got set containing number"
+ },
+ {
+  "name": "strings.any_suffix_match",
+  "args": [
+   {
+    "a": "b"
+   },
+   "a"
+  ],
+  "error": "p.rego:1: eval_type_error: strings.any_suffix_match: operand 1 must be one of {string, set, array} but got object"
+ },
+ {
+  "name": "strings.any_suffix_match",
+  "args": [
+   "a",
+   {
+    "a": "b"
+   }
+  ],
+  "error": "p.rego:1: eval_type_error: strings.any_suffix_match: operand 2 must be one of {string, set, array} but got object"
+ },
+ {
+  "name": "format_int",
+  "args": [
+   10,
+   2
+  ],
+  "result": "1010"
+ },
+ {
+  "name": "format_int",
+  "args": [
+   10,
+   8
+  ],
+  "result": "12"
+ },
+ {
+  "name": "format_int",
+  "args": [
+   10,
+   10
+  ],
+  "result": "10"
+ },
+ {
+  "name": "format_int",
+  "args": [
+   10,
+   16
+  ],
+  "result": "a"
+ },
+ {
+  "name": "format_int",
+  "args": [
+   255,
+   16
+  ],
+  "result": "ff"
+ },
+ {
+  "name": "format_int",
+  "args": [
+   -255,
+   16
+  ],
+  "result": "-ff"
+ },
+ {
+  "name": "format_int",
+  "args": [
+   -10,
+   2
+  ],
+  "result": "-1010"
+ },
+ {
+  "name": "format_int",
+  "args": [
+   0,
+   2
+  ],
+  "result": "0"
+ },
+ {
+  "name": "format_int",
+  "args": [
+   0,
+   16
+  ],
+  "result": "0"
+ },
+ {
+  "name": "format_int",
+  "args": [
+   3.7,
+   10
+  ],
+  "result": "3"
+ },
+ {
+  "name": "format_int",
+  "args": [
+   -3.7,
+   10
+  ],
+  "result": "-3"
+ },
+ {
+  "name": "format_int",
+  "args": [
+   3.7,
+   2
+  ],
+  "result": "11"
+ },
+ {
+  "name": "format_int",
+  "args": [
+   -3.7,
+   16
+  ],
+  "result": "-3"
+ },
+ {
+  "name": "format_int",
+  "args": [
+   1e3,
+   10
+  ],
+  "result": "1000"
+ },
+ {
+  "name": "format_int",
+  "args": [
+   1e3,
+   16
+  ],
+  "result": "3e8"
+ },
+ {
+  "name": "format_int",
+  "args": [
+   0.5,
+   10
+  ],
+  "result": "0"
+ },
+ {
+  "name": "format_int",
+  "args": [
+   -0.5,
+   10
+  ],
+  "result": "0"
+ },
+ {
+  "name": "format_int",
+  "args": [
+   123456789012345678901234567890,
+   10
+  ],
+  "result": "123456789012345678899921813504"
+ },
+ {
+  "name": "format_int",
+  "args": [
+   123456789012345678901234567890,
+   16
+  ],
+  "result": "18ee90ff6c373e0ee00000000"
+ },
+ {
+  "name": "format_int",
+  "args": [
+   -123456789012345678901234567890,
+   2
+  ],
+  "result": "-1100011101110100100001111111101101100001101110011111000001110111000000000000000000000000000000000"
+ },
+ {
+  "name": "format_int",
+  "args": [
+   10,
+   3
+  ],
+  "error": "p.rego:1: eval_type_error: format_int: operand 2 must be one of {2, 8, 10, 16}"
+ },
+ {
+  "name": "format_int",
+  "args": [
+   10,
+   2.0
+  ],
+  "error": "p.rego:1: eval_type_error: format_int: operand 2 must be one of {2, 8, 10, 16}"
+ },
+ {
+  "name": "format_int",
+  "args": [
+   10,
+   10.0
+  ],
+  "error": "p.rego:1: eval_type_error: format_int: operand 2 must be one of {2, 8, 10, 16}"
+ },
+ {
+  "name": "format_int",
+  "args": [
+   10,
+   1e1
+  ],
+  "error": "p.rego:1: eval_type_error: format_int: operand 2 must be one of {2, 8, 10, 16}"
+ },
+ {
+  "name": "format_int",
+  "args": [
+   10,
+   -2
+  ],
+  "error": "p.rego:1: eval_type_error: format_int: operand 2 must be one of {2, 8, 10, 16}"
+ },
+ {
+  "name": "format_int",
+  "args": [
+   10,
+   16.5
+  ],
+  "error": "p.rego:1: eval_type_error: format_int: operand 2 must be one of {2, 8, 10, 16}"
+ },
+ {
+  "name": "format_int",
+  "args": [
+   "1",
+   10
+  ],
+  "error": "p.rego:1: eval_type_error: format_int: operand 1 must be number but got string"
+ },
+ {
+  "name": "format_int",
+  "args": [
+   1,
+   "10"
+  ],
+  "error": "p.rego:1: eval_type_error: format_int: operand 2 must be number but got string"
+ },
+ {
+  "name": "format_int",
+  "args": [
+   null,
+   2
+  ],
+  "error": "p.rego:1: eval_type_error: format_int: operand 1 must be number but got null"
+ },
+ {
+  "name": "format_int",
+  "args": [
+   1,
+   null
+  ],
+  "error": "p.rego:1: eval_type_error: format_int: operand 2 must be number but got null"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%d",
+   [
+    1
+   ]
+  ],
+  "result": "1"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%d",
+   [
+    -42
+   ]
+  ],
+  "result": "-42"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%d",
+   [
+    1.5
+   ]
+  ],
+  "result": "%!d(float64=1.5)"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%d",
+   [
+    "a"
+   ]
+  ],
+  "result": "%!d(string=a)"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%d",
+   [
+    12345678901234567890123
+   ]
+  ],
+  "result": "12345678901234567890123"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "hello %s",
+   [
+    "world"
+   ]
+  ],
+  "result": "hello world"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%s",
+   [
+    1
+   ]
+  ],
+  "result": "%!s(int=1)"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%s",
+   [
+    1.5
+   ]
+  ],
+  "result": "%!s(float64=1.5)"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%s",
+   [
+    [
+     1,
+     "a"
+    ]
+   ]
+  ],
+  "result": "[1, \"a\"]"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%s",
+   [
+    {
+     "a": 1
+    }
+   ]
+  ],
+  "result": "{\"a\": 1}"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%s",
+   [
+    {
+     "$set": [
+      1,
+      2
+     ]
+    }
+   ]
+  ],
+  "result": "{1, 2}"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    null
+   ]
+  ],
+  "result": "null"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    true
+   ]
+  ],
+  "result": "true"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    false
+   ]
+  ],
+  "result": "false"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    {
+     "$set": []
+    }
+   ]
+  ],
+  "result": "set()"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    {}
+   ]
+  ],
+  "result": "{}"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    []
+   ]
+  ],
+  "result": "[]"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    [
+     null,
+     true,
+     1.5,
+     "x\n"
+    ]
+   ]
+  ],
+  "result": "[null, true, 1.5, \"x\\n\"]"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    {
+     "b": [
+      1,
+      {
+       "c": {
+        "$set": [
+         "x"
+        ]
+       }
+      }
+     ],
+     "a": null
+    }
+   ]
+  ],
+  "result": "{\"a\": null, \"b\": [1, {\"c\": {\"x\"}}]}"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v %v %v %v",
+   [
+    1,
+    1.5,
+    "s",
+    123456789012345678901234567890
+   ]
+  ],
+  "result": "1 1.5 s 123456789012345678901234567890"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    1e21
+   ]
+  ],
+  "result": "1e+21"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    1e20
+   ]
+  ],
+  "result": "1e+20"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    123456789.0
+   ]
+  ],
+  "result": "1.23456789e+08"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    1e-06
+   ]
+  ],
+  "result": "1e-06"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    1e-07
+   ]
+  ],
+  "result": "1e-07"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    100.0
+   ]
+  ],
+  "result": "100"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    1e400
+   ]
+  ],
+  "result": "1e400"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    -1e400
+   ]
+  ],
+  "result": "-1e400"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%d",
+   [
+    1e400
+   ]
+  ],
+  "result": "%!d(string=1e400)"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    1e-400
+   ]
+  ],
+  "result": "0"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    -0.0
+   ]
+  ],
+  "result": "-0"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    0.1
+   ]
+  ],
+  "result": "0.1"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    1.0
+   ]
+  ],
+  "result": "1"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    -1.0
+   ]
+  ],
+  "result": "-1"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    2.5e-10
+   ]
+  ],
+  "result": "2.5e-10"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    1.7976931348623157e+308
+   ]
+  ],
+  "result": "1.7976931348623157e+308"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    5e-324
+   ]
+  ],
+  "result": "5e-324"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%f",
+   [
+    3.14159
+   ]
+  ],
+  "result": "3.141590"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.2f",
+   [
+    3.14159
+   ]
+  ],
+  "result": "3.14"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%8.3f",
+   [
+    3.14159
+   ]
+  ],
+  "result": "   3.142"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%-8.3f|",
+   [
+    3.14159
+   ]
+  ],
+  "result": "3.142   |"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%08.3f",
+   [
+    -3.14159
+   ]
+  ],
+  "result": "-003.142"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%+.1f",
+   [
+    2.25
+   ]
+  ],
+  "result": "+2.2"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.1f",
+   [
+    0.25
+   ]
+  ],
+  "result": "0.2"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.1f",
+   [
+    0.35
+   ]
+  ],
+  "result": "0.3"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.0f",
+   [
+    0.5
+   ]
+  ],
+  "result": "0"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.0f",
+   [
+    1.5
+   ]
+  ],
+  "result": "2"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.0f",
+   [
+    2.5
+   ]
+  ],
+  "result": "2"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%f",
+   [
+    1
+   ]
+  ],
+  "result": "%!f(int=1)"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%f",
+   [
+    "x"
+   ]
+  ],
+  "result": "%!f(string=x)"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%f",
+   [
+    12345678901234567890123
+   ]
+  ],
+  "result": "%!f(big.Int=12345678901234567890123)"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.3f",
+   [
+    1e+100
+   ]
+  ],
+  "result": "10000000000000000159028911097599180468360808563945281389781327557747838772170381060813469985856815104.000"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.30f",
+   [
+    0.1
+   ]
+  ],
+  "result": "0.100000000000000005551115123126"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%e",
+   [
+    1234.5678
+   ]
+  ],
+  "result": "1.234568e+03"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%E",
+   [
+    1234.5678
+   ]
+  ],
+  "result": "1.234568E+03"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.2e",
+   [
+    1234.5678
+   ]
+  ],
+  "result": "1.23e+03"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%e",
+   [
+    0.0
+   ]
+  ],
+  "result": "0.000000e+00"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%e",
+   [
+    1e-300
+   ]
+  ],
+  "result": "1.000000e-300"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.20e",
+   [
+    0.1
+   ]
+  ],
+  "result": "1.00000000000000005551e-01"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%g",
+   [
+    1234.5678
+   ]
+  ],
+  "result": "1234.5678"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%G",
+   [
+    1e-10
+   ]
+  ],
+  "result": "1E-10"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.3g",
+   [
+    1234.5678
+   ]
+  ],
+  "result": "1.23e+03"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.10g",
+   [
+    0.3333333333333333
+   ]
+  ],
+  "result": "0.3333333333"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%g",
+   [
+    1000000.0
+   ]
+  ],
+  "result": "1e+06"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%g",
+   [
+    100000.0
+   ]
+  ],
+  "result": "100000"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.0g",
+   [
+    1.5
+   ]
+  ],
+  "result": "2"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.1g",
+   [
+    0.15
+   ]
+  ],
+  "result": "0.1"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#g",
+   [
+    1.0
+   ]
+  ],
+  "result": "1.00000"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#g",
+   [
+    1.5
+   ]
+  ],
+  "result": "1.50000"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#.3g",
+   [
+    1.0
+   ]
+  ],
+  "result": "1.00"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#v",
+   [
+    1.5
+   ]
+  ],
+  "result": "1.5"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#f",
+   [
+    1.0
+   ]
+  ],
+  "result": "1.000000"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#e",
+   [
+    1.0
+   ]
+  ],
+  "result": "1.000000e+00"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#.0f",
+   [
+    1.0
+   ]
+  ],
+  "result": "1."
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#.0e",
+   [
+    1.0
+   ]
+  ],
+  "result": "1.e+00"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#g",
+   [
+    0.0
+   ]
+  ],
+  "result": "0.00000"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#g",
+   [
+    123456789.0
+   ]
+  ],
+  "result": "1.23456789e+08"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#v",
+   [
+    1.0
+   ]
+  ],
+  "result": "1"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%x",
+   [
+    1.5
+   ]
+  ],
+  "result": "0x1.8p+00"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%X",
+   [
+    1.5
+   ]
+  ],
+  "result": "0X1.8P+00"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%x",
+   [
+    -0.1
+   ]
+  ],
+  "result": "-0x1.999999999999ap-04"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.2x",
+   [
+    0.3333333333333333
+   ]
+  ],
+  "result": "0x1.55p-02"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#x",
+   [
+    1.0
+   ]
+  ],
+  "result": "0x1.0000p+00"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#X",
+   [
+    2.0
+   ]
+  ],
+  "result": "0X1.P+01"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%x",
+   [
+    0.0
+   ]
+  ],
+  "result": "0x0p+00"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.0x",
+   [
+    1.5
+   ]
+  ],
+  "result": "0x1p+01"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.1x",
+   [
+    1.96875
+   ]
+  ],
+  "result": "0x1.0p+01"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%x",
+   [
+    5e-324
+   ]
+  ],
+  "result": "0x1p-1074"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%x",
+   [
+    1e+300
+   ]
+  ],
+  "result": "0x1.7e43c8800759cp+996"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#.3x",
+   [
+    1.0
+   ]
+  ],
+  "result": "0x1.000p+00"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#.3X",
+   [
+    3.75
+   ]
+  ],
+  "result": "0X1.E00P+01"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%b",
+   [
+    1.0
+   ]
+  ],
+  "result": "4503599627370496p-52"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%b",
+   [
+    5e-324
+   ]
+  ],
+  "result": "1p-1074"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%b",
+   [
+    -2.5
+   ]
+  ],
+  "result": "-5629499534213120p-51"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%F",
+   [
+    1.5
+   ]
+  ],
+  "result": "1.500000"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "% f",
+   [
+    1.5
+   ]
+  ],
+  "result": " 1.500000"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "% .2f",
+   [
+    -1.5
+   ]
+  ],
+  "result": "-1.50"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%+f",
+   [
+    1.5
+   ]
+  ],
+  "result": "+1.500000"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%+ f",
+   [
+    1.5
+   ]
+  ],
+  "result": "+1.500000"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%010.2f",
+   [
+    1.5
+   ]
+  ],
+  "result": "0000001.50"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%-010.2f|",
+   [
+    1.5
+   ]
+  ],
+  "result": "1.50      |"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%+010.2f",
+   [
+    1.5
+   ]
+  ],
+  "result": "+000001.50"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "% 010.2f",
+   [
+    1.5
+   ]
+  ],
+  "result": " 000001.50"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%10e",
+   [
+    1.5
+   ]
+  ],
+  "result": "1.500000e+00"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%-12g|",
+   [
+    1.5
+   ]
+  ],
+  "result": "1.5         |"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%x",
+   [
+    255
+   ]
+  ],
+  "result": "ff"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%X",
+   [
+    255
+   ]
+  ],
+  "result": "FF"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#x",
+   [
+    255
+   ]
+  ],
+  "result": "0xff"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#X",
+   [
+    255
+   ]
+  ],
+  "result": "0XFF"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%o",
+   [
+    8
+   ]
+  ],
+  "result": "10"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#o",
+   [
+    8
+   ]
+  ],
+  "result": "010"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%O",
+   [
+    8
+   ]
+  ],
+  "result": "0o10"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#o",
+   [
+    0
+   ]
+  ],
+  "result": "0"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%b",
+   [
+    5
+   ]
+  ],
+  "result": "101"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#b",
+   [
+    5
+   ]
+  ],
+  "result": "0b101"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%x",
+   [
+    -255
+   ]
+  ],
+  "result": "-ff"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%c",
+   [
+    65
+   ]
+  ],
+  "result": "A"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%c",
+   [
+    128578
+   ]
+  ],
+  "result": "🙂"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%c",
+   [
+    -1
+   ]
+  ],
+  "result": "�"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%c",
+   [
+    1114112
+   ]
+  ],
+  "result": "�"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%c",
+   [
+    55296
+   ]
+  ],
+  "result": "�"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%q",
+   [
+    65
+   ]
+  ],
+  "result": "'A'"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%q",
+   [
+    39
+   ]
+  ],
+  "result": "'\\''"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%q",
+   [
+    10
+   ]
+  ],
+  "result": "'\\n'"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%+q",
+   [
+    233
+   ]
+  ],
+  "result": "'\\u00e9'"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%q",
+   [
+    233
+   ]
+  ],
+  "result": "'é'"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%U",
+   [
+    128578
+   ]
+  ],
+  "result": "U+1F642"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#U",
+   [
+    128578
+   ]
+  ],
+  "result": "U+1F642 '🙂'"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#U",
+   [
+    10
+   ]
+  ],
+  "result": "U+000A"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%U",
+   [
+    -1
+   ]
+  ],
+  "result": "U+FFFFFFFFFFFFFFFF"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.6U",
+   [
+    65
+   ]
+  ],
+  "result": "U+000041"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%10U|",
+   [
+    65
+   ]
+  ],
+  "result": "    U+0041|"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%-10U|",
+   [
+    65
+   ]
+  ],
+  "result": "U+0041    |"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%010U",
+   [
+    65
+   ]
+  ],
+  "result": "    U+0041"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%5d|",
+   [
+    42
+   ]
+  ],
+  "result": "   42|"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%-5d|",
+   [
+    42
+   ]
+  ],
+  "result": "42   |"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%05d",
+   [
+    42
+   ]
+  ],
+  "result": "00042"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%05d",
+   [
+    -42
+   ]
+  ],
+  "result": "-0042"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%+d",
+   [
+    42
+   ]
+  ],
+  "result": "+42"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "% d",
+   [
+    42
+   ]
+  ],
+  "result": " 42"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%+ d",
+   [
+    42
+   ]
+  ],
+  "result": "+42"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.5d",
+   [
+    42
+   ]
+  ],
+  "result": "00042"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%8.5d",
+   [
+    -42
+   ]
+  ],
+  "result": "  -00042"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.0d",
+   [
+    0
+   ]
+  ],
+  "result": ""
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%5.0d|",
+   [
+    0
+   ]
+  ],
+  "result": "     |"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%-05d|",
+   [
+    42
+   ]
+  ],
+  "result": "42   |"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%0-5d|",
+   [
+    42
+   ]
+  ],
+  "result": "42   |"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%+v",
+   [
+    42
+   ]
+  ],
+  "result": "42"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#v",
+   [
+    42
+   ]
+  ],
+  "result": "42"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#v",
+   [
+    "a\"b"
+   ]
+  ],
+  "result": "\"a\\\"b\""
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%+v",
+   [
+    "x"
+   ]
+  ],
+  "result": "x"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#v",
+   [
+    -1
+   ]
+  ],
+  "result": "-1"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    9223372036854775807
+   ]
+  ],
+  "result": "9223372036854775807"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%d",
+   [
+    9223372036854775808
+   ]
+  ],
+  "result": "9223372036854775808"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%d",
+   [
+    -9223372036854775808
+   ]
+  ],
+  "result": "-9223372036854775808"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%d",
+   [
+    -9223372036854775809
+   ]
+  ],
+  "result": "-9223372036854775809"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%x",
+   [
+    9223372036854775808
+   ]
+  ],
+  "result": "8000000000000000"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%t",
+   [
+    true
+   ]
+  ],
+  "result": "%!t(string=true)"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%t",
+   [
+    1
+   ]
+  ],
+  "result": "%!t(int=1)"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%t",
+   [
+    "true"
+   ]
+  ],
+  "result": "%!t(string=true)"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%t",
+   [
+    1.5
+   ]
+  ],
+  "result": "%!t(float64=1.5)"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%t",
+   [
+    123456789012345678901234567890
+   ]
+  ],
+  "result": "%!t(big.Int=123456789012345678901234567890)"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%T",
+   [
+    1
+   ]
+  ],
+  "result": "int"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%T",
+   [
+    1.5
+   ]
+  ],
+  "result": "float64"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%T",
+   [
+    "a"
+   ]
+  ],
+  "result": "string"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%T",
+   [
+    true
+   ]
+  ],
+  "result": "string"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%T",
+   [
+    null
+   ]
+  ],
+  "result": "string"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%T",
+   [
+    123456789012345678901234567890
+   ]
+  ],
+  "result": "*big.Int"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%T",
+   [
+    1e400
+   ]
+  ],
+  "result": "string"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%s",
+   [
+    "abc"
+   ]
+  ],
+  "result": "abc"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%10s|",
+   [
+    "abc"
+   ]
+  ],
+  "result": "       abc|"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%-10s|",
+   [
+    "abc"
+   ]
+  ],
+  "result": "abc       |"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.2s",
+   [
+    "abcdef"
+   ]
+  ],
+  "result": "ab"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.2s",
+   [
+    "héllo"
+   ]
+  ],
+  "result": "hé"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%5.1s|",
+   [
+    "日本"
+   ]
+  ],
+  "result": "    日|"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%010s",
+   [
+    "abc"
+   ]
+  ],
+  "result": "0000000abc"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%-010s|",
+   [
+    "abc"
+   ]
+  ],
+  "result": "abc       |"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%x",
+   [
+    "hello"
+   ]
+  ],
+  "result": "68656c6c6f"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%X",
+   [
+    "hello"
+   ]
+  ],
+  "result": "68656C6C6F"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "% x",
+   [
+    "hello"
+   ]
+  ],
+  "result": "68 65 6c 6c 6f"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#x",
+   [
+    "hi"
+   ]
+  ],
+  "result": "0x6869"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%# x",
+   [
+    "hi"
+   ]
+  ],
+  "result": "0x68 0x69"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%# X",
+   [
+    "hi"
+   ]
+  ],
+  "result": "0X68 0X69"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.2x",
+   [
+    "hello"
+   ]
+  ],
+  "result": "6865"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%10x|",
+   [
+    "hi"
+   ]
+  ],
+  "result": "      6869|"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%-10x|",
+   [
+    "hi"
+   ]
+  ],
+  "result": "6869      |"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%x",
+   [
+    ""
+   ]
+  ],
+  "result": ""
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%5x|",
+   [
+    ""
+   ]
+  ],
+  "result": "     |"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%x",
+   [
+    "é"
+   ]
+  ],
+  "result": "c3a9"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%q",
+   [
+    "hello"
+   ]
+  ],
+  "result": "\"hello\""
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%q",
+   [
+    "a\"b\\c\n\t\u0001"
+   ]
+  ],
+  "result": "\"a\\\"b\\\\c\\n\\t\\x01\\x7f\""
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%+q",
+   [
+    "héllo 日本"
+   ]
+  ],
+  "result": "\"h\\u00e9llo \\u65e5\\u672c\""
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#q",
+   [
+    "abc"
+   ]
+  ],
+  "result": "`abc`"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#q",
+   [
+    "a`b"
+   ]
+  ],
+  "result": "\"a`b\""
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#q",
+   [
+    "a\nb"
+   ]
+  ],
+  "result": "\"a\\nb\""
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%q",
+   [
+    "­\u2028🙂󠀁"
+   ]
+  ],
+  "result": "\"\\u00ad\\u2028🙂\\U000e0001\""
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.3q",
+   [
+    "abcdef"
+   ]
+  ],
+  "result": "\"abc\""
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%10q|",
+   [
+    "a"
+   ]
+  ],
+  "result": "       \"a\"|"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#+q",
+   [
+    "é"
+   ]
+  ],
+  "result": "`é`"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%%",
+   []
+  ],
+  "result": "%"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "100%%",
+   []
+  ],
+  "result": "100%"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%5%",
+   []
+  ],
+  "result": "%"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%",
+   []
+  ],
+  "result": "%!(NOVERB)"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "abc%",
+   []
+  ],
+  "result": "abc%!(NOVERB)"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%!",
+   []
+  ],
+  "result": "%!!(MISSING)"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%z",
+   [
+    1
+   ]
+  ],
+  "result": "%!z(int=1)"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%z",
+   [
+    "a"
+   ]
+  ],
+  "result": "%!z(string=a)"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%z",
+   [
+    1.5
+   ]
+  ],
+  "result": "%!z(float64=1.5)"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%z",
+   [
+    123456789012345678901234567890
+   ]
+  ],
+  "result": "%!z(big.Int=123456789012345678901234567890)"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%d",
+   []
+  ],
+  "result": "%!d(MISSING)"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%d %d",
+   [
+    1
+   ]
+  ],
+  "result": "1 %!d(MISSING)"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%d",
+   [
+    1,
+    2
+   ]
+  ],
+  "result": "1%!(EXTRA int=2)"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%d",
+   [
+    1,
+    "a",
+    1.5,
+    [
+     1
+    ]
+   ]
+  ],
+  "result": "1%!(EXTRA string=a, float64=1.5, string=[1])"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "no verbs",
+   [
+    1
+   ]
+  ],
+  "result": "no verbs%!(EXTRA int=1)"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "",
+   [
+    "a"
+   ]
+  ],
+  "result": "%!(EXTRA string=a)"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "",
+   []
+  ],
+  "result": ""
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%s %s",
+   [
+    "a"
+   ]
+  ],
+  "result": "a %!s(MISSING)"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%[2]d %[1]d",
+   [
+    1,
+    2
+   ]
+  ],
+  "result": "2 1"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%[3]d",
+   [
+    1,
+    2
+   ]
+  ],
+  "result": "%!d(BADINDEX)"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%[0]d",
+   [
+    1
+   ]
+  ],
+  "result": "%!d(BADINDEX)"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%[1]d %d",
+   [
+    1,
+    2
+   ]
+  ],
+  "result": "1 2"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%[2]d %d",
+   [
+    1,
+    2
+   ]
+  ],
+  "result": "2 %!d(MISSING)"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%[x]d",
+   [
+    1
+   ]
+  ],
+  "result": "%!d(BADINDEX)"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%[1]",
+   [
+    1
+   ]
+  ],
+  "result": "%!(NOVERB)"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%[1",
+   [
+    1
+   ]
+  ],
+  "result": "%!(NOVERB)"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%[]d",
+   [
+    1
+   ]
+  ],
+  "result": "%!d(BADINDEX)"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%[1]*d",
+   [
+    5,
+    2
+   ]
+  ],
+  "result": "    2"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%[2]*[1]d",
+   [
+    12,
+    5
+   ]
+  ],
+  "result": "   12"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%*d",
+   [
+    5,
+    42
+   ]
+  ],
+  "result": "   42"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%-*d|",
+   [
+    5,
+    42
+   ]
+  ],
+  "result": "42   |"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%*d|",
+   [
+    -5,
+    42
+   ]
+  ],
+  "result": "42   |"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.*f",
+   [
+    2,
+    3.14159
+   ]
+  ],
+  "result": "3.14"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%*d",
+   [
+    "x",
+    42
+   ]
+  ],
+  "result": "%!(BADWIDTH)42"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%*d",
+   [
+    1.5,
+    42
+   ]
+  ],
+  "result": "%!(BADWIDTH)42"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.*d",
+   [
+    -1,
+    42
+   ]
+  ],
+  "result": "%!(BADPREC)42"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.*d",
+   [
+    "x",
+    42
+   ]
+  ],
+  "result": "%!(BADPREC)42"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%*d",
+   [
+    5
+   ]
+  ],
+  "result": "%!d(MISSING)"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%*d",
+   [
+    123456789012345678901234567890,
+    1
+   ]
+  ],
+  "result": "%!(BADWIDTH)1"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.f",
+   [
+    1.5
+   ]
+  ],
+  "result": "2"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.d",
+   [
+    0
+   ]
+  ],
+  "result": ""
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.s",
+   [
+    "abc"
+   ]
+  ],
+  "result": ""
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%3.",
+   [
+    1
+   ]
+  ],
+  "result": "%!.(int=  1)"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.",
+   [
+    1
+   ]
+  ],
+  "result": "%!.(int=1)"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%1[2]d",
+   [
+    1,
+    2
+   ]
+  ],
+  "result": "2"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%[2].2f",
+   [
+    1,
+    2.5
+   ]
+  ],
+  "result": "%!f(BADINDEX)"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%[1]d %[1]d",
+   [
+    7
+   ]
+  ],
+  "result": "7 7"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%w",
+   [
+    1
+   ]
+  ],
+  "result": "%!w(int=1)"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%w",
+   [
+    "a"
+   ]
+  ],
+  "result": "%!w(string=a)"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%w",
+   [
+    1.5
+   ]
+  ],
+  "result": "%!w(float64=1.5)"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%w",
+   [
+    123456789012345678901234567890
+   ]
+  ],
+  "result": "%!w(*big.Int=\u0026{false [14083847773837265618 6692605942]})"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%+w",
+   [
+    123456789012345678901234567890
+   ]
+  ],
+  "result": "%!w(*big.Int=\u0026{neg:false abs:[14083847773837265618 6692605942]})"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#w",
+   [
+    123456789012345678901234567890
+   ]
+  ],
+  "result": "%!w(*big.Int=\u0026big.Int{neg:false, abs:big.nat{0xc373e0ee4e3f0ad2, 0x18ee90ff6}})"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#w",
+   [
+    -123456789012345678901234567890
+   ]
+  ],
+  "result": "%!w(*big.Int=\u0026big.Int{neg:true, abs:big.nat{0xc373e0ee4e3f0ad2, 0x18ee90ff6}})"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#w",
+   [
+    1
+   ]
+  ],
+  "result": "%!w(int=1)"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%d",
+   [
+    123456789012345678901234567890
+   ]
+  ],
+  "result": "123456789012345678901234567890"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%x",
+   [
+    123456789012345678901234567890
+   ]
+  ],
+  "result": "18ee90ff6c373e0ee4e3f0ad2"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%X",
+   [
+    -123456789012345678901234567890
+   ]
+  ],
+  "result": "-18EE90FF6C373E0EE4E3F0AD2"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%o",
+   [
+    123456789012345678901234567890
+   ]
+  ],
+  "result": "143564417755415637016711617605322"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%O",
+   [
+    123456789012345678901234567890
+   ]
+  ],
+  "result": "0o143564417755415637016711617605322"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%b",
+   [
+    123456789012345678901234567890
+   ]
+  ],
+  "result": "1100011101110100100001111111101101100001101110011111000001110111001001110001111110000101011010010"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#x",
+   [
+    123456789012345678901234567890
+   ]
+  ],
+  "result": "0x18ee90ff6c373e0ee4e3f0ad2"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#o",
+   [
+    123456789012345678901234567890
+   ]
+  ],
+  "result": "0143564417755415637016711617605322"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#b",
+   [
+    123456789012345678901234567890
+   ]
+  ],
+  "result": "0b1100011101110100100001111111101101100001101110011111000001110111001001110001111110000101011010010"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%+d",
+   [
+    123456789012345678901234567890
+   ]
+  ],
+  "result": "+123456789012345678901234567890"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "% d",
+   [
+    123456789012345678901234567890
+   ]
+  ],
+  "result": " 123456789012345678901234567890"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%40d|",
+   [
+    123456789012345678901234567890
+   ]
+  ],
+  "result": "          123456789012345678901234567890|"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%-40d|",
+   [
+    123456789012345678901234567890
+   ]
+  ],
+  "result": "123456789012345678901234567890          |"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%040d",
+   [
+    -123456789012345678901234567890
+   ]
+  ],
+  "result": "-000000000123456789012345678901234567890"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.40d",
+   [
+    123456789012345678901234567890
+   ]
+  ],
+  "result": "0000000000123456789012345678901234567890"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%45.40d|",
+   [
+    123456789012345678901234567890
+   ]
+  ],
+  "result": "     0000000000123456789012345678901234567890|"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%045.40d",
+   [
+    123456789012345678901234567890
+   ]
+  ],
+  "result": "     0000000000123456789012345678901234567890"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%s",
+   [
+    123456789012345678901234567890
+   ]
+  ],
+  "result": "123456789012345678901234567890"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    -123456789012345678901234567890
+   ]
+  ],
+  "result": "-123456789012345678901234567890"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%+v",
+   [
+    123456789012345678901234567890
+   ]
+  ],
+  "result": "+123456789012345678901234567890"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#v",
+   [
+    123456789012345678901234567890
+   ]
+  ],
+  "result": "123456789012345678901234567890"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%c",
+   [
+    123456789012345678901234567890
+   ]
+  ],
+  "result": "%!c(big.Int=123456789012345678901234567890)"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%q",
+   [
+    123456789012345678901234567890
+   ]
+  ],
+  "result": "%!q(big.Int=123456789012345678901234567890)"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%e",
+   [
+    123456789012345678901234567890
+   ]
+  ],
+  "result": "%!e(big.Int=123456789012345678901234567890)"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%x",
+   [
+    123456789012345678901234567890,
+    1
+   ]
+  ],
+  "result": "18ee90ff6c373e0ee4e3f0ad2%!(EXTRA int=1)"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%d",
+   [
+    1,
+    123456789012345678901234567890
+   ]
+  ],
+  "result": "1%!(EXTRA *big.Int=123456789012345678901234567890)"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    1.0e2
+   ]
+  ],
+  "result": "100"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%d",
+   [
+    1.0e2
+   ]
+  ],
+  "result": "%!d(float64=100)"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%d",
+   [
+    100.0
+   ]
+  ],
+  "result": "%!d(float64=100)"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    1E2
+   ]
+  ],
+  "result": "100"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%d",
+   [
+    -0
+   ]
+  ],
+  "result": "0"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    -0
+   ]
+  ],
+  "result": "0"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%s",
+   [
+    "x",
+    "y"
+   ]
+  ],
+  "result": "x%!(EXTRA string=y)"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%[2]s",
+   [
+    "x",
+    "y"
+   ]
+  ],
+  "result": "y"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v %v",
+   [
+    [
+     1,
+     [
+      2,
+      [
+       3
+      ]
+     ]
+    ],
+    {
+     "k": {
+      "$set": [
+       "v"
+      ]
+     }
+    }
+   ]
+  ],
+  "result": "[1, [2, [3]]] {\"k\": {\"v\"}}"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%5v|",
+   [
+    true
+   ]
+  ],
+  "result": " true|"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%-5v|",
+   [
+    null
+   ]
+  ],
+  "result": "null |"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%q",
+   [
+    [
+     1
+    ]
+   ]
+  ],
+  "result": "\"[1]\""
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%x",
+   [
+    {
+     "a": 1
+    }
+   ]
+  ],
+  "result": "7b2261223a20317d"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%d",
+   [
+    [
+     1
+    ]
+   ]
+  ],
+  "result": "%!d(string=[1])"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    "日本語"
+   ]
+  ],
+  "result": "日本語"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%-8s|",
+   [
+    "日本"
+   ]
+  ],
+  "result": "日本      |"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%08s",
+   [
+    "日本"
+   ]
+  ],
+  "result": "000000日本"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    "­\u0001"
+   ]
+  ],
+  "result": "­\u0001"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    [
+     "­\u0001",
+     "🙂"
+    ]
+   ]
+  ],
+  "result": "[\"\\u00ad\\x01\", \"🙂\"]"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%6.2f%%",
+   [
+    99.5
+   ]
+  ],
+  "result": " 99.50%"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%s=%d (%.1f%%)",
+   [
+    "a",
+    3,
+    37.5
+   ]
+  ],
+  "result": "a=3 (37.5%)"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%3c|",
+   [
+    65
+   ]
+  ],
+  "result": "  A|"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%-3c|",
+   [
+    65
+   ]
+  ],
+  "result": "A  |"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%03c",
+   [
+    65
+   ]
+  ],
+  "result": "00A"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    1.2e-05
+   ]
+  ],
+  "result": "1.2e-05"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    1234567.0
+   ]
+  ],
+  "result": "1.234567e+06"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    12345678.9
+   ]
+  ],
+  "result": "1.23456789e+07"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.3v",
+   [
+    3.14159
+   ]
+  ],
+  "result": "3.14"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%10.3v|",
+   [
+    3.14159
+   ]
+  ],
+  "result": "      3.14|"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%5t|",
+   [
+    true
+   ]
+  ],
+  "result": "%!t(string= true)|"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.2t",
+   [
+    false
+   ]
+  ],
+  "result": "%!t(string=fa)"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%d %s",
+   [
+    1,
+    null
+   ]
+  ],
+  "result": "1 null"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   1,
+   []
+  ],
+  "error": "p.rego:1: eval_type_error: sprintf: operand 1 must be string but got number"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%d",
+   1
+  ],
+  "error": "p.rego:1: eval_type_error: sprintf: operand 2 must be array but got number"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%d",
+   {
+    "$set": [
+     1
+    ]
+   }
+  ],
+  "error": "p.rego:1: eval_type_error: sprintf: operand 2 must be array but got set"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%d",
+   {
+    "a": 1
+   }
+  ],
+  "error": "p.rego:1: eval_type_error: sprintf: operand 2 must be array but got object"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   null,
+   null
+  ],
+  "error": "p.rego:1: eval_type_error: sprintf: operand 1 must be string but got null"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   "abc"
+  ],
+  "error": "p.rego:1: eval_type_error: sprintf: operand 2 must be array but got string"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v %.3e %.20e",
+   [
+    0.1,
+    0.1,
+    0.1
+   ]
+  ],
+  "result": "0.1 1.000e-01 1.00000000000000005551e-01"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%e %g %.3f",
+   [
+    0.2,
+    0.2,
+    0.2
+   ]
+  ],
+  "result": "2.000000e-01 0.2 0.200"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.0e %.3x %.1g",
+   [
+    0.3,
+    0.3,
+    0.3
+   ]
+  ],
+  "result": "3e-01 0x1.333p-02 0.3"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.3e %.17e %.25g",
+   [
+    0.3333333333333333,
+    0.3333333333333333,
+    0.3333333333333333
+   ]
+  ],
+  "result": "3.333e-01 3.33333333333333315e-01 0.3333333333333333148296163"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.17e %.1g %.3x",
+   [
+    0.6666666666666666,
+    0.6666666666666666,
+    0.6666666666666666
+   ]
+  ],
+  "result": "6.66666666666666630e-01 0.7 0x1.555p-01"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.20e %G %v",
+   [
+    1000000000000000.2,
+    1000000000000000.2,
+    1000000000000000.2
+   ]
+  ],
+  "result": "1.00000000000000025000e+15 1.0000000000000002E+15 1.0000000000000002e+15"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%f %.20e %.3e",
+   [
+    9.995,
+    9.995,
+    9.995
+   ]
+  ],
+  "result": "9.995000 9.99499999999999921840e+00 9.995e+00"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.0f %.5g %f",
+   [
+    0.125,
+    0.125,
+    0.125
+   ]
+  ],
+  "result": "0 0.125 0.125000"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.3f %E %.20f",
+   [
+    0.375,
+    0.375,
+    0.375
+   ]
+  ],
+  "result": "0.375 3.750000E-01 0.37500000000000000000"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.20f %f %.5g",
+   [
+    2.675,
+    2.675,
+    2.675
+   ]
+  ],
+  "result": "2.67499999999999982236 2.675000 2.675"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%g %.17g %#.5g",
+   [
+    1.005,
+    1.005,
+    1.005
+   ]
+  ],
+  "result": "1.005 1.0049999999999999 1.0050"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.1g %v %G",
+   [
+    123.456,
+    123.456,
+    123.456
+   ]
+  ],
+  "result": "1e+02 123.456 123.456"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.5g %.0f %e",
+   [
+    1e-05,
+    1e-05,
+    1e-05
+   ]
+  ],
+  "result": "1e-05 0 1.000000e-05"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.17g %.25g %.17e",
+   [
+    9.999999e-05,
+    9.999999e-05,
+    9.999999e-05
+   ]
+  ],
+  "result": "9.9999990000000004e-05 9.999999000000000409262013e-05 9.99999900000000041e-05"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.25g %e %.0f",
+   [
+    5e-05,
+    5e-05,
+    5e-05
+   ]
+  ],
+  "result": "5.00000000000000023960868e-05 5.000000e-05 0"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#.5g %.3f %g",
+   [
+    5e-05,
+    5e-05,
+    5e-05
+   ]
+  ],
+  "result": "5.0000e-05 0.000 5e-05"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%x %#.5g %.17g",
+   [
+    999999.5,
+    999999.5,
+    999999.5
+   ]
+  ],
+  "result": "0x1.e847fp+19 1.0000e+06 999999.5"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.3x %.0e %x",
+   [
+    9999995.0,
+    9999995.0,
+    9999995.0
+   ]
+  ],
+  "result": "0x1.313p+23 1e+07 0x1.312cf6p+23"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%G %.20f %E",
+   [
+    1e+17,
+    1e+17,
+    1e+17
+   ]
+  ],
+  "result": "1E+17 100000000000000000.00000000000000000000 1.000000E+17"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%E %x %.0e",
+   [
+    1.2345678901234568e-300,
+    1.2345678901234568e-300,
+    1.2345678901234568e-300
+   ]
+  ],
+  "result": "1.234568E-300 0x1.a74fe1c1e8908p-997 1e-300"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v %.3e %.20e",
+   [
+    5e-324,
+    5e-324,
+    5e-324
+   ]
+  ],
+  "result": "5e-324 4.941e-324 4.94065645841246544177e-324"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%e %g %.3f",
+   [
+    2.2250738585072014e-308,
+    2.2250738585072014e-308,
+    2.2250738585072014e-308
+   ]
+  ],
+  "result": "2.225074e-308 2.2250738585072014e-308 0.000"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.0e %.3x %.1g",
+   [
+    1e+23,
+    1e+23,
+    1e+23
+   ]
+  ],
+  "result": "1e+23 0x1.52dp+76 1e+23"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.3e %.17e %.25g",
+   [
+    8.41e+21,
+    8.41e+21,
+    8.41e+21
+   ]
+  ],
+  "result": "8.410e+21 8.40999999999999948e+21 8409999999999999475712"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.17e %.1g %.3x",
+   [
+    5e+22,
+    5e+22,
+    5e+22
+   ]
+  ],
+  "result": "4.99999999999999958e+22 5e+22 0x1.52dp+75"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.20e %G %v",
+   [
+    688018070742.767,
+    688018070742.767,
+    688018070742.767
+   ]
+  ],
+  "result": "6.88018070742766967773e+11 6.88018070742767E+11 6.88018070742767e+11"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%f %.20e %.3e",
+   [
+    -0.5885024652838298,
+    -0.5885024652838298,
+    -0.5885024652838298
+   ]
+  ],
+  "result": "-0.588502 -5.88502465283829767628e-01 -5.885e-01"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.0f %.5g %f",
+   [
+    -8.32997413550849e+16,
+    -8.32997413550849e+16,
+    -8.32997413550849e+16
+   ]
+  ],
+  "result": "-83299741355084896 -8.33e+16 -83299741355084896.000000"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.3f %E %.20f",
+   [
+    0.0067492442179148205,
+    0.0067492442179148205,
+    0.0067492442179148205
+   ]
+  ],
+  "result": "0.007 6.749244E-03 0.00674924421791482047"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.20f %f %.5g",
+   [
+    5.0865116520875395e+26,
+    5.0865116520875395e+26,
+    5.0865116520875395e+26
+   ]
+  ],
+  "result": "508651165208753949806428160.00000000000000000000 508651165208753949806428160.000000 5.0865e+26"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%g %.17g %#.5g",
+   [
+    -0.2737900413864123,
+    -0.2737900413864123,
+    -0.2737900413864123
+   ]
+  ],
+  "result": "-0.2737900413864123 -0.27379004138641228 -0.27379"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.1g %v %G",
+   [
+    -8.721476532624081e-08,
+    -8.721476532624081e-08,
+    -8.721476532624081e-08
+   ]
+  ],
+  "result": "-9e-08 -8.721476532624081e-08 -8.721476532624081E-08"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.5g %.0f %e",
+   [
+    -9.936376244028897e-24,
+    -9.936376244028897e-24,
+    -9.936376244028897e-24
+   ]
+  ],
+  "result": "-9.9364e-24 -0 -9.936376e-24"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.17g %.25g %.17e",
+   [
+    3.4749015508581006e-15,
+    3.4749015508581006e-15,
+    3.4749015508581006e-15
+   ]
+  ],
+  "result": "3.4749015508581006e-15 3.474901550858100646020039e-15 3.47490155085810065e-15"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.25g %e %.0f",
+   [
+    -9.301771222266044e-08,
+    -9.301771222266044e-08,
+    -9.301771222266044e-08
+   ]
+  ],
+  "result": "-9.301771222266044456407596e-08 -9.301771e-08 -0"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#.5g %.3f %g",
+   [
+    2.4118114752574237e-12,
+    2.4118114752574237e-12,
+    2.4118114752574237e-12
+   ]
+  ],
+  "result": "2.4118e-12 0.000 2.4118114752574237e-12"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%x %#.5g %.17g",
+   [
+    5.342099125338582e-13,
+    5.342099125338582e-13,
+    5.342099125338582e-13
+   ]
+  ],
+  "result": "0x1.2cbbc3138882p-41 5.3421e-13 5.3420991253385822e-13"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.3x %.0e %x",
+   [
+    -4.134666998954595e-32,
+    -4.134666998954595e-32,
+    -4.134666998954595e-32
+   ]
+  ],
+  "result": "-0x1.ad6p-105 -4e-32 -0x1.ad5e4d74e931bp-105"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%G %.20f %E",
+   [
+    -41783106332.88662,
+    -41783106332.88662,
+    -41783106332.88662
+   ]
+  ],
+  "result": "-4.178310633288662E+10 -41783106332.88661956787109375000 -4.178311E+10"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%E %x %.0e",
+   [
+    -7.370637418311795e-07,
+    -7.370637418311795e-07,
+    -7.370637418311795e-07
+   ]
+  ],
+  "result": "-7.370637E-07 -0x1.8bb544f21e4ffp-21 -7e-07"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v %.3e %.20e",
+   [
+    6.987896952027078e-19,
+    6.987896952027078e-19,
+    6.987896952027078e-19
+   ]
+  ],
+  "result": "6.987896952027078e-19 6.988e-19 6.98789695202707815685e-19"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%e %g %.3f",
+   [
+    7.845838553265463e-26,
+    7.845838553265463e-26,
+    7.845838553265463e-26
+   ]
+  ],
+  "result": "7.845839e-26 7.845838553265463e-26 0.000"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.0e %.3x %.1g",
+   [
+    -8.199653395161754e-22,
+    -8.199653395161754e-22,
+    -8.199653395161754e-22
+   ]
+  ],
+  "result": "-8e-22 -0x1.efap-71 -8e-22"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.3e %.17e %.25g",
+   [
+    -17731682048079.2,
+    -17731682048079.2,
+    -17731682048079.2
+   ]
+  ],
+  "result": "-1.773e+13 -1.77316820480791992e+13 -17731682048079.19921875"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.17e %.1g %.3x",
+   [
+    4.178946283663934e+25,
+    4.178946283663934e+25,
+    4.178946283663934e+25
+   ]
+  ],
+  "result": "4.17894628366393398e+25 4e+25 0x1.149p+85"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.20e %G %v",
+   [
+    -9.351820527785868e-30,
+    -9.351820527785868e-30,
+    -9.351820527785868e-30
+   ]
+  ],
+  "result": "-9.35182052778586794346e-30 -9.351820527785868E-30 -9.351820527785868e-30"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%f %.20e %.3e",
+   [
+    40947393698.474754,
+    40947393698.474754,
+    40947393698.474754
+   ]
+  ],
+  "result": "40947393698.474754 4.09473936984747543335e+10 4.095e+10"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.0f %.5g %f",
+   [
+    -6.224491721109068e-08,
+    -6.224491721109068e-08,
+    -6.224491721109068e-08
+   ]
+  ],
+  "result": "-0 -6.2245e-08 -0.000000"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.3f %E %.20f",
+   [
+    2.3028757635286337e-28,
+    2.3028757635286337e-28,
+    2.3028757635286337e-28
+   ]
+  ],
+  "result": "0.000 2.302876E-28 0.00000000000000000000"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.20f %f %.5g",
+   [
+    -8.703262644333447e+24,
+    -8.703262644333447e+24,
+    -8.703262644333447e+24
+   ]
+  ],
+  "result": "-8703262644333447485587456.00000000000000000000 -8703262644333447485587456.000000 -8.7033e+24"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%g %.17g %#.5g",
+   [
+    -6.820562176095689e-22,
+    -6.820562176095689e-22,
+    -6.820562176095689e-22
+   ]
+  ],
+  "result": "-6.820562176095689e-22 -6.8205621760956893e-22 -6.8206e-22"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.1g %v %G",
+   [
+    -2.8907388748147337e-31,
+    -2.8907388748147337e-31,
+    -2.8907388748147337e-31
+   ]
+  ],
+  "result": "-3e-31 -2.8907388748147337e-31 -2.8907388748147337E-31"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.5g %.0f %e",
+   [
+    8721201122538.491,
+    8721201122538.491,
+    8721201122538.491
+   ]
+  ],
+  "result": "8.7212e+12 8721201122538 8.721201e+12"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.17g %.25g %.17e",
+   [
+    -8.967375864203251e+27,
+    -8.967375864203251e+27,
+    -8.967375864203251e+27
+   ]
+  ],
+  "result": "-8.9673758642032506e+27 -8.967375864203250563589079e+27 -8.96737586420325056e+27"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.25g %e %.0f",
+   [
+    -1.455090954295315e-18,
+    -1.455090954295315e-18,
+    -1.455090954295315e-18
+   ]
+  ],
+  "result": "-1.455090954295315091866433e-18 -1.455091e-18 -0"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#.5g %.3f %g",
+   [
+    -6146118497385935.0,
+    -6146118497385935.0,
+    -6146118497385935.0
+   ]
+  ],
+  "result": "-6.1461e+15 -6146118497385935.000 -6.146118497385935e+15"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%x %#.5g %.17g",
+   [
+    -762237271494.0337,
+    -762237271494.0337,
+    -762237271494.0337
+   ]
+  ],
+  "result": "-0x1.62f1c37b8c114p+39 -7.6224e+11 -762237271494.03369"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.3x %.0e %x",
+   [
+    -8.195554503216359e-27,
+    -8.195554503216359e-27,
+    -8.195554503216359e-27
+   ]
+  ],
+  "result": "-0x1.44bp-87 -8e-27 -0x1.44a8cbf354026p-87"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%G %.20f %E",
+   [
+    3.7536096921378803e+21,
+    3.7536096921378803e+21,
+    3.7536096921378803e+21
+   ]
+  ],
+  "result": "3.7536096921378803E+21 3753609692137880289280.00000000000000000000 3.753610E+21"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%E %x %.0e",
+   [
+    -4.346269217114242e-24,
+    -4.346269217114242e-24,
+    -4.346269217114242e-24
+   ]
+  ],
+  "result": "-4.346269E-24 -0x1.5046bb20979c2p-78 -4e-24"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v %.3e %.20e",
+   [
+    3.108216353771589,
+    3.108216353771589,
+    3.108216353771589
+   ]
+  ],
+  "result": "3.108216353771589 3.108e+00 3.10821635377158900226e+00"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%e %g %.3f",
+   [
+    0.09192596384241225,
+    0.09192596384241225,
+    0.09192596384241225
+   ]
+  ],
+  "result": "9.192596e-02 0.09192596384241225 0.092"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.0e %.3x %.1g",
+   [
+    -6.781915832054839e-13,
+    -6.781915832054839e-13,
+    -6.781915832054839e-13
+   ]
+  ],
+  "result": "-7e-13 -0x1.7ddp-41 -7e-13"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.3e %.17e %.25g",
+   [
+    3.8735864022769494e+21,
+    3.8735864022769494e+21,
+    3.8735864022769494e+21
+   ]
+  ],
+  "result": "3.874e+21 3.87358640227694936e+21 3873586402276949360640"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.17e %.1g %.3x",
+   [
+    -2.653090084754428e-14,
+    -2.653090084754428e-14,
+    -2.653090084754428e-14
+   ]
+  ],
+  "result": "-2.65309008475442810e-14 -3e-14 -0x1.ddfp-46"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v %e %g %f",
+   [
+    1000000000000000.25,
+    1000000000000000.25,
+    1000000000000000.25,
+    1000000000000000.25
+   ]
+  ],
+  "result": "1.0000000000000002e+15 1.000000e+15 1.0000000000000002e+15 1000000000000000.250000"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v %e %g %f",
+   [
+    1000000000000001.25,
+    1000000000000001.25,
+    1000000000000001.25,
+    1000000000000001.25
+   ]
+  ],
+  "result": "1.0000000000000012e+15 1.000000e+15 1.0000000000000012e+15 1000000000000001.250000"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v %e %g %f",
+   [
+    1000000000000002.75,
+    1000000000000002.75,
+    1000000000000002.75,
+    1000000000000002.75
+   ]
+  ],
+  "result": "1.0000000000000028e+15 1.000000e+15 1.0000000000000028e+15 1000000000000002.750000"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v %e %g %f",
+   [
+    1000000000000003.75,
+    1000000000000003.75,
+    1000000000000003.75,
+    1000000000000003.75
+   ]
+  ],
+  "result": "1.0000000000000038e+15 1.000000e+15 1.0000000000000038e+15 1000000000000003.750000"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v %e %g %f",
+   [
+    -1000000000000005.25,
+    -1000000000000005.25,
+    -1000000000000005.25,
+    -1000000000000005.25
+   ]
+  ],
+  "result": "-1.0000000000000052e+15 -1.000000e+15 -1.0000000000000052e+15 -1000000000000005.250000"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v %e %g %f",
+   [
+    4503599627370497.5,
+    4503599627370497.5,
+    4503599627370497.5,
+    4503599627370497.5
+   ]
+  ],
+  "result": "4.503599627370498e+15 4.503600e+15 4.503599627370498e+15 4503599627370498.000000"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v %e %g %f",
+   [
+    4503599627370498.5,
+    4503599627370498.5,
+    4503599627370498.5,
+    4503599627370498.5
+   ]
+  ],
+  "result": "4.503599627370498e+15 4.503600e+15 4.503599627370498e+15 4503599627370498.000000"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v %e %g %f",
+   [
+    9007199254740993,
+    9007199254740993,
+    9007199254740993,
+    9007199254740993
+   ]
+  ],
+  "result": "9007199254740993 %!e(int=9007199254740993) %!g(int=9007199254740993) %!f(int=9007199254740993)"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v %e %g %f",
+   [
+    9007199254740995,
+    9007199254740995,
+    9007199254740995,
+    9007199254740995
+   ]
+  ],
+  "result": "9007199254740995 %!e(int=9007199254740995) %!g(int=9007199254740995) %!f(int=9007199254740995)"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v %e %g %f",
+   [
+    123456789012345680000,
+    123456789012345680000,
+    123456789012345680000,
+    123456789012345680000
+   ]
+  ],
+  "result": "123456789012345680000 %!e(big.Int=123456789012345680000) %!g(big.Int=123456789012345680000) %!f(big.Int=123456789012345680000)"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v %e %g %f",
+   [
+    5e-324,
+    5e-324,
+    5e-324,
+    5e-324
+   ]
+  ],
+  "result": "5e-324 4.940656e-324 5e-324 0.000000"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v %e %g %f",
+   [
+    1.5e-323,
+    1.5e-323,
+    1.5e-323,
+    1.5e-323
+   ]
+  ],
+  "result": "1.5e-323 1.482197e-323 1.5e-323 0.000000"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v %e %g %f",
+   [
+    2.5e-323,
+    2.5e-323,
+    2.5e-323,
+    2.5e-323
+   ]
+  ],
+  "result": "2.5e-323 2.470328e-323 2.5e-323 0.000000"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v %e %g %f",
+   [
+    0.30000000000000004,
+    0.30000000000000004,
+    0.30000000000000004,
+    0.30000000000000004
+   ]
+  ],
+  "result": "0.30000000000000004 3.000000e-01 0.30000000000000004 0.300000"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    -2.5
+   ]
+  ],
+  "result": "-2.5"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    1e+300
+   ]
+  ],
+  "result": "1e+300"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%e",
+   [
+    -2.5
+   ]
+  ],
+  "result": "-2.500000e+00"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%e",
+   [
+    1e+300
+   ]
+  ],
+  "result": "1.000000e+300"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.0e",
+   [
+    -2.5
+   ]
+  ],
+  "result": "-2e+00"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.0e",
+   [
+    1e+300
+   ]
+  ],
+  "result": "1e+300"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.3e",
+   [
+    -2.5
+   ]
+  ],
+  "result": "-2.500e+00"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.3e",
+   [
+    1e+300
+   ]
+  ],
+  "result": "1.000e+300"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.17e",
+   [
+    -2.5
+   ]
+  ],
+  "result": "-2.50000000000000000e+00"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.17e",
+   [
+    1e+300
+   ]
+  ],
+  "result": "1.00000000000000005e+300"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.20e",
+   [
+    -2.5
+   ]
+  ],
+  "result": "-2.50000000000000000000e+00"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.20e",
+   [
+    1e+300
+   ]
+  ],
+  "result": "1.00000000000000005250e+300"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%f",
+   [
+    -2.5
+   ]
+  ],
+  "result": "-2.500000"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%f",
+   [
+    1e+300
+   ]
+  ],
+  "result": "1000000000000000052504760255204420248704468581108159154915854115511802457988908195786371375080447864043704443832883878176942523235360430575644792184786706982848387200926575803737830233794788090059368953234970799945081119038967640880074652742780142494579258788820056842838115669472196386865459400540160.000000"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.0f",
+   [
+    -2.5
+   ]
+  ],
+  "result": "-2"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.0f",
+   [
+    1e+300
+   ]
+  ],
+  "result": "1000000000000000052504760255204420248704468581108159154915854115511802457988908195786371375080447864043704443832883878176942523235360430575644792184786706982848387200926575803737830233794788090059368953234970799945081119038967640880074652742780142494579258788820056842838115669472196386865459400540160"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.3f",
+   [
+    -2.5
+   ]
+  ],
+  "result": "-2.500"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.3f",
+   [
+    1e+300
+   ]
+  ],
+  "result": "1000000000000000052504760255204420248704468581108159154915854115511802457988908195786371375080447864043704443832883878176942523235360430575644792184786706982848387200926575803737830233794788090059368953234970799945081119038967640880074652742780142494579258788820056842838115669472196386865459400540160.000"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.20f",
+   [
+    -2.5
+   ]
+  ],
+  "result": "-2.50000000000000000000"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.20f",
+   [
+    1e+300
+   ]
+  ],
+  "result": "1000000000000000052504760255204420248704468581108159154915854115511802457988908195786371375080447864043704443832883878176942523235360430575644792184786706982848387200926575803737830233794788090059368953234970799945081119038967640880074652742780142494579258788820056842838115669472196386865459400540160.00000000000000000000"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%g",
+   [
+    -2.5
+   ]
+  ],
+  "result": "-2.5"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%g",
+   [
+    1e+300
+   ]
+  ],
+  "result": "1e+300"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.1g",
+   [
+    -2.5
+   ]
+  ],
+  "result": "-2"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.1g",
+   [
+    1e+300
+   ]
+  ],
+  "result": "1e+300"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.5g",
+   [
+    -2.5
+   ]
+  ],
+  "result": "-2.5"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.5g",
+   [
+    1e+300
+   ]
+  ],
+  "result": "1e+300"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.17g",
+   [
+    -2.5
+   ]
+  ],
+  "result": "-2.5"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.17g",
+   [
+    1e+300
+   ]
+  ],
+  "result": "1.0000000000000001e+300"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.25g",
+   [
+    -2.5
+   ]
+  ],
+  "result": "-2.5"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.25g",
+   [
+    1e+300
+   ]
+  ],
+  "result": "1.00000000000000005250476e+300"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#.5g",
+   [
+    -2.5
+   ]
+  ],
+  "result": "-2.5000"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#.5g",
+   [
+    1e+300
+   ]
+  ],
+  "result": "1.0000e+300"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%x",
+   [
+    -2.5
+   ]
+  ],
+  "result": "-0x1.4p+01"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%x",
+   [
+    1e+300
+   ]
+  ],
+  "result": "0x1.7e43c8800759cp+996"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.3x",
+   [
+    -2.5
+   ]
+  ],
+  "result": "-0x1.400p+01"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.3x",
+   [
+    1e+300
+   ]
+  ],
+  "result": "0x1.7e4p+996"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%G",
+   [
+    -2.5
+   ]
+  ],
+  "result": "-2.5"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%G",
+   [
+    1e+300
+   ]
+  ],
+  "result": "1E+300"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%E",
+   [
+    -2.5
+   ]
+  ],
+  "result": "-2.500000E+00"
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%E",
+   [
+    1e+300
+   ]
+  ],
+  "result": "1.000000E+300"
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "Hello {{.name}}!",
+   {
+    "name": "world"
+   }
+  ],
+  "result": "Hello world!"
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{.missing}}",
+   {}
+  ],
+  "result": "\u003cundefined\u003e"
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{.a}} {{.b}}",
+   {
+    "a": 1,
+    "b": 1.5
+   }
+  ],
+  "result": "1 1.5"
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{range .items}}[{{.}}]{{end}}",
+   {
+    "items": [
+     1,
+     "a",
+     true,
+     null
+    ]
+   }
+  ],
+  "result": "[1][a][true][\u003cundefined\u003e]"
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{.obj}}",
+   {
+    "obj": {
+     "x": 1,
+     "y": [
+      1,
+      2
+     ]
+    }
+   }
+  ],
+  "result": "map[x:1 y:[1 2]]"
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{.obj.x}}",
+   {
+    "obj": {
+     "x": "deep"
+    }
+   }
+  ],
+  "result": "deep"
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{.obj.missing}}",
+   {
+    "obj": {
+     "x": 1
+    }
+   }
+  ],
+  "result": "\u003cundefined\u003e"
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{if .flag}}yes{{else}}no{{end}}",
+   {
+    "flag": false
+   }
+  ],
+  "result": "no"
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{if .flag}}yes{{else}}no{{end}}",
+   {
+    "flag": true
+   }
+  ],
+  "result": "yes"
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{len .items}}",
+   {
+    "items": [
+     1,
+     2,
+     3
+    ]
+   }
+  ],
+  "result": "3"
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{index .items 1}}",
+   {
+    "items": [
+     "a",
+     "b"
+    ]
+   }
+  ],
+  "result": "b"
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{printf \"%05d\" 42}}",
+   {}
+  ],
+  "result": "00042"
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{printf \"%s-%s\" .a .b}}",
+   {
+    "a": "x",
+    "b": "y"
+   }
+  ],
+  "result": "x-y"
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{.a",
+   {}
+  ],
+  "error": "p.rego:1: eval_builtin_error: strings.render_template: template: template:1: unclosed action"
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{.a}}}}",
+   {
+    "a": 1
+   }
+  ],
+  "result": "1}}"
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{template \"x\"}}",
+   {}
+  ],
+  "error": "p.rego:1: eval_builtin_error: strings.render_template: template: template:1:11: executing \"template\" at \u003c{{template \"x\"}}\u003e: template \"x\" not defined"
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{.a.b}}",
+   {
+    "a": 1
+   }
+  ],
+  "error": "p.rego:1: eval_builtin_error: strings.render_template: template: template:1:4: executing \"template\" at \u003c.a.b\u003e: can't evaluate field b in type interface {}"
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{index .a 5}}",
+   {
+    "a": [
+     1
+    ]
+   }
+  ],
+  "error": "p.rego:1: eval_builtin_error: strings.render_template: template: template:1:2: executing \"template\" at \u003cindex .a 5\u003e: error calling index: index out of range: 5"
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "plain",
+   {}
+  ],
+  "result": "plain"
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "",
+   {}
+  ],
+  "result": ""
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{.}}",
+   {
+    "b": 2,
+    "a": 1
+   }
+  ],
+  "result": "map[a:1 b:2]"
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{range $k, $v := .}}{{$k}}={{$v}};{{end}}",
+   {
+    "b": 2,
+    "a": "x"
+   }
+  ],
+  "result": "a=x;b=2;"
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{.n}}",
+   {
+    "n": null
+   }
+  ],
+  "result": "\u003cundefined\u003e"
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{.s}}",
+   {
+    "s": {
+     "$set": [
+      "a"
+     ]
+    }
+   }
+  ],
+  "error": "p.rego:1: eval_builtin_error: strings.render_template: invalid character '}' after object key"
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{.s}}",
+   {
+    "s": {
+     "$set": []
+    }
+   }
+  ],
+  "error": "p.rego:1: eval_builtin_error: strings.render_template: invalid character 's' looking for beginning of value"
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{.s}}",
+   {
+    "s": {
+     "$set": [
+      1,
+      2
+     ]
+    }
+   }
+  ],
+  "error": "p.rego:1: eval_builtin_error: strings.render_template: invalid character '1' looking for beginning of object key string"
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{.s}}",
+   {
+    "s": {
+     "$set": [
+      "a",
+      "b"
+     ]
+    }
+   }
+  ],
+  "error": "p.rego:1: eval_builtin_error: strings.render_template: invalid character ',' after object key"
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{.x}}",
+   {
+    "x": "a\u0007b"
+   }
+  ],
+  "error": "p.rego:1: eval_builtin_error: strings.render_template: invalid character 'a' in string escape code"
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{.x}}",
+   {
+    "x": "a\u000bb"
+   }
+  ],
+  "error": "p.rego:1: eval_builtin_error: strings.render_template: invalid character 'v' in string escape code"
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{.x}}",
+   {
+    "x": "a\u0001b"
+   }
+  ],
+  "error": "p.rego:1: eval_builtin_error: strings.render_template: invalid character 'x' in string escape code"
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{.x}}",
+   {
+    "x": "ab"
+   }
+  ],
+  "error": "p.rego:1: eval_builtin_error: strings.render_template: invalid character 'x' in string escape code"
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{.x}}",
+   {
+    "x": "a󠀁b"
+   }
+  ],
+  "error": "p.rego:1: eval_builtin_error: strings.render_template: invalid character 'U' in string escape code"
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{.x}}",
+   {
+    "x": "a­b\u2028"
+   }
+  ],
+  "result": "a­b\u2028"
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{.x}}",
+   {
+    "x": "tab\there\nnl \"q\" \\"
+   }
+  ],
+  "result": "tab\there\nnl \"q\" \\"
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{.x}}",
+   {
+    "x": "a\u0007",
+    "y": {
+     "$set": []
+    }
+   }
+  ],
+  "error": "p.rego:1: eval_builtin_error: strings.render_template: invalid character 'a' in string escape code"
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{.a}}",
+   {
+    "a": {
+     "$set": []
+    },
+    "b": "\u0007"
+   }
+  ],
+  "error": "p.rego:1: eval_builtin_error: strings.render_template: invalid character 's' looking for beginning of value"
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{.x}}",
+   {
+    "x": [
+     {
+      "$set": []
+     },
+     1
+    ]
+   }
+  ],
+  "error": "p.rego:1: eval_builtin_error: strings.render_template: invalid character 's' looking for beginning of value"
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{.x}}",
+   {
+    "x": {
+     "$set": [
+      {
+       "$set": [
+        "a"
+       ]
+      }
+     ]
+    }
+   }
+  ],
+  "error": "p.rego:1: eval_builtin_error: strings.render_template: invalid character '{' looking for beginning of object key string"
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{.x}}",
+   {
+    "x": {
+     "$set": [
+      "\u0007"
+     ]
+    }
+   }
+  ],
+  "error": "p.rego:1: eval_builtin_error: strings.render_template: invalid character 'a' in string escape code"
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{.x}} {{.y}}",
+   {
+    "x": 123456789012345678901234567890,
+    "y": 1e400
+   }
+  ],
+  "result": "123456789012345678901234567890 1e400"
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{.x}}",
+   {
+    "x": 1.0
+   }
+  ],
+  "result": "1.0"
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{eq .x \"a\"}}",
+   {
+    "x": "a"
+   }
+  ],
+  "result": "true"
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{printf \"%v\" .x}}",
+   {
+    "x": 2.5
+   }
+  ],
+  "result": "2.5"
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{.x | len}}",
+   {
+    "x": "abc"
+   }
+  ],
+  "result": "3"
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "\u003cno value\u003e",
+   {}
+  ],
+  "result": "\u003cundefined\u003e"
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{.x}}",
+   {
+    "x": "\u003cno value\u003e"
+   }
+  ],
+  "result": "\u003cundefined\u003e"
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{with .x}}{{.}}{{else}}none{{end}}",
+   {}
+  ],
+  "result": "none"
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{nil}}",
+   {}
+  ],
+  "error": "p.rego:1: eval_builtin_error: strings.render_template: template: template:1:2: executing \"template\" at \u003cnil\u003e: nil is not a command"
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{.x.y.z}}",
+   {}
+  ],
+  "result": "\u003cundefined\u003e"
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   1,
+   {}
+  ],
+  "error": "p.rego:1: eval_type_error: strings.render_template: operand 1 must be string but got number"
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "a",
+   1
+  ],
+  "error": "p.rego:1: eval_type_error: strings.render_template: operand 2 must be object but got number"
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "a",
+   []
+  ],
+  "error": "p.rego:1: eval_type_error: strings.render_template: operand 2 must be object but got array"
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   null,
+   null
+  ],
+  "error": "p.rego:1: eval_type_error: strings.render_template: operand 1 must be string but got null"
+ }
+]

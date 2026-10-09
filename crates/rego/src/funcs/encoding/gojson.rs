@@ -82,7 +82,10 @@ fn quote_char(c: u8) -> String {
         _ => {
             let mut buf = [0; 4];
             let s = gofmt::quote_bytes(char::from(c).encode_utf8(&mut buf).as_bytes());
-            let inner = s.strip_prefix('"').and_then(|t| t.strip_suffix('"')).unwrap_or(&s);
+            let inner = s
+                .strip_prefix('"')
+                .and_then(|t| t.strip_suffix('"'))
+                .unwrap_or(&s);
             format!("'{inner}'")
         }
     }
@@ -474,7 +477,10 @@ pub fn unmarshal(data: &[u8]) -> Result<Value, String> {
     let tok = match c {
         b'[' | b'{' => char::from(c).to_string(),
         b']' | b'}' | b':' | b',' => {
-            return Err(format!("invalid character {} looking for beginning of value", quote_char(c)));
+            return Err(format!(
+                "invalid character {} looking for beginning of value",
+                quote_char(c)
+            ));
         }
         _ => {
             let end2 = read_value(data, pos)?;
@@ -493,26 +499,19 @@ pub fn unmarshal(data: &[u8]) -> Result<Value, String> {
 
 /// json.Indent's appendIndent over compact, valid JSON.
 pub fn indent(src: &str, prefix: &str, indent: &str) -> String {
-    let mut dst = String::with_capacity(src.len() * 2);
+    let mut dst: Vec<u8> = Vec::with_capacity(src.len() * 2);
     let mut s = Scanner::new();
     let mut need_indent = false;
     let mut depth = 0usize;
-    let newline = |dst: &mut String, depth: usize| {
-        dst.push('\n');
-        dst.push_str(prefix);
+    let newline = |dst: &mut Vec<u8>, depth: usize| {
+        dst.push(b'\n');
+        dst.extend_from_slice(prefix.as_bytes());
         for _ in 0..depth {
-            dst.push_str(indent);
+            dst.extend_from_slice(indent.as_bytes());
         }
     };
-    let bytes = src.as_bytes();
-    let mut i = 0;
-    while let Some(&c) = bytes.get(i) {
+    for &c in src.as_bytes() {
         let op = s.step(c);
-        // The whole UTF-8 character, which the scanner passes through as it passes
-        // its bytes.
-        let w = super::yaml_width(c);
-        let ch = src.get(i..i + w).unwrap_or("");
-        i += w;
         if op == Op::SkipSpace {
             continue;
         }
@@ -525,21 +524,21 @@ pub fn indent(src: &str, prefix: &str, indent: &str) -> String {
             newline(&mut dst, depth);
         }
         if op == Op::Continue {
-            dst.push_str(ch);
+            dst.push(c);
             continue;
         }
         match c {
             b'{' | b'[' => {
                 need_indent = true;
-                dst.push_str(ch);
+                dst.push(c);
             }
             b',' => {
-                dst.push_str(ch);
+                dst.push(c);
                 newline(&mut dst, depth);
             }
             b':' => {
-                dst.push_str(ch);
-                dst.push(' ');
+                dst.push(c);
+                dst.push(b' ');
             }
             b'}' | b']' => {
                 if need_indent {
@@ -548,10 +547,10 @@ pub fn indent(src: &str, prefix: &str, indent: &str) -> String {
                     depth = depth.saturating_sub(1);
                     newline(&mut dst, depth);
                 }
-                dst.push_str(ch);
+                dst.push(c);
             }
-            _ => dst.push_str(ch),
+            _ => dst.push(c),
         }
     }
-    dst
+    gofmt::lossy(&dst)
 }
