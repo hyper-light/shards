@@ -3210,6 +3210,60 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode
 waits on the user.
 
+### D98. Rego as OPA evaluates it, for buildx's build policies
+
+`shards build --policy` (buildx v0.37.1's, in progress) needs OPA v1.14.1's Rego, with
+OPA's answers. `crates/rego` is shards' own implementation of that Rego, not a binding.
+OPA is Go, and linking it would put a second runtime beside `shards` (rule: one binary).
+Its parts:
+- the scanner and parser;
+- the compiler's stages in OPA's order, including the type checker and the rule index;
+- the evaluator, which is topdown's structure ported, including partial evaluation;
+- OPA's builtins, limited to buildx's allow-list.
+
+Evidence:
+- OPA v1.14.1's source: `ast` (parser, compile.go, check.go, index.go) and `topdown`
+  (eval.go, save.go, bindings.go, copypropagation).
+- buildx v0.37.1's `policy/validate.go`. It runs `rego.Partial` with the input's unknown
+  fields and fetches only the `input.*` refs left in the support modules
+  (`collectUnknowns`, then `trimKey`). Which source metadata a build resolves therefore
+  depends on partial evaluation matching OPA exactly, not just on the final decision.
+
+Held to OPA by `scripts/rego/generate`, which runs OPA v1.14.1 set up as buildx sets it
+up (its `builtins.go` and `builtins.rego`, checked by SHA-256) and records its answers:
+- **Compile and eval:** 178 cases. Compiled modules and errors match byte for byte, and
+  so do results, prints and errors.
+- **Partial evaluation:** 53 of those cases run it, over buildx's unknown lists for
+  image, git and http sources. Partial queries and support modules match byte for byte,
+  including OPA's namespaced variable names (`__local3__3`).
+- **Type checker:** 126 cases, including have/want error texts and `PassesTypeCheck`.
+- **Rule index:** 217 lookups in 56 cases.
+- **Builtins:** 11,660 calls, across strings, regex and glob, collections, time with
+  Go's zone database, and encoding.
+- **Parser and numbers:** 75 parse cases, and Go's `big.Float` number text.
+
+Where OPA itself is random, the oracle measures it and the tests accept any answer OPA
+gave. OPA ranges over Go maps in these places:
+- the order of unsafe-variable errors at one location (six runs);
+- the rule index's frequency map and trie (100 compilers per lookup: one answer for 200
+  of the 210 Lookups, and several for 103 of the 210 AllRules);
+- the type checker's rule graph (20 compilers per case; one case varies);
+- `yaml.marshal` of keys that go-yaml's comparator orders cyclically (6 outputs over 200
+  runs; those keys are left out of the corpus);
+- support modules, which OPA lists from a map; they are compared sorted.
+
+Each of these spots in shards is deterministic and gives one of OPA's answers.
+
+Measured differences, kept:
+- Rego strings in shards are UTF-8, but OPA's can hold any bytes: `base64.decode("/w==")`
+  gives U+FFFD, as OPA's JSON output shows it. A chain that encodes those bytes again
+  differs.
+- Where OPA's Go code panics (for example, patching into a root replaced by `""`),
+  shards returns an error.
+- Rule indices with more than 8 distinct refs or keys range over Go's larger maps in
+  hash order, which can't be reproduced. Lookups there may list rules in another of the
+  orders OPA could take.
+
 ### D97. OSI artifacts of several platforms: an index
 
 `shards build agent|harness|mcp DIR --platform LIST -t NAME` makes one manifest per
