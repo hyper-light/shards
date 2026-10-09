@@ -3099,5 +3099,117 @@
    "input.image.provenance",
    "input.image.signatures"
   ]
+ },
+ {
+  "name": "c-recursion-self",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np if p\n\ndecision := p\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-recursion-else",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np := 1 if input.x else := 2 if q\n\nq if p\n\ndecision := p\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-recursion-function",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nf(x) := y if y := f(x)\n\ndecision := f(1)\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-recursion-package",
+  "modules": [
+   [
+    "lib.rego",
+    "package lib\n\np if data.lib[_]\n"
+   ],
+   [
+    "policy.rego",
+    "package docker\n\ndecision := data.lib.p\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-recursion-modules",
+  "modules": [
+   [
+    "a.rego",
+    "package a\n\np if data.b.q\n"
+   ],
+   [
+    "b.rego",
+    "package b\n\nq if data.a.p\n"
+   ],
+   [
+    "policy.rego",
+    "package docker\n\ndecision := data.a.p\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-recursion-tail",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nx if p\n\np if q\n\nq if r\n\nr if p\n\ndecision := x\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-recursion-two-cycles",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\na if b\n\nb if a\n\nc if d\n\nd if c\n\ne if { a; c }\n\ndecision := e\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-recursion-ref-head",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\na.b[k] := 1 if { some k in [\"x\"]; data.docker.a.c }\n\na.c if data.docker.a.b.x\n\ndecision := a.c\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-recursion-ref-var",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\na.b[k] := 1 if { some k in [\"x\"]; data.docker.a[_] }\n\ndecision := a.b\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-recursion-none-deep",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nr0 := 0\n\nr1 := r0 + 1\n\nr2 := r1 + r0\n\nr3 := r2 + r1\n\nr4 := r3 + r2\n\ndecision := {\"allow\": r4 > 0, \"n\": r4}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
  }
 ]

@@ -1,0 +1,9 @@
+[
+  {"name": "org-image-signed", "file": "org.rego", "input": "image-signed.json"},
+  {"name": "org-image-plain", "file": "org.rego", "input": "image-plain.json"},
+  {"name": "org-git", "file": "org.rego", "input": "git.json"},
+  {"name": "org-http", "file": "org.rego", "input": "http.json"},
+  {"name": "org-image-partial", "file": "org.rego", "input": "image-plain.json", "unknowns": ["input.image.checksum", "input.image.labels", "input.image.user", "input.image.volumes", "input.image.workingDir", "input.image.env", "input.image.hasProvenance", "input.image.provenance", "input.image.signatures"]},
+  {"name": "default-image-signed", "file": "../../src/buildx_default_policy.rego", "input": "image-signed.json"},
+  {"name": "default-image-partial", "file": "../../src/buildx_default_policy.rego", "input": "image-plain.json", "unknowns": ["input.image.checksum", "input.image.labels", "input.image.user", "input.image.volumes", "input.image.workingDir", "input.image.env", "input.image.hasProvenance", "input.image.provenance", "input.image.signatures"]}
+]

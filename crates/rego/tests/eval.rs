@@ -204,14 +204,14 @@ fn parse_term(s: &str) -> shards_rego::ast::Term {
     m.rules[0].head.value.clone().unwrap()
 }
 
-/// OPA orders unsafe-variable errors of one location at random (measured): compare
+/// OPA orders unsafe-variable errors of one location at random (measured), and recursion
+/// errors as it walks a map of the rule tree's children (TreeNode.DepthFirst): compare
 /// those as sets.
 fn normalize(text: &str) -> String {
     let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
-    if lines
-        .iter()
-        .all(|l| l.contains("rego_unsafe_var_error") || l.contains("errors occurred"))
-    {
+    if lines.iter().all(|l| {
+        l.contains("rego_unsafe_var_error") || l.contains("rego_recursion_error") || l.contains("errors occurred")
+    }) {
         lines.sort();
     }
     lines.join("\n")

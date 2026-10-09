@@ -11,6 +11,7 @@ use crate::builtins::{self, Builtin};
 use crate::check;
 use crate::types::Type;
 
+mod graph;
 pub mod localvars;
 pub mod rewrite;
 pub mod safety;
@@ -107,6 +108,8 @@ pub struct Compiler {
     /// The types the checker knows: the builtins', then the rules' (c.TypeEnv).
     pub type_env: check::TypeEnv,
     loader: Option<Loader>,
+    /// The rules' dependencies, which checkRecursion and checkTypes read (c.Graph).
+    graph: Option<graph::DepGraph>,
 }
 
 impl std::fmt::Debug for Compiler {
@@ -143,6 +146,7 @@ impl Compiler {
             print,
             limit_reached: false,
             loader: None,
+            graph: None,
         }
     }
 
@@ -237,13 +241,13 @@ impl Compiler {
     fn resolve_all_refs(&mut self) {
         // getExports: each package's rules' ground prefixes, without repeats.
         let mut exports: HashMap<Vec<String>, Vec<Vec<Term>>> = HashMap::new();
+        let mut seen: std::collections::HashSet<(Vec<String>, Vec<String>)> = std::collections::HashSet::new();
         for m in self.modules.values() {
             let key = ref_key(&m.package.path);
             for r in &m.rules {
                 let prefix = ground_prefix(&r.head.ref_path());
-                let list = exports.entry(key.clone()).or_default();
-                if !list.iter().any(|p| ref_key(p) == ref_key(&prefix)) {
-                    list.push(prefix);
+                if seen.insert((key.clone(), ref_key(&prefix))) {
+                    exports.entry(key.clone()).or_default().push(prefix);
                 }
             }
         }
@@ -646,7 +650,9 @@ impl Compiler {
         }
     }
 
-    /// The rules, else branches included, a rule's refs may name (setGraph's edges).
+    /// The rules, else branches included, a rule's refs may name, by a scan of every rule:
+    /// what graph.rs's index finds, held equal to it by the tests.
+    #[cfg(test)]
     fn dependencies(&self, rule: &Rule) -> Vec<RuleNode> {
         let mut refs: Vec<Vec<Term>> = Vec::new();
         let mut collect = |t: &Term| -> bool {
@@ -698,8 +704,12 @@ impl Compiler {
         Some(r)
     }
 
-    /// checkRecursion: a rule that depends on itself, with the path that leads back.
+    /// checkRecursion: a rule that depends on itself, with the path that leads back. Each
+    /// rule on a cycle is searched for its way back, as OPA searches every rule; one on no
+    /// cycle has none, which the graph's components say for all rules at once.
     fn check_recursion(&mut self) {
+        let graph = self.graph.take().unwrap_or_else(|| graph::DepGraph::new(&self.modules));
+        let cyclic = graph.cyclic();
         let mut errs = Vec::new();
         let paths: Vec<Vec<String>> = self.tree.nodes.keys().cloned().collect();
         for p in &paths {
@@ -707,93 +717,51 @@ impl Compiler {
                 let mut depth = 0;
                 while let Some(rule) = self.rule_node(&(id.0.clone(), id.1, depth)) {
                     let node = (id.0.clone(), id.1, depth);
-                    let mut visited = std::collections::HashSet::new();
-                    let path = self.dfs(&node, &node, &mut visited);
-                    if !path.is_empty() {
-                        let text = |n: &RuleNode| -> String {
-                            let pkg = self
-                                .modules
-                                .get(&n.0)
-                                .map(|m| m.package.path.clone())
-                                .unwrap_or_default();
-                            self.rule_node(n)
-                                .map(|r| text_of_ref(&rule_ref(&pkg, r)))
-                                .unwrap_or_default()
-                        };
-                        let names: Vec<String> = path.iter().rev().map(text).collect();
-                        errs.push(CompileError::new(
-                            RECURSION_ERR,
-                            rule.loc.clone(),
-                            format!("rule {} is recursive: {}", text(&node), names.join(" -> ")),
-                        ));
-                    }
                     depth += 1;
+                    let Some(at) = graph.id(&node) else { continue };
+                    if !cyclic.get(at).copied().unwrap_or(false) {
+                        continue;
+                    }
+                    let path = graph.path_back(at);
+                    if path.is_empty() {
+                        continue;
+                    }
+                    let text = |n: &RuleNode| -> String {
+                        let pkg = self
+                            .modules
+                            .get(&n.0)
+                            .map(|m| m.package.path.clone())
+                            .unwrap_or_default();
+                        self.rule_node(n)
+                            .map(|r| text_of_ref(&rule_ref(&pkg, r)))
+                            .unwrap_or_default()
+                    };
+                    let names: Vec<String> = path
+                        .iter()
+                        .rev()
+                        .filter_map(|&i| graph.nodes.get(i))
+                        .map(text)
+                        .collect();
+                    errs.push(CompileError::new(
+                        RECURSION_ERR,
+                        rule.loc.clone(),
+                        format!("rule {} is recursive: {}", text(&node), names.join(" -> ")),
+                    ));
                 }
             }
         }
+        self.graph = Some(graph);
         self.err(errs);
     }
 
-    /// util.dfsRecursive.
-    fn dfs(
-        &self,
-        u: &RuleNode,
-        z: &RuleNode,
-        visited: &mut std::collections::HashSet<RuleNode>,
-    ) -> Vec<RuleNode> {
-        if !visited.insert(u.clone()) {
-            return Vec::new();
-        }
-        let Some(rule) = self.rule_node(u) else {
-            return Vec::new();
-        };
-        for v in self.dependencies(rule) {
-            if &v == z {
-                return vec![z.clone(), u.clone()];
-            }
-            let mut p = self.dfs(&v, z, visited);
-            if !p.is_empty() {
-                p.push(u.clone());
-                return p;
-            }
-        }
-        Vec::new()
-    }
-
     /// Every rule and else branch, each after the rules it depends on (Graph.Sort).
-    fn sorted_rules(&self) -> Vec<RuleNode> {
-        let mut marked = std::collections::HashSet::new();
-        let mut out = Vec::new();
-        for (name, m) in &self.modules {
-            for (i, rule) in m.rules.iter().enumerate() {
-                let mut depth = 0;
-                let mut r = Some(rule);
-                while let Some(x) = r {
-                    self.sort_visit(&(name.clone(), i, depth), &mut marked, &mut out);
-                    depth += 1;
-                    r = x.else_.as_deref();
-                }
-            }
-        }
-        out
-    }
-
-    /// graphSort.Visit: CheckRecursion has ruled out cycles.
-    fn sort_visit(
-        &self,
-        n: &RuleNode,
-        marked: &mut std::collections::HashSet<RuleNode>,
-        out: &mut Vec<RuleNode>,
-    ) {
-        if !marked.insert(n.clone()) {
-            return;
-        }
-        if let Some(rule) = self.rule_node(n) {
-            for d in self.dependencies(rule) {
-                self.sort_visit(&d, marked, out);
-            }
-        }
-        out.push(n.clone());
+    fn sorted_rules(&mut self) -> Vec<RuleNode> {
+        let graph = self.graph.take().unwrap_or_else(|| graph::DepGraph::new(&self.modules));
+        graph
+            .sorted()
+            .into_iter()
+            .filter_map(|i| graph.nodes.get(i).cloned())
+            .collect()
     }
 
     /// checkTypes: the rules type checked in dependency order, their types kept.

@@ -1163,5 +1163,48 @@
    "builtin/buildx_defaults.rego": "package docker\n\ndocker_github_builder(__local0__, __local1__) = true if { __local0__.hasProvenance; __local4__ = __local0__.signatures[__local3__]; data.docker.docker_github_builder_signature(__local4__, __local1__) }\ndocker_github_builder_tag(__local5__, __local6__, __local7__) = true if { data.docker.docker_github_builder(__local5__, __local6__); __local10__ = __local5__.signatures[__local9__]; sprintf(\"refs/tags/%s\", [__local7__], __local22__); __local10__.signer.sourceRepositoryRef = __local22__ }\ndocker_github_builder_signature(__local11__, __local12__) = true if { __local11__.kind = \"docker-github-builder\"; __local11__.type = \"bundle-v0.3\"; __local11__.signer.certificateIssuer = \"CN=sigstore-intermediate,O=sigstore.dev\"; __local11__.signer.issuer = \"https://token.actions.githubusercontent.com\"; sprintf(\"https://github.com/%s\", [__local12__], __local23__); __local11__.signer.sourceRepositoryURI = __local23__; __local11__.signer.runnerEnvironment = \"github-hosted\"; __local31__ = __local11__.timestamps; count(__local31__, __local24__); gt(__local24__, 0) }\ndocker_github_builder_bundle(__local13__, __local14__, __local15__) = true if { artifact_attestation(__local13__, __local14__, __local25__); __local16__ = __local25__; data.docker.docker_github_builder_signature(__local16__, __local15__) }\ngithub_release_attestation(__local17__) := __local21__ if { __local17__.schema = \"https\"; __local32__ = __local17__.host; lower(__local32__, __local26__); __local26__ = \"github.com\"; __local33__ = __local17__.path; regex.find_all_string_submatch_n(\"^/([^/]+)/([^/]+)/releases/download/[^/]+/.+$\", __local33__, 1, __local27__); __local18__ = __local27__[0]; __local19__ = __local18__[1]; __local20__ = __local18__[2]; sprintf(\"%s/%s\", [__local19__, __local20__], __local28__); github_attestation(__local17__, __local28__, __local29__); __local21__ = __local29__ }",
    "policy.rego": "package docker\n\ndefault allow := false\nallow = true if { input.image.repo = \"alpine\" }\ndecision := __local30__ if { __local34__ = data.docker.allow; __local30__ = {\"allow\": __local34__} }"
   }
+ },
+ {
+  "name": "c-recursion-self",
+  "error": "1 error occurred: policy.rego:3: rego_recursion_error: rule data.docker.p is recursive: data.docker.p -\u003e data.docker.p"
+ },
+ {
+  "name": "c-recursion-else",
+  "error": "2 errors occurred:\npolicy.rego:3: rego_recursion_error: rule data.docker.p is recursive: data.docker.p -\u003e data.docker.q -\u003e data.docker.p\npolicy.rego:5: rego_recursion_error: rule data.docker.q is recursive: data.docker.q -\u003e data.docker.p -\u003e data.docker.q"
+ },
+ {
+  "name": "c-recursion-function",
+  "error": "1 error occurred: policy.rego:3: rego_recursion_error: rule data.docker.f is recursive: data.docker.f -\u003e data.docker.f"
+ },
+ {
+  "name": "c-recursion-package",
+  "error": "1 error occurred: lib.rego:3: rego_recursion_error: rule data.lib.p is recursive: data.lib.p -\u003e data.lib.p"
+ },
+ {
+  "name": "c-recursion-modules",
+  "error": "2 errors occurred:\na.rego:3: rego_recursion_error: rule data.a.p is recursive: data.a.p -\u003e data.b.q -\u003e data.a.p\nb.rego:3: rego_recursion_error: rule data.b.q is recursive: data.b.q -\u003e data.a.p -\u003e data.b.q"
+ },
+ {
+  "name": "c-recursion-tail",
+  "error": "3 errors occurred:\npolicy.rego:5: rego_recursion_error: rule data.docker.p is recursive: data.docker.p -\u003e data.docker.q -\u003e data.docker.r -\u003e data.docker.p\npolicy.rego:7: rego_recursion_error: rule data.docker.q is recursive: data.docker.q -\u003e data.docker.r -\u003e data.docker.p -\u003e data.docker.q\npolicy.rego:9: rego_recursion_error: rule data.docker.r is recursive: data.docker.r -\u003e data.docker.p -\u003e data.docker.q -\u003e data.docker.r"
+ },
+ {
+  "name": "c-recursion-two-cycles",
+  "error": "4 errors occurred:\npolicy.rego:5: rego_recursion_error: rule data.docker.b is recursive: data.docker.b -\u003e data.docker.a -\u003e data.docker.b\npolicy.rego:3: rego_recursion_error: rule data.docker.a is recursive: data.docker.a -\u003e data.docker.b -\u003e data.docker.a\npolicy.rego:7: rego_recursion_error: rule data.docker.c is recursive: data.docker.c -\u003e data.docker.d -\u003e data.docker.c\npolicy.rego:9: rego_recursion_error: rule data.docker.d is recursive: data.docker.d -\u003e data.docker.c -\u003e data.docker.d"
+ },
+ {
+  "name": "c-recursion-ref-head",
+  "error": "2 errors occurred:\npolicy.rego:3: rego_recursion_error: rule data.docker.a.b[__local24__] is recursive: data.docker.a.b[__local24__] -\u003e data.docker.a.c -\u003e data.docker.a.b[__local24__]\npolicy.rego:5: rego_recursion_error: rule data.docker.a.c is recursive: data.docker.a.c -\u003e data.docker.a.b[__local24__] -\u003e data.docker.a.c"
+ },
+ {
+  "name": "c-recursion-ref-var",
+  "error": "1 error occurred: policy.rego:3: rego_recursion_error: rule data.docker.a.b[__local24__] is recursive: data.docker.a.b[__local24__] -\u003e data.docker.a.b[__local24__]"
+ },
+ {
+  "name": "c-recursion-none-deep",
+  "modules": {
+   "builtin/buildx_defaults.rego": "package docker\n\ndocker_github_builder(__local0__, __local1__) = true if { __local0__.hasProvenance; __local4__ = __local0__.signatures[__local3__]; data.docker.docker_github_builder_signature(__local4__, __local1__) }\ndocker_github_builder_tag(__local5__, __local6__, __local7__) = true if { data.docker.docker_github_builder(__local5__, __local6__); __local10__ = __local5__.signatures[__local9__]; sprintf(\"refs/tags/%s\", [__local7__], __local22__); __local10__.signer.sourceRepositoryRef = __local22__ }\ndocker_github_builder_signature(__local11__, __local12__) = true if { __local11__.kind = \"docker-github-builder\"; __local11__.type = \"bundle-v0.3\"; __local11__.signer.certificateIssuer = \"CN=sigstore-intermediate,O=sigstore.dev\"; __local11__.signer.issuer = \"https://token.actions.githubusercontent.com\"; sprintf(\"https://github.com/%s\", [__local12__], __local23__); __local11__.signer.sourceRepositoryURI = __local23__; __local11__.signer.runnerEnvironment = \"github-hosted\"; __local36__ = __local11__.timestamps; count(__local36__, __local24__); gt(__local24__, 0) }\ndocker_github_builder_bundle(__local13__, __local14__, __local15__) = true if { artifact_attestation(__local13__, __local14__, __local25__); __local16__ = __local25__; data.docker.docker_github_builder_signature(__local16__, __local15__) }\ngithub_release_attestation(__local17__) := __local21__ if { __local17__.schema = \"https\"; __local37__ = __local17__.host; lower(__local37__, __local26__); __local26__ = \"github.com\"; __local38__ = __local17__.path; regex.find_all_string_submatch_n(\"^/([^/]+)/([^/]+)/releases/download/[^/]+/.+$\", __local38__, 1, __local27__); __local18__ = __local27__[0]; __local19__ = __local18__[1]; __local20__ = __local18__[2]; sprintf(\"%s/%s\", [__local19__, __local20__], __local28__); github_attestation(__local17__, __local28__, __local29__); __local21__ = __local29__ }",
+   "policy.rego": "package docker\n\nr0 := 0 if { true }\nr1 := __local30__ if { __local39__ = data.docker.r0; plus(__local39__, 1, __local30__) }\nr2 := __local31__ if { __local40__ = data.docker.r1; __local41__ = data.docker.r0; plus(__local40__, __local41__, __local31__) }\nr3 := __local32__ if { __local42__ = data.docker.r2; __local43__ = data.docker.r1; plus(__local42__, __local43__, __local32__) }\nr4 := __local33__ if { __local44__ = data.docker.r3; __local45__ = data.docker.r2; plus(__local44__, __local45__, __local33__) }\ndecision := __local35__ if { __local46__ = data.docker.r4; gt(__local46__, 0, __local34__); __local47__ = data.docker.r4; __local35__ = {\"allow\": __local34__, \"n\": __local47__} }"
+  }
  }
 ]

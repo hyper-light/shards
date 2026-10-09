@@ -101,7 +101,9 @@ fn modules_compile_as_opa_compiles_them() {
             None => want["error"].as_str().unwrap().to_string(),
         };
         // OPA orders unsafe-variable errors of one location at random (a map's range,
-        // then an unstable sort): measured, see scripts/rego. Compare those runs as sets.
+        // then an unstable sort): measured, see scripts/rego. It orders recursion errors
+        // as it ranges over the rule tree's map of children (TreeNode.DepthFirst). Compare
+        // those runs as sets.
         if normalize(&got) != normalize(&wanted) {
             failed.push(format!("--- {name}\ngot:\n{got}\nOPA:\n{wanted}"));
         }
@@ -114,12 +116,101 @@ fn modules_compile_as_opa_compiles_them() {
     );
 }
 
+/// A policy of `n` rules, each reading the one before it and the input, as a large
+/// organization's policy reads its helpers.
+fn chain(n: usize) -> String {
+    let mut s = String::from("package docker\n\ndefault allow := false\n\nr0 if input.image\n\n");
+    for i in 1..n {
+        s.push_str(&format!(
+            "r{i} if {{\n\tr{}\n\tinput.image.repo != \"blocked-{i}\"\n\tsome x in object.get(input.image, \"labels\", {{}})\n\tx != \"deny-{i}\"\n}}\n\n",
+            i - 1
+        ));
+    }
+    s.push_str(&format!("allow if r{}\n\ndecision := {{\"allow\": allow}}\n", n - 1));
+    s
+}
+
+/// The compiler's work grows as OPA's does with the rules a policy has, not with their
+/// square or cube: 2000 rules in a chain compile within a bound that leaves room for a
+/// busy host (OPA v1.14.1 compiles 1600 in 0.27 s on an M5 Max; before the dependency
+/// graph was built once, shards took 3.5 s for 400 and minutes for 2000).
+#[test]
+fn a_long_chain_of_rules_compiles_in_time() {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .stack_size(123 << 20)
+        .spawn(move || {
+            let mut modules = BTreeMap::new();
+            modules.insert(
+                "builtin/buildx_defaults.rego".to_string(),
+                parse_module("builtin/buildx_defaults.rego", include_str!("../src/buildx_defaults.rego")).unwrap(),
+            );
+            modules.insert("chain.rego".to_string(), parse_module("chain.rego", &chain(2000)).unwrap());
+            let mut comp = Compiler::new(modules, host(), true);
+            comp.compile();
+            let _ = tx.send(comp.errors.len());
+        })
+        .unwrap();
+    let errors = rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("2000 rules did not compile within 10 s");
+    assert_eq!(errors, 0);
+}
+
+/// Layers of rules, each rule reading the whole layer below it: few rules, many edges.
+fn layers(width: usize, depth: usize) -> String {
+    let mut s = String::from("package docker\n\n");
+    for i in 0..width {
+        s.push_str(&format!("l0.r{i} := {i}\n"));
+    }
+    for k in 1..depth {
+        for i in 0..width {
+            s.push_str(&format!("l{k}.r{i} if {{ some x in l{}; x != {i} }}\n", k - 1));
+        }
+    }
+    s.push_str(&format!("decision := {{\"allow\": count(l{}) > 0}}\n", depth - 1));
+    s
+}
+
+/// The recursion check searches only the rules on a cycle: OPA searches from every rule
+/// (checkRecursion, one DFSPath each), which on these 6000 rules of 2.75 million edges
+/// walks the edges below every rule again, billions of steps.
+#[test]
+fn a_wide_policy_without_cycles_compiles_in_time() {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .stack_size(123 << 20)
+        .spawn(move || {
+            let mut modules = BTreeMap::new();
+            modules.insert(
+                "builtin/buildx_defaults.rego".to_string(),
+                parse_module("builtin/buildx_defaults.rego", include_str!("../src/buildx_defaults.rego")).unwrap(),
+            );
+            modules.insert("layers.rego".to_string(), parse_module("layers.rego", &layers(500, 12)).unwrap());
+            let mut comp = Compiler::new(modules, host(), true);
+            comp.compile();
+            let _ = tx.send(comp.errors.iter().map(ToString::to_string).collect::<Vec<_>>());
+        })
+        .unwrap();
+    let errors = rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("6000 rules did not compile within 10 s");
+    assert_eq!(errors, Vec::<String>::new());
+}
+
 fn normalize(text: &str) -> String {
     let mut out: Vec<String> = Vec::new();
     let mut run: Vec<String> = Vec::new();
-    let key = |l: &str| l.split(": rego_unsafe_var_error:").next().map(str::to_string);
+    // The run a line's error is ordered within: unsafe-variable errors by location,
+    // recursion errors all together.
+    let key = |l: &str| -> Option<String> {
+        if l.contains(": rego_recursion_error: ") {
+            return Some(String::new());
+        }
+        l.split_once(": rego_unsafe_var_error: ").map(|(at, _)| at.to_string())
+    };
     for line in text.lines() {
-        if line.contains(": rego_unsafe_var_error: ") {
+        if key(line).is_some() {
             if run.first().is_some_and(|f| key(f) != key(line)) {
                 run.sort();
                 out.append(&mut run);

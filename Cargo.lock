@@ -1178,6 +1178,7 @@ dependencies = [
 name = "shards-rego"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "num-bigint",
  "regex",
  "serde_json",
