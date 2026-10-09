@@ -56,7 +56,7 @@ pub(super) fn with<T>(f: impl FnOnce(&mut Sub) -> T) -> Option<T> {
 
 /// A platform's directory name in a local output split by platform (BuildKit's
 /// `platforms.Format`, `/` as `_`): `linux_amd64`, `linux_arm_v7`.
-fn dir_name(p: &Platform) -> String {
+pub(crate) fn dir_name(p: &Platform) -> String {
     show(&platform::format(p)).replace('/', "_")
 }
 

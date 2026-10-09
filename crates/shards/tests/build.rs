@@ -6155,6 +6155,120 @@ fn agents_are_osi_artifacts_made_pushed_and_taken() {
     );
 }
 
+/// An OSI artifact of several platforms (§8 Q1, D97): `--platform` makes a manifest for
+/// each, its config naming its platform and its content `DIR/<os>_<arch>` where there is
+/// one, else `DIR` without those; the name resolves to an index carrying the artifact
+/// type, which `push` sends whole; `AGENT … FROM` takes the guest's manifest out of it.
+#[test]
+fn osi_artifacts_of_several_platforms_are_an_index() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let (port, repos) = common::writable_registry();
+    let home = TempDir::new("build-osi-index-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let guest = if cfg!(target_arch = "aarch64") {
+        "arm64"
+    } else {
+        "amd64"
+    };
+    let other = if guest == "arm64" { "amd64" } else { "arm64" };
+    let dir = TempDir::new("build-osi-index-agent");
+    std::fs::create_dir_all(dir.join(format!("linux_{guest}/bin"))).unwrap();
+    std::fs::write(dir.join(format!("linux_{guest}/bin/run")), format!("{guest}\n")).unwrap();
+    std::fs::create_dir_all(dir.join("bin")).unwrap();
+    std::fs::write(dir.join("bin/run"), "shared\n").unwrap();
+    std::fs::write(
+        dir.join("agent.json"),
+        r#"{"name":"main","version":"1.0.0","run":{"command":["bin/run"]}}"#,
+    )
+    .unwrap();
+    let name = format!("127.0.0.1:{port}/team/multi:1");
+    let platforms = format!("linux/{other},linux/{guest}");
+    let made = shards(&[
+        "build",
+        "agent",
+        dir.to_str().unwrap(),
+        "--platform",
+        &platforms,
+        "-t",
+        &name,
+    ]);
+    assert_eq!(made.status, Some(0), "{}", made.stderr);
+    let pushed = shards(&["push", "agent", &name]);
+    assert_eq!(pushed.status, Some(0), "{}", pushed.stderr);
+    {
+        let repos = repos.lock().unwrap();
+        let (_, index) = repos.manifests["team/multi"]["1"].clone();
+        let index: serde_json::Value = serde_json::from_slice(&index).unwrap();
+        assert_eq!(index["mediaType"], "application/vnd.oci.image.index.v1+json");
+        assert_eq!(index["artifactType"], "application/vnd.osi.agent.v1");
+        let entries = index["manifests"].as_array().unwrap();
+        assert_eq!(entries.len(), 2);
+        for (entry, arch) in entries.iter().zip([other, guest]) {
+            assert_eq!(entry["platform"]["os"], "linux");
+            assert_eq!(entry["platform"]["architecture"], arch);
+            assert_eq!(entry["artifactType"], "application/vnd.osi.agent.v1");
+        }
+    }
+    let removed = shards(&["rm", "agent", &name]);
+    assert_eq!(removed.status, Some(0), "{}", removed.stderr);
+    let ctx = context("build-osi-index-ctx", &format!("FROM {image}\n"));
+    std::fs::write(
+        ctx.join("Agentfile"),
+        format!("FROM {image}\nAGENT main FROM {name}\n"),
+    )
+    .unwrap();
+    let out = TempDir::new("build-osi-index-out");
+    let built = shards(&[
+        "build",
+        "-o",
+        out.join("root").to_str().unwrap(),
+        ctx.to_str().unwrap(),
+    ]);
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    let root = out.join("root");
+    assert_eq!(
+        std::fs::read_to_string(root.join("agents/main/bin/run")).unwrap(),
+        format!("{guest}\n")
+    );
+    assert!(!root.join(format!("agents/main/linux_{guest}")).exists());
+    let config: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(root.join("agents/main.d/osi.json")).unwrap()).unwrap();
+    assert_eq!(config["platform"]["architecture"], guest);
+
+    // The other platform's manifest holds the shared content, without the guest's directory.
+    let other_dir = TempDir::new("build-osi-index-other");
+    std::fs::write(
+        other_dir.join("agent.json"),
+        format!(r#"{{"name":"main","version":"1.0.0","run":{{"command":["bin/run"]}},"platform":{{"os":"linux","architecture":"{guest}"}}}}"#),
+    )
+    .unwrap();
+    let refused = shards(&[
+        "build",
+        "agent",
+        other_dir.to_str().unwrap(),
+        "--platform",
+        &platforms,
+        "-t",
+        "local/bad:1",
+    ]);
+    assert_ne!(refused.status, Some(0));
+    assert!(
+        refused
+            .stderr
+            .contains(&format!("says its platform is linux/{guest}, not linux/{other}")),
+        "{}",
+        refused.stderr
+    );
+}
+
 /// An image with agents is checked before it leaves the build (D55, §9.2): an agent's
 /// directory holding a symlink out of its domain fails the build, naming the path and
 /// where it leads, as does a grant made set-user-ID; one that stays inside builds.

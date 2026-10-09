@@ -46,7 +46,7 @@ mod git;
 pub(crate) mod http;
 #[cfg(unix)]
 mod live;
-mod multi;
+pub(crate) mod multi;
 mod output;
 mod provenance;
 mod remote;
@@ -1014,7 +1014,7 @@ fn show(b: &[u8]) -> String {
 /// `Dedupe` keeps it, where BuildKit would build and export it twice. `local` is the
 /// platform this host's microVMs run, where buildx takes its client's own, which on a
 /// Mac is no platform a Linux build makes.
-fn target_platforms(given: &[String], host: &Platform) -> Result<Vec<Platform>, String> {
+pub(crate) fn target_platforms(given: &[String], host: &Platform) -> Result<Vec<Platform>, String> {
     let mut out: Vec<Platform> = Vec::new();
     for value in given {
         for one in value.split(',') {
@@ -1036,7 +1036,7 @@ fn target_platforms(given: &[String], host: &Platform) -> Result<Vec<Platform>, 
 }
 
 /// The platform this host's microVMs run.
-fn host_platform() -> Platform {
+pub(crate) fn host_platform() -> Platform {
     let arch = match std::env::consts::ARCH {
         "aarch64" => "arm64",
         "x86_64" => "amd64",

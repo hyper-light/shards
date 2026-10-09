@@ -3210,6 +3210,35 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode
 waits on the user.
 
+### D97. OSI artifacts of several platforms: an index
+
+`shards build agent|harness|mcp DIR --platform LIST -t NAME` makes one manifest per
+platform and an OCI index of them, as §8 Q1 asks ("an index for several platforms").
+
+Evidence:
+- The OCI image spec v1.1 (image-index.md): an index's `artifactType`, and the `platform`
+  and `artifactType` of each entry.
+- BuildKit v0.28.1's local exporter: with several platforms it writes each one's files
+  under `<os>_<arch>[_<variant>]`, so that is how a directory lays out per-platform content.
+- `--platform` is read as `shards build` reads it (`build::target_platforms`, which
+  normalizes names as containerd does).
+
+What it does:
+- Each platform's content is `DIR/<os>_<arch>[_<variant>]` where that directory exists.
+  Otherwise it is `DIR`, with every platform directory left out.
+- Each manifest's config records its platform. A config that names a different platform
+  is refused.
+- The index carries the artifact type, at the top and on every entry.
+- The name resolves to the index, and is tagged to this host's manifest (else the first).
+- `shards push` sends the index together with every platform's manifest.
+- `AGENT … FROM` (and `shards pull agent`) takes the guest's manifest out of an index.
+  Before this, an index was refused.
+
+Tested on real microVMs: `osi_artifacts_of_several_platforms_are_an_index`. The guest's
+platform is listed second, so a pull that took the first entry would fail the test.
+Mutation-checked: taking the first entry lays out the shared content in place of the
+guest's.
+
 ### D96. `RUN --device`: CDI devices in a microVM's step
 
 `RUN --device=NAME[,required=true]` gives a step the CDI devices it names, as BuildKit
@@ -3385,8 +3414,10 @@ The last two `BUILDKIT_*` build arguments, as frontend 1.27.1's dockerui reads t
   - Measured: Docker 29.3.1's built-in frontend (BuildKit v0.28.1) predates the option
     and ignores even an unreadable value. shards follows frontend 1.27.1, which its plans
     are held to and which `# syntax=docker/dockerfile:1` runs.
-  - Not done: BuildKit's Git then lets the git CLI print its advice (`hint:` lines).
-    shards' own Git runs no git CLI and prints no advice.
+  - BuildKit v0.28.1, the solver Docker 29.3.1 runs, never reads `git.advice`: its
+    `source/git/source.go` and `util/gitutil/git_cli.go` have no advice at all, so its
+    Git prints no `hint:` lines either way, as shards' prints none. Later BuildKit
+    (v0.34.0 `util/gitutil/git_cli.go:176-222`) passes `GIT_ADVICE` to the git CLI.
 
 Tested:
 - The plan oracle: `add-git-advice` and `context-git-advice` (the scripts now pass

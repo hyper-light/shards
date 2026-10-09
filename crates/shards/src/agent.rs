@@ -93,7 +93,7 @@ fn usage(kind: Kind) -> String {
         Kind::Mcp => "mcp",
     };
     format!(
-        "Usage:\n  shards build {w} DIR -t NAME   make one of DIR and its {}\n  shards push {w} NAME\n  shards pull {w} NAME\n  shards ls {w}\n  shards inspect {w} NAME\n  shards rm {w} NAME",
+        "Usage:\n  shards build {w} DIR -t NAME [--platform LIST]   make one of DIR and its {}\n  shards push {w} NAME\n  shards pull {w} NAME\n  shards ls {w}\n  shards inspect {w} NAME\n  shards rm {w} NAME",
         config_file(kind)
     )
 }
@@ -115,11 +115,16 @@ fn reference(name: &str) -> Result<Reference, String> {
 /// `shards build agent DIR -t NAME`.
 fn build(kind: Kind, args: &[String]) -> Result<(), String> {
     let (mut dir, mut name) = (None, None);
+    let mut platforms: Vec<String> = Vec::new();
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
             "-t" | "--tag" => name = Some(it.next().ok_or("-t needs a name")?.clone()),
             s if s.starts_with("--tag=") => name = Some(s.trim_start_matches("--tag=").to_string()),
+            "--platform" => platforms.push(it.next().ok_or("--platform needs platforms")?.clone()),
+            s if s.starts_with("--platform=") => {
+                platforms.push(s.trim_start_matches("--platform=").to_string())
+            }
             s if s.starts_with('-') => return Err(format!("unknown flag {s}\n{}", usage(kind))),
             s if dir.is_none() => dir = Some(PathBuf::from(s)),
             s => return Err(format!("one directory only, not {s:?} too")),
@@ -129,6 +134,9 @@ fn build(kind: Kind, args: &[String]) -> Result<(), String> {
     let name = reference(&name.ok_or("-t names what it is called")?)?;
     let store = store()?;
     let _lease = store.lease().map_err(|e| e.to_string())?;
+    if !platforms.is_empty() {
+        return build_index(kind, &dir, &name, &platforms, &store);
+    }
     let (desc, _) = make(kind, &dir, &store)?;
     let digest = desc.digest().map_err(|e| e.to_string())?;
     store
@@ -138,9 +146,104 @@ fn build(kind: Kind, args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// An artifact of several platforms (§8 Q1): an index of a manifest for each, its config
+/// naming its platform, its content `DIR/<os>_<arch>[_<variant>]` where there is one, as
+/// BuildKit's local exporter lays out several platforms, else `DIR` itself, those
+/// directories left out. The name resolves to the index, and is this host's manifest.
+fn build_index(
+    kind: Kind,
+    dir: &Path,
+    name: &Reference,
+    given: &[String],
+    store: &Store,
+) -> Result<(), String> {
+    let host = crate::build::host_platform();
+    let wanted = crate::build::target_platforms(given, &host)?;
+    let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
+    let subdirs: Vec<String> = wanted.iter().map(crate::build::multi::dir_name).collect();
+    let skip: Vec<&str> = subdirs.iter().map(String::as_str).collect();
+    let mut manifests = Vec::new();
+    let mut all = Vec::new();
+    for (p, sub) in wanted.iter().zip(&subdirs) {
+        let content = dir.join(sub);
+        let platform = osi::Platform {
+            os: text(&p.os),
+            architecture: text(&p.architecture),
+            variant: (!p.variant.is_empty()).then(|| text(&p.variant)),
+        };
+        let (mut desc, _) = if content.is_dir() {
+            make_in(kind, dir, &content, &[], store, Some(&platform))?
+        } else {
+            make_in(kind, dir, dir, &skip, store, Some(&platform))?
+        };
+        all.extend(contents(store, &desc)?);
+        desc.platform = Some(oci::Platform {
+            architecture: platform.architecture.clone(),
+            os: platform.os.clone(),
+            variant: platform.variant.clone(),
+            os_features: Vec::new(),
+        });
+        manifests.push(desc);
+    }
+    let entries = manifests
+        .iter()
+        .map(|d| {
+            let mut v = serde_json::to_value(d).map_err(|e| e.to_string())?;
+            if let Some(o) = v.as_object_mut() {
+                o.insert("artifactType".into(), kind.artifact_type().into());
+            }
+            Ok(v)
+        })
+        .collect::<Result<Vec<serde_json::Value>, String>>()?;
+    let index = serde_json::to_vec(&serde_json::json!({
+        "schemaVersion": 2,
+        "mediaType": oci::media::OCI_INDEX,
+        "artifactType": kind.artifact_type(),
+        "manifests": entries,
+    }))
+    .map_err(|e| e.to_string())?;
+    let index_digest = sha256(&index)?;
+    store
+        .ingest(&index_digest, index.len() as u64, &mut &index[..])
+        .map_err(|e| e.to_string())?;
+    all.insert(0, index_digest.clone());
+    let parsed = oci::Index {
+        schema_version: 2,
+        media_type: Some(oci::media::OCI_INDEX.into()),
+        manifests: manifests.clone(),
+    };
+    // This host's manifest, else the first: what the name gives a run here.
+    let ours = shards_image::platform::select(&parsed, &shards_image::platform::guest())
+        .or(manifests.first())
+        .cloned()
+        .ok_or("no platforms")?;
+    let ours = Descriptor {
+        platform: None,
+        ..ours
+    };
+    store
+        .tag(&name.to_string(), &ours, &index_digest, &all)
+        .map_err(|e| e.to_string())?;
+    let _ = writeln!(io::stdout(), "{index_digest}");
+    Ok(())
+}
+
 /// The artifact of `dir`: its config (its `agent.json`, with `schemaVersion` filled in),
 /// and its files in one uncompressed tar, all stored. Returns its manifest's descriptor.
 pub fn make(kind: Kind, dir: &Path, store: &Store) -> Result<(Descriptor, Config), String> {
+    make_in(kind, dir, dir, &[], store, None)
+}
+
+/// [`make`] of the config in `dir` and the content of `content`, `skip` left out of it,
+/// for `platform` where one is given: its config names it, and refuses another.
+fn make_in(
+    kind: Kind,
+    dir: &Path,
+    content: &Path,
+    skip: &[&str],
+    store: &Store,
+    platform: Option<&osi::Platform>,
+) -> Result<(Descriptor, Config), String> {
     let cfg_path = dir.join(config_file(kind));
     let text = fs::read(&cfg_path).map_err(|e| format!("{}: {e}", cfg_path.display()))?;
     let mut v: serde_json::Value =
@@ -149,10 +252,25 @@ pub fn make(kind: Kind, dir: &Path, store: &Store) -> Result<(Descriptor, Config
         o.entry("schemaVersion").or_insert(osi::SCHEMA_VERSION.into());
     }
     let bytes = serde_json::to_vec(&v).map_err(|e| e.to_string())?;
-    let config = Config::parse(&bytes).map_err(|e| format!("{}: {e}", cfg_path.display()))?;
+    let mut config = Config::parse(&bytes).map_err(|e| format!("{}: {e}", cfg_path.display()))?;
+    if let Some(p) = platform {
+        if let Some(said) = config.platform.as_ref().filter(|said| *said != p) {
+            return Err(format!(
+                "{} says its platform is {}/{}, not {}/{}",
+                cfg_path.display(),
+                said.os,
+                said.architecture,
+                p.os,
+                p.architecture
+            ));
+        }
+        config.platform = Some(p.clone());
+    }
     let config_bytes = config.to_bytes().map_err(|e| e.to_string())?;
     let mut tar = Vec::new();
-    pack(dir, &[config_file(kind)], &mut tar)?;
+    let mut skipped = vec![config_file(kind)];
+    skipped.extend_from_slice(skip);
+    pack(content, &skipped, &mut tar)?;
     let put = |bytes: &[u8]| -> Result<Digest, String> {
         let d = sha256(bytes)?;
         store
@@ -451,12 +569,32 @@ pub fn fetch(
             let registry = crate::pull::registry(name, None, &|k| std::env::var(k).ok())?;
             let desc = registry.resolve(store, name).map_err(|e| e.to_string())?;
             let bytes = registry.fetch_document(store, &desc).map_err(|e| e.to_string())?;
+            // An index of several platforms: this host's manifest, the name resolving to
+            // the index.
+            let (desc, bytes, index) =
+                match oci::parse_document(&bytes, &desc.media_type).map_err(|e| e.to_string())? {
+                    Document::Index(index) => {
+                        let chosen = shards_image::platform::select(&index, &shards_image::platform::guest())
+                            .cloned()
+                            .ok_or_else(|| format!("{name}: no {} for this platform", want.word()))?;
+                        let bytes = registry
+                            .fetch_document(store, &chosen)
+                            .map_err(|e| e.to_string())?;
+                        (
+                            Descriptor {
+                                platform: None,
+                                ..chosen
+                            },
+                            bytes,
+                            Some(desc.digest().map_err(|e| e.to_string())?),
+                        )
+                    }
+                    Document::Manifest(_) => (desc, bytes, None),
+                };
             let Document::Manifest(m) =
                 oci::parse_document(&bytes, &desc.media_type).map_err(|e| e.to_string())?
             else {
-                return Err(format!(
-                    "{name}: an index; OSI artifacts of several platforms are not read yet"
-                ));
+                return Err(format!("{name}: an index inside an index"));
             };
             let limits = crate::pull::limits()?;
             for part in std::iter::once(&m.config).chain(&m.layers) {
@@ -469,8 +607,10 @@ pub fn fetch(
             if kind != want {
                 return Err(format!("{name} is {}, not {}", a(kind), a(want)));
             }
+            let mut held = contents(store, &desc)?;
+            held.extend(index.clone());
             store
-                .tag(&name.to_string(), &desc, &digest, &contents(store, &desc)?)
+                .tag(&name.to_string(), &desc, index.as_ref().unwrap_or(&digest), &held)
                 .map_err(|e| e.to_string())?;
             desc
         }
@@ -521,6 +661,23 @@ fn push(kind: Kind, args: &[String]) -> Result<(), String> {
     }
     check_content(&store, kind, &m)?;
     let registry = crate::pull::registry_for_push(&name, None, None, &|k| std::env::var(k).ok())?;
+    // Of several platforms, the index: every platform's manifest with it.
+    let resolved = store.resolved(&name.to_string()).map_err(|e| e.to_string())?;
+    let desc = match resolved.filter(|r| r.to_string() != desc.digest) {
+        Some(index) => {
+            let size = std::fs::metadata(store.blob_path(&index))
+                .map_err(|e| format!("{index}: {e}"))?
+                .len();
+            Descriptor {
+                media_type: oci::media::OCI_INDEX.into(),
+                digest: index.to_string(),
+                size: i64::try_from(size).map_err(|e| e.to_string())?,
+                platform: None,
+                annotations: BTreeMap::new(),
+            }
+        }
+        None => desc,
+    };
     shards_registry::push::push(&registry, &store, &desc, name.tag.as_deref(), None, &|_, _| {})
         .map_err(|e| e.to_string())?;
     let _ = writeln!(io::stdout(), "{name}: pushed {}", desc.digest);
