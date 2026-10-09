@@ -14,4 +14,5 @@ pub mod types;
 pub mod value;
 pub mod compile;
 pub mod funcs;
+pub mod index;
 pub mod eval;

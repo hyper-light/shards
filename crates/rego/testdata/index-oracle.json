@@ -1,0 +1,10137 @@
+[
+ {
+  "name": "eq-string",
+  "lookups": [
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "eq-number",
+  "lookups": [
+   {
+    "path": "data.docker.p",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.p",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.p",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.p",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.p",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.p",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "eq-bool-null",
+  "lookups": [
+   {
+    "path": "data.docker.p",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#2",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.p",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#2",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.p",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#2",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.p",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#2",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.p",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#2",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "eq-array",
+  "lookups": [
+   {
+    "path": "data.docker.r",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#3",
+       "policy.rego#1",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.r",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#3",
+       "policy.rego#1",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.r",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#3",
+       "policy.rego#1",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.r",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#3"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#3",
+       "policy.rego#1",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.r",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#3",
+       "policy.rego#1",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.r",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#3",
+       "policy.rego#1",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.r",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#3",
+       "policy.rego#1",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "eq-object-not-indexed",
+  "lookups": [
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "var-vs-scalar",
+  "lookups": [
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "multiple-refs",
+  "lookups": [
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#3",
+       "policy.rego#1",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#3",
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#3",
+       "policy.rego#2",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#3",
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#3",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#3",
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#3"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#3",
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#3"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#3",
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "frequency-order",
+  "lookups": [
+   {
+    "path": "data.docker.p",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#3",
+       "policy.rego#6"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#3",
+       "policy.rego#6",
+       "policy.rego#4",
+       "policy.rego#5"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#3",
+       "policy.rego#6",
+       "policy.rego#4",
+       "policy.rego#5"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#4",
+       "policy.rego#5",
+       "policy.rego#3",
+       "policy.rego#6"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#5",
+       "policy.rego#3",
+       "policy.rego#6",
+       "policy.rego#4"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#4",
+       "policy.rego#5",
+       "policy.rego#3",
+       "policy.rego#6"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.p",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#4"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#3",
+       "policy.rego#6",
+       "policy.rego#4",
+       "policy.rego#5"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#3",
+       "policy.rego#6",
+       "policy.rego#4",
+       "policy.rego#5"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#5",
+       "policy.rego#3",
+       "policy.rego#6",
+       "policy.rego#4"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#4",
+       "policy.rego#5",
+       "policy.rego#3",
+       "policy.rego#6"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#5",
+       "policy.rego#3",
+       "policy.rego#6",
+       "policy.rego#4"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#4",
+       "policy.rego#5",
+       "policy.rego#3",
+       "policy.rego#6"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.p",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#5",
+       "policy.rego#3",
+       "policy.rego#6",
+       "policy.rego#4"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#3",
+       "policy.rego#6",
+       "policy.rego#4",
+       "policy.rego#5"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#4",
+       "policy.rego#5",
+       "policy.rego#3",
+       "policy.rego#6"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#3",
+       "policy.rego#6",
+       "policy.rego#4",
+       "policy.rego#5"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#5",
+       "policy.rego#3",
+       "policy.rego#6",
+       "policy.rego#4"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#4",
+       "policy.rego#5",
+       "policy.rego#3",
+       "policy.rego#6"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.p",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#3",
+       "policy.rego#6",
+       "policy.rego#4",
+       "policy.rego#5"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#5",
+       "policy.rego#3",
+       "policy.rego#6",
+       "policy.rego#4"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#3",
+       "policy.rego#6",
+       "policy.rego#4",
+       "policy.rego#5"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#4",
+       "policy.rego#5",
+       "policy.rego#3",
+       "policy.rego#6"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#5",
+       "policy.rego#3",
+       "policy.rego#6",
+       "policy.rego#4"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#4",
+       "policy.rego#5",
+       "policy.rego#3",
+       "policy.rego#6"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "frequency-order-mixed",
+  "lookups": [
+   {
+    "path": "data.docker.p",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#3",
+       "policy.rego#6"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#3",
+       "policy.rego#4",
+       "policy.rego#5",
+       "policy.rego#9",
+       "policy.rego#6",
+       "policy.rego#7",
+       "policy.rego#8"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#3",
+       "policy.rego#4",
+       "policy.rego#5",
+       "policy.rego#7",
+       "policy.rego#8",
+       "policy.rego#9",
+       "policy.rego#6"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#3",
+       "policy.rego#4",
+       "policy.rego#5",
+       "policy.rego#6",
+       "policy.rego#7",
+       "policy.rego#8",
+       "policy.rego#9"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#3",
+       "policy.rego#4",
+       "policy.rego#5",
+       "policy.rego#8",
+       "policy.rego#9",
+       "policy.rego#6",
+       "policy.rego#7"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#4",
+       "policy.rego#5",
+       "policy.rego#3",
+       "policy.rego#8",
+       "policy.rego#9",
+       "policy.rego#6",
+       "policy.rego#7"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#4",
+       "policy.rego#5",
+       "policy.rego#3",
+       "policy.rego#7",
+       "policy.rego#8",
+       "policy.rego#9",
+       "policy.rego#6"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#3",
+       "policy.rego#4",
+       "policy.rego#5",
+       "policy.rego#6",
+       "policy.rego#7",
+       "policy.rego#8",
+       "policy.rego#9"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#5",
+       "policy.rego#3",
+       "policy.rego#4",
+       "policy.rego#6",
+       "policy.rego#7",
+       "policy.rego#8",
+       "policy.rego#9"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#4",
+       "policy.rego#5",
+       "policy.rego#3",
+       "policy.rego#6",
+       "policy.rego#7",
+       "policy.rego#8",
+       "policy.rego#9"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#5",
+       "policy.rego#3",
+       "policy.rego#4",
+       "policy.rego#7",
+       "policy.rego#8",
+       "policy.rego#9",
+       "policy.rego#6"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#4",
+       "policy.rego#5",
+       "policy.rego#3",
+       "policy.rego#9",
+       "policy.rego#6",
+       "policy.rego#7",
+       "policy.rego#8"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#3",
+       "policy.rego#4",
+       "policy.rego#5",
+       "policy.rego#7",
+       "policy.rego#8",
+       "policy.rego#9",
+       "policy.rego#6"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#5",
+       "policy.rego#3",
+       "policy.rego#4",
+       "policy.rego#6",
+       "policy.rego#7",
+       "policy.rego#8",
+       "policy.rego#9"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#3",
+       "policy.rego#4",
+       "policy.rego#5",
+       "policy.rego#9",
+       "policy.rego#6",
+       "policy.rego#7",
+       "policy.rego#8"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#3",
+       "policy.rego#4",
+       "policy.rego#5",
+       "policy.rego#8",
+       "policy.rego#9",
+       "policy.rego#6",
+       "policy.rego#7"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#5",
+       "policy.rego#3",
+       "policy.rego#4",
+       "policy.rego#8",
+       "policy.rego#9",
+       "policy.rego#6",
+       "policy.rego#7"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#4",
+       "policy.rego#5",
+       "policy.rego#3",
+       "policy.rego#7",
+       "policy.rego#8",
+       "policy.rego#9",
+       "policy.rego#6"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#5",
+       "policy.rego#3",
+       "policy.rego#4",
+       "policy.rego#9",
+       "policy.rego#6",
+       "policy.rego#7",
+       "policy.rego#8"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#4",
+       "policy.rego#5",
+       "policy.rego#3",
+       "policy.rego#9",
+       "policy.rego#6",
+       "policy.rego#7",
+       "policy.rego#8"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.p",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#5",
+       "policy.rego#9"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#5",
+       "policy.rego#3",
+       "policy.rego#4",
+       "policy.rego#8",
+       "policy.rego#9",
+       "policy.rego#6",
+       "policy.rego#7"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#3",
+       "policy.rego#4",
+       "policy.rego#5",
+       "policy.rego#9",
+       "policy.rego#6",
+       "policy.rego#7",
+       "policy.rego#8"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#4",
+       "policy.rego#5",
+       "policy.rego#3",
+       "policy.rego#6",
+       "policy.rego#7",
+       "policy.rego#8",
+       "policy.rego#9"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#4",
+       "policy.rego#5",
+       "policy.rego#3",
+       "policy.rego#7",
+       "policy.rego#8",
+       "policy.rego#9",
+       "policy.rego#6"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#3",
+       "policy.rego#4",
+       "policy.rego#5",
+       "policy.rego#6",
+       "policy.rego#7",
+       "policy.rego#8",
+       "policy.rego#9"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#5",
+       "policy.rego#3",
+       "policy.rego#4",
+       "policy.rego#6",
+       "policy.rego#7",
+       "policy.rego#8",
+       "policy.rego#9"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#3",
+       "policy.rego#4",
+       "policy.rego#5",
+       "policy.rego#6",
+       "policy.rego#7",
+       "policy.rego#8",
+       "policy.rego#9"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#3",
+       "policy.rego#4",
+       "policy.rego#5",
+       "policy.rego#7",
+       "policy.rego#8",
+       "policy.rego#9",
+       "policy.rego#6"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#3",
+       "policy.rego#4",
+       "policy.rego#5",
+       "policy.rego#8",
+       "policy.rego#9",
+       "policy.rego#6",
+       "policy.rego#7"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#5",
+       "policy.rego#3",
+       "policy.rego#4",
+       "policy.rego#7",
+       "policy.rego#8",
+       "policy.rego#9",
+       "policy.rego#6"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#5",
+       "policy.rego#3",
+       "policy.rego#4",
+       "policy.rego#6",
+       "policy.rego#7",
+       "policy.rego#8",
+       "policy.rego#9"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#5",
+       "policy.rego#3",
+       "policy.rego#4",
+       "policy.rego#9",
+       "policy.rego#6",
+       "policy.rego#7",
+       "policy.rego#8"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#4",
+       "policy.rego#5",
+       "policy.rego#3",
+       "policy.rego#8",
+       "policy.rego#9",
+       "policy.rego#6",
+       "policy.rego#7"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.p",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#3",
+       "policy.rego#4",
+       "policy.rego#5",
+       "policy.rego#9",
+       "policy.rego#6",
+       "policy.rego#7",
+       "policy.rego#8"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#3",
+       "policy.rego#4",
+       "policy.rego#5",
+       "policy.rego#6",
+       "policy.rego#7",
+       "policy.rego#8",
+       "policy.rego#9"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#3",
+       "policy.rego#4",
+       "policy.rego#5",
+       "policy.rego#6",
+       "policy.rego#7",
+       "policy.rego#8",
+       "policy.rego#9"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#3",
+       "policy.rego#4",
+       "policy.rego#5",
+       "policy.rego#7",
+       "policy.rego#8",
+       "policy.rego#9",
+       "policy.rego#6"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#5",
+       "policy.rego#3",
+       "policy.rego#4",
+       "policy.rego#6",
+       "policy.rego#7",
+       "policy.rego#8",
+       "policy.rego#9"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#4",
+       "policy.rego#5",
+       "policy.rego#3",
+       "policy.rego#6",
+       "policy.rego#7",
+       "policy.rego#8",
+       "policy.rego#9"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#3",
+       "policy.rego#4",
+       "policy.rego#5",
+       "policy.rego#8",
+       "policy.rego#9",
+       "policy.rego#6",
+       "policy.rego#7"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#5",
+       "policy.rego#3",
+       "policy.rego#4",
+       "policy.rego#7",
+       "policy.rego#8",
+       "policy.rego#9",
+       "policy.rego#6"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#3",
+       "policy.rego#4",
+       "policy.rego#5",
+       "policy.rego#9",
+       "policy.rego#6",
+       "policy.rego#7",
+       "policy.rego#8"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#5",
+       "policy.rego#3",
+       "policy.rego#4",
+       "policy.rego#8",
+       "policy.rego#9",
+       "policy.rego#6",
+       "policy.rego#7"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#3",
+       "policy.rego#4",
+       "policy.rego#5",
+       "policy.rego#8",
+       "policy.rego#9",
+       "policy.rego#6",
+       "policy.rego#7"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#4",
+       "policy.rego#5",
+       "policy.rego#3",
+       "policy.rego#8",
+       "policy.rego#9",
+       "policy.rego#6",
+       "policy.rego#7"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#4",
+       "policy.rego#5",
+       "policy.rego#3",
+       "policy.rego#7",
+       "policy.rego#8",
+       "policy.rego#9",
+       "policy.rego#6"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#3",
+       "policy.rego#4",
+       "policy.rego#5",
+       "policy.rego#7",
+       "policy.rego#8",
+       "policy.rego#9",
+       "policy.rego#6"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#4",
+       "policy.rego#5",
+       "policy.rego#3",
+       "policy.rego#9",
+       "policy.rego#6",
+       "policy.rego#7",
+       "policy.rego#8"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#5",
+       "policy.rego#3",
+       "policy.rego#4",
+       "policy.rego#9",
+       "policy.rego#6",
+       "policy.rego#7",
+       "policy.rego#8"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#5",
+       "policy.rego#3",
+       "policy.rego#4",
+       "policy.rego#6",
+       "policy.rego#7",
+       "policy.rego#8",
+       "policy.rego#9"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#4",
+       "policy.rego#5",
+       "policy.rego#3",
+       "policy.rego#6",
+       "policy.rego#7",
+       "policy.rego#8",
+       "policy.rego#9"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "frequency-sort-quirk",
+  "lookups": [
+   {
+    "path": "data.docker.p",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#4",
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": false,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#4",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": false,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#4"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#4",
+       "policy.rego#5",
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#3"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#4",
+       "policy.rego#5",
+       "policy.rego#0",
+       "policy.rego#3",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#5",
+       "policy.rego#4",
+       "policy.rego#0",
+       "policy.rego#3",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#5",
+       "policy.rego#4",
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#3"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#4",
+       "policy.rego#5",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#3"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#4",
+       "policy.rego#5",
+       "policy.rego#3",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#4",
+       "policy.rego#5",
+       "policy.rego#0",
+       "policy.rego#2",
+       "policy.rego#3",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#3",
+       "policy.rego#4",
+       "policy.rego#5"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#5",
+       "policy.rego#4",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#3"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#2",
+       "policy.rego#3",
+       "policy.rego#1",
+       "policy.rego#4",
+       "policy.rego#5"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#3",
+       "policy.rego#5",
+       "policy.rego#4"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#3",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#4",
+       "policy.rego#5"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#4",
+       "policy.rego#5",
+       "policy.rego#2",
+       "policy.rego#3",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#5",
+       "policy.rego#4",
+       "policy.rego#0",
+       "policy.rego#2",
+       "policy.rego#3",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.p",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#5",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": false,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#5"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#4",
+       "policy.rego#5",
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#3"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#4",
+       "policy.rego#5",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#3"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#4",
+       "policy.rego#5",
+       "policy.rego#0",
+       "policy.rego#2",
+       "policy.rego#3",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#5",
+       "policy.rego#4",
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#3"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#2",
+       "policy.rego#3",
+       "policy.rego#1",
+       "policy.rego#4",
+       "policy.rego#5"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#3",
+       "policy.rego#4",
+       "policy.rego#5"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#4",
+       "policy.rego#5",
+       "policy.rego#0",
+       "policy.rego#3",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#3",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#4",
+       "policy.rego#5"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#5",
+       "policy.rego#4",
+       "policy.rego#0",
+       "policy.rego#2",
+       "policy.rego#3",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#5",
+       "policy.rego#4",
+       "policy.rego#0",
+       "policy.rego#3",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#4",
+       "policy.rego#5",
+       "policy.rego#3",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#5",
+       "policy.rego#4",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#3"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#3",
+       "policy.rego#5",
+       "policy.rego#4"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "ref-through-var",
+  "lookups": [
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "ref-through-var-glob",
+  "lookups": [
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "negation",
+  "lookups": [
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.deny",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.deny",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "naked-ref",
+  "lookups": [
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "glob-direct-ref",
+  "lookups": [
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "glob-delimiters",
+  "lookups": [
+   {
+    "path": "data.docker.p",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.p",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.p",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.p",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.p",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.p",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "glob-not-indexed",
+  "lookups": [
+   {
+    "path": "data.docker.p",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#3",
+       "policy.rego#4",
+       "policy.rego#5",
+       "policy.rego#6"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#3",
+       "policy.rego#4",
+       "policy.rego#5",
+       "policy.rego#6"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.p",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#3",
+       "policy.rego#4",
+       "policy.rego#5"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#3",
+       "policy.rego#4",
+       "policy.rego#5",
+       "policy.rego#6"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.p",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#3",
+       "policy.rego#4",
+       "policy.rego#5",
+       "policy.rego#6"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "glob-escaped",
+  "lookups": [
+   {
+    "path": "data.docker.p",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.p",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.p",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.p",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.p",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "glob-function-arg",
+  "lookups": [
+   {
+    "path": "data.docker.registry",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.registry",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.registry",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.registry",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.registry",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.registry",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#0",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "glob-two-mappers",
+  "lookups": [
+   {
+    "path": "data.docker.p",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.p",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.p",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.p",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "else-chain",
+  "lookups": [
+   {
+    "path": "data.docker.p",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#0"
+      ],
+      "else": [
+       {
+        "rule": "policy.rego#0",
+        "else": [
+         "policy.rego#0.2"
+        ]
+       }
+      ],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0"
+      ],
+      "else": [
+       {
+        "rule": "policy.rego#0",
+        "else": [
+         "policy.rego#0.1",
+         "policy.rego#0.2"
+        ]
+       }
+      ],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.p",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#0.1"
+      ],
+      "else": [
+       {
+        "rule": "policy.rego#0.1",
+        "else": [
+         "policy.rego#0.2"
+        ]
+       }
+      ],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0"
+      ],
+      "else": [
+       {
+        "rule": "policy.rego#0",
+        "else": [
+         "policy.rego#0.1",
+         "policy.rego#0.2"
+        ]
+       }
+      ],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.p",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#0.2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0"
+      ],
+      "else": [
+       {
+        "rule": "policy.rego#0",
+        "else": [
+         "policy.rego#0.1",
+         "policy.rego#0.2"
+        ]
+       }
+      ],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.q",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#1"
+      ],
+      "else": [
+       {
+        "rule": "policy.rego#1",
+        "else": [
+         "policy.rego#1.1"
+        ]
+       }
+      ],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.q",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#1.1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#1"
+      ],
+      "else": [
+       {
+        "rule": "policy.rego#1",
+        "else": [
+         "policy.rego#1.1"
+        ]
+       }
+      ],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.q",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#1"
+      ],
+      "else": [
+       {
+        "rule": "policy.rego#1",
+        "else": [
+         "policy.rego#1.1"
+        ]
+       }
+      ],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "else-chains-several",
+  "lookups": [
+   {
+    "path": "data.docker.p",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#1.2",
+       "policy.rego#0"
+      ],
+      "else": [
+       {
+        "rule": "policy.rego#0",
+        "else": [
+         "policy.rego#0.1"
+        ]
+       }
+      ],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#0",
+       "policy.rego#2"
+      ],
+      "else": [
+       {
+        "rule": "policy.rego#1",
+        "else": [
+         "policy.rego#1.1",
+         "policy.rego#1.2"
+        ]
+       },
+       {
+        "rule": "policy.rego#0",
+        "else": [
+         "policy.rego#0.1"
+        ]
+       }
+      ],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#0"
+      ],
+      "else": [
+       {
+        "rule": "policy.rego#1",
+        "else": [
+         "policy.rego#1.1",
+         "policy.rego#1.2"
+        ]
+       },
+       {
+        "rule": "policy.rego#0",
+        "else": [
+         "policy.rego#0.1"
+        ]
+       }
+      ],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.p",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#1.1"
+      ],
+      "else": [
+       {
+        "rule": "policy.rego#1.1",
+        "else": [
+         "policy.rego#1.2"
+        ]
+       }
+      ],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#0",
+       "policy.rego#2"
+      ],
+      "else": [
+       {
+        "rule": "policy.rego#1",
+        "else": [
+         "policy.rego#1.1",
+         "policy.rego#1.2"
+        ]
+       },
+       {
+        "rule": "policy.rego#0",
+        "else": [
+         "policy.rego#0.1"
+        ]
+       }
+      ],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#0"
+      ],
+      "else": [
+       {
+        "rule": "policy.rego#1",
+        "else": [
+         "policy.rego#1.1",
+         "policy.rego#1.2"
+        ]
+       },
+       {
+        "rule": "policy.rego#0",
+        "else": [
+         "policy.rego#0.1"
+        ]
+       }
+      ],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.p",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#1.2",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#0",
+       "policy.rego#2"
+      ],
+      "else": [
+       {
+        "rule": "policy.rego#1",
+        "else": [
+         "policy.rego#1.1",
+         "policy.rego#1.2"
+        ]
+       },
+       {
+        "rule": "policy.rego#0",
+        "else": [
+         "policy.rego#0.1"
+        ]
+       }
+      ],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#0"
+      ],
+      "else": [
+       {
+        "rule": "policy.rego#1",
+        "else": [
+         "policy.rego#1.1",
+         "policy.rego#1.2"
+        ]
+       },
+       {
+        "rule": "policy.rego#0",
+        "else": [
+         "policy.rego#0.1"
+        ]
+       }
+      ],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.p",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#1.2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#0",
+       "policy.rego#2"
+      ],
+      "else": [
+       {
+        "rule": "policy.rego#1",
+        "else": [
+         "policy.rego#1.1",
+         "policy.rego#1.2"
+        ]
+       },
+       {
+        "rule": "policy.rego#0",
+        "else": [
+         "policy.rego#0.1"
+        ]
+       }
+      ],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#0"
+      ],
+      "else": [
+       {
+        "rule": "policy.rego#1",
+        "else": [
+         "policy.rego#1.1",
+         "policy.rego#1.2"
+        ]
+       },
+       {
+        "rule": "policy.rego#0",
+        "else": [
+         "policy.rego#0.1"
+        ]
+       }
+      ],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "default-rule",
+  "lookups": [
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#1"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.level",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#4"
+      ],
+      "else": [],
+      "default": "policy.rego#3",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#4"
+      ],
+      "else": [],
+      "default": "policy.rego#3",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.level",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [],
+      "else": [],
+      "default": "policy.rego#3",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#4"
+      ],
+      "else": [],
+      "default": "policy.rego#3",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "default-only",
+  "lookups": [
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "function-args",
+  "lookups": [
+   {
+    "path": "data.docker.f",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#3",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#3",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#3",
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#3",
+       "policy.rego#2",
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.f",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#3",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#3",
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#3",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#3",
+       "policy.rego#2",
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.f",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#3",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#3",
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#3",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#3",
+       "policy.rego#2",
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.f",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#3",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#3",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#3",
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#3",
+       "policy.rego#2",
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.f",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#3"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#3",
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#3",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#3",
+       "policy.rego#2",
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.f",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#3",
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#3",
+       "policy.rego#2",
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#3",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#3",
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#3",
+       "policy.rego#2",
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#3",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.f",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#3"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#3",
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#3",
+       "policy.rego#2",
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#3",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "function-two-args",
+  "lookups": [
+   {
+    "path": "data.docker.g",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#0",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.g",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#0",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.g",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#0",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.g",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#0",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.g",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#0",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "function-constant-args",
+  "lookups": [
+   {
+    "path": "data.docker.h",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.h",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.h",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "function-arg-ref-not-indexed",
+  "lookups": [
+   {
+    "path": "data.docker.k",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.k",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "function-else",
+  "lookups": [
+   {
+    "path": "data.docker.f",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#0"
+      ],
+      "else": [
+       {
+        "rule": "policy.rego#0",
+        "else": [
+         "policy.rego#0.2"
+        ]
+       }
+      ],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0"
+      ],
+      "else": [
+       {
+        "rule": "policy.rego#0",
+        "else": [
+         "policy.rego#0.1",
+         "policy.rego#0.2"
+        ]
+       }
+      ],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.f",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#0.1"
+      ],
+      "else": [
+       {
+        "rule": "policy.rego#0.1",
+        "else": [
+         "policy.rego#0.2"
+        ]
+       }
+      ],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0"
+      ],
+      "else": [
+       {
+        "rule": "policy.rego#0",
+        "else": [
+         "policy.rego#0.1",
+         "policy.rego#0.2"
+        ]
+       }
+      ],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.f",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#0.2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0"
+      ],
+      "else": [
+       {
+        "rule": "policy.rego#0",
+        "else": [
+         "policy.rego#0.1",
+         "policy.rego#0.2"
+        ]
+       }
+      ],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "multi-value",
+  "lookups": [
+   {
+    "path": "data.docker.deny",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.deny",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.deny",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "print-not-indexed",
+  "lookups": [
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#2",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#2",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#2",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "early-exit-same-values",
+  "lookups": [
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "early-exit-different-values",
+  "lookups": [
+   {
+    "path": "data.docker.p",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.p",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.p",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.p",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "early-exit-non-ground-value",
+  "lookups": [
+   {
+    "path": "data.docker.p",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.q",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.r",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#3"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#3"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "early-exit-same-node-different-values",
+  "lookups": [
+   {
+    "path": "data.docker.p",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.q",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#3"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#3",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.q",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#3"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#3"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#3",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "partial-object",
+  "lookups": [
+   {
+    "path": "data.docker.obj",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": false
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#0",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": false
+     },
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": false
+     }
+    ]
+   },
+   {
+    "path": "data.docker.obj",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": false
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": false
+     },
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#0",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": false
+     }
+    ]
+   },
+   {
+    "path": "data.docker.obj.fixed",
+    "index": false
+   }
+  ]
+ },
+ {
+  "name": "non-ground-head",
+  "lookups": [
+   {
+    "path": "data.docker.b.c",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": false
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#2",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": false
+     }
+    ]
+   },
+   {
+    "path": "data.docker.b.c",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": false
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#2",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": false
+     }
+    ]
+   },
+   {
+    "path": "data.docker.b.c.d",
+    "index": false
+   },
+   {
+    "path": "data.docker.b",
+    "index": false
+   }
+  ]
+ },
+ {
+  "name": "ground-ref-heads",
+  "lookups": [
+   {
+    "path": "data.docker.a.b",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.a.c",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.a.b2.c",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.a",
+    "index": false
+   }
+  ]
+ },
+ {
+  "name": "unknowns",
+  "lookups": [
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#3",
+       "policy.rego#2",
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#3",
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#3",
+       "policy.rego#0",
+       "policy.rego#2",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#3",
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#3",
+       "policy.rego#2",
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#3",
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#3",
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#3",
+       "policy.rego#0",
+       "policy.rego#2",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#3",
+       "policy.rego#2",
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#3",
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#3",
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#3",
+       "policy.rego#0",
+       "policy.rego#2",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#3",
+       "policy.rego#2",
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#3",
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#3",
+       "policy.rego#0",
+       "policy.rego#2",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#3",
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#3"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#3",
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#3",
+       "policy.rego#0",
+       "policy.rego#2",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#3",
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#3",
+       "policy.rego#2",
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "unknown-args",
+  "lookups": [
+   {
+    "path": "data.docker.f",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.f",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.f",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "data-base-ref",
+  "lookups": [
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "data-virtual-not-indexed",
+  "lookups": [
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#3"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#3",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#3",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "with-not-indexed",
+  "lookups": [
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "equal-captured",
+  "lookups": [
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#3"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#3",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#2",
+       "policy.rego#3",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#3"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#2",
+       "policy.rego#3",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#3",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#3"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#2",
+       "policy.rego#3",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#3",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#3"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#3"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#3",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#2",
+       "policy.rego#3",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "non-ground-refs-in-body",
+  "lookups": [
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#2",
+       "policy.rego#4",
+       "policy.rego#3"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#4",
+       "policy.rego#3"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#4",
+       "policy.rego#3"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#2",
+       "policy.rego#4"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#4",
+       "policy.rego#3"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#4",
+       "policy.rego#3"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "some-in-every",
+  "lookups": [
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#2",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "value-kinds",
+  "lookups": [
+   {
+    "path": "data.docker.p",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#0",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.p",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#1"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#0",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.p",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#0",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.p",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#0",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.p",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#0",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "modules-same-package",
+  "lookups": [
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "b.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "b.rego#0",
+       "c.rego#0",
+       "a.rego#0",
+       "b.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "c.rego#0",
+       "b.rego#0",
+       "a.rego#0",
+       "b.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "b.rego#0",
+       "c.rego#0",
+       "b.rego#1",
+       "a.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "c.rego#0",
+       "b.rego#0",
+       "b.rego#1",
+       "a.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "a.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "b.rego#0",
+       "c.rego#0",
+       "b.rego#1",
+       "a.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "b.rego#0",
+       "c.rego#0",
+       "a.rego#0",
+       "b.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "c.rego#0",
+       "b.rego#0",
+       "a.rego#0",
+       "b.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "c.rego#0",
+       "b.rego#0",
+       "b.rego#1",
+       "a.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "b.rego#0",
+       "c.rego#0",
+       "a.rego#0",
+       "b.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "b.rego#0",
+       "c.rego#0",
+       "b.rego#1",
+       "a.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "c.rego#0",
+       "b.rego#0",
+       "a.rego#0",
+       "b.rego#1"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "c.rego#0",
+       "b.rego#0",
+       "b.rego#1",
+       "a.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "modules-two-packages-one-path",
+  "lookups": [
+   {
+    "path": "data.x.y.z",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "a.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "c.rego#0",
+       "b.rego#0",
+       "a.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.x.y.z",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "b.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "c.rego#0",
+       "b.rego#0",
+       "a.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.x.y.z",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "c.rego#0",
+       "b.rego#0",
+       "a.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "no-index-paths",
+  "lookups": [
+   {
+    "path": "data.docker",
+    "index": false
+   },
+   {
+    "path": "data.nothing",
+    "index": false
+   },
+   {
+    "path": "data.docker.allow.deeper",
+    "index": false
+   }
+  ]
+ },
+ {
+  "name": "buildx-defaults-functions",
+  "lookups": [
+   {
+    "path": "data.docker.docker_github_builder",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "builtin/buildx_defaults.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "builtin/buildx_defaults.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.docker_github_builder_signature",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "builtin/buildx_defaults.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "builtin/buildx_defaults.rego#2"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "buildx-image",
+  "lookups": [
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#1"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#4",
+       "policy.rego#3",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#4",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#3"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#4",
+       "policy.rego#3",
+       "policy.rego#2",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#4",
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#3"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#2"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#4",
+       "policy.rego#3",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#4",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#3"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#4",
+       "policy.rego#3",
+       "policy.rego#2",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#4",
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#3"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#3",
+       "policy.rego#4"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#4",
+       "policy.rego#3"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#4",
+       "policy.rego#3",
+       "policy.rego#2",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#4",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#3"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#4",
+       "policy.rego#3",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#4",
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#3"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#4",
+       "policy.rego#3",
+       "policy.rego#2",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#4",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#3"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#4",
+       "policy.rego#3",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#4",
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#3"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#4",
+       "policy.rego#3",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#4",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#3"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#4",
+       "policy.rego#2",
+       "policy.rego#1",
+       "policy.rego#3"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#4",
+       "policy.rego#3",
+       "policy.rego#2",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.decision",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#5"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#5"
+      ],
+      "else": [],
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "buildx-git",
+  "lookups": [
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#1"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#3",
+       "policy.rego#2",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#3",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#2"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#3",
+       "policy.rego#2",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#3",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#3"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#3",
+       "policy.rego#2",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#3",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#3",
+       "policy.rego#2",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#3",
+       "policy.rego#1",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.deny",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#4"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#4"
+      ],
+      "else": [],
+      "kind": "multi",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "buildx-http",
+  "lookups": [
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#1"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#4",
+       "policy.rego#2",
+       "policy.rego#3"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#4",
+       "policy.rego#2",
+       "policy.rego#3",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#4",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#3"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#2"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#4",
+       "policy.rego#2",
+       "policy.rego#3"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#4",
+       "policy.rego#2",
+       "policy.rego#3",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#4",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#3"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#3"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#4",
+       "policy.rego#2",
+       "policy.rego#3"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#4",
+       "policy.rego#2",
+       "policy.rego#3",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#4",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#3"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#4"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#4",
+       "policy.rego#2",
+       "policy.rego#3"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#4",
+       "policy.rego#2",
+       "policy.rego#3",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#4",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#3"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#4",
+       "policy.rego#2",
+       "policy.rego#3"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#4",
+       "policy.rego#2",
+       "policy.rego#3",
+       "policy.rego#1"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#4",
+       "policy.rego#1",
+       "policy.rego#2",
+       "policy.rego#3"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "buildx-decision-else",
+  "lookups": [
+   {
+    "path": "data.docker.decision",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#0"
+      ],
+      "else": [
+       {
+        "rule": "policy.rego#0",
+        "else": [
+         "policy.rego#0.2"
+        ]
+       }
+      ],
+      "default": "policy.rego#1",
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0"
+      ],
+      "else": [
+       {
+        "rule": "policy.rego#0",
+        "else": [
+         "policy.rego#0.1",
+         "policy.rego#0.2"
+        ]
+       }
+      ],
+      "default": "policy.rego#1",
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.decision",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#0.1"
+      ],
+      "else": [
+       {
+        "rule": "policy.rego#0.1",
+        "else": [
+         "policy.rego#0.2"
+        ]
+       }
+      ],
+      "default": "policy.rego#1",
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0"
+      ],
+      "else": [
+       {
+        "rule": "policy.rego#0",
+        "else": [
+         "policy.rego#0.1",
+         "policy.rego#0.2"
+        ]
+       }
+      ],
+      "default": "policy.rego#1",
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.decision",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#0.2"
+      ],
+      "else": [],
+      "default": "policy.rego#1",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#0"
+      ],
+      "else": [
+       {
+        "rule": "policy.rego#0",
+        "else": [
+         "policy.rego#0.1",
+         "policy.rego#0.2"
+        ]
+       }
+      ],
+      "default": "policy.rego#1",
+      "kind": "single",
+      "early_exit": false,
+      "only_ground_refs": true
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "buildx-mixed-sources",
+  "lookups": [
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#5"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#4",
+       "policy.rego#3",
+       "policy.rego#2",
+       "policy.rego#5"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#4",
+       "policy.rego#3",
+       "policy.rego#5",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#3",
+       "policy.rego#4",
+       "policy.rego#2",
+       "policy.rego#5"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#3",
+       "policy.rego#4",
+       "policy.rego#5",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#1"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#4",
+       "policy.rego#3",
+       "policy.rego#2",
+       "policy.rego#5"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#4",
+       "policy.rego#3",
+       "policy.rego#5",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#3",
+       "policy.rego#4",
+       "policy.rego#2",
+       "policy.rego#5"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#3",
+       "policy.rego#4",
+       "policy.rego#5",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#4",
+       "policy.rego#3"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#3",
+       "policy.rego#4"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#4",
+       "policy.rego#3",
+       "policy.rego#2",
+       "policy.rego#5"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#4",
+       "policy.rego#3",
+       "policy.rego#5",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#3",
+       "policy.rego#4",
+       "policy.rego#2",
+       "policy.rego#5"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#3",
+       "policy.rego#4",
+       "policy.rego#5",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   },
+   {
+    "path": "data.docker.allow",
+    "index": true,
+    "lookup": [
+     {
+      "rules": [
+       "policy.rego#2",
+       "policy.rego#5"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#5",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ],
+    "all": [
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#4",
+       "policy.rego#3",
+       "policy.rego#5",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#4",
+       "policy.rego#3",
+       "policy.rego#2",
+       "policy.rego#5"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#3",
+       "policy.rego#4",
+       "policy.rego#2",
+       "policy.rego#5"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     },
+     {
+      "rules": [
+       "policy.rego#1",
+       "policy.rego#3",
+       "policy.rego#4",
+       "policy.rego#5",
+       "policy.rego#2"
+      ],
+      "else": [],
+      "default": "policy.rego#0",
+      "kind": "single",
+      "early_exit": true,
+      "only_ground_refs": true
+     }
+    ]
+   }
+  ]
+ }
+]

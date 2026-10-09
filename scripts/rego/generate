@@ -57,3 +57,6 @@ SHARDS_PARSE="$root/crates/rego/testdata/parse.json" \
 SHARDS_REGO_CASES="$root/crates/rego/testdata/cases.json" \
 	SHARDS_COMPILE_OUT="$root/crates/rego/testdata/compile-oracle.json" \
 	go test -count=1 -run '^TestShardsCompile$' .
+SHARDS_INDEX="$root/crates/rego/testdata/index.json" \
+	SHARDS_INDEX_OUT="$root/crates/rego/testdata/index-oracle.json" \
+	go test -count=1 -run '^TestShardsIndex$' .

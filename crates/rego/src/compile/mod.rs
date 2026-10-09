@@ -90,6 +90,8 @@ pub struct Compiler {
     /// Generated names to the names they replace (RewrittenVars).
     pub rewritten: HashMap<Var, Var>,
     pub tree: RuleTree,
+    /// The rule indices, by their rule tree node's path (TreeNode.Index).
+    pub indices: BTreeMap<Vec<String>, crate::index::RuleIndex>,
     vargen: localvars::LocalVarGen,
     functions: Vec<Function>,
     print: bool,
@@ -108,6 +110,7 @@ impl Compiler {
             errors: Vec::new(),
             rewritten: HashMap::new(),
             tree: RuleTree::default(),
+            indices: BTreeMap::new(),
             vargen: localvars::LocalVarGen::new(VarSet::new(), ""),
             functions,
             print,
@@ -155,7 +158,7 @@ impl Compiler {
 
     /// Compiles the modules, stage by stage, stopping after the first stage that fails.
     pub fn compile(&mut self) {
-        let stages: [fn(&mut Compiler); 21] = [
+        let stages: [fn(&mut Compiler); 22] = [
             Compiler::resolve_all_refs,
             Compiler::init_local_var_gen,
             rewrite::rewrite_rule_head_refs,
@@ -177,6 +180,7 @@ impl Compiler {
             Compiler::check_safety_rule_bodies,
             Compiler::rewrite_equals_and_dynamics,
             Compiler::check_recursion,
+            crate::index::build_rule_indices,
         ];
         for stage in stages {
             stage(self);
