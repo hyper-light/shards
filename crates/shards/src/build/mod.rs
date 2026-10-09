@@ -36,6 +36,7 @@ use shards_registry::pull::{self as registry_pull, Event};
 mod azblob;
 mod builder;
 mod cache;
+mod cdi;
 mod compress;
 mod domains;
 mod estargz;
@@ -1932,6 +1933,46 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
         exec.stage()?
     };
     let mut downloads = http::Downloads::start(sources, &dir, limits)?;
+    // The CDI devices each step asks for (D96), found and granted before any step runs,
+    // as BuildKit's solver checks them as it loads the definition (ValidateEntitlements).
+    let mut cdi_edits: std::collections::HashMap<usize, cdi::Edits> = std::collections::HashMap::new();
+    if def
+        .ops
+        .iter()
+        .any(|op| matches!(&op.kind, OpKind::Exec { devices, .. } if !devices.is_empty()))
+    {
+        // BuildKit's `cdi.autoAllowed`, which buildkitd's configuration gives.
+        let auto: Vec<String> = std::env::var("SHARDS_CDI_AUTO_ALLOWED")
+            .map(|v| {
+                v.split(',')
+                    .filter(|d| !d.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let registry = cdi::Registry::load(&cdi::spec_dirs(&|k| std::env::var(k).ok()), &auto);
+        let grant = allowed.devices();
+        for (i, op) in def.ops.iter().enumerate() {
+            let OpKind::Exec { devices, .. } = &op.kind else {
+                continue;
+            };
+            if devices.is_empty() {
+                continue;
+            }
+            let requests: Vec<(String, bool)> = devices.iter().map(|d| (show(&d.name), d.optional)).collect();
+            let names = registry.grant(&requests, grant.as_ref()).map_err(|e| {
+                let unread = if registry.errors.is_empty() {
+                    String::new()
+                } else {
+                    format!(" (CDI specs not read: {})", registry.errors.join("; "))
+                };
+                format!("failed to build: failed to solve: {e}{unread}")
+            })?;
+            if !names.is_empty() {
+                cdi_edits.insert(i, registry.edits(&names));
+            }
+        }
+    }
     let log_limits = LogLimits::from_env();
     let mut builder: Option<builder::Builder> = None;
     // Its steps' seccomp filter, compiled once for the kernel the builder boots.
@@ -2247,7 +2288,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
                 network,
                 security,
                 secret_env,
-                devices,
+                ..
             } => {
                 let v = progress.borrow_mut().start(&name);
                 // A step for a platform this host's microVMs do not run is refused here, at
@@ -2260,16 +2301,6 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
                         show(&platform::format(&host_platform())),
                         show(&platform::format(p)),
                         show(&platform::format(p)),
-                    );
-                    return Err(fail(&v, &why));
-                }
-                // No CDI devices reach a builder: an optional one is left out, a required
-                // one fails as BuildKit fails it without CDI (solver/llbsolver/vertex.go).
-                if let Some(d) = devices.iter().find(|d| !d.optional) {
-                    let why = format!(
-                        "CDI device {:?} is required by step {:?}, but CDI device support is disabled",
-                        show(&d.name),
-                        name
                     );
                     return Err(fail(&v, &why));
                 }
@@ -2316,6 +2347,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
                     seccomp: &step_filter,
                     agents: &agents,
                     resources: meta.linux_resources.as_ref(),
+                    cdi: cdi_edits.get(&i),
                 };
                 let mut log = StepLog::new(log_limits);
                 let r = exec.run(b, &inputs, &op, &name, &mut |which, bytes| {

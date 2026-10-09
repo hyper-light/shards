@@ -49,6 +49,7 @@ shards-archive = { path = "../archive" }
 aws-lc-rs = { version = "1.18.1", default-features = false, features = ["aws-lc-sys"] }
 base64 = "0.23.1"
 zeroize = "1"
+yaml-rust2 = "0.13.0"
 time = { version = "0.3.55", features = ["parsing"] }
 
 [target.'cfg(unix)'.dependencies]

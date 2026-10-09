@@ -3210,6 +3210,85 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode
 waits on the user.
 
+### D96. `RUN --device`: CDI devices in a microVM's step
+
+`RUN --device=NAME[,required=true]` gives a step the CDI devices it names, as BuildKit
+v0.28.1 gives them.
+
+Evidence:
+- BuildKit's `cdidevices` manager and `ValidateEntitlements` (solver/llbsolver).
+- The Container Device Interface v1.1.0 (tags.cncf.io/container-device-interface,
+  BuildKit's pin): its spec types, version rules, validation, cache and `Apply`.
+- `scripts/cdi/generate` runs CDI's own `ParseSpec` over eight specs
+  (`testdata/cdi-specs.json`) and records what it makes of each, or its error.
+
+What it does, as BuildKit and CDI do:
+- Specs are read from `/etc/cdi` then `/var/run/cdi` (`SHARDS_CDI_SPEC_DIRS` names
+  others), each directory's `.json` and `.yaml` in name order.
+  - A later directory's device wins over an earlier's. A device two specs of one
+    directory give is dropped.
+  - A spec that cannot be read is said where a device is wanted.
+  - Validation is CDI's: known versions and the least each feature needs, vendor, class
+    and device names, environment, device nodes, hooks, mounts, unknown fields refused.
+  - YAML is read as CDI reads it through sigs.k8s.io/yaml and go-yaml v2: YAML 1.1's plain
+    scalars (`0660` octal, `yes` and `on` true, `~` null), a duplicate key refused, and
+    a number or bool turned to a string wherever a string is wanted (a device named `0`).
+    The reader is yaml-rust2's event stream; the resolution is go-yaml v2's, ported.
+- Names resolve as BuildKit's manager resolves them:
+  - `VENDOR/CLASS=NAME` is that device;
+  - `VENDOR/CLASS` is the first of its kind;
+  - `VENDOR/CLASS=*` is every one;
+  - anything else is the devices whose `org.mobyproject.buildkit.device.class`
+    annotation it is.
+  
+  A required device not found is refused ("required device … is not registered"). An
+  optional one, the default, is left out.
+- Grants are BuildKit's, checked before any step runs:
+  - `--allow device` grants every device;
+  - `--allow device=NAME` grants that one;
+  - `device=NAME,alias=A` gives NAME to a step that asks for A;
+  - otherwise only devices annotated `org.mobyproject.buildkit.device.autoallow`, or
+    named in `SHARDS_CDI_AUTO_ALLOWED` (buildkitd's `cdi.autoAllowed`), pass;
+  - anything else is refused: "device … is requested by the build but not allowed".
+- Edits merge in CDI's order: each device's spec's own once, then the device's.
+  Environment replaces its key or follows (`AddMultipleProcessEnv`).
+
+What a microVM's step makes of them:
+- The environment and `additionalGids` are the step's.
+- A mount's host path is mounted as a snapshot of it, a file alone or a directory,
+  read-only unless its options say `rw` (writes then stay with the step). A `tmpfs`
+  mount is a tmpfs. Mounts are sorted by depth, as CDI sorts them.
+- A device node is made in the step's root from the builder guest's own device at its
+  `hostPath` (or its path), with that device's numbers, never the host's. A host's
+  major and minor name nothing in a guest, and might name another device there. Its
+  mode is the spec's or the device's, its owner the spec's or the step's user's. A FIFO
+  is made as one. A guest without the device refuses the step, naming it.
+- What only a container's host can do is refused, naming each:
+  - a hook (`createContainer` and the like), a host binary run beside the container;
+  - a host network interface moved in (`netDevices`);
+  - an Intel RDT class.
+
+  A GPU's device is not in a microVM until it is passed through, which shards does not
+  yet do.
+
+Better than BuildKit's: a device's node is the guest's own, so a spec written for the host
+cannot hand a step a device node it did not mean.
+
+Tested:
+- `specs_parse_as_cdis_parse_spec_parses_them`: the eight oracle specs, field for field.
+- `devices_resolve_and_are_granted_as_buildkits`, `later_directories_win_and_conflicts_drop`
+  and `specs_are_checked_as_cdi_checks_them`.
+- `run_steps_take_cdi_devices` (a builder microVM, a YAML spec):
+  - the device's and spec's environment;
+  - the step's groups with 4242;
+  - a host file at `/opt/vendor/data.txt`;
+  - `/dev/vendor0` made from the guest's `/dev/zero` (`c 1:5`, mode `0660`);
+  - granted by `--allow device` and by name;
+  - refused ungranted, refused unregistered when required;
+  - an optional unregistered device left out;
+  - a hook refused by name.
+- Mutation-checked: without the environment edits the test fails.
+
 ### D95. The azblob cache signed in with an Azure AD identity
 
 Without `secret_access_key`, BuildKit's azblob cache signs in with azidentity's

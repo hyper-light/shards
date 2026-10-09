@@ -136,6 +136,22 @@ pub struct Step {
     /// mount's can be (an SBOM scan's `/run/out`, D81): each its index in `mounts` and the
     /// layer its changes become.
     pub outputs: Vec<(u32, u32)>,
+    /// The device nodes its CDI devices bring (D96), made in its `/dev`.
+    pub devices: Vec<Device>,
+}
+
+/// A device node a step is given: its path in the step, the guest's device it is (`from`,
+/// the path itself where empty; never a host's numbers, which name nothing in a guest),
+/// the kind it must be (`c`, `b`, a FIFO `p`, or 0 for the guest device's own), and its
+/// mode (the guest device's where `None`) and owner.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Device {
+    pub path: Vec<u8>,
+    pub from: Vec<u8>,
+    pub kind: u8,
+    pub mode: Option<u32>,
+    pub uid: u32,
+    pub gid: u32,
 }
 
 fn put_u32(out: &mut Vec<u8>, n: u32) {
@@ -265,6 +281,16 @@ impl Step {
             put_u32(&mut out, mount);
             put_u32(&mut out, layer);
         }
+        put_len(&mut out, self.devices.len());
+        for d in &self.devices {
+            put_bytes(&mut out, &d.path);
+            put_bytes(&mut out, &d.from);
+            out.push(d.kind);
+            out.push(u8::from(d.mode.is_some()));
+            put_u32(&mut out, d.mode.unwrap_or(0));
+            put_u32(&mut out, d.uid);
+            put_u32(&mut out, d.gid);
+        }
         out
     }
 
@@ -349,6 +375,23 @@ impl Step {
         for _ in 0..n {
             outputs.push((r.u32()?, r.u32()?));
         }
+        let n = r.count(19)?;
+        let mut devices = Vec::with_capacity(n);
+        for _ in 0..n {
+            let path = r.bytes()?;
+            let from = r.bytes()?;
+            let kind = r.u8()?;
+            let has_mode = r.flag()?;
+            let mode = r.u32()?;
+            devices.push(Device {
+                path,
+                from,
+                kind,
+                mode: has_mode.then_some(mode),
+                uid: r.u32()?,
+                gid: r.u32()?,
+            });
+        }
         r.0.is_empty().then_some(Step {
             root,
             upper,
@@ -368,6 +411,7 @@ impl Step {
             seccomp,
             cgroup,
             outputs,
+            devices,
         })
     }
 }
@@ -509,6 +553,24 @@ mod tests {
             seccomp: vec![0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 255, 127],
             cgroup: vec![(b"memory.max".to_vec(), b"67108864".to_vec())],
             outputs: vec![(1, 9)],
+            devices: vec![
+                Device {
+                    path: b"/dev/fuse".to_vec(),
+                    from: Vec::new(),
+                    kind: 0,
+                    mode: None,
+                    uid: 0,
+                    gid: 0,
+                },
+                Device {
+                    path: b"/dev/vendor0".to_vec(),
+                    from: b"/dev/null".to_vec(),
+                    kind: b'c',
+                    mode: Some(0o660),
+                    uid: 1000,
+                    gid: 44,
+                },
+            ],
         };
         let bytes = step.encode();
         assert_eq!(Step::decode(&bytes), Some(step));

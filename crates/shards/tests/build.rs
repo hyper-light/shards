@@ -2935,6 +2935,91 @@ fn dockeruis_build_args_are_read_as_it_reads_them() {
     assert_eq!(build("BUILDKIT_GIT_ADVICE=true").status, Some(0));
 }
 
+/// `RUN --device`, CDI devices as BuildKit gives them to a step (D96), in a microVM: a spec
+/// read from its directory (YAML), the device found by its name and granted by `--allow
+/// device`; its environment and groups the step's, a host file mounted read-only where the
+/// spec puts it, a device node made from the guest's own device of its host path. Refused
+/// as BuildKit refuses them: a device not granted, a required device not registered; an
+/// optional one not registered left out; and what only a host can do, a hook, by name.
+#[test]
+fn run_steps_take_cdi_devices() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let specs = TempDir::new("cdi-specs");
+    let lib = TempDir::new("cdi-lib");
+    std::fs::write(lib.join("data.txt"), "from the host\n").unwrap();
+    std::fs::write(
+        specs.join("vendor.yaml"),
+        format!(
+            "cdiVersion: \"0.7.0\"\nkind: vendor.com/dev\ncontainerEdits:\n  env: [VENDOR=1]\ndevices:\n  - name: zero\n    containerEdits:\n      env: [ZERO=yes]\n      additionalGids: [4242]\n      deviceNodes:\n        - path: /dev/vendor0\n          hostPath: /dev/zero\n          fileMode: 0660\n      mounts:\n        - hostPath: {}\n          containerPath: /opt/vendor/data.txt\n          options: [ro, bind]\n  - name: hooked\n    containerEdits:\n      hooks:\n        - hookName: createContainer\n          path: /usr/bin/vendor-hook\n",
+            lib.join("data.txt").display()
+        ),
+    )
+    .unwrap();
+    let home = TempDir::new("cdi-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+        ("SHARDS_CDI_SPEC_DIRS", specs.as_os_str()),
+    ];
+    let build = |dockerfile: &str, extra: &[&str]| {
+        let ctx = context("cdi-ctx", dockerfile);
+        let mut args = vec!["build", "--progress=plain", "--no-cache"];
+        args.extend_from_slice(extra);
+        args.push(ctx.to_str().unwrap());
+        let r = run_shards_env(&[], &args, &env, TIMEOUT);
+        (r.status, r.stderr)
+    };
+    let run = format!(
+        "FROM {image}\nUSER root\nRUN --device=vendor.com/dev=zero --device=vendor.com/absent,required=false [\"/bin/testguest\", \"fs\", \"print:/proc/self/environ\", \"print:/proc/self/status\", \"print:/opt/vendor/data.txt\", \"dev:/dev/vendor0\"]\n"
+    );
+    let (code, log) = build(&run, &["--allow", "device"]);
+    assert_eq!(code, Some(0), "{log}");
+    assert!(log.contains("VENDOR=1") && log.contains("ZERO=yes"), "{log}");
+    assert!(
+        log.lines().any(|l| l.contains("Groups:") && l.contains("4242")),
+        "{log}"
+    );
+    assert!(log.contains("from the host"), "{log}");
+    // /dev/zero's numbers, 1:5, the mode the spec gives.
+    assert!(log.contains("/dev/vendor0 c 1:5 660"), "{log}");
+    // Granted by name too.
+    let (code, log) = build(&run, &["--allow", "device=vendor.com/dev=zero"]);
+    assert_eq!(code, Some(0), "{log}");
+    // Not granted.
+    let (code, log) = build(&run, &[]);
+    assert_ne!(code, Some(0));
+    assert!(
+        log.contains("device vendor.com/dev=zero is requested by the build but not allowed"),
+        "{log}"
+    );
+    // A required device not registered (`--device` is optional unless `required=true`).
+    let (code, log) = build(
+        &format!(
+            "FROM {image}\nRUN --device=vendor.com/absent,required=true [\"/bin/testguest\", \"exit\", \"0\"]\n"
+        ),
+        &["--allow", "device"],
+    );
+    assert_ne!(code, Some(0));
+    assert!(
+        log.contains("required device \"vendor.com/absent\" is not registered"),
+        "{log}"
+    );
+    // A hook, which only a host runs.
+    let (code, log) = build(
+        &format!("FROM {image}\nRUN --device=vendor.com/dev=hooked [\"/bin/testguest\", \"exit\", \"0\"]\n"),
+        &["--allow", "device"],
+    );
+    assert_ne!(code, Some(0));
+    assert!(
+        log.contains("a createContainer hook (/usr/bin/vendor-hook)"),
+        "{log}"
+    );
+}
+
 /// A ustar archive of `files` (path, bytes), regular files mode 0644, as a client's
 /// context archive would hold them.
 fn ustar(files: &[(&str, &[u8])]) -> Vec<u8> {

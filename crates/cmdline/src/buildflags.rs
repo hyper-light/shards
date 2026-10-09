@@ -877,12 +877,47 @@ pub struct Entitlements {
 }
 
 impl Entitlements {
+    /// The `device` entitlements merged, as BuildKit's `DevicesConfig.Merge` merges them:
+    /// none where none was given.
+    pub fn devices(&self) -> Option<DevicesGrant> {
+        let mut out: Option<DevicesGrant> = None;
+        for g in &self.granted {
+            let (key, rest) = g.split_once('=').map_or((g.as_str(), ""), |(k, r)| (k, r));
+            if key != DEVICE {
+                continue;
+            }
+            let grant = out.get_or_insert_with(DevicesGrant::default);
+            if rest.is_empty() {
+                grant.all = true;
+                continue;
+            }
+            let fields = go::csv_fields(rest.as_bytes()).unwrap_or_default();
+            let mut fields = fields.iter().map(|f| String::from_utf8_lossy(f).into_owned());
+            let name = fields.next().unwrap_or_default();
+            let alias = fields.find_map(|f| f.strip_prefix("alias=").map(str::to_string));
+            match alias {
+                Some(a) => grant.devices.insert(a, name),
+                None => grant.devices.insert(name, String::new()),
+            };
+        }
+        out
+    }
+
     /// Whether `name` is granted: `device` with or without its configuration.
     pub fn grants(&self, name: &str) -> bool {
         self.granted
             .iter()
             .any(|g| g == name || g.split_once('=').is_some_and(|(k, _)| k == name))
     }
+}
+
+/// `--allow device` as BuildKit's `DevicesConfig` holds it: every device, or the devices
+/// named, each by the alias a step asks for it by (`alias=`) or its own name, to the device
+/// it is (empty for itself).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DevicesGrant {
+    pub all: bool,
+    pub devices: std::collections::BTreeMap<String, String>,
 }
 
 pub const SECURITY_INSECURE: &str = "security.insecure";

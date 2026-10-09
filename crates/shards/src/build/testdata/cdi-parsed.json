@@ -1,0 +1,147 @@
+[
+  {
+    "spec": {
+      "cdiVersion": "0.6.0",
+      "kind": "v.com/c",
+      "devices": [
+        {
+          "name": "0",
+          "containerEdits": {
+            "env": [
+              "A=yes"
+            ],
+            "deviceNodes": [
+              {
+                "path": "/dev/x",
+                "major": 16,
+                "minor": 3,
+                "fileMode": 432
+              }
+            ]
+          }
+        }
+      ],
+      "containerEdits": {}
+    }
+  },
+  {
+    "spec": {
+      "cdiVersion": "0.6.0",
+      "kind": "v.com/c",
+      "devices": [
+        {
+          "name": "true",
+          "containerEdits": {
+            "env": [
+              "A=1"
+            ]
+          }
+        }
+      ],
+      "containerEdits": {}
+    }
+  },
+  {
+    "error": "failed to unmarshal CDI Spec: error converting YAML to JSON: yaml: unmarshal errors:\n  line 2: key \"cdiVersion\" already set in map"
+  },
+  {
+    "spec": {
+      "cdiVersion": "0.7.0",
+      "kind": "v.com/c",
+      "devices": [
+        {
+          "name": "true",
+          "annotations": {
+            "k": "12"
+          },
+          "containerEdits": {
+            "env": [
+              "N=~"
+            ],
+            "mounts": [
+              {
+                "hostPath": "/a",
+                "containerPath": "/b",
+                "options": [
+                  "ro",
+                  "1"
+                ]
+              }
+            ],
+            "additionalGids": [
+              15,
+              44
+            ]
+          }
+        }
+      ],
+      "containerEdits": {}
+    }
+  },
+  {
+    "spec": {
+      "cdiVersion": "0.3.0",
+      "kind": "v.com/c",
+      "devices": [
+        {
+          "name": "d",
+          "containerEdits": {
+            "env": [
+              "A=1"
+            ]
+          }
+        }
+      ],
+      "containerEdits": {}
+    }
+  },
+  {
+    "spec": {
+      "cdiVersion": "0.6.0",
+      "kind": "v.com/c",
+      "devices": [
+        {
+          "name": "x",
+          "containerEdits": {
+            "env": [
+              "A=1"
+            ]
+          }
+        },
+        {
+          "name": "true",
+          "containerEdits": {
+            "env": [
+              "B=2"
+            ]
+          }
+        }
+      ],
+      "containerEdits": {}
+    }
+  },
+  {
+    "error": "failed to unmarshal CDI Spec: error unmarshaling JSON: while decoding JSON: json: unknown field \"unknown\""
+  },
+  {
+    "spec": {
+      "cdiVersion": "0.6.0",
+      "kind": "v.com/c",
+      "devices": [
+        {
+          "name": "007",
+          "containerEdits": {
+            "deviceNodes": [
+              {
+                "path": "/dev/y",
+                "uid": 1000,
+                "gid": 10
+              }
+            ]
+          }
+        }
+      ],
+      "containerEdits": {}
+    }
+  }
+]

@@ -1,0 +1,10 @@
+[
+  "cdiVersion: 0.6.0\nkind: v.com/c\ndevices:\n  - name: 0\n    containerEdits:\n      env: [A=yes]\n      deviceNodes: [{path: /dev/x, fileMode: 0660, major: 0x10, minor: 0b11}]\n",
+  "cdiVersion: \"0.6.0\"\nkind: v.com/c\ndevices:\n  - name: yes\n    containerEdits: {env: [A=1]}\n",
+  "cdiVersion: 0.6.0\ncdiVersion: 0.7.0\nkind: v.com/c\n",
+  "cdiVersion: 0.7.0\nkind: v.com/c\ndevices:\n  - name: on\n    annotations: {k: 12}\n    containerEdits:\n      additionalGids: [017, 44]\n      env: [\"N=~\"]\n      mounts: [{hostPath: /a, containerPath: /b, options: [ro, 1]}]\n",
+  "{\"cdiVersion\":\"0.3.0\",\"kind\":\"v.com/c\",\"devices\":[{\"name\":\"d\",\"containerEdits\":{\"env\":[\"A=1\"]}}]}",
+  "cdiVersion: 0.6.0\nkind: v.com/c\ndevices:\n  - &d\n    name: x\n    containerEdits: {env: [A=1]}\n  - name: y\n    containerEdits: {env: [B=2]}\n",
+  "cdiVersion: 0.6.0\nkind: v.com/c\nunknown: 1\ndevices: []\n",
+  "cdiVersion: 0.6.0\nkind: v.com/c\ndevices:\n  - name: \"007\"\n    containerEdits:\n      deviceNodes: [{path: /dev/y, uid: 1_000, gid: 012}]\n"
+]

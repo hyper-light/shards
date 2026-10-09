@@ -777,6 +777,8 @@ pub struct RunOp<'o> {
     pub agents: &'o super::Agents,
     /// Its limits, its op's (`--memory`, `--cpu-shares` and the like).
     pub resources: Option<&'o shards_dockerfile::llb::LinuxResources>,
+    /// What its CDI devices bring it (D96), granted and merged.
+    pub cdi: Option<&'o super::cdi::Edits>,
 }
 
 /// Cgroup v2 files and what each holds, in the order written.
@@ -949,6 +951,54 @@ impl Exec<'_> {
         Ok((f, source, 0))
     }
 
+    /// A CDI mount (D96): a tmpfs, or the host path as a snapshot, read-only unless its
+    /// options say `rw` (its writes then the step's alone); a file mounted from a snapshot
+    /// of it alone.
+    fn cdi_mount(
+        &mut self,
+        builder: &mut super::builder::Builder,
+        m: &super::cdi::Mount,
+    ) -> Result<shards_abi::build::Mount, String> {
+        use shards_abi::build::Mount;
+        let has = |o: &str| m.options.iter().any(|x| x == o);
+        let readonly = !has("rw");
+        match m.kind.as_str() {
+            "tmpfs" => return Ok(Mount::Tmpfs { size: 0, readonly }),
+            "" | "bind" | "rbind" => {}
+            other => {
+                return Err(format!(
+                    "CDI mount {}: a {other} mount, which shards does not make",
+                    m.container_path
+                ));
+            }
+        }
+        let host = std::path::Path::new(&m.host_path);
+        let md = std::fs::metadata(host).map_err(|e| format!("CDI mount {}: {e}", m.host_path))?;
+        let (dir, follow, subpath) = if md.is_dir() {
+            (host.to_path_buf(), Vec::new(), Vec::new())
+        } else {
+            let name = host
+                .file_name()
+                .ok_or_else(|| format!("CDI mount {}: no file name", m.host_path))?
+                .to_string_lossy()
+                .into_owned()
+                .into_bytes();
+            let parent = host.parent().unwrap_or(std::path::Path::new("/")).to_path_buf();
+            (parent, vec![name.clone()], name)
+        };
+        let filters = shards_build::context::Filters {
+            include: Vec::new(),
+            exclude: Vec::new(),
+            follow,
+        };
+        let r = self.context(&dir, &filters)?;
+        Ok(Mount::Tree {
+            tree: builder.tree(&r.origin, &mut self.sources)?,
+            subpath,
+            writable: !readonly,
+        })
+    }
+
     /// Runs a `RUN` in `builder` as BuildKit runs it (docs/research/buildkit-run.md), its
     /// output to `out` as it comes; its result is its root mount's.
     pub fn run(
@@ -1008,8 +1058,25 @@ impl Exec<'_> {
             }
         }
         let env = super::step::env(&p.env, p.proxy.as_ref(), &secrets);
-        let env = shards_user::prepare_env(&env, user.uid, passwd.ok().flatten().as_deref())
+        let mut env = shards_user::prepare_env(&env, user.uid, passwd.ok().flatten().as_deref())
             .map_err(|e| fail(&e))?;
+        let mut groups = user.groups.clone();
+        // Its CDI devices' edits (D96), as CDI's `Apply` makes them, but what only a host
+        // can do: those refuse the step.
+        if let Some(e) = op.cdi {
+            if !e.host_only.is_empty() {
+                return Err(fail(&format!(
+                    "CDI devices ask for what only a container's host can do, which a microVM's step has none of: {}",
+                    e.host_only.join("; ")
+                )));
+            }
+            super::cdi::merge_env(&mut env, &e.env);
+            for g in &e.gids {
+                if !groups.contains(g) {
+                    groups.push(*g);
+                }
+            }
+        }
         let hostname = if p.hostname.is_empty() {
             super::step::HOSTNAME.to_vec()
         } else {
@@ -1108,6 +1175,49 @@ impl Exec<'_> {
             };
             mounts.push((m.dest.clone(), mount));
         }
+        let mut devices = Vec::new();
+        if let Some(e) = op.cdi {
+            for m in &e.mounts {
+                let mount = self.cdi_mount(builder, m).map_err(|why| fail(&why))?;
+                mounts.retain(|(t, _)| *t != m.container_path.as_bytes());
+                mounts.push((m.container_path.clone().into_bytes(), mount));
+            }
+            if !e.mounts.is_empty() {
+                // Sorted by depth, stably, as CDI sorts a spec's mounts; the outputs follow
+                // their mounts.
+                let depth = |t: &[u8]| t.split(|&b| b == b'/').filter(|c| !c.is_empty()).count();
+                let mut order: Vec<usize> = (0..mounts.len()).collect();
+                order.sort_by_key(|&i| mounts.get(i).map_or(0, |(t, _)| depth(t)));
+                let mut taken: Vec<Option<(Vec<u8>, Mount)>> = mounts.into_iter().map(Some).collect();
+                mounts = order
+                    .iter()
+                    .filter_map(|&i| taken.get_mut(i).and_then(Option::take))
+                    .collect();
+                for (at, _, _) in &mut outputs {
+                    if let Some(new) = order.iter().position(|&i| i == *at as usize) {
+                        *at = u32::try_from(new).map_err(|_| "too many mounts")?;
+                    }
+                }
+            }
+            for n in &e.nodes {
+                let kind = match n.kind.as_str() {
+                    "c" | "u" => b'c',
+                    "b" => b'b',
+                    "p" => b'p',
+                    _ => 0,
+                };
+                // CDI gives a node the process's owner where the spec gives none, but root.
+                let owner = |given: Option<u32>, process: u32| given.unwrap_or(process);
+                devices.push(shards_abi::build::Device {
+                    path: n.path.clone().into_bytes(),
+                    from: n.host_path.clone().into_bytes(),
+                    kind,
+                    mode: n.file_mode.map(|m| m & 0o7777),
+                    uid: owner(n.uid, user.uid),
+                    gid: owner(n.gid, user.gid),
+                });
+            }
+        }
         let mut rlimits = Vec::new();
         for u in &p.ulimits {
             let name = String::from_utf8_lossy(&u.name).to_lowercase();
@@ -1131,7 +1241,7 @@ impl Exec<'_> {
             },
             uid: user.uid,
             gid: user.gid,
-            groups: user.groups,
+            groups,
             hosts: super::step::hosts(&hostname, &p.extra_hosts),
             hostname,
             resolv,
@@ -1151,6 +1261,7 @@ impl Exec<'_> {
                 op.seccomp.to_vec()
             },
             outputs: outputs.iter().map(|(at, _, _)| (*at, 0)).collect(),
+            devices,
         };
         let mut fs = (*root.fs).clone();
         fs.begin();

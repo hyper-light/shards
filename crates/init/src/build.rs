@@ -822,6 +822,10 @@ fn setup(step: &Step, root: &Path, files: &Path, sources: &[Option<PathBuf>], wo
         nosuid | noexec | nodev,
         "",
     )?;
+    // The step's CDI devices (D96), each the builder's own device of its path.
+    for d in &step.devices {
+        cdi_node(&r, d)?;
+    }
     let ro = if step.insecure { 0 } else { libc::MS_RDONLY };
     let sys = dir("/sys")?;
     mount(
@@ -1330,4 +1334,86 @@ fn step_cgroup(files: &[(Vec<u8>, Vec<u8>)]) -> io::Result<Option<(OwnedFd, Path
         .custom_flags(libc::O_DIRECTORY | libc::O_CLOEXEC)
         .open(&dir)?;
     Ok(Some((OwnedFd::from(fd), dir)))
+}
+
+/// A CDI device node in the step's root: the builder's own device at `from` (or its path),
+/// of the kind asked for, or a FIFO; its mode the device's unless given, its owner given.
+fn cdi_node(r: &Root, d: &shards_abi::build::Device) -> io::Result<()> {
+    use std::os::unix::ffi::OsStrExt as _;
+    use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _};
+    let shown = String::from_utf8_lossy(&d.path).into_owned();
+    let (kind, rdev, mode) = if d.kind == b'p' {
+        (libc::S_IFIFO, 0, d.mode.unwrap_or(0o666))
+    } else {
+        let from = if d.from.is_empty() { &d.path } else { &d.from };
+        let at = Path::new(std::ffi::OsStr::from_bytes(from));
+        let md = std::fs::metadata(at).map_err(|e| {
+            io::Error::new(
+                e.kind(),
+                format!("CDI device {shown}: the microVM has no {}: {e}", at.display()),
+            )
+        })?;
+        let ft = md.file_type();
+        let kind = match (d.kind, ft.is_char_device(), ft.is_block_device()) {
+            (b'c' | 0, true, _) => libc::S_IFCHR,
+            (b'b' | 0, _, true) => libc::S_IFBLK,
+            _ => {
+                return Err(io::Error::other(format!(
+                    "CDI device {shown}: the microVM's {} is no {} device",
+                    at.display(),
+                    match d.kind {
+                        b'b' => "block",
+                        b'c' => "character",
+                        _ => "block or character",
+                    }
+                )));
+            }
+        };
+        (kind, md.rdev(), d.mode.unwrap_or(md.mode() & 0o7777))
+    };
+    if let Some(parent) = d
+        .path
+        .iter()
+        .rposition(|&b| b == b'/')
+        .and_then(|i| d.path.get(..i))
+        && !parent.is_empty()
+    {
+        r.mkdir_all(parent, 0o755, None)?;
+    }
+    let (dir, name) = r.parent(&d.path)?;
+    // In place of what the path held, as CDI removes a device before it adds it.
+    // SAFETY: unlinkat(2) of a name in a directory of ours.
+    unsafe { libc::unlinkat(std::os::fd::AsRawFd::as_raw_fd(&dir), name.as_ptr(), 0) };
+    // SAFETY: mknodat(2) and fchownat(2) relative to a descriptor of ours.
+    let made = unsafe {
+        libc::mknodat(
+            std::os::fd::AsRawFd::as_raw_fd(&dir),
+            name.as_ptr(),
+            kind | mode,
+            rdev,
+        )
+    };
+    if made != 0 {
+        return Err(io::Error::new(
+            io::Error::last_os_error().kind(),
+            format!("CDI device {shown}: {}", io::Error::last_os_error()),
+        ));
+    }
+    // SAFETY: as above.
+    let owned = unsafe {
+        libc::fchownat(
+            std::os::fd::AsRawFd::as_raw_fd(&dir),
+            name.as_ptr(),
+            d.uid,
+            d.gid,
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    };
+    if owned != 0 {
+        return Err(io::Error::new(
+            io::Error::last_os_error().kind(),
+            format!("CDI device {shown}: {}", io::Error::last_os_error()),
+        ));
+    }
+    Ok(())
 }
