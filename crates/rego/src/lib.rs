@@ -10,6 +10,7 @@ pub mod compile;
 pub mod copyprop;
 pub mod eval;
 pub mod funcs;
+pub mod index;
 pub mod goquote;
 pub mod number;
 pub mod parser;
