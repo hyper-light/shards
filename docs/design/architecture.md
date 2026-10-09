@@ -3210,6 +3210,52 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode
 waits on the user.
 
+### D107. The frontend a Dockerfile names, and buildx's default policy, in build policies
+
+**The frontend.** A Dockerfile that names its frontend (`# syntax=` or BUILDKIT_SYNTAX)
+hands BuildKit's build to that frontend's image, and BuildKit asks the build's policies of
+it as of any image it loads. shards runs its own port of docker/dockerfile (any tag), so
+it pulls no frontend image, but it asks the same questions, in the same order (measured,
+buildx v0.37.1 on BuildKit v0.28.1 in shards-dind):
+- the reference by its tag, for no platform;
+- its image config resolved, a step of its own (`resolve image config for
+  docker-image://…`), for the digest the frontend is pinned to;
+- the pinned reference, for the builder's platform: not the build's `--platform`
+  (measured: `--platform linux/amd64` on an arm64 builder checks `(linux/arm64)`);
+- the Dockerfile again (`local://dockerfile`), as the frontend reads it.
+A refusal fails the build in BuildKit's words (`failed to resolve source metadata for
+docker.io/docker/dockerfile:1: could not resolve image due to policy: …`), with the
+excerpt at the directive (`Plan`'s `Resolver::frontend`). Before D107 shards asked
+nothing of the frontend: a policy refusing it had no effect.
+
+**A build of several platforms** asks the Dockerfile and the frontend once and each
+platform's bases for it (measured: `--platform linux/amd64,linux/arm64`), all under one
+policy step, as buildx's one policy logger logs. Before D107 each platform's build began a
+step of its own and checked the Dockerfile again (`multi::Sub::policy_step`).
+
+**The default policy.** With `BUILDX_DEFAULT_POLICY` true (as `strconv.ParseBool` reads
+it) and no policy disabled, buildx's own `default.rego` (carried byte for byte as
+`buildx_default_policy.rego`) comes before every other policy, its caps never asked
+(`SkipCaps`), its step named with it (`loading policies buildx_default_policy.rego, …`).
+It requires Docker's GitHub builder's signature (D106) of docker/dockerfile from 1.21 and
+its floating tags, docker/buildkit-syft-scanner from 1.10, and moby/buildkit's floating
+tags and releases from v0.27.0, each signed for its own tag; everything else passes to
+the user's policies. buildx also asks it of the image a docker-container builder runs;
+shards runs no container builder.
+
+**Held to buildx:** `policies_check_the_frontend_and_the_default_policy`, six builds
+whose every check equals buildx's (digests aside, which the registries move): the default
+policy over `# syntax=docker/dockerfile:1`, an unsigned moby/buildkit v0.26.0, a signed
+v0.28.1; a policy allowing the frontend for an amd64 build, and for amd64 and arm64 (the
+platforms' checks in any order, as BuildKit makes them at once); one refusing it, with
+buildx's error and excerpt.
+
+**Differences, recorded:**
+- No frontend image is pulled (BuildKit's `resolve docker.io/docker/dockerfile:1@…`
+  step): shards does not run it.
+- With a remote context, a build policy is refused as not supported yet, the default
+  one too; before D107 a remote build would have skipped it.
+
 ### D106. Images' provenance and signatures, and artifact attestations, in build policies
 
 buildx v0.37.1 gives a policy an image's `hasProvenance`, `provenance` and `signatures`,

@@ -10264,3 +10264,166 @@ fn policies_read_image_provenance_and_signatures() {
         .collect();
     assert_eq!(got, want, "{}", built.stderr);
 }
+
+/// The frontend a Dockerfile names and buildx's default policy (D107), each check in
+/// order as buildx v0.37.1 made it on BuildKit v0.28.1 (measured in shards-dind,
+/// `testdata/policy-frontend`): `# syntax=docker/dockerfile:1` asked of the policies by
+/// its tag, then pinned for the builder's platform (whatever `--platform` the build
+/// targets), and the Dockerfile again as the frontend reads it; a refusal of it fails the
+/// build at the directive. With `BUILDX_DEFAULT_POLICY`, buildx's own policy comes first:
+/// moby/buildkit releases from v0.27.0 and docker/dockerfile need Docker's GitHub
+/// builder's signature, earlier releases pass. Digests are the registries' to move.
+#[test]
+fn policies_check_the_frontend_and_the_default_policy() {
+    if cannot_run_vms() {
+        return;
+    }
+    let host = match std::env::consts::ARCH {
+        "aarch64" => "arm64",
+        "x86_64" => "amd64",
+        other => other,
+    };
+    let digests = |s: &str| -> String {
+        let mut parts = s.split("sha256:");
+        let mut out = parts.next().unwrap_or_default().to_string();
+        for part in parts {
+            out.push_str("sha256:");
+            match (part.get(..64), part.get(64..)) {
+                (Some(hex), Some(rest)) if hex.bytes().all(|b| b.is_ascii_hexdigit()) => {
+                    out.push_str("DIGEST");
+                    out.push_str(rest);
+                }
+                _ => out.push_str(part),
+            }
+        }
+        out
+    };
+    let home = TempDir::new("policy-frontend-home");
+    let case = |name: &str, dockerfile: &str, rego: Option<&str>, platform: &str, default: bool| {
+        let ctx = context(&format!("policy-frontend-{name}"), dockerfile);
+        if let Some(rego) = rego {
+            std::fs::write(ctx.join("Dockerfile.rego"), rego).unwrap();
+        }
+        let mut env = vec![("SHARDS_HOME", home.as_os_str())];
+        if default {
+            env.push(("BUILDX_DEFAULT_POLICY", std::ffi::OsStr::new("1")));
+        }
+        let out = common::run_shards_env_in(
+            &ctx,
+            &[],
+            &["build", "--progress=plain", "--platform", platform, "."],
+            &env,
+            TIMEOUT,
+        );
+        let checks: Vec<String> = policy_log(&out.stderr)
+            .into_iter()
+            .filter(|l| {
+                l.starts_with("checking policy for source ") || l.starts_with("policy decision for source ")
+            })
+            .map(|l| digests(&l))
+            .collect();
+        (out, checks)
+    };
+    let want = |file: &str| -> Vec<String> {
+        let text = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("src/build/testdata/policy-frontend")
+                .join(file),
+        )
+        .unwrap();
+        // The pinned frontend is the builder's, measured on an arm64 one.
+        text.lines()
+            .map(|l| {
+                l.replace(
+                    "dockerfile:1@sha256:DIGEST (linux/arm64)",
+                    &format!("dockerfile:1@sha256:DIGEST (linux/{host})"),
+                )
+            })
+            .collect()
+    };
+    let syntax = "# syntax=docker/dockerfile:1\nFROM alpine:3.20\n";
+
+    let (out, checks) = case("default-syntax", syntax, None, "linux/arm64", true);
+    assert_eq!(out.status, Some(0), "{}", out.stderr);
+    assert!(
+        out.stderr
+            .contains(" loading policies buildx_default_policy.rego\n"),
+        "{}",
+        out.stderr
+    );
+    assert_eq!(checks, want("default-syntax.txt"), "{}", out.stderr);
+    for (name, from, file) in [
+        (
+            "default-unsigned",
+            "FROM moby/buildkit:v0.26.0\n",
+            "default-buildkit-unsigned.txt",
+        ),
+        (
+            "default-signed",
+            "FROM moby/buildkit:v0.28.1\n",
+            "default-buildkit-signed.txt",
+        ),
+    ] {
+        let (out, checks) = case(name, from, None, "linux/arm64", true);
+        assert_eq!(out.status, Some(0), "{}", out.stderr);
+        assert_eq!(checks, want(file), "{}", out.stderr);
+    }
+
+    let (out, checks) = case(
+        "syntax-allowed",
+        syntax,
+        Some(
+            "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if input.image\n\ndecision := {\"allow\": allow}\n",
+        ),
+        "linux/amd64",
+        false,
+    );
+    assert_eq!(out.status, Some(0), "{}", out.stderr);
+    assert_eq!(checks, want("syntax-allowed.txt"), "{}", out.stderr);
+
+    // Several platforms, one frontend: asked once (measured), the bases per platform.
+    let (out, checks) = case(
+        "syntax-multi",
+        syntax,
+        Some(
+            "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if input.image\n\ndecision := {\"allow\": allow}\n",
+        ),
+        "linux/amd64,linux/arm64",
+        false,
+    );
+    assert_eq!(out.status, Some(0), "{}", out.stderr);
+    // The frontend's checks in buildx's order, then each platform's: BuildKit checks the
+    // platforms' at once, so in any order.
+    let mut multi = want("syntax-multi.txt");
+    assert_eq!(checks.get(..8), multi.get(..8), "{}", out.stderr);
+    let mut rest = checks.get(8..).unwrap_or_default().to_vec();
+    rest.sort();
+    multi.drain(..8);
+    multi.sort();
+    assert_eq!(rest, multi, "{}", out.stderr);
+
+    let (out, checks) = case(
+        "syntax-denied",
+        syntax,
+        Some(
+            "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if input.image.repo == \"alpine\"\n\ndecision := {\"allow\": allow}\n",
+        ),
+        "linux/amd64",
+        false,
+    );
+    assert_ne!(out.status, Some(0), "{}", out.stderr);
+    assert_eq!(checks, want("syntax-denied.txt"), "{}", out.stderr);
+    assert!(
+        out.stderr.lines().any(
+            |l| l == include_str!("../src/build/testdata/policy-frontend/syntax-denied.error").trim_end()
+        ),
+        "{}",
+        out.stderr
+    );
+    assert!(
+        out.stderr
+            .contains("Dockerfile:1\n--------------------\n   1 | >>> # syntax=docker/dockerfile:1\n"),
+        "{}",
+        out.stderr
+    );
+}

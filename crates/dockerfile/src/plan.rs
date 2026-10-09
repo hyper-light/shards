@@ -136,6 +136,12 @@ pub trait Resolver {
         let _ = (kind, log);
         Err(errb(&[name, b": OSI artifacts are not resolved here"]))
     }
+    /// The frontend the build names (`# syntax=` or BUILDKIT_SYNTAX), one shards runs as
+    /// its own: what BuildKit asks of its image before it forwards the build to it.
+    fn frontend(&self, name: &[u8]) -> Result<(), Vec<u8>> {
+        let _ = name;
+        Ok(())
+    }
 }
 
 /// Where SOURCE_DATE_EPOCH's time comes from when it is no number of seconds
@@ -429,9 +435,14 @@ struct Planner<'a> {
 const FRONTENDS: [&str; 2] = ["docker/dockerfile", "docker/dockerfile-upstream"];
 
 /// What builder.Build does with the frontend BUILDKIT_SYNTAX or `# syntax=` names, which is
-/// to hand the build to it: the Dockerfile frontend's own is this one, and any other, which
-/// shards cannot run, fails the build where it is named.
-fn check_frontend(text: &[u8], build_args: &BTreeMap<Vec<u8>, Vec<u8>>) -> Result<(), Fail> {
+/// to hand the build to it: the Dockerfile frontend's own is this one, its image asked of
+/// `resolver` as BuildKit asks of it before it runs it (a refusal fails the build where it
+/// is named), and any other, which shards cannot run, fails the build where it is named.
+fn check_frontend(
+    text: &[u8],
+    build_args: &BTreeMap<Vec<u8>, Vec<u8>>,
+    resolver: &dyn Resolver,
+) -> Result<(), Fail> {
     let ours = |r: &[u8]| {
         std::str::from_utf8(r)
             .ok()
@@ -448,7 +459,7 @@ fn check_frontend(text: &[u8], build_args: &BTreeMap<Vec<u8>, Vec<u8>>) -> Resul
     if let Some(cmdline) = build_args.get(b"BUILDKIT_SYNTAX".as_slice()) {
         let r = parser::first_word(go::trim_space(cmdline));
         return match ours(&r) {
-            true => Ok(()),
+            true => resolver.frontend(&r).map_err(Fail::new),
             false => Err(Fail::new(errb(&[
                 b"failed with build-arg:BUILDKIT_SYNTAX = ",
                 cmdline,
@@ -459,7 +470,10 @@ fn check_frontend(text: &[u8], build_args: &BTreeMap<Vec<u8>, Vec<u8>>) -> Resul
     }
     match parser::detect_syntax(text) {
         Some((r, _, line)) if !ours(&r) => Err(Fail::new(refused(&r)).at(&vec![(line, line)])),
-        _ => Ok(()),
+        Some((r, _, line)) => resolver
+            .frontend(&r)
+            .map_err(|e| Fail::new(e).at(&vec![(line, line)])),
+        None => Ok(()),
     }
 }
 
@@ -511,7 +525,7 @@ pub fn plan(text: &[u8], opts: &Options, resolver: &dyn Resolver) -> Result<Plan
         warnings: Vec::new(),
     };
     let mut ui = dockerui(opts).map_err(fail)?;
-    check_frontend(text, &opts.build_args).map_err(|Fail(message, location)| Error {
+    check_frontend(text, &opts.build_args, resolver).map_err(|Fail(message, location)| Error {
         message,
         location,
         warnings: Vec::new(),
@@ -558,7 +572,7 @@ pub fn outline(text: &[u8], opts: &Options, resolver: &dyn Resolver) -> Result<O
         warnings: Vec::new(),
     };
     let mut ui = dockerui(opts).map_err(fail)?;
-    check_frontend(text, &opts.build_args).map_err(|Fail(message, location)| Error {
+    check_frontend(text, &opts.build_args, resolver).map_err(|Fail(message, location)| Error {
         message,
         location,
         warnings: Vec::new(),
@@ -602,7 +616,7 @@ pub fn lint(text: &[u8], opts: &Options, resolver: &dyn Resolver) -> Result<Lint
     // the subrequest is asked (builder.Build); what follows fails only the plan, which
     // the result says.
     let mut ui = dockerui(&opts).map_err(fail)?;
-    check_frontend(text, &opts.build_args).map_err(|Fail(message, location)| Error {
+    check_frontend(text, &opts.build_args, resolver).map_err(|Fail(message, location)| Error {
         message,
         location,
         warnings: Vec::new(),

@@ -42,6 +42,9 @@ pub(super) struct Sub {
     /// `--cache-to` exports of the builds of them all (D87).
     pub keys: Vec<String>,
     pub image_layers: std::collections::BTreeSet<String>,
+    /// The number of the policies' step, which the platforms' builds log under: one step,
+    /// as buildx's one policy logger.
+    pub policy_step: usize,
 }
 
 /// Whether this build is one platform's of several.
@@ -212,6 +215,7 @@ pub(super) fn run(
     provenance_asked: &Provenance,
     descriptor_annotations: &BTreeMap<String, String>,
     pushes: bool,
+    policy_step: usize,
 ) -> Result<(), String> {
     for o in outputs {
         // buildx's refusal (build/opt.go), before BuildKit's own (exporter/oci): a docker
@@ -277,6 +281,8 @@ pub(super) fn run(
     let mut built = Vec::new();
     let mut answered = BTreeMap::new();
     let mut bases = BTreeMap::new();
+    // The policies' step the build began, which each platform's logs under.
+    let mut policy_step = policy_step;
     for (n, p) in platforms.iter().enumerate() {
         let layout = stage.path().join(dir_name(p));
         let mut outs = vec![format!(
@@ -320,6 +326,7 @@ pub(super) fn run(
                 first: n == 0,
                 answered: std::mem::take(&mut answered),
                 bases: std::mem::take(&mut bases),
+                policy_step,
                 ..Sub::default()
             })
         });
@@ -328,6 +335,7 @@ pub(super) fn run(
         progress.borrow_mut().next = given.next;
         answered = given.answered;
         bases = given.bases;
+        policy_step = given.policy_step;
         for k in given.keys {
             if !keys.contains(&k) {
                 keys.push(k);

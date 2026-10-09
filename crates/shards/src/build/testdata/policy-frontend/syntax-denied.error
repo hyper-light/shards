@@ -1,0 +1,1 @@
+ERROR: failed to build: failed to solve: failed to resolve source metadata for docker.io/docker/dockerfile:1: could not resolve image due to policy: source "docker-image://docker.io/docker/dockerfile:1" not allowed by policy: action DENY

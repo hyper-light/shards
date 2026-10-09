@@ -287,8 +287,14 @@ impl Progress {
     }
 
     /// Vertex `index` begins again under its number, as progressui shows a vertex whose
-    /// digest runs again: buildx's policy step, each time a policy logs after it ended.
-    fn resume(&mut self, index: usize) -> Vertex {
+    /// digest runs again: buildx's policy step, each time a policy logs after it ended,
+    /// named `name` where this display has not shown it (another platform's build began
+    /// it).
+    fn resume(&mut self, index: usize, name: &str) -> Vertex {
+        self.steps
+            .borrow_mut()
+            .entry(index)
+            .or_insert_with(|| (name.to_string(), std::collections::VecDeque::new(), false));
         #[cfg(unix)]
         if let Some(live) = &self.live {
             live.borrow_mut().resume(index);
@@ -738,6 +744,8 @@ struct Bases<'a> {
     policies: Option<&'a policy::Policies>,
     policy_log: &'a dyn policy::Log,
     refused: RefCell<Option<policy::Refused>>,
+    /// Whether the Dockerfile is the context's, which a frontend reads again.
+    local_dockerfile: bool,
 }
 
 /// Base images as resolved, by name and platform.
@@ -792,6 +800,93 @@ impl Resolver for Bases<'_> {
             Err(e) => progress.error(&v, &String::from_utf8_lossy(e)),
         }
         r
+    }
+
+    /// The frontend the build names, as BuildKit asks its policies of it before it runs it
+    /// (measured, buildx v0.37.1 on BuildKit v0.28.1): its reference, for no platform; its
+    /// image config resolved, as a step of its own, for the digest it is pinned to; the
+    /// pinned image, for the builder's platform (not the build's); and the Dockerfile
+    /// again, as the frontend reads it; once for a build of several platforms. shards runs
+    /// its own port of the frontend, so it pulls no image of it.
+    fn frontend(&self, name: &[u8]) -> Result<(), Vec<u8>> {
+        // One frontend runs a build of several platforms: the first platform's asks.
+        let Some(p) = self
+            .policies
+            .filter(|_| multi::with(|sub| sub.first).unwrap_or(true))
+        else {
+            return Ok(());
+        };
+        let meta = PolicyMeta { bases: self };
+        let refuse = |r: policy::Refused, normalized: &str| {
+            let e = format!(
+                "failed to resolve source metadata for {normalized}: could not resolve image due to policy: {}",
+                r.error
+            );
+            *self.refused.borrow_mut() = Some(r);
+            e.into_bytes()
+        };
+        let reference =
+            Reference::parse(&String::from_utf8_lossy(name)).map_err(|e| e.to_string().into_bytes())?;
+        let normalized = reference.to_string();
+        let mut name = normalized.clone();
+        match p.evaluate(
+            &policy::Source::new(format!("docker-image://{normalized}")),
+            None,
+            &meta,
+            self.policy_log,
+        ) {
+            Ok(None) => {}
+            Ok(Some(to)) => {
+                name = to
+                    .identifier
+                    .strip_prefix("docker-image://")
+                    .unwrap_or(&to.identifier)
+                    .to_string();
+            }
+            Err(r) => return Err(refuse(r, &normalized)),
+        }
+        let reference = Reference::parse(&name).map_err(|e| e.to_string().into_bytes())?;
+        let pinned = match &reference.digest {
+            Some(_) => name.clone(),
+            None => {
+                let v = self
+                    .progress
+                    .borrow_mut()
+                    .start(&format!("resolve image config for docker-image://{name}"));
+                let top = crate::pull::registry(&reference, None, &|k| std::env::var(k).ok())
+                    .and_then(|r| r.resolve(self.store, &reference).map_err(|e| e.to_string()));
+                let progress = self.progress.borrow();
+                match top {
+                    Ok(top) => {
+                        progress.done(&v);
+                        format!("{name}@{}", top.digest)
+                    }
+                    Err(e) => {
+                        progress.error(&v, &e);
+                        return Err(e.into_bytes());
+                    }
+                }
+            }
+        };
+        if let Err(r) = p.evaluate(
+            &policy::Source::new(format!("docker-image://{pinned}")),
+            Some(&host_platform()),
+            &meta,
+            self.policy_log,
+        ) {
+            return Err(refuse(r, &pinned));
+        }
+        if self.local_dockerfile
+            && let Err(r) = p.evaluate(
+                &policy::Source::new("local://dockerfile"),
+                None,
+                &NoMeta,
+                self.policy_log,
+            )
+        {
+            return Err(refuse(r, "dockerfile"));
+        }
+        Ok(())
     }
 
     /// An OSI artifact, from the store or pulled (with `--pull`, pulled again), checked:
@@ -1377,7 +1472,8 @@ impl<'a> PolicyStep<'a> {
             store,
             limits,
             name: RefCell::new(String::new()),
-            index: std::cell::Cell::new(0),
+            // A platform's build of several logs under the step the first one began.
+            index: std::cell::Cell::new(multi::with(|sub| sub.policy_step).unwrap_or(0)),
             window: RefCell::new(None),
             closed: std::cell::Cell::new(false),
         }
@@ -1396,7 +1492,7 @@ impl<'a> PolicyStep<'a> {
             let name = self.name.borrow();
             let v = match self.index.get() {
                 0 => self.progress.borrow_mut().start(&name),
-                i => self.progress.borrow_mut().resume(i),
+                i => self.progress.borrow_mut().resume(i, &name),
             };
             self.index.set(v.index);
             *w = Some((v, Instant::now()));
@@ -1451,6 +1547,9 @@ impl policy::Log for PolicyStep<'_> {
 
 impl Drop for PolicyStep<'_> {
     fn drop(&mut self) {
+        // The build of the next platform logs on under this step's number.
+        let index = self.index.get();
+        multi::with(|sub| sub.policy_step = index);
         if self.closed.replace(true) {
             return;
         }
@@ -2156,7 +2255,10 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
     // own local source, the first source they are asked of.
     let policy_step = PolicyStep::new(&progress, &store, limits);
     let disabled = policy_configs.iter().any(|c| c.disabled);
-    if remote.is_some() && !disabled && (remote_policy || !policy_configs.is_empty()) {
+    if remote.is_some()
+        && !disabled
+        && (remote_policy || !policy_configs.is_empty() || policy::default_policy_enabled())
+    {
         return Err(
             "failed to build: a build policy over a remote context is not supported by shards yet".into(),
         );
@@ -2179,8 +2281,11 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
         policy_said(&r.messages);
         format!("failed to build: {e}")
     };
+    let beside_local = fetched_dockerfile.is_none();
+    // Loaded once for a build of several platforms, before it is split by platform.
     if let Some(p) = &policies
-        && fetched_dockerfile.is_none()
+        && beside_local
+        && !multi::active()
     {
         let unasked = NoMeta;
         p.evaluate(
@@ -2259,6 +2364,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
         policies: policies.as_ref(),
         policy_log: &policy_step,
         refused: RefCell::new(None),
+        local_dockerfile: beside_local,
     };
     // What the build's provenance records of its request, as buildx sends it (D71).
     let filename = Path::new(&name)
@@ -2426,6 +2532,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
             &provenance_asked,
             &descriptor_annotations,
             pushes,
+            policy_step.index.get(),
         );
     }
     let mut plan = match plan::plan(&text, &opts, &bases) {

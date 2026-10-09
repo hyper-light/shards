@@ -36,6 +36,20 @@ const BUILTIN_MODULE: (&str, &str) = (
     include_str!("../../../../rego/src/buildx_defaults.rego"),
 );
 
+/// buildx's default policy (policy/default.rego), loaded as a policy file of this name.
+const DEFAULT_POLICY: (&str, &str) = (
+    "buildx_default_policy.rego",
+    include_str!("../../../../rego/src/buildx_default_policy.rego"),
+);
+
+/// DefaultPolicyEnabled: BUILDX_DEFAULT_POLICY, where strconv.ParseBool takes it.
+pub fn default_policy_enabled() -> bool {
+    std::env::var("BUILDX_DEFAULT_POLICY")
+        .ok()
+        .and_then(|v| shards_cmdline::go::parse_bool(&v).ok())
+        == Some(true)
+}
+
 /// How often a policy may ask for more of a source before it decides
 /// (maxResolveIterations), and how often BuildKit asks again for one source.
 const MAX_RESOLVES: usize = 10;
@@ -58,6 +72,8 @@ pub struct Opt {
     pub context_dir: Option<PathBuf>,
     pub strict: bool,
     pub log_level: Option<LogLevel>,
+    /// Not asked for its caps as the build begins (the default policy's).
+    pub skip_caps: bool,
 }
 
 /// `withPolicyConfig`: the Dockerfile's own policy, then each `--policy`'s, as the flags
@@ -387,6 +403,7 @@ struct Policy {
     level: LogLevel,
     fs: Fs,
     default_platform: Platform,
+    skip_caps: bool,
 }
 
 /// The functions buildx gives its policies (policy/funcs.go), with their types.
@@ -1259,14 +1276,23 @@ pub struct Setup<'a> {
 impl Policies {
     /// The build's policies, or none: with_config, then resolvePolicyOpts.
     pub fn configure(setup: Setup<'_>) -> Result<Option<Policies>, String> {
-        if std::env::var("BUILDX_DEFAULT_POLICY")
-            .ok()
-            .and_then(|v| shards_cmdline::go::parse_bool(&v).ok())
-            == Some(true)
-        {
-            return Err("BUILDX_DEFAULT_POLICY is not supported by shards yet".into());
+        let mut opts = with_config(setup.default, setup.configs)?;
+        // The default policy first, where it is enabled and no policy is disabled, its
+        // caps never asked.
+        if default_policy_enabled() && !setup.configs.iter().any(|c| c.disabled) {
+            opts.insert(
+                0,
+                Opt {
+                    files: vec![FileSpec {
+                        filename: DEFAULT_POLICY.0.into(),
+                        optional: false,
+                        data: Some(DEFAULT_POLICY.1.as_bytes().to_vec()),
+                    }],
+                    skip_caps: true,
+                    ..Opt::default()
+                },
+            );
         }
-        let opts = with_config(setup.default, setup.configs)?;
         let level = if setup.debug {
             LogLevel::Debug
         } else {
@@ -1302,6 +1328,7 @@ impl Policies {
                 level: opt.log_level.unwrap_or(level),
                 fs,
                 default_platform: setup.default_platform.clone(),
+                skip_caps: opt.skip_caps,
             });
         }
         if list.is_empty() {
@@ -1320,7 +1347,7 @@ impl Policies {
 
     /// Each policy asked for its caps, as the build begins (applyPolicyCaps).
     pub fn check_caps(&self, log: &dyn Log) -> Result<(), String> {
-        for p in &self.list {
+        for p in self.list.iter().filter(|p| !p.skip_caps) {
             self.caps(p, log)
                 .map_err(|e| format!("failed to evaluate policy caps: {e}"))?;
         }

@@ -1,0 +1,12 @@
+checking policy for source local://dockerfile
+policy decision for source local://dockerfile: ALLOW
+checking policy for source docker-image://docker.io/moby/buildkit:v0.28.1 (linux/arm64)
+policy decision for source docker-image://docker.io/moby/buildkit:v0.28.1 (linux/arm64): resolve missing fields [image.signatures]
+checking policy for source docker-image://docker.io/moby/buildkit:v0.28.1 (linux/arm64)
+policy decision for source docker-image://docker.io/moby/buildkit:v0.28.1 (linux/arm64): ALLOW
+checking policy for source local://context
+policy decision for source local://context: ALLOW
+checking policy for source docker-image://docker.io/moby/buildkit:v0.28.1@sha256:DIGEST (linux/arm64)
+policy decision for source docker-image://docker.io/moby/buildkit:v0.28.1@sha256:DIGEST (linux/arm64): resolve missing fields [image.signatures]
+checking policy for source docker-image://docker.io/moby/buildkit:v0.28.1@sha256:DIGEST (linux/arm64)
+policy decision for source docker-image://docker.io/moby/buildkit:v0.28.1@sha256:DIGEST (linux/arm64): ALLOW
