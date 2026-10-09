@@ -1820,6 +1820,21 @@ fn run_sets_capabilities_groups_and_privileges_as_docker_run_does() {
         "000001ffffffffff",
         "{privileged}"
     );
+    // `--env-file`: its lines, before `-e`'s, which wins (docker/cli exec.go parseExec).
+    let env_file = home.join("exec.env");
+    std::fs::write(&env_file, "# a comment\nFROM_EXEC_FILE=1\nBOTH=file\n").unwrap();
+    let with_env = exec(&[
+        "--env-file",
+        env_file.to_str().unwrap(),
+        "-e",
+        "BOTH=flag",
+        "tweaked",
+        "/bin/testguest",
+        "report",
+    ]);
+    assert!(with_env.stdout.contains("env FROM_EXEC_FILE=1\n"), "{with_env}");
+    assert!(with_env.stdout.contains("env BOTH=flag\n"), "{with_env}");
+    assert!(!with_env.stdout.contains("env BOTH=file\n"), "{with_env}");
     let shown = shards(&[
         "inspect",
         "-f",
