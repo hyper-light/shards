@@ -907,3 +907,84 @@ func mustJSON(v ast.Value) any {
 	}
 	return j
 }
+
+// What OPA's type checker makes of check.json's modules, compiled as TestShardsCompile
+// compiles them: the compile errors (none when it compiles) and, for each of the case's
+// bodies, whether Compiler.PassesTypeCheck passes it. Each case compiles 20 times,
+// because the checker walks Go maps (the rule graph, the type tree): every distinct
+// answer is kept, in the order first seen, and crates/rego/tests/check.rs accepts any.
+func TestShardsCheck(t *testing.T) {
+	dt, err := os.ReadFile(os.Getenv("SHARDS_CHECK"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cases []struct {
+		Name    string      `json:"name"`
+		Modules [][2]string `json:"modules"`
+		Bodies  []string    `json:"bodies,omitempty"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(dt))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&cases); err != nil {
+		t.Fatal(err)
+	}
+	caps := &ast.Capabilities{Builtins: builtins(), Features: slices.Clone(ast.Features)}
+	for _, h := range hostDecls {
+		caps.Builtins = append(caps.Builtins, &ast.Builtin{Name: h.name, Decl: h.decl})
+	}
+	popts := ast.ParserOptions{RegoVersion: ast.RegoV1, Capabilities: caps}
+	type answer struct {
+		Error  string `json:"error,omitempty"`
+		Passes []bool `json:"passes,omitempty"`
+	}
+	type result struct {
+		Name    string   `json:"name"`
+		Answers []answer `json:"answers"`
+	}
+	var out []result
+	for _, c := range cases {
+		r := result{Name: c.Name}
+		seen := map[string]bool{}
+		for range 20 {
+			var a answer
+			mods := map[string]*ast.Module{}
+			srcs := append([][2]string{{"builtin/buildx_defaults.rego", builtinsRego}}, c.Modules...)
+			for _, m := range srcs {
+				mod, err := ast.ParseModuleWithOpts(m[0], m[1], popts)
+				if err != nil {
+					t.Fatalf("%s: %v", c.Name, err)
+				}
+				mods[m[0]] = mod
+			}
+			comp := ast.NewCompiler().WithCapabilities(caps).WithKeepModules(true).WithEnablePrintStatements(true)
+			comp.Compile(mods)
+			if comp.Failed() {
+				a.Error = comp.Errors.Error()
+			} else {
+				for _, b := range c.Bodies {
+					body, err := ast.ParseBodyWithOpts(b, popts)
+					if err != nil {
+						t.Fatalf("%s: %v", c.Name, err)
+					}
+					a.Passes = append(a.Passes, comp.PassesTypeCheck(body))
+				}
+			}
+			key, err := json.Marshal(a)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !seen[string(key)] {
+				seen[string(key)] = true
+				r.Answers = append(r.Answers, a)
+			}
+		}
+		out = append(out, r)
+	}
+	res, err := json.MarshalIndent(out, "", " ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(os.Getenv("SHARDS_CHECK_OUT"), append(res, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}

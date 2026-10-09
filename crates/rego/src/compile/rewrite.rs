@@ -854,7 +854,7 @@ impl Transformer for Withs<'_> {
             for i in 0..e.with.len() {
                 match validate_with(self.c, &mut e, i) {
                     Err(err) => {
-                        self.errs.push(err);
+                        self.errs.push(*err);
                         continue;
                     }
                     Ok(false) => {}
@@ -880,8 +880,7 @@ fn has_prefix_var(r: &[Term], root: &str) -> bool {
 }
 
 /// validateWith: whether the with's value needs evaluating first, or why it is wrong.
-#[allow(clippy::result_large_err)]
-fn validate_with(c: &Compiler, e: &mut Expr, i: usize) -> Result<bool, CompileError> {
+fn validate_with(c: &Compiler, e: &mut Expr, i: usize) -> Result<bool, Box<CompileError>> {
     let Some(w) = e.with.get_mut(i) else {
         return Ok(false);
     };
@@ -908,10 +907,10 @@ fn validate_with(c: &Compiler, e: &mut Expr, i: usize) -> Result<bool, CompileEr
                     break;
                 }
                 if !tree.exact(prefix).is_empty() {
-                    return Err(CompileError::compile(
+                    return Err(Box::new(CompileError::compile(
                         w.target.loc.clone(),
                         "with keyword cannot partially replace virtual document(s)".into(),
-                    ));
+                    )));
                 }
             }
             let target_fns = tree
@@ -953,30 +952,30 @@ fn validate_with(c: &Compiler, e: &mut Expr, i: usize) -> Result<bool, CompileEr
             let loc = w.target.loc.clone();
             let bi = crate::builtins::registry().get(&name);
             if matches!(name.as_str(), "eq" | "rego.metadata.chain" | "rego.metadata.rule") {
-                return Err(CompileError::compile(
+                return Err(Box::new(CompileError::compile(
                     loc,
                     format!("with keyword replacing built-in function: replacement of {name:?} invalid"),
-                ));
+                )));
             }
             if name.starts_with("internal.") {
-                return Err(CompileError::compile(
+                return Err(Box::new(CompileError::compile(
                     loc,
                     format!(
                         "with keyword replacing built-in function: replacement of internal function {name:?} invalid"
                     ),
-                ));
+                )));
             }
             if bi.is_some_and(|b| b.relation) {
-                return Err(CompileError::compile(
+                return Err(Box::new(CompileError::compile(
                     loc,
                     "with keyword replacing built-in function: target must not be a relation".into(),
-                ));
+                )));
             }
             if matches!(c.builtin_decl(&name), Some(Type::Function { result: None, .. })) {
-                return Err(CompileError::compile(
+                return Err(Box::new(CompileError::compile(
                     loc,
                     "with keyword replacing built-in function: target must not be a void function".into(),
-                ));
+                )));
             }
             if let Some(vr) = w.value.as_ref()
                 && tree.has_node(vr)
@@ -993,11 +992,11 @@ fn validate_with(c: &Compiler, e: &mut Expr, i: usize) -> Result<bool, CompileEr
             }
         }
         _ => {
-            return Err(CompileError::new(
+            return Err(Box::new(CompileError::new(
                 TYPE_ERR,
                 w.target.loc.clone(),
                 "with keyword target must reference existing input, data, or a function".into(),
-            ));
+            )));
         }
     }
     Ok(requires_eval(&w.value))

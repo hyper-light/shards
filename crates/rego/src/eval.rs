@@ -148,6 +148,8 @@ pub struct Program {
     indices: BTreeMap<Vec<String>, crate::index::RuleIndex>,
     /// Each rule and else branch, by the index's name for it.
     nodes: HashMap<crate::compile::RuleNode, Rc<RuleRec>>,
+    /// The compiler's type environment, for the checks on saved bodies.
+    type_env: crate::check::TypeEnv,
 }
 
 /// A comprehension's identity: where it is and what it says.
@@ -187,6 +189,7 @@ impl Program {
             compr_index,
             indices: c.indices.clone(),
             nodes,
+            type_env: c.type_env.clone(),
         }
     }
 
@@ -235,8 +238,11 @@ impl Program {
     }
 
     /// Compiler.PassesTypeCheck over a saved body.
-    fn passes_type_check(&self, _body: &Body) -> bool {
-        true
+    fn passes_type_check(&self, body: &Body) -> bool {
+        let mut env = self.type_env.clone();
+        crate::check::Checker::new(None)
+            .check_body(&mut env, body)
+            .is_empty()
     }
 }
 

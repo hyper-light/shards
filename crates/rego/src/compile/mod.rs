@@ -8,6 +8,7 @@ use std::rc::Rc;
 
 use crate::ast::{Body, Expr, ExprTerms, Import, Location, Module, Rule, Term, TermValue};
 use crate::builtins::{self, Builtin};
+use crate::check;
 use crate::types::Type;
 
 pub mod localvars;
@@ -100,6 +101,8 @@ pub struct Compiler {
     functions: Vec<Function>,
     print: bool,
     limit_reached: bool,
+    /// The types the checker knows: the builtins', then the rules' (c.TypeEnv).
+    pub type_env: check::TypeEnv,
 }
 
 /// The builtins a policy may call (buildx's allow-list).
@@ -109,7 +112,14 @@ pub fn allowed(name: &str) -> Option<&'static Builtin> {
 
 impl Compiler {
     pub fn new(modules: BTreeMap<String, Module>, functions: Vec<Function>, print: bool) -> Compiler {
+        let decls = builtins::registry()
+            .values()
+            .filter(|b| b.allowed)
+            .map(|b| (b.name.as_str(), &b.decl));
+        let type_env =
+            check::TypeEnv::with_builtins(decls.chain(functions.iter().map(|f| (f.name.as_str(), &f.decl))));
         Compiler {
+            type_env,
             modules,
             errors: Vec::new(),
             rewritten: HashMap::new(),
@@ -165,7 +175,7 @@ impl Compiler {
 
     /// Compiles the modules, stage by stage, stopping after the first stage that fails.
     pub fn compile(&mut self) {
-        let stages: [fn(&mut Compiler); 22] = [
+        let stages: [fn(&mut Compiler); 23] = [
             Compiler::resolve_all_refs,
             Compiler::init_local_var_gen,
             rewrite::rewrite_rule_head_refs,
@@ -187,6 +197,7 @@ impl Compiler {
             Compiler::check_safety_rule_bodies,
             Compiler::rewrite_equals_and_dynamics,
             Compiler::check_recursion,
+            Compiler::check_types,
             crate::index::build_rule_indices,
         ];
         for stage in stages {
@@ -495,7 +506,7 @@ impl Compiler {
                                 operands != arity && operands != arity + 1
                             };
                             if bad {
-                                let f = rewrite_vars_in_ref(&self.rewritten, op);
+                                let f = rewrite_ref(&self.rewritten, op);
                                 let got = if e.generated { operands - 1 } else { operands };
                                 errs.push(self.arity_error(e, &f, arity, got));
                             }
@@ -515,8 +526,13 @@ impl Compiler {
         self.err(errs);
     }
 
-    fn arity_error(&self, e: &Expr, f: &str, exp: usize, act: usize) -> CompileError {
+    /// arityMismatchError: with the declaration's arguments for a builtin.
+    fn arity_error(&self, e: &Expr, f: &[Term], exp: usize, act: usize) -> CompileError {
+        if let Some(err) = check::arity_error(&self.type_env, f, e) {
+            return err;
+        }
         let noun = if act == 1 { "argument" } else { "arguments" };
+        let f = text_of_ref(f);
         CompileError::new(
             TYPE_ERR,
             e.loc.clone(),
@@ -706,6 +722,73 @@ impl Compiler {
         Vec::new()
     }
 
+    /// Every rule and else branch, each after the rules it depends on (Graph.Sort).
+    fn sorted_rules(&self) -> Vec<RuleNode> {
+        let mut marked = std::collections::HashSet::new();
+        let mut out = Vec::new();
+        for (name, m) in &self.modules {
+            for (i, rule) in m.rules.iter().enumerate() {
+                let mut depth = 0;
+                let mut r = Some(rule);
+                while let Some(x) = r {
+                    self.sort_visit(&(name.clone(), i, depth), &mut marked, &mut out);
+                    depth += 1;
+                    r = x.else_.as_deref();
+                }
+            }
+        }
+        out
+    }
+
+    /// graphSort.Visit: CheckRecursion has ruled out cycles.
+    fn sort_visit(
+        &self,
+        n: &RuleNode,
+        marked: &mut std::collections::HashSet<RuleNode>,
+        out: &mut Vec<RuleNode>,
+    ) {
+        if !marked.insert(n.clone()) {
+            return;
+        }
+        if let Some(rule) = self.rule_node(n) {
+            for d in self.dependencies(rule) {
+                self.sort_visit(&d, marked, out);
+            }
+        }
+        out.push(n.clone());
+    }
+
+    /// checkTypes: the rules type checked in dependency order, their types kept.
+    fn check_types(&mut self) {
+        let sorted = self.sorted_rules();
+        let mut env = self.type_env.clone();
+        env.wrap();
+        let errs = {
+            let mut rules = Vec::with_capacity(sorted.len());
+            for n in &sorted {
+                let pkg = self
+                    .modules
+                    .get(&n.0)
+                    .map(|m| m.package.path.as_slice())
+                    .unwrap_or_default();
+                if let Some(rule) = self.rule_node(n) {
+                    rules.push((rule_ref(pkg, rule), rule));
+                }
+            }
+            check::Checker::new(Some(&self.rewritten)).check_types(&mut env, &rules)
+        };
+        self.type_env = env;
+        for e in errs {
+            self.err(vec![e]);
+        }
+    }
+
+    /// PassesTypeCheck: whether a body has no type errors against the rules' types.
+    pub fn passes_type_check(&self, body: &Body) -> bool {
+        let mut env = self.type_env.clone();
+        check::Checker::new(None).check_body(&mut env, body).is_empty()
+    }
+
     fn rewrite_equals_and_dynamics(&mut self) {
         rewrite::rewrite_equals(self);
         rewrite::rewrite_dynamic_terms(self);
@@ -754,12 +837,17 @@ pub fn text_of_ref(r: &[Term]) -> String {
 }
 
 /// rewriteVarsInRef: generated names back to the ones written.
-pub fn rewrite_vars_in_ref(rewritten: &HashMap<Var, Var>, r: &[Term]) -> String {
+pub fn rewrite_ref(rewritten: &HashMap<Var, Var>, r: &[Term]) -> Vec<Term> {
     let mut r = r.to_vec();
     for t in r.iter_mut() {
         transform_vars(t, &mut |v: &Var| rewritten.get(v).cloned());
     }
-    text_of_ref(&r)
+    r
+}
+
+/// The text of a ref, its generated names written as they were.
+pub fn rewrite_vars_in_ref(rewritten: &HashMap<Var, Var>, r: &[Term]) -> String {
+    text_of_ref(&rewrite_ref(rewritten, r))
 }
 
 /// Ref.GroundPrefix: the head, then the ground terms up to the first that is not.
