@@ -90,12 +90,11 @@ impl Stack {
         }
     }
 
-    fn top(&mut self) -> &mut DeclaredVarSet {
+    fn top(&mut self) -> Option<&mut DeclaredVarSet> {
         if self.vars.is_empty() {
             self.vars.push(DeclaredVarSet::default());
         }
-        let n = self.vars.len() - 1;
-        &mut self.vars[n]
+        self.vars.last_mut()
     }
 
     fn peek(&self) -> Option<&DeclaredVarSet> {
@@ -103,10 +102,11 @@ impl Stack {
     }
 
     fn insert(&mut self, x: &Var, y: &Var, occ: Occurrence) {
-        let top = self.top();
-        top.vs.insert(x.clone(), y.clone());
-        top.occurrence.insert(x.clone(), occ);
-        top.count.insert(x.clone(), 1);
+        if let Some(top) = self.top() {
+            top.vs.insert(x.clone(), y.clone());
+            top.occurrence.insert(x.clone(), occ);
+            top.count.insert(x.clone(), 1);
+        }
         if x != y {
             self.rewritten.insert(y.clone(), x.clone());
         }
@@ -131,7 +131,9 @@ impl Stack {
                 return;
             }
         }
-        self.top().count.insert(x.clone(), 1);
+        if let Some(top) = self.top() {
+            top.count.insert(x.clone(), 1);
+        }
     }
 
     fn count(&self, x: &str) -> usize {
@@ -478,15 +480,15 @@ fn every(rw: &mut Rewriter<'_>, stack: &mut Stack, mut expr: Expr) -> Option<Exp
     stack.push();
     let fail = |rw: &mut Rewriter<'_>, m: String| rw.errs.push(err(&ev.loc.clone().or(loc.clone()), m));
     if let Some(k) = ev.key.as_mut() {
-        if let Some(v) = k.as_var().map(Rc::from) {
-            if !vars::is_wildcard(&v) {
-                match declare(rw, stack, &v, Occurrence::Declared) {
-                    Ok(gv) => k.value = TermValue::Var(gv),
-                    Err(m) => {
-                        fail(rw, m);
-                        stack.pop();
-                        return None;
-                    }
+        if let Some(v) = k.as_var().map(Rc::from)
+            && !vars::is_wildcard(&v)
+        {
+            match declare(rw, stack, &v, Occurrence::Declared) {
+                Ok(gv) => k.value = TermValue::Var(gv),
+                Err(m) => {
+                    fail(rw, m);
+                    stack.pop();
+                    return None;
                 }
             }
         }

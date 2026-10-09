@@ -168,11 +168,9 @@ impl Unifier<'_> {
                         self.mark_all_safe(a);
                     }
                 }
-                TermValue::Array(ba) => {
-                    if aa.len() == ba.len() {
-                        for (x, y) in aa.iter().zip(ba) {
-                            self.unify(x, y);
-                        }
+                TermValue::Array(ba) if aa.len() == ba.len() => {
+                    for (x, y) in aa.iter().zip(ba) {
+                        self.unify(x, y);
                     }
                 }
                 _ => {}
@@ -189,12 +187,10 @@ impl Unifier<'_> {
                         self.mark_all_safe(a);
                     }
                 }
-                TermValue::Object(bo) => {
-                    if ao.len() == bo.len() {
-                        for (k, v) in vars::sorted_pairs(ao) {
-                            if let Some((_, v2)) = bo.iter().find(|(k2, _)| k2.equal(k)) {
-                                self.unify(v, v2);
-                            }
+                TermValue::Object(bo) if ao.len() == bo.len() => {
+                    for (k, v) in vars::sorted_pairs(ao) {
+                        if let Some((_, v2)) = bo.iter().find(|(k2, _)| k2.equal(k)) {
+                            self.unify(v, v2);
                         }
                     }
                 }
