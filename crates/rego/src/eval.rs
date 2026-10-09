@@ -144,6 +144,10 @@ pub struct Program {
     /// Comprehensions evaluated once and indexed by these variables
     /// (buildComprehensionIndices), by the comprehension's key.
     compr_index: HashMap<String, Vec<Term>>,
+    /// The rule indices, by rule tree path (TreeNode.Index).
+    indices: BTreeMap<Vec<String>, crate::index::RuleIndex>,
+    /// Each rule and else branch, by the index's name for it.
+    nodes: HashMap<crate::compile::RuleNode, Rc<RuleRec>>,
 }
 
 /// A comprehension's identity: where it is and what it says.
@@ -157,8 +161,9 @@ fn compr_key(t: &Term) -> String {
 impl Program {
     pub fn new(c: &Compiler, host_names: Vec<String>) -> Program {
         let mut root = TreeNode::default();
-        for m in c.modules.values() {
-            add_module(&mut root, m);
+        let mut nodes = HashMap::new();
+        for (name, m) in &c.modules {
+            add_module(&mut root, name, m, &mut nodes);
         }
         sort_tree(&mut root);
         let mut compr_index = HashMap::new();
@@ -180,6 +185,8 @@ impl Program {
             root,
             host_names,
             compr_index,
+            indices: c.indices.clone(),
+            nodes,
         }
     }
 
@@ -251,21 +258,28 @@ fn dynamic_walk(node: &TreeNode, r: &[Term], i: usize, out: &mut Vec<Rc<RuleRec>
     }
 }
 
-fn add_module(root: &mut TreeNode, m: &Module) {
+fn add_module(
+    root: &mut TreeNode,
+    name: &str,
+    m: &Module,
+    nodes: &mut HashMap<crate::compile::RuleNode, Rc<RuleRec>>,
+) {
     let pkg_len = m.package.path.len();
-    for rule in &m.rules {
+    for (ri, rule) in m.rules.iter().enumerate() {
         let path = rule_ref(&m.package.path, rule);
         let mut elses = Vec::new();
         let mut e = rule.else_.as_deref();
         while let Some(x) = e {
             let mut r = x.clone();
             r.else_ = None;
-            elses.push(Rc::new(RuleRec {
+            let rec = Rc::new(RuleRec {
                 rule: r,
                 path: path.clone(),
                 pkg_len,
                 elses: Vec::new(),
-            }));
+            });
+            nodes.insert((name.to_string(), ri, elses.len() + 1), rec.clone());
+            elses.push(rec);
             e = x.else_.as_deref();
         }
         let mut r = rule.clone();
@@ -276,6 +290,7 @@ fn add_module(root: &mut TreeNode, m: &Module) {
             pkg_len,
             elses,
         });
+        nodes.insert((name.to_string(), ri, 0), rec.clone());
         let mut node = &mut *root;
         for t in ground_prefix(&path) {
             let pos = node.children.iter().position(|(k, _)| k.equal(&t));
@@ -2566,51 +2581,64 @@ fn leaves(
     Ok(Some(crate::ast::object_term(result, None)))
 }
 
-/// getRules: the rules at a path, as OPA's index answers when it indexes nothing.
-fn get_rules(m: &Machine<'_>, path: &[Term]) -> IndexResult {
-    let roots = m.p.rules_at(path);
+/// getRules: the rule index's answer at a path, its resolver evalResolver's.
+fn get_rules(m: &Machine<'_>, f: &Frame, path: &[Term], args: Option<&[Term]>) -> Result<IndexResult, Flow> {
+    let Some(index) = m.p.indices.get(&crate::compile::ref_key(path)) else {
+        return Ok(IndexResult::default());
+    };
+    let mut resolver =
+        |r: &[Term]| -> Result<crate::index::Resolved<Term>, Flow> { resolve_for_index(m, f, args, r) };
+    let found = index.lookup(&mut resolver)?;
+    let rec = |n: &crate::compile::RuleNode| m.p.nodes.get(n).cloned();
     let mut ir = IndexResult {
-        only_ground_refs: true,
+        default: found.default.as_ref().and_then(rec),
+        kind_multi: found.kind == RuleKind::MultiValue,
+        early_exit: found.early_exit,
+        only_ground_refs: found.only_ground_refs,
         ..IndexResult::default()
     };
-    let Some(first) = roots.first() else { return ir };
-    ir.kind_multi = first.rule.head.kind() == RuleKind::MultiValue;
-    let mut multiple = false;
-    let mut last_value: Option<Term> = None;
-    for r in &roots {
-        let chain: Vec<&Rc<RuleRec>> = std::iter::once(r).chain(r.elses.iter()).collect();
-        for x in &chain {
-            if !x.rule.head.reference.iter().skip(1).all(Term::is_ground) {
-                ir.only_ground_refs = false;
+    for n in &found.rules {
+        let Some(r) = rec(n) else { continue };
+        if let Some(es) = found.else_.get(n) {
+            ir.elses
+                .insert(ir.rules.len(), es.iter().filter_map(rec).collect());
+        }
+        ir.rules.push(r);
+    }
+    Ok(ir)
+}
+
+/// evalResolver.Resolve: what a ref the index looks at is.
+fn resolve_for_index(
+    m: &Machine<'_>,
+    f: &Frame,
+    args: Option<&[Term]>,
+    r: &[Term],
+) -> Result<crate::index::Resolved<Term>, Flow> {
+    use crate::index::Resolved;
+    if m.disabled_ref(r, true) || m.ss_contains(&ref_of(r), None) {
+        return Ok(Resolved::Unknown);
+    }
+    match r.first().and_then(Term::as_var) {
+        Some("args") => {
+            let i = r.get(1).and_then(|t| match &t.value {
+                TermValue::Number(n) => n.as_i64().and_then(|i| usize::try_from(i).ok()),
+                _ => None,
+            });
+            match i.and_then(|i| args.and_then(|a| a.get(i))) {
+                Some(a) => Ok(Resolved::Value(m.plug_ns(a, f.b, Some(m.caller)))),
+                None => Ok(Resolved::Unknown),
             }
         }
-        if r.rule.default {
-            ir.default = Some(r.clone());
-            continue;
-        }
-        if !r.elses.is_empty() {
-            ir.elses.insert(ir.rules.len(), r.elses.clone());
-        }
-        ir.rules.push(r.clone());
-    }
-    for r in &ir.rules {
-        let complete = r.rule.head.kind() == RuleKind::SingleValue
-            && r.rule.head.args.is_empty()
-            && r.rule.head.reference.iter().skip(1).all(Term::is_ground);
-        if !complete && r.rule.head.key.is_some() {
-            multiple = true;
-            break;
-        }
-        if let Some(v) = &r.rule.head.value {
-            if last_value.as_ref().is_some_and(|l| !l.equal(v)) {
-                multiple = true;
-                break;
+        Some("input") => match &f.input {
+            Some(i) => {
+                Ok(find_in(i, r.get(1..).unwrap_or_default()).map_or(Resolved::Undefined, Resolved::Value))
             }
-            last_value = Some(v.clone());
-        }
+            None => Ok(Resolved::Undefined),
+        },
+        Some("data") => Ok(resolve(m, f, r)?.map_or(Resolved::Undefined, Resolved::Value)),
+        _ => Err(err(INTERNAL_ERR, None, "illegal ref")),
     }
-    ir.early_exit = !multiple;
-    ir
 }
 
 /// evalVirtual.
@@ -2626,7 +2654,7 @@ fn eval_virtual(
     rb: usize,
     k: K<'_>,
 ) -> R {
-    let ir = get_rules(m, plugged.get(..=pos).unwrap_or_default());
+    let ir = get_rules(m, f, plugged.get(..=pos).unwrap_or_default(), None)?;
     if !ir.elses.is_empty() && m.unknown_ref(r, b) {
         return save_unify(m, f, ref_of(r), rterm.clone(), b, rb, k);
     }
@@ -3756,7 +3784,7 @@ fn save_expr(m: &mut Machine<'_>, f: &Frame, mut e: Expr, b: usize, k: K<'_>) ->
 /// saveExprMarkUnknowns.
 fn save_expr_mark_unknowns(m: &mut Machine<'_>, f: &Frame, mut e: Expr, b: usize, k: K<'_>) -> R {
     update_from_query(m, f, &mut e);
-    let decl_args = decl_args_len(m, &e);
+    let decl_args = decl_args_len(m, f, &e);
     let pairs = save_pairs_from_expr(m, decl_args, &e, b);
     let pops = pairs.len();
     for (t, pb) in pairs {
@@ -3838,7 +3866,7 @@ fn save_inlined_negated(m: &mut Machine<'_>, f: &Frame, exprs: Vec<Expr>, k: K<'
 }
 
 /// getDeclArgsLen.
-fn decl_args_len(m: &Machine<'_>, e: &Expr) -> Option<usize> {
+fn decl_args_len(m: &Machine<'_>, f: &Frame, e: &Expr) -> Option<usize> {
     let ExprTerms::Call(c) = &e.terms else { return None };
     let op = c.first()?.as_ref()?;
     let name = crate::compile::text_of_ref(op);
@@ -3848,7 +3876,7 @@ fn decl_args_len(m: &Machine<'_>, e: &Expr) -> Option<usize> {
     if m.p.host_names.contains(&name) {
         return Some(host_arity(&name));
     }
-    let ir = get_rules(m, op);
+    let ir = get_rules(m, f, op, None).ok()?;
     ir.rules.first().map(|r| r.rule.head.args.len())
 }
 
@@ -3928,7 +3956,8 @@ fn eval_call(m: &mut Machine<'_>, f: &Frame, terms: &[Term], k: K<'_>) -> R {
             let arity = m.p.arity(op).unwrap_or(0);
             return eval_call_value(m, f, arity, terms, &mv, k);
         }
-        let ir = get_rules(m, op);
+        let args = if m.is_partial() { None } else { terms.get(1..) };
+        let ir = get_rules(m, f, op, args)?;
         return eval_func(m, f, terms, &ir, k);
     }
     let decl_arity = if crate::compile::allowed(&name).is_some() || m.p.host_names.contains(&name) {
