@@ -1139,8 +1139,12 @@ dependencies = [
 name = "shards-rego"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "num-bigint",
+ "regex",
  "serde_json",
+ "shards-template",
+ "yaml-rust2",
 ]
 
 [[package]]

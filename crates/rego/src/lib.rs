@@ -5,6 +5,7 @@
 
 pub mod ast;
 pub mod builtins;
+pub mod check;
 pub mod compare;
 pub mod goquote;
 pub mod number;

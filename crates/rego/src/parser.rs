@@ -18,6 +18,8 @@ pub struct Error {
     pub loc: Option<Location>,
     /// The source line and the offending byte's index in it.
     pub details: Option<(String, usize)>,
+    /// A type error's details (ErrorDetails.Lines), each written on its own line.
+    pub lines: Vec<String>,
 }
 
 pub const PARSE_ERR: &str = "rego_parse_error";
@@ -74,6 +76,9 @@ impl std::fmt::Display for Error {
             let indent = idx.saturating_sub(tabs);
             write!(f, "\n\t{trimmed}\n\t{}^", " ".repeat(indent))?;
         }
+        for line in &self.lines {
+            write!(f, "\n\t{line}")?;
+        }
         Ok(())
     }
 }
@@ -85,6 +90,7 @@ impl Error {
             message,
             loc,
             details: None,
+            lines: Vec::new(),
         }
     }
 }
@@ -2113,6 +2119,7 @@ impl<'a> Parser<'a> {
             message: msg,
             loc,
             details,
+            lines: Vec::new(),
         });
         self.s.hints.clear();
     }

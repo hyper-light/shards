@@ -1,0 +1,777 @@
+[
+ {
+  "name": "arg-count-number",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np if count(1) > 0\n"
+   ]
+  ]
+ },
+ {
+  "name": "arg-sprintf-format",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np := sprintf(1, [])\n"
+   ]
+  ]
+ },
+ {
+  "name": "arg-sprintf-values",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np := sprintf(\"%s\", \"a\")\n"
+   ]
+  ]
+ },
+ {
+  "name": "arg-upper-number",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np := upper(1)\n"
+   ]
+  ]
+ },
+ {
+  "name": "arg-concat-elems",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np := concat(\",\", [1, 2])\n"
+   ]
+  ]
+ },
+ {
+  "name": "arg-startswith-input",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np if startswith(input.x, 1)\n"
+   ]
+  ]
+ },
+ {
+  "name": "arg-plus-string",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np := 1 + \"a\"\n"
+   ]
+  ]
+ },
+ {
+  "name": "arg-trim-both",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np := trim(1, 2)\n"
+   ]
+  ]
+ },
+ {
+  "name": "arg-negated",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np if not upper(1)\n"
+   ]
+  ]
+ },
+ {
+  "name": "arg-var-typed",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np if {\n\tx := 1\n\ty := upper(x)\n\ty == \"1\"\n}\n"
+   ]
+  ]
+ },
+ {
+  "name": "arg-object-get",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np := object.get(\"a\", \"b\", 0)\n"
+   ]
+  ]
+ },
+ {
+  "name": "arg-object-ok",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np := object.get({\"a\": 1}, \"a\", 0)\n"
+   ]
+  ]
+ },
+ {
+  "name": "arg-set-elem",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np if {\n\ts := {1, 2}\n\tupper(s[_])\n}\n"
+   ]
+  ]
+ },
+ {
+  "name": "arg-unified-array",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np if {\n\t[x, \"a\"] = [1, y]\n\tupper(x)\n\tlower(y)\n}\n"
+   ]
+  ]
+ },
+ {
+  "name": "arg-unified-object",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np if {\n\t{\"a\": 1} = {\"a\": x}\n\tupper(x)\n}\n"
+   ]
+  ]
+ },
+ {
+  "name": "arg-too-many",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np := count([1], 2, 3)\n"
+   ]
+  ]
+ },
+ {
+  "name": "arg-arity-fn",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nf(x) := x\n\np := f(1, 2, 3)\n"
+   ]
+  ]
+ },
+ {
+  "name": "arg-user-fn",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nf(x) := x + 1\n\np := f(\"a\")\n"
+   ]
+  ]
+ },
+ {
+  "name": "arg-user-fn-ok",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nf(x) := x + 1\n\np := f(2)\n"
+   ]
+  ]
+ },
+ {
+  "name": "arg-user-fn-result",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nf(x) := y if y := x + 1\n\np := upper(f(1))\n"
+   ]
+  ]
+ },
+ {
+  "name": "arg-else-union",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nf(x) := 1 if x == 1\n\nelse := \"a\"\n\np := upper(f(1))\n"
+   ]
+  ]
+ },
+ {
+  "name": "arg-in-comprehension",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np := [x | some y in [1]; x := upper(y)]\n"
+   ]
+  ]
+ },
+ {
+  "name": "arg-closure-suppressed",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np := count([x | x := upper(1)])\n"
+   ]
+  ]
+ },
+ {
+  "name": "arg-in-every",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np if every x in [1] { upper(x) }\n"
+   ]
+  ]
+ },
+ {
+  "name": "arg-error-limit",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np if {\n\tupper(0)\n\tupper(1)\n\tupper(2)\n\tupper(3)\n\tupper(4)\n\tupper(5)\n\tupper(6)\n\tupper(7)\n\tupper(8)\n\tupper(9)\n\tupper(10)\n\tupper(11)\n}\n"
+   ]
+  ]
+ },
+ {
+  "name": "arg-two-files",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np := upper(1)\n"
+   ],
+   [
+    "other.rego",
+    "package docker\n\nq := lower(2)\n"
+   ]
+  ]
+ },
+ {
+  "name": "arg-with-arity",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nf(x) := 1\n\ng(x, y) := 2\n\np if f(1) with f as g\n"
+   ]
+  ]
+ },
+ {
+  "name": "arg-with-builtin",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nf(x) := 1\n\np if count([1]) == 1 with count as f\n"
+   ]
+  ]
+ },
+ {
+  "name": "arg-with-builtin-arity",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ng(x, y) := 2\n\np if count([1]) == 1 with count as g\n"
+   ]
+  ]
+ },
+ {
+  "name": "eq-mismatch",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np if {\n\tx := 1\n\tx = \"a\"\n}\n"
+   ]
+  ]
+ },
+ {
+  "name": "eq-array-length",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np if {\n\tx := [1, 2]\n\tx = [_]\n}\n"
+   ]
+  ]
+ },
+ {
+  "name": "eq-rule-types",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nn := 1\n\np if n = \"a\"\n"
+   ]
+  ]
+ },
+ {
+  "name": "eq-ok",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nn := 1\n\np if n = 2\n"
+   ]
+  ]
+ },
+ {
+  "name": "ref-object-missing",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nobj := {\"a\": 1}\n\np := obj.b\n"
+   ]
+  ]
+ },
+ {
+  "name": "ref-object-local",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np if {\n\tobj := {\"a\": 1}\n\tobj.b == 1\n}\n"
+   ]
+  ]
+ },
+ {
+  "name": "ref-number",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nn := 1\n\np := n.x\n"
+   ]
+  ]
+ },
+ {
+  "name": "ref-number-local",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np if {\n\tn := 1\n\tn.x\n}\n"
+   ]
+  ]
+ },
+ {
+  "name": "ref-string-index",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np if {\n\ts := \"abc\"\n\ts[0]\n}\n"
+   ]
+  ]
+ },
+ {
+  "name": "ref-array-key",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np if {\n\tarr := [1, 2]\n\tarr.foo\n}\n"
+   ]
+  ]
+ },
+ {
+  "name": "ref-array-bounds",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np if {\n\tarr := [1, 2]\n\tarr[5]\n}\n"
+   ]
+  ]
+ },
+ {
+  "name": "ref-object-number-key",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nobj := {\"a\": 1}\n\np := obj[1]\n"
+   ]
+  ]
+ },
+ {
+  "name": "ref-nested-object",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np if {\n\tarr := [{\"a\": 1}]\n\tarr[0].b\n}\n"
+   ]
+  ]
+ },
+ {
+  "name": "ref-data-number",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np := data[1]\n"
+   ]
+  ]
+ },
+ {
+  "name": "ref-decision-key",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := {\"allow\": true}\n\np := data.docker.decision.deny\n"
+   ]
+  ]
+ },
+ {
+  "name": "ref-decision-scalar",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := {\"allow\": true}\n\np := data.docker.decision.allow.x\n"
+   ]
+  ]
+ },
+ {
+  "name": "ref-union-keys",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nq := {\"a\": 1} if input.x\n\nq := {\"b\": \"s\"} if input.y\n\np := q.c\n"
+   ]
+  ]
+ },
+ {
+  "name": "ref-union-ok",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nq := {\"a\": 1} if input.x\n\nq := {\"b\": \"s\"} if input.y\n\np := q.a\n"
+   ]
+  ]
+ },
+ {
+  "name": "ref-rule-head-nested",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\na.b.c := 1\n\np := a.b.c.d\n"
+   ]
+  ]
+ },
+ {
+  "name": "ref-partial-object",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nm[k] := 1 if some k in [\"a\"]\n\np := m.x.y\n"
+   ]
+  ]
+ },
+ {
+  "name": "ref-partial-set",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ns contains 1\n\ns contains \"a\"\n\np if s.foo\n"
+   ]
+  ]
+ },
+ {
+  "name": "ref-rule-with-error",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nq := upper(1)\n\np := q.x\n"
+   ]
+  ]
+ },
+ {
+  "name": "ref-function",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nf(x) := x\n\np := f\n"
+   ]
+  ]
+ },
+ {
+  "name": "ref-function-index",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nf(x) := x\n\np := f[1]\n"
+   ]
+  ]
+ },
+ {
+  "name": "ref-builtin-as-value",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np := count\n"
+   ]
+  ]
+ },
+ {
+  "name": "ref-every-body",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nobj := {\"a\": 1}\n\np if every x in input.a { obj.b == x }\n"
+   ]
+  ]
+ },
+ {
+  "name": "ref-in-comprehension",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nobj := {\"a\": 1}\n\np := [x | x := obj.b]\n"
+   ]
+  ]
+ },
+ {
+  "name": "ref-input-ok",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np := input.x[1].y\n"
+   ]
+  ]
+ },
+ {
+  "name": "ref-undefined-function",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np := foo(1)\n"
+   ]
+  ]
+ },
+ {
+  "name": "ref-var-key-type",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nobj := {\"a\": 1}\n\np if {\n\tx := 1\n\tobj[x]\n}\n"
+   ]
+  ]
+ },
+ {
+  "name": "ref-set-of-numbers",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ns := {1, 2}\n\np if s.a\n"
+   ]
+  ]
+ },
+ {
+  "name": "ref-object-object",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\no := {\"a\": {\"b\": 1}}\n\np := o.a.c\n"
+   ]
+  ]
+ },
+ {
+  "name": "ref-escape-key",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\no := {\"a b\": 1}\n\np := o[\"c d\"]\n"
+   ]
+  ]
+ },
+ {
+  "name": "ref-generated-name",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np if {\n\tsome x in input.list\n\tn := 1\n\tn[x]\n}\n"
+   ]
+  ]
+ },
+ {
+  "name": "conflict-numbers-strings",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np := 1 if input.a\n\np := \"s\" if input.b\n\nq := upper(p)\n"
+   ]
+  ]
+ },
+ {
+  "name": "conflict-objects",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\no := {\"a\": 1} if input.a\n\no := 2 if input.b\n\nq := o.a.b\n"
+   ]
+  ]
+ },
+ {
+  "name": "conflict-default",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow := 1 if input.a\n\nq := allow.x\n"
+   ]
+  ]
+ },
+ {
+  "name": "conflict-set-elems",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ns contains 1 if input.a\n\ns contains {\"a\": 1} if input.b\n\nq if s[_].b\n"
+   ]
+  ]
+ },
+ {
+  "name": "conflict-function-results",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nf(1) := \"one\"\n\nf(2) := 2\n\nq := f(1).x\n"
+   ]
+  ]
+ },
+ {
+  "name": "conflict-partial-objects",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nm[\"a\"] := 1\n\nm[\"b\"] := \"x\"\n\nq := m.a.z\n"
+   ]
+  ]
+ },
+ {
+  "name": "bx-ok",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if {\n\tinput.image.ref == \"docker.io/library/alpine\"\n\tdocker_github_builder(input.image, \"docker/buildx\")\n}\n\nallow if verify_git_signature(input.git, \"ABCDEF\")\n\nallow if pin_image(input.image, \"sha256:0000\")\n\nallow if {\n\tatt := artifact_attestation(input.image, \"https://slsa.dev/provenance/v1\")\n\tatt.predicate.builder.id == \"x\"\n}\n\nallow if github_release_attestation(input.http)\n\nkeys := load_json(\"keys.json\")\n\ndecision := {\"allow\": allow, \"keys\": keys}\n"
+   ]
+  ],
+  "bodies": [
+   "data.docker.decision.allow",
+   "data.docker.decision.deny",
+   "data.docker.decision.allow.x",
+   "data.docker.keys.a.b",
+   "x = data.docker.decision; x.allow"
+  ]
+ },
+ {
+  "name": "bx-git-signature-arg",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nallow if verify_git_signature(input.git, 1)\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ]
+ },
+ {
+  "name": "bx-load-json-arg",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nx := load_json(1)\n\ndecision := {\"allow\": true}\n"
+   ]
+  ]
+ },
+ {
+  "name": "bx-pin-image-arg",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nallow if pin_image(input.image, 5)\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ]
+ },
+ {
+  "name": "bx-attestation-arg",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\natt := artifact_attestation(input.image, true)\n\ndecision := {\"allow\": true}\n"
+   ]
+  ]
+ },
+ {
+  "name": "bx-github-attestation-arg",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\natt := github_attestation(1, 2)\n\ndecision := {\"allow\": true}\n"
+   ]
+  ]
+ },
+ {
+  "name": "bx-pgp-arg",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nallow if verify_http_pgp_signature(input.http, \"sig\", 3)\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ]
+ },
+ {
+  "name": "bx-host-result",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nallow if pin_image(input.image, \"x\").ok\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ]
+ },
+ {
+  "name": "bx-defaults-misuse",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nallow if docker_github_builder_tag(input.image, \"docker/buildx\", 1)\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ]
+ },
+ {
+  "name": "bx-decision-shape",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := {\"allow\": true, \"deny_msg\": [\"a\"]}\n\nmsg := decision.deny_msg[0].x\n"
+   ]
+  ]
+ },
+ {
+  "name": "bx-deny-messages",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndeny contains msg if {\n\tsome l in input.labels\n\tmsg := sprintf(\"bad %s\", l)\n}\n\ndecision := {\"allow\": count(deny) == 0, \"deny_msg\": deny}\n"
+   ]
+  ]
+ },
+ {
+  "name": "bx-ok-messages",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndeny contains msg if {\n\tsome k, v in input.labels\n\tv == \"\"\n\tmsg := sprintf(\"label %s is empty\", [k])\n}\n\ndecision := {\"allow\": count(deny) == 0, \"deny_msg\": deny}\n"
+   ]
+  ],
+  "bodies": [
+   "data.docker.deny[x]; upper(x)",
+   "data.docker.deny[x]; x.y",
+   "data.docker.decision.allow",
+   "count(data.docker.deny, n)"
+  ]
+ },
+ {
+  "name": "passes",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nobj := {\"a\": 1}\n\nn := 1\n\nf(x) := x + 1\n\narr := [1, \"a\"]\n"
+   ]
+  ],
+  "bodies": [
+   "data.docker.obj.a",
+   "data.docker.obj.b",
+   "data.docker.n.x",
+   "x = data.docker.n; upper(x)",
+   "input.x.y",
+   "count(input.x, n)",
+   "data.docker.f(\"a\", y)",
+   "data.docker.f(1, y)",
+   "x = [1, 2]; x[_] = \"a\"",
+   "data.docker.obj[1]",
+   "data.docker.arr[0] = 1",
+   "data.docker.arr[1] = 1",
+   "data.docker.arr[2]",
+   "x = data.docker.obj; y = x.a; lower(y)",
+   "[x | x = data.docker.obj.c]",
+   "data.docker.unknown.x.y",
+   "data.docker[1]",
+   "data[x].obj"
+  ]
+ }
+]
