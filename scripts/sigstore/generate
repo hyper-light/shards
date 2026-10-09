@@ -1,0 +1,21 @@
+#!/bin/sh
+# Regenerates crates/sigstore/testdata/oracle.json: Sigstore bundles made against a
+# virtual Sigstore built with what buildx vendors, and the real moby/buildkit v0.28.1
+# attestation bundle against Sigstore's trusted root, each with what sigstore-go v1.2.2,
+# as buildx v0.37.1 vendors it and BuildKit's policy helpers configure it, makes of it.
+# Local times print in UTC (TZ=UTC), as the harness asks.
+#
+#   scripts/sigstore/generate BUILDX_V0.37.1_CHECKOUT
+set -eu
+here=$(cd "$(dirname "$0")" && pwd)
+root=$(cd "$here/../.." && pwd)
+bx=$1
+dir="$bx/cmd/zz_shards_sigstore"
+trap 'rm -rf "$dir"' EXIT
+mkdir -p "$root/crates/sigstore/testdata" "$dir"
+cp "$here/oracle_test.go" "$dir/oracle_test.go"
+cd "$bx"
+TZ=UTC SHARDS_SIGSTORE_OUT="$root/crates/sigstore/testdata/oracle.json" \
+	SHARDS_SIGSTORE_ROOT="$root/crates/tuf/roots/sigstore/targets/trusted_root.json" \
+	SHARDS_SIGSTORE_REAL="$root/crates/sigstore/testdata/real/buildkit-v0.28.1-arm64.bundle.json" \
+	go test -mod=vendor -count=1 -v -run '^TestShardsSigstoreOracle$' ./cmd/zz_shards_sigstore/

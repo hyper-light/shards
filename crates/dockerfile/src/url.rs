@@ -420,7 +420,7 @@ fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
 type AddrFail<'a> = &'a dyn Fn(&str, Option<&[u8]>) -> Vec<u8>;
 
 /// `netip.ParseAddr`: whether the address is IPv4, or `ParseAddr`'s error.
-fn parse_addr(s: &[u8]) -> Result<bool, Vec<u8>> {
+pub fn parse_addr(s: &[u8]) -> Result<bool, Vec<u8>> {
     let fail = |msg: &str, at: Option<&[u8]>| {
         let mut e = [
             b"ParseAddr(".as_slice(),

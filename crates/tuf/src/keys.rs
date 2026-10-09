@@ -1,11 +1,10 @@
 //! TUF keys as go-tuf reads them (metadata/keys.go ToPublicKey) and verifies with them
 //! (sigstore's signature verifiers): ECDSA keys (`ecdsa` and `ecdsa-sha2-nistp256`) and
 //! RSA ones as PEM public keys, Ed25519 ones in hex; ECDSA and Ed25519 checked through
-//! AWS-LC, RSASSA-PSS (salt length found, as Go's PSSSaltLengthAuto) over public values in
-//! safe Rust.
+//! AWS-LC, RSASSA-PSS (salt length found, as Go's PSSSaltLengthAuto) through
+//! `shards_gitsign::arith`.
 
 use aws_lc_rs::digest;
-use num_bigint::BigUint;
 
 use crate::Error;
 use crate::metadata::Key;
@@ -288,7 +287,17 @@ impl PublicKey {
             }
             PublicKey::Rsa { n, e } => {
                 let d = digest::digest(h, payload);
-                rsa_pss_auto(n, e, hash, d.as_ref(), sig)
+                shards_gitsign::arith::rsa_pss_verify(
+                    n,
+                    e,
+                    match hash {
+                        Hash::Sha256 => shards_gitsign::signature::Hash::Sha256,
+                        Hash::Sha384 => shards_gitsign::signature::Hash::Sha384,
+                    },
+                    d.as_ref(),
+                    sig,
+                    None,
+                )
             }
         }
     }
@@ -323,85 +332,4 @@ fn ecdsa_asn1(curve: Curve, point: &[u8], hashed: &[u8], sig: &[u8]) -> bool {
         return false;
     };
     ParsedPublicKey::new(alg, point).is_ok_and(|k| k.verify_digest_sig(&d, sig).is_ok())
-}
-
-/// rsa.VerifyPSS with PSSSaltLengthAuto (RFC 8017 §9.1.2, the salt's length found from
-/// the encoding), after Go's key checks.
-fn rsa_pss_auto(n: &[u8], e: &[u8], hash: Hash, digest: &[u8], sig: &[u8]) -> bool {
-    let n = BigUint::from_bytes_be(n);
-    let e = BigUint::from_bytes_be(e);
-    let bits = n.bits();
-    if bits < 1024 || !n.bit(0) || e < BigUint::from(2u8) || !e.bit(0) {
-        return false;
-    }
-    let k = usize::try_from(bits.div_ceil(8)).unwrap_or(usize::MAX);
-    if sig.len() != k {
-        return false;
-    }
-    let s = BigUint::from_bytes_be(sig);
-    if s >= n {
-        return false;
-    }
-    let m = s.modpow(&e, &n).to_bytes_be();
-    let em_bits = usize::try_from(bits - 1).unwrap_or(usize::MAX);
-    let em_len = em_bits.div_ceil(8);
-    // The encoded message: k octets, the first zero where emLen is shorter.
-    let Some(lead) = k.checked_sub(m.len()) else {
-        return false;
-    };
-    let mut full = vec![0u8; lead];
-    full.extend(m);
-    let em = match full.get(k - em_len..) {
-        Some(em) if k - em_len <= 1 && full.get(..k - em_len).is_some_and(|z| z.iter().all(|x| *x == 0)) => {
-            em
-        }
-        _ => return false,
-    };
-    let (h_alg, h_len) = match hash {
-        Hash::Sha256 => (&digest::SHA256, 32),
-        Hash::Sha384 => (&digest::SHA384, 48),
-    };
-    if digest.len() != h_len || em_len < h_len + 2 {
-        return false;
-    }
-    if em.last() != Some(&0xbc) {
-        return false;
-    }
-    let db_len = em_len - h_len - 1;
-    let (masked, rest) = em.split_at(db_len);
-    let Some(h) = rest.get(..h_len) else {
-        return false;
-    };
-    // The top bits beyond emBits must be zero.
-    let top = 8 * em_len - em_bits;
-    if masked.first().is_some_and(|b| b >> (8 - top) != 0) {
-        return false;
-    }
-    // MGF1 over H.
-    let mut mask = Vec::with_capacity(db_len + h_len);
-    let mut counter = 0u32;
-    while mask.len() < db_len {
-        let mut ctx = digest::Context::new(h_alg);
-        ctx.update(h);
-        ctx.update(&counter.to_be_bytes());
-        mask.extend_from_slice(ctx.finish().as_ref());
-        counter += 1;
-    }
-    let mut db: Vec<u8> = masked.iter().zip(&mask).map(|(a, b)| a ^ b).collect();
-    if let Some(first) = db.first_mut() {
-        *first &= 0xff >> top;
-    }
-    // Auto salt: zeros, then 0x01, then the salt.
-    let Some(one) = db.iter().position(|x| *x != 0) else {
-        return false;
-    };
-    if db.get(one) != Some(&1) {
-        return false;
-    }
-    let salt = db.get(one + 1..).unwrap_or_default();
-    let mut ctx = digest::Context::new(h_alg);
-    ctx.update(&[0u8; 8]);
-    ctx.update(digest);
-    ctx.update(salt);
-    ctx.finish().as_ref() == h
 }

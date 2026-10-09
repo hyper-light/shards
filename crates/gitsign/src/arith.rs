@@ -146,6 +146,102 @@ pub fn rsa_pkcs1_verify(n: &[u8], e: &[u8], hash: Hash, digest: &[u8], sig: &[u8
     em == want
 }
 
+/// rsa.VerifyPSS of `digest` by (n, e) (RFC 8017 §9.1.2, as Go's emsaPSSVerify): the salt
+/// `salt` octets long, or of the length the encoding shows (PSSSaltLengthAuto) where None.
+pub fn rsa_pss_verify(
+    n: &[u8],
+    e: &[u8],
+    hash: Hash,
+    digest: &[u8],
+    sig: &[u8],
+    salt: Option<usize>,
+) -> bool {
+    use aws_lc_rs::digest as d;
+    if rsa_key_error(n, e).is_some() {
+        return false;
+    }
+    let (alg, h_len): (&'static d::Algorithm, usize) = match hash {
+        Hash::Sha1 => (&d::SHA1_FOR_LEGACY_USE_ONLY, 20),
+        Hash::Sha256 => (&d::SHA256, 32),
+        Hash::Sha384 => (&d::SHA384, 48),
+        Hash::Sha512 => (&d::SHA512, 64),
+        _ => return false,
+    };
+    let n = BigUint::from_bytes_be(n);
+    let e = BigUint::from_bytes_be(e);
+    let bits = n.bits();
+    let k = usize::try_from(bits.div_ceil(8)).unwrap_or(usize::MAX);
+    if sig.len() != k {
+        return false;
+    }
+    let s = BigUint::from_bytes_be(sig);
+    if s >= n {
+        return false;
+    }
+    let m = s.modpow(&e, &n).to_bytes_be();
+    let Some(lead) = k.checked_sub(m.len()) else {
+        return false;
+    };
+    let mut full = vec![0u8; lead];
+    full.extend(m);
+    let em_bits = usize::try_from(bits - 1).unwrap_or(usize::MAX);
+    let em_len = em_bits.div_ceil(8);
+    // The modulus's octets beyond emLen: one at most, zero.
+    let em = match k.checked_sub(em_len) {
+        Some(0) => full.as_slice(),
+        Some(1) if full.first() == Some(&0) => full.get(1..).unwrap_or_default(),
+        _ => return false,
+    };
+    let min = h_len + salt.unwrap_or(0) + 2 - usize::from(salt.is_none());
+    if digest.len() != h_len || em_len < min || em.last() != Some(&0xbc) {
+        return false;
+    }
+    let db_len = em_len - h_len - 1;
+    let (masked, rest) = em.split_at(db_len);
+    let Some(h) = rest.get(..h_len) else {
+        return false;
+    };
+    let top = 8 * em_len - em_bits;
+    let bit_mask = 0xffu8 >> top;
+    if masked.first().is_some_and(|b| b & !bit_mask != 0) {
+        return false;
+    }
+    let mut mask = Vec::with_capacity(db_len + h_len);
+    let mut counter = 0u32;
+    while mask.len() < db_len {
+        let mut ctx = d::Context::new(alg);
+        ctx.update(h);
+        ctx.update(&counter.to_be_bytes());
+        mask.extend_from_slice(ctx.finish().as_ref());
+        counter += 1;
+    }
+    let mut db: Vec<u8> = masked.iter().zip(&mask).map(|(a, b)| a ^ b).collect();
+    if let Some(first) = db.first_mut() {
+        *first &= bit_mask;
+    }
+    let s_len = match salt {
+        Some(s) => s,
+        None => match db.iter().position(|x| *x == 1) {
+            Some(ps) => db.len() - ps - 1,
+            None => return false,
+        },
+    };
+    let Some(ps_len) = em_len.checked_sub(h_len + s_len + 2) else {
+        return false;
+    };
+    if db.get(..ps_len).is_none_or(|z| z.iter().any(|x| *x != 0)) || db.get(ps_len) != Some(&1) {
+        return false;
+    }
+    let Some(salt) = db.get(db.len() - s_len..) else {
+        return false;
+    };
+    let mut ctx = d::Context::new(alg);
+    ctx.update(&[0u8; 8]);
+    ctx.update(digest);
+    ctx.update(salt);
+    ctx.finish().as_ref() == h
+}
+
 /// dsa.Verify of `digest` (already cut to the subgroup's size, as go-crypto cuts it).
 pub fn dsa_verify(p: &[u8], q: &[u8], g: &[u8], y: &[u8], digest: &[u8], r: &[u8], s: &[u8]) -> bool {
     let (p, q, g, y) = (
@@ -304,6 +400,30 @@ pub const BRAINPOOL_P512: Brainpool = Brainpool {
     gy: "5B534BD595F5AF0FA2C892376C84ACE1BB4E3019B71634C01131159CAE03CEE9D9932184BEEF216BD71DF2DADF86A627306ECFF96DBB8BACE198B61E00F8B332",
     z: "12EE58E6764838B69782136F0F2D3BA06E27695716054092E60A80BEDB212B64E585D90BCE13761F85C3F1D2A64E3BE8FEA2220F01EBA5EEB0F35DBD29D922AB",
     bytes: 64,
+};
+
+/// NIST P-224, a short Weierstrass curve with a = -3 as brainpool's twists are, computed
+/// untwisted (z = 1), for the keys crypto/ecdsa verifies on it: SP 800-186 §3.2.1.2's
+/// parameters, as Go 1.26's crypto/elliptic (nistec.go) carries them.
+pub const NIST_P224: Brainpool = Brainpool {
+    p: "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF000000000000000000000001",
+    n: "FFFFFFFFFFFFFFFFFFFFFFFFFFFF16A2E0B8F03E13DD29455C5C2A3D",
+    b: "B4050A850C04B3ABF54132565044B0B7D7BFD8BA270B39432355FFB4",
+    gx: "B70E0CBD6BB4BF7F321390B94A03C1D356C21122343280D6115C1D21",
+    gy: "BD376388B5F723FB4C22DFE6CD4375A05A07476444D5819985007E34",
+    z: "01",
+    bytes: 28,
+};
+
+/// NIST P-521, likewise (a = -3, untwisted), for digests longer than AWS-LC takes.
+pub const NIST_P521: Brainpool = Brainpool {
+    p: "1FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF",
+    n: "1FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFA51868783BF2F966B7FCC0148F709A5D03BB5C9B8899C47AEBB6FB71E91386409",
+    b: "51953EB9618E1C9A1F929A21A0B68540EEA2DA725B99B315F3B8B489918EF109E156193951EC7E937B1652C0BD3BB1BF073573DF883D2C34F1EF451FD46B503F00",
+    gx: "C6858E06B70404E9CD9E3ECB662395B4429C648139053FB521F828AF606B4D3DBAA14B5E77EFE75928FE1DC127A2FFA8DE3348B3C1856A429BF97E7E31C2E5BD66",
+    gy: "11839296A789A3BC0045C8A5FB42C7D1BD998F54449579B446817AFBD17273E662C97EE72995EF42640C550B9013FAD0761353C7086A272C24088BE94769FD16650",
+    z: "01",
+    bytes: 66,
 };
 
 impl Brainpool {
@@ -556,6 +676,18 @@ mod tests {
     // RFC 8032 §5.2's parameters, from their definitions: p = 2^448 - 2^224 - 1,
     // L = 2^446 - 13818066809895115352007386748515426880336692474882178609894547503885,
     // and B on the curve x² + y² = 1 + d·x²·y², d = -39081.
+    #[test]
+    fn nist_generators_are_on_their_curves_and_of_their_orders() {
+        for c in [NIST_P224, NIST_P521] {
+            let (gx, gy) = (big(c.gx), big(c.gy));
+            assert!(c.on_curve(&gx, &gy));
+            let p = big(c.p);
+            let f = Field { p: &p };
+            let g: Jacobian = Some((gx, gy, BigUint::from(1u8)));
+            assert!(jmul(&f, &big(c.n), &g).is_none());
+        }
+    }
+
     #[test]
     fn ed448_constants_are_rfc_8032s() {
         let [p, l, x, y] = ed448_constants();

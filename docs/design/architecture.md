@@ -3210,6 +3210,88 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode
 waits on the user.
 
+### D105. Sigstore bundles verified as sigstore-go verifies them
+
+buildx v0.37.1 checks Sigstore signatures through BuildKit's policy helpers
+(moby/policy-helpers), which verify bundles with sigstore-go v1.2.2 against the trusted
+root D104 fetches. The policies' `artifact_attestation` and `github_attestation`, and an
+image's `signatures`, are what they report (D106). The new crate `shards-sigstore`
+verifies a bundle as sigstore-go does, from the bytes up, and refuses one in its words.
+
+**The verification** (`verify`), sigstore-go's `Verifier.Verify` with the options the
+policy helpers set (a transparency log entry, an observer timestamp and a certificate
+transparency SCT, one each; for Docker Hardened Images, their key with or without the
+log):
+- **The log entries** (`tlog`): Rekor v1's signed entry timestamps (ECDSA over the JCS
+  canonicalization of the entry), RFC 6962 inclusion proofs and signed checkpoints, and
+  each entry's body (dsse, hashedrekord, intoto) read as Rekor's own types read it and
+  compared with the bundle's signature, key and digest; Rekor v2's entries and their
+  c2sp notes.
+  Rekor's own forms (dsse `proposedContent`, intoto with a payload) are read and their
+  envelopes checked as Rekor checks them.
+- **The timestamps** (`tsa`): RFC 3161 responses read as digitorus/timestamp and
+  digitorus/pkcs7 read them (BER converted to DER first), the CMS signature and the
+  timestamping authority's chain checked as sigstore's timestamp-authority checks them.
+- **The certificate** (`x509`): Go's crypto/x509, parsed and verified (chains built by
+  key ID, each certificate valid at the observed time, the code-signing usage), its
+  SCTs (`sct`) read again through certificate-transparency-go's own x509 and checked
+  over the precertificate it rebuilds.
+  Name constraints and certificate policies are applied as Go applies them
+  (`checkChainConstraints`, `policiesValid`, RFC 9618's policy graph).
+- **The signature** (`signature`): DSSE envelopes over their PAE, with key IDs as
+  go-securesystemslib derives them (SSH fingerprints), and message signatures over the
+  artifact's digest, through sigstore's verifiers (Ed25519ph, the compatibility
+  verifiers for P-384 and P-521 over SHA-256); the in-toto statement's subjects against
+  the artifact's digest.
+- **The certificate's summary** (`summary`): Fulcio's extensions, the first SAN, and the
+  issuer as Go's `pkix.Name.String` prints it.
+- **The bundle** (`bundle`, `proto`): protojson read a token at a time against
+  protobuf-specs v0.5.1's messages, so a malformed bundle fails where Go's does, in its
+  words and at its line and column; media types and versions as sigstore-go reads them.
+
+Underneath, ports of the Go each library reads with: cryptobyte's DER (`der`),
+encoding/asn1's lenient reader (`asn1`), Go's `time.Parse` for ASN.1 times (`gotime`),
+encoding/base64 (`gobase64`), x/mod/semver (`semver`). Signatures are checked through
+AWS-LC (Ed25519ph through its own `ED25519ph_verify_digest`), RSA and P-224 over public
+values in safe Rust (`shards_gitsign::arith`, which now holds RSASSA-PSS for D104 too).
+
+**Held to Go** by five oracles, each a Go test run inside buildx's checkout with its
+vendored libraries (`scripts/sigstore/generate*`):
+- `oracle.json`: 222 bundles through sigstore-go's own `Verify` with the policy helpers'
+  options: every form valid (v0.1–v0.3, certificates, chains, keys, DSSE and message
+  signatures, each entry kind, Rekor v2, P-256/P-384/RSA/Ed25519, Fulcio's v1 and v2
+  extensions), and mutations at every layer, the real moby/buildkit v0.28.1 signature
+  among them. Same error, or the same summary, timestamps and statement.
+- `tsa.json` (76), `sct.json` (87), `tlog.json` (309), `x509.json` (3,967: 3,157
+  parses of real and mutated certificates at every DER node, 810 chain verifications
+  with every constraint kind and policy form): each library's answers case by case.
+- Mutation-checked: the protojson decoder's duplicates, v0.1's inclusion promises,
+  duplicate entries, the integrated time's window, the entry's signature, the subject
+  digest, the DSSE key ID rule and each key's SSH fingerprint, the cleared critical SAN;
+  each port's own checks (TSA 4, SCT 8, Rekor 5, x509 26).
+
+**Measured, Go's behaviour kept:**
+- sigstore-go compares an entry's kind and version with themselves: a bundle may say any
+  kind over a dsse body.
+- The policy helpers never allow certificate chains in bundles: v0.1 and v0.2 chains add
+  no intermediates (a garbage second certificate is ignored); v0.3 chains are refused.
+- An Ed25519 message signature always fails by digest, through the compatibility
+  verifier, never with the error meant for it.
+- A missing error prints as `%!w(<nil>)` in a threshold's message, as Go's fmt prints it.
+
+**Different on purpose:**
+- **`proto:`**: Go's protobuf prints it followed by a space or a no-break space, chosen
+  per binary to keep callers from comparing messages; shards prints a space.
+- **Pointers in encoding/asn1's messages**: where Go prints a field's parameters with
+  their addresses, `(ptr)` stands in.
+- **MD5 SCT signatures** are refused; certificate-transparency-go accepts them.
+- **A message signature in `artifact_attestation`**: Go reads a nil statement's predicate
+  type and panics; shards refuses it as not SLSA provenance.
+- **Constraint sets** are sorted stably, where Go sorts unstably: with thirteen or more
+  constraints equal but for case, an "excluded by" error may name another of them.
+- **A non-canonical Ed25519 key** Go's edwards25519 accepts is refused by AWS-LC; no
+  certificate Fulcio issues has one.
+
 ### D104. Sigstore's trusted root, by The Update Framework
 
 Verifying Sigstore signatures (D105) starts from Sigstore's trusted root

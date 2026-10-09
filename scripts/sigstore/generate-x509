@@ -1,0 +1,19 @@
+#!/bin/sh
+# Regenerates crates/sigstore/testdata/x509.json: certificates parsed by Go's
+# crypto/x509 (Sigstore's real ones, generated ones with each extension, and both
+# mutated at every class of DER position) and chains verified by it (name constraints,
+# policies, key usages, path lengths, validity, candidates, signature algorithms), with
+# what Go, as buildx v0.37.1 builds with it, makes of each.
+#
+#   scripts/sigstore/generate-x509 BUILDX_V0.37.1_CHECKOUT
+set -eu
+here=$(cd "$(dirname "$0")" && pwd)
+root=$(cd "$here/../.." && pwd)
+bx=$1
+dir="$bx/cmd/zz_shards_x509"
+trap 'rm -rf "$dir"' EXIT
+mkdir -p "$dir" "$root/crates/sigstore/testdata"
+cp "$here/x509_oracle_test.go" "$dir/zz_shards_x509_test.go"
+cd "$bx"
+SHARDS_X509_OUT="$root/crates/sigstore/testdata/x509.json" SHARDS_ROOT="$root" TZ=UTC \
+	go test -mod=vendor -count=1 -run '^TestShardsX509Oracle$' ./cmd/zz_shards_x509/
