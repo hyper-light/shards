@@ -10,7 +10,7 @@
 
 use std::collections::VecDeque;
 use std::io::{self, IoSlice, Read, Write};
-use std::net::{Ipv4Addr, Shutdown, SocketAddr, TcpStream};
+use std::net::{IpAddr, Shutdown, SocketAddr, TcpStream};
 use std::os::fd::AsRawFd;
 use std::time::{Duration, Instant};
 
@@ -54,7 +54,7 @@ enum State {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Key {
     pub guest_port: u16,
-    pub remote: (Ipv4Addr, u16),
+    pub remote: (IpAddr, u16),
 }
 
 #[derive(Debug)]
@@ -169,7 +169,7 @@ impl Conn {
 
     /// A connection for the guest's SYN to `key`'s remote end, its host socket connecting
     /// to `to` instead.
-    pub fn open_to(key: Key, to: (Ipv4Addr, u16), seg: &wire::Tcp<'_>, isn: u32) -> io::Result<Conn> {
+    pub fn open_to(key: Key, to: (IpAddr, u16), seg: &wire::Tcp<'_>, isn: u32) -> io::Result<Conn> {
         let sock = connect(to)?;
         Ok(Conn {
             key,
@@ -927,11 +927,16 @@ fn write_now(mut sock: impl Write, parts: Payload<'_>) -> io::Result<usize> {
     Ok(done)
 }
 
-/// A TCP socket connecting to `to` without blocking.
-fn connect(to: (Ipv4Addr, u16)) -> io::Result<TcpStream> {
+/// A TCP socket connecting to `to`, of its address's family, without blocking.
+fn connect(to: (IpAddr, u16)) -> io::Result<TcpStream> {
     let addr = SocketAddr::from(to);
+    let family = if addr.is_ipv6() {
+        libc::AF_INET6
+    } else {
+        libc::AF_INET
+    };
     // SAFETY: socket(2) with constant arguments; the descriptor is owned below.
-    let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
+    let fd = unsafe { libc::socket(family, libc::SOCK_STREAM, 0) };
     if fd < 0 {
         return Err(io::Error::last_os_error());
     }
@@ -942,14 +947,29 @@ fn connect(to: (Ipv4Addr, u16)) -> io::Result<TcpStream> {
     sock.set_nodelay(true)?;
     // SAFETY: fcntl(2) on our own descriptor.
     unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
-    let sa = sockaddr(addr);
-    // SAFETY: a sockaddr_in of its own length.
-    let r = unsafe {
-        libc::connect(
-            fd,
-            (&raw const sa).cast(),
-            std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
-        )
+    let r = match addr {
+        SocketAddr::V4(v4) => {
+            let sa = sockaddr_in(v4);
+            // SAFETY: a sockaddr_in of its own length.
+            unsafe {
+                libc::connect(
+                    fd,
+                    (&raw const sa).cast(),
+                    std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
+                )
+            }
+        }
+        SocketAddr::V6(v6) => {
+            let sa = sockaddr_in6(v6);
+            // SAFETY: a sockaddr_in6 of its own length.
+            unsafe {
+                libc::connect(
+                    fd,
+                    (&raw const sa).cast(),
+                    std::mem::size_of::<libc::sockaddr_in6>() as libc::socklen_t,
+                )
+            }
+        }
     };
     if r != 0 {
         let e = io::Error::last_os_error();
@@ -960,7 +980,7 @@ fn connect(to: (Ipv4Addr, u16)) -> io::Result<TcpStream> {
     Ok(sock)
 }
 
-fn sockaddr(addr: SocketAddr) -> libc::sockaddr_in {
+fn sockaddr_in(v4: std::net::SocketAddrV4) -> libc::sockaddr_in {
     // SAFETY: an all-zero sockaddr_in is valid.
     let mut sa: libc::sockaddr_in = unsafe { std::mem::zeroed() };
     #[cfg(target_os = "macos")]
@@ -968,12 +988,25 @@ fn sockaddr(addr: SocketAddr) -> libc::sockaddr_in {
         sa.sin_len = std::mem::size_of::<libc::sockaddr_in>() as u8;
     }
     sa.sin_family = libc::AF_INET as libc::sa_family_t;
-    if let SocketAddr::V4(v4) = addr {
-        sa.sin_port = v4.port().to_be();
-        sa.sin_addr = libc::in_addr {
-            s_addr: u32::from_ne_bytes(v4.ip().octets()),
-        };
+    sa.sin_port = v4.port().to_be();
+    sa.sin_addr = libc::in_addr {
+        s_addr: u32::from_ne_bytes(v4.ip().octets()),
+    };
+    sa
+}
+
+fn sockaddr_in6(v6: std::net::SocketAddrV6) -> libc::sockaddr_in6 {
+    // SAFETY: an all-zero sockaddr_in6 is valid.
+    let mut sa: libc::sockaddr_in6 = unsafe { std::mem::zeroed() };
+    #[cfg(target_os = "macos")]
+    {
+        sa.sin6_len = std::mem::size_of::<libc::sockaddr_in6>() as u8;
     }
+    sa.sin6_family = libc::AF_INET6 as libc::sa_family_t;
+    sa.sin6_port = v6.port().to_be();
+    sa.sin6_addr = libc::in6_addr {
+        s6_addr: v6.ip().octets(),
+    };
     sa
 }
 
@@ -1040,7 +1073,7 @@ mod tests {
         sock.set_nonblocking(true).unwrap();
         let key = Key {
             guest_port: 80,
-            remote: (Ipv4Addr::new(172, 17, 0, 1), 40_000),
+            remote: (IpAddr::from([172, 17, 0, 1]), 40_000),
         };
         let mut c = Conn::accept(key, sock, 1000, sent);
         c.on_segment(&segment(5000, 1001, SYN | ACK), sent);

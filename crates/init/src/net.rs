@@ -5,7 +5,7 @@
 //! `shards_net=ADDR/PREFIX,GATEWAY`.
 
 use std::io;
-use std::net::Ipv4Addr;
+use std::net::{Ipv4Addr, Ipv6Addr};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 
 const RTM_NEWLINK: u16 = 16;
@@ -164,6 +164,79 @@ pub fn readdress(from: (Ipv4Addr, u8), to: (Ipv4Addr, u8, Ipv4Addr)) -> io::Resu
     request(&sock, RTM_NEWROUTE, NLM_F_CREATE | NLM_F_REPLACE, &r)?;
     *MOVED.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(to);
     Ok(())
+}
+
+/// IPv6's address flag that skips duplicate address detection (linux/if_addr.h), as
+/// libnetwork adds a container's IPv6 address: no other node on the guest's link may hold
+/// it, so the check would only delay the run.
+const IFA_F_NODAD: u8 = 0x02;
+
+/// The guest's IPv6 address and gateway on its network, once a run has given them.
+static ADDRESS6: std::sync::Mutex<Option<(Ipv6Addr, u8, Ipv6Addr)>> = std::sync::Mutex::new(None);
+
+/// The guest's IPv6 address, prefix and gateway, if its network has IPv6.
+pub fn current6() -> Option<(Ipv6Addr, u8, Ipv6Addr)> {
+    *ADDRESS6.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Gives `eth0` IPv6 address `to.0`/`to.1` and a default route through `to.2` (D99): a
+/// run on a network with IPv6, as it starts.
+pub fn address6(to: (Ipv6Addr, u8, Ipv6Addr)) -> io::Result<()> {
+    // The template booted with IPv6 off on eth0, as Docker's containers on a network
+    // without it have it ([`configure`]); a network with IPv6 turns it on, as dockerd
+    // leaves it on for one: the kernel then gives eth0 its link-local address too.
+    // Through the /proc/sys init kept before it was made read-only.
+    crate::setup::write_sysctl("net.ipv6.conf.eth0.disable_ipv6", "0").map_err(io::Error::other)?;
+    // SAFETY: if_nametoindex(3) with a NUL-terminated name.
+    let index = unsafe { libc::if_nametoindex(c"eth0".as_ptr()) };
+    if index == 0 {
+        return Err(io::Error::other("no eth0"));
+    }
+    // SAFETY: socket(2) with constant arguments.
+    let fd = unsafe {
+        libc::socket(
+            libc::AF_NETLINK,
+            libc::SOCK_RAW | libc::SOCK_CLOEXEC,
+            libc::NETLINK_ROUTE,
+        )
+    };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: a descriptor just made.
+    let sock = unsafe { OwnedFd::from_raw_fd(fd) };
+    let mut a = vec![libc::AF_INET6 as u8, to.1, IFA_F_NODAD, RT_SCOPE_UNIVERSE];
+    a.extend_from_slice(&index.to_ne_bytes());
+    attr(&mut a, IFA_LOCAL, &to.0.octets());
+    attr(&mut a, IFA_ADDRESS, &to.0.octets());
+    request(&sock, RTM_NEWADDR, NLM_F_CREATE | NLM_F_REPLACE, &a)?;
+    let mut r = vec![
+        libc::AF_INET6 as u8,
+        0,
+        0,
+        0,
+        RT_TABLE_MAIN,
+        RTPROT_BOOT,
+        RT_SCOPE_UNIVERSE,
+        RTN_UNICAST,
+    ];
+    r.extend_from_slice(&0u32.to_ne_bytes());
+    attr(&mut r, RTA_GATEWAY, &to.2.octets());
+    attr(&mut r, RTA_OIF, &index.to_ne_bytes());
+    request(&sock, RTM_NEWROUTE, NLM_F_CREATE | NLM_F_REPLACE, &r)?;
+    *ADDRESS6.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(to);
+    Ok(())
+}
+
+/// `ADDR/PREFIX,GATEWAY` of IPv6, as an `address6=` setup entry says it.
+pub fn parse6(v: &str) -> Option<(Ipv6Addr, u8, Ipv6Addr)> {
+    let (cidr, gw) = v.split_once(',')?;
+    let (addr, prefix) = cidr.split_once('/')?;
+    Some((
+        addr.parse().ok()?,
+        prefix.parse().ok().filter(|p| *p <= 128)?,
+        gw.parse().ok()?,
+    ))
 }
 
 /// `ADDR/PREFIX,GATEWAY`, as the command line and an `address=` setup entry say it.

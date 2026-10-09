@@ -6459,6 +6459,110 @@ fn attach_joins_a_running_container_as_docker_attach_does() {
     assert_eq!(shards(&["rm", "-f", "term"]).status, Some(0));
 }
 
+/// D99: microVMs on a network with IPv6 have an address of its IPv6 subnet each, the
+/// lowest free (the subnet's first address and the gateway kept out), or the one `--ip6`
+/// asks for: they reach one another at it, the server sees the client's own, their names
+/// resolve to both versions, `/etc/hosts` names each at both, and inspect says it as
+/// dockerd does.
+#[test]
+fn microvms_on_an_ipv6_network_reach_one_another() {
+    let Some((home, image)) = home("containers-ipv6") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let made = shards(&[
+        "network",
+        "create",
+        "--ipv6",
+        "--subnet",
+        "10.78.0.0/24",
+        "--subnet",
+        "fd78::/64",
+        "lan6",
+    ]);
+    assert_eq!(made.status, Some(0), "{made}");
+    let mut srv = start(
+        &home,
+        &image,
+        &["--name", "srv6", "--network", "lan6", "--ip6", "fd78::50"],
+        &["serve", "7000", "3"],
+    );
+    // By its IPv6 address: the client's own, the lowest free, is what the server sees.
+    let r = run_in(
+        &home,
+        &image,
+        &["--rm", "--network", "lan6"],
+        &["ask", "[fd78::50]:7000"],
+    );
+    assert_eq!(r.status, Some(0), "{r}");
+    assert_eq!(r.stdout, "ask from fd78::2\n", "{r}");
+    // Its name has both versions' addresses.
+    let r = run_in(
+        &home,
+        &image,
+        &["--rm", "--network", "lan6"],
+        &["resolve", "srv6"],
+    );
+    assert_eq!(r.status, Some(0), "{r}");
+    assert!(r.stdout.contains("resolve fd78::50\n"), "{r}");
+    assert!(r.stdout.contains("resolve 10.78.0."), "{r}");
+    // And by name, whichever version the resolver puts first.
+    let r = run_in(
+        &home,
+        &image,
+        &["--rm", "--network", "lan6"],
+        &["ask", "srv6:7000"],
+    );
+    assert_eq!(r.status, Some(0), "{r}");
+    // Its own hosts file names it at both, its IPv6 address after its IPv4 one.
+    let r = run_in(
+        &home,
+        &image,
+        &[
+            "--rm",
+            "--network",
+            "lan6",
+            "--hostname",
+            "six",
+            "--ip6",
+            "fd78::60",
+        ],
+        &["fs", "print:/etc/hosts"],
+    );
+    assert!(r.stdout.ends_with("\tsix\nfd78::60\tsix\n"), "{r}");
+    let endpoint = shards(&[
+        "inspect",
+        "-f",
+        "{{with .NetworkSettings.Networks.lan6}}{{.GlobalIPv6Address}} {{.IPv6Gateway}} {{.GlobalIPv6PrefixLen}}{{end}}",
+        "srv6",
+    ]);
+    assert_eq!(endpoint.stdout, "fd78::50 fd78::1 64\n", "{endpoint}");
+    let members = shards(&[
+        "network",
+        "inspect",
+        "-f",
+        "{{range .Containers}}{{.Name}} {{.IPv6Address}}{{end}}",
+        "lan6",
+    ]);
+    assert_eq!(members.stdout, "srv6 fd78::50/64\n", "{members}");
+    // An address taken is refused in dockerd's words.
+    let r = run_in(
+        &home,
+        &image,
+        &["--rm", "--network", "lan6", "--ip6", "fd78::50"],
+        &["exit", "0"],
+    );
+    assert!(
+        r.stderr
+            .contains("failed to set up container networking: Address already in use"),
+        "{r}"
+    );
+    assert_eq!(shards(&["rm", "-f", "srv6"]).status, Some(0));
+    let _ = srv.kill();
+    let _ = srv.wait();
+    assert_eq!(shards(&["network", "rm", "lan6"]).stdout, "lan6\n");
+}
+
 /// D46: microVMs on a user network reach one another, by address and by every name
 /// Docker's embedded DNS answers (name, alias, short ID, host name, any case), at
 /// Docker's 127.0.0.11; the server sees each by its own address; a microVM off the network

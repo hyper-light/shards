@@ -1,13 +1,14 @@
 //! The resolver a guest on a network of its own asks (D46), as Docker's embedded DNS answers
 //! a container on a user-defined network, to a microVM on one (moby libnetwork resolver.go; measured on Docker
 //! Engine 29.3.1): each member's names (its microVM's name, its aliases, its host name)
-//! as A records with a TTL of 600, whatever their case; its address back to its name and
-//! the network's (`name.network.`); no AAAA for a name it holds, its IPv4 alone; and,
+//! as A records with a TTL of 600, whatever their case, and as AAAA records on a network
+//! with IPv6 (resolver.go handleIPQuery), none for a name without one; its address, of
+//! either version, back to its name and the network's (`name.network.`); and,
 //! upstream being denied (D31's default deny, as on Docker's `--internal` networks),
 //! SERVFAIL for a name it does not hold. Queries are RFC 1035's.
 
 use std::collections::HashMap;
-use std::net::Ipv4Addr;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 /// The TTL Docker's embedded DNS gives its answers (libnetwork resolver.go, respTTL).
 const TTL: u32 = 600;
@@ -27,14 +28,15 @@ const NOTIMP: u8 = 4;
 pub struct Names {
     network: String,
     /// Each name, lowered, to the addresses it has.
-    by_name: HashMap<String, Vec<Ipv4Addr>>,
+    by_name: HashMap<String, Vec<IpAddr>>,
     /// Each address to its member's first name, for PTR.
-    by_addr: HashMap<Ipv4Addr, String>,
+    by_addr: HashMap<IpAddr, String>,
 }
 
 impl Names {
     /// The table a `NET_NAMES` message carries: the network's name, then each name with
-    /// its address, each name its length's byte first. None for a malformed one.
+    /// its address (its version's byte, 4 or 6, then its 4 or 16 bytes), each name its
+    /// length's byte first. None for a malformed one.
     pub fn decode(payload: &[u8]) -> Option<Names> {
         let mut rest = payload;
         let word = |rest: &mut &[u8]| -> Option<String> {
@@ -50,15 +52,27 @@ impl Names {
         };
         while !rest.is_empty() {
             let name = word(&mut rest)?;
-            let (&[a, b, c, d], tail) = rest.split_first_chunk::<4>()?;
-            rest = tail;
-            names.add(&name, Ipv4Addr::new(a, b, c, d));
+            let (&version, tail) = rest.split_first()?;
+            let ip = match version {
+                4 => {
+                    let (o, tail) = tail.split_first_chunk::<4>()?;
+                    rest = tail;
+                    IpAddr::V4(Ipv4Addr::from(*o))
+                }
+                6 => {
+                    let (o, tail) = tail.split_first_chunk::<16>()?;
+                    rest = tail;
+                    IpAddr::V6(Ipv6Addr::from(*o))
+                }
+                _ => return None,
+            };
+            names.add(&name, ip);
         }
         Some(names)
     }
 
     /// `name` at `ip`; the first name an address is given is its PTR's.
-    pub fn add(&mut self, name: &str, ip: Ipv4Addr) {
+    pub fn add(&mut self, name: &str, ip: IpAddr) {
         let ips = self.by_name.entry(name.to_ascii_lowercase()).or_default();
         if !ips.contains(&ip) {
             ips.push(ip);
@@ -67,7 +81,7 @@ impl Names {
     }
 
     /// The table as a `NET_NAMES` message carries it.
-    pub fn encode(network: &str, entries: &[(String, Ipv4Addr)]) -> Vec<u8> {
+    pub fn encode(network: &str, entries: &[(String, IpAddr)]) -> Vec<u8> {
         let mut out = Vec::new();
         let word = |out: &mut Vec<u8>, w: &str| {
             let w = w.get(..w.len().min(255)).unwrap_or_default();
@@ -77,7 +91,16 @@ impl Names {
         word(&mut out, network);
         for (name, ip) in entries {
             word(&mut out, name);
-            out.extend_from_slice(&ip.octets());
+            match ip {
+                IpAddr::V4(v4) => {
+                    out.push(4);
+                    out.extend_from_slice(&v4.octets());
+                }
+                IpAddr::V6(v6) => {
+                    out.push(6);
+                    out.extend_from_slice(&v6.octets());
+                }
+            }
         }
         out
     }
@@ -154,13 +177,16 @@ impl Names {
         let Some(ips) = self.by_name.get(&name) else {
             return Some(reply(SERVFAIL, question, &[]));
         };
-        let answers: Vec<Vec<u8>> = if qtype == TYPE_A {
-            ips.iter().map(|ip| record(TYPE_A, &ip.octets())).collect()
-        } else {
-            // AAAA and the rest: the name is there, with none of that type.
-            let _ = TYPE_AAAA;
-            Vec::new()
-        };
+        // A and AAAA from the addresses of their version; the rest: the name is there,
+        // with none of that type.
+        let answers: Vec<Vec<u8>> = ips
+            .iter()
+            .filter_map(|ip| match ip {
+                IpAddr::V4(v4) if qtype == TYPE_A => Some(record(TYPE_A, &v4.octets())),
+                IpAddr::V6(v6) if qtype == TYPE_AAAA => Some(record(TYPE_AAAA, &v6.octets())),
+                _ => None,
+            })
+            .collect();
         Some(reply(NOERROR, question, &answers))
     }
 }
@@ -209,9 +235,9 @@ pub fn refused(q: &[u8]) -> Option<Vec<u8>> {
 }
 
 /// A response's question name, lowered and without its last dot, and the addresses of
-/// its answers' A records (RFC 1035 §4.1): what a name granted to agents resolved to
-/// (D59). None for what is no response of one question.
-pub fn a_records(msg: &[u8]) -> Option<(String, Vec<Ipv4Addr>)> {
+/// its answers' A and AAAA records (RFC 1035 §4.1, RFC 3596 §2.2): what a name granted to
+/// agents resolved to (D59). None for what is no response of one question.
+pub fn a_records(msg: &[u8]) -> Option<(String, Vec<IpAddr>)> {
     let be16 = |at: usize| Some(u16::from_be_bytes([*msg.get(at)?, *msg.get(at + 1)?]));
     if msg.get(2)? & 0x80 == 0 || be16(4)? != 1 {
         return None;
@@ -237,22 +263,46 @@ pub fn a_records(msg: &[u8]) -> Option<(String, Vec<Ipv4Addr>)> {
         let (kind, length) = (be16(at)?, usize::from(be16(at + 8)?));
         at += 10;
         if kind == TYPE_A && length == 4 {
-            let &[a, b, c, d] = msg.get(at..at + 4)?.first_chunk::<4>()?;
-            out.push(Ipv4Addr::new(a, b, c, d));
+            let o = msg.get(at..at + 4)?.first_chunk::<4>()?;
+            out.push(IpAddr::V4(Ipv4Addr::from(*o)));
+        } else if kind == TYPE_AAAA && length == 16 {
+            let o = msg.get(at..at + 16)?.first_chunk::<16>()?;
+            out.push(IpAddr::V6(Ipv6Addr::from(*o)));
         }
         at += length;
     }
     Some((name, out))
 }
 
-/// The address `d.c.b.a.in-addr.arpa` names.
-fn ptr_addr(name: &str) -> Option<Ipv4Addr> {
+/// The address `d.c.b.a.in-addr.arpa` names, or the one `ip6.arpa`'s 32 nibbles name,
+/// lowest first (RFC 3596 §2.5).
+fn ptr_addr(name: &str) -> Option<IpAddr> {
+    if let Some(rest) = name.strip_suffix(".ip6.arpa") {
+        let nibbles: Vec<u8> = rest
+            .split('.')
+            .map(|p| match p.as_bytes() {
+                [c] => (*c as char).to_digit(16).and_then(|d| u8::try_from(d).ok()),
+                _ => None,
+            })
+            .collect::<Option<_>>()?;
+        if nibbles.len() != 32 {
+            return None;
+        }
+        let mut o = [0u8; 16];
+        for (i, pair) in nibbles.rchunks(2).enumerate() {
+            let (Some(&lo), Some(&hi)) = (pair.first(), pair.get(1)) else {
+                return None;
+            };
+            *o.get_mut(i)? = (hi << 4) | lo;
+        }
+        return Some(IpAddr::V6(Ipv6Addr::from(o)));
+    }
     let rest = name.strip_suffix(".in-addr.arpa")?;
     let parts: Vec<u8> = rest.split('.').map(|p| p.parse().ok()).collect::<Option<_>>()?;
     let [d, c, b, a] = parts.as_slice() else {
         return None;
     };
-    Some(Ipv4Addr::new(*a, *b, *c, *d))
+    Some(IpAddr::V4(Ipv4Addr::new(*a, *b, *c, *d)))
 }
 
 /// One DNS-over-TCP connection between the guest and the host's resolver (RFC 7766), as
@@ -271,7 +321,7 @@ pub struct Stream {
     /// Refusals, framed, waiting for no answer to be part way.
     refusals: Vec<u8>,
     /// What answers of granted names resolved to, for the stack to learn.
-    pub learned: Vec<(String, Vec<Ipv4Addr>)>,
+    pub learned: Vec<(String, Vec<IpAddr>)>,
 }
 
 /// The whole messages at the front of `buf`, taken from it, each with its length's bytes.
@@ -367,9 +417,11 @@ mod tests {
 
     fn names() -> Names {
         let entries = vec![
-            ("web".to_string(), Ipv4Addr::new(172, 19, 0, 2)),
-            ("alias".to_string(), Ipv4Addr::new(172, 19, 0, 2)),
-            ("alias".to_string(), Ipv4Addr::new(172, 19, 0, 3)),
+            ("web".to_string(), IpAddr::from([172, 19, 0, 2])),
+            ("alias".to_string(), IpAddr::from([172, 19, 0, 2])),
+            ("alias".to_string(), IpAddr::from([172, 19, 0, 3])),
+            ("v6".to_string(), IpAddr::from([172, 19, 0, 4])),
+            ("v6".to_string(), "fd00:19::4".parse().unwrap()),
         ];
         Names::decode(&Names::encode("net1", &entries)).unwrap()
     }
@@ -392,7 +444,7 @@ mod tests {
             a_records(&m),
             Some((
                 "mcp.example".to_string(),
-                vec![Ipv4Addr::new(203, 0, 113, 9), Ipv4Addr::new(203, 0, 113, 10)]
+                vec![IpAddr::from([203, 0, 113, 9]), IpAddr::from([203, 0, 113, 10])]
             ))
         );
         // The query asked it, and is refused with its question kept.
@@ -429,6 +481,18 @@ mod tests {
         assert_eq!(a[3] & 0x0f, SERVFAIL);
         let a = n.answer(&query("2.0.19.172.in-addr.arpa", TYPE_PTR)).unwrap();
         assert!(a.ends_with(b"\x03web\x04net1\x00"), "{a:?}");
+        // A member with IPv6: its AAAA, and its address's ip6.arpa name back to it.
+        let a = n.answer(&query("v6", TYPE_AAAA)).unwrap();
+        assert_eq!((a[3] & 0x0f, u16::from_be_bytes([a[6], a[7]])), (NOERROR, 1));
+        assert_eq!(
+            &a[a.len() - 16..],
+            &"fd00:19::4".parse::<Ipv6Addr>().unwrap().octets()
+        );
+        let a = n.answer(&query("v6", TYPE_A)).unwrap();
+        assert_eq!(u16::from_be_bytes([a[6], a[7]]), 1);
+        let nibbles = "4.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.9.1.0.0.0.0.d.f.ip6.arpa";
+        let a = n.answer(&query(nibbles, TYPE_PTR)).unwrap();
+        assert!(a.ends_with(b"\x02v6\x04net1\x00"), "{a:?}");
         assert_eq!(n.answer(&a), None, "a response is not answered");
         assert!(n.answer(&[1, 2]).is_none());
     }
@@ -484,7 +548,7 @@ mod tests {
         assert_eq!(s.held(), 0);
         assert_eq!(
             s.learned,
-            vec![("mcp.example".to_string(), vec![Ipv4Addr::new(192, 0, 2, 7)])]
+            vec![("mcp.example".to_string(), vec![IpAddr::from([192, 0, 2, 7])])]
         );
     }
 }

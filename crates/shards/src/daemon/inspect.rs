@@ -525,6 +525,13 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                 ip: Some(m.ip),
                 gateway: n.pools.first().map(|p| p.gateway),
                 prefix: n.pools.first().map_or(0, |p| p.subnet.1),
+                ip6: m.ip6,
+                gateway6: n.pools6.first().map(|p| p.gateway.clone()).unwrap_or_default(),
+                prefix6: n
+                    .pools6
+                    .first()
+                    .and_then(|p| crate::networks::prefix6(&p.subnet))
+                    .map_or(0, |(_, bits)| bits),
                 mac: m.mac,
                 dns_names: m.dns_names,
             }),
@@ -556,6 +563,9 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                         ip: None,
                         gateway: None,
                         prefix: 0,
+                        ip6: None,
+                        gateway6: String::new(),
+                        prefix6: 0,
                         mac: String::new(),
                         dns_names,
                     }

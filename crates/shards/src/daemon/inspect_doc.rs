@@ -68,6 +68,10 @@ pub(super) struct UserNet {
     pub ip: Option<Ipv4Addr>,
     pub gateway: Option<Ipv4Addr>,
     pub prefix: u8,
+    /// Its IPv6 address, gateway and prefix, on a network with IPv6 (D99).
+    pub ip6: Option<std::net::Ipv6Addr>,
+    pub gateway6: String,
+    pub prefix6: u8,
     pub mac: String,
     pub dns_names: Vec<String>,
 }
@@ -1016,9 +1020,15 @@ fn network_settings(f: &Facts<'_>, run: &Run) -> Value {
                 "IPPrefixLen",
                 int(i64::from(if u.ip.is_some() { u.prefix } else { 0 })),
             )
-            .field("IPv6Gateway", s(""))
-            .field("GlobalIPv6Address", s(""))
-            .field("GlobalIPv6PrefixLen", int(0))
+            .field("IPv6Gateway", s(if u.ip6.is_some() { &u.gateway6 } else { "" }))
+            .field(
+                "GlobalIPv6Address",
+                s(&u.ip6.map(|a| a.to_string()).unwrap_or_default()),
+            )
+            .field(
+                "GlobalIPv6PrefixLen",
+                int(if u.ip6.is_some() { i64::from(u.prefix6) } else { 0 }),
+            )
             .field("DNSNames", Value::strings(u.dns_names.iter().cloned()))
             .value();
         return Struct::pointer("container.NetworkSettings")

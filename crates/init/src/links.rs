@@ -104,6 +104,7 @@ mod nft {
     pub const NFT_MSG_NEWCHAIN: u16 = 3;
     pub const NFT_MSG_NEWRULE: u16 = 6;
     pub const NFPROTO_IPV4: u8 = 2;
+    pub const NFPROTO_IPV6: u8 = 10;
     pub const NFTA_TABLE_NAME: u16 = 1;
     pub const NFTA_CHAIN_TABLE: u16 = 1;
     pub const NFTA_CHAIN_NAME: u16 = 3;
@@ -759,10 +760,10 @@ fn meta(list: &mut Vec<u8>, key: u32) {
     });
 }
 
-/// The nf_tables message `kind`, of family ip, with `attrs`.
-fn nft_msg(kind: u16, flags: u16, attrs: Vec<u8>) -> (u16, u16, Vec<u8>) {
+/// The nf_tables message `kind`, of `family` (ip or ip6), with `attrs`.
+fn nft_msg(family: u8, kind: u16, flags: u16, attrs: Vec<u8>) -> (u16, u16, Vec<u8>) {
     // struct nfgenmsg: family, version, resource id.
-    let mut m = vec![nft::NFPROTO_IPV4, 0, 0, 0];
+    let mut m = vec![family, 0, 0, 0];
     m.extend_from_slice(&attrs);
     (
         (nft::NFNL_SUBSYS_NFTABLES << 8) | kind,
@@ -771,20 +772,27 @@ fn nft_msg(kind: u16, flags: u16, attrs: Vec<u8>) -> (u16, u16, Vec<u8>) {
     )
 }
 
-/// One nf_tables transaction for table `shards`, of family ip: its chains, each with
-/// its rules (nf_tables_api.c commits a batch whole or not at all).
+/// One nf_tables transaction for table `shards`, of family ip (or ip6, [`Batch::of`]):
+/// its chains, each with its rules (nf_tables_api.c commits a batch whole or not at all).
 struct Batch {
     msgs: Vec<(u16, u16, Vec<u8>)>,
+    family: u8,
 }
 
 impl Batch {
     fn new() -> Batch {
+        Batch::of(nft::NFPROTO_IPV4)
+    }
+
+    fn of(family: u8) -> Batch {
         let mut b = Batch {
             msgs: vec![Batch::bound(nft::NFNL_MSG_BATCH_BEGIN)],
+            family,
         };
         let mut t = Vec::new();
         attr(&mut t, nft::NFTA_TABLE_NAME, TABLE);
-        b.msgs.push(nft_msg(nft::NFT_MSG_NEWTABLE, NLM_F_CREATE, t));
+        b.msgs
+            .push(nft_msg(family, nft::NFT_MSG_NEWTABLE, NLM_F_CREATE, t));
         b
     }
 
@@ -806,7 +814,8 @@ impl Batch {
         });
         be32(&mut c, nft::NFTA_CHAIN_POLICY, policy);
         attr(&mut c, nft::NFTA_CHAIN_TYPE, kind);
-        self.msgs.push(nft_msg(nft::NFT_MSG_NEWCHAIN, NLM_F_CREATE, c));
+        self.msgs
+            .push(nft_msg(self.family, nft::NFT_MSG_NEWCHAIN, NLM_F_CREATE, c));
     }
 
     fn rule(&mut self, chain: &[u8], exprs: Vec<u8>) {
@@ -814,8 +823,12 @@ impl Batch {
         attr(&mut r, nft::NFTA_RULE_TABLE, TABLE);
         attr(&mut r, nft::NFTA_RULE_CHAIN, chain);
         attr(&mut r, nft::NFTA_RULE_EXPRESSIONS | NLA_F_NESTED, &exprs);
-        self.msgs
-            .push(nft_msg(nft::NFT_MSG_NEWRULE, NLM_F_CREATE | NLM_F_APPEND, r));
+        self.msgs.push(nft_msg(
+            self.family,
+            nft::NFT_MSG_NEWRULE,
+            NLM_F_CREATE | NLM_F_APPEND,
+            r,
+        ));
     }
 
     fn commit(mut self, sock: &OwnedFd) -> io::Result<()> {
@@ -1103,12 +1116,12 @@ fn gate_policy(sock: &OwnedFd, g: &Gate) -> io::Result<()> {
 /// - `in` drops what comes up from the switch but answers: the run's own processes serve
 ///   no domain;
 /// - `post` gives what is marked eth0's address, so that the network process, which takes
-///   frames from the guest's address alone, takes it;
-/// - `out` keeps the run's own processes to what they reached before: the default deny
-///   held them at the host, which now opens the agents' ports to the whole microVM, so
-///   no new flow leaves eth0 but to eth0's own subnet (its network's members, D46).
+///   frames from the guest's address alone, takes it.
+///
+/// The run's own processes were kept to eth0's subnet before its command started
+/// ([`confine_eth0`]).
 fn outside(sock: &OwnedFd, eth0: u32, u: &Uplink) -> io::Result<()> {
-    let ((addr, subnet, prefix), ingress) = (u.eth0, &u.ingress);
+    let ((addr, _, _), ingress) = (u.eth0, &u.ingress);
     let mut b = Batch::new();
     b.chain(b"in\0", b"filter\0", nft::NF_INET_LOCAL_IN, 0, nft::NF_ACCEPT);
     b.rule(b"in\0", answers());
@@ -1203,22 +1216,64 @@ fn outside(sock: &OwnedFd, eth0: u32, u: &Uplink) -> io::Result<()> {
         be32(d, nft::NFTA_NAT_REG_ADDR_MIN, nft::NFT_REG_1);
     });
     b.rule(b"post\0", e);
-    b.chain(b"out\0", b"filter\0", nft::NF_INET_LOCAL_OUT, 0, nft::NF_ACCEPT);
-    b.rule(b"out\0", answers());
-    let mut e = Vec::new();
-    meta(&mut e, nft::NFT_META_OIF);
-    compare(&mut e, nft::NFT_CMP_EQ, &eth0.to_ne_bytes());
-    // The destination address, at offset 16 of IPv4's header, in eth0's subnet.
-    payload(&mut e, nft::NFT_PAYLOAD_NETWORK_HEADER, 16, 4);
-    let mask = u32::MAX.checked_shl(32 - u32::from(prefix)).unwrap_or(0);
-    masked(&mut e, &mask.to_be_bytes());
-    compare(&mut e, nft::NFT_CMP_EQ, &subnet.octets());
-    accept(&mut e);
-    b.rule(b"out\0", e);
-    let mut e = Vec::new();
-    meta(&mut e, nft::NFT_META_OIF);
-    compare(&mut e, nft::NFT_CMP_EQ, &eth0.to_ne_bytes());
-    drop_verdict(&mut e);
-    b.rule(b"out\0", e);
     b.commit(sock)
+}
+
+/// Keeps the run's own processes, of both IP versions, to what they reached before a run
+/// whose image grants its agents anything past the microVM (D59, D99): the host's network
+/// process holds the agents' grants for the whole microVM, from before the run, so no new
+/// flow leaves eth0 but to eth0's own subnet (its network's members, D46). Chain `out` of
+/// family ip, and of ip6 where eth0 has IPv6, each dropping the rest. Made before the
+/// run's command starts, and fails the run where the kernel has no ip6 family for it.
+pub fn confine_eth0() -> io::Result<()> {
+    // SAFETY: if_nametoindex(3) of a NUL-terminated literal.
+    let eth0 = unsafe { libc::if_nametoindex(c"eth0".as_ptr()) };
+    if eth0 == 0 {
+        return Err(io::Error::other("no eth0 to confine"));
+    }
+    let sock = netlink_socket(libc::NETLINK_NETFILTER)?;
+    // Answers, then the subnet's own, then nothing else out eth0.
+    let out = |family: u8, at: u32, subnet: &[u8], mask: &[u8]| -> io::Result<()> {
+        let mut b = Batch::of(family);
+        b.chain(b"out\0", b"filter\0", nft::NF_INET_LOCAL_OUT, 0, nft::NF_ACCEPT);
+        b.rule(b"out\0", answers());
+        let mut e = Vec::new();
+        meta(&mut e, nft::NFT_META_OIF);
+        compare(&mut e, nft::NFT_CMP_EQ, &eth0.to_ne_bytes());
+        payload(
+            &mut e,
+            nft::NFT_PAYLOAD_NETWORK_HEADER,
+            at,
+            u32::try_from(subnet.len()).unwrap_or(0),
+        );
+        masked(&mut e, mask);
+        compare(&mut e, nft::NFT_CMP_EQ, subnet);
+        accept(&mut e);
+        b.rule(b"out\0", e);
+        let mut e = Vec::new();
+        meta(&mut e, nft::NFT_META_OIF);
+        compare(&mut e, nft::NFT_CMP_EQ, &eth0.to_ne_bytes());
+        drop_verdict(&mut e);
+        b.rule(b"out\0", e);
+        b.commit(&sock)
+    };
+    let (addr, prefix, _) = crate::net::current().ok_or_else(|| io::Error::other("eth0 has no address"))?;
+    let mask = u32::MAX.checked_shl(32 - u32::from(prefix)).unwrap_or(0);
+    // The destination address: at offset 16 of IPv4's header, 24 of IPv6's.
+    out(
+        nft::NFPROTO_IPV4,
+        DESTINATION,
+        &Ipv4Addr::from(u32::from(addr) & mask).octets(),
+        &mask.to_be_bytes(),
+    )?;
+    if let Some((addr6, prefix6, _)) = crate::net::current6() {
+        let mask6 = u128::MAX.checked_shl(128 - u32::from(prefix6)).unwrap_or(0);
+        out(
+            nft::NFPROTO_IPV6,
+            24,
+            &std::net::Ipv6Addr::from(u128::from(addr6) & mask6).octets(),
+            &mask6.to_be_bytes(),
+        )?;
+    }
+    Ok(())
 }

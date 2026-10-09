@@ -2604,8 +2604,8 @@ the daemon elected (D31).
   address is the next given), or its `--ip`. Status' counts are dockerd's (IPsInUse
   marks the network and broadcast addresses, the gateway, auxiliary addresses and
   members). IPv6 pools are kept and shown as dockerd's, the ULA one derived from the
-  home's engine ID by dockerd's formula; a microVM's guest has no IPv6 (D31), so takes no
-  address of one.
+  home's engine ID by dockerd's formula; each microVM takes an address of one as of
+  D99.
 - **One template for every network.** A microVM on a network boots on the default
   bridge's template, as every run does, and shards-init moves eth0 to its own address
   and gateway as the run starts (one netlink address swap and route replace, only where
@@ -3209,6 +3209,84 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 2026-10-07): every path between domains is a grant, and the build refuses any that joins
 an internal-only domain to the world (D58), so there is no data to label. Code mode
 waits on the user.
+
+### D99. IPv6 on a network of microVMs
+
+A network made with `--ipv6` (`shards network create --ipv6`, or a run's `--network` on
+one) gives each microVM an IPv6 address of its IPv6 subnet, as dockerd gives each
+container on one; D31's guests had none.
+
+Evidence:
+- moby docker-v29.3.1 (f78c987):
+  - **Addresses.** libnetwork's local IPAM (ipams/defaultipam allocator.go, newPoolData
+    and getAddress) marks a pool's first address (IPv6's Subnet-Router anycast, RFC 4291
+    §2.6.1), its gateway and auxiliary addresses, and gives the lowest free, or `--ip6`'s,
+    as for IPv4 (D46), with no broadcast address to keep out.
+  - **The interface.** Its address is added with no duplicate address detection
+    (IFA_F_NODAD).
+  - **Names.** The embedded DNS answers AAAA from a member's IPv6 addresses
+    (resolver.go, handleIPQuery), and PTR under `ip6.arpa` as under `in-addr.arpa`.
+  - **/etc/hosts.** It names the container at each of its addresses, IPv6's after
+    IPv4's (sandbox_dns_unix.go, makeHostsRecs).
+- RFC 8200 (IPv6, its extension headers), RFC 4443 (ICMPv6), RFC 4861 (neighbor
+  discovery).
+
+What changed:
+- **The network process** speaks IPv6 beside IPv4:
+  - Neighbor solicitations are answered with the gateway's MAC as ARP is (as a router,
+    hop limit 255 both ways), and never one checking for a duplicate address.
+  - Echo requests to the gateway are answered.
+  - Refusals are ICMPv6's "administratively prohibited", quoting what fits in 1280
+    bytes.
+  - TCP and UDP flows take host sockets of IPv6.
+  - Frames to a peer's IPv6 address go to its network process whole, as IPv4's do.
+- **Its policy holds IPv6 to what it holds IPv4 to.** Not the gateway, the loopback,
+  link-local or multicast; not IPv4-compatible addresses. An IPv4 address carried in
+  IPv6 (`::ffff:a.b.c.d`) is judged as that IPv4 address, since a host socket to it
+  reaches it.
+- **The daemon** gives each member its IPv6 address and passes it to the member's
+  network process, its peers and the resolver. `--ip6` is checked against the network's
+  IPv6 subnets.
+  - Inspect says `GlobalIPv6Address`, `GlobalIPv6PrefixLen` and `IPv6Gateway` for the
+    member, and `network inspect` its `IPv6Address`.
+- **init** turns IPv6 back on for eth0 on such a network. The template boots with it
+  off, as Docker's containers on a network without IPv6 have it (D31). It adds the
+  address with no duplicate address detection and a default route through the gateway,
+  and writes the address's `/etc/hosts` line.
+
+Tested on real microVMs: `microvms_on_an_ipv6_network_reach_one_another`.
+- One microVM reaches another at its IPv6 address, and the server sees the client's own,
+  the lowest free.
+- A name resolves to both versions' addresses, and is reached by name.
+- `/etc/hosts` names a microVM at both, and inspect says what dockerd says.
+- An address taken is refused in dockerd's words.
+
+Mutation-checked, each failing the test: no neighbor advertisements, no AAAA answers, the
+subnet's first address not kept out. The headers, neighbor discovery, ICMPv6's quote and
+checksums, `ip6.arpa`, and the policy's IPv6 rules have unit tests.
+
+**Found and closed: the run's own command, ahead of its agents' rules.**
+- **What D59 promised.** A run whose image's agents have grants past the microVM has
+  its own processes kept to eth0's subnet (init's `out` chain, D59 part four). The
+  host's network process holds the grants for the whole microVM.
+- **The window.** The daemon gives the network process those grants before the run. init
+  made the chain only as the agents started, which is after the command starts.
+- **The fix.** The daemon now marks such a run (`confine-eth0`). init makes the chain
+  before the command can start, of family ip, and of ip6 where eth0 has IPv6, which
+  D99's IPv6 would otherwise have let past an ip-only chain.
+- **Its test.** `agents_reach_past_the_microvm_what_their_networks_grant` now has the
+  run's own command send, as its first instruction, a datagram past eth0's subnet on a
+  port the agents are granted. Over IPv4, and over IPv6 on a network with IPv6, the
+  guest's own stack refuses it (EPERM).
+- **Mutation-checked.** With the chain made as the agents start, as before, the
+  datagram left the guest: the network process answered it, and the send reported
+  "Host is unreachable".
+
+The guest kernel now has nf_tables' ip6 family and its fib expression
+(kernel-6.18.48-9199fc6fad00): the confinement's ip6 chain is built on it, and agents'
+IPv6 networks are next.
+
+Open: agents' IPv6 subnets on an Agentfile's networks.
 
 ### D98. Rego as OPA evaluates it, for buildx's build policies
 

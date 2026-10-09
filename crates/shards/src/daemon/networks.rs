@@ -28,6 +28,8 @@ pub(super) struct Member {
     pub endpoint: String,
     pub mac: String,
     pub ip: Ipv4Addr,
+    /// Its IPv6 address, on a network with IPv6 (D99).
+    pub ip6: Option<Ipv6Addr>,
     /// What its peers' resolver answers for it (DNSNames): its name, aliases, short ID
     /// and host name, the first its PTR's.
     pub dns_names: Vec<String>,
@@ -696,6 +698,7 @@ impl<D: Disk> Daemon<D> {
         id: &str,
         term: &str,
         asked_ip: &str,
+        asked_ip6: &str,
         aliases: &[String],
         hostname: &str,
     ) -> Result<(Network, Member), String> {
@@ -727,6 +730,31 @@ impl<D: Disk> Daemon<D> {
             }
             ip
         };
+        // Its IPv6 address, as its IPv4 one: the asked one, or the lowest free.
+        let ip6 = match (network.ipv6, network.pools6.first()) {
+            (true, Some(pool6)) => {
+                let others6: Vec<Ipv6Addr> = self
+                    .members_of(&network.id)
+                    .iter()
+                    .filter_map(|m| m.ip6)
+                    .collect();
+                Some(if asked_ip6.is_empty() {
+                    nets::allocate6(pool6, &others6).ok_or_else(|| {
+                        fail(&format!(
+                            "no available IPv6 addresses on this network's address pools: {} ({})",
+                            network.name, network.id
+                        ))
+                    })?
+                } else {
+                    let ip6: Ipv6Addr = asked_ip6.parse().map_err(|_| fail("Address already in use"))?;
+                    if nets::in_use6(pool6, &others6).contains(&ip6) {
+                        return Err(fail("Address already in use"));
+                    }
+                    ip6
+                })
+            }
+            _ => None,
+        };
         let short = id.get(..12).unwrap_or(id).to_string();
         let mut dns_names = Vec::new();
         for n in aliases.iter().chain([&short, &hostname.to_string()]) {
@@ -740,6 +768,7 @@ impl<D: Disk> Daemon<D> {
             endpoint: new_id()?,
             mac: String::new(),
             ip,
+            ip6,
             dns_names,
         };
         let mut members = lock(&self.members);
@@ -757,13 +786,20 @@ impl<D: Disk> Daemon<D> {
     pub(super) fn network_guest(
         &self,
         network: &Network,
-        ip: Ipv4Addr,
+        member: &Member,
         run: &shards_ipc::Run,
         spec: &mut shards_abi::run::Spec,
     ) {
         let Some(pool) = network.pools.first() else { return };
         spec.setup
-            .push(format!("address={ip}/{},{}", pool.subnet.1, pool.gateway).into_bytes());
+            .push(format!("address={}/{},{}", member.ip, pool.subnet.1, pool.gateway).into_bytes());
+        // Its IPv6 address and gateway, on a network with IPv6 (D99).
+        if let (Some(ip6), Some(pool6)) = (member.ip6, network.pools6.first())
+            && let Some((_, bits)) = nets::prefix6(&pool6.subnet)
+        {
+            spec.setup
+                .push(format!("address6={ip6}/{bits},{}", pool6.gateway).into_bytes());
+        }
         spec.setup.push(format!("dns={}", pool.gateway).into_bytes());
         let mut resolv = String::from("nameserver 127.0.0.11\n");
         if !run.dns_search.is_empty() {
@@ -803,12 +839,17 @@ impl<D: Disk> Daemon<D> {
         }
         let [a, b, c, d] = me.ip.octets();
         let [g0, g1, g2, g3] = pool.gateway.octets();
-        ask_net(
-            net,
-            shards_ipc::kind::NET_ADDRESS,
-            &[a, b, c, d, pool.subnet.1, g0, g1, g2, g3],
-            &[],
-        )?;
+        let mut address = vec![a, b, c, d, pool.subnet.1, g0, g1, g2, g3];
+        // Then its IPv6 address, prefix and gateway, on a network with IPv6.
+        if let (Some(ip6), Some(pool6)) = (me.ip6, network.pools6.first())
+            && let Some((_, bits)) = nets::prefix6(&pool6.subnet)
+            && let Ok(gateway6) = pool6.gateway.parse::<Ipv6Addr>()
+        {
+            address.extend_from_slice(&ip6.octets());
+            address.push(bits);
+            address.extend_from_slice(&gateway6.octets());
+        }
+        ask_net(net, shards_ipc::kind::NET_ADDRESS, &address, &[])?;
         for peer in self
             .members_of(&network.id)
             .into_iter()
@@ -820,17 +861,23 @@ impl<D: Disk> Daemon<D> {
             let (ours_end, their_end) =
                 std::os::unix::net::UnixStream::pair().map_err(|e| format!("a peer's link: {e}"))?;
             use std::os::fd::AsFd as _;
+            // Each peer's address, then its IPv6 one where it has one.
+            let addresses = |m: &Member| -> Vec<u8> {
+                let mut v = m.ip.octets().to_vec();
+                v.extend(m.ip6.iter().flat_map(|a| a.octets()));
+                v
+            };
             ask_net(
                 net,
                 shards_ipc::kind::NET_PEER,
-                &peer.ip.octets(),
+                &addresses(&peer),
                 &[ours_end.as_fd()],
             )?;
             // A peer that cannot take it has gone; its own end comes soon.
             let _ = ask_net(
                 &theirs,
                 shards_ipc::kind::NET_PEER,
-                &me.ip.octets(),
+                &addresses(&me),
                 &[their_end.as_fd()],
             );
         }
@@ -856,7 +903,12 @@ impl<D: Disk> Daemon<D> {
             if !m.name.is_empty() && !names.contains(&m.name) {
                 names.insert(0, m.name.clone());
             }
-            entries.extend(names.into_iter().map(|n| (n, m.ip)));
+            for n in names {
+                entries.push((n.clone(), std::net::IpAddr::V4(m.ip)));
+                if let Some(ip6) = m.ip6 {
+                    entries.push((n, std::net::IpAddr::V6(ip6)));
+                }
+            }
         }
         shards_net::dns::Names::encode(&network.name, &entries)
     }
@@ -1280,7 +1332,15 @@ impl<D: Disk> Daemon<D> {
                         .field("EndpointID", Value::String(m.endpoint.clone()))
                         .field("MacAddress", Value::String(m.mac.clone()))
                         .field("IPv4Address", Value::String(format!("{}/{prefix}", m.ip)))
-                        .field("IPv6Address", Value::String(String::new()))
+                        .field(
+                            "IPv6Address",
+                            Value::String(
+                                m.ip6
+                                    .zip(n.pools6.first().and_then(|p| nets::prefix6(&p.subnet)))
+                                    .map(|(a, (_, bits))| format!("{a}/{bits}"))
+                                    .unwrap_or_default(),
+                            ),
+                        )
                         .value(),
                 )
             })

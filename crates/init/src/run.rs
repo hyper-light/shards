@@ -343,7 +343,10 @@ fn sort_setup(entries: &[Vec<u8>], into: &mut Inherited) -> Result<Vec<Vec<u8>>,
                 .and_then(|g| g.parse().ok())
                 .ok_or_else(|| setup_failed("a malformed dns entry"))?;
             crate::dnsrelay::start(gateway).map_err(setup_failed)?;
-        } else if entry.starts_with(b"address=") {
+        } else if entry.starts_with(b"address=")
+            || entry.starts_with(b"address6=")
+            || entry == b"confine-eth0"
+        {
             // Init's, as the run starts (`Standby::start`).
         } else if entry.starts_with(b"devices=") {
             // Init's, done as the workload's limits are (`limit`).
@@ -782,19 +785,31 @@ fn set_hostname(name: &[u8], domain: &[u8], extra: &[Vec<u8>]) -> Result<(), Fai
     // The guest's own address on a network, as Docker names a container on its bridge;
     // the loopback's otherwise.
     let own = crate::net::current().map(|(addr, _, _)| addr.to_string());
-    hosts.extend_from_slice(own.as_deref().map_or(OWN_ADDRESS, str::as_bytes));
-    hosts.push(b'\t');
     let mut full = name.to_vec();
     if !domain.is_empty() {
         full.push(b'.');
         full.extend_from_slice(domain);
     }
-    hosts.extend_from_slice(&full);
+    let mut names = full.clone();
     if let Some(dot) = full.iter().position(|&b| b == b'.') {
-        hosts.push(b' ');
-        hosts.extend_from_slice(full.get(..dot).unwrap_or_default());
+        names.push(b' ');
+        names.extend_from_slice(full.get(..dot).unwrap_or_default());
     }
-    hosts.push(b'\n');
+    // Its IPv6 address after its IPv4 one, on a network with IPv6 (D99), each line the
+    // same names, as makeHostsRecs writes one per address of the container's.
+    let own6 = crate::net::current6().map(|(addr, _, _)| addr.to_string());
+    for addr in [
+        own.as_deref().map(str::as_bytes).or(Some(OWN_ADDRESS)),
+        own6.as_deref().map(str::as_bytes),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        hosts.extend_from_slice(addr);
+        hosts.push(b'\t');
+        hosts.extend_from_slice(&names);
+        hosts.push(b'\n');
+    }
     write_file("/etc/hosts", &hosts)
 }
 
@@ -1181,6 +1196,19 @@ impl Standby {
                 crate::net::readdress((from.0, from.1), to)
                     .map_err(|e| setup_failed(format!("eth0's address: {e}")))?;
             }
+        }
+        // Its IPv6 address, on a network with IPv6 (D99).
+        if let Some(to) = spec.setup.iter().find_map(|e| e.strip_prefix(b"address6=")) {
+            let to = std::str::from_utf8(to)
+                .ok()
+                .and_then(crate::net::parse6)
+                .ok_or_else(|| setup_failed("a malformed address6 entry"))?;
+            crate::net::address6(to).map_err(|e| setup_failed(format!("eth0's IPv6 address: {e}")))?;
+        }
+        // An image whose agents have grants past the microVM: the run's own processes kept
+        // from them before its command can start (D59, D99).
+        if spec.setup.iter().any(|e| e == b"confine-eth0") {
+            crate::links::confine_eth0().map_err(|e| setup_failed(format!("eth0's confinement: {e}")))?;
         }
         if !spec.hostname.is_empty() {
             // SAFETY: a buffer of the given length.

@@ -93,8 +93,8 @@ Run a command in an image, as `docker run` does:
 
 ```console
 $ shards run alpine echo hello
-Downloading the guest kernel Image-6.18.48-aarch64-98788948976a from https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-98788948976a/Image-6.18.48-aarch64
-Guest kernel: sha256:5cc14e7758925368367175486516b2e338f89d18b185d9c67daaa33f893a8a96
+Downloading the guest kernel Image-6.18.48-aarch64-9199fc6fad00 from https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-9199fc6fad00/Image-6.18.48-aarch64
+Guest kernel: sha256:9193e849396621f788bb18f48ac6b581c2b5ef99b51bc6063c21e4f774b4fa27
 Unable to find image 'alpine:latest' locally
 latest: Pulling from library/alpine
 a9986cd6f37d: Download complete
@@ -116,14 +116,14 @@ reproducibly by CI ([resources/kernel](resources/kernel/README.md)):
 ```sh
 arch=$(uname -m | sed s/arm64/aarch64/)
 file=$([ $arch = x86_64 ] && echo vmlinux || echo Image)-6.18.48-$arch
-curl -fLo vmlinux https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-98788948976a/$file
+curl -fLo vmlinux https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-9199fc6fad00/$file
 shasum -a 256 vmlinux
 ```
 
 | Architecture | SHA-256 |
 |---|---|
-| aarch64 (arm64) | `5cc14e7758925368367175486516b2e338f89d18b185d9c67daaa33f893a8a96` |
-| x86_64 | `dd464d2076713e58ae4b57f02171779fa358907d6bc7d7cc2d9f14c39209a8dc` |
+| aarch64 (arm64) | `9193e849396621f788bb18f48ac6b581c2b5ef99b51bc6063c21e4f774b4fa27` |
+| x86_64 | `69405cd3e6e20432d076deac84c0414797b031de5dbadd30d1d1510eb9ad5070` |
 
 Build `shards-init`, a tiny PID 1 that reports Linux's boot time and powers off:
 

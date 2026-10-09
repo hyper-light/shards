@@ -7,7 +7,7 @@
 //! has one. dockerd's predefined `bridge`, `host` and `none` are listed beside them.
 
 use std::collections::BTreeMap;
-use std::net::Ipv4Addr;
+use std::net::{Ipv4Addr, Ipv6Addr};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -28,8 +28,8 @@ pub struct Pool {
     pub aux: BTreeMap<String, Ipv4Addr>,
 }
 
-/// An IPv6 pool, kept as given or allocated, for what inspect says: shards' guests have no
-/// IPv6 (D31), so no member takes an address of one.
+/// An IPv6 pool, kept as given or allocated: each member's IPv6 address comes from it
+/// (D99), as its IPv4 address from its network's IPv4 pool.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Pool6 {
     pub subnet: String,
@@ -220,6 +220,50 @@ fn lowest_free(within: Prefix, used: &[Ipv4Addr]) -> Option<Ipv4Addr> {
 /// takes the lowest, not the next: a freed address is the next taken).
 pub fn allocate(pool: &Pool, members: &[Ipv4Addr]) -> Option<Ipv4Addr> {
     lowest_free(span(pool), &in_use(pool, members))
+}
+
+/// An IPv6 prefix as dockerd keeps one, `ADDR/BITS`, its address masked.
+pub fn prefix6(s: &str) -> Option<(Ipv6Addr, u8)> {
+    let (addr, bits) = s.split_once('/')?;
+    let addr: Ipv6Addr = addr.parse().ok()?;
+    let bits: u8 = bits.parse().ok().filter(|b| *b <= 128)?;
+    let mask = u128::MAX.checked_shl(u32::from(128 - bits)).unwrap_or(0);
+    Some((Ipv6Addr::from(u128::from(addr) & mask), bits))
+}
+
+fn contains6((net, bits): (Ipv6Addr, u8), ip: Ipv6Addr) -> bool {
+    let mask = u128::MAX.checked_shl(u32::from(128 - bits)).unwrap_or(0);
+    u128::from(ip) & mask == u128::from(net)
+}
+
+/// The addresses of IPv6 pool `pool` marked in use (newPoolData): its first, the
+/// Subnet-Router anycast address (RFC 4291 §2.6.1), its gateway, its auxiliary addresses
+/// and its members'. IPv6 has no broadcast address to keep out.
+pub fn in_use6(pool: &Pool6, members: &[Ipv6Addr]) -> Vec<Ipv6Addr> {
+    let Some(subnet) = prefix6(&pool.subnet) else {
+        return Vec::new();
+    };
+    let mut used = vec![subnet.0];
+    used.extend(pool.gateway.parse::<Ipv6Addr>().ok());
+    used.extend(pool.aux.values().filter_map(|a| a.parse::<Ipv6Addr>().ok()));
+    used.extend(members.iter().copied().filter(|ip| contains6(subnet, *ip)));
+    used.sort_unstable();
+    used.dedup();
+    used
+}
+
+/// A member's IPv6 address in `pool`: the lowest free in its range, or its subnet, as
+/// libnetwork's local IPAM takes one (addrset AddAny, not serial).
+pub fn allocate6(pool: &Pool6, members: &[Ipv6Addr]) -> Option<Ipv6Addr> {
+    let span = prefix6(&pool.ip_range).or_else(|| prefix6(&pool.subnet))?;
+    let used = in_use6(pool, members);
+    let base = u128::from(span.0);
+    let last = base | u128::MAX.checked_shr(u32::from(span.1)).unwrap_or(0);
+    // The lowest free is at most as many past the base as there are addresses in use.
+    (0..=used.len() as u128)
+        .filter_map(|i| base.checked_add(i).filter(|a| *a <= last))
+        .map(Ipv6Addr::from)
+        .find(|ip| !used.contains(ip))
 }
 
 /// Status.IPAM.Subnets' counts for `pool`: every address marked in it, and those of its

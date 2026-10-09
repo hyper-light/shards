@@ -6952,6 +6952,34 @@ fn agents_reach_past_the_microvm_what_their_networks_grant() {
         ran.stdout,
         ran.stderr
     );
+    // From its first instruction, before any agent starts: eth0 is confined before the
+    // command begins (D99), so a datagram past eth0's subnet on a port the agents are
+    // granted is refused by the guest's own stack (EPERM), not sent; and over IPv6 alike,
+    // on a network with IPv6.
+    let first = shards(&["run", "--rm", "egress:1", "udp", &format!("192.0.2.1:{granted}")]);
+    assert!(
+        first.stdout.contains("udp error Operation not permitted"),
+        "{}{}",
+        first.stdout,
+        first.stderr
+    );
+    let made = shards(&["network", "create", "--ipv6", "--subnet", "fd79::/64", "six"]);
+    assert_eq!(made.status, Some(0), "{}", made.stderr);
+    let first6 = shards(&[
+        "run",
+        "--rm",
+        "--network",
+        "six",
+        "egress:1",
+        "udp",
+        &format!("[2001:db8::1]:{granted}"),
+    ]);
+    assert!(
+        first6.stdout.contains("udp error Operation not permitted"),
+        "{}{}",
+        first6.stdout,
+        first6.stderr
+    );
 }
 
 /// What a network lets in past its microVM reaches its agent (D59, AGENTFILE_ARCH.md §4.1,

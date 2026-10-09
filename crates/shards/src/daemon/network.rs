@@ -9,7 +9,7 @@
 //! (`none` and then `bridge` runs, `bridge` and then `none` does not), both orders are
 //! refused as it refuses the second.
 
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::IpAddr;
 
 use shards_cmdline::network::{Addr, is_user_defined, parse_addr};
 use shards_ipc::{Endpoint, Run};
@@ -27,7 +27,7 @@ pub enum Net {
 }
 
 /// A user network's IPv4 subnets, by its name or ID; none for one there is not.
-pub type UserSubnets<'a> = &'a dyn Fn(&str) -> Option<Vec<(Ipv4Addr, u8)>>;
+pub type UserSubnets<'a> = &'a dyn Fn(&str) -> Option<Vec<(IpAddr, u8)>>;
 
 /// What starting the run will find of its networks: one to attach it to, or what dockerd
 /// says as the start fails, the container left created.
@@ -40,14 +40,21 @@ pub enum Start {
 /// The driver option whose value sets the endpoint's interface sysctls.
 const SYSCTLS: &str = "com.docker.network.endpoint.sysctls";
 
-/// The IPv4 subnets of dockerd's predefined networks, the default bridge's `bridge`, or
-/// `None` for a network it does not have; none has IPv6.
-fn subnets(network: &str, bridge: Option<Bridge>, user: UserSubnets<'_>) -> Option<Vec<(Ipv4Addr, u8)>> {
+/// The subnets of a network, of both versions: a user network's, or those of dockerd's
+/// predefined networks (the default bridge's IPv4 subnet for `bridge`; none has IPv6),
+/// or `None` for a network it does not have.
+fn subnets(network: &str, bridge: Option<Bridge>, user: UserSubnets<'_>) -> Option<Vec<(IpAddr, u8)>> {
     if is_user_defined(network) {
         return user(network);
     }
     match network {
-        "bridge" => Some(bridge.iter().map(Bridge::subnet).collect()),
+        "bridge" => Some(
+            bridge
+                .iter()
+                .map(Bridge::subnet)
+                .map(|(net, bits)| (IpAddr::V4(net), bits))
+                .collect(),
+        ),
         "none" | "host" => Some(Vec::new()),
         _ => None,
     }
@@ -195,22 +202,27 @@ fn endpoint_settings(e: &Endpoint, bridge: Option<Bridge>, user: UserSubnets<'_>
         }
     }
     // validateIPAMConfigIsInRange, for the networks dockerd has.
-    if let Some(v4) = subnets(&e.network, bridge, user) {
-        let within = |a: &Addr| match a.ip {
-            IpAddr::V4(ip) => v4.iter().any(|(net, bits)| {
-                let mask = u32::MAX.checked_shl(32 - u32::from(*bits)).unwrap_or(0);
-                u32::from(ip) & mask == u32::from(*net) & mask
-            }),
-            IpAddr::V6(_) => false,
+    if let Some(nets) = subnets(&e.network, bridge, user) {
+        let within = |a: &Addr| {
+            nets.iter().any(|(net, bits)| match (a.ip, net) {
+                (IpAddr::V4(ip), IpAddr::V4(net)) => {
+                    let mask = u32::MAX.checked_shl(32 - u32::from(*bits)).unwrap_or(0);
+                    u32::from(ip) & mask == u32::from(*net) & mask
+                }
+                (IpAddr::V6(ip), IpAddr::V6(net)) => {
+                    let mask = u128::MAX.checked_shl(128 - u32::from(*bits)).unwrap_or(0);
+                    u128::from(ip) & mask == u128::from(*net) & mask
+                }
+                _ => false,
+            })
         };
-        if let Some(a) = ipv4.as_ref().map(Addr::unmap)
-            && !within(&a)
+        for a in [ipv4.as_ref().map(Addr::unmap), ipv6.as_ref().map(Addr::unmap)]
+            .into_iter()
+            .flatten()
         {
-            errs.push(format!("no configured subnet contains IP address {a}"));
-        }
-        // No predefined network has an IPv6 subnet; an IPv4 one is not looked for there.
-        if let Some(a) = ipv6.as_ref().map(Addr::unmap) {
-            errs.push(format!("no configured subnet contains IP address {a}"));
+            if !within(&a) {
+                errs.push(format!("no configured subnet contains IP address {a}"));
+            }
         }
     }
     if let Some((_, sysctls)) = e.driver_opts.iter().find(|(k, _)| k == SYSCTLS) {

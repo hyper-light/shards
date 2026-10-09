@@ -20,7 +20,7 @@ pub mod wire;
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
 use std::io;
-use std::net::{Ipv4Addr, UdpSocket};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, UdpSocket};
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::time::{Duration, Instant};
 
@@ -226,6 +226,10 @@ pub struct Config {
     pub guest_ip: Ipv4Addr,
     pub gateway_mac: [u8; 6],
     pub gateway_ip: Ipv4Addr,
+    /// The guest's IPv6 address and its gateway's, on a network with IPv6 (D99): none
+    /// else, and the guest's IPv6 frames are dropped.
+    pub guest_ip6: Option<Ipv6Addr>,
+    pub gateway_ip6: Option<Ipv6Addr>,
     pub policy: Policy,
     /// The resolvers a guest's names past the microVM are asked of, the host's own
     /// (`/etc/resolv.conf`, or `SHARDS_DNS`): asked only under [`Policy::Ports`], for a
@@ -237,7 +241,7 @@ pub struct Config {
     /// answered for it through this process.
     pub named: Vec<(String, u16)>,
     /// What the named have resolved to, each address with its grant's port.
-    pub learned: HashSet<(Ipv4Addr, u16)>,
+    pub learned: HashSet<(IpAddr, u16)>,
     /// Whether any name may be asked past the microVM (`NETWORK --dns`); else only the
     /// named's, and every other question is REFUSED.
     pub dns_all: bool,
@@ -328,6 +332,8 @@ impl Config {
             guest_ip: bridge.guest(),
             gateway_mac: [0x02, 0x42, a, b, c, d],
             gateway_ip: bridge.gateway(),
+            guest_ip6: None,
+            gateway_ip6: None,
             policy,
             resolvers: Vec::new(),
             named: Vec::new(),
@@ -336,26 +342,50 @@ impl Config {
         }
     }
 
-    fn allows(&self, to: Ipv4Addr, proto: Proto, port: u16) -> bool {
+    /// The gateway of `ip`'s version: the address the guest reaches this process at.
+    fn gateway_of(&self, ip: IpAddr) -> IpAddr {
+        match (ip, self.gateway_ip6) {
+            (IpAddr::V6(_), Some(g)) => IpAddr::V6(g),
+            _ => IpAddr::V4(self.gateway_ip),
+        }
+    }
+
+    fn allows(&self, to: IpAddr, proto: Proto, port: u16) -> bool {
+        // An IPv4 address carried in IPv6 (`::ffff:a.b.c.d`) is that address, and is
+        // judged as it is: a host socket to it reaches it.
+        let to = to.to_canonical();
         let named = proto == Proto::Tcp
             && (self.learned.contains(&(to, port))
-                || self
-                    .named
-                    .iter()
-                    .any(|(h, p)| *p == port && h.parse::<Ipv4Addr>().ok() == Some(to)));
+                || self.named.iter().any(|(h, p)| {
+                    *p == port && h.parse::<IpAddr>().ok().map(|a| a.to_canonical()) == Some(to)
+                }));
         match &self.policy {
             Policy::DenyAll => false,
             Policy::Ports(p) if !p.has(proto, port) && !named => false,
             // The gateway would be the host itself: never by default (rootless-security.md
             // R4.16).
-            Policy::AllowAll | Policy::Ports(_) => {
-                to != self.gateway_ip
-                    && !to.is_loopback()
-                    && !to.is_unspecified()
-                    && !to.is_link_local()
-                    && !to.is_multicast()
-                    && !to.is_broadcast()
-            }
+            Policy::AllowAll | Policy::Ports(_) => match to {
+                IpAddr::V4(to) => {
+                    to != self.gateway_ip
+                        && !to.is_loopback()
+                        && !to.is_unspecified()
+                        && !to.is_link_local()
+                        && !to.is_multicast()
+                        && !to.is_broadcast()
+                }
+                // IPv6's: not the gateway, the loopback, the unspecified address, link-local
+                // unicast (fe80::/10, RFC 4291 §2.5.6) or multicast (ff00::/8), as IPv4's;
+                // nor IPv4-compatible addresses (::/96, deprecated by RFC 4291 §2.5.5.1),
+                // which some stacks still route to IPv4.
+                IpAddr::V6(to) => {
+                    Some(to) != self.gateway_ip6
+                        && !to.is_loopback()
+                        && !to.is_unspecified()
+                        && !to.is_unicast_link_local()
+                        && !to.is_multicast()
+                        && to.segments().get(..6) != Some(&[0; 6])
+                }
+            },
         }
     }
 }
@@ -394,7 +424,7 @@ struct UdpFlow {
 }
 
 /// The guest's ends of a UDP flow: its port, and the remote address and port.
-type UdpKey = (u16, Ipv4Addr, u16);
+type UdpKey = (u16, IpAddr, u16);
 
 /// What a poller's token or a timer names (review 2.14): its kind in the top byte, then
 /// the generation of the slot it names, then the slot, so that what an earlier holder of
@@ -551,6 +581,8 @@ struct Stack<'r> {
 /// and the guests' TCP sends them again.
 struct Peer {
     ip: Ipv4Addr,
+    /// Its IPv6 address, on a network with IPv6.
+    ip6: Option<Ipv6Addr>,
     sock: std::os::unix::net::UnixStream,
     /// What of the frame being sent the socket has yet to take.
     unsent: Vec<u8>,
@@ -564,6 +596,7 @@ struct Out<'a, 'r> {
     to_guest: &'a mut Producer<'r>,
     backlog: &'a mut VecDeque<Vec<u8>>,
     guest_ip: Ipv4Addr,
+    guest_ip6: Option<Ipv6Addr>,
     /// Where segments are made, kept from one to the next.
     scratch: &'a mut Vec<u8>,
 }
@@ -595,12 +628,21 @@ impl Out<'_, '_> {
         sent
     }
 
+    /// The guest's address of `ip`'s version.
+    fn guest_of(&self, ip: IpAddr) -> IpAddr {
+        match (ip, self.guest_ip6) {
+            (IpAddr::V6(_), Some(g)) => IpAddr::V6(g),
+            _ => IpAddr::V4(self.guest_ip),
+        }
+    }
+
     /// Sends the guest `payload` from `src`, to its port `port`: the datagram's headers
     /// made in the scratch, its bytes copied from where they lie.
-    fn datagram(&mut self, src: (Ipv4Addr, u16), port: u16, payload: &[u8]) -> bool {
+    fn datagram(&mut self, src: (IpAddr, u16), port: u16, payload: &[u8]) -> bool {
         let mut head = std::mem::take(self.scratch);
+        let guest = self.guest_of(src.0);
         self.frames
-            .udp_headers(&mut head, src, (self.guest_ip, port), payload.len());
+            .udp_headers(&mut head, src, (guest, port), payload.len());
         let sent = self.send(&[&head, payload]);
         *self.scratch = head;
         sent
@@ -627,10 +669,11 @@ impl ToGuest for Out<'_, '_> {
             return false;
         }
         let mut head = std::mem::take(self.scratch);
+        let guest = self.guest_of(key.remote.0);
         self.frames.tcp_headers(
             &mut head,
             key.remote,
-            (self.guest_ip, key.guest_port),
+            (guest, key.guest_port),
             seq,
             ack,
             flags,
@@ -890,12 +933,16 @@ fn free_udp_port(next: &mut u16, inbound: &HashMap<u16, Inbound>) -> Option<u16>
 }
 
 /// [`Stack::isn`] of connection `conn` of `guest`, under `secret`, `ticks` 64 ns ticks on.
-fn initial_seq(secret: &[u8; 16], ticks: u64, guest: Ipv4Addr, conn: &Key) -> u32 {
-    let [a, b, c, d] = guest.octets();
-    let [e, f, g, h] = conn.remote.0.octets();
-    let [i, j] = conn.guest_port.to_be_bytes();
-    let [k, l] = conn.remote.1.to_be_bytes();
-    let hash = siphash::siphash24(secret, &[a, b, c, d, e, f, g, h, i, j, k, l]);
+fn initial_seq(secret: &[u8; 16], ticks: u64, guest: IpAddr, conn: &Key) -> u32 {
+    let octets = |ip: IpAddr| match ip {
+        IpAddr::V4(v4) => v4.octets().to_vec(),
+        IpAddr::V6(v6) => v6.octets().to_vec(),
+    };
+    let mut m = octets(guest);
+    m.extend(octets(conn.remote.0));
+    m.extend_from_slice(&conn.guest_port.to_be_bytes());
+    m.extend_from_slice(&conn.remote.1.to_be_bytes());
+    let hash = siphash::siphash24(secret, &m);
     (hash as u32).wrapping_add(ticks as u32)
 }
 
@@ -908,7 +955,11 @@ impl<'r> Stack<'r> {
     /// of the other processes of its guest.
     fn isn(&self, key: &Key) -> u32 {
         let ticks = u64::try_from(self.began.elapsed().as_nanos() >> 6).unwrap_or(u64::MAX);
-        initial_seq(&self.isn_key, ticks, self.cfg.guest_ip, key)
+        let guest = match (key.remote.0, self.cfg.guest_ip6) {
+            (IpAddr::V6(_), Some(g)) => IpAddr::V6(g),
+            _ => IpAddr::V4(self.cfg.guest_ip),
+        };
+        initial_seq(&self.isn_key, ticks, guest, key)
     }
 
     /// Takes published ports' host sockets, each for the guest port and protocol its
@@ -995,10 +1046,11 @@ impl<'r> Stack<'r> {
                 to_guest: &mut self.to_guest,
                 backlog: &mut self.backlog,
                 guest_ip: self.cfg.guest_ip,
+                guest_ip6: self.cfg.guest_ip6,
                 scratch: &mut self.scratch,
             };
             o.datagram(
-                (self.cfg.gateway_ip, port),
+                (IpAddr::V4(self.cfg.gateway_ip), port),
                 guest_port,
                 self.buf.get(..n).unwrap_or_default(),
             );
@@ -1029,7 +1081,7 @@ impl<'r> Stack<'r> {
             };
             let key = Key {
                 guest_port,
-                remote: (self.cfg.gateway_ip, port),
+                remote: (IpAddr::V4(self.cfg.gateway_ip), port),
             };
             let isn = self.isn(&key);
             let c = {
@@ -1052,7 +1104,7 @@ impl<'r> Stack<'r> {
                 .unwrap_or(*EPHEMERAL.start());
             let key = Key {
                 guest_port,
-                remote: (self.cfg.gateway_ip, port),
+                remote: (IpAddr::V4(self.cfg.gateway_ip), port),
             };
             if !self.tcp.by_key.contains_key(&key) {
                 return Some(port);
@@ -1067,6 +1119,7 @@ impl<'r> Stack<'r> {
             to_guest: &mut self.to_guest,
             backlog: &mut self.backlog,
             guest_ip: self.cfg.guest_ip,
+            guest_ip6: self.cfg.guest_ip6,
             scratch: &mut self.scratch,
         }
     }
@@ -1100,47 +1153,100 @@ impl<'r> Stack<'r> {
             }
             wire::ETHERTYPE_IPV4 => {
                 let Some(ip) = wire::ipv4(e.payload) else { return };
-                if ip.src != self.cfg.guest_ip {
-                    return;
-                }
-                // A peer's, on the guest's network: to its VM whole, past the policy, as
-                // a bridge's members reach one another.
-                if let Some(i) = self
-                    .peers
-                    .iter()
-                    .position(|p| p.as_ref().is_some_and(|p| p.ip == ip.dst))
-                {
-                    self.forward_to_peer(i, f);
-                    return;
-                }
-                match ip.proto {
-                    wire::PROTO_ICMP => self.on_icmp(&ip),
-                    wire::PROTO_UDP => self.on_guest_udp(&ip),
-                    wire::PROTO_TCP => self.on_guest_tcp(&ip),
-                    _ => {}
-                }
+                self.on_guest_ip(f, &ip);
             }
+            wire::ETHERTYPE_IPV6 => {
+                // No IPv6 on the guest's network: its frames (link-local chatter, router
+                // and multicast listener messages) reach nothing.
+                let Some(guest6) = self.cfg.guest_ip6 else { return };
+                let Some(ip) = wire::ipv6(e.payload) else { return };
+                // Neighbor discovery for any address but its own: the gateway's MAC, as
+                // ARP is answered. The guest may ask from its link-local address (Linux
+                // solicits from the address the waiting packet has, else that one); the
+                // frame is its own, by its MAC, either way.
+                if let Some(ns) = wire::neighbor_solicit(&ip) {
+                    if ns.target != guest6 {
+                        self.out().built(|frames, f| frames.neighbor_advert(f, &ns));
+                    }
+                    return;
+                }
+                self.on_guest_ip(f, &ip);
+            }
+            _ => {}
+        }
+    }
+
+    /// The guest's IP packet `ip`, of either version, in frame `f`: to a peer, or to the
+    /// stack, only from the guest's own address of its version.
+    fn on_guest_ip(&mut self, f: &[u8], ip: &wire::Ip<'_>) {
+        let own = match ip.src {
+            IpAddr::V4(src) => src == self.cfg.guest_ip,
+            IpAddr::V6(src) => Some(src) == self.cfg.guest_ip6,
+        };
+        if !own {
+            return;
+        }
+        // A peer's, on the guest's network: to its VM whole, past the policy, as a
+        // bridge's members reach one another.
+        if let Some(i) = self.peers.iter().position(|p| {
+            p.as_ref().is_some_and(|p| match ip.dst {
+                IpAddr::V4(dst) => p.ip == dst,
+                IpAddr::V6(dst) => p.ip6 == Some(dst),
+            })
+        }) {
+            self.forward_to_peer(i, f);
+            return;
+        }
+        match ip.proto {
+            wire::PROTO_ICMP | wire::PROTO_ICMPV6 => self.on_icmp(ip),
+            wire::PROTO_UDP => self.on_guest_udp(ip),
+            wire::PROTO_TCP => self.on_guest_tcp(ip),
             _ => {}
         }
     }
 
     /// The guest's address on its network, its prefix and gateway (`NET_ADDRESS`): what
     /// its frames come from, and the gateway they go through. False for a malformed one.
+    /// Then, on a network with IPv6, its IPv6 address, prefix and gateway (16, 1 and 16
+    /// bytes).
     fn readdress(&mut self, payload: &[u8]) -> bool {
-        let Some(&[a, b, c, d, _prefix, g0, g1, g2, g3]) = payload.first_chunk::<9>() else {
+        let Some((&[a, b, c, d, _prefix, g0, g1, g2, g3], rest)) = payload.split_first_chunk::<9>() else {
             return false;
+        };
+        let v6 = match rest.len() {
+            0 => None,
+            33 => {
+                let (Some(guest), Some(gateway)) = (
+                    rest.get(..16).and_then(|o| <[u8; 16]>::try_from(o).ok()),
+                    rest.get(17..33).and_then(|o| <[u8; 16]>::try_from(o).ok()),
+                ) else {
+                    return false;
+                };
+                Some((Ipv6Addr::from(guest), Ipv6Addr::from(gateway)))
+            }
+            _ => return false,
         };
         self.cfg.guest_ip = Ipv4Addr::new(a, b, c, d);
         self.cfg.gateway_ip = Ipv4Addr::new(g0, g1, g2, g3);
         self.cfg.gateway_mac = [0x02, 0x42, g0, g1, g2, g3];
+        self.cfg.guest_ip6 = v6.map(|(guest, _)| guest);
+        self.cfg.gateway_ip6 = v6.map(|(_, gateway)| gateway);
         self.frames.gateway_mac = self.cfg.gateway_mac;
         true
     }
 
-    /// A peer (`NET_PEER`): its guest's address and the socket to its network process.
+    /// A peer (`NET_PEER`): its guest's address, then its IPv6 one on a network with
+    /// IPv6, and the socket to its network process.
     fn add_peer(&mut self, payload: &[u8], fds: Vec<OwnedFd>) {
-        let (Some(&[a, b, c, d]), Some(fd)) = (payload.first_chunk::<4>(), fds.into_iter().next()) else {
+        let (Some((&[a, b, c, d], rest)), Some(fd)) =
+            (payload.split_first_chunk::<4>(), fds.into_iter().next())
+        else {
             return;
+        };
+        let ip6 = match rest.len() {
+            0 => None,
+            16 => rest.first_chunk::<16>().map(|o| Ipv6Addr::from(*o)),
+            _ => return,
         };
         let sock = std::os::unix::net::UnixStream::from(fd);
         if sock.set_nonblocking(true).is_err() {
@@ -1166,6 +1272,7 @@ impl<'r> Stack<'r> {
         }
         let peer = Peer {
             ip: Ipv4Addr::new(a, b, c, d),
+            ip6,
             sock,
             unsent: Vec::new(),
             received: Vec::new(),
@@ -1269,20 +1376,25 @@ impl<'r> Stack<'r> {
                     break;
                 }
                 let frame: Vec<u8> = peer.received.drain(..4 + len).skip(4).collect();
-                frames.push((peer.ip, frame));
+                frames.push((peer.ip, peer.ip6, frame));
             }
         }
-        for (from, mut frame) in frames {
+        for (from, from6, mut frame) in frames {
             let Some(eth) = frame.get(wire::VNET..).and_then(wire::eth) else {
                 continue;
             };
-            if eth.kind != wire::ETHERTYPE_IPV4 {
-                continue;
-            }
-            let Some(ip) = wire::ipv4(eth.payload) else {
-                continue;
+            let ip = match eth.kind {
+                wire::ETHERTYPE_IPV4 => wire::ipv4(eth.payload),
+                wire::ETHERTYPE_IPV6 => wire::ipv6(eth.payload),
+                _ => None,
             };
-            if ip.src != from || ip.dst != self.cfg.guest_ip {
+            let Some(ip) = ip else { continue };
+            let theirs_to_ours = match (ip.src, ip.dst) {
+                (IpAddr::V4(src), IpAddr::V4(dst)) => src == from && dst == self.cfg.guest_ip,
+                (IpAddr::V6(src), IpAddr::V6(dst)) => from6 == Some(src) && self.cfg.guest_ip6 == Some(dst),
+                _ => false,
+            };
+            if !theirs_to_ours {
                 continue;
             }
             if let Some(macs) = frame.get_mut(wire::VNET..wire::VNET + 12)
@@ -1318,10 +1430,16 @@ impl<'r> Stack<'r> {
         }
     }
 
-    /// An echo request to the gateway is answered here; others are not reached yet.
+    /// An echo request to the gateway, ICMP's or ICMPv6's, is answered here; others are not
+    /// reached yet.
     fn on_icmp(&mut self, ip: &wire::Ip<'_>) {
         let p = ip.payload;
-        if p.first() == Some(&8) && ip.dst == self.cfg.gateway_ip {
+        let request = if ip.proto == wire::PROTO_ICMPV6 {
+            wire::ICMPV6_ECHO_REQUEST
+        } else {
+            8
+        };
+        if p.first() == Some(&request) && ip.dst == self.cfg.gateway_of(ip.src) {
             let data = p.get(4..).unwrap_or_default();
             self.out()
                 .built(|frames, f| frames.icmp_echo_reply(f, ip.dst, ip.src, data));
@@ -1330,14 +1448,14 @@ impl<'r> Stack<'r> {
 
     fn on_guest_udp(&mut self, ip: &wire::Ip<'_>) {
         let Some(u) = wire::udp(ip.payload) else { return };
+        let gateway = self.cfg.gateway_of(ip.src);
         // An answer to a published port's peer, through the gateway port it was given.
-        if ip.dst == self.cfg.gateway_ip {
+        if ip.dst == gateway {
             // The network's resolver, as Docker's embedded DNS (the guest's 127.0.0.11
             // relays to it).
             if u.dst_port == 53
                 && let Some(answer) = self.names.as_ref().and_then(|n| n.answer(u.payload))
             {
-                let gateway = self.cfg.gateway_ip;
                 self.out().datagram((gateway, 53), u.src_port, &answer);
                 return;
             }
@@ -1356,14 +1474,14 @@ impl<'r> Stack<'r> {
                         .as_deref()
                         .is_some_and(|q| self.cfg.named.iter().any(|(h, _)| h.eq_ignore_ascii_case(q)));
                 if granted {
-                    self.flow((u.src_port, ip.dst, 53), up, u.payload);
+                    self.flow((u.src_port, ip.dst, 53), (IpAddr::V4(up.0), up.1), u.payload);
                 } else if let Some(no) = dns::refused(u.payload) {
-                    let gateway = self.cfg.gateway_ip;
                     self.out().datagram((gateway, 53), u.src_port, &no);
                 }
                 return;
             }
             if let Some(f) = self.inbound.get_mut(&u.dst_port)
+                && gateway.is_ipv4()
                 && f.guest_port == u.src_port
                 && let Some((Listener::Udp(sock), _)) = self.published.get(f.published)
             {
@@ -1376,9 +1494,8 @@ impl<'r> Stack<'r> {
         // (Linux: EHOSTUNREACH, net/ipv4/icmp.c icmp_err_convert), where a datagram
         // dropped would leave a resolver to wait out its timeouts.
         if !self.cfg.allows(ip.dst, Proto::Udp, u.dst_port) {
-            let gateway = self.cfg.gateway_ip;
             self.out().built(|frames, f| {
-                frames.icmp_unreachable(f, gateway, ip.src, wire::ADMIN_PROHIBITED, ip);
+                frames.icmp_unreachable(f, gateway, ip.src, ip);
             });
             return;
         }
@@ -1387,11 +1504,15 @@ impl<'r> Stack<'r> {
 
     /// Sends `payload` on UDP flow `key`, its host socket connected to `to`, made where
     /// there is none; its answers go to the guest from `key`'s remote end.
-    fn flow(&mut self, key: UdpKey, to: (Ipv4Addr, u16), payload: &[u8]) {
+    fn flow(&mut self, key: UdpKey, to: (IpAddr, u16), payload: &[u8]) {
         let f = match self.udp.entry(key) {
             std::collections::hash_map::Entry::Occupied(o) => o.into_mut(),
             std::collections::hash_map::Entry::Vacant(v) => {
-                let Ok(sock) = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)) else {
+                let any = match to.0 {
+                    IpAddr::V4(_) => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+                    IpAddr::V6(_) => IpAddr::V6(Ipv6Addr::UNSPECIFIED),
+                };
+                let Ok(sock) = UdpSocket::bind((any, 0)) else {
                     return;
                 };
                 if sock.connect(to).is_err() || sock.set_nonblocking(true).is_err() {
@@ -1434,6 +1555,7 @@ impl<'r> Stack<'r> {
             to_guest: &mut self.to_guest,
             backlog: &mut self.backlog,
             guest_ip: self.cfg.guest_ip,
+            guest_ip6: self.cfg.guest_ip6,
             scratch: &mut self.scratch,
         };
         for _ in 0..BUDGET {
@@ -1444,7 +1566,7 @@ impl<'r> Stack<'r> {
             let got = self.buf.get(..n).unwrap_or_default();
             // A forwarded answer for a name granted to agents: what it resolved to, each
             // address reached at its grant's port from now on.
-            if key.1 == self.cfg.gateway_ip
+            if key.1 == IpAddr::V4(self.cfg.gateway_ip)
                 && key.2 == 53
                 && !self.cfg.named.is_empty()
                 && let Some((name, addrs)) = dns::a_records(got)
@@ -1491,10 +1613,10 @@ impl<'r> Stack<'r> {
             }
             // DNS over TCP past the microVM, for agents granted egress (D59), as by UDP: to
             // the host's resolver, each question as its grants say.
-            let resolver = (ip.dst == self.cfg.gateway_ip
+            let resolver = (ip.dst == IpAddr::V4(self.cfg.gateway_ip)
                 && seg.dst_port == 53
                 && matches!(self.cfg.policy, Policy::Ports(_)))
-            .then(|| self.cfg.resolvers.first().copied())
+            .then(|| self.cfg.resolvers.first().map(|&(a, p)| (IpAddr::V4(a), p)))
             .flatten();
             if resolver.is_none() && !self.cfg.allows(ip.dst, Proto::Tcp, seg.dst_port) {
                 let mut o = self.out();
@@ -1630,6 +1752,7 @@ impl<'r> Stack<'r> {
                 to_guest: &mut self.to_guest,
                 backlog: &mut self.backlog,
                 guest_ip: self.cfg.guest_ip,
+                guest_ip6: self.cfg.guest_ip6,
                 scratch: &mut self.scratch,
             };
             if e.write {
@@ -1735,7 +1858,7 @@ mod tests {
         let mut tcp = Tcp::default();
         let key = |port| Key {
             guest_port: port,
-            remote: (Ipv4Addr::LOCALHOST, 1),
+            remote: (IpAddr::V4(Ipv4Addr::LOCALHOST), 1),
         };
         let a = tcp.reserve(key(1));
         let first = tcp.token(a);
@@ -1802,7 +1925,7 @@ mod tests {
         sock.set_nonblocking(true).unwrap();
         let key = Key {
             guest_port: 80,
-            remote: (stack.cfg.gateway_ip, 49152),
+            remote: (IpAddr::V4(stack.cfg.gateway_ip), 49152),
         };
         // Opened to the guest: its SYN sent, a retransmission due.
         let c = Conn::accept(key, sock, 1000, &mut stack.out());
@@ -1850,21 +1973,22 @@ mod tests {
             to_guest: &mut producer,
             backlog: &mut backlog,
             guest_ip,
+            guest_ip6: None,
             scratch: &mut scratch,
         };
         let key = Key {
             guest_port: 80,
-            remote: (Ipv4Addr::new(1, 2, 3, 4), 40_000),
+            remote: (IpAddr::from([1, 2, 3, 4]), 40_000),
         };
         assert!(out.segment(&key, 7, 9, wire::ACK, 100, None, [b"hello, ", b"world"]));
-        assert!(out.datagram((Ipv4Addr::new(8, 8, 8, 8), 53), 5353, b"an answer"));
+        assert!(out.datagram((IpAddr::from([8, 8, 8, 8]), 53), 5353, b"an answer"));
         out.backlog.push_back(vec![0; 64]);
         assert!(!out.segment(&key, 19, 9, wire::ACK, 100, None, [b"later", b""]));
         assert!(out.segment(&key, 19, 9, wire::ACK, 100, None, tcp::EMPTY));
         assert_eq!(out.backlog.len(), 2);
         let segment = take().unwrap();
         let ip = wire::ipv4(wire::eth(segment.get(wire::VNET..).unwrap()).unwrap().payload).unwrap();
-        assert_eq!((ip.src, ip.dst), (key.remote.0, guest_ip));
+        assert_eq!((ip.src, ip.dst), (key.remote.0, IpAddr::V4(guest_ip)));
         let t = wire::tcp(ip.payload).unwrap();
         assert_eq!((t.seq, t.ack, t.payload), (7, 9, &b"hello, world"[..]));
         let datagram = take().unwrap();
@@ -1904,7 +2028,7 @@ mod tests {
         let bridge = bridge::Bridge::elect(&[]).unwrap();
         let allow = Config::on_bridge(Policy::AllowAll, [2, 0, 0, 0, 0, 1], &bridge);
         for to in [[8, 8, 8, 8], [192, 168, 1, 10], [10, 0, 0, 1], [172, 17, 0, 3]] {
-            assert!(allow.allows(Ipv4Addr::from(to), Proto::Tcp, 443), "{to:?}");
+            assert!(allow.allows(IpAddr::from(to), Proto::Tcp, 443), "{to:?}");
         }
         for to in [
             [172, 17, 0, 1],
@@ -1916,10 +2040,30 @@ mod tests {
             [239, 255, 255, 250],
             [255, 255, 255, 255],
         ] {
-            assert!(!allow.allows(Ipv4Addr::from(to), Proto::Tcp, 443), "{to:?}");
+            assert!(!allow.allows(IpAddr::from(to), Proto::Tcp, 443), "{to:?}");
         }
         let deny = Config::on_bridge(Policy::DenyAll, [2, 0, 0, 0, 0, 1], &bridge);
-        assert!(!deny.allows(Ipv4Addr::new(8, 8, 8, 8), Proto::Tcp, 443));
+        assert!(!deny.allows(IpAddr::from([8, 8, 8, 8]), Proto::Tcp, 443));
+        // IPv6 alike (D99): the gateway, loopback, link-local and multicast kept out, and
+        // an IPv4 address carried in IPv6 judged as the IPv4 address it is.
+        let mut allow = allow;
+        allow.gateway_ip6 = Some("fd00:17::1".parse().unwrap());
+        for to in ["2001:4860:4860::8888", "fd00:17::3", "::ffff:8.8.8.8"] {
+            assert!(allow.allows(to.parse().unwrap(), Proto::Tcp, 443), "{to}");
+        }
+        for to in [
+            "fd00:17::1",
+            "::1",
+            "::",
+            "fe80::1",
+            "ff02::1",
+            "::127.0.0.1",
+            "::ffff:127.0.0.1",
+            "::ffff:169.254.169.254",
+            "::ffff:172.17.0.1",
+        ] {
+            assert!(!allow.allows(to.parse().unwrap(), Proto::Tcp, 443), "{to}");
+        }
     }
 
     /// An Agentfile's egress grants: their ports alone, of their protocol, and never
@@ -1930,7 +2074,7 @@ mod tests {
         let ports = Ports::parse("443, 53/udp,8000-8010/tcp").unwrap();
         assert_eq!(Ports::decode(&ports.encode()), Some(ports.clone()));
         let cfg = Config::on_bridge(Policy::Ports(ports), [2, 0, 0, 0, 0, 1], &bridge);
-        let out = Ipv4Addr::new(8, 8, 8, 8);
+        let out = IpAddr::from([8, 8, 8, 8]);
         for (proto, port) in [
             (Proto::Tcp, 443),
             (Proto::Udp, 53),
@@ -1947,8 +2091,8 @@ mod tests {
         ] {
             assert!(!cfg.allows(out, proto, port), "{proto:?} {port}");
         }
-        assert!(!cfg.allows(Ipv4Addr::new(169, 254, 169, 254), Proto::Tcp, 443));
-        assert!(!cfg.allows(Ipv4Addr::new(127, 0, 0, 1), Proto::Tcp, 443));
+        assert!(!cfg.allows(IpAddr::from([169, 254, 169, 254]), Proto::Tcp, 443));
+        assert!(!cfg.allows(IpAddr::from([127, 0, 0, 1]), Proto::Tcp, 443));
         for bad in ["0", "70000", "9-8", "443/sctp", "x"] {
             assert!(Ports::parse(bad).is_err(), "{bad}");
         }
@@ -1968,14 +2112,14 @@ mod tests {
         // A named grant reaches its address, learned or literal, at its port alone.
         let mut cfg = Config::on_bridge(Policy::Ports(Ports::default()), [2, 0, 0, 0, 0, 1], &bridge);
         cfg.named = named;
-        let learned = Ipv4Addr::new(203, 0, 113, 9);
+        let learned = IpAddr::from([203, 0, 113, 9]);
         assert!(!cfg.allows(learned, Proto::Tcp, 443), "not yet resolved");
         cfg.learned.insert((learned, 443));
         assert!(cfg.allows(learned, Proto::Tcp, 443));
         assert!(!cfg.allows(learned, Proto::Tcp, 80));
         assert!(!cfg.allows(learned, Proto::Udp, 443));
-        assert!(cfg.allows(Ipv4Addr::new(10, 0, 0, 7), Proto::Tcp, 8443));
-        assert!(!cfg.allows(Ipv4Addr::new(10, 0, 0, 8), Proto::Tcp, 8443));
+        assert!(cfg.allows(IpAddr::from([10, 0, 0, 7]), Proto::Tcp, 8443));
+        assert!(!cfg.allows(IpAddr::from([10, 0, 0, 8]), Proto::Tcp, 8443));
         assert_eq!(Ports::decode(&[6, 0, 1]), None);
     }
 
@@ -1993,10 +2137,10 @@ mod tests {
     /// clock adds to it (RFC 6528 §3, review 2.31).
     #[test]
     fn initial_sequence_numbers_are_the_connections_and_the_secrets() {
-        let guest = Ipv4Addr::new(172, 17, 0, 2);
+        let guest = IpAddr::from([172, 17, 0, 2]);
         let conn = |port| Key {
             guest_port: port,
-            remote: (Ipv4Addr::new(93, 184, 215, 14), 443),
+            remote: (IpAddr::from([93, 184, 215, 14]), 443),
         };
         let (one, two) = ([1u8; 16], [2u8; 16]);
         let isn = initial_seq(&one, 0, guest, &conn(40_000));

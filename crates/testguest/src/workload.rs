@@ -87,6 +87,7 @@ pub fn main() -> ! {
         "fs" => fs(args.get(1..).unwrap_or_default()),
         "tcp" => tcp(arg(1)),
         "ask" => ask(arg(1)),
+        "resolve" => resolve(arg(1)),
         "udp" => udp(arg(1)),
         "serve" => serve(arg(1), arg(2).parse().unwrap_or(1)),
         "agent" => agent(),
@@ -525,6 +526,25 @@ fn ask(addr: &str) -> i32 {
     }
 }
 
+/// Every address the guest's resolver (musl's getaddrinfo: /etc/hosts, then the
+/// resolv.conf's servers, A and AAAA) gives `name`, one a line, as `resolve ADDR`; or
+/// `resolve error E`.
+fn resolve(name: &str) -> i32 {
+    use std::net::ToSocketAddrs as _;
+    match (name, 0).to_socket_addrs() {
+        Ok(addrs) => {
+            for a in addrs {
+                let _ = writeln!(io::stdout(), "resolve {}", a.ip());
+            }
+            0
+        }
+        Err(e) => {
+            let _ = writeln!(io::stdout(), "resolve error {e}");
+            1
+        }
+    }
+}
+
 /// Connects to `addr` (IP:PORT), reads until the far end closes, and prints what came:
 /// `tcp N BYTES` then the bytes.
 fn tcp(addr: &str) -> i32 {
@@ -549,7 +569,13 @@ fn tcp(addr: &str) -> i32 {
 /// Sends a datagram to `addr` from a connected socket, and waits up to 5 s for an answer:
 /// `udp N` its length, or `udp error E`, as an ICMP error or the wait ends it.
 fn udp(addr: &str) -> i32 {
-    let answered = std::net::UdpSocket::bind("0.0.0.0:0").and_then(|s| {
+    // A socket of the address's version.
+    let any = if addr.starts_with('[') {
+        "[::]:0"
+    } else {
+        "0.0.0.0:0"
+    };
+    let answered = std::net::UdpSocket::bind(any).and_then(|s| {
         s.connect(addr)?;
         s.set_read_timeout(Some(std::time::Duration::from_secs(5)))?;
         s.send(b"?")?;
@@ -686,7 +712,11 @@ fn agent() -> i32 {
 }
 
 fn serve(port: &str, connections: usize) -> i32 {
-    let listener = match std::net::TcpListener::bind(format!("0.0.0.0:{port}")) {
+    // Both versions on one socket where the guest has IPv6 (a v6 socket takes v4 as
+    // mapped addresses, ipv6(7)), IPv4 alone where it has not.
+    let listener = match std::net::TcpListener::bind(format!("[::]:{port}"))
+        .or_else(|_| std::net::TcpListener::bind(format!("0.0.0.0:{port}")))
+    {
         Ok(l) => l,
         Err(e) => {
             let _ = writeln!(io::stdout(), "serve error {e}");
@@ -696,7 +726,7 @@ fn serve(port: &str, connections: usize) -> i32 {
     let _ = writeln!(io::stdout(), "ready");
     for _ in 0..connections {
         let served = listener.accept().and_then(|(mut c, peer)| {
-            writeln!(c, "from {}", peer.ip())?;
+            writeln!(c, "from {}", peer.ip().to_canonical())?;
             let mut read = c.try_clone()?;
             let echoed = io::copy(&mut read, &mut c)?;
             // What it had of the connection, for a test to tell a stream cut on its way in

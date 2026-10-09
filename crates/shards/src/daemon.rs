@@ -1734,8 +1734,18 @@ impl<D: Disk> Daemon<D> {
             run.endpoints.retain(|e| e.network == only);
         }
         let user_subnets = |term: &str| {
-            self.user_network(term)
-                .map(|n| n.pools.iter().map(|p| p.subnet).collect())
+            self.user_network(term).map(|n| {
+                let v4 = n
+                    .pools
+                    .iter()
+                    .map(|p| (std::net::IpAddr::V4(p.subnet.0), p.subnet.1));
+                let v6 = n
+                    .pools6
+                    .iter()
+                    .filter_map(|p| crate::networks::prefix6(&p.subnet))
+                    .map(|(net, bits)| (std::net::IpAddr::V6(net), bits));
+                v4.chain(v6).collect()
+            })
         };
         let mut start = match network::check(
             &run,
@@ -1818,12 +1828,13 @@ impl<D: Disk> Daemon<D> {
             let term = run.network.clone();
             let endpoint = run.endpoints.iter().find(|e| e.network == term);
             let ip = endpoint.map(|e| e.ipv4.clone()).unwrap_or_default();
+            let ip6 = endpoint.map(|e| e.ipv6.clone()).unwrap_or_default();
             let aliases = endpoint.map(|e| e.aliases.clone()).unwrap_or_default();
             let hostname = run.hostname.clone().unwrap_or_default();
-            match self.join_network(&id, &term, &ip, &aliases, &hostname) {
+            match self.join_network(&id, &term, &ip, &ip6, &aliases, &hostname) {
                 Ok((network, member)) => {
                     let before = prepared.spec.setup.len();
-                    self.network_guest(&network, member.ip, &run, &mut prepared.spec);
+                    self.network_guest(&network, &member, &run, &mut prepared.spec);
                     network_setup = prepared.spec.setup.split_off(before);
                 }
                 Err(e) => start = network::Start::Fails(e),
@@ -2048,6 +2059,24 @@ impl<D: Disk> Daemon<D> {
         }
         if let Some(link) = &shares {
             fds.push(link.as_fd());
+        }
+        // An image whose Agentfile grants its agents anything past the microVM: init keeps
+        // the run's own processes from those grants (eth0's own subnet alone, of both
+        // versions) before its command starts, as its VM's network process holds the
+        // grants for the whole microVM from before the run (D59, D99).
+        let granted = [
+            shards_dockerfile::agentfile::EGRESS_LABEL,
+            shards_dockerfile::agentfile::MCP_LABEL,
+            shards_dockerfile::agentfile::DNS_LABEL,
+        ]
+        .iter()
+        .any(|l| {
+            prepared
+                .labels
+                .contains_key(std::str::from_utf8(l).unwrap_or_default())
+        });
+        if granted {
+            prepared.spec.setup.push(b"confine-eth0".to_vec());
         }
         // The flags, the retention's two u64s, the log's segment, then the spec, in one
         // allocation (audit D10).
