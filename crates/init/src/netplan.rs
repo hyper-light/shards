@@ -16,7 +16,7 @@
 //! those its own grants (`--egress`, `--expose`) and the microVM's for it (`EXPOSE ...
 //! FOR` it, not ingress-only) both open, as the build's `agentfile::boundary` reads them.
 
-use std::net::Ipv4Addr;
+use std::net::{Ipv4Addr, Ipv6Addr};
 
 use crate::json::Value;
 
@@ -36,6 +36,14 @@ ff02::2\tip6-allrouters\n";
 const POOL: (Ipv4Addr, u8) = (Ipv4Addr::new(10, 244, 0, 0), 16);
 const POOL_PREFIX: u8 = 24;
 
+/// The block a network with IPv6 (`NETWORK --ipv6`) takes its subnet from where it names
+/// none: /64s of a /48 of unique local addresses (RFC 4193), the first that overlaps
+/// neither the microVM's own network's IPv6 subnet nor a declared one (D99). Its global ID
+/// spells "Shar"; these networks never leave the microVM, so no other site's ULAs meet
+/// them, and the one subnet they could meet, eth0's, is kept clear of.
+const POOL6: (Ipv6Addr, u8) = (Ipv6Addr::new(0xfdf0, 0x5368, 0x6172, 0, 0, 0, 0, 0), 48);
+const POOL6_PREFIX: u8 = 64;
+
 /// A domain, as the Agentfile names it: whether it is a harness, and its name.
 pub type Name = (bool, String);
 
@@ -49,6 +57,16 @@ pub struct Address {
     pub gateway: Ipv4Addr,
 }
 
+/// A domain's IPv6 address on one network with IPv6 (D99).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Address6 {
+    pub network: String,
+    pub addr: Ipv6Addr,
+    pub subnet: Ipv6Addr,
+    pub prefix: u8,
+    pub gateway: Ipv6Addr,
+}
+
 /// A port range a domain may open flows to past its microVM: the protocol's IP number
 /// (6 TCP, 17 UDP), and the range's ends.
 pub type Egress = (u8, u16, u16);
@@ -59,6 +77,8 @@ pub type Egress = (u8, u16, u16);
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Link {
     pub addresses: Vec<Address>,
+    /// Its IPv6 addresses, on the networks it joins that have IPv6.
+    pub addresses6: Vec<Address6>,
     pub hosts: Vec<u8>,
     pub egress: Vec<Egress>,
     /// The ports let in past the microVM to it: of networks it is the one member of,
@@ -137,14 +157,36 @@ fn mask(prefix: u8) -> u32 {
     u32::MAX.checked_shl(32 - u32::from(prefix)).unwrap_or(0)
 }
 
+fn cidr6(s: &str) -> Option<(Ipv6Addr, u8)> {
+    let (a, p) = s.split_once('/')?;
+    let a: Ipv6Addr = a.parse().ok()?;
+    let p: u8 = p.parse().ok().filter(|p| *p <= 126)?;
+    Some((Ipv6Addr::from(u128::from(a) & mask6(p)), p))
+}
+
+fn mask6(prefix: u8) -> u128 {
+    u128::MAX.checked_shl(128 - u32::from(prefix)).unwrap_or(0)
+}
+
+fn overlaps6(a: (Ipv6Addr, u8), b: (Ipv6Addr, u8)) -> bool {
+    let p = a.1.min(b.1);
+    u128::from(a.0) & mask6(p) == u128::from(b.0) & mask6(p)
+}
+
 fn overlaps(a: (Ipv4Addr, u8), b: (Ipv4Addr, u8)) -> bool {
     let p = a.1.min(b.1);
     u32::from(a.0) & mask(p) == u32::from(b.0) & mask(p)
 }
 
 /// Plans the links of `names`, the domains that run, from `spec`, the normalized
-/// Agentfile; `own` is the microVM's own network, which no subnet may overlap.
-pub fn plan(spec: &Value, names: &[Name], own: Option<(Ipv4Addr, u8)>) -> Result<Plan, String> {
+/// Agentfile; `own` and `own6` are the microVM's own network's subnets, which no subnet
+/// may overlap.
+pub fn plan(
+    spec: &Value,
+    names: &[Name],
+    own: Option<(Ipv4Addr, u8)>,
+    own6: Option<(Ipv6Addr, u8)>,
+) -> Result<Plan, String> {
     let index = |kind: Option<&str>, name: &str| -> Option<usize> {
         let find = |harness: bool| names.iter().position(|(h, n)| *h == harness && n == name);
         match kind {
@@ -282,6 +324,21 @@ pub fn plan(spec: &Value, names: &[Name], own: Option<(Ipv4Addr, u8)>) -> Result
             ))
         })
         .collect();
+    // The networks with IPv6: those that say `--ipv6` (Compose's enable_ipv6), as dockerd
+    // gives a network IPv6 only when asked, its IPv6 configs ignored otherwise.
+    let with_ipv6: Vec<String> = spec
+        .get("networks")
+        .map(Value::array)
+        .unwrap_or_default()
+        .iter()
+        .filter(|n| matches!(n.get("ipv6"), Some(Value::Bool(true))))
+        .filter_map(|n| n.get("name").and_then(Value::str).map(str::to_string))
+        .collect();
+    let mut taken6: Vec<(Ipv6Addr, u8)> = own6.into_iter().collect();
+    for (_, subnets, _) in &declared {
+        taken6.extend(subnets.iter().filter_map(|s| cidr6(s)));
+    }
+    let mut next6 = 0u128;
     let mut taken: Vec<(Ipv4Addr, u8)> = own.into_iter().collect();
     for (_, subnets, _) in &declared {
         taken.extend(subnets.iter().filter_map(|s| cidr(s)));
@@ -334,6 +391,60 @@ pub fn plan(spec: &Value, names: &[Name], own: Option<(Ipv4Addr, u8)>) -> Result
             });
             host += 1;
         }
+        if !with_ipv6.contains(net) {
+            continue;
+        }
+        // Its IPv6 subnet: as declared, else a /64 of the pool; its gateway as declared,
+        // else the subnet's first host; members from ::2 up, past the gateway.
+        let ipv6 = said.and_then(|(_, s, _)| s.iter().find_map(|s| cidr6(s)));
+        let (subnet6, prefix6) = match ipv6 {
+            Some(s) => s,
+            None => loop {
+                let span = 1u128 << (POOL6_PREFIX - POOL6.1);
+                if next6 >= span {
+                    return Err(format!(
+                        "network {net}: no /64 of {}/{} is free",
+                        POOL6.0, POOL6.1
+                    ));
+                }
+                let base = u128::from(POOL6.0) | (next6 << (128 - u32::from(POOL6_PREFIX)));
+                next6 += 1;
+                let candidate = (Ipv6Addr::from(base), POOL6_PREFIX);
+                if !taken6.iter().any(|t| overlaps6(*t, candidate)) {
+                    taken6.push(candidate);
+                    break candidate;
+                }
+            },
+        };
+        let base6 = u128::from(subnet6);
+        let gateway6 = said
+            .and_then(|(_, _, g)| g.iter().find_map(|g| g.parse::<Ipv6Addr>().ok()))
+            .unwrap_or(Ipv6Addr::from(base6 + 1));
+        let room6 = (1u128 << (128 - u32::from(prefix6))).saturating_sub(2);
+        if m.len() as u128 > room6 {
+            return Err(format!(
+                "network {net}: {} members, room for {room6} of IPv6",
+                m.len()
+            ));
+        }
+        let mut host6 = base6 + 2;
+        for &d in m {
+            if Ipv6Addr::from(host6) == gateway6 {
+                host6 += 1;
+            }
+            let link = links
+                .get_mut(d)
+                .ok_or("a member beyond the domains")?
+                .get_or_insert_with(Link::default);
+            link.addresses6.push(Address6 {
+                network: net.clone(),
+                addr: Ipv6Addr::from(host6),
+                subnet: subnet6,
+                prefix: prefix6,
+                gateway: gateway6,
+            });
+            host6 += 1;
+        }
     }
     // Names: each domain's own, and every member's of each network it joins, the first
     // network's address for a name on several.
@@ -364,6 +475,14 @@ pub fn plan(spec: &Value, names: &[Name], own: Option<(Ipv4Addr, u8)>) -> Result
                 };
                 if let Some((_, name)) = names.get(peer) {
                     hosts.push_str(&format!("{}\t{name}\n", addr.addr));
+                    // Its IPv6 address on the network too, after its IPv4 one.
+                    if let Some(a6) = links
+                        .get(peer)
+                        .and_then(Option::as_ref)
+                        .and_then(|l| l.addresses6.iter().find(|x| x.network == a.network))
+                    {
+                        hosts.push_str(&format!("{}\t{name}\n", a6.addr));
+                    }
                 }
                 named.push(peer);
             }
@@ -546,6 +665,7 @@ mod tests {
             &spec,
             &names(&["a", "b", "c", "d", "e"]),
             Some((Ipv4Addr::new(10, 244, 0, 0), 24)),
+            None,
         )
         .unwrap();
         // a -> b on its ports; d <-> b both ways on its; nothing for e, a member that no
@@ -606,7 +726,7 @@ mod tests {
                                {"kind":null,"from":["b"],"bothWays":true,"to":["b"],"on":["shut"]}]}"#,
         )
         .unwrap();
-        let p = plan(&spec, &names(&["a", "b"]), None).unwrap();
+        let p = plan(&spec, &names(&["a", "b"]), None, None).unwrap();
         let a = p.links[0].as_ref().unwrap();
         // 443 and 53/udp both boundaries open outward; not 8080 (the network's
         // ingress-only), nor 9000-9010 (the microVM's alone).
@@ -637,7 +757,7 @@ mod tests {
         .unwrap();
         let mut n = names(&["a", "b"]);
         n.push((true, "h".to_string()));
-        let p = plan(&spec, &n, None).unwrap();
+        let p = plan(&spec, &n, None, None).unwrap();
         let a = p.links[0].as_ref().unwrap();
         assert_eq!(
             a.mcp,
@@ -661,7 +781,7 @@ mod tests {
                 "connections":[{"kind":"agent","from":["x"],"bothWays":true,"to":["y"],"on":["n"],"ports":["80"]}]}"#,
         )
         .unwrap();
-        let p = plan(&spec, &names(&["x", "y"]), None).unwrap();
+        let p = plan(&spec, &names(&["x", "y"]), None, None).unwrap();
         let x = &p.links[0].as_ref().unwrap().addresses[0];
         let y = &p.links[1].as_ref().unwrap().addresses[0];
         assert_eq!(
@@ -680,9 +800,47 @@ mod tests {
         )
         .unwrap();
         assert!(
-            plan(&small, &names(&["x", "y"]), None)
+            plan(&small, &names(&["x", "y"]), None, None)
                 .unwrap_err()
                 .contains("room for 1")
+        );
+    }
+
+    /// A network with IPv6 (D99): its members' IPv6 addresses from ::2 up, of the subnet
+    /// declared or else the pool's first /64 clear of the microVM's own, its gateway the
+    /// subnet's first host or the one declared; each names its granted peers at both
+    /// addresses; a network without `--ipv6` takes none, its IPv6 subnet ignored.
+    #[test]
+    fn networks_with_ipv6_give_their_members_ipv6_addresses() {
+        let spec = crate::json::parse(
+            br#"{"networks":[{"name":"six","ipv6":true,"subnets":["fd31:3::/64"],"gateways":["fd31:3::fe"]},
+                             {"name":"pooled","ipv6":true,"subnets":[],"gateways":[]},
+                             {"name":"four","ipv6":false,"subnets":["fd99::/64"],"gateways":[]}],
+                "connections":[{"kind":null,"from":["a"],"bothWays":false,"to":["b"],"on":["six"],"ports":["7000"]},
+                               {"kind":null,"from":["c"],"bothWays":true,"to":["c"],"on":["pooled"],"ports":[]},
+                               {"kind":null,"from":["d"],"bothWays":true,"to":["d"],"on":["four"],"ports":[]}]}"#,
+        )
+        .unwrap();
+        let own6 = Some((Ipv6Addr::new(0xfdf0, 0x5368, 0x6172, 0, 0, 0, 0, 0), 64));
+        let p = plan(&spec, &names(&["a", "b", "c", "d"]), None, own6).unwrap();
+        let six = |i: usize| p.links[i].as_ref().unwrap().addresses6.clone();
+        assert_eq!(six(0)[0].addr, "fd31:3::2".parse::<Ipv6Addr>().unwrap());
+        assert_eq!(six(1)[0].addr, "fd31:3::3".parse::<Ipv6Addr>().unwrap());
+        assert_eq!(six(0)[0].gateway, "fd31:3::fe".parse::<Ipv6Addr>().unwrap());
+        // The pool's first /64 is the microVM's own: pooled takes the next.
+        assert_eq!(
+            six(2)[0].subnet,
+            "fdf0:5368:6172:1::".parse::<Ipv6Addr>().unwrap()
+        );
+        assert_eq!(
+            six(2)[0].gateway,
+            "fdf0:5368:6172:1::1".parse::<Ipv6Addr>().unwrap()
+        );
+        assert!(six(3).is_empty());
+        let hosts = String::from_utf8(p.links[0].as_ref().unwrap().hosts.clone()).unwrap();
+        assert!(
+            hosts.ends_with("10.244.0.2\ta\nfd31:3::2\ta\n10.244.0.3\tb\nfd31:3::3\tb\n"),
+            "{hosts}"
         );
     }
 }

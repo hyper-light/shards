@@ -14,7 +14,7 @@
 //! network.
 
 use std::io;
-use std::net::Ipv4Addr;
+use std::net::{Ipv4Addr, Ipv6Addr};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 
 use crate::netplan::Link;
@@ -174,7 +174,23 @@ mod nft {
     pub const PRIORITY_DNAT: u32 = (-100i32) as u32;
     /// NF_IP_PRI_RAW, -300: before connection tracking, which `notrack` keeps a packet from.
     pub const PRIORITY_RAW: u32 = (-300i32) as u32;
+    /// The fib expression (nf_tables.h): the oif a route lookup by the packet's source and
+    /// arriving link gives, zero where none.
+    pub const NFTA_FIB_DREG: u16 = 1;
+    pub const NFTA_FIB_RESULT: u16 = 2;
+    pub const NFTA_FIB_FLAGS: u16 = 3;
+    pub const NFT_FIB_RESULT_OIF: u32 = 1;
+    pub const NFTA_FIB_F_SADDR: u32 = 1;
+    pub const NFTA_FIB_F_IIF: u32 = 8;
 }
+
+/// IPv6's address flag that skips duplicate address detection (linux/if_addr.h): each
+/// link here has two ends, both of ours.
+const IFA_F_NODAD: u8 = 0x02;
+/// The switch's end of every gate's link, and the gate's, for IPv6: link-local (RFC 4291
+/// §2.5.6), the same on each link, as a link-local address is the link's alone (D99).
+const TRANSIT6_SWITCH: Ipv6Addr = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1);
+const TRANSIT6_GATE: Ipv6Addr = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 2);
 
 const TABLE: &[u8] = b"shards\0";
 
@@ -334,6 +350,8 @@ fn open_ns(path: &str) -> io::Result<OwnedFd> {
 pub struct Switch {
     ns: OwnedFd,
     route: OwnedFd,
+    /// Whether any domain has IPv6 (D99): the switch's own IPv6 tables, and forwarding.
+    ipv6: bool,
     /// A route socket in init's own namespace, where veths are made.
     here: OwnedFd,
     /// Whether it has a link past the microVM, which every domain's default route takes.
@@ -354,6 +372,10 @@ pub struct Gate {
     pub egress: Vec<crate::netplan::Egress>,
     pub ingress: Vec<crate::netplan::Egress>,
     pub dns: bool,
+    /// Its IPv6 addresses, and its peers' (D99): flows within the microVM alone.
+    pub own6: Vec<Ipv6Addr>,
+    pub opens6: Vec<(Vec<Ipv6Addr>, Vec<crate::netplan::Egress>)>,
+    pub accepts6: Vec<(Vec<Ipv6Addr>, Vec<crate::netplan::Egress>)>,
 }
 
 impl Gate {
@@ -378,6 +400,7 @@ impl Switch {
         ingress: &[(usize, Vec<crate::netplan::Egress>)],
         dns: &[usize],
         uplink: Option<&Uplink>,
+        ipv6: bool,
     ) -> io::Result<Switch> {
         let (ns, route, nftables) = in_netns(None, || {
             let ns = open_ns("/proc/thread-self/ns/net")?;
@@ -398,9 +421,18 @@ impl Switch {
             Ok((ns, route, nftables))
         })?;
         policy(&nftables, pairs, egress, ingress, dns)?;
+        // IPv6 between domains (D99): its tables first, then forwarding, so that a kernel
+        // without nf_tables' ip6 family fails the run rather than forward unfiltered.
+        if ipv6 {
+            policy6(&nftables, pairs)?;
+            in_netns(Some(ns.as_raw_fd()), || {
+                crate::setup::write_sysctl("net.ipv6.conf.all.forwarding", "1").map_err(io::Error::other)
+            })?;
+        }
         let switch = Switch {
             ns,
             route,
+            ipv6,
             here: netlink_socket(libc::NETLINK_ROUTE)?,
             uplink: uplink.is_some(),
             gates: std::sync::Mutex::new(Vec::new()),
@@ -627,6 +659,43 @@ impl Switch {
                 route_msg(index, a.addr, 32, Some(transit), None),
             ));
         }
+        // IPv6 (D99): the domain's addresses and subnets through their gateways, the gate's
+        // gateways on in0 and its link-local end on out0, its default route up to the
+        // switch's; the switch's link-local end on d<n> and the domain's addresses through
+        // the gate. No duplicate address detection: each link has two ends, both ours.
+        if !link.addresses6.is_empty() && !self.ipv6 {
+            return Err(io::Error::other("a domain with IPv6 on a switch made without it"));
+        }
+        let mut gateways6: Vec<Ipv6Addr> = Vec::new();
+        for a in &link.addresses6 {
+            ours.push((RTM_NEWADDR, create, addr6_msg(DOMAIN_IFINDEX, a.addr, 128)));
+            ours.push((
+                RTM_NEWROUTE,
+                create,
+                route6_msg(DOMAIN_IFINDEX, a.subnet, a.prefix, Some(a.gateway), Some(a.addr)),
+            ));
+            if !gateways6.contains(&a.gateway) {
+                gateways6.push(a.gateway);
+            }
+            gates.push((RTM_NEWROUTE, create, route6_msg(GATE_IN, a.addr, 128, None, None)));
+            theirs.push((
+                RTM_NEWROUTE,
+                create,
+                route6_msg(index, a.addr, 128, Some(TRANSIT6_GATE), None),
+            ));
+        }
+        if !link.addresses6.is_empty() {
+            for g in &gateways6 {
+                gates.push((RTM_NEWADDR, create, addr6_msg(GATE_IN, *g, 128)));
+            }
+            gates.push((RTM_NEWADDR, create, addr6_msg(GATE_OUT, TRANSIT6_GATE, 64)));
+            gates.push((
+                RTM_NEWROUTE,
+                create,
+                route6_msg(GATE_OUT, Ipv6Addr::UNSPECIFIED, 0, Some(TRANSIT6_SWITCH), None),
+            ));
+            theirs.push((RTM_NEWADDR, create, addr6_msg(index, TRANSIT6_SWITCH, 64)));
+        }
         // Up before its routes: a route through a link that is down is refused.
         let domain_route = in_netns(Some(domain_ns.as_raw_fd()), || {
             // Its own connections' ports none of those it accepts, so that what answers
@@ -647,6 +716,13 @@ impl Switch {
         exchange(&self.route, rest_theirs)?;
         exchange(&domain_route, rest_ours)?;
         gate_policy(&gate_nft, gate)?;
+        // IPv6's tables, then its forwarding, as the switch's (D99).
+        if !link.addresses6.is_empty() {
+            gate_policy6(&gate_nft, gate)?;
+            in_netns(Some(gate_ns.as_raw_fd()), || {
+                crate::setup::write_sysctl("net.ipv6.conf.all.forwarding", "1").map_err(io::Error::other)
+            })?;
+        }
         match self.gates.lock() {
             Ok(mut g) => g.push(gate_ns),
             Err(poisoned) => poisoned.into_inner().push(gate_ns),
@@ -687,6 +763,50 @@ fn addr_msg_prefix(index: i32, addr: Ipv4Addr, prefix: u8) -> Vec<u8> {
     m.extend_from_slice(&(index as u32).to_ne_bytes());
     attr(&mut m, IFA_LOCAL, &addr.octets());
     attr(&mut m, IFA_ADDRESS, &addr.octets());
+    m
+}
+
+/// An IPv6 address `addr/prefix` on link `index`, with no duplicate address detection.
+fn addr6_msg(index: i32, addr: Ipv6Addr, prefix: u8) -> Vec<u8> {
+    // struct ifaddrmsg: family, prefix length, flags, scope, index.
+    let mut m = vec![libc::AF_INET6 as u8, prefix, IFA_F_NODAD, RT_SCOPE_UNIVERSE];
+    m.extend_from_slice(&(index as u32).to_ne_bytes());
+    attr(&mut m, IFA_LOCAL, &addr.octets());
+    attr(&mut m, IFA_ADDRESS, &addr.octets());
+    m
+}
+
+/// An IPv6 route to `dst/prefix` on link `index`, as [`route_msg`] makes IPv4's.
+fn route6_msg(
+    index: i32,
+    dst: Ipv6Addr,
+    prefix: u8,
+    gateway: Option<Ipv6Addr>,
+    source: Option<Ipv6Addr>,
+) -> Vec<u8> {
+    let (scope, flags) = match gateway {
+        Some(_) => (RT_SCOPE_UNIVERSE, RTNH_F_ONLINK),
+        None => (RT_SCOPE_LINK, 0),
+    };
+    let mut m = vec![
+        libc::AF_INET6 as u8,
+        prefix,
+        0,
+        0,
+        RT_TABLE_MAIN,
+        RTPROT_BOOT,
+        scope,
+        RTN_UNICAST,
+    ];
+    m.extend_from_slice(&flags.to_ne_bytes());
+    attr(&mut m, RTA_DST, &dst.octets());
+    if let Some(g) = gateway {
+        attr(&mut m, RTA_GATEWAY, &g.octets());
+    }
+    if let Some(s) = source {
+        attr(&mut m, RTA_PREFSRC, &s.octets());
+    }
+    attr(&mut m, RTA_OIF, &(index as u32).to_ne_bytes());
     m
 }
 
@@ -932,6 +1052,49 @@ fn address(list: &mut Vec<u8>, offset: u32, addr: Ipv4Addr) {
 const SOURCE: u32 = 12;
 const DESTINATION: u32 = 16;
 
+/// The packet's IPv6 source (offset 8 of its header) or destination (24) address.
+fn address6(list: &mut Vec<u8>, offset: u32, addr: Ipv6Addr) {
+    payload(list, nft::NFT_PAYLOAD_NETWORK_HEADER, offset, 16);
+    compare(list, nft::NFT_CMP_EQ, &addr.octets());
+}
+const SOURCE6: u32 = 8;
+const DESTINATION6: u32 = 24;
+
+/// Neighbor discovery (RFC 4861: router and neighbor solicitations and advertisements,
+/// redirects, ICMPv6 types 133 to 137), of hop limit 255 alone (§7.1.1), which a link's
+/// two ends need to reach each other: accepted.
+fn neighbor_discovery() -> Vec<u8> {
+    let mut e = Vec::new();
+    meta(&mut e, nft::NFT_META_L4PROTO);
+    compare(&mut e, nft::NFT_CMP_EQ, &[58]);
+    payload(&mut e, nft::NFT_PAYLOAD_TRANSPORT_HEADER, 0, 1);
+    compare(&mut e, nft::NFT_CMP_GTE, &[133]);
+    compare(&mut e, nft::NFT_CMP_LTE, &[137]);
+    payload(&mut e, nft::NFT_PAYLOAD_NETWORK_HEADER, 7, 1);
+    compare(&mut e, nft::NFT_CMP_EQ, &[255]);
+    accept(&mut e);
+    e
+}
+
+/// Strict reverse-path filtering for IPv6 (RFC 3704 §2.2), which has no rp_filter
+/// sysctl: a packet whose source no route reaches through the link it came on is dropped
+/// (nft's `fib saddr . iif oif missing drop`).
+fn reverse_path() -> Vec<u8> {
+    let mut e = Vec::new();
+    expr(&mut e, b"fib\0", |d| {
+        be32(d, nft::NFTA_FIB_DREG, nft::NFT_REG_1);
+        be32(d, nft::NFTA_FIB_RESULT, nft::NFT_FIB_RESULT_OIF);
+        be32(
+            d,
+            nft::NFTA_FIB_FLAGS,
+            nft::NFTA_FIB_F_SADDR | nft::NFTA_FIB_F_IIF,
+        );
+    });
+    compare(&mut e, nft::NFT_CMP_EQ, &0u32.to_ne_bytes());
+    drop_verdict(&mut e);
+    e
+}
+
 /// The arriving (`NFT_META_IIF`) or leaving (`NFT_META_OIF`) link, `index`.
 fn on(list: &mut Vec<u8>, key: u32, index: u32) {
     meta(list, key);
@@ -1101,6 +1264,109 @@ fn gate_policy(sock: &OwnedFd, g: &Gate) -> io::Result<()> {
         }
         for &range in &g.ingress {
             opened(&mut b, None, range);
+        }
+    }
+    b.commit(sock)
+}
+
+/// The switch's IPv6 tables (D99), stateless as its IPv4 ones: its own address answers
+/// neighbor discovery alone, reverse paths are strict, and it forwards each pair's flows
+/// one way on their ports and their answers back, and nothing else. No IPv6 crosses the
+/// microVM's boundary: past it, the domains reach by IPv4.
+fn policy6(sock: &OwnedFd, pairs: &[(usize, usize, Vec<crate::netplan::Egress>)]) -> io::Result<()> {
+    let mut b = Batch::of(nft::NFPROTO_IPV6);
+    b.chain(b"pre\0", b"filter\0", nft::NF_INET_PRE_ROUTING, 0, nft::NF_ACCEPT);
+    b.rule(b"pre\0", reverse_path());
+    b.chain(b"input\0", b"filter\0", nft::NF_INET_LOCAL_IN, 0, nft::NF_DROP);
+    b.rule(b"input\0", neighbor_discovery());
+    b.chain(b"forward\0", b"filter\0", nft::NF_INET_FORWARD, 0, nft::NF_DROP);
+    for (from, to, ranges) in pairs {
+        let (from, to) = (link_index(*from)?, link_index(*to)?);
+        for &range in ranges {
+            let mut e = Vec::new();
+            on(&mut e, nft::NFT_META_IIF, from);
+            on(&mut e, nft::NFT_META_OIF, to);
+            ports(&mut e, range);
+            accept(&mut e);
+            b.rule(b"forward\0", e);
+            let mut e = Vec::new();
+            on(&mut e, nft::NFT_META_IIF, to);
+            on(&mut e, nft::NFT_META_OIF, from);
+            source_ports(&mut e, range);
+            accept(&mut e);
+            b.rule(b"forward\0", e);
+        }
+    }
+    b.commit(sock)
+}
+
+/// A domain's gate's IPv6 tables (D99), as its IPv4 ones ([`gate_policy`]) within the
+/// microVM: what others open to it kept from its table, its own address alone answering
+/// neighbor discovery, reverse paths strict, and forwarded: answers to what it opened, what
+/// it opens from its own addresses to each peer's on the peer's ports, and what peers open
+/// to it from theirs on its ports, with its answers.
+fn gate_policy6(sock: &OwnedFd, g: &Gate) -> io::Result<()> {
+    let (inside, outside) = (GATE_IN as u32, GATE_OUT as u32);
+    let mut b = Batch::of(nft::NFPROTO_IPV6);
+    b.chain(
+        b"raw\0",
+        b"filter\0",
+        nft::NF_INET_PRE_ROUTING,
+        nft::PRIORITY_RAW,
+        nft::NF_ACCEPT,
+    );
+    b.rule(b"raw\0", reverse_path());
+    for range in g.accepted() {
+        let mut e = Vec::new();
+        on(&mut e, nft::NFT_META_IIF, outside);
+        ports(&mut e, range);
+        expr(&mut e, b"notrack\0", |_| {});
+        b.rule(b"raw\0", e);
+        let mut e = Vec::new();
+        on(&mut e, nft::NFT_META_IIF, inside);
+        source_ports(&mut e, range);
+        expr(&mut e, b"notrack\0", |_| {});
+        b.rule(b"raw\0", e);
+    }
+    b.chain(b"input\0", b"filter\0", nft::NF_INET_LOCAL_IN, 0, nft::NF_DROP);
+    b.rule(b"input\0", neighbor_discovery());
+    b.chain(b"output\0", b"filter\0", nft::NF_INET_LOCAL_OUT, 0, nft::NF_DROP);
+    b.rule(b"output\0", neighbor_discovery());
+    b.chain(b"forward\0", b"filter\0", nft::NF_INET_FORWARD, 0, nft::NF_DROP);
+    b.rule(b"forward\0", answers());
+    for &own in &g.own6 {
+        for (peer, ranges) in &g.opens6 {
+            for &to in peer {
+                for &range in ranges {
+                    let mut e = Vec::new();
+                    on(&mut e, nft::NFT_META_IIF, inside);
+                    address6(&mut e, SOURCE6, own);
+                    address6(&mut e, DESTINATION6, to);
+                    ports(&mut e, range);
+                    accept(&mut e);
+                    b.rule(b"forward\0", e);
+                }
+            }
+        }
+        for (peer, ranges) in &g.accepts6 {
+            for &from in peer {
+                for &range in ranges {
+                    let mut e = Vec::new();
+                    on(&mut e, nft::NFT_META_IIF, outside);
+                    address6(&mut e, SOURCE6, from);
+                    address6(&mut e, DESTINATION6, own);
+                    ports(&mut e, range);
+                    accept(&mut e);
+                    b.rule(b"forward\0", e);
+                    let mut e = Vec::new();
+                    on(&mut e, nft::NFT_META_IIF, inside);
+                    address6(&mut e, SOURCE6, own);
+                    address6(&mut e, DESTINATION6, from);
+                    source_ports(&mut e, range);
+                    accept(&mut e);
+                    b.rule(b"forward\0", e);
+                }
+            }
         }
     }
     b.commit(sock)

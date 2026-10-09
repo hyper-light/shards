@@ -3283,10 +3283,44 @@ checksums, `ip6.arpa`, and the policy's IPv6 rules have unit tests.
   "Host is unreachable".
 
 The guest kernel now has nf_tables' ip6 family and its fib expression
-(kernel-6.18.48-9199fc6fad00): the confinement's ip6 chain is built on it, and agents'
-IPv6 networks are next.
+(kernel-6.18.48-9199fc6fad00).
 
-Open: agents' IPv6 subnets on an Agentfile's networks.
+**Part two: agents' IPv6 subnets.** An Agentfile's `NETWORK --ipv6` (Compose's
+`enable_ipv6`) gives its members IPv6 addresses.
+- **Addresses and names.**
+  - Each member's address comes from the network's declared IPv6 subnet (`--subnet`),
+    or else from a /64 of a unique-local /48 (RFC 4193, global ID "Shar"). The pool
+    keeps clear of the microVM's own network's IPv6 subnet, as IPv4's 10.244.0.0/16
+    pool keeps clear of its IPv4 one.
+  - The gateway is the declared one, or the subnet's first host. Members take ::2 up.
+  - Without `--ipv6`, a network's IPv6 subnets are ignored, as dockerd ignores them.
+  - Each domain's `/etc/hosts` names its granted peers at both addresses.
+- **Links.** A domain's address and its gateway are on its gate's link. The gate and
+  the switch meet over link-local addresses (`fe80::2` and `fe80::1`, each link its
+  own). Every address is added with no duplicate address detection, since each link has
+  two ends and both are init's.
+- **Tables.** IPv6 has tables of its own, as the kernel has no `inet` family.
+  - The switch forwards each pair's flows one way on their ports, and their answers
+    back, by link and stateless.
+  - Each gate tracks what its domain opens, and keeps what others open to it out of its
+    connection table (D61).
+  - Each answers neighbor discovery (hop limit 255) and nothing else to itself.
+  - Strict reverse-path filtering, which IPv6 gets from no sysctl, is nf_tables' `fib
+    saddr . iif oif missing drop`.
+  - IPv6 forwarding is turned on only after the tables are in place. A kernel without
+    nf_tables' ip6 family fails the run, never forwards unfiltered.
+- **Past the microVM.** Agents reach it by IPv4 alone. No IPv6 route leaves the switch,
+  so their egress, names and ingress past it stay IPv4's (D59).
+
+Tested on real microVMs: `agents_reach_by_ipv6_only_what_connect_grants`.
+- `CONNECT --port=7000 a TO b` lets a reach b at its IPv6 address on 7000, and not on
+  7001, where b listens too.
+- b's way to a is dropped.
+- d, paired with b alone, reaches b and not a.
+- Each names its peers at both addresses.
+
+Mutation-checked: both IPv6 forward chains accepting all, and a reaches b's 7001. The
+planner's addresses, pool, gateways and hosts lines have a unit test.
 
 ### D98. Rego as OPA evaluates it, for buildx's build policies
 

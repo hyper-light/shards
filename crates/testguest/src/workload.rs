@@ -1768,7 +1768,10 @@ fn confined(args: &[String]) -> i32 {
                 Err(e) => out.push_str(&format!("confined cat {path}: {}\n", errno(&e))),
             },
             port if mode == "listen" => {
-                let said = match std::net::TcpListener::bind(format!("0.0.0.0:{port}")) {
+                // Both IP versions where the domain has IPv6, else IPv4 alone.
+                let said = match std::net::TcpListener::bind(format!("[::]:{port}"))
+                    .or_else(|_| std::net::TcpListener::bind(format!("0.0.0.0:{port}")))
+                {
                     Ok(l) => {
                         // Answers every connection with its host name, for as long as the
                         // agent runs, so that who answered is known.

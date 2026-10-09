@@ -144,7 +144,11 @@ pub fn read() -> Result<Read, String> {
         let mask = u32::MAX.checked_shl(32 - u32::from(prefix)).unwrap_or(0);
         (std::net::Ipv4Addr::from(u32::from(addr) & mask), prefix)
     });
-    let plan = crate::netplan::plan(&spec, &names, own)?;
+    let own6 = crate::net::current6().map(|(addr, prefix, _)| {
+        let mask = u128::MAX.checked_shl(128 - u32::from(prefix)).unwrap_or(0);
+        (std::net::Ipv6Addr::from(u128::from(addr) & mask), prefix)
+    });
+    let plan = crate::netplan::plan(&spec, &names, own, own6)?;
     for d in &mut out {
         d.mcp = offered(&spec, d);
     }
@@ -774,6 +778,13 @@ fn gate_of(
             .map(|l| l.addresses.iter().map(|a| a.addr).collect())
             .unwrap_or_default()
     };
+    let addrs6 = |j: usize| -> Vec<std::net::Ipv6Addr> {
+        domains
+            .get(j)
+            .and_then(|d| d.link.as_ref())
+            .map(|l| l.addresses6.iter().map(|a| a.addr).collect())
+            .unwrap_or_default()
+    };
     crate::links::Gate {
         own: link.addresses.iter().map(|a| a.addr).collect(),
         opens: pairs
@@ -789,6 +800,17 @@ fn gate_of(
         egress: link.egress.clone(),
         ingress: link.ingress.clone(),
         dns: link.dns || !link.mcp.is_empty(),
+        own6: link.addresses6.iter().map(|a| a.addr).collect(),
+        opens6: pairs
+            .iter()
+            .filter(|(from, _, _)| *from == i)
+            .map(|(_, to, ports)| (addrs6(*to), ports.clone()))
+            .collect(),
+        accepts6: pairs
+            .iter()
+            .filter(|(_, to, _)| *to == i)
+            .map(|(from, _, ports)| (addrs6(*from), ports.clone()))
+            .collect(),
     }
 }
 
@@ -874,7 +896,10 @@ fn switch(
     let resolver = uplink
         .as_ref()
         .and_then(|_| crate::net::current().map(|(_, _, g)| g));
-    let switch = crate::links::Switch::new(pairs, &egress, &ingress, &dns, uplink.as_ref())?;
+    let ipv6 = domains
+        .iter()
+        .any(|d| d.link.as_ref().is_some_and(|l| !l.addresses6.is_empty()));
+    let switch = crate::links::Switch::new(pairs, &egress, &ingress, &dns, uplink.as_ref(), ipv6)?;
     // The agents' resolver, for those granted names.
     let mut askers: Vec<crate::agentdns::Asker> = Vec::new();
     for &i in &dns {

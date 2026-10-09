@@ -6606,6 +6606,113 @@ fn agents_run_in_their_domains() {
     );
 }
 
+/// IPv6 between agents (D99): on a network with IPv6 (`NETWORK --ipv6`), each member has
+/// an address of its IPv6 subnet, and the grants hold by IPv6 as by IPv4: `CONNECT
+/// --port=7000 a TO b` lets `a` reach `b` at its IPv6 address on 7000 alone, `b` only
+/// answer it, and `d`, paired with `b` alone, reach `b` and not `a`; each names its granted
+/// peers at both addresses.
+#[test]
+fn agents_reach_by_ipv6_only_what_connect_grants() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let (port, _repos) = common::writable_registry();
+    let home = TempDir::new("links6-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let agent = |name: &str, args: &[&str]| -> String {
+        let dir = TempDir::new(&format!("links6-agent-{name}"));
+        std::fs::create_dir_all(dir.join("bin")).unwrap();
+        std::fs::copy(common::test_guest(), dir.join("bin/testguest")).unwrap();
+        let command: Vec<String> = ["bin/testguest", "confined", "cat", "/etc/hosts"]
+            .iter()
+            .chain(args)
+            .map(|a| format!("{a:?}"))
+            .collect();
+        std::fs::write(
+            dir.join("agent.json"),
+            format!(
+                r#"{{"name":"{name}","run":{{"command":[{}]}}}}"#,
+                command.join(",")
+            ),
+        )
+        .unwrap();
+        let tag = format!("127.0.0.1:{port}/team/links6-{name}:1");
+        let made = shards(&["build", "agent", dir.to_str().unwrap(), "-t", &tag]);
+        assert_eq!(made.status, Some(0), "{}", made.stderr);
+        let pushed = shards(&["push", "agent", &tag]);
+        assert_eq!(pushed.status, Some(0), "{}", pushed.stderr);
+        tag
+    };
+    // Members in order: a ::2, b ::3, d ::4.
+    let a = agent("a", &["reach", "[fd31:3::3]:7000", "unreach", "[fd31:3::3]:7001"]);
+    let b = agent("b", &["listen", "7000", "7001", "unreach", "[fd31:3::2]:7000"]);
+    let d = agent("d", &["reach", "[fd31:3::3]:7000", "unreach", "[fd31:3::2]:7000"]);
+    let ctx = context("links6-ctx", &format!("FROM {image}\n"));
+    std::fs::write(
+        ctx.join("Agentfile"),
+        format!(
+            "FROM {image}\nAGENT a FROM {a}\nAGENT b FROM {b}\nAGENT d FROM {d}\n\
+             NETWORK --ipv6 --subnet=172.31.3.0/24 --subnet=fd31:3::/64 --ingress=7000-7001 back\n\
+             CONNECT --port=7000 a TO b ON back\nCONNECT --port=7000 d WITH b ON back\n"
+        ),
+    )
+    .unwrap();
+    let built = shards(&["build", "-t", "links6:1", ctx.to_str().unwrap()]);
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    let ran = shards(&["run", "--rm", "links6:1", "await", "confined-ready", "3"]);
+    assert_eq!(ran.status, Some(0), "{}{}", ran.stdout, ran.stderr);
+    let said = |who: &str| -> Vec<String> {
+        let prefix = format!("[agent {who}] ");
+        ran.stderr
+            .lines()
+            .filter_map(|l| l.strip_prefix(&prefix).map(str::to_string))
+            .collect()
+    };
+    for (who, wants) in [
+        (
+            "a",
+            &[
+                "confined cat /etc/hosts: fd31:3::2\ta",
+                "confined cat /etc/hosts: fd31:3::3\tb",
+                "confined reach [fd31:3::3]:7000: ok",
+                // b listens on 7001 too, which no CONNECT grants: dropped.
+                "confined unreach [fd31:3::3]:7001: timeout",
+            ][..],
+        ),
+        (
+            "b",
+            &[
+                "confined listen 7000: ok",
+                // a TO b: b only answers a.
+                "confined unreach [fd31:3::2]:7000: timeout",
+            ][..],
+        ),
+        (
+            "d",
+            &[
+                "confined reach [fd31:3::3]:7000: ok",
+                // Paired with b alone: its way to a is dropped.
+                "confined unreach [fd31:3::2]:7000: timeout",
+            ][..],
+        ),
+    ] {
+        let lines = said(who);
+        for want in wants {
+            assert!(
+                lines.iter().any(|l| l == want),
+                "no {want:?} from {who} in:\n{}",
+                ran.stderr
+            );
+        }
+    }
+}
+
 /// Agents reach one another as the Agentfile's `CONNECT`s grant and nothing more (D59,
 /// AGENTFILE_ARCH.md §4.6, §4.7, §9.7; networks are default deny), each over one link to
 /// a switch that decides by link and port. On `back`, `CONNECT --port=7000 a TO b` lets
