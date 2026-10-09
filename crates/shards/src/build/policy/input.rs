@@ -8,7 +8,11 @@ use std::collections::BTreeMap;
 use shards_dockerfile::platform::{self, Platform};
 use shards_image::reference::Reference;
 
+use shards_cmdline::buildflags::LogLevel;
+
 use super::gitobject::{self, Actor, Commit, Tag};
+use super::provenance::{self, Provenance};
+use super::signatures::{self, Trust};
 use super::{Meta, Source};
 
 /// A JSON document as encoding/json writes Go's values: an object's fields in the order
@@ -27,17 +31,29 @@ impl Json {
     /// `json.MarshalIndent(v, "", "  ")`.
     pub fn indented(&self) -> String {
         let mut out = String::new();
-        self.write(&mut out, 0);
+        self.write(&mut out, Some(0));
         out
     }
 
-    fn write(&self, out: &mut String, depth: usize) {
-        let pad = |out: &mut String, d: usize| {
-            out.push('\n');
-            for _ in 0..d {
-                out.push_str("  ");
+    /// `json.Marshal(v)`.
+    #[cfg(test)]
+    pub fn compact(&self) -> String {
+        let mut out = String::new();
+        self.write(&mut out, None);
+        out
+    }
+
+    /// The document at `depth`, indented, or compact where `None`.
+    fn write(&self, out: &mut String, depth: Option<usize>) {
+        let pad = |out: &mut String, d: Option<usize>| {
+            if let Some(d) = d {
+                out.push('\n');
+                for _ in 0..d {
+                    out.push_str("  ");
+                }
             }
         };
+        let inner = depth.map(|d| d + 1);
         match self {
             Json::Null => out.push_str("null"),
             Json::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
@@ -51,8 +67,8 @@ impl Json {
                     if i > 0 {
                         out.push(',');
                     }
-                    pad(out, depth + 1);
-                    v.write(out, depth + 1);
+                    pad(out, inner);
+                    v.write(out, inner);
                 }
                 pad(out, depth);
                 out.push(']');
@@ -63,10 +79,10 @@ impl Json {
                     if i > 0 {
                         out.push(',');
                     }
-                    pad(out, depth + 1);
+                    pad(out, inner);
                     go_string(out, k);
-                    out.push_str(": ");
-                    v.write(out, depth + 1);
+                    out.push_str(if depth.is_some() { ": " } else { ":" });
+                    v.write(out, inner);
                 }
                 pad(out, depth);
                 out.push('}');
@@ -93,7 +109,7 @@ impl Json {
 }
 
 /// encoding/json's string: `<`, `>`, `&`, U+2028 and U+2029 escaped, as are control
-/// characters, `\n`, `\r` and `\t` by name.
+/// characters, `\b`, `\f`, `\n`, `\r` and `\t` by name.
 fn go_string(out: &mut String, s: &str) {
     out.push('"');
     for c in s.chars() {
@@ -103,6 +119,8 @@ fn go_string(out: &mut String, s: &str) {
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
+            '\x08' => out.push_str("\\b"),
+            '\x0c' => out.push_str("\\f"),
             '<' | '>' | '&' | '\u{2028}' | '\u{2029}' => out.push_str(&format!("\\u{:04x}", u32::from(c))),
             c if u32::from(c) < 0x20 => out.push_str(&format!("\\u{:04x}", u32::from(c))),
             c => out.push(c),
@@ -114,17 +132,17 @@ fn go_string(out: &mut String, s: &str) {
 /// A struct's fields as encoding/json writes them with `omitempty`: those not empty, in
 /// order.
 #[derive(Default)]
-struct Fields(Vec<(String, Json)>);
+pub(super) struct Fields(Vec<(String, Json)>);
 
 impl Fields {
-    fn str(mut self, k: &str, v: &str) -> Self {
+    pub(super) fn str(mut self, k: &str, v: &str) -> Self {
         if !v.is_empty() {
             self.0.push((k.into(), Json::Str(v.into())));
         }
         self
     }
 
-    fn flag(mut self, k: &str, v: bool) -> Self {
+    pub(super) fn flag(mut self, k: &str, v: bool) -> Self {
         if v {
             self.0.push((k.into(), Json::Bool(true)));
         }
@@ -141,7 +159,7 @@ impl Fields {
         self
     }
 
-    fn map(mut self, k: &str, v: &BTreeMap<String, String>) -> Self {
+    pub(super) fn map(mut self, k: &str, v: &BTreeMap<String, String>) -> Self {
         if !v.is_empty() {
             let o = v.iter().map(|(a, b)| (a.clone(), Json::Str(b.clone()))).collect();
             self.0.push((k.into(), Json::Obj(o)));
@@ -149,14 +167,14 @@ impl Fields {
         self
     }
 
-    fn json(mut self, k: &str, v: Option<Json>) -> Self {
+    pub(super) fn json(mut self, k: &str, v: Option<Json>) -> Self {
         if let Some(v) = v {
             self.0.push((k.into(), v));
         }
         self
     }
 
-    fn done(self) -> Json {
+    pub(super) fn done(self) -> Json {
         Json::Obj(self.0)
     }
 }
@@ -174,6 +192,16 @@ pub struct Env {
 }
 
 impl Env {
+    /// Whether `omitzero` leaves it out: nothing set, at depth 0.
+    fn is_zero(&self) -> bool {
+        self.args.is_empty()
+            && self.labels.is_empty()
+            && self.filename.is_empty()
+            && self.target.is_empty()
+            && !self.caps_request
+            && self.depth == 0
+    }
+
     fn json(&self) -> Json {
         let mut f = Fields::default();
         if !self.args.is_empty() {
@@ -215,6 +243,13 @@ pub struct Image {
     pub user: String,
     pub volumes: Vec<String>,
     pub working_dir: String,
+    /// Whether the image has an attestation manifest or a provenance.
+    pub has_provenance: bool,
+    pub provenance: Option<Box<Provenance>>,
+    /// D106 SIGNATURES HOOK: `signatures` ([]AttestationSignature, parseSignatures over
+    /// the attestation chain), each as its JSON. `None` until that is in; written after
+    /// `provenance`, and only when it holds any (omitempty).
+    pub signatures: Option<Vec<Json>>,
 }
 
 impl Image {
@@ -237,6 +272,15 @@ impl Image {
             .str("user", &self.user)
             .strs("volumes", &self.volumes)
             .str("workingDir", &self.working_dir)
+            .flag("hasProvenance", self.has_provenance)
+            .json("provenance", self.provenance.as_ref().map(|p| p.json()))
+            .json(
+                "signatures",
+                self.signatures
+                    .as_ref()
+                    .filter(|s| !s.is_empty())
+                    .map(|s| Json::Arr(s.clone())),
+            )
             .done()
     }
 }
@@ -391,7 +435,7 @@ impl Git {
     }
 }
 
-/// `Input`: the source, and the build's own `Env`.
+/// `Input`: the source, and the build's own `Env` (`omitzero`).
 #[derive(Debug, Clone, Default)]
 pub struct Input {
     pub env: Env,
@@ -406,7 +450,7 @@ pub struct Input {
 impl Input {
     pub fn json(&self) -> Json {
         Fields::default()
-            .json("env", Some(self.env.json()))
+            .json("env", (!self.env.is_zero()).then(|| self.env.json()))
             .json(
                 "local",
                 self.local
@@ -419,9 +463,26 @@ impl Input {
             .done()
     }
 
-    /// `Input.Unknowns`: the refs not known yet, each from `input`.
+    /// `Input.Unknowns`: the refs not known yet, each from `input`, then each provenance
+    /// material's, from `input.image.provenance.materials[N]` (collectInputUnknowns).
     pub fn unknown_refs(&self) -> Vec<String> {
-        self.unknowns.iter().map(|u| format!("input.{u}")).collect()
+        let mut out = Vec::new();
+        self.collect_unknowns("input", &mut out);
+        out
+    }
+
+    fn collect_unknowns(&self, prefix: &str, out: &mut Vec<String>) {
+        out.extend(
+            self.unknowns
+                .iter()
+                .filter(|u| !u.is_empty())
+                .map(|u| format!("{prefix}.{u}")),
+        );
+        if let Some(p) = self.image.as_ref().and_then(|i| i.provenance.as_ref()) {
+            for (i, m) in p.materials.iter().enumerate() {
+                m.collect_unknowns(&format!("{prefix}.image.provenance.materials[{i}]"), out);
+            }
+        }
     }
 }
 
@@ -429,8 +490,14 @@ impl Input {
 const CONFIG_FIELDS: [&str; 5] = ["labels", "user", "volumes", "workingDir", "env"];
 
 /// `sourceToInput`: the input for `source` as its metadata `meta` tells it, for
-/// `platform`, and what it leaves unknown.
-pub fn of_source(source: &Source, meta: &Meta, wanted: Option<&Platform>) -> Result<Input, String> {
+/// `platform`, and what it leaves unknown; what it notes said to `log`.
+pub fn of_source(
+    source: &Source,
+    meta: &Meta,
+    wanted: Option<&Platform>,
+    trust: Option<&Trust>,
+    log: &mut dyn FnMut(LogLevel, &str),
+) -> Result<Input, String> {
     let mut inp = Input::default();
     let Some((scheme, rest)) = source.identifier.split_once("://") else {
         return Err(format!("invalid source identifier: {}", source.identifier));
@@ -475,9 +542,41 @@ pub fn of_source(source: &Source, meta: &Meta, wanted: Option<&Platform>) -> Res
                         Some(cfg) => config_fields(&mut img, cfg)?,
                         None => inp.unknowns.extend(CONFIG_FIELDS.iter().map(|f| config(f))),
                     }
-                    inp.unknowns.extend(
-                        ["image.hasProvenance", "image.provenance", "image.signatures"].map(String::from),
-                    );
+                    match &m.attestation_chain {
+                        Some(chain) => {
+                            match provenance::parse(chain, log) {
+                                Ok(p) => img.provenance = p.map(Box::new),
+                                Err(e) => {
+                                    log(LogLevel::Debug, &format!("failed to parse image provenance: {e}"))
+                                }
+                            }
+                            img.has_provenance =
+                                !chain.attestation_manifest.is_empty() || img.provenance.is_some();
+                            // parseSignatures, where there is a verifier: a failure is the
+                            // debug log's, the field left out. Every input is built for a
+                            // platform (CheckPolicy's, or a material's own or its parent's).
+                            if let (Some(trust), Some(w)) = (trust, wanted) {
+                                let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
+                                let platform = shards_sigstore::platforms::Platform {
+                                    os: text(&w.os),
+                                    architecture: text(&w.architecture),
+                                    variant: text(&w.variant),
+                                    os_version: text(&w.os_version),
+                                    os_features: w.os_features.iter().map(|f| text(f)).collect(),
+                                };
+                                match signatures::parse_signatures(chain, &platform, trust) {
+                                    Ok(sigs) => img.signatures = sigs,
+                                    Err(e) => log(
+                                        LogLevel::Debug,
+                                        &format!("failed to parse image signatures: {e}"),
+                                    ),
+                                }
+                            }
+                        }
+                        None => inp.unknowns.extend(
+                            ["image.hasProvenance", "image.provenance", "image.signatures"].map(String::from),
+                        ),
+                    }
                 }
             }
             inp.image = Some(img);

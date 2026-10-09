@@ -1,0 +1,23 @@
+#!/bin/sh
+# Regenerates crates/shards/testdata/policy/provenance.json, what buildx v0.37.1's
+# policy.SourceToInput and policy.ResolveInputUnknowns make of images whose attestation
+# chains carry SLSA provenance (scripts/policy/provenance_oracle_test.go), among them
+# the real moby/buildkit v0.28.1 arm64 provenance (testdata/policy/real), and
+# src/build/policy/provenance-schema.json, which shards decodes provenance with: the Go
+# types encoding/json decodes a provenance into, as its typeFields lays them out.
+#
+#   scripts/policy/generate-provenance BUILDX_V0.37.1_CHECKOUT
+set -eu
+here=$(cd "$(dirname "$0")" && pwd)
+root=$(cd "$here/../.." && pwd)
+bx=$1
+dir="$bx/cmd/zz_shards_provenance"
+data="$root/crates/shards/testdata/policy"
+trap 'rm -rf "$dir"' EXIT
+mkdir -p "$dir"
+cp "$here/provenance_oracle_test.go" "$dir/provenance_oracle_test.go"
+cd "$bx"
+SHARDS_PROVENANCE_OUT="$data/provenance.json" \
+	SHARDS_PROVENANCE_SCHEMA="$root/crates/shards/src/build/policy/provenance-schema.json" \
+	SHARDS_PROVENANCE_DIR="$data" \
+	go test -mod=vendor -count=1 -run '^TestShardsProvenance(Oracle|Schema)$' ./cmd/zz_shards_provenance/

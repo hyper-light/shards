@@ -33,6 +33,7 @@ use shards_image::reference::{Algorithm, Digest, Reference};
 use shards_image::store::{self, Store};
 use shards_registry::pull::{self as registry_pull, Event};
 
+mod attest;
 mod azblob;
 mod builder;
 mod cache;
@@ -1184,6 +1185,38 @@ impl Bases<'_> {
     }
 }
 
+impl Bases<'_> {
+    /// The image's attestation chain for `wanted`, from its registry (BuildKit fetches it
+    /// whatever its image store holds); none where the image is not an OCI index.
+    fn attestation_chain(
+        &self,
+        name: &str,
+        wanted: &Platform,
+        resolve_attestations: &[String],
+    ) -> Result<Option<policy::AttestationChain>, String> {
+        let reference = Reference::parse(name).map_err(|e| e.to_string())?;
+        let limits = crate::pull::limits()?;
+        let registry = crate::pull::registry(&reference, None, &|k| std::env::var(k).ok())?;
+        let top = registry
+            .resolve(self.store, &reference)
+            .map_err(|e| e.to_string())?;
+        let platform = shards_sigstore::platforms::Platform {
+            os: show(&wanted.os),
+            architecture: show(&wanted.architecture),
+            variant: show(&wanted.variant),
+            ..Default::default()
+        };
+        attest::chain(
+            &registry,
+            self.store,
+            &limits,
+            &top,
+            &platform,
+            resolve_attestations,
+        )
+    }
+}
+
 /// The digest of a file's content followed by a suffix, by the algorithm asked for:
 /// `ALGORITHM:HEX`.
 fn suffixed_digest(path: &Path, c: &policy::ChecksumRequest) -> Result<String, String> {
@@ -1269,21 +1302,33 @@ impl policy::Resolve for PolicyMeta<'_, '_> {
         let Some(image) = &request.image else {
             return Ok(policy::Meta::default());
         };
-        if image.attestation_chain {
-            return Err(
-                "an image's provenance and signatures in a policy are not supported by shards yet".into(),
-            );
-        }
         let name = source
             .identifier
             .strip_prefix("docker-image://")
             .ok_or_else(|| format!("{}: not an image", source.identifier))?;
         let platform = request.platform.clone().unwrap_or_else(host_platform);
         let (digest, config) = self.bases.metadata(name, &platform)?;
+        let attestation_chain = if image.attestation_chain {
+            let chain = self
+                .bases
+                .attestation_chain(name, &platform, &image.resolve_attestations)?;
+            if let Some(c) = &chain
+                && c.root != digest
+            {
+                return Err(format!(
+                    "attestation chain root digest {} does not match image digest {digest}",
+                    c.root
+                ));
+            }
+            chain
+        } else {
+            None
+        };
         Ok(policy::Meta {
             image: Some(policy::ImageMeta {
                 digest,
                 config: (!image.no_config).then_some(config),
+                attestation_chain,
             }),
             ..policy::Meta::default()
         })
@@ -1313,6 +1358,9 @@ fn policy_said(messages: &[String]) {
 /// by the next; failed by a policy's refusal; done when the build ends, if it is not.
 struct PolicyStep<'a> {
     progress: &'a RefCell<Progress>,
+    /// Where the sources the policies' functions fetch are staged, and within what.
+    store: &'a Store,
+    limits: store::Limits,
     name: RefCell<String>,
     index: std::cell::Cell<usize>,
     window: RefCell<Option<(Vertex, Instant)>>,
@@ -1323,9 +1371,11 @@ struct PolicyStep<'a> {
 const POLICY_WINDOW: std::time::Duration = std::time::Duration::from_millis(500);
 
 impl<'a> PolicyStep<'a> {
-    fn new(progress: &'a RefCell<Progress>) -> PolicyStep<'a> {
+    fn new(progress: &'a RefCell<Progress>, store: &'a Store, limits: store::Limits) -> PolicyStep<'a> {
         PolicyStep {
             progress,
+            store,
+            limits,
             name: RefCell::new(String::new()),
             index: std::cell::Cell::new(0),
             window: RefCell::new(None),
@@ -1375,6 +1425,26 @@ impl policy::Log for PolicyStep<'_> {
         if let Some((v, last)) = w.as_mut() {
             self.progress.borrow().log(v, text);
             *last = Instant::now();
+        }
+    }
+
+    /// An HTTP source a function solves and reads, a step of its own: its error the
+    /// source's, and the read's the cache key's that failed to load.
+    fn fetch(&self, name: &str, url: &str, accept: Option<&str>) -> Result<Vec<u8>, String> {
+        let v = self.progress.borrow_mut().start(name);
+        let got = self.store.stage().map_err(|e| e.to_string()).and_then(|stage| {
+            let d = http::fetch_accepting(url, None, accept, stage.path().join("source"), &self.limits)?;
+            std::fs::read(&d.path).map_err(|e| format!("{}: {e}", d.path.display()))
+        });
+        match got {
+            Ok(data) => {
+                self.progress.borrow().done(&v);
+                Ok(data)
+            }
+            Err(e) => {
+                self.progress.borrow().error(&v, &e);
+                Err(format!("failed to load cache key: {e}"))
+            }
         }
     }
 }
@@ -2084,7 +2154,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
 
     // The build's policies (D101), set up as it begins; the Dockerfile, loaded from its
     // own local source, the first source they are asked of.
-    let policy_step = PolicyStep::new(&progress);
+    let policy_step = PolicyStep::new(&progress, &store, limits);
     let disabled = policy_configs.iter().any(|c| c.disabled);
     if remote.is_some() && !disabled && (remote_policy || !policy_configs.is_empty()) {
         return Err(

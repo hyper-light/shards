@@ -119,15 +119,19 @@ pub const ARTIFACT_CONFIG: Config = Config {
     no_observer: false,
 };
 
+/// The trusted root, loaded where policy-helpers loads its trust provider: after what
+/// is checked without it, so those errors come first. Its error is the whole message.
+pub type Root<'r> = dyn Fn() -> Result<&'r TrustedRoot, String> + 'r;
+
 /// VerifyArtifact: the bundle `bundle` over the artifact `digest` (`sha256:…`), against
 /// `root`, a SLSA provenance statement required unless `slsa_not_required`.
 ///
 /// A message signature has no statement; Go reads its predicate type from a nil
 /// statement and panics, where this refuses it as not SLSA provenance (D105).
-pub fn verify_artifact(
+pub fn verify_artifact<'r>(
     digest: &str,
     bundle: &[u8],
-    root: &TrustedRoot,
+    root: &Root<'r>,
     zone: Zone,
     slsa_not_required: bool,
 ) -> Result<SignatureInfo, Error> {
@@ -138,6 +142,8 @@ pub fn verify_artifact(
             crate::signature::hex_error(hex)
         ))
     })?;
+    let b = crate::bundle::parse(bundle)?;
+    let root = root().map_err(Error)?;
     let material = Material {
         root,
         key: None,
@@ -147,7 +153,6 @@ pub fn verify_artifact(
         digest: Some((alg.to_string(), raw)),
         identity: Identity::Any,
     };
-    let b = crate::bundle::parse(bundle)?;
     let outcome = verify::verify_entity(
         &verify::Entity::from_bundle(&b),
         &material,

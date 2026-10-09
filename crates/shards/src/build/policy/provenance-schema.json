@@ -1,0 +1,2618 @@
+{
+ "custom": {
+  "github.com/moby/buildkit/solver/pb.FileAction": "github.com/docker/buildx/cmd/zz_shards_provenance.jsonFileAction",
+  "github.com/moby/buildkit/solver/pb.Op": "github.com/docker/buildx/cmd/zz_shards_provenance.jsonOp",
+  "github.com/moby/buildkit/solver/pb.UserOpt": "github.com/docker/buildx/cmd/zz_shards_provenance.jsonUserOpt"
+ },
+ "roots": {
+  "slsa02": "github.com/moby/buildkit/solver/llbsolver/provenance/types.ProvenancePredicateSLSA02",
+  "slsa1": "github.com/moby/buildkit/solver/llbsolver/provenance/types.ProvenancePredicateSLSA1",
+  "statement": "github.com/docker/buildx/cmd/zz_shards_provenance.inTotoStatement"
+ },
+ "types": {
+  "*.float64": {
+   "kind": "ptr",
+   "elem": ".float64"
+  },
+  "*.uint32": {
+   "kind": "ptr",
+   "elem": ".uint32"
+  },
+  "*.uint64": {
+   "kind": "ptr",
+   "elem": ".uint64"
+  },
+  "*github.com/moby/buildkit/executor/resources/types.CPUStat": {
+   "kind": "ptr",
+   "elem": "github.com/moby/buildkit/executor/resources/types.CPUStat"
+  },
+  "*github.com/moby/buildkit/executor/resources/types.IOStat": {
+   "kind": "ptr",
+   "elem": "github.com/moby/buildkit/executor/resources/types.IOStat"
+  },
+  "*github.com/moby/buildkit/executor/resources/types.MemoryStat": {
+   "kind": "ptr",
+   "elem": "github.com/moby/buildkit/executor/resources/types.MemoryStat"
+  },
+  "*github.com/moby/buildkit/executor/resources/types.NetworkSample": {
+   "kind": "ptr",
+   "elem": "github.com/moby/buildkit/executor/resources/types.NetworkSample"
+  },
+  "*github.com/moby/buildkit/executor/resources/types.PIDsStat": {
+   "kind": "ptr",
+   "elem": "github.com/moby/buildkit/executor/resources/types.PIDsStat"
+  },
+  "*github.com/moby/buildkit/executor/resources/types.Pressure": {
+   "kind": "ptr",
+   "elem": "github.com/moby/buildkit/executor/resources/types.Pressure"
+  },
+  "*github.com/moby/buildkit/executor/resources/types.PressureValues": {
+   "kind": "ptr",
+   "elem": "github.com/moby/buildkit/executor/resources/types.PressureValues"
+  },
+  "*github.com/moby/buildkit/executor/resources/types.ProcStat": {
+   "kind": "ptr",
+   "elem": "github.com/moby/buildkit/executor/resources/types.ProcStat"
+  },
+  "*github.com/moby/buildkit/executor/resources/types.Sample": {
+   "kind": "ptr",
+   "elem": "github.com/moby/buildkit/executor/resources/types.Sample"
+  },
+  "*github.com/moby/buildkit/executor/resources/types.Samples": {
+   "kind": "ptr",
+   "elem": "github.com/moby/buildkit/executor/resources/types.Samples"
+  },
+  "*github.com/moby/buildkit/executor/resources/types.SysCPUStat": {
+   "kind": "ptr",
+   "elem": "github.com/moby/buildkit/executor/resources/types.SysCPUStat"
+  },
+  "*github.com/moby/buildkit/executor/resources/types.SysMemoryStat": {
+   "kind": "ptr",
+   "elem": "github.com/moby/buildkit/executor/resources/types.SysMemoryStat"
+  },
+  "*github.com/moby/buildkit/executor/resources/types.SysSample": {
+   "kind": "ptr",
+   "elem": "github.com/moby/buildkit/executor/resources/types.SysSample"
+  },
+  "*github.com/moby/buildkit/solver/llbsolver/provenance/types.BuildConfig": {
+   "kind": "ptr",
+   "elem": "github.com/moby/buildkit/solver/llbsolver/provenance/types.BuildConfig"
+  },
+  "*github.com/moby/buildkit/solver/llbsolver/provenance/types.LocalSource": {
+   "kind": "ptr",
+   "elem": "github.com/moby/buildkit/solver/llbsolver/provenance/types.LocalSource"
+  },
+  "*github.com/moby/buildkit/solver/llbsolver/provenance/types.NetworkMetadata": {
+   "kind": "ptr",
+   "elem": "github.com/moby/buildkit/solver/llbsolver/provenance/types.NetworkMetadata"
+  },
+  "*github.com/moby/buildkit/solver/llbsolver/provenance/types.Parameters": {
+   "kind": "ptr",
+   "elem": "github.com/moby/buildkit/solver/llbsolver/provenance/types.Parameters"
+  },
+  "*github.com/moby/buildkit/solver/llbsolver/provenance/types.ProvenanceMetadataSLSA02": {
+   "kind": "ptr",
+   "elem": "github.com/moby/buildkit/solver/llbsolver/provenance/types.ProvenanceMetadataSLSA02"
+  },
+  "*github.com/moby/buildkit/solver/llbsolver/provenance/types.ProvenanceMetadataSLSA1": {
+   "kind": "ptr",
+   "elem": "github.com/moby/buildkit/solver/llbsolver/provenance/types.ProvenanceMetadataSLSA1"
+  },
+  "*github.com/moby/buildkit/solver/llbsolver/provenance/types.ProxyNetworkMetadata": {
+   "kind": "ptr",
+   "elem": "github.com/moby/buildkit/solver/llbsolver/provenance/types.ProxyNetworkMetadata"
+  },
+  "*github.com/moby/buildkit/solver/llbsolver/provenance/types.RequestProvenance": {
+   "kind": "ptr",
+   "elem": "github.com/moby/buildkit/solver/llbsolver/provenance/types.RequestProvenance"
+  },
+  "*github.com/moby/buildkit/solver/llbsolver/provenance/types.SSH": {
+   "kind": "ptr",
+   "elem": "github.com/moby/buildkit/solver/llbsolver/provenance/types.SSH"
+  },
+  "*github.com/moby/buildkit/solver/llbsolver/provenance/types.Secret": {
+   "kind": "ptr",
+   "elem": "github.com/moby/buildkit/solver/llbsolver/provenance/types.Secret"
+  },
+  "*github.com/moby/buildkit/solver/llbsolver/provenance/types.Source": {
+   "kind": "ptr",
+   "elem": "github.com/moby/buildkit/solver/llbsolver/provenance/types.Source"
+  },
+  "*github.com/moby/buildkit/solver/pb.BuildInput": {
+   "kind": "ptr",
+   "elem": "github.com/moby/buildkit/solver/pb.BuildInput"
+  },
+  "*github.com/moby/buildkit/solver/pb.BuildOp": {
+   "kind": "ptr",
+   "elem": "github.com/moby/buildkit/solver/pb.BuildOp"
+  },
+  "*github.com/moby/buildkit/solver/pb.CDIDevice": {
+   "kind": "ptr",
+   "elem": "github.com/moby/buildkit/solver/pb.CDIDevice"
+  },
+  "*github.com/moby/buildkit/solver/pb.CacheOpt": {
+   "kind": "ptr",
+   "elem": "github.com/moby/buildkit/solver/pb.CacheOpt"
+  },
+  "*github.com/moby/buildkit/solver/pb.ChownOpt": {
+   "kind": "ptr",
+   "elem": "github.com/moby/buildkit/solver/pb.ChownOpt"
+  },
+  "*github.com/moby/buildkit/solver/pb.Definition": {
+   "kind": "ptr",
+   "elem": "github.com/moby/buildkit/solver/pb.Definition"
+  },
+  "*github.com/moby/buildkit/solver/pb.DiffOp": {
+   "kind": "ptr",
+   "elem": "github.com/moby/buildkit/solver/pb.DiffOp"
+  },
+  "*github.com/moby/buildkit/solver/pb.ExecOp": {
+   "kind": "ptr",
+   "elem": "github.com/moby/buildkit/solver/pb.ExecOp"
+  },
+  "*github.com/moby/buildkit/solver/pb.ExportCache": {
+   "kind": "ptr",
+   "elem": "github.com/moby/buildkit/solver/pb.ExportCache"
+  },
+  "*github.com/moby/buildkit/solver/pb.FileAction": {
+   "kind": "ptr",
+   "elem": "github.com/moby/buildkit/solver/pb.FileAction"
+  },
+  "*github.com/moby/buildkit/solver/pb.FileActionCopy": {
+   "kind": "ptr",
+   "elem": "github.com/moby/buildkit/solver/pb.FileActionCopy"
+  },
+  "*github.com/moby/buildkit/solver/pb.FileActionMkDir": {
+   "kind": "ptr",
+   "elem": "github.com/moby/buildkit/solver/pb.FileActionMkDir"
+  },
+  "*github.com/moby/buildkit/solver/pb.FileActionMkFile": {
+   "kind": "ptr",
+   "elem": "github.com/moby/buildkit/solver/pb.FileActionMkFile"
+  },
+  "*github.com/moby/buildkit/solver/pb.FileActionRm": {
+   "kind": "ptr",
+   "elem": "github.com/moby/buildkit/solver/pb.FileActionRm"
+  },
+  "*github.com/moby/buildkit/solver/pb.FileOp": {
+   "kind": "ptr",
+   "elem": "github.com/moby/buildkit/solver/pb.FileOp"
+  },
+  "*github.com/moby/buildkit/solver/pb.HostIP": {
+   "kind": "ptr",
+   "elem": "github.com/moby/buildkit/solver/pb.HostIP"
+  },
+  "*github.com/moby/buildkit/solver/pb.Input": {
+   "kind": "ptr",
+   "elem": "github.com/moby/buildkit/solver/pb.Input"
+  },
+  "*github.com/moby/buildkit/solver/pb.LinuxResources": {
+   "kind": "ptr",
+   "elem": "github.com/moby/buildkit/solver/pb.LinuxResources"
+  },
+  "*github.com/moby/buildkit/solver/pb.Location": {
+   "kind": "ptr",
+   "elem": "github.com/moby/buildkit/solver/pb.Location"
+  },
+  "*github.com/moby/buildkit/solver/pb.Locations": {
+   "kind": "ptr",
+   "elem": "github.com/moby/buildkit/solver/pb.Locations"
+  },
+  "*github.com/moby/buildkit/solver/pb.LowerDiffInput": {
+   "kind": "ptr",
+   "elem": "github.com/moby/buildkit/solver/pb.LowerDiffInput"
+  },
+  "*github.com/moby/buildkit/solver/pb.MergeInput": {
+   "kind": "ptr",
+   "elem": "github.com/moby/buildkit/solver/pb.MergeInput"
+  },
+  "*github.com/moby/buildkit/solver/pb.MergeOp": {
+   "kind": "ptr",
+   "elem": "github.com/moby/buildkit/solver/pb.MergeOp"
+  },
+  "*github.com/moby/buildkit/solver/pb.Meta": {
+   "kind": "ptr",
+   "elem": "github.com/moby/buildkit/solver/pb.Meta"
+  },
+  "*github.com/moby/buildkit/solver/pb.Mount": {
+   "kind": "ptr",
+   "elem": "github.com/moby/buildkit/solver/pb.Mount"
+  },
+  "*github.com/moby/buildkit/solver/pb.NamedUserOpt": {
+   "kind": "ptr",
+   "elem": "github.com/moby/buildkit/solver/pb.NamedUserOpt"
+  },
+  "*github.com/moby/buildkit/solver/pb.Op": {
+   "kind": "ptr",
+   "elem": "github.com/moby/buildkit/solver/pb.Op"
+  },
+  "*github.com/moby/buildkit/solver/pb.OpMetadata": {
+   "kind": "ptr",
+   "elem": "github.com/moby/buildkit/solver/pb.OpMetadata"
+  },
+  "*github.com/moby/buildkit/solver/pb.PassthroughOp": {
+   "kind": "ptr",
+   "elem": "github.com/moby/buildkit/solver/pb.PassthroughOp"
+  },
+  "*github.com/moby/buildkit/solver/pb.Platform": {
+   "kind": "ptr",
+   "elem": "github.com/moby/buildkit/solver/pb.Platform"
+  },
+  "*github.com/moby/buildkit/solver/pb.Position": {
+   "kind": "ptr",
+   "elem": "github.com/moby/buildkit/solver/pb.Position"
+  },
+  "*github.com/moby/buildkit/solver/pb.ProgressGroup": {
+   "kind": "ptr",
+   "elem": "github.com/moby/buildkit/solver/pb.ProgressGroup"
+  },
+  "*github.com/moby/buildkit/solver/pb.ProxyEnv": {
+   "kind": "ptr",
+   "elem": "github.com/moby/buildkit/solver/pb.ProxyEnv"
+  },
+  "*github.com/moby/buildkit/solver/pb.Range": {
+   "kind": "ptr",
+   "elem": "github.com/moby/buildkit/solver/pb.Range"
+  },
+  "*github.com/moby/buildkit/solver/pb.SSHOpt": {
+   "kind": "ptr",
+   "elem": "github.com/moby/buildkit/solver/pb.SSHOpt"
+  },
+  "*github.com/moby/buildkit/solver/pb.SecretEnv": {
+   "kind": "ptr",
+   "elem": "github.com/moby/buildkit/solver/pb.SecretEnv"
+  },
+  "*github.com/moby/buildkit/solver/pb.SecretOpt": {
+   "kind": "ptr",
+   "elem": "github.com/moby/buildkit/solver/pb.SecretOpt"
+  },
+  "*github.com/moby/buildkit/solver/pb.Source": {
+   "kind": "ptr",
+   "elem": "github.com/moby/buildkit/solver/pb.Source"
+  },
+  "*github.com/moby/buildkit/solver/pb.SourceInfo": {
+   "kind": "ptr",
+   "elem": "github.com/moby/buildkit/solver/pb.SourceInfo"
+  },
+  "*github.com/moby/buildkit/solver/pb.SourceOp": {
+   "kind": "ptr",
+   "elem": "github.com/moby/buildkit/solver/pb.SourceOp"
+  },
+  "*github.com/moby/buildkit/solver/pb.TmpfsOpt": {
+   "kind": "ptr",
+   "elem": "github.com/moby/buildkit/solver/pb.TmpfsOpt"
+  },
+  "*github.com/moby/buildkit/solver/pb.Ulimit": {
+   "kind": "ptr",
+   "elem": "github.com/moby/buildkit/solver/pb.Ulimit"
+  },
+  "*github.com/moby/buildkit/solver/pb.UpperDiffInput": {
+   "kind": "ptr",
+   "elem": "github.com/moby/buildkit/solver/pb.UpperDiffInput"
+  },
+  "*github.com/moby/buildkit/solver/pb.UserOpt": {
+   "kind": "ptr",
+   "elem": "github.com/moby/buildkit/solver/pb.UserOpt"
+  },
+  "*github.com/moby/buildkit/solver/pb.WorkerConstraints": {
+   "kind": "ptr",
+   "elem": "github.com/moby/buildkit/solver/pb.WorkerConstraints"
+  },
+  "*github.com/opencontainers/image-spec/specs-go/v1.Platform": {
+   "kind": "ptr",
+   "elem": "github.com/opencontainers/image-spec/specs-go/v1.Platform"
+  },
+  "*time.Time": {
+   "kind": "ptr",
+   "elem": "time.Time"
+  },
+  ".bool": {
+   "kind": "bool"
+  },
+  ".float64": {
+   "kind": "float",
+   "bits": 64
+  },
+  ".int": {
+   "kind": "int",
+   "bits": 64
+  },
+  ".int32": {
+   "kind": "int",
+   "bits": 32
+  },
+  ".int64": {
+   "kind": "int",
+   "bits": 64
+  },
+  ".string": {
+   "kind": "string"
+  },
+  ".uint32": {
+   "kind": "uint",
+   "bits": 32
+  },
+  ".uint64": {
+   "kind": "uint",
+   "bits": 64
+  },
+  ".uint8": {
+   "kind": "uint",
+   "bits": 8
+  },
+  "[]*github.com/moby/buildkit/executor/resources/types.Sample": {
+   "kind": "slice",
+   "elem": "*github.com/moby/buildkit/executor/resources/types.Sample"
+  },
+  "[]*github.com/moby/buildkit/executor/resources/types.SysSample": {
+   "kind": "slice",
+   "elem": "*github.com/moby/buildkit/executor/resources/types.SysSample"
+  },
+  "[]*github.com/moby/buildkit/solver/llbsolver/provenance/types.LocalSource": {
+   "kind": "slice",
+   "elem": "*github.com/moby/buildkit/solver/llbsolver/provenance/types.LocalSource"
+  },
+  "[]*github.com/moby/buildkit/solver/llbsolver/provenance/types.SSH": {
+   "kind": "slice",
+   "elem": "*github.com/moby/buildkit/solver/llbsolver/provenance/types.SSH"
+  },
+  "[]*github.com/moby/buildkit/solver/llbsolver/provenance/types.Secret": {
+   "kind": "slice",
+   "elem": "*github.com/moby/buildkit/solver/llbsolver/provenance/types.Secret"
+  },
+  "[]*github.com/moby/buildkit/solver/pb.CDIDevice": {
+   "kind": "slice",
+   "elem": "*github.com/moby/buildkit/solver/pb.CDIDevice"
+  },
+  "[]*github.com/moby/buildkit/solver/pb.FileAction": {
+   "kind": "slice",
+   "elem": "*github.com/moby/buildkit/solver/pb.FileAction"
+  },
+  "[]*github.com/moby/buildkit/solver/pb.HostIP": {
+   "kind": "slice",
+   "elem": "*github.com/moby/buildkit/solver/pb.HostIP"
+  },
+  "[]*github.com/moby/buildkit/solver/pb.Input": {
+   "kind": "slice",
+   "elem": "*github.com/moby/buildkit/solver/pb.Input"
+  },
+  "[]*github.com/moby/buildkit/solver/pb.Location": {
+   "kind": "slice",
+   "elem": "*github.com/moby/buildkit/solver/pb.Location"
+  },
+  "[]*github.com/moby/buildkit/solver/pb.MergeInput": {
+   "kind": "slice",
+   "elem": "*github.com/moby/buildkit/solver/pb.MergeInput"
+  },
+  "[]*github.com/moby/buildkit/solver/pb.Mount": {
+   "kind": "slice",
+   "elem": "*github.com/moby/buildkit/solver/pb.Mount"
+  },
+  "[]*github.com/moby/buildkit/solver/pb.Range": {
+   "kind": "slice",
+   "elem": "*github.com/moby/buildkit/solver/pb.Range"
+  },
+  "[]*github.com/moby/buildkit/solver/pb.SecretEnv": {
+   "kind": "slice",
+   "elem": "*github.com/moby/buildkit/solver/pb.SecretEnv"
+  },
+  "[]*github.com/moby/buildkit/solver/pb.SourceInfo": {
+   "kind": "slice",
+   "elem": "*github.com/moby/buildkit/solver/pb.SourceInfo"
+  },
+  "[]*github.com/moby/buildkit/solver/pb.Ulimit": {
+   "kind": "slice",
+   "elem": "*github.com/moby/buildkit/solver/pb.Ulimit"
+  },
+  "[].int32": {
+   "kind": "slice",
+   "elem": ".int32"
+  },
+  "[].int64": {
+   "kind": "slice",
+   "elem": ".int64"
+  },
+  "[].string": {
+   "kind": "slice",
+   "elem": ".string"
+  },
+  "[].uint8": {
+   "kind": "slice",
+   "elem": ".uint8"
+  },
+  "[][].uint8": {
+   "kind": "slice",
+   "elem": "[].uint8"
+  },
+  "[][]github.com/opencontainers/image-spec/specs-go/v1.Descriptor": {
+   "kind": "slice",
+   "elem": "[]github.com/opencontainers/image-spec/specs-go/v1.Descriptor"
+  },
+  "[]github.com/in-toto/in-toto-golang/in_toto/slsa_provenance/common.ProvenanceMaterial": {
+   "kind": "slice",
+   "elem": "github.com/in-toto/in-toto-golang/in_toto/slsa_provenance/common.ProvenanceMaterial"
+  },
+  "[]github.com/in-toto/in-toto-golang/in_toto/slsa_provenance/v1.ResourceDescriptor": {
+   "kind": "slice",
+   "elem": "github.com/in-toto/in-toto-golang/in_toto/slsa_provenance/v1.ResourceDescriptor"
+  },
+  "[]github.com/moby/buildkit/solver/llbsolver/provenance/types.BuildStep": {
+   "kind": "slice",
+   "elem": "github.com/moby/buildkit/solver/llbsolver/provenance/types.BuildStep"
+  },
+  "[]github.com/moby/buildkit/solver/llbsolver/provenance/types.ProxyCaptureIncomplete": {
+   "kind": "slice",
+   "elem": "github.com/moby/buildkit/solver/llbsolver/provenance/types.ProxyCaptureIncomplete"
+  },
+  "[]github.com/moby/buildkit/solver/llbsolver/provenance/types.SourceInfo": {
+   "kind": "slice",
+   "elem": "github.com/moby/buildkit/solver/llbsolver/provenance/types.SourceInfo"
+  },
+  "[]github.com/opencontainers/image-spec/specs-go/v1.Descriptor": {
+   "kind": "slice",
+   "elem": "github.com/opencontainers/image-spec/specs-go/v1.Descriptor"
+  },
+  "encoding/json.RawMessage": {
+   "kind": "custom"
+  },
+  "github.com/docker/buildx/cmd/zz_shards_provenance.inTotoStatement": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "predicateType",
+     "type": ".string"
+    },
+    {
+     "name": "predicate",
+     "type": "encoding/json.RawMessage"
+    }
+   ]
+  },
+  "github.com/docker/buildx/cmd/zz_shards_provenance.jsonFileAction": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "input",
+     "type": "github.com/moby/buildkit/solver/pb.InputIndex"
+    },
+    {
+     "name": "secondaryInput",
+     "type": "github.com/moby/buildkit/solver/pb.InputIndex"
+    },
+    {
+     "name": "output",
+     "type": "github.com/moby/buildkit/solver/pb.OutputIndex"
+    },
+    {
+     "name": "Action",
+     "type": "struct { Copy *pb.FileActionCopy \"json:\\\"copy,omitempty\\\"\"; Mkfile *pb.FileActionMkFile \"json:\\\"mkfile,omitempty\\\"\"; Mkdir *pb.FileActionMkDir \"json:\\\"mkdir,omitempty\\\"\"; Rm *pb.FileActionRm \"json:\\\"rm,omitempty\\\"\" }"
+    }
+   ]
+  },
+  "github.com/docker/buildx/cmd/zz_shards_provenance.jsonOp": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "inputs",
+     "type": "[]*github.com/moby/buildkit/solver/pb.Input"
+    },
+    {
+     "name": "Op",
+     "type": "struct { Exec *pb.ExecOp \"json:\\\"exec,omitempty\\\"\"; Source *pb.SourceOp \"json:\\\"source,omitempty\\\"\"; File *pb.FileOp \"json:\\\"file,omitempty\\\"\"; Build *pb.BuildOp \"json:\\\"build,omitempty\\\"\"; Merge *pb.MergeOp \"json:\\\"merge,omitempty\\\"\"; Diff *pb.DiffOp \"json:\\\"diff,omitempty\\\"\"; Pass *pb.PassthroughOp \"json:\\\"passthrough,omitempty\\\"\" }"
+    },
+    {
+     "name": "platform",
+     "type": "*github.com/moby/buildkit/solver/pb.Platform"
+    },
+    {
+     "name": "constraints",
+     "type": "*github.com/moby/buildkit/solver/pb.WorkerConstraints"
+    }
+   ]
+  },
+  "github.com/docker/buildx/cmd/zz_shards_provenance.jsonUserOpt": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "User",
+     "type": "struct { ByName *pb.NamedUserOpt \"json:\\\"byName,omitempty\\\"\"; ByID uint32 \"json:\\\"byId,omitempty\\\"\" }"
+    }
+   ]
+  },
+  "github.com/in-toto/in-toto-golang/in_toto/slsa_provenance/common.DigestSet": {
+   "kind": "map",
+   "elem": ".string",
+   "key": "string"
+  },
+  "github.com/in-toto/in-toto-golang/in_toto/slsa_provenance/common.ProvenanceBuilder": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "id",
+     "type": ".string"
+    }
+   ]
+  },
+  "github.com/in-toto/in-toto-golang/in_toto/slsa_provenance/common.ProvenanceMaterial": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "uri",
+     "type": ".string"
+    },
+    {
+     "name": "digest",
+     "type": "github.com/in-toto/in-toto-golang/in_toto/slsa_provenance/common.DigestSet"
+    }
+   ]
+  },
+  "github.com/in-toto/in-toto-golang/in_toto/slsa_provenance/v0.2.ConfigSource": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "uri",
+     "type": ".string"
+    },
+    {
+     "name": "digest",
+     "type": "github.com/in-toto/in-toto-golang/in_toto/slsa_provenance/common.DigestSet"
+    },
+    {
+     "name": "entryPoint",
+     "type": ".string"
+    }
+   ]
+  },
+  "github.com/in-toto/in-toto-golang/in_toto/slsa_provenance/v0.2.ProvenanceComplete": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "parameters",
+     "type": ".bool"
+    },
+    {
+     "name": "environment",
+     "type": ".bool"
+    },
+    {
+     "name": "materials",
+     "type": ".bool"
+    }
+   ]
+  },
+  "github.com/in-toto/in-toto-golang/in_toto/slsa_provenance/v1.Builder": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "id",
+     "type": ".string"
+    },
+    {
+     "name": "version",
+     "type": "map[.string].string"
+    },
+    {
+     "name": "builderDependencies",
+     "type": "[]github.com/in-toto/in-toto-golang/in_toto/slsa_provenance/v1.ResourceDescriptor"
+    }
+   ]
+  },
+  "github.com/in-toto/in-toto-golang/in_toto/slsa_provenance/v1.ResourceDescriptor": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "uri",
+     "type": ".string"
+    },
+    {
+     "name": "digest",
+     "type": "github.com/in-toto/in-toto-golang/in_toto/slsa_provenance/common.DigestSet"
+    },
+    {
+     "name": "name",
+     "type": ".string"
+    },
+    {
+     "name": "downloadLocation",
+     "type": ".string"
+    },
+    {
+     "name": "mediaType",
+     "type": ".string"
+    },
+    {
+     "name": "content",
+     "type": "[].uint8"
+    },
+    {
+     "name": "annotations",
+     "type": "map[.string]interface {}"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/executor/resources/types.CPUStat": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "usageNanos",
+     "type": "*.uint64"
+    },
+    {
+     "name": "userNanos",
+     "type": "*.uint64"
+    },
+    {
+     "name": "systemNanos",
+     "type": "*.uint64"
+    },
+    {
+     "name": "nrPeriods",
+     "type": "*.uint32"
+    },
+    {
+     "name": "nrThrottled",
+     "type": "*.uint32"
+    },
+    {
+     "name": "throttledNanos",
+     "type": "*.uint64"
+    },
+    {
+     "name": "pressure",
+     "type": "*github.com/moby/buildkit/executor/resources/types.Pressure"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/executor/resources/types.IOStat": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "readBytes",
+     "type": "*.uint64"
+    },
+    {
+     "name": "writeBytes",
+     "type": "*.uint64"
+    },
+    {
+     "name": "discardBytes",
+     "type": "*.uint64"
+    },
+    {
+     "name": "readIOs",
+     "type": "*.uint64"
+    },
+    {
+     "name": "writeIOs",
+     "type": "*.uint64"
+    },
+    {
+     "name": "discardIOs",
+     "type": "*.uint64"
+    },
+    {
+     "name": "pressure",
+     "type": "*github.com/moby/buildkit/executor/resources/types.Pressure"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/executor/resources/types.MemoryStat": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "swapBytes",
+     "type": "*.uint64"
+    },
+    {
+     "name": "anon",
+     "type": "*.uint64"
+    },
+    {
+     "name": "file",
+     "type": "*.uint64"
+    },
+    {
+     "name": "kernel",
+     "type": "*.uint64"
+    },
+    {
+     "name": "kernelStack",
+     "type": "*.uint64"
+    },
+    {
+     "name": "pageTables",
+     "type": "*.uint64"
+    },
+    {
+     "name": "sock",
+     "type": "*.uint64"
+    },
+    {
+     "name": "vmalloc",
+     "type": "*.uint64"
+    },
+    {
+     "name": "shmem",
+     "type": "*.uint64"
+    },
+    {
+     "name": "fileMapped",
+     "type": "*.uint64"
+    },
+    {
+     "name": "fileDirty",
+     "type": "*.uint64"
+    },
+    {
+     "name": "fileWriteback",
+     "type": "*.uint64"
+    },
+    {
+     "name": "slab",
+     "type": "*.uint64"
+    },
+    {
+     "name": "pgscan",
+     "type": "*.uint64"
+    },
+    {
+     "name": "pgsteal",
+     "type": "*.uint64"
+    },
+    {
+     "name": "pgfault",
+     "type": "*.uint64"
+    },
+    {
+     "name": "pgmajfault",
+     "type": "*.uint64"
+    },
+    {
+     "name": "peak",
+     "type": "*.uint64"
+    },
+    {
+     "name": "lowEvents",
+     "type": ".uint64"
+    },
+    {
+     "name": "highEvents",
+     "type": ".uint64"
+    },
+    {
+     "name": "maxEvents",
+     "type": ".uint64"
+    },
+    {
+     "name": "oomEvents",
+     "type": ".uint64"
+    },
+    {
+     "name": "oomKillEvents",
+     "type": ".uint64"
+    },
+    {
+     "name": "pressure",
+     "type": "*github.com/moby/buildkit/executor/resources/types.Pressure"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/executor/resources/types.NetworkSample": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "rxBytes",
+     "type": ".int64"
+    },
+    {
+     "name": "rxPackets",
+     "type": ".int64"
+    },
+    {
+     "name": "rxErrors",
+     "type": ".int64"
+    },
+    {
+     "name": "rxDropped",
+     "type": ".int64"
+    },
+    {
+     "name": "txBytes",
+     "type": ".int64"
+    },
+    {
+     "name": "txPackets",
+     "type": ".int64"
+    },
+    {
+     "name": "txErrors",
+     "type": ".int64"
+    },
+    {
+     "name": "txDropped",
+     "type": ".int64"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/executor/resources/types.PIDsStat": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "current",
+     "type": "*.uint64"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/executor/resources/types.Pressure": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "some",
+     "type": "*github.com/moby/buildkit/executor/resources/types.PressureValues"
+    },
+    {
+     "name": "full",
+     "type": "*github.com/moby/buildkit/executor/resources/types.PressureValues"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/executor/resources/types.PressureValues": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "avg10",
+     "type": "*.float64"
+    },
+    {
+     "name": "avg60",
+     "type": "*.float64"
+    },
+    {
+     "name": "avg300",
+     "type": "*.float64"
+    },
+    {
+     "name": "total",
+     "type": "*.uint64"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/executor/resources/types.ProcStat": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "contextSwitches",
+     "type": ".uint64"
+    },
+    {
+     "name": "processCreated",
+     "type": ".uint64"
+    },
+    {
+     "name": "processesRunning",
+     "type": ".uint64"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/executor/resources/types.Sample": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "timestamp",
+     "type": "time.Time"
+    },
+    {
+     "name": "cpuStat",
+     "type": "*github.com/moby/buildkit/executor/resources/types.CPUStat"
+    },
+    {
+     "name": "memoryStat",
+     "type": "*github.com/moby/buildkit/executor/resources/types.MemoryStat"
+    },
+    {
+     "name": "ioStat",
+     "type": "*github.com/moby/buildkit/executor/resources/types.IOStat"
+    },
+    {
+     "name": "pidsStat",
+     "type": "*github.com/moby/buildkit/executor/resources/types.PIDsStat"
+    },
+    {
+     "name": "netStat",
+     "type": "*github.com/moby/buildkit/executor/resources/types.NetworkSample"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/executor/resources/types.Samples": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "samples",
+     "type": "[]*github.com/moby/buildkit/executor/resources/types.Sample"
+    },
+    {
+     "name": "sysCPUStat",
+     "type": "*github.com/moby/buildkit/executor/resources/types.SysCPUStat"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/executor/resources/types.SysCPUStat": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "user",
+     "type": ".float64"
+    },
+    {
+     "name": "nice",
+     "type": ".float64"
+    },
+    {
+     "name": "system",
+     "type": ".float64"
+    },
+    {
+     "name": "idle",
+     "type": ".float64"
+    },
+    {
+     "name": "iowait",
+     "type": ".float64"
+    },
+    {
+     "name": "irq",
+     "type": ".float64"
+    },
+    {
+     "name": "softirq",
+     "type": ".float64"
+    },
+    {
+     "name": "steal",
+     "type": ".float64"
+    },
+    {
+     "name": "guest",
+     "type": ".float64"
+    },
+    {
+     "name": "guestNice",
+     "type": ".float64"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/executor/resources/types.SysMemoryStat": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "total",
+     "type": "*.uint64"
+    },
+    {
+     "name": "free",
+     "type": "*.uint64"
+    },
+    {
+     "name": "available",
+     "type": "*.uint64"
+    },
+    {
+     "name": "buffers",
+     "type": "*.uint64"
+    },
+    {
+     "name": "cached",
+     "type": "*.uint64"
+    },
+    {
+     "name": "active",
+     "type": "*.uint64"
+    },
+    {
+     "name": "inactive",
+     "type": "*.uint64"
+    },
+    {
+     "name": "swap",
+     "type": "*.uint64"
+    },
+    {
+     "name": "dirty",
+     "type": "*.uint64"
+    },
+    {
+     "name": "writeback",
+     "type": "*.uint64"
+    },
+    {
+     "name": "slab",
+     "type": "*.uint64"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/executor/resources/types.SysSample": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "timestamp",
+     "type": "time.Time"
+    },
+    {
+     "name": "cpuStat",
+     "type": "*github.com/moby/buildkit/executor/resources/types.SysCPUStat"
+    },
+    {
+     "name": "procStat",
+     "type": "*github.com/moby/buildkit/executor/resources/types.ProcStat"
+    },
+    {
+     "name": "memoryStat",
+     "type": "*github.com/moby/buildkit/executor/resources/types.SysMemoryStat"
+    },
+    {
+     "name": "cpuPressure",
+     "type": "*github.com/moby/buildkit/executor/resources/types.Pressure"
+    },
+    {
+     "name": "memoryPressure",
+     "type": "*github.com/moby/buildkit/executor/resources/types.Pressure"
+    },
+    {
+     "name": "ioPressure",
+     "type": "*github.com/moby/buildkit/executor/resources/types.Pressure"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/solver/llbsolver/provenance/types.BuildConfig": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "llbDefinition",
+     "type": "[]github.com/moby/buildkit/solver/llbsolver/provenance/types.BuildStep"
+    },
+    {
+     "name": "digestMapping",
+     "type": "map[github.com/opencontainers/go-digest.Digest].string"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/solver/llbsolver/provenance/types.BuildKitComplete": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "request",
+     "type": ".bool"
+    },
+    {
+     "name": "resolvedDependencies",
+     "type": ".bool"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/solver/llbsolver/provenance/types.BuildKitMetadata": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "vcs",
+     "type": "map[.string].string"
+    },
+    {
+     "name": "source",
+     "type": "*github.com/moby/buildkit/solver/llbsolver/provenance/types.Source"
+    },
+    {
+     "name": "layers",
+     "type": "map[.string][][]github.com/opencontainers/image-spec/specs-go/v1.Descriptor"
+    },
+    {
+     "name": "sysUsage",
+     "type": "[]*github.com/moby/buildkit/executor/resources/types.SysSample"
+    },
+    {
+     "name": "network",
+     "type": "*github.com/moby/buildkit/solver/llbsolver/provenance/types.NetworkMetadata"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/solver/llbsolver/provenance/types.BuildStep": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "id",
+     "type": ".string"
+    },
+    {
+     "name": "op",
+     "type": "*github.com/moby/buildkit/solver/pb.Op"
+    },
+    {
+     "name": "inputs",
+     "type": "[].string"
+    },
+    {
+     "name": "resourceUsage",
+     "type": "*github.com/moby/buildkit/executor/resources/types.Samples"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/solver/llbsolver/provenance/types.Environment": {
+   "kind": "custom",
+   "fields": [
+    {
+     "name": "platform",
+     "type": ".string"
+    },
+    {
+     "name": "dockerfileVersion",
+     "type": ".string"
+    },
+    {
+     "name": "ProvenanceCustomEnv",
+     "type": "github.com/moby/buildkit/solver/llbsolver/provenance/types.ProvenanceCustomEnv"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/solver/llbsolver/provenance/types.LocalSource": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "name",
+     "type": ".string"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/solver/llbsolver/provenance/types.NetworkMetadata": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "mode",
+     "type": ".string"
+    },
+    {
+     "name": "proxy",
+     "type": "*github.com/moby/buildkit/solver/llbsolver/provenance/types.ProxyNetworkMetadata"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/solver/llbsolver/provenance/types.Parameters": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "frontend",
+     "type": ".string"
+    },
+    {
+     "name": "args",
+     "type": "map[.string].string"
+    },
+    {
+     "name": "secrets",
+     "type": "[]*github.com/moby/buildkit/solver/llbsolver/provenance/types.Secret"
+    },
+    {
+     "name": "ssh",
+     "type": "[]*github.com/moby/buildkit/solver/llbsolver/provenance/types.SSH"
+    },
+    {
+     "name": "locals",
+     "type": "[]*github.com/moby/buildkit/solver/llbsolver/provenance/types.LocalSource"
+    },
+    {
+     "name": "inputs",
+     "type": "map[.string]*github.com/moby/buildkit/solver/llbsolver/provenance/types.RequestProvenance"
+    },
+    {
+     "name": "root",
+     "type": "*github.com/moby/buildkit/solver/llbsolver/provenance/types.RequestProvenance"
+    },
+    {
+     "name": "compatibilityVersion",
+     "type": ".int"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/solver/llbsolver/provenance/types.ProvenanceBuildDefinitionSLSA1": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "buildType",
+     "type": ".string"
+    },
+    {
+     "name": "resolvedDependencies",
+     "type": "[]github.com/in-toto/in-toto-golang/in_toto/slsa_provenance/v1.ResourceDescriptor"
+    },
+    {
+     "name": "externalParameters",
+     "type": "github.com/moby/buildkit/solver/llbsolver/provenance/types.ProvenanceExternalParametersSLSA1"
+    },
+    {
+     "name": "internalParameters",
+     "type": "github.com/moby/buildkit/solver/llbsolver/provenance/types.ProvenanceInternalParametersSLSA1"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/solver/llbsolver/provenance/types.ProvenanceConfigSourceSLSA1": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "uri",
+     "type": ".string"
+    },
+    {
+     "name": "digest",
+     "type": "github.com/in-toto/in-toto-golang/in_toto/slsa_provenance/common.DigestSet"
+    },
+    {
+     "name": "path",
+     "type": ".string"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/solver/llbsolver/provenance/types.ProvenanceCustomEnv": {
+   "kind": "map",
+   "elem": "interface {}",
+   "key": "string"
+  },
+  "github.com/moby/buildkit/solver/llbsolver/provenance/types.ProvenanceExternalParametersSLSA1": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "configSource",
+     "type": "github.com/moby/buildkit/solver/llbsolver/provenance/types.ProvenanceConfigSourceSLSA1"
+    },
+    {
+     "name": "request",
+     "type": "github.com/moby/buildkit/solver/llbsolver/provenance/types.Parameters"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/solver/llbsolver/provenance/types.ProvenanceInternalParametersSLSA1": {
+   "kind": "custom",
+   "fields": [
+    {
+     "name": "buildConfig",
+     "type": "*github.com/moby/buildkit/solver/llbsolver/provenance/types.BuildConfig"
+    },
+    {
+     "name": "builderPlatform",
+     "type": ".string"
+    },
+    {
+     "name": "dockerfileVersion",
+     "type": ".string"
+    },
+    {
+     "name": "ProvenanceCustomEnv",
+     "type": "github.com/moby/buildkit/solver/llbsolver/provenance/types.ProvenanceCustomEnv"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/solver/llbsolver/provenance/types.ProvenanceInvocationSLSA02": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "configSource",
+     "type": "github.com/in-toto/in-toto-golang/in_toto/slsa_provenance/v0.2.ConfigSource"
+    },
+    {
+     "name": "parameters",
+     "type": "github.com/moby/buildkit/solver/llbsolver/provenance/types.Parameters"
+    },
+    {
+     "name": "environment",
+     "type": "github.com/moby/buildkit/solver/llbsolver/provenance/types.Environment"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/solver/llbsolver/provenance/types.ProvenanceMetadataSLSA02": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "buildInvocationID",
+     "type": ".string"
+    },
+    {
+     "name": "buildStartedOn",
+     "type": "*time.Time"
+    },
+    {
+     "name": "buildFinishedOn",
+     "type": "*time.Time"
+    },
+    {
+     "name": "completeness",
+     "type": "github.com/in-toto/in-toto-golang/in_toto/slsa_provenance/v0.2.ProvenanceComplete"
+    },
+    {
+     "name": "reproducible",
+     "type": ".bool"
+    },
+    {
+     "name": "https://mobyproject.org/buildkit@v1#metadata",
+     "type": "github.com/moby/buildkit/solver/llbsolver/provenance/types.BuildKitMetadata"
+    },
+    {
+     "name": "https://mobyproject.org/buildkit@v1#hermetic",
+     "type": ".bool"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/solver/llbsolver/provenance/types.ProvenanceMetadataSLSA1": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "invocationId",
+     "type": ".string"
+    },
+    {
+     "name": "startedOn",
+     "type": "*time.Time"
+    },
+    {
+     "name": "finishedOn",
+     "type": "*time.Time"
+    },
+    {
+     "name": "buildkit_metadata",
+     "type": "github.com/moby/buildkit/solver/llbsolver/provenance/types.BuildKitMetadata"
+    },
+    {
+     "name": "buildkit_hermetic",
+     "type": ".bool"
+    },
+    {
+     "name": "buildkit_completeness",
+     "type": "github.com/moby/buildkit/solver/llbsolver/provenance/types.BuildKitComplete"
+    },
+    {
+     "name": "buildkit_reproducible",
+     "type": ".bool"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/solver/llbsolver/provenance/types.ProvenancePredicateSLSA02": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "builder",
+     "type": "github.com/in-toto/in-toto-golang/in_toto/slsa_provenance/common.ProvenanceBuilder"
+    },
+    {
+     "name": "buildType",
+     "type": ".string"
+    },
+    {
+     "name": "materials",
+     "type": "[]github.com/in-toto/in-toto-golang/in_toto/slsa_provenance/common.ProvenanceMaterial"
+    },
+    {
+     "name": "invocation",
+     "type": "github.com/moby/buildkit/solver/llbsolver/provenance/types.ProvenanceInvocationSLSA02"
+    },
+    {
+     "name": "buildConfig",
+     "type": "*github.com/moby/buildkit/solver/llbsolver/provenance/types.BuildConfig"
+    },
+    {
+     "name": "metadata",
+     "type": "*github.com/moby/buildkit/solver/llbsolver/provenance/types.ProvenanceMetadataSLSA02"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/solver/llbsolver/provenance/types.ProvenancePredicateSLSA1": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "buildDefinition",
+     "type": "github.com/moby/buildkit/solver/llbsolver/provenance/types.ProvenanceBuildDefinitionSLSA1"
+    },
+    {
+     "name": "runDetails",
+     "type": "github.com/moby/buildkit/solver/llbsolver/provenance/types.ProvenanceRunDetailsSLSA1"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/solver/llbsolver/provenance/types.ProvenanceRunDetailsSLSA1": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "builder",
+     "type": "github.com/in-toto/in-toto-golang/in_toto/slsa_provenance/v1.Builder"
+    },
+    {
+     "name": "byproducts",
+     "type": "[]github.com/in-toto/in-toto-golang/in_toto/slsa_provenance/v1.ResourceDescriptor"
+    },
+    {
+     "name": "metadata",
+     "type": "*github.com/moby/buildkit/solver/llbsolver/provenance/types.ProvenanceMetadataSLSA1"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/solver/llbsolver/provenance/types.ProxyCaptureIncomplete": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "op",
+     "type": ".string"
+    },
+    {
+     "name": "name",
+     "type": ".string"
+    },
+    {
+     "name": "method",
+     "type": ".string"
+    },
+    {
+     "name": "uri",
+     "type": ".string"
+    },
+    {
+     "name": "finalUri",
+     "type": ".string"
+    },
+    {
+     "name": "reason",
+     "type": ".string"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/solver/llbsolver/provenance/types.ProxyNetworkMetadata": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "incomplete",
+     "type": "[]github.com/moby/buildkit/solver/llbsolver/provenance/types.ProxyCaptureIncomplete"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/solver/llbsolver/provenance/types.RequestProvenance": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "configSource",
+     "type": "github.com/moby/buildkit/solver/llbsolver/provenance/types.ProvenanceConfigSourceSLSA1"
+    },
+    {
+     "name": "request",
+     "type": "*github.com/moby/buildkit/solver/llbsolver/provenance/types.Parameters"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/solver/llbsolver/provenance/types.SSH": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "id",
+     "type": ".string"
+    },
+    {
+     "name": "optional",
+     "type": ".bool"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/solver/llbsolver/provenance/types.Secret": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "id",
+     "type": ".string"
+    },
+    {
+     "name": "optional",
+     "type": ".bool"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/solver/llbsolver/provenance/types.Source": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "locations",
+     "type": "map[.string]*github.com/moby/buildkit/solver/pb.Locations"
+    },
+    {
+     "name": "infos",
+     "type": "[]github.com/moby/buildkit/solver/llbsolver/provenance/types.SourceInfo"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/solver/llbsolver/provenance/types.SourceInfo": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "filename",
+     "type": ".string"
+    },
+    {
+     "name": "language",
+     "type": ".string"
+    },
+    {
+     "name": "data",
+     "type": "[].uint8"
+    },
+    {
+     "name": "llbDefinition",
+     "type": "[]github.com/moby/buildkit/solver/llbsolver/provenance/types.BuildStep"
+    },
+    {
+     "name": "digestMapping",
+     "type": "map[github.com/opencontainers/go-digest.Digest].string"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/solver/pb.BuildInput": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "input",
+     "type": ".int64"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/solver/pb.BuildOp": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "builder",
+     "type": ".int64"
+    },
+    {
+     "name": "inputs",
+     "type": "map[.string]*github.com/moby/buildkit/solver/pb.BuildInput"
+    },
+    {
+     "name": "def",
+     "type": "*github.com/moby/buildkit/solver/pb.Definition"
+    },
+    {
+     "name": "attrs",
+     "type": "map[.string].string"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/solver/pb.CDIDevice": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "name",
+     "type": ".string"
+    },
+    {
+     "name": "optional",
+     "type": ".bool"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/solver/pb.CacheOpt": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "ID",
+     "type": ".string"
+    },
+    {
+     "name": "sharing",
+     "type": "github.com/moby/buildkit/solver/pb.CacheSharingOpt"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/solver/pb.CacheSharingOpt": {
+   "kind": "int",
+   "bits": 32
+  },
+  "github.com/moby/buildkit/solver/pb.ChownOpt": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "user",
+     "type": "*github.com/moby/buildkit/solver/pb.UserOpt"
+    },
+    {
+     "name": "group",
+     "type": "*github.com/moby/buildkit/solver/pb.UserOpt"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/solver/pb.Definition": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "def",
+     "type": "[][].uint8"
+    },
+    {
+     "name": "metadata",
+     "type": "map[.string]*github.com/moby/buildkit/solver/pb.OpMetadata"
+    },
+    {
+     "name": "Source",
+     "type": "*github.com/moby/buildkit/solver/pb.Source"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/solver/pb.DiffOp": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "lower",
+     "type": "*github.com/moby/buildkit/solver/pb.LowerDiffInput"
+    },
+    {
+     "name": "upper",
+     "type": "*github.com/moby/buildkit/solver/pb.UpperDiffInput"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/solver/pb.ExecOp": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "meta",
+     "type": "*github.com/moby/buildkit/solver/pb.Meta"
+    },
+    {
+     "name": "mounts",
+     "type": "[]*github.com/moby/buildkit/solver/pb.Mount"
+    },
+    {
+     "name": "network",
+     "type": "github.com/moby/buildkit/solver/pb.NetMode"
+    },
+    {
+     "name": "security",
+     "type": "github.com/moby/buildkit/solver/pb.SecurityMode"
+    },
+    {
+     "name": "secretenv",
+     "type": "[]*github.com/moby/buildkit/solver/pb.SecretEnv"
+    },
+    {
+     "name": "cdiDevices",
+     "type": "[]*github.com/moby/buildkit/solver/pb.CDIDevice"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/solver/pb.ExportCache": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "Value",
+     "type": ".bool"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/solver/pb.FileAction": {
+   "kind": "custom",
+   "fields": [
+    {
+     "name": "input",
+     "type": ".int64"
+    },
+    {
+     "name": "secondaryInput",
+     "type": ".int64"
+    },
+    {
+     "name": "output",
+     "type": ".int64"
+    },
+    {
+     "name": "Action",
+     "type": "github.com/moby/buildkit/solver/pb.isFileAction_Action"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/solver/pb.FileActionCopy": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "src",
+     "type": ".string"
+    },
+    {
+     "name": "dest",
+     "type": ".string"
+    },
+    {
+     "name": "owner",
+     "type": "*github.com/moby/buildkit/solver/pb.ChownOpt"
+    },
+    {
+     "name": "mode",
+     "type": ".int32"
+    },
+    {
+     "name": "followSymlink",
+     "type": ".bool"
+    },
+    {
+     "name": "dirCopyContents",
+     "type": ".bool"
+    },
+    {
+     "name": "attemptUnpackDockerCompatibility",
+     "type": ".bool"
+    },
+    {
+     "name": "createDestPath",
+     "type": ".bool"
+    },
+    {
+     "name": "allowWildcard",
+     "type": ".bool"
+    },
+    {
+     "name": "allowEmptyWildcard",
+     "type": ".bool"
+    },
+    {
+     "name": "timestamp",
+     "type": ".int64"
+    },
+    {
+     "name": "include_patterns",
+     "type": "[].string"
+    },
+    {
+     "name": "exclude_patterns",
+     "type": "[].string"
+    },
+    {
+     "name": "alwaysReplaceExistingDestPaths",
+     "type": ".bool"
+    },
+    {
+     "name": "modeStr",
+     "type": ".string"
+    },
+    {
+     "name": "required_paths",
+     "type": "[].string"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/solver/pb.FileActionMkDir": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "path",
+     "type": ".string"
+    },
+    {
+     "name": "mode",
+     "type": ".int32"
+    },
+    {
+     "name": "makeParents",
+     "type": ".bool"
+    },
+    {
+     "name": "owner",
+     "type": "*github.com/moby/buildkit/solver/pb.ChownOpt"
+    },
+    {
+     "name": "timestamp",
+     "type": ".int64"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/solver/pb.FileActionMkFile": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "path",
+     "type": ".string"
+    },
+    {
+     "name": "mode",
+     "type": ".int32"
+    },
+    {
+     "name": "data",
+     "type": "[].uint8"
+    },
+    {
+     "name": "owner",
+     "type": "*github.com/moby/buildkit/solver/pb.ChownOpt"
+    },
+    {
+     "name": "timestamp",
+     "type": ".int64"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/solver/pb.FileActionRm": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "path",
+     "type": ".string"
+    },
+    {
+     "name": "allowNotFound",
+     "type": ".bool"
+    },
+    {
+     "name": "allowWildcard",
+     "type": ".bool"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/solver/pb.FileOp": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "actions",
+     "type": "[]*github.com/moby/buildkit/solver/pb.FileAction"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/solver/pb.HostIP": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "Host",
+     "type": ".string"
+    },
+    {
+     "name": "IP",
+     "type": ".string"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/solver/pb.Input": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "digest",
+     "type": ".string"
+    },
+    {
+     "name": "index",
+     "type": ".int64"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/solver/pb.InputIndex": {
+   "kind": "int",
+   "bits": 64
+  },
+  "github.com/moby/buildkit/solver/pb.LinuxResources": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "memory",
+     "type": ".int64"
+    },
+    {
+     "name": "memorySwap",
+     "type": ".int64"
+    },
+    {
+     "name": "cpuShares",
+     "type": ".uint64"
+    },
+    {
+     "name": "cpuPeriod",
+     "type": ".uint64"
+    },
+    {
+     "name": "cpuQuota",
+     "type": ".int64"
+    },
+    {
+     "name": "cpusetCpus",
+     "type": ".string"
+    },
+    {
+     "name": "cpusetMems",
+     "type": ".string"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/solver/pb.Location": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "sourceIndex",
+     "type": ".int32"
+    },
+    {
+     "name": "ranges",
+     "type": "[]*github.com/moby/buildkit/solver/pb.Range"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/solver/pb.Locations": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "locations",
+     "type": "[]*github.com/moby/buildkit/solver/pb.Location"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/solver/pb.LowerDiffInput": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "input",
+     "type": ".int64"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/solver/pb.MergeInput": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "input",
+     "type": ".int64"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/solver/pb.MergeOp": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "inputs",
+     "type": "[]*github.com/moby/buildkit/solver/pb.MergeInput"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/solver/pb.Meta": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "args",
+     "type": "[].string"
+    },
+    {
+     "name": "env",
+     "type": "[].string"
+    },
+    {
+     "name": "cwd",
+     "type": ".string"
+    },
+    {
+     "name": "user",
+     "type": ".string"
+    },
+    {
+     "name": "proxy_env",
+     "type": "*github.com/moby/buildkit/solver/pb.ProxyEnv"
+    },
+    {
+     "name": "extraHosts",
+     "type": "[]*github.com/moby/buildkit/solver/pb.HostIP"
+    },
+    {
+     "name": "hostname",
+     "type": ".string"
+    },
+    {
+     "name": "ulimit",
+     "type": "[]*github.com/moby/buildkit/solver/pb.Ulimit"
+    },
+    {
+     "name": "cgroupParent",
+     "type": ".string"
+    },
+    {
+     "name": "removeMountStubsRecursive",
+     "type": ".bool"
+    },
+    {
+     "name": "validExitCodes",
+     "type": "[].int32"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/solver/pb.Mount": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "input",
+     "type": ".int64"
+    },
+    {
+     "name": "selector",
+     "type": ".string"
+    },
+    {
+     "name": "dest",
+     "type": ".string"
+    },
+    {
+     "name": "output",
+     "type": ".int64"
+    },
+    {
+     "name": "readonly",
+     "type": ".bool"
+    },
+    {
+     "name": "mountType",
+     "type": "github.com/moby/buildkit/solver/pb.MountType"
+    },
+    {
+     "name": "TmpfsOpt",
+     "type": "*github.com/moby/buildkit/solver/pb.TmpfsOpt"
+    },
+    {
+     "name": "cacheOpt",
+     "type": "*github.com/moby/buildkit/solver/pb.CacheOpt"
+    },
+    {
+     "name": "secretOpt",
+     "type": "*github.com/moby/buildkit/solver/pb.SecretOpt"
+    },
+    {
+     "name": "SSHOpt",
+     "type": "*github.com/moby/buildkit/solver/pb.SSHOpt"
+    },
+    {
+     "name": "resultID",
+     "type": ".string"
+    },
+    {
+     "name": "contentCache",
+     "type": "github.com/moby/buildkit/solver/pb.MountContentCache"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/solver/pb.MountContentCache": {
+   "kind": "int",
+   "bits": 32
+  },
+  "github.com/moby/buildkit/solver/pb.MountType": {
+   "kind": "int",
+   "bits": 32
+  },
+  "github.com/moby/buildkit/solver/pb.NamedUserOpt": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "name",
+     "type": ".string"
+    },
+    {
+     "name": "input",
+     "type": ".int64"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/solver/pb.NetMode": {
+   "kind": "int",
+   "bits": 32
+  },
+  "github.com/moby/buildkit/solver/pb.Op": {
+   "kind": "custom",
+   "fields": [
+    {
+     "name": "inputs",
+     "type": "[]*github.com/moby/buildkit/solver/pb.Input"
+    },
+    {
+     "name": "Op",
+     "type": "github.com/moby/buildkit/solver/pb.isOp_Op"
+    },
+    {
+     "name": "platform",
+     "type": "*github.com/moby/buildkit/solver/pb.Platform"
+    },
+    {
+     "name": "constraints",
+     "type": "*github.com/moby/buildkit/solver/pb.WorkerConstraints"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/solver/pb.OpMetadata": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "ignore_cache",
+     "type": ".bool"
+    },
+    {
+     "name": "description",
+     "type": "map[.string].string"
+    },
+    {
+     "name": "export_cache",
+     "type": "*github.com/moby/buildkit/solver/pb.ExportCache"
+    },
+    {
+     "name": "caps",
+     "type": "map[.string].bool"
+    },
+    {
+     "name": "progress_group",
+     "type": "*github.com/moby/buildkit/solver/pb.ProgressGroup"
+    },
+    {
+     "name": "linux_resources",
+     "type": "*github.com/moby/buildkit/solver/pb.LinuxResources"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/solver/pb.OutputIndex": {
+   "kind": "int",
+   "bits": 64
+  },
+  "github.com/moby/buildkit/solver/pb.PassthroughOp": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "id",
+     "type": ".string"
+    },
+    {
+     "name": "outputs",
+     "type": "[].int64"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/solver/pb.Platform": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "Architecture",
+     "type": ".string"
+    },
+    {
+     "name": "OS",
+     "type": ".string"
+    },
+    {
+     "name": "Variant",
+     "type": ".string"
+    },
+    {
+     "name": "OSVersion",
+     "type": ".string"
+    },
+    {
+     "name": "OSFeatures",
+     "type": "[].string"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/solver/pb.Position": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "line",
+     "type": ".int32"
+    },
+    {
+     "name": "character",
+     "type": ".int32"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/solver/pb.ProgressGroup": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "id",
+     "type": ".string"
+    },
+    {
+     "name": "name",
+     "type": ".string"
+    },
+    {
+     "name": "weak",
+     "type": ".bool"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/solver/pb.ProxyEnv": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "http_proxy",
+     "type": ".string"
+    },
+    {
+     "name": "https_proxy",
+     "type": ".string"
+    },
+    {
+     "name": "ftp_proxy",
+     "type": ".string"
+    },
+    {
+     "name": "no_proxy",
+     "type": ".string"
+    },
+    {
+     "name": "all_proxy",
+     "type": ".string"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/solver/pb.Range": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "start",
+     "type": "*github.com/moby/buildkit/solver/pb.Position"
+    },
+    {
+     "name": "end",
+     "type": "*github.com/moby/buildkit/solver/pb.Position"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/solver/pb.SSHOpt": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "ID",
+     "type": ".string"
+    },
+    {
+     "name": "uid",
+     "type": ".uint32"
+    },
+    {
+     "name": "gid",
+     "type": ".uint32"
+    },
+    {
+     "name": "mode",
+     "type": ".uint32"
+    },
+    {
+     "name": "optional",
+     "type": ".bool"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/solver/pb.SecretEnv": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "ID",
+     "type": ".string"
+    },
+    {
+     "name": "name",
+     "type": ".string"
+    },
+    {
+     "name": "optional",
+     "type": ".bool"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/solver/pb.SecretOpt": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "ID",
+     "type": ".string"
+    },
+    {
+     "name": "uid",
+     "type": ".uint32"
+    },
+    {
+     "name": "gid",
+     "type": ".uint32"
+    },
+    {
+     "name": "mode",
+     "type": ".uint32"
+    },
+    {
+     "name": "optional",
+     "type": ".bool"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/solver/pb.SecurityMode": {
+   "kind": "int",
+   "bits": 32
+  },
+  "github.com/moby/buildkit/solver/pb.Source": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "locations",
+     "type": "map[.string]*github.com/moby/buildkit/solver/pb.Locations"
+    },
+    {
+     "name": "infos",
+     "type": "[]*github.com/moby/buildkit/solver/pb.SourceInfo"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/solver/pb.SourceInfo": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "filename",
+     "type": ".string"
+    },
+    {
+     "name": "data",
+     "type": "[].uint8"
+    },
+    {
+     "name": "definition",
+     "type": "*github.com/moby/buildkit/solver/pb.Definition"
+    },
+    {
+     "name": "language",
+     "type": ".string"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/solver/pb.SourceOp": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "identifier",
+     "type": ".string"
+    },
+    {
+     "name": "attrs",
+     "type": "map[.string].string"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/solver/pb.TmpfsOpt": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "size",
+     "type": ".int64"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/solver/pb.Ulimit": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "Name",
+     "type": ".string"
+    },
+    {
+     "name": "Soft",
+     "type": ".int64"
+    },
+    {
+     "name": "Hard",
+     "type": ".int64"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/solver/pb.UpperDiffInput": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "input",
+     "type": ".int64"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/solver/pb.UserOpt": {
+   "kind": "custom",
+   "fields": [
+    {
+     "name": "User",
+     "type": "github.com/moby/buildkit/solver/pb.isUserOpt_User"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/solver/pb.WorkerConstraints": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "filter",
+     "type": "[].string"
+    }
+   ]
+  },
+  "github.com/moby/buildkit/solver/pb.isFileAction_Action": {
+   "kind": "iface"
+  },
+  "github.com/moby/buildkit/solver/pb.isOp_Op": {
+   "kind": "iface"
+  },
+  "github.com/moby/buildkit/solver/pb.isUserOpt_User": {
+   "kind": "iface"
+  },
+  "github.com/opencontainers/go-digest.Digest": {
+   "kind": "string"
+  },
+  "github.com/opencontainers/image-spec/specs-go/v1.Descriptor": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "mediaType",
+     "type": ".string"
+    },
+    {
+     "name": "digest",
+     "type": "github.com/opencontainers/go-digest.Digest"
+    },
+    {
+     "name": "size",
+     "type": ".int64"
+    },
+    {
+     "name": "urls",
+     "type": "[].string"
+    },
+    {
+     "name": "annotations",
+     "type": "map[.string].string"
+    },
+    {
+     "name": "data",
+     "type": "[].uint8"
+    },
+    {
+     "name": "platform",
+     "type": "*github.com/opencontainers/image-spec/specs-go/v1.Platform"
+    },
+    {
+     "name": "artifactType",
+     "type": ".string"
+    }
+   ]
+  },
+  "github.com/opencontainers/image-spec/specs-go/v1.Platform": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "architecture",
+     "type": ".string"
+    },
+    {
+     "name": "os",
+     "type": ".string"
+    },
+    {
+     "name": "os.version",
+     "type": ".string"
+    },
+    {
+     "name": "os.features",
+     "type": "[].string"
+    },
+    {
+     "name": "variant",
+     "type": ".string"
+    }
+   ]
+  },
+  "interface {}": {
+   "kind": "any"
+  },
+  "map[.string]*github.com/moby/buildkit/solver/llbsolver/provenance/types.RequestProvenance": {
+   "kind": "map",
+   "elem": "*github.com/moby/buildkit/solver/llbsolver/provenance/types.RequestProvenance",
+   "key": "string"
+  },
+  "map[.string]*github.com/moby/buildkit/solver/pb.BuildInput": {
+   "kind": "map",
+   "elem": "*github.com/moby/buildkit/solver/pb.BuildInput",
+   "key": "string"
+  },
+  "map[.string]*github.com/moby/buildkit/solver/pb.Locations": {
+   "kind": "map",
+   "elem": "*github.com/moby/buildkit/solver/pb.Locations",
+   "key": "string"
+  },
+  "map[.string]*github.com/moby/buildkit/solver/pb.OpMetadata": {
+   "kind": "map",
+   "elem": "*github.com/moby/buildkit/solver/pb.OpMetadata",
+   "key": "string"
+  },
+  "map[.string].bool": {
+   "kind": "map",
+   "elem": ".bool",
+   "key": "string"
+  },
+  "map[.string].string": {
+   "kind": "map",
+   "elem": ".string",
+   "key": "string"
+  },
+  "map[.string][][]github.com/opencontainers/image-spec/specs-go/v1.Descriptor": {
+   "kind": "map",
+   "elem": "[][]github.com/opencontainers/image-spec/specs-go/v1.Descriptor",
+   "key": "string"
+  },
+  "map[.string]interface {}": {
+   "kind": "map",
+   "elem": "interface {}",
+   "key": "string"
+  },
+  "map[github.com/opencontainers/go-digest.Digest].string": {
+   "kind": "map",
+   "elem": ".string",
+   "key": "string"
+  },
+  "struct { ByName *pb.NamedUserOpt \"json:\\\"byName,omitempty\\\"\"; ByID uint32 \"json:\\\"byId,omitempty\\\"\" }": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "byName",
+     "type": "*github.com/moby/buildkit/solver/pb.NamedUserOpt"
+    },
+    {
+     "name": "byId",
+     "type": ".uint32"
+    }
+   ]
+  },
+  "struct { Copy *pb.FileActionCopy \"json:\\\"copy,omitempty\\\"\"; Mkfile *pb.FileActionMkFile \"json:\\\"mkfile,omitempty\\\"\"; Mkdir *pb.FileActionMkDir \"json:\\\"mkdir,omitempty\\\"\"; Rm *pb.FileActionRm \"json:\\\"rm,omitempty\\\"\" }": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "copy",
+     "type": "*github.com/moby/buildkit/solver/pb.FileActionCopy"
+    },
+    {
+     "name": "mkfile",
+     "type": "*github.com/moby/buildkit/solver/pb.FileActionMkFile"
+    },
+    {
+     "name": "mkdir",
+     "type": "*github.com/moby/buildkit/solver/pb.FileActionMkDir"
+    },
+    {
+     "name": "rm",
+     "type": "*github.com/moby/buildkit/solver/pb.FileActionRm"
+    }
+   ]
+  },
+  "struct { Exec *pb.ExecOp \"json:\\\"exec,omitempty\\\"\"; Source *pb.SourceOp \"json:\\\"source,omitempty\\\"\"; File *pb.FileOp \"json:\\\"file,omitempty\\\"\"; Build *pb.BuildOp \"json:\\\"build,omitempty\\\"\"; Merge *pb.MergeOp \"json:\\\"merge,omitempty\\\"\"; Diff *pb.DiffOp \"json:\\\"diff,omitempty\\\"\"; Pass *pb.PassthroughOp \"json:\\\"passthrough,omitempty\\\"\" }": {
+   "kind": "struct",
+   "fields": [
+    {
+     "name": "exec",
+     "type": "*github.com/moby/buildkit/solver/pb.ExecOp"
+    },
+    {
+     "name": "source",
+     "type": "*github.com/moby/buildkit/solver/pb.SourceOp"
+    },
+    {
+     "name": "file",
+     "type": "*github.com/moby/buildkit/solver/pb.FileOp"
+    },
+    {
+     "name": "build",
+     "type": "*github.com/moby/buildkit/solver/pb.BuildOp"
+    },
+    {
+     "name": "merge",
+     "type": "*github.com/moby/buildkit/solver/pb.MergeOp"
+    },
+    {
+     "name": "diff",
+     "type": "*github.com/moby/buildkit/solver/pb.DiffOp"
+    },
+    {
+     "name": "passthrough",
+     "type": "*github.com/moby/buildkit/solver/pb.PassthroughOp"
+    }
+   ]
+  },
+  "time.Time": {
+   "kind": "custom"
+  }
+ }
+}

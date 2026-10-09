@@ -132,6 +132,15 @@ fn online<'f>(cache: &Path, fetch: &'f dyn Fetch, now: (i64, u32)) -> Result<Upd
     Ok(u)
 }
 
+/// Where the trusted root failed, as policy-helpers words it: the provider not started
+/// (NewTrustProvider, "loading trust provider") or its target not read (TrustedRoot,
+/// "getting trusted root").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stage {
+    Provider,
+    Root,
+}
+
 /// TrustProvider.TrustedRoot: `trusted_root.json` from Sigstore's repository by way of
 /// the cache under `cache_path` (the state directory's `tuf`), and how it was had. As the
 /// provider starts: the cache, or the repository, or failing both the cache offline;
@@ -142,26 +151,30 @@ pub fn trusted_root(
     cache_path: &Path,
     fetch: &dyn Fetch,
     now: (i64, u32),
-) -> (Result<Vec<u8>, Error>, Status) {
+) -> (Result<Vec<u8>, (Stage, Error)>, Status) {
     let cache = cache_path.join(url_to_path(SIGSTORE));
     let mut status = Status::default();
     if let Err(e) = std::fs::create_dir_all(&cache) {
         return (
-            Err(Error::Io(format!(
-                "creating cache directory for trust provider: {e}"
-            ))),
+            Err((
+                Stage::Provider,
+                Error::Io(format!("creating cache directory for trust provider: {e}")),
+            )),
             status,
         );
     }
     let _lock = match lock(cache_path) {
         Ok(l) => l,
-        Err(e) => return (Err(e), status),
+        Err(e) => return (Err((Stage::Provider, e)), status),
     };
     if let Err(e) = seed(&cache) {
         return (
-            Err(Error::Io(format!(
-                "initializing cache directory for trust provider with embedded root: {e}"
-            ))),
+            Err((
+                Stage::Provider,
+                Error::Io(format!(
+                    "initializing cache directory for trust provider with embedded root: {e}"
+                )),
+            )),
             status,
         );
     }
@@ -176,7 +189,7 @@ pub fn trusted_root(
         Ok(u) => u,
         Err(_) => match client(&cache, &off, now) {
             Ok(u) => u,
-            Err(e) => return (Err(e), status),
+            Err(e) => return (Err((Stage::Provider, e)), status),
         },
     };
     let mut current = match client(&cache, &on, now).and_then(|_| online(&cache, &on, now)) {
@@ -193,9 +206,10 @@ pub fn trusted_root(
         Ok(t) => t,
         Err(e) => {
             return (
-                Err(Error::Other(format!(
-                    "getting info for target \"trusted_root.json\": {e}"
-                ))),
+                Err((
+                    Stage::Root,
+                    Error::Other(format!("getting info for target \"trusted_root.json\": {e}")),
+                )),
                 status,
             );
         }
@@ -206,9 +220,10 @@ pub fn trusted_root(
     match current.download_target(&target) {
         Ok(data) => (Ok(data), status),
         Err(e) => (
-            Err(Error::Other(format!(
-                "failed to download target file trusted_root.json - {e}"
-            ))),
+            Err((
+                Stage::Root,
+                Error::Other(format!("failed to download target file trusted_root.json - {e}")),
+            )),
             status,
         ),
     }
@@ -270,8 +285,12 @@ mod tests {
         // offline fetcher's 404 naming no URL).
         let (got, _) = trusted_root(&dir, &Unreachable, when("2026-10-09T00:00:00Z"));
         assert_eq!(
-            got.unwrap_err().to_string(),
-            "failed to load metadata: tuf refresh failed: failed to download , http status code: 404"
+            got.map_err(|(stage, e)| (stage, e.to_string())).unwrap_err(),
+            (
+                Stage::Provider,
+                "failed to load metadata: tuf refresh failed: failed to download , http status code: 404"
+                    .to_string()
+            )
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

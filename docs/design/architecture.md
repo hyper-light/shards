@@ -3210,6 +3210,115 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode
 waits on the user.
 
+### D106. Images' provenance and signatures, and artifact attestations, in build policies
+
+buildx v0.37.1 gives a policy an image's `hasProvenance`, `provenance` and `signatures`,
+and the functions `artifact_attestation` and `github_attestation`, from what BuildKit
+v0.28.1 resolves of an image (its attestation chain) and what the policy helpers verify
+with sigstore-go against Sigstore's trusted root (D104, D105). shards gives them all, from
+the same sources, in the same words.
+
+**The attestation chain** (`build/attest.rs`, `shards_sigstore::image`): BuildKit's
+`ResolveImageMetadata` with `AttestationChain`, where a policy asks for any of the three
+fields:
+- policy-helpers' `ResolveSignatureChain`: the index's manifest for the platform as
+  containerd's `platforms.Only` matches and orders them (`platforms`, a port held to
+  containerd by its oracle), its attestation manifest (`vnd.docker.reference.type`), and
+  the signature manifest among the attestation's referrers;
+- the referrers from the registry as containerd's `FetchReferrers` reads them: the
+  Referrers API with `artifactType` and its filter, else the tag schema `sha256-HEX`, a
+  404 there an empty list (`shards_registry::Registry::referrers`);
+- the blobs read on the way, and the attestation's layers of the predicate types asked
+  for (`addAttestationBlobs`: SLSA v0.2 and v1 where provenance is unknown);
+- the chain's root checked against the image's digest, in BuildKit's words.
+
+**The provenance** (`policy/provenance.rs`): buildx's `parseProvenance` over the chain, the
+SLSA v1 or v0.2 statement checked whole against BuildKit's provenance types as
+encoding/json decodes them (`provenance-schema.json`, from reflect and typeFields: one
+wrong-typed field anywhere and Go has no provenance), then the fields buildx reads.
+Materials (purls by packageurl-go and `PURLToRef`, Git URLs, HTTP URLs) become nested
+inputs, their unknowns prefixed and resolved by CheckPolicy's loop (`ResolveInputUnknowns`,
+depth 24, a seen-set) before the policy runs again.
+
+**The signatures** (`policy/signatures.rs`): buildx's `parseSignatures`, the chain read back
+through its `acProvider` (signature manifests as the attestation's referrers, their
+artifact type from the manifest, cosign's where none) and verified by VerifyImage
+(`shards_sigstore::image::verify_image`): the attestation and signature manifests'
+subjects, sizes and media types checked; a Sigstore bundle over the attestation manifest
+or cosign's simple signing (a hashed record over the payload layer); Docker Hardened
+Images by their carried key (`roots/dhi.pub`, from 2025-04-02), with or without the log as
+their bundle annotation says; others by Fulcio with an SCT, a log entry and an observer
+timestamp. `AttestationSignature` in buildx's field order, each timestamp RFC 3339 in
+this process's zone, as Go's `time.Local` prints it. A failure is logged at debug level and
+leaves the field out, as buildx does.
+
+**The trust provider**: one per build, as buildx makes one per invocation
+(`SignatureVerifier`): its state under the home's `policy/tuf`, made before each use until
+one succeeds; the trusted root read from it (D104) when first needed and kept, a failure
+not kept (loadTrustProvider). It is loaded where VerifyImage and VerifyArtifact load it,
+after what they check without it, so their errors come first and in their order; its own
+are "loading trust provider" or "getting trusted root" by where it failed
+(`shards_tuf::client::Stage`).
+
+**`artifact_attestation(input.http, path)`**: a bundle from a file of the policy's FS (its
+first 8 MiB), verified over the download's digest by VerifyArtifact (SLSA provenance
+required); undefined where it does not verify, unknown until the digest is known.
+
+**`github_attestation(input.http, repo)`**: GitHub's attestations of the download
+(`api.github.com/repos/REPO/attestations/DIGEST?predicate_type=` SLSA v1, with GitHub's
+`Accept`), each inline bundle and each `bundle_url` (snappy where its path ends
+`.json.sn`), the first that verifies its answer; each failure logged at info level in
+buildx's words (the repository quoted as `%s` prints an `ast.String`). Each fetch is a step
+of its own, named as buildx names it (`[policy] fetch GitHub attestation REPO@DIGEST`,
+`[policy] fetch GitHub attestation bundle URL` without its query), not checked by the
+policies (measured: buildx does not check them), its failure the step's error and, to the
+policy, the cache key's that failed to load (`failed to load cache key: invalid response
+status 404`, measured).
+- The policy runs on its own thread (M126's stack); its log lines and fetches are answered
+  by the build's thread as it runs (`with_stack_serving`), so `print` lines and the
+  functions' lines interleave as buildx's do and a fetch's step comes where it comes in Go.
+- The API's answer read as `json.Unmarshal` reads it into buildx's struct: names folded,
+  repeated members merged into what earlier ones decoded (in-place slices, Go's growth),
+  raw bundles as written (`json.RawMessage`, from the spans `gojson::unmarshal_raw`
+  records), nothing at all where any member has the wrong type.
+- Snappy blocks decoded as golang/snappy v1.0.0 decodes them (`policy/snappy.rs`).
+
+**Held to Go:**
+- `shards-sigstore`'s `image.json` (187 images: 58 verified, 129 refused, a mutation at
+  every check, every signer kind, DHI with and without the log, Go's JSON corners) and
+  `platforms.json` (110 platforms: Normalize, FormatAll, every Match, Less over every
+  pair): VerifyImage and ResolveSignatureChain through policy-helpers' own code over
+  replayed registries, and containerd's `platforms.Only` and `Less`
+  (`scripts/sigstore/generate-image`). An empty OS is the host's GOOS, as buildx checks
+  in its client.
+- `testdata/policy/provenance.json`: 206 cases through buildx's own `SourceToInput` and
+  `ResolveInputUnknowns`, the real moby/buildkit v0.28.1 provenance among them.
+- `build/testdata/github-attestation.json`: 537 snappy blocks (all `Encode` makes, cut
+  short, grown and changed; every tag form), 32 API answers, 16 bundle URLs, through
+  buildx's own helpers and golang/snappy (`scripts/policy/generate-github`).
+- Real data: moby/buildkit v0.28.1's image signature (Docker's GitHub builder, Tlog and
+  TSA timestamps), and the GitHub CLI v2.102.0's release attestation verified field for
+  field as buildx verified it in shards-dind.
+- E2E: `policies_read_image_provenance_and_signatures` (moby/buildkit v0.28.1's
+  printed provenance and signatures, line for line as buildx printed them, for the tag
+  and the pinned digest) and `policies_verify_artifact_attestations` (a real release,
+  both functions, the refusal of an unattested file).
+- Mutation-checked: the snappy bounds and checks, the response's trimming, `null` and
+  error rules, the query's stripping, the raw spans; F's 74 mutants of the chain,
+  VerifyImage, godec and platforms (five equivalent, one kept as Go has it: a non-DHI
+  image without a certificate, which sigstore-go refuses before).
+
+**Differences, recorded:**
+- A snappy block whose header claims more than any input of its length could decode to
+  is refused before anything is allocated; Go allocates the claim (up to 4 GiB) first.
+  The result is the same error.
+- A failed `bundle_url` is logged without its query: buildx logs the signed URL whole.
+- Each policy fetch's step is shown once: buildx's plain progress shows a bundle's step
+  twice (measured), which is progressui replaying it.
+- `pkg:docker/x?platform` (a qualifier with no `=`): packageurl-go indexes past its slice
+  and buildx panics; shards skips the material with a warning.
+- Materials and blobs in index and digest order, where buildx iterates Go maps (random).
+
 ### D105. Sigstore bundles verified as sigstore-go verifies them
 
 buildx v0.37.1 checks Sigstore signatures through BuildKit's policy helpers

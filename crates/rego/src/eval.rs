@@ -107,6 +107,12 @@ pub enum HostError {
 /// A function the host answers: buildx's own, in policies.
 pub trait Host {
     fn call(&mut self, name: &str, args: &[Value]) -> Result<Option<Value>, HostError>;
+
+    /// A line `print` printed (PrintHook), in order with what the host's functions say;
+    /// false leaves it to the machine's `prints`.
+    fn print(&mut self, _line: &str) -> bool {
+        false
+    }
 }
 
 /// A rule, its path (Rule.Ref), its package's length and its else chain.
@@ -4126,7 +4132,10 @@ fn eval_print(m: &mut Machine<'_>, _f: &Frame, ins: &[Term], loc: Option<Locatio
     }
     let at = loc.unwrap_or_default();
     for l in lines {
-        m.prints.push(at.format(&l.join(" ")));
+        let line = at.format(&l.join(" "));
+        if !m.host.print(&line) {
+            m.prints.push(line);
+        }
     }
     k(m)
 }

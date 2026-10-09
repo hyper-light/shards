@@ -54,6 +54,8 @@ enum Fail {
 struct Parser<'a> {
     b: &'a [u8],
     at: usize,
+    /// Where each value lies, in the order the values begin, when asked for.
+    spans: Option<Vec<(usize, usize)>>,
 }
 
 /// strconv.Quote of a byte taken as a rune, its quotes dropped (Go's quoteChar).
@@ -106,6 +108,21 @@ impl Parser<'_> {
 
     fn value(&mut self, depth: usize) -> Result<JValue, Fail> {
         self.ws();
+        let Some(spans) = self.spans.as_mut() else {
+            return self.bare(depth);
+        };
+        let i = spans.len();
+        spans.push((self.at, self.at));
+        let v = self.bare(depth)?;
+        let end = self.at;
+        if let Some(s) = self.spans.as_mut().and_then(|s| s.get_mut(i)) {
+            s.1 = end;
+        }
+        Ok(v)
+    }
+
+    /// A value, white space before it skipped.
+    fn bare(&mut self, depth: usize) -> Result<JValue, Fail> {
         match self.peek() {
             Some(b'{') => {
                 if depth >= 10_000 {
@@ -323,7 +340,11 @@ impl Parser<'_> {
 
 /// json.Unmarshal's reading of a document: one value, then only white space.
 pub fn unmarshal(b: &[u8]) -> Result<JValue, String> {
-    let mut p = Parser { b, at: 0 };
+    let mut p = Parser {
+        b,
+        at: 0,
+        spans: None,
+    };
     let v = match p.value(0) {
         Ok(v) => v,
         Err(Fail::Syntax(s)) => return Err(s),
@@ -339,10 +360,48 @@ pub fn unmarshal(b: &[u8]) -> Result<JValue, String> {
     Ok(v)
 }
 
+/// [`unmarshal`], and the bytes of each value (a json.RawMessage's) in the order the
+/// values begin: the order [`pre_order`] walks them in.
+pub fn unmarshal_raw(b: &[u8]) -> Result<(JValue, Vec<(usize, usize)>), String> {
+    let mut p = Parser {
+        b,
+        at: 0,
+        spans: Some(Vec::new()),
+    };
+    let v = match p.value(0) {
+        Ok(v) => v,
+        Err(Fail::Syntax(s)) => return Err(s),
+        Err(Fail::Eof) => return Err("unexpected end of JSON input".into()),
+    };
+    p.ws();
+    if p.at != b.len() {
+        return match p.unexpected("after top-level value") {
+            Fail::Syntax(s) => Err(s),
+            Fail::Eof => Err("unexpected end of JSON input".into()),
+        };
+    }
+    Ok((v, p.spans.unwrap_or_default()))
+}
+
+/// `v` and the values inside it, each before those inside it, members and elements in
+/// document order.
+pub fn pre_order<'v>(v: &'v JValue, out: &mut Vec<&'v JValue>) {
+    out.push(v);
+    match v {
+        JValue::Array(items) => items.iter().for_each(|x| pre_order(x, out)),
+        JValue::Object(members) => members.iter().for_each(|(_, x)| pre_order(x, out)),
+        _ => {}
+    }
+}
+
 /// json.Decoder.Decode's reading: the first value, whatever follows it; `EOF` where
 /// there is none and `unexpected EOF` where it is cut short.
 pub fn decode_first(b: &[u8]) -> Result<JValue, String> {
-    let mut p = Parser { b, at: 0 };
+    let mut p = Parser {
+        b,
+        at: 0,
+        spans: None,
+    };
     p.ws();
     if p.at == b.len() {
         return Err("EOF".into());

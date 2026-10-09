@@ -525,6 +525,81 @@ impl Registry {
             .ok_or_else(|| Error::new(format!("{digest}: gone from the store")))
     }
 
+    /// The referrers of `digest` as containerd's FetchReferrers asks for them: the
+    /// Referrers API (`referrers/<digest>`, with the artifact types and filters as its
+    /// query), then the Referrers Tag Schema (`manifests/sha256-<hex>`) where the API is
+    /// not found; an empty index where neither is. The index's bytes, at most a
+    /// manifest's size.
+    pub fn referrers(
+        &self,
+        digest: &str,
+        artifact_types: &[&str],
+        filters: &[(&str, &str)],
+    ) -> Result<Vec<u8>, Error> {
+        let accept = [
+            ("Accept", "application/vnd.oci.image.index.v1+json, */*"),
+            ("Accept-Encoding", ENCODINGS),
+        ];
+        let mut url = self.base.join(&format!("referrers/{digest}"))?;
+        for t in artifact_types {
+            url = url.with_query_pair("artifactType", t)?;
+        }
+        for (k, v) in filters {
+            url = url.with_query_pair(k, v)?;
+        }
+        let tag = digest.replacen(':', "-", 1);
+        // The API's failure is kept, the tag tried anyway; the tag's 404 means none.
+        let mut first: Option<Error> = None;
+        for (fallback, url) in [(false, url), (true, self.base.join(&format!("manifests/{tag}"))?)] {
+            let (mut response, _) = match self.request("GET", &url, &accept) {
+                Ok(r) => r,
+                Err(e) => {
+                    if fallback {
+                        return Err(first.unwrap_or(e));
+                    }
+                    first = Some(e);
+                    continue;
+                }
+            };
+            match response.status {
+                200..=299 => {
+                    let encoding = response
+                        .header("content-encoding")
+                        .unwrap_or_default()
+                        .to_string();
+                    let mut body = decoded(&mut response, &encoding)?;
+                    let mut bytes = Vec::new();
+                    body.by_ref()
+                        .take(MAX_MANIFEST.saturating_add(1))
+                        .read_to_end(&mut bytes)?;
+                    if bytes.len() as u64 > MAX_MANIFEST {
+                        return Err(Error::of(
+                            ErrorKind::NotFound,
+                            format!(
+                                "referrers index size {} exceeds maximum allowed {MAX_MANIFEST}: not found",
+                                bytes.len()
+                            ),
+                        ));
+                    }
+                    return Ok(bytes);
+                }
+                404 if fallback => break,
+                404 => continue,
+                _ => {
+                    let e = not_fetched(response, &url);
+                    if fallback {
+                        return Err(first.unwrap_or(e));
+                    }
+                    first = Some(e);
+                }
+            }
+        }
+        Ok(
+            br#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[]}"#
+                .to_vec(),
+        )
+    }
+
     /// Where the blob `digest` is at this registry.
     pub(crate) fn blob_url(&self, digest: &Digest) -> Result<Url, Error> {
         self.base.join(&format!("blobs/{digest}"))

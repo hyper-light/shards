@@ -130,3 +130,108 @@ fn the_bundle_reads_and_its_envelope_verifies_by_the_artifact_s_digest() {
             .starts_with("https://github.com/")
     );
 }
+
+/// The registry's answers for moby/buildkit v0.28.1, as fetched: its blobs by digest, and
+/// the referrers of its arm64 attestation manifest.
+struct Hub(Vec<(&'static str, &'static [u8])>);
+
+impl shards_sigstore::image::Provider for Hub {
+    fn referrers(
+        &self,
+        digest: &str,
+        _: &[&str],
+        _: &[(&str, &str)],
+    ) -> Result<Vec<shards_sigstore::image::Descriptor>, String> {
+        if digest != "sha256:8bfad6cf4b6e1042a48c4f151a10da5fce0db3f2dbb768448c13b904514ab898" {
+            return Ok(Vec::new());
+        }
+        Ok(shards_sigstore::image::parse_index(include_bytes!(
+            "../testdata/real/buildkit-v0.28.1.referrers.json"
+        ))?
+        .manifests)
+    }
+
+    fn read(&self, desc: &shards_sigstore::image::Descriptor) -> Result<Vec<u8>, String> {
+        self.0
+            .iter()
+            .find(|(d, _)| *d == desc.digest)
+            .map(|(_, b)| b.to_vec())
+            .ok_or_else(|| format!("{}: not found", desc.digest))
+    }
+}
+
+fn hub() -> Hub {
+    Hub(vec![
+        (
+            "sha256:a82d1ab899cda51aade6fe818d71e4b58c4079e047a0cf29dbb93b2b0465ea69",
+            include_bytes!("../testdata/real/buildkit-v0.28.1.index.json"),
+        ),
+        (
+            "sha256:8bfad6cf4b6e1042a48c4f151a10da5fce0db3f2dbb768448c13b904514ab898",
+            include_bytes!("../testdata/real/buildkit-v0.28.1-arm64.attestation.json"),
+        ),
+        (
+            "sha256:64584b03b7c9aff3c8b10a44df9ba7eeb76888382e61f7ffd5ac83d42ff27aac",
+            include_bytes!("../testdata/real/buildkit-v0.28.1-arm64.sigmanifest.json"),
+        ),
+        (
+            "sha256:3e7b5c6a1e00b8778fc1c881593220acf37fc953a9ffbfbf316cd5858671cdb2",
+            include_bytes!("../testdata/real/buildkit-v0.28.1-arm64.bundle.json"),
+        ),
+    ])
+}
+
+fn index_desc() -> shards_sigstore::image::Descriptor {
+    shards_sigstore::image::Descriptor {
+        media_type: shards_sigstore::image::MEDIA_INDEX.into(),
+        digest: "sha256:a82d1ab899cda51aade6fe818d71e4b58c4079e047a0cf29dbb93b2b0465ea69".into(),
+        size: include_bytes!("../testdata/real/buildkit-v0.28.1.index.json").len() as i64,
+        ..Default::default()
+    }
+}
+
+#[test]
+fn the_image_s_signature_is_docker_s_github_builder_s() {
+    use shards_sigstore::helpers::{Kind, SignatureType};
+    use shards_sigstore::platforms::Platform;
+    let arm64 = Platform {
+        os: "linux".into(),
+        architecture: "arm64".into(),
+        ..Platform::default()
+    };
+    let trusted = root();
+    let si = shards_sigstore::image::verify_image(
+        &hub(),
+        &index_desc(),
+        &arm64,
+        &|| Ok(&trusted),
+        shards_sigstore::time::utc,
+    )
+    .unwrap();
+    assert_eq!(si.kind, Kind::DockerGithubBuilder);
+    assert_eq!(si.signature_type, SignatureType::BundleV03);
+    let kinds: Vec<&str> = si.timestamps.iter().map(|t| t.kind).collect();
+    assert_eq!(kinds, ["Tlog", "TimestampAuthority"]);
+    let signer = si.signer.unwrap();
+    assert_eq!(
+        signer.extensions.source_repository_uri,
+        "https://github.com/moby/buildkit"
+    );
+    // Another platform's attestation has no signature here.
+    let amd64 = Platform {
+        architecture: "amd64".into(),
+        ..arm64
+    };
+    assert_eq!(
+        shards_sigstore::image::verify_image(
+            &hub(),
+            &index_desc(),
+            &amd64,
+            &|| Ok(&trusted),
+            shards_sigstore::time::utc
+        )
+        .unwrap_err()
+        .0,
+        "no signature found for image sha256:a82d1ab899cda51aade6fe818d71e4b58c4079e047a0cf29dbb93b2b0465ea69"
+    );
+}

@@ -55,6 +55,8 @@ struct Job {
     cancel: Cancel,
     url: String,
     checksum: Option<String>,
+    /// The `Accept` the source asks with (llb.Header), if any.
+    accept: Option<String>,
     path: PathBuf,
     limits: Limits,
 }
@@ -75,6 +77,7 @@ impl Job {
             &client,
             &self.url,
             self.checksum.as_deref(),
+            self.accept.as_deref(),
             self.path,
             &self.limits,
         )
@@ -120,6 +123,7 @@ impl Downloads {
                 cancel: downloads.cancel.clone(),
                 url,
                 checksum,
+                accept: None,
                 path: dir.join(op.to_string()),
                 limits,
             };
@@ -187,6 +191,7 @@ pub fn fetch(
     client: &Client,
     url: &str,
     checksum: Option<&str>,
+    accept: Option<&str>,
     path: PathBuf,
     limits: &Limits,
 ) -> Result<Download, Failure> {
@@ -206,10 +211,14 @@ pub fn fetch(
             None
         })
     };
+    let mut headers = vec![("Accept-Encoding", "gzip")];
+    if let Some(a) = accept {
+        headers.push(("Accept", a));
+    }
     let request = Request {
         method: "GET",
         url: &parsed,
-        headers: &[("Accept-Encoding", "gzip")],
+        headers: &headers,
         body: &[],
         file: None,
     };
@@ -279,6 +288,17 @@ pub fn fetch_now(
     path: PathBuf,
     limits: &Limits,
 ) -> Result<Download, String> {
+    fetch_accepting(url, checksum, None, path, limits)
+}
+
+/// [`fetch_now`] of a source that asks with an `Accept` header (llb.Header).
+pub fn fetch_accepting(
+    url: &str,
+    checksum: Option<&str>,
+    accept: Option<&str>,
+    path: PathBuf,
+    limits: &Limits,
+) -> Result<Download, String> {
     // The platform's roots, as Go's default transport trusts: no registry's certs.d.
     let config = shards_registry::tls::client_config(Vec::new(), None).map_err(|e| e.to_string())?;
     let job = Job {
@@ -286,6 +306,7 @@ pub fn fetch_now(
         cancel: Cancel::new(),
         url: url.to_string(),
         checksum: checksum.map(String::from),
+        accept: accept.map(String::from),
         path,
         limits: *limits,
     };

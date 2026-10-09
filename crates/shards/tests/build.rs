@@ -10101,3 +10101,166 @@ fn policies_verify_git_and_http_signatures() {
         refused.stderr
     );
 }
+
+/// Policies that verify GitHub artifact attestations (D106): the GitHub CLI v2.102.0's
+/// linux/arm64 archive, by `artifact_attestation` over its bundle in the context and by
+/// `github_attestation` from GitHub's API (its own step, the bundle behind a snappy
+/// `bundle_url` its step too), each verified against Sigstore's trusted root as buildx
+/// v0.37.1 verified it (measured in shards-dind). The release's checksums file has no
+/// attestation: its source is refused, and GitHub has no bundle for it. GitHub's API
+/// answers 403 past its hourly limit for an address, which buildx logs as it logs any
+/// failed read: so does this, and the test asserts that line in its place.
+#[test]
+fn policies_verify_artifact_attestations() {
+    if cannot_run_vms() {
+        return;
+    }
+    const RELEASE: &str = "https://github.com/cli/cli/releases/download/v2.102.0";
+    const GH: &str = "sha256:7862c86c72f43df3a2d93ddde6f473285b4e2af61b494849846827e513ef6484";
+    const SUMS: &str = "sha256:afe49e9affa232faa8212aed035417166f6ade9b9470acb53d4dbd28c0504e8d";
+    let home = TempDir::new("policy-att-home");
+    let env = [("SHARDS_HOME", home.as_os_str())];
+    let build = |file: &str| {
+        let ctx = context(
+            "policy-att-ctx",
+            &format!("FROM scratch\nADD {RELEASE}/{file} /f\n"),
+        );
+        std::fs::write(
+            ctx.join("Dockerfile.rego"),
+            "package docker\n\ndefault allow := false\n\nallow if input.local\n\ndefault gh := \"none\"\n\ngh := g.kind if {\n\tg := github_attestation(input.http, \"cli/cli\")\n}\n\nallow if {\n\tinput.http\n\tprint(\"GH\", gh)\n\ta := artifact_attestation(input.http, \"gh.sigstore.json\")\n\ta.kind == \"self-signed-github-repo\"\n\ta.signer.sourceRepositoryURI == \"https://github.com/cli/cli\"\n\ta.timestamps[0].type == \"Tlog\"\n}\n\ndecision := {\"allow\": allow}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            ctx.join("gh.sigstore.json"),
+            include_bytes!("../src/build/testdata/gh-2.102.0-linux-arm64.sigstore.json"),
+        )
+        .unwrap();
+        common::run_shards_env_in(
+            &ctx,
+            &[],
+            &["build", "--progress=plain", "--no-cache", "."],
+            &env,
+            TIMEOUT,
+        )
+    };
+    let limited = |log: &[String], dgst: &str| {
+        log.iter().any(|l| {
+            l.starts_with(&format!(
+                "github_attestation: failed reading bundles for \"cli/cli\"@{dgst}: read GitHub attestation response: failed to load cache key: invalid response status 403"
+            ))
+        })
+    };
+
+    let src = format!("{RELEASE}/gh_2.102.0_linux_arm64.tar.gz");
+    let built = build("gh_2.102.0_linux_arm64.tar.gz");
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    let log = policy_log(&built.stderr);
+    assert!(
+        built
+            .stderr
+            .lines()
+            .any(|l| l.ends_with(&format!(" [policy] fetch GitHub attestation cli/cli@{GH}"))),
+        "{}",
+        built.stderr
+    );
+    if !limited(&log, GH) {
+        // How many bundles GitHub inlines is GitHub's to change.
+        let suffix = format!(
+            " bundle URLs from https://api.github.com/repos/cli/cli/attestations/{GH}?predicate_type=https%3A%2F%2Fslsa.dev%2Fprovenance%2Fv1"
+        );
+        let urls = log
+            .iter()
+            .find_map(|l| {
+                let counts = l
+                    .strip_prefix("github_attestation: fetched ")?
+                    .strip_suffix(&suffix)?;
+                counts.split_once(" inline bundles and ")?.1.parse::<usize>().ok()
+            })
+            .unwrap_or_else(|| panic!("{log:#?}"));
+        // A signed URL's step is named without its query.
+        assert_eq!(
+            built
+                .stderr
+                .lines()
+                .filter(
+                    |l| l.contains(" [policy] fetch GitHub attestation bundle https://") && !l.contains('?')
+                )
+                .filter(|l| l.split(' ').nth(1).is_some_and(|w| w == "[policy]"))
+                .count(),
+            urls,
+            "{}",
+            built.stderr
+        );
+        assert!(
+            log.iter()
+                .any(|l| l == "Dockerfile.rego:15: GH self-signed-github-repo"),
+            "{log:#?}"
+        );
+    }
+    assert_eq!(
+        log.last().map(String::as_str),
+        Some(format!("policy decision for source {src}: ALLOW").as_str()),
+        "{log:#?}"
+    );
+
+    // The checksums file: no attestation verifies, and GitHub has none.
+    let src = format!("{RELEASE}/gh_2.102.0_checksums.txt");
+    let refused = build("gh_2.102.0_checksums.txt");
+    assert_ne!(refused.status, Some(0), "{}", refused.stderr);
+    let log = policy_log(&refused.stderr);
+    if !limited(&log, SUMS) {
+        assert!(
+            log.iter()
+                .any(|l| l == &format!("github_attestation: no bundle found for \"cli/cli\"@{SUMS}")),
+            "{log:#?}"
+        );
+    }
+    assert!(
+        log.iter()
+            .any(|l| l == &format!("policy decision for source {src}: DENY")),
+        "{log:#?}"
+    );
+}
+
+/// An image's provenance and signatures in a policy (D106): moby/buildkit v0.28.1 for
+/// linux/arm64, its attestation chain read from Docker Hub, its SLSA provenance and its
+/// signature by Docker's GitHub builder verified against Sigstore's trusted root, each
+/// printed line as buildx v0.37.1 printed it in shards-dind (in UTC, as there), for the
+/// tag and for the digest the build pins.
+#[test]
+fn policies_read_image_provenance_and_signatures() {
+    if cannot_run_vms() {
+        return;
+    }
+    let home = TempDir::new("policy-image-sig-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("TZ", std::ffi::OsStr::new("UTC")),
+    ];
+    let ctx = context("policy-image-sig-ctx", "FROM moby/buildkit:v0.28.1\n");
+    std::fs::write(
+        ctx.join("Dockerfile.rego"),
+        "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if {\n\tinput.image\n\tprint(\"PROV\", input.image.hasProvenance, input.image.provenance.predicateType, input.image.provenance.buildType)\n\tprint(\"SIG\", input.image.signatures)\n}\n\ndecision := {\"allow\": allow}\n",
+    )
+    .unwrap();
+    let built = common::run_shards_env_in(
+        &ctx,
+        &[],
+        &["build", "--progress=plain", "--platform", "linux/arm64", "."],
+        &env,
+        TIMEOUT,
+    );
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    let got: Vec<String> = policy_log(&built.stderr)
+        .into_iter()
+        .filter(|l| {
+            l.contains(": PROV ")
+                || l.contains(": SIG ")
+                || l.starts_with("policy decision for source docker-image://")
+        })
+        .collect();
+    let want: Vec<&str> = include_str!("../src/build/testdata/buildkit-v0.28.1-policy.buildx.txt")
+        .lines()
+        .collect();
+    assert_eq!(got, want, "{}", built.stderr);
+}

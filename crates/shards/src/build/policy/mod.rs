@@ -7,12 +7,17 @@
 //! resolved for it, and the policy asked again. One policy's denial stops the build in
 //! BuildKit's words; every policy must allow a source for the build to load it.
 
+mod github;
 mod gitobject;
 mod input;
+mod provenance;
+mod signatures;
+mod snappy;
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
 
 use shards_cmdline::buildflags::{LogLevel, PolicyConfig};
 use shards_dockerfile::platform::{self, Platform};
@@ -268,11 +273,26 @@ pub struct HttpMeta {
     pub signature_checksum: Option<(String, Vec<u8>)>,
 }
 
-/// An image's metadata: the digest its name resolves to, and its config where asked for.
+/// An image's metadata: the digest its name resolves to, its config where asked for,
+/// and its attestation chain where asked for and it has one.
 #[derive(Debug, Clone)]
 pub struct ImageMeta {
     pub digest: String,
     pub config: Option<Vec<u8>>,
+    pub attestation_chain: Option<AttestationChain>,
+}
+
+/// sourceresolver.AttestationChain as buildx reads it: from the image's index (`root`),
+/// the attestation manifest beside the manifest its platform resolved to, the signature
+/// manifests referring to that, and the blobs read on the way (the index, the
+/// attestation and signature manifests and their layers, and the attestations asked
+/// for), by digest.
+#[derive(Debug, Clone, Default)]
+pub struct AttestationChain {
+    pub root: String,
+    pub attestation_manifest: String,
+    pub signature_manifests: Vec<String>,
+    pub blobs: BTreeMap<String, (shards_sigstore::image::Descriptor, Vec<u8>)>,
 }
 
 /// What a policy asks to know of a source (ResolveSourceMetaRequest), and for which
@@ -315,6 +335,8 @@ impl MetaRequest {
 pub struct ImageRequest {
     pub no_config: bool,
     pub attestation_chain: bool,
+    /// The predicate types of the attestations to read with the chain.
+    pub resolve_attestations: Vec<String>,
 }
 
 /// What resolves a source's metadata when a policy asks for it.
@@ -330,6 +352,14 @@ enum Answer {
     Deny(Vec<String>),
     Convert(Source),
     Resolve(MetaRequest),
+}
+
+/// What resolving a policy's unknowns comes to: a request for the source's metadata, or
+/// its materials' resolved, to run the policy again.
+#[derive(Debug)]
+enum Step {
+    Ask(MetaRequest),
+    Retry,
 }
 
 /// A source the policies would not have, in BuildKit's words, and the messages the
@@ -438,7 +468,6 @@ fn input_ref(path: &str) -> Term {
 struct Run {
     decision: Result<Option<Decision>, String>,
     unknown: Vec<String>,
-    prints: Vec<String>,
     pins: Vec<String>,
     runtime: Vec<String>,
     checksum: Option<ChecksumRequest>,
@@ -455,6 +484,9 @@ struct Funcs<'a> {
     pins: Vec<String>,
     unknowns: Vec<&'static str>,
     checksum: Option<ChecksumRequest>,
+    /// The build's thread, which says the lines and fetches the sources.
+    ask: &'a mpsc::Sender<Ask>,
+    trust: &'a signatures::Trust,
 }
 
 /// Go's %T of an OPA value.
@@ -481,6 +513,25 @@ fn local_time(secs: i64) -> String {
 }
 
 impl Funcs<'_> {
+    /// Policy.log: a line for the policy's step, at `level`.
+    fn say(&self, level: LogLevel, text: String) {
+        let _ = self.ask.send(Ask::Log(level, text));
+    }
+
+    /// An HTTP source solved and read, as the build's thread fetches it.
+    fn fetch(&self, name: String, url: String, accept: Option<&'static str>) -> Result<Vec<u8>, String> {
+        let (reply, answer) = mpsc::channel();
+        self.ask
+            .send(Ask::Fetch {
+                name,
+                url,
+                accept,
+                reply,
+            })
+            .map_err(|_| "the build has ended".to_string())?;
+        answer.recv().map_err(|_| "the build has ended".to_string())?
+    }
+
     fn add_unknown(&mut self, name: &'static str) {
         if !self.unknowns.contains(&name) {
             self.unknowns.push(name);
@@ -504,6 +555,12 @@ impl Funcs<'_> {
 }
 
 impl Host for Funcs<'_> {
+    /// Policy.Print: at Info, in order with what the functions say.
+    fn print(&mut self, line: &str) -> bool {
+        self.say(LogLevel::Info, line.to_string());
+        true
+    }
+
     fn call(&mut self, name: &str, args: &[Value]) -> Result<Option<Value>, HostError> {
         let undefined = |m: String| HostError::Undefined(m);
         match name {
@@ -700,6 +757,105 @@ impl Host for Funcs<'_> {
                     shards_gitsign::pgpsign::verify_signature_with_digest(&sig, &ring, got, hex).is_ok(),
                 )))
             }
+            // builtinArtifactAttestationImpl and builtinGithubAttestationImpl: a SLSA
+            // provenance bundle over the download, from a file of the policy's FS or
+            // from GitHub's attestations of a repository, verified against Sigstore's
+            // trusted root; undefined where none verifies, and unknown until the
+            // download's digest is known.
+            "artifact_attestation" | "github_attestation" => {
+                let github = name == "github_attestation";
+                let name: &'static str = if github {
+                    "github_attestation"
+                } else {
+                    "artifact_attestation"
+                };
+                let Some(http) = &self.input.http else {
+                    return Ok(None);
+                };
+                let arg = args.first().unwrap_or(&Value::Null);
+                if !matches!(arg, Value::Object(_)) {
+                    return Err(undefined(format!(
+                        "{name}: expected object, got {}",
+                        ast_type(arg)
+                    )));
+                }
+                if self.input_value.get(&Value::string("http")) != Some(arg) {
+                    return Err(undefined(format!(
+                        "{name}: first argument is not the same as input http"
+                    )));
+                }
+                let Some(Value::String(second)) = args.get(1) else {
+                    return Err(undefined(format!(
+                        "{name}: expected {}, got {}",
+                        if github {
+                            "repository name string"
+                        } else {
+                            "string path"
+                        },
+                        args.get(1).map_or("<nil>", ast_type)
+                    )));
+                };
+                if http.checksum.is_empty() {
+                    self.add_unknown(name);
+                    return Ok(None);
+                }
+                shards_image::reference::Digest::parse(&http.checksum)
+                    .map_err(|e| undefined(format!("{name}: invalid checksum: {e}")))?;
+                let dgst = http.checksum.as_str();
+                let trust = self.trust;
+                let verify = |bundle: &[u8]| {
+                    shards_sigstore::helpers::verify_artifact(
+                        dgst,
+                        bundle,
+                        &|| trust.root(),
+                        signatures::local_offset,
+                        false,
+                    )
+                };
+                if !github {
+                    let bundle = self.read_file(second, 8 << 20)?;
+                    trust
+                        .verifier()
+                        .map_err(|e| undefined(format!("{name}: getting policy verifier: {e}")))?;
+                    return Ok(verify(&bundle)
+                        .ok()
+                        .map(|si| signatures::attestation_signature(&si).value()));
+                }
+                trust
+                    .verifier()
+                    .map_err(|e| undefined(format!("{name}: getting policy verifier: {e}")))?;
+                // ast.String's %s: quoted.
+                let repo = shards_cmdline::go::quote(second);
+                let bundles = match github::bundles(second, dgst, &|n, u, a| self.fetch(n, u, a), &|line| {
+                    self.say(LogLevel::Info, format!("{name}: {line}"));
+                }) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        self.say(
+                            LogLevel::Info,
+                            format!("{name}: failed reading bundles for {repo}@{dgst}: {e}"),
+                        );
+                        return Ok(None);
+                    }
+                };
+                if bundles.is_empty() {
+                    self.say(
+                        LogLevel::Info,
+                        format!("{name}: no bundle found for {repo}@{dgst}"),
+                    );
+                    return Ok(None);
+                }
+                for bundle in &bundles {
+                    match verify(bundle) {
+                        Ok(si) => return Ok(Some(signatures::attestation_signature(&si).value())),
+                        Err(e) => self.say(
+                            LogLevel::Info,
+                            format!("{name}: failed verifying bundle for {repo}@{dgst}: {}", e.0),
+                        ),
+                    }
+                }
+                Ok(None)
+            }
             other => Err(HostError::Halt(format!(
                 "{other} in a policy is not supported by shards yet"
             ))),
@@ -742,11 +898,10 @@ impl Policy {
     /// One evaluation of `input`, compiled afresh as rego.New compiles: where `partial`
     /// and it leaves fields unknown, a partial one that says which of them its decision
     /// reads (collectUnknowns over the support modules); else the decision.
-    fn run(&self, input: &Input, partial: bool) -> Run {
+    fn run(&self, input: &Input, partial: bool, ask: &mpsc::Sender<Ask>, trust: &signatures::Trust) -> Run {
         let mut out = Run {
             decision: Ok(None),
             unknown: Vec::new(),
-            prints: Vec::new(),
             pins: Vec::new(),
             runtime: Vec::new(),
             checksum: None,
@@ -766,6 +921,8 @@ impl Policy {
             pins: Vec::new(),
             unknowns: Vec::new(),
             checksum: None,
+            ask,
+            trust,
         };
         let unknowns = input.unknown_refs();
         let mut m = Machine::new(&program, &mut host, context());
@@ -775,7 +932,6 @@ impl Policy {
                 Ok(p) => out.unknown = collect_unknowns(&p.support, &unknowns),
                 Err(e) => out.decision = Err(e.to_string()),
             }
-            out.prints = std::mem::take(&mut m.prints);
             drop(m);
             out.runtime = runtime_refs(&host.unknowns);
             out.checksum = host.checksum;
@@ -785,7 +941,6 @@ impl Policy {
             .map_err(|e| e.to_string())
             .and_then(decision_of)
             .map(Some);
-        out.prints = std::mem::take(&mut m.prints);
         drop(m);
         let mut pins = host.pins;
         pins.sort();
@@ -1009,8 +1164,16 @@ fn request_for(unknowns: &[String], request: &mut MetaRequest) -> Result<(), Str
             let img = request.image.get_or_insert(ImageRequest {
                 no_config: true,
                 attestation_chain: false,
+                resolve_attestations: Vec::new(),
             });
             img.attestation_chain = true;
+            if u == "image.provenance" || u.starts_with("image.provenance.") {
+                for t in [shards_sigstore::image::SLSA_V02, shards_sigstore::image::SLSA_V1] {
+                    if !img.resolve_attestations.iter().any(|x| x == t) {
+                        img.resolve_attestations.push(t.to_string());
+                    }
+                }
+            }
             continue;
         }
         match u {
@@ -1049,9 +1212,26 @@ fn source_name(source: &Source, platform: Option<&Platform>) -> String {
     }
 }
 
-/// Where a policy's log lines go: the build's `loading policies` step.
+/// Where a policy's log lines go, the build's `loading policies` step, and what fetches
+/// the HTTP sources its functions read (SourceResolver.ResolveState, then ReadFile).
 pub trait Log {
     fn line(&self, text: &str);
+
+    /// The content of `url`, asked for with `accept`, fetched as a step named `name`;
+    /// the error as the read of the solved source words it.
+    fn fetch(&self, name: &str, url: &str, accept: Option<&str>) -> Result<Vec<u8>, String>;
+}
+
+/// What a policy's evaluation asks of the build's thread as it runs: a line for its
+/// step, said as it is said, or an HTTP source fetched as a step of its own.
+enum Ask {
+    Log(LogLevel, String),
+    Fetch {
+        name: String,
+        url: String,
+        accept: Option<&'static str>,
+        reply: mpsc::Sender<Result<Vec<u8>, String>>,
+    },
 }
 
 /// The policies a build heeds, and how much each logs.
@@ -1061,6 +1241,8 @@ pub struct Policies {
     pub names: Vec<String>,
     /// The messages of the last denial, which the build prints as `Policy: …`.
     pub denied: RefCell<Vec<String>>,
+    /// The build's signature verifier (SignatureVerifier).
+    trust: signatures::Trust,
 }
 
 /// configureSourcePolicy's setup of one build's policies: the Dockerfile's own and the
@@ -1132,6 +1314,7 @@ impl Policies {
                 .collect(),
             list,
             denied: RefCell::new(Vec::new()),
+            trust: signatures::Trust::default(),
         }))
     }
 
@@ -1166,10 +1349,7 @@ impl Policies {
             log,
             &format!("policy input: {}", input.json().indented()),
         );
-        let run = with_stack(|| p.run(&input, false))?;
-        for line in &run.prints {
-            self.say(p, LogLevel::Info, log, line);
-        }
+        let run = self.run(p, &input, false, log)?;
         let decision = run.decision?.ok_or("policy returned zero result")?;
         if decision.caps.iter().any(|(_, on)| *on) {
             return Err("network proxy requested by policy is not supported by shards yet".into());
@@ -1192,7 +1372,7 @@ impl Policies {
         let mut converted = false;
         let mut meta = Meta::default();
         for _ in 0..MAX_RESOLVES {
-            match self.answer(&source, platform, &meta, log)? {
+            match self.answer(&source, platform, &meta, resolver, log)? {
                 Answer::Resolve(request) => {
                     meta = resolver
                         .resolve(&source, &request)
@@ -1226,10 +1406,11 @@ impl Policies {
         source: &Source,
         platform: Option<&Platform>,
         meta: &Meta,
+        resolver: &dyn Resolve,
         log: &dyn Log,
     ) -> Result<Answer, String> {
         for p in &self.list {
-            match self.check(p, source, platform, meta, log)? {
+            match self.check(p, source, platform, meta, resolver, log)? {
                 Answer::Allow => {}
                 other => return Ok(other),
             }
@@ -1237,68 +1418,104 @@ impl Policies {
         Ok(Answer::Allow)
     }
 
-    /// resolveUnknowns: the request for what `unk` and a signature's digest need of the
-    /// source, where they need anything.
+    /// resolveUnknowns: for a signature's digest, the request for it and for all of
+    /// `unk`; else ResolveInputUnknowns: the request for what `unk` needs of the source
+    /// itself, or its materials' resolved through `resolver` (`Retry`: run again).
+    #[allow(clippy::too_many_arguments)]
     fn resolve(
         &self,
         p: &Policy,
+        input: &mut Input,
+        source: &Source,
         platform: &Platform,
         name: &str,
         unk: &[String],
         checksum: Option<ChecksumRequest>,
+        resolver: &dyn Resolve,
         log: &dyn Log,
-    ) -> Result<Option<Answer>, String> {
-        let collected: Vec<String> = unk
-            .iter()
-            .filter(|u| !matches!(u.as_str(), "image" | "git" | "http" | "local"))
-            .cloned()
-            .collect();
-        if !collected.is_empty() {
-            self.say(
-                p,
-                LogLevel::Debug,
-                log,
-                &format!("collected unknowns: {}", summarize(&collected)),
-            );
-        }
-        let mut request = MetaRequest {
-            platform: Some(platform.clone()),
-            ..MetaRequest::default()
+    ) -> Result<Option<Step>, String> {
+        let mut say = |level: LogLevel, text: &str| self.say(p, level, log, text);
+        let request = match checksum {
+            Some(c) => {
+                let mut request = MetaRequest {
+                    platform: Some(platform.clone()),
+                    ..MetaRequest::default()
+                };
+                let unk: Vec<String> = unk
+                    .iter()
+                    .map(|u| u.strip_prefix("input.").unwrap_or(u).to_string())
+                    .filter(|u| !u.is_empty())
+                    .collect();
+                provenance::add_unknowns(&unk, &mut request, &mut say)?;
+                request.http = true;
+                request.http_checksum = Some(c);
+                request
+            }
+            None => {
+                match provenance::resolve_input_unknowns(
+                    input,
+                    source,
+                    unk,
+                    Some(platform),
+                    Some(platform),
+                    Some(resolver),
+                    Some(&self.trust),
+                    &mut say,
+                )? {
+                    (_, Some(request)) => request,
+                    (true, None) => return Ok(Some(Step::Retry)),
+                    (false, None) => return Ok(None),
+                }
+            }
         };
-        request_for(unk, &mut request)?;
-        if let Some(c) = checksum {
-            request.http = true;
-            request.http_checksum = Some(c);
-        }
-        if !request.asks() {
-            return Ok(None);
-        }
-        self.say(
-            p,
+        say(
             LogLevel::Info,
-            log,
             &format!(
                 "policy decision for source {name}: resolve missing fields {}",
                 summarize(unk)
             ),
         );
-        Ok(Some(Answer::Resolve(request)))
+        Ok(Some(Step::Ask(request)))
     }
 
-    /// CheckPolicy: one policy's answer for `source`.
+    /// One evaluation of `p` on its thread, this one saying its lines and fetching its
+    /// sources meanwhile.
+    fn run(&self, p: &Policy, input: &Input, partial: bool, log: &dyn Log) -> Result<Run, String> {
+        let trust = &self.trust;
+        with_stack_serving(|ask| p.run(input, partial, ask, trust), &|a| match a {
+            Ask::Log(level, line) => self.say(p, level, log, &line),
+            Ask::Fetch {
+                name,
+                url,
+                accept,
+                reply,
+            } => {
+                let _ = reply.send(log.fetch(&name, &url, accept));
+            }
+        })
+    }
+
+    /// CheckPolicy: one policy's answer for `source`, its provenance's materials resolved
+    /// through `resolver` as the policy asks of them.
     fn check(
         &self,
         p: &Policy,
         source: &Source,
         platform: Option<&Platform>,
         meta: &Meta,
+        resolver: &dyn Resolve,
         log: &dyn Log,
     ) -> Result<Answer, String> {
         let normalized = platform.map(platform::normalize);
         let wanted = normalized.as_ref().unwrap_or(&p.default_platform);
-        let mut input = input::of_source(source, meta, Some(wanted))
-            .map_err(|e| format!("failed to build policy input: {e}"))?;
-        input.env = p.env.clone();
+        let mut input = provenance::source_to_input(
+            source,
+            meta,
+            Some(wanted),
+            Some(&self.trust),
+            &mut |level, text| self.say(p, level, log, text),
+        )
+        .map_err(|e| format!("failed to build policy input: {e}"))?;
         let name = source_name(source, normalized.as_ref());
         self.say(
             p,
@@ -1306,11 +1523,37 @@ impl Policies {
             log,
             &format!("checking policy for source {name}"),
         );
+        for _ in 0..MAX_RESOLVES {
+            let mut run_input = input.clone();
+            provenance::apply_env(&mut run_input, &p.env, 0);
+            if let Some(answer) =
+                self.decide(p, &mut input, &run_input, source, wanted, &name, resolver, log)?
+            {
+                return Ok(answer);
+            }
+        }
+        Err("maximum attempts reached for resolving policy metadata".into())
+    }
+
+    /// One pass of CheckPolicy's loop over `run_input`: the answer, or `None` where what
+    /// the policy asked of the materials was resolved into `input`, to run again.
+    #[allow(clippy::too_many_arguments)]
+    fn decide(
+        &self,
+        p: &Policy,
+        input: &mut Input,
+        run_input: &Input,
+        source: &Source,
+        wanted: &Platform,
+        name: &str,
+        resolver: &dyn Resolve,
+        log: &dyn Log,
+    ) -> Result<Option<Answer>, String> {
         self.say(
             p,
             LogLevel::Debug,
             log,
-            &format!("policy input: {}", input.json().indented()),
+            &format!("policy input: {}", run_input.json().indented()),
         );
         let unknowns = input.unknown_refs();
         if !unknowns.is_empty() {
@@ -1320,10 +1563,7 @@ impl Policies {
                 log,
                 &format!("unknowns for policy evaluation: {}", summarize(&unknowns)),
             );
-            let run = with_stack(|| p.run(&input, true))?;
-            for line in &run.prints {
-                self.say(p, LogLevel::Info, log, line);
-            }
+            let run = self.run(p, run_input, true, log)?;
             run.decision?;
             let mut unk: Vec<String> = run
                 .unknown
@@ -1331,18 +1571,29 @@ impl Policies {
                 .map(|u| u.strip_prefix("input.").unwrap_or(u).to_string())
                 .collect();
             unk.extend(run.runtime);
-            if let Some(answer) = self.resolve(p, wanted, &name, &unk, run.checksum, log)? {
-                return Ok(answer);
+            match self.resolve(p, input, source, wanted, name, &unk, run.checksum, resolver, log)? {
+                Some(Step::Ask(request)) => return Ok(Some(Answer::Resolve(request))),
+                Some(Step::Retry) => return Ok(None),
+                None => {}
             }
         }
-        let run = with_stack(|| p.run(&input, false))?;
-        for line in &run.prints {
-            self.say(p, LogLevel::Info, log, line);
-        }
+        let run = self.run(p, run_input, false, log)?;
         let decision = run.decision?;
         // What the functions could not answer is fetched, and the policy run again.
-        if let Some(answer) = self.resolve(p, wanted, &name, &run.runtime, run.checksum, log)? {
-            return Ok(answer);
+        match self.resolve(
+            p,
+            input,
+            source,
+            wanted,
+            name,
+            &run.runtime,
+            run.checksum,
+            resolver,
+            log,
+        )? {
+            Some(Step::Ask(request)) => return Ok(Some(Answer::Resolve(request))),
+            Some(Step::Retry) => return Ok(None),
+            None => {}
         }
         let decision = decision.ok_or("policy returned zero result")?;
         self.say(
@@ -1366,7 +1617,7 @@ impl Policies {
                         log,
                         &format!("policy decision for source {name}: convert to {}", to.identifier),
                     );
-                    return Ok(Answer::Convert(to));
+                    return Ok(Some(Answer::Convert(to)));
                 }
                 pins => {
                     return Err(format!(
@@ -1381,7 +1632,7 @@ impl Policies {
                 log,
                 &format!("policy decision for source {name}: ALLOW"),
             );
-            return Ok(Answer::Allow);
+            return Ok(Some(Answer::Allow));
         }
         self.say(
             p,
@@ -1392,7 +1643,7 @@ impl Policies {
         for m in &decision.deny {
             self.say(p, LogLevel::Info, log, &format!(" - {m}"));
         }
-        Ok(Answer::Deny(decision.deny))
+        Ok(Some(Answer::Deny(decision.deny)))
     }
 }
 
@@ -1500,15 +1751,35 @@ fn go_type(v: &Value) -> &'static str {
 
 /// Rego's parser, compiler and evaluator recurse as deep as the documents and rules they
 /// walk, which Go's growable stacks allow: they run on a thread with room for the
-/// deepest a policy may be.
-fn with_stack<T: Send>(f: impl FnOnce() -> T + Send) -> Result<T, String> {
+/// deepest a policy may be, the calling thread answering what the evaluation asks until
+/// it ends.
+fn with_stack_serving<T: Send>(
+    f: impl FnOnce(&mpsc::Sender<Ask>) -> T + Send,
+    serve: &dyn Fn(Ask),
+) -> Result<T, String> {
     #[cfg(test)]
     let size = tests::PROBE.with(std::cell::Cell::get).unwrap_or(STACK);
     #[cfg(not(test))]
     let size = STACK;
-    with_stack_of(size, f)
+    let (tx, rx) = mpsc::channel();
+    std::thread::scope(|s| {
+        let evaluation = std::thread::Builder::new()
+            .name("policy".into())
+            .stack_size(size)
+            .spawn_scoped(s, move || f(&tx))
+            .map_err(|e| format!("starting the policy's evaluation: {e}"))?;
+        // The evaluation's sender goes when it ends, which ends this.
+        for ask in rx {
+            serve(ask);
+        }
+        evaluation
+            .join()
+            .map_err(|_| "the policy's evaluation failed".to_string())
+    })
 }
 
+/// A thread of `size` for the stack measurement, as [`with_stack_serving`] makes one.
+#[cfg(test)]
 fn with_stack_of<T: Send>(size: usize, f: impl FnOnce() -> T + Send) -> Result<T, String> {
     std::thread::scope(|s| {
         std::thread::Builder::new()
@@ -1544,6 +1815,20 @@ mod tests {
     impl Log for Lines {
         fn line(&self, text: &str) {
             self.0.borrow_mut().push(text.to_string());
+        }
+
+        fn fetch(&self, name: &str, url: &str, _: Option<&str>) -> Result<Vec<u8>, String> {
+            self.0.borrow_mut().push(format!("FETCH {name} {url}"));
+            Err("invalid response status 404".into())
+        }
+    }
+
+    /// A resolver with nothing to tell.
+    struct NoMeta;
+
+    impl Resolve for NoMeta {
+        fn resolve(&self, source: &Source, _: &MetaRequest) -> Result<Meta, String> {
+            Err(format!("no metadata for {}", source.identifier))
         }
     }
 
@@ -1672,6 +1957,112 @@ mod tests {
         .unwrap()
     }
 
+    /// An image whose provenance names a material, and the material's digest.
+    struct Provenanced(RefCell<Vec<(String, MetaRequest)>>);
+
+    impl Resolve for Provenanced {
+        fn resolve(&self, source: &Source, request: &MetaRequest) -> Result<Meta, String> {
+            self.0
+                .borrow_mut()
+                .push((source.identifier.clone(), request.clone()));
+            let digest = |c: char| format!("sha256:{}", c.to_string().repeat(64));
+            let statement = format!(
+                r#"{{"predicateType":"{}","predicate":{{"buildDefinition":{{"buildType":"t","resolvedDependencies":[{{"uri":"pkg:docker/golang@1.25?platform=linux%2Famd64"}}]}}}}}}"#,
+                shards_sigstore::image::SLSA_V1
+            );
+            let mut desc = shards_sigstore::image::Descriptor::default();
+            desc.annotations.insert(
+                "in-toto.io/predicate-type".into(),
+                shards_sigstore::image::SLSA_V1.into(),
+            );
+            let chain = AttestationChain {
+                attestation_manifest: digest('d'),
+                blobs: [(digest('1'), (desc, statement.into_bytes()))].into(),
+                ..AttestationChain::default()
+            };
+            let image = match source.identifier.as_str() {
+                "docker-image://docker.io/library/alpine:3.20" => ImageMeta {
+                    digest: digest('a'),
+                    config: None,
+                    attestation_chain: Some(chain),
+                },
+                "docker-image://docker.io/library/golang:1.25" => ImageMeta {
+                    digest: digest('b'),
+                    config: None,
+                    attestation_chain: None,
+                },
+                other => return Err(format!("no metadata for {other}")),
+            };
+            Ok(Meta {
+                image: Some(image),
+                ..Meta::default()
+            })
+        }
+    }
+
+    /// CheckPolicy's loop: the image's provenance asked of BuildKit, then its material's
+    /// checksum resolved by the policy itself, for the material's own platform, and the
+    /// policy run again.
+    #[test]
+    fn a_policy_reads_provenance_materials() {
+        let dir = scratch("materials");
+        let p = policy_in(
+            &dir,
+            &format!(
+                "package docker\n\ndefault allow := false\n\nallow if {{\n\tinput.local\n}}\n\nallow if {{\n\tinput.image.provenance.materials[0].image.checksum == \"sha256:{}\"\n}}\n\ndecision := {{\"allow\": allow}}\n",
+                "b".repeat(64)
+            ),
+        );
+        let log = Lines(RefCell::new(Vec::new()));
+        let resolver = Provenanced(RefCell::new(Vec::new()));
+        let alpine = Source::new("docker-image://docker.io/library/alpine:3.20");
+        let verdict = p.evaluate(&alpine, None, &resolver, &log);
+        assert!(matches!(verdict, Ok(None)), "{verdict:?} {:?}", log.0.borrow());
+        let calls = resolver.0.borrow();
+        let asked: Vec<(&str, Option<&ImageRequest>, Option<&Platform>)> = calls
+            .iter()
+            .map(|(s, r)| (s.as_str(), r.image.as_ref(), r.platform.as_ref()))
+            .collect();
+        let amd64 = Platform::new("linux", "amd64");
+        let arm64 = Platform::new("linux", "arm64");
+        assert_eq!(
+            asked,
+            [
+                (
+                    "docker-image://docker.io/library/alpine:3.20",
+                    Some(&ImageRequest {
+                        no_config: true,
+                        attestation_chain: true,
+                        resolve_attestations: vec![
+                            shards_sigstore::image::SLSA_V02.into(),
+                            shards_sigstore::image::SLSA_V1.into()
+                        ],
+                    }),
+                    Some(&arm64)
+                ),
+                (
+                    "docker-image://docker.io/library/golang:1.25",
+                    Some(&ImageRequest::default()),
+                    Some(&amd64)
+                ),
+            ]
+        );
+        let lines = log.0.borrow();
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|l| l.starts_with("checking policy for source"))
+                .count(),
+            2,
+            "{lines:?}"
+        );
+        assert_eq!(
+            lines.last().map(String::as_str),
+            Some("policy decision for source docker-image://docker.io/library/alpine:3.20: ALLOW")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     fn scratch(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("shards-policy-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
@@ -1704,7 +2095,7 @@ mod tests {
         let log = Lines(RefCell::new(Vec::new()));
         let local = Source::new("local://context");
         assert_eq!(
-            p.answer(&local, None, &Meta::default(), &log).unwrap(),
+            p.answer(&local, None, &Meta::default(), &NoMeta, &log).unwrap(),
             Answer::Allow,
             "{:?}",
             log.0.borrow()
@@ -1736,7 +2127,7 @@ mod tests {
             ),
         );
         assert_eq!(
-            p.answer(&local, None, &Meta::default(), &log).unwrap(),
+            p.answer(&local, None, &Meta::default(), &NoMeta, &log).unwrap(),
             Answer::Allow,
             "{:?}",
             log.0.borrow()

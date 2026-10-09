@@ -502,6 +502,9 @@ type leafSpec struct {
 	badDERIssuer bool
 }
 
+// leafURI: a leaf's URI SAN (the image oracle changes it for other signers).
+var leafURI = "https://github.com/moby/buildkit/.github/workflows/build.yml@refs/tags/v0.28.1"
+
 var (
 	oidIssuerV1  = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 57264, 1, 1}
 	oidSCTList   = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 11129, 2, 4, 2}
@@ -563,7 +566,7 @@ func (w *world) leaf(s signer, spec leafSpec) *x509.Certificate {
 		})
 	case "none":
 	default:
-		u, _ := url.Parse("https://github.com/moby/buildkit/.github/workflows/build.yml@refs/tags/v0.28.1")
+		u, _ := url.Parse(leafURI)
 		tmpl.URIs = []*url.URL{u}
 	}
 	if spec.extsV1 {

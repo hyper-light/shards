@@ -5,10 +5,10 @@
 //! verify/tlog.go's hasRekorV1STH; each failure in the words of the code it ports.
 
 mod gocodec;
-mod gojson;
+pub mod gojson;
 mod jcs;
 pub mod note;
-mod pem;
+pub(crate) mod pem;
 mod semver;
 mod v1;
 mod v2;
@@ -64,6 +64,11 @@ pub fn parse_entry(tle: &TlogEntry) -> Result<Entry, String> {
             _ => {}
         }
     }
+    new_entry(tle)
+}
+
+/// NewTlogEntry: the body read as Rekor v2's, else v1's, with no other check.
+pub fn new_entry(tle: &TlogEntry) -> Result<Entry, String> {
     let body_bytes = tle.canonicalized_body.clone().unwrap_or_default();
     let body = match v2::unmarshal(&body_bytes) {
         Some(e) => Body::V2(e),
