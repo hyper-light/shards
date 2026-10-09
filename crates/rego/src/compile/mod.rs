@@ -50,7 +50,9 @@ pub type RuleNode = (String, usize, usize);
 /// Whether a ref may name (part of) the document a rule defines: their common parts
 /// equal, a variable matching anything.
 pub fn refers_to(r: &[Term], rule: &[Term]) -> bool {
-    r.iter().zip(rule).all(|(a, b)| a.as_var().is_some() || b.as_var().is_some() || a.equal(b))
+    r.iter()
+        .zip(rule)
+        .all(|(a, b)| a.as_var().is_some() || b.as_var().is_some() || a.equal(b))
         && r.first().and_then(Term::as_var) == rule.first().and_then(Term::as_var)
 }
 
@@ -69,7 +71,9 @@ pub fn ref_key(r: &[Term]) -> Vec<String> {
 impl RuleTree {
     /// GetRulesExact.
     pub fn exact(&self, r: &[Term]) -> &[RuleId] {
-        if r.iter().any(|t| matches!(t.value, TermValue::Ref(_) | TermValue::Call(_))) {
+        if r.iter()
+            .any(|t| matches!(t.value, TermValue::Ref(_) | TermValue::Call(_)))
+        {
             return &[];
         }
         self.nodes.get(&ref_key(r)).map(Vec::as_slice).unwrap_or_default()
@@ -127,7 +131,8 @@ impl Compiler {
         let take = remaining.min(errs.len());
         self.errors.extend(errs.into_iter().take(take));
         if self.errors.len() == MAX_ERRS {
-            self.errors.push(CompileError::compile(None, "error limit reached".into()));
+            self.errors
+                .push(CompileError::compile(None, "error limit reached".into()));
             self.limit_reached = true;
             return false;
         }
@@ -136,7 +141,9 @@ impl Compiler {
 
     /// The declaration of a callable builtin or host function.
     pub fn builtin_decl(&self, name: &str) -> Option<&Type> {
-        allowed(name).map(|b| &b.decl).or_else(|| self.functions.iter().find(|f| f.name == name).map(|f| &f.decl))
+        allowed(name)
+            .map(|b| &b.decl)
+            .or_else(|| self.functions.iter().find(|f| f.name == name).map(|f| &f.decl))
     }
 
     /// GetArity: a builtin's declared arguments, or a function rule's; None when neither.
@@ -207,7 +214,11 @@ impl Compiler {
         let mut errs = Vec::new();
         for m in self.modules.values_mut() {
             let mut globals: HashMap<Var, Vec<Term>> = HashMap::new();
-            for r in exports.get(&ref_key(&m.package.path)).map(Vec::as_slice).unwrap_or_default() {
+            for r in exports
+                .get(&ref_key(&m.package.path))
+                .map(Vec::as_slice)
+                .unwrap_or_default()
+            {
                 if let Some(v) = r.first().and_then(Term::as_var) {
                     let mut path = m.package.path.clone();
                     path.push(Term::string(v, None));
@@ -248,20 +259,34 @@ impl Compiler {
     /// `input`.
     fn check_keyword_overrides(&mut self) {
         for name in self.names() {
-            let Some(m) = self.modules.get(&name) else { continue };
+            let Some(m) = self.modules.get(&name) else {
+                continue;
+            };
             let mut errs = Vec::new();
             for rule in &m.rules {
                 let mut r = Some(rule);
                 while let Some(x) = r {
-                    let head_name = x.head.reference.first().and_then(Term::as_var).map(str::to_string).or_else(|| x.head.name.as_deref().map(str::to_string));
+                    let head_name = x
+                        .head
+                        .reference
+                        .first()
+                        .and_then(Term::as_var)
+                        .map(str::to_string)
+                        .or_else(|| x.head.name.as_deref().map(str::to_string));
                     if let Some(n) = head_name.filter(|n| n == "data" || n == "input") {
-                        errs.push(CompileError::compile(x.loc.clone(), format!("rules must not shadow {n} (use a different rule name)")));
+                        errs.push(CompileError::compile(
+                            x.loc.clone(),
+                            format!("rules must not shadow {n} (use a different rule name)"),
+                        ));
                     }
                     for a in &x.head.args {
                         if let Some([t]) = a.as_ref()
                             && matches!(t.as_var(), Some("data" | "input"))
                         {
-                            errs.push(CompileError::compile(a.loc.clone(), format!("args must not shadow {a} (use a different variable name)")));
+                            errs.push(CompileError::compile(
+                                a.loc.clone(),
+                                format!("args must not shadow {a} (use a different variable name)"),
+                            ));
                         }
                     }
                     r = x.else_.as_deref();
@@ -274,7 +299,10 @@ impl Compiler {
                     {
                         let n = op.to_string();
                         if n == "data" || n == "input" {
-                            errs.push(CompileError::compile(e.loc.clone(), format!("variables must not shadow {n} (use a different variable name)")));
+                            errs.push(CompileError::compile(
+                                e.loc.clone(),
+                                format!("variables must not shadow {n} (use a different variable name)"),
+                            ));
                         }
                     }
                 });
@@ -297,7 +325,10 @@ impl Compiler {
                     if let Some(a) = &prev.alias {
                         text.push_str(&format!(" as {a}"));
                     }
-                    errs.push(CompileError::compile(imp.loc.clone(), format!("import must not shadow {text}")));
+                    errs.push(CompileError::compile(
+                        imp.loc.clone(),
+                        format!("import must not shadow {text}"),
+                    ));
                 } else {
                     seen.insert(name, imp);
                 }
@@ -318,7 +349,10 @@ impl Compiler {
         for (name, m) in &self.modules {
             for (i, r) in m.rules.iter().enumerate() {
                 let path = ground_prefix(&rule_ref(&m.package.path, r));
-                tree.nodes.entry(ref_key(&path)).or_default().push((name.clone(), i));
+                tree.nodes
+                    .entry(ref_key(&path))
+                    .or_default()
+                    .push((name.clone(), i));
             }
         }
         self.tree = tree;
@@ -331,7 +365,10 @@ impl Compiler {
         let mut all_errs = Vec::new();
         for m in self.modules.values_mut() {
             for rule in m.rules.iter_mut() {
-                let mut rw = localvars::Rewriter { vargen: &mut vargen, errs: Vec::new() };
+                let mut rw = localvars::Rewriter {
+                    vargen: &mut vargen,
+                    errs: Vec::new(),
+                };
                 let mut args_stack = localvars::Stack::default();
                 localvars::rewrite_arg_vars(&mut rw, &mut args_stack, rule);
                 let mut r = Some(rule);
@@ -355,24 +392,39 @@ impl Compiler {
             let ids = self.tree.nodes.get(path).cloned().unwrap_or_default();
             let rules: Vec<&Rule> = ids.iter().filter_map(|id| self.rule(id)).collect();
             let Some(first) = rules.first() else { continue };
-            let pkg = ids.first().and_then(|id| self.modules.get(&id.0)).map(|m| m.package.path.clone()).unwrap_or_default();
+            let pkg = ids
+                .first()
+                .and_then(|id| self.modules.get(&id.0))
+                .map(|m| m.package.path.clone())
+                .unwrap_or_default();
             let name = rewrite_vars_in_ref(&self.rewritten, &rule_ref(&pkg, first));
-            let kinds: std::collections::HashSet<bool> = rules.iter().map(|r| r.head.kind() == crate::ast::RuleKind::MultiValue).collect();
+            let kinds: std::collections::HashSet<bool> = rules
+                .iter()
+                .map(|r| r.head.kind() == crate::ast::RuleKind::MultiValue)
+                .collect();
             let arities: std::collections::HashSet<usize> = rules.iter().map(|r| r.head.args.len()).collect();
             let complete = rules
                 .iter()
-                .filter(|r| r.head.kind() == crate::ast::RuleKind::SingleValue && r.head.ref_path().iter().skip(1).all(Term::is_ground))
+                .filter(|r| {
+                    r.head.kind() == crate::ast::RuleKind::SingleValue
+                        && r.head.ref_path().iter().skip(1).all(Term::is_ground)
+                })
                 .count();
             let partial = rules.len() - complete;
             let defaults: Vec<&&Rule> = rules.iter().filter(|r| r.default).collect();
             // A complete rule whose path is a prefix of another rule's conflicts with it.
-            let children: Vec<&Vec<String>> = paths.iter().filter(|p| p.len() > path.len() && p.starts_with(path)).collect();
+            let children: Vec<&Vec<String>> = paths
+                .iter()
+                .filter(|p| p.len() > path.len() && p.starts_with(path))
+                .collect();
             if first.head.ref_path().iter().skip(1).all(Term::is_ground) && !children.is_empty() {
                 // flattenChildren: the children's rules' refs, prefixes only, sorted.
                 let mut refs: Vec<Vec<Term>> = Vec::new();
                 for p in &children {
                     for id in self.tree.nodes.get(*p).map(Vec::as_slice).unwrap_or_default() {
-                        let Some(m) = self.modules.get(&id.0) else { continue };
+                        let Some(m) = self.modules.get(&id.0) else {
+                            continue;
+                        };
                         let Some(r) = m.rules.get(id.1) else { continue };
                         let rr = rule_ref(&m.package.path, r);
                         if refs.iter().any(|x| has_prefix(&rr, x)) {
@@ -382,19 +434,39 @@ impl Compiler {
                         refs.push(rr);
                     }
                 }
-                refs.sort_by(|a, b| crate::compare::term_compare(&Term::reference(a.clone(), None), &Term::reference(b.clone(), None)));
+                refs.sort_by(|a, b| {
+                    crate::compare::term_compare(
+                        &Term::reference(a.clone(), None),
+                        &Term::reference(b.clone(), None),
+                    )
+                });
                 let list: Vec<String> = refs.iter().map(|r| text_of_ref(r)).collect();
-                errs.push(CompileError::new(TYPE_ERR, first.loc.clone(), format!("rule {name} conflicts with [{}]", list.join(" "))));
+                errs.push(CompileError::new(
+                    TYPE_ERR,
+                    first.loc.clone(),
+                    format!("rule {name} conflicts with [{}]", list.join(" ")),
+                ));
                 continue;
             }
             if kinds.len() > 1 || arities.len() > 1 || (complete >= 1 && partial >= 1) {
-                errs.push(CompileError::new(TYPE_ERR, first.loc.clone(), format!("conflicting rules {name} found")));
+                errs.push(CompileError::new(
+                    TYPE_ERR,
+                    first.loc.clone(),
+                    format!("conflicting rules {name} found"),
+                ));
                 continue;
             }
             if defaults.len() > 1 {
                 let locs: Vec<String> = defaults.iter().map(|r| loc_text(&r.loc)).collect();
-                let pkg_loc = self.modules.get(&ids.first().map(|i| i.0.clone()).unwrap_or_default()).and_then(|m| m.package.loc.clone());
-                errs.push(CompileError::new(TYPE_ERR, pkg_loc, format!("multiple default rules {name} found at {}", locs.join(", "))));
+                let pkg_loc = self
+                    .modules
+                    .get(&ids.first().map(|i| i.0.clone()).unwrap_or_default())
+                    .and_then(|m| m.package.loc.clone());
+                errs.push(CompileError::new(
+                    TYPE_ERR,
+                    pkg_loc,
+                    format!("multiple default rules {name} found at {}", locs.join(", ")),
+                ));
             }
         }
         self.err(errs);
@@ -407,7 +479,9 @@ impl Compiler {
             for rule in &m.rules {
                 walk_exprs(rule, &mut |e: &Expr| {
                     let ExprTerms::Call(terms) = &e.terms else { return };
-                    let Some(op) = terms.first().and_then(Term::as_ref) else { return };
+                    let Some(op) = terms.first().and_then(Term::as_ref) else {
+                        return;
+                    };
                     let operands = terms.len() - 1;
                     match self.arity(op) {
                         Some(arity) => {
@@ -424,7 +498,11 @@ impl Compiler {
                         }
                         None => {
                             let f = rewrite_vars_in_ref(&self.rewritten, op);
-                            errs.push(CompileError::new(TYPE_ERR, e.loc.clone(), format!("undefined function {f}")));
+                            errs.push(CompileError::new(
+                                TYPE_ERR,
+                                e.loc.clone(),
+                                format!("undefined function {f}"),
+                            ));
                         }
                     }
                 });
@@ -435,7 +513,11 @@ impl Compiler {
 
     fn arity_error(&self, e: &Expr, f: &str, exp: usize, act: usize) -> CompileError {
         let noun = if act == 1 { "argument" } else { "arguments" };
-        CompileError::new(TYPE_ERR, e.loc.clone(), format!("function {f} has arity {exp}, got {act} {noun}"))
+        CompileError::new(
+            TYPE_ERR,
+            e.loc.clone(),
+            format!("function {f} has arity {exp}, got {act} {noun}"),
+        )
     }
 
     /// checkSafetyRuleHeads.
@@ -465,7 +547,11 @@ impl Compiler {
                         for v in head_vars.vars.difference(&vis.vars) {
                             let v = self.rewritten.get(v).cloned().unwrap_or_else(|| v.clone());
                             if !vars::is_generated(&v) {
-                                errs.push(CompileError::new(UNSAFE_VAR_ERR, x.head.loc.clone(), format!("var {v} is unsafe")));
+                                errs.push(CompileError::new(
+                                    UNSAFE_VAR_ERR,
+                                    x.head.loc.clone(),
+                                    format!("var {v} is unsafe"),
+                                ));
                             }
                         }
                     }
@@ -480,7 +566,9 @@ impl Compiler {
     fn check_safety_rule_bodies(&mut self) {
         let names = self.names();
         for name in names {
-            let Some(m) = self.modules.get(&name) else { continue };
+            let Some(m) = self.modules.get(&name) else {
+                continue;
+            };
             let mut rules = m.rules.clone();
             for rule in rules.iter_mut() {
                 let mut r = Some(rule);
@@ -509,7 +597,13 @@ impl Compiler {
             }
             false
         };
-        for t in rule.head.args.iter().chain(rule.head.key.iter()).chain(rule.head.value.iter()) {
+        for t in rule
+            .head
+            .args
+            .iter()
+            .chain(rule.head.key.iter())
+            .chain(rule.head.value.iter())
+        {
             safety::walk_terms(t, &mut collect);
         }
         for e in &rule.body {
@@ -559,8 +653,14 @@ impl Compiler {
                     let path = self.dfs(&node, &node, &mut visited);
                     if !path.is_empty() {
                         let text = |n: &RuleNode| -> String {
-                            let pkg = self.modules.get(&n.0).map(|m| m.package.path.clone()).unwrap_or_default();
-                            self.rule_node(n).map(|r| text_of_ref(&rule_ref(&pkg, r))).unwrap_or_default()
+                            let pkg = self
+                                .modules
+                                .get(&n.0)
+                                .map(|m| m.package.path.clone())
+                                .unwrap_or_default();
+                            self.rule_node(n)
+                                .map(|r| text_of_ref(&rule_ref(&pkg, r)))
+                                .unwrap_or_default()
                         };
                         let names: Vec<String> = path.iter().rev().map(text).collect();
                         errs.push(CompileError::new(
@@ -577,11 +677,18 @@ impl Compiler {
     }
 
     /// util.dfsRecursive.
-    fn dfs(&self, u: &RuleNode, z: &RuleNode, visited: &mut std::collections::HashSet<RuleNode>) -> Vec<RuleNode> {
+    fn dfs(
+        &self,
+        u: &RuleNode,
+        z: &RuleNode,
+        visited: &mut std::collections::HashSet<RuleNode>,
+    ) -> Vec<RuleNode> {
         if !visited.insert(u.clone()) {
             return Vec::new();
         }
-        let Some(rule) = self.rule_node(u) else { return Vec::new() };
+        let Some(rule) = self.rule_node(u) else {
+            return Vec::new();
+        };
         for v in self.dependencies(rule) {
             if &v == z {
                 return vec![z.clone(), u.clone()];
@@ -780,7 +887,9 @@ fn collect_arg_vars(t: &Term, out: &mut VarSet) -> Result<(), String> {
             if let [only] = r.as_slice()
                 && matches!(only.as_var(), Some("data" | "input"))
             {
-                return Err(format!("args must not shadow {t} (use a different variable name)"));
+                return Err(format!(
+                    "args must not shadow {t} (use a different variable name)"
+                ));
             }
             for x in r {
                 collect_arg_vars(x, out)?;
@@ -843,7 +952,10 @@ fn resolve_term(globals: &HashMap<Var, Vec<Term>>, ignore: &mut Vec<VarSet>, t: 
             if let Some(g) = globals.get(v)
                 && !ignored(ignore, v)
             {
-                let r: Vec<Term> = g.iter().map(|x| Term::new(x.value.clone(), loc.clone())).collect();
+                let r: Vec<Term> = g
+                    .iter()
+                    .map(|x| Term::new(x.value.clone(), loc.clone()))
+                    .collect();
                 t.value = TermValue::Ref(r);
             }
         }
@@ -852,7 +964,13 @@ fn resolve_term(globals: &HashMap<Var, Vec<Term>>, ignore: &mut Vec<VarSet>, t: 
             for (i, x) in r.iter_mut().enumerate() {
                 match &x.value {
                     TermValue::Var(v) if globals.contains_key(v) && !ignored(ignore, v) => {
-                        let g: Vec<Term> = globals.get(v).cloned().unwrap_or_default().into_iter().map(|y| Term::new(y.value, x.loc.clone())).collect();
+                        let g: Vec<Term> = globals
+                            .get(v)
+                            .cloned()
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(|y| Term::new(y.value, x.loc.clone()))
+                            .collect();
                         if i == 0 {
                             out = g;
                         } else {
@@ -884,7 +1002,9 @@ fn resolve_term(globals: &HashMap<Var, Vec<Term>>, ignore: &mut Vec<VarSet>, t: 
             }
             *o = pairs;
         }
-        TermValue::Array(a) | TermValue::Call(a) => a.iter_mut().for_each(|x| resolve_term(globals, ignore, x)),
+        TermValue::Array(a) | TermValue::Call(a) => {
+            a.iter_mut().for_each(|x| resolve_term(globals, ignore, x))
+        }
         TermValue::Set(s) => {
             let mut items: Vec<Term> = vars::sorted_items(s).into_iter().cloned().collect();
             items.iter_mut().for_each(|x| resolve_term(globals, ignore, x));

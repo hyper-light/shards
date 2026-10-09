@@ -3,7 +3,7 @@
 
 use std::cmp::Ordering;
 
-use crate::ast::{Term, TermValue};
+use crate::ast::{Body, Expr, ExprTerms, Head, Rule, Term, TermValue, With};
 use crate::value::number_compare;
 
 /// ast.sortOrder.
@@ -75,8 +75,107 @@ pub fn term_compare(a: &Term, b: &Term) -> Ordering {
             }
             xs.len().cmp(&ys.len())
         }
-        // Comprehensions and template strings: OPA compares their terms and bodies;
-        // their text orders them the same way for equal kinds and is total.
+        (TermValue::ArrayCompr(x, xb), TermValue::ArrayCompr(y, yb))
+        | (TermValue::SetCompr(x, xb), TermValue::SetCompr(y, yb)) => {
+            term_compare(x, y).then_with(|| body_compare(xb, yb))
+        }
+        (TermValue::ObjectCompr(xk, xv, xb), TermValue::ObjectCompr(yk, yv, yb)) => term_compare(xk, yk)
+            .then_with(|| term_compare(xv, yv))
+            .then_with(|| body_compare(xb, yb)),
+        // Template strings: OPA compares their parts; their text orders them the same way.
         _ => a.to_string().cmp(&b.to_string()),
     }
+}
+
+/// Compare over optional terms: nil first.
+fn opt_compare(a: Option<&Term>, b: Option<&Term>) -> Ordering {
+    match (a, b) {
+        (None, None) => Ordering::Equal,
+        (None, Some(_)) => Ordering::Less,
+        (Some(_), None) => Ordering::Greater,
+        (Some(x), Some(y)) => term_compare(x, y),
+    }
+}
+
+/// Expr.sortOrder.
+fn expr_order(e: &Expr) -> u8 {
+    match e.terms {
+        ExprTerms::Some(_) => 0,
+        ExprTerms::Term(_) => 1,
+        ExprTerms::Call(_) => 2,
+        ExprTerms::Every(_) => 3,
+    }
+}
+
+/// Expr.Compare.
+pub fn expr_compare(a: &Expr, b: &Expr) -> Ordering {
+    let c = expr_order(a)
+        .cmp(&expr_order(b))
+        .then(a.index.cmp(&b.index))
+        .then(a.negated.cmp(&b.negated));
+    if c != Ordering::Equal {
+        return c;
+    }
+    let c = match (&a.terms, &b.terms) {
+        (ExprTerms::Term(x), ExprTerms::Term(y)) => term_compare(x, y),
+        (ExprTerms::Call(x), ExprTerms::Call(y)) => slice_compare(x, y),
+        (ExprTerms::Some(x), ExprTerms::Some(y)) => slice_compare(&x.symbols, &y.symbols),
+        (ExprTerms::Every(x), ExprTerms::Every(y)) => opt_compare(x.key.as_ref(), y.key.as_ref())
+            .then_with(|| term_compare(&x.value, &y.value))
+            .then_with(|| term_compare(&x.domain, &y.domain))
+            .then_with(|| body_compare(&x.body, &y.body)),
+        _ => Ordering::Equal,
+    };
+    c.then_with(|| with_slice_compare(&a.with, &b.with))
+}
+
+fn with_slice_compare(a: &[With], b: &[With]) -> Ordering {
+    for (x, y) in a.iter().zip(b) {
+        let c = term_compare(&x.target, &y.target).then_with(|| term_compare(&x.value, &y.value));
+        if c != Ordering::Equal {
+            return c;
+        }
+    }
+    a.len().cmp(&b.len())
+}
+
+/// Body.Compare.
+pub fn body_compare(a: &Body, b: &Body) -> Ordering {
+    for (x, y) in a.iter().zip(b) {
+        let c = expr_compare(x, y);
+        if c != Ordering::Equal {
+            return c;
+        }
+    }
+    a.len().cmp(&b.len())
+}
+
+/// Head.Compare.
+fn head_compare(a: &Head, b: &Head) -> Ordering {
+    b.assign
+        .cmp(&a.assign)
+        .then_with(|| slice_compare(&a.args, &b.args))
+        .then_with(|| slice_compare(&a.reference, &b.reference))
+        .then_with(|| {
+            a.name
+                .as_deref()
+                .unwrap_or_default()
+                .as_bytes()
+                .cmp(b.name.as_deref().unwrap_or_default().as_bytes())
+        })
+        .then_with(|| opt_compare(a.key.as_ref(), b.key.as_ref()))
+        .then_with(|| opt_compare(a.value.as_ref(), b.value.as_ref()))
+}
+
+/// Rule.Compare.
+pub fn rule_compare(a: &Rule, b: &Rule) -> Ordering {
+    head_compare(&a.head, &b.head)
+        .then(a.default.cmp(&b.default))
+        .then_with(|| body_compare(&a.body, &b.body))
+        .then_with(|| match (&a.else_, &b.else_) {
+            (None, None) => Ordering::Equal,
+            (None, Some(_)) => Ordering::Less,
+            (Some(_), None) => Ordering::Greater,
+            (Some(x), Some(y)) => rule_compare(x, y),
+        })
 }

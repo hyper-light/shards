@@ -2,8 +2,6 @@
 
 use super::Builtin;
 
-pub fn lookup(name: &str) -> Option<Builtin> {
-    match name {
-        _ => None,
-    }
+pub fn lookup(_name: &str) -> Option<Builtin> {
+    None
 }

@@ -5,8 +5,14 @@
 # crates/rego/testdata/cases.json, which crates/rego/tests/oracle.rs expects shards-rego
 # to make. Run with the Go release that builds that buildx (1.26).
 #
-#   scripts/rego/generate
+#   scripts/rego/generate [STEP...]
+#
+# With STEPs (rego, numbers, builtins, parse, compile), regenerates only those.
 set -eu
+steps=" $* "
+want() {
+	[ "$steps" = "  " ] || case "$steps" in *" $1 "*) true ;; *) false ;; esac
+}
 
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
@@ -43,17 +49,27 @@ cp "$here/oracle_test.go" "$work/oracle_test.go"
 cd "$work"
 go get github.com/open-policy-agent/opa@v1.14.1 >/dev/null 2>&1
 go mod tidy >/dev/null 2>&1
-SHARDS_REGO_CASES="$root/crates/rego/testdata/cases.json" \
-	SHARDS_REGO_OUT="$root/crates/rego/testdata/oracle.json" \
-	go test -count=1 -run '^TestShardsRego$' .
-SHARDS_NUMBERS="$root/crates/rego/testdata/numbers.json" \
-	SHARDS_NUMBERS_OUT="$root/crates/rego/testdata/numbers-oracle.json" \
-	go test -count=1 -run '^TestShardsNumbers$' .
-SHARDS_BUILTINS_OUT="$root/crates/rego/src/builtins.json" \
-	go test -count=1 -run '^TestShardsBuiltins$' .
-SHARDS_PARSE="$root/crates/rego/testdata/parse.json" \
-	SHARDS_PARSE_OUT="$root/crates/rego/testdata/parse-oracle.json" \
-	go test -count=1 -run '^TestShardsParse$' .
-SHARDS_REGO_CASES="$root/crates/rego/testdata/cases.json" \
-	SHARDS_COMPILE_OUT="$root/crates/rego/testdata/compile-oracle.json" \
-	go test -count=1 -run '^TestShardsCompile$' .
+if want rego; then
+	SHARDS_REGO_CASES="$root/crates/rego/testdata/cases.json" \
+		SHARDS_REGO_OUT="$root/crates/rego/testdata/oracle.json" \
+		go test -count=1 -run '^TestShardsRego$' .
+fi
+if want numbers; then
+	SHARDS_NUMBERS="$root/crates/rego/testdata/numbers.json" \
+		SHARDS_NUMBERS_OUT="$root/crates/rego/testdata/numbers-oracle.json" \
+		go test -count=1 -run '^TestShardsNumbers$' .
+fi
+if want builtins; then
+	SHARDS_BUILTINS_OUT="$root/crates/rego/src/builtins.json" \
+		go test -count=1 -run '^TestShardsBuiltins$' .
+fi
+if want parse; then
+	SHARDS_PARSE="$root/crates/rego/testdata/parse.json" \
+		SHARDS_PARSE_OUT="$root/crates/rego/testdata/parse-oracle.json" \
+		go test -count=1 -run '^TestShardsParse$' .
+fi
+if want compile; then
+	SHARDS_REGO_CASES="$root/crates/rego/testdata/cases.json" \
+		SHARDS_COMPILE_OUT="$root/crates/rego/testdata/compile-oracle.json" \
+		go test -count=1 -run '^TestShardsCompile$' .
+fi

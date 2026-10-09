@@ -100,9 +100,7 @@ fn index_rune(s: &[u8], r: u32) -> Option<usize> {
     if r == RUNE_ERROR {
         return runes(s).find(|&(_, c)| c == RUNE_ERROR).map(|(i, _)| i);
     }
-    if char::from_u32(r).is_none() {
-        return None;
-    }
+    char::from_u32(r)?;
     index(s, &encode(r))
 }
 

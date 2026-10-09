@@ -5,8 +5,8 @@
 use super::localvars::{is_scalar, push};
 use super::safety::{self, Unsafe};
 use super::transform::{self, Transformer};
-use super::vars::{self, Var, VarSet, VarVisitor, SAFETY};
-use super::{Compiler, CompileError, RuleTree, TYPE_ERR, is_empty_body, text_of_ref};
+use super::vars::{self, SAFETY, Var, VarSet, VarVisitor};
+use super::{CompileError, Compiler, RuleTree, TYPE_ERR, is_empty_body, text_of_ref};
 use crate::ast::{Body, Expr, ExprTerms, Location, Rule, TemplatePart, Term, TermValue};
 use crate::types::Type;
 
@@ -47,7 +47,9 @@ fn for_each_rule(c: &mut Compiler, mut f: impl FnMut(&mut Compiler, &mut Rule)) 
         // lookups see the module whole, as OPA's do.
         let count = c.modules.get(&name).map_or(0, |m| m.rules.len());
         for i in 0..count {
-            let Some(mut rule) = c.modules.get(&name).and_then(|m| m.rules.get(i)).cloned() else { continue };
+            let Some(mut rule) = c.modules.get(&name).and_then(|m| m.rules.get(i)).cloned() else {
+                continue;
+            };
             let mut r = Some(&mut rule);
             while let Some(x) = r {
                 f(c, x);
@@ -68,7 +70,9 @@ pub fn rewrite_rule_head_refs(c: &mut Compiler) {
         }
         let n = rule.head.reference.len();
         for i in 1..n {
-            let Some(part) = rule.head.reference.get(i).cloned() else { continue };
+            let Some(part) = rule.head.reference.get(i).cloned() else {
+                continue;
+            };
             if part.as_var().is_some() || is_scalar(&part) {
                 continue;
             }
@@ -91,8 +95,16 @@ fn is_constant_rule(rule: &Rule) -> bool {
         return false;
     }
     match rule.head.value.as_ref().map(|v| &v.value) {
-        Some(TermValue::String(_) | TermValue::Var(_) | TermValue::Number(_) | TermValue::Bool(_) | TermValue::Null) => true,
-        Some(TermValue::Array(_) | TermValue::Object(_) | TermValue::Set(_)) => rule.head.value.as_ref().is_some_and(Term::is_ground),
+        Some(
+            TermValue::String(_)
+            | TermValue::Var(_)
+            | TermValue::Number(_)
+            | TermValue::Bool(_)
+            | TermValue::Null,
+        ) => true,
+        Some(TermValue::Array(_) | TermValue::Object(_) | TermValue::Set(_)) => {
+            rule.head.value.as_ref().is_some_and(Term::is_ground)
+        }
         _ => false,
     }
 }
@@ -132,7 +144,11 @@ pub fn rewrite_template_strings(c: &mut Compiler) {
         safe.insert("data".into());
         safe.insert("input".into());
         let body_safe = template_strings_in_body(c, &safe, &mut rule.body, &mut errs);
-        let mut ts = TemplateWalk { c, safe: body_safe, errs: &mut errs };
+        let mut ts = TemplateWalk {
+            c,
+            safe: body_safe,
+            errs: &mut errs,
+        };
         for a in rule.head.args.iter_mut() {
             ts.term(a);
         }
@@ -147,13 +163,22 @@ pub fn rewrite_template_strings(c: &mut Compiler) {
 }
 
 /// rewriteTemplateStrings over a body: returns the variables safe after it.
-fn template_strings_in_body(c: &mut Compiler, globals: &VarSet, body: &mut Body, errs: &mut Vec<CompileError>) -> VarSet {
+fn template_strings_in_body(
+    c: &mut Compiler,
+    globals: &VarSet,
+    body: &mut Body,
+    errs: &mut Vec<CompileError>,
+) -> VarSet {
     let mut safe = {
         let arity = arity_of(c);
         safety::output_vars_for_body(body, &arity, globals)
     };
     safe.extend(globals.iter().cloned());
-    let mut ts = TemplateWalk { c, safe: safe.clone(), errs };
+    let mut ts = TemplateWalk {
+        c,
+        safe: safe.clone(),
+        errs,
+    };
     for e in body.iter_mut() {
         ts.expr(e);
     }
@@ -213,7 +238,9 @@ impl TemplateWalk<'_> {
             _ => {}
         }
         match &mut t.value {
-            TermValue::Ref(r) | TermValue::Array(r) | TermValue::Call(r) => r.iter_mut().for_each(|x| self.term(x)),
+            TermValue::Ref(r) | TermValue::Array(r) | TermValue::Call(r) => {
+                r.iter_mut().for_each(|x| self.term(x))
+            }
             TermValue::Object(o) => {
                 for (k, v) in o.iter_mut() {
                     self.term(k);
@@ -237,7 +264,9 @@ impl TemplateWalk<'_> {
 
 /// rewriteTemplateStringTerm and rewriteTemplateString.
 fn rewrite_template_term(c: &mut Compiler, safe: &VarSet, t: &mut Term, errs: &mut Vec<CompileError>) {
-    let TermValue::TemplateString { parts, .. } = &t.value else { return };
+    let TermValue::TemplateString { parts, .. } = &t.value else {
+        return;
+    };
     let parts = parts.clone();
     let loc = t.loc.clone();
     let mut terms = Vec::new();
@@ -262,7 +291,10 @@ fn rewrite_template_term(c: &mut Compiler, safe: &VarSet, t: &mut Term, errs: &m
                     }
                     ExprTerms::Term(x) => (**x).clone(),
                     _ => {
-                        local_errs.push(CompileError::compile(e.loc.clone(), "unexpected template-string expression type".into()));
+                        local_errs.push(CompileError::compile(
+                            e.loc.clone(),
+                            "unexpected template-string expression type".into(),
+                        ));
                         continue;
                     }
                 };
@@ -282,11 +314,17 @@ fn rewrite_template_term(c: &mut Compiler, safe: &VarSet, t: &mut Term, errs: &m
                 vis.term(&term);
                 for v in vis.vars.difference(safe) {
                     let v = c.rewritten.get(v).cloned().unwrap_or_else(|| v.clone());
-                    local_errs.push(CompileError::compile(term.loc.clone(), format!("var {v} is undeclared")));
+                    local_errs.push(CompileError::compile(
+                        term.loc.clone(),
+                        format!("var {v} is undeclared"),
+                    ));
                 }
                 let l = term.loc.clone();
                 let x = Term::new(TermValue::Var(c.vargen().generate()), l.clone());
-                let mut capture = Expr::new(ExprTerms::Call(vec![super::localvars::op("eq"), x.clone(), term]), l.clone());
+                let mut capture = Expr::new(
+                    ExprTerms::Call(vec![super::localvars::op("eq"), x.clone(), term]),
+                    l.clone(),
+                );
                 capture.with = e.with.clone();
                 terms.push(Term::new(TermValue::SetCompr(Box::new(x), vec![capture]), l));
             }
@@ -297,7 +335,10 @@ fn rewrite_template_term(c: &mut Compiler, safe: &VarSet, t: &mut Term, errs: &m
         errs.extend(local_errs);
         return;
     }
-    let op = Term::reference(vec![Term::var("internal", None), Term::string("template_string", None)], None);
+    let op = Term::reference(
+        vec![Term::var("internal", None), Term::string("template_string", None)],
+        None,
+    );
     t.value = TermValue::Call(vec![op, Term::new(TermValue::Array(terms), loc)]);
 }
 
@@ -309,7 +350,11 @@ pub fn check_void_calls(c: &mut Compiler) {
             && let Some(op) = cl.first().and_then(Term::as_ref)
             && let Some(Type::Function { result: None, .. }) = c.builtin_decl(&text_of_ref(op))
         {
-            errs.push(CompileError::new(TYPE_ERR, t.loc.clone(), format!("{t} used as value")));
+            errs.push(CompileError::new(
+                TYPE_ERR,
+                t.loc.clone(),
+                format!("{t} used as value"),
+            ));
         }
     };
     let rules: Vec<Rule> = c.modules.values().flat_map(|m| m.rules.iter().cloned()).collect();
@@ -317,7 +362,13 @@ pub fn check_void_calls(c: &mut Compiler) {
         let mut r = Some(rule);
         while let Some(x) = r {
             let mut terms = Vec::new();
-            for t in x.head.args.iter().chain(x.head.key.iter()).chain(x.head.value.iter()) {
+            for t in x
+                .head
+                .args
+                .iter()
+                .chain(x.head.key.iter())
+                .chain(x.head.value.iter())
+            {
                 safety::walk_terms(t, &mut |t| {
                     terms.push(t.clone());
                     false
@@ -345,7 +396,10 @@ fn is_print_call(e: &Expr) -> bool {
 fn contains_closures(e: &Expr) -> bool {
     let mut found = false;
     safety::walk_terms_expr(e, &mut |t| {
-        if matches!(t.value, TermValue::ArrayCompr(..) | TermValue::SetCompr(..) | TermValue::ObjectCompr(..)) {
+        if matches!(
+            t.value,
+            TermValue::ArrayCompr(..) | TermValue::SetCompr(..) | TermValue::ObjectCompr(..)
+        ) {
             found = true;
         }
         found
@@ -387,8 +441,13 @@ fn print_bodies(c: &mut Compiler, globals: &VarSet, body: &mut Body, errs: &mut 
 fn print_bodies_in_expr(c: &mut Compiler, globals: &VarSet, e: &mut Expr, errs: &mut Vec<CompileError>) {
     match &mut e.terms {
         ExprTerms::Term(t) => print_bodies_in_term(c, globals, t, errs),
-        ExprTerms::Call(cl) => cl.iter_mut().for_each(|t| print_bodies_in_term(c, globals, t, errs)),
-        ExprTerms::Some(d) => d.symbols.iter_mut().for_each(|t| print_bodies_in_term(c, globals, t, errs)),
+        ExprTerms::Call(cl) => cl
+            .iter_mut()
+            .for_each(|t| print_bodies_in_term(c, globals, t, errs)),
+        ExprTerms::Some(d) => d
+            .symbols
+            .iter_mut()
+            .for_each(|t| print_bodies_in_term(c, globals, t, errs)),
         ExprTerms::Every(ev) => {
             print_bodies_in_term(c, globals, &mut ev.domain, errs);
             print_bodies(c, globals, &mut ev.body, errs);
@@ -398,9 +457,9 @@ fn print_bodies_in_expr(c: &mut Compiler, globals: &VarSet, e: &mut Expr, errs: 
 
 fn print_bodies_in_term(c: &mut Compiler, globals: &VarSet, t: &mut Term, errs: &mut Vec<CompileError>) {
     match &mut t.value {
-        TermValue::Ref(r) | TermValue::Array(r) | TermValue::Call(r) | TermValue::Set(r) => {
-            r.iter_mut().for_each(|x| print_bodies_in_term(c, globals, x, errs))
-        }
+        TermValue::Ref(r) | TermValue::Array(r) | TermValue::Call(r) | TermValue::Set(r) => r
+            .iter_mut()
+            .for_each(|x| print_bodies_in_term(c, globals, x, errs)),
         TermValue::Object(o) => {
             for (k, v) in o.iter_mut() {
                 print_bodies_in_term(c, globals, k, errs);
@@ -449,7 +508,11 @@ fn print_calls(c: &mut Compiler, globals: &VarSet, body: &mut Body, errs: &mut V
         };
         safe.extend(globals.iter().cloned());
         for e in body.get(..i).unwrap_or_default() {
-            safe.extend(vars::expr_vars(e, vars::Params::default()).into_iter().filter(|v| vars::is_generated(v)));
+            safe.extend(
+                vars::expr_vars(e, vars::Params::default())
+                    .into_iter()
+                    .filter(|v| vars::is_generated(v)),
+            );
         }
         let Some(e) = body.get(i) else { continue };
         let loc = e.loc.clone();
@@ -462,7 +525,10 @@ fn print_calls(c: &mut Compiler, globals: &VarSet, body: &mut Body, errs: &mut V
             let mut vis = VarVisitor::new(SAFETY);
             vis.term(a);
             for v in vis.vars.difference(&safe) {
-                local.push(CompileError::compile(a.loc.clone(), format!("var {v} is undeclared")));
+                local.push(CompileError::compile(
+                    a.loc.clone(),
+                    format!("var {v} is undeclared"),
+                ));
             }
         }
         if !local.is_empty() {
@@ -473,11 +539,23 @@ fn print_calls(c: &mut Compiler, globals: &VarSet, body: &mut Body, errs: &mut V
         for a in args {
             let l = a.loc.clone();
             let x = Term::new(TermValue::Var(c.vargen().generate()), l.clone());
-            let capture = Expr::new(ExprTerms::Call(vec![super::localvars::op("eq"), x.clone(), a]), l.clone());
+            let capture = Expr::new(
+                ExprTerms::Call(vec![super::localvars::op("eq"), x.clone(), a]),
+                l.clone(),
+            );
             terms.push(Term::new(TermValue::SetCompr(Box::new(x), vec![capture]), l));
         }
-        let op = Term::reference(vec![Term::var("internal", loc.clone()), Term::string("print", loc.clone())], loc.clone());
-        let mut new = Expr::new(ExprTerms::Call(vec![op, Term::new(TermValue::Array(terms), loc.clone())]), loc);
+        let op = Term::reference(
+            vec![
+                Term::var("internal", loc.clone()),
+                Term::string("print", loc.clone()),
+            ],
+            loc.clone(),
+        );
+        let mut new = Expr::new(
+            ExprTerms::Call(vec![op, Term::new(TermValue::Array(terms), loc.clone())]),
+            loc,
+        );
         new.index = i;
         if let Some(slot) = body.get_mut(i) {
             *slot = new;
@@ -572,7 +650,10 @@ fn expand_expr(c: &mut Compiler, mut e: Expr) -> Vec<Expr> {
             let loc = ev.domain.loc.clone();
             let term = Term::new(TermValue::Var(c.vargen().generate()), loc.clone());
             let domain = std::mem::replace(&mut ev.domain, term.clone());
-            let mut eq = Expr::new(ExprTerms::Call(vec![super::localvars::op("eq"), term, domain]), loc);
+            let mut eq = Expr::new(
+                ExprTerms::Call(vec![super::localvars::op("eq"), term, domain]),
+                loc,
+            );
             eq.generated = true;
             eq.with = with;
             let extras = expand_expr(c, eq);
@@ -610,7 +691,13 @@ fn expand_term(c: &mut Compiler, t: &mut Term) -> Vec<Expr> {
             if let Some(subject) = r.first()
                 && matches!(
                     subject.value,
-                    TermValue::Array(_) | TermValue::Object(_) | TermValue::Set(_) | TermValue::ArrayCompr(..) | TermValue::SetCompr(..) | TermValue::ObjectCompr(..) | TermValue::Call(_)
+                    TermValue::Array(_)
+                        | TermValue::Object(_)
+                        | TermValue::Set(_)
+                        | TermValue::ArrayCompr(..)
+                        | TermValue::SetCompr(..)
+                        | TermValue::ObjectCompr(..)
+                        | TermValue::Call(_)
                 )
             {
                 let e = generate(c, subject.clone());
@@ -663,7 +750,13 @@ fn expand_term(c: &mut Compiler, t: &mut Term) -> Vec<Expr> {
 fn requires_eval(t: &Term) -> bool {
     let mut found = false;
     safety::walk_terms(t, &mut |x| {
-        if matches!(x.value, TermValue::Ref(_) | TermValue::ArrayCompr(..) | TermValue::SetCompr(..) | TermValue::ObjectCompr(..)) {
+        if matches!(
+            x.value,
+            TermValue::Ref(_)
+                | TermValue::ArrayCompr(..)
+                | TermValue::SetCompr(..)
+                | TermValue::ObjectCompr(..)
+        ) {
             found = true;
         }
         found
@@ -706,7 +799,9 @@ pub fn rewrite_comprehension_terms(c: &mut Compiler) {
     for name in names {
         let count = c.modules.get(&name).map_or(0, |m| m.rules.len());
         for i in 0..count {
-            let Some(mut r) = c.modules.get(&name).and_then(|m| m.rules.get(i)).cloned() else { continue };
+            let Some(mut r) = c.modules.get(&name).and_then(|m| m.rules.get(i)).cloned() else {
+                continue;
+            };
             transform::rule(&mut Comprehensions(c), &mut r);
             if let Some(slot) = c.modules.get_mut(&name).and_then(|m| m.rules.get_mut(i)) {
                 *slot = r;
@@ -785,8 +880,11 @@ fn has_prefix_var(r: &[Term], root: &str) -> bool {
 }
 
 /// validateWith: whether the with's value needs evaluating first, or why it is wrong.
+#[allow(clippy::result_large_err)]
 fn validate_with(c: &Compiler, e: &mut Expr, i: usize) -> Result<bool, CompileError> {
-    let Some(w) = e.with.get_mut(i) else { return Ok(false) };
+    let Some(w) = e.with.get_mut(i) else {
+        return Ok(false);
+    };
     if let Some(v) = w.value.as_var()
         && super::allowed(v).is_some()
     {
@@ -798,7 +896,9 @@ fn validate_with(c: &Compiler, e: &mut Expr, i: usize) -> Result<bool, CompileEr
         TermValue::Var(v) => Some(v.to_string()),
         _ => None,
     };
-    let is_builtin = target_name.as_deref().is_some_and(|n| c.builtin_decl(n).is_some());
+    let is_builtin = target_name
+        .as_deref()
+        .is_some_and(|n| c.builtin_decl(n).is_some());
     let tree: &RuleTree = &c.tree;
     match &w.target.value {
         TermValue::Ref(r) if has_prefix_var(r, "data") => {
@@ -808,10 +908,17 @@ fn validate_with(c: &Compiler, e: &mut Expr, i: usize) -> Result<bool, CompileEr
                     break;
                 }
                 if !tree.exact(prefix).is_empty() {
-                    return Err(CompileError::compile(w.target.loc.clone(), "with keyword cannot partially replace virtual document(s)".into()));
+                    return Err(CompileError::compile(
+                        w.target.loc.clone(),
+                        "with keyword cannot partially replace virtual document(s)".into(),
+                    ));
                 }
             }
-            let target_fns = tree.exact(r).iter().filter_map(|id| c.rule(id)).any(|x| !x.head.args.is_empty());
+            let target_fns = tree
+                .exact(r)
+                .iter()
+                .filter_map(|id| c.rule(id))
+                .any(|x| !x.head.args.is_empty());
             if target_fns {
                 if let Some(vr) = w.value.as_ref()
                     && tree.has_node(vr)
@@ -828,7 +935,11 @@ fn validate_with(c: &Compiler, e: &mut Expr, i: usize) -> Result<bool, CompileEr
                 }
             }
             if let Some(vr) = w.value.as_ref()
-                && tree.exact(vr).iter().filter_map(|id| c.rule(id)).any(|x| !x.head.args.is_empty())
+                && tree
+                    .exact(vr)
+                    .iter()
+                    .filter_map(|id| c.rule(id))
+                    .any(|x| !x.head.args.is_empty())
             {
                 return Ok(false);
             }
@@ -842,16 +953,30 @@ fn validate_with(c: &Compiler, e: &mut Expr, i: usize) -> Result<bool, CompileEr
             let loc = w.target.loc.clone();
             let bi = crate::builtins::registry().get(&name);
             if matches!(name.as_str(), "eq" | "rego.metadata.chain" | "rego.metadata.rule") {
-                return Err(CompileError::compile(loc, format!("with keyword replacing built-in function: replacement of {name:?} invalid")));
+                return Err(CompileError::compile(
+                    loc,
+                    format!("with keyword replacing built-in function: replacement of {name:?} invalid"),
+                ));
             }
             if name.starts_with("internal.") {
-                return Err(CompileError::compile(loc, format!("with keyword replacing built-in function: replacement of internal function {name:?} invalid")));
+                return Err(CompileError::compile(
+                    loc,
+                    format!(
+                        "with keyword replacing built-in function: replacement of internal function {name:?} invalid"
+                    ),
+                ));
             }
             if bi.is_some_and(|b| b.relation) {
-                return Err(CompileError::compile(loc, "with keyword replacing built-in function: target must not be a relation".into()));
+                return Err(CompileError::compile(
+                    loc,
+                    "with keyword replacing built-in function: target must not be a relation".into(),
+                ));
             }
             if matches!(c.builtin_decl(&name), Some(Type::Function { result: None, .. })) {
-                return Err(CompileError::compile(loc, "with keyword replacing built-in function: target must not be a void function".into()));
+                return Err(CompileError::compile(
+                    loc,
+                    "with keyword replacing built-in function: target must not be a void function".into(),
+                ));
             }
             if let Some(vr) = w.value.as_ref()
                 && tree.has_node(vr)
@@ -868,7 +993,11 @@ fn validate_with(c: &Compiler, e: &mut Expr, i: usize) -> Result<bool, CompileEr
             }
         }
         _ => {
-            return Err(CompileError::new(TYPE_ERR, w.target.loc.clone(), "with keyword target must reference existing input, data, or a function".into()));
+            return Err(CompileError::new(
+                TYPE_ERR,
+                w.target.loc.clone(),
+                "with keyword target must reference existing input, data, or a function".into(),
+            ));
         }
     }
     Ok(requires_eval(&w.value))
@@ -881,7 +1010,9 @@ pub fn rewrite_with_modifiers(c: &mut Compiler) {
     for name in names {
         let count = c.modules.get(&name).map_or(0, |m| m.rules.len());
         for i in 0..count {
-            let Some(mut r) = c.modules.get(&name).and_then(|m| m.rules.get(i)).cloned() else { continue };
+            let Some(mut r) = c.modules.get(&name).and_then(|m| m.rules.get(i)).cloned() else {
+                continue;
+            };
             let mut t = Withs { c, errs: Vec::new() };
             transform::rule(&mut t, &mut r);
             errs.extend(t.errs);
@@ -977,7 +1108,14 @@ fn closure_safety_expr(c: &Compiler, g: &mut VarSet, e: &mut Expr, add: &mut Var
 }
 
 /// reorderComprehensionSafety.
-fn closure_body(c: &Compiler, globals: &VarSet, tv: &VarSet, body: &Body, add: &mut VarSet, nested: &mut Unsafe) -> Body {
+fn closure_body(
+    c: &Compiler,
+    globals: &VarSet,
+    tv: &VarSet,
+    body: &Body,
+    add: &mut VarSet,
+    nested: &mut Unsafe,
+) -> Body {
     let mut bv = vars::body_vars(body, SAFETY);
     bv.extend(globals.iter().cloned());
     for v in tv.difference(&bv) {

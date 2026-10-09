@@ -1,6 +1,7 @@
 //! OPA v1.14.1's builtins (src/builtins.json, written by scripts/rego/generate from
-//! `ast.Builtins`): their names, infix operators, declarations, and whether buildx's
-//! policies may call them (buildx policy/builtins.go).
+//! `ast.Builtins`): their names, infix operators, declarations, whether buildx's
+//! policies may call them (buildx policy/builtins.go), and whether they are
+//! nondeterministic.
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -14,6 +15,8 @@ pub struct Builtin {
     pub relation: bool,
     pub deprecated: bool,
     pub allowed: bool,
+    /// Partial evaluation leaves nondeterministic builtins' calls for later.
+    pub nondeterministic: bool,
     /// The declaration: a function type.
     pub decl: Type,
 }
@@ -37,6 +40,7 @@ fn read(text: &str) -> Option<HashMap<String, Builtin>> {
             relation: flag("relation"),
             deprecated: flag("deprecated"),
             allowed: flag("allowed"),
+            nondeterministic: flag("nondeterministic"),
             decl: Type::from_json(e.get("decl")?)?,
         };
         out.insert(name, b);

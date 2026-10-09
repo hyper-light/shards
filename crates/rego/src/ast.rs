@@ -314,9 +314,15 @@ impl Head {
         }
     }
 
-    /// RefHead.
+    /// RefHead: named when the ref is one variable.
     pub fn reference(r: Vec<Term>, value: Option<Term>) -> Head {
+        let name = if r.len() < 2 {
+            r.first().and_then(Term::as_var).map(Rc::from)
+        } else {
+            None
+        };
         Head {
+            name,
             reference: r,
             value,
             ..Head::default()

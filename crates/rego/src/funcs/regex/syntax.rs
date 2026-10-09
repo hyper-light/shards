@@ -789,7 +789,7 @@ impl Parser<'_> {
         let invalid = |t: usize| error(ERR_INVALID_ESCAPE, sub(s, at, t));
         let octal = |i: usize| byte(s, i).filter(|b| (b'0'..=b'7').contains(b));
         match c {
-            0x31..=0x37 | 0x30 => {
+            0x30..=0x37 => {
                 if c != 0x30 && octal(t).is_none() {
                     // A single non-zero digit is a backreference; not supported.
                     return Err(invalid(t));
@@ -1140,7 +1140,7 @@ pub fn parse(s: &str) -> Result<Parsed, Error> {
                     t += 1;
                 }
                 Some((min, max, after)) => {
-                    if min < 0 || min > 1000 || max > 1000 || (max >= 0 && min > max) {
+                    if !(0..=1000).contains(&min) || max > 1000 || (max >= 0 && min > max) {
                         return Err(error(ERR_INVALID_REPEAT_SIZE, sub(s, t, after)));
                     }
                     let after = p.repeat(Op::Repeat, min, max, t, after, last_repeat)?;

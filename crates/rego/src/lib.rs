@@ -6,12 +6,13 @@
 pub mod ast;
 pub mod builtins;
 pub mod compare;
+pub mod compile;
+pub mod copyprop;
+pub mod eval;
+pub mod funcs;
 pub mod goquote;
 pub mod number;
 pub mod parser;
 pub mod scanner;
 pub mod types;
 pub mod value;
-pub mod compile;
-pub mod funcs;
-pub mod eval;

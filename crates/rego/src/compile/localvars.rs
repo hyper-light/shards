@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use super::vars::{self, Var, VarSet, sorted_items, sorted_pairs};
-use super::{CompileError, COMPILE_ERR};
+use super::{COMPILE_ERR, CompileError};
 use crate::ast::{Body, Expr, ExprTerms, Location, Rule, TemplatePart, Term, TermValue};
 
 /// localVarGenerator: `__local<n>__`, skipping names the modules use.
@@ -20,7 +20,11 @@ pub struct LocalVarGen {
 
 impl LocalVarGen {
     pub fn new(exclude: VarSet, suffix: &str) -> LocalVarGen {
-        LocalVarGen { exclude, suffix: format!("__local{suffix}"), next: 0 }
+        LocalVarGen {
+            exclude,
+            suffix: format!("__local{suffix}"),
+            next: 0,
+        }
     }
 
     pub fn generate(&mut self) -> Var {
@@ -60,7 +64,11 @@ pub struct Stack {
 
 impl Default for Stack {
     fn default() -> Stack {
-        Stack { vars: vec![DeclaredVarSet::default()], rewritten: HashMap::new(), assignment: false }
+        Stack {
+            vars: vec![DeclaredVarSet::default()],
+            rewritten: HashMap::new(),
+            assignment: false,
+        }
     }
 }
 
@@ -70,14 +78,20 @@ impl Stack {
         let mut merged = DeclaredVarSet::default();
         for s in &self.vars {
             merged.vs.extend(s.vs.iter().map(|(k, v)| (k.clone(), v.clone())));
-            merged.occurrence.extend(s.occurrence.iter().map(|(k, v)| (k.clone(), *v)));
+            merged
+                .occurrence
+                .extend(s.occurrence.iter().map(|(k, v)| (k.clone(), *v)));
             merged.count.extend(s.count.iter().map(|(k, v)| (k.clone(), *v)));
         }
         let mut vars = vec![merged];
         for _ in 1..self.vars.len() {
             vars.push(DeclaredVarSet::default());
         }
-        Stack { vars, rewritten: self.rewritten.clone(), assignment: false }
+        Stack {
+            vars,
+            rewritten: self.rewritten.clone(),
+            assignment: false,
+        }
     }
 
     fn push(&mut self) {
@@ -90,12 +104,12 @@ impl Stack {
         }
     }
 
-    fn top(&mut self) -> &mut DeclaredVarSet {
+    /// The innermost scope, made when there is none.
+    fn top(&mut self) -> Option<&mut DeclaredVarSet> {
         if self.vars.is_empty() {
             self.vars.push(DeclaredVarSet::default());
         }
-        let n = self.vars.len() - 1;
-        &mut self.vars[n]
+        self.vars.last_mut()
     }
 
     fn peek(&self) -> Option<&DeclaredVarSet> {
@@ -103,10 +117,11 @@ impl Stack {
     }
 
     fn insert(&mut self, x: &Var, y: &Var, occ: Occurrence) {
-        let top = self.top();
-        top.vs.insert(x.clone(), y.clone());
-        top.occurrence.insert(x.clone(), occ);
-        top.count.insert(x.clone(), 1);
+        if let Some(top) = self.top() {
+            top.vs.insert(x.clone(), y.clone());
+            top.occurrence.insert(x.clone(), occ);
+            top.count.insert(x.clone(), 1);
+        }
         if x != y {
             self.rewritten.insert(y.clone(), x.clone());
         }
@@ -117,7 +132,9 @@ impl Stack {
     }
 
     fn occurrence(&self, x: &str) -> Occurrence {
-        self.peek().and_then(|s| s.occurrence.get(x).copied()).unwrap_or(Occurrence::New)
+        self.peek()
+            .and_then(|s| s.occurrence.get(x).copied())
+            .unwrap_or(Occurrence::New)
     }
 
     fn global_occurrence(&self, x: &str) -> Option<Occurrence> {
@@ -131,11 +148,17 @@ impl Stack {
                 return;
             }
         }
-        self.top().count.insert(x.clone(), 1);
+        if let Some(top) = self.top() {
+            top.count.insert(x.clone(), 1);
+        }
     }
 
     fn count(&self, x: &str) -> usize {
-        self.vars.iter().rev().find_map(|s| s.count.get(x).copied()).unwrap_or(0)
+        self.vars
+            .iter()
+            .rev()
+            .find_map(|s| s.count.get(x).copied())
+            .unwrap_or(0)
     }
 }
 
@@ -206,14 +229,19 @@ fn arg_term(rw: &mut Rewriter<'_>, stack: &mut Stack, t: &mut Term) {
         | TermValue::ObjectCompr(..)
         | TermValue::Set(_)
         | TermValue::TemplateString { .. } => {}
-        TermValue::Call(_) => rw.errs.push(err(&t.loc, "rule arguments cannot contain calls".into())),
+        TermValue::Call(_) => rw
+            .errs
+            .push(err(&t.loc, "rule arguments cannot contain calls".into())),
         TermValue::Ref(r) | TermValue::Array(r) => r.iter_mut().for_each(|x| arg_term(rw, stack, x)),
     }
 }
 
 /// IsScalar.
 pub fn is_scalar(t: &Term) -> bool {
-    matches!(t.value, TermValue::Null | TermValue::Bool(_) | TermValue::Number(_) | TermValue::String(_))
+    matches!(
+        t.value,
+        TermValue::Null | TermValue::Bool(_) | TermValue::Number(_) | TermValue::String(_)
+    )
 }
 
 /// headMayHaveVars.
@@ -226,7 +254,12 @@ fn head_may_have_vars(rule: &Rule) -> bool {
 }
 
 /// rewriteLocalVarsInRule. Returns the stack it used, for counting arguments' uses.
-pub fn rewrite_rule(rw: &mut Rewriter<'_>, rewritten: &mut HashMap<Var, Var>, rule: &mut Rule, args_stack: &Stack) -> Stack {
+pub fn rewrite_rule(
+    rw: &mut Rewriter<'_>,
+    rewritten: &mut HashMap<Var, Var>,
+    rule: &mut Rule,
+    args_stack: &Stack,
+) -> Stack {
     let only_scalars = !head_may_have_vars(rule);
     let mut used = VarSet::new();
     if !only_scalars {
@@ -318,7 +351,9 @@ pub fn walk_terms_mut(t: &mut Term, f: &mut dyn FnMut(&mut Term) -> bool) {
         return;
     }
     match &mut t.value {
-        TermValue::Ref(r) | TermValue::Array(r) | TermValue::Call(r) => r.iter_mut().for_each(|x| walk_terms_mut(x, f)),
+        TermValue::Ref(r) | TermValue::Array(r) | TermValue::Call(r) => {
+            r.iter_mut().for_each(|x| walk_terms_mut(x, f))
+        }
         TermValue::Object(o) => {
             let mut pairs: Vec<(Term, Term)> = sorted_pairs(o).into_iter().cloned().collect();
             for (k, v) in pairs.iter_mut() {
@@ -435,8 +470,14 @@ fn check_unused_declared(rw: &mut Rewriter<'_>, stack: &Stack, used: &VarSet, bo
         if vars::is_generated(rv) {
             continue;
         }
-        let at = body.iter().find(|e| declared_vars_expr(e).contains(rv)).or(body.first());
-        rw.errs.push(err(&at.and_then(|e| e.loc.clone()), format!("declared var {rv} unused")));
+        let at = body
+            .iter()
+            .find(|e| declared_vars_expr(e).contains(rv))
+            .or(body.first());
+        rw.errs.push(err(
+            &at.and_then(|e| e.loc.clone()),
+            format!("declared var {rv} unused"),
+        ));
     }
 }
 
@@ -473,20 +514,22 @@ pub fn declared_vars_expr(e: &Expr) -> VarSet {
 /// rewriteEveryStatement.
 fn every(rw: &mut Rewriter<'_>, stack: &mut Stack, mut expr: Expr) -> Option<Expr> {
     let loc = expr.loc.clone();
-    let ExprTerms::Every(ev) = &mut expr.terms else { return Some(expr) };
+    let ExprTerms::Every(ev) = &mut expr.terms else {
+        return Some(expr);
+    };
     term_recursive(rw, stack, &mut ev.domain);
     stack.push();
     let fail = |rw: &mut Rewriter<'_>, m: String| rw.errs.push(err(&ev.loc.clone().or(loc.clone()), m));
     if let Some(k) = ev.key.as_mut() {
-        if let Some(v) = k.as_var().map(Rc::from) {
-            if !vars::is_wildcard(&v) {
-                match declare(rw, stack, &v, Occurrence::Declared) {
-                    Ok(gv) => k.value = TermValue::Var(gv),
-                    Err(m) => {
-                        fail(rw, m);
-                        stack.pop();
-                        return None;
-                    }
+        if let Some(v) = k.as_var().map(Rc::from)
+            && !vars::is_wildcard(&v)
+        {
+            match declare(rw, stack, &v, Occurrence::Declared) {
+                Ok(gv) => k.value = TermValue::Var(gv),
+                Err(m) => {
+                    fail(rw, m);
+                    stack.pop();
+                    return None;
                 }
             }
         }
@@ -514,7 +557,9 @@ fn every(rw: &mut Rewriter<'_>, stack: &mut Stack, mut expr: Expr) -> Option<Exp
 
 /// rewriteSomeDeclStatement.
 fn some_decl(rw: &mut Rewriter<'_>, stack: &mut Stack, mut expr: Expr) -> Option<Expr> {
-    let ExprTerms::Some(decl) = &expr.terms else { return Some(expr) };
+    let ExprTerms::Some(decl) = &expr.terms else {
+        return Some(expr);
+    };
     let decl = decl.clone();
     for s in &decl.symbols {
         match &s.value {
@@ -527,7 +572,11 @@ fn some_decl(rw: &mut Rewriter<'_>, stack: &mut Stack, mut expr: Expr) -> Option
             TermValue::Call(c) => {
                 let (key, val, container) = match c.as_slice() {
                     [_, k, v, cont] => (k.clone(), v.clone(), cont.clone()),
-                    [_, v, cont] => (Term::new(TermValue::Var(rw.vargen.generate()), None), v.clone(), cont.clone()),
+                    [_, v, cont] => (
+                        Term::new(TermValue::Var(rw.vargen.generate()), None),
+                        v.clone(),
+                        cont.clone(),
+                    ),
                     _ => return None,
                 };
                 let rhs = match &container.value {
@@ -562,11 +611,16 @@ pub fn op(name: &str) -> Term {
 /// rewriteDeclaredAssignment.
 fn assignment(rw: &mut Rewriter<'_>, stack: &mut Stack, mut expr: Expr) -> Expr {
     if expr.negated {
-        rw.errs.push(err(&expr.loc, "cannot assign vars inside negated expression".into()));
+        rw.errs.push(err(
+            &expr.loc,
+            "cannot assign vars inside negated expression".into(),
+        ));
         return expr;
     }
     let before = rw.errs.len();
-    let ExprTerms::Call(terms) = &mut expr.terms else { return expr };
+    let ExprTerms::Call(terms) = &mut expr.terms else {
+        return expr;
+    };
     if terms.len() != 3 {
         return expr;
     }
@@ -576,7 +630,9 @@ fn assignment(rw: &mut Rewriter<'_>, stack: &mut Stack, mut expr: Expr) -> Expr 
     for w in expr.with.iter_mut() {
         term_recursive(rw, stack, &mut w.value);
     }
-    let ExprTerms::Call(terms) = &mut expr.terms else { return expr };
+    let ExprTerms::Call(terms) = &mut expr.terms else {
+        return expr;
+    };
     if let Some(lhs) = terms.get_mut(1) {
         assign_target(rw, stack, lhs);
     }
@@ -604,7 +660,9 @@ fn assign_target(rw: &mut Rewriter<'_>, stack: &mut Stack, t: &mut Term) {
                 assign_target(rw, stack, v);
             }
         }
-        TermValue::Ref(r) if r.len() == 1 && matches!(r.first().and_then(Term::as_var), Some("data" | "input")) => {
+        TermValue::Ref(r)
+            if r.len() == 1 && matches!(r.first().and_then(Term::as_var), Some("data" | "input")) =>
+        {
             let v: Var = r.first().and_then(Term::as_var).unwrap_or_default().into();
             match declare(rw, stack, &v, Occurrence::Assigned) {
                 Ok(gv) => t.value = TermValue::Var(gv),
@@ -664,7 +722,9 @@ fn walk_decl_terms(rw: &mut Rewriter<'_>, stack: &mut Stack, t: &mut Term) {
         return;
     }
     match &mut t.value {
-        TermValue::Ref(r) | TermValue::Array(r) | TermValue::Call(r) => r.iter_mut().for_each(|x| walk_decl_terms(rw, stack, x)),
+        TermValue::Ref(r) | TermValue::Array(r) | TermValue::Call(r) => {
+            r.iter_mut().for_each(|x| walk_decl_terms(rw, stack, x))
+        }
         TermValue::TemplateString { parts, .. } => {
             for p in parts.iter_mut() {
                 if let TemplatePart::Term(t) = p {
@@ -699,7 +759,10 @@ fn decl_term(rw: &mut Rewriter<'_>, stack: &mut Stack, t: &mut Term) -> bool {
         }
         TermValue::Ref(r) => {
             if r.len() == 1
-                && let Some(x) = r.first().and_then(Term::as_var).filter(|x| matches!(*x, "data" | "input"))
+                && let Some(x) = r
+                    .first()
+                    .and_then(Term::as_var)
+                    .filter(|x| matches!(*x, "data" | "input"))
             {
                 if let Some(occ) = stack.global_occurrence(x)
                     && occ != Occurrence::Seen
@@ -721,7 +784,8 @@ fn decl_term(rw: &mut Rewriter<'_>, stack: &mut Stack, t: &mut Term) -> bool {
                     }
                 }
                 if shadowed {
-                    rw.errs.push(err(&t.loc, format!("called function {op} shadowed")));
+                    rw.errs
+                        .push(err(&t.loc, format!("called function {op} shadowed")));
                 }
             }
             false

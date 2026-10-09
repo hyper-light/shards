@@ -66,7 +66,10 @@ pub struct VarVisitor {
 
 impl VarVisitor {
     pub fn new(params: Params) -> VarVisitor {
-        VarVisitor { params, vars: VarSet::new() }
+        VarVisitor {
+            params,
+            vars: VarSet::new(),
+        }
     }
 
     pub fn add(&mut self, v: &Var) {
@@ -120,7 +123,9 @@ impl VarVisitor {
             _ => {}
         }
         match v {
-            TermValue::Ref(r) | TermValue::Array(r) | TermValue::Call(r) => r.iter().for_each(|t| self.term(t)),
+            TermValue::Ref(r) | TermValue::Array(r) | TermValue::Call(r) => {
+                r.iter().for_each(|t| self.term(t))
+            }
             TermValue::Object(o) => {
                 for (k, val) in sorted_pairs(o) {
                     self.term(k);

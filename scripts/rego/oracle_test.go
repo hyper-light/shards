@@ -54,8 +54,10 @@ type Result struct {
 	// Support lists the input refs in the support modules partial evaluation made, in
 	// walk order, as buildx's collectUnknowns sees them (before its trimming).
 	Support []string `json:"support,omitempty"`
-	// Queries are the partial queries, as text, for diagnosis only.
+	// Queries are the partial queries, as text.
 	Queries []string `json:"queries,omitempty"`
+	// SupportModules are the support modules' texts, sorted (OPA lists them from a map).
+	SupportModules []string `json:"support_modules,omitempty"`
 	// Prints are what print statements printed, "file:row: msg", as buildx logs them.
 	Prints []string `json:"prints"`
 }
@@ -157,6 +159,10 @@ func run(c Case) Result {
 		for _, q := range pq.Queries {
 			out.Queries = append(out.Queries, q.String())
 		}
+		for _, mod := range pq.Support {
+			out.SupportModules = append(out.SupportModules, mod.String())
+		}
+		slices.Sort(out.SupportModules)
 		h.lines = nil
 	}
 	rs, err := rego.New(opts...).Eval(ctx)
@@ -293,19 +299,22 @@ func TestShardsNumbers(t *testing.T) {
 
 // OPA's builtins, as the crate's src/builtins.json: each one's name, infix operator,
 // whether it is a relation or deprecated, its declaration as OPA marshals it, and
-// whether buildx's policies may call it (builtins.go).
+// whether buildx's policies may call it (builtins.go), and whether it is
+// nondeterministic.
 func TestShardsBuiltins(t *testing.T) {
 	allowed := map[string]bool{}
 	for _, b := range builtins() {
 		allowed[b.Name] = true
 	}
 	type entry struct {
-		Name       string          `json:"name"`
-		Infix      string          `json:"infix,omitempty"`
-		Relation   bool            `json:"relation,omitempty"`
-		Deprecated bool            `json:"deprecated,omitempty"`
-		Allowed    bool            `json:"allowed,omitempty"`
-		Decl       json.RawMessage `json:"decl"`
+		Name       string `json:"name"`
+		Infix      string `json:"infix,omitempty"`
+		Relation   bool   `json:"relation,omitempty"`
+		Deprecated bool   `json:"deprecated,omitempty"`
+		Allowed    bool   `json:"allowed,omitempty"`
+		// Nondeterministic builtins are left for later by partial evaluation.
+		Nondeterministic bool            `json:"nondeterministic,omitempty"`
+		Decl             json.RawMessage `json:"decl"`
 	}
 	var out []entry
 	for _, b := range ast.Builtins {
@@ -321,7 +330,7 @@ func TestShardsBuiltins(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		out = append(out, entry{Name: b.Name, Infix: b.Infix, Relation: b.Relation, Deprecated: b.IsDeprecated(), Allowed: allowed[b.Name], Decl: decl})
+		out = append(out, entry{Name: b.Name, Infix: b.Infix, Relation: b.Relation, Deprecated: b.IsDeprecated(), Allowed: allowed[b.Name], Nondeterministic: b.Nondeterministic, Decl: decl})
 	}
 	res, err := json.Marshal(out)
 	if err != nil {

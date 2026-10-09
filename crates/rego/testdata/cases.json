@@ -1637,5 +1637,1467 @@
    ]
   ],
   "query": "data.docker.decision"
+ },
+ {
+  "name": "pe-not-label",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if not input.image.labels[\"org.opencontainers.image.source\"]\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-not-call-support",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if not startswith(input.image.labels.src, \"https://github.com/\")\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-compr-count",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if count([s | some s in input.image.signatures; s.kind == \"x\"]) > 0\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-every-sigs",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if {\n\tevery s in input.image.signatures {\n\t\ts.type == \"bundle\"\n\t}\n}\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-fn-default",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault f(_) := false\n\nf(x) if x.kind == \"a\"\n\ndefault allow := false\n\nallow if f(input.image.signatures[_])\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-fn-default-true",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault ok(_) := true\n\nok(x) := false if x.kind == \"bad\"\n\ndefault allow := false\n\nallow if ok(input.image.signatures[0])\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-else-chain",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nallow := true if input.image.checksum == \"sha256:aa\"\n\nelse := false if input.image.user == \"root\"\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-partial-object",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nlabels[k] := v if {\n\tsome k, v in input.image.labels\n}\n\ndecision := {\"allow\": count(labels) > 0}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-git-tag",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if input.git.tagName == \"v1\"\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "git": {
+    "schema": "https",
+    "remote": "https://github.com/moby/buildkit.git",
+    "host": "github.com"
+   }
+  },
+  "unknowns": [
+   "input.git.tagName",
+   "input.git.branch",
+   "input.git.ref",
+   "input.git.checksum",
+   "input.git.isAnnotatedTag",
+   "input.git.commitChecksum",
+   "input.git.isSHA256",
+   "input.git.tag",
+   "input.git.commit"
+  ]
+ },
+ {
+  "name": "pe-git-sig",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if verify_git_signature(input.git.commit, \"key.pub\")\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "git": {
+    "schema": "https",
+    "remote": "https://github.com/moby/buildkit.git",
+    "host": "github.com"
+   }
+  },
+  "unknowns": [
+   "input.git.tagName",
+   "input.git.branch",
+   "input.git.ref",
+   "input.git.checksum",
+   "input.git.isAnnotatedTag",
+   "input.git.commitChecksum",
+   "input.git.isSHA256",
+   "input.git.tag",
+   "input.git.commit"
+  ]
+ },
+ {
+  "name": "pe-git-remote-known",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if {\n\tinput.git.host == \"github.com\"\n\tinput.git.branch == \"main\"\n}\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "git": {
+    "schema": "https",
+    "remote": "https://github.com/moby/buildkit.git",
+    "host": "github.com"
+   }
+  },
+  "unknowns": [
+   "input.git.tagName",
+   "input.git.branch",
+   "input.git.ref",
+   "input.git.checksum",
+   "input.git.isAnnotatedTag",
+   "input.git.commitChecksum",
+   "input.git.isSHA256",
+   "input.git.tag",
+   "input.git.commit"
+  ]
+ },
+ {
+  "name": "pe-http-checksum",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if input.http.checksum == \"sha256:00\"\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "http": {
+    "url": "https://example.com/a.tgz",
+    "schema": "https",
+    "host": "example.com",
+    "path": "/a.tgz"
+   }
+  },
+  "unknowns": [
+   "input.http.checksum"
+  ]
+ },
+ {
+  "name": "pe-with-input",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nroot if input.image.user == \"root\"\n\nallow if not root with input.image.user as \"nobody\"\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-print-unknown",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if {\n\tprint(\"labels\", input.image.labels)\n\tinput.image.labels.a == \"b\"\n}\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-deny-msgs",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if count(deny) == 0\n\ndeny contains \"no provenance\" if not input.image.hasProvenance\n\ndeny contains msg if {\n\tinput.image.user == \"root\"\n\tmsg := \"runs as root\"\n}\n\ndecision := {\"allow\": allow, \"deny_msg\": deny}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-nested-rules",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\ntrusted if input.image.repo == \"alpine\"\n\nsigned if count(input.image.signatures) > 0\n\nallow if {\n\ttrusted\n\tsigned\n}\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-object-get",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if object.get(input.image.labels, \"a\", \"\") == \"b\"\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-some-in",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if {\n\tsome s in input.image.signatures\n\ts.signer.issuer == \"https://token.actions.githubusercontent.com\"\n}\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-known-and-unknown",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if {\n\tinput.image.repo == \"alpine\"\n\tinput.image.labels.x == \"1\"\n}\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-known-false",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if {\n\tinput.image.repo == \"busybox\"\n\tinput.image.labels.x == \"1\"\n}\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-env-startswith",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if {\n\tsome e in input.image.env\n\tstartswith(e, \"PATH=\")\n}\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-default-decision",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault decision := {\"allow\": false}\n\ndecision := {\"allow\": true} if input.image.checksum == \"sha256:x\"\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-volumes-set",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if {x | some x in input.image.volumes} == set()\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-materials",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if input.image.provenance.materials[0].image.labels.foo == \"bar\"\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64",
+    "provenance": {
+     "materials": [
+      {
+       "image": {
+        "repo": "golang"
+       }
+      }
+     ]
+    }
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.signatures",
+   "input.image.provenance.materials[0].image.labels"
+  ]
+ },
+ {
+  "name": "pe-deny-only",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndeny contains \"no provenance\" if not input.image.hasProvenance\n\ndecision := {\"allow\": count(deny) == 0}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-user-neq",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if input.image.user != \"root\"\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-two-rules",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if input.image.workingDir == \"/app\"\n\nallow if input.image.user == \"nobody\"\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-fn-no-default",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nis_ok(s) if s.kind == \"k\"\n\ndefault allow := false\n\nallow if {\n\tsome s in input.image.signatures\n\tis_ok(s)\n}\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-not-rule",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\ndenied if input.image.user == \"root\"\n\nallow if not denied\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-github-builder-tag",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if docker_github_builder_tag(input.image, \"moby/buildkit\", \"v0.20.0\")\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-count-ge",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if count(input.image.signatures) >= 1\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-regex-tag",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if regex.match(`^v[0-9]+`, input.git.tagName)\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "git": {
+    "schema": "https",
+    "remote": "https://github.com/moby/buildkit.git",
+    "host": "github.com"
+   }
+  },
+  "unknowns": [
+   "input.git.tagName",
+   "input.git.branch",
+   "input.git.ref",
+   "input.git.checksum",
+   "input.git.isAnnotatedTag",
+   "input.git.commitChecksum",
+   "input.git.isSHA256",
+   "input.git.tag",
+   "input.git.commit"
+  ]
+ },
+ {
+  "name": "pe-sprintf",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if sprintf(\"%s:%s\", [input.image.repo, input.image.user]) == \"alpine:root\"\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-in-labels",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if \"maintainer\" in object.keys(input.image.labels)\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-array-compr-eq",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if [e | some e in input.image.env; startswith(e, \"SECRET\")] == []\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-object-compr",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nnames := {k: true | some k, _ in input.image.labels}\n\nallow if names.a\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-now",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if {\n\ttime.now_ns() > 0\n\tinput.image.user == \"root\"\n}\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-with-fn",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nf(x) if x == \"root\"\n\ng(x) if x == \"nobody\"\n\nallow if f(input.image.user) with f as g\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-fn-else",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nlevel(u) := \"admin\" if u == \"root\"\n\nelse := \"user\"\n\ndefault allow := false\n\nallow if level(input.image.user) == \"user\"\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-multi-field",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if input.image.checksum != \"\"\n\nreason := \"unsigned\" if count(input.image.signatures) == 0\n\ndecision := {\"allow\": allow, \"reason\": reason}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-set-member",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallowed := {\"amd64\", \"arm64\"}\n\nallow if {\n\tallowed[input.image.architecture]\n\tinput.image.user != \"root\"\n}\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-not-every",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if {\n\tnot every s in input.image.signatures { s.type == \"bundle\" }\n}\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-not-two-exprs",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nbad if {\n\tinput.image.user == \"root\"\n\tinput.image.workingDir == \"/\"\n}\n\nallow if not bad\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-pin-image",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if pin_image(input.image, \"sha256:aa\")\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-no-unknown-touch",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if input.image.repo == \"alpine\"\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
  }
 ]

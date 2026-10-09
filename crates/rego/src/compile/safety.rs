@@ -4,7 +4,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use super::vars::{self, Params, Var, VarSet, VarVisitor, OUTPUT, SAFETY};
+use super::vars::{self, OUTPUT, Params, SAFETY, Var, VarSet, VarVisitor};
 use super::{CompileError, UNSAFE_VAR_ERR};
 use crate::ast::{Body, Expr, ExprTerms, Location, Term, TermValue};
 
@@ -71,7 +71,12 @@ impl Unifier<'_> {
     }
 
     fn mark_all_safe(&mut self, t: &Term) {
-        let p = Params { skip_ref_head: true, skip_object_keys: true, skip_closures: true, ..Params::default() };
+        let p = Params {
+            skip_ref_head: true,
+            skip_object_keys: true,
+            skip_closures: true,
+            ..Params::default()
+        };
         for v in walk_vars(t, p) {
             self.mark_safe(&v);
         }
@@ -81,14 +86,25 @@ impl Unifier<'_> {
         if self.is_safe(a) {
             self.mark_all_safe(b);
         } else {
-            let p = Params { skip_ref_head: true, skip_object_keys: true, skip_closures: true, ..Params::default() };
+            let p = Params {
+                skip_ref_head: true,
+                skip_object_keys: true,
+                skip_closures: true,
+                ..Params::default()
+            };
             let vs = walk_vars(b, p);
-            let unsafe_count = vs.iter().filter(|v| !self.safe.contains(*v) && !self.unified.contains(*v)).count();
+            let unsafe_count = vs
+                .iter()
+                .filter(|v| !self.safe.contains(*v) && !self.unified.contains(*v))
+                .count();
             if unsafe_count == 0 {
                 self.mark_safe(a);
             } else {
-                let unsafe_vars: Vec<Var> =
-                    vs.iter().filter(|v| !self.safe.contains(*v) && !self.unified.contains(*v)).cloned().collect();
+                let unsafe_vars: Vec<Var> = vs
+                    .iter()
+                    .filter(|v| !self.safe.contains(*v) && !self.unified.contains(*v))
+                    .cloned()
+                    .collect();
                 for v in &unsafe_vars {
                     self.mark_unknown(a, v);
                 }
@@ -157,7 +173,9 @@ impl Unifier<'_> {
             }
             TermValue::Array(aa) => match &b.value {
                 TermValue::Var(bv) => self.unify_all(bv, a),
-                TermValue::ArrayCompr(..) | TermValue::ObjectCompr(..) | TermValue::SetCompr(..) => self.mark_all_safe(a),
+                TermValue::ArrayCompr(..) | TermValue::ObjectCompr(..) | TermValue::SetCompr(..) => {
+                    self.mark_all_safe(a)
+                }
                 TermValue::Ref(r) => {
                     if is_ref_safe(r, self.safe) {
                         self.mark_all_safe(a);
@@ -168,11 +186,9 @@ impl Unifier<'_> {
                         self.mark_all_safe(a);
                     }
                 }
-                TermValue::Array(ba) => {
-                    if aa.len() == ba.len() {
-                        for (x, y) in aa.iter().zip(ba) {
-                            self.unify(x, y);
-                        }
+                TermValue::Array(ba) if aa.len() == ba.len() => {
+                    for (x, y) in aa.iter().zip(ba) {
+                        self.unify(x, y);
                     }
                 }
                 _ => {}
@@ -189,12 +205,10 @@ impl Unifier<'_> {
                         self.mark_all_safe(a);
                     }
                 }
-                TermValue::Object(bo) => {
-                    if ao.len() == bo.len() {
-                        for (k, v) in vars::sorted_pairs(ao) {
-                            if let Some((_, v2)) = bo.iter().find(|(k2, _)| k2.equal(k)) {
-                                self.unify(v, v2);
-                            }
+                TermValue::Object(bo) if ao.len() == bo.len() => {
+                    for (k, v) in vars::sorted_pairs(ao) {
+                        if let Some((_, v2)) = bo.iter().find(|(k2, _)| k2.equal(k)) {
+                            self.unify(v, v2);
                         }
                     }
                 }
@@ -211,7 +225,11 @@ impl Unifier<'_> {
 
 /// ast.Unify.
 pub fn unify(safe: &VarSet, a: &Term, b: &Term) -> VarSet {
-    let mut u = Unifier { safe, unified: VarSet::new(), unknown: HashMap::new() };
+    let mut u = Unifier {
+        safe,
+        unified: VarSet::new(),
+        unknown: HashMap::new(),
+    };
     u.unify(a, b);
     u.unified
 }
@@ -221,13 +239,19 @@ fn output_vars_for_terms(e: &Expr, safe: &VarSet) -> VarSet {
     let mut out = VarSet::new();
     let mut f = |t: &Term| -> bool {
         match &t.value {
-            TermValue::SetCompr(..) | TermValue::ArrayCompr(..) | TermValue::ObjectCompr(..) | TermValue::TemplateString { .. } => true,
+            TermValue::SetCompr(..)
+            | TermValue::ArrayCompr(..)
+            | TermValue::ObjectCompr(..)
+            | TermValue::TemplateString { .. } => true,
             TermValue::Ref(r) => {
                 if !is_ref_safe(r, safe) {
                     return true;
                 }
                 if !t.is_ground() {
-                    let mut v = VarVisitor::new(Params { skip_ref_head: true, ..Params::default() });
+                    let mut v = VarVisitor::new(Params {
+                        skip_ref_head: true,
+                        ..Params::default()
+                    });
                     v.reference(r);
                     out.extend(v.vars);
                 }
@@ -270,7 +294,9 @@ pub fn walk_terms(t: &Term, f: &mut dyn FnMut(&Term) -> bool) {
         return;
     }
     match &t.value {
-        TermValue::Ref(r) | TermValue::Array(r) | TermValue::Call(r) => r.iter().for_each(|x| walk_terms(x, f)),
+        TermValue::Ref(r) | TermValue::Array(r) | TermValue::Call(r) => {
+            r.iter().for_each(|x| walk_terms(x, f))
+        }
         TermValue::Object(o) => {
             for (k, v) in vars::sorted_pairs(o) {
                 walk_terms(k, f);
@@ -301,7 +327,9 @@ pub fn walk_terms(t: &Term, f: &mut dyn FnMut(&Term) -> bool) {
 
 /// outputVarsForExprEq.
 pub fn output_vars_for_expr_eq(e: &Expr, safe: &VarSet) -> VarSet {
-    let (Some(a), Some(b)) = (e.operand(0), e.operand(1)) else { return safe.clone() };
+    let (Some(a), Some(b)) = (e.operand(0), e.operand(1)) else {
+        return safe.clone();
+    };
     if e.operand(2).is_some() {
         return safe.clone();
     }
@@ -320,7 +348,11 @@ fn output_vars_for_expr_call(e: &Expr, arity: usize, safe: &VarSet, terms: &[Ter
     }
     let mut v = VarVisitor::new(OUTPUT);
     v.args(terms.get(..inputs).unwrap_or_default());
-    let unsafe_count = v.vars.iter().filter(|x| !output.contains(*x) && !safe.contains(*x)).count();
+    let unsafe_count = v
+        .vars
+        .iter()
+        .filter(|x| !output.contains(*x) && !safe.contains(*x))
+        .count();
     if unsafe_count > 0 {
         return VarSet::new();
     }
@@ -353,7 +385,9 @@ pub fn output_vars_for_expr(e: &Expr, arity: Arity<'_>, safe: &VarSet) -> VarSet
             if e.is_equality() {
                 return output_vars_for_expr_eq(e, safe);
             }
-            let Some(op) = terms.first().and_then(Term::as_ref) else { return VarSet::new() };
+            let Some(op) = terms.first().and_then(Term::as_ref) else {
+                return VarSet::new();
+            };
             let Some(a) = arity(op) else { return VarSet::new() };
             output_vars_for_expr_call(e, a, safe, terms)
         }
@@ -416,7 +450,11 @@ pub fn reorder(arity: Arity<'_>, globals: &VarSet, body: &Body) -> (Vec<usize>, 
                 continue;
             }
             let ovs = output_vars_for_expr(e, arity, &safe);
-            let cv: VarSet = vars_in_closures(e).intersection(&body_vars).filter(|v| !globals.contains(*v)).cloned().collect();
+            let cv: VarSet = vars_in_closures(e)
+                .intersection(&body_vars)
+                .filter(|v| !globals.contains(*v))
+                .cloned()
+                .collect();
             let reordered: Body = order.iter().filter_map(|&j| body.get(j).cloned()).collect();
             let ob = output_vars_for_body(&reordered, arity, &safe);
             if diff_count(&cv, &ob) > 0 {
@@ -448,7 +486,8 @@ pub type Unsafe = Vec<(Option<Location>, VarSet)>;
 
 /// safetyErrorSlice: the unsafe variables' errors, by their first locations.
 pub fn errors(unsafe_vars: &Unsafe, rewritten: &HashMap<Var, Var>) -> Vec<CompileError> {
-    let unsafe_vars: Vec<&(Option<Location>, VarSet)> = unsafe_vars.iter().filter(|(_, v)| !v.is_empty()).collect();
+    let unsafe_vars: Vec<&(Option<Location>, VarSet)> =
+        unsafe_vars.iter().filter(|(_, v)| !v.is_empty()).collect();
     if unsafe_vars.is_empty() {
         return Vec::new();
     }
@@ -480,7 +519,11 @@ pub fn errors(unsafe_vars: &Unsafe, rewritten: &HashMap<Var, Var>) -> Vec<Compil
             ));
             continue;
         }
-        out.push(CompileError::new(UNSAFE_VAR_ERR, loc, format!("var {v} is unsafe")));
+        out.push(CompileError::new(
+            UNSAFE_VAR_ERR,
+            loc,
+            format!("var {v} is unsafe"),
+        ));
     }
     if !out.is_empty() {
         return out;
@@ -492,7 +535,11 @@ pub fn errors(unsafe_vars: &Unsafe, rewritten: &HashMap<Var, Var>) -> Vec<Compil
         let before = seen.len();
         seen.extend(vs.iter().filter(|v| vars::is_generated(v)).cloned());
         if seen.len() > before {
-            out.push(CompileError::new(UNSAFE_VAR_ERR, l.clone(), "expression is unsafe".into()));
+            out.push(CompileError::new(
+                UNSAFE_VAR_ERR,
+                l.clone(),
+                "expression is unsafe".into(),
+            ));
         }
     }
     out
@@ -505,7 +552,11 @@ pub fn compare_loc(a: &Option<Location>, b: &Option<Location>) -> i32 {
         (None, Some(_)) => 1,
         (Some(_), None) => -1,
         (Some(a), Some(b)) => {
-            let c = a.file.cmp(&b.file).then(a.row.cmp(&b.row)).then(a.col.cmp(&b.col));
+            let c = a
+                .file
+                .cmp(&b.file)
+                .then(a.row.cmp(&b.row))
+                .then(a.col.cmp(&b.col));
             match c {
                 std::cmp::Ordering::Less => -1,
                 std::cmp::Ordering::Equal => 0,
