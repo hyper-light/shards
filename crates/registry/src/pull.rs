@@ -308,6 +308,35 @@ pub fn fetch_untagged(
     targets: &[Target],
     limits: &Limits,
 ) -> Result<(Digest, Descriptor), Error> {
+    let (resolved, manifest_desc, manifest, _) = config_for(registry, store, reference, targets, limits)?;
+    crate::fetch::layers(registry, store, &manifest, limits, &|_| {}, &|_| {}, false)?;
+    Ok((resolved, manifest_desc))
+}
+
+/// What `reference` resolves to and its image's config for one of `targets`, fetched
+/// into `store` and checked as [`pull`] checks them, without a layer: what a build
+/// policy reads of an image before the build may load it, as BuildKit resolves an
+/// image's metadata.
+pub fn metadata(
+    registry: &Registry,
+    store: &Store,
+    reference: &Reference,
+    targets: &[Target],
+    limits: &Limits,
+) -> Result<(Digest, Vec<u8>), Error> {
+    let (resolved, _, _, config) = config_for(registry, store, reference, targets, limits)?;
+    Ok((resolved, config))
+}
+
+/// The resolution [`fetch_untagged`] and [`metadata`] share: what `reference` resolved
+/// to, the manifest chosen and its descriptor, and its config.
+fn config_for(
+    registry: &Registry,
+    store: &Store,
+    reference: &Reference,
+    targets: &[Target],
+    limits: &Limits,
+) -> Result<(Digest, Descriptor, Manifest, Vec<u8>), Error> {
     let name = reference.familiar();
     let top = registry
         .resolve(store, reference)
@@ -353,8 +382,7 @@ pub fn fetch_untagged(
         read => read?,
     };
     checked(&name, &manifest_desc, &manifest, &config, targets)?;
-    crate::fetch::layers(registry, store, &manifest, limits, &|_| {}, &|_| {}, false)?;
-    Ok((resolved, manifest_desc))
+    Ok((resolved, manifest_desc, manifest, config))
 }
 
 /// Downloads the layers `manifest` names that are not here, and builds the image's root

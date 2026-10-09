@@ -227,7 +227,7 @@ impl Plug<'_> {
             && (!self.negated || value_ground(b))
         {
             let mut base = match b {
-                TermValue::Ref(x) => x.clone(),
+                TermValue::Ref(x) => x.to_vec(),
                 other => vec![Term::new(other.clone(), None)],
             };
             base.extend(v.iter().skip(1).cloned());
@@ -241,7 +241,7 @@ impl Transformer for Plug<'_> {
     fn term(&mut self, t: &mut Term) {
         let next = match &t.value {
             TermValue::Var(v) => Some(self.var(v)),
-            TermValue::Ref(r) => Some(TermValue::Ref(self.reference(r))),
+            TermValue::Ref(r) => Some(TermValue::Ref(self.reference(r).into())),
             _ => None,
         };
         if let Some(n) = next {
@@ -379,7 +379,7 @@ impl<'a> CopyPropagator<'a> {
             && !headvars.contains(k)
         {
             let call = terms.get(..terms.len() - 1).unwrap_or_default().to_vec();
-            removed_put(removed, TermValue::Var(k.clone()), TermValue::Call(call));
+            removed_put(removed, TermValue::Var(k.clone()), TermValue::Call(call.into()));
             return false;
         }
         !is_noop(e)

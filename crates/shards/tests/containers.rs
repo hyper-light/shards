@@ -3200,6 +3200,52 @@ fn holders_of(port: u16) -> String {
     format!("[{owned}] netstat: [{kernel}]")
 }
 
+/// Who holds `port` while it is held: the system's sockets on it, asked at once and again
+/// until a bind of it succeeds (up to 2 s), with how long that took. A holder that lives
+/// a few milliseconds is gone before lsof, which reads every process, has answered
+/// (project-port-free-flake), so netstat (with each socket's process, `-v`) or ss go
+/// first.
+fn catch_holder(port: u16) -> String {
+    let began = Instant::now();
+    let mut seen: Vec<String> = Vec::new();
+    let sockets = || -> String {
+        let out = if cfg!(target_os = "macos") {
+            std::process::Command::new("netstat")
+                .args(["-anv", "-p", "tcp"])
+                .output()
+        } else {
+            std::process::Command::new("ss").args(["-tanpe"]).output()
+        };
+        out.map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .filter(|l| l.contains(&format!(".{port} ")) || l.contains(&format!(":{port} ")))
+                .map(|l| l.split_whitespace().collect::<Vec<_>>().join(" "))
+                .collect::<Vec<_>>()
+                .join("; ")
+        })
+        .unwrap_or_else(|e| format!("({e})"))
+    };
+    while began.elapsed() < Duration::from_secs(2) {
+        let now = sockets();
+        if seen.len() < 5 && !now.is_empty() && seen.last() != Some(&now) {
+            seen.push(format!("{:?}: {now}", began.elapsed()));
+        }
+        if std::net::TcpListener::bind(("0.0.0.0", port)).is_ok() {
+            return format!(
+                "free after {:?}; sockets seen: [{}]",
+                began.elapsed(),
+                seen.join(" | ")
+            );
+        }
+    }
+    format!(
+        "held 2 s and more; sockets seen: [{}]; {}",
+        seen.join(" | "),
+        holders_of(port)
+    )
+}
+
 /// lsof's answer to `args`, where the host's lsof is lsof's own, which `-v` names: none
 /// where it has none, or busybox's (Alpine's), which ignores what it is asked and lists
 /// every open file.
@@ -3462,9 +3508,9 @@ fn published_ports_reach_the_guest_as_dockerd_publishes_them() {
         assert_eq!(
             again.status,
             Some(0),
-            "{again}; run {i} of 20, {:?} after this test had {p} free; held by {}",
+            "{again}; run {i} of 20, {:?} after this test had {p} free; {}",
             freed.elapsed(),
-            holders_of(p)
+            catch_holder(p)
         );
         // Nothing listens on it once `run` has returned: asked of the system, not by
         // binding, which SO_REUSEADDR lets succeed beside a socket a later bind meets.
@@ -3474,14 +3520,14 @@ fn published_ports_reach_the_guest_as_dockerd_publishes_them() {
             "{p} after a run ended: still listened on by {listening}"
         );
         if let Err(e) = std::net::TcpListener::bind(("0.0.0.0", p)) {
-            panic!("{p} after a run ended: {e}; held by {}", holders_of(p));
+            panic!("{p} after a run ended: {e}; {}", catch_holder(p));
         }
         freed = Instant::now();
     }
     // And the daemon holds it no longer: taken by another program, it is refused at once,
     // not after the wait for a run's ports to come free.
     let held = std::net::TcpListener::bind(("0.0.0.0", p))
-        .unwrap_or_else(|e| panic!("{p}: {e}; held by {}", holders_of(p)));
+        .unwrap_or_else(|e| panic!("{p}: {e}; {}", catch_holder(p)));
     let began = Instant::now();
     let refused = run_in(
         &home,

@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 
 use shards_rego::compile::{Compiler, Function};
-use shards_rego::eval::{Host, Machine, Program, eval_query, partial_query};
+use shards_rego::eval::{Host, HostError, Machine, Program, eval_query, partial_query};
 use shards_rego::funcs::Context;
 use shards_rego::parser::parse_module;
 use shards_rego::types::Type;
@@ -14,8 +14,8 @@ use shards_rego::value::{self, Value};
 struct Table(BTreeMap<String, BTreeMap<String, Value>>);
 
 impl Host for Table {
-    fn call(&mut self, name: &str, args: &[Value]) -> Result<Option<Value>, String> {
-        let key = value::to_json(&Value::array(args.to_vec())).map_err(|e| e.0)?;
+    fn call(&mut self, name: &str, args: &[Value]) -> Result<Option<Value>, HostError> {
+        let key = value::to_json(&Value::array(args.to_vec())).map_err(|e| HostError::Undefined(e.0))?;
         Ok(self.0.get(name).and_then(|t| t.get(&key)).cloned())
     }
 }

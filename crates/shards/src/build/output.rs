@@ -573,11 +573,18 @@ fn manifest_for(made: &Made<'_>, docker: bool) -> (Vec<u8>, &'static str) {
 /// The layout tar of the `oci` and `docker` outputs, as containerd's exporter writes it
 /// for BuildKit: blobs, `index.json` with an entry per name (one without), `oci-layout`,
 /// and for `docker` `manifest.json`; records in name order, every time 0, owner 0,
-/// directories 0755, the documents 0644 and the blobs 0444.
+/// directories 0755, the documents 0644 and the blobs 0444. `docker` is Docker's media
+/// types, `archive` the `docker` output.
+///
+/// An attested `docker` archive is the `oci` one with `manifest.json` naming the image
+/// beside its index. buildx refuses one (build/opt.go), and BuildKit's exporter, given
+/// no platform to pick from the index, writes no `manifest.json`, which `docker load`
+/// without containerd's store cannot read; this one loads in both stores.
 pub fn layout<W: Write>(
     store: &Store,
     made: &Made<'_>,
     docker: bool,
+    archive: bool,
     names: &[Reference],
     created: &str,
     out: W,
@@ -653,7 +660,7 @@ pub fn layout<W: Write>(
         entries.join(",")
     );
     records.insert("index.json".into(), (0o644, Content::Bytes(index.into_bytes())));
-    if docker {
+    if archive {
         let tags = if names.is_empty() {
             "null".to_string()
         } else {

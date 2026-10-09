@@ -723,7 +723,7 @@ fn glob_pattern(t: &Term, delim: &str) -> Option<Term> {
         }
         arr.push(Term::string(&part, None));
     }
-    Some(Term::new(TermValue::Array(arr), None))
+    Some(Term::new(TermValue::Array(arr.into()), None))
 }
 
 impl RefIndices<'_> {
@@ -756,7 +756,7 @@ impl RefIndices<'_> {
                     return None;
                 }
                 index_value(b).map(|value| RefIndex {
-                    r: v.clone(),
+                    r: v.to_vec(),
                     value,
                     mapper: None,
                 })

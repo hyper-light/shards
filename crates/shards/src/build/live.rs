@@ -78,6 +78,16 @@ impl Live {
         self.draw();
     }
 
+    /// Step `index` begins again, as progressui shows a vertex that runs again.
+    pub(super) fn resume(&mut self, index: usize) {
+        if let Some(s) = self.step(index) {
+            s.state = State::Running;
+            s.started = Instant::now();
+            s.took = None;
+        }
+        self.draw();
+    }
+
     fn step(&mut self, index: usize) -> Option<&mut Step> {
         self.steps.get_mut(index.checked_sub(1)?)
     }

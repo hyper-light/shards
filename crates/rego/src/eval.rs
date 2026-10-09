@@ -28,6 +28,10 @@ pub struct EvalError {
 
 impl std::fmt::Display for EvalError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // A host's halt is its own error, as topdown.Halt returns the error it wraps.
+        if self.code == HALT {
+            return f.write_str(&self.message);
+        }
         match &self.loc {
             Some(l) if !l.file.is_empty() => {
                 write!(f, "{}:{}: {}: {}", l.file, l.row, self.code, self.message)
@@ -38,6 +42,8 @@ impl std::fmt::Display for EvalError {
     }
 }
 
+/// A host function's halt, which carries no code of its own.
+pub const HALT: &str = "";
 pub const CONFLICT_ERR: &str = "eval_conflict_error";
 pub const TYPE_ERR: &str = "eval_type_error";
 pub const BUILTIN_ERR: &str = "eval_builtin_error";
@@ -89,9 +95,18 @@ fn handle_deferred(r: R, deferred: &mut Option<Flow>) -> R {
     r
 }
 
+/// Why a function the host answers failed: an error that leaves its call undefined, as
+/// OPA records a builtin's (topdown evalBuiltin), or one that stops the query
+/// (topdown.Halt).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HostError {
+    Undefined(String),
+    Halt(String),
+}
+
 /// A function the host answers: buildx's own, in policies.
 pub trait Host {
-    fn call(&mut self, name: &str, args: &[Value]) -> Result<Option<Value>, String>;
+    fn call(&mut self, name: &str, args: &[Value]) -> Result<Option<Value>, HostError>;
 }
 
 /// A rule, its path (Rule.Ref), its package's length and its else chain.
@@ -350,7 +365,7 @@ fn nested_bodies(e: &Expr) -> Vec<Body> {
     }
     crate::compile::safety::walk_terms_expr(e, &mut |t: &Term| match &t.value {
         TermValue::ArrayCompr(_, b) | TermValue::SetCompr(_, b) | TermValue::ObjectCompr(_, _, b) => {
-            out.push(b.clone());
+            out.push(b.to_vec());
             true
         }
         _ => false,
@@ -1003,7 +1018,7 @@ impl<'p> Machine<'p> {
         for t in ts {
             match t.value {
                 TermValue::Var(_) => vars.push(t),
-                TermValue::Ref(r) => refs.push(r),
+                TermValue::Ref(r) => refs.push(r.into_inner()),
                 _ => {}
             }
         }
@@ -1817,7 +1832,7 @@ fn eval_every(m: &mut Machine<'_>, f: &Frame, ev: &Every, expr: &Expr, iter: I<'
     let key = ev.key.clone().unwrap_or_else(|| var_term("$_"));
     let loc = ev.domain.loc.clone();
     let mut r = match &ev.domain.value {
-        TermValue::Ref(r) => r.clone(),
+        TermValue::Ref(r) => r.to_vec(),
         _ => vec![ev.domain.clone()],
     };
     r.push(key);
@@ -2021,7 +2036,7 @@ fn set_path(doc: Term, path: &[Term], value: Term) -> Option<Term> {
         set_path(inner, rest, value)?
     };
     o.push((first.clone(), new));
-    Some(crate::ast::object_term(o, doc.loc))
+    Some(crate::ast::object_term(o.into_inner(), doc.loc))
 }
 
 /// biunify.
@@ -2273,7 +2288,7 @@ fn eval_term(
             }
         }
         TermValue::Set(s) => {
-            let mut items = s.clone();
+            let mut items = s.to_vec();
             items.sort_by(term_compare);
             for elem in items {
                 let r1 = unify(m, f, &elem, part, tb, b, &mut |m| {
@@ -2390,7 +2405,7 @@ fn eval_tree(
                 ks
             }
             TermValue::Set(s) => {
-                let mut ks = s.clone();
+                let mut ks = s.to_vec();
                 ks.sort_by(term_compare);
                 ks
             }
@@ -3502,7 +3517,7 @@ fn compr_cached(m: &mut Machine<'_>, f: &Frame, a: &Term) -> Result<Option<Term>
     if m.ccache.last().is_none_or(|c| !c.contains_key(&ck)) {
         let body = match &a.value {
             TermValue::ArrayCompr(_, b) | TermValue::SetCompr(_, b) | TermValue::ObjectCompr(_, _, b) => {
-                b.clone()
+                b.to_vec()
             }
             _ => return Ok(None),
         };
@@ -3510,41 +3525,41 @@ fn compr_cached(m: &mut Machine<'_>, f: &Frame, a: &Term) -> Result<Option<Term>
         let mut groups: HashMap<String, Term> = HashMap::new();
         eval_expr(m, &cf, &mut |m, cf| {
             let kv: Vec<Term> = keys.iter().map(|x| m.plug(x, cf.b)).collect();
-            let gk = Term::new(TermValue::Array(kv), None).to_string();
-            let entry = groups.get(&gk).cloned();
+            let gk = Term::new(TermValue::Array(kv.into()), None).to_string();
+            let entry = groups.remove(&gk);
             let next = match &a.value {
                 TermValue::ArrayCompr(h, _) => {
                     let v = m.plug(h, cf.b);
                     let mut items = match entry.map(|t| t.value) {
-                        Some(TermValue::Array(xs)) => xs,
+                        Some(TermValue::Array(xs)) => xs.into_inner(),
                         _ => Vec::new(),
                     };
                     items.push(v);
-                    Term::new(TermValue::Array(items), None)
+                    Term::new(TermValue::Array(items.into()), None)
                 }
                 TermValue::SetCompr(h, _) => {
                     let v = m.plug(h, cf.b);
                     let mut items = match entry.map(|t| t.value) {
-                        Some(TermValue::Set(xs)) => xs,
+                        Some(TermValue::Set(xs)) => xs.into_inner(),
                         _ => Vec::new(),
                     };
                     if !items.iter().any(|x| x.equal(&v)) {
                         items.push(v);
                     }
-                    Term::new(TermValue::Set(items), None)
+                    Term::new(TermValue::Set(items.into()), None)
                 }
                 TermValue::ObjectCompr(kk, vv, _) => {
                     let key = m.plug(kk, cf.b);
                     let val = m.plug(vv, cf.b);
                     let mut items = match entry.map(|t| t.value) {
-                        Some(TermValue::Object(xs)) => xs,
+                        Some(TermValue::Object(xs)) => xs.into_inner(),
                         _ => Vec::new(),
                     };
                     match items.iter_mut().find(|(x, _)| x.equal(&key)) {
                         Some(slot) => slot.1 = val,
                         None => items.push((key, val)),
                     }
-                    Term::new(TermValue::Object(items), None)
+                    Term::new(TermValue::Object(items.into()), None)
                 }
                 _ => return Ok(()),
             };
@@ -3556,7 +3571,7 @@ fn compr_cached(m: &mut Machine<'_>, f: &Frame, a: &Term) -> Result<Option<Term>
         }
     }
     let kv: Vec<Term> = keys.iter().map(|x| m.plug(x, f.b)).collect();
-    let gk = Term::new(TermValue::Array(kv), None).to_string();
+    let gk = Term::new(TermValue::Array(kv.into()), None).to_string();
     Ok(m.ccache
         .last()
         .and_then(|c| c.get(&ck))
@@ -3594,17 +3609,17 @@ fn unify_comprehension(
     }
     let value = match &a.value {
         TermValue::ArrayCompr(head, body) => {
-            let c = closure(m, f, body.clone());
+            let c = closure(m, f, body.to_vec());
             let c = Frame { b: b1, ..c };
             let mut out = Vec::new();
             eval_expr(m, &c, &mut |m, cf| {
                 out.push(m.plug(head, cf.b));
                 Ok(())
             })?;
-            Term::new(TermValue::Array(out), None)
+            Term::new(TermValue::Array(out.into()), None)
         }
         TermValue::SetCompr(head, body) => {
-            let c = closure(m, f, body.clone());
+            let c = closure(m, f, body.to_vec());
             let c = Frame { b: b1, ..c };
             let mut out: Vec<Term> = Vec::new();
             eval_expr(m, &c, &mut |m, cf| {
@@ -3614,10 +3629,10 @@ fn unify_comprehension(
                 }
                 Ok(())
             })?;
-            Term::new(TermValue::Set(out), None)
+            Term::new(TermValue::Set(out.into()), None)
         }
         TermValue::ObjectCompr(kk, vv, body) => {
-            let c = closure(m, f, body.clone());
+            let c = closure(m, f, body.to_vec());
             let c = Frame { b: b1, ..c };
             let mut out: Vec<(Term, Term)> = Vec::new();
             let loc = kk.loc.clone();
@@ -3633,7 +3648,7 @@ fn unify_comprehension(
                 }
                 Ok(())
             })?;
-            Term::new(TermValue::Object(out), None)
+            Term::new(TermValue::Object(out.into()), None)
         }
         _ => return Ok(()),
     };
@@ -3997,7 +4012,8 @@ fn eval_call(m: &mut Machine<'_>, f: &Frame, terms: &[Term], k: K<'_>) -> R {
     let result = if m.p.host_names.contains(&name) {
         match m.host.call(&name, &args) {
             Ok(v) => v,
-            Err(e) => {
+            Err(HostError::Halt(msg)) => return Err(err(HALT, loc, msg)),
+            Err(HostError::Undefined(e)) => {
                 m.builtin_errors.push(EvalError {
                     code: BUILTIN_ERR,
                     message: format!("{name}: {e}"),

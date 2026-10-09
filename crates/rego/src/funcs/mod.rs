@@ -65,7 +65,13 @@ pub struct Context {
     pub seed_at: usize,
     /// Per-query results of nondeterministic builtins, by name and operands.
     pub cache: HashMap<(String, Vec<Value>), Value>,
+    /// Where more seed comes from once `seed` is read: the system's random source, as
+    /// OPA's default Seed is crypto/rand's Reader; none for a seed given whole.
+    pub fill: Option<Fill>,
 }
+
+/// What fills a buffer with random bytes, or says why it could not.
+pub type Fill = fn(&mut [u8]) -> Result<(), String>;
 
 /// A builtin: its operands to its result, `None` when undefined.
 pub type Builtin = fn(&mut Context, &[Value]) -> Result<Option<Value>, BuiltinError>;

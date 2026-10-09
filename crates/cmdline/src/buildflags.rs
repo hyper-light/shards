@@ -1061,6 +1061,88 @@ pub fn ulimits(values: &[String]) -> Result<Vec<Ulimit>, String> {
     Ok(by_name.into_values().collect())
 }
 
+/// A logrus level (`log-level`), as `logrus.ParseLevel` reads one: its name in any case.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum LogLevel {
+    Panic,
+    Fatal,
+    Error,
+    Warn,
+    Info,
+    Debug,
+    Trace,
+}
+
+impl LogLevel {
+    /// `logrus.ParseLevel`, with its error's words.
+    pub fn parse(s: &str) -> Result<LogLevel, String> {
+        Ok(match s.to_lowercase().as_str() {
+            "panic" => LogLevel::Panic,
+            "fatal" => LogLevel::Fatal,
+            "error" => LogLevel::Error,
+            "warn" | "warning" => LogLevel::Warn,
+            "info" => LogLevel::Info,
+            "debug" => LogLevel::Debug,
+            "trace" => LogLevel::Trace,
+            _ => return Err(format!("not a valid logrus Level: {}", go::quote(s))),
+        })
+    }
+
+    /// `Level.String`.
+    pub fn name(self) -> &'static str {
+        match self {
+            LogLevel::Panic => "panic",
+            LogLevel::Fatal => "fatal",
+            LogLevel::Error => "error",
+            LogLevel::Warn => "warning",
+            LogLevel::Info => "info",
+            LogLevel::Debug => "debug",
+            LogLevel::Trace => "trace",
+        }
+    }
+}
+
+/// A `--policy`, as buildx v0.37.1 reads one (util/buildflags/policy.go): the files it
+/// names, whether it drops the policies before it (`reset`) or turns policies off
+/// (`disabled`), and its `strict` and `log-level`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PolicyConfig {
+    pub files: Vec<String>,
+    pub reset: bool,
+    pub disabled: bool,
+    pub strict: Option<bool>,
+    pub log_level: Option<LogLevel>,
+}
+
+/// `ParsePolicyConfigs`: each a CSV of `key=value`, its keys in any case.
+pub fn parse_policies(values: &[String]) -> Result<Vec<PolicyConfig>, String> {
+    let mut out = Vec::new();
+    for v in values {
+        let fields = go::csv_fields(v.as_bytes()).map_err(|e| String::from_utf8_lossy(&e).into_owned())?;
+        let mut cfg = PolicyConfig::default();
+        for field in fields {
+            let field = String::from_utf8_lossy(&field).into_owned();
+            let Some((key, value)) = field.split_once('=') else {
+                return Err(format!("invalid value {field}"));
+            };
+            let boolean = || go::parse_bool(value).map_err(|e| format!("invalid value {field}: {e}"));
+            match key.trim().to_lowercase().as_str() {
+                "filename" if !value.is_empty() => cfg.files.push(value.to_string()),
+                "reset" => cfg.reset = boolean()?,
+                "disabled" => cfg.disabled = boolean()?,
+                "strict" => cfg.strict = Some(boolean()?),
+                "log-level" => {
+                    let level = LogLevel::parse(value).map_err(|e| format!("invalid value {field}: {e}"))?;
+                    cfg.log_level = Some(level);
+                }
+                _ => return Err(format!("invalid value {field}")),
+            }
+        }
+        out.push(cfg);
+    }
+    Ok(out)
+}
+
 /// What `build`'s flags take, checked as pflag sets them: a `--ulimit` read, and shown
 /// as UlimitOpt shows it; the rest as given.
 pub fn validate(flag: &crate::flags::Flag, value: &str) -> Result<String, String> {

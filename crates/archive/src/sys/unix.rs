@@ -472,6 +472,11 @@ impl Root {
         Ok(File::from(fd))
     }
 
+    /// Root.Open: read only, a final symlink followed inside the root.
+    pub(crate) fn open_read(&self, name: &[u8]) -> Result<File, WalkError> {
+        self.open_file(name, libc::O_RDONLY, 0)
+    }
+
     /// Root.OpenFile(name, O_CREATE|O_WRONLY|O_TRUNC, perm).
     pub(crate) fn create(&self, name: &[u8], perm: u32) -> Result<File, WalkError> {
         self.open_file(name, libc::O_CREAT | libc::O_WRONLY | libc::O_TRUNC, perm)

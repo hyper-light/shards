@@ -4236,3 +4236,36 @@ revision before comparing a changed API/implementation.
 - **Consequence.** The backend's requests are signed and shaped as Blob Storage takes
   them, blocks included, which layers past 32 MiB rely on and no fake covers.
 
+### M126. How deep a build policy may nest, and what it costs
+
+- **Question.** How long do OPA and shards' Rego take on the deepest policy OPA parses?
+  How much stack does shards' policy thread need for it, and for the deepest JSON
+  `load_json` reads? Go grows its stacks to 1 GB; a Rust thread's stack is fixed when the
+  thread starts (D101).
+- **Method.** `docs/research/measurements/rego-depth/run.sh` times OPA v1.14.1, as buildx
+  v0.37.1 vendors it, on a policy whose one rule nests an array N deep (`opa_depth.go`).
+  It then bisects the smallest stack on which
+  `the_deepest_policy_runs_on_the_policy_thread` passes, each size in its own process
+  (`SHARDS_STACK_PROBE`). That test runs, on the policy thread:
+  - a 10000-deep JSON document read by `load_json`, compared and dropped;
+  - a policy nested as deep as OPA's parser takes (its `DefaultMaxParsingRecursionDepth`,
+    100000), parsed, compiled and evaluated.
+
+  macOS 26.4 (Darwin 25.4.0), arm64, release builds, 2026-10-09; x86_64 under Rosetta 2.
+- **Results.**
+
+  | depth | OPA parse | OPA compile | shards parse | shards compile |
+  |---|---|---|---|---|
+  | 1000 | 1.0 ms | 1.9 ms | 1.3 ms | 2.2 ms |
+  | 4000 | 7.2 ms | 4.6 ms | 2.8 ms | 4.0 ms |
+  | 33333 | 79 ms | 50 ms | 29 ms | 33 ms |
+
+  - Before terms were shared, shards took 40 ms and 26 ms at depth 1000, and four times
+    as long at each doubling: quadratic. The parser's cache of parsed terms and the
+    compiler's copies cloned whole subtrees.
+  - The stack the deepest cases need: 123 MiB on aarch64-apple-darwin, 120 MiB on
+    x86_64-apple-darwin.
+- **Consequence.** The policy thread's stack is 123 MiB (`policy::STACK`). Rust's std
+  reserves it as address space: an `mmap`ed stack on Unix, and on Windows
+  `CreateThread` with `STACK_SIZE_PARAM_IS_A_RESERVATION`. Memory is committed only as
+  deep as a policy goes; this is unmeasured. The test holds every CI target to that stack.

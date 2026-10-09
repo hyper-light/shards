@@ -48,6 +48,7 @@ pub(crate) mod http;
 mod live;
 pub(crate) mod multi;
 mod output;
+mod policy;
 mod provenance;
 mod remote;
 mod s3;
@@ -196,7 +197,20 @@ struct Progress {
     /// On a colour terminal, shards' own display in place of the plain one.
     #[cfg(unix)]
     live: Option<RefCell<live::Live>>,
+    /// Each step's name, its last lines (the 10 progressui's printer keeps,
+    /// logsBufferSize) and whether it failed: what the build's end recaps of each step
+    /// that failed (printErrorLogs).
+    steps: RefCell<BTreeMap<usize, StepRecap>>,
+    recapped: std::cell::Cell<bool>,
+    /// The step printed last and not ended, 0 for none (the printer's `current`).
+    current: std::cell::Cell<usize>,
 }
+
+/// A step's name, last lines and whether it failed.
+type StepRecap = (String, std::collections::VecDeque<String>, bool);
+
+/// progressui's logsBufferSize.
+const RECAP_LINES: usize = 10;
 
 struct Vertex {
     index: usize,
@@ -221,15 +235,45 @@ impl Progress {
     /// A vertex begins: a blank line after the one before, as progressui separates them.
     fn start(&mut self, name: &str) -> Vertex {
         self.next += 1;
+        self.steps.borrow_mut().insert(
+            self.next,
+            (name.to_string(), std::collections::VecDeque::new(), false),
+        );
         #[cfg(unix)]
         if let Some(live) = &self.live {
             live.borrow_mut().start(name);
         }
-        self.say(&format!("\n#{} {name}\n", self.next));
+        self.to(self.next);
         Vertex {
             index: self.next,
             started: Instant::now(),
         }
+    }
+
+    /// The printer's turn to step `index`: where another, not ended, printed last, its
+    /// `#N ...`; then a blank line and the step's name.
+    fn to(&self, index: usize) {
+        let current = self.current.get();
+        if current == index {
+            return;
+        }
+        if current != 0 {
+            self.say(&format!("#{current} ...\n"));
+        }
+        let name = self
+            .steps
+            .borrow()
+            .get(&index)
+            .map(|s| s.0.clone())
+            .unwrap_or_default();
+        self.say(&format!("\n#{index} {name}\n"));
+        self.current.set(index);
+    }
+
+    /// Step `v` has ended: the printer's turn to it, and no step current after.
+    fn ended(&self, v: &Vertex) {
+        self.to(v.index);
+        self.current.set(0);
     }
 
     fn line(&self, v: &Vertex, text: &str) {
@@ -237,7 +281,73 @@ impl Progress {
         if let Some(live) = &self.live {
             live.borrow_mut().line(v.index, text);
         }
+        self.to(v.index);
         self.say(&format!("#{} {text}\n", v.index));
+    }
+
+    /// Vertex `index` begins again under its number, as progressui shows a vertex whose
+    /// digest runs again: buildx's policy step, each time a policy logs after it ended.
+    fn resume(&mut self, index: usize) -> Vertex {
+        #[cfg(unix)]
+        if let Some(live) = &self.live {
+            live.borrow_mut().resume(index);
+        }
+        Vertex {
+            index,
+            started: Instant::now(),
+        }
+    }
+
+    /// A log line of vertex `v`, stamped as progressui stamps one: the seconds since the
+    /// vertex began, to 3 places below 10 s, 2 below 100, and 1 past.
+    fn log(&self, v: &Vertex, text: &str) {
+        let secs = v.started.elapsed().as_secs_f64();
+        let places = if secs < 10.0 {
+            3
+        } else if secs < 100.0 {
+            2
+        } else {
+            1
+        };
+        self.to(v.index);
+        for line in text.strip_suffix('\n').unwrap_or(text).split('\n') {
+            #[cfg(unix)]
+            if let Some(live) = &self.live {
+                live.borrow_mut().line(v.index, line);
+            }
+            self.say(&format!("#{} {secs:.places$} {line}\n", v.index));
+            self.remember(v.index, &format!("{secs:.places$} {line}"));
+        }
+    }
+
+    /// A line of step `index`'s log, kept for the recap should it fail.
+    fn remember(&self, index: usize, line: &str) {
+        if let Some((_, lines, _)) = self.steps.borrow_mut().get_mut(&index) {
+            if lines.len() == RECAP_LINES {
+                lines.pop_front();
+            }
+            lines.push_back(line.to_string());
+        }
+    }
+
+    /// printErrorLogs, once: each failed step's name and last lines, between rules, as
+    /// the display's end shows them before the build's error.
+    fn recap(&self) {
+        if self.recapped.replace(true) {
+            return;
+        }
+        for (name, lines, failed) in self.steps.borrow().values() {
+            if !failed {
+                continue;
+            }
+            let mut out = format!("------\n > {name}:\n");
+            for l in lines {
+                out.push_str(l);
+                out.push('\n');
+            }
+            out.push_str("------\n");
+            self.say(&out);
+        }
     }
 
     fn done(&self, v: &Vertex) {
@@ -246,14 +356,19 @@ impl Progress {
             live.borrow_mut().done(v.index);
         }
         let secs = v.started.elapsed().as_secs_f64();
+        self.ended(v);
         self.say(&format!("#{} DONE {secs:.1}s\n", v.index));
     }
 
     fn error(&self, v: &Vertex, message: &str) {
+        if let Some(step) = self.steps.borrow_mut().get_mut(&v.index) {
+            step.2 = true;
+        }
         #[cfg(unix)]
         if let Some(live) = &self.live {
             live.borrow_mut().error(v.index, message);
         }
+        self.ended(v);
         self.say(&format!("#{} ERROR: {message}\n", v.index));
     }
 
@@ -263,6 +378,7 @@ impl Progress {
         if let Some(live) = &self.live {
             live.borrow_mut().cached(v.index);
         }
+        self.ended(v);
         self.say(&format!("#{} CACHED\n", v.index));
     }
 
@@ -273,7 +389,14 @@ impl Progress {
             live.borrow_mut().canceled(v.index);
             live.borrow_mut().leave();
         }
+        self.ended(v);
         self.say(&format!("#{} CANCELED\n", v.index));
+    }
+}
+
+impl Drop for Progress {
+    fn drop(&mut self) {
+        self.recap();
     }
 }
 
@@ -470,7 +593,16 @@ impl StepLog {
             live.borrow_mut().output(v.index, &out);
             return;
         }
-        p.say_bytes(&self.show(v, &out));
+        p.to(v.index);
+        let shown = self.show(v, &out);
+        // Each line ended, kept for the recap should the step fail.
+        let prefix = format!("#{} ", v.index);
+        for line in String::from_utf8_lossy(&shown).split_inclusive('\n') {
+            if let Some(rest) = line.strip_prefix(&prefix).and_then(|l| l.strip_suffix('\n')) {
+                p.remember(v.index, rest);
+            }
+        }
+        p.say_bytes(&shown);
     }
 
     /// progressui: each line stamped with the seconds since the step began when its first
@@ -600,6 +732,11 @@ struct Bases<'a> {
     /// of its own, as BuildKit's resolve is one vertex for its identifier and platform
     /// (llbsolver/bridge.go resolveSourceMetadata).
     answered: RefCell<Answered>,
+    /// The build's policies, asked of each base before its metadata is resolved (D101),
+    /// where they log, and the refusal that stopped the build, if one did.
+    policies: Option<&'a policy::Policies>,
+    policy_log: &'a dyn policy::Log,
+    refused: RefCell<Option<policy::Refused>>,
 }
 
 /// Base images as resolved, by name and platform.
@@ -611,7 +748,38 @@ impl Resolver for Bases<'_> {
         if let Some(r) = self.answered.borrow().get(&key) {
             return Ok(r.clone());
         }
-        let name = String::from_utf8_lossy(name).into_owned();
+        let mut name = String::from_utf8_lossy(name).into_owned();
+        // The policies first, as bridge.resolveSourceMetadata asks them before it resolves:
+        // a refusal resolves nothing; a source converted is resolved in its place.
+        if let Some(p) = self.policies {
+            let normalized = Reference::parse(&name)
+                .map(|r| r.to_string())
+                .map_err(|e| e.to_string().into_bytes())?;
+            let source = policy::Source::new(format!("docker-image://{normalized}"));
+            match p.evaluate(
+                &source,
+                Some(platform),
+                &PolicyMeta { bases: self },
+                self.policy_log,
+            ) {
+                Ok(None) => {}
+                Ok(Some(to)) => {
+                    name = to
+                        .identifier
+                        .strip_prefix("docker-image://")
+                        .unwrap_or(&to.identifier)
+                        .to_string();
+                }
+                Err(r) => {
+                    let e = format!(
+                        "failed to resolve source metadata for {normalized}: could not resolve image due to policy: {}",
+                        r.error
+                    );
+                    *self.refused.borrow_mut() = Some(r);
+                    return Err(e.into_bytes());
+                }
+            }
+        }
         let v = self.progress.borrow_mut().start(&String::from_utf8_lossy(log));
         let r = self.fetch(&name, platform);
         let progress = self.progress.borrow();
@@ -939,6 +1107,305 @@ impl Bases<'_> {
     }
 }
 
+impl Bases<'_> {
+    /// What a policy reads of the base `name` for `wanted` (D101): the digest its name
+    /// resolves to and its config, found where [`Bases::fetch`] finds the image, without
+    /// its layers, as BuildKit resolves an image's metadata.
+    fn metadata(&self, name: &str, wanted: &Platform) -> Result<(String, Vec<u8>), String> {
+        let reference = Reference::parse(name).map_err(|e| e.to_string())?;
+        let config_of = |record: &Descriptor| -> Result<Vec<u8>, String> {
+            let bytes = self
+                .store
+                .content(record, oci::MAX_MANIFEST)
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| format!("{name}: its manifest is missing"))?;
+            let Document::Manifest(m) =
+                oci::parse_document(&bytes, &record.media_type).map_err(|e| e.to_string())?
+            else {
+                return Err(format!("{name}: its record names an index"));
+            };
+            self.store
+                .content(&m.config, oci::MAX_CONFIG)
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| format!("{name}: its config is missing"))
+        };
+        if let Some(d) = &reference.digest
+            && let Some(record) = self.layouts.get(&d.to_string())
+        {
+            return Ok((d.to_string(), config_of(record)?));
+        }
+        let target = image_platform::normalize(&oci::Platform {
+            os: show(&wanted.os),
+            architecture: show(&wanted.architecture),
+            variant: (!wanted.variant.is_empty()).then(|| show(&wanted.variant)),
+            os_features: Vec::new(),
+        });
+        if !self.pull {
+            if ours(wanted) {
+                let held = match &reference.digest {
+                    Some(d) => self.store.holding(d).map_err(|e| e.to_string())?,
+                    None => None,
+                };
+                if let (Some(held), Some(d)) = (&held, &reference.digest)
+                    && let Some(record) = self.store.tagged(held).map_err(|e| e.to_string())?
+                {
+                    return Ok((d.to_string(), config_of(&record)?));
+                }
+                let tagged = reference.to_string();
+                if let Some(record) = self.store.tagged(&tagged).map_err(|e| e.to_string())? {
+                    let resolved = match self.store.resolved(&tagged).map_err(|e| e.to_string())? {
+                        Some(d) => d.to_string(),
+                        None => record.digest.clone(),
+                    };
+                    return Ok((resolved, config_of(&record)?));
+                }
+            } else {
+                let key = sha256(format!("foreign base\0{reference}\0{}", base_platform(wanted)).as_bytes())
+                    .hex()
+                    .to_string();
+                if let Some(body) = self.store.cache_get(&key).map_err(|e| e.to_string())?
+                    && let Ok(held) = serde_json::from_slice::<ForeignBase>(&body)
+                {
+                    return Ok((held.resolved, config_of(&held.manifest)?));
+                }
+            }
+        }
+        let limits = crate::pull::limits()?;
+        let registry = crate::pull::registry(&reference, None, &|k| std::env::var(k).ok())?;
+        let targets = if ours(wanted) {
+            image_platform::guest()
+        } else {
+            vec![target]
+        };
+        let (resolved, config) =
+            shards_registry::pull::metadata(&registry, self.store, &reference, &targets, &limits)
+                .map_err(|e| e.to_string())?;
+        Ok((resolved.to_string(), config))
+    }
+}
+
+/// What answers a policy's questions of a source: a base image's digest and config.
+struct PolicyMeta<'a, 'b> {
+    bases: &'a Bases<'b>,
+}
+
+impl policy::Resolve for PolicyMeta<'_, '_> {
+    fn resolve(
+        &self,
+        source: &policy::Source,
+        request: &policy::MetaRequest,
+    ) -> Result<policy::Meta, String> {
+        let Some(image) = &request.image else {
+            return Ok(policy::Meta::default());
+        };
+        if image.attestation_chain {
+            return Err(
+                "an image's provenance and signatures in a policy are not supported by shards yet".into(),
+            );
+        }
+        let name = source
+            .identifier
+            .strip_prefix("docker-image://")
+            .ok_or_else(|| format!("{}: not an image", source.identifier))?;
+        let platform = request.platform.clone().unwrap_or_else(host_platform);
+        let (digest, config) = self.bases.metadata(name, &platform)?;
+        Ok(policy::Meta {
+            image: Some(policy::ImageMeta {
+                digest,
+                config: (!image.no_config).then_some(config),
+            }),
+        })
+    }
+}
+
+/// What answers no question: a local source's policy needs nothing resolved.
+struct NoMeta;
+
+impl policy::Resolve for NoMeta {
+    fn resolve(&self, source: &policy::Source, _: &policy::MetaRequest) -> Result<policy::Meta, String> {
+        Err(format!("{}: no metadata to resolve", source.identifier))
+    }
+}
+
+/// buildx's main: each message of a policy's refusal, before the error
+/// (policysession.DenyMessages).
+fn policy_said(messages: &[String]) {
+    for m in messages.iter().filter(|m| !m.is_empty()) {
+        let _ = writeln!(std::io::stderr(), "Policy: {m}");
+    }
+}
+
+/// buildx's `loading policies` step (build/opt.go policyProgressLogger): begun when a
+/// policy first logs, each line stamped with the seconds since it began; done half a
+/// second after its last line, as its timer ends it, and begun again under its number
+/// by the next; failed by a policy's refusal; done when the build ends, if it is not.
+struct PolicyStep<'a> {
+    progress: &'a RefCell<Progress>,
+    name: RefCell<String>,
+    index: std::cell::Cell<usize>,
+    window: RefCell<Option<(Vertex, Instant)>>,
+    closed: std::cell::Cell<bool>,
+}
+
+/// policyProgressWindow.
+const POLICY_WINDOW: std::time::Duration = std::time::Duration::from_millis(500);
+
+impl<'a> PolicyStep<'a> {
+    fn new(progress: &'a RefCell<Progress>) -> PolicyStep<'a> {
+        PolicyStep {
+            progress,
+            name: RefCell::new(String::new()),
+            index: std::cell::Cell::new(0),
+            window: RefCell::new(None),
+            closed: std::cell::Cell::new(false),
+        }
+    }
+
+    /// The step's window, begun (again) if it has ended.
+    fn open(&self) -> std::cell::RefMut<'_, Option<(Vertex, Instant)>> {
+        let mut w = self.window.borrow_mut();
+        if let Some((v, last)) = w.as_ref()
+            && last.elapsed() >= POLICY_WINDOW
+        {
+            self.progress.borrow().done(v);
+            *w = None;
+        }
+        if w.is_none() {
+            let name = self.name.borrow();
+            let v = match self.index.get() {
+                0 => self.progress.borrow_mut().start(&name),
+                i => self.progress.borrow_mut().resume(i),
+            };
+            self.index.set(v.index);
+            *w = Some((v, Instant::now()));
+        }
+        w
+    }
+
+    /// Close(err) of a refusal: the step failed with the build's error.
+    fn fail(&self, error: &str) {
+        if self.closed.replace(true) || self.index.get() == 0 {
+            return;
+        }
+        let w = self.open();
+        if let Some((v, _)) = w.as_ref() {
+            self.progress.borrow().error(v, error);
+        }
+    }
+}
+
+impl policy::Log for PolicyStep<'_> {
+    fn line(&self, text: &str) {
+        if self.closed.get() {
+            return;
+        }
+        let mut w = self.open();
+        if let Some((v, last)) = w.as_mut() {
+            self.progress.borrow().log(v, text);
+            *last = Instant::now();
+        }
+    }
+}
+
+impl Drop for PolicyStep<'_> {
+    fn drop(&mut self) {
+        if self.closed.replace(true) {
+            return;
+        }
+        if let Some((v, _)) = self.window.borrow_mut().take() {
+            self.progress.borrow().done(&v);
+        }
+    }
+}
+
+/// The build's policies (configureSourcePolicy): the Dockerfile's own, `Dockerfile.rego`
+/// beside it (or `Agentfile.rego` beside an Agentfile), read where buildx reads it
+/// (loadInputs), and the flags'; each asked for its caps. None where none applies.
+fn policies_of(
+    parsed: &Parsed,
+    configs: &[buildflags::PolicyConfig],
+    context: &Path,
+    step: &PolicyStep<'_>,
+) -> Result<Option<policy::Policies>, String> {
+    let (path, defined) = definition(parsed, context);
+    let file = parsed.string("file");
+    let mut default = policy::Opt {
+        context_dir: Some(context.to_path_buf()),
+        ..policy::Opt::default()
+    };
+    // stdin's Dockerfile, and one fetched by URL, have a directory of their own, empty.
+    if let Some(path) = path.filter(|_| !file.starts_with("http://") && !file.starts_with("https://")) {
+        let dir = path.parent().unwrap_or(Path::new(""));
+        let mut base = path
+            .file_name()
+            .map_or_else(|| "Dockerfile".into(), |n| n.to_string_lossy().into_owned());
+        // handleLowercaseDockerfile: `dockerfile` where only it is there.
+        if base == "Dockerfile" && !dir.join("Dockerfile").exists() && dir.join("dockerfile").exists() {
+            base = "dockerfile".into();
+        }
+        let rego = dir.join(format!("{base}.rego"));
+        let filename = show(&shards_dockerfile::go::clean(rego.to_string_lossy().as_bytes()));
+        match std::fs::read(&rego) {
+            Ok(data) => default.files.push(policy::FileSpec {
+                filename,
+                optional: true,
+                data: Some(data),
+            }),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                return Err(format!(
+                    "failed to read policy file {filename}: open {filename}: {}",
+                    buildflags::os_error(&e)
+                ));
+            }
+        }
+    }
+    let mut args: BTreeMap<String, Option<String>> = build_args(parsed.many("build-arg"), true)
+        .into_iter()
+        .map(|(k, v)| (show(&k), Some(show(&v))))
+        .collect();
+    if let Ok(v) = std::env::var("SOURCE_DATE_EPOCH")
+        && !v.is_empty()
+    {
+        args.entry("SOURCE_DATE_EPOCH".into()).or_insert(Some(v));
+    }
+    // policyEnvFilename: `-f`'s base name, else the definition's.
+    let filename = if file.is_empty() || file == "-" {
+        defined
+    } else {
+        let clean = show(&shards_dockerfile::go::clean(file.as_bytes()));
+        match Path::new(&clean).file_name() {
+            Some(n) if clean != "." && clean != "/" => n.to_string_lossy().into_owned(),
+            _ => "Dockerfile".into(),
+        }
+    };
+    let env = policy::Env {
+        args,
+        labels: build_args(parsed.many("label"), false)
+            .into_iter()
+            .map(|(k, v)| (show(&k), show(&v)))
+            .collect(),
+        filename,
+        target: parsed.string("target").to_string(),
+        ..policy::Env::default()
+    };
+    let cwd = std::env::current_dir().map_err(|e| format!("the working directory: {e}"))?;
+    let Some(policies) = policy::Policies::configure(policy::Setup {
+        default,
+        configs,
+        env,
+        cwd,
+        default_platform: host_platform(),
+        debug: parsed.bool("debug"),
+    })?
+    else {
+        return Ok(None);
+    };
+    *step.name.borrow_mut() = format!("loading policies {}", policies.names.join(", "));
+    policies.check_caps(step)?;
+    Ok(Some(policies))
+}
+
 /// A foreign base as the build cache keeps it: what its name resolved to, and the
 /// manifest chosen for its platform.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -1210,6 +1677,8 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
             .map(|r| r.familiar())
             .map_err(|e| e.to_string())
     };
+    // The policies, read as toOptions reads them before the attestations (D101).
+    let policy_configs = buildflags::parse_policies(parsed.many("policy"))?;
     // The attestations asked for, read as buildx reads them, before the contexts.
     let (provenance_asked, sbom_asked) = provenance_of(parsed)?;
     let named = buildflags::parse_contexts(parsed.many("build-context"), &familiar)?;
@@ -1329,18 +1798,6 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
     .map_err(|e| format!("failed to build: {e}"))?;
     check_outputs(&outputs)?;
     let (compression, rewrite_timestamp) = compression_of(&outputs)?;
-    // A provenance asked for (not inline-only) goes in every output, which shards makes
-    // in every output but a docker archive yet.
-    if let Provenance::Explicit {
-        inline_only: false, ..
-    } = provenance_asked
-        && let Some(o) = outputs.iter().find(|o| o.kind == "docker")
-    {
-        return Err(format!(
-            "a provenance attestation in a {} output is not supported by shards yet",
-            o.kind
-        ));
-    }
     let (manifest_annotations, descriptor_annotations) = annotations_of(parsed, &outputs, &target_platform)?;
     // toSolveOpt: an image pushed must have a name.
     let pushes = outputs.iter().any(|o| {
@@ -1453,6 +1910,9 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
         } else {
             None
         },
+        steps: RefCell::new(BTreeMap::new()),
+        recapped: std::cell::Cell::new(false),
+        current: std::cell::Cell::new(0),
     });
     // Said once of a build of several platforms, not again by each platform's.
     if !multi::active() {
@@ -1478,6 +1938,8 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
     // each source's result kept for the build's own step of it.
     let mut given: Vec<Given> = Vec::new();
     let mut fetched_dockerfile = None;
+    // Whether a remote context holds its Dockerfile's own policy (D101).
+    let mut remote_policy = false;
     let mut remote = remote;
     if let Some(main) = &mut remote {
         let (r, sources) = fetch_context(
@@ -1509,6 +1971,9 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
             let text = text.ok_or_else(|| {
                 format!("failed to build: failed to solve: failed to read dockerfile: open {name}: no such file or directory")
             })?;
+            remote_policy = exec
+                .read_file(&r, at(&format!("{name}.rego")).as_bytes())?
+                .is_some();
             let shown = Path::new(&name)
                 .file_name()
                 .map_or_else(|| name.clone(), |n| n.to_string_lossy().into_owned());
@@ -1545,6 +2010,45 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
         fetched_dockerfile = Some(("Dockerfile".to_string(), text));
     }
 
+    // The build's policies (D101), set up as it begins; the Dockerfile, loaded from its
+    // own local source, the first source they are asked of.
+    let policy_step = PolicyStep::new(&progress);
+    let disabled = policy_configs.iter().any(|c| c.disabled);
+    if remote.is_some() && !disabled && (remote_policy || !policy_configs.is_empty()) {
+        return Err(
+            "failed to build: a build policy over a remote context is not supported by shards yet".into(),
+        );
+    }
+    let policies = if remote.is_some() {
+        None
+    } else {
+        policies_of(parsed, &policy_configs, &context, &policy_step)
+            .map_err(|e| format!("failed to build: {e}"))?
+    };
+    // A source a policy refused: its step failed with the build's error, the failed steps
+    // recapped as the display ends, then the policy's messages, as buildx's main says them.
+    let refused = |r: policy::Refused, at: &str| -> String {
+        let e = format!(
+            "failed to solve: {at}failed to load LLB: error evaluating the source policy: {}",
+            r.error
+        );
+        policy_step.fail(&e);
+        progress.borrow().recap();
+        policy_said(&r.messages);
+        format!("failed to build: {e}")
+    };
+    if let Some(p) = &policies
+        && fetched_dockerfile.is_none()
+    {
+        let unasked = NoMeta;
+        p.evaluate(
+            &policy::Source::new("local://dockerfile"),
+            None,
+            &unasked,
+            &policy_step,
+        )
+        .map_err(|r| refused(r, "failed to read dockerfile: "))?;
+    }
     let (name, text, beside) = if let Some((name, text)) = fetched_dockerfile {
         (name, text, None)
     } else {
@@ -1610,6 +2114,9 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
             .iter()
             .map(|(dir, digest)| import_layout(&store, dir, digest).map(|d| (digest.to_string(), d)))
             .collect::<Result<_, String>>()?,
+        policies: policies.as_ref(),
+        policy_log: &policy_step,
+        refused: RefCell::new(None),
     };
     // What the build's provenance records of its request, as buildx sends it (D71).
     let filename = Path::new(&name)
@@ -1782,6 +2289,16 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
     let mut plan = match plan::plan(&text, &opts, &bases) {
         Ok(p) => p,
         Err(e) => {
+            // A base a policy refused: its step failed with the build's error, and the
+            // policy's messages said first, as buildx's main says them.
+            let denied = bases.refused.borrow_mut().take();
+            if denied.is_some() {
+                policy_step.fail(&format!("failed to solve: {}", show(&e.message)));
+            }
+            progress.borrow().recap();
+            if let Some(r) = denied {
+                policy_said(&r.messages);
+            }
             let mut out = String::new();
             for loc in &e.location {
                 out.push_str(&excerpt(&name, &text, loc));
@@ -1796,6 +2313,18 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
         if let Some(found) = &context_ignore
             && multi::with(|sub| sub.first).unwrap_or(true)
         {
+            // Read from the context's own local source: the policies asked of it, as they
+            // are when dockerui reads it. A refusal here stops nothing: the frontend reads no
+            // ignore file then, and the build stops when its definition loads the context.
+            if let Some(p) = &policies {
+                let _ = p.evaluate(
+                    &policy::Source::new("local://context"),
+                    None,
+                    &NoMeta,
+                    &policy_step,
+                );
+                p.denied.borrow_mut().clear();
+            }
             let v = progress.borrow_mut().start("[internal] load .dockerignore");
             if let Some(t) = found {
                 progress
@@ -1847,13 +2376,65 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
         }
         None => None,
     };
-    let (def, scan_at) = match &scan {
+    let (mut def, scan_at) = match &scan {
         Some((s, _)) => {
             let (def, found) = plan.graph.marshal_with(&plan.state, &[s], &plan.platform);
             (def, found.first().copied().flatten())
         }
         None => (plan.definition(), None),
     };
+    // Every source of the definition, asked of the policies as BuildKit asks them when it
+    // loads the definition, before anything runs (D101): an image by its pinned name and
+    // its platform; a source converted loaded in its place.
+    if let Some(p) = &policies {
+        for op in def.ops.iter_mut() {
+            let OpKind::Source { identifier, attrs } = &mut op.kind else {
+                continue;
+            };
+            let id = show(identifier);
+            if ["git://", "http://", "https://"]
+                .iter()
+                .any(|s| id.starts_with(s))
+            {
+                return Err(format!(
+                    "failed to build: a build policy over {id}: Git and HTTP sources in policies are not supported by shards yet"
+                ));
+            }
+            let image = id.starts_with("docker-image://");
+            let platform = image.then(|| op.platform.clone().unwrap_or_else(|| target_platform.clone()));
+            let source = policy::Source {
+                identifier: id,
+                attrs: attrs.iter().map(|(k, v)| (show(k), show(v))).collect(),
+            };
+            match p.evaluate(
+                &source,
+                platform.as_ref(),
+                &PolicyMeta { bases: &bases },
+                &policy_step,
+            ) {
+                Ok(None) => {}
+                Ok(Some(to)) => {
+                    if let (Some(name), Some(pf)) = (to.identifier.strip_prefix("docker-image://"), &platform)
+                    {
+                        bases
+                            .resolve(
+                                name.as_bytes(),
+                                pf,
+                                format!("[internal] load metadata for {name}").as_bytes(),
+                            )
+                            .map_err(|e| format!("failed to build: failed to solve: {}", show(&e)))?;
+                    }
+                    *identifier = to.identifier.into_bytes();
+                    *attrs = to
+                        .attrs
+                        .into_iter()
+                        .map(|(k, v)| (k.into_bytes(), v.into_bytes()))
+                        .collect();
+                }
+                Err(r) => return Err(refused(r, "")),
+            }
+        }
+    }
     // The base a source op names, as it was resolved for the op's platform.
     let op_base = |op: &shards_dockerfile::llb::Op, reference: &str| {
         base_key(reference, op.platform.as_ref().unwrap_or(&opts.target_platform))
@@ -3532,6 +4113,9 @@ fn write_image_outputs(
         next: 0,
         #[cfg(unix)]
         live: None,
+        steps: RefCell::new(BTreeMap::new()),
+        recapped: std::cell::Cell::new(false),
+        current: std::cell::Cell::new(0),
     });
     let progress = if multi::active() { &hushed } else { progress };
     for (i, o) in outputs.iter().enumerate() {
@@ -3550,12 +4134,16 @@ fn write_image_outputs(
                 ..*image
             });
         let made = own.as_ref().unwrap_or(image);
-        // Docker's types unless `oci-mediatypes` asks for OCI's, or (the `docker` exporter's
-        // default) the output carries an attestation (D83).
-        let docker = match o.attrs.get("oci-mediatypes") {
-            Some(v) => !oci_types_attr(v)?,
-            None => o.kind == "docker" && made.provenance.is_none(),
-        };
+        // Docker's types where `oci-mediatypes` asks for them or (the `docker` exporter's
+        // default) nothing asks, never with an attestation, for which BuildKit turns OCI's
+        // on whatever was asked (ImageWriter.Commit, EnableOCITypes; D83).
+        let asked = o
+            .attrs
+            .get("oci-mediatypes")
+            .map(String::as_str)
+            .map(oci_types_attr)
+            .transpose()?;
+        let docker = made.provenance.is_none() && asked.map_or(o.kind == "docker", |oci| !oci);
         let v = progress
             .borrow_mut()
             .start(&format!("exporting to {} image format", o.kind));
@@ -3600,13 +4188,22 @@ fn write_image_outputs(
             }
             buildflags::Dest::Stdout => {
                 let out = std::io::BufWriter::new(std::io::stdout().lock());
-                output::layout(store, made, docker, &names, &created, out).map_err(fail)?;
+                output::layout(store, made, docker, o.kind == "docker", &names, &created, out)
+                    .map_err(fail)?;
                 progress.borrow().line(&v, "sending tarball done");
             }
             buildflags::Dest::File(path) => {
                 let f = create_dest_file(path).map_err(fail)?;
-                output::layout(store, made, docker, &names, &created, std::io::BufWriter::new(f))
-                    .map_err(fail)?;
+                output::layout(
+                    store,
+                    made,
+                    docker,
+                    o.kind == "docker",
+                    &names,
+                    &created,
+                    std::io::BufWriter::new(f),
+                )
+                .map_err(fail)?;
                 progress.borrow().line(&v, "sending tarball done");
             }
             buildflags::Dest::Store => {}

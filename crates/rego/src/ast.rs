@@ -43,6 +43,66 @@ pub enum TemplatePart {
     Expr(Box<Expr>),
 }
 
+/// A node's children, shared until changed: OPA's nodes are pointers, so that a term met
+/// again (the parser's cache of what it parsed, the compiler's copies of rules) costs
+/// nothing to keep; one changed is copied first (`Rc::make_mut`).
+#[derive(Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct Shared<T>(Rc<T>);
+
+impl<T> Clone for Shared<T> {
+    fn clone(&self) -> Self {
+        Shared(Rc::clone(&self.0))
+    }
+}
+
+impl<T> std::ops::Deref for Shared<T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+
+impl<T: Clone> std::ops::DerefMut for Shared<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        Rc::make_mut(&mut self.0)
+    }
+}
+
+impl<T> From<T> for Shared<T> {
+    fn from(v: T) -> Self {
+        Shared(Rc::new(v))
+    }
+}
+
+impl<T: std::fmt::Display> std::fmt::Display for Shared<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl<T: Clone> Shared<T> {
+    /// The value, unshared: moved out where nothing else holds it, else copied.
+    pub fn into_inner(self) -> T {
+        Rc::unwrap_or_clone(self.0)
+    }
+}
+
+impl<A> FromIterator<A> for Shared<Vec<A>> {
+    fn from_iter<I: IntoIterator<Item = A>>(iter: I) -> Self {
+        Shared(Rc::new(iter.into_iter().collect()))
+    }
+}
+
+impl<'a, T> IntoIterator for &'a Shared<Vec<T>> {
+    type Item = &'a T;
+    type IntoIter = std::slice::Iter<'a, T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum TermValue {
     Null,
@@ -50,16 +110,16 @@ pub enum TermValue {
     Number(Number),
     String(Rc<str>),
     Var(Rc<str>),
-    Ref(Vec<Term>),
-    Array(Vec<Term>),
+    Ref(Shared<Vec<Term>>),
+    Array(Shared<Vec<Term>>),
     /// Keys unique, in insertion order (OPA's object keeps both).
-    Object(Vec<(Term, Term)>),
+    Object(Shared<Vec<(Term, Term)>>),
     /// Members unique, in insertion order.
-    Set(Vec<Term>),
-    ArrayCompr(Box<Term>, Body),
-    SetCompr(Box<Term>, Body),
-    ObjectCompr(Box<Term>, Box<Term>, Body),
-    Call(Vec<Term>),
+    Set(Shared<Vec<Term>>),
+    ArrayCompr(Shared<Term>, Shared<Body>),
+    SetCompr(Shared<Term>, Shared<Body>),
+    ObjectCompr(Shared<Term>, Shared<Term>, Shared<Body>),
+    Call(Shared<Vec<Term>>),
     TemplateString {
         multi_line: bool,
         parts: Vec<TemplatePart>,
@@ -84,7 +144,7 @@ impl Term {
     }
 
     pub fn reference(parts: Vec<Term>, loc: Option<Location>) -> Term {
-        Term::new(TermValue::Ref(parts), loc)
+        Term::new(TermValue::Ref(parts.into()), loc)
     }
 
     pub fn as_var(&self) -> Option<&str> {
@@ -165,7 +225,7 @@ pub fn object_term(pairs: Vec<(Term, Term)>, loc: Option<Location>) -> Term {
             out.push((k, v));
         }
     }
-    Term::new(TermValue::Object(out), loc)
+    Term::new(TermValue::Object(out.into()), loc)
 }
 
 /// Makes a set term, repeated members kept once.
@@ -176,7 +236,7 @@ pub fn set_term(items: Vec<Term>, loc: Option<Location>) -> Term {
             out.push(t);
         }
     }
-    Term::new(TermValue::Set(out), loc)
+    Term::new(TermValue::Set(out.into()), loc)
 }
 
 #[derive(Debug, Clone)]

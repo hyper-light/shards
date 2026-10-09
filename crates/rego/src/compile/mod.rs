@@ -87,7 +87,10 @@ impl RuleTree {
     }
 }
 
-#[derive(Debug)]
+/// A module loader (`WithModuleLoader`): given the modules so far, the ones to add, or why
+/// they cannot be.
+pub type Loader = Box<dyn FnMut(&BTreeMap<String, Module>) -> Result<BTreeMap<String, Module>, String>>;
+
 pub struct Compiler {
     /// The modules, by name: OPA's `c.sorted` order.
     pub modules: BTreeMap<String, Module>,
@@ -103,6 +106,16 @@ pub struct Compiler {
     limit_reached: bool,
     /// The types the checker knows: the builtins', then the rules' (c.TypeEnv).
     pub type_env: check::TypeEnv,
+    loader: Option<Loader>,
+}
+
+impl std::fmt::Debug for Compiler {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Compiler")
+            .field("modules", &self.modules)
+            .field("errors", &self.errors)
+            .finish_non_exhaustive()
+    }
 }
 
 /// The builtins a policy may call (buildx's allow-list).
@@ -129,7 +142,15 @@ impl Compiler {
             functions,
             print,
             limit_reached: false,
+            loader: None,
         }
+    }
+
+    /// WithModuleLoader: modules the compiler asks `loader` for once it has resolved the
+    /// refs of those it has, until it answers none.
+    pub fn with_loader(mut self, loader: Loader) -> Compiler {
+        self.loader = Some(loader);
+        self
     }
 
     /// c.err: records errors up to OPA's limit; false once the limit is reached.
@@ -258,6 +279,23 @@ impl Compiler {
             }
         }
         self.err(errs);
+        // The loader's modules, then their refs and those of any they import in turn; its
+        // error a compile error of no location.
+        let Some(mut load) = self.loader.take() else {
+            return;
+        };
+        let loaded = load(&self.modules);
+        self.loader = Some(load);
+        match loaded {
+            Err(e) => {
+                self.err(vec![CompileError::compile(None, e)]);
+            }
+            Ok(parsed) if parsed.is_empty() => {}
+            Ok(parsed) => {
+                self.modules.extend(parsed);
+                self.resolve_all_refs();
+            }
+        }
     }
 
     fn init_local_var_gen(&mut self) {
@@ -613,7 +651,7 @@ impl Compiler {
         let mut refs: Vec<Vec<Term>> = Vec::new();
         let mut collect = |t: &Term| -> bool {
             if let TermValue::Ref(r) = &t.value {
-                refs.push(r.clone());
+                refs.push(r.to_vec());
             }
             false
         };
@@ -1048,7 +1086,7 @@ fn resolve_term(globals: &HashMap<Var, Vec<Term>>, ignore: &mut Vec<VarSet>, t: 
                     .iter()
                     .map(|x| Term::new(x.value.clone(), loc.clone()))
                     .collect();
-                t.value = TermValue::Ref(r);
+                t.value = TermValue::Ref(r.into());
             }
         }
         TermValue::Ref(r) => {
@@ -1084,7 +1122,7 @@ fn resolve_term(globals: &HashMap<Var, Vec<Term>>, ignore: &mut Vec<VarSet>, t: 
                     _ => out.push(x.clone()),
                 }
             }
-            *r = out;
+            *r = out.into();
         }
         TermValue::Object(o) => {
             let mut pairs: Vec<(Term, Term)> = vars::sorted_pairs(o).into_iter().cloned().collect();
@@ -1092,7 +1130,7 @@ fn resolve_term(globals: &HashMap<Var, Vec<Term>>, ignore: &mut Vec<VarSet>, t: 
                 resolve_term(globals, ignore, k);
                 resolve_term(globals, ignore, v);
             }
-            *o = pairs;
+            *o = pairs.into();
         }
         TermValue::Array(a) | TermValue::Call(a) => {
             a.iter_mut().for_each(|x| resolve_term(globals, ignore, x))
@@ -1100,7 +1138,7 @@ fn resolve_term(globals: &HashMap<Var, Vec<Term>>, ignore: &mut Vec<VarSet>, t: 
         TermValue::Set(s) => {
             let mut items: Vec<Term> = vars::sorted_items(s).into_iter().cloned().collect();
             items.iter_mut().for_each(|x| resolve_term(globals, ignore, x));
-            *s = items;
+            *s = items.into();
         }
         TermValue::ArrayCompr(term, body) | TermValue::SetCompr(term, body) => {
             ignore.push(declared_vars(body));

@@ -359,7 +359,7 @@ fn complete_rule(lhs: &Term, rhs: &Term) -> Result<Rule, String> {
             if r.len() > 1 && r.last().is_some_and(|t| !t.is_ground()) {
                 return Err("ref not ground".into());
             }
-            Head::reference(r.clone(), None)
+            Head::reference(r.to_vec(), None)
         }
         _ => return Err(format!("{} cannot be used for rule name", lhs.value_name())),
     };
@@ -1008,7 +1008,7 @@ impl<'a> Parser<'a> {
         };
         let mut head = match &r.value {
             TermValue::Var(v) => Head::var(v, r.loc.clone()),
-            TermValue::Ref(x) => Head::reference(x.clone(), None),
+            TermValue::Ref(x) => Head::reference(x.to_vec(), None),
             TermValue::Call(c) => {
                 let (op, args) = c.split_first()?;
                 let reference = match &op.value {
@@ -1018,7 +1018,7 @@ impl<'a> Parser<'a> {
                             self.illegal(&format!("rule head ref {} invalid", ref_text(y)));
                             return None;
                         }
-                        y.clone()
+                        y.to_vec()
                     }
                     _ => Vec::new(),
                 };
@@ -1329,7 +1329,7 @@ impl<'a> Parser<'a> {
             return Some(Expr::new(ExprTerms::Call(vec![op, lhs, rhs]), None));
         }
         if let TermValue::Call(c) = lhs.value {
-            return Some(Expr::new(ExprTerms::Call(c), None));
+            return Some(Expr::new(ExprTerms::Call(c.into_inner()), None));
         }
         Some(Expr::term(lhs))
     }
@@ -1355,7 +1355,7 @@ impl<'a> Parser<'a> {
     fn call(&self, op: Term, args: Vec<Term>, loc: Option<Location>) -> Term {
         let mut c = vec![op];
         c.extend(args);
-        Term::new(TermValue::Call(c), loc)
+        Term::new(TermValue::Call(c.into()), loc)
     }
 
     fn parse_term_in(&mut self, lhs: Option<Term>, key_val: bool) -> Option<Term> {
@@ -1756,11 +1756,11 @@ impl<'a> Parser<'a> {
             {
                 Some(ast::set_term(Vec::new(), loc))
             } else {
-                Some(Term::new(TermValue::Call(vec![operator]), loc))
+                Some(Term::new(TermValue::Call(vec![operator].into()), loc))
             }
         } else if let Some(r) = self.parse_term_list(Token::RParen, vec![operator]) {
             self.scan_ws();
-            Some(Term::new(TermValue::Call(r), loc))
+            Some(Term::new(TermValue::Call(r.into()), loc))
         } else {
             None
         };
@@ -1855,7 +1855,7 @@ impl<'a> Parser<'a> {
     fn parse_array_inner(&mut self) -> Option<Term> {
         self.scan();
         if self.s.tok == Token::RBrack {
-            return Some(Term::new(TermValue::Array(Vec::new()), None));
+            return Some(Term::new(TermValue::Array(Vec::new().into()), None));
         }
         let mut potential = true;
         if self.s.tok == Token::Comma {
@@ -1865,17 +1865,17 @@ impl<'a> Parser<'a> {
         let s = self.save();
         let head = self.parse_term()?;
         match self.s.tok {
-            Token::RBrack => return Some(Term::new(TermValue::Array(vec![head]), None)),
+            Token::RBrack => return Some(Term::new(TermValue::Array(vec![head].into()), None)),
             Token::Comma => {
                 self.scan();
                 return self
                     .parse_term_list(Token::RBrack, vec![head])
-                    .map(|t| Term::new(TermValue::Array(t), None));
+                    .map(|t| Term::new(TermValue::Array(t.into()), None));
             }
             Token::Or if potential => {
                 self.scan();
                 if let Some(body) = self.parse_body(Token::RBrack) {
-                    return Some(Term::new(TermValue::ArrayCompr(Box::new(head), body), None));
+                    return Some(Term::new(TermValue::ArrayCompr(head.into(), body.into()), None));
                 }
                 if self.s.tok != Token::Comma {
                     return None;
@@ -1885,7 +1885,7 @@ impl<'a> Parser<'a> {
         }
         self.restore(s);
         self.parse_term_list(Token::RBrack, Vec::new())
-            .map(|t| Term::new(TermValue::Array(t), None))
+            .map(|t| Term::new(TermValue::Array(t.into()), None))
     }
 
     fn parse_set_or_object(&mut self) -> Option<Term> {
@@ -1945,7 +1945,7 @@ impl<'a> Parser<'a> {
                 if potential {
                     self.scan();
                     if let Some(body) = self.parse_body(Token::RBrace) {
-                        break 'or Some(Term::new(TermValue::SetCompr(Box::new(head), body), None));
+                        break 'or Some(Term::new(TermValue::SetCompr(head.into(), body.into()), None));
                     }
                     if self.s.tok != Token::Comma {
                         break 'or None;
@@ -2009,7 +2009,7 @@ impl<'a> Parser<'a> {
                 if potential {
                     self.scan();
                     self.parse_body(Token::RBrace).map(|body| {
-                        Term::new(TermValue::ObjectCompr(Box::new(key), Box::new(val), body), None)
+                        Term::new(TermValue::ObjectCompr(key.into(), val.into(), body.into()), None)
                     })
                 } else {
                     self.illegal("non-terminated object");

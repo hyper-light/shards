@@ -369,6 +369,15 @@ pub(super) fn range_step(_: &mut Context, args: &[Value]) -> Out {
 
 /// io.ReadFull of `n` bytes from the query's seed, its errors in Go's words.
 pub(super) fn read_seed(ctx: &mut Context, n: usize) -> Result<Vec<u8>, BuiltinError> {
+    // A seed read from the system (OPA's default, rand.Reader) is filled as it is read.
+    if let Some(fill) = ctx.fill {
+        let short = n.saturating_sub(ctx.seed.len().saturating_sub(ctx.seed_at));
+        if short > 0 {
+            let mut more = vec![0u8; short];
+            fill(&mut more).map_err(BuiltinError::Other)?;
+            ctx.seed.extend_from_slice(&more);
+        }
+    }
     let rest = ctx.seed.get(ctx.seed_at..).unwrap_or_default();
     let got: Vec<u8> = rest.iter().take(n).copied().collect();
     ctx.seed_at = ctx.seed_at.saturating_add(got.len());

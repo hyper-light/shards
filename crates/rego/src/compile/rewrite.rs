@@ -287,7 +287,7 @@ fn rewrite_template_term(c: &mut Compiler, safe: &VarSet, t: &mut Term, errs: &m
                             ));
                             continue;
                         }
-                        Term::new(TermValue::Call(cl.clone()), e.loc.clone())
+                        Term::new(TermValue::Call(cl.clone().into()), e.loc.clone())
                     }
                     ExprTerms::Term(x) => (**x).clone(),
                     _ => {
@@ -326,7 +326,7 @@ fn rewrite_template_term(c: &mut Compiler, safe: &VarSet, t: &mut Term, errs: &m
                     l.clone(),
                 );
                 capture.with = e.with.clone();
-                terms.push(Term::new(TermValue::SetCompr(Box::new(x), vec![capture]), l));
+                terms.push(Term::new(TermValue::SetCompr(x.into(), vec![capture].into()), l));
             }
             TemplatePart::Term(x) => terms.push(x),
         }
@@ -339,7 +339,7 @@ fn rewrite_template_term(c: &mut Compiler, safe: &VarSet, t: &mut Term, errs: &m
         vec![Term::var("internal", None), Term::string("template_string", None)],
         None,
     );
-    t.value = TermValue::Call(vec![op, Term::new(TermValue::Array(terms), loc)]);
+    t.value = TermValue::Call(vec![op, Term::new(TermValue::Array(terms.into()), loc)].into());
 }
 
 /// checkVoidCalls: a call to a function without a result used as a value.
@@ -543,7 +543,7 @@ fn print_calls(c: &mut Compiler, globals: &VarSet, body: &mut Body, errs: &mut V
                 ExprTerms::Call(vec![super::localvars::op("eq"), x.clone(), a]),
                 l.clone(),
             );
-            terms.push(Term::new(TermValue::SetCompr(Box::new(x), vec![capture]), l));
+            terms.push(Term::new(TermValue::SetCompr(x.into(), vec![capture].into()), l));
         }
         let op = Term::reference(
             vec![
@@ -553,7 +553,7 @@ fn print_calls(c: &mut Compiler, globals: &VarSet, body: &mut Body, errs: &mut V
             loc.clone(),
         );
         let mut new = Expr::new(
-            ExprTerms::Call(vec![op, Term::new(TermValue::Array(terms), loc.clone())]),
+            ExprTerms::Call(vec![op, Term::new(TermValue::Array(terms.into()), loc.clone())]),
             loc,
         );
         new.index = i;
@@ -677,7 +677,7 @@ fn expand_term(c: &mut Compiler, t: &mut Term) -> Vec<Expr> {
                 support.extend(expand_term(c, x));
             }
             let out = Term::new(TermValue::Var(c.vargen().generate()), loc.clone());
-            let mut terms = cl.clone();
+            let mut terms = cl.to_vec();
             terms.push(out.clone());
             let mut e = Expr::new(ExprTerms::Call(terms), loc);
             e.generated = true;
@@ -718,28 +718,28 @@ fn expand_term(c: &mut Compiler, t: &mut Term) -> Vec<Expr> {
                 support.extend(expand_term(c, k));
                 support.extend(expand_term(c, v));
             }
-            *o = pairs;
+            *o = pairs.into();
         }
         TermValue::Set(s) => {
             let mut items: Vec<Term> = vars::sorted_items(s).into_iter().cloned().collect();
             for x in items.iter_mut() {
                 support.extend(expand_term(c, x));
             }
-            *s = items;
+            *s = items.into();
         }
         TermValue::ArrayCompr(x, b) | TermValue::SetCompr(x, b) => {
             let s = expand_term(c, x);
-            let mut body = std::mem::take(b);
+            let mut body = std::mem::take(b).into_inner();
             append_to_body(&mut body, s);
-            *b = expr_terms_in_body(c, body);
+            *b = expr_terms_in_body(c, body).into();
         }
         TermValue::ObjectCompr(k, v, b) => {
             let s = expand_term(c, k);
             append_to_body(b, s);
             let s = expand_term(c, v);
-            let mut body = std::mem::take(b);
+            let mut body = std::mem::take(b).into_inner();
             append_to_body(&mut body, s);
-            *b = expr_terms_in_body(c, body);
+            *b = expr_terms_in_body(c, body).into();
         }
         _ => {}
     }
@@ -888,7 +888,7 @@ fn validate_with(c: &Compiler, e: &mut Expr, i: usize) -> Result<bool, Box<Compi
         && super::allowed(v).is_some()
     {
         let v = v.to_string();
-        w.value.value = TermValue::Ref(vec![Term::var(&v, None)]);
+        w.value.value = TermValue::Ref(vec![Term::var(&v, None)].into());
     }
     let target_name = match &w.target.value {
         TermValue::Ref(r) => Some(text_of_ref(r)),
@@ -946,7 +946,7 @@ fn validate_with(c: &Compiler, e: &mut Expr, i: usize) -> Result<bool, Box<Compi
         TermValue::Ref(r) if has_prefix_var(r, "input") => {}
         _ if is_builtin => {
             if let Some(v) = w.target.as_var().map(str::to_string) {
-                w.target.value = TermValue::Ref(vec![Term::var(&v, None)]);
+                w.target.value = TermValue::Ref(vec![Term::var(&v, None)].into());
             }
             let name = target_name.unwrap_or_default();
             let loc = w.target.loc.clone();
@@ -1092,13 +1092,13 @@ fn closure_safety_expr(c: &Compiler, g: &mut VarSet, e: &mut Expr, add: &mut Var
     super::localvars::walk_expr_terms_mut(e, &mut |t: &mut Term| -> bool {
         match &mut t.value {
             TermValue::ArrayCompr(x, b) | TermValue::SetCompr(x, b) => {
-                *b = closure_body(c, &globals, &vars::term_vars(x), b, add, nested);
+                *b = closure_body(c, &globals, &vars::term_vars(x), b, add, nested).into();
                 true
             }
             TermValue::ObjectCompr(k, v, b) => {
                 let mut tv = vars::term_vars(k);
                 tv.extend(vars::term_vars(v));
-                *b = closure_body(c, &globals, &tv, b, add, nested);
+                *b = closure_body(c, &globals, &tv, b, add, nested).into();
                 true
             }
             _ => false,
@@ -1200,8 +1200,8 @@ fn dynamics_in_term(c: &mut Compiler, with: &[crate::ast::With], t: &mut Term, r
             }
         }
         TermValue::ArrayCompr(_, b) | TermValue::SetCompr(_, b) | TermValue::ObjectCompr(_, _, b) => {
-            let body = std::mem::take(b);
-            *b = dynamics(c, body);
+            let body = std::mem::take(b).into_inner();
+            *b = dynamics(c, body).into();
         }
         _ => dynamics_one(c, with, t, result),
     }
@@ -1230,18 +1230,18 @@ fn dynamics_one(c: &mut Compiler, with: &[crate::ast::With], t: &mut Term, resul
                 dynamics_one(c, with, k, result);
                 dynamics_one(c, with, v, result);
             }
-            *o = pairs;
+            *o = pairs.into();
         }
         TermValue::Set(s) => {
             let mut items: Vec<Term> = vars::sorted_items(s).into_iter().cloned().collect();
             for x in items.iter_mut() {
                 dynamics_one(c, with, x, result);
             }
-            *s = items;
+            *s = items.into();
         }
         TermValue::ArrayCompr(_, b) | TermValue::SetCompr(_, b) | TermValue::ObjectCompr(_, _, b) => {
-            let body = std::mem::take(b);
-            *b = dynamics(c, body);
+            let body = std::mem::take(b).into_inner();
+            *b = dynamics(c, body).into();
             let mut e = generate(c, t.clone());
             e.with = with.to_vec();
             let v = operand0(&e);

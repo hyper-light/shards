@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -40,13 +41,24 @@ import (
 var served = []string{
 	"add-host", "allow", "annotation", "attest", "build-arg", "build-context", "builder", "cache-from", "cache-to", "call", "cgroup-parent", "check", "debug",
 	"file", "help",
-	"iidfile", "label", "load", "metadata-file", "network", "no-cache", "no-cache-filter", "platform", "provenance", "resource",
+	"iidfile", "label", "load", "metadata-file", "network", "no-cache", "no-cache-filter", "platform", "policy", "provenance", "resource",
 	"sbom", "shm-size",
 	"output", "progress", "pull", "push", "quiet", "secret", "ssh", "tag", "target", "ulimit",
 }
 
 // The command lines asked, each the words after `buildx build`.
 var cases = [][]string{
+	{"--policy", "filename=a.rego", "--policy", "FILENAME=b.rego,filename=c.rego,reset=true,strict=1,log-level=DEBUG", "."},
+	{"--policy", "disabled=true", "."},
+	{"--policy", "\"filename=a,b.rego\",Log-Level=warning", "."},
+	{"--policy", "strict=false", "--policy", "log-level=trace", "."},
+	{"--policy", "foo", "."},
+	{"--policy", "filename=", "."},
+	{"--policy", "reset=maybe", "."},
+	{"--policy", "log-level=loud", "."},
+	{"--policy", "bogus=1", "."},
+	{"--policy", "\"unterminated", "."},
+	{"--policy", "foo", "--attest", "bogus", "."},
 	{"--provenance", "mode=max", "."},
 	{"--provenance=false", "."},
 	{"--provenance=true", "--sbom=false", "."},
@@ -324,6 +336,26 @@ func ask(t *testing.T, argv []string) answer {
 // (ParseEntitlements); the ulimits as the frontend's `ulimit` option carries them.
 func built(c *cobra.Command) error {
 	out := c.OutOrStdout()
+	// The policies, as toOptions reads them before the attestations (ParsePolicyConfigs).
+	policyArgs, _ := c.Flags().GetStringArray("policy")
+	policies, err := buildflags.ParsePolicyConfigs(policyArgs)
+	if err != nil {
+		return err
+	}
+	for _, p := range policies {
+		var files []string
+		for _, f := range p.Files {
+			files = append(files, f.Filename)
+		}
+		strict, level := "unset", "unset"
+		if p.Strict != nil {
+			strict = strconv.FormatBool(*p.Strict)
+		}
+		if p.LogLevel != nil {
+			level = p.LogLevel.String()
+		}
+		fmt.Fprintf(out, "POLICY files=%q reset=%t disabled=%t strict=%s log-level=%s\n", files, p.Reset, p.Disabled, strict, level)
+	}
 	// The attestations, as toBuildOptions reads them first (the shorthands canonicalized,
 	// ParseAttests), and as the build hands them on (ToMap).
 	attestArgs, _ := c.Flags().GetStringArray("attest")

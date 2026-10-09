@@ -1771,7 +1771,7 @@ fn builds_attest_their_provenance_as_docker_does() {
     let run_details = &asked_statement["predicate"]["runDetails"];
     assert_eq!(run_details["builder"]["id"], "https://example.com/builder");
     assert_eq!(run_details["metadata"]["buildkit_reproducible"], true);
-    // Turned off, and what shards does not make yet, refused by name.
+    // Turned off:
     // Unattested, the stored image is Docker's types, as Docker's image exporter stores
     // one (D83).
     let off = shards(&["build", "-q", "--provenance=false", ctx.to_str().unwrap()]);
@@ -1781,22 +1781,9 @@ fn builds_attest_their_provenance_as_docker_does() {
         "{}",
         off.stderr
     );
-    let refused = shards(&[
-        "build",
-        "--provenance=true",
-        "-o",
-        "type=docker,dest=out.tar",
-        ctx.to_str().unwrap(),
-    ]);
-    assert_ne!(refused.status, Some(0));
-    assert!(
-        refused
-            .stderr
-            .contains("a provenance attestation in a docker output is not supported by shards yet"),
-        "{}",
-        refused.stderr
-    );
     // Asked for in every output: an OCI archive names the index, its statement the name;
+    // a docker archive is the OCI one with manifest.json naming the image beside it, OCI's
+    // types even where Docker's are asked for, as BuildKit forces them for attestations;
     // a local output's provenance.json names its files.
     let layout_tar = home.join("prov.tar");
     let oci = shards(&[
@@ -1830,6 +1817,62 @@ fn builds_attest_their_provenance_as_docker_does() {
         oci_statement["subject"][0]["name"],
         format!("pkg:docker/prov@oci?platform=linux%2F{arch}").as_str()
     );
+    let docker_tar = home.join("prov-docker.tar");
+    let docker = shards(&[
+        "build",
+        "--provenance=true",
+        "-t",
+        "prov:docker",
+        "-o",
+        &format!("type=docker,dest={},oci-mediatypes=false", docker_tar.display()),
+        ctx.to_str().unwrap(),
+    ]);
+    assert_eq!(docker.status, Some(0), "{}", docker.stderr);
+    let entries = tar_entries(&std::fs::read(&docker_tar).unwrap());
+    let file = |name: &str| -> serde_json::Value {
+        let (_, b) = entries.iter().find(|(h, _)| h.name == name.as_bytes()).unwrap();
+        serde_json::from_slice(b).unwrap()
+    };
+    let blob_in = |d: &str| file(&format!("blobs/sha256/{}", d.trim_start_matches("sha256:")));
+    let top = file("index.json");
+    assert_eq!(
+        top["manifests"][0]["mediaType"], "application/vnd.oci.image.index.v1+json",
+        "{top}"
+    );
+    let docker_index = blob_in(top["manifests"][0]["digest"].as_str().unwrap());
+    let docker_image = blob_in(docker_index["manifests"][0]["digest"].as_str().unwrap());
+    assert_eq!(
+        docker_image["mediaType"], "application/vnd.oci.image.manifest.v1+json",
+        "{docker_image}"
+    );
+    let docker_statement = blob_in(
+        blob_in(docker_index["manifests"][1]["digest"].as_str().unwrap())["layers"][0]["digest"]
+            .as_str()
+            .unwrap(),
+    );
+    assert_eq!(
+        docker_statement["subject"][0]["name"],
+        format!("pkg:docker/prov@docker?platform=linux%2F{arch}").as_str()
+    );
+    let blob_path = |d: &serde_json::Value| {
+        format!(
+            "blobs/sha256/{}",
+            d.as_str().unwrap().trim_start_matches("sha256:")
+        )
+    };
+    let manifest_json = file("manifest.json");
+    assert_eq!(manifest_json[0]["RepoTags"][0], "prov:docker", "{manifest_json}");
+    assert_eq!(
+        manifest_json[0]["Config"],
+        blob_path(&docker_image["config"]["digest"]).as_str()
+    );
+    let layers: Vec<String> = docker_image["layers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| blob_path(&l["digest"]))
+        .collect();
+    assert_eq!(manifest_json[0]["Layers"], serde_json::json!(layers));
     let local = home.join("prov-local");
     let to_local = shards(&[
         "build",
@@ -9331,7 +9374,7 @@ fn several_platforms_make_one_image_of_their_manifests() {
     assert!(
         refused
             .stderr
-            .contains("docker exporter does not currently support exporting manifest lists"),
+            .contains("failed to build: docker exporter does not support exporting manifest lists, use the oci exporter instead"),
         "{}",
         refused.stderr
     );
@@ -9508,4 +9551,334 @@ fn base64_decode(s: &str) -> Vec<u8> {
         }
     }
     out
+}
+
+/// The policy step's log, as `#N SECONDS LINE` lines under `#N loading policies …`:
+/// the lines alone, in order.
+fn policy_log(stderr: &str) -> Vec<String> {
+    let Some(n) = stderr
+        .lines()
+        .find_map(|l| l.strip_prefix('#').filter(|r| r.contains(" loading policies ")))
+        .and_then(|r| r.split(' ').next())
+        .map(str::to_string)
+    else {
+        return Vec::new();
+    };
+    let prefix = format!("#{n} ");
+    stderr
+        .lines()
+        .filter_map(|l| l.strip_prefix(&prefix))
+        .filter_map(|rest| {
+            let (stamp, line) = rest.split_once(' ')?;
+            stamp.parse::<f64>().is_ok().then(|| line.to_string())
+        })
+        .collect()
+}
+
+/// Build policies (D101): the Dockerfile's own `Dockerfile.rego` and each `--policy`,
+/// asked of every source the build loads as buildx v0.37.1 asks them and BuildKit v0.28.1
+/// heeds them, each line and refusal in their words (measured in `shards-dind`).
+#[test]
+fn builds_heed_their_policies_as_buildx_does() {
+    let (image, _) = served();
+    let home = TempDir::new("build-policy-home");
+    let env = [("SHARDS_HOME", home.as_os_str())];
+    let arch = match std::env::consts::ARCH {
+        "aarch64" => "arm64",
+        "x86_64" => "amd64",
+        other => other,
+    };
+    let build_in = |cwd: &std::path::Path, ctx: &str, extra: &[&str]| {
+        let mut args = vec!["build", "--progress=plain"];
+        args.extend_from_slice(extra);
+        args.push(ctx);
+        common::run_shards_env_in(cwd, &[], &args, &env, TIMEOUT)
+    };
+    // Built from inside its context, as `.`, as measured.
+    let build = |ctx: &std::path::Path, extra: &[&str]| build_in(ctx, ".", extra);
+    let with_policy = |name: &str, dockerfile: &str, rego: &str| {
+        let ctx = context(name, dockerfile);
+        std::fs::write(ctx.join("Dockerfile.rego"), rego).unwrap();
+        ctx
+    };
+    let tail = |s: &str| s.lines().last().unwrap_or_default().to_string();
+
+    // Allowed: every source asked, in turn, the image by name and then pinned.
+    let allow = "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if startswith(input.image.repo, \"127.0.0.1:\")\n\ndecision := {\"allow\": allow}\n";
+    let ctx = with_policy(
+        "policy-allow",
+        &format!("FROM {image}\nCOPY Dockerfile /x\n"),
+        allow,
+    );
+    let ok = build(&ctx, &[]);
+    assert_eq!(ok.status, Some(0), "{}", ok.stderr);
+    assert!(
+        ok.stderr.contains(" loading policies Dockerfile.rego\n"),
+        "{}",
+        ok.stderr
+    );
+    let log = policy_log(&ok.stderr);
+    let pinned = log
+        .iter()
+        .find_map(|l| l.strip_prefix(&format!("checking policy for source docker-image://{image}@")))
+        .and_then(|r| r.strip_suffix(&format!(" (linux/{arch})")))
+        .map(|d| format!("{image}@{d}"))
+        .unwrap_or_else(|| panic!("{log:#?}"));
+    let digest = pinned.rsplit_once('@').unwrap().1.to_string();
+    let decided = |src: &str, what: &str| {
+        [
+            format!("checking policy for source {src}"),
+            format!("policy decision for source {src}: {what}"),
+        ]
+    };
+    let image_src = format!("docker-image://{image} (linux/{arch})");
+    let pinned_src = format!("docker-image://{pinned} (linux/{arch})");
+    let mut want: Vec<String> = Vec::new();
+    want.extend(decided("local://dockerfile", "ALLOW"));
+    want.extend(decided(&image_src, "ALLOW"));
+    want.extend(decided("local://context", "ALLOW"));
+    assert_eq!(log.get(..6), Some(&want[..]), "{log:#?}");
+    let mut solve: Vec<String> = log.get(6..).unwrap_or_default().to_vec();
+    solve.sort();
+    let mut solve_want: Vec<String> =
+        [decided("local://context", "ALLOW"), decided(&pinned_src, "ALLOW")].concat();
+    solve_want.sort();
+    assert_eq!(solve, solve_want, "{log:#?}");
+
+    // Refused by name, before its metadata is resolved: the step fails, the policy's
+    // message is said, then the FROM line, then BuildKit's error.
+    let deny_image = "package docker\n\ndefault allow := false\n\nallow if input.local\n\ndeny_msg contains msg if {\n  not allow\n  msg := sprintf(\"image %s is not allowed\", [input.image.ref])\n}\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n";
+    let ctx = with_policy(
+        "policy-deny-image",
+        &format!("FROM {image}\nCOPY Dockerfile /x\n"),
+        deny_image,
+    );
+    let refused = build(&ctx, &[]);
+    assert_eq!(refused.status, Some(1), "{}", refused.stderr);
+    let error = format!(
+        "failed to solve: {image}: failed to resolve source metadata for {image}: could not resolve image due to policy: source \"docker-image://{image}\" not allowed by policy: action DENY"
+    );
+    assert!(
+        refused.stderr.contains(&format!(
+            "Policy: image {image} is not allowed\nDockerfile:1\n--------------------\n   1 | >>> FROM {image}\n"
+        )),
+        "{}",
+        refused.stderr
+    );
+    assert_eq!(tail(&refused.stderr), format!("ERROR: failed to build: {error}"));
+    assert!(
+        refused.stderr.contains(&format!(" ERROR: {error}\n")),
+        "{}",
+        refused.stderr
+    );
+    assert!(
+        !refused.stderr.contains("load metadata for"),
+        "{}",
+        refused.stderr
+    );
+    assert_eq!(
+        policy_log(&refused.stderr).get(2..).unwrap_or_default(),
+        [
+            format!("checking policy for source {image_src}"),
+            format!("policy decision for source {image_src}: DENY"),
+            format!(" - image {image} is not allowed"),
+        ]
+    );
+
+    // Refused pinned, as BuildKit loads the definition: no Dockerfile lines.
+    let deny_pinned = "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if {\n  input.image\n  not input.image.isCanonical\n}\n\ndeny_msg contains \"pinned images are refused\" if input.image.isCanonical\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n";
+    let ctx = with_policy(
+        "policy-deny-pinned",
+        &format!("FROM {image}\nCOPY Dockerfile /x\n"),
+        deny_pinned,
+    );
+    let refused = build(&ctx, &[]);
+    assert_eq!(refused.status, Some(1), "{}", refused.stderr);
+    assert!(
+        refused
+            .stderr
+            .contains("\nPolicy: pinned images are refused\nERROR: "),
+        "{}",
+        refused.stderr
+    );
+    assert_eq!(
+        tail(&refused.stderr),
+        format!(
+            "ERROR: failed to build: failed to solve: failed to load LLB: error evaluating the source policy: source \"docker-image://{pinned}\" not allowed by policy: action DENY"
+        )
+    );
+
+    // The Dockerfile's own source refused: nothing of it read.
+    let deny_dockerfile = "package docker\n\ndefault allow := false\n\nallow if input.local.name == \"context\"\n\ndeny_msg contains \"no dockerfile\" if input.local.name == \"dockerfile\"\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n";
+    let ctx = with_policy(
+        "policy-deny-dockerfile",
+        "FROM scratch\nCOPY Dockerfile /x\n",
+        deny_dockerfile,
+    );
+    let refused = build(&ctx, &[]);
+    assert_eq!(refused.status, Some(1), "{}", refused.stderr);
+    assert!(
+        !refused.stderr.contains("load build definition"),
+        "{}",
+        refused.stderr
+    );
+    assert!(
+        refused.stderr.contains("\nPolicy: no dockerfile\nERROR: "),
+        "{}",
+        refused.stderr
+    );
+    assert_eq!(
+        tail(&refused.stderr),
+        "ERROR: failed to build: failed to solve: failed to read dockerfile: failed to load LLB: error evaluating the source policy: source \"local://dockerfile\" not allowed by policy: action DENY"
+    );
+
+    // The context refused: asked as its .dockerignore is read, which goes on, and again as
+    // the definition loads it, which stops the build.
+    let deny_context = "package docker\n\ndefault allow := false\n\nallow if input.local.name == \"dockerfile\"\n\ndecision := {\"allow\": allow}\n";
+    let ctx = with_policy(
+        "policy-deny-context",
+        "FROM scratch\nCOPY Dockerfile /x\n",
+        deny_context,
+    );
+    let refused = build(&ctx, &[]);
+    assert_eq!(refused.status, Some(1), "{}", refused.stderr);
+    assert_eq!(
+        policy_log(&refused.stderr),
+        [
+            decided("local://dockerfile", "ALLOW"),
+            decided("local://context", "DENY"),
+            decided("local://context", "DENY")
+        ]
+        .concat()
+    );
+    assert_eq!(
+        tail(&refused.stderr),
+        "ERROR: failed to build: failed to solve: failed to load LLB: error evaluating the source policy: source \"local://context\" not allowed by policy: action DENY"
+    );
+
+    // What a decision needs and the input lacks, resolved from the image and asked again;
+    // its print printed twice, as buildx's are, by the partial evaluation that the
+    // provenance and signatures still unknown call for, and by the decision's.
+    let unknown = "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if {\n  input.image.checksum != \"\"\n  print(\"checksum\", input.image.checksum, input.image.workingDir)\n}\n\ndecision := {\"allow\": allow}\n";
+    let ctx = with_policy("policy-unknown", &format!("FROM {image}\n"), unknown);
+    let ok = build(&ctx, &[]);
+    assert_eq!(ok.status, Some(0), "{}", ok.stderr);
+    let log = policy_log(&ok.stderr);
+    let at = log
+        .iter()
+        .position(|l| *l == format!("checking policy for source {image_src}"))
+        .unwrap_or_else(|| panic!("{log:#?}"));
+    assert_eq!(
+        log.get(at..at + 6).unwrap_or_default(),
+        [
+            format!("checking policy for source {image_src}"),
+            format!(
+                "policy decision for source {image_src}: resolve missing fields [image.checksum image.workingDir]"
+            ),
+            format!("checking policy for source {image_src}"),
+            format!("Dockerfile.rego:9: checksum {digest} /work"),
+            format!("Dockerfile.rego:9: checksum {digest} /work"),
+            format!("policy decision for source {image_src}: ALLOW"),
+        ],
+        "{log:#?}"
+    );
+
+    // --policy: a file of the working directory beside the Dockerfile's own, then a file
+    // not there, a policy turned off, the policies before one reset, and policies OPA
+    // refuses, each in buildx's words.
+    let ctx = with_policy("policy-flags", "FROM scratch\nCOPY Dockerfile /x\n", allow);
+    let cwd = TempDir::new("policy-flags-cwd");
+    std::fs::write(
+        cwd.join("deny.rego"),
+        "package docker\n\ndecision := {\"allow\": false, \"deny_msg\": [\"from the working directory\"]}\n",
+    )
+    .unwrap();
+    let at = ctx.to_str().unwrap();
+    let refused = build_in(&cwd, at, &["--policy", "filename=cwd://deny.rego"]);
+    assert_eq!(refused.status, Some(1), "{}", refused.stderr);
+    assert!(
+        refused.stderr.contains(&format!(
+            " loading policies {at}/Dockerfile.rego, cwd://deny.rego\n"
+        )),
+        "{}",
+        refused.stderr
+    );
+    assert!(
+        refused.stderr.contains("\nPolicy: from the working directory\n"),
+        "{}",
+        refused.stderr
+    );
+    let missing = build(&ctx, &["--policy", "filename=missing.rego"]);
+    assert_eq!(
+        tail(&missing.stderr),
+        "ERROR: failed to build: policy file missing.rego not found"
+    );
+    let off = build_in(&cwd, at, &["--policy", "disabled=true"]);
+    assert_eq!(off.status, Some(0), "{}", off.stderr);
+    assert!(!off.stderr.contains("loading policies"), "{}", off.stderr);
+    let reset = build_in(&cwd, at, &["--policy", "reset=true,filename=cwd://deny.rego"]);
+    assert!(
+        reset.stderr.contains(" loading policies cwd://deny.rego\n"),
+        "{}",
+        reset.stderr
+    );
+    for (rego, said) in [
+        (
+            "package docker\nallow if {\n",
+            "failed to evaluate policy caps: 1 error occurred: bad.rego:3: rego_parse_error: unexpected eof token\n\tallow if {\n\t         ^",
+        ),
+        (
+            "package docker\nallow := true\n",
+            "failed to evaluate policy caps: policy returned zero result",
+        ),
+        (
+            "package docker\ndecision := {\"allow\": \"yes\"}\n",
+            "failed to evaluate policy caps: invalid allowed property type string, expecting bool",
+        ),
+    ] {
+        std::fs::write(ctx.join("bad.rego"), rego).unwrap();
+        let bad = build(&ctx, &["--policy", "filename=bad.rego"]);
+        assert_eq!(bad.status, Some(1), "{}", bad.stderr);
+        assert!(
+            bad.stderr.ends_with(&format!("ERROR: failed to build: {said}\n")),
+            "{}",
+            bad.stderr
+        );
+    }
+
+    // A policy's imports and load_json, read from the context.
+    let ctx = with_policy(
+        "policy-imports",
+        "FROM scratch\nCOPY Dockerfile /x\n",
+        "package docker\n\nimport data.lib.rules\n\ndefault allow := false\n\nallow if rules.allowed[input.local.name]\n\ndecision := {\"allow\": allow, \"deny_msg\": [load_json(\"conf.json\").why]}\n",
+    );
+    std::fs::create_dir_all(ctx.join("lib")).unwrap();
+    std::fs::write(
+        ctx.join("lib/rules.rego"),
+        "package anything\n\nallowed := {\"dockerfile\": true, \"context\": false}\n",
+    )
+    .unwrap();
+    std::fs::write(ctx.join("conf.json"), "{\"why\": \"the context is closed\"}").unwrap();
+    let refused = build(&ctx, &[]);
+    assert_eq!(refused.status, Some(1), "{}", refused.stderr);
+    assert!(
+        refused.stderr.contains("\nPolicy: the context is closed\n"),
+        "{}",
+        refused.stderr
+    );
+    assert!(
+        refused.stderr.contains("source \"local://context\" not allowed"),
+        "{}",
+        refused.stderr
+    );
+
+    // --debug: the input each check is given, as buildx logs it.
+    let ctx = with_policy("policy-debug", "FROM scratch\nCOPY Dockerfile /x\n", allow);
+    let debug = build(&ctx, &["--debug", "--build-arg", "A=1"]);
+    assert_eq!(debug.status, Some(0), "{}", debug.stderr);
+    let log = policy_log(&debug.stderr).join("\n");
+    assert!(
+        log.contains("policy input: {\n  \"env\": {\n    \"args\": {\n      \"A\": \"1\"\n    },\n    \"filename\": \"Dockerfile\",\n    \"depth\": 0\n  },\n  \"local\": {\n    \"name\": \"dockerfile\"\n  }\n}"),
+        "{log}"
+    );
 }

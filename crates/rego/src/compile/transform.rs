@@ -67,12 +67,12 @@ pub fn term<T: Transformer + ?Sized>(t: &mut T, x: &mut Term) {
                 term(t, k);
                 term(t, v);
             }
-            *o = pairs;
+            *o = pairs.into();
         }
         TermValue::Set(s) => {
             let mut items: Vec<Term> = sorted_items(s).into_iter().cloned().collect();
             items.iter_mut().for_each(|y| term(t, y));
-            *s = items;
+            *s = items.into();
         }
         TermValue::ArrayCompr(y, b) | TermValue::SetCompr(y, b) => {
             term(t, y);

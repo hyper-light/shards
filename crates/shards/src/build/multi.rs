@@ -214,10 +214,11 @@ pub(super) fn run(
     pushes: bool,
 ) -> Result<(), String> {
     for o in outputs {
-        // BuildKit's own refusal (v0.28.1 exporter/oci): a docker archive holds one image.
+        // buildx's refusal (build/opt.go), before BuildKit's own (exporter/oci): a docker
+        // archive's manifest.json names one image of each name.
         if o.kind == "docker" && !matches!(o.dest, buildflags::Dest::Store) {
             return Err(
-                "failed to build: failed to solve: docker exporter does not currently support exporting manifest lists"
+                "failed to build: docker exporter does not support exporting manifest lists, use the oci exporter instead"
                     .into(),
             );
         }

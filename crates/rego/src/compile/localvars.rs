@@ -218,7 +218,7 @@ fn arg_term(rw: &mut Rewriter<'_>, stack: &mut Stack, t: &mut Term) {
             for (_, v) in pairs.iter_mut() {
                 arg_term(rw, stack, v);
             }
-            *o = pairs;
+            *o = pairs.into();
         }
         TermValue::Null
         | TermValue::Bool(_)
@@ -316,11 +316,11 @@ fn nested_head(rw: &mut Rewriter<'_>, rewritten: &mut HashMap<Var, Var>, rule: &
         let mut stack = Stack::default();
         let stop = match &mut t.value {
             TermValue::ArrayCompr(term, body) | TermValue::SetCompr(term, body) => {
-                comprehension(rw, &mut stack, &mut [term.as_mut()], body);
+                comprehension(rw, &mut stack, &mut [&mut **term], body);
                 true
             }
             TermValue::ObjectCompr(k, v, body) => {
-                comprehension(rw, &mut stack, &mut [k.as_mut(), v.as_mut()], body);
+                comprehension(rw, &mut stack, &mut [&mut **k, &mut **v], body);
                 true
             }
             TermValue::TemplateString { parts, .. } => {
@@ -360,12 +360,12 @@ pub fn walk_terms_mut(t: &mut Term, f: &mut dyn FnMut(&mut Term) -> bool) {
                 walk_terms_mut(k, f);
                 walk_terms_mut(v, f);
             }
-            *o = pairs;
+            *o = pairs.into();
         }
         TermValue::Set(s) => {
             let mut items: Vec<Term> = sorted_items(s).into_iter().cloned().collect();
             items.iter_mut().for_each(|x| walk_terms_mut(x, f));
-            *s = items;
+            *s = items.into();
         }
         TermValue::ArrayCompr(term, body) | TermValue::SetCompr(term, body) => {
             walk_terms_mut(term, f);
@@ -581,7 +581,7 @@ fn some_decl(rw: &mut Rewriter<'_>, stack: &mut Stack, mut expr: Expr) -> Option
                 };
                 let rhs = match &container.value {
                     TermValue::Ref(r) => {
-                        let mut r = r.clone();
+                        let mut r = r.to_vec();
                         r.push(key);
                         Term::reference(r, None)
                     }
@@ -699,7 +699,7 @@ fn rewrite_expr(rw: &mut Rewriter<'_>, stack: &mut Stack, mut expr: Expr) -> Exp
         if let Some(sdw) = stack.declared("input") {
             match &mut w.target.value {
                 TermValue::Var(v) if *v == sdw => {
-                    w.target.value = TermValue::Ref(vec![Term::var("input", None)]);
+                    w.target.value = TermValue::Ref(vec![Term::var("input", None)].into());
                 }
                 TermValue::Ref(r) => {
                     if let Some(first) = r.first_mut()
@@ -796,21 +796,21 @@ fn decl_term(rw: &mut Rewriter<'_>, stack: &mut Stack, t: &mut Term) -> bool {
                 term_recursive(rw, stack, k);
                 term_recursive(rw, stack, v);
             }
-            *o = pairs;
+            *o = pairs.into();
             true
         }
         TermValue::Set(s) => {
             let mut items: Vec<Term> = sorted_items(s).into_iter().cloned().collect();
             items.iter_mut().for_each(|x| term_recursive(rw, stack, x));
-            *s = items;
+            *s = items.into();
             true
         }
         TermValue::ArrayCompr(term, body) | TermValue::SetCompr(term, body) => {
-            comprehension(rw, stack, &mut [term.as_mut()], body);
+            comprehension(rw, stack, &mut [&mut **term], body);
             true
         }
         TermValue::ObjectCompr(k, v, body) => {
-            comprehension(rw, stack, &mut [k.as_mut(), v.as_mut()], body);
+            comprehension(rw, stack, &mut [&mut **k, &mut **v], body);
             true
         }
         _ => false,

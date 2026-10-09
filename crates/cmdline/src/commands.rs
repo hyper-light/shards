@@ -2249,6 +2249,12 @@ pub static BUILD: Command = Command {
         .hidden(),
         Flag::bool("force-rm", None, "Always remove intermediate containers").hidden(),
         Flag::many("platform", None, "stringArray", "Set target platform for build"),
+        Flag::many(
+            "policy",
+            None,
+            "stringArray",
+            "Policy configuration (format: \"filename=path[,filename=path][,reset=true|false][,disabled=true|false][,strict=true|false][,log-level=level]\")",
+        ),
         Flag::string(
             "progress",
             None,
@@ -2299,8 +2305,7 @@ pub static BUILD: Command = Command {
         Flag::string("target", None, "", "Set the target build stage to build"),
         Flag::many("ulimit", None, "ulimit", "Ulimit options").defaulting("[]"),
     ],
-    unserved: "\
-policy - m - -",
+    unserved: "",
     interspersed: true,
     error_prefix: "ERROR: ",
 };

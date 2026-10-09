@@ -35,6 +35,18 @@ const BETTER: &[(&[&str], &str, &str, u8)] = &[
 /// What buildx's build is given, as oracle_test.go's `built` says it, from shards'
 /// reading of the same flags: stdout's lines, or the error.
 fn built(parsed: &flags::Parsed, out: &mut String) -> Result<(), String> {
+    // The policies, as toOptions reads them before the attestations.
+    for p in buildflags::parse_policies(parsed.many("policy"))? {
+        let files: Vec<String> = p.files.iter().map(|f| shards_cmdline::go::quote(f)).collect();
+        let strict = p.strict.map_or("unset".to_string(), |s| s.to_string());
+        let level = p.log_level.map_or("unset", buildflags::LogLevel::name);
+        out.push_str(&format!(
+            "POLICY files=[{}] reset={} disabled={} strict={strict} log-level={level}\n",
+            files.join(" "),
+            p.reset,
+            p.disabled
+        ));
+    }
     // The attestations, first, as toBuildOptions reads them.
     let mut attests: Vec<String> = parsed.many("attest").to_vec();
     for kind in ["provenance", "sbom"] {

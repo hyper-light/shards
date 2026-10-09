@@ -3210,6 +3210,134 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode
 waits on the user.
 
+### D101. Build policies: `--policy` and `Dockerfile.rego`, asked of every source
+
+`shards build` heeds build policies as buildx v0.37.1 sets them up (build/opt.go
+configureSourcePolicy, build/policy_loader.go, policy/validate.go) and BuildKit v0.28.1
+heeds them (solver/llbsolver/policy.go, bridge.go resolveSourceMetadata). Each policy is
+a set of Rego modules, evaluated by shards' own OPA (D98) and asked `data.docker.decision`
+of every source the build loads (`crates/shards/src/build/policy/`).
+
+**Measured.** buildx v0.37.1, built from its source, against `shards-dind`'s BuildKit
+v0.28.1 (Docker 29.3.1):
+- **Flags.** `--policy`'s values (`filename`, `reset`, `disabled`, `strict`, `log-level`) and
+  their errors are held to buildx's own `ParsePolicyConfigs` by the buildx oracle
+  (`scripts/buildx/oracle_test.go`). They combine as withPolicyConfig combines them: after
+  the Dockerfile's own `<Dockerfile>.rego`, read beside it; `reset` drops what came before;
+  `disabled` is allowed only alone. `strict` only checks that BuildKit has policy sessions,
+  which shards' builder has.
+- **Order of checks.** `local://dockerfile`, then each base at its metadata (`docker-image://`
+  by name, with its platform), then `local://context` as its `.dockerignore` is read; a
+  refusal there stops nothing. Then every source of the definition is checked as BuildKit
+  loads it, before anything runs: images pinned to their digests.
+- **The step.** `#N loading policies FILES`, each line stamped.
+- **Refusals.** buildx's `Policy: MESSAGE` lines come before the Dockerfile excerpt. The
+  errors are:
+  - at the Dockerfile: `failed to solve: failed to read dockerfile: failed to load LLB: error evaluating the source policy: source "local://dockerfile" not allowed by policy: action DENY`;
+  - at a base: `failed to solve: NAME: failed to resolve source metadata for REF: could not resolve image due to policy: …`;
+  - at the definition: `failed to solve: failed to load LLB: error evaluating the source policy: …`, with no excerpt.
+- **Load errors.** Errors loading a policy are its first evaluation's (CheckCaps):
+  `failed to evaluate policy caps: 1 error occurred: …`, `policy returned zero result`,
+  `invalid allowed property type string, expecting bool`.
+
+**Evaluation.** Each check is CheckPolicy:
+- The input is buildx's (policy/types.go): `env` (build args, labels, filename, target),
+  `local`, or `image` with its reference, platform, and config fields once they are known.
+  It is written as Go's JSON for `--debug`'s `policy input:` line.
+- The unknown fields are found by partial evaluation over the support modules
+  (collectUnknowns, trimKey), and asked for (`resolve missing fields […]`). The image's
+  digest and config are then resolved and the policy asked again.
+- A print prints as often as buildx's does: during both the partial and the full
+  evaluation (measured).
+- `pin_image` converts a source to a digest; `load_json` reads the policy's FS; `data.`
+  imports are read as buildx's module loader reads them, which the compiler now calls where
+  OPA calls it (`Compiler::with_loader`).
+
+**What shards does better.**
+- **No layers before a decision.** A base's metadata is its digest and config alone
+  (`shards_registry::pull::metadata`), found where its pull would find it: a denied image's
+  layers are never fetched.
+- **The right platform.** buildx asks for metadata of its builder's default platform even
+  for another platform's base; shards asks for the base's own.
+- **Absolute policy names.** An absolute `filename` inside a context named relatively is
+  found. buildx's `filepath.Rel` cannot relate the two, and reads it as an invalid fs.FS name.
+- **Order.** An image's `volumes` are in name order, where Go's map gives them in no order.
+- **Agentfiles.** An Agentfile's own policy is `Agentfile.rego`.
+- **Progress, for every step.** The plain progress shows a step interrupted (`#N ...`)
+  and its name again when it resumes, as progressui's printer does. A failed step's last 10
+  lines are recapped between rules before the error (printErrorLogs).
+
+**The engine, as fast as OPA.** Terms shared OPA's nodes' way (`ast::Shared`, an `Rc`
+copied on write) made parsing and compiling linear: a policy nested 33333 deep parses in 29
+ms and compiles in 33 ms, where OPA takes 79 and 50 (M126). Before, both were quadratic,
+from the parser's cache of parsed terms and the compiler's copies. The policy runs on a
+thread whose stack holds the deepest policy OPA parses and the deepest JSON Go decodes:
+123 MiB, measured (M126). A host function may halt a query (`HostError::Halt`). A query's
+random seed is read from the system as it is used (`Context::fill`, AWS-LC's DRBG).
+
+**Not yet, each refused by name.**
+- Git and HTTP sources;
+- an image's provenance and signatures;
+- a policy over a remote context;
+- the `exec.proxy` cap;
+- `BUILDX_DEFAULT_POLICY`;
+- the signature functions;
+- `buildx policy eval` and `test`.
+
+Tested:
+- **`builds_heed_their_policies_as_buildx_does`:** every check and its order; refusals at
+  the image, the pinned image, the Dockerfile and the context, in buildx's words; unknowns
+  resolved; `cwd://`, a missing file, `disabled`, `reset`, and policies OPA refuses;
+  imports and `load_json`; and `--debug`'s input. Mutation-checked twice, without the
+  metadata check and without the definition's.
+- **Unit tests:** the flags' combination (withPolicyConfig), unknowns (trimKey,
+  collectUnknowns), and `the_deepest_policy_runs_on_the_policy_thread`.
+- **The buildx oracle:** `--policy`'s grammar.
+
+### D100. Attestations in a docker archive, which `docker load` reads in either store
+
+`-o type=docker,dest=…` with an attestation (provenance, SBOMs, `--attest`) writes the
+attested image. Measured in `shards-dind` (buildx v0.33.0, Docker 29.3.1):
+- **buildx refuses one** before the solve, with or without `oci-mediatypes`: "docker
+  exporter does not support exporting manifest lists, use the oci exporter instead"
+  (build/opt.go; "does not currently support…" where it would load).
+- **BuildKit's own docker exporter** (v0.28.1 exporter/oci) writes one, refusing only
+  several platforms. It hands containerd's archive exporter no platform, so the exporter
+  picks no manifest from the attested index and writes no `manifest.json`
+  (core/images/archive/exporter.go). Docker's classic store refuses that archive:
+  "invalid archive: does not contain a manifest.json", measured on a second dockerd with
+  `--feature containerd-snapshotter=false` inside `shards-dind`.
+
+shards writes the `oci` archive with `manifest.json` beside it, naming the image's config
+and layers under its tags (`output::layout`). Both stores load it, measured on the same
+archive:
+- **containerd's store** loads the attested index (the image's ID is the index's digest),
+  `docker image ls --tree` shows the platform's image, and Docker runs a container of it.
+- **The classic store** loads the image by `manifest.json` (its ID is the config's
+  digest), having checked its layer against the config's `diff_ids`.
+
+**Media types.** The image's manifest is OCI's even where `oci-mediatypes=false` asks for
+Docker's, as BuildKit turns OCI's on for any attested image (ImageWriter.Commit,
+`EnableOCITypes(ctx, "attestations")`). Before this, an `oci` output asking for Docker's
+types silently dropped its attestation.
+
+**Also fixed.**
+- A docker archive written with `oci-mediatypes=true` now has its `manifest.json`, as
+  containerd's exporter writes one for any manifest when the docker variant asks.
+- Several platforms in a docker archive are refused in buildx's words (they were
+  BuildKit's, with a "failed to solve" that buildx never reaches). One `manifest.json`
+  entry per tag can name only one platform's image, so a `docker load` in the classic
+  store would have to drop the others; the `oci` output carries them all.
+
+Tested:
+- `builds_attest_their_provenance_as_docker_does` builds with `--provenance=true` to
+  `type=docker,oci-mediatypes=false` and checks that `index.json` names the index, that
+  its image is OCI's types, and that its statement names the tag. It also checks that
+  `manifest.json` names that image's config and layers under the tag. Mutation-checked
+  twice: with `manifest.json` written only for Docker's types, and with the attestation
+  not forcing OCI's types.
+- `several_platforms_make_one_image_of_their_manifests` checks buildx's refusal.
+
 ### D99. IPv6 on a network of microVMs
 
 A network made with `--ipv6` (`shards network create --ipv6`, or a run's `--network` on
