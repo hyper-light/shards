@@ -3309,8 +3309,15 @@ The guest kernel now has nf_tables' ip6 family and its fib expression
     saddr . iif oif missing drop`.
   - IPv6 forwarding is turned on only after the tables are in place. A kernel without
     nf_tables' ip6 family fails the run, never forwards unfiltered.
-- **Past the microVM.** Agents reach it by IPv4 alone. No IPv6 route leaves the switch,
-  so their egress, names and ingress past it stay IPv4's (D59).
+- **Past the microVM** (part three), where the microVM's own network has IPv6:
+  - A domain with egress and an IPv6 address takes a default IPv6 route.
+  - Its gate and the switch pass its egress ports up the uplink, whose two ends are
+    link-local.
+  - init's IPv6 tables pass them out of eth0 under eth0's IPv6 address, the one the
+    network process takes frames from. They let nothing from the uplink reach init's
+    own sockets but answers and neighbor discovery. Then IPv6 forwarding is turned on.
+  - Names and ingress past the microVM stay IPv4's (D59): the agents' resolver and
+    published ports are reached by IPv4.
 
 Tested on real microVMs: `agents_reach_by_ipv6_only_what_connect_grants`.
 - `CONNECT --port=7000 a TO b` lets a reach b at its IPv6 address on 7000, and not on
@@ -3321,6 +3328,16 @@ Tested on real microVMs: `agents_reach_by_ipv6_only_what_connect_grants`.
 
 Mutation-checked: both IPv6 forward chains accepting all, and a reaches b's 7001. The
 planner's addresses, pool, gateways and hosts lines have a unit test.
+
+Also tested on real microVMs: `agents_reach_past_the_microvm_by_ipv6_what_their_networks_grant`.
+On a network with IPv6, an agent reaches a server at the host's IPv6 address on the port
+both boundaries grant, and not on one only its network grants. The test is skipped on a
+host with no routable IPv6 address. Mutation-checked: init passing no IPv6 egress.
+
+Found by that test: the ip6 chain that keeps the run's own processes to eth0's subnet
+dropped neighbor discovery, whose multicast destinations lie in no subnet. On a network
+with IPv6, a run whose agents had grants then reached nothing by IPv6, not even its
+network's members. Neighbor discovery now passes it, as ARP passes IPv4's chain below IP.
 
 ### D98. Rego as OPA evaluates it, for buildx's build policies
 

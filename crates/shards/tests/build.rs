@@ -6713,6 +6713,105 @@ fn agents_reach_by_ipv6_only_what_connect_grants() {
     }
 }
 
+/// Agents reach past their microVM by IPv6 what their networks grant (D99), where the
+/// microVM's own network has IPv6: through the switch's uplink and init's namespace, under
+/// eth0's IPv6 address, the granted port alone, as by IPv4 (D59).
+#[test]
+fn agents_reach_past_the_microvm_by_ipv6_what_their_networks_grant() {
+    if cannot_run_vms() {
+        return;
+    }
+    // This host's IPv6 address on its default route: a UDP connect sends nothing.
+    let host = std::net::UdpSocket::bind("[::]:0")
+        .and_then(|s| s.connect("[2001:db8::1]:9").map(|()| s))
+        .and_then(|s| s.local_addr())
+        .map(|a| a.ip());
+    let host = match host {
+        Ok(std::net::IpAddr::V6(h)) if !h.is_loopback() && !h.is_unicast_link_local() => h,
+        _ => {
+            eprintln!("SKIP: this host has no routable IPv6 address to give a guest");
+            return;
+        }
+    };
+    let serve = || {
+        let server = std::net::TcpListener::bind("[::]:0").unwrap();
+        let port = server.local_addr().unwrap().port();
+        std::thread::spawn(move || for _ in server.incoming() {});
+        port
+    };
+    let (granted, other) = (serve(), serve());
+    let (image, _) = served();
+    let (port, _repos) = common::writable_registry();
+    let home = TempDir::new("egress6-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let to = |p: u16| format!("[{host}]:{p}");
+    let dir = TempDir::new("egress6-agent-a");
+    std::fs::create_dir_all(dir.join("bin")).unwrap();
+    std::fs::copy(common::test_guest(), dir.join("bin/testguest")).unwrap();
+    let command: Vec<String> = [
+        "bin/testguest",
+        "confined",
+        "reach",
+        &to(granted),
+        "unreach",
+        &to(other),
+    ]
+    .iter()
+    .map(|a| format!("{a:?}"))
+    .collect();
+    std::fs::write(
+        dir.join("agent.json"),
+        format!(r#"{{"name":"a","run":{{"command":[{}]}}}}"#, command.join(",")),
+    )
+    .unwrap();
+    let tag = format!("127.0.0.1:{port}/team/egress6-a:1");
+    let made = shards(&["build", "agent", dir.to_str().unwrap(), "-t", &tag]);
+    assert_eq!(made.status, Some(0), "{}", made.stderr);
+    let pushed = shards(&["push", "agent", &tag]);
+    assert_eq!(pushed.status, Some(0), "{}", pushed.stderr);
+    let ctx = context("egress6-ctx", &format!("FROM {image}\n"));
+    std::fs::write(
+        ctx.join("Agentfile"),
+        format!(
+            "FROM {image}\nAGENT a FROM {tag}\n\
+             NETWORK --ipv6 --egress={granted} --egress={other} out\nEXPOSE {granted} AS egress FOR out\n\
+             CONNECT a WITH a ON out\n"
+        ),
+    )
+    .unwrap();
+    let built = shards(&["build", "-t", "egress6:1", ctx.to_str().unwrap()]);
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    let made = shards(&["network", "create", "--ipv6", "--subnet", "fd7a::/64", "six"]);
+    assert_eq!(made.status, Some(0), "{}", made.stderr);
+    let ran = shards(&[
+        "run",
+        "--rm",
+        "--network",
+        "six",
+        "egress6:1",
+        "await",
+        "confined-ready",
+        "1",
+    ]);
+    assert_eq!(ran.status, Some(0), "{}{}", ran.stdout, ran.stderr);
+    for want in [
+        format!("[agent a] confined reach {}: ok", to(granted)),
+        // A port its network grants, but not the microVM's boundary: dropped.
+        format!("[agent a] confined unreach {}: timeout", to(other)),
+    ] {
+        assert!(
+            ran.stderr.lines().any(|l| l == want),
+            "no {want:?} in:\n{}",
+            ran.stderr
+        );
+    }
+}
+
 /// Agents reach one another as the Agentfile's `CONNECT`s grant and nothing more (D59,
 /// AGENTFILE_ARCH.md §4.6, §4.7, §9.7; networks are default deny), each over one link to
 /// a switch that decides by link and port. On `back`, `CONNECT --port=7000 a TO b` lets

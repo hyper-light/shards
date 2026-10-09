@@ -811,6 +811,8 @@ fn gate_of(
             .filter(|(_, to, _)| *to == i)
             .map(|(from, _, ports)| (addrs6(*from), ports.clone()))
             .collect(),
+        // As the uplink carries IPv6: eth0 has IPv6, and so has this domain with egress.
+        egress6: crate::net::current6().is_some() && !link.addresses6.is_empty() && !link.egress.is_empty(),
     }
 }
 
@@ -884,12 +886,48 @@ fn switch(
                     Some((from, ranges.clone()))
                 })
                 .collect();
+            // By IPv6 too where eth0 has IPv6 and a domain with egress has IPv6 (D99).
+            let from_domain6: Vec<(Vec<std::net::Ipv6Addr>, Vec<crate::netplan::Egress>)> = egress
+                .iter()
+                .filter_map(|(i, ranges)| {
+                    let from: Vec<std::net::Ipv6Addr> = domains
+                        .get(*i)?
+                        .link
+                        .as_ref()?
+                        .addresses6
+                        .iter()
+                        .map(|a| a.addr)
+                        .collect();
+                    (!from.is_empty()).then(|| (from, ranges.clone()))
+                })
+                .collect();
+            let ipv6 = match (crate::net::current6(), from_domain6.is_empty()) {
+                (Some((eth0, _, _)), false) => {
+                    let mut subnets6: Vec<(std::net::Ipv6Addr, u8)> = Vec::new();
+                    for a in domains
+                        .iter()
+                        .filter_map(|d| d.link.as_ref())
+                        .flat_map(|l| &l.addresses6)
+                    {
+                        if !subnets6.contains(&(a.subnet, a.prefix)) {
+                            subnets6.push((a.subnet, a.prefix));
+                        }
+                    }
+                    Some(crate::links::Uplink6 {
+                        eth0,
+                        subnets: subnets6,
+                        egress: from_domain6,
+                    })
+                }
+                _ => None,
+            };
             Some(crate::links::Uplink {
                 ingress: to_domain,
                 egress: from_domain,
                 resolver: !dns.is_empty(),
                 subnets,
                 eth0: (addr, std::net::Ipv4Addr::from(u32::from(addr) & mask), prefix),
+                ipv6,
             })
         }
     };

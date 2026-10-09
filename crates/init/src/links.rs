@@ -93,6 +93,17 @@ pub struct Uplink {
     pub egress: Vec<(Vec<Ipv4Addr>, Vec<crate::netplan::Egress>)>,
     /// Whether the agents' resolver asks the microVM's.
     pub resolver: bool,
+    /// Past the microVM by IPv6 (D99), where eth0 has IPv6: eth0's IPv6 address, the
+    /// agents' IPv6 subnets, and the ports each domain opens flows to from its IPv6
+    /// addresses. None where eth0 has no IPv6 or no domain with egress has IPv6.
+    pub ipv6: Option<Uplink6>,
+}
+
+/// The uplink's IPv6 part (D99).
+pub struct Uplink6 {
+    pub eth0: Ipv6Addr,
+    pub subnets: Vec<(Ipv6Addr, u8)>,
+    pub egress: Vec<(Vec<Ipv6Addr>, Vec<crate::netplan::Egress>)>,
 }
 
 /// nfnetlink and nf_tables (include/uapi/linux/netfilter/nfnetlink.h, nf_tables.h).
@@ -352,6 +363,8 @@ pub struct Switch {
     route: OwnedFd,
     /// Whether any domain has IPv6 (D99): the switch's own IPv6 tables, and forwarding.
     ipv6: bool,
+    /// Whether the uplink carries IPv6: domains with egress take a default IPv6 route.
+    uplink6: bool,
     /// A route socket in init's own namespace, where veths are made.
     here: OwnedFd,
     /// Whether it has a link past the microVM, which every domain's default route takes.
@@ -376,6 +389,8 @@ pub struct Gate {
     pub own6: Vec<Ipv6Addr>,
     pub opens6: Vec<(Vec<Ipv6Addr>, Vec<crate::netplan::Egress>)>,
     pub accepts6: Vec<(Vec<Ipv6Addr>, Vec<crate::netplan::Egress>)>,
+    /// Whether its egress ports reach past the microVM by IPv6 too.
+    pub egress6: bool,
 }
 
 impl Gate {
@@ -423,8 +438,10 @@ impl Switch {
         policy(&nftables, pairs, egress, ingress, dns)?;
         // IPv6 between domains (D99): its tables first, then forwarding, so that a kernel
         // without nf_tables' ip6 family fails the run rather than forward unfiltered.
+        let uplink6 = uplink.is_some_and(|u| u.ipv6.is_some());
         if ipv6 {
-            policy6(&nftables, pairs)?;
+            let egress6: &[(usize, Vec<crate::netplan::Egress>)] = if uplink6 { egress } else { &[] };
+            policy6(&nftables, pairs, egress6)?;
             in_netns(Some(ns.as_raw_fd()), || {
                 crate::setup::write_sysctl("net.ipv6.conf.all.forwarding", "1").map_err(io::Error::other)
             })?;
@@ -433,6 +450,7 @@ impl Switch {
             ns,
             route,
             ipv6,
+            uplink6,
             here: netlink_socket(libc::NETLINK_ROUTE)?,
             uplink: uplink.is_some(),
             gates: std::sync::Mutex::new(Vec::new()),
@@ -508,7 +526,43 @@ impl Switch {
         if eth0 == 0 {
             return Err(io::Error::other("the microVM has no eth0 for its agents' egress"));
         }
-        outside(&netlink_socket(libc::NETLINK_NETFILTER)?, eth0, u)
+        outside(&netlink_socket(libc::NETLINK_NETFILTER)?, eth0, u)?;
+        // IPv6 past the microVM (D99): the uplink's link-local ends, the switch's default
+        // route up it and init's routes to the agents' IPv6 subnets down it; init's IPv6
+        // tables, then its IPv6 forwarding.
+        let Some(six) = &u.ipv6 else { return Ok(()) };
+        exchange(
+            &self.route,
+            &[
+                (RTM_NEWADDR, create, addr6_msg(UPLINK_IFINDEX, TRANSIT6_GATE, 64)),
+                (
+                    RTM_NEWROUTE,
+                    create,
+                    route6_msg(
+                        UPLINK_IFINDEX,
+                        Ipv6Addr::UNSPECIFIED,
+                        0,
+                        Some(TRANSIT6_SWITCH),
+                        None,
+                    ),
+                ),
+            ],
+        )?;
+        let mut here = vec![(
+            RTM_NEWADDR,
+            create,
+            addr6_msg(UPLINK_IFINDEX, TRANSIT6_SWITCH, 64),
+        )];
+        for &(subnet, prefix) in &six.subnets {
+            here.push((
+                RTM_NEWROUTE,
+                create,
+                route6_msg(UPLINK_IFINDEX, subnet, prefix, Some(TRANSIT6_GATE), None),
+            ));
+        }
+        exchange(&self.here, &here)?;
+        outside6(&netlink_socket(libc::NETLINK_NETFILTER)?, eth0, six)?;
+        crate::setup::write_sysctl("net.ipv6.conf.all.forwarding", "1").map_err(io::Error::other)
     }
 
     /// The agents' resolver's sockets, of the switch's namespace (`agentdns`): port 53 of
@@ -682,6 +736,23 @@ impl Switch {
                 RTM_NEWROUTE,
                 create,
                 route6_msg(index, a.addr, 128, Some(TRANSIT6_GATE), None),
+            ));
+        }
+        // Past the microVM by IPv6, where the uplink carries it and the domain has egress.
+        if let Some(a) = link.addresses6.first()
+            && self.uplink6
+            && !gate.egress.is_empty()
+        {
+            ours.push((
+                RTM_NEWROUTE,
+                create,
+                route6_msg(
+                    DOMAIN_IFINDEX,
+                    Ipv6Addr::UNSPECIFIED,
+                    0,
+                    Some(a.gateway),
+                    Some(a.addr),
+                ),
             ));
         }
         if !link.addresses6.is_empty() {
@@ -1270,18 +1341,31 @@ fn gate_policy(sock: &OwnedFd, g: &Gate) -> io::Result<()> {
 }
 
 /// The switch's IPv6 tables (D99), stateless as its IPv4 ones: its own address answers
-/// neighbor discovery alone, reverse paths are strict, and it forwards each pair's flows
-/// one way on their ports and their answers back, and nothing else. No IPv6 crosses the
-/// microVM's boundary: past it, the domains reach by IPv4.
-fn policy6(sock: &OwnedFd, pairs: &[(usize, usize, Vec<crate::netplan::Egress>)]) -> io::Result<()> {
+/// neighbor discovery alone, reverse paths are strict, and it forwards each pair's flows,
+/// and each domain's past the microVM where the uplink carries IPv6 (`egress`), one way
+/// on their ports and their answers back, and nothing else.
+fn policy6(
+    sock: &OwnedFd,
+    pairs: &[(usize, usize, Vec<crate::netplan::Egress>)],
+    egress: &[(usize, Vec<crate::netplan::Egress>)],
+) -> io::Result<()> {
     let mut b = Batch::of(nft::NFPROTO_IPV6);
     b.chain(b"pre\0", b"filter\0", nft::NF_INET_PRE_ROUTING, 0, nft::NF_ACCEPT);
     b.rule(b"pre\0", reverse_path());
     b.chain(b"input\0", b"filter\0", nft::NF_INET_LOCAL_IN, 0, nft::NF_DROP);
     b.rule(b"input\0", neighbor_discovery());
     b.chain(b"forward\0", b"filter\0", nft::NF_INET_FORWARD, 0, nft::NF_DROP);
+    let up = UPLINK_IFINDEX as u32;
+    let mut flows: Vec<(u32, u32, Vec<crate::netplan::Egress>)> = Vec::new();
     for (from, to, ranges) in pairs {
-        let (from, to) = (link_index(*from)?, link_index(*to)?);
+        flows.push((link_index(*from)?, link_index(*to)?, ranges.clone()));
+    }
+    // Each domain's past the microVM, up to the uplink (D99).
+    for (n, ranges) in egress {
+        flows.push((link_index(*n)?, up, ranges.clone()));
+    }
+    for (from, to, ranges) in &flows {
+        let (from, to) = (*from, *to);
         for &range in ranges {
             let mut e = Vec::new();
             on(&mut e, nft::NFT_META_IIF, from);
@@ -1335,6 +1419,17 @@ fn gate_policy6(sock: &OwnedFd, g: &Gate) -> io::Result<()> {
     b.chain(b"forward\0", b"filter\0", nft::NF_INET_FORWARD, 0, nft::NF_DROP);
     b.rule(b"forward\0", answers());
     for &own in &g.own6 {
+        // Past the microVM, on its egress ports, where the uplink carries IPv6.
+        if g.egress6 {
+            for &range in &g.egress {
+                let mut e = Vec::new();
+                on(&mut e, nft::NFT_META_IIF, inside);
+                address6(&mut e, SOURCE6, own);
+                ports(&mut e, range);
+                accept(&mut e);
+                b.rule(b"forward\0", e);
+            }
+        }
         for (peer, ranges) in &g.opens6 {
             for &to in peer {
                 for &range in ranges {
@@ -1369,6 +1464,61 @@ fn gate_policy6(sock: &OwnedFd, g: &Gate) -> io::Result<()> {
             }
         }
     }
+    b.commit(sock)
+}
+
+/// Init's own namespace's IPv6 tables, once agents reach past the microVM by IPv6 (D99), as
+/// [`outside`] makes IPv4's: `in` drops what comes up from the switch but answers and
+/// neighbor discovery; `forward` drops all but answers and each domain's egress, from its
+/// IPv6 addresses on its ports, up to eth0, which it marks; `post` gives what is marked
+/// eth0's IPv6 address, the one the network process takes frames from.
+fn outside6(sock: &OwnedFd, eth0: u32, u: &Uplink6) -> io::Result<()> {
+    let up = UPLINK_IFINDEX as u32;
+    let mut b = Batch::of(nft::NFPROTO_IPV6);
+    b.chain(b"in\0", b"filter\0", nft::NF_INET_LOCAL_IN, 0, nft::NF_ACCEPT);
+    b.rule(b"in\0", answers());
+    b.rule(b"in\0", neighbor_discovery());
+    let mut e = Vec::new();
+    on(&mut e, nft::NFT_META_IIF, up);
+    drop_verdict(&mut e);
+    b.rule(b"in\0", e);
+    b.chain(b"forward\0", b"filter\0", nft::NF_INET_FORWARD, 0, nft::NF_DROP);
+    b.rule(b"forward\0", answers());
+    for (from, ranges) in &u.egress {
+        for &a in from {
+            for &range in ranges {
+                let mut e = Vec::new();
+                on(&mut e, nft::NFT_META_IIF, up);
+                on(&mut e, nft::NFT_META_OIF, eth0);
+                address6(&mut e, SOURCE6, a);
+                ports(&mut e, range);
+                load(&mut e, &MARK_AGENTS.to_ne_bytes());
+                expr(&mut e, b"meta\0", |d| {
+                    be32(d, nft::NFTA_META_KEY, nft::NFT_META_MARK);
+                    be32(d, nft::NFTA_META_SREG, nft::NFT_REG_1);
+                });
+                accept(&mut e);
+                b.rule(b"forward\0", e);
+            }
+        }
+    }
+    b.chain(
+        b"post\0",
+        b"nat\0",
+        nft::NF_INET_POST_ROUTING,
+        nft::PRIORITY_SNAT,
+        nft::NF_ACCEPT,
+    );
+    let mut e = Vec::new();
+    meta(&mut e, nft::NFT_META_MARK);
+    compare(&mut e, nft::NFT_CMP_EQ, &MARK_AGENTS.to_ne_bytes());
+    load(&mut e, &u.eth0.octets());
+    expr(&mut e, b"nat\0", |d| {
+        be32(d, nft::NFTA_NAT_TYPE, nft::NFT_NAT_SNAT);
+        be32(d, nft::NFTA_NAT_FAMILY, u32::from(nft::NFPROTO_IPV6));
+        be32(d, nft::NFTA_NAT_REG_ADDR_MIN, nft::NFT_REG_1);
+    });
+    b.rule(b"post\0", e);
     b.commit(sock)
 }
 
@@ -1503,6 +1653,11 @@ pub fn confine_eth0() -> io::Result<()> {
         let mut b = Batch::of(family);
         b.chain(b"out\0", b"filter\0", nft::NF_INET_LOCAL_OUT, 0, nft::NF_ACCEPT);
         b.rule(b"out\0", answers());
+        // IPv6's neighbor discovery, to multicast addresses outside any subnet: what
+        // reaching the gateway at all takes, as ARP does for IPv4 below IP.
+        if family == nft::NFPROTO_IPV6 {
+            b.rule(b"out\0", neighbor_discovery());
+        }
         let mut e = Vec::new();
         meta(&mut e, nft::NFT_META_OIF);
         compare(&mut e, nft::NFT_CMP_EQ, &eth0.to_ne_bytes());
