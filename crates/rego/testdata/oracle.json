@@ -91,7 +91,7 @@
 {"name":"c-type-error-str","error":"1 error occurred: policy.rego:3: rego_type_error: lower: invalid argument(s)\n\thave: (number, ???)\n\twant: (x: string, y: string)","results":[],"prints":[]},
 {"name":"c-void-call","error":"1 error occurred: policy.rego:3: rego_type_error: print(\"a\") used as value","results":[],"prints":[]},
 {"name":"c-reorder","error":"1 error occurred: policy.rego:5: rego_compile_error: var x referenced above","results":[],"prints":[]},
-{"name":"c-reorder-compr","error":"2 errors occurred:\npolicy.rego:4: rego_unsafe_var_error: var q is unsafe\npolicy.rego:4: rego_unsafe_var_error: var w is unsafe","results":[],"prints":[]},
+{"name":"c-reorder-compr","error":"2 errors occurred:\npolicy.rego:4: rego_unsafe_var_error: var w is unsafe\npolicy.rego:4: rego_unsafe_var_error: var q is unsafe","results":[],"prints":[]},
 {"name":"c-eq-rewrite","results":[true],"prints":[]},
 {"name":"c-dynamic-terms","results":[[9,{"key":"val"}]],"prints":[]},
 {"name":"c-not-call","results":[true],"prints":[]},

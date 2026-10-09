@@ -129,9 +129,9 @@ impl Term {
         }
     }
 
-    /// Structural equality (ast.Term.Equal), locations aside.
+    /// Equality as OPA's Compare decides it (numbers by NumberCompare), locations aside.
     pub fn equal(&self, other: &Term) -> bool {
-        self.to_string() == other.to_string() && same_kind(&self.value, &other.value)
+        crate::compare::term_compare(self, other) == std::cmp::Ordering::Equal
     }
 
     /// OPA's `ValueName`, for error messages.
@@ -153,10 +153,6 @@ impl Term {
             TermValue::TemplateString { .. } => "templatestring",
         }
     }
-}
-
-fn same_kind(a: &TermValue, b: &TermValue) -> bool {
-    std::mem::discriminant(a) == std::mem::discriminant(b)
 }
 
 /// Makes an object term, a repeated key's value replacing the earlier one.

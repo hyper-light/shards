@@ -512,7 +512,7 @@
  },
  {
   "name": "c-recursion",
-  "error": "2 errors occurred:\npolicy.rego:3: rego_recursion_error: rule data.docker.p is recursive: data.docker.p -\u003e data.docker.q -\u003e data.docker.p\npolicy.rego:5: rego_recursion_error: rule data.docker.q is recursive: data.docker.q -\u003e data.docker.p -\u003e data.docker.q"
+  "error": "2 errors occurred:\npolicy.rego:5: rego_recursion_error: rule data.docker.q is recursive: data.docker.q -\u003e data.docker.p -\u003e data.docker.q\npolicy.rego:3: rego_recursion_error: rule data.docker.p is recursive: data.docker.p -\u003e data.docker.q -\u003e data.docker.p"
  },
  {
   "name": "c-shadow-input",
@@ -524,7 +524,7 @@
  },
  {
   "name": "c-unsafe-generated",
-  "error": "2 errors occurred:\npolicy.rego:4: rego_unsafe_var_error: var z is unsafe\npolicy.rego:4: rego_unsafe_var_error: var x is unsafe"
+  "error": "2 errors occurred:\npolicy.rego:4: rego_unsafe_var_error: var x is unsafe\npolicy.rego:4: rego_unsafe_var_error: var z is unsafe"
  },
  {
   "name": "c-unsafe-in-compr",
@@ -552,7 +552,7 @@
  },
  {
   "name": "c-reorder-compr",
-  "error": "2 errors occurred:\npolicy.rego:4: rego_unsafe_var_error: var q is unsafe\npolicy.rego:4: rego_unsafe_var_error: var w is unsafe"
+  "error": "2 errors occurred:\npolicy.rego:4: rego_unsafe_var_error: var w is unsafe\npolicy.rego:4: rego_unsafe_var_error: var q is unsafe"
  },
  {
   "name": "c-eq-rewrite",
