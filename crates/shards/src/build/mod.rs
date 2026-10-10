@@ -2556,7 +2556,10 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
         main_context: remote.clone().unwrap_or_default(),
         context_subdir: None,
         git_advice,
-        implicit_target: false,
+        // No --platform: the first build platform, and the image its base's platform, as
+        // BuildKit's frontend plans a build buildx asks for none (dockerui's TargetPlatform
+        // nil, Dockerfile2LLB's implicitTarget), shards' frontend too (D113).
+        implicit_target: target_platforms.is_empty(),
         // Its own builder's: no session, every capability.
         session: Vec::new(),
         local_sessions: BTreeMap::new(),

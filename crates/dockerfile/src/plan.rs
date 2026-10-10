@@ -6229,6 +6229,31 @@ mod tests {
         assert_eq!(mtime(&a), Some(b"checkout".to_vec()));
     }
 
+    /// A build asked for no platform (dockerui's TargetPlatform nil, Dockerfile2LLB's
+    /// implicitTarget) keeps its base's platform in the image; one asked for a platform
+    /// has that platform's.
+    #[test]
+    fn an_implicit_target_leaves_the_image_its_bases_platform() {
+        let times = Times {
+            asked: Default::default(),
+            answer: Ok(None),
+            logged: Default::default(),
+        };
+        let text = b"FROM --platform=linux/amd64 alpine\n";
+        let opts = |implicit_target: bool| Options {
+            target_platform: Platform::new("linux", "arm64"),
+            build_platforms: vec![Platform::new("linux", "arm64")],
+            implicit_target,
+            ..Default::default()
+        };
+        let arch = |o: &Options| {
+            let p = plan(text, o, &times).unwrap();
+            String::from_utf8(p.image.platform.architecture).unwrap()
+        };
+        assert_eq!(arch(&opts(true)), "amd64");
+        assert_eq!(arch(&opts(false)), "arm64");
+    }
+
     /// `strings.Index`: an empty needle is at the start.
     #[test]
     fn an_empty_needle_is_found_at_the_start() {

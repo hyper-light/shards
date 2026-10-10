@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""M129: what shards' BuildKit frontend costs against docker/dockerfile:1 (dockerfile/1.27.1)
+"""What shards' BuildKit frontend costs against docker/dockerfile:1 (dockerfile/1.27.1)
 in shards-dind (Docker 29.3.1, BuildKit v0.28.1, buildx v0.37.1): each frontend run by
 BuildKit through D113's spy (scripts/gateway/spy), which relays its stdio and stamps each
 chunk, n builds of one case each, interleaved; per frontend, the process's start to its
@@ -47,7 +47,7 @@ def dind(*argv, check=True):
 def image(name, dockerfile, files):
     """An image built in dind from `dockerfile` and `files`, pushed to the local registry;
     its name by digest."""
-    d = f"{ROOT}/m129/{name}"
+    d = f"{ROOT}/costs/{name}"
     dind("rm", "-rf", d)
     dind("mkdir", "-p", d)
     for src, dest in files:
@@ -56,7 +56,7 @@ def image(name, dockerfile, files):
         f.write(dockerfile)
     run(["docker", "cp", f.name, f"{DIND}:{d}/Dockerfile"])
     os.unlink(f.name)
-    tag = f"{REGISTRY}/shards-d113-{name}:m129"
+    tag = f"{REGISTRY}/shards-d113-{name}:costs"
     dind("docker", "build", "-q", "-t", tag, d)
     dind("docker", "push", "-q", tag)
     return tag, dind("docker", "inspect", "--format", "{{index .RepoDigests 0}}", tag).stdout.strip()
@@ -84,7 +84,7 @@ def main():
           run(["sw_vers", "-productVersion"], check=False).stdout.strip() or os.uname().release)
     print("revision:", run(["git", "-C", REPO, "rev-parse", "--short", "HEAD"]).stdout.strip())
     print("load:", os.getloadavg())
-    dind("mkdir", "-p", f"{ROOT}/m129")
+    dind("mkdir", "-p", f"{ROOT}/costs")
     if dind("docker", "inspect", "shards-d113-registry", check=False).returncode != 0:
         dind("docker", "run", "-d", "--name", "shards-d113-registry", "-p", "15113:5000", "registry:2")
     ours_tag, ours = image(
@@ -105,7 +105,7 @@ def main():
     for tag in (ours_tag, DOCKERFILE_1):
         size = dind("docker", "image", "inspect", "--format", "{{.Size}}", tag).stdout.strip()
         print("image size:", tag.split("@")[0], size, "bytes")
-    run(["docker", "cp", os.path.join(REPO, "scripts", "frontend", "cases", case), f"{DIND}:{ROOT}/m129/"])
+    run(["docker", "cp", os.path.join(REPO, "scripts", "frontend", "cases", case), f"{DIND}:{ROOT}/costs/"])
     since = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     sides = [("dockerfile", spy_theirs), ("shards", spy_ours)]
     for i in range(n):
@@ -116,7 +116,7 @@ def main():
                 "--build-arg", f"BUILDKIT_SYNTAX={ref}",
                 "--build-arg", f"SHARDS_D113_RUN={side}-{i}",
                 "--output", "type=cacheonly",
-                f"{ROOT}/m129/{case}",
+                f"{ROOT}/costs/{case}",
             )
     log = run(["docker", "logs", DIND, "--since", since]).stdout + ""
     log += run(["docker", "logs", DIND, "--since", since]).stderr
@@ -158,7 +158,7 @@ def main():
             print(f"{side:10} {metric:28} n={s['n']:3} p50={s['p50']:8.3f} p90={s['p90']:8.3f} p99={s['p99']:8.3f} max={s['max']:8.3f} ms")
     for tag in (spy_ours_tag, spy_theirs_tag, ours_tag):
         dind("docker", "rmi", "-f", tag, check=False)
-    dind("rm", "-rf", f"{ROOT}/m129", check=False)
+    dind("rm", "-rf", f"{ROOT}/costs", check=False)
 
 
 if __name__ == "__main__":
