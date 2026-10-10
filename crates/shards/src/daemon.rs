@@ -1767,16 +1767,46 @@ impl<D: Disk> Daemon<D> {
                 v4.chain(v6).collect()
             })
         };
-        // `--pid container:NAME`, as dockerd checks it as it makes the container: one that
-        // is not, in its words; one that is, a microVM of its own, whose PID namespace no
-        // other microVM's process can join (D115).
-        if let Some(name) = run.pid.strip_prefix("container:") {
-            refused(&if self.resolve(name).is_ok() {
-                "\"--pid container:NAME\" is not supported by shards yet".to_string()
-            } else {
-                format!("No such container: {name}")
-            });
-            return None;
+        // Another container's namespaces are kept by its ID as the container is made, so
+        // that they hold as that one is renamed, as dockerd keeps them (moby
+        // daemon/daemon_unix.go, adaptSharedNamespaceContainer); a name no container has
+        // is kept as given, and fails as it starts.
+        if again.is_none() {
+            let by_id = |mode: &str| {
+                mode.strip_prefix("container:")
+                    .filter(|name| !name.is_empty())
+                    .and_then(|name| self.resolve(name).ok())
+                    .map(|id| format!("container:{id}"))
+            };
+            if let Some(network) = by_id(&run.network) {
+                for e in &mut run.endpoints {
+                    if e.network == run.network {
+                        e.network.clone_from(&network);
+                    }
+                }
+                run.network = network;
+            }
+            if let Some(pid) = by_id(&run.pid) {
+                run.pid = pid;
+            }
+        }
+        // `--pid container:NAME`, as dockerd checks it as the container is made: one that
+        // is not, in its words. One that is runs in a microVM of its own, whose PID
+        // namespace no other microVM's process can join (D115): a container joining its
+        // network, which runs in its microVM (D119), joins it.
+        if again.is_none()
+            && let Some(name) = run.pid.strip_prefix("container:")
+        {
+            if self.resolve(name).is_err() {
+                refused(&format!("No such container: {name}"));
+                return None;
+            }
+            if run.network.strip_prefix("container:") != Some(name) {
+                refused(
+                    "\"--pid container:NAME\" is not supported by shards yet without \"--network container:NAME\" of the same container",
+                );
+                return None;
+            }
         }
         let mut start = match network::check(
             &run,
@@ -1801,12 +1831,14 @@ impl<D: Disk> Daemon<D> {
                 || !run.volumes_from.is_empty()
             {
                 Some("a volume")
-            } else if !run.devices.is_empty() || !run.device_cgroup_rules.is_empty() || run.privileged {
-                Some("a device")
-            } else if run.docker_init == Some(true) {
-                Some("--init")
-            } else if !run.pid.is_empty() {
-                Some("--pid")
+            } else if run
+                .pid
+                .strip_prefix("container:")
+                .is_some_and(|p| self.joined_run(p))
+            {
+                // Its own PID namespace in its provider's microVM, which init knows by its
+                // exec's id and the daemon does not.
+                Some("--pid container:NAME of a container that joins another's network")
             } else {
                 None
             };

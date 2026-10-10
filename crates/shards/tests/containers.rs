@@ -192,6 +192,8 @@ fn a_joiner_is_a_container_of_its_own() {
     let hostname = shards(&["inspect", "-f", "{{.Config.Hostname}}", "prov"]);
     let hostname = hostname.stdout.trim().to_string();
     assert_eq!(hostname.len(), 12, "the provider's hostname: {hostname:?}");
+    // Its provider kept by its ID, as dockerd keeps it (adaptSharedNamespaceContainer).
+    let id = shards(&["inspect", "-f", "{{.Id}}", "prov"]).stdout;
     let inspected = shards(&[
         "inspect",
         "-f",
@@ -200,7 +202,7 @@ fn a_joiner_is_a_container_of_its_own() {
     ]);
     assert_eq!(
         inspected.stdout,
-        format!("container:prov {hostname}\n"),
+        format!("container:{} {hostname}\n", id.trim()),
         "{inspected}"
     );
     let reported = shards(&["exec", "joiner", "/bin/testguest", "report"]);
@@ -383,6 +385,190 @@ fn a_joiners_own_commands_reach_the_joiner() {
     assert_eq!(stopped.status, Some(0), "{stopped}");
     assert_eq!(exit(&mut attached), Some(137));
     assert_eq!(shards(&["stop", "-t", "1", "prov"]).status, Some(0));
+    let _ = exit(&mut provider);
+}
+
+/// A joiner may share its provider's PID namespace, `--pid container:NAME` with `--network
+/// container:NAME`, as Docker's may (D119; Docker 29.3.1, PM M169): its PID 1 is its
+/// provider's command; `top` lists each container's own processes, by its cgroup; `--init`
+/// is taken and not given; and what it started is killed as it ends. Both are kept by the
+/// provider's ID. Another's PID namespace alone is refused, a microVM's being its own
+/// (D115), and one not there is refused in dockerd's words.
+#[test]
+fn a_joiner_may_share_its_providers_pid_namespace() {
+    let Some((home, image)) = home("containers-joiner-pid") else {
+        return;
+    };
+    let mut provider = start(&home, &image, &["--name", "prov"], &["sleep"]);
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let id = shards(&["inspect", "-f", "{{.Id}}", "prov"]).stdout;
+    let id = id.trim();
+    let joined = run_in(
+        &home,
+        &image,
+        &[
+            "-d",
+            "--name",
+            "joiner",
+            "--network",
+            "container:prov",
+            "--pid",
+            "container:prov",
+            "--init",
+        ],
+        &["trap", "TERM"],
+    );
+    assert_eq!(joined.status, Some(0), "{joined}");
+    let modes = shards(&[
+        "inspect",
+        "-f",
+        "{{.HostConfig.NetworkMode}} {{.HostConfig.PidMode}} {{.HostConfig.Init}}",
+        "joiner",
+    ]);
+    assert_eq!(
+        modes.stdout,
+        format!("container:{id} container:{id} true\n"),
+        "{modes}"
+    );
+    let first = shards(&["exec", "joiner", "/bin/testguest", "fs", "print:/proc/1/cmdline"]);
+    assert_eq!(first.stdout, "/bin/testguest\0sleep\0", "{first}");
+    let top = |name: &str| shards(&["top", name, "-o", "pid,args"]).stdout;
+    let (theirs, ours) = (top("prov"), top("joiner"));
+    assert!(
+        theirs.contains("testguest sleep") && !theirs.contains("testguest trap"),
+        "{theirs}"
+    );
+    assert!(
+        ours.contains("testguest trap") && !ours.contains("testguest sleep") && !ours.contains("init"),
+        "{ours}"
+    );
+    // What it started, an exec of its, goes as it ends; seen from its provider.
+    let left = shards(&["exec", "-d", "joiner", "/bin/testguest", "fs", "sleep:600000"]);
+    assert_eq!(left.status, Some(0), "{left}");
+    let seen = || shards(&["exec", "prov", "/bin/testguest", "ps"]).stdout;
+    let deadline = Instant::now() + TIMEOUT;
+    while !seen().contains("fs sleep:600000") {
+        assert!(Instant::now() < deadline, "the exec never showed: {}", seen());
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(shards(&["stop", "-t", "1", "joiner"]).status, Some(0));
+    let deadline = Instant::now() + TIMEOUT;
+    while seen().contains("fs sleep:600000") {
+        assert!(
+            Instant::now() < deadline,
+            "what the joiner started outlived it: {}",
+            seen()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // The microVM's own, with `--pid host`: init its PID 1.
+    let host = run_in(
+        &home,
+        &image,
+        &["--rm", "--network", "container:prov", "--pid", "host"],
+        &["fs", "print:/proc/1/cmdline"],
+    );
+    assert_eq!(host.status, Some(0), "{host}");
+    assert!(!host.stdout.starts_with("/bin/testguest"), "{host}");
+    // Refused: another's PID namespace alone, and one that is not there.
+    let refused = |options: &[&str], said: &str| {
+        let r = run_in(&home, &image, options, &["exit", "0"]);
+        assert_eq!(
+            (r.status, r.stderr.contains(said)),
+            (Some(125), true),
+            "{options:?}: {r}"
+        );
+    };
+    refused(
+        &["--pid", "container:prov"],
+        "\"--pid container:NAME\" is not supported by shards yet without \"--network container:NAME\" of the same container",
+    );
+    refused(&["--pid", "container:nope"], "No such container: nope");
+    assert_eq!(shards(&["stop", "-t", "1", "prov"]).status, Some(0));
+    let _ = exit(&mut provider);
+}
+
+/// A joiner under `--init`, in a PID namespace of its own, has a reaper first in it, as the
+/// workload has (D115, D119), docker-init's part: its command the namespace's second
+/// process, so that `stop`'s SIGTERM ends at once a command that does not handle it; the
+/// reaper as the command's user, which the joiner's own image names; `top` lists both.
+#[test]
+fn a_joiner_under_init_has_a_reaper_of_its_own() {
+    let Some((home, image)) = home("containers-joiner-init") else {
+        return;
+    };
+    let mut provider = start(&home, &image, &["--name", "prov"], &["sleep"]);
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let joined = run_in(
+        &home,
+        &image,
+        &["-d", "--name", "joiner", "--network", "container:prov", "--init"],
+        &["sleep"],
+    );
+    assert_eq!(joined.status, Some(0), "{joined}");
+    let read = |path: &str| {
+        let r = shards(&["exec", "joiner", "/bin/testguest", "fs", &format!("print:{path}")]);
+        assert_eq!(r.status, Some(0), "{path}: {r}");
+        r.stdout
+    };
+    assert_eq!(read("/proc/2/cmdline"), "/bin/testguest\0sleep\0");
+    assert!(!read("/proc/1/cmdline").starts_with("/bin/testguest"));
+    // The image's user, app.
+    let status = read("/proc/1/status");
+    assert!(
+        status
+            .lines()
+            .any(|l| l.split_whitespace().eq(["Uid:", "1000", "1000", "1000", "1000"])),
+        "{status}"
+    );
+    let top = shards(&["top", "joiner", "-o", "pid,args"]);
+    assert_eq!(top.stdout.lines().count(), 3, "{top}");
+    let stopping = Instant::now();
+    assert_eq!(shards(&["stop", "joiner"]).status, Some(0));
+    assert!(
+        stopping.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        stopping.elapsed()
+    );
+    let code = shards(&["inspect", "-f", "{{.State.ExitCode}}", "joiner"]);
+    assert_eq!(code.stdout, "143\n", "{code}");
+    assert_eq!(shards(&["stop", "-t", "1", "prov"]).status, Some(0));
+    let _ = exit(&mut provider);
+}
+
+/// A joiner takes devices as the workload does (D44, D119): the VM's, at another path,
+/// with the access given; its cgroup's rules; and with `--privileged` every device the
+/// microVM has, as a privileged Docker container has its host's. Without them, Docker's
+/// default rules confine it, as they confine the workload.
+#[test]
+fn a_joiner_takes_devices_as_a_container_does() {
+    let Some((home, image)) = home("containers-joiner-devices") else {
+        return;
+    };
+    let mut provider = start(&home, &image, &["--name", "prov"], &["sleep"]);
+    let fs = |opts: &[&str], ops: &[&str]| {
+        let mut o = vec!["--rm", "--network", "container:prov"];
+        o.extend_from_slice(opts);
+        let mut a = vec!["fs"];
+        a.extend_from_slice(ops);
+        run_in(&home, &image, &o, &a)
+    };
+    let r = fs(&["-u", "0"], &["mknod:b:259:0:/disk", "open:r:/disk"]);
+    assert!(r.stderr.contains("open:r:/disk: Operation not permitted"), "{r}");
+    let r = fs(
+        &["--device", "/dev/fuse:/dev/x:r"],
+        &["dev:/dev/x", "open:r:/dev/x", "open:w:/dev/x"],
+    );
+    assert!(r.stdout.contains("/dev/x c 10:229 666"), "{r}");
+    assert!(r.stderr.contains("open:w:/dev/x: Operation not permitted"), "{r}");
+    let r = fs(
+        &["-u", "0", "--device-cgroup-rule", "b 259:0 r"],
+        &["mknod:b:259:0:/disk", "open:r:/disk"],
+    );
+    assert_eq!(r.status, Some(0), "{r}");
+    let r = fs(&["-u", "0", "--privileged"], &["open:r:/dev/pmem0"]);
+    assert_eq!(r.status, Some(0), "{r}");
+    assert_eq!(shards_in(&home, &["stop", "-t", "1", "prov"]).status, Some(0));
     let _ = exit(&mut provider);
 }
 
@@ -921,13 +1107,14 @@ fn a_command_is_pid_1_as_a_containers_is() {
         let format = "{{json .HostConfig.Init}} {{json .HostConfig.PidMode}} {{if .HostConfig.Init}}set{{else}}unset{{end}}";
         assert_eq!(shards(&["inspect", "-f", format, name]).stdout, want, "{name}");
     }
-    // Another container's, a microVM of its own: none of its processes' namespaces is ours.
+    // Another container's, a microVM of its own: none of its processes' namespaces is ours,
+    // but a container's joining its network, in its microVM (D119).
     let r = shards(&["create", "--pid", "container:i0", ALPINE, "true"]);
     assert_eq!(
         (r.status, r.stderr.as_str()),
         (
             Some(1),
-            "Error response from daemon: \"--pid container:NAME\" is not supported by shards yet\n"
+            "Error response from daemon: \"--pid container:NAME\" is not supported by shards yet without \"--network container:NAME\" of the same container\n"
         ),
         "{r}"
     );
@@ -3893,8 +4080,16 @@ fn exec_runs_commands_in_a_running_container_as_docker_exec_does() {
     ] {
         assert!(tty.stdout.contains(line), "{line:?}\n{tty}");
     }
-    // -d: answered once it starts.
+    // -d: answered once it starts, its client's output ended then while the command runs
+    // on, as `docker exec -d` holds nothing of its client's (before, it was held to the
+    // command's end, and this read waited out its 60 s).
+    let detached = Instant::now();
     assert_eq!(exec(&["-d", "ex", "/bin/testguest", "sleep"]).status, Some(0));
+    assert!(
+        detached.elapsed() < Duration::from_secs(10),
+        "{:?}",
+        detached.elapsed()
+    );
     let refused = |args: &[&str], status: i32, said: &str| {
         let r = exec(args);
         assert_eq!(

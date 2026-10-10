@@ -535,6 +535,7 @@ fn sort_setup(entries: &[Vec<u8>], into: &mut Inherited) -> Result<Vec<Vec<u8>>,
             || entry == b"confine-eth0"
             || entry == b"init"
             || entry == b"pid=host"
+            || entry == b"pid=workload"
         {
             // Init's, as the run starts (`Standby::start`).
         } else if entry.starts_with(b"devices=") {
@@ -952,8 +953,26 @@ fn fork_in(ns: Option<&OwnedFd>) -> Result<libc::pid_t, Failure> {
 /// ([`Born::Own`]), it shows the workload and its execs none of the microVM's other
 /// processes, an agent's or init's, as a container sees none of its host's.
 fn clone_reaper(uid: libc::uid_t, gid: libc::gid_t) -> Result<libc::pid_t, Failure> {
-    let failed = |e: io::Error| setup_failed(format!("the workload's PID namespace: {e}"));
-    let cgroup = File::open(WORKLOAD_CGROUP).map_err(failed)?;
+    let (pid, ready) = spawn_reaper(WORKLOAD_CGROUP, Ids::Known(uid, gid), "the workload's")?;
+    await_reaper(pid, ready, "the workload's")
+}
+
+/// The IDs a [`reaper`] takes: as it is born, or sent on a pipe, `uid` then `gid`, four
+/// bytes each, big-endian, before its namespace's command may start: a joiner's (D119),
+/// whose user its own image names, which its standby, born in the reaper's namespace,
+/// reads as it builds its root.
+#[derive(Clone, Copy)]
+enum Ids {
+    Known(libc::uid_t, libc::gid_t),
+    Sent(RawFd),
+}
+
+/// A [`reaper`] born in `cgroup`, in a PID namespace of its own; with the read end of the
+/// pipe it closes once it is ready, for [`await_reaper`]. `whose` namespace it is, as
+/// its failures say.
+fn spawn_reaper(cgroup: &str, ids: Ids, whose: &str) -> Result<(libc::pid_t, OwnedFd), Failure> {
+    let failed = |e: io::Error| setup_failed(format!("{whose} PID namespace: {e}"));
+    let cgroup = File::open(cgroup).map_err(failed)?;
     let last_cap = defaults::last_cap();
     let mut args = crate::domains::CloneArgs {
         flags: (libc::CLONE_NEWPID | libc::CLONE_NEWNS) as u64 | crate::domains::CLONE_INTO_CGROUP,
@@ -973,21 +992,29 @@ fn clone_reaper(uid: libc::uid_t, gid: libc::gid_t) -> Result<libc::pid_t, Failu
         )
     };
     if pid == 0 {
-        reaper(last_cap, uid, gid)
+        reaper(last_cap, ids, ready_w.as_raw_fd())
     }
     if pid < 0 {
         return Err(failed(io::Error::last_os_error()));
     }
     let pid = libc::pid_t::try_from(pid)
-        .map_err(|_| setup_failed("the workload's PID namespace: a pid out of range"))?;
-    // No process is born in its namespace before it is ready, as none is in docker-init's
-    // before runc has made it the command's user: one would find it root, with init's
-    // privileges and descriptors, be refused signalling it as the command's user (kill(2)),
-    // and lose a signal it sent before the reaper blocked its own, which a namespace's
-    // first process discards where it neither handles nor blocks it (kernel/signal.c,
-    // sig_task_ignored). Its end closes as it is ready, or as it ends.
+        .map_err(|_| setup_failed(format!("{whose} PID namespace: a pid out of range")))?;
     drop(ready_w);
-    let mut ready = File::from(ready_r);
+    Ok((pid, ready_r))
+}
+
+/// Waits for reaper `pid` to say it is ready on `ready`: its PID, or why it is not, the
+/// reaper then ended.
+fn await_reaper(pid: libc::pid_t, ready: OwnedFd, whose: &str) -> Result<libc::pid_t, Failure> {
+    let failed = |e: io::Error| setup_failed(format!("{whose} PID namespace: {e}"));
+    // No process of the container's is born in its namespace before it is ready, as none
+    // is in docker-init's before runc has made it the command's user: one would find it
+    // root, with init's privileges and descriptors, be refused signalling it as the
+    // command's user (kill(2)), and lose a signal it sent before the reaper blocked its
+    // own, which a namespace's first process discards where it neither handles nor
+    // blocks it (kernel/signal.c, sig_task_ignored). Its end closes as it is ready, or as
+    // it ends.
+    let mut ready = File::from(ready);
     let mut byte = [0u8; 1];
     let waited = loop {
         match ready.read(&mut byte) {
@@ -1002,9 +1029,9 @@ fn clone_reaper(uid: libc::uid_t, gid: libc::gid_t) -> Result<libc::pid_t, Failu
     let gone = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) } == pid;
     match waited {
         Ok(()) if !gone => Ok(pid),
-        Ok(()) => Err(setup_failed(
-            "the workload's PID namespace: its reaper could not start",
-        )),
+        Ok(()) => Err(setup_failed(format!(
+            "{whose} PID namespace: its reaper could not start"
+        ))),
         Err(e) => {
             // SAFETY: kill(2) and waitpid(2) of our own child, not yet waited for.
             unsafe {
@@ -1049,13 +1076,14 @@ const UNFORWARDED: [libc::c_int; 9] = [
 /// CAP_SYS_PTRACE, which the run refuses beside an Agentfile's domains, could trace it
 /// (ptrace(2)). No process is born in its namespace before it is so ([`clone_reaper`]).
 /// A copy of init's memory before any run's. Ended with the run (`relay`).
-fn reaper(last_cap: u32, uid: libc::uid_t, gid: libc::gid_t) -> ! {
+fn reaper(last_cap: u32, ids: Ids, ready: RawFd) -> ! {
     // SAFETY: system calls on local values and literals alone: mount(2), chroot(2) and
-    // chdir(2) to an empty root; the command's IDs, then prctl(2) and capset(2) to none of
-    // init's privileges; its signals blocked; close_range(2) of every descriptor past
-    // stdio, which says to init that it is ready ([`clone_reaper`]); then waitpid(2),
-    // sigwaitinfo(2) and kill(2) for ever. Its signals stay blocked, so that one sent
-    // between the waits waits for sigwaitinfo.
+    // chdir(2) to an empty root; for IDs sent, dup2(2) of the two pipes it holds,
+    // close_range(2) of the rest and read(2) into a local buffer; the command's IDs, then
+    // prctl(2) and capset(2) to none of init's privileges; its signals blocked;
+    // close_range(2) of every descriptor past stdio, which says to init that it is ready
+    // ([`await_reaper`]); then waitpid(2), sigwaitinfo(2) and kill(2) for ever. Its
+    // signals stay blocked, so that one sent between the waits waits for sigwaitinfo.
     unsafe {
         let shut = libc::MS_RDONLY | libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC;
         let alone = libc::mount(
@@ -1073,14 +1101,52 @@ fn reaper(last_cap: u32, uid: libc::uid_t, gid: libc::gid_t) -> ! {
                 std::ptr::null(),
             ) == 0
             && libc::chroot(c"/proc".as_ptr()) == 0
-            && libc::chdir(c"/".as_ptr()) == 0
-            && defaults::bound(last_cap, |_| false)
+            && libc::chdir(c"/".as_ptr()) == 0;
+        if !alone {
+            // Its namespace ends with it: no standby is born there, and the run fails.
+            libc::_exit(1);
+        }
+        let (uid, gid) = match ids {
+            Ids::Known(uid, gid) => (uid, gid),
+            // A joiner's (D119): init's descriptors let go of at once but the pipe it is
+            // ready on and the one its IDs come on, as 3 and 4; then its IDs, as init sends
+            // them once the joiner's standby has read its image's users. Their writer's end
+            // closing first is its end.
+            Ids::Sent(sent) => {
+                if libc::dup2(ready, 3) < 0 || libc::dup2(sent, 4) < 0 {
+                    libc::_exit(1);
+                }
+                libc::syscall(
+                    libc::SYS_close_range,
+                    5 as libc::c_long,
+                    libc::c_long::from(u32::MAX),
+                    0 as libc::c_long,
+                );
+                let mut got = [0u8; 8];
+                let mut have = 0usize;
+                while have < got.len() {
+                    let n = libc::read(4, got.as_mut_ptr().add(have).cast(), got.len() - have);
+                    if n > 0 {
+                        have += n as usize;
+                    } else if n < 0 && io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
+                        continue;
+                    } else {
+                        libc::_exit(1);
+                    }
+                }
+                let [u0, u1, u2, u3, g0, g1, g2, g3] = got;
+                (
+                    u32::from_be_bytes([u0, u1, u2, u3]),
+                    u32::from_be_bytes([g0, g1, g2, g3]),
+                )
+            }
+        };
+        let dropped = defaults::bound(last_cap, |_| false)
             && defaults::take_ids(&[], gid, uid)
             && defaults::set(last_cap, |_| false)
             && libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) == 0
             && libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) == 0;
-        if !alone {
-            // Its namespace ends with it: no standby is born there, and the run fails.
+        if !dropped {
             libc::_exit(1);
         }
         let mut set: libc::sigset_t = std::mem::zeroed();
@@ -1123,14 +1189,16 @@ fn oom_killed() -> bool {
 /// limits and filter, in the order runc's fs2 Set writes them all: pids, memory and the
 /// weight (the list's head), the devices' I/O, CPU, the filter, then cpusets.
 fn limit(cgroup: &[Vec<u8>], devices: Option<&crate::devices::Prepared>) -> Result<(), Failure> {
-    limit_in(WORKLOAD_CGROUP, cgroup, devices)
+    limit_in(WORKLOAD_CGROUP, cgroup, devices, None)
 }
 
-/// [`limit`] on the cgroup at `dir`: the workload's, or a joiner's (D119).
+/// [`limit`] on the cgroup at `dir`: the workload's, or joiner `joiner`'s (D119), whose
+/// devices take the place of its own default filter.
 fn limit_in(
     dir: &str,
     cgroup: &[Vec<u8>],
     devices: Option<&crate::devices::Prepared>,
+    joiner: Option<u32>,
 ) -> Result<(), Failure> {
     let hooks = |e: String| setup_failed(format!("error setting cgroup config for procHooks process: {e}"));
     let at = |p: &dyn Fn(&[u8]) -> bool| cgroup.iter().position(|e| p(e)).unwrap_or(cgroup.len());
@@ -1148,18 +1216,21 @@ fn limit_in(
     }
     write_cgroup_in(dir, cpus).map_err(hooks)?;
     if let Some(d) = devices {
-        d.attach(dir).map_err(hooks)?;
+        match joiner {
+            Some(id) => crate::join::attach_devices(id, d),
+            None => d.attach(dir),
+        }
+        .map_err(hooks)?;
     }
     write_cgroup_in(dir, cpusets).map_err(hooks)
 }
 
-/// Writes each `FILE=VALUE` of `cgroup` to the workload's cgroup, as runc's fs2 writes
-/// them; what failed, in runc's words.
-pub fn write_cgroup(cgroup: &[Vec<u8>]) -> Result<(), String> {
-    write_cgroup_in(WORKLOAD_CGROUP, cgroup)
+/// Writes each `FILE=VALUE` of `cgroup` to the cgroup at `dir`, the workload's or a
+/// joiner's (D119), as runc's fs2 writes them; what failed, in runc's words.
+pub(crate) fn write_cgroup_at(dir: &str, cgroup: &[Vec<u8>]) -> Result<(), String> {
+    write_cgroup_in(dir, cgroup)
 }
 
-/// [`write_cgroup`] to the cgroup at `dir`: the workload's, or a joiner's (D119).
 fn write_cgroup_in(dir: &str, cgroup: &[Vec<u8>]) -> Result<(), String> {
     for entry in cgroup {
         let text = String::from_utf8_lossy(entry);
@@ -1673,6 +1744,9 @@ struct Standby {
     /// The first process of the PID namespace it was born in, its reaper, under `--init`
     /// (D115).
     reaper: Option<libc::pid_t>,
+    /// A joiner's reaper's (D119): where init sends its IDs, and where it says it is ready
+    /// ([`reaper_ready`]).
+    reaper_ids: Option<(OwnedFd, OwnedFd)>,
     /// Where init writes the standby's orders: what to exec, and as whom.
     orders: OwnedFd,
     /// Closes when the standby execs: bytes on it mean it could not.
@@ -1783,6 +1857,8 @@ impl Standby {
         reaper: Option<libc::pid_t>,
         (passwd, group): (Option<Vec<u8>>, Option<Vec<u8>>),
     ) -> Result<Standby, Failure> {
+        let mut reaper = reaper;
+        let mut reaper_ids = None;
         let (stdin_r, stdin_w) = pipe()?;
         let (stdout_r, stdout_w) = pipe()?;
         let (stderr_r, stderr_w) = pipe()?;
@@ -1845,7 +1921,41 @@ impl Standby {
                     ),
                     None => return Err(setup_failed("a joiner without its cgroup")),
                 };
-                (fork_in(None)?, Isolation::Joined { join, cgroup, report })
+                let pid = match join.pid {
+                    // docker-init's part first under `--init`, as the workload's (D115), in
+                    // its cgroup: its IDs, its command's, sent once its standby, born in
+                    // its namespace, has read its image's users (`reaper_ready`).
+                    crate::join::Pid::Own if join.init => {
+                        let (sent, send) = pipe()?;
+                        let (first, ready) =
+                            spawn_reaper(&cgroup, Ids::Sent(sent.as_raw_fd()), "the joiner's")?;
+                        drop(sent);
+                        let born = pid_ns_of(first).and_then(|ns| fork_in(Some(&ns)));
+                        let pid = born.inspect_err(|_| {
+                            // SAFETY: kill(2) and waitpid(2) of init's own child, not yet
+                            // waited for.
+                            unsafe {
+                                libc::kill(first, libc::SIGKILL);
+                                libc::waitpid(first, std::ptr::null_mut(), 0);
+                            }
+                        })?;
+                        reaper = Some(first);
+                        reaper_ids = Some((send, ready));
+                        pid
+                    }
+                    crate::join::Pid::Own => fork_in(None)?,
+                    crate::join::Pid::Workload => fork_in(Some(&pid_ns_of(join.workload)?))?,
+                    crate::join::Pid::Host => {
+                        // SAFETY: init is single-threaded, so its child may run anything
+                        // until it execs.
+                        let pid = unsafe { libc::fork() };
+                        if pid < 0 {
+                            return Err(setup_failed(format!("fork: {}", io::Error::last_os_error())));
+                        }
+                        pid
+                    }
+                };
+                (pid, Isolation::Joined { join, cgroup, report })
             }
         };
         if pid == 0 {
@@ -1875,6 +1985,14 @@ impl Standby {
                         // SAFETY: waits for our own child, which exits after reporting.
                         unsafe { libc::waitpid(pid, std::ptr::null_mut(), 0) };
                         if let Born::Joined(_, id) = born {
+                            if let Some(first) = reaper {
+                                // SAFETY: kill(2) and waitpid(2) of init's own child, not
+                                // yet waited for.
+                                unsafe {
+                                    libc::kill(first, libc::SIGKILL);
+                                    libc::waitpid(first, std::ptr::null_mut(), 0);
+                                }
+                            }
                             crate::join::remove_cgroup(id);
                         }
                         return Err(setup_failed(message));
@@ -1887,6 +2005,7 @@ impl Standby {
             pid,
             born,
             reaper,
+            reaper_ids,
             orders: orders_w,
             err: err_r,
             stdin: stdin_w,
@@ -2397,6 +2516,9 @@ fn builtin(kind: u8, args: &[Vec<u8>], joiner: Option<(libc::pid_t, u32)>) -> Re
         }
         None => None,
     };
+    // Whose processes `top` lists: a joiner's by its cgroup, which in a PID namespace of
+    // another's has others' beside its own.
+    let members = joiner.map(|(_, id)| format!("/join-{id}"));
     let joiner = joiner.map(|(pid, _)| pid);
     let cgroup = match joiner {
         Some(pid) => joiner_cgroup(pid).map_err(|e| {
@@ -2501,11 +2623,10 @@ fn builtin(kind: u8, args: &[Vec<u8>], joiner: Option<(libc::pid_t, u32)>) -> Re
             unsafe { libc::_exit(code) }
         }
         let done = match kind {
-            run::builtin::PROCESSES => out.write_all(&crate::procs::dump(if joiner.is_some() {
-                None
-            } else {
-                REAPER.get().copied()
-            })),
+            run::builtin::PROCESSES => out.write_all(&match &members {
+                Some(own) => crate::procs::dump(None, crate::procs::Members::Joiner(own)),
+                None => crate::procs::dump(REAPER.get().copied(), crate::procs::Members::Workload),
+            }),
             run::builtin::CHANGES => match (&layers, procfs) {
                 (Some((lower, upper)), Some(procfs)) => procfs
                     .and_then(|procfs| read_at(&procfs, c"self/mountinfo"))
@@ -2676,9 +2797,30 @@ fn start_joiner(
         len,
         workload,
         layer,
+        pid: crate::join::pid(&spec.setup),
+        init: spec.setup.iter().any(|e| e == b"init"),
     };
-    let standby = Standby::forked(Born::Joined(join, id), (None, None))?;
-    let pid = standby.pid;
+    // Its devices, as the workload's are found and confined (D44): the VM's, their nodes
+    // made in its own /dev once its root is built, its cgroup's filter theirs.
+    let devices = spec
+        .setup
+        .iter()
+        .find_map(|e| e.strip_prefix(b"devices="))
+        .map(crate::devices::prepare_joiner)
+        .transpose()
+        .map_err(setup_failed)?;
+    let mut standby = Standby::forked(Born::Joined(join, id), (None, None))?;
+    let (pid, reaper) = (standby.pid, standby.reaper);
+    // Under `--init`, its reaper, which a start that fails ends with it.
+    let end_reaper = || {
+        if let Some(first) = reaper {
+            // SAFETY: kill(2) and waitpid(2) of init's own child, not yet waited for.
+            unsafe {
+                libc::kill(first, libc::SIGKILL);
+                libc::waitpid(first, std::ptr::null_mut(), 0);
+            }
+        }
+    };
     // Its sysctls in its own namespaces, as runc writes a container's from within them:
     // init's own would be its provider's (`sort_setup`).
     let (sysctls, setup): (Vec<Vec<u8>>, Vec<Vec<u8>>) = spec
@@ -2688,8 +2830,10 @@ fn start_joiner(
         .partition(|e| e.starts_with(b"sysctl="));
     let mut inherited = Inherited::default();
     let ready = sysctls_in(pid, &sysctls)
-        .and_then(|()| limit_in(&crate::join::cgroup(id), &spec.cgroup, None))
-        .and_then(|()| sort_setup(&setup, &mut inherited));
+        .and_then(|()| devices.as_ref().map_or(Ok(()), |d| nodes_in(pid, d.nodes())))
+        .and_then(|()| limit_in(&crate::join::cgroup(id), &spec.cgroup, devices.as_ref(), Some(id)))
+        .and_then(|()| sort_setup(&setup, &mut inherited))
+        .and_then(|setup| reaper_ready(&mut standby, spec).map(|()| setup));
     let setup = match ready {
         Ok(setup) => setup,
         Err(f) => {
@@ -2698,6 +2842,7 @@ fn start_joiner(
             drop(standby);
             // SAFETY: waits for our own child, not yet waited for.
             unsafe { libc::waitpid(pid, std::ptr::null_mut(), 0) };
+            end_reaper();
             crate::join::remove_cgroup(id);
             return Err(f);
         }
@@ -2714,10 +2859,27 @@ fn start_joiner(
         // Its standby waited for as it reported why (`launch`).
         Err(f) => {
             joined().retain(|(j, _)| *j != id);
+            end_reaper();
             crate::join::remove_cgroup(id);
             Err(f)
         }
     }
+}
+
+/// Sends a joiner's reaper, under `--init` (D119), the IDs of its command, whose user its
+/// own image's users resolve, as `launch` resolves it again; and waits for it to be ready,
+/// as no process of the joiner's may run in its namespace before ([`await_reaper`]).
+fn reaper_ready(standby: &mut Standby, spec: &Spec) -> Result<(), Failure> {
+    let (Some(first), Some((send, ready))) = (standby.reaper, standby.reaper_ids.take()) else {
+        return Ok(());
+    };
+    let ExecUser { uid, gid, .. } =
+        user::resolve(&spec.user, standby.passwd.as_deref(), standby.group.as_deref())
+            .map_err(setup_failed)?;
+    File::from(send)
+        .write_all(&[uid.to_be_bytes(), gid.to_be_bytes()].concat())
+        .map_err(|e| setup_failed(format!("the joiner's PID namespace: {e}")))?;
+    await_reaper(first, ready, "the joiner's").map(drop)
 }
 
 /// Writes `entries`, `sysctl=KEY=VALUE` each, from within the IPC, UTS and network
@@ -2783,6 +2945,55 @@ fn sysctls_in(pid: libc::pid_t, entries: &[Vec<u8>]) -> Result<(), Failure> {
     }
 }
 
+/// Makes `nodes` in joiner `pid`'s own `/dev`, from within its mount namespace, in a
+/// child of init's (D44, D119): the workload's are made in the `/dev` init shares with it,
+/// a joiner's root is its own. What failed, as runc says it.
+fn nodes_in(pid: libc::pid_t, nodes: &[crate::devices::Node]) -> Result<(), Failure> {
+    if nodes.is_empty() {
+        return Ok(());
+    }
+    let (said_r, said_w) = pipe()?;
+    // SAFETY: init is single-threaded, so its child may run anything.
+    let child = unsafe { libc::fork() };
+    if child < 0 {
+        return Err(setup_failed(format!("fork: {}", io::Error::last_os_error())));
+    }
+    if child == 0 {
+        drop(said_r);
+        let made = File::open(format!("/proc/{pid}/ns/mnt"))
+            .map_err(|e| format!("the joiner's mount namespace: {e}"))
+            .and_then(|ns| {
+                // SAFETY: setns(2) on a descriptor this process holds.
+                if unsafe { libc::setns(ns.as_raw_fd(), libc::CLONE_NEWNS) } != 0 {
+                    return Err(format!(
+                        "the joiner's mount namespace: {}",
+                        io::Error::last_os_error()
+                    ));
+                }
+                crate::devices::make_nodes(nodes)
+            });
+        let code = match made {
+            Ok(()) => 0,
+            Err(said) => {
+                let _ = File::from(said_w).write_all(said.as_bytes());
+                1
+            }
+        };
+        // SAFETY: _exit(2) ends the child without running init's exit paths.
+        unsafe { libc::_exit(code) }
+    }
+    drop(said_w);
+    let mut said = String::new();
+    let _ = File::from(said_r).read_to_string(&mut said);
+    // SAFETY: waits for our own child.
+    unsafe { libc::waitpid(child, std::ptr::null_mut(), 0) };
+    if said.is_empty() {
+        Ok(())
+    } else {
+        Err(setup_failed(said))
+    }
+}
+
 /// What a joiner (D119) does not take yet, refused by name before it starts: what init
 /// would do in the workload's namespaces rather than the joiner's own, and the workload's
 /// own shared directories, which its run alone was given.
@@ -2790,12 +3001,6 @@ fn joiner_takes(setup: &[Vec<u8>]) -> Result<(), Failure> {
     for entry in setup {
         let what = if entry.starts_with(b"volume=") || entry.starts_with(b"domain-volume=") {
             "a volume"
-        } else if entry == b"init" {
-            "--init"
-        } else if entry == b"pid=host" {
-            "--pid host"
-        } else if entry.starts_with(b"devices=") || entry == b"privileged" {
-            "a device"
         } else if entry.starts_with(b"dns=")
             || entry.starts_with(b"address=")
             || entry.starts_with(b"address6=")
@@ -3134,6 +3339,8 @@ impl Workload {
             }
             for e in execs.iter().filter(|e| e.joined && e.finished()) {
                 join_layers().retain(|(j, _)| *j != e.id);
+                // What it left was killed as it ended, and has gone by now.
+                crate::join::remove_cgroup(e.id);
             }
             execs.retain(|e| !e.finished());
             // Its end said as soon as its own output is, while its joiners go on (D119).
@@ -3307,8 +3514,11 @@ impl Workload {
                                 // A joiner's cgroup, empty now: the kernel ends a PID
                                 // namespace's other processes before its first's end is
                                 // reaped (D119).
+                                // In another's PID namespace, what it started is killed
+                                // as it ends, as runc kills it.
                                 if e.joined {
                                     joined().retain(|(j, _)| *j != e.id);
+                                    crate::join::kill_rest(e.id);
                                     crate::join::remove_cgroup(e.id);
                                 }
                             } else if packing == Some(pid) {

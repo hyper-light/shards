@@ -650,8 +650,14 @@ A pull resolves, fetches and checks as containerd v2.4.1 does
     share of each. containerd asks again at once, and ECR Public, which throttles
     anonymous requests at random even at 1 a second, failed 12 of 20 pulls of shards
     that never retried and none that waits [PM M112]. A quota spent
-    (`ratelimit-remaining` at 0: Docker Hub counts pulls over hours) is never retried,
-    and the error reports its `ratelimit-*` fields and `Retry-After`.
+    (`ratelimit-remaining` at 0: Docker Hub counts pulls over hours) is never retried
+    unless a `Retry-After` that fits says when, and the error reports its `ratelimit-*`
+    fields and `Retry-After`. The wait is at least the random share, however little
+    `Retry-After` names, as it names how long a client ought to wait (RFC 9110 §10.2.3),
+    and one that cannot be read is waited as none: ghcr.io named under a millisecond in a
+    429's body (`retry-after: 900.208µs`), and a pull failed on it, where before a
+    `Retry-After` of 0 was waited not at all and an unreadable one was given up on
+    (`throttles_are_waited_out_and_long_waits_are_not`, mutation-checked).
 - **Resolve** follows containerd's `Resolve`:
   - a HEAD of the tag or digest with its `Accept` list;
   - the digest comes from the reference, else from `Docker-Content-Digest` with a
@@ -3470,7 +3476,8 @@ the boundary is a container's, which is what the mode asks for.
   no file does not. The join disk as built cost no restore anything resolved against none
   (−513 µs [−1,682, +120]; none less join +330 [−370, +883]).
 - **Its life.** The joiner is a container of its own: its record, log, exit code, `stop`,
-  `kill`, `wait`, `rm`, `inspect` (its NetworkMode as asked, its provider's hostname), and
+  `kill`, `wait`, `rm`, `inspect` (its NetworkMode its provider's ID, as dockerd keeps it,
+  M169; its provider's hostname), and
   in its own namespaces and cgroup `exec`, `attach` (its stdin and output, never its
   provider's), `top`, `cp`, `export`, `diff`, `commit`, its size, `stats` and `update`,
   which init's built-ins do in its context. `pause` freezes its cgroup in the guest (init's FREEZE: `cgroup.freeze`,
@@ -3539,9 +3546,49 @@ the boundary is a container's, which is what the mode asks for.
   failed. Tested (`a_joiner_keeps_its_files_as_it_stops`: a file written and one removed,
   one copied in while it was stopped, all there after `start`; mutation-checked: the
   layer's entry left out, the create-time checks made again).
+- **Its provider's PID namespace, or the microVM's** (Docker 29.3.1, PM M169). dockerd
+  keeps another container's namespaces by its ID as the container is made, so that they
+  hold as that one is renamed (daemon/daemon_unix.go, adaptSharedNamespaceContainer):
+  shards keeps both modes so, where it kept the name as given. `--pid container:NAME`
+  beside `--network container:NAME` of the same container gives the joiner its provider's
+  PID namespace, its child born there as an exec is (`pid=workload`); `--pid host`, the
+  microVM's own, init's. Its command is then no namespace's PID 1, whose end the kernel
+  would make the end of the rest, so init kills what is left in its cgroup as it ends, as
+  runc kills what a container sharing one leaves (libcontainer signalAllProcesses), and
+  removes the cgroup once all of it is said. `top` lists a container's processes by its
+  cgroup, as containerd lists a task's: the workload's leave out the joiners' in its
+  namespace. `--init` there is kept and not given, as dockerd gives its init only to a PID
+  namespace of the container's own (daemon/oci_linux.go). Refused: `--pid container:` of
+  a joiner, whose PID namespace is its own in its provider's microVM, known to init by its
+  exec's id; and `--pid container:NAME` without its network, NAME's PID namespace being in
+  NAME's microVM, where a network of its own is not built (D115). Tested
+  (`a_joiner_may_share_its_providers_pid_namespace`: its PID 1 its provider's command,
+  `top` of each, `--init` kept, an exec of its killed as it ends, `--pid host`, the
+  refusals; `a_joiner_is_a_container_of_its_own`: its provider by ID).
+- **`--init` in a PID namespace of its own**: a reaper is its first process, as the
+  workload's is (D115), in its cgroup. Its user is the command's, which the joiner's own
+  image names, and that image's users are read by its standby, born in the reaper's
+  namespace as it builds its root: so the reaper, born first, lets go of init's
+  descriptors at once and waits for its IDs, which init sends once the standby has
+  reported its users, and init waits for it to be ready before the command may start, as
+  for the workload: no process of the joiner's finds it root or holding init's
+  descriptors. Tested (`a_joiner_under_init_has_a_reaper_of_its_own`: the command the
+  namespace's second process, the reaper the image's user, `stop`'s SIGTERM ending at once
+  a command that does not handle it; mutation-checked: no reaper, a reaper as root).
+- **Devices and `--privileged`**, as the workload takes them (D44): the microVM's
+  devices, found and given as dockerd and runc give a host's, their nodes made in the
+  joiner's own `/dev` by a child of init's that enters its mount namespace (the
+  workload's are made in the `/dev` init shares with it); its cgroup's filter, Docker's
+  default as it is made, replaced by its own rules (`BPF_F_REPLACE`, its descriptor kept
+  by the joiner's id until its cgroup goes) or, privileged, taken away, every device the
+  microVM has then its, the provider's among them, as a privileged Docker container has
+  its host's. Its I/O limits on its own cgroup, where the workload's were written whatever
+  cgroup was named. Tested (`a_joiner_takes_devices_as_a_container_does`: Docker's
+  default rules, a device at another path read and not written, a cgroup rule,
+  `--privileged` opening the microVM's own; mutation-checked: its filter left the
+  default).
 - **Not yet, each refused by name before anything starts:** volumes (the provider's
-  microVM has shares for its own run alone), devices and `--privileged`, `--init`, `--pid`,
-  an image's `VOLUME`s, an Agentfile's image.
+  microVM has shares for its own run alone), an image's `VOLUME`s, an Agentfile's image.
 - **No count of holders.** A VM process runs one VM, so its join disk is a `static` of
   that process's (`Join::new` is a `const fn`), its device given `&'static Join`; a
   joiner's attached clients are kept by its id in the guest, as the workload's are. The

@@ -12,7 +12,9 @@
 //!
 //! Left out: this process, kernel threads, and processes of this program not yet
 //! anything else (shards-init's standby forks), which are not the container's, but its
-//! reaper under `--init`, docker-init's part, which `docker top` lists (D115).
+//! reaper under `--init`, docker-init's part, which `docker top` lists (D115); and those
+//! of another container's cgroup, as containerd lists a container's processes by its
+//! cgroup: a joiner sharing the workload's PID namespace shows in it (D119).
 
 use std::io;
 
@@ -22,8 +24,34 @@ const US: u8 = 0x1f;
 /// `PF_KTHREAD` in `/proc/PID/stat`'s flags (include/linux/sched.h).
 const PF_KTHREAD: u64 = 0x0020_0000;
 
-/// The dump, with the run's `reaper`, where it has one.
-pub fn dump(reaper: Option<libc::pid_t>) -> Vec<u8> {
+/// Whose processes a dump lists, by their cgroup as init sees it.
+#[derive(Clone, Copy)]
+pub enum Members<'a> {
+    /// The workload's: all but the joiners' (D119).
+    Workload,
+    /// A joiner's: those of its cgroup, `/join-N`.
+    Joiner(&'a str),
+}
+
+impl Members<'_> {
+    /// Whether the process whose `/proc/PID/cgroup` is `cgroup` is one of these.
+    fn have(self, cgroup: &[u8]) -> bool {
+        // cgroup v2's line, `0::PATH` (cgroups(7)).
+        let path = cgroup
+            .split(|&b| b == b'\n')
+            .find_map(|l| l.strip_prefix(b"0::"))
+            .unwrap_or_default();
+        match self {
+            Members::Workload => !path.starts_with(b"/join-"),
+            Members::Joiner(own) => path
+                .strip_prefix(own.as_bytes())
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with(b"/")),
+        }
+    }
+}
+
+/// The dump of `members`, with the run's `reaper`, where it has one.
+pub fn dump(reaper: Option<libc::pid_t>, members: Members<'_>) -> Vec<u8> {
     let mut out = Vec::new();
     let read = |path: &str| std::fs::read(path).unwrap_or_default();
     let stat = String::from_utf8_lossy(&read("/proc/stat")).into_owned();
@@ -106,6 +134,9 @@ pub fn dump(reaper: Option<libc::pid_t>) -> Vec<u8> {
         if !reaped && mine.is_some() && std::fs::read_link(format!("{base}/exe")).ok() == mine {
             continue;
         }
+        if !members.have(&std::fs::read(format!("{base}/cgroup")).unwrap_or_default()) {
+            continue;
+        }
         let Ok(status) = std::fs::read(format!("{base}/status")) else {
             continue;
         };
@@ -144,5 +175,5 @@ fn flags(stat: &[u8]) -> Option<u64> {
 /// tests that hold the host's layout to procps's own (scripts/top/generate).
 pub fn print() -> io::Result<()> {
     use std::io::Write as _;
-    io::stdout().write_all(&dump(None))
+    io::stdout().write_all(&dump(None, Members::Workload))
 }

@@ -477,12 +477,17 @@ pub fn setup(run: &Run, points: &[(String, Vec<u8>)]) -> Result<Vec<Vec<u8>>, St
     if run.read_only {
         out.push(b"readonly".to_vec());
     }
-    // Where the command is born (D115): PID 1 of a PID namespace of its own, but for these.
-    if run.docker_init == Some(true) {
+    // Where the command is born (D115): PID 1 of a PID namespace of its own, but for these;
+    // dockerd's init only in a namespace of the container's own (moby daemon/oci_linux.go).
+    if run.docker_init == Some(true) && run.pid.is_empty() {
         out.push(b"init".to_vec());
     }
     if run.pid == "host" {
         out.push(b"pid=host".to_vec());
+    } else if run.pid.starts_with("container:") {
+        // The namespace of the workload whose network a joiner joins (D119), the one other
+        // container's that the daemon lets a container join.
+        out.push(b"pid=workload".to_vec());
     }
     Ok(out)
 }

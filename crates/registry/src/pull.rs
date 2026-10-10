@@ -1489,11 +1489,17 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// A throttle is waited out, as ECR Public's is (PM M112); a `Retry-After` past the
-    /// waits left is not.
+    /// A throttle is waited out, as ECR Public's is (PM M112), one naming no wait, or none
+    /// that can be read, as one naming none; a `Retry-After` past the waits left is not.
     #[test]
     fn throttles_are_waited_out_and_long_waits_are_not() {
-        for (retry_after, pulled) in [(None, true), (Some("1"), true), (Some("3600"), false)] {
+        for (retry_after, pulled) in [
+            (None, true),
+            (Some("1"), true),
+            (Some("0"), true),
+            (Some("0.5"), true),
+            (Some("3600"), false),
+        ] {
             let image = image("arm64", &[("a", b"a")], true);
             let fake = fake_throttling(image, None, 2, retry_after);
             let reference =
