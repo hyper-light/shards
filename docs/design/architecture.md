@@ -3512,6 +3512,23 @@ and BuildKit build an Agentfile, no shards installed. The frontend is `shards` i
   from a registry), until BuildKit's fetching of one is measured. Subrequests other than
   `frontend.subrequests.describe`, `frontend.outline`, `frontend.targets` and
   `frontend.lint` are answered as dockerui answers them, unsupported.
+- **Found in `shards-dind`, 2026-10-10: one gateway call from a frontend ends Docker's
+  daemon.** A frontend asked `ResolveSourceMeta` for the attestation chain of an image
+  that is one manifest, no index (an OSI agent, with no config asked).
+  - BuildKit's `ResolveImageMetadata` finds no chain for a root that is no index and
+    returns none (`source/containerimage/source.go:224`). It then reads that chain's
+    root regardless: `:283` where no config was asked, `:284` where one was. That is a
+    nil dereference.
+  - In dockerd, which has BuildKit built in, the panic ends the whole daemon.
+    shards-dind's dockerd 29.3.1 exited with status 2, its log naming source.go:283 under
+    `ResolveSourceMeta`.
+  - Read in the source, not run: BuildKit v0.34.0, the latest release (2026-10-07), and
+    master (325ea68, 2026-10-09) hold the same code, at lines 235–236 and 294–295.
+  - shards' frontend asks BuildKit for no attestation chain.
+  - `shards build`, asked by a policy for a one-manifest image's chain, answers with a
+    chain of that manifest alone, rooted at its digest: no provenance and no signatures,
+    and the policy decides. buildx's policy, given no chain, asks again until "too many
+    policy requests"; so did shards build before this.
 - **Tested.**
   - The replay test, and the gateway client's.
   - The definitions and source detail held byte for byte to the capture
@@ -3519,6 +3536,10 @@ and BuildKit build an Agentfile, no shards installed. The frontend is `shards` i
   - The isolation checks over host trees, and as BuildKit is asked to run them (a fake
     gateway).
   - The skills layout through the gateway, and the annotations.
+  - A policy reading a one-manifest image's provenance and signatures, answered and
+    allowed, its tag and then its pinned digest
+    (`a_policy_asking_a_single_manifests_chain_is_answered`; without the answer it ends
+    in "too many policy requests").
   - Mutation-checked, each mutant killed: the Inputs call, the `.dockerignore` load's key,
     a capability, the own domain's exemption, the contents' comparison, the image check,
     and the guards' collection.

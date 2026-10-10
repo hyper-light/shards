@@ -1392,13 +1392,18 @@ impl Bases<'_> {
 
 impl Bases<'_> {
     /// The image's attestation chain for `wanted`, from its registry (BuildKit fetches it
-    /// whatever its image store holds); none where the image is not an OCI index.
+    /// whatever its image store holds). An image that is one manifest, no index, holds no
+    /// attestation manifest and no signature to chain to it, and is answered so: a chain
+    /// of its own manifest alone, its root that manifest's digest. BuildKit v0.28.1 has no
+    /// chain to answer with and reads its root regardless, a nil dereference that ends
+    /// dockerd (source/containerimage/source.go:283, D113); and buildx, given no chain,
+    /// asks for one again until it gives up ("too many policy requests").
     fn attestation_chain(
         &self,
         name: &str,
         wanted: &Platform,
         resolve_attestations: &[String],
-    ) -> Result<Option<policy::AttestationChain>, String> {
+    ) -> Result<policy::AttestationChain, String> {
         let reference = Reference::parse(name).map_err(|e| e.to_string())?;
         let limits = crate::pull::limits()?;
         let registry = crate::pull::registry(&reference, None, &|k| std::env::var(k).ok())?;
@@ -1411,14 +1416,18 @@ impl Bases<'_> {
             variant: show(&wanted.variant),
             ..Default::default()
         };
-        attest::chain(
+        let chain = attest::chain(
             &registry,
             self.store,
             &limits,
             &top,
             &platform,
             resolve_attestations,
-        )
+        )?;
+        Ok(chain.unwrap_or_else(|| policy::AttestationChain {
+            root: top.digest.clone(),
+            ..policy::AttestationChain::default()
+        }))
     }
 }
 
@@ -1520,15 +1529,13 @@ impl policy::Resolve for PolicyMeta<'_, '_> {
             let chain = self
                 .bases
                 .attestation_chain(name, &platform, &image.resolve_attestations)?;
-            if let Some(c) = &chain
-                && c.root != digest
-            {
+            if chain.root != digest {
                 return Err(format!(
                     "attestation chain root digest {} does not match image digest {digest}",
-                    c.root
+                    chain.root
                 ));
             }
-            chain
+            Some(chain)
         } else {
             None
         };

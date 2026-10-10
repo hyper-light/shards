@@ -10551,6 +10551,60 @@ fn policies_read_image_provenance_and_signatures() {
     assert_eq!(got, want, "{}", built.stderr);
 }
 
+/// A policy asking for the attestation chain of an image that is one manifest, no index
+/// (D113): answered with none, so the policy sees no provenance and no signatures and
+/// decides, the build going on. BuildKit v0.28.1 answers the same question by
+/// dereferencing nil (source/containerimage/source.go:283), which ends dockerd.
+#[test]
+fn a_policy_asking_a_single_manifests_chain_is_answered() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("policy-single-manifest-home");
+    let env = [("SHARDS_HOME", home.as_os_str())];
+    let ctx = context("policy-single-manifest-ctx", &format!("FROM {image}\n"));
+    std::fs::write(
+        ctx.join("Dockerfile.rego"),
+        "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if {\n\tinput.image\n\tprint(\"PROV\", input.image.hasProvenance)\n\tprint(\"SIG\", count(object.get(input.image, \"signatures\", [])))\n}\n\ndecision := {\"allow\": allow}\n",
+    )
+    .unwrap();
+    let built = common::run_shards_env_in(&ctx, &[], &["build", "--progress=plain", "."], &env, TIMEOUT);
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    let host = match std::env::consts::ARCH {
+        "aarch64" => "arm64",
+        "x86_64" => "amd64",
+        other => other,
+    };
+    // The image by its tag, then pinned: each asked for its chain once, answered, allowed.
+    let got: Vec<String> = policy_log(&built.stderr)
+        .into_iter()
+        .filter(|l| {
+            l.contains(": PROV ")
+                || l.contains(": SIG ")
+                || l.starts_with("policy decision for source docker-image://")
+        })
+        .map(|l| {
+            let l = l.replace(&image, "IMAGE");
+            match l.split_once("@sha256:") {
+                Some((a, b)) => format!("{a}@sha256:DIGEST{}", b.get(64..).unwrap_or_default()),
+                None => l,
+            }
+        })
+        .collect();
+    let mut want = Vec::new();
+    for source in ["IMAGE", "IMAGE@sha256:DIGEST"] {
+        let decision =
+            |d: &str| format!("policy decision for source docker-image://{source} (linux/{host}): {d}");
+        want.push(decision("resolve missing fields [image.hasProvenance]"));
+        want.push("Dockerfile.rego:9: PROV <undefined>".to_string());
+        want.push("Dockerfile.rego:9: PROV <undefined>".to_string());
+        want.push("Dockerfile.rego:10: SIG 0".to_string());
+        want.push(decision("ALLOW"));
+    }
+    assert_eq!(got, want, "{}", built.stderr);
+}
+
 /// The frontend a Dockerfile names and buildx's default policy (D107), each check in
 /// order as buildx v0.37.1 made it on BuildKit v0.28.1 (measured in shards-dind,
 /// `testdata/policy-frontend`): `# syntax=docker/dockerfile:1` asked of the policies by
