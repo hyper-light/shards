@@ -1,0 +1,17 @@
+#!/bin/sh
+# Regenerates crates/shards/testdata/policy/tester.json: what buildx v0.37.1's own
+# RunPolicyTests and `policy test`'s printing make of each tree of
+# scripts/policy/tester_oracle_test.go, with a provider that answers every image alike.
+#
+#   scripts/policy/generate-tester BUILDX_V0.37.1_CHECKOUT
+set -eu
+here=$(cd "$(dirname "$0")" && pwd)
+root=$(cd "$here/../.." && pwd)
+bx=$1
+test="$bx/policy/zz_shards_tester_oracle_test.go"
+trap 'rm -f "$test"' EXIT
+mkdir -p "$root/crates/shards/testdata/policy"
+cp "$here/tester_oracle_test.go" "$test"
+cd "$bx"
+SHARDS_POLICY_OUT="$root/crates/shards/testdata/policy/tester.json" \
+	go test -mod=vendor -count=1 -run '^TestShardsTesterOracle$' ./policy/

@@ -4,8 +4,9 @@
 //! `UseNumber` (numbers as written, an object's members in order, invalid UTF-8 in
 //! strings replaced), and struct fields matched as the decoder matches them.
 
-/// A JSON value.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// A JSON value. As deep as Go reads one, it is made, copied and let go without
+/// recursion, on any thread's stack.
+#[derive(Debug, PartialEq, Eq)]
 pub enum JValue {
     Null,
     Bool(bool),
@@ -13,6 +14,102 @@ pub enum JValue {
     Str(String),
     Array(Vec<JValue>),
     Object(Vec<(String, JValue)>),
+}
+
+impl JValue {
+    /// The values directly inside it, moved out onto `out`.
+    fn take_inner(&mut self, out: &mut Vec<JValue>) {
+        match self {
+            JValue::Array(items) => out.append(items),
+            JValue::Object(members) => out.extend(members.drain(..).map(|(_, v)| v)),
+            _ => {}
+        }
+    }
+
+    /// A copy of a value with nothing inside it; none for a container.
+    fn copy_scalar(&self) -> Option<JValue> {
+        Some(match self {
+            JValue::Null => JValue::Null,
+            JValue::Bool(b) => JValue::Bool(*b),
+            JValue::Number(n) => JValue::Number(n.clone()),
+            JValue::Str(s) => JValue::Str(s.clone()),
+            JValue::Array(_) | JValue::Object(_) => return None,
+        })
+    }
+}
+
+impl Drop for JValue {
+    /// The values inside it let go one at a time, each emptied first.
+    fn drop(&mut self) {
+        let mut inner = Vec::new();
+        self.take_inner(&mut inner);
+        while let Some(mut v) = inner.pop() {
+            v.take_inner(&mut inner);
+        }
+    }
+}
+
+/// A container being copied: what is left of it to copy, and its copy so far.
+enum Copying<'v> {
+    Array(std::slice::Iter<'v, JValue>, Vec<JValue>),
+    Object(
+        std::slice::Iter<'v, (String, JValue)>,
+        Vec<(String, JValue)>,
+        String,
+    ),
+}
+
+impl Clone for JValue {
+    /// Copied container by container, those being copied held on a stack of the heap's.
+    fn clone(&self) -> JValue {
+        let mut open: Vec<Copying<'_>> = Vec::new();
+        let mut next = self;
+        loop {
+            let mut done = match next {
+                JValue::Array(items) => {
+                    open.push(Copying::Array(items.iter(), Vec::with_capacity(items.len())));
+                    None
+                }
+                JValue::Object(members) => {
+                    open.push(Copying::Object(
+                        members.iter(),
+                        Vec::with_capacity(members.len()),
+                        String::new(),
+                    ));
+                    None
+                }
+                scalar => scalar.copy_scalar(),
+            };
+            // Each copy done goes into the container being copied; the next value in that
+            // is copied next, or the container is done.
+            loop {
+                if let Some(v) = done.take() {
+                    match open.last_mut() {
+                        None => return v,
+                        Some(Copying::Array(_, out)) => out.push(v),
+                        Some(Copying::Object(_, out, key)) => out.push((std::mem::take(key), v)),
+                    }
+                }
+                let advanced = match open.last_mut() {
+                    None => return JValue::Null,
+                    Some(Copying::Array(rest, _)) => rest.next(),
+                    Some(Copying::Object(rest, _, key)) => rest.next().map(|(k, v)| {
+                        key.clone_from(k);
+                        v
+                    }),
+                };
+                if let Some(v) = advanced {
+                    next = v;
+                    break;
+                }
+                done = match open.pop() {
+                    Some(Copying::Array(_, out)) => Some(JValue::Array(out)),
+                    Some(Copying::Object(_, out, _)) => Some(JValue::Object(out)),
+                    None => return JValue::Null,
+                };
+            }
+        }
+    }
 }
 
 impl JValue {
@@ -49,6 +146,17 @@ enum Fail {
     Syntax(String),
     /// The input ended inside a value.
     Eof,
+}
+
+/// How deep encoding/json's scanner nests containers (maxNestingDepth): the next is
+/// refused.
+const MAX_DEPTH: usize = 10_000;
+
+/// A container being read: its values so far, an object's key for the value next, and
+/// where its span is.
+enum Open {
+    Array(Vec<JValue>, Option<usize>),
+    Object(Vec<(String, JValue)>, String, Option<usize>),
 }
 
 struct Parser<'a> {
@@ -106,89 +214,117 @@ impl Parser<'_> {
         }
     }
 
-    fn value(&mut self, depth: usize) -> Result<JValue, Fail> {
-        self.ws();
-        let Some(spans) = self.spans.as_mut() else {
-            return self.bare(depth);
-        };
-        let i = spans.len();
-        spans.push((self.at, self.at));
-        let v = self.bare(depth)?;
-        let end = self.at;
-        if let Some(s) = self.spans.as_mut().and_then(|s| s.get_mut(i)) {
-            s.1 = end;
+    /// A value, as the scanner reads one: the containers it is inside held on a stack of
+    /// the heap's, so no depth Go reads (its 10,000) needs a deeper stack of the thread's.
+    fn value(&mut self) -> Result<JValue, Fail> {
+        let mut open: Vec<Open> = Vec::new();
+        'value: loop {
+            self.ws();
+            let span = self.spans.as_mut().map(|s| {
+                s.push((self.at, self.at));
+                s.len() - 1
+            });
+            let mut v = match self.peek() {
+                Some(c @ (b'{' | b'[')) => {
+                    if open.len() >= MAX_DEPTH {
+                        return Err(Fail::Syntax(format!(
+                            "invalid character {} exceeded max depth",
+                            quote_char(c)
+                        )));
+                    }
+                    self.at += 1;
+                    self.ws();
+                    if c == b'{' {
+                        if self.peek() == Some(b'}') {
+                            self.at += 1;
+                            JValue::Object(Vec::new())
+                        } else {
+                            let key = self.key()?;
+                            open.push(Open::Object(Vec::new(), key, span));
+                            continue 'value;
+                        }
+                    } else if self.peek() == Some(b']') {
+                        self.at += 1;
+                        JValue::Array(Vec::new())
+                    } else {
+                        open.push(Open::Array(Vec::new(), span));
+                        continue 'value;
+                    }
+                }
+                Some(b'"') => self.string().map(JValue::Str)?,
+                Some(b't') => self.literal(b"true", JValue::Bool(true))?,
+                Some(b'f') => self.literal(b"false", JValue::Bool(false))?,
+                Some(b'n') => self.literal(b"null", JValue::Null)?,
+                Some(b'-' | b'0'..=b'9') => self.number()?,
+                _ => return Err(self.unexpected("looking for beginning of value")),
+            };
+            self.close(span);
+            // The value done: into the container it is in, and each container it ends.
+            loop {
+                match open.last_mut() {
+                    None => return Ok(v),
+                    Some(Open::Array(items, _)) => {
+                        items.push(v);
+                        self.ws();
+                        match self.peek() {
+                            Some(b',') => {
+                                self.at += 1;
+                                continue 'value;
+                            }
+                            Some(b']') => self.at += 1,
+                            _ => return Err(self.unexpected("after array element")),
+                        }
+                    }
+                    Some(Open::Object(members, key, _)) => {
+                        members.push((std::mem::take(key), v));
+                        self.ws();
+                        match self.peek() {
+                            Some(b',') => {
+                                self.at += 1;
+                                *key = self.key()?;
+                                continue 'value;
+                            }
+                            Some(b'}') => self.at += 1,
+                            _ => return Err(self.unexpected("after object key:value pair")),
+                        }
+                    }
+                }
+                // The container ended (the one just read: there is one).
+                v = match open.pop() {
+                    Some(Open::Array(items, span)) => {
+                        self.close(span);
+                        JValue::Array(items)
+                    }
+                    Some(Open::Object(members, _, span)) => {
+                        self.close(span);
+                        JValue::Object(members)
+                    }
+                    None => JValue::Null,
+                };
+            }
         }
-        Ok(v)
     }
 
-    /// A value, white space before it skipped.
-    fn bare(&mut self, depth: usize) -> Result<JValue, Fail> {
-        match self.peek() {
-            Some(b'{') => {
-                if depth >= 10_000 {
-                    return Err(Fail::Syntax("invalid character '{' exceeded max depth".into()));
-                }
-                self.at += 1;
-                let mut members = Vec::new();
-                self.ws();
-                if self.peek() == Some(b'}') {
-                    self.at += 1;
-                    return Ok(JValue::Object(members));
-                }
-                loop {
-                    self.ws();
-                    if self.peek() != Some(b'"') {
-                        return Err(self.unexpected("looking for beginning of object key string"));
-                    }
-                    let key = self.string()?;
-                    self.ws();
-                    if self.peek() != Some(b':') {
-                        return Err(self.unexpected("after object key"));
-                    }
-                    self.at += 1;
-                    let v = self.value(depth + 1)?;
-                    members.push((key, v));
-                    self.ws();
-                    match self.peek() {
-                        Some(b',') => self.at += 1,
-                        Some(b'}') => {
-                            self.at += 1;
-                            return Ok(JValue::Object(members));
-                        }
-                        _ => return Err(self.unexpected("after object key:value pair")),
-                    }
-                }
-            }
-            Some(b'[') => {
-                if depth >= 10_000 {
-                    return Err(Fail::Syntax("invalid character '[' exceeded max depth".into()));
-                }
-                self.at += 1;
-                let mut items = Vec::new();
-                self.ws();
-                if self.peek() == Some(b']') {
-                    self.at += 1;
-                    return Ok(JValue::Array(items));
-                }
-                loop {
-                    items.push(self.value(depth + 1)?);
-                    self.ws();
-                    match self.peek() {
-                        Some(b',') => self.at += 1,
-                        Some(b']') => {
-                            self.at += 1;
-                            return Ok(JValue::Array(items));
-                        }
-                        _ => return Err(self.unexpected("after array element")),
-                    }
-                }
-            }
-            Some(b'"') => self.string().map(JValue::Str),
-            Some(b't') => self.literal(b"true", JValue::Bool(true)),
-            Some(b'f') => self.literal(b"false", JValue::Bool(false)),
-            Some(b'n') => self.literal(b"null", JValue::Null),
-            Some(b'-' | b'0'..=b'9') => self.number(),
-            _ => Err(self.unexpected("looking for beginning of value")),
+    /// An object's key: the string, then its `:`.
+    fn key(&mut self) -> Result<String, Fail> {
+        self.ws();
+        if self.peek() != Some(b'"') {
+            return Err(self.unexpected("looking for beginning of object key string"));
+        }
+        let key = self.string()?;
+        self.ws();
+        if self.peek() != Some(b':') {
+            return Err(self.unexpected("after object key"));
+        }
+        self.at += 1;
+        Ok(key)
+    }
+
+    /// The span begun at `span` ends here.
+    fn close(&mut self, span: Option<usize>) {
+        let end = self.at;
+        if let Some(s) = span.and_then(|i| self.spans.as_mut()?.get_mut(i)) {
+            s.1 = end;
         }
     }
 
@@ -345,7 +481,7 @@ pub fn unmarshal(b: &[u8]) -> Result<JValue, String> {
         at: 0,
         spans: None,
     };
-    let v = match p.value(0) {
+    let v = match p.value() {
         Ok(v) => v,
         Err(Fail::Syntax(s)) => return Err(s),
         Err(Fail::Eof) => return Err("unexpected end of JSON input".into()),
@@ -368,7 +504,7 @@ pub fn unmarshal_raw(b: &[u8]) -> Result<(JValue, Vec<(usize, usize)>), String> 
         at: 0,
         spans: Some(Vec::new()),
     };
-    let v = match p.value(0) {
+    let v = match p.value() {
         Ok(v) => v,
         Err(Fail::Syntax(s)) => return Err(s),
         Err(Fail::Eof) => return Err("unexpected end of JSON input".into()),
@@ -386,11 +522,14 @@ pub fn unmarshal_raw(b: &[u8]) -> Result<(JValue, Vec<(usize, usize)>), String> 
 /// `v` and the values inside it, each before those inside it, members and elements in
 /// document order.
 pub fn pre_order<'v>(v: &'v JValue, out: &mut Vec<&'v JValue>) {
-    out.push(v);
-    match v {
-        JValue::Array(items) => items.iter().for_each(|x| pre_order(x, out)),
-        JValue::Object(members) => members.iter().for_each(|(_, x)| pre_order(x, out)),
-        _ => {}
+    let mut next = vec![v];
+    while let Some(v) = next.pop() {
+        out.push(v);
+        match v {
+            JValue::Array(items) => next.extend(items.iter().rev()),
+            JValue::Object(members) => next.extend(members.iter().rev().map(|(_, x)| x)),
+            _ => {}
+        }
     }
 }
 
@@ -406,8 +545,27 @@ pub fn decode_first(b: &[u8]) -> Result<JValue, String> {
     if p.at == b.len() {
         return Err("EOF".into());
     }
-    match p.value(0) {
+    match p.value() {
         Ok(v) => Ok(v),
+        Err(Fail::Syntax(s)) => Err(s),
+        Err(Fail::Eof) => Err("unexpected EOF".into()),
+    }
+}
+
+/// [`decode_first`], and the bytes of each value in the order the values begin (as
+/// [`unmarshal_raw`]): what an Unmarshaler is given.
+pub fn decode_first_raw(b: &[u8]) -> Result<(JValue, Vec<(usize, usize)>), String> {
+    let mut p = Parser {
+        b,
+        at: 0,
+        spans: Some(Vec::new()),
+    };
+    p.ws();
+    if p.at == b.len() {
+        return Err("EOF".into());
+    }
+    match p.value() {
+        Ok(v) => Ok((v, p.spans.unwrap_or_default())),
         Err(Fail::Syntax(s)) => Err(s),
         Err(Fail::Eof) => Err("unexpected EOF".into()),
     }

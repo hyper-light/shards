@@ -1151,6 +1151,60 @@ fn an_images_healthcheck_runs_as_dockerd_runs_it() {
         "{}",
         status("patient")
     );
+    // `inspect` shows each record as dockerd keeps it (moby daemon/health.go): its status,
+    // its failing streak, and its last five probes, each with its times, exit code and
+    // output, a probe past its timeout -1 and dockerd's words.
+    let health = |name: &str| -> serde_json::Value {
+        let shown = run_shards_env(
+            &["inspect"],
+            &["-f", "{{json .State.Health}}", name],
+            &env,
+            TIMEOUT,
+        );
+        assert_eq!(shown.status, Some(0), "{}", shown.stderr);
+        serde_json::from_str(&shown.stdout).unwrap()
+    };
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    // The good one last: once each failing one has failed six times, it has been probed
+    // more than five times too.
+    for (name, status, code, output) in [
+        ("bad", "unhealthy", 1, ""),
+        // What the probe said before its timeout follows dockerd's words.
+        (
+            "slow",
+            "unhealthy",
+            -1,
+            "Health check exceeded timeout (100ms): ready\n",
+        ),
+        ("patient", "starting", 1, ""),
+        ("good", "healthy", 0, ""),
+    ] {
+        // More than five probes run (a failing streak counts them); five are kept.
+        let h = loop {
+            let h = health(name);
+            let probed = h["Log"].as_array().is_some_and(|l| l.len() >= 5)
+                && (code == 0 || h["FailingStreak"].as_u64().is_some_and(|n| n > 5));
+            if probed {
+                break h;
+            }
+            assert!(std::time::Instant::now() < deadline, "{name}: {h}");
+            std::thread::sleep(Duration::from_millis(100));
+        };
+        assert_eq!(h["Status"], status, "{name}: {h}");
+        let log = h["Log"].as_array().unwrap();
+        assert_eq!(log.len(), 5, "{name}: {h}");
+        for probe in log {
+            assert_eq!(probe["ExitCode"], code, "{name}: {h}");
+            assert_eq!(probe["Output"], output, "{name}: {h}");
+            for at in ["Start", "End"] {
+                let t = probe[at].as_str().unwrap();
+                assert!(t.len() >= 20 && t.as_bytes()[10] == b'T', "{name}: {h}");
+            }
+        }
+        if code == 0 {
+            assert_eq!(h["FailingStreak"], 0, "{name}: {h}");
+        }
+    }
     for name in ["good", "bad", "slow", "patient"] {
         let _ = run_shards_env(&["rm"], &["-f", name], &env, TIMEOUT);
     }
@@ -6546,7 +6600,8 @@ fn an_agentfiles_manifest_says_what_it_holds() {
 /// An image's agents run as its microVM starts (D59, AGENTFILE_ARCH.md §9.3), each in its
 /// domain: its own uid and no capability, PID 1 of its own PID namespace, its own host
 /// name and only a loopback, the system and its own directory read-only, every other
-/// domain's hidden, a scratch `/tmp` of its own, a `/dev` of six nodes; under Landlock, no
+/// domain's hidden, with the skills and MCP servers `FOR` gives another, while those given
+/// every agent are in its view, a scratch `/tmp` of its own, a `/dev` of six nodes; under Landlock, no
 /// write but to its scratch and `/dev`, and no TCP; under seccomp, no vsock, netlink,
 /// io_uring, keys or userfaultfd; its output on the
 /// run's stderr, each line prefixed with it. An agent whose config says nothing of how it
@@ -6570,7 +6625,7 @@ fn agents_run_in_their_domains() {
     std::fs::copy(common::test_guest(), dir.join("bin/testguest")).unwrap();
     std::fs::write(
         dir.join("agent.json"),
-        r#"{"name":"main","run":{"command":["bin/testguest","confined","see","/agents/other","/sys","/dev","/proc/self/fd","write","/agents/main/x","/etc/x","/tmp/x","/tmp/../proc/self/comm","bind","127.0.0.1:8080","connect","127.0.0.1:9","call","fork","thread","socket-vsock","socket-netlink","socket-unix","socket-inet6","io_uring_setup","keyctl","userfaultfd"]}}"#,
+        r#"{"name":"main","run":{"command":["bin/testguest","confined","see","/agents/other","/sys","/dev","/proc/self/fd","/agents/main.d/skills","/agents/other.d","/skills","/mcp","write","/agents/main/x","/etc/x","/tmp/x","/tmp/../proc/self/comm","bind","127.0.0.1:8080","connect","127.0.0.1:9","call","fork","thread","socket-vsock","socket-netlink","socket-unix","socket-inet6","io_uring_setup","keyctl","userfaultfd"]}}"#,
     )
     .unwrap();
     let name = format!("127.0.0.1:{port}/team/confined:1");
@@ -6579,11 +6634,39 @@ fn agents_run_in_their_domains() {
     let pushed = shards(&["push", "agent", &name]);
     assert_eq!(pushed.status, Some(0), "{}", pushed.stderr);
     let ctx = context("domains-ctx", &format!("FROM {image}\n"));
-    std::fs::create_dir_all(ctx.join("other")).unwrap();
-    std::fs::write(ctx.join("other/secret"), "theirs\n").unwrap();
+    let write = |rel: &str, text: &str| {
+        let p = ctx.join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, text).unwrap();
+    };
+    write("other/secret", "theirs\n");
+    write(
+        "skills/mine/SKILL.md",
+        "---\nname: mine\ndescription: Main's own.\n---\n",
+    );
+    write(
+        "skills/theirs/SKILL.md",
+        "---\nname: theirs\ndescription: Other's own.\n---\n",
+    );
+    write(
+        "shared/review/SKILL.md",
+        "---\nname: review\ndescription: Reviews code.\n---\n",
+    );
+    write("tools/server.py", "print('tools')\n");
+    write("helper/server.py", "print('helper')\n");
     std::fs::write(
         ctx.join("Agentfile"),
-        format!("FROM {image}\nAGENT main FROM {name}\nAGENT other FROM ./other\nAGENT --processes=none solo FROM {name}\n"),
+        format!(
+            "FROM {image}\n\
+             AGENT main FROM {name}\n\
+             AGENT other FROM ./other\n\
+             AGENT --processes=none solo FROM {name}\n\
+             SKILL ./skills/mine FOR main\n\
+             SKILL ./skills/theirs FOR other\n\
+             SKILL ./shared\n\
+             MCP tools FROM ./tools\n\
+             MCP helper FROM ./helper FOR other\n"
+        ),
     )
     .unwrap();
     let built = shards(&["build", "-t", "confined:1", ctx.to_str().unwrap()]);
@@ -6608,6 +6691,12 @@ fn agents_run_in_their_domains() {
         "confined see /dev: fd,full,mqueue,null,random,shm,stderr,stdin,stdout,tty,urandom,zero",
         // Its stdio and the directory being listed: nothing of init's.
         "confined see /proc/self/fd: 0,1,2,3",
+        // The skills given it and those given every agent, and the servers given every
+        // agent; never what another agent was given.
+        "confined see /agents/main.d/skills: mine",
+        "confined see /agents/other.d: errno 13",
+        "confined see /skills: review",
+        "confined see /mcp: tools",
         // Its directory and the system read-only; its scratch its own.
         "confined write /agents/main/x: errno 30",
         "confined write /etc/x: errno 30",
@@ -10758,6 +10847,73 @@ fn policy_eval_answers_as_buildx_does() {
             || err.ends_with("DEBUG: policy decision for source docker-image://docker.io/library/alpine:3.20 (linux/amd64): ALLOW\n"),
         "{err}"
     );
+}
+
+/// `shards buildx policy test` (D108), each run as buildx v0.37.1's in shards-dind: tests
+/// that pass and fail, an image input resolved from its registry (pinned, for one
+/// platform), `--run`, a test file named alone, and the paths and policies buildx refuses.
+#[test]
+fn policy_test_runs_as_buildx_does() {
+    let home = TempDir::new("policy-test-home");
+    let dir = TempDir::new("policy-test");
+    for sub in ["basic", "notests"] {
+        std::fs::create_dir_all(dir.join(sub)).unwrap();
+    }
+    std::fs::write(
+        dir.join("basic/Dockerfile.rego"),
+        "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if {\n\tinput.image.repo == \"alpine\"\n\t\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\" in input.image.env\n}\n\ndeny_msg contains \"not allowed\" if not allow\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("basic/policy_test.rego"),
+        "package docker\n\ntest_local if allow with input as {\"local\": {\"name\": \"context\"}}\n\ntest_git_denied if not allow with input as {\"git\": {\"remote\": \"https://github.com/x/y.git\", \"tagName\": \"v1\"}}\n\ntest_alpine if allow with input as {\"image\": {\"ref\": \"docker.io/library/alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc\", \"platform\": \"linux/amd64\"}}\n\ntest_nothing if allow\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("notests/Dockerfile.rego"),
+        "package docker\n\ndecision := {\"allow\": true}\n",
+    )
+    .unwrap();
+    let env = [("SHARDS_HOME", home.as_os_str())];
+    let test = |sub: &str, args: &[&str]| {
+        let mut argv = vec!["buildx", "policy", "test"];
+        argv.extend_from_slice(args);
+        let out = common::run_shards_env_in(&dir.join(sub), &[], &argv, &env, TIMEOUT);
+        (out.status, out.stdout, out.stderr)
+    };
+    let refused = |e: &str| (Some(1), String::new(), format!("ERROR: {e}\n"));
+    // The image test's input resolved by the policy's own questions: its config read for
+    // linux/amd64, the input the policy decides on; its own `with` input lacks it.
+    let all = "test_alpine: FAIL (allow=true)\ninput:\n{\n  \"image\": {\n    \"ref\": \"docker.io/library/alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc\",\n    \"host\": \"docker.io\",\n    \"repo\": \"alpine\",\n    \"fullRepo\": \"docker.io/library/alpine\",\n    \"platform\": \"linux/amd64\",\n    \"os\": \"linux\",\n    \"arch\": \"amd64\",\n    \"isCanonical\": true,\n    \"checksum\": \"sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc\",\n    \"createdTime\": \"2026-04-16T23:53:26Z\",\n    \"env\": [\n      \"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"\n    ],\n    \"workingDir\": \"/\"\n  }\n}\ndecision:\n{\n  \"allow\": true\n}\nmissing_input: input.local\ntest_git_denied: PASS (allow=false, deny_msg=not allowed)\ntest_local: PASS (allow=true)\ntest_nothing: FAIL (allow=false, deny_msg=not allowed)\ninput: <nil>\ndecision:\n{\n  \"allow\": false,\n  \"deny_msg\": [\n    \"not allowed\"\n  ]\n}\nmissing_input: input.image.env, input.image.repo, input.local\n";
+    // A failed test ends the run with status 1 and nothing more (cobrautil.ExitCodeError).
+    assert_eq!(test("basic", &["."]), (Some(1), all.into(), String::new()));
+    assert_eq!(test("basic", &["./"]), (Some(1), all.into(), String::new()));
+    assert_eq!(
+        test("basic", &["--run", "local", "."]),
+        (Some(0), "test_local: PASS (allow=true)\n".into(), String::new())
+    );
+    assert_eq!(
+        test("basic", &["--run", "git", "policy_test.rego"]),
+        (
+            Some(0),
+            "test_git_denied: PASS (allow=false, deny_msg=not allowed)\n".into(),
+            String::new()
+        )
+    );
+    assert_eq!(test("basic", &["--run", "zzz", "."]), refused("no tests found"));
+    assert_eq!(
+        test("basic", &["nope"]),
+        refused("stat nope: stat nope: no such file or directory")
+    );
+    assert_eq!(
+        test("basic", &["Dockerfile.rego"]),
+        refused("test file must have _test.rego suffix: Dockerfile.rego")
+    );
+    assert_eq!(
+        test("basic", &["--filename", "other", "."]),
+        refused("read policy module other.rego: open other.rego: no such file or directory")
+    );
+    assert_eq!(test("notests", &["."]), refused("no policy tests found"));
 }
 
 /// A step that fails cites where in the Dockerfile it comes from, as buildx v0.37.1 prints

@@ -1,0 +1,1315 @@
+[
+ {
+  "name": "pass and fail",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if input.image.repo == \"alpine\"\n\ndeny_msg contains \"not alpine\" if not allow\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n",
+   "p_test.rego": "package docker\n\ntest_local if {\n\tallow with input as {\"local\": {\"name\": \"context\"}}\n}\n\ntest_alpine if {\n\tallow with input as {\"image\": {\"repo\": \"alpine\", \"ref\": \"docker.io/library/alpine:3.20\"}}\n}\n\ntest_busybox if {\n\tallow with input as {\"local\": {\"name\": \"x\"}, \"image\": {\"repo\": \"busybox\"}}\n}\n\ntest_none if {\n\tnot allow\n}\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "test_alpine: PASS (allow=true)\ntest_busybox: PASS (allow=false, deny_msg=not alpine)\ntest_local: PASS (allow=true)\ntest_none: PASS (allow=false, deny_msg=not alpine)\n",
+  "err": "",
+  "status": 0
+ },
+ {
+  "name": "no input",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if input.image.repo == \"alpine\"\n\ndeny_msg contains \"not alpine\" if not allow\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n",
+   "p_test.rego": "package docker\n\ntest_nothing if {\n\tallow\n}\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "test_nothing: FAIL (allow=false, deny_msg=not alpine)\ninput: \u003cnil\u003e\ndecision:\n{\n  \"allow\": false,\n  \"deny_msg\": [\n    \"not alpine\"\n  ]\n}\nmissing_input: input.image.repo, input.local\n",
+  "err": "",
+  "status": 1
+ },
+ {
+  "name": "env and http",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if input.image.repo == \"alpine\"\n\ndeny_msg contains \"not alpine\" if not allow\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n",
+   "p_test.rego": "package docker\n\ntest_http if {\n\tallow with input as {\"env\": {\"filename\": \"Dockerfile\", \"args\": {\"A\": \"1\", \"B\": null}, \"labels\": {}, \"depth\": 2}, \"http\": {\"url\": \"https://example.com/x\", \"schema\": \"https\", \"host\": \"example.com\", \"path\": \"/x\", \"query\": {\"a\": [\"1\"], \"b\": null, \"c\": []}, \"checksum\": \"sha256:aa\"}}\n}\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "test_http: FAIL (allow=false, deny_msg=not alpine)\ninput:\n{\n  \"env\": {\n    \"args\": {\n      \"A\": \"1\",\n      \"B\": null\n    },\n    \"filename\": \"Dockerfile\",\n    \"depth\": 2\n  },\n  \"http\": {\n    \"url\": \"https://example.com/x\",\n    \"schema\": \"https\",\n    \"host\": \"example.com\",\n    \"path\": \"/x\",\n    \"query\": {\n      \"a\": [\n        \"1\"\n      ],\n      \"b\": null,\n      \"c\": []\n    },\n    \"checksum\": \"sha256:aa\"\n  }\n}\ndecision:\n{\n  \"allow\": false,\n  \"deny_msg\": [\n    \"not alpine\"\n  ]\n}\nmissing_input: input.image.repo, input.local\n",
+  "err": "",
+  "status": 1
+ },
+ {
+  "name": "git",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if input.image.repo == \"alpine\"\n\ndeny_msg contains \"not alpine\" if not allow\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n",
+   "p_test.rego": "package docker\n\ntest_git if {\n\tallow with input as {\"git\": {\"schema\": \"https\", \"host\": \"github.com\", \"remote\": \"https://github.com/a/b.git\", \"tagName\": \"v1\", \"isCommitRef\": false, \"commit\": {\"tree\": \"t\", \"parents\": [\"p\"], \"author\": {\"name\": \"A\", \"when\": \"2024-01-02T03:04:05+00:00\"}, \"committer\": {}, \"pgpSignature\": {\"version\": 4, \"keyID\": \"abc\"}}, \"tag\": {\"tagger\": {\"email\": \"e@x\"}, \"sshSignature\": {}}}}\n}\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "test_git: FAIL (allow=false, deny_msg=not alpine)\ninput:\n{\n  \"git\": {\n    \"schema\": \"https\",\n    \"host\": \"github.com\",\n    \"remote\": \"https://github.com/a/b.git\",\n    \"tagName\": \"v1\",\n    \"tag\": {\n      \"tagger\": {\n        \"email\": \"e@x\"\n      },\n      \"sshSignature\": {}\n    },\n    \"commit\": {\n      \"tree\": \"t\",\n      \"parents\": [\n        \"p\"\n      ],\n      \"author\": {\n        \"name\": \"A\",\n        \"when\": \"2024-01-02T03:04:05Z\"\n      },\n      \"pgpSignature\": {\n        \"version\": 4,\n        \"keyID\": \"abc\"\n      }\n    }\n  }\n}\ndecision:\n{\n  \"allow\": false,\n  \"deny_msg\": [\n    \"not alpine\"\n  ]\n}\nmissing_input: input.image.repo, input.local\n",
+  "err": "",
+  "status": 1
+ },
+ {
+  "name": "unknown fields dropped",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if input.image.repo == \"alpine\"\n\ndeny_msg contains \"not alpine\" if not allow\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n",
+   "p_test.rego": "package docker\n\ntest_x if {\n\tallow with input as {\"local\": {\"name\": \"c\", \"extra\": 1}, \"other\": [1, 2]}\n}\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "test_x: PASS (allow=true)\n",
+  "err": "",
+  "status": 0
+ },
+ {
+  "name": "folded and repeated keys",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if input.image.repo == \"alpine\"\n\ndeny_msg contains \"not alpine\" if not allow\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n",
+   "p_test.rego": "package docker\n\ntest_x if {\n\tallow with input as {\"LOCAL\": {\"NAME\": \"c\"}, \"Image\": {\"Repo\": \"alpine\"}}\n}\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "test_x: FAIL (allow=true)\ninput:\n{\n  \"image\": {\n    \"ref\": \"docker.io/library/alpine\",\n    \"host\": \"docker.io\",\n    \"repo\": \"alpine\",\n    \"fullRepo\": \"docker.io/library/alpine\",\n    \"platform\": \"linux/amd64\",\n    \"os\": \"linux\",\n    \"arch\": \"amd64\"\n  }\n}\ndecision:\n{\n  \"allow\": true\n}\nmissing_input: input.local\n",
+  "err": "",
+  "status": 1
+ },
+ {
+  "name": "type error",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if input.image.repo == \"alpine\"\n\ndeny_msg contains \"not alpine\" if not allow\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n",
+   "p_test.rego": "package docker\n\ntest_x if {\n\tallow with input as {\"local\": {\"name\": 1}}\n}\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "",
+  "err": "failed to decode test input for test_x: json: cannot unmarshal number into Go struct field Local.local.name of type string",
+  "status": 1
+ },
+ {
+  "name": "type error nested",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if input.image.repo == \"alpine\"\n\ndeny_msg contains \"not alpine\" if not allow\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n",
+   "p_test.rego": "package docker\n\ntest_x if {\n\tallow with input as {\"image\": {\"repo\": \"a\", \"labels\": {\"a\": true}}}\n}\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "",
+  "err": "failed to decode test input for test_x: json: cannot unmarshal bool into Go struct field Image.image.labels of type string",
+  "status": 1
+ },
+ {
+  "name": "type error int",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if input.image.repo == \"alpine\"\n\ndeny_msg contains \"not alpine\" if not allow\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n",
+   "p_test.rego": "package docker\n\ntest_x if {\n\tallow with input as {\"env\": {\"depth\": 1.5}}\n}\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "",
+  "err": "failed to decode test input for test_x: json: cannot unmarshal number 1.5 into Go struct field Env.env.depth of type int",
+  "status": 1
+ },
+ {
+  "name": "type error top",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if input.image.repo == \"alpine\"\n\ndeny_msg contains \"not alpine\" if not allow\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n",
+   "p_test.rego": "package docker\n\ntest_x if {\n\tallow with input as [1]\n}\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "",
+  "err": "failed to decode test input for test_x: json: cannot unmarshal array into Go value of type policy.Input",
+  "status": 1
+ },
+ {
+  "name": "input not json",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if input.image.repo == \"alpine\"\n\ndeny_msg contains \"not alpine\" if not allow\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n",
+   "p_test.rego": "package docker\n\ntest_x if {\n\tallow with input as data.other\n}\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "",
+  "err": "failed to decode test input for test_x: invalid character 'd' looking for beginning of value",
+  "status": 1
+ },
+ {
+  "name": "input set",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if input.image.repo == \"alpine\"\n\ndeny_msg contains \"not alpine\" if not allow\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n",
+   "p_test.rego": "package docker\n\ntest_x if {\n\tallow with input as {1, 2}\n}\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "",
+  "err": "failed to decode test input for test_x: invalid character '1' looking for beginning of object key string",
+  "status": 1
+ },
+ {
+  "name": "input with var",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if input.image.repo == \"alpine\"\n\ndeny_msg contains \"not alpine\" if not allow\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n",
+   "p_test.rego": "package docker\n\ntest_x if {\n\tx := \"a\"\n\tallow with input as {\"local\": {\"name\": x}}\n}\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "",
+  "err": "failed to decode test input for test_x: invalid character 'x' looking for beginning of value",
+  "status": 1
+ },
+ {
+  "name": "multiple overrides",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if input.image.repo == \"alpine\"\n\ndeny_msg contains \"not alpine\" if not allow\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n",
+   "p_test.rego": "package docker\n\ntest_x if {\n\tallow with input as {\"local\": {\"name\": \"a\"}}\n\tallow with input as {\"local\": {\"name\": \"b\"}}\n}\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "",
+  "err": "multiple input overrides for test_x",
+  "status": 1
+ },
+ {
+  "name": "equal overrides",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if input.image.repo == \"alpine\"\n\ndeny_msg contains \"not alpine\" if not allow\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n",
+   "p_test.rego": "package docker\n\ntest_x if {\n\tallow with input as {\"local\": {\"name\": \"a\"}}\n\tallow with input as {\"local\": {\"name\": \"a\"}}\n}\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "test_x: PASS (allow=true)\n",
+  "err": "",
+  "status": 0
+ },
+ {
+  "name": "input null",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if input.image.repo == \"alpine\"\n\ndeny_msg contains \"not alpine\" if not allow\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n",
+   "p_test.rego": "package docker\n\ntest_x if {\n\tallow with input as null\n}\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "test_x: FAIL (allow=false, deny_msg=not alpine)\ninput:\n{}\ndecision:\n{\n  \"allow\": false,\n  \"deny_msg\": [\n    \"not alpine\"\n  ]\n}\nmissing_input: input.image.repo, input.local\n",
+  "err": "",
+  "status": 1
+ },
+ {
+  "name": "image resolved",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if input.image.repo == \"alpine\"\n\ndeny_msg contains \"not alpine\" if not allow\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n",
+   "p_test.rego": "package docker\n\ntest_alpine if {\n\tallow with input as {\"image\": {\"repo\": \"alpine\", \"tag\": \"3.20\"}}\n}\n\ntest_platform if {\n\tallow with input as {\"image\": {\"ref\": \"docker.io/library/alpine:3.20\", \"platform\": \"linux/arm64/v8\"}}\n}\n\ntest_os if {\n\tallow with input as {\"image\": {\"fullRepo\": \"docker.io/library/busybox\", \"os\": \"linux\", \"arch\": \"x86_64\"}}\n}\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "test_alpine: PASS (allow=true)\ntest_os: FAIL (allow=false, deny_msg=not alpine)\ninput:\n{\n  \"image\": {\n    \"ref\": \"docker.io/library/busybox\",\n    \"host\": \"docker.io\",\n    \"repo\": \"busybox\",\n    \"fullRepo\": \"docker.io/library/busybox\",\n    \"platform\": \"linux/x86_64\",\n    \"os\": \"linux\",\n    \"arch\": \"x86_64\"\n  }\n}\ndecision:\n{\n  \"allow\": false,\n  \"deny_msg\": [\n    \"not alpine\"\n  ]\n}\nmissing_input: input.local\ntest_platform: FAIL (allow=true)\ninput:\n{\n  \"image\": {\n    \"ref\": \"docker.io/library/alpine:3.20\",\n    \"host\": \"docker.io\",\n    \"repo\": \"alpine\",\n    \"fullRepo\": \"docker.io/library/alpine\",\n    \"tag\": \"3.20\",\n    \"platform\": \"linux/arm64\",\n    \"os\": \"linux\",\n    \"arch\": \"arm64\"\n  }\n}\ndecision:\n{\n  \"allow\": true\n}\nmissing_input: input.local\n",
+  "err": "",
+  "status": 1
+ },
+ {
+  "name": "image bad platform",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if input.image.repo == \"alpine\"\n\ndeny_msg contains \"not alpine\" if not allow\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n",
+   "p_test.rego": "package docker\n\ntest_x if {\n\tallow with input as {\"image\": {\"repo\": \"alpine\", \"platform\": \"linux/a/b/c\"}}\n}\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "",
+  "err": "invalid platform linux/a/b/c: \"linux/a/b/c\": cannot parse platform specifier: invalid argument",
+  "status": 1
+ },
+ {
+  "name": "image labels",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if input.image.labels[\"org.opencontainers.image.source\"] == \"https://github.com/x/y\"\n\ndecision := {\"allow\": allow}\n",
+   "p_test.rego": "package docker\n\ntest_labels if {\n\tallow with input as {\"image\": {\"repo\": \"alpine\", \"env\": [\"A=1\"]}}\n}\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "test_labels: FAIL (allow=true)\ninput:\n{\n  \"image\": {\n    \"ref\": \"docker.io/library/alpine\",\n    \"host\": \"docker.io\",\n    \"repo\": \"alpine\",\n    \"fullRepo\": \"docker.io/library/alpine\",\n    \"platform\": \"linux/amd64\",\n    \"os\": \"linux\",\n    \"arch\": \"amd64\",\n    \"checksum\": \"sha256:1949166212c489301bb7d8c0a238b102517c93a0ec04cfc85b721db4dd3b5822\",\n    \"createdTime\": \"2024-01-02T03:04:05Z\",\n    \"env\": [\n      \"PATH=/bin\"\n    ],\n    \"labels\": {\n      \"org.opencontainers.image.source\": \"https://github.com/x/y\"\n    },\n    \"user\": \"app\",\n    \"volumes\": [\n      \"/data\"\n    ],\n    \"workingDir\": \"/w\"\n  }\n}\ndecision:\n{\n  \"allow\": true\n}\n",
+  "err": "",
+  "status": 1
+ },
+ {
+  "name": "image checksum",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if startswith(input.image.checksum, \"sha256:\")\n\ndecision := {\"allow\": allow}\n",
+   "p_test.rego": "package docker\n\ntest_checksum if {\n\tallow with input as {\"image\": {\"ref\": \"docker.io/library/alpine:3.20\"}}\n}\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "test_checksum: FAIL (allow=true)\ninput:\n{\n  \"image\": {\n    \"ref\": \"docker.io/library/alpine:3.20\",\n    \"host\": \"docker.io\",\n    \"repo\": \"alpine\",\n    \"fullRepo\": \"docker.io/library/alpine\",\n    \"tag\": \"3.20\",\n    \"platform\": \"linux/amd64\",\n    \"os\": \"linux\",\n    \"arch\": \"amd64\",\n    \"checksum\": \"sha256:45ee4c5682f947a4a38e3a630098f3aed760fad59946a1b879dbc263db6746c2\",\n    \"createdTime\": \"2024-01-02T03:04:05Z\",\n    \"env\": [\n      \"PATH=/bin\"\n    ],\n    \"labels\": {\n      \"org.opencontainers.image.source\": \"https://github.com/x/y\"\n    },\n    \"user\": \"app\",\n    \"volumes\": [\n      \"/data\"\n    ],\n    \"workingDir\": \"/w\"\n  }\n}\ndecision:\n{\n  \"allow\": true\n}\n",
+  "err": "",
+  "status": 1
+ },
+ {
+  "name": "image never answered",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if input.image.workingDir == \"/w\"\n\nallow if count(input.image.provenance.materials) \u003e 0\n\ndecision := {\"allow\": allow}\n",
+   "p_test.rego": "package docker\n\ntest_x if {\n\tallow with input as {\"image\": {\"repo\": \"alpine\"}}\n}\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "",
+  "err": "maximum attempts reached for resolving policy metadata",
+  "status": 1
+ },
+ {
+  "name": "missing input",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if input.git.tagName == \"v1\"\n\nallow if input.http.checksum == \"x\"\n\nallow if input.env.target == \"t\"\n\ndecision := {\"allow\": allow}\n",
+   "p_test.rego": "package docker\n\ntest_git if {\n\tallow with input as {\"git\": {\"branch\": \"main\"}}\n}\n\ntest_none if {\n\tallow\n}\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "test_git: FAIL (allow=false)\ninput:\n{\n  \"git\": {\n    \"branch\": \"main\"\n  }\n}\ndecision:\n{\n  \"allow\": false\n}\nmissing_input: input.env.target, input.git.tagName, input.http.checksum\ntest_none: FAIL (allow=false)\ninput: \u003cnil\u003e\ndecision:\n{\n  \"allow\": false\n}\nmissing_input: input.env.target, input.git.tagName, input.http.checksum\n",
+  "err": "",
+  "status": 1
+ },
+ {
+  "name": "decision shapes",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndecision := {\"allow\": \"yes\", \"deny_msg\": \"one\", \"caps\": {\"exec.proxy\": true, \"x\": 1}}\n",
+   "p_test.rego": "package docker\n\ntest_x if {\n\tfalse\n}\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "test_x: FAIL (allow=n/a, deny_msg=one)\ninput: \u003cnil\u003e\ndecision:\n{\n  \"deny_msg\": [\n    \"one\"\n  ],\n  \"caps\": {\n    \"exec.proxy\": true\n  }\n}\n",
+  "err": "",
+  "status": 1
+ },
+ {
+  "name": "decision set messages",
+  "files": {
+   "Dockerfile.rego": "package docker\n\nmsgs contains \"b\"\n\nmsgs contains \"a\"\n\ndecision := {\"allow\": false, \"deny_msg\": msgs}\n",
+   "p_test.rego": "package docker\n\ntest_x if {\n\tdecision.allow\n}\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "test_x: FAIL (allow=false, deny_msg=a; b)\ninput: \u003cnil\u003e\ndecision:\n{\n  \"allow\": false,\n  \"deny_msg\": [\n    \"a\",\n    \"b\"\n  ]\n}\n",
+  "err": "",
+  "status": 1
+ },
+ {
+  "name": "decision not object",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndecision := true\n",
+   "p_test.rego": "package docker\n\ntest_x if {\n\tnot decision\n}\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "test_x: FAIL (allow=n/a)\ninput: \u003cnil\u003e\ndecision: \u003cnil\u003e\n",
+  "err": "",
+  "status": 1
+ },
+ {
+  "name": "decision undefined",
+  "files": {
+   "Dockerfile.rego": "package docker\n\nallow := true\n",
+   "p_test.rego": "package docker\n\ntest_x if {\n\tnot allow\n}\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "test_x: FAIL (allow=n/a)\ninput: \u003cnil\u003e\ndecision: \u003cnil\u003e\n",
+  "err": "",
+  "status": 1
+ },
+ {
+  "name": "decision empty",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndecision := {}\n",
+   "p_test.rego": "package docker\n\ntest_x := false\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "test_x: FAIL (allow=n/a)\ninput: \u003cnil\u003e\ndecision:\n{}\n",
+  "err": "",
+  "status": 1
+ },
+ {
+  "name": "non boolean and functions skipped",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if input.image.repo == \"alpine\"\n\ndeny_msg contains \"not alpine\" if not allow\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n",
+   "p_test.rego": "package docker\n\ntest_one := 1\n\ntest_f(x) if x\n\ntest_ok := true\n\nhelper if true\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "test_ok: PASS (allow=false, deny_msg=not alpine)\n",
+  "err": "",
+  "status": 0
+ },
+ {
+  "name": "run filter",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if input.image.repo == \"alpine\"\n\ndeny_msg contains \"not alpine\" if not allow\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n",
+   "p_test.rego": "package docker\n\ntest_a if true\n\ntest_b if true\n\ntest_ab if false\n"
+  },
+  "path": ".",
+  "run": "b",
+  "filename": "Dockerfile",
+  "stdout": "test_ab: FAIL (allow=false, deny_msg=not alpine)\ninput: \u003cnil\u003e\ndecision:\n{\n  \"allow\": false,\n  \"deny_msg\": [\n    \"not alpine\"\n  ]\n}\nmissing_input: input.image.repo, input.local\ntest_b: PASS (allow=false, deny_msg=not alpine)\n",
+  "err": "",
+  "status": 1
+ },
+ {
+  "name": "run filter none",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if input.image.repo == \"alpine\"\n\ndeny_msg contains \"not alpine\" if not allow\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n",
+   "p_test.rego": "package docker\n\ntest_a if true\n"
+  },
+  "path": ".",
+  "run": "zzz",
+  "filename": "Dockerfile",
+  "stdout": "",
+  "err": "no tests found",
+  "status": 1
+ },
+ {
+  "name": "no tests",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if input.image.repo == \"alpine\"\n\ndeny_msg contains \"not alpine\" if not allow\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n",
+   "p_test.rego": "package docker\n\nhelper if true\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "",
+  "err": "no tests found",
+  "status": 1
+ },
+ {
+  "name": "no test files",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if input.image.repo == \"alpine\"\n\ndeny_msg contains \"not alpine\" if not allow\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n",
+   "x.rego": "package docker\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "",
+  "err": "no policy tests found",
+  "status": 1
+ },
+ {
+  "name": "single file",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if input.image.repo == \"alpine\"\n\ndeny_msg contains \"not alpine\" if not allow\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n",
+   "tests/one_test.rego": "package docker\n\ntest_one if not allow\n",
+   "tests/two_test.rego": "package docker\n\ntest_two if allow\n"
+  },
+  "path": "tests/one_test.rego",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "test_one: PASS (allow=false, deny_msg=not alpine)\n",
+  "err": "",
+  "status": 0
+ },
+ {
+  "name": "directory",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if input.image.repo == \"alpine\"\n\ndeny_msg contains \"not alpine\" if not allow\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n",
+   "tests/a_test.rego": "package docker\n\ntest_a if allow with input as {\"local\": {}}\n",
+   "tests/b_test.rego": "package docker\n\ntest_b if not allow\n",
+   "tests/c.rego": "package docker\n\ntest_c if false\n",
+   "tests/e_test.rego/": "",
+   "tests/sub/d_test.rego": "package docker\n\ntest_d if false\n"
+  },
+  "path": "tests/",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "test_a: PASS (allow=true)\ntest_b: PASS (allow=false, deny_msg=not alpine)\n",
+  "err": "",
+  "status": 0
+ },
+ {
+  "name": "bad suffix",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if input.image.repo == \"alpine\"\n\ndeny_msg contains \"not alpine\" if not allow\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n",
+   "tests/one.rego": "package docker\n"
+  },
+  "path": "tests/one.rego",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "",
+  "err": "test file must have _test.rego suffix: tests/one.rego",
+  "status": 1
+ },
+ {
+  "name": "missing path",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if input.image.repo == \"alpine\"\n\ndeny_msg contains \"not alpine\" if not allow\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n"
+  },
+  "path": "nope",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "",
+  "err": "stat nope: stat nope: no such file or directory",
+  "status": 1
+ },
+ {
+  "name": "absolute path",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if input.image.repo == \"alpine\"\n\ndeny_msg contains \"not alpine\" if not allow\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n"
+  },
+  "path": "/etc",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "",
+  "err": "stat /etc: stat /etc: invalid argument",
+  "status": 1
+ },
+ {
+  "name": "parent path",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if input.image.repo == \"alpine\"\n\ndeny_msg contains \"not alpine\" if not allow\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n"
+  },
+  "path": "../x",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "",
+  "err": "stat ../x: stat ../x: invalid argument",
+  "status": 1
+ },
+ {
+  "name": "missing policy",
+  "files": {
+   "p_test.rego": "package docker\n\ntest_a if true\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "",
+  "err": "read policy module Dockerfile.rego: open Dockerfile.rego: no such file or directory",
+  "status": 1
+ },
+ {
+  "name": "policy parse error",
+  "files": {
+   "Dockerfile.rego": "package docker\n\nallow if {\n",
+   "p_test.rego": "package docker\n\ntest_a if true\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "",
+  "err": "parse policy module Dockerfile.rego: 1 error occurred: Dockerfile.rego:4: rego_parse_error: unexpected eof token\n\tallow if {\n\t         ^",
+  "status": 1
+ },
+ {
+  "name": "test parse error",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if input.image.repo == \"alpine\"\n\ndeny_msg contains \"not alpine\" if not allow\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n",
+   "p_test.rego": "package docker\n\ntest_a if ][\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "",
+  "err": "parse policy test module p_test.rego: 1 error occurred: p_test.rego:4: rego_parse_error: unexpected eof token\n\ttest_a if ][\n\t           ^",
+  "status": 1
+ },
+ {
+  "name": "compile error",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if input.image.repo == \"alpine\"\n\ndeny_msg contains \"not alpine\" if not allow\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n",
+   "p_test.rego": "package docker\n\ntest_a if undefined_function(1)\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "",
+  "err": "compile: 1 error occurred: p_test.rego:3: rego_type_error: undefined function undefined_function",
+  "status": 1
+ },
+ {
+  "name": "import from fs",
+  "files": {
+   "Dockerfile.rego": "package docker\n\nimport data.lib.names\n\ndefault allow := false\n\nallow if input.image.repo in names.allowed\n\ndecision := {\"allow\": allow}\n",
+   "lib/names.rego": "package names\n\nallowed := {\"alpine\"}\n",
+   "p_test.rego": "package docker\n\ntest_a if allow with input as {\"image\": {\"repo\": \"alpine\"}}\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "test_a: PASS (allow=true)\n",
+  "err": "",
+  "status": 0
+ },
+ {
+  "name": "import missing",
+  "files": {
+   "Dockerfile.rego": "package docker\n\nimport data.lib.gone\n\ndecision := {\"allow\": true}\n",
+   "p_test.rego": "package docker\n\ntest_a if true\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "",
+  "err": "compile: 1 error occurred: rego_compile_error: import data.lib.gone not found for module Dockerfile.rego: stat lib/gone.rego: no such file or directory",
+  "status": 1
+ },
+ {
+  "name": "import from tests",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndecision := {\"allow\": true}\n",
+   "p_test.rego": "package docker\n\nimport data.helpers\n\ntest_a if helpers.yes\n",
+   "q_test.rego": "package helpers\n\nyes := true\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "test_a: PASS (allow=true)\n",
+  "err": "",
+  "status": 0
+ },
+ {
+  "name": "other package",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if input.image.repo == \"alpine\"\n\ndeny_msg contains \"not alpine\" if not allow\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n",
+   "p_test.rego": "package other\n\ntest_x if true\n\ntest_y if data.docker.allow with input as {\"local\": {}}\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "test_x: PASS (allow=n/a)\ntest_y: PASS (allow=n/a)\n",
+  "err": "",
+  "status": 0
+ },
+ {
+  "name": "eval error",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if input.image.repo == \"alpine\"\n\ndeny_msg contains \"not alpine\" if not allow\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n",
+   "p_test.rego": "package docker\n\nf := 1\n\nf := 2\n\ntest_x if f == 1\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "",
+  "err": "p_test.rego:5: eval_conflict_error: complete rules must not produce multiple outputs",
+  "status": 1
+ },
+ {
+  "name": "load json",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if input.image.repo in load_json(\"allowed.json\")\n\ndecision := {\"allow\": allow}\n",
+   "allowed.json": "[\"alpine\"]",
+   "p_test.rego": "package docker\n\ntest_a if allow with input as {\"local\": {}, \"image\": {\"repo\": \"alpine\", \"ref\": \"alpine\"}}\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "test_a: PASS (allow=true)\n",
+  "err": "",
+  "status": 0
+ },
+ {
+  "name": "attestation without verifier",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if artifact_attestation(input.http, \"b.json\")\n\ndecision := {\"allow\": allow}\n",
+   "b.json": "{}",
+   "p_test.rego": "package docker\n\ntest_a if allow with input as {\"http\": {\"url\": \"https://x/y\", \"checksum\": \"sha256:0000000000000000000000000000000000000000000000000000000000000000\"}}\n\ntest_b if allow with input as {\"http\": {\"url\": \"https://x/y\"}}\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "test_a: FAIL (allow=false)\ninput:\n{\n  \"http\": {\n    \"url\": \"https://x/y\",\n    \"checksum\": \"sha256:0000000000000000000000000000000000000000000000000000000000000000\"\n  }\n}\ndecision:\n{\n  \"allow\": false\n}\ntest_b: FAIL (allow=false)\ninput:\n{\n  \"http\": {\n    \"url\": \"https://x/y\"\n  }\n}\ndecision:\n{\n  \"allow\": false\n}\nmissing_input: input.http.checksum\n",
+  "err": "",
+  "status": 1
+ },
+ {
+  "name": "verify git without object",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if verify_git_signature(input.git.tag, \"k.pub\")\n\ndecision := {\"allow\": allow}\n",
+   "k.pub": "",
+   "p_test.rego": "package docker\n\ntest_a if allow with input as {\"git\": {\"remote\": \"r\"}}\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "test_a: FAIL (allow=false)\ninput:\n{\n  \"git\": {\n    \"remote\": \"r\"\n  }\n}\ndecision:\n{\n  \"allow\": false\n}\nmissing_input: input.git.tag\nmetadata_resolve: git\n",
+  "err": "",
+  "status": 1
+ },
+ {
+  "name": "pin image",
+  "files": {
+   "Dockerfile.rego": "package docker\n\nallow if pin_image(input.image, \"sha256:0000000000000000000000000000000000000000000000000000000000000000\")\n\ndecision := {\"allow\": allow}\n",
+   "p_test.rego": "package docker\n\ntest_a if allow with input as {\"image\": {\"checksum\": \"sha256:1111111111111111111111111111111111111111111111111111111111111111\"}}\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "test_a: PASS (allow=true)\n",
+  "err": "",
+  "status": 0
+ },
+ {
+  "name": "time errors",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if input.image.repo == \"alpine\"\n\ndeny_msg contains \"not alpine\" if not allow\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n",
+   "p_test.rego": "package docker\n\ntest_a if allow with input as {\"git\": {\"commit\": {\"author\": {\"when\": 5}}}}\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "",
+  "err": "failed to decode test input for test_a: Time.UnmarshalJSON: input is not a JSON string",
+  "status": 1
+ },
+ {
+  "name": "time parse error",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if input.image.repo == \"alpine\"\n\ndeny_msg contains \"not alpine\" if not allow\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n",
+   "p_test.rego": "package docker\n\ntest_a if allow with input as {\"git\": {\"commit\": {\"author\": {\"when\": \"2024-01-02 03:04:05\"}}}}\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "",
+  "err": "failed to decode test input for test_a: parsing time \"2024-01-02 03:04:05\" as \"2006-01-02T15:04:05Z07:00\": cannot parse \" 03:04:05\" as \"T\"",
+  "status": 1
+ },
+ {
+  "name": "time one digit hour",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if input.image.repo == \"alpine\"\n\ndeny_msg contains \"not alpine\" if not allow\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n",
+   "p_test.rego": "package docker\n\ntest_a if allow with input as {\"git\": {\"commit\": {\"author\": {\"when\": \"2024-01-02T3:04:05Z\"}}}}\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "test_a: FAIL (allow=false, deny_msg=not alpine)\ninput:\n{\n  \"git\": {\n    \"commit\": {\n      \"author\": {\n        \"when\": \"2024-01-02T03:04:05Z\"\n      }\n    }\n  }\n}\ndecision:\n{\n  \"allow\": false,\n  \"deny_msg\": [\n    \"not alpine\"\n  ]\n}\nmissing_input: input.image.repo, input.local\n",
+  "err": "",
+  "status": 1
+ },
+ {
+  "name": "time fraction comma",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if input.image.repo == \"alpine\"\n\ndeny_msg contains \"not alpine\" if not allow\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n",
+   "p_test.rego": "package docker\n\ntest_a if allow with input as {\"git\": {\"tag\": {\"tagger\": {\"when\": \"2024-01-02T03:04:05,5Z\"}}}}\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "test_a: FAIL (allow=false, deny_msg=not alpine)\ninput:\n{\n  \"git\": {\n    \"tag\": {\n      \"tagger\": {\n        \"when\": \"2024-01-02T03:04:05.5Z\"\n      }\n    }\n  }\n}\ndecision:\n{\n  \"allow\": false,\n  \"deny_msg\": [\n    \"not alpine\"\n  ]\n}\nmissing_input: input.image.repo, input.local\n",
+  "err": "",
+  "status": 1
+ },
+ {
+  "name": "time offset and fraction",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if input.image.repo == \"alpine\"\n\ndeny_msg contains \"not alpine\" if not allow\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n",
+   "p_test.rego": "package docker\n\ntest_a if allow with input as {\"git\": {\"tag\": {\"tagger\": {\"when\": \"2024-01-02T03:04:05.120+05:30\"}}}}\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "test_a: FAIL (allow=false, deny_msg=not alpine)\ninput:\n{\n  \"git\": {\n    \"tag\": {\n      \"tagger\": {\n        \"when\": \"2024-01-02T03:04:05.12+05:30\"\n      }\n    }\n  }\n}\ndecision:\n{\n  \"allow\": false,\n  \"deny_msg\": [\n    \"not alpine\"\n  ]\n}\nmissing_input: input.image.repo, input.local\n",
+  "err": "",
+  "status": 1
+ },
+ {
+  "name": "time null",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if input.image.repo == \"alpine\"\n\ndeny_msg contains \"not alpine\" if not allow\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n",
+   "p_test.rego": "package docker\n\ntest_a if allow with input as {\"git\": {\"commit\": {\"author\": {\"when\": null}}}}\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "test_a: FAIL (allow=false, deny_msg=not alpine)\ninput:\n{\n  \"git\": {\n    \"commit\": {}\n  }\n}\ndecision:\n{\n  \"allow\": false,\n  \"deny_msg\": [\n    \"not alpine\"\n  ]\n}\nmissing_input: input.image.repo, input.local\n",
+  "err": "",
+  "status": 1
+ },
+ {
+  "name": "provenance and signatures",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if input.image.repo == \"alpine\"\n\ndeny_msg contains \"not alpine\" if not allow\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n",
+   "p_test.rego": "package docker\n\ntest_a if allow with input as {\"image\": {\"hasProvenance\": true, \"provenance\": {\"predicateType\": \"p\", \"configSource\": {\"uri\": \"u\", \"digest\": {\"sha1\": \"x\"}}, \"buildArgs\": {}, \"reproducible\": false, \"completeness\": {\"materials\": true}, \"materials\": [{\"image\": {\"ref\": \"m\"}}, {}, null]}, \"signatures\": [{\"kind\": \"docker-github-builder\", \"timestamps\": [{\"type\": \"Tlog\"}, {\"uri\": \"u\", \"timestamp\": \"2024-01-02T03:04:05Z\"}], \"isDHI\": true, \"signer\": {\"issuer\": \"i\"}}, {}]}}\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "test_a: FAIL (allow=false, deny_msg=not alpine)\ninput:\n{\n  \"image\": {\n    \"hasProvenance\": true,\n    \"provenance\": {\n      \"predicateType\": \"p\",\n      \"configSource\": {\n        \"uri\": \"u\",\n        \"digest\": {\n          \"sha1\": \"x\"\n        }\n      },\n      \"reproducible\": false,\n      \"completeness\": {\n        \"materials\": true\n      },\n      \"materials\": [\n        {\n          \"image\": {\n            \"ref\": \"m\"\n          }\n        },\n        {},\n        {}\n      ]\n    },\n    \"signatures\": [\n      {\n        \"kind\": \"docker-github-builder\",\n        \"timestamps\": [\n          {\n            \"type\": \"Tlog\",\n            \"uri\": \"\",\n            \"timestamp\": \"0001-01-01T00:00:00Z\"\n          },\n          {\n            \"type\": \"\",\n            \"uri\": \"u\",\n            \"timestamp\": \"2024-01-02T03:04:05Z\"\n          }\n        ],\n        \"isDHI\": true,\n        \"signer\": {\n          \"certificateIssuer\": \"\",\n          \"subjectAlternativeName\": \"\",\n          \"issuer\": \"i\"\n        }\n      },\n      {}\n    ]\n  }\n}\ndecision:\n{\n  \"allow\": false,\n  \"deny_msg\": [\n    \"not alpine\"\n  ]\n}\nmissing_input: input.image.repo, input.local\n",
+  "err": "",
+  "status": 1
+ },
+ {
+  "name": "slices merged",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if input.image.repo == \"alpine\"\n\ndeny_msg contains \"not alpine\" if not allow\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n",
+   "p_test.rego": "package docker\n\ntest_a if allow with input as {\"image\": {\"env\": [\"a\", \"b\", \"c\"], \"Env\": [\"x\"], \"volumes\": [], \"signatures\": [{\"kind\": \"k\", \"dockerReference\": \"r\"}, {\"kind\": \"j\"}], \"SIGNATURES\": [{\"type\": \"t\"}]}}\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "test_a: FAIL (allow=false, deny_msg=not alpine)\ninput:\n{\n  \"image\": {\n    \"env\": [\n      \"a\",\n      \"b\",\n      \"c\"\n    ],\n    \"signatures\": [\n      {\n        \"kind\": \"k\",\n        \"type\": \"t\",\n        \"dockerReference\": \"r\"\n      },\n      {\n        \"kind\": \"j\"\n      }\n    ]\n  }\n}\ndecision:\n{\n  \"allow\": false,\n  \"deny_msg\": [\n    \"not alpine\"\n  ]\n}\nmissing_input: input.image.repo, input.local\n",
+  "err": "",
+  "status": 1
+ },
+ {
+  "name": "env zero and maps",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if input.image.repo == \"alpine\"\n\ndeny_msg contains \"not alpine\" if not allow\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n",
+   "p_test.rego": "package docker\n\ntest_a if allow with input as {\"env\": {\"args\": {}}}\n\ntest_b if allow with input as {\"env\": {}}\n\ntest_c if allow with input as {\"env\": {\"labels\": null, \"capsRequest\": true}}\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "test_a: FAIL (allow=false, deny_msg=not alpine)\ninput:\n{\n  \"env\": {\n    \"depth\": 0\n  }\n}\ndecision:\n{\n  \"allow\": false,\n  \"deny_msg\": [\n    \"not alpine\"\n  ]\n}\nmissing_input: input.image.repo, input.local\ntest_b: FAIL (allow=false, deny_msg=not alpine)\ninput:\n{}\ndecision:\n{\n  \"allow\": false,\n  \"deny_msg\": [\n    \"not alpine\"\n  ]\n}\nmissing_input: input.image.repo, input.local\ntest_c: FAIL (allow=false, deny_msg=not alpine)\ninput:\n{\n  \"env\": {\n    \"capsRequest\": true,\n    \"depth\": 0\n  }\n}\ndecision:\n{\n  \"allow\": false,\n  \"deny_msg\": [\n    \"not alpine\"\n  ]\n}\nmissing_input: input.image.repo, input.local\n",
+  "err": "",
+  "status": 1
+ },
+ {
+  "name": "html escaping",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if input.image.repo == \"alpine\"\n\ndeny_msg contains \"not alpine\" if not allow\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n",
+   "p_test.rego": "package docker\n\ntest_a if not allow with input as {\"local\": {\"name\": \"\u003ca\u0026b\u003e\\u2028\\t\\u00e9\"}}\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "test_a: FAIL (allow=true)\ninput:\n{\n  \"local\": {\n    \"name\": \"\\u003ca\\u0026b\\u003e\\u2028\\té\"\n  }\n}\ndecision:\n{\n  \"allow\": true\n}\nmissing_input: input.image.repo\n",
+  "err": "",
+  "status": 1
+ },
+ {
+  "name": "numbers exponent",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if input.image.repo == \"alpine\"\n\ndeny_msg contains \"not alpine\" if not allow\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n",
+   "p_test.rego": "package docker\n\ntest_a if allow with input as {\"env\": {\"depth\": 1e2}}\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "",
+  "err": "failed to decode test input for test_a: json: cannot unmarshal number 1e2 into Go struct field Env.env.depth of type int",
+  "status": 1
+ },
+ {
+  "name": "numbers overflow",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if input.image.repo == \"alpine\"\n\ndeny_msg contains \"not alpine\" if not allow\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n",
+   "p_test.rego": "package docker\n\ntest_b if allow with input as {\"git\": {\"commit\": {\"pgpSignature\": {\"version\": 9223372036854775808}}}}\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "",
+  "err": "failed to decode test input for test_b: json: cannot unmarshal number 9223372036854775808 into Go struct field PGPSignature.git.commit.pgpSignature.version of type int",
+  "status": 1
+ },
+ {
+  "name": "strings bad escapes",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if input.image.repo == \"alpine\"\n\ndeny_msg contains \"not alpine\" if not allow\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n",
+   "p_test.rego": "package docker\n\ntest_a if allow with input as {\"local\": {\"name\": \"\\u0001\"}}\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "",
+  "err": "failed to decode test input for test_a: invalid character 'x' in string escape code",
+  "status": 1
+ },
+ {
+  "name": "deny messages",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if input.image.repo == \"alpine\"\n\ndeny_msg contains \"not alpine\" if not allow\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n",
+   "p_test.rego": "package docker\n\ntest_a if allow with input as {\"image\": {\"repo\": \"busybox\"}}\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "test_a: FAIL (allow=false, deny_msg=not alpine)\ninput:\n{\n  \"image\": {\n    \"ref\": \"docker.io/library/busybox\",\n    \"host\": \"docker.io\",\n    \"repo\": \"busybox\",\n    \"fullRepo\": \"docker.io/library/busybox\",\n    \"platform\": \"linux/amd64\",\n    \"os\": \"linux\",\n    \"arch\": \"amd64\"\n  }\n}\ndecision:\n{\n  \"allow\": false,\n  \"deny_msg\": [\n    \"not alpine\"\n  ]\n}\nmissing_input: input.local\n",
+  "err": "",
+  "status": 1
+ },
+ {
+  "name": "filename other",
+  "files": {
+   "build.rego": "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if input.image.repo == \"alpine\"\n\ndeny_msg contains \"not alpine\" if not allow\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n",
+   "p_test.rego": "package docker\n\ntest_a if allow with input as {\"local\": {}}\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "build",
+  "stdout": "test_a: PASS (allow=true)\n",
+  "err": "",
+  "status": 0
+ },
+ {
+  "name": "filename empty",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if input.image.repo == \"alpine\"\n\ndeny_msg contains \"not alpine\" if not allow\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n",
+   "p_test.rego": "package docker\n\ntest_a if true\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "",
+  "stdout": "",
+  "err": "policy filename is required",
+  "status": 1
+ },
+ {
+  "name": "nested refs",
+  "files": {
+   "Dockerfile.rego": "package docker\n\nkeys := {\"a\": \"image\"}\n\ndefault allow := false\n\nallow if input[keys.a].repo == data.lists[input.env.target]\n\ndecision := {\"allow\": allow}\n",
+   "p_test.rego": "package docker\n\ntest_a if allow with input as {\"local\": {}}\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "test_a: FAIL (allow=false)\ninput:\n{\n  \"local\": {}\n}\ndecision:\n{\n  \"allow\": false\n}\nmissing_input: input.input[keys\n",
+  "err": "",
+  "status": 1
+ },
+ {
+  "name": "slice capacities",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if input.image.repo == \"alpine\"\n\ndeny_msg contains \"not alpine\" if not allow\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n",
+   "p_test.rego": "package docker\n\ntest_a if allow with input as {\"image\": {\"SIGNATURES\": [{\"kind\": \"A\"}], \"SIGNATUREs\": [{\"kind\": \"B\", \"timestamps\": [{\"uri\": \"1\"}]}, {\"kind\": \"C\"}, {\"kind\": \"D\"}], \"SIgnatures\": [{\"dockerReference\": \"E\", \"TIMESTAMPS\": [{\"type\": \"x\"}, {\"type\": \"y\"}, {\"type\": \"z\"}], \"timestamps\": [{}]}], \"Signatures\": [{}, {}, {}, {}, {}], \"provenance\": {\"MATERIALS\": [{\"local\": {\"name\": \"a\"}}], \"MATERIALs\": [{\"local\": {\"name\": \"b\"}}, {\"local\": {\"name\": \"c\"}}, {\"local\": {\"name\": \"d\"}}], \"MAterials\": [{}], \"Materials\": [{}, {}, {}, {}, {}]}, \"ENV\": [\"1\"], \"ENv\": [\"2\", \"3\", \"4\"], \"Env\": [\"5\"], \"env\": [\"6\", \"7\", \"8\", \"9\", \"10\"]}}\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "test_a: FAIL (allow=false, deny_msg=not alpine)\ninput:\n{\n  \"image\": {\n    \"env\": [\n      \"6\",\n      \"7\",\n      \"8\",\n      \"9\",\n      \"10\"\n    ],\n    \"provenance\": {\n      \"materials\": [\n        {\n          \"local\": {\n            \"name\": \"b\"\n          }\n        },\n        {\n          \"local\": {\n            \"name\": \"c\"\n          }\n        },\n        {\n          \"local\": {\n            \"name\": \"d\"\n          }\n        },\n        {},\n        {}\n      ]\n    },\n    \"signatures\": [\n      {\n        \"kind\": \"B\",\n        \"timestamps\": [\n          {\n            \"type\": \"x\",\n            \"uri\": \"1\",\n            \"timestamp\": \"0001-01-01T00:00:00Z\"\n          }\n        ],\n        \"dockerReference\": \"E\"\n      },\n      {\n        \"kind\": \"C\"\n      },\n      {\n        \"kind\": \"D\"\n      },\n      {},\n      {}\n    ]\n  }\n}\ndecision:\n{\n  \"allow\": false,\n  \"deny_msg\": [\n    \"not alpine\"\n  ]\n}\nmissing_input: input.image.repo, input.local\n",
+  "err": "",
+  "status": 1
+ },
+ {
+  "name": "with on input member",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if input.image.repo == \"alpine\"\n\ndeny_msg contains \"not alpine\" if not allow\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n",
+   "p_test.rego": "package docker\n\ntest_a if not allow with input.local as {\"name\": \"x\"}\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "test_a: FAIL (allow=false, deny_msg=not alpine)\ninput: \u003cnil\u003e\ndecision:\n{\n  \"allow\": false,\n  \"deny_msg\": [\n    \"not alpine\"\n  ]\n}\nmissing_input: input.image.repo, input.local\n",
+  "err": "",
+  "status": 1
+ },
+ {
+  "name": "env target resolves",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if {\n\tinput.env.target == \"t\"\n\tinput.image.user == \"app\"\n}\n\ndecision := {\"allow\": allow}\n",
+   "p_test.rego": "package docker\n\ntest_a if allow with input as {\"env\": {\"target\": \"t\"}, \"image\": {\"ref\": \"localhost:5000/x\", \"tag\": \"1\"}}\n\ntest_b if allow with input as {\"env\": {\"depth\": 3}, \"image\": {\"repo\": \"alpine\", \"tag\": \"1\"}}\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "test_a: FAIL (allow=true)\ninput:\n{\n  \"env\": {\n    \"target\": \"t\",\n    \"depth\": 0\n  },\n  \"image\": {\n    \"ref\": \"localhost:5000/x\",\n    \"host\": \"localhost:5000\",\n    \"repo\": \"localhost:5000/x\",\n    \"fullRepo\": \"localhost:5000/x\",\n    \"platform\": \"linux/amd64\",\n    \"os\": \"linux\",\n    \"arch\": \"amd64\",\n    \"checksum\": \"sha256:bf8f10b1c86ea4761e5fb7cebb1007e83de1a595ed468848a355055c046a7c81\",\n    \"createdTime\": \"2024-01-02T03:04:05Z\",\n    \"env\": [\n      \"PATH=/bin\"\n    ],\n    \"labels\": {\n      \"org.opencontainers.image.source\": \"https://github.com/x/y\"\n    },\n    \"user\": \"app\",\n    \"volumes\": [\n      \"/data\"\n    ],\n    \"workingDir\": \"/w\"\n  }\n}\ndecision:\n{\n  \"allow\": true\n}\ntest_b: FAIL (allow=false)\ninput:\n{\n  \"image\": {\n    \"ref\": \"docker.io/library/alpine:1\",\n    \"host\": \"docker.io\",\n    \"repo\": \"alpine\",\n    \"fullRepo\": \"docker.io/library/alpine\",\n    \"tag\": \"1\",\n    \"platform\": \"linux/amd64\",\n    \"os\": \"linux\",\n    \"arch\": \"amd64\",\n    \"checksum\": \"sha256:21b511f0cda8933c721e8e57466ae88c189fc87e3a5fb960c7467083dd5817cc\",\n    \"createdTime\": \"2024-01-02T03:04:05Z\",\n    \"env\": [\n      \"PATH=/bin\"\n    ],\n    \"labels\": {\n      \"org.opencontainers.image.source\": \"https://github.com/x/y\"\n    },\n    \"user\": \"app\",\n    \"volumes\": [\n      \"/data\"\n    ],\n    \"workingDir\": \"/w\"\n  }\n}\ndecision:\n{\n  \"allow\": false\n}\nmissing_input: input.env.target\n",
+  "err": "",
+  "status": 1
+ },
+ {
+  "name": "rule shapes",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if input.image.repo == \"alpine\"\n\ndeny_msg contains \"not alpine\" if not allow\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n",
+   "p_test.rego": "package docker\n\ndefault test_d := false\n\ntest_d if allow\n\ntest_e if false else := true\n\ntest_s contains 1\n\ntest_ns.a if true\n\ntest_k[\"k\"] := true\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "test_d: FAIL (allow=false, deny_msg=not alpine)\ninput: \u003cnil\u003e\ndecision:\n{\n  \"allow\": false,\n  \"deny_msg\": [\n    \"not alpine\"\n  ]\n}\nmissing_input: input.image.repo, input.local\ntest_e: PASS (allow=false, deny_msg=not alpine)\ntest_k: FAIL (allow=false, deny_msg=not alpine)\ninput: \u003cnil\u003e\ndecision:\n{\n  \"allow\": false,\n  \"deny_msg\": [\n    \"not alpine\"\n  ]\n}\nmissing_input: input.image.repo, input.local\ntest_s: FAIL (allow=false, deny_msg=not alpine)\ninput: \u003cnil\u003e\ndecision:\n{\n  \"allow\": false,\n  \"deny_msg\": [\n    \"not alpine\"\n  ]\n}\nmissing_input: input.image.repo, input.local\n",
+  "err": "",
+  "status": 1
+ },
+ {
+  "name": "same name two packages",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if input.image.repo == \"alpine\"\n\ndeny_msg contains \"not alpine\" if not allow\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n",
+   "a_test.rego": "package pa\n\ntest_same if true\n",
+   "b_test.rego": "package pb\n\ntest_same if true\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "test_same: PASS (allow=n/a)\n",
+  "err": "",
+  "status": 0
+ },
+ {
+  "name": "map null after",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if input.image.repo == \"alpine\"\n\ndeny_msg contains \"not alpine\" if not allow\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n",
+   "p_test.rego": "package docker\n\ntest_a if allow with input as {\"env\": {\"LABELS\": {\"a\": \"b\"}, \"labels\": null}, \"image\": {\"provenance\": {\"REPRODUCIBLE\": true, \"reproducible\": null, \"BUILDARGS\": {\"a\": \"b\"}, \"buildArgs\": null}}}\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "test_a: FAIL (allow=false, deny_msg=not alpine)\ninput:\n{\n  \"image\": {\n    \"provenance\": {}\n  }\n}\ndecision:\n{\n  \"allow\": false,\n  \"deny_msg\": [\n    \"not alpine\"\n  ]\n}\nmissing_input: input.image.repo, input.local\n",
+  "err": "",
+  "status": 1
+ },
+ {
+  "name": "multiple overrides across rules",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if input.image.repo == \"alpine\"\n\ndeny_msg contains \"not alpine\" if not allow\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n",
+   "p_test.rego": "package docker\n\ntest_x if allow with input as {\"local\": {\"name\": \"a\"}}\n\ntest_x if allow with input as {\"local\": {\"name\": \"b\"}}\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "",
+  "err": "multiple input overrides for test_x",
+  "status": 1
+ },
+ {
+  "name": "equal overrides across rules",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if input.image.repo == \"alpine\"\n\ndeny_msg contains \"not alpine\" if not allow\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n",
+   "p_test.rego": "package docker\n\ntest_x if allow with input as {\"local\": {\"name\": \"a\"}}\n\ntest_x if not allow with input as {\"local\": {\"name\": \"a\"}}\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "test_x: PASS (allow=true)\n",
+  "err": "",
+  "status": 0
+ },
+ {
+  "name": "platform os only",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if input.image.repo == \"alpine\"\n\ndeny_msg contains \"not alpine\" if not allow\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n",
+   "p_test.rego": "package docker\n\ntest_a if allow with input as {\"image\": {\"repo\": \"alpine\", \"os\": \"linux\"}}\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "",
+  "err": "failed to parse platform: \"\" is an invalid component of \"linux/\": platform specifier component must match \"^[A-Za-z0-9_.-]+$\": invalid argument",
+  "status": 1
+ },
+ {
+  "name": "platform arch only",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if input.image.repo == \"alpine\"\n\ndeny_msg contains \"not alpine\" if not allow\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n",
+   "p_test.rego": "package docker\n\ntest_a if allow with input as {\"image\": {\"repo\": \"alpine\", \"arch\": \"amd64\"}}\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "",
+  "err": "failed to parse platform: \"\" is an invalid OS component of \"/amd64\": OSAndVersion specifier component must match \"^([A-Za-z0-9_-]+)(?:\\\\(([A-Za-z0-9_.%-]*)((?:\\\\+[A-Za-z0-9_.%-]+)*)\\\\))?$\": invalid argument",
+  "status": 1
+ },
+ {
+  "name": "platform variant",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if input.image.repo == \"alpine\"\n\ndeny_msg contains \"not alpine\" if not allow\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n",
+   "p_test.rego": "package docker\n\ntest_a if not allow with input as {\"image\": {\"repo\": \"alpine\", \"os\": \"linux\", \"arch\": \"aarch64\", \"variant\": \"8\"}}\n\ntest_b if not allow with input as {\"image\": {\"repo\": \"alpine\", \"platform\": \"windows(10.0.17763)/amd64\"}}\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "test_a: FAIL (allow=true)\ninput:\n{\n  \"image\": {\n    \"ref\": \"docker.io/library/alpine\",\n    \"host\": \"docker.io\",\n    \"repo\": \"alpine\",\n    \"fullRepo\": \"docker.io/library/alpine\",\n    \"platform\": \"linux/aarch64/8\",\n    \"os\": \"linux\",\n    \"arch\": \"aarch64\",\n    \"variant\": \"8\"\n  }\n}\ndecision:\n{\n  \"allow\": true\n}\nmissing_input: input.local\ntest_b: FAIL (allow=true)\ninput:\n{\n  \"image\": {\n    \"ref\": \"docker.io/library/alpine\",\n    \"host\": \"docker.io\",\n    \"repo\": \"alpine\",\n    \"fullRepo\": \"docker.io/library/alpine\",\n    \"platform\": \"windows/amd64\",\n    \"os\": \"windows\",\n    \"arch\": \"amd64\"\n  }\n}\ndecision:\n{\n  \"allow\": true\n}\nmissing_input: input.local\n",
+  "err": "",
+  "status": 1
+ },
+ {
+  "name": "image input reads git",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if input.image.repo == \"alpine\"\n\nallow if input.git.tagName == \"v1\"\n\ndecision := {\"allow\": allow}\n",
+   "p_test.rego": "package docker\n\ntest_a if allow with input as {\"image\": {\"repo\": \"alpine\"}}\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "",
+  "err": "maximum attempts reached for resolving policy metadata",
+  "status": 1
+ },
+ {
+  "name": "image input unhandled field",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if input.image.tag == \"1\"\n\ndecision := {\"allow\": allow}\n",
+   "p_test.rego": "package docker\n\ntest_a if allow with input as {\"image\": {\"ref\": \"alpine@sha256:0000000000000000000000000000000000000000000000000000000000000000\"}}\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "test_a: FAIL (allow=false)\ninput:\n{\n  \"image\": {\n    \"ref\": \"docker.io/library/alpine@sha256:0000000000000000000000000000000000000000000000000000000000000000\",\n    \"host\": \"docker.io\",\n    \"repo\": \"alpine\",\n    \"fullRepo\": \"docker.io/library/alpine\",\n    \"platform\": \"linux/amd64\",\n    \"os\": \"linux\",\n    \"arch\": \"amd64\",\n    \"isCanonical\": true,\n    \"checksum\": \"sha256:0000000000000000000000000000000000000000000000000000000000000000\"\n  }\n}\ndecision:\n{\n  \"allow\": false\n}\nmissing_input: input.image.tag\n",
+  "err": "",
+  "status": 1
+ },
+ {
+  "name": "image decision undefined",
+  "files": {
+   "Dockerfile.rego": "package docker\n\nallow := true\n",
+   "p_test.rego": "package docker\n\ntest_a if allow with input as {\"image\": {\"repo\": \"alpine\"}}\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "",
+  "err": "policy returned zero result",
+  "status": 1
+ },
+ {
+  "name": "image decision not object",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndecision := 1\n",
+   "p_test.rego": "package docker\n\ntest_a if decision with input as {\"image\": {\"repo\": \"alpine\"}}\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "",
+  "err": "unexpected policy return type: json.Number data.docker.decision",
+  "status": 1
+ },
+ {
+  "name": "policy imports a test package",
+  "files": {
+   "Dockerfile.rego": "package docker\n\nimport data.helpers\n\ndecision := {\"allow\": helpers.yes}\n",
+   "p_test.rego": "package docker\n\ntest_a if decision.allow with input as {\"local\": {}}\n\ntest_b if decision.allow with input as {\"image\": {\"repo\": \"alpine\"}}\n",
+   "q_test.rego": "package helpers\n\nyes := true\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "",
+  "err": "1 error occurred: rego_compile_error: import data.helpers not found for module Dockerfile.rego: stat helpers.rego: no such file or directory",
+  "status": 1
+ },
+ {
+  "name": "policy calls a test function",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndecision := {\"allow\": helper(1)}\n",
+   "p_test.rego": "package docker\n\nhelper(x) := x == 1\n\ntest_a if decision.allow with input as {\"image\": {\"repo\": \"alpine\"}}\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "",
+  "err": "1 error occurred: Dockerfile.rego:3: rego_type_error: undefined function helper",
+  "status": 1
+ },
+ {
+  "name": "import parse error",
+  "files": {
+   "Dockerfile.rego": "package docker\n\nimport data.lib.bad\n\ndecision := {\"allow\": true}\n",
+   "lib/bad.rego": "package bad\n\nx if {\n",
+   "p_test.rego": "package docker\n\ntest_a if true\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "",
+  "err": "compile: 1 error occurred: rego_compile_error: failed to parse imported policy file lib/bad.rego for module Dockerfile.rego: 1 error occurred: lib/bad.rego:4: rego_parse_error: unexpected eof token\n\tx if {\n\t     ^",
+  "status": 1
+ },
+ {
+  "name": "import directory",
+  "files": {
+   "Dockerfile.rego": "package docker\n\nimport data.lib.dir\n\ndecision := {\"allow\": true}\n",
+   "lib/dir.rego/": "",
+   "p_test.rego": "package docker\n\ntest_a if true\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "",
+  "err": "compile: 1 error occurred: rego_compile_error: failed to read imported policy file lib/dir.rego for module Dockerfile.rego: read lib/dir.rego: is a directory",
+  "status": 1
+ },
+ {
+  "name": "verify git runtime unknown",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if verify_git_signature(input.git, \"k.pub\")\n\ndecision := {\"allow\": allow}\n",
+   "k.pub": "",
+   "p_test.rego": "package docker\n\ntest_a if allow with input as {\"git\": {\"remote\": \"r\"}}\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "test_a: FAIL (allow=false)\ninput:\n{\n  \"git\": {\n    \"remote\": \"r\"\n  }\n}\ndecision:\n{\n  \"allow\": false\n}\nmissing_input: input.git.commit\nmetadata_resolve: git\n",
+  "err": "",
+  "status": 1
+ },
+ {
+  "name": "verify git commit",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if verify_git_signature(input.git.commit, \"k.pub\")\n\ndecision := {\"allow\": allow}\n",
+   "k.pub": "",
+   "p_test.rego": "package docker\n\ntest_a if allow with input as {\"git\": {\"commit\": {\"tree\": \"t\"}}}\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "",
+  "err": "",
+  "status": 0,
+  "panic": "runtime error: invalid memory address or nil pointer dereference"
+ },
+ {
+  "name": "time offset 24 hours",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if input.image.repo == \"alpine\"\n\ndeny_msg contains \"not alpine\" if not allow\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n",
+   "p_test.rego": "package docker\n\ntest_a if allow with input as {\"git\": {\"commit\": {\"author\": {\"when\": \"2024-01-02T03:04:05+24:00\"}}}}\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "",
+  "err": "json: error calling MarshalJSON for type *time.Time: Time.MarshalJSON: timezone hour outside of range [0,23]",
+  "status": 1
+ },
+ {
+  "name": "time timestamp offset 24 hours",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if input.image.repo == \"alpine\"\n\ndeny_msg contains \"not alpine\" if not allow\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n",
+   "p_test.rego": "package docker\n\ntest_a if allow with input as {\"image\": {\"signatures\": [{\"timestamps\": [{\"timestamp\": \"2024-01-02T03:04:05-23:60\"}]}]}}\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "",
+  "err": "json: error calling MarshalJSON for type time.Time: Time.MarshalJSON: timezone hour outside of range [0,23]",
+  "status": 1
+ },
+ {
+  "name": "load json names",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault a := false\n\na if \"x\" in load_json(\"a.json\")\n\ndefault b := false\n\nb if \"x\" in load_json(\"./a.json\")\n\ndefault c := false\n\nc if \"x\" in load_json(\"cwd://a.json\")\n\ndefault d := false\n\nd if \"x\" in load_json(\"sub/../a.json\")\n\ndecision := {\"allow\": false, \"deny_msg\": [sprintf(\"%v %v %v %v\", [a, b, c, d])]}\n",
+   "a.json": "[\"x\"]",
+   "p_test.rego": "package docker\n\ntest_a if false\n\ntest_b if false with input as {\"image\": {\"repo\": \"alpine\"}}\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "test_a: FAIL (allow=false, deny_msg=true false false false)\ninput: \u003cnil\u003e\ndecision:\n{\n  \"allow\": false,\n  \"deny_msg\": [\n    \"true false false false\"\n  ]\n}\ntest_b: FAIL (allow=false, deny_msg=true false false false)\ninput:\n{\n  \"image\": {\n    \"ref\": \"docker.io/library/alpine\",\n    \"host\": \"docker.io\",\n    \"repo\": \"alpine\",\n    \"fullRepo\": \"docker.io/library/alpine\",\n    \"platform\": \"linux/amd64\",\n    \"os\": \"linux\",\n    \"arch\": \"amd64\"\n  }\n}\ndecision:\n{\n  \"allow\": false,\n  \"deny_msg\": [\n    \"true false false false\"\n  ]\n}\n",
+  "err": "",
+  "status": 1
+ },
+ {
+  "name": "github attestation without resolver",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if github_attestation(input.http, \"o/r\")\n\ndecision := {\"allow\": allow}\n",
+   "p_test.rego": "package docker\n\ntest_a if allow with input as {\"http\": {\"url\": \"https://x/y\", \"checksum\": \"sha256:0000000000000000000000000000000000000000000000000000000000000000\"}}\n\ntest_b if allow with input as {\"http\": {\"url\": \"https://x/y\"}}\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "test_a: FAIL (allow=false)\ninput:\n{\n  \"http\": {\n    \"url\": \"https://x/y\",\n    \"checksum\": \"sha256:0000000000000000000000000000000000000000000000000000000000000000\"\n  }\n}\ndecision:\n{\n  \"allow\": false\n}\ntest_b: FAIL (allow=false)\ninput:\n{\n  \"http\": {\n    \"url\": \"https://x/y\"\n  }\n}\ndecision:\n{\n  \"allow\": false\n}\nmissing_input: input.http.checksum\n",
+  "err": "",
+  "status": 1
+ },
+ {
+  "name": "other package image",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if input.image.repo == \"alpine\"\n\ndeny_msg contains \"not alpine\" if not allow\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n",
+   "p_test.rego": "package other\n\ntest_x if not data.docker.allow with input as {\"image\": {\"repo\": \"alpine\"}}\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "test_x: FAIL (allow=n/a)\ninput:\n{\n  \"image\": {\n    \"ref\": \"docker.io/library/alpine\",\n    \"host\": \"docker.io\",\n    \"repo\": \"alpine\",\n    \"fullRepo\": \"docker.io/library/alpine\",\n    \"platform\": \"linux/amd64\",\n    \"os\": \"linux\",\n    \"arch\": \"amd64\"\n  }\n}\ndecision: \u003cnil\u003e\n",
+  "err": "",
+  "status": 1
+ },
+ {
+  "name": "policy file is the builtin",
+  "files": {
+   "builtin/buildx_defaults.rego": "package docker\n\ndecision := {\"allow\": true}\n",
+   "p_test.rego": "package docker\n\ntest_a if decision.allow\n\ntest_b if not docker_github_builder({}, \"x\")\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "builtin/buildx_defaults",
+  "stdout": "",
+  "err": "compile: 1 error occurred: p_test.rego:5: rego_type_error: undefined function docker_github_builder",
+  "status": 1
+ },
+ {
+  "name": "other package runtime unknown",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if verify_git_signature(input.git, \"k.pub\")\n",
+   "k.pub": "",
+   "p_test.rego": "package other\n\ntest_a if data.docker.allow with input as {\"git\": {\"remote\": \"r\"}}\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "test_a: FAIL (allow=n/a)\ninput:\n{\n  \"git\": {\n    \"remote\": \"r\"\n  }\n}\ndecision: \u003cnil\u003e\n",
+  "err": "",
+  "status": 1
+ },
+ {
+  "name": "policy imports its own package",
+  "files": {
+   "Dockerfile.rego": "package docker\n\nimport data.docker\n\ndecision := {\"allow\": true}\n",
+   "p_test.rego": "package docker\n\ntest_a if decision.allow with input as {\"local\": {}}\n\ntest_b if decision.allow with input as {\"image\": {\"repo\": \"alpine\"}}\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "",
+  "err": "1 error occurred: rego_compile_error: import data.docker not found for module Dockerfile.rego: stat docker.rego: no such file or directory",
+  "status": 1
+ },
+ {
+  "name": "policy imports the builtin's file",
+  "files": {
+   "Dockerfile.rego": "package docker\n\nimport data.builtin.buildx_defaults\n\ndecision := {\"allow\": true}\n",
+   "p_test.rego": "package docker\n\ntest_a if decision.allow with input as {\"image\": {\"repo\": \"alpine\"}}\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "test_a: PASS (allow=true)\n",
+  "err": "",
+  "status": 0
+ },
+ {
+  "name": "path with a nul",
+  "files": {
+   "Dockerfile.rego": "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if input.image.repo == \"alpine\"\n\ndeny_msg contains \"not alpine\" if not allow\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n"
+  },
+  "path": "a\u0000b_test.rego",
+  "run": "",
+  "filename": "Dockerfile",
+  "stdout": "",
+  "err": "stat a\u0000b_test.rego: stat a\u0000b_test.rego: invalid argument",
+  "status": 1
+ },
+ {
+  "name": "policy file invalid name",
+  "files": {
+   "p_test.rego": "package docker\n\ntest_a if true\n"
+  },
+  "path": ".",
+  "run": "",
+  "filename": "../x",
+  "stdout": "",
+  "err": "read policy module ../x.rego: readfile ../x.rego: invalid argument",
+  "status": 1
+ }
+]

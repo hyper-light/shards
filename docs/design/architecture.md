@@ -3437,13 +3437,13 @@ reserves no label: recorded as ours).
   network process's grants and `-p`'s refusal, each failing its E2E. Init's duplicate
   refusal is reached only past the daemon's: unit-tested.
 
-### D108. `buildx policy eval`, SSH certificates, and a failing step's lines
+### D108. `buildx policy eval` and `test`, SSH certificates, and a failing step's lines
 
 buildx v0.37.1 checks policies outside a build: `docker buildx policy eval` asks a policy
 about one source, or prints the input a policy would see of it; `docker buildx policy
-test` runs a policy's tests. shards serves `eval` as `shards buildx policy eval`, in the
-one binary, the builder being shards itself (its platform this host's, as buildx takes its
-builder's first worker's); `test`'s command line is buildx's, its run **missing**.
+test` runs a policy's tests. shards serves both, as `shards buildx policy eval` and
+`shards buildx policy test`, in the one binary, the builder being shards itself (its
+platform this host's, as buildx takes its builder's first worker's).
 
 **The command lines** (`shards_cmdline::commands::{POLICY, POLICY_EVAL, POLICY_TEST}`):
 buildx's flags, help and errors as the Docker CLI runs buildx as its plugin, held byte
@@ -3479,6 +3479,57 @@ file; an invalid platform; a missing path).
 - `--debug`'s `policy response` line prints the decision's `Allow` as its value; Go prints
   the address of the `*bool` (`Allow:0xc000…`), a different number each run. The build's
   policy step prints it the same way (D101).
+
+**`test`** (`build/policy/tester.rs`, `policy/testinput.rs`): RunPolicyTests, then
+runTest's report.
+- The tests: the `*_test.rego` files of the path, or the one file it names (`_test.rego`
+  required), compiled beside the policy (`--filename` + `.rego`) and buildx's own module
+  with the tester's module loader (an import a module of the set has the package of is
+  not read). Every name is read as `os.DirFS(".")` reads the working directory: `./x`,
+  `cwd://x` and absolute names are invalid there, as in buildx, where a build reads them.
+- Each `test_` rule with no arguments and a boolean value or none (`--run`: a substring of
+  its name), asked with the input its `with input as` gives, the same term in each of its
+  rules, decoded as `ast.As` decodes it into buildx's Input types: the term printed as
+  Rego prints it, read as encoding/json reads it (fields exact or folded, unknown ones
+  dropped, a repeated member decoding into what an earlier one left, `null` making a
+  pointer, slice or map nil, times parsed from their text, the first type mismatch in
+  Go's words), and written back as encoding/json writes the types (`omitempty`,
+  `omitzero`; a time with a 24-hour offset fails the run, as rego.Input's marshaling does).
+- An image input resolved first, as resolveTestInput resolves it: the policy alone,
+  asked as CheckPolicy is (the platform parsed again from `os/arch[/variant]`, no source
+  resolver, the home's verifier), each question answered by the build's resolver for the
+  input's platform or the builder's; then the missing image and Git fields the policy
+  reads asked for once more; five rounds at most. The test's own Env kept where it says
+  anything. A test's own `with input as` still overrides it within the test.
+- The decision (`<package>.decision`), and what of the input the package's policy modules
+  read and the input lacks, with the functions' own unknowns; the report as runTest
+  prints it, a line per test, and for a failed one its input, decision, `missing_input`
+  and `metadata_resolve`. A failed test ends the run with status 1 and nothing more
+  (cobrautil.ExitCodeError); an error is `ERROR: …`.
+- The run is on a thread with a build's policy stack (D101), the metadata asked on the
+  calling thread.
+
+**Held to buildx:** `scripts/policy/generate-tester` runs `tester_oracle_test.go` in
+buildx v0.37.1's own policy package: 100 trees of a policy and its tests (passing and
+failing tests; decisions of every shape; inputs of every source and Go's decoding of each;
+images resolved by a deterministic provider; platforms; imports and their failures;
+compile, parse and path errors; `--run`), each run by RunPolicyTests and printed by
+runTest's own code; `crates/shards/testdata/policy/tester.json` holds each one's stdout,
+error and status, all equal in shards. Every guard mutation-checked (45 mutants, each
+killed; the equivalent code removed). `policy_test_runs_as_buildx_does` holds the command
+to buildx's answers measured in shards-dind: tests passing and failing, an image pinned
+by digest resolved from Docker Hub, `--run`, a test file named alone, a missing path,
+policy and tests.
+
+**Differences, recorded:**
+- A test input with a commit or a tag: buildx's `verify_git_signature` dereferences the
+  Git object such an input never has, and panics (the oracle records it); shards finds it
+  unsigned (the function's error, so undefined).
+- A test name two packages define runs once, as the later module's by file name; Go's
+  map makes it either. Of two imports that fail, the first by module name is told; Go's
+  map tells either.
+- `--debug` prints an error as `ERROR: %+v` in buildx, with its Go stack; shards prints
+  the error alone.
 
 **SSH certificates as keys** (`shards_gitsign::ssh`): `verify_git_signature` takes an
 OpenSSH certificate in its key file, and signatures that embed one (`gpg.format=ssh`
@@ -3764,7 +3815,13 @@ ms before, 7.0 ms after); a Rekor v2 entry body is read no deeper than a valid E
 nests (7), and an interface{}'s numbers walked without recursion; an RSA key's exponent
 past 2^31-1 is refused as crypto/rsa refuses it (`crypto/rsa: public exponent too
 large`), in x509's signatures, the keys' verifiers and SCTs alike (a valid signature by
-such a key was accepted before; vectors from `scripts/sigstore/rsa_exponent.go`).
+such a key was accepted before; vectors from `scripts/sigstore/rsa_exponent.go`). What
+encoding/json reads (`tlog::gojson`: Rekor's entry bodies, bundles, image indexes and
+manifests, a policy test's input) is read, walked, copied and dropped without recursion:
+10,000 levels on a 256 KiB thread, as Go reads them, the next refused in its scanner's
+words (`invalid character '[' exceeded max depth`); before, a referrers index 9,999 deep
+overflowed a 2 MiB thread. `tests/limits.rs` holds Go 1.26's answers at the limit,
+measured (json.Unmarshal into ocispecs.Index).
 
 ### D104. Sigstore's trusted root, by The Update Framework
 
