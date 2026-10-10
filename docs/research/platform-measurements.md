@@ -4804,7 +4804,9 @@ revision before comparing a changed API/implementation.
   sent the three descriptors with each request (`spawner`); and posix_spawn's own time,
   here or there, and the round trip to the spawner alone. 10 s a run, direct and spawner
   in turn, 3 rounds at each count. Apple M5 Max, macOS 26.4.1, 2026-10-10, load average
-  17 to 33 for 1,000 more and 40 to 56 for the rest.
+  17 to 33 for 1,000 more and 40 to 56 for the rest. And what a daemon holds: `lsof` of
+  one (a debug build of 5994c0c) with 0, 5, 10 and 20 detached `alpine sleep 600` runs
+  going.
 - **Results.** Holds, n held of those let go and the longest, and posix_spawn's p50, by
   round:
 
@@ -4820,14 +4822,17 @@ revision before comparing a changed API/implementation.
   | 1,000 | spawner | 0/19,430, 0/17,411, 0/18,087 | | 0 of as many | | 187, 165, 167 | 8.7, 38.8, 12.0 |
 
   posix_spawn's p90/p99/max, and the round trip's, are in the runs' output (n 15,126 to
-  24,662 spawns a run; round trips 8,000 a run, p99 30 to 645 µs).
+  24,662 spawns a run; round trips 8,000 a run, p99 30 to 645 µs). The daemon held 29
+  descriptors with no run going, and 41, 51 and 71 with 5, 10 and 20: 2 more a run, so
+  a thousand more is a daemon of some 485 runs.
 - **Consequence.** A child made here held 13 to 20 in 100 listeners let go of while it
   was made, up to 299 ms, and some pipes up to 127 ms; one made by the spawner held none
   of 207,836 listeners and as many pipes. Binding the listeners where no child is made
   would have freed ports alone, not clients' pipes. Through the spawner a spawn costs a
   round trip, 7 to 39 µs at p50, and posix_spawn there took less than here at every
-  count, 22 to 42 µs less at p50 with nothing more open, 190 to 250 µs with a thousand
-  more: XNU copies the parent's whole table into each child. Every child of the daemon
+  count: 22 to 57 µs less at p50 with up to 100 more open, as a daemon of tens of runs
+  holds, and 190 to 250 µs with a thousand more, as XNU copies the parent's whole table
+  into each child. Every child of the daemon
   is now its spawner's (shards_ipc::start_spawner, architecture.md D31), and
   `published_ports_are_free_at_once_while_the_daemon_makes_vms` holds a run's port free
   once its end is told while other runs make VMs.

@@ -1887,9 +1887,9 @@ stack inside the VMM, is superseded by it.
     daemon asks, so a pid stays its child's. Binding the listeners in the network process
     instead, which makes no children (M134's note), would have freed ports alone, not
     clients' pipes; and a spawn through the spawner costs a round trip (7 to 39 µs at
-    p50), where posix_spawn took 22 to 42 µs less at p50 in the spawner than in a process
-    holding nothing more, and 190 to 250 µs less than in one holding a thousand
-    descriptors, each copied into every child it makes.
+    p50), where posix_spawn took 22 to 57 µs less at p50 in the spawner than in a process
+    holding up to 100 descriptors more, as a daemon of tens of runs does (2 a run), and
+    190 to 250 µs less than in one holding a thousand, each copied into every child.
   - *Frames, and what the guest loses of them (PM M104).* The VM's device returns a
     received frame's buffers to the guest together (virtio 1.2 §5.1.6.4.1), and a
     segment's bytes go from a connection's queue to the ring in one copy. A guest short of
