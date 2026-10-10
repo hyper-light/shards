@@ -4831,3 +4831,37 @@ revision before comparing a changed API/implementation.
   is now its spawner's (shards_ipc::start_spawner, architecture.md D31), and
   `published_ports_are_free_at_once_while_the_daemon_makes_vms` holds a run's port free
   once its end is told while other runs make VMs.
+
+### M159. The stack a Rego builtin call takes, on each target CI tests (CI: aarch64-linux-gnu's overflow)
+
+- **Question.** `stack::LEAF`, the stack the policy evaluation keeps for a builtin call,
+  was 181 KiB: 177 measured on aarch64-apple-darwin and 181 on x86_64-apple-darwin.
+  aarch64-unknown-linux-gnu's test of the builtin corpus, on a thread of that much,
+  overflowed (CI, 2026-10-10). What does each target take, on release, which ships, and
+  on test-release, which CI's tests now build (M156)?
+- **Method.** On each CI target that runs tests, `tests/builtins.rs` built on each
+  profile and run with `SHARDS_REGO_LEAF` bisected between 64 and 16,384 KiB, each probe
+  a process of its own: the least that passed, the most that failed, and the least run
+  three times more (the native jobs). CI run 38044351202, revision 41839c7, 2026-10-10.
+- **Results.** KiB a builtin call took at most, the least that passed:
+
+  | target | release | test-release |
+  |---|---:|---:|
+  | aarch64-apple-darwin | 177 | 81 |
+  | x86_64-unknown-linux-gnu | 194 | 103 |
+  | aarch64-unknown-linux-gnu | 205 | 65 or less |
+  | x86_64-pc-windows-msvc | 193 | 129 |
+  | x86_64-unknown-linux-musl | 187 | 95 |
+  | aarch64-unknown-linux-musl | 195 | 95 |
+
+  In the native jobs each least passed three runs more. aarch64-linux-gnu's test-release
+  passed at the bisection's floor. x86_64-apple-darwin and aarch64-pc-windows-msvc are
+  built in CI, not tested; x86_64-apple-darwin's 181 is a Mac's release, as before.
+- **Consequence.** LEAF is now 205 KiB, the most a release build takes: at 181,
+  aarch64-linux-gnu's evaluation let builtin calls start that its stack could not hold.
+  A test-release build takes 46 to 67 % of release's (aarch64-linux-gnu 32 % or less),
+  so its tests no longer hold release to the guards measured on it (LEAF here;
+  RULE_STEP and the policy thread's STACK likewise): CI runs `tests/builtins.rs`,
+  `deep.rs` and `depth.rs` on release too, on every target that runs tests. The larger
+  LEAF leaves the deepest policies `depth.rs` holds (OPA's parser's deepest) running on
+  the policy thread's 123 MiB on aarch64-apple-darwin, release.
