@@ -409,10 +409,112 @@ pub fn fixed_port() -> u16 {
     let port = (0..SPAN)
         .filter_map(|i| u16::try_from(FIRST + (start + i) % SPAN).ok())
         .filter(|port| !handed.contains(port))
-        .find(|&port| std::net::TcpListener::bind(("0.0.0.0", port)).is_ok())
+        .find(|&port| port_free(port))
         .expect("a free port below the ephemeral ranges");
     handed.push(port);
     port
+}
+
+/// Whether TCP port `port` can be bound at every IPv4 address now, asked of a process of
+/// its own that spawns nothing ([`port_probe`]). A socket a test process makes, however
+/// briefly, stays open in each child another of its threads spawns meanwhile until that
+/// child execs, so a probe made here would hold the very port it found free from the
+/// program that binds it next: measured on macOS under load, a listener dropped beside
+/// four spawning threads was still bound for up to 180 ms, with std's spawns and with
+/// posix_spawn's CLOEXEC_DEFAULT alike (project-port-free-flake).
+pub fn port_free(port: u16) -> bool {
+    port_probe_process(port, false)
+        .and_then(|mut probe| {
+            let said = probe.said();
+            let _ = probe.child.wait();
+            said
+        })
+        .is_some_and(|said| said == "port free")
+}
+
+/// `port` held at every IPv4 address by a process of its own, as another program holds it,
+/// until the holder is dropped: then its socket closes with it, held by no child of this
+/// process meanwhile.
+pub fn hold_port(port: u16) -> PortHolder {
+    let mut probe = port_probe_process(port, true).expect("a process to hold the port");
+    match probe.said() {
+        Some(said) if said == "port held" => probe,
+        said => panic!("{port}: not held: {said:?}"),
+    }
+}
+
+/// A process of this test binary's running [`port_probe`] alone.
+pub struct PortHolder {
+    child: std::process::Child,
+    lines: BufReader<std::process::ChildStdout>,
+}
+
+impl PortHolder {
+    /// The probe's word: `port free`, `port held` or `port taken …`.
+    fn said(&mut self) -> Option<String> {
+        let mut line = String::new();
+        while self.lines.read_line(&mut line).ok()? > 0 {
+            // After libtest's `test common::port_probe ... `, on its line.
+            if let Some((_, said)) = line.trim_end().split_once("PORT_PROBE ") {
+                return Some(said.to_string());
+            }
+            line.clear();
+        }
+        None
+    }
+}
+
+impl Drop for PortHolder {
+    fn drop(&mut self) {
+        // Its stdin closed, the holder lets go and ends.
+        drop(self.child.stdin.take());
+        let _ = self.child.wait();
+    }
+}
+
+fn port_probe_process(port: u16, hold: bool) -> Option<PortHolder> {
+    let mut command = Command::new(std::env::current_exe().ok()?);
+    command
+        .args([
+            "common::port_probe",
+            "--exact",
+            "--ignored",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env("SHARDS_PORT_PROBE", port.to_string())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    if hold {
+        command.env("SHARDS_PORT_HOLD", "1");
+    }
+    let mut child = command.spawn().ok()?;
+    let lines = BufReader::new(child.stdout.take()?);
+    Some(PortHolder { child, lines })
+}
+
+/// The process [`port_free`] and [`hold_port`] ask: it binds the port named by
+/// `SHARDS_PORT_PROBE` and says whether it could, holding it, with `SHARDS_PORT_HOLD`, until
+/// its stdin closes. Nothing else of the test binary runs in it.
+#[test]
+#[ignore = "a process of its own for port_free and hold_port, which run it"]
+fn port_probe() {
+    let Some(port) = std::env::var("SHARDS_PORT_PROBE")
+        .ok()
+        .and_then(|p| p.parse::<u16>().ok())
+    else {
+        return;
+    };
+    match std::net::TcpListener::bind(("0.0.0.0", port)) {
+        Ok(held) if std::env::var_os("SHARDS_PORT_HOLD").is_some() => {
+            println!("PORT_PROBE port held");
+            let _ = io::stdin().read(&mut [0u8; 1]);
+            drop(held);
+        }
+        Ok(_) => println!("PORT_PROBE port free"),
+        Err(e) => println!("PORT_PROBE port taken {e}"),
+    }
 }
 
 /// The network process: each networked VM's.

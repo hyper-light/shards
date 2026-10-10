@@ -4568,3 +4568,39 @@ revision before comparing a changed API/implementation.
   cosign verifies, and reads cosign's; both registries' kinds of listing work both ways.
   Unmeasured: registries with the API that answer no `OCI-Subject` (shards then asks the
   API, as cosign does), and keyless signing, which needs Fulcio and Rekor.
+
+### M134. How long a socket a process lets go stays bound while it spawns children (CI: the published-port bind race)
+
+- **Question.** The published-port tests found a port refused (EADDRINUSE) right after
+  the test had bound and let go of it, held for 10 to 106 ms by nothing `ss`, `netstat`
+  or `lsof` could see (project-port-free-flake, 2026-10-06 to 2026-10-10, on this host
+  and a GitHub Linux runner). Does a child another thread spawns hold such a socket?
+- **Method.** `docs/research/measurements/bind-race`: one thread binds a port (std,
+  `SO_REUSEADDR`), lets it go and binds it again, ten seconds; 0, 4 or 16 threads spawn
+  `/usr/bin/true` meanwhile, by std's `Command` or by `posix_spawn` with
+  `POSIX_SPAWN_CLOEXEC_DEFAULT`, as `shards_ipc::spawn` does on macOS. Each second bind
+  refused is retried until it succeeds, and that wait recorded. Apple M5 Max, macOS
+  26.4.1, 2026-10-10, load average 19 to 33.
+- **Results.** Holds of a let-go listener, n / p50 / p90 / p99 / max:
+
+  | spawns | spawning threads | drops | second binds refused | hold |
+  |---|---:|---:|---:|---|
+  | none | 0 | 21,310 | 0 | — |
+  | std | 4 | 17,262 | 2,919 | 2,919 / 0.42 / 1.42 / 3.68 / 7.30 ms |
+  | std | 16 | 12,279 | 2,459 | 2,459 / 0.42 / 1.96 / 18.6 / 238.9 ms |
+  | CLOEXEC_DEFAULT | 4 | 18,830 | 2,906 | 2,906 / 0.36 / 1.20 / 3.28 / 18.2 ms |
+  | CLOEXEC_DEFAULT | 16 | 12,098 | 3,048 | 3,048 / 0.37 / 1.37 / 16.4 / 153.8 ms |
+
+- **Consequence.** A child holds every descriptor its parent had at the spawn until it
+  execs, close-on-exec ones included, `POSIX_SPAWN_CLOEXEC_DEFAULT` too (XNU copies the
+  table before exec closes them); glibc's `posix_spawn` (sysdeps/unix/sysv/linux/spawni.c:
+  `clone(CLONE_VM | CLONE_VFORK)`, the descriptor table copied) does the same until
+  `execve`, by its source, not measured here. So a listener a multithreaded process drops while another of its
+  threads spawns stays bound in the child, up to a quarter of a second under load. The
+  test process, its tests spawning in parallel, held its own probes of the ports it then
+  had a run publish: those probes now run in a process of their own that spawns nothing
+  (tests/common `port_free`, `hold_port`). The daemon holds a run's listeners from
+  binding them until the run is taken, while its other threads spawn VMs: a spawn then
+  holds them until it execs, so a run shorter than that spawn may end before its ports
+  are free. Not seen in a failure; the fix (the listeners bound by the network process,
+  which spawns nothing, so the daemon holds none) is recorded as open.
