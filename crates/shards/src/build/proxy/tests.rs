@@ -433,6 +433,9 @@ fn the_loopback_is_never_reached_through_the_proxy() {
     assert!(!reachable("fe80::1".parse().unwrap()));
     assert!(!reachable("0.0.0.0".parse().unwrap()));
     assert!(!reachable("224.0.0.1".parse().unwrap()));
+    assert!(!reachable("255.255.255.255".parse().unwrap()));
+    assert!(!reachable("::".parse().unwrap()));
+    assert!(!reachable("ff02::1".parse().unwrap()));
     assert!(!reachable("::127.0.0.1".parse().unwrap()));
     assert!(reachable("10.0.0.1".parse().unwrap()));
     assert!(reachable("93.184.215.14".parse().unwrap()));
@@ -629,6 +632,98 @@ fn a_tls_body_ended_bare_is_no_material() {
     assert_eq!(
         capture.incomplete.first().map(|i| i.reason),
         Some("body_read_failed")
+    );
+}
+
+/// Reads `c` until `end` comes, or it closes or times out.
+fn read_until(c: &mut UnixStream, end: &[u8]) -> Vec<u8> {
+    let mut got = Vec::new();
+    let mut buf = [0u8; 4096];
+    while !got.ends_with(end) {
+        match c.read(&mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => got.extend_from_slice(&buf[..n]),
+        }
+    }
+    got
+}
+
+/// A request's head is waited for so long alone (BuildKit's ReadHeaderTimeout, 30 s; here
+/// 300 ms), the connection then closed unanswered, as Go's server closes it; the wait
+/// between one request and the next is not bounded, only each head from its first byte.
+#[test]
+fn heads_are_waited_for_so_long_alone() {
+    let mut proxy = Proxy::new(scratch("head-time"), &shards_image::store::Limits::none()).unwrap();
+    proxy.head_time = Duration::from_millis(300);
+    let ((cut, waited, first, second), _, _) = serving(
+        &proxy,
+        |_| false,
+        |socket, _| {
+            let mut c = UnixStream::connect(socket).unwrap();
+            c.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+            let t = Instant::now();
+            c.write_all(b"GET http://x/ HTTP/1.1\r\nHost: x\r\n").unwrap();
+            let mut cut = Vec::new();
+            let _ = c.read_to_end(&mut cut);
+            let waited = t.elapsed();
+            let mut k = UnixStream::connect(socket).unwrap();
+            k.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+            let request = b"GET http://x/ HTTP/1.1\r\nHost: x\r\n\r\n";
+            k.write_all(request).unwrap();
+            let first = read_until(&mut k, b"Forbidden\n");
+            std::thread::sleep(Duration::from_millis(700));
+            k.write_all(request).unwrap();
+            let second = read_until(&mut k, b"Forbidden\n");
+            (cut, waited, first, second)
+        },
+    );
+    assert!(cut.is_empty(), "{}", String::from_utf8_lossy(&cut));
+    assert!(
+        waited >= Duration::from_millis(250) && waited < Duration::from_secs(5),
+        "{waited:?}"
+    );
+    assert!(
+        first.ends_with(b"Forbidden\n"),
+        "{}",
+        String::from_utf8_lossy(&first)
+    );
+    assert!(
+        second.ends_with(b"Forbidden\n"),
+        "{}",
+        String::from_utf8_lossy(&second)
+    );
+}
+
+/// A step holds so many connections open at once (512; here 2): another waits, unserved,
+/// until one of them ends.
+#[test]
+fn a_step_holds_so_many_connections_at_once() {
+    let mut proxy = Proxy::new(scratch("connections"), &shards_image::store::Limits::none()).unwrap();
+    proxy.connections = 2;
+    let ((before, after), _, _) = serving(
+        &proxy,
+        |_| false,
+        |socket, _| {
+            let held: Vec<UnixStream> = (0..2).map(|_| UnixStream::connect(socket).unwrap()).collect();
+            // Both taken before the third comes.
+            std::thread::sleep(Duration::from_millis(300));
+            let mut third = UnixStream::connect(socket).unwrap();
+            third
+                .write_all(b"GET http://x/ HTTP/1.1\r\nHost: x\r\n\r\n")
+                .unwrap();
+            third.set_read_timeout(Some(Duration::from_millis(700))).unwrap();
+            let mut buf = [0u8; 64];
+            let before = third.read(&mut buf).is_err();
+            drop(held);
+            third.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+            (before, read_until(&mut third, b"Forbidden\n"))
+        },
+    );
+    assert!(before, "a third connection was served while two were held");
+    assert!(
+        after.ends_with(b"Forbidden\n"),
+        "{}",
+        String::from_utf8_lossy(&after)
     );
 }
 

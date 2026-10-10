@@ -1657,4 +1657,37 @@ mod tests {
         assert_eq!(e, "/etc/ssl/cert.pem exceeds 10485760 bytes");
         assert!(inject_ca(&r, b"no PEM").is_err());
     }
+
+    /// A bundle of 10 MiB to the byte is read, and the CA goes in; past that, it no longer
+    /// reads, so the cleanup leaves it, as BuildKit's readCertBundle leaves it.
+    #[test]
+    fn a_bundle_of_ten_mib_takes_the_ca() {
+        let s = scratch("most");
+        std::fs::create_dir_all(s.0.join("etc/ssl")).unwrap();
+        let bundle = s.0.join("etc/ssl/cert.pem");
+        std::fs::File::create(&bundle)
+            .unwrap()
+            .set_len(proxyca::MOST)
+            .unwrap();
+        let r = Root::open(&s.0).unwrap();
+        let injected = inject_ca(&r, CA).unwrap().unwrap();
+        let grown = std::fs::metadata(&bundle).unwrap().len();
+        assert!(grown > proxyca::MOST, "{grown}");
+        injected.clean(&s.0);
+        assert_eq!(std::fs::metadata(&bundle).unwrap().len(), grown);
+    }
+
+    /// A bundle is read only where it is a regular file: a FIFO there is refused, never
+    /// read as an empty one.
+    #[test]
+    fn a_bundle_that_is_no_file_is_refused() {
+        let s = scratch("nofile");
+        std::fs::create_dir_all(s.0.join("etc/ssl")).unwrap();
+        let fifo = CString::new(s.0.join("etc/ssl/cert.pem").as_os_str().as_bytes()).unwrap();
+        // SAFETY: a NUL-terminated path.
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o644) }, 0);
+        let r = Root::open(&s.0).unwrap();
+        let e = read_bundle(&r, b"/etc/ssl/cert.pem").unwrap_err().to_string();
+        assert_eq!(e, "/etc/ssl/cert.pem is not a regular file");
+    }
 }

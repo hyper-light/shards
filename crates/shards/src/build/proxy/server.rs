@@ -639,6 +639,10 @@ pub struct Proxy {
     pub(super) tls: Arc<rustls::ClientConfig>,
     /// The addresses its requests may go to ([`reachable`]).
     pub(super) reach: fn(std::net::IpAddr) -> bool,
+    /// How long a request's head may take ([`HEAD_TIME`]).
+    pub(super) head_time: Duration,
+    /// The most connections a step holds open at once ([`CONNECTIONS`]).
+    pub(super) connections: usize,
     /// The room its files of request bodies have, past which they stop (SHARDS_KEEP_FREE).
     room: shards_image::store::Room,
 }
@@ -676,6 +680,8 @@ impl Proxy {
             authority: ca::Authority::new()?,
             tls,
             reach: reachable,
+            head_time: HEAD_TIME,
+            connections: CONNECTIONS,
             room,
         })
     }
@@ -806,7 +812,7 @@ impl<'p> Session<'p> {
             if polled[1].revents != 0 || self.ended.load(Ordering::SeqCst) {
                 return;
             }
-            if self.live.lock().unwrap_or_else(PoisonError::into_inner).1.len() >= CONNECTIONS {
+            if self.live.lock().unwrap_or_else(PoisonError::into_inner).1.len() >= self.proxy.connections {
                 std::thread::sleep(Duration::from_millis(1));
                 continue;
             }
@@ -956,7 +962,8 @@ impl<'p> Session<'p> {
                     return;
                 }
             }
-            reader.get_mut().deadline = Some(if first { began } else { Instant::now() } + HEAD_TIME);
+            reader.get_mut().deadline =
+                Some(if first { began } else { Instant::now() } + self.proxy.head_time);
             first = false;
             let head = head::read(&mut reader, true, after_post);
             reader.get_mut().deadline = None;
