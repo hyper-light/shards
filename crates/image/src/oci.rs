@@ -484,6 +484,181 @@ mod tests {
         assert!(parse_config(b"{").is_err());
     }
 
+    /// The reader `parse_config` used before Go's (serde, by exact key), kept here alone to
+    /// measure against (M128): its types and its reading, as they were at aa7a2d3.
+    mod serde_reader {
+        use std::collections::BTreeMap;
+
+        use serde::Deserialize;
+
+        #[derive(Deserialize)]
+        #[allow(dead_code)]
+        pub struct ImageConfig {
+            #[serde(default)]
+            architecture: String,
+            #[serde(default)]
+            os: String,
+            #[serde(default)]
+            variant: Option<String>,
+            #[serde(default)]
+            created: Option<String>,
+            #[serde(default)]
+            config: Option<RunConfig>,
+            rootfs: RootFs,
+        }
+
+        #[derive(Deserialize, Default)]
+        #[serde(rename_all = "PascalCase")]
+        #[allow(dead_code)]
+        struct RunConfig {
+            #[serde(default)]
+            user: Option<String>,
+            #[serde(default)]
+            env: Option<Vec<String>>,
+            #[serde(default)]
+            entrypoint: Option<Vec<String>>,
+            #[serde(default)]
+            cmd: Option<Vec<String>>,
+            #[serde(default)]
+            working_dir: Option<String>,
+            #[serde(default)]
+            stop_signal: Option<String>,
+            #[serde(default)]
+            healthcheck: Option<HealthConfig>,
+            #[serde(default)]
+            shell: Option<Vec<String>>,
+            #[serde(default, deserialize_with = "keys")]
+            exposed_ports: Vec<String>,
+            #[serde(default, deserialize_with = "keys")]
+            volumes: Vec<String>,
+            #[serde(default)]
+            labels: Option<BTreeMap<String, String>>,
+        }
+
+        #[derive(Deserialize, Default)]
+        #[serde(rename_all = "PascalCase")]
+        #[allow(dead_code)]
+        struct HealthConfig {
+            #[serde(default)]
+            test: Option<Vec<String>>,
+            #[serde(default)]
+            interval: i64,
+            #[serde(default)]
+            timeout: i64,
+            #[serde(default)]
+            start_period: i64,
+            #[serde(default)]
+            start_interval: i64,
+            #[serde(default)]
+            retries: i64,
+        }
+
+        #[derive(Deserialize)]
+        struct RootFs {
+            #[serde(rename = "type")]
+            kind: String,
+            #[serde(default, deserialize_with = "list")]
+            #[allow(dead_code)]
+            diff_ids: Vec<String>,
+        }
+
+        fn list<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(d: D) -> Result<Vec<T>, D::Error> {
+            let v: Option<Vec<T>> = Deserialize::deserialize(d)?;
+            Ok(v.unwrap_or_default())
+        }
+
+        fn keys<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
+            let map: Option<BTreeMap<String, serde::de::IgnoredAny>> = Deserialize::deserialize(d)?;
+            Ok(map.map(|m| m.into_keys().collect()).unwrap_or_default())
+        }
+
+        pub fn parse_config(bytes: &[u8]) -> Result<ImageConfig, String> {
+            let config: ImageConfig =
+                serde_json::from_slice(bytes).map_err(|e| format!("image config: {e}"))?;
+            if config.rootfs.kind != "layers" {
+                return Err(format!("rootfs type {:?} is not \"layers\"", config.rootfs.kind));
+            }
+            Ok(config)
+        }
+    }
+
+    /// M128: what reading an image's config costs (`parse_config`, which every pull, load,
+    /// listing and run takes), for a config of a BuildKit build's size, one with a long
+    /// history, and one near the largest read (`MAX_CONFIG`): n readings each by Go's
+    /// reader and by the serde reader it replaced, interleaved, each reading's microseconds
+    /// at p50, p90, p99 and max. docs/research/measurements/image-config/run.sh runs it.
+    #[test]
+    #[ignore]
+    fn parse_config_costs() {
+        let history = |n: usize| {
+            (0..n)
+                .map(|i| {
+                    format!(
+                        r#"{{"created":"2024-01-02T03:04:05.{i:09}Z","created_by":"RUN /bin/sh -c step {i} && make install","comment":"buildkit.dockerfile.v0"{}}}"#,
+                        if i % 3 == 0 { r#","empty_layer":true"# } else { "" }
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        let config = |steps: usize, env: usize| {
+            let env: Vec<String> = (0..env).map(|i| format!(r#""VAR_{i}=value-{i}""#)).collect();
+            let labels: Vec<String> = (0..env.len())
+                .map(|i| format!(r#""org.example.label.{i}":"{i}""#))
+                .collect();
+            let diff_ids: Vec<String> = (0..steps.div_ceil(3))
+                .map(|i| format!(r#""sha256:{i:064x}""#))
+                .collect();
+            format!(
+                r#"{{"architecture":"arm64","os":"linux","created":"2024-01-02T03:04:05Z","config":{{"User":"app","Env":[{}],"Entrypoint":["/bin/app"],"Cmd":["serve"],"WorkingDir":"/srv","Labels":{{{}}},"ExposedPorts":{{"80/tcp":{{}},"443/tcp":{{}}}},"Volumes":{{"/data":{{}}}},"StopSignal":"SIGTERM"}},"rootfs":{{"type":"layers","diff_ids":[{}]}},"history":[{}]}}"#,
+                env.join(","),
+                labels.join(","),
+                diff_ids.join(","),
+                history(steps)
+            )
+        };
+        let quantiles = |mut took: Vec<u128>| {
+            took.sort_unstable();
+            let q = |p: usize| took[(took.len() * p / 100).min(took.len() - 1)];
+            format!(
+                "p50 {} p90 {} p99 {} max {}",
+                q(50),
+                q(90),
+                q(99),
+                took[took.len() - 1]
+            )
+        };
+        for (name, text, n) in [
+            ("build-sized", config(12, 8), 2000),
+            ("long history", config(2000, 500), 200),
+            ("near MAX_CONFIG", config(18000, 4000), 40),
+        ] {
+            assert!(text.len() as u64 <= MAX_CONFIG, "{name}: {}", text.len());
+            assert!(parse_config(text.as_bytes()).is_ok(), "{name}");
+            assert!(serde_reader::parse_config(text.as_bytes()).is_ok(), "{name}");
+            let (mut go, mut serde) = (Vec::with_capacity(n), Vec::with_capacity(n));
+            for i in 0..n {
+                // Interleaved, each first in turn, so a busy host weighs on both alike.
+                for which in [i % 2, 1 - i % 2] {
+                    let at = std::time::Instant::now();
+                    if which == 0 {
+                        std::hint::black_box(parse_config(std::hint::black_box(text.as_bytes()))).unwrap();
+                        go.push(at.elapsed().as_micros());
+                    } else {
+                        std::hint::black_box(serde_reader::parse_config(std::hint::black_box(
+                            text.as_bytes(),
+                        )))
+                        .unwrap();
+                        serde.push(at.elapsed().as_micros());
+                    }
+                }
+            }
+            eprintln!("{name}: {} bytes, n={n}", text.len());
+            eprintln!("{name}: go {}", quantiles(go));
+            eprintln!("{name}: serde {}", quantiles(serde));
+        }
+    }
+
     #[test]
     fn layers_are_read_as_containerd_reads_their_media_types() {
         use LayerCompression::{None as Raw, Sniffed};

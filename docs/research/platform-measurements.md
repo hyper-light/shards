@@ -4321,3 +4321,34 @@ revision before comparing a changed API/implementation.
   MiB, held to every target by those two tests. A build reads each chain once.
   Compiling a policy once a build is the largest cost left; a compiled program is not
   `Send`, so that needs a long-lived evaluation thread (unmeasured).
+
+### M128. What reading an image's config as Docker reads it costs
+
+- **Question.** `parse_config` now reads a config as moby's encoding/json does
+  (`shards_image::config`: Go's scanner builds the whole document, then every field is
+  read, every history entry's time parsed, so each Go type's answer comes from one
+  reading); before, serde read it by exact key and skipped what it did not model, the
+  history among it. What does that cost, on a config of a build's size and on large ones?
+- **Method.** `docs/research/measurements/image-config/run.sh` runs `parse_config_costs`
+  (ignored; release): Go's reader and a copy of the serde reader it replaced, n readings
+  each, interleaved and each first in turn, so a busy host weighs on both alike. Three
+  configs: a BuildKit build's (12 history steps, 8 variables and labels, 2.6 KB); a long
+  history (2000 steps, 500 variables and labels, 358 KB); one near `MAX_CONFIG` (18000
+  steps, 4000 variables and labels, 3.2 MB). Apple M5 Max, macOS 26.4.1, revision
+  258bea2, 2026-10-09, load average 20 (other builds running).
+- **Results.** Microseconds, the first of two runs (the second's p50s within 3%).
+
+  | config | n | Go p50 / p90 / p99 / max | serde p50 / p90 / p99 / max |
+  |---|---|---|---|
+  | build-sized, 2.6 KB | 2000 | 14 / 15 / 19 / 52 | 2 / 3 / 3 / 12 |
+  | long history, 358 KB | 200 | 1634 / 1730 / 1844 / 1852 | 274 / 295 / 338 / 349 |
+  | near MAX_CONFIG, 3.2 MB | 40 | 14415 / 15655 / 16617 / 16617 | 2408 / 2567 / 2882 / 2882 |
+
+  - The second run: build-sized 14 / 15 / 19 / 53 against 2 / 3 / 4 / 9; long history
+    1598 / 1807 / 2456 / 2737 against 254 / 297 / 334 / 397; near MAX_CONFIG
+    14862 / 15669 / 20293 / 20293 against 2573 / 2644 / 4126 / 4126.
+- **Consequence.** Reading as Go reads costs 5 to 7 times what serde's reading did,
+  12 µs more on a build's config, where a run's budget is 5 ms; it reads what serde
+  skipped (each history entry and its time), which Docker's own answers depend on.
+  Where the time goes within the reading (the scanner's tree, the fields, the times) is
+  unmeasured, and so is a reader that decodes as it scans, as encoding/json does.
