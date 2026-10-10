@@ -476,15 +476,30 @@ mod tests {
         assert_eq!(got, "state");
         for (access, path, why) in [
             (Access::Read, template.join("g-1/memory"), "not a regular file"),
-            (Access::ReadIfThere, template.join("g-1/working-set"), "not a regular file"),
+            (
+                Access::ReadIfThere,
+                template.join("g-1/working-set"),
+                "not a regular file",
+            ),
             (Access::Read, template.join("g-2/state"), "g-2/state"),
-            (Access::Write, template.join("g-1/state"), "writes nothing of its template"),
-            (Access::MakeDir, template.join("g-3"), "writes nothing of its template"),
+            (
+                Access::Write,
+                template.join("g-1/state"),
+                "writes nothing of its template",
+            ),
+            (
+                Access::MakeDir,
+                template.join("g-3"),
+                "writes nothing of its template",
+            ),
         ] {
             let e = ask(vec![(access, path.clone())]).unwrap_err();
             assert!(e.contains(why), "{}: {e}", path.display());
         }
-        assert_eq!(ask(vec![(Access::ReadIfThere, template.join("g-1/absent"))]), Ok(()));
+        assert_eq!(
+            ask(vec![(Access::ReadIfThere, template.join("g-1/absent"))]),
+            Ok(())
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
