@@ -168,10 +168,18 @@ fn serve(
     if raw && let Err(e) = terminal::make_raw() {
         return failed(&format!("the terminal's raw mode: {e}"));
     }
-    let mut threads = Some((signals, filler, proxy));
+    let mut signals = Some(signals);
+    // Their forwarder, once anything may be waited for: then SIGINT and SIGTERM end the
+    // client as it waits for a daemon to start, as they end the Docker CLI before its
+    // container is made; else once the request is on its way.
+    let forwarding = |signals: &mut Option<Option<Signals>>| match signals.take() {
+        Some(taken) => forward(taken, current),
+        None => Ok(()),
+    };
+    let mut threads = Some((filler, proxy));
     // A daemon from another build answers RESTART once it has stepped aside.
     for _ in 0..2 {
-        let conn = match connect(home, daemon, &mut started) {
+        let conn = match connect(home, daemon, &mut started, &mut || forwarding(&mut signals)) {
             Ok(conn) => conn,
             Err(e) => return failed(&e),
         };
@@ -187,15 +195,13 @@ fn serve(
             Err(e) => return failed(&format!("asking the daemon: {e}")),
             Ok(()) => {}
         }
-        if let Some((signals, filler, proxy)) = threads.take() {
-            if let Err(e) = forward(signals, current) {
-                return failed(&e);
-            }
-            if let Some(filler) = filler
-                && let Err(e) = fill_stdin(filler, proxy, request.detach_said)
-            {
-                return failed(&e);
-            }
+        if let Err(e) = forwarding(&mut signals) {
+            return failed(&e);
+        }
+        if let Some((Some(filler), proxy)) = threads.take()
+            && let Err(e) = fill_stdin(filler, proxy, request.detach_said)
+        {
+            return failed(&e);
         }
         // Signals go to the command, and its terminal follows ours, once it is there: a
         // run's once the daemon has made its container, an exec's at once.
@@ -286,7 +292,8 @@ pub fn container(home: &Path, daemon: &Path, command: &Command, fds: &[std::os::
     };
     // A daemon from another build answers RESTART once it has stepped aside.
     for _ in 0..2 {
-        let conn = match connect(home, daemon, &mut started) {
+        // Its signals act on it as they would, as it waits too.
+        let conn = match connect(home, daemon, &mut started, &mut || Ok(())) {
             Ok(conn) => conn,
             Err(e) => return failed(&e),
         };
@@ -314,7 +321,7 @@ pub fn ask(
     let mut started = enter(home, daemon)?;
     // A daemon from another build answers RESTART once it has stepped aside.
     for _ in 0..2 {
-        let conn = connect(home, daemon, &mut started)?;
+        let conn = connect(home, daemon, &mut started, &mut || Ok(()))?;
         match shards_ipc::send(&conn, kind::CONTAINER, &command.encode(), fds) {
             Err(e) if unread(&e) => continue,
             Err(e) => return Err(format!("asking the daemon: {e}")),
@@ -548,7 +555,12 @@ fn enter(home: &Path, daemon: &Path) -> Result<bool, String> {
 
 /// The daemon's connection, starting the daemon if none listens and `started` says this
 /// process has not started one yet.
-fn connect(home: &Path, daemon: &Path, started: &mut bool) -> Result<UnixStream, String> {
+fn connect(
+    home: &Path,
+    daemon: &Path,
+    started: &mut bool,
+    waiting: &mut dyn FnMut() -> Result<(), String>,
+) -> Result<UnixStream, String> {
     match UnixStream::connect(SOCKET) {
         Ok(conn) => return Ok(conn),
         Err(e)
@@ -558,6 +570,9 @@ fn connect(home: &Path, daemon: &Path, started: &mut bool) -> Result<UnixStream,
             ) => {}
         Err(e) => return Err(format!("{}: {e}", home.join(SOCKET).display())),
     }
+    // What follows may wait as long as a daemon takes to start, or the one it replaces to
+    // end its runs: what must not wait with it goes first.
+    waiting()?;
     if !*started {
         start(daemon, home)?;
         *started = true;

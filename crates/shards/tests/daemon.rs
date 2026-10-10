@@ -175,6 +175,57 @@ fn alive(pid: i32) -> bool {
     unsafe { libc::kill(pid, 0) == 0 }
 }
 
+/// A client that must wait for its daemon to start ends of SIGTERM at once, as the Docker
+/// CLI ends before its container is made: with 128 and the signal's number, nothing said
+/// (docker/cli cmd/docker/docker.go, notifyContext). Its daemon cannot start here, the
+/// home's lock held; then it goes, seeing one listen (`take_lock`), before anything is
+/// asserted, so that a failing test leaves no process behind.
+#[test]
+fn a_client_waiting_for_its_daemon_ends_on_sigterm() {
+    use std::os::fd::AsRawFd;
+    let home = TempDir::new("daemon-client-waits");
+    let lock = std::fs::File::create(home.join("daemon.lock")).unwrap();
+    // SAFETY: flock(2) on a descriptor this test holds, released as it closes.
+    let locked = unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    assert_eq!(locked, 0);
+    let mut client = spawn_run(&home, &["--pull", "never", "nope"]);
+    // Waiting for its daemon, which it started once its signals were taken: the daemon
+    // has said something before it waits for the lock.
+    let log = home.join("daemon.log");
+    let deadline = Instant::now() + TIMEOUT;
+    while !std::fs::metadata(&log).is_ok_and(|m| m.len() > 0) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    // SAFETY: kill(2) of our own child, not yet waited for.
+    unsafe { libc::kill(client.id() as libc::pid_t, libc::SIGTERM) };
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let status = loop {
+        if let Some(status) = client.try_wait().unwrap() {
+            break Some(status);
+        }
+        if Instant::now() >= deadline {
+            let _ = client.kill();
+            let _ = client.wait();
+            break None;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    let mut said = String::new();
+    let _ = client.stderr.take().unwrap().read_to_string(&mut said);
+    // Its daemon, waiting for the lock, sees one listen and goes.
+    let listener = std::os::unix::net::UnixListener::bind(home.join("daemon.sock")).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let deadline = Instant::now() + TIMEOUT;
+    let mut looked = false;
+    while !looked && Instant::now() < deadline {
+        looked = listener.accept().is_ok();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let status = status.expect("the client waited on past SIGTERM");
+    assert_eq!((status.code(), said.as_str()), (Some(143), ""), "{status:?}");
+    assert!(looked, "the client's daemon never looked");
+}
+
 #[test]
 fn parallel_runs_keep_their_own_stdio() {
     if cannot_run_vms() || cannot_snapshot() {

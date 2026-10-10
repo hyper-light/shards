@@ -115,11 +115,11 @@ impl Join {
     pub fn attach(&self, file: File) -> Result<(u64, u64), String> {
         let len = file
             .metadata()
-            .map_err(|e| format!("a joining image: {e}"))?
+            .map_err(|e| format!("a file for the join disk: {e}"))?
             .len();
         if len == 0 || len % SECTOR != 0 {
             return Err(format!(
-                "a joining image of {len} bytes: a join disk takes whole sectors of {SECTOR}"
+                "a file of {len} bytes: a join disk takes whole sectors of {SECTOR}"
             ));
         }
         let start = {

@@ -150,11 +150,12 @@ pub fn main(device: &str, template: bool) -> ! {
     power_off()
 }
 
-/// Kills every process but init, the kernel's threads, and those of the containers joined
-/// to the workload's network (D119), each in a cgroup of its own (`join-N`): the workload's
-/// end ends the rest of its microVM, and its joiners go on. Looked at again until none is
-/// left to kill, as one may have forked meanwhile.
-fn kill_all_but_joiners() {
+/// Kills every process but init, the kernel's threads, those of the containers joined to
+/// the workload's network (D119), each in a cgroup of its own (`join-N`), and `spared`,
+/// init's own children working for them: the workload's end ends the rest of its
+/// microVM, and its joiners go on. Looked at again until none is left to kill, as one may
+/// have forked meanwhile.
+fn kill_all_but_joiners(spared: &[libc::pid_t]) {
     // A process forks at most once between looks; each look kills what it finds.
     for _ in 0..64 {
         let Ok(dir) = std::fs::read_dir("/proc") else {
@@ -169,7 +170,7 @@ fn kill_all_but_joiners() {
             else {
                 continue;
             };
-            if pid <= 2 {
+            if pid <= 2 || spared.contains(&pid) {
                 continue;
             }
             // The kernel's threads are kthreadd's (pid 2) children: the fourth field of
@@ -2346,6 +2347,26 @@ struct Exec {
     ended: bool,
     /// A container joining the workload's network (D119), rather than a command beside it.
     joined: bool,
+    /// A joiner's writable layer, as the host asks for it once it has the joiner's end.
+    save: Save,
+    /// Init's own work for a joiner (D119), its built-in in a child of init's: spared as
+    /// the workload's end ends the rest, as the joiner is.
+    into_joiner: bool,
+}
+
+/// A joiner's writable layer after its end (D119), as the workload's is after its own
+/// (layer.rs, `save`): its connection kept until the host closes it, having asked for the
+/// layer ([`kind::SAVE`]) or not.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Save {
+    /// Not asked for.
+    Unasked,
+    /// Asked for, to send once the joiner's end is.
+    Asked,
+    /// Being sent by a child of init's, this one.
+    Sending(libc::pid_t),
+    /// Sent, or not to be: the host closes the connection once it has it.
+    Done,
 }
 
 /// One of init's own for an exec ([`Spec::builtin`]), done in a child of init's, so that
@@ -2646,11 +2667,15 @@ fn start_joiner(
     spec: &Spec,
 ) -> Result<Started, Failure> {
     let (offset, len) = range.map_err(setup_failed)?;
+    let layer = crate::join::layer_range(&spec.setup)
+        .transpose()
+        .map_err(setup_failed)?;
     joiner_takes(&spec.setup)?;
     let join = crate::join::Join {
         offset,
         len,
         workload,
+        layer,
     };
     let standby = Standby::forked(Born::Joined(join, id), (None, None))?;
     let pid = standby.pid;
@@ -2821,6 +2846,8 @@ impl Exec {
             status: None,
             ended: false,
             joined: false,
+            save: Save::Unasked,
+            into_joiner: false,
         };
         exec.to_conn
             .extend(&[&run::header(kind::HELLO, run::TOKEN as u32), token]);
@@ -2840,7 +2867,10 @@ impl Exec {
         } else if let Some(joiner) = into {
             match joiner.and_then(|j| joiners.iter().find(|(id, _)| *id == j)) {
                 // Init's own work, in the joiner's namespaces and cgroup.
-                Some(&(id, pid)) if spec.builtin != 0 => builtin(spec.builtin, &spec.argv, Some((pid, id))),
+                Some(&(id, pid)) if spec.builtin != 0 => {
+                    exec.into_joiner = true;
+                    builtin(spec.builtin, &spec.argv, Some((pid, id)))
+                }
                 Some(&(joiner, pid)) => {
                     // The joiner's process, but for what the exec says (`--privileged`).
                     let mut process = joined()
@@ -2919,12 +2949,61 @@ impl Exec {
     }
 
     /// Whether everything of it is said: its status known, its output drained, its EXIT
-    /// sent, or its connection gone.
+    /// sent, or its connection gone. A joiner's connection is the host's to close, once it
+    /// has asked for its writable layer or not (D119).
     fn finished(&self) -> bool {
         self.status.is_some()
             && self.stdout.is_none()
             && self.stderr.is_none()
-            && (self.conn.is_none() || self.ended && self.to_conn.is_empty())
+            && !matches!(self.save, Save::Sending(_))
+            && (self.conn.is_none() || self.ended && self.to_conn.is_empty() && !self.joined)
+    }
+
+    /// Whether its end is all said and its connection waits for the host: a joiner's
+    /// (D119), whose writable layer the host may ask for, then closes.
+    fn awaiting_host(&self) -> bool {
+        self.joined
+            && self.ended
+            && self.to_conn.is_empty()
+            && matches!(self.save, Save::Unasked | Save::Done)
+    }
+
+    /// Sends this joiner's writable layer on its connection from a child of init's, as
+    /// the host asked once it had its end: the layers its root was built of, kept until
+    /// now (`JOIN_LAYERS`). Where it has none, its root never built, or no child can be
+    /// had, its connection goes unanswered, which the host hears as no layer.
+    fn send_layer(&mut self) {
+        let upper = join_layers()
+            .iter()
+            .find(|(j, _)| *j == self.id)
+            .and_then(|(_, k)| k.upper.try_clone().ok());
+        let (Some(upper), Some(conn)) = (upper, self.conn.as_ref()) else {
+            self.save = Save::Done;
+            self.conn = None;
+            return;
+        };
+        // SAFETY: init is single-threaded, so its child may run anything.
+        let pid = unsafe { libc::fork() };
+        if pid == 0 {
+            // The connection's file is init's too, which writes no more to it.
+            set_nonblocking(conn.as_raw_fd(), false);
+            let at = format!("/proc/self/fd/{}", upper.as_raw_fd());
+            let code = match crate::layer::save_from(conn, &at) {
+                Ok(()) => 0,
+                Err(e) => {
+                    let _ = writeln!(io::stderr(), "shards-init: saving a joiner's files: {e}");
+                    1
+                }
+            };
+            // SAFETY: _exit(2) ends the child without running init's exit paths.
+            unsafe { libc::_exit(code) }
+        }
+        if pid < 0 {
+            self.save = Save::Done;
+            self.conn = None;
+        } else {
+            self.save = Save::Sending(pid);
+        }
     }
 }
 
@@ -3010,6 +3089,16 @@ impl Workload {
         let (mut set, mut owners) = (Vec::<libc::pollfd>::new(), Vec::<Owner>::new());
         loop {
             let exited = status.is_some();
+            // A joiner's writable layer, sent as the host asked once its end is said; its
+            // layers kept until all of it is (D119).
+            for e in &mut execs {
+                if e.save == Save::Asked && e.ended && e.to_conn.is_empty() {
+                    e.send_layer();
+                }
+            }
+            for e in execs.iter().filter(|e| e.joined && e.finished()) {
+                join_layers().retain(|(j, _)| *j != e.id);
+            }
             execs.retain(|e| !e.finished());
             // Its end said as soon as its own output is, while its joiners go on (D119).
             if outlived
@@ -3098,9 +3187,12 @@ impl Workload {
             for (i, e) in execs.iter().enumerate() {
                 let conn_events = if !e.connected {
                     libc::POLLOUT
+                } else if matches!(e.save, Save::Sending(_)) {
+                    // A joiner's layer is written to it meanwhile, by a child of init's.
+                    0
                 } else {
                     (if e.to_conn.is_empty() { 0 } else { libc::POLLOUT })
-                        | if !e.stdin_eof && e.to_stdin.len() < BUFFERED {
+                        | if e.awaiting_host() || (!e.stdin_eof && e.to_stdin.len() < BUFFERED) {
                             libc::POLLIN
                         } else {
                             0
@@ -3153,7 +3245,17 @@ impl Workload {
                                 // to its network outlive it, as Docker's do (D119).
                                 if execs.iter().any(|e| e.joined && e.pid > 0 && e.status.is_none()) {
                                     outlived = true;
-                                    kill_all_but_joiners();
+                                    // And init's own work for them: their built-ins, and
+                                    // the layers of those that ended, being sent.
+                                    let spared: Vec<libc::pid_t> = execs
+                                        .iter()
+                                        .filter_map(|e| match e.save {
+                                            Save::Sending(pid) => Some(pid),
+                                            _ => (e.into_joiner && e.pid > 0 && e.status.is_none())
+                                                .then_some(e.pid),
+                                        })
+                                        .collect();
+                                    kill_all_but_joiners(&spared);
                                 } else {
                                     // SAFETY: kill(2) of every process but init.
                                     unsafe { libc::kill(-1, libc::SIGKILL) };
@@ -3168,8 +3270,16 @@ impl Workload {
                                 // reaped (D119).
                                 if e.joined {
                                     joined().retain(|(j, _)| *j != e.id);
-                                    join_layers().retain(|(j, _)| *j != e.id);
                                     crate::join::remove_cgroup(e.id);
+                                }
+                            } else if let Some(e) = execs.iter_mut().find(|e| e.save == Save::Sending(pid)) {
+                                // Its layer sent, whole or not: the host keeps only a whole
+                                // one, and closes the connection once it has what came. The
+                                // connection's file, which the child made blocking to write
+                                // it, is nonblocking again for this loop.
+                                e.save = Save::Done;
+                                if let Some(conn) = &e.conn {
+                                    set_nonblocking(conn.as_raw_fd(), true);
                                 }
                             }
                         });
@@ -3365,17 +3475,36 @@ impl Workload {
                                 {
                                     match read(fd, &mut buf) {
                                         Err(err) if err.kind() == io::ErrorKind::WouldBlock => {}
-                                        Ok(0) | Err(_) => e.stdin_eof = true,
+                                        // The end of the host's stdin; past a joiner's end,
+                                        // of its asking (D119).
+                                        Ok(0) | Err(_) => {
+                                            e.stdin_eof = true;
+                                            if e.awaiting_host() {
+                                                e.conn = None;
+                                            }
+                                        }
                                         Ok(n) => {
                                             e.from_conn.extend_from_slice(buf.get(..n).unwrap_or_default());
-                                            let (mut closed, to) = (false, &mut e.to_stdin);
+                                            let live = e.stdin.is_some();
+                                            let (mut closed, mut save, to) = (false, false, &mut e.to_stdin);
                                             let whole = each_frame(&mut e.from_conn, |which, payload| {
                                                 if which == kind::STDIN {
                                                     closed |= payload.is_empty();
-                                                    to.extend(&[payload]);
+                                                    if live {
+                                                        to.extend(&[payload]);
+                                                    }
                                                 }
+                                                save |= which == kind::SAVE;
                                             });
                                             e.stdin_eof |= closed || !whole;
+                                            // A joiner's writable layer, as the host asks once
+                                            // it has its end; a connection that says what no
+                                            // frame is ends its asking.
+                                            if save && e.joined && e.save == Save::Unasked {
+                                                e.save = Save::Asked;
+                                            } else if !whole && e.awaiting_host() {
+                                                e.conn = None;
+                                            }
                                         }
                                     }
                                 }

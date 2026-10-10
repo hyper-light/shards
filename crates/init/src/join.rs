@@ -12,12 +12,14 @@ use std::io::{self, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::time::{Duration, Instant};
 
-/// Where a joiner's image lies on the join disk, and the workload whose network it joins.
+/// Where a joiner's image lies on the join disk, the workload whose network it joins, and
+/// where its writable layer from before lies on the disk, if it has one to put back (D37).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Join {
     pub offset: u64,
     pub len: u64,
     pub workload: libc::pid_t,
+    pub layer: Option<(u64, u64)>,
 }
 
 /// An image's user database, `/etc/passwd` and `/etc/group`, where it has them.
@@ -39,15 +41,29 @@ pub type Built = (Users, Kept);
 /// the join disk, which the host gave it.
 pub const ENTRY: &[u8] = b"join=";
 
+/// The setup entry naming a joiner's writable layer from before on the join disk:
+/// `join-layer=OFFSET,LEN`, an OCI layer as its last run left it (layer.rs), to put back
+/// over its root before its command runs again.
+pub const LAYER_ENTRY: &[u8] = b"join-layer=";
+
 /// The range `setup`'s join entry names, if it has one; a malformed one is refused.
 pub fn range(setup: &[Vec<u8>]) -> Option<Result<(u64, u64), String>> {
-    let entry = setup.iter().find_map(|e| e.strip_prefix(ENTRY))?;
+    entry_range(setup, ENTRY, "join")
+}
+
+/// The range `setup`'s join layer entry names, if it has one; a malformed one is refused.
+pub fn layer_range(setup: &[Vec<u8>]) -> Option<Result<(u64, u64), String>> {
+    entry_range(setup, LAYER_ENTRY, "join layer")
+}
+
+fn entry_range(setup: &[Vec<u8>], prefix: &[u8], what: &str) -> Option<Result<(u64, u64), String>> {
+    let entry = setup.iter().find_map(|e| e.strip_prefix(prefix))?;
     let parsed = std::str::from_utf8(entry)
         .ok()
         .and_then(|e| e.split_once(','))
         .and_then(|(o, l)| Some((o.parse::<u64>().ok()?, l.parse::<u64>().ok()?)))
         .filter(|&(o, l)| l > 0 && o.checked_add(l).is_some());
-    Some(parsed.ok_or_else(|| "a malformed join entry".to_string()))
+    Some(parsed.ok_or_else(|| format!("a malformed {what} entry")))
 }
 
 /// The cgroup of the joiner init knows as exec `id`: beside the workload's, its own, as a
@@ -272,12 +288,14 @@ fn loop_device(disk: &str, offset: u64, len: u64) -> Result<(String, File), Stri
 /// an IPC namespace of its own; its image's range of the join disk on a loop device, under
 /// a tmpfs overlay, its root; the workload's `/etc/hostname`, `/etc/hosts` and
 /// `/etc/resolv.conf` over its own; then its cgroup, `cgroup`, and a cgroup namespace
-/// rooted there; then the mounts Docker gives a container. Returns its image's user
-/// database, `/etc/passwd` and `/etc/group`, which init resolves its user against.
+/// rooted there; then the mounts Docker gives a container. Its writable layer from before,
+/// if it has one, is put back over its root first. Returns its user database,
+/// `/etc/passwd` and `/etc/group`, which init resolves its user against.
 pub fn build(join: Join, cgroup: &str) -> Result<Built, String> {
-    let end = join
-        .offset
-        .checked_add(join.len)
+    let end = [Some((join.offset, join.len)), join.layer]
+        .into_iter()
+        .flatten()
+        .try_fold(0u64, |end, (offset, len)| Some(end.max(offset.checked_add(len)?)))
         .ok_or("a join range past the end")?;
     // SAFETY: unshare(2) and mount(2) of NUL-terminated literals, in a single-threaded
     // fork of init's.
@@ -327,7 +345,12 @@ pub fn build(join: Join, cgroup: &str) -> Result<Built, String> {
         0,
         "lowerdir=/dev/join/lower,upperdir=/dev/join/rw/upper,workdir=/dev/join/rw/work,volatile",
     )?;
-    // Its image's users, read before anything is mounted over its /etc.
+    // What it changed before, over its image's files, as a run's (D37): before its users
+    // are read, which it may have changed, and before anything is mounted in its root.
+    if let Some((offset, len)) = join.layer {
+        put_back("/dev/join/disk", offset, len)?;
+    }
+    // Its users, read before anything is mounted over its /etc.
     let users = (
         std::fs::read(format!("{ROOT}/etc/passwd")).ok(),
         std::fs::read(format!("{ROOT}/etc/group")).ok(),
@@ -388,6 +411,89 @@ pub fn build(join: Join, cgroup: &str) -> Result<Built, String> {
     std::os::unix::fs::symlink("/proc/mounts", mtab).map_err(|e| format!("{mtab}: {e}"))?;
     crate::run::masked().map_err(|f| f.message)?;
     Ok((users, kept))
+}
+
+/// Puts back the joiner's writable layer from before, `len` bytes of the join disk at
+/// `disk` from `offset`, over its root ([`ROOT`]), as go-archive's ApplyLayer puts a
+/// container's back (layer.rs, `apply`). Applied with [`ROOT`] as this process's root, so
+/// that no path or link the layer holds resolves past it (chroot(2)); the root it had is
+/// taken back after, from a descriptor of it held meanwhile. What it reads of the disk is
+/// let go of from the page cache as it goes: read once, it is the joiner's files after.
+fn put_back(disk: &str, offset: u64, len: u64) -> Result<(), String> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let disk = File::open(disk).map_err(|e| format!("the join disk: {e}"))?;
+    let own = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_PATH | libc::O_DIRECTORY)
+        .open("/")
+        .map_err(|e| format!("its root: {e}"))?;
+    let root = c(ROOT)?;
+    // SAFETY: chroot(2) and chdir(2) of NUL-terminated paths, in a single-threaded fork
+    // of init's.
+    if unsafe { libc::chroot(root.as_ptr()) } != 0 || unsafe { libc::chdir(c"/".as_ptr()) } != 0 {
+        return Err(last("entering its root to put back its files"));
+    }
+    let mut layer = DiskRange {
+        disk: &disk,
+        at: offset,
+        left: len,
+    };
+    let applied = shards_archive::apply_layer(
+        &mut layer,
+        std::path::Path::new("/"),
+        &shards_archive::UnpackOptions::default(),
+    );
+    // SAFETY: fchdir(2) to the root this process had, which it holds, then chroot(2) and
+    // chdir(2) of literals.
+    let back = unsafe {
+        libc::fchdir(own.as_raw_fd()) == 0
+            && libc::chroot(c".".as_ptr()) == 0
+            && libc::chdir(c"/".as_ptr()) == 0
+    };
+    if !back {
+        return Err(last("leaving its root after putting back its files"));
+    }
+    applied
+        .map(drop)
+        .map_err(|e| format!("putting back the container's files: {e}"))
+}
+
+/// `left` bytes of the join disk from `at`, read in order; each read let go of from the
+/// page cache once read (posix_fadvise(2), POSIX_FADV_DONTNEED).
+struct DiskRange<'a> {
+    disk: &'a File,
+    at: u64,
+    left: u64,
+}
+
+impl io::Read for DiskRange<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        use std::os::unix::fs::FileExt;
+        let want = usize::try_from(self.left).unwrap_or(usize::MAX).min(buf.len());
+        let Some(to) = buf.get_mut(..want).filter(|b| !b.is_empty()) else {
+            return Ok(0);
+        };
+        let n = self.disk.read_at(to, self.at)?;
+        if n == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "the join disk ended before the layer",
+            ));
+        }
+        let (start, read) = (self.at, n as u64);
+        // SAFETY: posix_fadvise(2) on a descriptor this process holds; advice only.
+        unsafe {
+            libc::posix_fadvise(
+                self.disk.as_raw_fd(),
+                i64::try_from(start).unwrap_or(i64::MAX),
+                i64::try_from(read).unwrap_or(0),
+                libc::POSIX_FADV_DONTNEED,
+            )
+        };
+        self.at = self.at.saturating_add(read);
+        self.left = self.left.saturating_sub(read);
+        Ok(n)
+    }
 }
 
 /// Makes the joiner's `/etc` a directory, as Docker's init layer does over an image that
@@ -639,6 +745,11 @@ mod tests {
         let setup = |e: &str| vec![b"caps=1".to_vec(), e.as_bytes().to_vec()];
         assert_eq!(range(&setup("join=1048576,4096")), Some(Ok((1 << 20, 4096))));
         assert_eq!(range(&[b"caps=1".to_vec()]), None);
+        // Its layer from before, its own entry, which the image's is not.
+        let both = [b"join=0,512".to_vec(), b"join-layer=2097152,1024".to_vec()];
+        assert_eq!(range(&both), Some(Ok((0, 512))));
+        assert_eq!(layer_range(&both), Some(Ok((2 << 20, 1024))));
+        assert_eq!(layer_range(&setup("join=1048576,4096")), None);
         for bad in [
             "join=",
             "join=1",
@@ -647,6 +758,8 @@ mod tests {
             "join=18446744073709551615,2",
         ] {
             assert!(range(&setup(bad)).unwrap().is_err(), "{bad}");
+            let layer = bad.replacen("join=", "join-layer=", 1);
+            assert!(layer_range(&setup(&layer)).unwrap().is_err(), "{layer}");
         }
     }
 

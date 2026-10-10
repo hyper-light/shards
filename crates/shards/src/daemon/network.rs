@@ -86,11 +86,14 @@ pub fn check(
         .map(|(_, v)| v);
     // dockerd's checks of a container network mode, in its order and words (moby
     // daemon/internal/runconfig/hostconfig.go validateNetContainerMode); shards takes no
-    // `--link`.
-    if mode == "container" || container == Some("") {
+    // `--link`. dockerd makes them of the request a container is created by alone
+    // (daemon/internal/runconfig/config.go decodeCreateRequest), never as it starts it
+    // again: a joiner's names are then its provider's (initializeNetworking).
+    let creating = run.again.is_none();
+    if creating && (mode == "container" || container == Some("")) {
         return Err("invalid network mode: invalid container format container:<name|id>".into());
     }
-    if container.is_some() {
+    if creating && container.is_some() {
         if run.hostname.is_some() {
             return Err("conflicting options: hostname and the network mode".into());
         }
@@ -502,6 +505,12 @@ mod tests {
         r.dns = vec!["1.1.1.1".into()];
         assert_eq!(check(&r), said("dns and the network mode"));
         assert_eq!(check(&joined()), Ok(Start::Join("web".into())));
+        // Started again, its names its provider's as its first start stored them: nothing
+        // of what it was created by is checked again, as dockerd checks none.
+        let mut again = joined();
+        again.hostname = Some("web-host".into());
+        again.again = Some("id".into());
+        assert_eq!(check(&again), Ok(Start::Join("web".into())));
         // One that is not there fails as it starts, the container made, in dockerd's words.
         assert_eq!(
             check(&run(&["container:nope"])),

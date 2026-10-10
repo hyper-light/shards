@@ -43,11 +43,25 @@ pub fn apply(conn: &File, first: u32) -> io::Result<()> {
     io::copy(&mut frames, &mut io::sink()).map(drop)
 }
 
-/// Sends the container's writable layer on `conn` as [`kind::LAYER`] frames, then an
-/// empty one.
+/// Sends the container's writable layer on `conn`, as [`save_from`] sends one.
 pub fn save(conn: &File) -> io::Result<()> {
+    match crate::changes::upper() {
+        Some(upper) => save_from(conn, &upper),
+        None => {
+            let why = io::Error::other("the writable layer was not kept");
+            refuse(conn, &why)?;
+            Err(why)
+        }
+    }
+}
+
+/// Sends the writable layer at `upper` on `conn`, the workload's or a joiner's (D119): what
+/// it uses ([`kind::USAGE`]), then [`kind::LAYER`] frames and an empty one; or, where it
+/// could not all be packed, why ([`kind::SYSTEM_ERR`]) in the empty one's place, so that
+/// the host keeps the layer it had.
+pub fn save_from(conn: &File, upper: &str) -> io::Result<()> {
     // What it uses first, while its files are as they will be packed.
-    if let Some(used) = crate::changes::upper().and_then(|u| usage(std::path::Path::new(&u)).ok()) {
+    if let Ok(used) = usage(std::path::Path::new(upper)) {
         let mut c = conn;
         c.write_all(&run::header(kind::USAGE, 8))?;
         c.write_all(&used.to_be_bytes())?;
@@ -56,11 +70,21 @@ pub fn save(conn: &File) -> io::Result<()> {
         conn,
         buf: Vec::with_capacity(CHUNK),
     };
-    let packed = pack(&mut out);
-    out.flush()?;
-    // The end, whether or not all of it was sent: the host keeps only a whole one.
-    send(conn, &[])?;
+    let packed = pack_from(upper, &mut out).and_then(|()| out.flush());
+    match &packed {
+        Ok(()) => send(conn, &[])?,
+        Err(e) => refuse(conn, e)?,
+    }
     packed
+}
+
+/// Says on `conn` why the layer did not all come, in place of its end.
+fn refuse(conn: &File, why: &io::Error) -> io::Result<()> {
+    let why = why.to_string();
+    let len = u32::try_from(why.len()).map_err(|_| io::Error::other("a frame past its size"))?;
+    let mut c = conn;
+    c.write_all(&run::header(kind::SYSTEM_ERR, len))?;
+    c.write_all(why.as_bytes())
 }
 
 /// The disk the tree at `root` uses, as continuity's DiskUsage counts it (containerd's

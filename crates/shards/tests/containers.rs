@@ -368,6 +368,77 @@ fn a_joiners_own_commands_reach_the_joiner() {
     let _ = exit(&mut provider);
 }
 
+/// A joiner keeps its writable layer as it stops, as any container does (D37, D119): its
+/// changes are read while it is stopped, a file is copied into it then, and all of them
+/// are put back over its image as it starts again in its provider's microVM, its names
+/// its provider's still (dockerd checks what it was created by as it is created alone).
+#[test]
+fn a_joiner_keeps_its_files_as_it_stops() {
+    let Some((home, image)) = home("containers-joiner-kept") else {
+        return;
+    };
+    let mut provider = start(&home, &image, &["--name", "prov"], &["sleep"]);
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let detached = run_in(
+        &home,
+        &image,
+        &["-d", "--name", "joiner", "--network", "container:prov"],
+        &["sleep"],
+    );
+    assert_eq!(detached.status, Some(0), "{detached}");
+    let wrote = shards(&[
+        "exec",
+        "-u",
+        "0",
+        "joiner",
+        "/bin/testguest",
+        "fs",
+        "write:/made=kept",
+        "rm:/etc/group",
+    ]);
+    assert_eq!(wrote.status, Some(0), "{wrote}");
+    assert_eq!(shards(&["stop", "-t", "1", "joiner"]).status, Some(0));
+    // Stopped, its changes are read in a VM over its files, as any container's.
+    let changes = "C /etc\nD /etc/group\nA /made\n";
+    let diff = shards(&["diff", "joiner"]);
+    assert_eq!((diff.status, diff.stdout.as_str()), (Some(0), changes), "{diff}");
+    let note = home.join("note");
+    std::fs::write(&note, "copied").unwrap();
+    let into = shards(&["cp", note.to_str().unwrap(), "joiner:/note"]);
+    assert_eq!((into.status, into.stderr.as_str()), (Some(0), ""), "{into}");
+    // Started again, in its provider's microVM again, over what it changed.
+    let started = shards(&["start", "joiner"]);
+    assert_eq!(
+        (started.status, started.stdout.as_str()),
+        (Some(0), "joiner\n"),
+        "{started}"
+    );
+    let read = shards(&[
+        "exec",
+        "joiner",
+        "/bin/testguest",
+        "fs",
+        "print:/made",
+        "print:/note",
+    ]);
+    assert_eq!(
+        (read.status, read.stdout.as_str()),
+        (Some(0), "keptcopied"),
+        "{read}"
+    );
+    let diff = shards(&["diff", "joiner"]);
+    assert_eq!(
+        (diff.status, diff.stdout.as_str()),
+        (Some(0), "C /etc\nD /etc/group\nA /made\nA /note\n"),
+        "{diff}"
+    );
+    let names = |name: &str| shards(&["inspect", "-f", "{{.Config.Hostname}}", name]).stdout;
+    assert_eq!(names("joiner"), names("prov"));
+    assert_eq!(shards(&["stop", "-t", "1", "joiner"]).status, Some(0));
+    assert_eq!(shards(&["stop", "-t", "1", "prov"]).status, Some(0));
+    let _ = exit(&mut provider);
+}
+
 /// A joiner's `--sysctl` is set in its own namespaces, as runc sets a container's from
 /// within them (D119): an IPC one in its own IPC namespace, its provider's untouched; a
 /// network one in the network namespace it shares, which Docker's joiner may set too.
@@ -1430,6 +1501,67 @@ fn a_stopped_microvms_files_are_read_and_written_as_dockerd_does() {
     // top, as dockerd's, reads only a running one.
     let top = shards(&["top", "resting"]);
     assert_eq!(top.status, Some(1), "{top}");
+}
+
+/// A container started again and refused before it starts is left as it was: refused
+/// in `docker start`'s words, the client naming it after, or `docker restart`'s, and
+/// every command reaches it at once after, another start among them (D37).
+#[test]
+fn a_refused_start_leaves_its_container_as_it_was() {
+    let Some((home, image)) = home("containers-start-refused") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let ok = |args: &[&str]| {
+        let r = shards(args);
+        assert_eq!(r.status, Some(0), "{args:?}: {r}");
+    };
+    ok(&["network", "create", "--subnet", "10.77.0.0/24", "moved"]);
+    ok(&[
+        "create",
+        "--pull",
+        "never",
+        "--name",
+        "left",
+        "--network",
+        "moved",
+        "--ip",
+        "10.77.0.5",
+        &image,
+        "exit",
+        "0",
+    ]);
+    // Its network made again elsewhere: no subnet of it holds the address it was given.
+    ok(&["network", "rm", "moved"]);
+    ok(&["network", "create", "--subnet", "10.78.0.0/24", "moved"]);
+    let started = shards(&["start", "left"]);
+    assert_eq!(started.status, Some(1), "{started}");
+    let why = started
+        .stderr
+        .strip_prefix("Error response from daemon: ")
+        .and_then(|s| s.strip_suffix("\nfailed to start containers: left\n"))
+        .unwrap_or_else(|| panic!("{started}"));
+    assert!(why.contains("10.77.0.5"), "{started}");
+    // Reached at once: its files, another start, refused alike, a restart, in its words.
+    let diff = shards(&["diff", "left"]);
+    assert_eq!((diff.status, diff.stdout.as_str()), (Some(0), ""), "{diff}");
+    let again = shards(&["start", "left"]);
+    assert_eq!(
+        (again.status, again.stderr.as_str()),
+        (Some(1), started.stderr.as_str()),
+        "{again}"
+    );
+    let restarted = shards(&["restart", "left"]);
+    assert_eq!(
+        (restarted.status, restarted.stderr),
+        (
+            Some(1),
+            format!("Error response from daemon: Cannot restart container left: {why}\n")
+        ),
+    );
+    let state = shards(&["inspect", "-f", "{{.State.Status}}", "left"]);
+    assert_eq!(state.stdout, "created\n", "{state}");
+    ok(&["rm", "left"]);
 }
 
 #[test]

@@ -517,9 +517,9 @@ fn send_layer(conn: &mut UnixStream, mut layer: fs::File) -> io::Result<()> {
 
 /// Asks the guest for the container's writable layer ([`kind::SAVE`]) and writes its
 /// [`kind::LAYER`] frames to `out` until the empty one; an error if it did not come
-/// whole.
+/// whole: the guest's reason, where it says why ([`kind::SYSTEM_ERR`]).
 #[cfg(unix)]
-fn receive_layer(conn: &mut UnixStream, mut out: fs::File) -> io::Result<Option<u64>> {
+pub(crate) fn receive_layer(conn: &mut UnixStream, mut out: fs::File) -> io::Result<Option<u64>> {
     send(conn, kind::SAVE, &[])?;
     let mut frame = Vec::new();
     let mut used = None;
@@ -528,6 +528,12 @@ fn receive_layer(conn: &mut UnixStream, mut out: fs::File) -> io::Result<Option<
         conn.read_exact(&mut h)?;
         let len = match run::parse_header(h) {
             Some((kind::LAYER, len)) => len as usize,
+            // Not all of it could be packed: the layer it had stays.
+            Some((kind::SYSTEM_ERR, len)) => {
+                let mut why = vec![0u8; len as usize];
+                conn.read_exact(&mut why)?;
+                return Err(io::Error::other(String::from_utf8_lossy(&why).into_owned()));
+            }
             // What the layer uses, before it (kind::USAGE).
             Some((kind::USAGE, 8)) if used.is_none() => {
                 let mut n = [0u8; 8];
@@ -1107,7 +1113,7 @@ pub fn join(
     req: JoinRequest,
     on_id: &dyn Fn(u32),
     started: &dyn Fn(),
-) -> Result<Ended, String> {
+) -> Result<(Ended, UnixStream), String> {
     let JoinRequest {
         spec,
         interactive,
@@ -1129,13 +1135,13 @@ pub fn join(
         pending().retain(|w| w.token != token);
         return Err("the container whose network it joins is not running".into());
     }
-    let conn = rx
+    let stream = rx
         .recv()
         .map_err(|_| "the container whose network it joins ended first".to_string())??;
-    let mut input = conn.try_clone().map_err(|e| e.to_string())?;
+    let mut input = stream.try_clone().map_err(|e| e.to_string())?;
     // Its way in, for the clients that attach to it, until it ends (`end_joiner`).
     let (wake, watched) = UnixStream::pair().map_err(|e| format!("a joiner's attach: {e}"))?;
-    lock_join_inputs().push((id, conn.try_clone().map_err(|e| e.to_string())?, wake, watched));
+    lock_join_inputs().push((id, stream.try_clone().map_err(|e| e.to_string())?, wake, watched));
     // Its stdin as a run's (`serve`): its client's, closed as the client's ends where it has
     // no terminal (Docker's StdinOnce); a detached one's open for those who attach; none
     // without `-i`.
@@ -1183,7 +1189,7 @@ pub fn join(
     }
     let mut frame = Vec::new();
     let mut not_run: Option<String> = None;
-    let mut conn = io::BufReader::with_capacity(run::BUFFERED, &conn);
+    let mut conn = io::BufReader::with_capacity(run::BUFFERED, &stream);
     loop {
         let mut h = [0u8; run::HEADER];
         conn.read_exact(&mut h)
@@ -1218,14 +1224,18 @@ pub fn join(
                 let (_, why) = payload.split_first().ok_or("an empty failure")?;
                 not_run = Some(String::from_utf8_lossy(why).into_owned());
             }
+            // Its end, and its connection, on which the host may ask for its writable
+            // layer (`receive_layer`) before it closes it: the guest sends nothing more
+            // until then.
             kind::EXIT => {
                 let status: [u8; 4] = payload.try_into().map_err(|_| "malformed exit status")?;
-                return Ok(Ended {
+                let ended = Ended {
                     status: u8::try_from(u32::from_be_bytes(status)).unwrap_or(u8::MAX),
                     not_run,
                     lost: log.as_ref().map_or(0, Logger::lost),
                     oom: false,
-                });
+                };
+                return Ok((ended, stream));
             }
             _ => return Err(format!("the guest sent an unknown frame kind {which}")),
         }

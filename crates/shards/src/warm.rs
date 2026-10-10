@@ -550,7 +550,9 @@ fn join_request(message: shards_ipc::Message, to: &'static ToGuest) -> Result<()
     let link = UnixStream::from(link);
     // What fails here, the run says as its own start failing, once it has the run.
     let range = match crate::vm_run::join_disk() {
-        Some(disk) => disk.attach(File::from(image)),
+        Some(disk) => disk
+            .attach(File::from(image))
+            .map_err(|e| format!("its image: {e}")),
         None => Err("this microVM has no join disk".into()),
     };
     *JOINERS.lock().unwrap_or_else(std::sync::PoisonError::into_inner) += 1;
@@ -632,8 +634,19 @@ fn joiner(link: &UnixStream, range: Result<(u64, u64), String>, to: &'static ToG
     } else {
         None
     };
-    // A joiner keeps no writable layer and has no shares: the daemon sends neither.
-    if flags & (shards_ipc::RUN_LAYER_IN | shards_ipc::RUN_LAYER_OUT) != 0 || fds.next().is_some() {
+    // Its writable layer from before, to put back, and where to keep it as it stops (D37),
+    // as a run's; a joiner has no shares, which the daemon does not send.
+    let layer_in = if flags & shards_ipc::RUN_LAYER_IN != 0 {
+        Some(File::from(next()?))
+    } else {
+        None
+    };
+    let layer_out = if flags & shards_ipc::RUN_LAYER_OUT != 0 {
+        Some(File::from(next()?))
+    } else {
+        None
+    };
+    if fds.next().is_some() {
         return Err(format!("a request brings too many descriptors: {count}"));
     }
     if let Err(e) = shards_ipc::send(link, kind::TAKEN, &[], &[])
@@ -646,6 +659,22 @@ fn joiner(link: &UnixStream, range: Result<(u64, u64), String>, to: &'static ToG
     }
     let id = std::sync::atomic::AtomicU32::new(0);
     let attached = range.as_ref().ok().copied();
+    // Its writable layer from before on the join disk beside its image, which its child
+    // reads as it builds its root: let go of once its command has started.
+    let layer = match layer_in {
+        Some(file) => crate::vm_run::join_disk()
+            .ok_or_else(|| "this microVM has no join disk".to_string())
+            .and_then(|disk| disk.attach(file))
+            .map(Some)
+            .map_err(|e| format!("putting back the container's files: {e}")),
+        None => Ok(None),
+    };
+    let layer_at = layer.as_ref().ok().copied().flatten();
+    let let_go_of_layer = || {
+        if let (Some((at, _)), Some(disk)) = (layer_at, crate::vm_run::join_disk()) {
+            let _ = disk.detach(at);
+        }
+    };
     // Where what kept its command from starting is said: its client's own stderr.
     let said_to = stderr.as_ref().and_then(|e| e.try_clone().ok());
     std::thread::scope(|s| {
@@ -655,8 +684,11 @@ fn joiner(link: &UnixStream, range: Result<(u64, u64), String>, to: &'static ToG
             let id = &id;
             s.spawn(move || relay_signals(&from, to, From::Joiner(segments, id)))
         });
-        let ended = range.and_then(|(offset, len)| {
+        let joined = range.and_then(|(offset, len)| {
             spec.setup.push(format!("join={offset},{len}").into_bytes());
+            if let Some((at, len)) = layer? {
+                spec.setup.push(format!("join-layer={at},{len}").into_bytes());
+            }
             workload::join(
                 to,
                 workload::JoinRequest {
@@ -671,10 +703,15 @@ fn joiner(link: &UnixStream, range: Result<(u64, u64), String>, to: &'static ToG
                 },
                 &|guest| id.store(guest, std::sync::atomic::Ordering::SeqCst),
                 &|| {
+                    let_go_of_layer();
                     let _ = shards_ipc::send(link, kind::STARTED, &[], &[]);
                 },
             )
         });
+        let (ended, conn) = match joined {
+            Ok((ended, conn)) => (Ok(ended), Some(conn)),
+            Err(e) => (Err(e), None),
+        };
         joined_finish(link, client.as_ref(), said_to, &ended);
         // Those attached hear its status as its own client does.
         workload::end_joiner(
@@ -684,6 +721,24 @@ fn joiner(link: &UnixStream, range: Result<(u64, u64), String>, to: &'static ToG
                 Err(_) => NOT_RUN,
             },
         );
+        // Its writable layer, kept as it stops once its end is told, as a run's (D37):
+        // where its command started, and so its root was built.
+        if let (Ok(e), Some(mut conn), Some(out)) = (&ended, conn, layer_out)
+            && e.not_run.is_none()
+        {
+            match workload::receive_layer(&mut conn, out) {
+                Ok(used) => {
+                    let payload = used.map(u64::to_be_bytes);
+                    let _ = shards_ipc::send(
+                        link,
+                        kind::LAYER_SAVED,
+                        payload.as_ref().map_or(&[][..], |p| p),
+                        &[],
+                    );
+                }
+                Err(e) => shards_vmm::debug!("saving a joiner's files: {e}"),
+            }
+        }
         // Its connection's reads end here, whatever the daemon does with its end.
         let _ = link.shutdown(std::net::Shutdown::Both);
         if let Some(r) = relayed {
@@ -693,6 +748,7 @@ fn joiner(link: &UnixStream, range: Result<(u64, u64), String>, to: &'static ToG
     if let (Some((offset, _)), Some(disk)) = (attached, crate::vm_run::join_disk()) {
         let _ = disk.detach(offset);
     }
+    let_go_of_layer();
     Ok(())
 }
 
