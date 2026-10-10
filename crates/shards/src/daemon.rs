@@ -1694,6 +1694,8 @@ impl<D: Disk> Daemon<D> {
         // `shards start`: the container as it was made, attached as this client asks
         // (D37). One running already is left so, and named, as `docker start` names it.
         let mut again = None;
+        // Set aside as the run becomes the one the container was made by (`again_as`).
+        let restarting = run.restart;
         if let Some(given) = run.again.clone() {
             if run.restart
                 && let Err(e) = self.stop_for_restart(&given, run.stop_signal.as_deref(), run.stop_timeout)
@@ -1719,6 +1721,31 @@ impl<D: Disk> Daemon<D> {
                 }
             }
         }
+        // A container started again is refused in `docker start`'s words, the client
+        // naming it after, or `docker restart`'s (moby daemon/restart.go,
+        // ContainerRestart), not `docker run`'s.
+        let asked_again = again.as_ref().map(|(given, _, _)| given.clone());
+        let refuse = |said: &str| match &asked_again {
+            Some(given) => {
+                if restarting {
+                    say(&format!(
+                        "Error response from daemon: Cannot restart container {given}: {said}"
+                    ));
+                } else {
+                    say(&format!("Error response from daemon: {said}"));
+                }
+                let _ = shards_ipc::send(conn, kind::EXIT, &[1], &[]);
+            }
+            None => refuse(said),
+        };
+        // One refused before it starts waits no more to be, as one that does not start
+        // (`abandon`).
+        let refused = |said: &str| {
+            refuse(said);
+            if let Some((_, id, _)) = &again {
+                self.not_again(id);
+            }
+        };
         // Its networks as dockerd checks them before it makes the container; what fails
         // as it starts fails once the container is made.
         // Connected to one user network from the default bridge: on it alone (D46).
@@ -1744,7 +1771,7 @@ impl<D: Disk> Daemon<D> {
         // is not, in its words; one that is, a microVM of its own, whose PID namespace no
         // other microVM's process can join (D115).
         if let Some(name) = run.pid.strip_prefix("container:") {
-            refuse(&if self.resolve(name).is_ok() {
+            refused(&if self.resolve(name).is_ok() {
                 "\"--pid container:NAME\" is not supported by shards yet".to_string()
             } else {
                 format!("No such container: {name}")
@@ -1759,7 +1786,7 @@ impl<D: Disk> Daemon<D> {
         ) {
             Ok(start) => start,
             Err(e) => {
-                refuse(&e);
+                refused(&e);
                 return None;
             }
         };
@@ -1784,7 +1811,7 @@ impl<D: Disk> Daemon<D> {
                 None
             };
             if let Some(what) = what {
-                refuse(&format!(
+                refused(&format!(
                     "{what} is not supported in a container joining another's network yet"
                 ));
                 return None;
@@ -1806,7 +1833,7 @@ impl<D: Disk> Daemon<D> {
         // spare is made; a container started again only waits no more to be (`again`).
         let abandon = |id: &str| {
             if again.is_some() {
-                lock(&self.runs).remove(id);
+                self.not_again(id);
             } else {
                 self.discard(id);
                 self.make_spare();
@@ -2112,10 +2139,8 @@ impl<D: Disk> Daemon<D> {
         };
         fds.extend([container_log.log.as_fd(), container_log.index.as_fd()]);
         // A container that stays keeps its writable layer once it stops (D37): written
-        // beside its log, and kept once whole (`run_ended`).
-        // A joiner's (D119) is not kept yet: its root is in a mount namespace of its own
-        // in its provider's guest, which ends with it.
-        let layer_out = if run.remove || matches!(start, network::Start::Join(_)) {
+        // beside its log, and kept once whole (`run_ended`); a joiner's (D119) as any.
+        let layer_out = if run.remove {
             None
         } else {
             let at = lock(&self.containers).dir(&id).join(LAYER_NEW);
@@ -2515,10 +2540,18 @@ impl<D: Disk> Daemon<D> {
         match found {
             Ok((stored, log)) => Ok(Some((id, log, stored))),
             Err(e) => {
-                lock(&self.runs).remove(&id);
+                self.not_again(&id);
                 Err(e)
             }
         }
+    }
+
+    /// Container `id`, which [`again`](Self::again) was to start, does not start: it
+    /// waits no more to be, and whoever waits for its start (`await_start`) is woken to
+    /// see so.
+    fn not_again(&self, id: &str) {
+        lock(&self.runs).remove(id);
+        self.resolved.notify_all();
     }
 
     /// Waits until container `id`'s writable layer is whole where it is kept, if its VM

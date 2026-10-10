@@ -324,6 +324,12 @@ virtio-pmem with DAX ([image-storage](../research/image-storage.md) R1, R2). The
     until `ContainerCreate` returns, docker/cli `notifyContext`). The daemon tells the
     client the container is made (`CREATED`), from which point it forwards signals. A
     client that went hears nothing more of its run: the daemon holds its stderr.
+  - So too as it waits for its daemon to start: the thread that takes the signals starts
+    before any wait, where no daemon listens and one is started or awaited, and else once
+    the request is on its way, off the start's path. Before, a client waiting on a daemon
+    held them blocked with nothing to take them, and only SIGKILL ended it
+    (`a_client_waiting_for_its_daemon_ends_on_sigterm`, mutation-checked: the thread
+    started after the request, the client waited past SIGTERM).
   - A signal shards was started ignoring is forwarded too, as the Docker CLI's Go
     runtime takes it once asked. A script's `shards run ... &` starts with SIGINT and
     SIGQUIT ignored, and macOS drops an ignored signal even for a thread in `sigwait`
@@ -2276,7 +2282,10 @@ gone with the VM. So a container that stays (not `--rm`) keeps it on the host:
   and sends it as `kind::LAYER` frames. The VM process writes it to a file the daemon
   opened in the container's directory (`layer.new`), and says so (`LAYER_SAVED`); the
   daemon keeps it as `layer.tar` only whole. That is an OCI image layer of the container's
-  changes, which `commit` takes as it is.
+  changes, which `commit` takes as it is. Where not all of it could be packed, init says
+  why (`kind::SYSTEM_ERR`) in place of the layer's end, and the layer the container had
+  stays: before, the end came all the same, and a cut layer was kept that only the next
+  start found unreadable.
 - **After the end is told.** Saving before the run's end cost an empty layer 29 ms at p50
   and a 4 MiB one 155 ms; told first, the empty layer costs nothing measurable and the
   4 MiB one 6.5 ms at p50, from the save running beside the next run [PM M115]. Only what
@@ -2286,6 +2295,13 @@ gone with the VM. So a container that stays (not `--rm`) keeps it on the host:
   (`RUN_LAYER_IN`), which init applies over the image's root before the command, as
   go-archive's ApplyLayer does; its log goes on from its newest segment. `restart` stops
   it first; `create` makes it, and starts nothing.
+- **A start refused before it starts** leaves the container as it was, as dockerd leaves
+  one it refuses: the start it was waiting to be is released and whoever waits on it woken
+  (`not_again`), in `docker start`'s words (the client names the container after) or
+  `docker restart`'s ("Cannot restart container NAME: ...", moby daemon/restart.go,
+  ContainerRestart). Before, one the network checks refused stayed starting, and every
+  command after waited on it (`a_refused_start_leaves_its_container_as_it_was`,
+  mutation-checked: the release left out, its `diff` waited past 60 s).
 - **Visits** (`daemon/visit.rs`). `cp`, `diff` and `export` of a stopped container read
   its files as dockerd reads a stopped container's: in a VM booted over them, its image
   and its layer put back, running nothing of the image's (`builtin::HOLD`: init's standby,
@@ -3501,10 +3517,28 @@ the boundary is a container's, which is what the mode asks for.
   `top` of a joiner reads its `/proc`, whose PIDs are its namespace's: init's child no
   longer leaves out the one numbered as its own PID in init's (getpid(2) answers in the
   caller's namespace).
+- **Its files kept as it stops**, as any container's (D37). After the joiner's end on its
+  own connection, its VM process asks there for its writable layer (`kind::SAVE`), as for
+  a run's; init keeps the joiner's connection and layers until the host has asked or
+  closed it, and packs the layer in a child of its own, which writes to the connection:
+  init's loop, serving the provider and the other joiners, never waits on it (the
+  workload's own save, once joiners outlive it, still packs in init's loop: open). Put back
+  as it starts again: the VM process appends the layer to the join disk beside its image
+  (`join-layer=OFFSET,LEN`), and the joiner's child applies it over its root as ApplyLayer
+  does, before it reads its users and before anything is mounted in its root, with its
+  root as its own (chroot(2)) so that no path or link of the layer resolves past it; the
+  disk's pages it read are let go of as it reads them (`POSIX_FADV_DONTNEED`). Stopped, its
+  files are visited as any stopped container's. Started again, its names are its
+  provider's, as dockerd gives them at every start (initializeNetworking), and dockerd's
+  create-time checks are not made again, as dockerd makes them of the create request
+  alone (decodeCreateRequest): before, the hostname its first start stored failed them. A
+  joiner's layers, now let go of as all of it is said, no longer outlive a start that
+  failed. Tested (`a_joiner_keeps_its_files_as_it_stops`: a file written and one removed,
+  one copied in while it was stopped, all there after `start`; mutation-checked: the
+  layer's entry left out, the create-time checks made again).
 - **Not yet, each refused by name before anything starts:** volumes (the provider's
   microVM has shares for its own run alone), devices and `--privileged`, `--init`, `--pid`,
-  an image's `VOLUME`s, an Agentfile's image. A joiner's writable layer is not yet kept as
-  it stops (D37): stopped, its files are its image's.
+  an image's `VOLUME`s, an Agentfile's image.
 - **No count of holders.** A VM process runs one VM, so its join disk is a `static` of
   that process's (`Join::new` is a `const fn`), its device given `&'static Join`; a
   joiner's attached clients are kept by its id in the guest, as the workload's are. The
