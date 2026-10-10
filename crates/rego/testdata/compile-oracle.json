@@ -512,7 +512,7 @@
  },
  {
   "name": "c-recursion",
-  "error": "2 errors occurred:\npolicy.rego:3: rego_recursion_error: rule data.docker.p is recursive: data.docker.p -\u003e data.docker.q -\u003e data.docker.p\npolicy.rego:5: rego_recursion_error: rule data.docker.q is recursive: data.docker.q -\u003e data.docker.p -\u003e data.docker.q"
+  "error": "2 errors occurred:\npolicy.rego:5: rego_recursion_error: rule data.docker.q is recursive: data.docker.q -\u003e data.docker.p -\u003e data.docker.q\npolicy.rego:3: rego_recursion_error: rule data.docker.p is recursive: data.docker.p -\u003e data.docker.q -\u003e data.docker.p"
  },
  {
   "name": "c-shadow-input",
@@ -1190,7 +1190,7 @@
  },
  {
   "name": "c-recursion-two-cycles",
-  "error": "4 errors occurred:\npolicy.rego:3: rego_recursion_error: rule data.docker.a is recursive: data.docker.a -\u003e data.docker.b -\u003e data.docker.a\npolicy.rego:5: rego_recursion_error: rule data.docker.b is recursive: data.docker.b -\u003e data.docker.a -\u003e data.docker.b\npolicy.rego:7: rego_recursion_error: rule data.docker.c is recursive: data.docker.c -\u003e data.docker.d -\u003e data.docker.c\npolicy.rego:9: rego_recursion_error: rule data.docker.d is recursive: data.docker.d -\u003e data.docker.c -\u003e data.docker.d"
+  "error": "4 errors occurred:\npolicy.rego:5: rego_recursion_error: rule data.docker.b is recursive: data.docker.b -\u003e data.docker.a -\u003e data.docker.b\npolicy.rego:3: rego_recursion_error: rule data.docker.a is recursive: data.docker.a -\u003e data.docker.b -\u003e data.docker.a\npolicy.rego:7: rego_recursion_error: rule data.docker.c is recursive: data.docker.c -\u003e data.docker.d -\u003e data.docker.c\npolicy.rego:9: rego_recursion_error: rule data.docker.d is recursive: data.docker.d -\u003e data.docker.c -\u003e data.docker.d"
  },
  {
   "name": "c-recursion-ref-head",
@@ -1381,6 +1381,47 @@
   "modules": {
    "builtin/buildx_defaults.rego": "package docker\n\ndocker_github_builder(__local0__, __local1__) = true if { __local0__.hasProvenance; __local4__ = __local0__.signatures[__local3__]; data.docker.docker_github_builder_signature(__local4__, __local1__) }\ndocker_github_builder_tag(__local5__, __local6__, __local7__) = true if { data.docker.docker_github_builder(__local5__, __local6__); __local10__ = __local5__.signatures[__local9__]; sprintf(\"refs/tags/%s\", [__local7__], __local35__); __local10__.signer.sourceRepositoryRef = __local35__ }\ndocker_github_builder_signature(__local11__, __local12__) = true if { __local11__.kind = \"docker-github-builder\"; __local11__.type = \"bundle-v0.3\"; __local11__.signer.certificateIssuer = \"CN=sigstore-intermediate,O=sigstore.dev\"; __local11__.signer.issuer = \"https://token.actions.githubusercontent.com\"; sprintf(\"https://github.com/%s\", [__local12__], __local36__); __local11__.signer.sourceRepositoryURI = __local36__; __local11__.signer.runnerEnvironment = \"github-hosted\"; __local50__ = __local11__.timestamps; count(__local50__, __local37__); gt(__local37__, 0) }\ndocker_github_builder_bundle(__local13__, __local14__, __local15__) = true if { artifact_attestation(__local13__, __local14__, __local38__); __local16__ = __local38__; data.docker.docker_github_builder_signature(__local16__, __local15__) }\ngithub_release_attestation(__local17__) := __local21__ if { __local17__.schema = \"https\"; __local51__ = __local17__.host; lower(__local51__, __local39__); __local39__ = \"github.com\"; __local52__ = __local17__.path; regex.find_all_string_submatch_n(\"^/([^/]+)/([^/]+)/releases/download/[^/]+/.+$\", __local52__, 1, __local40__); __local18__ = __local40__[0]; __local19__ = __local18__[1]; __local20__ = __local18__[2]; sprintf(\"%s/%s\", [__local19__, __local20__], __local41__); github_attestation(__local17__, __local41__, __local42__); __local21__ = __local42__ }",
    "policy.rego": "package docker\n\ndecision = true if { __local43__ = [1]; every __local22__, __local23__ in __local43__ { __local23__ = 1; __local44__ = [1]; every __local24__, __local25__ in __local44__ { __local25__ = 1; __local45__ = [1]; every __local26__, __local27__ in __local45__ { __local27__ = 1; __local46__ = [1]; every __local28__, __local29__ in __local46__ { __local29__ = 1; __local47__ = [1]; every __local30__, __local31__ in __local47__ { __local31__ = 1; __local48__ = [1]; every __local32__, __local33__ in __local48__ { __local33__ = 1; __local53__ = {__local34__ | internal.template_string([{__local33__}], __local49__); __local34__ = __local49__}; internal.print([__local53__]); __local33__ = 1 } } } } } } }"
+  }
+ },
+ {
+  "name": "safety-template-comprehension",
+  "error": "1 error occurred: policy.rego:3: rego_unsafe_var_error: var q is unsafe"
+ },
+ {
+  "name": "safety-template-later",
+  "modules": {
+   "builtin/buildx_defaults.rego": "package docker\n\ndocker_github_builder(__local0__, __local1__) = true if { __local0__.hasProvenance; __local4__ = __local0__.signatures[__local3__]; data.docker.docker_github_builder_signature(__local4__, __local1__) }\ndocker_github_builder_tag(__local5__, __local6__, __local7__) = true if { data.docker.docker_github_builder(__local5__, __local6__); __local10__ = __local5__.signatures[__local9__]; sprintf(\"refs/tags/%s\", [__local7__], __local23__); __local10__.signer.sourceRepositoryRef = __local23__ }\ndocker_github_builder_signature(__local11__, __local12__) = true if { __local11__.kind = \"docker-github-builder\"; __local11__.type = \"bundle-v0.3\"; __local11__.signer.certificateIssuer = \"CN=sigstore-intermediate,O=sigstore.dev\"; __local11__.signer.issuer = \"https://token.actions.githubusercontent.com\"; sprintf(\"https://github.com/%s\", [__local12__], __local24__); __local11__.signer.sourceRepositoryURI = __local24__; __local11__.signer.runnerEnvironment = \"github-hosted\"; __local33__ = __local11__.timestamps; count(__local33__, __local25__); gt(__local25__, 0) }\ndocker_github_builder_bundle(__local13__, __local14__, __local15__) = true if { artifact_attestation(__local13__, __local14__, __local26__); __local16__ = __local26__; data.docker.docker_github_builder_signature(__local16__, __local15__) }\ngithub_release_attestation(__local17__) := __local21__ if { __local17__.schema = \"https\"; __local34__ = __local17__.host; lower(__local34__, __local27__); __local27__ = \"github.com\"; __local35__ = __local17__.path; regex.find_all_string_submatch_n(\"^/([^/]+)/([^/]+)/releases/download/[^/]+/.+$\", __local35__, 1, __local28__); __local18__ = __local28__[0]; __local19__ = __local18__[1]; __local20__ = __local18__[2]; sprintf(\"%s/%s\", [__local19__, __local20__], __local29__); github_attestation(__local17__, __local29__, __local30__); __local21__ = __local30__ }",
+   "policy.rego": "package docker\n\ndecision := __local32__ if { __local32__ = [__local22__ | __local22__ = __local31__; q = 1; internal.template_string([{q}], __local31__)] }"
+  }
+ },
+ {
+  "name": "safety-call-set-later",
+  "modules": {
+   "builtin/buildx_defaults.rego": "package docker\n\ndocker_github_builder(__local0__, __local1__) = true if { __local0__.hasProvenance; __local4__ = __local0__.signatures[__local3__]; data.docker.docker_github_builder_signature(__local4__, __local1__) }\ndocker_github_builder_tag(__local5__, __local6__, __local7__) = true if { data.docker.docker_github_builder(__local5__, __local6__); __local10__ = __local5__.signatures[__local9__]; sprintf(\"refs/tags/%s\", [__local7__], __local22__); __local10__.signer.sourceRepositoryRef = __local22__ }\ndocker_github_builder_signature(__local11__, __local12__) = true if { __local11__.kind = \"docker-github-builder\"; __local11__.type = \"bundle-v0.3\"; __local11__.signer.certificateIssuer = \"CN=sigstore-intermediate,O=sigstore.dev\"; __local11__.signer.issuer = \"https://token.actions.githubusercontent.com\"; sprintf(\"https://github.com/%s\", [__local12__], __local23__); __local11__.signer.sourceRepositoryURI = __local23__; __local11__.signer.runnerEnvironment = \"github-hosted\"; __local31__ = __local11__.timestamps; count(__local31__, __local24__); gt(__local24__, 0) }\ndocker_github_builder_bundle(__local13__, __local14__, __local15__) = true if { artifact_attestation(__local13__, __local14__, __local25__); __local16__ = __local25__; data.docker.docker_github_builder_signature(__local16__, __local15__) }\ngithub_release_attestation(__local17__) := __local21__ if { __local17__.schema = \"https\"; __local32__ = __local17__.host; lower(__local32__, __local26__); __local26__ = \"github.com\"; __local33__ = __local17__.path; regex.find_all_string_submatch_n(\"^/([^/]+)/([^/]+)/releases/download/[^/]+/.+$\", __local33__, 1, __local27__); __local18__ = __local27__[0]; __local19__ = __local18__[1]; __local20__ = __local18__[2]; sprintf(\"%s/%s\", [__local19__, __local20__], __local28__); github_attestation(__local17__, __local28__, __local29__); __local21__ = __local29__ }",
+   "policy.rego": "package docker\n\ndecision := __local30__ if { __local30__ = [y | y = t; q = 1; count({q}, t)] }"
+  }
+ },
+ {
+  "name": "safety-call-set-every",
+  "error": "1 error occurred: policy.rego:5: rego_unsafe_var_error: var n is unsafe"
+ },
+ {
+  "name": "safety-call-set-unsafe",
+  "error": "1 error occurred: policy.rego:3: rego_unsafe_var_error: var q is unsafe"
+ },
+ {
+  "name": "safety-print-after-call",
+  "error": "1 error occurred: policy.rego:4: rego_type_error: count: invalid argument(s)\n\thave: (number, ???)\n\twant: (collection: any\u003cstring, array[any], object[any: any], set[any]\u003e, n: number)"
+ },
+ {
+  "name": "safety-print-after-call-unsafe",
+  "error": "1 error occurred: policy.rego:6: rego_compile_error: var x is undeclared"
+ },
+ {
+  "name": "safety-every-after-call",
+  "modules": {
+   "builtin/buildx_defaults.rego": "package docker\n\ndocker_github_builder(__local0__, __local1__) = true if { __local0__.hasProvenance; __local4__ = __local0__.signatures[__local3__]; data.docker.docker_github_builder_signature(__local4__, __local1__) }\ndocker_github_builder_tag(__local5__, __local6__, __local7__) = true if { data.docker.docker_github_builder(__local5__, __local6__); __local10__ = __local5__.signatures[__local9__]; sprintf(\"refs/tags/%s\", [__local7__], __local24__); __local10__.signer.sourceRepositoryRef = __local24__ }\ndocker_github_builder_signature(__local11__, __local12__) = true if { __local11__.kind = \"docker-github-builder\"; __local11__.type = \"bundle-v0.3\"; __local11__.signer.certificateIssuer = \"CN=sigstore-intermediate,O=sigstore.dev\"; __local11__.signer.issuer = \"https://token.actions.githubusercontent.com\"; sprintf(\"https://github.com/%s\", [__local12__], __local25__); __local11__.signer.sourceRepositoryURI = __local25__; __local11__.signer.runnerEnvironment = \"github-hosted\"; __local33__ = __local11__.timestamps; count(__local33__, __local26__); gt(__local26__, 0) }\ndocker_github_builder_bundle(__local13__, __local14__, __local15__) = true if { artifact_attestation(__local13__, __local14__, __local27__); __local16__ = __local27__; data.docker.docker_github_builder_signature(__local16__, __local15__) }\ngithub_release_attestation(__local17__) := __local21__ if { __local17__.schema = \"https\"; __local34__ = __local17__.host; lower(__local34__, __local28__); __local28__ = \"github.com\"; __local35__ = __local17__.path; regex.find_all_string_submatch_n(\"^/([^/]+)/([^/]+)/releases/download/[^/]+/.+$\", __local35__, 1, __local29__); __local18__ = __local29__[0]; __local19__ = __local18__[1]; __local20__ = __local18__[2]; sprintf(\"%s/%s\", [__local19__, __local20__], __local30__); github_attestation(__local17__, __local30__, __local31__); __local21__ = __local31__ }",
+   "policy.rego": "package docker\n\ndecision = true if { __local32__ = [1]; every __local22__, __local23__ in __local32__ { __local23__ = 1 }; abs(i, m); z = 1; __local36__ = input.a[i]; sum([__local36__, z], n) }"
   }
  }
 ]

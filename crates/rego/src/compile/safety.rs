@@ -325,26 +325,43 @@ pub fn walk_terms(t: &Term, f: &mut dyn FnMut(&Term) -> bool) {
     }
 }
 
-/// outputVarsForExprEq.
+/// outputVarsForExprEq, on a set of its own.
 pub fn output_vars_for_expr_eq(e: &Expr, safe: &VarSet) -> VarSet {
+    output_vars_for_expr_eq_in(e, safe, &mut VarSet::new())
+}
+
+/// outputVarsForExprEq on the `output` set a body's expressions share: what is in it
+/// counts as safe, and as the expression's outputs, before the set is emptied.
+fn output_vars_for_expr_eq_in(e: &Expr, safe: &VarSet, output: &mut VarSet) -> VarSet {
     let (Some(a), Some(b)) = (e.operand(0), e.operand(1)) else {
         return safe.clone();
     };
     if e.operand(2).is_some() {
         return safe.clone();
     }
-    let mut output = output_vars_for_terms(e, safe);
+    output.extend(output_vars_for_terms(e, safe));
     output.extend(safe.iter().cloned());
-    let u = unify(&output, a, b);
+    let u = unify(output, a, b);
     output.extend(u);
-    output.difference(safe).cloned().collect()
+    let diff = output.difference(safe).cloned().collect();
+    output.clear();
+    diff
 }
 
-fn output_vars_for_expr_call(e: &Expr, arity: usize, safe: &VarSet, terms: &[Term]) -> VarSet {
-    let mut output = output_vars_for_terms(e, safe);
+/// outputVarsForExprCall on the shared `output` set: emptied, then filled with the
+/// call's outputs, which stay in it when its inputs are not safe.
+fn output_vars_for_expr_call_in(
+    e: &Expr,
+    arity: usize,
+    safe: &VarSet,
+    terms: &[Term],
+    output: &mut VarSet,
+) -> VarSet {
+    output.clear();
+    output.extend(output_vars_for_terms(e, safe));
     let inputs = arity + 1;
     if inputs >= terms.len() {
-        return output;
+        return output.clone();
     }
     let mut v = VarVisitor::new(OUTPUT);
     v.args(terms.get(..inputs).unwrap_or_default());
@@ -359,11 +376,19 @@ fn output_vars_for_expr_call(e: &Expr, arity: usize, safe: &VarSet, terms: &[Ter
     let mut v = VarVisitor::new(OUTPUT);
     v.args(terms.get(inputs..).unwrap_or_default());
     output.extend(v.vars);
-    output
+    output.clone()
 }
 
-/// outputVarsForExpr.
+/// outputVarsForExpr, on a set of its own (OutputVarsFromExpr).
 pub fn output_vars_for_expr(e: &Expr, arity: Arity<'_>, safe: &VarSet) -> VarSet {
+    output_vars_for_expr_in(e, arity, safe, &mut VarSet::new())
+}
+
+/// outputVarsForExpr on the `output` set that OPA reads a body's expressions with in turn
+/// (outputVarsForBody, reorderBodyForSafety): a call fills it, an `every` statement adds
+/// its domain's outputs, an equality reads it as safe and empties it. What a call left
+/// that was not placed counts as safe, and as outputs, in the equality after it.
+fn output_vars_for_expr_in(e: &Expr, arity: Arity<'_>, safe: &VarSet, output: &mut VarSet) -> VarSet {
     if e.negated {
         return VarSet::new();
     }
@@ -383,15 +408,18 @@ pub fn output_vars_for_expr(e: &Expr, arity: Arity<'_>, safe: &VarSet) -> VarSet
         }
         ExprTerms::Call(terms) => {
             if e.is_equality() {
-                return output_vars_for_expr_eq(e, safe);
+                return output_vars_for_expr_eq_in(e, safe, output);
             }
             let Some(op) = terms.first().and_then(Term::as_ref) else {
                 return VarSet::new();
             };
             let Some(a) = arity(op) else { return VarSet::new() };
-            output_vars_for_expr_call(e, a, safe, terms)
+            output_vars_for_expr_call_in(e, a, safe, terms, output)
         }
-        ExprTerms::Every(ev) => output_vars_for_term(&ev.domain, safe),
+        ExprTerms::Every(ev) => {
+            output.extend(output_vars_for_term(&ev.domain, safe));
+            output.clone()
+        }
         ExprTerms::Some(_) => VarSet::new(),
     }
 }
@@ -399,13 +427,13 @@ pub fn output_vars_for_expr(e: &Expr, arity: Arity<'_>, safe: &VarSet) -> VarSet
 /// outputVarsForBody.
 pub fn output_vars_for_body(body: &[Expr], arity: Arity<'_>, safe: &VarSet) -> VarSet {
     let mut o = safe.clone();
+    let mut output = VarSet::new();
     for e in body {
-        let out = output_vars_for_expr(e, arity, &o);
+        let out = output_vars_for_expr_in(e, arity, &o, &mut output);
         o.extend(out);
     }
     o.difference(safe).cloned().collect()
 }
-
 fn unsafe_add(u: &mut HashMap<usize, VarSet>, i: usize, v: &Var) {
     u.entry(i).or_default().insert(v.clone());
 }
@@ -442,6 +470,8 @@ pub fn reorder(arity: Arity<'_>, globals: &VarSet, body: &Body) -> (Vec<usize>, 
         }
     }
     let mut order: Vec<usize> = Vec::new();
+    // reorderBodyForSafety reads every expression with one output set, through every pass.
+    let mut output = VarSet::new();
     let mut placed: HashSet<usize> = HashSet::new();
     loop {
         let n = order.len();
@@ -449,7 +479,7 @@ pub fn reorder(arity: Arity<'_>, globals: &VarSet, body: &Body) -> (Vec<usize>, 
             if placed.contains(&i) {
                 continue;
             }
-            let ovs = output_vars_for_expr(e, arity, &safe);
+            let ovs = output_vars_for_expr_in(e, arity, &safe, &mut output);
             let cv: VarSet = vars_in_closures(e)
                 .intersection(&body_vars)
                 .filter(|v| !globals.contains(*v))

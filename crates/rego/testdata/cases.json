@@ -3531,5 +3531,100 @@
    ]
   ],
   "query": "data.docker.decision"
+ },
+ {
+  "name": "safety-template-comprehension",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := [x | x := [y | y := $\"{q}\"]]\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "safety-template-later",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := [y | y := $\"{q}\"; q = 1]\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "safety-call-set-later",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := [y | count({q}, t); y = t; q = 1]\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "safety-call-set-every",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tcount({z}, n)\n\tevery y in [1] { y < n }\n\tz = 1\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "safety-call-set-unsafe",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := [y | count({q}, t); y = t]\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "safety-print-after-call",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tcount(input.a[i] + z, n)\n\tx = i\n\tprint(x)\n\tz = 1\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "a": [
+    1
+   ]
+  }
+ },
+ {
+  "name": "safety-print-after-call-unsafe",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tcount(input.a[i] + z, n)\n\tx = w\n\tprint(x)\n\tz = 1\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "a": [
+    1
+   ]
+  }
+ },
+ {
+  "name": "safety-every-after-call",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tsum([input.a[i], z], n)\n\tevery y in [1] { y == 1 }\n\tabs(i, m)\n\tz = 1\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "a": [
+    1
+   ]
+  }
  }
 ]
