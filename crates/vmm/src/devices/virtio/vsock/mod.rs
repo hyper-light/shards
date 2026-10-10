@@ -386,8 +386,11 @@ fn run(
         let more = match step(&mut s, mem, irq) {
             Ok(more) => more,
             Err(e) => {
-                warn!("virtio-vsock: {e}; device needs reset");
-                irq.fail();
+                if irq.fail() {
+                    warn!("virtio-vsock: {e}; device needs reset");
+                } else {
+                    debug!("virtio-vsock: {e}; device needs reset");
+                }
                 return s;
             }
         };

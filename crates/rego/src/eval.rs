@@ -297,10 +297,8 @@ fn add_module(
         let mut elses = Vec::new();
         let mut e = rule.else_.as_deref();
         while let Some(x) = e {
-            let mut r = x.clone();
-            r.else_ = None;
             let rec = Rc::new(RuleRec {
-                rule: r,
+                rule: x.branch(),
                 path: path.clone(),
                 pkg_len,
                 elses: Vec::new(),
@@ -309,10 +307,8 @@ fn add_module(
             elses.push(rec);
             e = x.else_.as_deref();
         }
-        let mut r = rule.clone();
-        r.else_ = None;
         let rec = Rc::new(RuleRec {
-            rule: r,
+            rule: rule.branch(),
             path: path.clone(),
             pkg_len,
             elses,
@@ -605,36 +601,114 @@ impl std::fmt::Debug for Machine<'_> {
 type K<'a> = &'a mut dyn FnMut(&mut Machine<'_>) -> R;
 type I<'a> = &'a mut dyn FnMut(&mut Machine<'_>, &Frame) -> R;
 
-/// Converts a ground term to a value.
-pub fn to_value(t: &Term) -> Option<Value> {
-    Some(match &t.value {
-        TermValue::Null => Value::Null,
-        TermValue::Bool(b) => Value::Bool(*b),
-        TermValue::Number(n) => Value::Number(n.clone()),
-        TermValue::String(s) => Value::String(s.clone()),
-        TermValue::Array(a) => Value::array(a.iter().map(to_value).collect::<Option<Vec<_>>>()?),
-        TermValue::Set(s) => Value::set(s.iter().map(to_value).collect::<Option<_>>()?),
-        TermValue::Object(o) => Value::object(
-            o.iter()
-                .map(|(k, v)| Some((to_value(k)?, to_value(v)?)))
-                .collect::<Option<_>>()?,
-        ),
-        _ => return None,
-    })
+/// What converting a nested value has left to do: a member to convert, or a collection
+/// to make of the last members converted.
+enum Convert<T> {
+    Visit(T),
+    Array(usize),
+    Set(usize),
+    Object(usize),
 }
 
-/// A value as a term.
+/// The last `n` members converted, taken.
+fn last<T>(out: &mut Vec<T>, n: usize) -> Vec<T> {
+    out.split_off(out.len().saturating_sub(n))
+}
+
+/// Converts a ground term to a value, a member at a time: a value nests deeper than a
+/// thread has stack for a frame a level.
+pub fn to_value(t: &Term) -> Option<Value> {
+    let mut todo = vec![Convert::Visit(t)];
+    let mut out: Vec<Value> = Vec::new();
+    while let Some(c) = todo.pop() {
+        match c {
+            Convert::Visit(t) => match &t.value {
+                TermValue::Null => out.push(Value::Null),
+                TermValue::Bool(b) => out.push(Value::Bool(*b)),
+                TermValue::Number(n) => out.push(Value::Number(n.clone())),
+                TermValue::String(s) => out.push(Value::String(s.clone())),
+                TermValue::Array(a) => {
+                    todo.push(Convert::Array(a.len()));
+                    todo.extend(a.iter().rev().map(Convert::Visit));
+                }
+                TermValue::Set(s) => {
+                    todo.push(Convert::Set(s.len()));
+                    todo.extend(s.iter().rev().map(Convert::Visit));
+                }
+                TermValue::Object(o) => {
+                    todo.push(Convert::Object(o.len()));
+                    for (k, v) in o.iter().rev() {
+                        todo.push(Convert::Visit(v));
+                        todo.push(Convert::Visit(k));
+                    }
+                }
+                _ => return None,
+            },
+            Convert::Array(n) => {
+                let items = last(&mut out, n);
+                out.push(Value::array(items));
+            }
+            Convert::Set(n) => {
+                let items = last(&mut out, n);
+                out.push(Value::set(items.into_iter().collect()));
+            }
+            Convert::Object(n) => {
+                let mut flat = last(&mut out, 2 * n).into_iter();
+                let mut pairs = BTreeMap::new();
+                while let (Some(k), Some(v)) = (flat.next(), flat.next()) {
+                    pairs.insert(k, v);
+                }
+                out.push(Value::object(pairs));
+            }
+        }
+    }
+    out.pop()
+}
+
+/// A value as a term, a member at a time.
 pub fn to_term(v: &Value) -> Term {
-    let value = match v {
-        Value::Null => TermValue::Null,
-        Value::Bool(b) => TermValue::Bool(*b),
-        Value::Number(n) => TermValue::Number(n.clone()),
-        Value::String(s) => TermValue::String(s.clone()),
-        Value::Array(a) => TermValue::Array(a.iter().map(to_term).collect()),
-        Value::Set(s) => TermValue::Set(s.iter().map(to_term).collect()),
-        Value::Object(o) => TermValue::Object(o.iter().map(|(k, v)| (to_term(k), to_term(v))).collect()),
-    };
-    Term::new(value, None)
+    let mut todo = vec![Convert::Visit(v)];
+    let mut out: Vec<Term> = Vec::new();
+    while let Some(c) = todo.pop() {
+        let value = match c {
+            Convert::Visit(v) => match v {
+                Value::Null => TermValue::Null,
+                Value::Bool(b) => TermValue::Bool(*b),
+                Value::Number(n) => TermValue::Number(n.clone()),
+                Value::String(s) => TermValue::String(s.clone()),
+                Value::Array(a) => {
+                    todo.push(Convert::Array(a.len()));
+                    todo.extend(a.iter().rev().map(Convert::Visit));
+                    continue;
+                }
+                Value::Set(s) => {
+                    todo.push(Convert::Set(s.len()));
+                    todo.extend(s.iter().rev().map(Convert::Visit));
+                    continue;
+                }
+                Value::Object(o) => {
+                    todo.push(Convert::Object(o.len()));
+                    for (k, v) in o.iter().rev() {
+                        todo.push(Convert::Visit(v));
+                        todo.push(Convert::Visit(k));
+                    }
+                    continue;
+                }
+            },
+            Convert::Array(n) => TermValue::Array(last(&mut out, n).into()),
+            Convert::Set(n) => TermValue::Set(last(&mut out, n).into()),
+            Convert::Object(n) => {
+                let mut flat = last(&mut out, 2 * n).into_iter();
+                let mut pairs = Vec::with_capacity(n);
+                while let (Some(k), Some(v)) = (flat.next(), flat.next()) {
+                    pairs.push((k, v));
+                }
+                TermValue::Object(pairs.into())
+            }
+        };
+        out.push(Term::new(value, None));
+    }
+    out.pop().unwrap_or_else(|| Term::new(TermValue::Null, None))
 }
 
 fn var_term(name: &str) -> Term {
@@ -1009,9 +1083,9 @@ impl<'p> Machine<'p> {
         for e in &p.set {
             for v in &e.vars {
                 if let Some(b) = e.b
-                    && let TermValue::Var(x) = self.plug_ns(v, b, Some(caller)).value
+                    && let TermValue::Var(x) = &self.plug_ns(v, b, Some(caller)).value
                 {
-                    out.insert(x);
+                    out.insert(x.clone());
                 }
             }
         }
@@ -1021,10 +1095,10 @@ impl<'p> Machine<'p> {
     fn ss_push(&mut self, ts: Vec<Term>, b: Option<usize>) {
         let mut refs = Vec::new();
         let mut vars = Vec::new();
-        for t in ts {
-            match t.value {
+        for mut t in ts {
+            match &mut t.value {
                 TermValue::Var(_) => vars.push(t),
-                TermValue::Ref(r) => refs.push(r.into_inner()),
+                TermValue::Ref(r) => refs.push(std::mem::take(r).into_inner()),
                 _ => {}
             }
         }
@@ -2024,13 +2098,14 @@ fn merge_with(base: Option<&Term>, pairs: &[(Vec<Term>, Term)]) -> Option<Term> 
     doc
 }
 
-fn set_path(doc: Term, path: &[Term], value: Term) -> Option<Term> {
+fn set_path(mut doc: Term, path: &[Term], value: Term) -> Option<Term> {
     let Some((first, rest)) = path.split_first() else {
         return Some(value);
     };
-    let TermValue::Object(mut o) = doc.value else {
+    let TermValue::Object(o) = &mut doc.value else {
         return set_path(crate::ast::object_term(Vec::new(), None), path, value);
     };
+    let mut o = std::mem::take(o);
     let existing = o.iter().position(|(k, _)| k.equal(first));
     let inner = match existing {
         Some(i) => o.remove(i).1,
@@ -2042,7 +2117,7 @@ fn set_path(doc: Term, path: &[Term], value: Term) -> Option<Term> {
         set_path(inner, rest, value)?
     };
     o.push((first.clone(), new));
-    Some(crate::ast::object_term(o.into_inner(), doc.loc))
+    Some(crate::ast::object_term(o.into_inner(), doc.loc.take()))
 }
 
 /// biunify.
@@ -3397,58 +3472,59 @@ fn reduce(
 ) -> Result<(Term, bool), Flow> {
     let head = &rule.rule.head;
     let loc = head.loc.clone();
-    match result.value {
-        TermValue::Set(mut s) => {
-            let key = m.plug(head.key.as_ref().unwrap_or(&Term::boolean(true, None)), b);
-            let exists = s.iter().any(|x| x.equal(&key));
-            if !exists {
-                s.push(key);
-            }
-            Ok((Term::new(TermValue::Set(s), None), exists))
+    let mut result = result;
+    if let TermValue::Set(s) = &mut result.value {
+        let mut s = std::mem::take(s);
+        let key = m.plug(head.key.as_ref().unwrap_or(&Term::boolean(true, None)), b);
+        let exists = s.iter().any(|x| x.equal(&key));
+        if !exists {
+            s.push(key);
         }
-        TermValue::Object(o) => {
-            let full = &rule.path;
-            let collision: Vec<Term> = full
-                .get(pos + 1..)
-                .unwrap_or_default()
-                .iter()
-                .map(|t| m.plug(t, b))
-                .collect();
-            if visited
-                .iter()
-                .any(|c| ref_has_prefix(&collision, c) && !(c.len() == collision.len()))
-            {
-                return Err(err(CONFLICT_ERR, loc, "object keys must be unique"));
-            }
-            visited.push(collision);
-            let obj_path: Vec<Term> = full
-                .get(pos + 1..full.len().saturating_sub(1))
-                .unwrap_or_default()
-                .iter()
-                .map(|t| m.plug(t, b))
-                .collect();
-            let leaf_key = full
-                .last()
-                .map(|t| m.plug(t, b))
-                .unwrap_or_else(|| Term::boolean(true, None));
-            let leaf = if head.kind() == RuleKind::SingleValue {
-                Leaf::Value(m.plug(head.value.as_ref().unwrap_or(&Term::boolean(true, None)), b))
-            } else {
-                Leaf::SetMember(m.plug(head.key.as_ref().unwrap_or(&Term::boolean(true, None)), b))
-            };
-            let mut exists = false;
-            let new = insert_nested(
-                Term::new(TermValue::Object(o), None),
-                &obj_path,
-                &leaf_key,
-                &leaf,
-                &mut exists,
-                &loc,
-            )?;
-            Ok((new, exists))
-        }
-        _ => Ok((result, false)),
+        return Ok((Term::new(TermValue::Set(s), None), exists));
     }
+    if let TermValue::Object(o) = &mut result.value {
+        let o = std::mem::take(o);
+        let full = &rule.path;
+        let collision: Vec<Term> = full
+            .get(pos + 1..)
+            .unwrap_or_default()
+            .iter()
+            .map(|t| m.plug(t, b))
+            .collect();
+        if visited
+            .iter()
+            .any(|c| ref_has_prefix(&collision, c) && !(c.len() == collision.len()))
+        {
+            return Err(err(CONFLICT_ERR, loc, "object keys must be unique"));
+        }
+        visited.push(collision);
+        let obj_path: Vec<Term> = full
+            .get(pos + 1..full.len().saturating_sub(1))
+            .unwrap_or_default()
+            .iter()
+            .map(|t| m.plug(t, b))
+            .collect();
+        let leaf_key = full
+            .last()
+            .map(|t| m.plug(t, b))
+            .unwrap_or_else(|| Term::boolean(true, None));
+        let leaf = if head.kind() == RuleKind::SingleValue {
+            Leaf::Value(m.plug(head.value.as_ref().unwrap_or(&Term::boolean(true, None)), b))
+        } else {
+            Leaf::SetMember(m.plug(head.key.as_ref().unwrap_or(&Term::boolean(true, None)), b))
+        };
+        let mut exists = false;
+        let new = insert_nested(
+            Term::new(TermValue::Object(o), None),
+            &obj_path,
+            &leaf_key,
+            &leaf,
+            &mut exists,
+            &loc,
+        )?;
+        return Ok((new, exists));
+    }
+    Ok((result, false))
 }
 
 enum Leaf {
@@ -3457,16 +3533,17 @@ enum Leaf {
 }
 
 fn insert_nested(
-    obj: Term,
+    mut obj: Term,
     path: &[Term],
     leaf_key: &Term,
     leaf: &Leaf,
     exists: &mut bool,
     loc: &Option<Location>,
 ) -> Result<Term, Flow> {
-    let TermValue::Object(mut o) = obj.value else {
+    let TermValue::Object(o) = &mut obj.value else {
         return Err(err(CONFLICT_ERR, loc.clone(), "object keys must be unique"));
     };
+    let mut o = std::mem::take(o);
     if let Some((first, rest)) = path.split_first() {
         let pos = o.iter().position(|(k, _)| k.equal(first));
         let inner = match pos {
@@ -3536,19 +3613,13 @@ fn compr_cached(m: &mut Machine<'_>, f: &Frame, a: &Term) -> Result<Option<Term>
             let next = match &a.value {
                 TermValue::ArrayCompr(h, _) => {
                     let v = m.plug(h, cf.b);
-                    let mut items = match entry.map(|t| t.value) {
-                        Some(TermValue::Array(xs)) => xs.into_inner(),
-                        _ => Vec::new(),
-                    };
+                    let mut items = entry.and_then(|mut t| t.value.take_array()).unwrap_or_default();
                     items.push(v);
                     Term::new(TermValue::Array(items.into()), None)
                 }
                 TermValue::SetCompr(h, _) => {
                     let v = m.plug(h, cf.b);
-                    let mut items = match entry.map(|t| t.value) {
-                        Some(TermValue::Set(xs)) => xs.into_inner(),
-                        _ => Vec::new(),
-                    };
+                    let mut items = entry.and_then(|mut t| t.value.take_set()).unwrap_or_default();
                     if !items.iter().any(|x| x.equal(&v)) {
                         items.push(v);
                     }
@@ -3557,10 +3628,7 @@ fn compr_cached(m: &mut Machine<'_>, f: &Frame, a: &Term) -> Result<Option<Term>
                 TermValue::ObjectCompr(kk, vv, _) => {
                     let key = m.plug(kk, cf.b);
                     let val = m.plug(vv, cf.b);
-                    let mut items = match entry.map(|t| t.value) {
-                        Some(TermValue::Object(xs)) => xs.into_inner(),
-                        _ => Vec::new(),
-                    };
+                    let mut items = entry.and_then(|mut t| t.value.take_object()).unwrap_or_default();
                     match items.iter_mut().find(|(x, _)| x.equal(&key)) {
                         Some(slot) => slot.1 = val,
                         None => items.push((key, val)),

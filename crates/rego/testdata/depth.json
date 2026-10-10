@@ -1,0 +1,22 @@
+[
+ {"name": "array", "check": true, "head": "package docker\n\nx := ", "open": "[", "inner": "1", "close": "]", "tail": "\n\ndecision := count(json.marshal(x))\n"},
+ {"name": "object", "answer": "[199981]", "head": "package docker\n\nx := ", "open": "{\"a\": ", "inner": "1", "close": "}", "tail": "\n\ndecision := count(json.marshal(x))\n"},
+ {"name": "set", "answer": "[99993]", "head": "package docker\n\nx := ", "open": "{", "inner": "1", "close": "}", "tail": "\n\ndecision := count(json.marshal(x))\n"},
+ {"name": "parens", "check": true, "head": "package docker\n\ndecision := ", "open": "(", "inner": "1", "close": ")", "tail": "\n"},
+ {"name": "builtin", "head": "package docker\n\ndecision := ", "open": "abs(", "inner": "1", "close": ")", "tail": "\n"},
+ {"name": "function", "head": "package docker\n\nf(x) := x\n\ndecision := ", "open": "f(", "inner": "1", "close": ")", "tail": "\n"},
+ {"name": "array-comprehension", "head": "package docker\n\nx := ", "open": "[y | y := ", "inner": "1", "close": "]", "tail": "\n\ndecision := count(json.marshal(x))\n"},
+ {"name": "set-comprehension", "head": "package docker\n\nx := ", "open": "{y | y := ", "inner": "1", "close": "}", "tail": "\n\ndecision := count(json.marshal(x))\n"},
+ {"name": "object-comprehension", "head": "package docker\n\nx := ", "open": "{\"a\": y | y := ", "inner": "1", "close": "}", "tail": "\n\ndecision := count(json.marshal(x))\n"},
+ {"name": "negated-comprehension", "head": "package docker\n\ndecision := ", "open": "count([1 | not ", "inner": "false", "close": "])", "tail": "\n"},
+ {"name": "ref", "head": "package docker\n\ndecision := ", "open": "input[", "inner": "\"a\"", "close": "]", "tail": "\n"},
+ {"name": "every", "head": "package docker\n\ndecision if {\n\t", "open": "every x in [1] { ", "inner": "true", "close": " }", "tail": "\n}\n"},
+ {"name": "plus", "head": "package docker\n\ndecision := ", "inner": "1", "sep": " + ", "tail": "\n"},
+ {"name": "times", "head": "package docker\n\ndecision := ", "inner": "1", "sep": " * ", "tail": "\n"},
+ {"name": "union", "head": "package docker\n\ndecision := count(", "inner": "{1}", "sep": " | ", "tail": ")\n"},
+ {"name": "intersection", "head": "package docker\n\ndecision := count(", "inner": "{1}", "sep": " & ", "tail": ")\n"},
+ {"name": "equality", "head": "package docker\n\ndecision := ", "inner": "1", "sep": " == ", "tail": "\n"},
+ {"name": "membership", "head": "package docker\n\ndecision := ", "inner": "[1]", "sep": " in ", "tail": "\n"},
+ {"name": "object-key", "head": "package docker\n\nx := ", "open": "{", "inner": "1", "close": ": 1}", "tail": "\n\ndecision := count(json.marshal(x))\n"},
+ {"name": "mixed", "head": "package docker\n\nx := ", "open": "[{\"a\": {", "inner": "1", "close": "}}]", "tail": "\n\ndecision := count(json.marshal(x))\n"}
+]

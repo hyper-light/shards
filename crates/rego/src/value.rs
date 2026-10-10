@@ -157,6 +157,43 @@ pub enum Value {
     Set(Rc<BTreeSet<Value>>),
 }
 
+/// A value nests as deep as json.patch puts one in another, past any frame a level a
+/// thread's stack holds: its last owner drops its members one after another.
+impl Drop for Value {
+    fn drop(&mut self) {
+        let mut rest = Vec::new();
+        take_members(self, &mut rest);
+        while let Some(mut v) = rest.pop() {
+            take_members(&mut v, &mut rest);
+        }
+    }
+}
+
+/// Moves a container's members to `out` when this is its last owner.
+fn take_members(v: &mut Value, out: &mut Vec<Value>) {
+    match v {
+        Value::Array(a) => {
+            if let Some(a) = Rc::get_mut(a) {
+                out.append(a);
+            }
+        }
+        Value::Object(o) => {
+            if let Some(o) = Rc::get_mut(o) {
+                for (k, v) in std::mem::take(o) {
+                    out.push(k);
+                    out.push(v);
+                }
+            }
+        }
+        Value::Set(s) => {
+            if let Some(s) = Rc::get_mut(s) {
+                out.extend(std::mem::take(s));
+            }
+        }
+        _ => {}
+    }
+}
+
 impl Value {
     pub fn string(s: impl Into<Rc<str>>) -> Value {
         Value::String(s.into())

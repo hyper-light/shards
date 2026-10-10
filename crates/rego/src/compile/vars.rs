@@ -254,10 +254,9 @@ impl VarVisitor {
     }
 
     pub fn rule(&mut self, r: &Rule) {
-        self.head(&r.head);
-        self.body(&r.body);
-        if let Some(e) = &r.else_ {
-            self.rule(e);
+        for r in r.branches() {
+            self.head(&r.head);
+            self.body(&r.body);
         }
     }
 }

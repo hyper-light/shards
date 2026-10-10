@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """virtio-fs's request paths at two revisions of shards-vmm, alternating fresh processes.
 
-    run.py OLD_REV [--runs N] [--n SAMPLES] [--delay-us D]
+    run.py OLD_REV [--runs N] [--n SAMPLES] [--delay-us D] [--cases open,serve,...]
     run.py --old-bin OLD --new-bin NEW [...]
 
 Builds this harness twice, in a temporary git worktree of OLD_REV and in the working tree
 (NEW), each against its own crates/vmm, or takes two built binaries. For each case (open,
-serve, held), runs a fresh process per arm in turn, OLD NEW then NEW OLD, after one
-warm-up process each, and pools each arm's samples: n, p50, p90, p99 and max in
+serve, held, list, listplus), runs a fresh process per arm in turn, OLD NEW then NEW OLD,
+after one warm-up process each, and pools each arm's samples: n, p50, p90, p99 and max in
 microseconds, and the median of the paired differences of the processes' medians
 (NEW - OLD) with a bootstrap 95% interval.
 """
@@ -24,6 +24,7 @@ ap.add_argument("--new-bin")
 ap.add_argument("--runs", type=int, default=20)
 ap.add_argument("--n", type=int, default=2000)
 ap.add_argument("--delay-us", type=int, default=5000)
+ap.add_argument("--cases", default="open,serve,held,list,listplus")
 args = ap.parse_args()
 
 work = tempfile.mkdtemp(prefix="virtio-fs-audit-")
@@ -58,9 +59,12 @@ try:
         "open": ["--case", "open", "--n", str(args.n)],
         "serve": ["--case", "serve", "--n", str(args.n)],
         "held": ["--case", "held", "--n", "20", "--delay-us", str(args.delay_us)],
+        "list": ["--case", "list", "--n", "30"],
+        "listplus": ["--case", "listplus", "--n", "10"],
     }
     results = {}
-    for case, flags in cases.items():
+    for case in args.cases.split(","):
+        flags = cases[case]
         def sample(binary):
             return json.loads(subprocess.check_output([binary, *flags], text=True))["ns"]
         for binary in arms.values():

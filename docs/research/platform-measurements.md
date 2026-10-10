@@ -4413,3 +4413,65 @@ revision before comparing a changed API/implementation.
   a slow share no longer holds guest memory from the VM's other devices and snapshots,
   which waited on it for as long as it took (8.9 ms of a 5 ms answer at the median
   here), or for good. Unmeasured: the open's whole round trip from the guest.
+
+### M130. What a directory a guest opens costs the share (audit V05)
+
+- **Question.** OPENDIR copied a directory's listing into its handle. What did a handle
+  hold, what does one hold that reads from a descriptor of its own instead, and what do
+  the C libraries' directory streams cost, which a handle might keep? Does a listing get
+  slower?
+- **Method.** `crates/vmm/tests/fs_dir_handles.rs`, a test binary of its own whose global
+  allocator counts the bytes allocated and not freed: 100 OPENDIRs of a directory of 2000
+  entries, after one that grows the server's tables. `probes/dirbuf.c`: malloc's bytes in
+  use before and after 200 `fdopendir`s each read once (macOS: `malloc_zone_statistics`;
+  glibc: `mallinfo2`, in a `rust:1.98.0` container in shards-dind). `run.py --cases
+  list,listplus --runs 10`: whole listings of 10,000 entries (OPENDIR, pages of 4096
+  bytes, RELEASEDIR), READDIR 30 a process and READDIRPLUS 10, the old arm at 6ad9857.
+  Apple M5 Max, macOS 26.4.1, 2026-10-09, load average 51.
+- **Results.**
+  - Held for 100 handles: 10,759,216 bytes before (108 KB a handle, the listing's
+    names and their table), 8,092 after (81 bytes a handle, the handle table's).
+  - A stream: 2,208 bytes on macOS, 32,835 on glibc (its 32 KiB buffer; up to 1 MiB where
+    a directory's `st_blksize` says so). So the Linux handle keeps no stream, only its
+    descriptor, and reads by getdents64 into a buffer for the request alone.
+  - Listings, milliseconds, n / p50 / p90 / p99 / max:
+
+    | case | old | new | new − old, paired |
+    |---|---|---|---|
+    | READDIR | 300 / 17.7 / 42.6 / 96.7 / 167.1 | 300 / 4.4 / 10.7 / 36.4 / 49.1 | −12.3 [−14.7, −10.6] |
+    | READDIRPLUS | 100 / 453.7 / 593.2 / 708.2 / 1560.7 | 100 / 458.5 / 605.3 / 850.8 / 888.2 | +15.4 [−56.7, +51.7] |
+
+- **Consequence.** A guest can hold the share process to a descriptor and 81 bytes a
+  directory it opens (with 2.2 KiB of stream on macOS), as many as the process may have
+  descriptors, where it held the directory's size each, without bound. READDIR is four
+  times faster on a large directory: each page copied the rest of the listing before; it
+  now reads only the page. READDIRPLUS is its lookups', unchanged. The Linux path runs
+  in CI's Linux jobs; `probes/getdents.rs` checks the paging by `d_off` on its own, and
+  was not run here (Docker did not answer).
+
+### M131. How fast a guest can fail a device again and again (audit V07)
+
+- **Question.** A device that meets a malformed ring says so in the host's log and needs
+  reset; a guest can reset it, break it again, and so on. How many failures, and how
+  many bytes of log, can one guest make?
+- **Method.** `docs/research/measurements/device-reset-log/`: a virtio-blk device behind
+  its MMIO transport, driven through the registers as a driver drives them, its queue's
+  available index 100 ahead of a ring of 8. Each cycle writes STATUS 0, sets the device
+  up, writes DRIVER_OK and waits for DEVICE_NEEDS_RESET; 5 s a run, the process's log
+  sent to a file (`log::to`). Apple M5 Max, macOS 26.4.1, revision 4027d72 (old) and its
+  fix (new), 2026-10-09, load average 51 to 89. No vCPU: a guest's register writes each
+  add an exit's 0.8 µs (PM M4).
+- **Results.** Runs in the order made:
+
+  | arm | cycles in 5 s | log lines | log bytes |
+  |---|---|---|---|
+  | old | 2184 | 2184 | 220,584 |
+  | new | 7267 | 1 | 101 |
+  | old | 545 | 545 | 55,045 |
+  | new | 6444 | 1 | 101 |
+
+- **Consequence.** Each failure was a 101-byte line of the daemon's log, which nothing
+  rotates: at the 1,450 cycles a second the fixed device managed, 147 KB a second, 13 GB
+  a day, from one guest. A device's failure is now said once, across resets; the rest go
+  to debug. The cycle rates themselves vary fourfold with the host's load, which was
+  high and changing throughout.

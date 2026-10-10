@@ -485,7 +485,7 @@ pub fn unmarshal(data: &[u8]) -> Result<Value, String> {
         _ => {
             let end2 = read_value(data, pos)?;
             let x = parse(data.get(pos..end2).unwrap_or_default())?;
-            match x {
+            match &x {
                 Value::Null => return Ok(v),
                 Value::Bool(b) => format!("%!s(bool={b})"),
                 Value::Number(n) => n.text().to_string(),

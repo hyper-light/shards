@@ -717,7 +717,8 @@ impl Host for Funcs<'_> {
                     self.add_unknown(NAME);
                     return Ok(Some(Value::Bool(false)));
                 };
-                let arg = args.first().unwrap_or(&Value::Null);
+                let null = Value::Null;
+                let arg = args.first().unwrap_or(&null);
                 if !matches!(arg, Value::Object(_)) {
                     return Err(undefined(format!(
                         "{NAME}: expected object, got {}",
@@ -769,7 +770,8 @@ impl Host for Funcs<'_> {
                 let Some(http) = &self.input.http else {
                     return Ok(Some(Value::Bool(false)));
                 };
-                let arg = args.first().unwrap_or(&Value::Null);
+                let null = Value::Null;
+                let arg = args.first().unwrap_or(&null);
                 if !matches!(arg, Value::Object(_)) {
                     return Err(undefined(format!(
                         "{NAME}: expected object, got {}",
@@ -854,7 +856,8 @@ impl Host for Funcs<'_> {
                 let Some(http) = &self.input.http else {
                     return Ok(None);
                 };
-                let arg = args.first().unwrap_or(&Value::Null);
+                let null = Value::Null;
+                let arg = args.first().unwrap_or(&null);
                 if !matches!(arg, Value::Object(_)) {
                     return Err(undefined(format!(
                         "{name}: expected object, got {}",

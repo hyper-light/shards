@@ -10,7 +10,7 @@ use std::thread::{self, JoinHandle, Thread};
 use super::DeviceInterrupt;
 use super::queue::{Chain, Queue, Round, serve_round};
 use crate::memory::GuestMemory;
-use crate::warn;
+use crate::{debug, warn};
 
 #[derive(Debug)]
 pub struct Worker {
@@ -40,8 +40,11 @@ impl Worker {
                     Ok(Round::More) => {}
                     // A malformed ring: the device needs reset (virtio 1.3 §2.1.2).
                     Err(e) => {
-                        warn!("{name}: {e}; device needs reset");
-                        interrupt.fail();
+                        if interrupt.fail() {
+                            warn!("{name}: {e}; device needs reset");
+                        } else {
+                            debug!("{name}: {e}; device needs reset");
+                        }
                         return None;
                     }
                 }

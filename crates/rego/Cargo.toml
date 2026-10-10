@@ -18,3 +18,11 @@ shards-template = { path = "../template" }
 
 [dev-dependencies]
 serde_json = "1"
+
+# benches/policy.rs reads its peak memory with getrusage(2).
+[target.'cfg(unix)'.dev-dependencies]
+libc = { workspace = true }
+
+[[bench]]
+name = "policy"
+harness = false

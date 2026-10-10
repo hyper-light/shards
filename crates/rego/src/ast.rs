@@ -9,14 +9,15 @@ use crate::goquote;
 use crate::scanner::Token;
 use crate::value::Number;
 
-/// Where a node is in its module.
+/// Where a node is in its module. OPA's Location also lists the columns of the line's
+/// tabs, which only its formatter reads: kept, they made each term's location a copy of
+/// that list.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Location {
     pub file: Rc<str>,
     pub row: usize,
     pub col: usize,
     pub offset: usize,
-    pub tabs: Vec<usize>,
 }
 
 impl Location {
@@ -88,6 +89,13 @@ impl<T: Clone> Shared<T> {
     }
 }
 
+impl<T> Shared<T> {
+    /// The value, where nothing else holds it.
+    pub fn get_mut(this: &mut Shared<T>) -> Option<&mut T> {
+        Rc::get_mut(&mut this.0)
+    }
+}
+
 impl<A> FromIterator<A> for Shared<Vec<A>> {
     fn from_iter<I: IntoIterator<Item = A>>(iter: I) -> Self {
         Shared(Rc::new(iter.into_iter().collect()))
@@ -124,6 +132,74 @@ pub enum TermValue {
         multi_line: bool,
         parts: Vec<TemplatePart>,
     },
+}
+
+/// A value made a term (a builtin's result, a document read) nests as deep as the value:
+/// the last owner of a collection drops its members one after another. What only the
+/// parser builds (comprehensions, templates) nests no deeper than its limit and drops
+/// as Rust drops it.
+impl Drop for TermValue {
+    fn drop(&mut self) {
+        let mut rest = Vec::new();
+        take_members(self, &mut rest);
+        while let Some(mut t) = rest.pop() {
+            take_members(&mut t.value, &mut rest);
+        }
+    }
+}
+
+impl TermValue {
+    /// An array's members, taken out of it (copied where shared); none for another value.
+    pub fn take_array(&mut self) -> Option<Vec<Term>> {
+        match self {
+            TermValue::Array(a) => Some(std::mem::take(a).into_inner()),
+            _ => None,
+        }
+    }
+
+    /// A set's members, taken out of it (copied where shared); none for another value.
+    pub fn take_set(&mut self) -> Option<Vec<Term>> {
+        match self {
+            TermValue::Set(s) => Some(std::mem::take(s).into_inner()),
+            _ => None,
+        }
+    }
+
+    /// An object's pairs, taken out of it (copied where shared); none for another value.
+    pub fn take_object(&mut self) -> Option<Vec<(Term, Term)>> {
+        match self {
+            TermValue::Object(o) => Some(std::mem::take(o).into_inner()),
+            _ => None,
+        }
+    }
+
+    /// A call's terms, taken out of it (copied where shared); none for another value.
+    pub fn take_call(&mut self) -> Option<Vec<Term>> {
+        match self {
+            TermValue::Call(c) => Some(std::mem::take(c).into_inner()),
+            _ => None,
+        }
+    }
+}
+
+/// Moves a collection's members to `out` when this is its last owner.
+fn take_members(v: &mut TermValue, out: &mut Vec<Term>) {
+    match v {
+        TermValue::Ref(a) | TermValue::Array(a) | TermValue::Set(a) | TermValue::Call(a) => {
+            if let Some(a) = Shared::get_mut(a) {
+                out.append(a);
+            }
+        }
+        TermValue::Object(o) => {
+            if let Some(o) = Shared::get_mut(o) {
+                for (k, v) in o.drain(..) {
+                    out.push(k);
+                    out.push(v);
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 impl Term {
@@ -409,7 +485,9 @@ impl Head {
     }
 }
 
-#[derive(Debug, Clone)]
+/// A rule, and its else branches in a chain. A rule may have more branches than a thread
+/// has stack for frames (OPA takes 100000 and more), so what walks the chain loops over
+/// it: cloning, dropping and printing a rule included.
 pub struct Rule {
     pub default: bool,
     pub head: Head,
@@ -422,6 +500,74 @@ pub struct Rule {
 impl Rule {
     pub fn is_function(&self) -> bool {
         !self.head.args.is_empty()
+    }
+
+    /// This branch alone, its else branches left out.
+    pub fn branch(&self) -> Rule {
+        Rule {
+            default: self.default,
+            head: self.head.clone(),
+            body: self.body.clone(),
+            else_: None,
+            loc: self.loc.clone(),
+            generated_body: self.generated_body,
+        }
+    }
+
+    /// This rule and its else branches, in order.
+    pub fn branches(&self) -> impl Iterator<Item = &Rule> {
+        std::iter::successors(Some(self), |r| r.else_.as_deref())
+    }
+}
+
+impl Clone for Rule {
+    fn clone(&self) -> Rule {
+        let mut tail = None;
+        let rest: Vec<&Rule> = self.branches().skip(1).collect();
+        for r in rest.into_iter().rev() {
+            let mut b = r.branch();
+            b.else_ = tail;
+            tail = Some(Box::new(b));
+        }
+        let mut out = self.branch();
+        out.else_ = tail;
+        out
+    }
+}
+
+impl Drop for Rule {
+    fn drop(&mut self) {
+        let mut e = self.else_.take();
+        while let Some(mut r) = e {
+            e = r.else_.take();
+        }
+    }
+}
+
+impl std::fmt::Debug for Rule {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        /// A branch's fields but its else.
+        struct Branch<'a>(&'a Rule);
+        impl std::fmt::Debug for Branch<'_> {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.debug_struct("Rule")
+                    .field("default", &self.0.default)
+                    .field("head", &self.0.head)
+                    .field("body", &self.0.body)
+                    .field("loc", &self.0.loc)
+                    .field("generated_body", &self.0.generated_body)
+                    .finish()
+            }
+        }
+        let elses: Vec<Branch<'_>> = self.branches().skip(1).map(Branch).collect();
+        f.debug_struct("Rule")
+            .field("default", &self.default)
+            .field("head", &self.head)
+            .field("body", &self.body)
+            .field("else", &elses)
+            .field("loc", &self.loc)
+            .field("generated_body", &self.generated_body)
+            .finish()
     }
 }
 

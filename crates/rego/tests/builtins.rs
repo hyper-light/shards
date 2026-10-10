@@ -10,7 +10,7 @@ use shards_rego::funcs::{self, BuiltinError, Context};
 use shards_rego::value::{self, Value};
 
 fn decode(v: Value) -> Value {
-    match v {
+    match &v {
         Value::Array(a) => Value::array(a.iter().cloned().map(decode).collect()),
         Value::Object(o) => {
             if o.len() == 1 {
@@ -35,7 +35,7 @@ fn decode(v: Value) -> Value {
                     .collect(),
             )
         }
-        v => v,
+        _ => v.clone(),
     }
 }
 
@@ -119,9 +119,8 @@ fn builtins_answer_as_opas_answer() {
     let (mut failed, mut missing, mut total) = (Vec::new(), BTreeSet::new(), 0);
     for file in files {
         let text = std::fs::read_to_string(&file).unwrap();
-        let Value::Array(calls) = value::from_json(&text).unwrap() else {
-            panic!()
-        };
+        let doc = value::from_json(&text).unwrap();
+        let Value::Array(calls) = &doc else { panic!() };
         for c in calls.iter() {
             total += 1;
             let name = c
@@ -134,7 +133,7 @@ fn builtins_answer_as_opas_answer() {
                 missing.insert(name);
                 continue;
             };
-            let Value::Array(args) = c.get(&Value::string("args")).unwrap().clone() else {
+            let Value::Array(args) = c.get(&Value::string("args")).unwrap() else {
                 panic!()
             };
             let args: Vec<Value> = args.iter().cloned().map(decode).collect();

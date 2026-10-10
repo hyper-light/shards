@@ -167,15 +167,21 @@ fn head_compare(a: &Head, b: &Head) -> Ordering {
         .then_with(|| opt_compare(a.value.as_ref(), b.value.as_ref()))
 }
 
-/// Rule.Compare.
+/// Rule.Compare: branch by branch down both else chains (OPA recurses down them).
 pub fn rule_compare(a: &Rule, b: &Rule) -> Ordering {
-    head_compare(&a.head, &b.head)
-        .then(a.default.cmp(&b.default))
-        .then_with(|| body_compare(&a.body, &b.body))
-        .then_with(|| match (&a.else_, &b.else_) {
-            (None, None) => Ordering::Equal,
-            (None, Some(_)) => Ordering::Less,
-            (Some(_), None) => Ordering::Greater,
-            (Some(x), Some(y)) => rule_compare(x, y),
-        })
+    let (mut a, mut b) = (a, b);
+    loop {
+        let o = head_compare(&a.head, &b.head)
+            .then(a.default.cmp(&b.default))
+            .then_with(|| body_compare(&a.body, &b.body));
+        if o != Ordering::Equal {
+            return o;
+        }
+        match (&a.else_, &b.else_) {
+            (None, None) => return Ordering::Equal,
+            (None, Some(_)) => return Ordering::Less,
+            (Some(_), None) => return Ordering::Greater,
+            (Some(x), Some(y)) => (a, b) = (x, y),
+        }
+    }
 }

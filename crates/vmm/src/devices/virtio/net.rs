@@ -20,7 +20,7 @@ use shards_netring::{Consumer, Producer, Region};
 use super::queue::{Chain, Queue, QueueError, with};
 use super::{Activation, DeviceInterrupt, VirtioDevice, feature};
 use crate::memory::GuestMemory;
-use crate::warn;
+use crate::{debug, warn};
 
 pub const DEVICE_ID: u32 = 1;
 const QUEUE_SIZE: u16 = 256;
@@ -321,8 +321,11 @@ fn run(
                 false
             }
             Err(e) => {
-                warn!("virtio-net: {e}; device needs reset");
-                irq.fail();
+                if irq.fail() {
+                    warn!("virtio-net: {e}; device needs reset");
+                } else {
+                    debug!("virtio-net: {e}; device needs reset");
+                }
                 return s;
             }
         };

@@ -6,6 +6,8 @@ use crate::ast::{
     self, Body, Every, Expr, ExprTerms, Head, Import, Location, Module, Package, Rule, SomeDecl,
     TemplatePart, Term, TermValue, With,
 };
+use std::rc::Rc;
+
 use crate::number::Float;
 use crate::scanner::{Scanner, Token};
 use crate::value::Number;
@@ -124,9 +126,12 @@ fn detail(bs: &[u8], offset: usize) -> (String, usize) {
 
 const MAX_DEPTH: usize = 100_000;
 
+/// What `save` copies and `restore` puts back (OPA's `state`). Its errors are shared by
+/// the copies until one adds to them: a copy of a state is as cheap as Go's, which copies
+/// the slice's header, whatever errors a deep policy has gathered.
 #[derive(Debug, Clone)]
 struct State<'a> {
-    errors: Vec<Error>,
+    errors: Rc<Vec<Error>>,
     comments: usize,
     hints: Vec<String>,
     s: Scanner<'a>,
@@ -151,7 +156,7 @@ pub enum Statement {
 pub struct Parser<'a> {
     s: State<'a>,
     /// The parsed-term cache: offsets strictly decreasing from its end.
-    cache: Vec<(usize, Option<Term>, State<'a>)>,
+    cache: Vec<(usize, Option<Term>, Box<State<'a>>)>,
     depth: usize,
 }
 
@@ -445,7 +450,8 @@ pub fn parse_statements(file: &str, src: &str) -> Result<Vec<Statement>, Vec<Err
     if p.s.errors.is_empty() {
         Ok(stmts)
     } else {
-        Err(p.s.errors)
+        p.cache.clear();
+        Err(Rc::try_unwrap(p.s.errors).unwrap_or_else(|shared| (*shared).clone()))
     }
 }
 
@@ -472,7 +478,7 @@ impl<'a> Parser<'a> {
         }
         Parser {
             s: State {
-                errors: Vec::new(),
+                errors: Rc::new(Vec::new()),
                 comments: 0,
                 hints: Vec::new(),
                 s,
@@ -496,12 +502,14 @@ impl<'a> Parser<'a> {
         Some(self.s.loc.clone())
     }
 
-    fn save(&self) -> State<'a> {
-        self.s.clone()
+    /// A copy of the state, on the heap: the parser recurses as deep as OPA's does, and
+    /// each frame that holds a state to return to holds only its address.
+    fn save(&self) -> Box<State<'a>> {
+        Box::new(self.s.clone())
     }
 
-    fn restore(&mut self, s: State<'a>) {
-        self.s = s;
+    fn restore(&mut self, s: Box<State<'a>>) {
+        self.s = *s;
     }
 
     fn parse(&mut self) -> Vec<Statement> {
@@ -637,8 +645,9 @@ impl<'a> Parser<'a> {
         }
         // The path is read without the future keywords (presentParser).
         let prev = self.s.s.keywords.clone();
+        let keywords = Rc::make_mut(&mut self.s.s.keywords);
         for (k, _) in V1_KEYWORDS {
-            self.s.s.keywords.remove(k);
+            keywords.remove(k);
         }
         let saved_cache = std::mem::take(&mut self.cache);
         let term = self.parse_term();
@@ -905,7 +914,7 @@ impl<'a> Parser<'a> {
                 return None;
             }
             let head = rule.head.clone();
-            rule.else_ = Some(Box::new(self.parse_else(&head)?));
+            rule.else_ = Some(self.parse_elses(&head)?);
         }
         let mut rules = vec![rule.clone()];
         while self.s.tok == Token::LBrace {
@@ -937,7 +946,27 @@ impl<'a> Parser<'a> {
         Some(rules)
     }
 
-    fn parse_else(&mut self, head: &Head) -> Option<Rule> {
+    /// parseElse for each else branch in turn, chained: OPA recurses once a branch,
+    /// without a depth limit, which a loop does without a frame a branch.
+    fn parse_elses(&mut self, head: &Head) -> Option<Box<Rule>> {
+        let mut branches = Vec::new();
+        loop {
+            let (branch, more) = self.parse_else(head)?;
+            branches.push(branch);
+            if !more {
+                break;
+            }
+        }
+        let mut tail = None;
+        while let Some(mut b) = branches.pop() {
+            b.else_ = tail;
+            tail = Some(Box::new(b));
+        }
+        tail
+    }
+
+    /// One else branch, and whether another follows it.
+    fn parse_else(&mut self, head: &Head) -> Option<(Rule, bool)> {
         let loc = self.loc();
         let mut h = head.clone();
         h.generated_value = false;
@@ -976,7 +1005,7 @@ impl<'a> Parser<'a> {
         if !has_if && !has_lbrace {
             rule.body = ast::true_body(loc);
             rule.generated_body = true;
-            return Some(rule);
+            return Some((rule, false));
         }
         if has_if {
             rule.head.keywords.push(Token::If);
@@ -993,10 +1022,8 @@ impl<'a> Parser<'a> {
             self.illegal("rule body expected");
             return None;
         }
-        if self.s.tok == Token::Else {
-            rule.else_ = Some(Box::new(self.parse_else(head)?));
-        }
-        Some(rule)
+        let more = self.s.tok == Token::Else;
+        Some((rule, more))
     }
 
     fn parse_head(&mut self, default: bool) -> Option<(Head, bool)> {
@@ -1094,6 +1121,7 @@ impl<'a> Parser<'a> {
         r
     }
 
+    #[inline(never)]
     fn parse_query(&mut self, require_semi: bool, end: Token) -> Option<Body> {
         let mut body = Vec::new();
         if self.s.tok == end {
@@ -1112,15 +1140,21 @@ impl<'a> Parser<'a> {
                 return Some(body);
             }
             if !self.s.skipped_nl {
-                if self.s.errors.is_empty() {
-                    self.illegal(&format!(
-                        "expected \\n or {} or {}",
-                        Token::Semicolon.name(),
-                        end.name()
-                    ));
-                }
+                self.unterminated_expr(end);
                 return None;
             }
+        }
+    }
+
+    /// parseQuery's error for an expression not ended by a newline, `;` or `end`.
+    #[inline(never)]
+    fn unterminated_expr(&mut self, end: Token) {
+        if self.s.errors.is_empty() {
+            self.illegal(&format!(
+                "expected \\n or {} or {}",
+                Token::Semicolon.name(),
+                end.name()
+            ));
         }
     }
 
@@ -1133,12 +1167,10 @@ impl<'a> Parser<'a> {
         })
     }
 
+    #[inline(never)]
     fn parse_literal_inner(&mut self) -> Option<Expr> {
         if self.is_allowed_ref_keyword(self.s.tok) {
-            let s = self.save();
-            self.scan_ws();
-            let tok = self.s.tok;
-            self.restore(s);
+            let tok = self.peek_ws();
             if matches!(tok, Token::Dot | Token::LBrack) {
                 self.s.tok = Token::Ident;
                 return self.parse_literal_expr(false);
@@ -1146,10 +1178,7 @@ impl<'a> Parser<'a> {
         }
         let mut negated = false;
         if self.s.tok == Token::Not {
-            let s = self.save();
-            self.scan_ws();
-            let tok = self.s.tok;
-            self.restore(s);
+            let tok = self.peek_ws();
             if !matches!(tok, Token::Dot | Token::LBrack) {
                 self.scan();
                 negated = true;
@@ -1174,6 +1203,17 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// The token after the next, whitespace included, the state left as it was.
+    #[inline(never)]
+    fn peek_ws(&mut self) -> Token {
+        let s = self.save();
+        self.scan_ws();
+        let tok = self.s.tok;
+        self.restore(s);
+        tok
+    }
+
+    #[inline(never)]
     fn parse_literal_expr(&mut self, negated: bool) -> Option<Expr> {
         let mut expr = self.parse_expr()?;
         expr.negated = negated;
@@ -1183,6 +1223,7 @@ impl<'a> Parser<'a> {
         Some(expr)
     }
 
+    #[inline(never)]
     fn parse_with(&mut self) -> Option<Vec<With>> {
         let mut withs = Vec::new();
         loop {
@@ -1210,6 +1251,7 @@ impl<'a> Parser<'a> {
         Some(withs)
     }
 
+    #[inline(never)]
     fn parse_some(&mut self) -> Option<Expr> {
         let loc = self.loc();
         let s = self.save();
@@ -1265,7 +1307,25 @@ impl<'a> Parser<'a> {
         ))
     }
 
+    /// An `every`, its body parsed between its head and the expression made of them: the
+    /// body nests as deep as OPA takes (a level each), so its frame keeps the head boxed.
+    #[inline(never)]
     fn parse_every(&mut self) -> Option<Expr> {
+        let mut every = self.parse_every_head()?;
+        self.scan();
+        every.body = self.parse_body(Token::RBrace)?;
+        self.scan();
+        let loc = every.loc.clone();
+        let mut expr = Expr::new(ExprTerms::Every(every), loc);
+        if self.s.tok == Token::With {
+            expr.with = self.parse_with()?;
+        }
+        Some(expr)
+    }
+
+    /// An `every`'s `x[, y] in xs`, up to its body's brace.
+    #[inline(never)]
+    fn parse_every_head(&mut self) -> Option<Box<Every>> {
         let loc = self.loc();
         self.scan();
         let term = self.parse_term_infix_call()?;
@@ -1301,35 +1361,29 @@ impl<'a> Parser<'a> {
             self.illegal("expected value to be a variable");
             return None;
         }
-        if self.s.tok == Token::LBrace {
-            self.scan();
-            let body = self.parse_body(Token::RBrace)?;
-            self.scan();
-            let every = Every {
-                key,
-                value,
-                domain,
-                body,
-                loc: loc.clone(),
-            };
-            let mut expr = Expr::new(ExprTerms::Every(Box::new(every)), loc);
-            if self.s.tok == Token::With {
-                expr.with = self.parse_with()?;
-            }
-            return Some(expr);
+        if self.s.tok != Token::LBrace {
+            self.illegal("missing body");
+            return None;
         }
-        self.illegal("missing body");
-        None
+        Some(Box::new(Every {
+            key,
+            value,
+            domain,
+            body: Vec::new(),
+            loc,
+        }))
     }
 
+    #[inline(never)]
     fn parse_expr(&mut self) -> Option<Expr> {
         let lhs = self.parse_term_infix_call()?;
         if let Some(op) = self.parse_term_op(&[Token::Assign, Token::Unify]) {
             let rhs = self.parse_term_infix_call()?;
             return Some(Expr::new(ExprTerms::Call(vec![op, lhs, rhs]), None));
         }
-        if let TermValue::Call(c) = lhs.value {
-            return Some(Expr::new(ExprTerms::Call(c.into_inner()), None));
+        let mut lhs = lhs;
+        if let Some(c) = lhs.value.take_call() {
+            return Some(Expr::new(ExprTerms::Call(c), None));
         }
         Some(Expr::term(lhs))
     }
@@ -1367,12 +1421,42 @@ impl<'a> Parser<'a> {
         r
     }
 
+    /// parseTermIn's body after its first level: OPA calls itself again for each further
+    /// `in`, a level each; this loops, entering a level each time round, and leaves them
+    /// all at the end, so a chain as long as OPA takes needs no frame a link.
+    #[inline(never)]
     fn parse_term_in_inner(&mut self, lhs: Option<Term>, key_val: bool) -> Option<Term> {
-        let lhs = match lhs {
-            Some(l) => Some(l),
-            None => self.parse_term_relation(None),
+        let mut lhs = lhs;
+        let mut levels = 0;
+        let r = loop {
+            if levels > 0 && !self.enter() {
+                break None;
+            }
+            levels += 1;
+            let Some(l) = (match lhs.take() {
+                Some(l) => Some(l),
+                None => self.parse_term_relation(None),
+            }) else {
+                break None;
+            };
+            let call = match self.term_in_member(l, key_val) {
+                Ok(call) => call,
+                Err(l) => break Some(l),
+            };
+            if self.s.tok != Token::In {
+                break Some(call);
+            }
+            lhs = Some(call);
         };
-        let lhs = lhs?;
+        for _ in 1..levels {
+            self.leave();
+        }
+        r
+    }
+
+    /// One `in` of parseTermIn: the call `lhs` starts, or `lhs` back when none follows.
+    #[inline(never)]
+    fn term_in_member(&mut self, lhs: Term, key_val: bool) -> Result<Term, Term> {
         if key_val && self.s.tok == Token::Comma {
             let s = self.save();
             self.scan();
@@ -1381,12 +1465,7 @@ impl<'a> Parser<'a> {
                 && let Some(rhs) = self.parse_term_relation(None)
             {
                 let loc = lhs.loc.clone();
-                let call = self.call(op, vec![lhs.clone(), mhs, rhs], loc);
-                return if self.s.tok == Token::In {
-                    self.parse_term_in(Some(call), key_val)
-                } else {
-                    Some(call)
-                };
+                return Ok(self.call(op, vec![lhs, mhs, rhs], loc));
             }
             self.restore(s);
         }
@@ -1395,50 +1474,51 @@ impl<'a> Parser<'a> {
             && let Some(rhs) = self.parse_term_relation(None)
         {
             let loc = lhs.loc.clone();
-            let call = self.call(op, vec![lhs, rhs], loc);
-            return if self.s.tok == Token::In {
-                self.parse_term_in(Some(call), key_val)
-            } else {
-                Some(call)
-            };
+            return Ok(self.call(op, vec![lhs, rhs], loc));
         }
-        Some(lhs)
+        Err(lhs)
     }
 
+    /// One precedence level of binary operators, left-associative: OPA calls the level
+    /// again for each further operator, a level each; this loops, entering a level each
+    /// time round, and leaves them all at the end.
+    #[inline(never)]
     fn parse_binary(
         &mut self,
         lhs: Option<Term>,
         ops: &[Token],
         next: fn(&mut Self, Option<Term>) -> Option<Term>,
-        again: fn(&mut Self, Option<Term>) -> Option<Term>,
     ) -> Option<Term> {
-        if !self.enter() {
-            return None;
+        let mut lhs = lhs;
+        let mut levels = 0;
+        let r = loop {
+            if !self.enter() {
+                break None;
+            }
+            levels += 1;
+            let Some(l) = (match lhs.take() {
+                Some(l) => Some(l),
+                None => next(self, None),
+            }) else {
+                break None;
+            };
+            // An operator whose right side fails leaves the left side, as OPA's do.
+            let Some(op) = self.parse_term_op(ops) else {
+                break Some(l);
+            };
+            let Some(rhs) = next(self, None) else {
+                break Some(l);
+            };
+            let loc = l.loc.clone();
+            let call = self.call(op, vec![l, rhs], loc);
+            if !ops.contains(&self.s.tok) {
+                break Some(call);
+            }
+            lhs = Some(call);
+        };
+        for _ in 0..levels {
+            self.leave();
         }
-        let lhs = match lhs {
-            Some(l) => Some(l),
-            None => next(self, None),
-        };
-        // An operator whose right side fails leaves the left side, as OPA's do.
-        let r = match lhs {
-            None => None,
-            Some(lhs) => match self.parse_term_op(ops) {
-                Some(op) => match next(self, None) {
-                    Some(rhs) => {
-                        let loc = lhs.loc.clone();
-                        let call = self.call(op, vec![lhs, rhs], loc);
-                        if ops.contains(&self.s.tok) {
-                            again(self, Some(call))
-                        } else {
-                            Some(call)
-                        }
-                    }
-                    None => Some(lhs),
-                },
-                None => Some(lhs),
-            },
-        };
-        self.leave();
         r
     }
 
@@ -1454,34 +1534,23 @@ impl<'a> Parser<'a> {
                 Token::Gte,
             ],
             Self::parse_term_or,
-            Self::parse_term_relation,
         )
     }
 
     fn parse_term_or(&mut self, lhs: Option<Term>) -> Option<Term> {
-        self.parse_binary(lhs, &[Token::Or], Self::parse_term_and, Self::parse_term_or)
+        self.parse_binary(lhs, &[Token::Or], Self::parse_term_and)
     }
 
     fn parse_term_and(&mut self, lhs: Option<Term>) -> Option<Term> {
-        self.parse_binary(lhs, &[Token::And], Self::parse_term_arith, Self::parse_term_and)
+        self.parse_binary(lhs, &[Token::And], Self::parse_term_arith)
     }
 
     fn parse_term_arith(&mut self, lhs: Option<Term>) -> Option<Term> {
-        self.parse_binary(
-            lhs,
-            &[Token::Add, Token::Sub],
-            Self::parse_term_factor,
-            Self::parse_term_arith,
-        )
+        self.parse_binary(lhs, &[Token::Add, Token::Sub], Self::parse_term_factor)
     }
 
     fn parse_term_factor(&mut self, lhs: Option<Term>) -> Option<Term> {
-        self.parse_binary(
-            lhs,
-            &[Token::Mul, Token::Quo, Token::Rem],
-            |p, _| p.parse_term(),
-            Self::parse_term_factor,
-        )
+        self.parse_binary(lhs, &[Token::Mul, Token::Quo, Token::Rem], |p, _| p.parse_term())
     }
 
     fn parse_term(&mut self) -> Option<Term> {
@@ -1493,6 +1562,7 @@ impl<'a> Parser<'a> {
         r
     }
 
+    #[inline(never)]
     fn parse_term_inner(&mut self) -> Option<Term> {
         let at = self.s.loc.offset;
         for (offset, term, post) in self.cache.iter().rev() {
@@ -1505,7 +1575,6 @@ impl<'a> Parser<'a> {
                 return term;
             }
         }
-        let s0 = self.save();
         let term = match self.s.tok {
             Token::Null => Some(Term::new(TermValue::Null, self.loc())),
             Token::True => Some(Term::boolean(true, self.loc())),
@@ -1536,14 +1605,14 @@ impl<'a> Parser<'a> {
         };
         let term = self.parse_term_finish(term, false);
         let post = self.save();
-        let o0 = s0.loc.offset;
-        while self.cache.last().is_some_and(|(o, _, _)| *o >= o0) {
+        while self.cache.last().is_some_and(|(o, _, _)| *o >= at) {
             self.cache.pop();
         }
-        self.cache.push((o0, term.clone(), post));
+        self.cache.push((at, term.clone(), post));
         term
     }
 
+    #[inline(never)]
     fn parse_term_finish(&mut self, head: Option<Term>, skipws: bool) -> Option<Term> {
         let head = head?;
         self.do_scan(skipws, None);
@@ -1585,6 +1654,7 @@ impl<'a> Parser<'a> {
         Some(root_doc_ref(head))
     }
 
+    #[inline(never)]
     fn parse_number(&mut self) -> Option<Term> {
         let loc = self.loc();
         let mut prefix = String::new();
@@ -1629,6 +1699,7 @@ impl<'a> Parser<'a> {
         Some(Term::new(TermValue::Number(Number(s.into())), loc))
     }
 
+    #[inline(never)]
     fn parse_string(&mut self) -> Option<Term> {
         let lit = self.s.lit.clone();
         if lit.starts_with('"') {
@@ -1639,7 +1710,10 @@ impl<'a> Parser<'a> {
             if !inner.contains('\\') {
                 return Some(Term::string(inner, self.loc()));
             }
-            let Ok(crate::value::Value::String(s)) = crate::value::from_json(&lit) else {
+            let Some(s) = crate::value::from_json(&lit)
+                .ok()
+                .and_then(|v| v.as_str().map(Rc::<str>::from))
+            else {
                 self.errorf(self.loc(), format!("illegal string literal: {lit}"));
                 return None;
             };
@@ -1667,8 +1741,11 @@ impl<'a> Parser<'a> {
                     return Ok(s);
                 }
                 match crate::value::from_json(&format!("\"{s}\"")) {
-                    Ok(crate::value::Value::String(v)) => Ok(v.to_string()),
-                    _ => Err(format!("illegal template-string part: {lit}")),
+                    Ok(v) => v
+                        .as_str()
+                        .map(str::to_string)
+                        .ok_or_else(|| format!("illegal template-string part: {lit}")),
+                    Err(_) => Err(format!("illegal template-string part: {lit}")),
                 }
             }
             Token::RawTemplateStringPart | Token::RawTemplateStringEnd => Ok(inner()),
@@ -1676,6 +1753,7 @@ impl<'a> Parser<'a> {
         }
     }
 
+    #[inline(never)]
     fn parse_template_string(&mut self, multi_line: bool) -> Option<Term> {
         let loc = self.loc();
         let mut parts = Vec::new();
@@ -1742,6 +1820,7 @@ impl<'a> Parser<'a> {
         Some(Term::new(TermValue::TemplateString { multi_line, parts }, loc))
     }
 
+    #[inline(never)]
     fn parse_call(&mut self, operator: Term) -> Option<Term> {
         if !self.enter() {
             return None;
@@ -1777,6 +1856,7 @@ impl<'a> Parser<'a> {
         r
     }
 
+    #[inline(never)]
     fn parse_ref_inner(&mut self, head: Term) -> Option<Term> {
         let loc = head.loc.clone();
         match head.value {
@@ -1852,6 +1932,7 @@ impl<'a> Parser<'a> {
         r
     }
 
+    #[inline(never)]
     fn parse_array_inner(&mut self) -> Option<Term> {
         self.scan();
         if self.s.tok == Token::RBrack {
@@ -1901,6 +1982,7 @@ impl<'a> Parser<'a> {
         r
     }
 
+    #[inline(never)]
     fn parse_set_or_object_inner(&mut self) -> Option<Term> {
         self.scan();
         if self.s.tok == Token::RBrace {
@@ -1930,7 +2012,8 @@ impl<'a> Parser<'a> {
         None
     }
 
-    fn parse_set(&mut self, s: State<'a>, head: Term, potential: bool) -> Option<Term> {
+    #[inline(never)]
+    fn parse_set(&mut self, s: Box<State<'a>>, head: Term, potential: bool) -> Option<Term> {
         if !self.enter() {
             return None;
         }
@@ -1970,6 +2053,7 @@ impl<'a> Parser<'a> {
         r
     }
 
+    #[inline(never)]
     fn parse_object_inner(&mut self, k: Term, potential: bool) -> Option<Term> {
         if self.s.tok != Token::Colon {
             return None;
@@ -1999,6 +2083,7 @@ impl<'a> Parser<'a> {
         None
     }
 
+    #[inline(never)]
     fn parse_object_finish(&mut self, key: Term, val: Term, potential: bool) -> Option<Term> {
         if !self.enter() {
             return None;
@@ -2027,6 +2112,7 @@ impl<'a> Parser<'a> {
         r
     }
 
+    #[inline(never)]
     fn parse_term_list(&mut self, end: Token, mut r: Vec<Term>) -> Option<Vec<Term>> {
         if self.s.tok == end {
             return Some(r);
@@ -2049,6 +2135,7 @@ impl<'a> Parser<'a> {
         }
     }
 
+    #[inline(never)]
     fn parse_term_pair_list(&mut self, end: Token, mut r: Vec<(Term, Term)>) -> Option<Vec<(Term, Term)>> {
         if self.s.tok == end {
             return Some(r);
@@ -2096,6 +2183,7 @@ impl<'a> Parser<'a> {
         None
     }
 
+    #[inline(never)]
     fn parse_var(&mut self) -> Term {
         if self.s.lit == "_" {
             let w = self.gen_wildcard();
@@ -2110,11 +2198,12 @@ impl<'a> Parser<'a> {
         v
     }
 
+    #[inline(never)]
     fn error(&mut self, loc: Option<Location>, reason: String) {
         let mut msg = reason;
         write_hints(&mut msg, &self.s.hints);
         let details = loc.as_ref().map(|l| detail(self.s.s.bs, l.offset));
-        self.s.errors.push(Error {
+        Rc::make_mut(&mut self.s.errors).push(Error {
             code: PARSE_ERR,
             message: msg,
             loc,
@@ -2132,6 +2221,7 @@ impl<'a> Parser<'a> {
         self.s.hints.push(s);
     }
 
+    #[inline(never)]
     fn illegal(&mut self, note: &str) {
         if self.s.tok == Token::Illegal {
             self.errorf(self.loc(), "illegal token".into());
@@ -2176,7 +2266,6 @@ impl<'a> Parser<'a> {
             self.s.loc.row = pos.row;
             self.s.loc.col = pos.col;
             self.s.loc.offset = pos.offset;
-            self.s.loc.tabs = pos.tabs;
             for e in &errs {
                 let l = self.loc();
                 self.error(l, e.message.to_string());
