@@ -451,14 +451,16 @@ fn tabwrite(rows: &[Vec<String>], padding: usize) -> String {
 
 /// `lint.LintResults` of one file, as `ToResult` writes its `result.json`: the checks'
 /// warnings in the order they were found, the file, and the error that ended the
-/// planning, if one did. The file carries no `definition`: BuildKit's is the frontend's
-/// LLB for loading it, which names a session of that build alone (testdata/deviations.json).
+/// planning, if one did. The file carries the definition that loaded it where there is
+/// one (compact JSON, [`crate::pb::definition_json`]): a frontend's, which names its
+/// build's session; `shards build`'s has none (testdata/deviations.json).
 #[derive(Debug)]
 pub struct LintResults<'a> {
     pub warnings: &'a [crate::lint::Warning],
     pub filename: &'a [u8],
     pub data: &'a [u8],
     pub language: &'a [u8],
+    pub definition: Option<&'a str>,
     pub error: Option<(&'a [u8], &'a Location)>,
 }
 
@@ -498,6 +500,12 @@ impl LintResults<'_> {
         }
         if !self.data.is_empty() {
             f.string("data", base64(self.data).as_bytes());
+        }
+        if let Some(d) = self.definition {
+            // MarshalIndent's of the nested value: its lines under the source's.
+            let indented =
+                String::from_utf8_lossy(&crate::json::indent(d.as_bytes())).replace('\n', "\n      ");
+            f.key("definition").push_str(&indented);
         }
         if !self.language.is_empty() {
             f.string("language", self.language);

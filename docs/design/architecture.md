@@ -3288,6 +3288,136 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode
 waits on the user.
 
+### D113. A BuildKit frontend: `docker buildx build` builds an Agentfile with Docker alone
+
+AGENTFILE_ARCH.md §8 Q16: a `# syntax=` line naming shards' frontend lets plain Docker
+and BuildKit build an Agentfile, no shards installed. The frontend is `shards` itself.
+- **One binary.** BuildKit runs a gateway frontend from an image, as the image's
+  entrypoint (it reads no `Cmd`), with its options in `BUILDKIT_FRONTEND_OPT_*`, its
+  session, workers and product in the environment, and the gateway's gRPC on its stdin and
+  stdout (frontend/gateway/gateway.go, BuildKit v0.28.1). So the image holds the static
+  musl `shards` alone, FROM scratch, and runs `shards frontend`, a command not for people
+  to run. It moves the pipe to descriptors of its own and points fd 1 at stderr, so that
+  nothing else the process prints reaches the connection. `scripts/frontend/Dockerfile`
+  builds the image. It is laid out as BuildKit's own docker/dockerfile is: one binary
+  COPYed onto scratch, `moby.buildkit.frontend.network.none=true` (BuildKit then runs it
+  with no network), `moby.buildkit.frontend.caps`, and the entrypoint. The caps label
+  lists what the frontend serves (subrequests, named contexts, Git query strings, zstd
+  contexts); a test holds it to `frontend::CAPS`. It leaves out frontend inputs, so that
+  BuildKit itself refuses a build that sends them, before the frontend runs.
+- **Named** `ghcr.io/hyper-light/shards:<version>`, under the project's own GitHub
+  organization, where its releases are (`release.yml`). `shards build` takes an Agentfile
+  whose `# syntax=` names it, at any tag, as its own (`plan::SHARDS_FRONTEND`). Publishing
+  waits on the user's approval: nothing is pushed anywhere public, and no credential is
+  written. Tests build the image in `shards-dind` and push it only to a registry
+  container there.
+- **The gateway client** (`crates/gateway`): HPACK, HTTP/2, gRPC's unary call and
+  protobuf, written here rather than taken from h2, tonic and prost. shards links no async
+  runtime, and the gateway needs one peer's unary calls over one pipe. Frames are bounded
+  by 16 KiB, header lists by 1 MiB and messages by grpcclient's 16 MiB. The client is held
+  to BuildKit's own traffic, captured by a spy relaying docker/dockerfile:1's stdio in
+  `shards-dind` (`scripts/gateway/capture`): it reads every answer and error as grpc-go
+  read them. HPACK is also held to RFC 7541's vectors.
+- **As docker/dockerfile:1 builds.** That image is dockerfile/1.27.1, the release
+  shards' planner is held to. The frontend makes its calls in that frontend's order, with
+  its requests:
+  - `Ping`, then `Inputs`;
+  - the Dockerfile's local source, solved, then `StatFile` and `ReadFile` of it, its
+    `.dockerignore` beside it, and Docker's other casing;
+  - `ResolveSourceMeta` of each base, cached as `withResolveCache` caches;
+  - the context's `.dockerignore`, read as dispatch begins;
+  - the build's definition, solved;
+  - `Return`, with the ref, `containerimage.config`, `containerimage.base.config`,
+    `source.date.epoch` and `refs.platforms`.
+
+  The replay test drives the frontend with BuildKit's half of that capture. It makes the
+  same 13 calls, each request equal to docker/dockerfile's with maps compared in one
+  order, and returns the same configs.
+
+  What the capture showed, and the frontend does likewise:
+  - BuildKit's Go client writes protobuf maps in Go's map order; the frontend writes them
+    in order.
+  - A file op's capabilities in 1.27.1 are `file.base` alone: `FileOp.Marshal` asks each
+    action for its capabilities from a marshal state that has none yet
+    (client/llb/fileop.go, `newMarshalState` before `state.add`).
+  - Where the worker lacks `gateway.solve.evaluate`, an evaluated solve is a solve and a
+    `StatFile` of its root, as grpcclient makes it.
+  - A definition's capabilities are checked against the worker's before a solve, and
+    refused in `apicaps.CapError`'s words.
+  - A failing `RUN` never reaches the frontend: its solve is lazy, and BuildKit fails the
+    export, printing the excerpt from the definition's source map.
+  - A parse error, or a base that does not resolve, is returned as an error. Its code is
+    2, or BuildKit's own status where a call failed (ToGRPC keeps a status's message over
+    the frontend's wrapping). Each location gets an `errdefs.Source+json` detail,
+    encoding/json of the Dockerfile and its definition, byte for byte.
+  - The checks' warnings are sent as they are found, between the other calls.
+- **What the planner gained**, for `shards build` too where it applies:
+  - local sources name the build's session;
+  - steps needing a capability the worker lacks are planned without it, as Dockerfile2LLB
+    plans them;
+  - no `--platform` is an implicit target, so the image keeps its base's platform; this
+    changes `shards build` too;
+  - the target's base image as resolved;
+  - Git contexts' `git.mtime` and `git.advice`, missing before, for `shards build`'s
+    remote contexts too;
+  - zstd archives are read as archives;
+  - local named contexts' own `.dockerignore`;
+  - OCI layout contexts read from the client's store.
+- **Agentfiles.**
+  - shards' own skills step has no BuildKit op. Its tree is solved and read through the
+    gateway (ReadDir, ReadFile), checked by the same code `shards build` uses
+    (`build::skills::Fetched`), and laid out as a file op.
+  - D55's isolation checks cannot go through the gateway. Its ReadDir walks one directory
+    a call, and fsutil's Stat carries no inode, so a hard link across two domains is
+    invisible to it. So they run as exec steps of the frontend's own image (its
+    definition, which BuildKit mounts at `/run/config/buildkit/metadata/frontend.bin`).
+    `shards frontend check SPEC` reads whole trees, the image's and each guarded step's
+    before and after, and writes its finding to a report the frontend reads back. It runs
+    as BuildKit runs any step, as root in its sandbox, because it reads every file
+    whatever its owner and mode, but with no network and every tree read-only, its report
+    alone written. The checks are solved at once, before the build, and refuse in
+    `shards build`'s words.
+  - D57's manifest annotations are returned as `annotation-manifest` metadata, which
+    BuildKit's exporter takes.
+- **Deliberately unlike docker/dockerfile, recorded:**
+  - an error carries no Go stack trace (`stack.Stack+json`), since shards has none;
+  - the platforms of a multi-platform build are planned and solved one after another,
+    where dockerui's Build runs them in an errgroup.
+- **Refused by name, not left out, until each is built:** SBOM attestations
+  (`attest:sbom`), frontend inputs (which BuildKit itself refuses first, by the caps
+  label), SOURCE_DATE_EPOCH taken from a source, and OSI artifacts (AGENT, HARNESS and MCP
+  from a registry), until BuildKit's fetching of one is measured. Subrequests other than
+  `frontend.subrequests.describe`, `frontend.outline`, `frontend.targets` and
+  `frontend.lint` are answered as dockerui answers them, unsupported.
+- **Tested.**
+  - The replay test, and the gateway client's.
+  - The definitions and source detail held byte for byte to the capture
+    (`crates/dockerfile/tests/gateway.rs`).
+  - The isolation checks over host trees, and as BuildKit is asked to run them (a fake
+    gateway).
+  - The skills layout through the gateway, and the annotations.
+  - Mutation-checked, each mutant killed: the Inputs call, the `.dockerignore` load's key,
+    a capability, the own domain's exemption, the contents' comparison, the image check,
+    and the guards' collection.
+- **Pending: Docker Desktop's engine stopped answering on 2026-10-09.** Waiting on it:
+  - the corpus comparison in `shards-dind` (`scripts/frontend/compare`: images byte for
+    byte and buildx's output, against docker/dockerfile:1.27.1 by digest);
+  - Agentfiles built by BuildKit through the frontend against `shards build`'s, and
+    both run on microVMs (`scripts/frontend/agentfiles`; through `shards build` alone,
+    each case already makes or refuses what the harness expects);
+  - the costs: the frontend's start and each gateway call against docker/dockerfile:1's
+    (`docs/research/measurements/frontend/run`);
+  - OSI artifacts. BuildKit's source, at dockerfile/1.27.1's tree, sets what to measure.
+    Its image resolver refuses a config of any type but an image's
+    (`util/imageutil/config.go`, `childrenConfigHandler`), so `ResolveSourceMeta` of an
+    artifact fails as it reads the config. Asked for no config but for the attestation
+    chain, it returns an index's own bytes, where the index's signature chain resolves
+    (`source/containerimage/source.go`).
+    `docker-image+blob` fetches any blob by digest, falling back to the manifests endpoint
+    (containerd's `FetchByDigest`). An artifact's index, manifest, config and layers are
+    then each within reach, and its layers can be laid out as `shards build` lays them by
+    an exec step of the frontend's own image, as its checks are.
+
 ### D112. Image configs read as Docker reads them
 
 At run shards read an image's config with serde: exact keys, a repeated key an error.

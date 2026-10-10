@@ -1,0 +1,4 @@
+# syntax=ghcr.io/hyper-light/shards
+FROM scratch
+AGENT main FROM ./agent
+COPY note /agents/main/note

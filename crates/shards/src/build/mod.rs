@@ -39,7 +39,7 @@ mod builder;
 mod cache;
 mod cdi;
 mod compress;
-mod domains;
+pub(crate) mod domains;
 mod estargz;
 mod exec;
 mod gha;
@@ -55,7 +55,7 @@ mod provenance;
 mod remote;
 mod s3;
 mod sbom;
-mod skills;
+pub(crate) mod skills;
 mod ssh;
 mod sshkey;
 
@@ -2556,6 +2556,15 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
         main_context: remote.clone().unwrap_or_default(),
         context_subdir: None,
         git_advice,
+        // No --platform: the first build platform, and the image its base's platform, as
+        // BuildKit's frontend plans a build buildx asks for none (dockerui's TargetPlatform
+        // nil, Dockerfile2LLB's implicitTarget), shards' frontend too (D113).
+        implicit_target: target_platforms.is_empty(),
+        // Its own builder's: no session, every capability.
+        session: Vec::new(),
+        local_sessions: BTreeMap::new(),
+        llb_caps: None,
+        cmdline: None,
     };
     let call = call_of(parsed)?;
     let debug = parsed.bool("debug");
@@ -2601,6 +2610,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
                         shards_dockerfile::parser::Dialect::Agentfile => b"Agentfile",
                         shards_dockerfile::parser::Dialect::Dockerfile => b"Dockerfile",
                     },
+                    definition: None,
                     error: lint.error.as_ref().map(|(m, loc)| (m.as_slice(), loc)),
                 };
                 out.push_str(&results.json());
@@ -5412,7 +5422,7 @@ fn call_of(parsed: &Parsed) -> Result<Option<Call>, String> {
 
 /// The build's checks as BuildKit's lint subrequest prints them (frontend/subrequests/lint
 /// `LintResults.PrintTo`): by line, each its rule, URL, message and lines.
-fn lint_text(warnings: &[shards_dockerfile::lint::Warning], file: &str, text: &[u8]) -> String {
+pub(crate) fn lint_text(warnings: &[shards_dockerfile::lint::Warning], file: &str, text: &[u8]) -> String {
     let mut sorted: Vec<&shards_dockerfile::lint::Warning> = warnings.iter().collect();
     sorted.sort_by(|a, b| match (a.location.first(), b.location.first()) {
         (None, None) => a.rule.cmp(b.rule),

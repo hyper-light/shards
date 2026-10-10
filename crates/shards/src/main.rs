@@ -18,6 +18,7 @@ mod containers;
 #[cfg(unix)]
 mod daemon;
 mod from_image;
+mod frontend;
 #[cfg(target_os = "macos")]
 mod grant;
 #[cfg(target_os = "macos")]
@@ -84,6 +85,9 @@ pub(crate) fn shardsd(args: Vec<std::ffi::OsString>) -> ExitCode {
         #[cfg(unix)]
         Some("share") => share::share(args),
         Some("build") => build::build(args),
+        // BuildKit's frontend, which BuildKit runs from shards' image (D113): not for people
+        // to run.
+        Some("frontend") => frontend::frontend(args),
         Some("policy") => build::policy_command::command(args),
         Some("agentfile") => from_image::command(args),
         Some("run") => usage_error("run: the `shards` command runs commands, through the daemon"),

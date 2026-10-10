@@ -1,0 +1,9 @@
+# syntax=ghcr.io/hyper-light/shards
+FROM scratch
+AGENT a FROM ./a
+AGENT b FROM ./b
+NETWORK --internal back
+NETWORK --egress=443 world
+EXPOSE 443 FOR world
+CONNECT --port=8080 b WITH a ON back
+CONNECT a WITH a ON world

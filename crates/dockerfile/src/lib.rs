@@ -17,6 +17,7 @@
 //! where it deliberately does better, and testdata/deviations.json each case of it.
 
 pub mod agentfile;
+pub mod caps;
 pub mod commit;
 pub mod dockerui;
 pub mod export;

@@ -6,6 +6,9 @@
 //! single Markdown file, the skill's `SKILL.md`; otherwise each entry at its root must be
 //! a skill's directory. Anything else is refused, naming each skill and what is wrong
 //! with it.
+//!
+//! The tree is read through [`Fetched`]: `shards build`'s own snapshot, or what BuildKit's
+//! gateway answers of a solved one (the frontend, D113), the check the same for both.
 
 use shards_build::data::Sources;
 use shards_build::skill;
@@ -14,25 +17,96 @@ use shards_image::erofs::{Kind, NodeId, Source as _, Tree};
 
 use super::exec::Ref;
 
-/// A regular file's bytes in `tree`.
-fn read(tree: &Tree, id: NodeId, sources: &mut Sources) -> Result<Option<Vec<u8>>, String> {
-    let Some(node) = tree.node(id) else {
-        return Ok(None);
-    };
-    let Kind::File { size, data } = &node.kind else {
-        return Ok(None);
-    };
-    let len = usize::try_from(*size).map_err(|e| e.to_string())?;
-    let mut buf = vec![0u8; len];
-    sources.read_at(*data, 0, &mut buf).map_err(|e| e.to_string())?;
-    Ok(Some(buf))
+/// What an entry of the tree's root is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EntryKind {
+    Dir,
+    File,
+    Other,
 }
 
-/// The `SKILL.md` (else `skill.md`) of the directory `dir`, if it has one that is a file.
-fn skill_md(tree: &Tree, dir: NodeId, sources: &mut Sources) -> Result<Option<Vec<u8>>, String> {
+/// What a path of the tree is: not there, a regular file's bytes, or something else (no
+/// symlink is followed).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Found {
+    Missing,
+    File(Vec<u8>),
+    Other,
+}
+
+/// What a skills step reads of the tree it checks.
+pub trait Fetched {
+    /// The root's entries, by name, in their names' order.
+    fn entries(&mut self) -> Result<Vec<(Vec<u8>, EntryKind)>, String>;
+    /// What `path`, relative to the root, is.
+    fn lookup(&mut self, path: &[u8]) -> Result<Found, String>;
+}
+
+/// `shards build`'s snapshot of the tree.
+struct Snapshot<'a> {
+    tree: &'a Tree,
+    sources: &'a mut Sources,
+}
+
+impl Snapshot<'_> {
+    fn node(&self, path: &[u8]) -> Option<NodeId> {
+        let mut at = Tree::ROOT;
+        for c in path.split(|&b| b == b'/').filter(|c| !c.is_empty()) {
+            at = self.tree.child(at, c)?;
+        }
+        Some(at)
+    }
+}
+
+impl Fetched for Snapshot<'_> {
+    fn entries(&mut self) -> Result<Vec<(Vec<u8>, EntryKind)>, String> {
+        Ok(self
+            .tree
+            .entries(Tree::ROOT)
+            .into_iter()
+            .map(|(n, id)| {
+                let kind = match self.tree.node(id).map(|n| &n.kind) {
+                    Some(Kind::Dir(_)) => EntryKind::Dir,
+                    Some(Kind::File { .. }) => EntryKind::File,
+                    _ => EntryKind::Other,
+                };
+                (n.to_vec(), kind)
+            })
+            .collect())
+    }
+
+    fn lookup(&mut self, path: &[u8]) -> Result<Found, String> {
+        let Some(id) = self.node(path) else {
+            return Ok(Found::Missing);
+        };
+        let Some(node) = self.tree.node(id) else {
+            return Ok(Found::Missing);
+        };
+        let Kind::File { size, data } = &node.kind else {
+            return Ok(Found::Other);
+        };
+        let len = usize::try_from(*size).map_err(|e| e.to_string())?;
+        let mut buf = vec![0u8; len];
+        self.sources
+            .read_at(*data, 0, &mut buf)
+            .map_err(|e| e.to_string())?;
+        Ok(Found::File(buf))
+    }
+}
+
+/// The `SKILL.md` (else `skill.md`) of the directory `dir` (empty for the root), if it has
+/// one that is a file: the first of the two names there decides.
+fn skill_md(tree: &mut dyn Fetched, dir: &[u8]) -> Result<Option<Vec<u8>>, String> {
     for name in [b"SKILL.md".as_slice(), b"skill.md"] {
-        if let Some(id) = tree.child(dir, name) {
-            return read(tree, id, sources);
+        let path = if dir.is_empty() {
+            name.to_vec()
+        } else {
+            [dir, b"/", name].concat()
+        };
+        match tree.lookup(&path)? {
+            Found::Missing => continue,
+            Found::File(b) => return Ok(Some(b)),
+            Found::Other => return Ok(None),
         }
     }
     Ok(None)
@@ -63,12 +137,16 @@ fn copy(src: Vec<u8>, dest: Vec<u8>, contents: bool) -> OpActionKind {
 /// directory of its name, onto nothing. `came_as` is the directory a source that is one
 /// skill came as, which its name must match; none for one without (a URL, a heredoc).
 pub fn layout(fetched: &Ref, came_as: &str, sources: &mut Sources) -> Result<Vec<OpAction>, String> {
-    let tree = fetched.fs.tree();
-    let entries: Vec<(Vec<u8>, NodeId)> = tree
-        .entries(Tree::ROOT)
-        .into_iter()
-        .map(|(n, id)| (n.to_vec(), id))
-        .collect();
+    let mut snapshot = Snapshot {
+        tree: fetched.fs.tree(),
+        sources,
+    };
+    layout_of(&mut snapshot, came_as)
+}
+
+/// [`layout`] of a tree read through `tree`.
+pub fn layout_of(tree: &mut dyn Fetched, came_as: &str) -> Result<Vec<OpAction>, String> {
+    let entries = tree.entries()?;
     let mut errors = Vec::new();
     let mut laid: Vec<OpActionKind> = Vec::new();
     // Its name as the frontmatter gives it, checked against `dir` when there is one.
@@ -94,7 +172,7 @@ pub fn layout(fetched: &Ref, came_as: &str, sources: &mut Sources) -> Result<Vec
                 None
             }
         };
-    let root_md = skill_md(tree, Tree::ROOT, sources)?;
+    let root_md = skill_md(tree, b"")?;
     if root_md.is_some() {
         // The tree is one skill.
         let dir = (!came_as.is_empty()).then_some(came_as);
@@ -106,15 +184,15 @@ pub fn layout(fetched: &Ref, came_as: &str, sources: &mut Sources) -> Result<Vec
         ) {
             laid.push(copy(b"/".to_vec(), format!("/{name}").into_bytes(), true));
         }
-    } else if let [(file, id)] = entries.as_slice()
+    } else if let [(file, EntryKind::File)] = entries.as_slice()
         && file.to_ascii_lowercase().ends_with(b".md")
-        && tree
-            .node(*id)
-            .is_some_and(|n| matches!(n.kind, Kind::File { .. }))
     {
         // A single Markdown file: the skill's SKILL.md, its directory its name.
         let shown = String::from_utf8_lossy(file).into_owned();
-        let md = read(tree, *id, sources)?;
+        let md = match tree.lookup(file)? {
+            Found::File(b) => Some(b),
+            _ => None,
+        };
         if let Some(name) = check(&shown, None, md, &mut errors) {
             laid.push(copy(
                 [b"/".as_slice(), file].concat(),
@@ -123,16 +201,15 @@ pub fn layout(fetched: &Ref, came_as: &str, sources: &mut Sources) -> Result<Vec
             ));
         }
     } else {
-        for (entry, id) in &entries {
+        for (entry, kind) in &entries {
             let shown = String::from_utf8_lossy(entry).into_owned();
-            let is_dir = tree.node(*id).is_some_and(|n| matches!(n.kind, Kind::Dir(_)));
-            if !is_dir {
+            if *kind != EntryKind::Dir {
                 errors.push(format!(
                     "{shown} is no skill: a skill is a directory whose SKILL.md names it"
                 ));
                 continue;
             }
-            let md = skill_md(tree, *id, sources)?;
+            let md = skill_md(tree, entry)?;
             if check(&shown, Some(&shown), md, &mut errors).is_some() {
                 laid.push(copy(
                     [b"/".as_slice(), entry].concat(),

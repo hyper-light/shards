@@ -1,0 +1,194 @@
+#!/usr/bin/env python3
+"""D113: builds each case of scripts/frontend/agentfile-cases/ twice, by BuildKit in
+shards-dind (Docker 29.3.1's, v0.28.1, through buildx v0.37.1) running shards' frontend
+from this tree, and by `shards build` on this host, and holds the two together: the
+images byte for byte (an OCI layout each, written with SOURCE_DATE_EPOCH and
+rewrite-timestamp), or both refusals in the same words. Where a case has a `run` file (a
+JSON list of arguments), each image is loaded into shards and run on a microVM, and the
+two runs' outputs are held together. Every case's context holds `testguest`, the test
+guest's workload, at its root.
+
+    scripts/frontend/agentfiles BINARY SHARDS TESTGUEST [CASE...]
+
+BINARY is a static musl `shards` for dind's architecture, the frontend's image's (see
+scripts/frontend/compare); SHARDS is this host's `shards`; TESTGUEST is shards-testguest
+built for this host's architecture, as the tests build it (`cargo build -p
+shards-testguest --profile guest --target <arch>-unknown-linux-musl`). shards runs with a
+home of its own and publishes nothing to this host's Docker engine
+(SHARDS_LOCAL_STORE=none). What is made in dind is named shards-d113-* or lives in
+/opt/shards-d113, and is removed at the end but the frontend's image and the registry, as
+compare leaves them. Prints one JSON line a case; exits 1 where any differs.
+"""
+import importlib.machinery
+import importlib.util
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tarfile
+import tempfile
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+_loader = importlib.machinery.SourceFileLoader("compare", os.path.join(HERE, "compare"))
+_spec = importlib.util.spec_from_loader("compare", _loader)
+compare = importlib.util.module_from_spec(_spec)
+_loader.exec_module(compare)
+run, dind = compare.run, compare.dind
+DIND, ROOT, BUILDX, EPOCH = compare.DIND, compare.ROOT, compare.BUILDX, compare.EPOCH
+
+
+def layout(path):
+    """An OCI layout tar's index and its JSON blobs (indexes, manifests, configs), by
+    digest: content addressing holds the layers to the manifests that name them."""
+    with tarfile.open(path) as t:
+        def read(name):
+            f = t.extractfile(name)
+            return f.read() if f else b""
+
+        index = json.loads(read("index.json"))
+        blobs = {}
+        todo = [m["digest"] for m in index.get("manifests", [])]
+        while todo:
+            d = todo.pop()
+            if d in blobs:
+                continue
+            raw = read("blobs/" + d.replace(":", "/"))
+            blobs[d] = raw.decode()
+            doc = json.loads(raw)
+            for k in ("manifests", "layers"):
+                for m in doc.get(k, []) or []:
+                    if "json" in m.get("mediaType", ""):
+                        todo.append(m["digest"])
+            if "config" in doc:
+                todo.append(doc["config"]["digest"])
+    return index, blobs
+
+
+def errors(text):
+    """What a build said failed: its error, from its `ERROR:` line on. The step boxes
+    before it differ by design: shards build shows the steps it runs itself (SKILL's
+    checks, the domains' isolation) with their logs, where through BuildKit those are the
+    frontend's own work, its refusal the frontend's error."""
+    lines = text.splitlines()
+    at = next((i for i, line in enumerate(lines) if line.startswith("ERROR:")), len(lines))
+    return lines[at:]
+
+
+def shards_run(shards, env, argv):
+    p = subprocess.run([shards, *argv], capture_output=True, text=True, env=env, timeout=900)
+    return p.returncode, p.stdout, p.stderr
+
+
+def case_context(case, testguest, into):
+    """The case's directory, its symlinks kept, and testguest at its root."""
+    ctx = os.path.join(into, case)
+    shutil.copytree(os.path.join(HERE, "agentfile-cases", case), ctx, symlinks=True)
+    shutil.copy(testguest, os.path.join(ctx, "testguest"))
+    return ctx
+
+
+def agentfile(case, digest, shards, testguest, work):
+    ctx = case_context(case, testguest, work)
+    name = f"shards-d113-{case}:1"
+    out_bk = os.path.join(work, f"{case}-buildkit.tar")
+    out_me = os.path.join(work, f"{case}-shards.tar")
+    output = f"rewrite-timestamp=true,name={name}"
+    # BuildKit, through the frontend named by BUILDKIT_SYNTAX, which wins over the
+    # Agentfile's own `# syntax=` line.
+    run(["docker", "cp", ctx, f"{DIND}:{ROOT}/agentfiles/"])
+    remote = f"{ROOT}/agentfiles/{case}"
+    p = dind(
+        BUILDX, "build", "--progress=plain", "--no-cache", "--provenance=false",
+        "--build-arg", f"SOURCE_DATE_EPOCH={EPOCH}",
+        "--build-arg", f"BUILDKIT_SYNTAX={digest}",
+        "-f", f"{remote}/Agentfile",
+        "--output", f"type=oci,dest={ROOT}/out/{case}.tar,{output}",
+        remote,
+        check=False,
+    )
+    theirs = (p.returncode, p.stdout + p.stderr)
+    if p.returncode == 0:
+        run(["docker", "cp", f"{DIND}:{ROOT}/out/{case}.tar", out_bk])
+    dind("rm", "-rf", remote, f"{ROOT}/out/{case}.tar", check=False)
+    # shards build, here.
+    home = os.path.join(work, "home")
+    env = dict(os.environ, SHARDS_HOME=home, SHARDS_LOCAL_STORE="none")
+    code, so, se = shards_run(shards, env, [
+        "build", "--progress=plain", "--no-cache", "--provenance=false",
+        "--build-arg", f"SOURCE_DATE_EPOCH={EPOCH}",
+        "-f", os.path.join(ctx, "Agentfile"),
+        "--output", f"type=oci,dest={out_me},{output}",
+        ctx,
+    ])
+    ours = (code, so + se)
+    result = {"case": case, "exit": [theirs[0], ours[0]]}
+    differs = []
+    if theirs[0] != ours[0]:
+        differs.append("exit")
+        result["output"] = [theirs[1], ours[1]]
+    elif theirs[0] != 0:
+        said = [errors(theirs[1]), errors(ours[1])]
+        result["error"] = said[0]
+        if said[0] != said[1]:
+            differs.append("error")
+            result["errors"] = said
+    else:
+        (i1, b1), (i2, b2) = layout(out_bk), layout(out_me)
+        result["index"] = [m["digest"] for m in i1.get("manifests", [])]
+        if i1 != i2:
+            differs.append("index")
+            result["indexes"] = [i1, i2]
+        if b1 != b2:
+            differs.append("blobs")
+            result["blobs"] = {d: [b1.get(d), b2.get(d)] for d in sorted(set(b1) ^ set(b2))}
+        argv_path = os.path.join(ctx, "run")
+        if os.path.exists(argv_path):
+            with open(argv_path) as f:
+                argv = json.load(f)
+            ran = []
+            for out in (out_bk, out_me):
+                loaded = shards_run(shards, env, ["load", "-i", out])
+                if loaded[0] != 0:
+                    ran.append(["load", *loaded])
+                    continue
+                ran.append(list(shards_run(shards, env, ["run", "--rm", name, *argv])))
+            result["run"] = ran[0]
+            if ran[0] != ran[1]:
+                differs.append("run")
+                result["runs"] = ran
+            elif ran[0][0] != 0:
+                differs.append("run failed")
+            shards_run(shards, env, ["rmi", name])
+    result["equal"] = not differs
+    if differs:
+        result["differs"] = differs
+    return result
+
+
+def main():
+    args = sys.argv[1:]
+    if len(args) < 3:
+        raise SystemExit(__doc__)
+    binary, shards, testguest, cases = args[0], os.path.abspath(args[1]), args[2], args[3:]
+    if not cases:
+        cases = sorted(os.listdir(os.path.join(HERE, "agentfile-cases")))
+    _, digest = compare.setup(binary)
+    dind("mkdir", "-p", f"{ROOT}/agentfiles", f"{ROOT}/out")
+    failed = False
+    work = tempfile.mkdtemp(prefix="shards-d113-agentfiles-")
+    try:
+        for case in cases:
+            r = agentfile(case, digest, shards, testguest, work)
+            failed |= not r["equal"]
+            print(json.dumps(r, sort_keys=True), flush=True)
+    finally:
+        env = dict(os.environ, SHARDS_HOME=os.path.join(work, "home"), SHARDS_LOCAL_STORE="none")
+        shards_run(shards, env, ["stop", "daemon"])
+        shutil.rmtree(work, ignore_errors=True)
+        dind("rm", "-rf", f"{ROOT}/agentfiles", f"{ROOT}/out", check=False)
+    sys.exit(1 if failed else 0)
+
+
+if __name__ == "__main__":
+    main()

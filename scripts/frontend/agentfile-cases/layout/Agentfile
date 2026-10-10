@@ -1,0 +1,11 @@
+# syntax=ghcr.io/hyper-light/shards
+FROM scratch
+COPY testguest /bin/testguest
+AGENT main FROM ./agent
+HARNESS drive FROM ./harness
+MCP files FROM ./mcp-files FOR main
+MCP web FROM https://mcp.example.com/sse
+SKILL ./skills/pdf-tools FOR main
+SKILL ./shared
+ATTACH main FOR drive
+ENTRYPOINT ["/bin/testguest"]

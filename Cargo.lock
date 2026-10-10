@@ -975,6 +975,7 @@ dependencies = [
  "shards-cmdline",
  "shards-dockerfile",
  "shards-flate",
+ "shards-gateway",
  "shards-git",
  "shards-gitsign",
  "shards-image",
@@ -1071,6 +1072,10 @@ dependencies = [
  "serde_json",
  "sha2",
 ]
+
+[[package]]
+name = "shards-gateway"
+version = "0.1.0"
 
 [[package]]
 name = "shards-git"

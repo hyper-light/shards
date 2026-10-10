@@ -1,0 +1,33 @@
+#!/bin/sh
+# D113: docker/dockerfile's gateway traffic, through a spy that relays its stdio. All made
+# here is named shards-d113-* or lives in /opt/shards-d113, and is removed at the end.
+#
+# Run inside `shards-dind`, the spy built beside it first:
+#   GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o spy ./scripts/gateway/spy
+#   docker cp spy shards-dind:/opt/shards-d113/spy
+#   docker exec shards-dind sh /opt/shards-d113/capture
+# The spy's lines are dockerd's stderr: `docker logs shards-dind --since TIME > dind.log`.
+# Then scripts/gateway/decode, built inside buildx v0.37.1's checkout for its vendored
+# x/net/http2 and gateway types (copied to cmd/zz_shards_d113, `go build -mod=vendor`),
+# writes the transcript and each direction's bytes: `decode dind.log PREFIX`, the server's
+# being crates/gateway/testdata/dockerfile-1.server.bin.
+set -u
+D=/opt/shards-d113
+REG=127.0.0.1:15113
+docker rm -f shards-d113-registry >/dev/null 2>&1
+docker run -d --name shards-d113-registry -p 15113:5000 registry:2 >/dev/null
+sleep 2
+rm -rf "$D/spyimg" "$D/ctx" && mkdir -p "$D/spyimg" "$D/ctx"
+cp "$D/spy" "$D/spyimg/spy"
+printf 'FROM docker/dockerfile:1\nCOPY spy /spy\nENTRYPOINT ["/spy"]\n' > "$D/spyimg/Dockerfile"
+docker build -q -t "$REG/shards-d113-spy:1" "$D/spyimg" >/dev/null
+docker push -q "$REG/shards-d113-spy:1" >/dev/null
+echo a > "$D/ctx/a.txt"
+printf '# syntax=%s/shards-d113-spy:1\nFROM alpine:3.20\nCOPY a.txt /a\nRUN echo hi > /b\n' "$REG" > "$D/ctx/Dockerfile"
+echo "SHARDS-D113-MARK BEGIN $(date +%s%N)" >&2
+/opt/shards-bx37/buildx build --progress=plain --no-cache -t shards-d113-out:1 "$D/ctx" > "$D/build.txt" 2>&1
+echo "exit $?" >> "$D/build.txt"
+echo "SHARDS-D113-MARK END $(date +%s%N)" >&2
+docker rmi -f shards-d113-out:1 "$REG/shards-d113-spy:1" >/dev/null 2>&1
+docker rm -f shards-d113-registry >/dev/null 2>&1
+tail -5 "$D/build.txt"

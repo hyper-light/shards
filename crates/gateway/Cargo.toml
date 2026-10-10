@@ -1,0 +1,11 @@
+[package]
+name = "shards-gateway"
+version = "0.1.0"
+description = "BuildKit's frontend gateway as a frontend speaks it: gRPC over HTTP/2 over a pipe"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true

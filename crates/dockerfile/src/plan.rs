@@ -38,6 +38,10 @@ use crate::url;
 pub struct Options {
     /// The platform the image is built for.
     pub target_platform: Platform,
+    /// Whether the build was asked for no platform, so that the target is the first build
+    /// platform and the image keeps its base's (dockerui's `TargetPlatform` nil,
+    /// `implicitTarget`).
+    pub implicit_target: bool,
     /// The platforms the build itself runs on; the first is `BUILDPLATFORM`.
     pub build_platforms: Vec<Platform>,
     pub build_args: BTreeMap<Vec<u8>, Vec<u8>>,
@@ -89,6 +93,33 @@ pub struct Options {
     pub context_subdir: Option<Vec<u8>>,
     /// Whether `ADD`'s Git fetches give Git's advice (BUILDKIT_GIT_ADVICE, `git.advice`).
     pub git_advice: bool,
+    /// The session that serves local sources (BuildKit's BUILDKIT_SESSION_ID, as a
+    /// frontend is given it), and each local name's own (the `local-sessionid:NAME`
+    /// options): a local source names its session (`local.session`) where it has one, else
+    /// a unique ID of its own (`local.unique`, [`Options::context_id`]).
+    pub session: Vec<u8>,
+    pub local_sessions: BTreeMap<Vec<u8>, Vec<u8>>,
+    /// The LLB capabilities the worker has, as its gateway says (Ping): `None` for every
+    /// one dockerfile/1.27.1 knows, as `shards build`'s builder has them. Where one is
+    /// missing, the step that needs it is planned as Dockerfile2LLB plans it without.
+    pub llb_caps: Option<BTreeSet<Vec<u8>>>,
+    /// The frontend's `cmdline` option: set where BuildKit runs this frontend because a
+    /// `# syntax=` line or BUILDKIT_SYNTAX named it, so that the file names no other.
+    pub cmdline: Option<Vec<u8>>,
+}
+
+impl Options {
+    /// Whether the worker has LLB capability `id` (`llbCaps.Supports(id) == nil`).
+    fn supports(&self, id: &str) -> bool {
+        self.llb_caps
+            .as_ref()
+            .is_none_or(|caps| caps.contains(id.as_bytes()))
+    }
+
+    /// The session local source `name` is served by, if any.
+    fn session_of(&self, name: &[u8]) -> &[u8] {
+        self.local_sessions.get(name).unwrap_or(&self.session)
+    }
 }
 
 /// What the build context is (dockerui's `initContext`).
@@ -142,6 +173,94 @@ pub trait Resolver {
         let _ = name;
         Ok(())
     }
+    /// The build context's `.dockerignore` patterns, read as dispatch begins
+    /// (`DockerIgnorePatterns`), where they were not known before: `None` for
+    /// [`Options::excludes`].
+    fn context_excludes(&self) -> Result<Option<Vec<Vec<u8>>>, Vec<u8>> {
+        Ok(None)
+    }
+    /// The `.dockerignore` patterns of local named context `name`, read as the build
+    /// loads it as `key` (`NamedContext.Load`), where they were not known before: `None`
+    /// for [`Options::context_excludes`].
+    fn local_excludes(&self, key: &[u8], name: &[u8]) -> Result<Option<Vec<Vec<u8>>>, Vec<u8>> {
+        let _ = (key, name);
+        Ok(None)
+    }
+    /// A check's warning, once the planning finds it: given before the next thing asked of
+    /// the resolver, as BuildKit's frontend sends each as it is found.
+    fn warn(&self, warning: &lint::Warning) {
+        let _ = warning;
+    }
+    /// An image of the OCI layout the client serves as content store `store`, by its
+    /// stand-in reference `name` (ResolveImageConfig's OCILayoutOpt); [`Resolver::resolve`]
+    /// where nothing tells them apart.
+    fn resolve_layout(
+        &self,
+        name: &[u8],
+        store: &[u8],
+        platform: &Platform,
+        log: &[u8],
+    ) -> Result<Resolved, Vec<u8>> {
+        let _ = store;
+        self.resolve(name, platform, log)
+    }
+}
+
+/// A resolver given each of the checks' warnings before anything else is asked of it.
+struct Warned<'a> {
+    inner: &'a dyn Resolver,
+    linter: &'a Linter,
+    sent: std::cell::Cell<usize>,
+}
+
+impl Warned<'_> {
+    fn flush(&self) {
+        let new = self.linter.warnings_from(self.sent.get());
+        self.sent.set(self.sent.get() + new.len());
+        for w in &new {
+            self.inner.warn(w);
+        }
+    }
+}
+
+impl Resolver for Warned<'_> {
+    fn resolve(&self, name: &[u8], platform: &Platform, log: &[u8]) -> Result<Resolved, Vec<u8>> {
+        self.flush();
+        self.inner.resolve(name, platform, log)
+    }
+    fn epoch(&self, source: &EpochSource) -> Result<Option<(i64, u32)>, Vec<u8>> {
+        self.flush();
+        self.inner.epoch(source)
+    }
+    fn artifact(&self, name: &[u8], kind: &[u8], log: &[u8]) -> Result<Resolved, Vec<u8>> {
+        self.flush();
+        self.inner.artifact(name, kind, log)
+    }
+    fn frontend(&self, name: &[u8]) -> Result<(), Vec<u8>> {
+        self.flush();
+        self.inner.frontend(name)
+    }
+    fn context_excludes(&self) -> Result<Option<Vec<Vec<u8>>>, Vec<u8>> {
+        self.flush();
+        self.inner.context_excludes()
+    }
+    fn local_excludes(&self, key: &[u8], name: &[u8]) -> Result<Option<Vec<Vec<u8>>>, Vec<u8>> {
+        self.flush();
+        self.inner.local_excludes(key, name)
+    }
+    fn warn(&self, warning: &lint::Warning) {
+        self.inner.warn(warning);
+    }
+    fn resolve_layout(
+        &self,
+        name: &[u8],
+        store: &[u8],
+        platform: &Platform,
+        log: &[u8],
+    ) -> Result<Resolved, Vec<u8>> {
+        self.flush();
+        self.inner.resolve_layout(name, store, platform, log)
+    }
 }
 
 /// Where SOURCE_DATE_EPOCH's time comes from when it is no number of seconds
@@ -184,6 +303,9 @@ pub struct Plan {
     pub graph: Graph,
     pub state: State,
     pub image: Image,
+    /// The image the target stands on, as resolved, its creation time kept
+    /// (`Result.BaseImage`): none for scratch or a stage that is a named context.
+    pub base_image: Option<Image>,
     pub platform: Platform,
     pub warnings: Vec<lint::Warning>,
     /// SOURCE_DATE_EPOCH, in seconds, when the build has one.
@@ -217,6 +339,16 @@ const HISTORY_COMMENT: &[u8] = b"buildkit.dockerfile.v0";
 const DEFAULT_PATH: &[u8] = b"/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 const SBOM_SCAN_CONTEXT: &[u8] = b"BUILDKIT_SBOM_SCAN_CONTEXT";
 const SBOM_SCAN_STAGE: &[u8] = b"BUILDKIT_SBOM_SCAN_STAGE";
+
+/// A local source's session (`llb.SessionID`), or where it has none the unique ID its
+/// marshal gives it (`SourceOp.Marshal`).
+fn local_session(attrs: &mut BTreeMap<Vec<u8>, Vec<u8>>, session: &[u8], unique: &[u8]) {
+    if session.is_empty() {
+        attrs.insert(b"local.unique".to_vec(), unique.to_vec());
+    } else {
+        attrs.insert(b"local.session".to_vec(), session.to_vec());
+    }
+}
 
 /// `isEnabledForStage`: a boolean for every stage, else a list of the stages' names.
 fn enabled_for_stage(stage: &[u8], value: &[u8]) -> bool {
@@ -319,6 +451,9 @@ struct Ds {
     /// Whether the cache is not asked for its steps (`ignoreCache`, `IsNoCache`).
     ignore_cache: bool,
     outline: OutlineCapture,
+    /// The image it stands on, as resolved (`baseImg`): inherited from the stage it
+    /// builds on, none for scratch.
+    base_image: Option<Image>,
 }
 
 impl Ds {
@@ -353,6 +488,7 @@ impl Ds {
             cmd: Tracker::default(),
             healthcheck: Tracker::default(),
             agentfile: Vec::new(),
+            base_image: None,
         }
     }
 }
@@ -414,6 +550,12 @@ struct Planner<'a> {
     proxy: Option<llb::ProxyEnv>,
     /// The .dockerignore's patterns, once dispatch begins, if it has any.
     ignore: Option<crate::glob::PatternMatcher>,
+    /// The build context's .dockerignore patterns: [`Options::excludes`], or what the
+    /// resolver read as dispatch began ([`Resolver::context_excludes`]).
+    excludes: Vec<Vec<u8>>,
+    /// Each local named context's, by its local name, as the resolver read them when it
+    /// loaded ([`Resolver::local_excludes`]).
+    named_excludes: BTreeMap<Vec<u8>, Vec<Vec<u8>>>,
     /// Local named contexts' sources, their attributes set once the stage that reads
     /// each has said which of its paths it uses: the source, the stage, its key and its
     /// local name.
@@ -434,20 +576,29 @@ struct Planner<'a> {
 /// the same frontend's upstream builds.
 const FRONTENDS: [&str; 2] = ["docker/dockerfile", "docker/dockerfile-upstream"];
 
+/// shards' own frontend (D113), at any tag: the image of `shards` itself, which an
+/// Agentfile's `# syntax=` line names so that `docker buildx build` builds it too, and
+/// which `shards build` therefore builds as its own.
+pub const SHARDS_FRONTEND: (&str, &str) = ("ghcr.io", "hyper-light/shards");
+
 /// What builder.Build does with the frontend BUILDKIT_SYNTAX or `# syntax=` names, which is
 /// to hand the build to it: the Dockerfile frontend's own is this one, its image asked of
 /// `resolver` as BuildKit asks of it before it runs it (a refusal fails the build where it
 /// is named), and any other, which shards cannot run, fails the build where it is named.
-fn check_frontend(
-    text: &[u8],
-    build_args: &BTreeMap<Vec<u8>, Vec<u8>>,
-    resolver: &dyn Resolver,
-) -> Result<(), Fail> {
+fn check_frontend(text: &[u8], opts: &Options, resolver: &dyn Resolver) -> Result<(), Fail> {
+    // The frontend a `# syntax=` line named, which then names no other (builder.Build).
+    if opts.cmdline.is_some() {
+        return Ok(());
+    }
+    let build_args = &opts.build_args;
     let ours = |r: &[u8]| {
         std::str::from_utf8(r)
             .ok()
             .and_then(|r| Reference::parse_normalized(r).ok())
-            .is_some_and(|r| r.domain == "docker.io" && FRONTENDS.contains(&r.path.as_str()))
+            .is_some_and(|r| {
+                (r.domain == "docker.io" && FRONTENDS.contains(&r.path.as_str()))
+                    || (r.domain == SHARDS_FRONTEND.0 && r.path == SHARDS_FRONTEND.1)
+            })
     };
     let refused = |r: &[u8]| {
         errb(&[
@@ -525,7 +676,7 @@ pub fn plan(text: &[u8], opts: &Options, resolver: &dyn Resolver) -> Result<Plan
         warnings: Vec::new(),
     };
     let mut ui = dockerui(opts).map_err(fail)?;
-    check_frontend(text, &opts.build_args, resolver).map_err(|Fail(message, location)| Error {
+    check_frontend(text, opts, resolver).map_err(|Fail(message, location)| Error {
         message,
         location,
         warnings: Vec::new(),
@@ -555,10 +706,16 @@ pub fn plan(text: &[u8], opts: &Options, resolver: &dyn Resolver) -> Result<Plan
             &linter,
         );
     }
-    let r = plan_with(text, opts, &ui, resolver, &linter, Mode::Plan).and_then(|p| match p {
+    let warned = Warned {
+        inner: resolver,
+        linter: &linter,
+        sent: std::cell::Cell::new(0),
+    };
+    let r = plan_with(text, opts, &ui, &warned, &linter, Mode::Plan).and_then(|p| match p {
         Planned::Plan(p) => Ok(*p),
         Planned::Outline(_) | Planned::Dispatched => Err(Fail::new(b"no plan".to_vec())),
     });
+    warned.flush();
     done(r, &linter)
 }
 
@@ -572,7 +729,7 @@ pub fn outline(text: &[u8], opts: &Options, resolver: &dyn Resolver) -> Result<O
         warnings: Vec::new(),
     };
     let mut ui = dockerui(opts).map_err(fail)?;
-    check_frontend(text, &opts.build_args, resolver).map_err(|Fail(message, location)| Error {
+    check_frontend(text, opts, resolver).map_err(|Fail(message, location)| Error {
         message,
         location,
         warnings: Vec::new(),
@@ -589,7 +746,14 @@ pub fn outline(text: &[u8], opts: &Options, resolver: &dyn Resolver) -> Result<O
     if text.is_empty() {
         return Err(fail(b"the Dockerfile cannot be empty".to_vec()));
     }
-    match plan_with(text, opts, &ui, resolver, &linter, Mode::Outline) {
+    let warned = Warned {
+        inner: resolver,
+        linter: &linter,
+        sent: std::cell::Cell::new(0),
+    };
+    let planned = plan_with(text, opts, &ui, &warned, &linter, Mode::Outline);
+    warned.flush();
+    match planned {
         Ok(Planned::Outline(o)) => Ok(o),
         Ok(Planned::Plan(_) | Planned::Dispatched) => Err(fail(b"no outline".to_vec())),
         Err(Fail(message, location)) => Err(Error {
@@ -616,7 +780,7 @@ pub fn lint(text: &[u8], opts: &Options, resolver: &dyn Resolver) -> Result<Lint
     // the subrequest is asked (builder.Build); what follows fails only the plan, which
     // the result says.
     let mut ui = dockerui(&opts).map_err(fail)?;
-    check_frontend(text, &opts.build_args, resolver).map_err(|Fail(message, location)| Error {
+    check_frontend(text, &opts, resolver).map_err(|Fail(message, location)| Error {
         message,
         location,
         warnings: Vec::new(),
@@ -831,6 +995,8 @@ fn plan_with(
         graph,
         context,
         ignore: None,
+        excludes: opts.excludes.clone(),
+        named_excludes: BTreeMap::new(),
         named_locals: Vec::new(),
         made: Vec::new(),
         contents: BTreeMap::new(),
@@ -960,6 +1126,19 @@ pub fn git_identifier(
         attrs.insert(b"git.fetchbycommit".to_vec(), b"true".to_vec());
     }
     ([b"git://".as_slice(), &id].concat(), attrs)
+}
+
+/// What dockerui's DetectGitContext gives a Git context beyond `llb.Git`'s own: its
+/// files' times (`git.mtime`, the URL's `mtime=`, else `default`), and Git's advice where
+/// BUILDKIT_GIT_ADVICE asks for it.
+fn context_git_attrs(attrs: &mut BTreeMap<Vec<u8>, Vec<u8>>, g: &git::GitRef, default: &[u8], advice: bool) {
+    let mtime = if g.mtime.is_empty() { default } else { &g.mtime };
+    if !mtime.is_empty() {
+        attrs.insert(b"git.mtime".to_vec(), mtime.to_vec());
+    }
+    if advice {
+        attrs.insert(b"git.advice".to_vec(), b"true".to_vec());
+    }
 }
 
 /// `resolveSourceDateEpochState`. shards takes no named contexts (`--build-context`), so
@@ -1916,7 +2095,9 @@ impl Planner<'_> {
         let (paths, workdir_set, build_args) = (base.paths, base.workdir_set, base.build_args.clone());
         let agentfile = base.agentfile.clone();
         let domains = base.domains.clone();
+        let base_image = base.base_image.clone();
         if let Some(d) = self.states.get_mut(i) {
+            d.base_image = base_image;
             d.domains = domains;
             d.state = state;
             d.platform = platform;
@@ -2098,6 +2279,7 @@ impl Planner<'_> {
             .unwrap_or_else(|| self.target_platform.clone());
         let mut base_name = r.to_string().into_bytes();
         let mut image = ds.image.clone();
+        let mut base_image = None;
         let mut scratch = false;
         let named = ds.named.clone();
         if reachable {
@@ -2127,9 +2309,11 @@ impl Planner<'_> {
             if let Some(n) = self.named_context(&base_name, Some(&platform))? {
                 let (mut state, img) = self.load_named(d, &n, &platform)?;
                 let mut img = img.unwrap_or_else(|| empty_image(&platform));
+                let base_image = img.clone();
                 img.created = None;
                 state.platform = Some(platform.clone());
                 let ds = self.ds(d)?;
+                ds.base_image = Some(base_image);
                 ds.stage.base_name = base_name;
                 ds.image = img;
                 ds.state = state;
@@ -2175,7 +2359,22 @@ impl Planner<'_> {
             }
             let mut img = Image::from_json(&resolved.config)
                 .map_err(|e| Fail::new(errb(&[b"failed to parse image config: ", &e])))?;
+            base_image = Some(img.clone());
             img.created = None;
+            // No platform asked for: the base's, where a build platform is it
+            // (autoDetectPlatform).
+            let stage_platform = self.states.get(d).and_then(|s| s.platform.as_ref());
+            let found = &img.platform;
+            if stage_platform.is_none()
+                && self.opts.implicit_target
+                && (platform.os != found.os || platform.architecture != found.architecture)
+                && let Some(p) = self
+                    .build_platforms
+                    .iter()
+                    .find(|p| p.os == found.os && p.architecture == found.architecture)
+            {
+                platform = p.clone();
+            }
             if let Some(dg) = &resolved.digest {
                 let s = std::str::from_utf8(dg).map_err(|_| Fail::new(b"invalid digest".to_vec()))?;
                 r.digest = Some(
@@ -2196,6 +2395,9 @@ impl Planner<'_> {
             .ok_or_else(|| Fail::new(b"no stage".to_vec()))?;
         ds.stage.base_name = base_name.clone();
         ds.image = image;
+        if base_image.is_some() {
+            ds.base_image = base_image;
+        }
         if scratch {
             ds.state = State::scratch();
         } else {
@@ -2253,8 +2455,14 @@ impl Planner<'_> {
     }
 
     fn dispatch_stages(&mut self, reachable: &BTreeSet<usize>, target: usize) -> Result<(), Fail> {
-        if !self.opts.excludes.is_empty() {
-            self.ignore = Some(crate::glob::PatternMatcher::new(&self.opts.excludes).map_err(Fail::new)?);
+        // A remote context has no .dockerignore (dockerui excludes nothing of it).
+        if self.opts.main_context == MainContext::Local
+            && let Some(found) = self.resolver.context_excludes().map_err(Fail::new)?
+        {
+            self.excludes = found;
+        }
+        if !self.excludes.is_empty() {
+            self.ignore = Some(crate::glob::PatternMatcher::new(&self.excludes).map_err(Fail::new)?);
         }
         for d in 0..self.states.len() {
             // Every stage, with all stages, dispatched before or not (convert.go).
@@ -3074,11 +3282,14 @@ impl Planner<'_> {
                 ])));
             }
         }
-        for dev in &r.devices {
-            run.devices.push(llb::Device {
-                name: dev.name.clone(),
-                optional: !dev.required,
-            });
+        // Devices only where the worker has CDI (dispatchRun).
+        if self.opts.supports("exec.meta.cdi") {
+            for dev in &r.devices {
+                run.devices.push(llb::Device {
+                    name: dev.name.clone(),
+                    optional: !dev.required,
+                });
+            }
         }
         // The progress name: the command with variables expanded, secrets masked, and
         // unset ones left as written.
@@ -3116,12 +3327,15 @@ impl Planner<'_> {
             state.extra_hosts.clone(),
             state.cgroup_parent.clone(),
         );
-        state.ulimits.extend(opts.ulimits.iter().cloned());
+        // Each only where the worker has what it needs (dispatchRun).
+        if opts.supports("exec.meta.ulimit") {
+            state.ulimits.extend(opts.ulimits.iter().cloned());
+        }
         state.extra_hosts.extend(opts.extra_hosts.iter().cloned());
-        if !opts.cgroup_parent.is_empty() {
+        if !opts.cgroup_parent.is_empty() && opts.supports("exec.meta.cgroup.parent") {
             state.cgroup_parent.clone_from(&opts.cgroup_parent);
         }
-        if opts.shm_size > 0 {
+        if opts.shm_size > 0 && opts.supports("exec.mount.tmpfs.size") {
             run.mounts.push(Mount {
                 target: b"/dev/shm".to_vec(),
                 source: None,
@@ -3131,7 +3345,7 @@ impl Planner<'_> {
                 no_output: false,
             });
         }
-        if opts.linux_resources.is_some() {
+        if opts.linux_resources.is_some() && opts.supports("exec.meta.linux.resources") {
             run.meta.linux_resources.clone_from(&opts.linux_resources);
         }
         let mut next = self.graph.run(&state, run);
@@ -3217,7 +3431,7 @@ impl Planner<'_> {
                 source = None;
                 kind = MountKind::Tmpfs { size: m.size };
             }
-            if !m.read_only && m.kind == b"bind" {
+            if !m.read_only && m.kind == b"bind" && self.opts.supports("exec.mount.bind.readwrite-nooutput") {
                 // The bind's changes are dropped: CapExecMountBindReadWriteNoOutput.
                 no_output = true;
             }
@@ -3512,9 +3726,10 @@ impl Planner<'_> {
             return Ok(Some(self.graph.file(onto, actions, meta)));
         }
         let msg = cfg.history.clone().unwrap_or(msg);
+        let merges = self.opts.supports("mergeop");
         let ds = self.ds(d)?;
         let state = ds.state.clone();
-        if cfg.link && cfg.chmod.is_empty() {
+        if cfg.link && cfg.chmod.is_empty() && merges {
             // --link: the files land on scratch, merged onto the stage after.
             let group = self.graph.progress_group();
             let ds = self.ds(d)?;
@@ -3620,11 +3835,14 @@ impl Planner<'_> {
             match git::parse_git_ref(&input) {
                 git::Parsed::Git(g) => {
                     let name = errb(&[b"[internal] load git source ", &input]);
-                    Ok(Some(planner.git_source(
-                        &g,
-                        g.keep_git_dir == Some(true),
-                        &g.checksum,
-                        &name,
+                    let (identifier, mut attrs) =
+                        git_identifier(&g, g.keep_git_dir == Some(true), &g.checksum);
+                    context_git_attrs(&mut attrs, &g, b"", planner.opts.git_advice);
+                    Ok(Some(planner.graph.source(
+                        identifier,
+                        attrs,
+                        None,
+                        custom_name(name),
                     )))
                 }
                 git::Parsed::BadGit(e) => Err(Fail::new(e)),
@@ -3680,6 +3898,9 @@ impl Planner<'_> {
                 Ok((st, None))
             }
             b"local" => {
+                if let Some(ex) = self.resolver.local_excludes(&n.key, rest).map_err(Fail::new)? {
+                    self.named_excludes.insert(rest.to_vec(), ex);
+                }
                 let st = self.graph.source(
                     [b"local://".as_slice(), rest].concat(),
                     BTreeMap::new(),
@@ -3726,12 +3947,20 @@ impl Planner<'_> {
                 dummy.digest = Some(digest);
                 let dummy = dummy.to_string().into_bytes();
                 let log = errb(&[b"[context ", &n.key, b"] load metadata for ", &dummy]);
-                let resolved = self.resolver.resolve(&dummy, platform, &log).map_err(Fail::new)?;
+                let store = r.name().into_bytes();
+                let resolved = self
+                    .resolver
+                    .resolve_layout(&dummy, &store, platform, &log)
+                    .map_err(Fail::new)?;
                 let mut img = Image::from_json(&resolved.config)
                     .map_err(|e| Fail::new(errb(&[b"could not parse oci-layout image config: ", &e])))?;
                 img.created = None;
                 let mut attrs = BTreeMap::new();
-                attrs.insert(b"oci.store".to_vec(), r.name().into_bytes());
+                // llb.OCIStore: the client's session where the build has one.
+                if !self.opts.session.is_empty() {
+                    attrs.insert(b"oci.session".to_vec(), self.opts.session.clone());
+                }
+                attrs.insert(b"oci.store".to_vec(), store);
                 let mut state = self.graph.source(
                     [b"oci-layout://".as_slice(), &dummy].concat(),
                     attrs,
@@ -4337,9 +4566,9 @@ impl Planner<'_> {
         }
         // The build context, with only the paths the stages copy from it.
         let mut attrs = BTreeMap::new();
-        if !self.opts.excludes.is_empty() {
+        if !self.excludes.is_empty() {
             let mut json = String::new();
-            crate::json::write_strings(&mut json, &self.opts.excludes);
+            crate::json::write_strings(&mut json, &self.excludes);
             attrs.insert(b"local.excludepatterns".to_vec(), json.into_bytes());
         }
         if let Some(paths) = normalize_context_paths(&ctx_paths) {
@@ -4348,7 +4577,11 @@ impl Planner<'_> {
             attrs.insert(b"local.followpaths".to_vec(), json.into_bytes());
         }
         attrs.insert(b"local.sharedkeyhint".to_vec(), b"context".to_vec());
-        attrs.insert(b"local.unique".to_vec(), self.opts.context_id.clone());
+        local_session(
+            &mut attrs,
+            self.opts.session_of(b"context"),
+            &self.opts.context_id,
+        );
         // Each local named context, with only the paths its stage copies from it
         // (asyncLocalOutput, as it is marshalled once every stage is dispatched).
         for (out, d, key, name) in std::mem::take(&mut self.named_locals) {
@@ -4364,7 +4597,11 @@ impl Planner<'_> {
                 crate::json::write_strings(&mut json, &paths);
                 a.insert(b"local.followpaths".to_vec(), json.into_bytes());
             }
-            if let Some(ex) = self.opts.context_excludes.get(&name).filter(|e| !e.is_empty()) {
+            let ex = self
+                .named_excludes
+                .get(&name)
+                .or_else(|| self.opts.context_excludes.get(&name));
+            if let Some(ex) = ex.filter(|e| !e.is_empty()) {
                 let mut json = String::new();
                 crate::json::write_strings(&mut json, ex);
                 a.insert(b"local.excludepatterns".to_vec(), json.into_bytes());
@@ -4374,7 +4611,7 @@ impl Planner<'_> {
                 b"local.sharedkeyhint".to_vec(),
                 errb(&[b"context:", &key, b"-", &shared]),
             );
-            a.insert(b"local.unique".to_vec(), self.opts.context_id.clone());
+            local_session(&mut a, self.opts.session_of(&name), &self.opts.context_id);
             if let Some(v) = self.graph.vertices.get_mut(out.vertex)
                 && let llb::Kind::Source { attrs: at, .. } = &mut v.kind
             {
@@ -4430,18 +4667,21 @@ impl Planner<'_> {
             .get_mut(target)
             .ok_or_else(|| Fail::new(b"no target".to_vec()))?;
         let mut image = std::mem::take(&mut t.image);
-        // An explicit target platform is the image's.
-        let same = platform.os == image.platform.os && platform.architecture == image.platform.architecture;
-        image.platform.os = platform.os.clone();
-        image.platform.architecture = platform.architecture.clone();
-        if !platform.variant.is_empty() || !same {
-            image.platform.variant = platform.variant.clone();
-        }
-        if !platform.os_version.is_empty() || !same {
-            image.platform.os_version = platform.os_version.clone();
-        }
-        if !platform.os_features.is_empty() {
-            image.platform.os_features = platform.os_features.clone();
+        // An explicit target platform is the image's; an implicit one leaves its base's.
+        if !self.opts.implicit_target {
+            let same =
+                platform.os == image.platform.os && platform.architecture == image.platform.architecture;
+            image.platform.os = platform.os.clone();
+            image.platform.architecture = platform.architecture.clone();
+            if !platform.variant.is_empty() || !same {
+                image.platform.variant = platform.variant.clone();
+            }
+            if !platform.os_version.is_empty() || !same {
+                image.platform.os_version = platform.os_version.clone();
+            }
+            if !platform.os_features.is_empty() {
+                image.platform.os_features = platform.os_features.clone();
+            }
         }
         image.platform = platform::normalize(&image.platform);
         // An Agentfile's directives travel in a layer of their own, the normalized
@@ -4494,10 +4734,12 @@ impl Planner<'_> {
                 empty_layer: false,
             });
         }
+        let base_image = t.base_image.clone();
         Ok(Plan {
             state: std::mem::take(&mut t.state),
             graph: self.graph,
             image,
+            base_image,
             platform,
             warnings: Vec::new(),
             epoch: self.epoch.map(|(s, _)| s),
@@ -5434,7 +5676,15 @@ fn main_context(graph: &mut Graph, opts: &Options) -> Result<State, Fail> {
         MainContext::Git { url, keep_git_dir } => match git::parse_git_ref(url) {
             git::Parsed::Git(g) => {
                 let keep = g.keep_git_dir == Some(true) || *keep_git_dir;
-                let (identifier, attrs) = git_identifier(&g, keep, &g.checksum);
+                let (identifier, mut attrs) = git_identifier(&g, keep, &g.checksum);
+                // SOURCE_DATE_EPOCH's build arg asks the context's files for the commit's
+                // time (initContext's llb.GitMTimeCommit), the URL's mtime= over it.
+                let epoch = opts
+                    .build_args
+                    .get(b"SOURCE_DATE_EPOCH".as_slice())
+                    .filter(|v| !v.is_empty())
+                    .map_or(b"".as_slice(), |_| b"commit".as_slice());
+                context_git_attrs(&mut attrs, &g, epoch, opts.git_advice);
                 graph.source(
                     identifier,
                     attrs,
@@ -5747,9 +5997,13 @@ mod tests {
             "# syntax = docker.io/docker/dockerfile:1.4-labs --x\nFROM scratch\n",
             "#syntax=docker/dockerfile-upstream:master@sha256:24454f830cdb571e2c4ad15481119c43b3cafd48dd869a9b2945d1036d1dc68d\nFROM scratch\n",
             "# check=skip=all\n# syntax=docker/dockerfile\nFROM scratch\n",
+            // shards' own frontend's image (D113), at any tag.
+            "# syntax=ghcr.io/hyper-light/shards:0.5\nFROM scratch\n",
+            "# syntax=ghcr.io/hyper-light/shards\nFROM scratch\n",
         ] {
             assert_eq!(plans(text, &[]), Ok(()), "{text}");
         }
+        assert!(plans("# syntax=ghcr.io/hyper-light/other:1\nFROM scratch\n", &[]).is_err());
         let refused = |r: &str| {
             format!(
                 "shards cannot run frontend {r}: it builds Dockerfiles with its own port of docker/dockerfile 1.27.1"
@@ -5927,6 +6181,77 @@ mod tests {
             String::from_utf8_lossy(&e.message),
             "shards builds Linux guests: the target platform windows/amd64 is not one"
         );
+    }
+
+    /// dockerui's DetectGitContext (dockerfile/1.27.1 context.go): the build context's
+    /// files take the commit's time where SOURCE_DATE_EPOCH is a build arg, the URL's
+    /// `mtime=` over it; a named context only the URL's; Git's advice where asked.
+    #[test]
+    fn git_contexts_take_their_times_and_advice_as_dockerui_gives_them() {
+        let git_attrs = |opts: &Options| -> BTreeMap<Vec<u8>, Vec<u8>> {
+            let def = context_definition(opts).unwrap();
+            def.ops
+                .iter()
+                .find_map(|op| match &op.kind {
+                    llb::OpKind::Source { identifier, attrs } if identifier.starts_with(b"git://") => {
+                        Some(attrs.clone())
+                    }
+                    _ => None,
+                })
+                .unwrap()
+        };
+        let main = |url: &str, epoch: bool, advice: bool| Options {
+            target_platform: Platform::new("linux", "amd64"),
+            main_context: MainContext::Git {
+                url: url.as_bytes().to_vec(),
+                keep_git_dir: false,
+            },
+            build_args: if epoch {
+                BTreeMap::from([(b"SOURCE_DATE_EPOCH".to_vec(), b"0".to_vec())])
+            } else {
+                BTreeMap::new()
+            },
+            git_advice: advice,
+            ..Default::default()
+        };
+        let mtime = |a: &BTreeMap<Vec<u8>, Vec<u8>>| a.get(b"git.mtime".as_slice()).cloned();
+        let a = git_attrs(&main("https://github.com/moby/buildkit.git", false, false));
+        assert_eq!(mtime(&a), None);
+        assert!(!a.contains_key(b"git.advice".as_slice()));
+        let a = git_attrs(&main("https://github.com/moby/buildkit.git", true, true));
+        assert_eq!(mtime(&a), Some(b"commit".to_vec()));
+        assert_eq!(a.get(b"git.advice".as_slice()), Some(&b"true".to_vec()));
+        let a = git_attrs(&main(
+            "https://github.com/moby/buildkit.git?mtime=checkout",
+            true,
+            false,
+        ));
+        assert_eq!(mtime(&a), Some(b"checkout".to_vec()));
+    }
+
+    /// A build asked for no platform (dockerui's TargetPlatform nil, Dockerfile2LLB's
+    /// implicitTarget) keeps its base's platform in the image; one asked for a platform
+    /// has that platform's.
+    #[test]
+    fn an_implicit_target_leaves_the_image_its_bases_platform() {
+        let times = Times {
+            asked: Default::default(),
+            answer: Ok(None),
+            logged: Default::default(),
+        };
+        let text = b"FROM --platform=linux/amd64 alpine\n";
+        let opts = |implicit_target: bool| Options {
+            target_platform: Platform::new("linux", "arm64"),
+            build_platforms: vec![Platform::new("linux", "arm64")],
+            implicit_target,
+            ..Default::default()
+        };
+        let arch = |o: &Options| {
+            let p = plan(text, o, &times).unwrap();
+            String::from_utf8(p.image.platform.architecture).unwrap()
+        };
+        assert_eq!(arch(&opts(true)), "amd64");
+        assert_eq!(arch(&opts(false)), "arm64");
     }
 
     /// `strings.Index`: an empty needle is at the start.
