@@ -5243,6 +5243,18 @@ revision before comparing a changed API/implementation.
   284.6). About 12 µs more at the median. A first form, which opened the directory again
   for each file and walked it with `openat`, cost 107.5 µs at the median and 1.0 ms at p99,
   and was not kept.
+- **End to end.** `build-ab/ab.py` over c1c2525 and a5a378c's release builds, each its own
+  home with busybox:1.36 and its template saved, `run --pull never busybox:1.36 true`,
+  n = 200 a side, interleaved; microseconds, wall p50 / p90 / p99 / max:
+  - pooled (the restore off the run's path), load 68–76: old 18,923 / 41,750 / 73,092 /
+    85,574, new 20,658 / 42,896 / 69,357 / 105,235; paired median new − old +1,681, 95%
+    [−2,686, +4,007];
+  - `SHARDS_POOL=0` (each run restores its own VM, its launch and grants included), load
+    59–70: old 93,214 / 153,079 / 203,267 / 220,727, new 90,680 / 144,029 / 196,573 /
+    203,325; paired median +6,741, 95% [−13,588, +22,085].
+
+  Neither distinguishable from nothing at this load, whose noise is a thousand times
+  the 12 µs measured above.
 
 ### M166. How long a VM process takes to start, and what it waits for
 
