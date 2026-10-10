@@ -310,8 +310,141 @@ fn fds(dirs: usize, limit: u64) {
     );
 }
 
+/// The directory tree `walk` walks, at `tree`: `dirs` directories, ten under each, the
+/// tenth level part full (`--dirs 100000`: 10, 100, 1,000, 10,000 and 88,890).
+fn mktree(tree: &std::path::Path, dirs: usize) {
+    let mut queue = std::collections::VecDeque::from([tree.to_path_buf()]);
+    let mut made = 0;
+    while let Some(parent) = queue.pop_front() {
+        for i in 0..10 {
+            if made == dirs {
+                return;
+            }
+            let child = parent.join(format!("d{i}"));
+            std::fs::create_dir_all(&child).unwrap();
+            queue.push_back(child);
+            made += 1;
+        }
+    }
+}
+
+/// Every name in directory `dir`, read in pages of 4096 bytes, as a guest lists one.
+fn names(server: &Server, dir: u64) -> Vec<String> {
+    let fh = word(&server.handle(&req(27, dir, &[0u8; 8])).unwrap());
+    let (mut out, mut offset) = (Vec::new(), 0u64);
+    loop {
+        let mut body = fh.to_le_bytes().to_vec();
+        body.extend_from_slice(&offset.to_le_bytes());
+        body.extend_from_slice(&4096u32.to_le_bytes());
+        body.extend_from_slice(&[0u8; 12]);
+        let page = server.handle(&req(28, dir, &body)).unwrap();
+        assert_eq!(i32::from_le_bytes(page[4..8].try_into().unwrap()), 0);
+        let mut rest = &page[16..];
+        if rest.is_empty() {
+            break;
+        }
+        while !rest.is_empty() {
+            offset = u64::from_le_bytes(rest[8..16].try_into().unwrap());
+            let len = u32::from_le_bytes(rest[16..20].try_into().unwrap()) as usize;
+            out.push(String::from_utf8(rest[24..24 + len].to_vec()).unwrap());
+            rest = &rest[(24 + len + 7) & !7..];
+        }
+    }
+    let mut release = fh.to_le_bytes().to_vec();
+    release.extend_from_slice(&[0u8; 16]);
+    server.handle(&req(29, dir, &release)).unwrap();
+    out
+}
+
+/// A walk of `tree` as `find` walks one: each directory looked up in its parent, opened,
+/// listed and released, depth first; each directory's visit timed.
+fn walk(tree: &std::path::Path) -> Vec<u128> {
+    let server = Server::new(std::fs::File::open(tree).unwrap().into(), true, None).unwrap();
+    let mut ns = Vec::new();
+    let mut stack: Vec<(u64, String)> = names(&server, 1)
+        .into_iter()
+        .filter(|n| n != "." && n != "..")
+        .map(|n| (1, n))
+        .collect();
+    while let Some((parent, name)) = stack.pop() {
+        let t0 = Instant::now();
+        let mut lookup = name.clone().into_bytes();
+        lookup.push(0);
+        let node = word(&server.handle(&req(1, parent, &lookup)).unwrap());
+        let children = names(&server, node);
+        ns.push(t0.elapsed().as_nanos());
+        stack.extend(
+            children
+                .into_iter()
+                .filter(|n| n != "." && n != "..")
+                .map(|n| (node, n)),
+        );
+    }
+    ns
+}
+
+/// A GETATTR of a directory `depth` deep, in turn with one beside it as deep: let go
+/// between requests and opened again along its path each time (`--let-go`, the process's
+/// limit leaving the server room for one), or held.
+fn reopen(n: usize, depth: usize, let_go: bool) -> Vec<u128> {
+    let dir = std::env::temp_dir().join(format!("virtio-fs-audit-reopen-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let chain = |top: &str| (1..depth).fold(dir.join(top), |p, i| p.join(format!("c{i}")));
+    for top in ["a", "b"] {
+        std::fs::create_dir_all(chain(top)).unwrap();
+    }
+    let root = std::fs::File::open(&dir).unwrap();
+    if let_go {
+        // The server's room: one directory, past what this process holds and the most a
+        // request holds besides (REQUEST_FDS, 3).
+        let open = std::fs::read_dir("/dev/fd").unwrap().count() - 1;
+        let mut lim = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // SAFETY: getrlimit(2) and setrlimit(2) of this process's own limit, from a local.
+        unsafe {
+            assert_eq!(libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim), 0);
+            lim.rlim_cur = (open + 3 + 1) as libc::rlim_t;
+            assert_eq!(libc::setrlimit(libc::RLIMIT_NOFILE, &lim), 0);
+        }
+    }
+    let server = Server::new(root.into(), true, None).unwrap();
+    let deep = |top: &str| {
+        let mut node = 1;
+        let mut names = vec![top.to_string()];
+        names.extend((1..depth).map(|i| format!("c{i}")));
+        for name in names {
+            let mut lookup = name.into_bytes();
+            lookup.push(0);
+            node = word(&server.handle(&req(1, node, &lookup)).unwrap());
+        }
+        node
+    };
+    let pair = [deep("a"), deep("b")];
+    let mut ns = Vec::with_capacity(n);
+    for i in 0..200 + n {
+        let t0 = Instant::now();
+        let out = server.handle(&req(3, pair[i % 2], &[0u8; 16])).unwrap();
+        assert_eq!(i32::from_le_bytes(out[4..8].try_into().unwrap()), 0);
+        if i >= 200 {
+            ns.push(t0.elapsed().as_nanos());
+        }
+    }
+    drop(server);
+    let _ = std::fs::remove_dir_all(&dir);
+    ns
+}
+
 fn main() {
     let case = arg("--case").unwrap();
+    if case == "mktree" {
+        mktree(
+            std::path::Path::new(&arg("--tree").unwrap()),
+            arg("--dirs").map_or(100_000, |v| v.parse().unwrap()),
+        );
+        return;
+    }
     if case == "fds" {
         fds(
             arg("--dirs").map_or(600, |v| v.parse().unwrap()),
@@ -333,6 +466,12 @@ fn main() {
             n,
             arg("--entries").map_or(10_000, |v| v.parse().unwrap()),
             case == "listplus",
+        ),
+        "walk" => walk(std::path::Path::new(&arg("--tree").unwrap())),
+        "reopen" => reopen(
+            n,
+            arg("--depth").map_or(4, |v| v.parse().unwrap()),
+            std::env::args().any(|a| a == "--let-go"),
         ),
         other => panic!("no case {other}"),
     };

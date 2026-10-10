@@ -2488,10 +2488,33 @@ microVM as virtio-fs shares (virtio 1.3 §5.11; Linux fs/fuse/virtio_fs.c):
     nor can one put a regular file and a device in one share without root, which a
     GETATTR naming one's open file for the other's node would need.
 - **The kernel** has `CONFIG_VIRTIO_FS` and `CONFIG_FUSE_DAX` (kernel-6.18.48-98788948976a).
-- Open, measured: the directories a guest can have looked up are as many as its share
-  process's descriptors, 252 under macOS's default limit of 256, past which every
-  directory LOOKUP fails EMFILE (PM M132); raising the limit lets a guest pin as many
-  kernel file objects, and letting directories go loses their identity through renames.
+- **A share holds the descriptors the host can spare, not what the guest names** (audit
+  V09). A directory held its descriptor until the guest forgot it: a walk past the share
+  process's limit failed EMFILE, and at the limit the daemon gives it (245,760 here) one
+  guest pinned half of the host's file table and two all of it (PM M132).
+  - *By path and identity.* A node keeps its parent, its name, kept current through the
+    guest's renames and lookups, and its (dev, ino). A lookup opens nothing; a directory
+    is opened when used, along its path from the nearest directory held, each component
+    never followed (openat2 with RESOLVE_BENEATH and RESOLVE_NO_SYMLINKS on Linux 5.6+,
+    O_NOFOLLOW a component at a time before it and on macOS), then checked to be the
+    directory the node was: one renamed or replaced on the host since, or reached through
+    a symlink even to itself, is stale (ESTALE), which has Linux's VFS look it up again
+    (`retry_estale`).
+  - *Bounded.* Directories' descriptors sit in an LRU let go between requests, never during
+    one. Its size, with the guest's open handles counted against it (OPEN and OPENDIR
+    refused EMFILE past it, as a kernel refuses a process), is derived
+    (`fs::server::Limits`): the process's limit raised as Go's runtime raises its own
+    (`platform::raise_descriptor_limit`, the daemon's too), less what it holds and
+    `REQUEST_FDS` (3) a server; and no more than its part of the system's table with as
+    many share processes as runs the user may start. This host: 90 a share process (PM
+    M134). A walk costs 2.1 µs a directory more (6%); a reopen 8 to 10 µs a component
+    walked on macOS.
+  - Tests: `tests/fs_dir_budget.rs` (a walk of 584 directories within 24 descriptors,
+    EMFILE at the budget, `REQUEST_FDS` exactly enough),
+    `a_directory_let_go_is_found_by_its_path_or_is_stale` (renames, a host's rename and
+    replacement, symlinks to itself and out of the share),
+    `a_budget_is_reckoned_from_the_hosts_limits`, each mutation-checked. Linux's openat2
+    path runs in CI's Linux jobs only.
 - Open, unmeasured: the forwarding hop's cost per request against an in-process server,
   and throughput against Docker Desktop's virtiofs; DAX windows, which would let file
   data skip the hop; the local driver's other types (NFS and CIFS clients in the guest

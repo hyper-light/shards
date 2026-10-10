@@ -4482,8 +4482,13 @@ revision before comparing a changed API/implementation.
 
 - **Question.** The share's server keeps a descriptor for every directory the guest has
   looked up and not forgotten, as it does every operation relative to one; a guest
-  kernel forgets only under memory pressure. The share process inherits the daemon's
-  descriptor limit, 256 under macOS's launchd. How many directories can a guest walk?
+  kernel forgets only under memory pressure. How many directories can a guest walk, at a
+  given limit on descriptors?
+- **Corrected (2026-10-09).** This entry first said the share process has macOS's 256:
+  it inherits the daemon's limit, which the daemon raises at its start to min(hard limit,
+  `kern.maxfilesperproc`), 245,760 here. 256 is a share process's only where the hard
+  limit is that low or the daemon did not start it. At 245,760 the walk passes, and a
+  guest pins as many of the host's table instead; see M134, which acts on both.
 - **Method.** `virtio-fs-audit --case fds --dirs D --limit L`: the process's soft
   RLIMIT_NOFILE set to L, then a LOOKUP of each of D directories through
   `Server::handle`, none forgotten. Apple M5 Max, macOS 26.4.1, revision ce225fa,
@@ -4491,12 +4496,9 @@ revision before comparing a changed API/implementation.
 - **Results.** Limit 256: 252 of 600 found, then EMFILE (24). Limit 1024: 1,020 of 3,000,
   then EMFILE.
 - **Consequence.** A guest that walks more directories than its share process may hold
-  descriptors (a `find` over a tree with a few hundred directories, a `node_modules`) is
-  told "Too many open files", and a hostile one can put its own shares there at will.
-  Open: raising the share process's soft limit to its hard one (Go's runtime does so for
-  every program since 1.19; virtiofsd raises it too) lets a guest pin that many kernel
-  file objects instead; letting directories go after a time keeps fewer, but a directory
-  reopened by name loses what holding it gives, its identity through renames.
+  descriptors is told "Too many open files", and a hostile one can put its own shares
+  there at will; at the limit the daemon gives it, one guest pins half of this host's
+  table and two all of it. Done in M134.
 
 ### M133. What looking before opening a node's attributes costs (audit V08)
 
@@ -5468,3 +5470,55 @@ revision before comparing a changed API/implementation.
   went both ways from run to run, and the one tested (run 3's p99) was not resolved from
   zero. Open: a take whose release costs a frame nothing; x86_64's copies (SSE2 moves) on
   x86_64 hardware.
+
+### M136. A share's descriptors, bounded: what it holds, and what a walk costs (audit V09)
+
+- **Question.** A share's server now keeps a directory by its path and identity, its
+  descriptor in an LRU of a derived size, and opens it again along its path when it is let
+  go. What size does the derivation give, does the server keep to it, and what do a walk
+  and a reopen cost?
+- **The derivation** (`fs::server::Limits::budget`): the process's limit, raised as Go's
+  runtime raises its own (min(hard limit, `kern.maxfilesperproc`) on macOS, the hard limit
+  on Linux); less what it holds besides (its standard streams, connections and shared
+  directories, counted from /dev/fd once they are open); less `REQUEST_FDS` a server, the
+  most a request holds past its room; and no more than a share process's part of the
+  system's table (`kern.maxfiles`, `fs.file-max`, less what is open) with as many share
+  processes as runs the user may start, two processes a run (`kern.maxprocperuid`,
+  Linux's thread limits). This host: 245,760, 491,520 with 10,754 open, 10,666 processes:
+  90 a share process, the table binding (`a_budget_is_reckoned_from_the_hosts_limits`). A
+  Linux host whose table systemd leaves unbounded gets its process's limit less what it
+  holds.
+- **Its basis, pinned.** `tests/fs_dir_budget.rs` sets its process's limit to what it holds
+  and 24 more, then has a guest walk 584 directories, work in ones let go long since, and
+  fill its handles: every request is answered (it failed EMFILE at directory 25 before),
+  OPEN and OPENDIR are refused EMFILE at the budget and nothing else is, and the worst
+  request, a RENAME between two directories let go with the server at its room, needs all
+  of `REQUEST_FDS` = 3: at 2 the kernel refuses it (mutation-checked). What a request holds
+  at most: the first directory, while the second's path is walked a component at a time
+  (two at once; one on Linux, where openat2 walks it).
+- **Method.** `virtio-fs-audit`: `--case mktree` made a tree of 100,000 directories (ten
+  under each, five levels); `run.py --cases walk --runs 6` walked it as `find` does, each
+  directory looked up, opened, listed in pages of 4096 bytes and released, depth first,
+  each visit timed, old (ebc464a's server, a descriptor a directory until forgotten,
+  245,760 of room) and new (da05f52, its budget of 90) alternating in fresh processes;
+  `reopen.py --runs 10` timed a GETATTR of a directory held, and of one let go between
+  requests (room for one, so no ancestor held either) and opened again from the root, at
+  depths 1, 4 and 16. Apple M5 Max, macOS 26.4.1, 2026-10-09, load average 58.
+- **Results.** Microseconds; n / p50 / p90 / p99 / max, pooled, and the paired difference
+  of the processes' medians with a bootstrap 95% interval:
+
+  | case | old or held | new or let go | difference |
+  |---|---|---|---|
+  | walk, a directory's visit | 600000 / 34.83 / 64.62 / 433.46 / 314972 | 600000 / 37.25 / 67.96 / 346.46 / 247113 | +2.12 [0.92, 8.38] |
+  | reopen, depth 1 | 20000 / 7.62 / 11.04 / 36.62 / 5575 | 20000 / 16.88 / 21.79 / 110.50 / 11505 | +8.83 [8.50, 10.21] |
+  | reopen, depth 4 | 20000 / 8.08 / 10.71 / 40.46 / 6199 | 20000 / 42.75 / 63.00 / 1059.42 / 17718 | +34.42 [29.42, 37.71] |
+  | reopen, depth 16 | 20000 / 10.38 / 14.83 / 46.54 / 14067 | 20000 / 176.29 / 324.04 / 7362.08 / 81752 | +165.50 [164.00, 170.54] |
+
+  - A walk took 6.5 s new; the old server held 100,000 descriptors at its end, the new 90.
+- **Consequence.** A guest walks any tree within 90 descriptors, at 2.1 µs a directory
+  more (6%): its directory is opened when first used, not at its lookup, checked by an
+  fstat, and one let go closed. A reopen walks its path from the nearest directory held,
+  8 to 10 µs a component on macOS when none above it is held, which the LRU makes rare. A
+  guest may hold 90 files and directories open across its shares on this host, past which
+  OPEN and OPENDIR answer EMFILE: the table's part of the share processes the user may
+  start. Linux's openat2, one call for a whole path, is unmeasured here.
