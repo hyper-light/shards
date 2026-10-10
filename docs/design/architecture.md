@@ -3412,6 +3412,53 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode
 waits on the user.
 
+### D119. `--network container:NAME`: a container joins another's microVM (in progress)
+
+Docker's container network mode gives a container another's network namespace and
+nothing else of it (moby docker-v29.3.1 daemon/oci_linux.go: the joiner's netns is
+`/proc/<pid>/ns/net` of the other's process; its mount, PID, IPC, UTS and cgroup
+namespaces are its own). It takes the other's hostname and domain name, and its
+`/etc/hostname`, `/etc/hosts` and `/etc/resolv.conf`, the same files
+(daemon/container_operations.go initializeNetworking, initializeNetworkingPaths). A
+microVM's network namespace cannot be shared with another microVM, so the joiner runs in
+the provider's: its guest init starts the joiner as a container of its own (its image its
+root, its own mount, PID, IPC and UTS namespaces and cgroup) in the network namespace the
+provider's command runs in. The microVM's boundary still holds the host; between the two,
+the boundary is a container's, which is what the mode asks for.
+
+- **What dockerd checks, held to its words.** As the container is made
+  (daemon/internal/runconfig/hostconfig.go validateNetContainerMode, in order): `container`
+  with no name ("invalid network mode: invalid container format container:<name|id>"),
+  then `--hostname`, `--link`, `--dns`, `--add-host`, `-p`/`-P`, `--expose`, each
+  "conflicting options: ..." in dockerd's words. As it starts (getNetworkedContainer): no
+  such container ("joining network namespace of container: No such container: X"), itself
+  ("cannot join own network namespace"), one not running ("cannot join network namespace
+  of a non running container: container X is STATE"), one restarting. `network connect`
+  of a joiner: "container sharing network namespace with another container or host cannot
+  be connected to any other network". dockerd lets the provider be stopped or removed
+  while joiners run (daemon/delete.go checks no dependents).
+- **The joiner's image, on a join disk.** A microVM has no PCI and no hotplug (virtio-mmio
+  alone, its devices in the device tree or ACPI), so every microVM carries a read-only
+  virtio-blk join disk, empty until a container joins, as Firecracker attaches a drive's
+  file after boot (its `PATCH /drives` rescan). The VM process appends the joiner's EROFS
+  file as a range of the disk and raises its capacity; the guest's virtio_blk reads the
+  new capacity on the config-change interrupt (Linux drivers/block/virtio_blk.c,
+  virtblk_config_changed_work). Init maps the range with a loop device at its offset
+  (`CONFIG_BLK_DEV_LOOP`, in the guest kernel's base config) and mounts it as EROFS,
+  under a tmpfs overlay as a run's root is. One disk serves every joiner a microVM has,
+  each its own range: no count of slots to run out of.
+- **Its cost to every microVM, measured first** (PM M168): a restore with empty
+  file-backed disks paid about 40 to 70 µs for each, 16 at once resolved from zero
+  (+642 µs [+226, +994], +1,122 [+790, +1,440]), one not (+95 µs [−304, +383], +15
+  [−160, +299]); each reopens its file through the grants broker, which a join disk with
+  no file does not. The join disk itself is to be measured as built.
+- **Its life.** The joiner is a container of its own: its record, log, exit code, `stop`,
+  `kill`, `wait`, `rm`, `exec`, `top`, `inspect` (its NetworkMode as asked, no networks of
+  its own). Unlike Docker, a provider's command ending leaves its microVM running while
+  joiners run, their network with it; in Docker the joiner keeps a namespace whose
+  interfaces went with the provider's sandbox, loopback alone. The microVM ends with its
+  last container.
+
 ### D117. Templates no VM process can forge, and VM starts the host has not admitted
 
 A template is saved by a VM process into the directory it is granted, and every later run

@@ -5587,3 +5587,35 @@ revision before comparing a changed API/implementation.
   compiles were nearly all of it (traced above); the gate's load was not recorded. The
   setup now takes milliseconds. What else a first run's 125 to 136 ms holds is unmeasured
   here.
+
+### M168. What an empty disk costs a microVM's restore (D119)
+
+- **Question.** `--network container:NAME` puts a joiner's image on a join disk that every
+  microVM carries, empty until a container joins (D119). What does a restore pay for a
+  disk it carries?
+- **Method.** `docs/research/measurements/join-disk/restore.py`: a template saved from
+  alpine:3.20's EROFS image for each count of empty (0-byte) read-only virtio-blk disks,
+  then `shards restore TEMPLATE -- /bin/true` 200 times each, the counts interleaved, their
+  order rotating each round; wall clock spawn to reap, and the timing line's
+  `released_us` (the VM process's start to its vCPUs' release). Release build of da38223.
+  Apple M5 Max, macOS 26.4.1, 2026-10-10, load average 73 to 80.
+- **Results.** µs, n / p50 / p90 / p99 / max, and the change against no disk, paired by
+  round, median [95%]:
+
+  | round | disks | released | less no disk |
+  |---|---|---|---|
+  | 1 | 0 | 200 / 4,925 / 22,033 / 41,737 / 42,573 | |
+  | 1 | 1 | 200 / 5,058 / 23,241 / 41,798 / 42,625 | +95 [−304, +383] |
+  | 1 | 4 | 200 / 4,881 / 28,657 / 56,198 / 71,374 | +117 [−320, +369] |
+  | 1 | 16 | 200 / 5,444 / 22,538 / 52,826 / 59,929 | +642 [+226, +994] |
+  | 2 | 0 | 200 / 5,051 / 19,659 / 50,869 / 108,105 | |
+  | 2 | 1 | 200 / 5,241 / 24,865 / 191,472 / 249,620 | +15 [−160, +299] |
+  | 2 | 16 | 200 / 6,539 / 29,605 / 102,775 / 259,328 | +1,122 [+790, +1,440] |
+
+  Wall clock, p50 37 to 39 ms throughout, no difference resolved but 16 disks' in round
+  2 (+2,507 µs [+210, +4,445]).
+- **Consequence.** A file-backed disk costs a restore about 40 to 70 µs, resolved only
+  where there are 16; one is within the noise at this load. Each is a file the restore
+  reopens through the grants broker on macOS; a join disk has no file until a container
+  joins, so this bounds its cost from above. The join disk as built is to be measured
+  against none.
