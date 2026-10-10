@@ -10,7 +10,7 @@
  {"name": "object-comprehension", "head": "package docker\n\nx := ", "open": "{\"a\": y | y := ", "inner": "1", "close": "}", "tail": "\n\ndecision := count(json.marshal(x))\n"},
  {"name": "negated-comprehension", "head": "package docker\n\ndecision := ", "open": "count([1 | not ", "inner": "false", "close": "])", "tail": "\n"},
  {"name": "ref", "head": "package docker\n\ndecision := ", "open": "input[", "inner": "\"a\"", "close": "]", "tail": "\n"},
- {"name": "every", "head": "package docker\n\ndecision if {\n\t", "open": "every x in [1] { ", "inner": "true", "close": " }", "tail": "\n}\n"},
+ {"name": "every", "answer": {"error": "1 error occurred: policy.rego:4: rego_compile_error: declared var x unused"}, "head": "package docker\n\ndecision if {\n\t", "open": "every x in [1] { ", "inner": "true", "close": " }", "tail": "\n}\n"},
  {"name": "plus", "head": "package docker\n\ndecision := ", "inner": "1", "sep": " + ", "tail": "\n"},
  {"name": "times", "head": "package docker\n\ndecision := ", "inner": "1", "sep": " * ", "tail": "\n"},
  {"name": "union", "head": "package docker\n\ndecision := count(", "inner": "{1}", "sep": " | ", "tail": ")\n"},
