@@ -789,6 +789,7 @@ mod tests {
             default_platform: platform.clone(),
             debug: false,
             default_policy: false,
+            remote: None,
         })
         .unwrap()
         .unwrap();
@@ -801,7 +802,8 @@ mod tests {
         show(
             "compile the policy",
             rounds(200, &mut || {
-                policies.list[0].compile().unwrap();
+                let (ask, _said) = std::sync::mpsc::channel();
+                policies.list[0].compile(&ask).unwrap();
             }),
         );
         show(

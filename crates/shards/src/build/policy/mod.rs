@@ -71,6 +71,9 @@ pub struct FileSpec {
 pub struct Opt {
     pub files: Vec<FileSpec>,
     pub context_dir: Option<PathBuf>,
+    /// The build's context is a remote one (D111): its names, but `cwd://` ones, are read
+    /// in it (`policyOpt.ContextState`).
+    pub remote: bool,
     pub strict: bool,
     pub log_level: Option<LogLevel>,
     /// Not asked for its caps as the build begins (the default policy's).
@@ -130,6 +133,7 @@ pub fn with_config(default: Opt, configs: &[PolicyConfig]) -> Result<Vec<Opt>, S
                 })
                 .collect(),
             context_dir: default.context_dir.clone(),
+            remote: default.remote,
             ..Opt::default()
         };
         for c in [&last, cfg] {
@@ -150,7 +154,32 @@ pub fn with_config(default: Opt, configs: &[PolicyConfig]) -> Result<Vec<Opt>, S
 #[derive(Debug, Clone)]
 struct Fs {
     context_dir: Option<PathBuf>,
+    /// The build's context is a remote one: its names are read by the build's thread.
+    remote: bool,
     cwd: PathBuf,
+}
+
+/// Where [`Fs::place`] finds a name: a root of the host's and the name in it, or the
+/// remote context and the name there.
+enum Place {
+    Local(PathBuf, String),
+    Remote(String),
+}
+
+/// A read of the remote context (D111), by the build's thread: the file, or none there.
+pub type ReadRemote<'r> = &'r dyn Fn(&str) -> Result<Option<Vec<u8>>, String>;
+
+/// normalizeRemotePolicyPath: a name made relative to the remote context's root, `..`
+/// never above it; none for the root itself.
+fn remote_name(raw: &str) -> Result<String, String> {
+    let joined = clean(&format!("/{raw}"));
+    match joined.trim_start_matches('/') {
+        "" | "." => Err(format!(
+            "invalid remote policy filename {}",
+            shards_cmdline::go::quote(raw)
+        )),
+        name => Ok(name.to_string()),
+    }
 }
 
 /// Why a policy file could not be had: it is not there, or reading it failed.
@@ -163,7 +192,7 @@ impl Fs {
     /// The root a name is read in and the name in it (policyPathFSRef.resolve): a
     /// `cwd://` name in the working directory; any other in the context, an absolute one
     /// inside the context as its path there (normalizeLocalPolicyPath).
-    fn place(&self, name: &str) -> Result<Option<(PathBuf, String)>, String> {
+    fn place(&self, name: &str) -> Result<Option<Place>, String> {
         if name.is_empty() {
             return Err("policy filename is empty".into());
         }
@@ -174,7 +203,11 @@ impl Fs {
                     shards_cmdline::go::quote(name)
                 ));
             }
-            return Ok(Some((self.cwd.clone(), clean(v))));
+            return Ok(Some(Place::Local(self.cwd.clone(), clean(v))));
+        }
+        // A remote context's names are read in it (policyPathFSRef.resolve).
+        if self.remote {
+            return remote_name(name).map(|n| Some(Place::Remote(n)));
         }
         let Some(context) = &self.context_dir else {
             return Ok(None);
@@ -192,13 +225,27 @@ impl Fs {
             Some(rel) => rel,
             None => clean(name),
         };
-        Ok(Some((context.clone(), target)))
+        Ok(Some(Place::Local(context.clone(), target)))
     }
 
-    /// loadPolicyData: the file, found as `os.Root.FS()` finds it.
-    fn read(&self, name: &str) -> Result<Vec<u8>, Missing> {
-        let Some((root, target)) = self.place(name).map_err(Missing::Failed)? else {
-            return Err(Missing::NotFound);
+    /// loadPolicyData: the file, found as `os.Root.FS()` finds it, or in the remote
+    /// context as the build's thread reads it there (`remote`).
+    fn read(&self, name: &str, remote: ReadRemote<'_>) -> Result<Vec<u8>, Missing> {
+        // loadPolicyData's Stat resolves the name first: its error is the stat's.
+        let placed = self
+            .place(name)
+            .map_err(|e| Missing::Failed(format!("failed to stat policy file {name}: {e}")))?;
+        let (root, target) = match placed {
+            None => return Err(Missing::NotFound),
+            Some(Place::Local(root, target)) => (root, target),
+            // The build's thread says itself where no file is there.
+            Some(Place::Remote(at)) => {
+                return match remote(&at) {
+                    Ok(Some(data)) => Ok(data),
+                    Ok(None) => Err(Missing::NotFound),
+                    Err(e) => Err(Missing::Failed(format!("failed to read policy file {name}: {e}"))),
+                };
+            }
         };
         match shards_archive::read_in_root(root.as_os_str().as_encoded_bytes(), &target) {
             Ok(data) => Ok(data),
@@ -558,7 +605,7 @@ impl Funcs<'_> {
 
     /// Policy.readFile: the file of the policy's FS, its first `limit` bytes.
     fn read_file(&self, path: &str, limit: usize) -> Result<Vec<u8>, HostError> {
-        let mut data = self.fs.read(path).map_err(|e| {
+        let mut data = self.fs.read(path, &|n| ask_read(self.ask, n)).map_err(|e| {
             HostError::Undefined(match e {
                 Missing::NotFound => format!(
                     "failed opening file {}: open {path}: file does not exist",
@@ -590,13 +637,16 @@ impl Host for Funcs<'_> {
                         args.first().map_or("nil", Value::type_name)
                     )));
                 };
-                let mut data = self.fs.read(path).map_err(|e| match e {
-                    Missing::NotFound => undefined(format!(
-                        "failed opening file {}: open {path}: file does not exist",
-                        shards_cmdline::go::quote(path)
-                    )),
-                    Missing::Failed(m) => undefined(m),
-                })?;
+                let mut data = self
+                    .fs
+                    .read(path, &|n| ask_read(self.ask, n))
+                    .map_err(|e| match e {
+                        Missing::NotFound => undefined(format!(
+                            "failed opening file {}: open {path}: file does not exist",
+                            shards_cmdline::go::quote(path)
+                        )),
+                        Missing::Failed(m) => undefined(m),
+                    })?;
                 data.truncate(4 << 20);
                 let text = String::from_utf8(data).map_err(|e| {
                     undefined(format!(
@@ -884,7 +934,7 @@ impl Host for Funcs<'_> {
 impl Policy {
     /// Parses its modules, and those they import from its FS (WithModuleLoader), and
     /// compiles them as rego.New does: OPA's own errors, as ast.Errors prints them.
-    fn compile(&self) -> Result<Program, String> {
+    fn compile(&self, ask: &mpsc::Sender<Ask>) -> Result<Program, String> {
         let mut modules = BTreeMap::new();
         let mut errors = Vec::new();
         for (file, src) in std::iter::once((BUILTIN_MODULE.0, BUILTIN_MODULE.1))
@@ -901,7 +951,9 @@ impl Policy {
             return Err(errors_text(&errors));
         }
         let fs = self.fs.clone();
-        let loader: shards_rego::compile::Loader = Box::new(move |resolved| import_modules(&fs, resolved));
+        let ask = ask.clone();
+        let loader: shards_rego::compile::Loader =
+            Box::new(move |resolved| import_modules(&fs, &|n| ask_read(&ask, n), resolved));
         let mut comp = Compiler::new(modules, functions(), true).with_loader(loader);
         comp.compile();
         if !comp.errors.is_empty() {
@@ -924,7 +976,7 @@ impl Policy {
             runtime: Vec::new(),
             checksum: None,
         };
-        let program = match self.compile() {
+        let program = match self.compile(ask) {
             Ok(p) => p,
             Err(e) => {
                 out.decision = Err(e);
@@ -1011,7 +1063,11 @@ fn errors_text(errors: &[shards_rego::parser::Error]) -> String {
 /// buildx's module loader: each module a `data.` import names and the set lacks, read
 /// from the policy's FS as the import's path, `/`-separated, with `.rego`, and placed
 /// in the import's package.
-fn import_modules(fs: &Fs, resolved: &BTreeMap<String, Module>) -> Result<BTreeMap<String, Module>, String> {
+fn import_modules(
+    fs: &Fs,
+    remote: ReadRemote<'_>,
+    resolved: &BTreeMap<String, Module>,
+) -> Result<BTreeMap<String, Module>, String> {
     let mut out = BTreeMap::new();
     for (k, m) in resolved {
         for imp in &m.imports {
@@ -1023,7 +1079,7 @@ fn import_modules(fs: &Fs, resolved: &BTreeMap<String, Module>) -> Result<BTreeM
             if resolved.contains_key(&file) || out.contains_key(&file) {
                 continue;
             }
-            let data = match fs.read(&file) {
+            let data = match fs.read(&file, remote) {
                 Ok(d) => d,
                 Err(Missing::NotFound) => {
                     let place = fs.place(&file).ok().flatten();
@@ -1238,6 +1294,12 @@ pub trait Log {
     /// The content of `url`, asked for with `accept`, fetched as a step named `name`;
     /// the error as the read of the solved source words it.
     fn fetch(&self, name: &str, url: &str, accept: Option<&str>) -> Result<Vec<u8>, String>;
+
+    /// The file at `name` of the build's remote context (D111), or none there; buildx's
+    /// words where the build has none (newPolicyPathFS).
+    fn read(&self, _name: &str) -> Result<Option<Vec<u8>>, String> {
+        Err("policy resolver is not configured".into())
+    }
 }
 
 /// `policy eval --print`'s input of `source` for `platform`, `fields` resolved through
@@ -1268,6 +1330,22 @@ enum Ask {
         accept: Option<&'static str>,
         reply: mpsc::Sender<Result<Vec<u8>, String>>,
     },
+    /// A file of the build's remote context (D111).
+    Read {
+        name: String,
+        reply: mpsc::Sender<Result<Option<Vec<u8>>, String>>,
+    },
+}
+
+/// A file of the build's remote context, read by the build's thread ([`Ask::Read`]).
+fn ask_read(ask: &mpsc::Sender<Ask>, name: &str) -> Result<Option<Vec<u8>>, String> {
+    let (reply, answer) = mpsc::channel();
+    ask.send(Ask::Read {
+        name: name.to_string(),
+        reply,
+    })
+    .map_err(|_| "the build has ended".to_string())?;
+    answer.recv().map_err(|_| "the build has ended".to_string())?
 }
 
 /// The policies a build heeds, and how much each logs.
@@ -1292,6 +1370,8 @@ pub struct Setup<'a> {
     pub debug: bool,
     /// Whether buildx's default policy may come first (a build's; not `policy eval`'s).
     pub default_policy: bool,
+    /// The build's remote context, its files read as the build's thread reads them (D111).
+    pub remote: Option<ReadRemote<'a>>,
 }
 
 impl Policies {
@@ -1323,13 +1403,18 @@ impl Policies {
         for opt in opts {
             let fs = Fs {
                 context_dir: opt.context_dir.clone(),
+                remote: opt.remote,
                 cwd: setup.cwd.clone(),
             };
+            let none = |_: &str| -> Result<Option<Vec<u8>>, String> {
+                Err("policy resolver is not configured".into())
+            };
+            let remote = setup.remote.unwrap_or(&none);
             let mut files = Vec::new();
             for f in &opt.files {
                 let data = match &f.data {
                     Some(d) => d.clone(),
-                    None => match fs.read(&f.filename) {
+                    None => match fs.read(&f.filename, remote) {
                         Ok(d) => d,
                         Err(Missing::NotFound) if f.optional => continue,
                         Err(Missing::NotFound) => {
@@ -1553,6 +1638,9 @@ impl Policies {
                 reply,
             } => {
                 let _ = reply.send(log.fetch(&name, &url, accept));
+            }
+            Ask::Read { name, reply } => {
+                let _ = reply.send(log.read(&name));
             }
         })
     }
@@ -2015,6 +2103,7 @@ mod tests {
             default_platform: Platform::new("linux", "arm64"),
             debug: false,
             default_policy: true,
+            remote: None,
         })
         .unwrap()
         .unwrap()

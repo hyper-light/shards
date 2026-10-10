@@ -6781,3 +6781,152 @@ fn microvms_on_a_network_reach_one_another_by_name() {
         "Deleted Networks:\nspare\n\n"
     );
 }
+
+/// An image's config as Docker 29.3.1 reads it (shards_image::config, held to Go by its
+/// testdata/image-config.json): a key matches its field exactly or else folded, the last of
+/// those that match winning, so `"User":"root","user":"app"` runs as app, as Docker runs it.
+/// One Go reads into no DockerOCIImage loads, as Docker loads it, and its run, create, tag
+/// and inspect are refused in Docker's words; its history is read as Docker's history reads
+/// its own part of it (each answer measured from Docker 29.3.1, its name ours).
+#[test]
+fn configs_are_read_as_docker_reads_them() {
+    if cannot_run_vms() {
+        return;
+    }
+    let home = TempDir::new("containers-config-read");
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let (_, blobs) = common::test_image_with(Some(b"config-read"));
+    let (config, layer) = (String::from_utf8(blobs[0].clone()).unwrap(), &blobs[1]);
+    assert!(config.contains(r#""User":"app""#), "{config}");
+    let load = |name: &str, config: &str| {
+        let manifest =
+            format!(r#"[{{"Config":"cfg.json","RepoTags":["{name}"],"Layers":["abc/layer.tar"]}}]"#);
+        let archive = common::tar(&[
+            ("cfg.json", 0o644, 0, Some(config.as_bytes())),
+            ("abc", 0o755, 0, None),
+            ("abc/layer.tar", 0o644, 0, Some(layer.as_slice())),
+            ("manifest.json", 0o644, 0, Some(manifest.as_bytes())),
+        ]);
+        let at = home.join(format!("{}.tar", name.replace(':', "-")));
+        std::fs::write(&at, archive).unwrap();
+        let loaded = shards(&["load", "-i", at.to_str().unwrap()]);
+        assert_eq!(
+            (loaded.status, loaded.stdout.as_str()),
+            (Some(0), format!("Loaded image: {name}\n").as_str()),
+            "{loaded}"
+        );
+    };
+    load(
+        "folded:1",
+        &config.replacen(r#""User":"app""#, r#""User":"root","user":"app""#, 1),
+    );
+    let ran = run_in(&home, "folded:1", &["--rm"], &["report"]);
+    assert_eq!(ran.status, Some(0), "{ran}");
+    assert!(ran.stdout.lines().any(|l| l == "uid 1000"), "{ran}");
+    // A container made from it holds its config as Go read it.
+    let made = shards(&["create", "--name", "folded-c", "folded:1"]);
+    assert_eq!(made.status, Some(0), "{made}");
+    let user = shards(&["inspect", "--format", "{{.Config.User}}", "folded-c"]);
+    assert_eq!((user.status, user.stdout.as_str()), (Some(0), "app\n"), "{user}");
+    // A config with no time Go reads lists at Go's zero time, as moby's summary has it,
+    // which the CLI says was made at no time since (its CreatedAt is in the local zone).
+    let listed = shards(&["images", "--format", "{{.CreatedSince}}|", "folded"]);
+    assert_eq!(
+        (listed.status, listed.stdout.as_str()),
+        (Some(0), "|\n"),
+        "{listed}"
+    );
+
+    load(
+        "badhc:1",
+        &config.replacen(r#""User":"app""#, r#""User":"app","Healthcheck":5"#, 1),
+    );
+    load("badhist:1", &config.replacen('{', r#"{"history":5,"#, 1));
+    let hc = "could not deserialize image config: json: cannot unmarshal number into Go struct field DockerOCIImageConfig.config.DockerOCIImageConfigExt.Healthcheck of type v1.HealthcheckConfig";
+    let ran = run_in(&home, "badhc:1", &["--rm"], &["report"]);
+    assert_eq!(
+        (ran.status, ran.stdout.as_str(), ran.stderr.as_str()),
+        (
+            Some(125),
+            "",
+            format!(
+                "shards: Error response from daemon: {hc}\n\nRun 'shards run --help' for more information\n"
+            )
+            .as_str()
+        ),
+        "{ran}"
+    );
+    for args in [&["create", "badhc:1"][..], &["tag", "badhc:1", "other:1"]] {
+        let said = shards(args);
+        assert_eq!(
+            (said.status, said.stderr.as_str()),
+            (Some(1), format!("Error response from daemon: {hc}\n").as_str()),
+            "{args:?}: {said}"
+        );
+    }
+    for args in [&["image", "inspect", "badhc:1"][..], &["inspect", "badhc:1"]] {
+        let said = shards(args);
+        assert_eq!(
+            (said.status, said.stdout.as_str(), said.stderr.as_str()),
+            (
+                Some(1),
+                "[]\n",
+                format!("Error response from daemon: failed to read image config: {hc}\n").as_str()
+            ),
+            "{args:?}: {said}"
+        );
+    }
+    // `history` reads the rootfs and history alone: the healthcheck is not its to read.
+    let history = shards(&["history", "-q", "badhc:1"]);
+    assert_eq!(history.status, Some(0), "{history}");
+    let history = shards(&["history", "badhist:1"]);
+    assert_eq!(
+        (history.status, history.stderr.as_str()),
+        (
+            Some(1),
+            "Error response from daemon: could not deserialize image config: json: cannot unmarshal number into Go struct field .history of type []v1.History\n"
+        ),
+        "{history}"
+    );
+    let ran = run_in(&home, "badhist:1", &["--rm"], &["report"]);
+    assert_eq!(
+        (ran.status, ran.stderr.as_str()),
+        (
+            Some(125),
+            "shards: Error response from daemon: could not deserialize image config: json: cannot unmarshal number into Go struct field DockerOCIImage.Image.history of type []v1.History\n\nRun 'shards run --help' for more information\n"
+        ),
+        "{ran}"
+    );
+
+    // A commit keeps what Go read of its image's config (daemon/containerd
+    // image_commit.go): its history under a folded key; and its container's ports as
+    // network.ParsePort wrote them when it was made.
+    load(
+        "based:1",
+        &config
+            .replacen('{', r#"{"History":[{"Created_By":"based step"}],"#, 1)
+            .replacen(
+                r#""User":"app""#,
+                r#""User":"app","ExposedPorts":{"80/TCP":{}}"#,
+                1,
+            ),
+    );
+    let made = shards(&["create", "--name", "to-commit", "based:1"]);
+    assert_eq!(made.status, Some(0), "{made}");
+    let committed = shards(&["commit", "to-commit", "committed:1"]);
+    assert_eq!(committed.status, Some(0), "{committed}");
+    let history = shards(&["history", "--format", "{{.CreatedBy}}", "committed:1"]);
+    assert!(history.stdout.lines().any(|l| l == "based step"), "{history}");
+    let ports = shards(&[
+        "image",
+        "inspect",
+        "--format",
+        "{{json .Config.ExposedPorts}}",
+        "committed:1",
+    ]);
+    assert_eq!(
+        (ports.status, ports.stdout.as_str()),
+        (Some(0), "{\"80/tcp\":{}}\n"),
+        "{ports}"
+    );
+}

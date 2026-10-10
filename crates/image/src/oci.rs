@@ -114,51 +114,41 @@ impl Manifest {
     }
 }
 
-/// An image config: the platform, the runtime defaults, and the layers' DiffIDs.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+/// An image config: the platform, the runtime defaults, and the layers' DiffIDs, as Docker
+/// reads them ([`crate::config`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImageConfig {
-    #[serde(default)]
     pub architecture: String,
-    #[serde(default)]
     pub os: String,
-    #[serde(default)]
     pub variant: Option<String>,
-    /// When it was made, as RFC 3339 (image-spec config.md).
-    #[serde(default)]
+    /// When it was made, as Docker writes it (`Time.Format(time.RFC3339Nano)`).
     pub created: Option<String>,
-    #[serde(default)]
     pub config: Option<RunConfig>,
     pub rootfs: RootFs,
+    /// What running, creating, tagging or inspecting the image fails with, where it does:
+    /// Go's error reading the config into a `DockerOCIImage` (daemon/containerd
+    /// `GetImage`), which Docker says after `could not deserialize image config: `.
+    pub run_error: Option<String>,
 }
 
-/// The config's defaults for a container, in Docker's field names.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
-#[serde(rename_all = "PascalCase")]
+/// The config's defaults for a container, as Docker's container config takes them from
+/// the image's (daemon/containerd imagespec.go): `None` where Go's is nil or empty.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct RunConfig {
-    #[serde(default)]
     pub user: Option<String>,
-    #[serde(default)]
     pub env: Option<Vec<String>>,
-    #[serde(default)]
     pub entrypoint: Option<Vec<String>>,
-    #[serde(default)]
     pub cmd: Option<Vec<String>>,
-    #[serde(default)]
     pub working_dir: Option<String>,
-    #[serde(default)]
     pub stop_signal: Option<String>,
-    #[serde(default)]
     pub healthcheck: Option<HealthConfig>,
     /// The shell `CMD-SHELL` health checks run in (the image's `SHELL`).
-    #[serde(default)]
     pub shell: Option<Vec<String>>,
-    /// Its `EXPOSE`d ports, `80/tcp` and the like: the keys of the config's object.
-    #[serde(default, deserialize_with = "keys")]
+    /// Its `EXPOSE`d ports as a container's config keeps them: those `network.ParsePort`
+    /// takes, `80/tcp` and the like, each once, in order.
     pub exposed_ports: Vec<String>,
-    /// Its `VOLUME`s: the keys of the config's object.
-    #[serde(default, deserialize_with = "keys")]
+    /// Its `VOLUME`s, in order.
     pub volumes: Vec<String>,
-    #[serde(default)]
     pub labels: Option<std::collections::BTreeMap<String, String>>,
 }
 
@@ -168,39 +158,69 @@ fn list<'de, D: serde::Deserializer<'de>, T: serde::Deserialize<'de>>(d: D) -> R
     Ok(v.unwrap_or_default())
 }
 
-/// An object's keys, or none for `null`.
-fn keys<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
-    let map: Option<std::collections::BTreeMap<String, serde::de::IgnoredAny>> =
-        serde::Deserialize::deserialize(d)?;
-    Ok(map.map(|m| m.into_keys().collect()).unwrap_or_default())
-}
-
 /// A `HEALTHCHECK` as an image config holds it: its test, then durations in nanoseconds,
 /// each 0 for "not set" (moby api/types/container HealthConfig).
-#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct HealthConfig {
-    #[serde(default)]
     pub test: Option<Vec<String>>,
-    #[serde(default)]
     pub interval: i64,
-    #[serde(default)]
     pub timeout: i64,
-    #[serde(default)]
     pub start_period: i64,
-    #[serde(default)]
     pub start_interval: i64,
-    #[serde(default)]
     pub retries: i64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RootFs {
-    #[serde(rename = "type")]
     pub kind: String,
-    /// `null` where an image has no layers, as BuildKit writes it.
-    #[serde(default, deserialize_with = "list")]
+    /// Empty where Go's is nil (`null`, as BuildKit writes an image without layers).
     pub diff_ids: Vec<String>,
+}
+
+impl ImageConfig {
+    /// The image config `image` is, `run_error` what Docker fails with running it.
+    fn new(image: crate::config::Image, run_error: Option<String>) -> ImageConfig {
+        let some = |s: String| (!s.is_empty()).then_some(s);
+        let c = image.config;
+        ImageConfig {
+            architecture: image.architecture,
+            os: image.os,
+            variant: some(image.variant),
+            created: image.created.map(|t| t.format_rfc3339_nano()),
+            config: Some(RunConfig {
+                user: some(c.user),
+                env: c.env,
+                entrypoint: c.entrypoint,
+                cmd: c.cmd,
+                working_dir: some(c.working_dir),
+                stop_signal: some(c.stop_signal),
+                healthcheck: c.healthcheck.map(|h| HealthConfig {
+                    test: h.test,
+                    interval: h.interval,
+                    timeout: h.timeout,
+                    start_period: h.start_period,
+                    start_interval: h.start_interval,
+                    retries: h.retries,
+                }),
+                shell: c.shell,
+                exposed_ports: c
+                    .exposed_ports
+                    .iter()
+                    .flatten()
+                    .filter_map(|p| crate::config::parse_port(p))
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .into_iter()
+                    .collect(),
+                volumes: c.volumes.into_iter().flatten().collect(),
+                labels: c.labels,
+            }),
+            rootfs: RootFs {
+                kind: image.rootfs.kind,
+                diff_ids: image.rootfs.diff_ids.unwrap_or_default(),
+            },
+            run_error,
+        }
+    }
 }
 
 /// What a manifest document turned out to be.
@@ -264,10 +284,16 @@ pub fn parse_document(bytes: &[u8], content_type: &str) -> Result<Document, Erro
     parsed.map_err(|e| Error(format!("manifest: {e}")))
 }
 
-/// Parses an image config, which must describe layers (config.md).
+/// Parses an image config, which must describe layers (config.md), as a pull or a load
+/// takes it: one Go reads into no type is no config, but one only running fails on is
+/// stored, as Docker 29.3.1 stores it (measured: `load` and `pull` of a config whose
+/// `history` is a number, or whose `created` is no date, succeed, and `run`, `create`,
+/// `tag` and `inspect` fail); what running it fails with is kept
+/// ([`ImageConfig::run_error`]).
 pub fn parse_config(bytes: &[u8]) -> Result<ImageConfig, Error> {
-    let config: ImageConfig =
-        serde_json::from_slice(bytes).map_err(|e| Error(format!("image config: {e}")))?;
+    let read = crate::config::Read::new(bytes).map_err(|e| Error(format!("image config: {e}")))?;
+    let run_error = read.error(crate::config::As::Docker);
+    let config = ImageConfig::new(read.into_image(), run_error);
     if config.rootfs.kind != "layers" {
         return bad(format!("rootfs type {:?} is not \"layers\"", config.rootfs.kind));
     }
@@ -419,6 +445,218 @@ mod tests {
         assert_eq!(run.cmd, Some(vec!["-c".to_string(), "true".to_string()]));
         assert_eq!(run.working_dir.as_deref(), Some("/srv"));
         assert!(parse_config(json.replace("\"layers\"", "\"other\"").as_bytes()).is_err());
+    }
+
+    /// A config read as Docker reads it (crate::config): its keys folded and repeated as
+    /// Go takes them, its ports as a container keeps them, its time as Docker writes it;
+    /// one only running fails on stored, with what running it says.
+    #[test]
+    fn configs_are_read_as_docker_reads_them() {
+        let json = r#"{"architecture":"arm64","os":"linux","variant":"","created":"2024-01-02T03:04:05.100000000+24:00",
+            "config":{"User":"root","user":"nobody","Env":["A","B"],"Env":[null],"ExposedPorts":{"80/TCP":{},"x":{},"53/udp":{},"80":{}}},
+            "rootfs":{"type":"layers","diff_ids":[]}}"#;
+        let c = parse_config(json.as_bytes()).unwrap();
+        let run = c.config.as_ref().unwrap();
+        assert_eq!(run.user.as_deref(), Some("nobody"));
+        assert_eq!(run.env, Some(vec!["A".to_string()]));
+        assert_eq!(
+            run.exposed_ports,
+            vec!["53/udp".to_string(), "80/tcp".to_string()]
+        );
+        assert_eq!(c.variant, None);
+        assert_eq!(c.created.as_deref(), Some("2024-01-02T03:04:05.1+24:00"));
+        assert_eq!(c.run_error, None);
+        // Stored, as Docker's load and pull store it; refused to run with Go's words.
+        for (json, said) in [
+            (
+                r#"{"config":{"Healthcheck":5},"rootfs":{"type":"layers","diff_ids":[]}}"#,
+                "json: cannot unmarshal number into Go struct field DockerOCIImageConfig.config.DockerOCIImageConfigExt.Healthcheck of type v1.HealthcheckConfig",
+            ),
+            (
+                r#"{"created":"2024-02-30T00:00:00Z","rootfs":{"type":"layers","diff_ids":[]}}"#,
+                "parsing time \"2024-02-30T00:00:00Z\": day out of range",
+            ),
+        ] {
+            let c = parse_config(json.as_bytes()).unwrap();
+            assert_eq!(c.run_error.as_deref(), Some(said), "{json}");
+        }
+        // No JSON at all is no config.
+        assert!(parse_config(b"{").is_err());
+    }
+
+    /// The reader `parse_config` used before Go's (serde, by exact key), kept here alone to
+    /// measure against (M128): its types and its reading, as they were at aa7a2d3.
+    mod serde_reader {
+        use std::collections::BTreeMap;
+
+        use serde::Deserialize;
+
+        #[derive(Deserialize)]
+        #[allow(dead_code)]
+        pub struct ImageConfig {
+            #[serde(default)]
+            architecture: String,
+            #[serde(default)]
+            os: String,
+            #[serde(default)]
+            variant: Option<String>,
+            #[serde(default)]
+            created: Option<String>,
+            #[serde(default)]
+            config: Option<RunConfig>,
+            rootfs: RootFs,
+        }
+
+        #[derive(Deserialize, Default)]
+        #[serde(rename_all = "PascalCase")]
+        #[allow(dead_code)]
+        struct RunConfig {
+            #[serde(default)]
+            user: Option<String>,
+            #[serde(default)]
+            env: Option<Vec<String>>,
+            #[serde(default)]
+            entrypoint: Option<Vec<String>>,
+            #[serde(default)]
+            cmd: Option<Vec<String>>,
+            #[serde(default)]
+            working_dir: Option<String>,
+            #[serde(default)]
+            stop_signal: Option<String>,
+            #[serde(default)]
+            healthcheck: Option<HealthConfig>,
+            #[serde(default)]
+            shell: Option<Vec<String>>,
+            #[serde(default, deserialize_with = "keys")]
+            exposed_ports: Vec<String>,
+            #[serde(default, deserialize_with = "keys")]
+            volumes: Vec<String>,
+            #[serde(default)]
+            labels: Option<BTreeMap<String, String>>,
+        }
+
+        #[derive(Deserialize, Default)]
+        #[serde(rename_all = "PascalCase")]
+        #[allow(dead_code)]
+        struct HealthConfig {
+            #[serde(default)]
+            test: Option<Vec<String>>,
+            #[serde(default)]
+            interval: i64,
+            #[serde(default)]
+            timeout: i64,
+            #[serde(default)]
+            start_period: i64,
+            #[serde(default)]
+            start_interval: i64,
+            #[serde(default)]
+            retries: i64,
+        }
+
+        #[derive(Deserialize)]
+        struct RootFs {
+            #[serde(rename = "type")]
+            kind: String,
+            #[serde(default, deserialize_with = "list")]
+            #[allow(dead_code)]
+            diff_ids: Vec<String>,
+        }
+
+        fn list<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(d: D) -> Result<Vec<T>, D::Error> {
+            let v: Option<Vec<T>> = Deserialize::deserialize(d)?;
+            Ok(v.unwrap_or_default())
+        }
+
+        fn keys<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
+            let map: Option<BTreeMap<String, serde::de::IgnoredAny>> = Deserialize::deserialize(d)?;
+            Ok(map.map(|m| m.into_keys().collect()).unwrap_or_default())
+        }
+
+        pub fn parse_config(bytes: &[u8]) -> Result<ImageConfig, String> {
+            let config: ImageConfig =
+                serde_json::from_slice(bytes).map_err(|e| format!("image config: {e}"))?;
+            if config.rootfs.kind != "layers" {
+                return Err(format!("rootfs type {:?} is not \"layers\"", config.rootfs.kind));
+            }
+            Ok(config)
+        }
+    }
+
+    /// M128: what reading an image's config costs (`parse_config`, which every pull, load,
+    /// listing and run takes), for a config of a BuildKit build's size, one with a long
+    /// history, and one near the largest read (`MAX_CONFIG`): n readings each by Go's
+    /// reader and by the serde reader it replaced, interleaved, each reading's microseconds
+    /// at p50, p90, p99 and max. docs/research/measurements/image-config/run.sh runs it.
+    #[test]
+    #[ignore]
+    fn parse_config_costs() {
+        let history = |n: usize| {
+            (0..n)
+                .map(|i| {
+                    format!(
+                        r#"{{"created":"2024-01-02T03:04:05.{i:09}Z","created_by":"RUN /bin/sh -c step {i} && make install","comment":"buildkit.dockerfile.v0"{}}}"#,
+                        if i % 3 == 0 { r#","empty_layer":true"# } else { "" }
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        let config = |steps: usize, env: usize| {
+            let env: Vec<String> = (0..env).map(|i| format!(r#""VAR_{i}=value-{i}""#)).collect();
+            let labels: Vec<String> = (0..env.len())
+                .map(|i| format!(r#""org.example.label.{i}":"{i}""#))
+                .collect();
+            let diff_ids: Vec<String> = (0..steps.div_ceil(3))
+                .map(|i| format!(r#""sha256:{i:064x}""#))
+                .collect();
+            format!(
+                r#"{{"architecture":"arm64","os":"linux","created":"2024-01-02T03:04:05Z","config":{{"User":"app","Env":[{}],"Entrypoint":["/bin/app"],"Cmd":["serve"],"WorkingDir":"/srv","Labels":{{{}}},"ExposedPorts":{{"80/tcp":{{}},"443/tcp":{{}}}},"Volumes":{{"/data":{{}}}},"StopSignal":"SIGTERM"}},"rootfs":{{"type":"layers","diff_ids":[{}]}},"history":[{}]}}"#,
+                env.join(","),
+                labels.join(","),
+                diff_ids.join(","),
+                history(steps)
+            )
+        };
+        let quantiles = |mut took: Vec<u128>| {
+            took.sort_unstable();
+            let q = |p: usize| took[(took.len() * p / 100).min(took.len() - 1)];
+            format!(
+                "p50 {} p90 {} p99 {} max {}",
+                q(50),
+                q(90),
+                q(99),
+                took[took.len() - 1]
+            )
+        };
+        for (name, text, n) in [
+            ("build-sized", config(12, 8), 2000),
+            ("long history", config(2000, 500), 200),
+            ("near MAX_CONFIG", config(18000, 4000), 40),
+        ] {
+            assert!(text.len() as u64 <= MAX_CONFIG, "{name}: {}", text.len());
+            assert!(parse_config(text.as_bytes()).is_ok(), "{name}");
+            assert!(serde_reader::parse_config(text.as_bytes()).is_ok(), "{name}");
+            let (mut go, mut serde) = (Vec::with_capacity(n), Vec::with_capacity(n));
+            for i in 0..n {
+                // Interleaved, each first in turn, so a busy host weighs on both alike.
+                for which in [i % 2, 1 - i % 2] {
+                    let at = std::time::Instant::now();
+                    if which == 0 {
+                        std::hint::black_box(parse_config(std::hint::black_box(text.as_bytes()))).unwrap();
+                        go.push(at.elapsed().as_micros());
+                    } else {
+                        std::hint::black_box(serde_reader::parse_config(std::hint::black_box(
+                            text.as_bytes(),
+                        )))
+                        .unwrap();
+                        serde.push(at.elapsed().as_micros());
+                    }
+                }
+            }
+            eprintln!("{name}: {} bytes, n={n}", text.len());
+            eprintln!("{name}: go {}", quantiles(go));
+            eprintln!("{name}: serde {}", quantiles(serde));
+        }
     }
 
     #[test]

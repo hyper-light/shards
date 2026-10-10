@@ -44,6 +44,42 @@ pub struct Ref {
     pub origin: Rc<Origin>,
 }
 
+/// A snapshot's files, read apart from the build that made it ([`Exec::reader`]).
+#[derive(Debug)]
+pub struct Reader {
+    fs: Fs,
+    sources: std::cell::RefCell<Sources>,
+}
+
+impl Reader {
+    /// At most `most` bytes of the file at `path`, its symlinks followed in the snapshot,
+    /// and its size: `None` where no file is there, or a name on the way is no directory.
+    pub fn read(&self, path: &[u8], most: u64) -> Result<Option<(Vec<u8>, u64)>, String> {
+        use shards_build::vfs::Errno;
+        use shards_image::erofs::Source as _;
+        let id = match self.fs.stat(path) {
+            Ok(id) => id,
+            Err(e) if matches!(e.errno, Errno::NoEnt | Errno::NotDir) => return Ok(None),
+            Err(e) => return Err(e.to_string()),
+        };
+        match self.fs.node(id).map(|n| &n.kind) {
+            Some(Kind::File { size, data }) => {
+                let mut out = vec![0u8; usize::try_from((*size).min(most)).map_err(|e| e.to_string())?];
+                self.sources
+                    .borrow_mut()
+                    .read_at(*data, 0, &mut out)
+                    .map_err(err)?;
+                Ok(Some((out, *size)))
+            }
+            Some(Kind::Dir(_)) => Err(format!("read {}: is a directory", String::from_utf8_lossy(path))),
+            _ => Err(format!(
+                "read {}: not a regular file",
+                String::from_utf8_lossy(path)
+            )),
+        }
+    }
+}
+
 /// A target's snapshot and its stack, to write its image's root filesystem from.
 #[derive(Debug)]
 pub struct Flat {
@@ -296,6 +332,15 @@ impl<'a> Exec<'a> {
         let mut out = vec![0u8; usize::try_from(size.min(most)).map_err(|e| e.to_string())?];
         self.sources.read_at(data, 0, &mut out).map_err(err)?;
         Ok(Some(out))
+    }
+
+    /// A reader of `r`'s files apart from the build (D111): a remote context's, which the
+    /// build's policies read their files from while the build goes on.
+    pub fn reader(&self, r: &Ref) -> Result<Reader, String> {
+        Ok(Reader {
+            fs: (*r.fs).clone(),
+            sources: std::cell::RefCell::new(self.sources.try_clone().map_err(err)?),
+        })
     }
 
     /// A directory that lasts as long as the build, for its downloads.

@@ -1,0 +1,61 @@
+#!/bin/sh
+# Regenerates crates/image/testdata/image-config.json: what moby's dockerd makes of an
+# image's config when it runs a container from it (daemon/containerd GetImage: the config
+# read with json.Unmarshal into a dockerspec.DockerOCIImage, at the moby commit docker/cli
+# v29.8.1 goes with), for the cases in config_oracle_test.go, which
+# crates/image/src/config.rs's tests expect shards_image::config to read alike.
+#
+# The test is built with the Go release moby's go.mod names, for Linux on this host's
+# architecture, as dockerd is, and run in a Linux container: CONTAINER, shards-dind by
+# default, in a directory of its own that is removed after.
+#
+#   scripts/image-config/generate [MOBY_CHECKOUT]
+set -eu
+
+here=$(cd "$(dirname "$0")" && pwd)
+root=$(cd "$here/../.." && pwd)
+out="$root/crates/image/testdata/image-config.json"
+commit=464cd50c3d9e92877d56940ea160de6fca7bea23
+container=${CONTAINER:-shards-dind}
+moby=${1:-}
+work=$(mktemp -d)
+cleanup() {
+	rm -rf "$work"
+	[ -n "${moby_tmp:-}" ] && rm -rf "$moby_tmp"
+	[ -n "${test_file:-}" ] && rm -f "$test_file"
+	docker exec "$container" rm -rf /root/shards-image-config-oracle >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+if [ -z "$moby" ]; then
+	moby_tmp=$(mktemp -d)
+	moby=$moby_tmp
+	git -C "$moby" init --quiet
+	git -C "$moby" fetch --quiet --depth 1 https://github.com/moby/moby "$commit"
+	git -C "$moby" checkout --quiet FETCH_HEAD
+fi
+if [ "$(git -C "$moby" rev-parse HEAD)" != "$commit" ]; then
+	echo "$moby is not moby/moby $commit" >&2
+	exit 1
+fi
+
+test_file="$moby/daemon/containerd/zz_shards_config_test.go"
+cp "$here/config_oracle_test.go" "$test_file"
+go=$(sed -n 's/^go //p' "$moby/go.mod")
+case $(uname -m) in
+arm64 | aarch64) arch=arm64 ;;
+x86_64 | amd64) arch=amd64 ;;
+*)
+	echo "unknown architecture $(uname -m)" >&2
+	exit 1
+	;;
+esac
+(cd "$moby" && GOTOOLCHAIN="go$go" GOFLAGS=-mod=vendor GOOS=linux GOARCH="$arch" CGO_ENABLED=0 \
+	go test -c -o "$work/oracle.test" ./daemon/containerd/)
+
+# /tmp in a docker:dind container is a tmpfs, which docker cp does not reach.
+dir=/root/shards-image-config-oracle
+docker exec "$container" mkdir -p "$dir"
+docker cp "$work/oracle.test" "$container:$dir/oracle.test"
+docker exec -e SHARDS_IMAGE_CONFIG_OUT="$dir/out.json" "$container" \
+	"$dir/oracle.test" -test.count=1 -test.run '^TestShardsImageConfig$'
+docker cp "$container:$dir/out.json" "$out"

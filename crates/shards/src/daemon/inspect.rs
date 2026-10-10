@@ -54,10 +54,19 @@ fn time_json(t: SystemTime) -> String {
 }
 
 /// `image`'s InspectResponse, compact: fields in the struct's order, those Go leaves out
-/// when empty left out.
-pub(super) fn document(image: &Image, record: Option<&str>) -> String {
+/// when empty left out. Fails as moby's ImageInspect fails where Go reads its config into
+/// no DockerOCIImage.
+pub(super) fn document(image: &Image, record: Option<&str>) -> Result<String, String> {
     let (tags, digests) = tags_and_digests(image);
-    let config = image.config.as_deref().and_then(|b| Config::from_json(b).ok());
+    let config = match image.config.as_deref() {
+        Some(b) => Some(Config::from_json(b).map_err(|e| {
+            format!(
+                "failed to read image config: could not deserialize image config: {}",
+                String::from_utf8_lossy(&e)
+            )
+        })?),
+        None => None,
+    };
     let mut o = vec![
         format!("\"Id\":{}", json_string(image.id.to_string().as_bytes())),
         format!("\"RepoTags\":{}", strings(&tags)),
@@ -71,10 +80,11 @@ pub(super) fn document(image: &Image, record: Option<&str>) -> String {
     {
         o.push(format!("\"Comment\":{}", json_string(comment)));
     }
+    // `Created.Format(time.RFC3339Nano)`, which fails at no offset.
     if let Some(created) = config
         .as_ref()
         .and_then(|c| c.created.as_ref())
-        .and_then(|t| t.rfc3339_nano().ok())
+        .map(|t| t.format_rfc3339_nano())
     {
         o.push(format!("\"Created\":{}", json_string(created.as_bytes())));
     }
@@ -146,7 +156,7 @@ pub(super) fn document(image: &Image, record: Option<&str>) -> String {
     if !pulls.is_empty() {
         o.push(format!("\"Identity\":{{\"Pull\":[{}]}}", pulls.join(",")));
     }
-    format!("{{{}}}", o.join(","))
+    Ok(format!("{{{}}}", o.join(",")))
 }
 
 /// An ocispec.Descriptor as Go encodes it: mediaType, digest, size, then the annotations,
@@ -286,11 +296,8 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                     .image(named)
                     .map_err(|e| e.to_string())
             });
-            match read {
-                Ok(image) => documents.push(super::inspect_doc::image_value(&document(
-                    &image,
-                    record_name(given).as_deref(),
-                ))),
+            match read.and_then(|image| document(&image, record_name(given).as_deref())) {
+                Ok(d) => documents.push(super::inspect_doc::image_value(&d)),
                 Err(e) => errors.push(format!("Error response from daemon: {e}")),
             }
         }
@@ -641,11 +648,13 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         else {
             return (None, None);
         };
+        // Its config as Docker reads it, a DockerOCIImageConfig, written as json.Marshal
+        // writes one: each field once, by its own name.
         let config = image
             .config
             .as_deref()
-            .and_then(|b| serde_json::from_slice::<serde_json::Value>(b).ok())
-            .and_then(|c| c.get("config").cloned());
+            .and_then(|b| Config::from_json(b).ok())
+            .and_then(|c| serde_json::from_str::<serde_json::Value>(&c.config.to_json()).ok());
         let ours = image.manifest.to_string();
         let manifest = if image.target.digest == ours {
             serde_json::to_value(&image.target).ok()
@@ -721,8 +730,10 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                 if any || kind == "image" {
                     match self.image_doc(given) {
                         Ok(d) => return Ok(d),
-                        Err(e) if !any => return Err(daemon_said(&e)),
-                        Err(_) => {}
+                        // docker/cli tries the next kind only past what is not found.
+                        Err(Missing::Not(e)) if !any => return Err(daemon_said(&e)),
+                        Err(Missing::Not(_)) => {}
+                        Err(Missing::Failed(e)) => return Err(daemon_said(&e)),
                     }
                 }
                 if (any || kind == "volume")
@@ -756,16 +767,24 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
     }
 
     /// Image `given`'s InspectResponse, or why not.
-    fn image_doc(&self, given: &str) -> Result<shards_template::Value, String> {
-        let store = self.store()?.ok_or_else(|| super::images::not_found(given))?;
-        let images = store.named().map_err(|e| e.to_string())?;
-        let named = super::images::resolve(&images, given)?;
-        let image = store.image(named).map_err(|e| e.to_string())?;
-        Ok(super::inspect_doc::image_value(&document(
-            &image,
-            record_name(given).as_deref(),
-        )))
+    fn image_doc(&self, given: &str) -> Result<shards_template::Value, Missing> {
+        let store = self
+            .store()
+            .map_err(Missing::Not)?
+            .ok_or_else(|| Missing::Not(super::images::not_found(given)))?;
+        let images = store.named().map_err(|e| Missing::Not(e.to_string()))?;
+        let named = super::images::resolve(&images, given).map_err(Missing::Not)?;
+        let image = store.image(named).map_err(|e| Missing::Not(e.to_string()))?;
+        let doc = document(&image, record_name(given).as_deref()).map_err(Missing::Failed)?;
+        Ok(super::inspect_doc::image_value(&doc))
     }
+}
+
+/// Why an image has no document: not found, which `inspect` without a `--type` passes
+/// over to the next kind of object, or found and failed, which it says.
+enum Missing {
+    Not(String),
+    Failed(String),
 }
 
 /// `e` as the CLI says what dockerd answered.

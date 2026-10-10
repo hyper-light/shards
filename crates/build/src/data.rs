@@ -14,6 +14,7 @@ enum Data {
     Archive(File),
     /// A file of the build context, and the size it had when the context was read.
     Host(PathBuf, u64),
+    /// What a build's `Mkfile` writes: small, copied by [`Sources::try_clone`].
     Bytes(Vec<u8>),
 }
 
@@ -53,6 +54,23 @@ impl Sources {
             source: self.push(Data::Bytes(data))?,
             offset: 0,
         })
+    }
+
+    /// Sources that read what these read, apart from them: each archive opened again
+    /// (its descriptor duplicated), host files by their paths, bytes copied.
+    pub fn try_clone(&self) -> Result<Sources, io::Error> {
+        let list = self
+            .list
+            .iter()
+            .map(|d| {
+                Ok(match d {
+                    Data::Archive(f) => Data::Archive(f.try_clone()?),
+                    Data::Host(path, size) => Data::Host(path.clone(), *size),
+                    Data::Bytes(b) => Data::Bytes(b.clone()),
+                })
+            })
+            .collect::<Result<_, io::Error>>()?;
+        Ok(Sources { list, open: None })
     }
 }
 

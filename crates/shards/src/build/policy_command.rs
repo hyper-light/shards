@@ -175,6 +175,7 @@ fn decide(
         default_platform: platform.clone(),
         debug,
         default_policy: false,
+        remote: None,
     })?
     else {
         return Err("policy returned no decision".into());

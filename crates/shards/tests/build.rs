@@ -9577,6 +9577,203 @@ fn policy_log(stderr: &str) -> Vec<String> {
         .collect()
 }
 
+/// Build policies over a remote context (D111), as buildx v0.37.1 reads them (measured in
+/// `shards-dind`): the context's own `<Dockerfile>.rego` and each `--policy`'s names read in
+/// the context (`cwd://` ones in the working directory), imports and `load_json` too; the
+/// context's source asked first, a refusal said as the Dockerfile's read.
+#[test]
+fn policies_hold_over_remote_contexts() {
+    if cannot_run_vms() {
+        return;
+    }
+    if std::process::Command::new("git")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        eprintln!("SKIP: no git on this host");
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("remote-policy-home");
+    let env = [("SHARDS_HOME", home.as_os_str())];
+    let arch = match std::env::consts::ARCH {
+        "aarch64" => "arm64",
+        "x86_64" => "amd64",
+        other => other,
+    };
+    let repos = TempDir::new("remote-policy-repos");
+    let origin = repos.join("repo.git");
+    std::fs::create_dir_all(&origin).unwrap();
+    let write = |path: &str, text: &str| {
+        let at = origin.join(path);
+        std::fs::create_dir_all(at.parent().unwrap()).unwrap();
+        std::fs::write(at, text).unwrap();
+    };
+    git_in(&origin, &["init", "-q", "-b", "main"]);
+    write("Dockerfile", &format!("FROM {image}\nCOPY a.txt /a\n"));
+    write("a.txt", "a\n");
+    write(
+        "Dockerfile.rego",
+        "package docker\n\ndefault allow := false\n\nallow if input.image\n\ndeny_msg contains \"remote policy says no\" if input.git\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n",
+    );
+    git_in(&origin, &["add", "-A"]);
+    git_in(&origin, &["commit", "-q", "-m", "main"]);
+    git_in(&origin, &["checkout", "-q", "-b", "flags"]);
+    git_in(&origin, &["rm", "-q", "Dockerfile.rego"]);
+    write(
+        "policies/allow.rego",
+        "package docker\n\nimport data.lib.rules\n\ndefault allow := false\n\nallow if {\n\tinput.git\n\trules.ok\n\tload_json(\"data.json\").ok\n}\n\nallow if input.image\n\ndecision := {\"allow\": allow}\n",
+    );
+    write("lib/rules.rego", "package lib.rules\n\nok if true\n");
+    write("data.json", "{\"ok\": true}\n");
+    write("policies/dir/x", "x\n");
+    // Past and short of what BuildKit's gRPC sends of a file (measured sizes).
+    write("policies/big.rego", &"#".repeat(16_777_217));
+    write("policies/near.rego", &"#".repeat(16_777_000));
+    write("sub/Dockerfile", &format!("FROM {image}\nCOPY a.txt /a\n"));
+    write(
+        "sub/Dockerfile.rego",
+        "package docker\n\ndefault allow := false\n\ndeny_msg contains \"sub policy says no\" if input.git\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n",
+    );
+    git_in(&origin, &["add", "-A"]);
+    git_in(&origin, &["commit", "-q", "-m", "flags"]);
+    let port = git_http_server(repos.to_path_buf(), Vec::new());
+    let repo = format!("http://127.0.0.1:{port}/repo.git");
+    // A policy of the working directory's, named `cwd://`.
+    let cwd = TempDir::new("remote-policy-cwd");
+    std::fs::write(
+        cwd.join("local.rego"),
+        "package docker\n\ndefault allow := false\n\ndeny_msg contains \"local policy says no\" if input.git\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n",
+    )
+    .unwrap();
+    let build = |extra: &[&str], branch: &str| {
+        let mut args = vec!["build", "--progress=plain"];
+        args.extend_from_slice(extra);
+        let ctx = format!("{repo}#{branch}");
+        args.push(&ctx);
+        common::run_shards_env_in(&cwd, &[], &args, &env, TIMEOUT)
+    };
+    let tail = |s: &str| s.lines().last().unwrap_or_default().to_string();
+    let source = |branch: &str| format!("git://127.0.0.1:{port}/repo.git#{branch}");
+    let decided = |src: &str, what: &str| {
+        [
+            format!("checking policy for source {src}"),
+            format!("policy decision for source {src}: {what}"),
+        ]
+    };
+    let refused = |branch: &str| {
+        format!(
+            "ERROR: failed to build: failed to solve: failed to read dockerfile: failed to load LLB: error evaluating the source policy: source \"{}\" not allowed by policy: action DENY",
+            source(branch)
+        )
+    };
+
+    // The context's own policy, refusing the context: asked of it first, said as the read
+    // of the Dockerfile fails.
+    for (extra, branch, file, said) in [
+        (&[][..], "main", "Dockerfile.rego", "remote policy says no"),
+        (
+            &["--policy", "filename=cwd://local.rego"][..],
+            "flags",
+            "cwd://local.rego",
+            "local policy says no",
+        ),
+        (
+            &["-f", "sub/Dockerfile"][..],
+            "flags",
+            "sub/Dockerfile.rego",
+            "sub policy says no",
+        ),
+    ] {
+        let out = build(extra, branch);
+        assert_eq!(out.status, Some(1), "{extra:?}: {}", out.stderr);
+        assert!(
+            out.stderr.contains(&format!(" loading policies {file}\n")),
+            "{extra:?}: {}",
+            out.stderr
+        );
+        let mut want = decided(&source(branch), "DENY").to_vec();
+        want.push(format!(" - {said}"));
+        assert_eq!(policy_log(&out.stderr), want, "{extra:?}: {}", out.stderr);
+        assert!(
+            out.stderr
+                .contains(&format!("Policy: {said}\n{}", refused(branch))),
+            "{extra:?}: {}",
+            out.stderr
+        );
+        assert_eq!(tail(&out.stderr), refused(branch), "{extra:?}");
+        assert!(!out.stderr.contains("load metadata for"), "{}", out.stderr);
+    }
+
+    // A policy of the context, by name or rooted there, with its import and its JSON read
+    // in the context: the context and the image allowed, then each again as the build
+    // loads them.
+    for name in ["policies/allow.rego", "/policies/allow.rego"] {
+        let out = build(&["--policy", &format!("filename={name}")], "flags");
+        assert_eq!(out.status, Some(0), "{name}: {}", out.stderr);
+        assert!(
+            out.stderr.contains(&format!(" loading policies {name}\n")),
+            "{name}: {}",
+            out.stderr
+        );
+        let log = policy_log(&out.stderr);
+        let image_src = format!("docker-image://{image} (linux/{arch})");
+        let want: Vec<String> = [decided(&source("flags"), "ALLOW"), decided(&image_src, "ALLOW")].concat();
+        assert_eq!(log.get(..4), Some(&want[..]), "{name}: {log:#?}");
+        let pinned = log
+            .iter()
+            .find_map(|l| l.strip_prefix(&format!("checking policy for source docker-image://{image}@")))
+            .and_then(|r| r.strip_suffix(&format!(" (linux/{arch})")))
+            .map(|d| format!("docker-image://{image}@{d} (linux/{arch})"))
+            .unwrap_or_else(|| panic!("{log:#?}"));
+        let mut solve: Vec<String> = log.get(4..).unwrap_or_default().to_vec();
+        solve.sort();
+        let mut solve_want: Vec<String> =
+            [decided(&source("flags"), "ALLOW"), decided(&pinned, "ALLOW")].concat();
+        solve_want.sort();
+        assert_eq!(solve, solve_want, "{name}: {log:#?}");
+    }
+
+    // Names that are not files of the context, in buildx's words.
+    for (name, said) in [
+        (
+            "policies/missing.rego",
+            "policy file policies/missing.rego not found".to_string(),
+        ),
+        (
+            "..",
+            "failed to stat policy file ..: invalid remote policy filename \"..\"".to_string(),
+        ),
+        (
+            "policies/dir",
+            "failed to read policy file policies/dir: read /policies/dir: is a directory".to_string(),
+        ),
+    ] {
+        let out = build(&["--policy", &format!("filename={name}")], "flags");
+        assert_eq!(out.status, Some(1), "{name}: {}", out.stderr);
+        assert_eq!(
+            tail(&out.stderr),
+            format!("ERROR: failed to build: {said}"),
+            "{name}"
+        );
+    }
+    // A file larger than a gRPC message of BuildKit's takes: its ResourceExhausted, and
+    // buildx's exit for that code; one short of it, read whole.
+    let big = build(&["--policy", "filename=policies/big.rego"], "flags");
+    assert_eq!(
+        tail(&big.stderr),
+        "ERROR: failed to build: failed to read policy file policies/big.rego: ResourceExhausted: grpc: trying to send message larger than max (16777222 vs. 16777216)"
+    );
+    assert_eq!(big.status, Some(102), "{}", big.stderr);
+    let near = build(&["--policy", "filename=policies/near.rego"], "flags");
+    assert_eq!(
+        tail(&near.stderr),
+        "ERROR: failed to build: failed to evaluate policy caps: 1 error occurred: policies/near.rego:0: rego_parse_error: empty module"
+    );
+    assert_eq!(near.status, Some(1), "{}", near.stderr);
+}
+
 /// Build policies (D101): the Dockerfile's own `Dockerfile.rego` and each `--policy`,
 /// asked of every source the build loads as buildx v0.37.1 asks them and BuildKit v0.28.1
 /// heeds them, each line and refusal in their words (measured in `shards-dind`).

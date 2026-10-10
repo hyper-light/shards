@@ -224,8 +224,8 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                 .unwrap_or_default();
             let layers = found
                 .and_then(|s| s.config.as_ref())
-                .and_then(|c| serde_json::from_slice::<shards_image::oci::ImageConfig>(c).ok())
-                .map(|c| c.rootfs.diff_ids.len())
+                .and_then(|c| shards_image::config::Read::new(c).ok())
+                .map(|r| r.image().rootfs.diff_ids.as_ref().map_or(0, Vec::len))
                 .unwrap_or(0);
             let names: Vec<(String, String)> = if image.tags.is_empty() {
                 vec![("<none>".into(), "<none>".into())]
@@ -349,11 +349,13 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             }
             let img = read.image(&store, n)?;
             let containers = users.get(&id).copied().unwrap_or(0);
+            // Go's zero time where the config holds none it reads, as moby's summary gives
+            // `time.Time{}.Unix()` (daemon/containerd image_list.go).
             let created = img
                 .created
                 .as_deref()
                 .and_then(|c| shards_dockerfile::go::parse_rfc3339(c.as_bytes()).ok())
-                .map_or(0, |t| t.unix().0);
+                .map_or(-62_135_596_800, |t| t.unix().0);
             images.push(Summary {
                 manifests: manifests(img, containers),
                 id,
@@ -689,6 +691,18 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             let store = store.ok_or_else(|| not_found(source))?;
             let images = store.named().map_err(|e| e.to_string())?;
             let image = resolve(&images, source)?;
+            // As dockerd's postImagesTag reads it first (daemon/containerd GetImage): one
+            // whose config Go reads into no DockerOCIImage is not tagged.
+            let config = store.image(image).map_err(|e| e.to_string())?.config;
+            if let Some(e) = config
+                .as_deref()
+                .and_then(|c| match shards_image::config::Read::new(c) {
+                    Ok(read) => read.error(shards_image::config::As::Docker),
+                    Err(e) => Some(e),
+                })
+            {
+                return Err(format!("could not deserialize image config: {e}"));
+            }
             let existing = image.references.first().ok_or_else(|| not_found(source))?;
             store
                 .alias(&tagged.to_string(), existing)
@@ -922,11 +936,21 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                 return 1;
             }
         };
-        let config: serde_json::Value = image
-            .config
-            .as_deref()
-            .and_then(|c| serde_json::from_slice(c).ok())
-            .unwrap_or(serde_json::Value::Null);
+        // Its config as dockerd's history reads it (image_history.go): its rootfs and
+        // history alone, read as Go reads them, failing as that fails; the rest unread.
+        let read = image.config.as_deref().map(|c| {
+            shards_image::config::Read::new(c).and_then(|r| r.read(shards_image::config::As::History))
+        });
+        let history = match read {
+            Some(Err(e)) => {
+                reply.err(&format!(
+                    "Error response from daemon: could not deserialize image config: {e}"
+                ));
+                return 1;
+            }
+            Some(Ok(i)) => i.history.unwrap_or_default(),
+            None => Vec::new(),
+        };
         // The layers' sizes, in order, from our platform's manifest.
         let sizes: Vec<i64> = self
             .store()
@@ -937,31 +961,17 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             .map(|m| m.layers.iter().map(|l| l.size).collect())
             .unwrap_or_default();
         let mut layer = 0;
-        let mut steps: Vec<(String, String, String, i64, bool)> = Vec::new();
-        for h in config
-            .get("history")
-            .and_then(serde_json::Value::as_array)
-            .into_iter()
-            .flatten()
-        {
-            let text = |k: &str| {
-                h.get(k)
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or_default()
-                    .to_string()
-            };
-            let empty = h
-                .get("empty_layer")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false);
-            let size = if empty {
+        let mut steps: Vec<(i64, String, String, i64, bool)> = Vec::new();
+        for h in history {
+            let size = if h.empty_layer {
                 0
             } else {
                 let s = sizes.get(layer).copied().unwrap_or(0);
                 layer += 1;
                 s
             };
-            steps.push((text("created"), text("created_by"), text("comment"), size, empty));
+            let when = h.created.map_or(0, |t| t.unix().0);
+            steps.push((when, h.created_by, h.comment, size, h.empty_layer));
         }
         steps.reverse();
         let now = asker.now / 1_000_000_000;
@@ -973,8 +983,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                 ("image", given.to_string()),
                 ("id", id.clone()),
             ]);
-            for (created, by, comment, size, empty) in &steps {
-                let when = shards_dockerfile::go::parse_rfc3339(created.as_bytes()).map_or(0, |t| t.unix().0);
+            for (when, by, comment, size, empty) in &steps {
                 sheet.record(&[
                     ("created", when.to_string()),
                     ("by", by.clone()),
@@ -992,8 +1001,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         let rows: Vec<serde_json::Value> = steps
             .iter()
             .enumerate()
-            .map(|(i, (created, by, comment, size, _))| {
-                let when = shards_dockerfile::go::parse_rfc3339(created.as_bytes()).map_or(0, |t| t.unix().0);
+            .map(|(i, (when, by, comment, size, _))| {
                 serde_json::json!({
                     "id": if i == 0 { full.as_str() } else { "<missing>" },
                     "created": when,

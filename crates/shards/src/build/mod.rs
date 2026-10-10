@@ -124,7 +124,14 @@ pub fn build(args: impl Iterator<Item = OsString>) -> ExitCode {
     match r {
         Ok(()) if status.get() != 0 => ExitCode::from(status.get()),
         Ok(()) => ExitCode::SUCCESS,
-        Err(e) => failed(&e),
+        Err(e) => {
+            let code = failed(&e);
+            if EXHAUSTED.load(std::sync::atomic::Ordering::Relaxed) {
+                ExitCode::from(102)
+            } else {
+                code
+            }
+        }
     }
 }
 
@@ -1480,6 +1487,8 @@ struct PolicyStep<'a> {
     /// Where the sources the policies' functions fetch are staged, and within what.
     store: &'a Store,
     limits: store::Limits,
+    /// The build's remote context, which its policies' files are read from (D111).
+    remote: Option<&'a exec::Reader>,
     name: RefCell<String>,
     index: std::cell::Cell<usize>,
     window: RefCell<Option<(Vertex, Instant)>>,
@@ -1490,11 +1499,17 @@ struct PolicyStep<'a> {
 const POLICY_WINDOW: std::time::Duration = std::time::Duration::from_millis(500);
 
 impl<'a> PolicyStep<'a> {
-    fn new(progress: &'a RefCell<Progress>, store: &'a Store, limits: store::Limits) -> PolicyStep<'a> {
+    fn new(
+        progress: &'a RefCell<Progress>,
+        store: &'a Store,
+        limits: store::Limits,
+        remote: Option<&'a exec::Reader>,
+    ) -> PolicyStep<'a> {
         PolicyStep {
             progress,
             store,
             limits,
+            remote,
             name: RefCell::new(String::new()),
             // A platform's build of several logs under the step the first one began.
             index: std::cell::Cell::new(multi::with(|sub| sub.policy_step).unwrap_or(0)),
@@ -1571,7 +1586,35 @@ impl policy::Log for PolicyStep<'_> {
             }
         }
     }
+
+    /// A policy file of the build's remote context (D111), as buildx reads one through
+    /// BuildKit's gateway: refused, as its gRPC server refuses to send it, where the
+    /// ReadFileResponse holding it (the file, its field's tag and length) is larger than
+    /// its messages may be (measured: buildx v0.37.1 on BuildKit v0.28.1).
+    fn read(&self, name: &str) -> Result<Option<Vec<u8>>, String> {
+        let Some(remote) = self.remote else {
+            return Err("policy resolver is not configured".into());
+        };
+        let Some((data, size)) = remote.read(format!("/{name}").as_bytes(), http::GATEWAY_MOST)? else {
+            return Ok(None);
+        };
+        let length = (1..=10u64).find(|n| size >> (7 * n) == 0).unwrap_or(10);
+        let message = size.saturating_add(1).saturating_add(length);
+        if message > http::GATEWAY_MOST {
+            EXHAUSTED.store(true, std::sync::atomic::Ordering::Relaxed);
+            return Err(format!(
+                "ResourceExhausted: grpc: trying to send message larger than max ({message} vs. {})",
+                http::GATEWAY_MOST
+            ));
+        }
+        Ok(Some(data))
+    }
 }
+
+/// A read refused as BuildKit's gRPC refuses a message too large (ResourceExhausted): a
+/// build that then fails exits 102, as buildx's main maps that code; one that goes on to
+/// succeed (its policy's `load_json` undefined) exits 0.
+static EXHAUSTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 impl Drop for PolicyStep<'_> {
     fn drop(&mut self) {
@@ -1589,21 +1632,40 @@ impl Drop for PolicyStep<'_> {
 
 /// The build's policies (configureSourcePolicy): the Dockerfile's own, `Dockerfile.rego`
 /// beside it (or `Agentfile.rego` beside an Agentfile), read where buildx reads it
-/// (loadInputs), and the flags'; each asked for its caps. None where none applies.
+/// (loadInputs), and the flags'; each asked for its caps. None where none applies. A
+/// remote context's names are read in it (D111), as buildx reads them in the context it
+/// fetched for them.
 fn policies_of(
     parsed: &Parsed,
     configs: &[buildflags::PolicyConfig],
     context: &Path,
+    remote: Option<&exec::Reader>,
     step: &PolicyStep<'_>,
 ) -> Result<Option<policy::Policies>, String> {
     let (path, defined) = definition(parsed, context);
     let file = parsed.string("file");
+    let from_url = file.starts_with("http://") || file.starts_with("https://");
     let mut default = policy::Opt {
-        context_dir: Some(context.to_path_buf()),
+        context_dir: remote.is_none().then(|| context.to_path_buf()),
+        remote: remote.is_some(),
         ..policy::Opt::default()
     };
+    if remote.is_some() {
+        // `<Dockerfile>.rego` of the context, read there, if it is there. A Dockerfile of
+        // the host's (`-f` an absolute path) names one in its own directory, which buildx
+        // looks for in the context too; stdin's and a URL's directories are buildx's own
+        // temporary ones, which no context holds.
+        if file != "-" && !from_url {
+            let name = if file.is_empty() { "Dockerfile" } else { file };
+            default.files.push(policy::FileSpec {
+                filename: format!("{name}.rego"),
+                optional: true,
+                data: None,
+            });
+        }
+    }
     // stdin's Dockerfile, and one fetched by URL, have a directory of their own, empty.
-    if let Some(path) = path.filter(|_| !file.starts_with("http://") && !file.starts_with("https://")) {
+    else if let Some(path) = path.filter(|_| !from_url) {
         let dir = path.parent().unwrap_or(Path::new(""));
         let mut base = path
             .file_name()
@@ -1659,6 +1721,7 @@ fn policies_of(
         ..policy::Env::default()
     };
     let cwd = std::env::current_dir().map_err(|e| format!("the working directory: {e}"))?;
+    let read = |name: &str| policy::Log::read(step, name);
     let Some(policies) = policy::Policies::configure(policy::Setup {
         default,
         configs,
@@ -1667,6 +1730,7 @@ fn policies_of(
         default_platform: host_platform(),
         debug: parsed.bool("debug"),
         default_policy: true,
+        remote: remote.map(|_| &read as policy::ReadRemote<'_>),
     })?
     else {
         return Ok(None);
@@ -2212,8 +2276,9 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
     // each source's result kept for the build's own step of it.
     let mut given: Vec<Given> = Vec::new();
     let mut fetched_dockerfile = None;
-    // Whether a remote context holds its Dockerfile's own policy (D101).
-    let mut remote_policy = false;
+    // A remote context's files, which its policies are read from (D111), as buildx's
+    // loads them from the context it fetched to read them (`[internal] load git source`).
+    let mut remote_files: Option<exec::Reader> = None;
     let mut remote = remote;
     if let Some(main) = &mut remote {
         let (r, sources) = fetch_context(
@@ -2226,6 +2291,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
             &progress,
         )?;
         given = sources;
+        remote_files = Some(exec.reader(&r)?);
         // `-f` names a file of the context, unless it is stdin's or a path of the host's
         // (buildx's `dockerfilekey`, its directory sent as `dockerfile`).
         let file = parsed.string("file");
@@ -2245,9 +2311,6 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
             let text = text.ok_or_else(|| {
                 format!("failed to build: failed to solve: failed to read dockerfile: open {name}: no such file or directory")
             })?;
-            remote_policy = exec
-                .read_file(&r, at(&format!("{name}.rego")).as_bytes())?
-                .is_some();
             let shown = Path::new(&name)
                 .file_name()
                 .map_or_else(|| name.clone(), |n| n.to_string_lossy().into_owned());
@@ -2286,22 +2349,15 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
 
     // The build's policies (D101), set up as it begins; the Dockerfile, loaded from its
     // own local source, the first source they are asked of.
-    let policy_step = PolicyStep::new(&progress, &store, limits);
-    let disabled = policy_configs.iter().any(|c| c.disabled);
-    if remote.is_some()
-        && !disabled
-        && (remote_policy || !policy_configs.is_empty() || policy::default_policy_enabled())
-    {
-        return Err(
-            "failed to build: a build policy over a remote context is not supported by shards yet".into(),
-        );
-    }
-    let policies = if remote.is_some() {
-        None
-    } else {
-        policies_of(parsed, &policy_configs, &context, &policy_step)
-            .map_err(|e| format!("failed to build: {e}"))?
-    };
+    let policy_step = PolicyStep::new(&progress, &store, limits, remote_files.as_ref());
+    let policies = policies_of(
+        parsed,
+        &policy_configs,
+        &context,
+        remote_files.as_ref(),
+        &policy_step,
+    )
+    .map_err(|e| format!("failed to build: {e}"))?;
     // A source a policy refused: its step failed with the build's error, the failed steps
     // recapped as the display ends, then the policy's messages, as buildx's main says them.
     let refused = |r: policy::Refused, at: &str| -> String {
@@ -2399,6 +2455,36 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
         refused: RefCell::new(None),
         local_dockerfile: beside_local,
     };
+    // A remote context's own source, asked of the policies as BuildKit asks it when the
+    // frontend reads the Dockerfile from it (D111), before anything of the Dockerfile.
+    // Only an image's pin converts a source, so a context's is allowed or refused.
+    if let (Some(p), Some(main)) = (&policies, &remote) {
+        let def = plan::context_definition(&Options {
+            target_platform: target_platform.clone(),
+            main_context: main.clone(),
+            ..Options::default()
+        })
+        .map_err(|e| format!("failed to build: failed to solve: {}", show(&e)))?;
+        for op in &def.ops {
+            let OpKind::Source { identifier, attrs } = &op.kind else {
+                continue;
+            };
+            let source = policy::Source {
+                identifier: show(identifier),
+                attrs: attrs.iter().map(|(k, v)| (show(k), show(v))).collect(),
+            };
+            match p.evaluate(&source, None, &PolicyMeta { bases: &bases }, &policy_step) {
+                Ok(None) => {}
+                Ok(Some(to)) => {
+                    return Err(format!(
+                        "failed to build: failed to solve: failed to read dockerfile: a policy converted the build's context to {}, which only an image's pin may",
+                        to.identifier
+                    ));
+                }
+                Err(r) => return Err(refused(r, "failed to read dockerfile: ")),
+            }
+        }
+    }
     // What the build's provenance records of its request, as buildx sends it (D71).
     let filename = Path::new(&name)
         .file_name()
