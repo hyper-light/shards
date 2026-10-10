@@ -29,6 +29,8 @@ use shards_dockerfile::platform::{self, Platform};
 use shards_gateway::gateway::{self as gw, Client, Pong, Ref, Returned, RpcStatus, Solve};
 use shards_gateway::grpc;
 
+use crate::build::skills;
+
 /// The most a file the frontend reads may be: dockerui's maxFileSize, containerd's
 /// DefaultMaxRecvMsgSize, 16 MiB.
 const MAX_FILE: i64 = 16 << 20;
@@ -1425,7 +1427,9 @@ fn build_platforms<R: Read, W: Write>(
             sets_default_path: g.caps.llb_refusal("exec.meta.setsdefaultpath", "").is_none(),
             group_prefix: &format!("{}-", g.env.session),
         };
-        let def = pb::definition(&planned.definition(), &carried)
+        let mut plan_def = planned.definition();
+        lay_skills(g, &mut plan_def, &carried, entry)?;
+        let def = pb::definition(&plan_def, &carried)
             .ok_or_else(|| Failure::new("failed to marshal LLB definition"))?;
         let r = g.solve(&def, &config.cache_imports, false)?.unwrap_or_default();
         let config_json = planned.image.to_json().map_err(|e| {
@@ -1481,6 +1485,167 @@ fn build_platforms<R: Read, W: Write>(
         format!("{{\"Platforms\":[{}]}}", platforms_json.join(",")).into_bytes(),
     );
     Ok(Outcome::Built(returned))
+}
+
+/// The ops `def` needs for `input`, in its order, numbered anew, and `input` among them.
+fn closure(def: &Definition, input: Input) -> Option<Definition> {
+    let mut needed = vec![false; def.ops.len()];
+    let mut stack = vec![input.op];
+    while let Some(at) = stack.pop() {
+        let slot = needed.get_mut(at)?;
+        if *slot {
+            continue;
+        }
+        *slot = true;
+        stack.extend(def.ops.get(at)?.inputs.iter().map(|i| i.op));
+    }
+    let mut renumbered = vec![usize::MAX; def.ops.len()];
+    let mut out = Definition::default();
+    for (i, (op, meta)) in def.ops.iter().zip(&def.metadata).enumerate() {
+        if !needed.get(i).copied().unwrap_or(false) {
+            continue;
+        }
+        let mut op = op.clone();
+        for inp in &mut op.inputs {
+            inp.op = *renumbered.get(inp.op)?;
+        }
+        if let Some(slot) = renumbered.get_mut(i) {
+            *slot = out.ops.len();
+        }
+        out.ops.push(op);
+        out.metadata.push(meta.clone());
+    }
+    out.root = Some(Input {
+        op: *renumbered.get(input.op)?,
+        index: input.index,
+    });
+    Some(out)
+}
+
+/// A solved tree as a skills step reads it, through the gateway: its directories'
+/// entries (ReadDir), a regular file's bytes (ReadFile, bounded as dockerui bounds a
+/// read), no symlink followed.
+struct GatewayTree<'g, 'c, R, W> {
+    g: &'g Gateway<'c, R, W>,
+    r: Ref,
+    dirs: BTreeMap<Vec<u8>, Vec<(Vec<u8>, skills::EntryKind)>>,
+}
+
+impl<R: Read, W: Write> GatewayTree<'_, '_, R, W> {
+    /// Go's os.FileMode type bits: a directory, else a regular file where none is set.
+    fn kind(mode: u32) -> skills::EntryKind {
+        const DIR: u32 = 1 << 31;
+        const TYPE: u32 = DIR | 1 << 27 | 1 << 26 | 1 << 25 | 1 << 24 | 1 << 21 | 1 << 19;
+        if mode & DIR != 0 {
+            skills::EntryKind::Dir
+        } else if mode & TYPE == 0 {
+            skills::EntryKind::File
+        } else {
+            skills::EntryKind::Other
+        }
+    }
+
+    fn dir(&mut self, path: &[u8]) -> Result<Vec<(Vec<u8>, skills::EntryKind)>, String> {
+        if let Some(d) = self.dirs.get(path) {
+            return Ok(d.clone());
+        }
+        let shown = if path.is_empty() {
+            "/".to_string()
+        } else {
+            String::from_utf8_lossy(path).into_owned()
+        };
+        let list = self
+            .g
+            .client
+            .borrow_mut()
+            .read_dir(&self.r.id, &shown, "")
+            .map_err(|e| Failure::call(e).message)?;
+        let mut out: Vec<(Vec<u8>, skills::EntryKind)> = list
+            .into_iter()
+            .map(|s| {
+                let name = s.path.rsplit('/').next().unwrap_or_default().as_bytes().to_vec();
+                (name, Self::kind(s.mode))
+            })
+            .collect();
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        self.dirs.insert(path.to_vec(), out.clone());
+        Ok(out)
+    }
+}
+
+impl<R: Read, W: Write> skills::Fetched for GatewayTree<'_, '_, R, W> {
+    fn entries(&mut self) -> Result<Vec<(Vec<u8>, skills::EntryKind)>, String> {
+        self.dir(b"")
+    }
+
+    fn lookup(&mut self, path: &[u8]) -> Result<skills::Found, String> {
+        let (parent, name) = match path.iter().rposition(|&b| b == b'/') {
+            Some(i) => (
+                path.get(..i).unwrap_or_default(),
+                path.get(i + 1..).unwrap_or_default(),
+            ),
+            None => (b"".as_slice(), path),
+        };
+        let Some(kind) = self.dir(parent)?.iter().find(|(n, _)| n == name).map(|(_, k)| *k) else {
+            return Ok(skills::Found::Missing);
+        };
+        if kind != skills::EntryKind::File {
+            return Ok(skills::Found::Other);
+        }
+        let shown = String::from_utf8_lossy(path).into_owned();
+        self.g
+            .read_file(&self.r, &shown)
+            .map(skills::Found::File)
+            .map_err(|e| e.failure().message)
+    }
+}
+
+/// Each of shards' own skills steps (D54) made a file op BuildKit runs: the tree it checks
+/// solved first, read through the gateway, checked as `shards build` checks it, and laid
+/// out by the copies that check gives; a refusal the build's error, on the SKILL's lines.
+fn lay_skills<R: Read, W: Write>(
+    g: &Gateway<'_, R, W>,
+    def: &mut Definition,
+    carried: &Carried<'_>,
+    entry: &Entrypoint,
+) -> Result<(), Failure> {
+    for k in 0..def.ops.len() {
+        let (came_as, input) = match def.ops.get(k) {
+            Some(Op {
+                kind: OpKind::Skills { name },
+                inputs,
+                ..
+            }) => (
+                String::from_utf8_lossy(name).into_owned(),
+                inputs
+                    .first()
+                    .copied()
+                    .ok_or_else(|| Failure::new("a skills step without what it checks"))?,
+            ),
+            _ => continue,
+        };
+        let sub = closure(def, input)
+            .ok_or_else(|| Failure::new("a skills step's input is not in its definition"))?;
+        let m =
+            pb::definition(&sub, carried).ok_or_else(|| Failure::new("failed to marshal LLB definition"))?;
+        let r = g.solve(&m, &[], true)?.unwrap_or_default();
+        let mut tree = GatewayTree {
+            g,
+            r,
+            dirs: BTreeMap::new(),
+        };
+        let locations = def
+            .metadata
+            .get(k)
+            .map(|m| m.locations.clone())
+            .unwrap_or_default();
+        let actions =
+            skills::layout_of(&mut tree, &came_as).map_err(|e| entry.wrap(Failure::new(e), &locations))?;
+        if let Some(op) = def.ops.get_mut(k) {
+            op.kind = OpKind::File { actions };
+        }
+    }
+    Ok(())
 }
 
 fn json_string(s: &str) -> String {
@@ -1683,6 +1848,287 @@ mod tests {
         maps.sort();
         plain.extend(maps);
         plain
+    }
+
+    /// A BuildKit that answers each call, stream by stream, as it is told: the server's half
+    /// of a connection, HTTP/2 and gRPC as grpc-go writes them, each answer a message or a
+    /// status (trailers-only).
+    fn fake_server(answers: &[Result<Vec<u8>, (u32, &str)>]) -> Vec<u8> {
+        use shards_gateway::hpack;
+        let frame = |out: &mut Vec<u8>, kind: u8, flags: u8, stream: u32, payload: &[u8]| {
+            let n = payload.len() as u32;
+            out.extend_from_slice(&n.to_be_bytes()[1..]);
+            out.push(kind);
+            out.push(flags);
+            out.extend_from_slice(&stream.to_be_bytes());
+            out.extend_from_slice(payload);
+        };
+        let mut out = Vec::new();
+        frame(&mut out, 4, 0, 0, &[]);
+        for (i, a) in answers.iter().enumerate() {
+            let stream = 2 * i as u32 + 1;
+            match a {
+                Ok(message) => {
+                    let head = hpack::encode(&[(":status", "200"), ("content-type", "application/grpc")]);
+                    frame(&mut out, 1, 0x4, stream, &head);
+                    let mut data = vec![0u8];
+                    data.extend_from_slice(&(message.len() as u32).to_be_bytes());
+                    data.extend_from_slice(message);
+                    frame(&mut out, 0, 0, stream, &data);
+                    frame(&mut out, 1, 0x5, stream, &hpack::encode(&[("grpc-status", "0")]));
+                }
+                Err((code, message)) => {
+                    let code = code.to_string();
+                    let head = hpack::encode(&[
+                        (":status", "200"),
+                        ("content-type", "application/grpc"),
+                        ("grpc-status", &code),
+                        ("grpc-message", message),
+                    ]);
+                    frame(&mut out, 1, 0x5, stream, &head);
+                }
+            }
+        }
+        out
+    }
+
+    /// A SolveResponse holding the ref `id`.
+    fn solved(id: &str) -> Vec<u8> {
+        let mut r = shards_gateway::wire::Writer::default();
+        r.string(1, id);
+        let mut result = shards_gateway::wire::Writer::default();
+        result.message(3, &r.0);
+        let mut w = shards_gateway::wire::Writer::default();
+        w.message(3, &result.0);
+        w.0
+    }
+
+    /// fsutil's Stat of `path`, mode `mode`, `size` bytes.
+    fn stat(path: &str, mode: u32, size: u64) -> Vec<u8> {
+        let mut s = shards_gateway::wire::Writer::default();
+        s.string(1, path);
+        s.uint(2, u64::from(mode));
+        s.uint(5, size);
+        s.0
+    }
+
+    /// A ReadDirResponse of `entries`.
+    fn listed(entries: &[Vec<u8>]) -> Vec<u8> {
+        let mut w = shards_gateway::wire::Writer::default();
+        for e in entries {
+            w.message(1, e);
+        }
+        w.0
+    }
+
+    /// A StatFileResponse of `stat`, and a ReadFileResponse of `data`.
+    fn stated(stat: Vec<u8>) -> Vec<u8> {
+        let mut w = shards_gateway::wire::Writer::default();
+        w.message(1, &stat);
+        w.0
+    }
+
+    fn read(data: &[u8]) -> Vec<u8> {
+        let mut w = shards_gateway::wire::Writer::default();
+        w.bytes(1, data);
+        w.0
+    }
+
+    const DIR: u32 = 1 << 31 | 0o755;
+
+    /// A gateway over a fake BuildKit's `answers`, with the frontend capabilities BuildKit
+    /// v0.28.1 said it has in the capture, and grpcclient's LLB defaults.
+    fn gateway_over(
+        server: Vec<u8>,
+        out: &mut Vec<u8>,
+        f: impl FnOnce(&Gateway<'_, std::io::Cursor<Vec<u8>>, &mut Vec<u8>>),
+    ) {
+        let mut client = Client::new(std::io::Cursor::new(server), out).unwrap();
+        let frontend_caps = [
+            "frontend.caps",
+            "frontend.inputs",
+            "gateway.evaluate",
+            "gateway.exec",
+            "gateway.solve.evaluate",
+            "gateway.solve.metadata",
+            "gateway.warnings",
+            "proto.refarray",
+            "readdir",
+            "readfile",
+            "return",
+            "returnmap",
+            "solve.base",
+            "source.metaresolver",
+            "statfile",
+        ]
+        .iter()
+        .map(|id| gw::Cap {
+            id: (*id).to_string(),
+            enabled: true,
+            disabled_reason_msg: String::new(),
+        })
+        .collect();
+        let caps = Caps::of(&Pong {
+            frontend_caps,
+            ..Pong::default()
+        });
+        let g = Gateway {
+            client: RefCell::new(&mut client),
+            caps,
+            env: captured_env(),
+            opts: BTreeMap::new(),
+            failed: RefCell::new(None),
+            resolved: RefCell::new(BTreeMap::new()),
+            dockerignore: RefCell::new(None),
+            warn_into: RefCell::new(None),
+        };
+        f(&g);
+    }
+
+    /// A definition of the context, a SKILL's skills step over it, as the planner makes one.
+    fn skills_definition() -> Definition {
+        let mut meta = Meta::default();
+        meta.locations.push(vec![(2, 2)]);
+        Definition {
+            ops: vec![
+                Op {
+                    inputs: Vec::new(),
+                    kind: OpKind::Source {
+                        identifier: b"local://context".to_vec(),
+                        attrs: BTreeMap::from([(b"local.session".to_vec(), b"s".to_vec())]),
+                    },
+                    platform: None,
+                },
+                Op {
+                    inputs: vec![Input { op: 0, index: 0 }],
+                    kind: OpKind::Skills {
+                        name: b"my-skill".to_vec(),
+                    },
+                    platform: None,
+                },
+            ],
+            metadata: vec![Meta::default(), meta],
+            root: Some(Input { op: 1, index: 0 }),
+        }
+    }
+
+    fn entry() -> Entrypoint {
+        let def = local_definition("dockerfile", &["Agentfile"], "s", "dockerfile", "[internal] load");
+        Entrypoint {
+            filename: "Agentfile".into(),
+            data: b"FROM scratch\nSKILL ./my-skill\n".to_vec(),
+            definition: pb::definition(&def, &Carried::default()).unwrap(),
+            definition_json: pb::definition_json(&def, &Carried::default()).unwrap(),
+        }
+    }
+
+    /// A skills step becomes the file op `shards build` lays its skills with: its tree
+    /// solved and read through the gateway, checked as shards build checks it.
+    #[test]
+    fn skills_are_laid_out_through_the_gateway_as_shards_build_lays_them() {
+        let md = b"---\nname: my-skill\ndescription: Does a thing.\n---\nBody.\n";
+        let server = fake_server(&[
+            Ok(solved("r1")),
+            Ok(listed(&[stat("my-skill", DIR, 0)])),
+            Ok(listed(&[stat("SKILL.md", 0o644, md.len() as u64)])),
+            Ok(stated(stat("my-skill/SKILL.md", 0o644, md.len() as u64))),
+            Ok(read(md)),
+        ]);
+        let mut out = Vec::new();
+        gateway_over(server, &mut out, |g| {
+            let mut def = skills_definition();
+            lay_skills(g, &mut def, &Carried::default(), &entry()).unwrap();
+            let Some(Op {
+                kind: OpKind::File { actions },
+                inputs,
+                ..
+            }) = def.ops.get(1)
+            else {
+                panic!("{:?}", def.ops.get(1));
+            };
+            assert_eq!(inputs, &vec![Input { op: 0, index: 0 }]);
+            assert_eq!(actions.len(), 1);
+            let shards_dockerfile::llb::OpActionKind::Copy {
+                src,
+                dest,
+                dir_copy_contents,
+                ..
+            } = &actions[0].action
+            else {
+                panic!("{actions:?}");
+            };
+            assert_eq!(
+                (src.as_slice(), dest.as_slice(), *dir_copy_contents),
+                (b"/my-skill".as_slice(), b"/my-skill".as_slice(), true)
+            );
+        });
+    }
+
+    /// Where BuildKit cannot evaluate a solve, a stat of its result's root makes it, as
+    /// grpcclient falls back; where it can, it is asked to.
+    #[test]
+    fn an_evaluated_solve_falls_back_to_a_stat_as_grpcclient_does() {
+        let def = local_definition("context", &[".dockerignore"], "s", "k", "[internal] load");
+        let m = pb::definition(&def, &Carried::default()).unwrap();
+        // Without gateway.solve.evaluate: Solve, then StatFile of ".".
+        let server = fake_server(&[Ok(solved("r1")), Ok(stated(stat(".", DIR, 0)))]);
+        let mut out = Vec::new();
+        let mut client = Client::new(std::io::Cursor::new(server), &mut out).unwrap();
+        let g = Gateway {
+            client: RefCell::new(&mut client),
+            caps: Caps::of(&Pong::default()),
+            env: captured_env(),
+            opts: BTreeMap::new(),
+            failed: RefCell::new(None),
+            resolved: RefCell::new(BTreeMap::new()),
+            dockerignore: RefCell::new(None),
+            warn_into: RefCell::new(None),
+        };
+        assert_eq!(g.solve(&m, &[], true).unwrap().unwrap().id, "r1");
+        drop(g);
+        let asked = messages(&out);
+        assert_eq!(asked.len(), 2, "{asked:?}");
+        // The Solve did not ask BuildKit to evaluate (field 14 absent).
+        assert!(!fields(&asked[&1][0]).iter().any(|(tag, _)| tag >> 3 == 14));
+        // With it: one Solve, evaluated.
+        let mut out = Vec::new();
+        gateway_over(fake_server(&[Ok(solved("r1"))]), &mut out, |g| {
+            assert_eq!(g.solve(&m, &[], true).unwrap().unwrap().id, "r1");
+        });
+        let asked = messages(&out);
+        assert_eq!(asked.len(), 1);
+        assert!(
+            fields(&asked[&1][0])
+                .iter()
+                .any(|(tag, v)| tag >> 3 == 14 && v == &[1])
+        );
+    }
+
+    /// A skill the check refuses fails the build with the check's words, its excerpt the
+    /// SKILL's line.
+    #[test]
+    fn a_refused_skill_fails_the_build_on_its_line() {
+        let md = b"---\nname: Not Valid\n---\n";
+        let server = fake_server(&[
+            Ok(solved("r1")),
+            Ok(listed(&[stat("my-skill", DIR, 0)])),
+            Ok(listed(&[stat("SKILL.md", 0o644, md.len() as u64)])),
+            Ok(stated(stat("my-skill/SKILL.md", 0o644, md.len() as u64))),
+            Ok(read(md)),
+        ]);
+        let mut out = Vec::new();
+        gateway_over(server, &mut out, |g| {
+            let mut def = skills_definition();
+            let f = lay_skills(g, &mut def, &Carried::default(), &entry()).unwrap_err();
+            assert!(f.message.starts_with("skill my-skill: "), "{}", f.message);
+            assert_eq!(f.details.len(), 1);
+            assert_eq!(f.details[0].0, SOURCE_DETAIL);
+            let detail = String::from_utf8(f.details[0].1.clone()).unwrap();
+            assert!(
+                detail.ends_with(r#""ranges":[{"start":{"line":2},"end":{"line":2}}]}"#),
+                "{detail}"
+            );
+        });
     }
 
     /// The image's label lists what the frontend can do, so that BuildKit refuses a build
