@@ -86,6 +86,20 @@ pub fn reserve_ram(len: usize) -> io::Result<NonNull<u8>> {
     reserve(len)
 }
 
+/// Keeps `ptr..ptr+len`, guest RAM from [`reserve_ram`], on the host's base pages: memory
+/// the guest touches sparsely, where each huge page would hold 2 MiB resident for the few
+/// KiB it uses (x86_64's first 2 MiB: 78 of 512 pages, PM M157). Advice only, given before
+/// the first touch: where it fails, or the kernel has no THP, the memory stays as it was.
+pub fn small_pages(ptr: NonNull<u8>, len: usize) {
+    #[cfg(all(target_os = "linux", not(miri)))]
+    // SAFETY: madvise(2) of guest RAM, which the caller maps.
+    if unsafe { libc::madvise(ptr.as_ptr().cast(), len, libc::MADV_NOHUGEPAGE) } != 0 {
+        crate::debug!("MADV_NOHUGEPAGE: {}", io::Error::last_os_error());
+    }
+    #[cfg(not(all(target_os = "linux", not(miri))))]
+    let _ = (ptr, len);
+}
+
 /// The kernel's transparent huge page size, if it has transparent huge pages.
 #[cfg(all(target_os = "linux", not(miri)))]
 fn huge_page_size() -> Option<usize> {

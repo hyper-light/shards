@@ -46,6 +46,9 @@ pub fn reserve_ram(len: usize) -> io::Result<NonNull<u8>> {
     reserve(len)
 }
 
+/// Guest RAM on base pages, as `reserve_ram`'s always is here: nothing to do.
+pub fn small_pages(_ptr: NonNull<u8>, _len: usize) {}
+
 /// # Safety
 /// `ptr` must come from `reserve` or `reserve_ram` and not be used afterwards.
 pub unsafe fn release(ptr: NonNull<u8>, _len: usize) {

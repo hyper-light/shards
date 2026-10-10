@@ -189,7 +189,14 @@ pub fn load_kernel(mem: &GuestMemory, kernel: &File, low_ram_end: u64) -> Result
     })
 }
 
-/// Places the initrd at the first 2 MiB boundary after the kernel, below `limit`.
+/// The guest's page: an initrd starts on one.
+const PAGE: u64 = 0x1000;
+
+/// Places the initrd at the top of RAM below `limit`, page-aligned, above the kernel's end
+/// (`after`), as Firecracker and QEMU place it: beside what the guest kernel takes there
+/// from the top down early in boot (its memblock allocations), so that the two share the
+/// host's huge pages. 2 MiB above the kernel, a 3 MiB initrd held one more of them
+/// (PM M157).
 pub fn load_initrd(
     mem: &GuestMemory,
     initrd: &[u8],
@@ -197,14 +204,15 @@ pub fn load_initrd(
     limit: u64,
 ) -> Result<(u64, u64), BootError> {
     let len = initrd.len() as u64;
-    let start = after.checked_next_multiple_of(2 << 20).unwrap_or(u64::MAX);
-    if start.checked_add(len).is_none_or(|end| end > limit) {
-        return Err(BootError::DoesNotFit {
+    let start = limit
+        .checked_sub(len)
+        .map(|s| s & !(PAGE - 1))
+        .filter(|s| *s >= after)
+        .ok_or(BootError::DoesNotFit {
             what: "initrd",
-            at: start,
+            at: after,
             len,
-        });
-    }
+        })?;
     mem.access()?.write(start, initrd)?;
     Ok((start, len))
 }
@@ -381,6 +389,28 @@ mod tests {
         let ds = segment(BOOT_DS, GDT_DATA);
         assert_eq!((ds.base, ds.limit, ds.kind), (0, 0xffff_ffff, 0x3));
         assert!(!ds.long && ds.db && ds.present);
+    }
+
+    /// The initrd ends within a page of the top of low RAM, starts on a page, holds what it
+    /// was given, and fails where it would reach below the kernel's end.
+    #[test]
+    fn the_initrd_goes_at_the_top_of_low_ram() {
+        let mem = GuestMemory::anonymous(&[(0, 64 << 20)]).unwrap();
+        let initrd: Vec<u8> = (0..(3 << 20) + 5).map(|i| (i % 251) as u8).collect();
+        let (start, len) = load_initrd(&mem, &initrd, 40 << 20, 64 << 20).unwrap();
+        assert_eq!(len, initrd.len() as u64);
+        assert_eq!(start % PAGE, 0);
+        assert!(
+            start + len <= 64 << 20 && start + len > (64 << 20) - PAGE,
+            "{start:#x}"
+        );
+        let mut back = vec![0u8; initrd.len()];
+        mem.access().unwrap().read(start, &mut back).unwrap();
+        assert_eq!(back, initrd);
+        assert!(matches!(
+            load_initrd(&mem, &vec![0u8; 30 << 20], 40 << 20, 64 << 20),
+            Err(BootError::DoesNotFit { what: "initrd", .. })
+        ));
     }
 
     #[test]
