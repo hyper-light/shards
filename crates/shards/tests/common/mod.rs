@@ -336,6 +336,56 @@ pub fn until_unserved(home: &Path) {
     }
 }
 
+/// The processes under the daemon whose log is `log` (its first line names its PID), each
+/// as `ps` shows it: whether a run's VM and network processes still live, for a failure
+/// to say.
+#[cfg(unix)]
+pub fn processes_under(log: &str) -> String {
+    let Some(daemon) = log.lines().find_map(|l| {
+        l.strip_prefix("shards daemon ")?
+            .split(':')
+            .next()?
+            .parse::<u32>()
+            .ok()
+    }) else {
+        return "(no daemon named in its log)".into();
+    };
+    let listed = Command::new("ps")
+        .args(["-axo", "pid=,ppid=,stat=,etime=,command="])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default();
+    let rows: Vec<(u32, u32, &str)> = listed
+        .lines()
+        .filter_map(|l| {
+            let mut f = l.split_whitespace();
+            Some((f.next()?.parse().ok()?, f.next()?.parse().ok()?, l.trim()))
+        })
+        .collect();
+    let mut under = vec![daemon];
+    loop {
+        let more: Vec<u32> = rows
+            .iter()
+            .filter(|(pid, ppid, _)| under.contains(ppid) && !under.contains(pid))
+            .map(|(pid, ..)| *pid)
+            .collect();
+        if more.is_empty() {
+            break;
+        }
+        under.extend(more);
+    }
+    let shown: Vec<&str> = rows
+        .iter()
+        .filter(|(pid, ..)| under.contains(pid))
+        .map(|(.., line)| *line)
+        .collect();
+    if shown.is_empty() {
+        format!("(daemon {daemon} is gone)")
+    } else {
+        shown.join("\n")
+    }
+}
+
 /// Docker's default bridge as the daemon and the builder elect it on this host
 /// (shards_net::bridge): its gateway and guest addresses are what a run sees.
 #[cfg(unix)]

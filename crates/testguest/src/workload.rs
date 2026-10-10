@@ -104,7 +104,7 @@ pub fn main() -> ! {
         "agent" => agent(),
         "vsock-agent" => vsock_agent(arg(1).parse().unwrap_or(1028)),
         "hold" => hold(arg(1)),
-        "udp-echo" => udp_echo(arg(1), arg(2).parse().unwrap_or(1)),
+        "udp-echo" => udp_echo(arg(1), arg(2)),
         "spin" => {
             let _ = writeln!(io::stdout(), "ready");
             let mut n = 0u64;
@@ -833,9 +833,11 @@ fn hold(port: &str) -> i32 {
     }
 }
 
-/// Binds UDP `port` at every address, says `ready`, then answers `datagrams` datagrams
-/// in turn, each with `from IP:PORT ` (its sender) and what it held.
-fn udp_echo(port: &str, datagrams: usize) -> i32 {
+/// Binds UDP `port` at every address, says `ready`, then answers each datagram with
+/// `from IP:PORT ` (its sender) and what it held, saying `datagram from IP:PORT LEN` for
+/// each, until one holds `stop`: a published port on a shared host may be sent anything,
+/// so no count of datagrams ends it.
+fn udp_echo(port: &str, stop: &str) -> i32 {
     let sock = match std::net::UdpSocket::bind(format!("0.0.0.0:{port}")) {
         Ok(s) => s,
         Err(e) => {
@@ -845,18 +847,26 @@ fn udp_echo(port: &str, datagrams: usize) -> i32 {
     };
     let _ = writeln!(io::stdout(), "ready");
     let mut buf = [0u8; 2048];
-    for _ in 0..datagrams {
+    loop {
         let answered = sock.recv_from(&mut buf).and_then(|(n, peer)| {
+            let _ = writeln!(io::stdout(), "datagram from {peer} {n}");
+            let held = buf.get(..n).unwrap_or_default();
             let mut answer = format!("from {peer} ").into_bytes();
-            answer.extend_from_slice(buf.get(..n).unwrap_or_default());
-            sock.send_to(&answer, peer)
+            answer.extend_from_slice(held);
+            sock.send_to(&answer, peer).map(|_| held == stop.as_bytes())
         });
-        if let Err(e) = answered {
-            let _ = writeln!(io::stdout(), "udp error {e}");
-            return 1;
+        match answered {
+            Ok(true) => {
+                let _ = writeln!(io::stdout(), "stopped");
+                return 0;
+            }
+            Ok(false) => {}
+            Err(e) => {
+                let _ = writeln!(io::stdout(), "udp error {e}");
+                return 1;
+            }
         }
     }
-    0
 }
 
 /// File operations, in order: `mkdir:P`, `write:P=DATA`, `link:OLD:NEW`, `symlink:T:P`,

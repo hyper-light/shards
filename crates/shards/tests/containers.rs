@@ -3547,7 +3547,9 @@ fn published_ports_reach_the_guest_as_dockerd_publishes_them() {
 
 /// `-p PORT/udp`: datagrams reach the guest as dockerd's proxy carries them: each host
 /// peer from a gateway port of its own, its answers back to that peer from the address
-/// it asked; `port` and `ps` list the port as UDP.
+/// it asked; `port` and `ps` list the port as UDP. The guest answers until it is sent
+/// `bye`: the published port is one of the host's ephemeral ports, which a datagram meant
+/// for an earlier holder of the number may still reach.
 #[test]
 fn published_udp_ports_carry_datagrams_both_ways() {
     use std::net::UdpSocket;
@@ -3558,7 +3560,7 @@ fn published_udp_ports_carry_datagrams_both_ways() {
         &home,
         &image,
         &["--name", "dns", "-p", "5353/udp"],
-        &["udp-echo", "5353", "5"],
+        &["udp-echo", "5353", "bye"],
     );
     let listed = shards_in(&home, &["port", "dns", "5353/udp"]);
     let n: u16 = listed
@@ -3576,17 +3578,18 @@ fn published_udp_ports_carry_datagrams_both_ways() {
         "{ps}"
     );
     // What the guest answers `client`'s `payload` with, and where the answer came from.
-    // An answer that never comes says what each side saw: the daemon's log, the run's
-    // own output, and the host's UDP sockets on the port (a lost datagram, 2026-10-06,
-    // under the full suite's load).
+    // An answer that never comes says what each side saw: the guest's datagrams (its
+    // output), whether the run and its processes live, the daemon's log, and the host's
+    // UDP sockets on the port (a lost answer, 2026-10-06 and 2026-10-10, under load).
     let ask = |client: &UdpSocket, to: std::net::SocketAddr, payload: &[u8]| {
         client.set_read_timeout(Some(TIMEOUT)).unwrap();
         client.send_to(payload, to).unwrap();
         let mut buf = [0u8; 2048];
         let (len, from) = common::recv_from(client, &mut buf).unwrap_or_else(|e| {
             let log = std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default();
-            let tail: Vec<&str> = log.lines().rev().take(60).collect();
             let logs = shards_in(&home, &["logs", "dns"]);
+            let listed = shards_in(&home, &["ps", "-a"]);
+            let state = shards_in(&home, &["inspect", "-f", "{{json .State}}", "dns"]);
             let sockets = std::process::Command::new("netstat")
                 .args(["-an", "-p", "udp"])
                 .output()
@@ -3595,8 +3598,8 @@ fn published_udp_ports_carry_datagrams_both_ways() {
             let port = to.port().to_string();
             let ours: Vec<&str> = sockets.lines().filter(|l| l.contains(&port)).collect();
             panic!(
-                "no answer to {payload:?} from {to}: {e}\n--- daemon.log (last lines first)\n{}\n--- logs\n{logs}\n--- netstat {port}\n{}",
-                tail.join("\n"),
+                "no answer to {payload:?} from {to}: {e}\n--- logs\n{logs}\n--- ps -a\n{listed}\n--- State\n{state}\n--- the daemon's processes\n{}\n--- netstat {port}\n{}\n--- daemon.log\n{log}",
+                common::processes_under(&log),
                 ours.join("\n")
             )
         });
@@ -3646,6 +3649,8 @@ fn published_udp_ports_carry_datagrams_both_ways() {
     let (third, from) = ask(&c, v6, b"three");
     assert_eq!(from, v6);
     gateway_port(&third, "three");
+    let (bye, _) = ask(&a, v4, b"bye");
+    gateway_port(&bye, "bye");
     assert_eq!(exit(&mut run), Some(0));
     // Ended, its port is free at once.
     drop(UdpSocket::bind(("0.0.0.0", n)).unwrap());
