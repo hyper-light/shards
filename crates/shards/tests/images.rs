@@ -293,6 +293,69 @@ fn repeat_runs_restore_a_template_of_the_image() {
     );
 }
 
+/// An Agentfile's image restores its template as any image does. Its template is saved
+/// with the in-VM server's device after its root filesystem (D60), and each restore is
+/// given that device too: given its root filesystem alone, every restore was refused ("the
+/// template names files it was not given") and each run booted. The guest is recorded
+/// here, as users run, where `SHARDS_KERNEL` and `SHARDS_INIT` would boot every run.
+#[test]
+fn an_agentfiles_image_restores_its_template_too() {
+    if cannot_run_vms() {
+        eprintln!("SKIP: this host cannot run VMs");
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("agentfile-templates");
+    let env = [("SHARDS_HOME", home.as_os_str())];
+    let args = [
+        "use".as_ref(),
+        "--kernel".as_ref(),
+        kernel().as_os_str(),
+        "--init".as_ref(),
+        guest_init().as_os_str(),
+    ];
+    let recorded = run_shards_env(&["guest"], &args, &env, TIMEOUT);
+    assert_eq!(recorded.status, Some(0), "{}", recorded.stderr);
+    let ctx = TempDir::new("agentfile-templates-ctx");
+    std::fs::create_dir_all(ctx.join("agent")).unwrap();
+    std::fs::write(ctx.join("agent/agent.json"), r#"{"name":"main"}"#).unwrap();
+    std::fs::write(
+        ctx.join("Agentfile"),
+        format!("FROM {image}\nAGENT main FROM ./agent\n"),
+    )
+    .unwrap();
+    let built = run_shards_env(
+        &["build"],
+        &["-t", "agents:1", ctx.to_str().unwrap()],
+        &env,
+        TIMEOUT,
+    );
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    let booted = |run: &common::Run| run.marker_us(shards_abi::marker::INIT_STARTED).is_some();
+    let first = run_shards_env(&["run"], &["agents:1"], &env, TIMEOUT);
+    assert_eq!(first.status, Some(0), "{}", first.stderr);
+    assert!(booted(&first), "{}", first.stderr);
+    if !shards_vmm::vm::SNAPSHOTS {
+        return;
+    }
+    for _ in 0..2 {
+        let again = run_shards_env(&["run"], &["agents:1"], &env, TIMEOUT);
+        let log = std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default();
+        let shown = format!(
+            "--- stdout\n{}\n--- stderr\n{}\n--- daemon.log\n{log}",
+            again.stdout, again.stderr
+        );
+        assert_eq!(again.status, Some(0), "{shown}");
+        assert!(!again.stderr.contains("does not restore"), "{shown}");
+        assert!(!booted(&again), "restored, not booted: {shown}");
+        assert!(again.marker_us(shards_abi::marker::RESUMED).is_some(), "{shown}");
+    }
+    let log = std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default();
+    assert!(!log.contains("names files it was not given"), "{log}");
+    let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
+    assert_eq!(stopped.status, Some(0), "{}", stopped.stderr);
+}
+
 /// shards' grammar makes an image a microVM before any action but its removal, as `run`
 /// does: `inspect vm`, `inspect image`, `history image` and `tag image` of an image not
 /// here pull and convert it first. Docker's own order (`image inspect`) answers as

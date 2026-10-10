@@ -163,6 +163,24 @@ impl<D: Disk> Daemon<D> {
             backing.push(":ro");
             args.extend(["--backing".into(), backing]);
         }
+        // An Agentfile's template restores against the in-VM server's device too (D60),
+        // the daemon's own, as its cold boot was given it: without it every restore is
+        // refused and each run boots.
+        if *pool
+            .server
+            .get_or_insert_with(|| crate::run::Origin::read(dir).is_some_and(|o| o.server()))
+        {
+            match crate::guest::server_device(&self.home) {
+                Ok(device) => {
+                    // As the VM saving the template recorded it: resolved, as its root
+                    // filesystem is.
+                    let mut backing = resolved(&device).into_os_string();
+                    backing.push(":ro");
+                    args.extend(["--backing".into(), backing]);
+                }
+                Err(e) => log(format!("{}: the in-VM server's device: {e}", dir.display())),
+            }
+        }
         Some(Planned {
             dir: dir.to_path_buf(),
             args,
