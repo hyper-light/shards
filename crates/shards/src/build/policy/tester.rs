@@ -936,6 +936,7 @@ mod tests {
             serde_json::from_str(include_str!("../../../testdata/policy/tester.json")).unwrap();
         let base = std::env::temp_dir().join(format!("shards-policy-tester-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
+        let mut failures = Vec::new();
         for (i, c) in cases.as_array().unwrap().iter().enumerate() {
             let dir = base.join(i.to_string());
             std::fs::create_dir_all(&dir).unwrap();
@@ -971,10 +972,35 @@ mod tests {
                 assert_eq!((stdout.as_str(), err.as_str(), status), (*ours, "", 1), "{name}");
                 continue;
             }
-            assert_eq!(err, c["err"].as_str().unwrap(), "{name}");
-            assert_eq!(stdout, c["stdout"].as_str().unwrap(), "{name}");
-            assert_eq!(status, c["status"].as_i64().unwrap(), "{name}");
+            let want = (c["err"].as_str().unwrap(), c["stdout"].as_str().unwrap());
+            // An error ending in the host's own words (a file not found, a directory read)
+            // is buildx's on the host the oracle ran on, Linux. On Windows Go's words are
+            // Windows' (os.Stat's GetFileAttributesEx, FormatMessage's text), which the
+            // oracle does not record: there the error short of its last path error alone
+            // is compared, as tests/buildx.rs compares one.
+            let windows_words = cfg!(windows)
+                && ["no such file or directory", "is a directory"]
+                    .iter()
+                    .any(|t| want.0.ends_with(t));
+            let head = |s: &str| s.rsplitn(3, ": ").nth(2).map(str::to_string);
+            let err_ok = if windows_words {
+                head(want.0).is_some() && head(&err) == head(want.0)
+            } else {
+                err == want.0
+            };
+            if !err_ok || stdout != want.1 || status != c["status"].as_i64().unwrap() {
+                failures.push(format!(
+                    "{name}\n  got:  {status} {stdout:?} {err:?}\n  want: {} {:?} {:?}",
+                    c["status"], want.1, want.0
+                ));
+            }
         }
         let _ = std::fs::remove_dir_all(&base);
+        assert!(
+            failures.is_empty(),
+            "{} cases differ:\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
     }
 }
