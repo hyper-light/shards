@@ -63,6 +63,28 @@ pub struct Client {
     user_agent: String,
     cancel: Option<Cancel>,
     proxies: Proxies,
+    patience: Patience,
+    /// The addresses a connection may go to, where not all may (a build's proxy, D110).
+    reach: Option<fn(std::net::IpAddr) -> bool>,
+}
+
+/// How long a request waits on its server: for its response's head, and on any read or
+/// write that makes no progress. `None` waits for as long as it takes, until the request
+/// is cancelled. A registry's are bounded ([`HEAD`] and 30 s); a build's proxy waits as
+/// long as the step it serves does, as Go's transport has no bound of its own (D110).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Patience {
+    pub head: Option<Duration>,
+    pub stall: Option<Duration>,
+}
+
+impl Default for Patience {
+    fn default() -> Patience {
+        Patience {
+            head: Some(HEAD),
+            stall: Some(STALL),
+        }
+    }
 }
 
 /// Stops a client's requests from another thread, as cancelling Go's request context
@@ -231,6 +253,16 @@ impl Response<'_> {
             .map(|(_, v)| v.as_str())
     }
 
+    /// Its fields, as the server sent them, in order.
+    pub fn fields(&self) -> &[(String, String)] {
+        &self.headers
+    }
+
+    /// Its reason phrase, empty where the server gave none.
+    pub fn reason(&self) -> &str {
+        &self.reason
+    }
+
     /// Every value of the field `name`, in order.
     pub fn headers<'a>(&'a self, name: &'a str) -> impl Iterator<Item = &'a str> + 'a {
         self.headers
@@ -254,7 +286,24 @@ impl Client {
             proxies: Proxies::default(),
             user_agent: user_agent.to_string(),
             cancel: None,
+            patience: Patience::default(),
+            reach: None,
         }
+    }
+
+    /// This client, its requests waiting on their servers as `patience` says.
+    pub fn with_patience(mut self, patience: Patience) -> Client {
+        self.patience = patience;
+        self
+    }
+
+    /// This client, connecting only to addresses `reach` allows: a name none of whose
+    /// addresses it allows, or an address it does not, fails to connect. A proxy the
+    /// environment names is reached whatever its address; a URL that names an address
+    /// `reach` refuses is refused before any proxy is asked for it.
+    pub fn reaching(mut self, reach: fn(std::net::IpAddr) -> bool) -> Client {
+        self.reach = Some(reach);
+        self
     }
 
     /// This client, its requests failing once `cancel` is cancelled.
@@ -382,10 +431,16 @@ impl Client {
             None => req.url.target().to_string(),
         };
         let mut head = format!("{} {target} HTTP/1.1\r\n", req.method);
-        let mut fields: Vec<(&str, String)> = vec![
-            ("Host", req.url.authority()),
-            ("User-Agent", self.user_agent.clone()),
-        ];
+        let mut fields: Vec<(&str, String)> = vec![("Host", req.url.authority())];
+        // The request's own User-Agent where it brings one, else the client's, if any.
+        if !self.user_agent.is_empty()
+            && !req
+                .headers
+                .iter()
+                .any(|(n, _)| n.eq_ignore_ascii_case("user-agent"))
+        {
+            fields.push(("User-Agent", self.user_agent.clone()));
+        }
         if let Some(authorization) = forwarded.and_then(|p| p.authorization.clone()) {
             fields.push(("Proxy-Authorization", authorization));
         }
@@ -412,14 +467,14 @@ impl Client {
 
     fn exchange(&self, mut conn: Conn, req: &Request<'_>, head: &[u8]) -> Result<Response<'_>, Failure> {
         let written = conn.io.get_mut().write_all(head).and_then(|()| match req.file {
-            Some((file, from, len)) => send_body(&mut conn, file, from, len),
+            Some((file, from, len)) => send_body(&mut conn, file, from, len, self.patience.stall),
             None => conn.io.get_mut().flush().map(|()| true),
         });
         // A server may answer before it has read the whole request, then close: a 413 or a
         // 401 to an upload. Its answer is taken as it comes (`send_body`), or where a
         // write fails as the server leaves, from what it left.
         let (head, early) = match written {
-            Ok(whole) => (read_head(&mut conn, req.url)?, !whole),
+            Ok(whole) => (read_head(&mut conn, req.url, self.patience.head)?, !whole),
             Err(e) => {
                 let left = matches!(
                     e.kind(),
@@ -431,7 +486,10 @@ impl Client {
                 if !left {
                     return Err(sending());
                 }
-                (read_head(&mut conn, req.url).map_err(|_| sending())?, true)
+                (
+                    read_head(&mut conn, req.url, self.patience.head).map_err(|_| sending())?,
+                    true,
+                )
             }
         };
         let Head {
@@ -454,7 +512,8 @@ impl Client {
             && headers
                 .iter()
                 .any(|(n, _)| n.eq_ignore_ascii_case("content-length"));
-        conn.stall().map_err(|e| Failure::Other(e.into()))?;
+        conn.stall(self.patience.stall)
+            .map_err(|e| Failure::Other(e.into()))?;
         let mut body = Body {
             conn: Some(conn),
             framing,
@@ -476,7 +535,21 @@ impl Client {
     fn connect(&self, url: &Url, key: Key, proxy: Option<&Proxy>) -> Result<Conn, Error> {
         // The first hop: the proxy, when there is one, else the server.
         let first = proxy.map_or(url, |p| &p.url);
-        let tcp = dial(first, self.cancel.as_ref()).map_err(|e| match proxy {
+        // An address the client may not reach is refused before a proxy is asked for it;
+        // the proxy is reached wherever it is, and a name it resolves is its own.
+        let reach = match proxy {
+            Some(_) => {
+                let host = url.host().trim_start_matches('[').trim_end_matches(']');
+                if let (Some(reach), Ok(ip)) = (self.reach, host.parse::<std::net::IpAddr>())
+                    && !reach(ip)
+                {
+                    return Err(unreachable(url));
+                }
+                None
+            }
+            None => self.reach,
+        };
+        let tcp = dial(first, self.cancel.as_ref(), reach).map_err(|e| match proxy {
             Some(p) => e.context(format!("proxyconnect {}", p.url.authority())),
             None => e,
         })?;
@@ -490,7 +563,7 @@ impl Client {
         if let Some(proxy) = proxy
             && url.scheme() == Scheme::Https
         {
-            tunnel(&mut hop, url, proxy, &self.user_agent)?;
+            tunnel(&mut hop, url, proxy, &self.user_agent, self.patience.head)?;
         }
         let stream = match url.scheme() {
             Scheme::Http => Stream::Plain(hop),
@@ -503,7 +576,7 @@ impl Client {
         };
         // The request's writes are bounded too: a fresh connection would otherwise have
         // none, or what was left of the handshake's.
-        conn.stall()?;
+        conn.stall(self.patience.stall)?;
         Ok(conn)
     }
 
@@ -598,8 +671,15 @@ impl<T: Write> Write for Hearing<'_, T> {
 
 /// Asks `proxy`, over `hop`, for a tunnel to `url`'s host (RFC 9110 §9.3.6), as Go's
 /// transport asks: `CONNECT host:port`, with the proxy's credentials, its answer awaited
-/// for 30 s. Anything but 200 is refused, in its status line's words, as Go's error says.
-fn tunnel(hop: &mut Hop, url: &Url, proxy: &Proxy, user_agent: &str) -> Result<(), Error> {
+/// for `patience` (30 s for a registry). Anything but 200 is refused, in its status line's
+/// words, as Go's error says.
+fn tunnel(
+    hop: &mut Hop,
+    url: &Url,
+    proxy: &Proxy,
+    user_agent: &str,
+    patience: Option<Duration>,
+) -> Result<(), Error> {
     let target = format!("{}:{}", url.host(), url.port());
     let proxying = |what: &dyn std::fmt::Display| {
         Error::new(format!(
@@ -607,15 +687,20 @@ fn tunnel(hop: &mut Hop, url: &Url, proxy: &Proxy, user_agent: &str) -> Result<(
             proxy.url.authority()
         ))
     };
-    let mut head = format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\nUser-Agent: {user_agent}\r\n");
+    let mut head = format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n");
+    if !user_agent.is_empty() {
+        head.push_str("User-Agent: ");
+        head.push_str(user_agent);
+        head.push_str("\r\n");
+    }
     if let Some(authorization) = &proxy.authorization {
         head.push_str("Proxy-Authorization: ");
         head.push_str(authorization);
         head.push_str("\r\n");
     }
     head.push_str("\r\n");
-    hop.tcp().set_write_timeout(Some(HEAD))?;
-    hop.tcp().set_read_timeout(Some(HEAD))?;
+    hop.tcp().set_write_timeout(patience)?;
+    hop.tcp().set_read_timeout(patience)?;
     hop.write_all(head.as_bytes())
         .and_then(|()| hop.flush())
         .map_err(|e| proxying(&e))?;
@@ -655,9 +740,15 @@ fn tunnel(hop: &mut Hop, url: &Url, proxy: &Proxy, user_agent: &str) -> Result<(
 /// only to be readable or writable, and an answer is taken as soon as it comes, as Go's
 /// transport reads a response while it writes the request (net/http transport.go,
 /// persistConn's readLoop and writeLoop).
-fn send_body(conn: &mut Conn, file: &std::fs::File, from: u64, len: u64) -> io::Result<bool> {
+fn send_body(
+    conn: &mut Conn,
+    file: &std::fs::File,
+    from: u64,
+    len: u64,
+    stall: Option<Duration>,
+) -> io::Result<bool> {
     conn.io.get_ref().tcp().set_nonblocking(true)?;
-    let sent = sending(conn, file, from, len);
+    let sent = sending(conn, file, from, len, stall);
     let restored = conn.io.get_ref().tcp().set_nonblocking(false);
     let sent = sent?;
     restored?;
@@ -667,7 +758,13 @@ fn send_body(conn: &mut Conn, file: &std::fs::File, from: u64, len: u64) -> io::
 /// [`send_body`]'s writes: on Linux a plain connection takes the body by sendfile(2), as
 /// std copies a file to a socket; otherwise in 64 KiB writes, four TLS records each, where
 /// io::copy's 8 KiB writes make a record and a send of each.
-fn sending(conn: &mut Conn, mut file: &std::fs::File, from: u64, len: u64) -> io::Result<bool> {
+fn sending(
+    conn: &mut Conn,
+    mut file: &std::fs::File,
+    from: u64,
+    len: u64,
+    stall: Option<Duration>,
+) -> io::Result<bool> {
     use std::io::{BufRead as _, Seek as _, SeekFrom};
     // The server has left: what it said is read next.
     let gone = |e: &io::Error| {
@@ -682,7 +779,7 @@ fn sending(conn: &mut Conn, mut file: &std::fs::File, from: u64, len: u64) -> io
     let mut buf = vec![0u8; 64 << 10];
     let (mut at, mut end, mut sent) = (0usize, 0usize, 0u64);
     loop {
-        let (readable, writable) = ready(conn.io.get_ref().tcp(), STALL)?;
+        let (readable, writable) = ready(conn.io.get_ref().tcp(), stall)?;
         if readable {
             match conn.io.fill_buf() {
                 // An answer, or the server's end: read next, either.
@@ -752,15 +849,21 @@ fn send_from(tcp: &TcpStream, file: &std::fs::File, at: u64, left: u64) -> io::R
     u64::try_from(n).map_err(|_| io::Error::last_os_error())
 }
 
-/// Waits up to `d` until `tcp` has something to read, or has ended, or has room to write:
-/// (readable, writable), an error or hangup both. `TimedOut` past `d`.
+/// Waits up to `d` (without end where `None`) until `tcp` has something to read, or has
+/// ended, or has room to write: (readable, writable), an error or hangup both. `TimedOut`
+/// past `d`.
 #[cfg(unix)]
-fn ready(tcp: &TcpStream, d: Duration) -> io::Result<(bool, bool)> {
+fn ready(tcp: &TcpStream, d: Option<Duration>) -> io::Result<(bool, bool)> {
     use std::os::fd::AsRawFd;
-    let deadline = Instant::now() + d;
+    let deadline = d.map(|d| Instant::now() + d);
     loop {
-        let left = deadline.saturating_duration_since(Instant::now());
-        let ms = libc::c_int::try_from(left.as_micros().div_ceil(1000).max(1)).unwrap_or(libc::c_int::MAX);
+        let ms = match deadline {
+            Some(deadline) => {
+                let left = deadline.saturating_duration_since(Instant::now());
+                libc::c_int::try_from(left.as_micros().div_ceil(1000).max(1)).unwrap_or(libc::c_int::MAX)
+            }
+            None => -1,
+        };
         let mut p = libc::pollfd {
             fd: tcp.as_raw_fd(),
             events: libc::POLLIN | libc::POLLOUT,
@@ -772,7 +875,7 @@ fn ready(tcp: &TcpStream, d: Duration) -> io::Result<(bool, bool)> {
                 let (end, r) = (libc::POLLHUP | libc::POLLERR, p.revents);
                 return Ok((r & (libc::POLLIN | end) != 0, r & (libc::POLLOUT | end) != 0));
             }
-            0 if Instant::now() >= deadline => {
+            0 if deadline.is_some_and(|d| Instant::now() >= d) => {
                 return Err(io::Error::new(io::ErrorKind::TimedOut, "no progress in 30 s"));
             }
             0 => {}
@@ -788,15 +891,20 @@ fn ready(tcp: &TcpStream, d: Duration) -> io::Result<(bool, bool)> {
 
 /// [`ready`] on Windows: WSAPoll.
 #[cfg(windows)]
-fn ready(tcp: &TcpStream, d: Duration) -> io::Result<(bool, bool)> {
+fn ready(tcp: &TcpStream, d: Option<Duration>) -> io::Result<(bool, bool)> {
     use std::os::windows::io::AsRawSocket;
     use windows_sys::Win32::Networking::WinSock::{
         POLLERR, POLLHUP, POLLRDNORM, POLLWRNORM, WSAPOLLFD, WSAPoll,
     };
-    let deadline = Instant::now() + d;
+    let deadline = d.map(|d| Instant::now() + d);
     loop {
-        let left = deadline.saturating_duration_since(Instant::now());
-        let ms = i32::try_from(left.as_micros().div_ceil(1000).max(1)).unwrap_or(i32::MAX);
+        let ms = match deadline {
+            Some(deadline) => {
+                let left = deadline.saturating_duration_since(Instant::now());
+                i32::try_from(left.as_micros().div_ceil(1000).max(1)).unwrap_or(i32::MAX)
+            }
+            None => -1,
+        };
         let mut p = WSAPOLLFD {
             fd: tcp.as_raw_socket() as usize,
             events: POLLRDNORM | POLLWRNORM,
@@ -808,7 +916,7 @@ fn ready(tcp: &TcpStream, d: Duration) -> io::Result<(bool, bool)> {
                 let (end, r) = (POLLHUP | POLLERR, p.revents);
                 return Ok((r & (POLLRDNORM | end) != 0, r & (POLLWRNORM | end) != 0));
             }
-            0 if Instant::now() >= deadline => {
+            0 if deadline.is_some_and(|d| Instant::now() >= d) => {
                 return Err(io::Error::new(io::ErrorKind::TimedOut, "no progress in 30 s"));
             }
             0 => {}
@@ -880,10 +988,29 @@ fn resolve(url: &Url, deadline: Instant, cancel: Option<&Cancel>) -> Result<Vec<
     }
 }
 
-fn dial(url: &Url, cancel: Option<&Cancel>) -> Result<TcpStream, Error> {
+/// What a client [`Client::reaching`] some addresses alone says of a URL it may not reach.
+fn unreachable(url: &Url) -> Error {
+    Error::new(format!(
+        "{}: no address a build step may reach (the host's own, link-local or multicast)",
+        url.authority()
+    ))
+}
+
+fn dial(
+    url: &Url,
+    cancel: Option<&Cancel>,
+    reach: Option<fn(std::net::IpAddr) -> bool>,
+) -> Result<TcpStream, Error> {
     // The name's lookup is within the dial's time, as Go's Dialer counts it.
     let deadline = Instant::now() + CONNECT;
-    let addrs = interleave(resolve(url, deadline, cancel)?);
+    let mut addrs = resolve(url, deadline, cancel)?;
+    if let Some(reach) = reach {
+        addrs.retain(|a| reach(a.ip()));
+        if addrs.is_empty() {
+            return Err(unreachable(url));
+        }
+    }
+    let addrs = interleave(addrs);
     let (tx, rx) = mpsc::channel();
     let mut pending = 0usize;
     let mut last = None;
@@ -974,24 +1101,30 @@ struct Head {
     fields: Vec<(String, String)>,
 }
 
-/// Reads a response head, skipping 1xx ones, within 10 MiB and 30 s in all.
-fn read_head(conn: &mut Conn, url: &Url) -> Result<Head, Failure> {
-    let deadline = Instant::now() + HEAD;
+/// Reads a response head, skipping 1xx ones, within 10 MiB and `patience` in all (30 s
+/// for a registry; without end where `None`).
+fn read_head(conn: &mut Conn, url: &Url, patience: Option<Duration>) -> Result<Head, Failure> {
+    let deadline = patience.map(|p| Instant::now() + p);
     let mut budget = MAX_HEAD;
     let mut first = true;
     loop {
         let mut buf = Vec::new();
         let mut lines = 0;
         let parsed = loop {
-            let left = deadline
-                .checked_duration_since(Instant::now())
-                .filter(|d| !d.is_zero())
-                .ok_or_else(|| {
-                    Failure::Other(Error::of(
-                        ErrorKind::Transient,
-                        format!("{url}: no response within 30 s"),
-                    ))
-                })?;
+            let left = match deadline {
+                Some(deadline) => Some(
+                    deadline
+                        .checked_duration_since(Instant::now())
+                        .filter(|d| !d.is_zero())
+                        .ok_or_else(|| {
+                            Failure::Other(Error::of(
+                                ErrorKind::Transient,
+                                format!("{url}: no response within 30 s"),
+                            ))
+                        })?,
+                ),
+                None => None,
+            };
             conn.set_timeout(left).map_err(|e| Failure::Other(e.into()))?;
             let available = match conn.io.fill_buf() {
                 Ok(bytes) => bytes,
@@ -1527,10 +1660,10 @@ impl Conn {
     /// bsd/kern/uipc_socket.c, sosetoptlock): its reads return what is buffered, then its
     /// end, and its writes fail, at once, so it needs no bound, and the exchange goes on
     /// to find out what the server sent.
-    fn set_timeout(&self, d: Duration) -> io::Result<()> {
+    fn set_timeout(&self, d: Option<Duration>) -> io::Result<()> {
         let tcp = self.io.get_ref().tcp();
         for set in [TcpStream::set_read_timeout, TcpStream::set_write_timeout] {
-            match set(tcp, Some(d)) {
+            match set(tcp, d) {
                 Err(e) if e.kind() == io::ErrorKind::InvalidInput && e.raw_os_error().is_some() => {}
                 result => result?,
             }
@@ -1538,9 +1671,10 @@ impl Conn {
         Ok(())
     }
 
-    /// From here on, any read or write that makes no progress for 30 s fails.
-    fn stall(&self) -> io::Result<()> {
-        self.set_timeout(STALL)
+    /// From here on, any read or write that makes no progress for `d` (30 s for a
+    /// registry) fails; none does where `None`.
+    fn stall(&self, d: Option<Duration>) -> io::Result<()> {
+        self.set_timeout(d)
     }
 
     /// Whether an idle connection can carry a request: the server has sent nothing since,
@@ -1813,8 +1947,8 @@ mod tests {
             io: BufReader::new(Stream::Plain(Hop::Tcp(tcp))),
             watch: None,
         };
-        conn.set_timeout(Duration::from_secs(30)).unwrap();
-        conn.stall().unwrap();
+        conn.set_timeout(Some(Duration::from_secs(30))).unwrap();
+        conn.stall(Some(STALL)).unwrap();
         let t0 = Instant::now();
         let mut conn = conn;
         let mut rest = Vec::new();
@@ -1844,7 +1978,8 @@ mod tests {
     }
 
     /// A fresh connection's reads and writes are bounded from the start: the request is
-    /// written within them too, which nothing bounded before its response's head.
+    /// written within them too, which nothing bounded before its response's head. A
+    /// client without that patience bounds neither.
     #[test]
     fn fresh_connections_bound_their_writes() {
         let server = serve(None, vec![]);
@@ -1853,6 +1988,79 @@ mod tests {
         let tcp = conn.io.get_ref().tcp();
         assert_eq!(tcp.write_timeout().unwrap(), Some(STALL));
         assert_eq!(tcp.read_timeout().unwrap(), Some(STALL));
+        let patient = plain().with_patience(Patience {
+            head: None,
+            stall: None,
+        });
+        let conn = patient.connect(&url, Key::of(&url, None), None).unwrap();
+        let tcp = conn.io.get_ref().tcp();
+        assert_eq!(
+            (tcp.write_timeout().unwrap(), tcp.read_timeout().unwrap()),
+            (None, None)
+        );
+    }
+
+    /// A client reaching some addresses alone refuses the others, directly and through a
+    /// proxy, and reaches what it allows.
+    #[test]
+    fn a_client_reaches_what_it_may_alone() {
+        let server = serve(
+            None,
+            vec![(
+                b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok".to_vec(),
+                After::Close,
+            )],
+        );
+        let url = at("http", "127.0.0.1", server.port);
+        let refusing = plain().reaching(|ip| !ip.is_loopback());
+        let e = fetch(&refusing, "GET", &url).unwrap_err().to_string();
+        assert!(e.contains("no address a build step may reach"), "{e}");
+        let proxied = plain()
+            .reaching(|ip| !ip.is_loopback())
+            .with_proxies(crate::proxy::Proxies::from_env(&|k| {
+                (k == "HTTP_PROXY").then(|| "http://proxy.invalid:3128".to_string())
+            }));
+        let e = fetch(&proxied, "GET", &at("http", "127.0.0.2", 80))
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("no address a build step may reach"), "{e}");
+        let allowing = plain().reaching(|ip| ip.is_loopback());
+        assert_eq!(fetch(&allowing, "GET", &url).unwrap(), (200, b"ok".to_vec()));
+    }
+
+    /// A request's own User-Agent goes in the client's place, and a client without one
+    /// sends none.
+    #[test]
+    fn a_requests_own_user_agent_is_sent() {
+        let agent = |client: &Client, headers: &[(&str, &str)]| {
+            let server = serve(
+                None,
+                vec![(b"HTTP/1.1 204 No Content\r\n\r\n".to_vec(), After::Close)],
+            );
+            let url = at("http", "127.0.0.1", server.port);
+            client
+                .send(&Request {
+                    method: "GET",
+                    url: &url,
+                    headers,
+                    body: &[],
+                    file: None,
+                })
+                .unwrap();
+            let asked = server.requests();
+            let head = asked.first().unwrap().clone();
+            head.lines()
+                .filter(|l| l.to_ascii_lowercase().starts_with("user-agent:"))
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(agent(&plain(), &[]), ["User-Agent: shards-test"]);
+        assert_eq!(
+            agent(&plain(), &[("user-agent", "curl/8")]),
+            ["user-agent: curl/8"]
+        );
+        let bare = Client::new(Box::new(|_| crate::tls::client_config(Vec::new(), None)), "");
+        assert!(agent(&bare, &[]).is_empty());
     }
 
     /// A server that answers an upload before reading it, then leaves, is heard: its 413,

@@ -97,6 +97,7 @@ pub fn main() -> ! {
         "loopback" => loopback(),
         "fs" => fs(args.get(1..).unwrap_or_default()),
         "tcp" => tcp(arg(1)),
+        "fetch" => fetch(args.get(1..).unwrap_or_default()),
         "ask" => ask(arg(1)),
         "resolve" => resolve(arg(1)),
         "udp" => udp(arg(1)),
@@ -140,82 +141,12 @@ pub fn main() -> ! {
             }
         }
         "outlive" => outlive(arg(1).parse().unwrap_or(0)),
-        // Once `arg(2)` processes named `arg(1)` exist, what each of the in-VM server's
-        // instances is: its uid, gid, groups, capabilities, no_new_privs, seccomp mode,
-        // the interfaces of its network namespace (`/proc/PID/net/dev`, which a process
-        // without CAP_SYS_PTRACE may read where `ns/net` it may not), and its resident
-        // memory, anonymous and of files apart.
-        "inspect-servers" => {
-            let code = await_process(arg(1), arg(2).parse().unwrap_or(1), "");
-            for e in std::fs::read_dir("/proc").into_iter().flatten().flatten() {
-                let p = e.path();
-                if !std::fs::read_to_string(p.join("comm")).is_ok_and(|c| c.trim_end() == "shards-server") {
-                    continue;
-                }
-                let status = std::fs::read_to_string(p.join("status")).unwrap_or_default();
-                let field = |k: &str| {
-                    status
-                        .lines()
-                        .find_map(|l| l.strip_prefix(k))
-                        .map(|v| v.split_whitespace().collect::<Vec<_>>().join(","))
-                        .unwrap_or_default()
-                };
-                let links: Vec<String> = std::fs::read_to_string(p.join("net/dev"))
-                    .unwrap_or_default()
-                    .lines()
-                    .skip(2)
-                    .filter_map(|l| l.split(':').next().map(|n| n.trim().to_string()))
-                    .collect();
-                let _ = writeln!(
-                    io::stdout(),
-                    "server uid={} gid={} groups={} capeff={} capprm={} capbnd={} nnp={} seccomp={} links={} rss_anon_kb={} rss_file_kb={}",
-                    field("Uid:"),
-                    field("Gid:"),
-                    field("Groups:"),
-                    field("CapEff:"),
-                    field("CapPrm:"),
-                    field("CapBnd:"),
-                    field("NoNewPrivs:"),
-                    field("Seccomp:"),
-                    links.join(","),
-                    field("RssAnon:").trim_end_matches(",kB"),
-                    field("RssFile:").trim_end_matches(",kB"),
-                );
-            }
-            code
-        }
-        // Waits (60 s at most) to see a process named `arg(1)`, then (60 s at most) for none.
-        "vanish" => {
-            let count = |name: &str| {
-                std::fs::read_dir("/proc")
-                    .into_iter()
-                    .flatten()
-                    .flatten()
-                    .filter(|e| {
-                        std::fs::read_to_string(e.path().join("comm")).is_ok_and(|c| c.trim_end() == name)
-                    })
-                    .count()
-            };
-            let wait = |until: &dyn Fn(usize) -> bool| {
-                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-                while std::time::Instant::now() < deadline {
-                    if until(count(arg(1))) {
-                        return true;
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(5));
-                }
-                false
-            };
-            let said = if !wait(&|n| n > 0) {
-                "never seen"
-            } else if wait(&|n| n == 0) {
-                "vanished"
-            } else {
-                "still running"
-            };
-            let _ = writeln!(io::stdout(), "vanish {}: {said}", arg(1));
-            i32::from(said != "vanished")
-        }
+        // Once the host says `arg(2)` processes named `arg(1)` run (`await`), what the run's
+        // own command sees of the microVM's processes (D115).
+        "beside" => match await_process(arg(1), arg(2).parse().unwrap_or(0), "") {
+            0 => beside(),
+            code => code,
+        },
         // Where the microVM is (its first non-loopback IPv4 address and its default
         // gateway), then TCP and UDP answered on `arg(1)`, until `arg(3)` processes named
         // `arg(2)` exist.
@@ -577,6 +508,212 @@ fn tcp(addr: &str) -> i32 {
     }
 }
 
+/// Fetches each URL as curl does through the proxy its environment names (a build's,
+/// D110): plain HTTP as an absolute URL to `HTTP_PROXY`; HTTPS through `CONNECT` to
+/// `HTTPS_PROXY`, then TLS trusting the system's bundle alone
+/// (`/etc/ssl/certs/ca-certificates.crt`); with no proxy named, or `--direct`, straight
+/// to its host. Before a URL, `-X METHOD`, `-d BODY` and `-H 'Name: value'` shape its
+/// request. Says `fetch STATUS BODY` of each, or `fetch error E`, and goes on. With
+/// `--repeat N`, makes it N times, each on a connection of its own, and says how long each
+/// took instead: `fetch-times n=N p50 P p90 P p99 P max M`, in microseconds.
+fn fetch(args: &[String]) -> i32 {
+    let mut method = "GET".to_string();
+    let mut body = String::new();
+    let mut headers: Vec<String> = Vec::new();
+    let mut direct = false;
+    let mut repeat = 0usize;
+    let mut i = 0;
+    while let Some(a) = args.get(i) {
+        let next = args.get(i + 1).cloned().unwrap_or_default();
+        match a.as_str() {
+            "-X" => method = next,
+            "-d" => body = next,
+            "-H" => headers.push(next),
+            "--repeat" => repeat = next.parse().unwrap_or(0),
+            "--direct" => {
+                direct = true;
+                i += 1;
+                continue;
+            }
+            url if repeat > 0 => {
+                let mut took = Vec::with_capacity(repeat);
+                let mut failed = None;
+                for _ in 0..repeat {
+                    let t = std::time::Instant::now();
+                    if let Err(e) = fetch_one(&method, url, &headers, &body, direct) {
+                        failed = Some(e);
+                        break;
+                    }
+                    took.push(t.elapsed().as_micros());
+                }
+                took.sort_unstable();
+                let q = |p: usize| {
+                    took.get((took.len() * p / 100).min(took.len().saturating_sub(1)))
+                        .copied()
+                };
+                match (failed, q(50), q(90), q(99), took.last()) {
+                    (None, Some(a), Some(b), Some(c), Some(d)) => {
+                        let _ = writeln!(
+                            io::stdout(),
+                            "fetch-times n={repeat} p50 {a} p90 {b} p99 {c} max {d}"
+                        );
+                    }
+                    (e, ..) => {
+                        let _ = writeln!(io::stdout(), "fetch error {}", e.unwrap_or_default());
+                    }
+                }
+                (method, body, headers, direct, repeat) =
+                    ("GET".to_string(), String::new(), Vec::new(), false, 0);
+                i += 1;
+                continue;
+            }
+            url => {
+                match fetch_one(&method, url, &headers, &body, direct) {
+                    Ok((status, text)) => {
+                        let _ = writeln!(io::stdout(), "fetch {status} {}", text.trim_end());
+                    }
+                    Err(e) => {
+                        let _ = writeln!(io::stdout(), "fetch error {e}");
+                    }
+                }
+                (method, body, headers, direct) = ("GET".to_string(), String::new(), Vec::new(), false);
+                i += 1;
+                continue;
+            }
+        }
+        i += 2;
+    }
+    0
+}
+
+/// One request of [`fetch`]'s: its status and body.
+fn fetch_one(
+    method: &str,
+    url: &str,
+    headers: &[String],
+    body: &str,
+    direct: bool,
+) -> Result<(u16, String), String> {
+    use rustls::pki_types::pem::PemObject as _;
+    use std::sync::Arc;
+    let (scheme, rest) = url.split_once("://").ok_or("not a URL")?;
+    let (authority, path) = match rest.find('/') {
+        Some(i) => (rest.get(..i).unwrap_or_default(), rest.get(i..).unwrap_or("/")),
+        None => (rest, "/"),
+    };
+    let default = if scheme == "https" { 443 } else { 80 };
+    let target = if authority.contains(':') {
+        authority.to_string()
+    } else {
+        format!("{authority}:{default}")
+    };
+    let proxy = ["HTTPS_PROXY", "https_proxy"]
+        .iter()
+        .filter(|_| scheme == "https")
+        .chain(["HTTP_PROXY", "http_proxy"].iter().filter(|_| scheme == "http"))
+        .find_map(|n| std::env::var(n).ok().filter(|v| !v.is_empty()))
+        .filter(|_| !direct)
+        .map(|p| p.trim_start_matches("http://").trim_end_matches('/').to_string());
+    let mut head = String::new();
+    let line = match (&proxy, scheme) {
+        (Some(_), "http") => format!("{method} {url} HTTP/1.1\r\n"),
+        _ => format!("{method} {path} HTTP/1.1\r\n"),
+    };
+    head.push_str(&line);
+    head.push_str(&format!(
+        "Host: {authority}\r\nUser-Agent: testguest\r\nConnection: close\r\n"
+    ));
+    for h in headers {
+        head.push_str(h);
+        head.push_str("\r\n");
+    }
+    if !body.is_empty() || method == "POST" {
+        head.push_str(&format!("Content-Length: {}\r\n", body.len()));
+    }
+    head.push_str("\r\n");
+    head.push_str(body);
+    let e = |what: &str, x: &dyn std::fmt::Display| format!("{what}: {x}");
+    let mut sock =
+        std::net::TcpStream::connect(proxy.as_deref().unwrap_or(&target)).map_err(|x| e("connect", &x))?;
+    sock.set_read_timeout(Some(std::time::Duration::from_secs(20)))
+        .map_err(|x| e("timeout", &x))?;
+    let mut got = Vec::new();
+    if scheme == "https" {
+        if proxy.is_some() {
+            sock.write_all(format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n\r\n").as_bytes())
+                .map_err(|x| e("connect", &x))?;
+            let mut answer = Vec::new();
+            let mut byte = [0u8; 1];
+            while !answer.ends_with(b"\r\n\r\n") {
+                if sock.read(&mut byte).map_err(|x| e("connect", &x))? == 0 {
+                    return Err("the proxy closed the tunnel".into());
+                }
+                answer.extend_from_slice(&byte);
+            }
+            let first = String::from_utf8_lossy(&answer)
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .to_string();
+            if !first.starts_with("HTTP/1.1 200") {
+                return Err(format!("CONNECT: {first}"));
+            }
+        }
+        let mut roots = rustls::RootCertStore::empty();
+        for c in rustls::pki_types::CertificateDer::pem_file_iter("/etc/ssl/certs/ca-certificates.crt")
+            .map_err(|x| e("bundle", &x))?
+        {
+            let _ = roots.add(c.map_err(|x| e("bundle", &x))?);
+        }
+        let config = rustls::ClientConfig::builder_with_provider(Arc::new(
+            rustls::crypto::aws_lc_rs::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .map_err(|x| e("tls", &x))?
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+        let host = authority.split(':').next().unwrap_or_default().to_string();
+        let name = rustls::pki_types::ServerName::try_from(host).map_err(|x| e("name", &x))?;
+        let conn = rustls::ClientConnection::new(Arc::new(config), name).map_err(|x| e("tls", &x))?;
+        let mut tls = rustls::StreamOwned::new(conn, sock);
+        tls.write_all(head.as_bytes()).map_err(|x| e("tls", &x))?;
+        // A peer that ends without close_notify still said what it said.
+        match tls.read_to_end(&mut got) {
+            Ok(_) => {}
+            Err(x) if x.kind() == io::ErrorKind::UnexpectedEof && !got.is_empty() => {}
+            Err(x) => return Err(e("tls", &x)),
+        }
+    } else {
+        sock.write_all(head.as_bytes()).map_err(|x| e("write", &x))?;
+        sock.read_to_end(&mut got).map_err(|x| e("read", &x))?;
+    }
+    let text = String::from_utf8_lossy(&got).into_owned();
+    let (response_head, rest) = text.split_once("\r\n\r\n").ok_or("no response head")?;
+    let status: u16 = response_head
+        .split(' ')
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .ok_or("no status")?;
+    let chunked = response_head
+        .lines()
+        .any(|l| l.to_ascii_lowercase().replace(' ', "") == "transfer-encoding:chunked");
+    if !chunked {
+        return Ok((status, rest.to_string()));
+    }
+    // Its chunks, joined.
+    let mut out = String::new();
+    let mut rest = rest;
+    while let Some((size, after)) = rest.split_once("\r\n") {
+        let n = usize::from_str_radix(size.trim(), 16).map_err(|x| e("chunk", &x))?;
+        if n == 0 {
+            break;
+        }
+        out.push_str(after.get(..n).ok_or("a chunk cut short")?);
+        rest = after.get(n + 2..).unwrap_or_default();
+    }
+    Ok((status, out))
+}
+
 /// Sends a datagram to `addr` from a connected socket, and waits up to 5 s for an answer:
 /// `udp N` its length, or `udp error E`, as an ICMP error or the wait ends it.
 fn udp(addr: &str) -> i32 {
@@ -870,10 +1007,10 @@ fn udp_echo(port: &str, stop: &str) -> i32 {
 }
 
 /// File operations, in order: `mkdir:P`, `write:P=DATA`, `link:OLD:NEW`, `symlink:T:P`,
-/// `rm:P`, `rmdir:P` (and what it holds), `chmod:OCTAL:P`, `mknod:b|c:MAJOR:MINOR:P`,
-/// `open:r|w:P`, `dev:P`, which prints a device node's type, numbers and mode, `print:P`,
-/// which prints a file, and `readn:N:P`, which reads N bytes of P. Stops
-/// at the first that fails, saying which.
+/// `rm:P`, `rmdir:P` (and what it holds), `chmod:OCTAL:P`, `chown:UID:GID:P` (not
+/// followed), `mknod:b|c:MAJOR:MINOR:P`, `open:r|w:P`, `dev:P`, which prints a device
+/// node's type, numbers and mode, `print:P`, which prints a file, `readn:N:P`, which reads
+/// N bytes of P, and `sleep:MS`. Stops at the first that fails, saying which.
 fn fs(ops: &[String]) -> i32 {
     use std::os::unix::fs::PermissionsExt as _;
     for op in ops {
@@ -901,6 +1038,18 @@ fn fs(ops: &[String]) -> i32 {
                     .and_then(|m| std::fs::set_permissions(p, std::fs::Permissions::from_mode(m)))
             }
             "mknod" => mknod(rest),
+            "chown" => {
+                let mut parts = rest.splitn(3, ':');
+                let id = |p: Option<&str>| p.and_then(|n| n.parse::<u32>().ok());
+                match (id(parts.next()), id(parts.next()), parts.next()) {
+                    (Some(u), Some(g), Some(p)) => std::os::unix::fs::lchown(p, Some(u), Some(g)),
+                    _ => Err(io::Error::other("a malformed chown")),
+                }
+            }
+            "sleep" => rest
+                .parse::<u64>()
+                .map_err(io::Error::other)
+                .map(|ms| std::thread::sleep(std::time::Duration::from_millis(ms))),
             "open" => {
                 let (m, p) = rest.split_once(':').unwrap_or((rest, ""));
                 std::fs::OpenOptions::new()
@@ -2022,40 +2171,43 @@ fn offered_command(json: &str, name: &str) -> Option<Vec<String>> {
     }
 }
 
-/// Waits, 60 s at most, until `count` processes whose `comm` is `name` exist; then says
-/// whether it reaches `then`, an address, where one is given.
+/// Waits for the host's go-ahead, SIGUSR1, which it sends once `count` of the microVM's
+/// processes are named `name` (`shards top`; the workload sees none of its agents', its
+/// PID namespace being its own, D115), none for a count of 0; then, where an address is
+/// given, says whether this process reaches it, in 3 s. A minute without one is a timeout.
 fn await_process(name: &str, count: usize, then: &str) -> i32 {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-    while std::time::Instant::now() < deadline {
-        let found = std::fs::read_dir("/proc")
-            .into_iter()
-            .flatten()
-            .flatten()
-            .filter(|e| std::fs::read_to_string(e.path().join("comm")).is_ok_and(|c| c.trim_end() == name))
-            .count();
-        if found >= count {
-            // Then, where an address is given, whether this process reaches it, in 3 s.
-            if !then.is_empty() {
-                use std::net::ToSocketAddrs as _;
-                let said = match then.to_socket_addrs().map(|mut a| a.next()) {
-                    Ok(Some(to)) => {
-                        match std::net::TcpStream::connect_timeout(&to, std::time::Duration::from_secs(3)) {
-                            Ok(_) => "ok".to_string(),
-                            Err(e) if e.kind() == io::ErrorKind::TimedOut => "timeout".to_string(),
-                            Err(e) => format!("errno {}", e.raw_os_error().unwrap_or(0)),
-                        }
-                    }
-                    Ok(None) => "no address".to_string(),
-                    Err(e) => e.to_string(),
-                };
-                let _ = writeln!(io::stdout(), "await unreach {then}: {said}");
-            }
-            return 0;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(5));
+    // SAFETY: a signal set of our own, SIGUSR1 blocked, then waited for, a minute at most.
+    let got = (count > 0).then(|| unsafe {
+        let mut set: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut set);
+        libc::sigaddset(&mut set, libc::SIGUSR1);
+        libc::sigprocmask(libc::SIG_BLOCK, &set, std::ptr::null_mut());
+        let minute = libc::timespec {
+            tv_sec: 60,
+            tv_nsec: 0,
+        };
+        libc::sigtimedwait(&set, std::ptr::null_mut(), &minute)
+    });
+    if got.is_some_and(|s| s != libc::SIGUSR1) {
+        let _ = writeln!(io::stdout(), "await timeout {name}");
+        return 1;
     }
-    let _ = writeln!(io::stdout(), "await timeout {name}");
-    1
+    if !then.is_empty() {
+        use std::net::ToSocketAddrs as _;
+        let said = match then.to_socket_addrs().map(|mut a| a.next()) {
+            Ok(Some(to)) => {
+                match std::net::TcpStream::connect_timeout(&to, std::time::Duration::from_secs(3)) {
+                    Ok(_) => "ok".to_string(),
+                    Err(e) if e.kind() == io::ErrorKind::TimedOut => "timeout".to_string(),
+                    Err(e) => format!("errno {}", e.raw_os_error().unwrap_or(0)),
+                }
+            }
+            Ok(None) => "no address".to_string(),
+            Err(e) => e.to_string(),
+        };
+        let _ = writeln!(io::stdout(), "await unreach {then}: {said}");
+    }
+    0
 }
 
 /// An abstract Unix socket's address (unix(7)): a zero byte, then the name.
@@ -2175,111 +2327,56 @@ fn fill_scratch() -> i32 {
     }
 }
 
+/// What the run's own command sees of the microVM's processes (D115): each its `/proc`
+/// lists, with its name, whether it is this one, and whether this process may signal it,
+/// read its environment and open its network namespace; then this process's capabilities.
+fn beside() -> i32 {
+    let me = std::process::id();
+    let errno = |e: &io::Error| format!("errno {}", e.raw_os_error().unwrap_or(0));
+    for e in std::fs::read_dir("/proc").into_iter().flatten().flatten() {
+        let Ok(pid) = e.file_name().to_string_lossy().parse::<u32>() else {
+            continue;
+        };
+        let comm = std::fs::read_to_string(e.path().join("comm")).unwrap_or_default();
+        // SAFETY: kill(2) with signal 0, which checks permission and sends nothing.
+        let signal = if unsafe { libc::kill(pid as libc::pid_t, 0) } == 0 {
+            "ok".to_string()
+        } else {
+            errno(&io::Error::last_os_error())
+        };
+        let open = |p: &str| match std::fs::File::open(e.path().join(p)) {
+            Ok(_) => "ok".to_string(),
+            Err(err) => errno(&err),
+        };
+        let _ = writeln!(
+            io::stdout(),
+            "beside {pid} {} self={} signal={signal} environ={} netns={}",
+            comm.trim_end(),
+            pid == me,
+            open("environ"),
+            open("ns/net"),
+        );
+    }
+    let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+    let eff = status
+        .lines()
+        .find_map(|l| l.strip_prefix("CapEff:"))
+        .map(str::trim)
+        .unwrap_or_default();
+    let _ = writeln!(io::stdout(), "beside caps {eff}");
+    0
+}
+
 /// The run's own command, outliving agents that fill their scratch: it holds `hold` MiB
-/// resident, waits (60 s at most) until it has seen an agent `filling` and none is left,
-/// and says how many `held` and `fill-stopped` processes remain.
+/// resident until the host, which watches the agents (`shards top`, D115), says it may go
+/// (SIGUSR1, a minute at most).
 fn outlive(hold: usize) -> i32 {
     let held: Vec<u8> = vec![1; hold << 20];
     let _ = writeln!(io::stdout(), "outlive holding {hold}");
     let _ = io::stdout().flush();
-    // A process going: a zombie, one with SIGKILL pending, or one already exiting, as a
-    // domain the kernel ends whole (cgroup.kill, memory.oom.group) has each of its processes
-    // until each is gone; one at a time, so the last may be seen after the first is gone.
-    // A domain's PID 1, having taken its SIGKILL, waits in do_exit for the rest of its PID
-    // namespace (zap_pid_ns_processes), neither a zombie nor with a signal pending: its
-    // PF_EXITING says so, set as do_exit begins (kernel/signal.c exit_signals), field 9 of
-    // /proc/PID/stat (CI, 2026-10-10: a holder counted alive in that gap).
-    let going = |p: &std::path::Path| {
-        let status = std::fs::read_to_string(p.join("status")).unwrap_or_default();
-        let field = |k: &str| status.lines().find_map(|l| l.strip_prefix(k)).map(str::trim);
-        let killed = |k: &str| {
-            field(k)
-                .and_then(|v| u64::from_str_radix(v, 16).ok())
-                .is_some_and(|m| m & (1 << (libc::SIGKILL - 1)) != 0)
-        };
-        const PF_EXITING: u64 = 0x4;
-        let stat = std::fs::read_to_string(p.join("stat")).unwrap_or_default();
-        // After the name, which may hold anything, closed by the last parenthesis: state,
-        // ppid, pgrp, session, tty_nr, tpgid, flags.
-        let exiting = stat
-            .rsplit_once(')')
-            .and_then(|(_, rest)| rest.split_whitespace().nth(6))
-            .and_then(|f| f.parse::<u64>().ok())
-            .is_some_and(|flags| flags & PF_EXITING != 0);
-        field("State:").is_some_and(|s| s.starts_with('Z') || s.starts_with('X'))
-            || killed("SigPnd:")
-            || killed("ShdPnd:")
-            || exiting
-    };
-    let living = |name: &str| -> Vec<std::path::PathBuf> {
-        std::fs::read_dir("/proc")
-            .into_iter()
-            .flatten()
-            .flatten()
-            .map(|e| e.path())
-            .filter(|p| std::fs::read_to_string(p.join("comm")).is_ok_and(|c| c.trim_end() == name))
-            .filter(|p| !going(p))
-            .collect()
-    };
-    let count = |name: &str| living(name).len();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-    let mut seen = false;
-    while std::time::Instant::now() < deadline {
-        let filling = count("filling");
-        seen |= filling > 0;
-        if seen && filling == 0 {
-            std::hint::black_box(&held);
-            // The kernel ends a domain whole (memory.oom.group) by killing its victim, then
-            // signalling the rest one by one: a holder can outlive its filler by that much.
-            // A domain not ended whole keeps its holder, which this then reports; 5 s is
-            // past that gap by orders of magnitude.
-            let settled = std::time::Instant::now() + std::time::Duration::from_secs(5);
-            while count("held") > count("fill-stopped") && std::time::Instant::now() < settled {
-                std::thread::sleep(std::time::Duration::from_millis(5));
-            }
-            // Where each holder left is: its domain's cgroup, for a holder that outlives it.
-            let held_in: Vec<String> = living("held")
-                .into_iter()
-                .map(|p| {
-                    std::fs::read_to_string(p.join("cgroup"))
-                        .unwrap_or_default()
-                        .trim()
-                        .replace(' ', "_")
-                })
-                .collect();
-            let _ = writeln!(
-                io::stdout(),
-                "outlived held={} stopped={} innocent={} held_in={}",
-                count("held"),
-                count("fill-stopped"),
-                count("innocent"),
-                held_in.join(",")
-            );
-            return 0;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
-    // What each process still filling waits on: its state, kernel wait channel and stack.
-    for e in std::fs::read_dir("/proc").into_iter().flatten().flatten() {
-        let p = e.path();
-        if !std::fs::read_to_string(p.join("comm")).is_ok_and(|c| c.trim_end() == "filling") {
-            continue;
-        }
-        let status = std::fs::read_to_string(p.join("status")).unwrap_or_default();
-        let state = status
-            .lines()
-            .find(|l| l.starts_with("State:"))
-            .unwrap_or_default();
-        let wchan = std::fs::read_to_string(p.join("wchan")).unwrap_or_default();
-        let stack = std::fs::read_to_string(p.join("stack")).unwrap_or_default();
-        let _ = writeln!(
-            io::stdout(),
-            "outlive stuck {}: {state} wchan={wchan}\n{stack}",
-            p.display()
-        );
-    }
-    let _ = writeln!(io::stdout(), "outlive timeout");
-    1
+    let code = await_process("filling", 1, "");
+    std::hint::black_box(&held);
+    code
 }
 
 /// The first IPv4 address of an interface other than loopback, or `none`.

@@ -328,6 +328,8 @@ enum RunState {
 struct Base {
     options: crate::spec::Options,
     health: Option<(shards_ipc::Health, Vec<String>)>,
+    /// Its image's Agentfile (D109), which its execs are held to as its run was (D115).
+    agentfile: Option<crate::agentfile::Agentfile>,
 }
 
 /// What a run's registration keeps of its request: a detached client, until it is told
@@ -351,6 +353,8 @@ struct Keep<'a> {
     /// The ports its image's Agentfile grants its agents (D59), for its VM's network
     /// process: `NET_POLICY`'s payload.
     egress: Option<Vec<u8>>,
+    /// Its image's Agentfile (D109), for its execs (D115).
+    agentfile: Option<crate::agentfile::Agentfile>,
 }
 
 /// A run in progress: its VM's socket, to signal the command, and the VM itself.
@@ -1761,6 +1765,17 @@ impl<D: Disk> Daemon<D> {
                 v4.chain(v6).collect()
             })
         };
+        // `--pid container:NAME`, as dockerd checks it as it makes the container: one that
+        // is not, in its words; one that is, a microVM of its own, whose PID namespace no
+        // other microVM's process can join (D115).
+        if let Some(name) = run.pid.strip_prefix("container:") {
+            refuse(&if self.resolve(name).is_ok() {
+                "\"--pid container:NAME\" is not supported by shards yet".to_string()
+            } else {
+                format!("No such container: {name}")
+            });
+            return None;
+        }
         let mut start = match network::check(
             &run,
             self.bridge,
@@ -1935,6 +1950,17 @@ impl<D: Disk> Daemon<D> {
                 for w in warned.unwrap_or_default() {
                     say(&format!("WARNING: {w}"));
                 }
+                // What the run withholds of Docker's beside its domains, never silently (D115).
+                for (cap, what) in prepared.agentfile.iter().flat_map(|a| a.withheld(&run)) {
+                    let name = shards_abi::run::CAP_NAMES
+                        .get(cap as usize)
+                        .copied()
+                        .unwrap_or("a capability");
+                    say(&format!(
+                        "WARNING: {}",
+                        shards_abi::run::beside::withheld(name, what)
+                    ));
+                }
                 name
             }
             Ok(name) => name,
@@ -1985,6 +2011,15 @@ impl<D: Disk> Daemon<D> {
         let shared = crate::volumes::open(&points, first, &crate::volumes::Store::new(&self.home)).and_then(
             |opened| {
                 prepared.spec.setup = crate::setup::setup(&run, &opened.mounts)?;
+                // Beside agents whose flows past the microVM cross the command's network
+                // namespace, Docker's default CAP_NET_RAW is not the command's (D115).
+                if let Some(a) = prepared.agentfile.as_ref().filter(|a| a.domains > 0 && a.uplink) {
+                    prepared.spec.setup.retain(|e| !e.starts_with(b"caps="));
+                    prepared
+                        .spec
+                        .setup
+                        .push(format!("caps={}", a.caps(&run)).into_bytes());
+                }
                 prepared.spec.setup.extend(network_setup.iter().cloned());
                 let kernel = crate::guest::version_of(crate::run::kernel_of(&prepared.boot))?;
                 prepared
@@ -2141,6 +2176,7 @@ impl<D: Disk> Daemon<D> {
                 layer_pending: layer_out.is_some(),
                 visit: false,
                 egress,
+                agentfile: prepared.agentfile.clone(),
             },
             || self.warm_for(threads, &prepared, &start, &say),
         );
@@ -2572,6 +2608,11 @@ impl<D: Disk> Daemon<D> {
         crate::resources::verify(&run.resources, crate::resources::host_cpus(), false)?;
         crate::setup::verify(run)?;
         validate_restart_policy(&run.restart_policy)?;
+        // Then shards' own: beside its image's agents and harnesses, nothing that reaches
+        // them (D115); its init refuses each again as it starts the command.
+        if let Some(a) = &prepared.agentfile {
+            a.refuse(run)?;
+        }
         // A name held by a container that ended with `--rm`, its end not yet taken or its
         // removal not yet durable, is free once that is done, as dockerd's is by the time
         // `docker run --rm` returns: its end is taken, and its removal waited for.
@@ -3032,6 +3073,7 @@ impl<D: Disk> Daemon<D> {
             layer_pending,
             visit,
             egress: _,
+            agentfile,
         } = keep;
         if layer_pending {
             lock(&self.settling).insert(id.to_string());
@@ -3068,7 +3110,11 @@ impl<D: Disk> Daemon<D> {
             visit,
         }));
         let tracked = Tracked {
-            base: Arc::new(Base { options, health }),
+            base: Arc::new(Base {
+                options,
+                health,
+                agentfile,
+            }),
             socket,
             vm: ready.vm,
             inbox: inbox.clone(),
@@ -3767,9 +3813,9 @@ impl<D: Disk> Daemon<D> {
         let fresh = dir.with_extension(format!("new-{}-{n}", std::process::id()));
         let mut ready = self.cold(threads, &cfg, &prepared.rootfs, Some(&fresh));
         if ready.is_ok()
-            && let Err(e) = crate::run::Origin::of(guest, &prepared.rootfs, server.is_some()).write(&fresh)
+            && let Err(e) = crate::run::Origin::of(guest, &prepared.rootfs, server.is_some()).write(&dir)
         {
-            log(format!("{}: {e}", fresh.display()));
+            log(format!("{}: its origin: {e}", dir.display()));
         }
         crate::run::settle(&fresh, &dir);
         if let Ok(r) = &mut ready
@@ -3978,6 +4024,13 @@ impl<D: Disk> Daemon<D> {
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default();
+            // A template's record is beside it (run::Origin), and goes once it has gone.
+            if let Some(of) = name.strip_suffix(".origin") {
+                if !templates.join(of).exists() {
+                    let _ = std::fs::remove_file(&dir);
+                }
+                continue;
+            }
             let live = if name.contains(".new-") {
                 // Being saved by this daemon, or left by one before it.
                 name.contains(&ours)
@@ -3993,7 +4046,12 @@ impl<D: Disk> Daemon<D> {
                 }
             }
             match std::fs::remove_dir_all(&dir) {
-                Ok(()) => log(format!("collected template {}", dir.display())),
+                Ok(()) => {
+                    if let Some(origin) = crate::run::Origin::path(&dir) {
+                        let _ = std::fs::remove_file(origin);
+                    }
+                    log(format!("collected template {}", dir.display()));
+                }
                 Err(e) => log(format!("collecting {}: {e}", dir.display())),
             }
         }
@@ -4268,11 +4326,21 @@ impl<D: Disk> Daemon<D> {
         // What it asks to reach comes first: it opens nothing until it has it.
         let granted = match &grants {
             #[cfg(target_os = "macos")]
-            Some(link) => grant(link, pid),
-            _ => Ok(()),
+            Some(link) => grant(
+                link,
+                pid,
+                match &dest {
+                    For::Pool(dir) => Some(dir.as_path()),
+                    For::Run(_) => None,
+                },
+            ),
+            _ => Ok::<(), GrantError>(()),
         };
         drop(grants);
-        let ready = granted.and_then(|()| ready(&socket, pid));
+        // A VM the host had not let run yet asked nothing and failed nothing of its own:
+        // no fault of its template's (PM M166).
+        let unstarted = matches!(&granted, Err(e) if !e.started);
+        let ready = granted.map_err(|e| e.why).and_then(|()| ready(&socket, pid));
         match &dest {
             For::Pool(dir) => {
                 let mut state = lock(&self.state);
@@ -4302,7 +4370,9 @@ impl<D: Disk> Daemon<D> {
                     }
                     Err(e) => {
                         log(&e);
-                        pool.failures += 1;
+                        if !unstarted {
+                            pool.failures += 1;
+                        }
                         let _ = child.kill(libc::SIGKILL);
                     }
                 }
@@ -4526,7 +4596,7 @@ const GRANT_STALL: Duration = Duration::from_secs(10);
 /// home, beside daemon.log, as it goes on being waited for; a wait that then fails says
 /// where.
 #[cfg(target_os = "macos")]
-fn grant(link: &UnixStream, pid: u32) -> Result<(), String> {
+fn grant(link: &UnixStream, pid: u32, template: Option<&Path>) -> Result<(), GrantError> {
     use std::os::fd::AsRawFd as _;
     let mut first = libc::pollfd {
         fd: link.as_raw_fd(),
@@ -4536,7 +4606,16 @@ fn grant(link: &UnixStream, pid: u32) -> Result<(), String> {
     let stall = i32::try_from(GRANT_STALL.as_millis()).unwrap_or(i32::MAX);
     // SAFETY: poll(2) of one pollfd of ours.
     let asked = unsafe { libc::poll(&raw mut first, 1, stall) };
-    let sampled = (asked == 0).then(|| {
+    // A VM the host has not let run yet: its stacks would hold nothing (PM M166).
+    let unstarted = || asked == 0 && shards_vmm::platform::launched(pid) == Some(false);
+    if unstarted() {
+        log(format!(
+            "VM {pid}: not started by the host in {GRANT_STALL:?}: it has run nothing yet, \
+             as macOS admits each launch after it has assessed the executables launched \
+             before it (PM M166)"
+        ));
+    }
+    let sampled = (asked == 0 && !unstarted()).then(|| {
         let file = format!("vm-{pid}.sample");
         log(format!(
             "VM {pid}: no request for access in {GRANT_STALL:?}; sampling its stacks to {file}"
@@ -4559,12 +4638,33 @@ fn grant(link: &UnixStream, pid: u32) -> Result<(), String> {
         }
         file
     });
+    let started = |why: String| GrantError { why, started: true };
     link.set_read_timeout(Some(READY_TIMEOUT))
-        .map_err(|e| format!("VM {pid}: {e}"))?;
-    crate::grant_answer::serve(link).map_err(|e| match &sampled {
-        Some(file) => format!("VM {pid}: {e} (its stacks at {GRANT_STALL:?}: {file} in the home)"),
-        None => format!("VM {pid}: {e}"),
+        .map_err(|e| started(format!("VM {pid}: {e}")))?;
+    crate::grant_answer::serve(link, template).map_err(|e| {
+        if unstarted() {
+            return GrantError {
+                why: format!(
+                    "VM {pid}: not started by the host in {:?}: it has run nothing (PM M166): {e}",
+                    GRANT_STALL + READY_TIMEOUT
+                ),
+                started: false,
+            };
+        }
+        started(match &sampled {
+            Some(file) => format!("VM {pid}: {e} (its stacks at {GRANT_STALL:?}: {file} in the home)"),
+            None => format!("VM {pid}: {e}"),
+        })
     })
+}
+
+/// Why a VM was not granted what it asked: `started` false for one the host had not let
+/// run at all, which no template is at fault for (PM M166). Only macOS grants a VM its
+/// files.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+struct GrantError {
+    why: String,
+    started: bool,
 }
 
 /// Waits for a starting VM to say it is ready.
@@ -5002,6 +5102,7 @@ mod tests {
                         layer_pending: false,
                         visit: false,
                         egress: None,
+                        agentfile: None,
                     },
                     acquire,
                 )?;
@@ -5284,6 +5385,7 @@ mod tests {
                             layer_pending: false,
                             visit: false,
                             egress: None,
+                            agentfile: None,
                         },
                         || {
                             offered
@@ -6907,6 +7009,7 @@ mod tests {
                 layer_pending: false,
                 visit: false,
                 egress: None,
+                agentfile: None,
             };
             let _inbox = t.daemon.register(ready, &id, keep);
             say(&vm, kind::STARTED, &[]);
@@ -7230,7 +7333,7 @@ mod tests {
         let rootfs = dir.with_extension("erofs");
         std::fs::write(&rootfs, b"").unwrap();
         let origin = serde_json::json!({"rootfs": rootfs, "kernel_digest": "", "init_digest": ""});
-        std::fs::write(dir.join("origin.json"), origin.to_string()).unwrap();
+        std::fs::write(crate::run::Origin::path(dir).unwrap(), origin.to_string()).unwrap();
     }
 
     /// A pool forgotten before its refill comes, made before its first claim and so
@@ -7260,7 +7363,7 @@ mod tests {
 
             let bare = t.home.join("bare");
             template(&bare);
-            std::fs::remove_file(bare.join("origin.json")).unwrap();
+            std::fs::remove_file(crate::run::Origin::path(&bare).unwrap()).unwrap();
             assert!(
                 t.daemon
                     .plan_refill(&mut lock(&t.daemon.state), &bare, true)

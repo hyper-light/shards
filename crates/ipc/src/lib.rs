@@ -514,6 +514,12 @@ pub struct Run {
     /// `--restart`, as docker/cli sends it (ParseRestartPolicy): the policy's name, empty
     /// where `--restart ""` gave none, and its most retries.
     pub restart_policy: (String, i64),
+    /// `--init` where given (HostConfig.Init, a `*bool`): with true, a reaper, docker-init's
+    /// part, is PID 1 of the command's PID namespace (D115); else the command is.
+    pub docker_init: Option<bool>,
+    /// `--pid` (HostConfig.PidMode): empty for a PID namespace of the command's own,
+    /// `host` for the microVM's own (D115).
+    pub pid: String,
     /// `--device`s, as docker/cli parses them (HostConfig.Devices): each
     /// `PATH_ON_HOST:PATH_IN_CONTAINER:PERMISSIONS`, the host being the VM.
     pub devices: Vec<String>,
@@ -901,6 +907,18 @@ impl Run {
             ("device-write-bps", self.device_write_bps.clone()),
             ("device-read-iops", self.device_read_iops.clone()),
             ("device-write-iops", self.device_write_iops.clone()),
+            (
+                "docker-init",
+                self.docker_init.map(|b| vec![b.to_string()]).unwrap_or_default(),
+            ),
+            (
+                "pid",
+                if self.pid.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![self.pid.clone()]
+                },
+            ),
         ]
         .into_iter()
         .filter(|(_, v)| !v.is_empty())
@@ -1048,6 +1066,8 @@ impl Run {
                     "device-write-bps" => run.device_write_bps = values,
                     "device-read-iops" => run.device_read_iops = values,
                     "device-write-iops" => run.device_write_iops = values,
+                    "docker-init" => run.docker_init = Some(values.first()?.parse().ok()?),
+                    "pid" => run.pid = values.into_iter().next().unwrap_or_default(),
                     // One a later build added: not this one's to read.
                     _ => {}
                 }
@@ -1601,6 +1621,8 @@ mod tests {
             device_write_bps: vec!["/dev/loop0:1".into()],
             device_read_iops: vec!["/dev/loop0:2".into()],
             device_write_iops: vec!["/dev/loop0:3".into()],
+            docker_init: Some(false),
+            pid: "host".into(),
         };
         let bytes = run.encode();
         let identity = run.daemon;
@@ -1645,6 +1667,8 @@ mod tests {
             device_write_bps: Vec::new(),
             device_read_iops: Vec::new(),
             device_write_iops: Vec::new(),
+            docker_init: None,
+            pid: String::new(),
             ..run.clone()
         };
         let boundary = earlier.encode().len() - 4;

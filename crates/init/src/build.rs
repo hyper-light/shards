@@ -24,6 +24,7 @@ use shards_abi::run;
 use crate::defaults::{self, CAPS, DEVICES, LINKS, MASKED, READONLY};
 use crate::inroot::{self, Root};
 use crate::linux::power_off;
+use crate::proxyca;
 use crate::run::{dial, loopback_up, send};
 use crate::tree::{LayerWriter, send_upper};
 
@@ -34,7 +35,6 @@ use crate::tree::{LayerWriter, send_upper};
 const B: &str = "/b";
 const LAYERS: &str = "/l";
 const ROOT: &str = "/root";
-const CACHES: &str = "/c";
 const EMPTY: &str = "/empty";
 
 fn err(what: impl std::fmt::Display) -> io::Error {
@@ -152,7 +152,7 @@ fn serve() -> io::Result<()> {
     std::fs::create_dir_all(B)?;
     // Layers live in memory, or on swap once memory runs short.
     mount("tmpfs", Path::new(B), "tmpfs", 0, "mode=0755,size=100%")?;
-    for d in [LAYERS, CACHES, EMPTY, ROOT, "/dev", "/proc"] {
+    for d in [LAYERS, EMPTY, ROOT, "/dev", "/proc"] {
         std::fs::create_dir_all(Path::new(B).join(d.trim_start_matches('/')))?;
     }
     mount("devtmpfs", &Path::new(B).join("dev"), "devtmpfs", 0, "")?;
@@ -314,19 +314,37 @@ impl Builder {
         // What fails as the step is set up fails the step, as what fails as its command
         // starts does: the builder says why and goes on to the next.
         let mut sources: Vec<Option<PathBuf>> = Vec::with_capacity(step.mounts.len());
+        let mut caches: Vec<PathBuf> = Vec::with_capacity(step.caches.len());
         let mut stubs = Vec::new();
-        let status = match self.prepare(step, root, &work, &upper, &mut sources, &mut stubs) {
+        let mut injected = None;
+        let status = match self.prepare(
+            step,
+            root,
+            &work,
+            &upper,
+            &mut caches,
+            &mut sources,
+            &mut stubs,
+            &mut injected,
+        ) {
             Ok(files) => self.run(step, root, &files, &sources, &work),
             Err(e) => Err(e),
         };
         // Its agents' sockets go with it, whether or not it ran.
         self.ssh.clear();
+        // The proxy's CA goes before the stubs, as BuildKit's deferred cleanups run.
+        if let Some(i) = &injected {
+            i.clean(root);
+        }
         clean_stubs(root, &stubs);
         let _ = umount(root);
         for (i, s) in sources.iter().enumerate() {
             if let (Some(at), Some((_, Mount::Tree { .. }))) = (s, step.mounts.get(i)) {
                 let _ = umount(at);
             }
+        }
+        for at in &caches {
+            let _ = umount(at);
         }
         let status = match status {
             Ok(s) => s,
@@ -349,26 +367,71 @@ impl Builder {
                 std::fs::rename(&up, Path::new(LAYERS).join(layer_name(layer)))?;
             }
         }
+        // Each cache's changes, whatever the status, as BuildKit keeps a cache's writes
+        // (D114), and the root they left it: none from a step whose caches were never
+        // mounted, its root as it was given.
+        for (k, c) in step.caches.iter().enumerate().filter(|(_, c)| c.writable) {
+            let up = work.join(format!("c{k}.upper"));
+            let left = match std::fs::symlink_metadata(&up) {
+                Ok(m) => build::Root {
+                    mode: m.mode() & 0o7777,
+                    uid: m.uid(),
+                    gid: m.gid(),
+                },
+                Err(_) => {
+                    std::fs::create_dir_all(&up)?;
+                    c.root
+                }
+            };
+            let conn = &self.conn;
+            send_upper(&up, &mut |chunk| send(conn, kind::MOUNT_CHANGES, chunk))?;
+            send(conn, kind::MOUNT_END, &left.encode())?;
+            std::fs::rename(&up, Path::new(LAYERS).join(layer_name(c.layer)))?;
+        }
         let _ = std::fs::remove_dir_all(&work);
         Ok(())
     }
 
     /// Sets step `step` up in `work`: its root at `root` with its upper directory `upper`,
-    /// the trees and caches it mounts (each put in `sources` as it is mounted, so that
-    /// what was mounted is unmounted whatever fails), what BuildKit removes after it if it
-    /// is left empty (`stubs`), its working directory, and its hosts and resolv.conf.
+    /// its caches (each put in `caches` as it is mounted) and the trees it mounts (each in
+    /// `sources`, so that what was mounted is unmounted whatever fails), what BuildKit
+    /// removes after it if it is left empty (`stubs`), the build's proxy's CA in its trust
+    /// bundle (`injected`, D110), its working directory, and its hosts and resolv.conf.
     /// Returns the directory of those two files.
+    #[allow(clippy::too_many_arguments)]
     fn prepare(
         &mut self,
         step: &Step,
         root: &Path,
         work: &Path,
         upper: &Path,
+        caches: &mut Vec<PathBuf>,
         sources: &mut Vec<Option<PathBuf>>,
         stubs: &mut Vec<Vec<u8>>,
+        injected: &mut Option<Injected>,
     ) -> io::Result<PathBuf> {
         std::fs::create_dir_all(work)?;
         self.mount_tree(&step.root, root, Some(upper))?;
+        for (k, c) in step.caches.iter().enumerate() {
+            let at = work.join(format!("c{k}"));
+            let up = c.writable.then(|| work.join(format!("c{k}.upper")));
+            // Its root is its upper directory's, as overlayfs shows it: the one it was left
+            // with, as containerd gives a snapshot its parent's owner.
+            if let Some(up) = &up {
+                std::fs::create_dir_all(up)?;
+                let p = cstr(up)?;
+                // SAFETY: a NUL-terminated path.
+                unsafe {
+                    if libc::chown(p.as_ptr(), c.root.uid, c.root.gid) != 0
+                        || libc::chmod(p.as_ptr(), c.root.mode & 0o7777) != 0
+                    {
+                        return Err(os_err("a cache's root"));
+                    }
+                }
+            }
+            self.mount_tree(&c.tree, &at, up.as_deref())?;
+            caches.push(at);
+        }
         for (i, (_, m)) in step.mounts.iter().enumerate() {
             let source = match m {
                 Mount::Tree { tree, writable, .. } => {
@@ -377,9 +440,13 @@ impl Builder {
                     self.mount_tree(tree, &at, up.as_deref())?;
                     Some(at)
                 }
-                Mount::Cache {
-                    id, mode, uid, gid, ..
-                } => Some(cache(id, *mode, *uid, *gid)?),
+                // The cache as it is mounted for the step.
+                Mount::Cache { cache, .. } => Some(
+                    caches
+                        .get(*cache as usize)
+                        .cloned()
+                        .ok_or_else(|| err("a mount of a cache the step has not"))?,
+                ),
                 // A socket here, which the step's mount places at its target and this
                 // process relays to the host's agent (`relay_ssh`).
                 Mount::Ssh {
@@ -412,6 +479,7 @@ impl Builder {
         }
         let r = Root::open(root)?;
         *stubs = self::stubs(&r, step);
+        *injected = inject_ca(&r, &step.proxy_ca)?;
         // A working directory not there yet, made as BuildKit's executor makes it, in the
         // step's root: each new directory 0755, owned by the step's user (§1).
         if !step.cwd.is_empty() && r.open_at(&step.cwd, libc::O_PATH).is_err() {
@@ -611,23 +679,158 @@ fn pipe() -> io::Result<(OwnedFd, OwnedFd)> {
     Ok(unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) })
 }
 
-/// A cache directory, kept for the build's life by `id`: made the first time with `mode`
-/// (`0755` at least, as BuildKit's mkdir makes it) and `uid:gid`.
-fn cache(id: &[u8], mode: u32, uid: u32, gid: u32) -> io::Result<PathBuf> {
-    // The id as a name: its bytes in hex, so any id is one name of its own.
-    let name: String = id.iter().map(|b| format!("{b:02x}")).collect();
-    let at = Path::new(CACHES).join(if name.is_empty() { "-".into() } else { name });
-    if !at.exists() {
-        std::fs::create_dir(&at)?;
-        let c = cstr(&at)?;
-        // SAFETY: a NUL-terminated path.
-        unsafe {
-            if libc::chown(c.as_ptr(), uid, gid) != 0 || libc::chmod(c.as_ptr(), mode | 0o755) != 0 {
-                return Err(os_err("making a cache"));
-            }
+/// The build's proxy's CA as it went into a step's trust bundle (D110): the bundle, a path
+/// of the step's root, and the certificate, to take it out again after the step.
+#[derive(Debug)]
+struct Injected {
+    path: Vec<u8>,
+    der: Vec<u8>,
+}
+
+impl Injected {
+    /// InjectProxyCA's cleanup: the bundle without the CA, if it still holds it, the step's
+    /// own changes to it kept; read and written in the root, whatever the step made of
+    /// the paths above it. As BuildKit's, its failure fails nothing.
+    fn clean(&self, root: &Path) {
+        let Ok(r) = Root::open(root) else {
+            return;
+        };
+        let Ok((current, st)) = read_bundle(&r, &self.path) else {
+            return;
+        };
+        let cleaned = proxyca::removed(&current, &self.der);
+        if cleaned != current {
+            let _ = write_bundle(&r, &self.path, &cleaned, &st);
         }
     }
-    Ok(at)
+}
+
+/// InjectProxyCA: the PEM `ca` appended to the first of the root's trust bundles that is a
+/// regular file (each found as fs.RootPath finds it, in the root), unless that bundle holds
+/// its certificate already. None where `ca` is empty, the root has no bundle, or it holds
+/// the CA.
+fn inject_ca(r: &Root, ca: &[u8]) -> io::Result<Option<Injected>> {
+    if ca.is_empty() {
+        return Ok(None);
+    }
+    let der = proxyca::first_certificate(ca).ok_or_else(|| err(proxyca::NO_CERTIFICATE))?;
+    let mut found = None;
+    for name in proxyca::BUNDLES {
+        let path = r.resolve(name, false).map_err(|e| {
+            err(format!(
+                "failed to resolve certificate bundle {}: {e}",
+                String::from_utf8_lossy(name)
+            ))
+        })?;
+        let regular = r
+            .open_at(&path, libc::O_PATH)
+            .and_then(|fd| fstat(&fd))
+            .is_ok_and(|st| st.st_mode & libc::S_IFMT == libc::S_IFREG);
+        if regular {
+            found = Some(path);
+            break;
+        }
+    }
+    let Some(path) = found else {
+        return Ok(None);
+    };
+    let (original, st) = read_bundle(r, &path)?;
+    if proxyca::contains(&original, &der) {
+        return Ok(None);
+    }
+    write_bundle(r, &path, &proxyca::appended(&original, ca), &st)?;
+    Ok(Some(Injected { path, der }))
+}
+
+fn fstat(fd: &OwnedFd) -> io::Result<libc::stat> {
+    // SAFETY: a zeroed stat is valid for fstat to fill.
+    let mut st: libc::stat = unsafe { std::mem::zeroed() };
+    // SAFETY: fstat(2) of a descriptor of ours.
+    if unsafe { libc::fstat(fd.as_raw_fd(), &mut st) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(st)
+}
+
+/// readCertBundle: the bundle at `path` of the root, a regular file of at most
+/// [`proxyca::MOST`] bytes, and its stat. Opened without blocking, so a FIFO there is refused,
+/// never waited on.
+fn read_bundle(r: &Root, path: &[u8]) -> io::Result<(Vec<u8>, libc::stat)> {
+    let shown = String::from_utf8_lossy(path);
+    let fd = r.open_at(path, libc::O_RDONLY | libc::O_NONBLOCK)?;
+    let st = fstat(&fd)?;
+    if st.st_mode & libc::S_IFMT != libc::S_IFREG {
+        return Err(err(format!("{shown} is not a regular file")));
+    }
+    let mut data = Vec::new();
+    File::from(fd).take(proxyca::MOST + 1).read_to_end(&mut data)?;
+    if data.len() as u64 > proxyca::MOST {
+        return Err(err(format!("{shown} exceeds {} bytes", proxyca::MOST)));
+    }
+    Ok((data, st))
+}
+
+/// writeCertBundle: `data` written to a new file beside the bundle (os.CreateTemp's
+/// `.buildkit-ca-*`), given the bundle's mode and owner, then renamed over it.
+fn write_bundle(r: &Root, path: &[u8], data: &[u8], st: &libc::stat) -> io::Result<()> {
+    let (dir, name) = r.parent(path)?;
+    // A name of its own: tried again where one is taken, as CreateTemp tries.
+    let mut tries = 0u32;
+    let (tmp, file) = loop {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.subsec_nanos());
+        let tmp = CString::new(format!(
+            ".buildkit-ca-{}",
+            nanos ^ tries.wrapping_mul(2_654_435_761)
+        ))
+        .map_err(|_| err("a temporary name"))?;
+        // SAFETY: openat(2) of a new name in a directory of ours, never followed.
+        let fd = unsafe {
+            libc::openat(
+                dir.as_raw_fd(),
+                tmp.as_ptr(),
+                libc::O_RDWR | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                0o600,
+            )
+        };
+        if fd >= 0 {
+            // SAFETY: a descriptor just opened, ours alone.
+            break (tmp, File::from(unsafe { OwnedFd::from_raw_fd(fd) }));
+        }
+        let e = io::Error::last_os_error();
+        tries += 1;
+        if e.raw_os_error() != Some(libc::EEXIST) || tries >= 10_000 {
+            return Err(e);
+        }
+    };
+    let written = (|| {
+        let mut f = &file;
+        f.write_all(data)?;
+        // SAFETY: fchmod(2) and fchown(2) of a descriptor of ours.
+        unsafe {
+            if libc::fchmod(file.as_raw_fd(), st.st_mode & 0o7777) != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            if libc::fchown(file.as_raw_fd(), st.st_uid, st.st_gid) != 0 {
+                return Err(io::Error::last_os_error());
+            }
+        }
+        Ok(())
+    })();
+    drop(file);
+    let renamed = written.and_then(|()| {
+        // SAFETY: renameat(2) of a name in a directory of ours over another there.
+        if unsafe { libc::renameat(dir.as_raw_fd(), tmp.as_ptr(), dir.as_raw_fd(), name.as_ptr()) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    });
+    if renamed.is_err() {
+        // SAFETY: unlinkat(2) of the name made above.
+        unsafe { libc::unlinkat(dir.as_raw_fd(), tmp.as_ptr(), 0) };
+    }
+    renamed
 }
 
 /// The step's paths that do not exist yet, with each missing parent, leaf first, as paths
@@ -872,13 +1075,22 @@ fn setup(step: &Step, root: &Path, files: &Path, sources: &[Option<PathBuf>], wo
                 // Readonly unless writable; a writable tree's writes go to its own upper.
                 bind(&inroot::path(&src), &at, &r, target, 0, false)?;
             }
-            Mount::Cache { readonly, .. } => {
-                let Some(Some(src)) = sources.get(i) else {
+            Mount::Cache {
+                subpath, readonly, ..
+            } => {
+                let Some(Some(tree)) = sources.get(i) else {
                     return Err(err("a cache mount without its cache"));
                 };
+                let src = Root::open(tree)?
+                    .open_at(subpath, libc::O_PATH)
+                    .map_err(|e| Executor::wrap(inroot::path_error("open", subpath, &e).to_string()))?;
                 let target = &r.resolve(target, false)?;
-                let at = r.mkdir_all(target, 0o755, None)?;
-                bind(src, &at, &r, target, 0, *readonly)?;
+                let at = if inroot::is_dir(&src)? {
+                    r.mkdir_all(target, 0o755, None)?
+                } else {
+                    r.file(target, 0o666)?
+                };
+                bind(&inroot::path(&src), &at, &r, target, 0, *readonly)?;
             }
             Mount::Tmpfs { size, readonly } => {
                 let at = r.mkdir_all(&r.resolve(target, false)?, 0o755, None)?;
@@ -1416,4 +1628,114 @@ fn cdi_node(r: &Root, d: &shards_abi::build::Device) -> io::Result<()> {
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    const CA: &[u8] = b"-----BEGIN CERTIFICATE-----\nAAEC\n-----END CERTIFICATE-----\n";
+
+    /// A step's root of its own, removed as it drops.
+    struct Scratch(PathBuf);
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn scratch(name: &str) -> Scratch {
+        let dir = std::env::temp_dir().join(format!("shards-init-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        Scratch(dir)
+    }
+
+    /// The CA goes into the first bundle that is a regular file, found in the root: a FIFO
+    /// first in the list passed over, never waited on; an absolute symlink followed in the
+    /// root, not the host's. Its mode kept, it comes out again, the step's own lines kept.
+    #[test]
+    fn the_proxy_ca_goes_into_the_first_bundle_and_out_again() {
+        let s = scratch("ca");
+        let at = |p: &str| s.0.join(p.trim_start_matches('/'));
+        std::fs::create_dir_all(at("/etc/ssl/certs")).unwrap();
+        let fifo = CString::new(at("/etc/ssl/certs/ca-certificates.crt").as_os_str().as_bytes()).unwrap();
+        // SAFETY: a NUL-terminated path.
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o644) }, 0);
+        std::fs::create_dir_all(at("/etc/pki/tls/certs")).unwrap();
+        std::os::unix::fs::symlink("/certs/real.pem", at("/etc/pki/tls/certs/ca-bundle.crt")).unwrap();
+        std::fs::create_dir_all(at("/certs")).unwrap();
+        let bundle = at("/certs/real.pem");
+        std::fs::write(&bundle, b"original").unwrap();
+        std::fs::set_permissions(&bundle, std::fs::Permissions::from_mode(0o640)).unwrap();
+        let r = Root::open(&s.0).unwrap();
+        let injected = inject_ca(&r, CA).unwrap().unwrap();
+        assert_eq!(injected.path, b"/certs/real.pem");
+        assert_eq!(
+            std::fs::read(&bundle).unwrap(),
+            proxyca::appended(b"original", CA)
+        );
+        assert_eq!(std::fs::metadata(&bundle).unwrap().mode() & 0o7777, 0o640);
+        // Held already: nothing goes in twice.
+        assert!(inject_ca(&r, CA).unwrap().is_none());
+        // What the step adds stays; the CA goes.
+        let mut grown = std::fs::read(&bundle).unwrap();
+        grown.extend_from_slice(b"step\n");
+        std::fs::write(&bundle, &grown).unwrap();
+        injected.clean(&s.0);
+        assert_eq!(std::fs::read(&bundle).unwrap(), b"original\nstep\n");
+        // No temporary file is left beside it.
+        assert_eq!(std::fs::read_dir(at("/certs")).unwrap().count(), 1);
+    }
+
+    /// No CA, no bundle: nothing to do. A bundle past 10 MiB fails the step, as BuildKit's.
+    #[test]
+    fn a_root_without_a_bundle_or_with_a_huge_one() {
+        let s = scratch("noca");
+        let r = Root::open(&s.0).unwrap();
+        assert!(inject_ca(&r, b"").unwrap().is_none());
+        assert!(inject_ca(&r, CA).unwrap().is_none());
+        std::fs::create_dir_all(s.0.join("etc/ssl")).unwrap();
+        let huge = std::fs::File::create(s.0.join("etc/ssl/cert.pem")).unwrap();
+        huge.set_len(proxyca::MOST + 1).unwrap();
+        let e = inject_ca(&r, CA).unwrap_err().to_string();
+        assert_eq!(e, "/etc/ssl/cert.pem exceeds 10485760 bytes");
+        assert!(inject_ca(&r, b"no PEM").is_err());
+    }
+
+    /// A bundle of 10 MiB to the byte is read, and the CA goes in; past that, it no longer
+    /// reads, so the cleanup leaves it, as BuildKit's readCertBundle leaves it.
+    #[test]
+    fn a_bundle_of_ten_mib_takes_the_ca() {
+        let s = scratch("most");
+        std::fs::create_dir_all(s.0.join("etc/ssl")).unwrap();
+        let bundle = s.0.join("etc/ssl/cert.pem");
+        std::fs::File::create(&bundle)
+            .unwrap()
+            .set_len(proxyca::MOST)
+            .unwrap();
+        let r = Root::open(&s.0).unwrap();
+        let injected = inject_ca(&r, CA).unwrap().unwrap();
+        let grown = std::fs::metadata(&bundle).unwrap().len();
+        assert!(grown > proxyca::MOST, "{grown}");
+        injected.clean(&s.0);
+        assert_eq!(std::fs::metadata(&bundle).unwrap().len(), grown);
+    }
+
+    /// A bundle is read only where it is a regular file: a FIFO there is refused, never
+    /// read as an empty one.
+    #[test]
+    fn a_bundle_that_is_no_file_is_refused() {
+        let s = scratch("nofile");
+        std::fs::create_dir_all(s.0.join("etc/ssl")).unwrap();
+        let fifo = CString::new(s.0.join("etc/ssl/cert.pem").as_os_str().as_bytes()).unwrap();
+        // SAFETY: a NUL-terminated path.
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o644) }, 0);
+        let r = Root::open(&s.0).unwrap();
+        let e = read_bundle(&r, b"/etc/ssl/cert.pem").unwrap_err().to_string();
+        assert_eq!(e, "/etc/ssl/cert.pem is not a regular file");
+    }
 }

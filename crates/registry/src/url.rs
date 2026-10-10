@@ -76,6 +76,45 @@ impl Url {
         })
     }
 
+    /// A request's URL from its parts, as a build's proxy forwards one (D110): its target
+    /// (path and query) taken as the client wrote it, as Go's transport writes what it was
+    /// given, not held to RFC 3986; only a space or a control there, which would split the
+    /// request line, refuses it. The host is a name of letters, digits, `-`, `.` and `_`,
+    /// lowercased, or an IP address, an IPv6 one in brackets.
+    pub fn request(scheme: Scheme, host: &str, port: Option<u16>, target: &str) -> Result<Url, Error> {
+        let named = !host.is_empty()
+            && host
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_'));
+        let bracketed = host
+            .strip_prefix('[')
+            .and_then(|h| h.strip_suffix(']'))
+            .is_some_and(|h| h.parse::<std::net::Ipv6Addr>().is_ok());
+        if !named && !bracketed {
+            return Err(Error::new(format!("{host:?} is no host a request can name")));
+        }
+        if !target.starts_with('/') || target.bytes().any(|b| b <= b' ' || b == 0x7f) {
+            return Err(Error::new(format!("{target:?} is no request target")));
+        }
+        let host = host.to_ascii_lowercase();
+        let (word, default) = match scheme {
+            Scheme::Http => ("http", 80),
+            Scheme::Https => ("https", 443),
+        };
+        let text = match port {
+            Some(p) => format!("{word}://{host}:{p}{target}"),
+            None => format!("{word}://{host}{target}"),
+        };
+        Ok(Url {
+            text,
+            scheme,
+            host,
+            port: port.unwrap_or(default),
+            explicit_port: port.is_some(),
+            target: target.to_string(),
+        })
+    }
+
     /// `reference` resolved against this URL (RFC 3986 §5.2), as a `Location` is
     /// (RFC 9110 §10.2.2). A fragment is dropped: it is never sent.
     pub fn join(&self, reference: &str) -> Result<Url, Error> {
@@ -278,6 +317,44 @@ mod tests {
             ("https://u:p@h", "https://u:xxxxx@h"),
         ] {
             assert_eq!(redact(given), shown, "{given}");
+        }
+    }
+
+    /// A proxy's request keeps its target as written; only what would split a request
+    /// line, or no host at all, is refused.
+    #[test]
+    fn requests_keep_their_targets_as_written() {
+        let u = Url::request(Scheme::Https, "Example.COM", Some(443), "/a|b?q={x}&y=^").unwrap();
+        assert_eq!(
+            (u.host(), u.port(), u.authority().as_str()),
+            ("example.com", 443, "example.com")
+        );
+        assert_eq!(u.target(), "/a|b?q={x}&y=^");
+        let u = Url::request(Scheme::Http, "[::1]", None, "/").unwrap();
+        assert_eq!((u.host(), u.port(), u.as_str()), ("[::1]", 80, "http://[::1]/"));
+        assert_eq!(
+            Url::request(Scheme::Http, "10.0.0.1", Some(8080), "/x")
+                .unwrap()
+                .as_str(),
+            "http://10.0.0.1:8080/x"
+        );
+        for (host, target) in [
+            ("", "/"),
+            ("h", "x"),
+            ("h", "/a b"),
+            ("h", "/a\r\nX: y"),
+            ("h", "/\u{7f}"),
+            ("h/x", "/"),
+            ("u@h", "/"),
+            ("h%25eth0", "/"),
+            ("[::1", "/"),
+            ("[zz]", "/"),
+            ("ä.example", "/"),
+        ] {
+            assert!(
+                Url::request(Scheme::Http, host, None, target).is_err(),
+                "{host:?} {target:?}"
+            );
         }
     }
 

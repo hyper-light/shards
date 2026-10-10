@@ -434,9 +434,12 @@ fn shares(cfg: &Config) -> String {
     String::new()
 }
 
-/// What a template was saved from, recorded in it: its root filesystem and its guest. It
-/// is live while that root filesystem is there and that guest is the current one
-/// (daemon.rs, `collect_garbage`).
+/// What a template was saved from: its root filesystem and its guest. It is live while
+/// that root filesystem is there and that guest is the current one (daemon.rs,
+/// `collect_garbage`). It is the daemon's record, kept beside the template rather than in
+/// it: a template's directory is a VM process's to write while it saves, and a VM taken
+/// over then could leave there a record naming any file, or a link the daemon would write
+/// through (PM M165).
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct Origin {
     rootfs: PathBuf,
@@ -451,7 +454,21 @@ pub struct Origin {
 }
 
 impl Origin {
-    const FILE: &str = "origin.json";
+    /// The most bytes a record may take: a path and two digests, far less.
+    const MOST: u64 = 64 << 10;
+
+    /// Where the template `dir`'s record is: beside it, in the directory of templates,
+    /// which no VM process is granted.
+    fn place(dir: &Path) -> Option<(&Path, String)> {
+        let parent = dir.parent()?;
+        let name = dir.file_name()?.to_str()?;
+        Some((parent, format!("{name}.origin")))
+    }
+
+    /// The template `dir`'s record, to remove with it.
+    pub fn path(dir: &Path) -> Option<PathBuf> {
+        Self::place(dir).map(|(parent, name)| parent.join(name))
+    }
 
     pub fn of(guest: &Guest, rootfs: &Path, server: bool) -> Origin {
         Origin {
@@ -467,15 +484,21 @@ impl Origin {
         self.server
     }
 
-    /// Records it in the template `dir`.
+    /// Records it for the template `dir`, beside it: written whole under a name of its
+    /// own and renamed into place, so that nothing at its name is written through.
     pub fn write(&self, dir: &Path) -> Result<(), String> {
+        let (parent, name) = Self::place(dir).ok_or_else(|| format!("{}: not a template", dir.display()))?;
         let bytes = serde_json::to_vec(self).map_err(|e| e.to_string())?;
-        std::fs::write(dir.join(Self::FILE), bytes).map_err(|e| e.to_string())
+        let at = |e: std::io::Error| format!("{}: {e}", parent.join(&name).display());
+        let templates = shards_vmm::platform::open_dir(parent).map_err(at)?;
+        shards_vmm::platform::write_in(&templates, &name, &bytes).map_err(at)
     }
 
-    /// What the template `dir` records, if it records it whole.
+    /// What is recorded for the template `dir`, if it is recorded whole: a regular file
+    /// beside it, never followed if it is a link.
     pub fn read(dir: &Path) -> Option<Origin> {
-        let bytes = std::fs::read(dir.join(Self::FILE)).ok()?;
+        let (parent, name) = Self::place(dir)?;
+        let bytes = shards_vmm::platform::read_beneath(parent, &[&name], Self::MOST).ok()??;
         serde_json::from_slice(&bytes).ok()
     }
 
@@ -563,6 +586,58 @@ fn short(digest: &str) -> &str {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    /// A template's origin is the daemon's record, beside the template where no VM
+    /// process is granted (PM M165): it reads back as written; a record a VM could leave in
+    /// the template itself is not read; a link at its place is replaced, never written
+    /// through, nor read; a FIFO there is not read, nor waited on.
+    #[cfg(unix)]
+    #[test]
+    fn a_templates_origin_is_beside_it_and_never_followed() {
+        let home = std::env::temp_dir().join(format!("shards-origin-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let templates = home.join("templates");
+        let dir = templates.join("0abc");
+        std::fs::create_dir_all(&dir).unwrap();
+        let rootfs = home.join("rootfs.erofs");
+        std::fs::write(&rootfs, b"").unwrap();
+        let guest = Guest {
+            kernel: home.join("kernel"),
+            init: home.join("init"),
+            kernel_digest: "sha256:k".into(),
+            init_digest: "sha256:i".into(),
+        };
+        // What a VM taken over while it saved could leave in the template itself.
+        std::fs::write(
+            dir.join("origin.json"),
+            br#"{"rootfs":"/etc/hosts","kernel_digest":"sha256:k","init_digest":"sha256:i","server":true}"#,
+        )
+        .unwrap();
+        assert!(Origin::read(&dir).is_none(), "a record in the template is read");
+        let place = Origin::path(&dir).unwrap();
+        assert_eq!(place, templates.join("0abc.origin"));
+        // A link at its place, to a file of the user's.
+        let victim = home.join("victim");
+        std::fs::write(&victim, b"the user's").unwrap();
+        std::os::unix::fs::symlink(&victim, &place).unwrap();
+        assert!(Origin::read(&dir).is_none(), "a link is read through");
+        Origin::of(&guest, &rootfs, true).write(&dir).unwrap();
+        assert_eq!(
+            std::fs::read(&victim).unwrap(),
+            b"the user's",
+            "written through a link"
+        );
+        let read = Origin::read(&dir).unwrap();
+        assert_eq!((read.rootfs(), read.server()), (rootfs.as_path(), true));
+        assert!(read.live(Some(&guest)));
+        // A FIFO at its place: neither read nor waited on.
+        std::fs::remove_file(&place).unwrap();
+        let fifo = std::ffi::CString::new(place.clone().into_os_string().into_encoded_bytes()).unwrap();
+        // SAFETY: mkfifo(2) of a NUL-terminated path.
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+        assert!(Origin::read(&dir).is_none());
+        let _ = std::fs::remove_dir_all(&home);
+    }
 
     fn strings(v: &[&str]) -> Vec<String> {
         v.iter().map(|s| s.to_string()).collect()

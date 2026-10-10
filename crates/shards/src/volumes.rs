@@ -357,6 +357,43 @@ const RESTRICTED: &str = "[a-zA-Z0-9][a-zA-Z0-9_.-]";
 /// daemon/volume/service AnonymousLabel), which `volume prune` takes without `--all`.
 pub const ANONYMOUS: &str = "com.docker.volume.anonymous";
 
+/// The label of a named volume an image's Agentfile gives some of its agents and
+/// harnesses alone (`VOLUME name path FOR …`, D109): set as a run of it first mounts the
+/// volume, so that another run takes it only as its own image's Agentfile gives it (D115).
+/// In the namespace a build's and a run's labels may not use (D109).
+pub const SCOPED: &str = "vnd.osi.agentfile.scoped";
+
+/// Refuses a run's own mount of volume `v` at `dest` where an image's Agentfile scoped
+/// it ([`SCOPED`]), unless the run's own image's Agentfile names it there: a stand-in
+/// for its own volume (D109).
+fn scoped_to(
+    v: &Volume,
+    dest: &str,
+    agent_volumes: Option<&[crate::agentfile::AgentVolume]>,
+) -> Result<(), String> {
+    if !v.labels.contains_key(SCOPED) {
+        return Ok(());
+    }
+    let own = agent_volumes.unwrap_or_default().iter().any(|a| {
+        a.name.as_deref() == Some(v.name.as_str()) && a.paths.iter().any(|p| clean(p) == clean(dest))
+    });
+    if own {
+        return Ok(());
+    }
+    Err(format!(
+        "cannot mount volume {} at {dest}: an image's Agentfile gives it to its agents and harnesses alone, and a run mounts it only where its own image's Agentfile puts it",
+        v.name
+    ))
+}
+
+/// Refusing label `key`, in the namespace of shards' build (D109).
+pub fn reserved(key: &str) -> String {
+    format!(
+        "label {key:?} is reserved: shards sets the {} labels from an image's Agentfile, and no other may set one",
+        String::from_utf8_lossy(shards_dockerfile::agentfile::LABEL_PREFIX)
+    )
+}
+
 /// One volume change at a time, and none while a container's mount points are taken: as
 /// the local driver's lock and dockerd's reference counts keep a volume in use from
 /// being removed.
@@ -481,6 +518,20 @@ impl Store {
         let text = serde_json::to_vec(&v).map_err(|e| e.to_string())?;
         durably(&dir, "opts.json", &text).map_err(|e| format!("volume {name}: {e}"))?;
         Ok((v, true))
+    }
+
+    /// Gives volume `name` label `key`, empty, where it has none, its options kept.
+    /// Callers hold [`lock`].
+    pub fn mark(&self, name: &str, key: &str) -> Result<(), String> {
+        let mut v = self
+            .get(name)
+            .ok_or_else(|| format!("get {name}: no such volume"))?;
+        if v.labels.contains_key(key) {
+            return Ok(());
+        }
+        v.labels.insert(key.to_string(), String::new());
+        let text = serde_json::to_vec(&v).map_err(|e| e.to_string())?;
+        durably(&self.root.join(name), "opts.json", &text).map_err(|e| format!("volume {name}: {e}"))
     }
 
     pub fn get(&self, name: &str) -> Option<Volume> {
@@ -630,6 +681,14 @@ fn register_into(
     for v in volumes_from {
         let (id, mode) = parse_volumes_from(v)?;
         for m in from(&id)? {
+            // One its image's Agentfile gives its agents and harnesses alone is theirs: no
+            // other run takes it (D115), as theirs is never in that container's own root.
+            if m.domains_only {
+                return Err(format!(
+                    "cannot take the volumes of {id}: its image's Agentfile gives the volume at {} to its agents and harnesses alone",
+                    m.destination
+                ));
+            }
             let cp = MountPoint {
                 rw: m.rw && !mode.split(',').any(|o| o == "ro"),
                 copy_data: false,
@@ -655,6 +714,7 @@ fn register_into(
         let mut made = false;
         if mp.kind == "volume" {
             let (v, now) = store.create(&mp.name, &BTreeMap::new(), &BTreeMap::new())?;
+            scoped_to(&v, &mp.destination, agent_volumes)?;
             made = now;
             mp.name = v.name.clone();
             mp.source = store.data(&v.name).to_string_lossy().into_owned();
@@ -685,7 +745,14 @@ fn register_into(
                     )
                 })
                 .unwrap_or_default();
+            if let Some(k) = labels
+                .keys()
+                .find(|k| shards_dockerfile::agentfile::reserved_label(k.as_bytes()))
+            {
+                return Err(reserved(k));
+            }
             let (v, now) = store.create(&mp.name, &labels, &options)?;
+            scoped_to(&v, &mp.destination, agent_volumes)?;
             made = now;
             mp.name = v.name.clone();
             mp.driver = "local".into();
@@ -729,6 +796,9 @@ fn register_into(
         }
         let name = agent.and_then(|a| a.name.as_deref()).unwrap_or("");
         let (v, now) = store.create(name, &BTreeMap::new(), &BTreeMap::new())?;
+        if agent.is_some_and(|a| a.scoped) && !name.is_empty() {
+            store.mark(&v.name, SCOPED)?;
+        }
         let mp = MountPoint {
             kind: "volume".into(),
             name: v.name.clone(),
@@ -903,15 +973,20 @@ mod tests {
             args.push("img".into());
             crate::cli::request::for_test(&args).unwrap()
         };
-        let registered = |args: &[&str], from: &dyn Fn(&str) -> Result<Vec<MountPoint>, String>| {
+        let registered_as = |args: &[&str],
+                             from: &dyn Fn(&str) -> Result<Vec<MountPoint>, String>,
+                             agent: Option<&[AgentVolume]>| {
             let run = run_with(args);
             // The image's own, then the run's `-v DEST`, as the daemon lists them.
             let mut image: Vec<String> = ["/data", "/shared", "/scratch", "/cache", "/dev/shm"]
                 .map(String::from)
                 .to_vec();
             image.extend(run.volumes.iter().cloned());
-            register(&store, &run, &image, Some(&agent), from)
+            register(&store, &run, &image, agent, from)
                 .map(|p| p.into_iter().map(|(p, _)| p).collect::<Vec<_>>())
+        };
+        let registered = |args: &[&str], from: &dyn Fn(&str) -> Result<Vec<MountPoint>, String>| {
+            registered_as(args, from, Some(&agent))
         };
         let at = |points: &[MountPoint], dest: &str| {
             points.iter().find(|p| p.destination == dest).cloned().unwrap()
@@ -1038,24 +1113,67 @@ mod tests {
             "a file anywhere else is the run's own"
         );
 
-        // `--volumes-from`: mounted as Docker mounts it, for whom this image says.
-        let theirs = |_: &str| {
-            Ok(["/theirs", "/data"]
-                .map(|dest| MountPoint {
-                    kind: "volume".into(),
-                    name: format!("v{}", dest.len()),
-                    destination: dest.into(),
-                    driver: "local".into(),
-                    rw: true,
-                    domains: true,
-                    domains_only: true,
-                    ..MountPoint::default()
-                })
-                .to_vec())
+        // `--volumes-from`: mounted as Docker mounts it, for whom this image says; one its
+        // container's image gives its agents and harnesses alone is theirs (D115).
+        let theirs = |scoped: bool| {
+            move |_: &str| {
+                Ok(["/theirs", "/data"]
+                    .map(|dest| MountPoint {
+                        kind: "volume".into(),
+                        name: format!("v{}", dest.len()),
+                        destination: dest.into(),
+                        driver: "local".into(),
+                        rw: true,
+                        domains: true,
+                        domains_only: scoped && dest == "/theirs",
+                        ..MountPoint::default()
+                    })
+                    .to_vec())
+            }
         };
-        let points = registered(&["--volumes-from", "c"], &theirs).unwrap();
+        let points = registered(&["--volumes-from", "c"], &theirs(false)).unwrap();
         assert_eq!(said(&at(&points, "/theirs")), (false, false));
         assert_eq!(said(&at(&points, "/data")), (true, false));
+        for agent in [Some(&agent[..]), None] {
+            let e = registered_as(&["--volumes-from", "c"], &theirs(true), agent).unwrap_err();
+            assert_eq!(
+                e,
+                "cannot take the volumes of c: its image's Agentfile gives the volume at /theirs to its agents and harnesses alone"
+            );
+        }
+
+        // A named volume an Agentfile scoped is marked so as its run mounts it, and no
+        // other run mounts it by name but where its own image's Agentfile puts it.
+        assert!(store.get("data").unwrap().labels.contains_key(SCOPED));
+        assert!(!store.get("shared").unwrap().labels.contains_key(SCOPED));
+        let refused =
+            "cannot mount volume data at /x: an image's Agentfile gives it to its agents and harnesses alone";
+        for (args, agent) in [
+            (&["-v", "data:/x"][..], None),
+            (&["-v", "data:/x"], Some(&agent[..])),
+            (&["--mount", "src=data,dst=/x"], None),
+        ] {
+            let e = registered_as(args, &none, agent).unwrap_err();
+            assert!(e.starts_with(refused), "{args:?}: {e}");
+        }
+        assert!(
+            registered(&["-v", "data:/data"], &none).is_ok(),
+            "its own stand-in"
+        );
+        assert!(registered_as(&["-v", "shared:/x"], &none, None).is_ok());
+        let e = registered(
+            &[
+                "--mount",
+                "src=v1,dst=/v1,volume-label=vnd.osi.agentfile.scoped=1",
+            ],
+            &none,
+        )
+        .unwrap_err();
+        assert!(
+            e.starts_with("label \"vnd.osi.agentfile.scoped\" is reserved"),
+            "{e}"
+        );
+        assert!(store.get("v1").is_none(), "refused before it is made");
         let _ = std::fs::remove_dir_all(&home);
     }
 

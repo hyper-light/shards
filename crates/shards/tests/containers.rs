@@ -205,12 +205,14 @@ fn names_are_unique_and_rm_leaves_nothing() {
     );
 }
 
+/// The command hears stop's SIGTERM and dies of it, as under `docker run --init`, where it
+/// is not PID 1, which hears only what it handles (`a_command_is_pid_1_as_a_containers_is`).
 #[test]
 fn stop_and_kill_signal_the_command() {
     let Some((home, image)) = home("containers-stop") else {
         return;
     };
-    let mut sleeper = start(&home, &image, &["--name", "sleeper"], &["sleep"]);
+    let mut sleeper = start(&home, &image, &["--name", "sleeper", "--init"], &["sleep"]);
     let stopped = shards_in(&home, &["stop", "-t", "5", "sleeper"]);
     assert_eq!(
         (stopped.status, stopped.stdout.as_str()),
@@ -299,12 +301,376 @@ fn stats_measures_each_microvm_from_its_guest() {
     exit(&mut sleeper);
 }
 
+/// alpine:3.22 as Docker 29.3.1 ran it for D115's measurements (platform-measurements.md
+/// M145): its shell and ps say what a command sees of its PID namespace.
+const ALPINE: &str = "alpine:3.22@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8";
+
+/// A home with `image` pulled from its registry.
+fn pulled(name: &str, image: &str) -> Option<TempDir> {
+    if cannot_run_vms() {
+        return None;
+    }
+    let home = TempDir::new(name);
+    let pulled = shards_in(&home, &["pull", "-q", image]);
+    assert_eq!(pulled.status, Some(0), "{pulled}");
+    Some(home)
+}
+
+/// A run's command is PID 1 of a PID namespace of its own, as a container's is (D115), with
+/// PID 1's signals; `--init` puts a reaper there in docker-init's place, which forwards
+/// what it hears; execs and restarts join or begin such a namespace as Docker's do;
+/// `--pid host` is the microVM's own. Each answer is Docker 29.3.1's in shards-dind
+/// (M145) but for what runc's own threads and docker-init make other there: the PID an
+/// exec or `--init`'s command gets (Docker's 7), the reaper's name, and the PPID of
+/// `--init`'s command, which is 0 here, its parent being init, outside the namespace.
+#[test]
+fn a_command_is_pid_1_as_a_containers_is() {
+    let Some(home) = pulled("containers-pid1", ALPINE) else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let run = |args: &[&str]| {
+        let mut all = vec!["run", "--rm"];
+        all.extend_from_slice(args);
+        shards(&all)
+    };
+    let said = |r: &Run| (r.status, r.stdout.clone());
+    let r = run(&[ALPINE, "sh", "-c", "echo $$"]);
+    assert_eq!(said(&r), (Some(0), "1\n".into()), "{r}");
+    // From inside, PID 1 hears only what it handles: TERM and KILL alike go unheard.
+    let r = run(&[ALPINE, "sh", "-c", "kill -TERM 1; kill -KILL 1; echo alive"]);
+    assert_eq!(said(&r), (Some(0), "alive\n".into()), "{r}");
+    let r = run(&[ALPINE, "ps", "-o", "pid,ppid,comm"]);
+    assert_eq!(
+        said(&r),
+        (Some(0), "PID   PPID  COMMAND\n    1     0 ps\n".into()),
+        "{r}"
+    );
+    let r = run(&["--init", ALPINE, "ps", "-o", "pid,ppid,comm"]);
+    assert_eq!(
+        said(&r),
+        (
+            Some(0),
+            "PID   PPID  COMMAND\n    1     0 init\n    2     0 ps\n".into()
+        ),
+        "{r}"
+    );
+    // The reaper forwards what PID 1 hears to the command, as tini does, of any user: it
+    // runs as the command's, as tini does.
+    for user in ["0", "1000"] {
+        let r = run(&[
+            "--init",
+            "-u",
+            user,
+            ALPINE,
+            "sh",
+            "-c",
+            "kill -TERM 1; sleep 5; echo alive",
+        ]);
+        assert_eq!(said(&r), (Some(143), String::new()), "-u {user}: {r}");
+    }
+
+    // A stop: PID 1 without a handler waits out the timeout, then is killed; under --init
+    // the command hears SIGTERM at once; with a handler, it ends as that says.
+    let code = |name: &str| shards(&["inspect", "-f", "{{.State.ExitCode}}", name]).stdout;
+    let since = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        .to_string();
+    for (name, flags, command, timeout, quick, exit) in [
+        ("pid1", &[][..], &["sleep", "1000"][..], "2", false, "137\n"),
+        (
+            "reaped",
+            &["--init"][..],
+            &["sleep", "1000"][..],
+            "10",
+            true,
+            "143\n",
+        ),
+        (
+            "trapped",
+            &[][..],
+            &["sh", "-c", "trap 'exit 7' TERM; while :; do sleep 0.1; done"][..],
+            "10",
+            true,
+            "7\n",
+        ),
+    ] {
+        let mut args = vec!["run", "-d", "--name", name];
+        args.extend_from_slice(flags);
+        args.push(ALPINE);
+        args.extend_from_slice(command);
+        let started = shards(&args);
+        assert_eq!(started.status, Some(0), "{started}");
+        let at = Instant::now();
+        let stopped = shards(&["stop", "-t", timeout, name]);
+        let took = at.elapsed();
+        assert_eq!(stopped.status, Some(0), "{stopped}");
+        if quick {
+            assert!(took < Duration::from_secs(5), "{name} took {took:?} to stop");
+        } else {
+            assert!(
+                took >= Duration::from_secs(2),
+                "{name} stopped in {took:?}: it heard SIGTERM"
+            );
+        }
+        assert_eq!(code(name), exit, "{name}");
+    }
+    // Its events, as dockerd's (M145): the SIGTERM it did not hear, then the SIGKILL that
+    // ended it, and its death of that.
+    let until = format!(
+        "{:.9}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64()
+    );
+    let events = shards(&[
+        "events",
+        "--since",
+        &since,
+        "--until",
+        &until,
+        "--filter",
+        "container=pid1",
+    ]);
+    let told: Vec<(&str, &str)> = events
+        .stdout
+        .lines()
+        .filter_map(|l| {
+            let action = l.split(' ').nth(2)?;
+            let attributes = l.get(l.find('(')? + 1..l.rfind(')')?)?;
+            let said = attributes
+                .split(", ")
+                .find(|kv| kv.starts_with("signal=") || kv.starts_with("exitCode="))?;
+            Some((action, said))
+        })
+        .collect();
+    assert_eq!(
+        told,
+        [
+            ("kill", "signal=15"),
+            ("kill", "signal=9"),
+            ("die", "exitCode=137")
+        ],
+        "{events}"
+    );
+    assert!(
+        events.stdout.lines().any(|l| l.split(' ').nth(2) == Some("stop")),
+        "{events}"
+    );
+    // `kill -s TERM` leaves it running; `kill`, SIGKILL, which PID 1 hears from outside,
+    // ends it.
+    assert_eq!(
+        shards(&["run", "-d", "--name", "deaf", ALPINE, "sleep", "1000"]).status,
+        Some(0)
+    );
+    assert_eq!(shards(&["kill", "-s", "TERM", "deaf"]).status, Some(0));
+    std::thread::sleep(Duration::from_secs(1));
+    assert_eq!(
+        shards(&["inspect", "-f", "{{.State.Running}}", "deaf"]).stdout,
+        "true\n"
+    );
+    // An exec joins its namespace: the command is PID 1 there.
+    let exec = shards(&[
+        "exec",
+        "deaf",
+        "sh",
+        "-c",
+        "echo $$; tr '\\0' ' ' </proc/1/cmdline",
+    ]);
+    let lines: Vec<&str> = exec.stdout.lines().collect();
+    assert!(
+        exec.status == Some(0) && lines.len() == 2 && lines[0] != "1" && lines[1] == "sleep 1000 ",
+        "{exec}"
+    );
+    assert_eq!(shards(&["kill", "deaf"]).status, Some(0));
+    assert_eq!(code("deaf"), "137\n");
+    // `top` lists the reaper under --init, as `docker top` lists docker-init.
+    assert_eq!(
+        shards(&["run", "-d", "--init", "--name", "listed", ALPINE, "sleep", "1000"]).status,
+        Some(0)
+    );
+    let top = shards(&["top", "listed", "-o", "pid,comm"]);
+    let names: Vec<&str> = top
+        .stdout
+        .lines()
+        .skip(1)
+        .filter_map(|l| l.split_whitespace().nth(1))
+        .collect();
+    assert_eq!(names, ["init", "sleep"], "{top}");
+    assert_eq!(shards(&["kill", "listed"]).status, Some(0));
+
+    // A restart policy's every run: PID 1 again.
+    let started = shards(&[
+        "run",
+        "-d",
+        "--restart",
+        "on-failure:2",
+        "--name",
+        "again",
+        ALPINE,
+        "sh",
+        "-c",
+        "echo $$; exit 3",
+    ]);
+    assert_eq!(started.status, Some(0), "{started}");
+    let deadline = Instant::now() + TIMEOUT;
+    let format = "{{.RestartCount}} {{.State.ExitCode}} {{.State.Status}}";
+    while shards(&["inspect", "-f", format, "again"]).stdout != "2 3 exited\n" {
+        assert!(Instant::now() < deadline, "again did not end its restarts");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert_eq!(shards(&["logs", "again"]).stdout, "1\n1\n1\n");
+
+    // `--pid host`: the microVM's own namespace, in which kthreadd is PID 2, and whose
+    // init's root the command, without CAP_SYS_PTRACE, cannot reach.
+    let r = run(&[
+        "--pid",
+        "host",
+        ALPINE,
+        "sh",
+        "-c",
+        "echo $$; cat /proc/2/comm; ls /proc/1/root >/dev/null 2>&1 && echo reached || echo denied",
+    ]);
+    let lines: Vec<&str> = r.stdout.lines().collect();
+    assert!(
+        r.status == Some(0) && lines.len() == 3 && lines[0] != "1" && lines[1..] == ["kthreadd", "denied"],
+        "{r}"
+    );
+    // The CLI's and dockerd's answers to the rest.
+    let r = run(&["--pid", "foo", ALPINE, "true"]);
+    assert!(
+        r.status == Some(125) && r.stderr.contains("--pid: invalid PID mode\n"),
+        "{r}"
+    );
+    let r = shards(&["create", "--pid", "container:nope", ALPINE, "true"]);
+    assert_eq!(
+        (r.status, r.stderr.as_str()),
+        (Some(1), "Error response from daemon: No such container: nope\n"),
+        "{r}"
+    );
+    for (name, flags, want) in [
+        ("i0", &[][..], "null \"\" unset\n"),
+        ("i1", &["--init"][..], "true \"\" set\n"),
+        ("i2", &["--init=false"][..], "false \"\" set\n"),
+        ("i3", &["--pid", "host"][..], "null \"host\" unset\n"),
+    ] {
+        let mut args = vec!["create", "--name", name];
+        args.extend_from_slice(flags);
+        args.extend([ALPINE, "true"]);
+        assert_eq!(shards(&args).status, Some(0));
+        let format = "{{json .HostConfig.Init}} {{json .HostConfig.PidMode}} {{if .HostConfig.Init}}set{{else}}unset{{end}}";
+        assert_eq!(shards(&["inspect", "-f", format, name]).stdout, want, "{name}");
+    }
+    // Another container's, a microVM of its own: none of its processes' namespaces is ours.
+    let r = shards(&["create", "--pid", "container:i0", ALPINE, "true"]);
+    assert_eq!(
+        (r.status, r.stderr.as_str()),
+        (
+            Some(1),
+            "Error response from daemon: \"--pid container:NAME\" is not supported by shards yet\n"
+        ),
+        "{r}"
+    );
+}
+
+/// Docker's own sysctls for a container's network namespace (moby daemon/oci_linux.go),
+/// which a run's `--sysctl` overrides: ICMP echo sockets for every group, so that ping
+/// works without CAP_NET_RAW, and every port bindable without CAP_NET_BIND_SERVICE; as
+/// Docker 29.3.1 answered (M145).
+#[test]
+fn dockers_default_sysctls_let_ping_go_without_net_raw() {
+    let Some(home) = pulled("containers-sysctls", ALPINE) else {
+        return;
+    };
+    let run = |args: &[&str]| {
+        let mut all = vec!["run", "--rm"];
+        all.extend_from_slice(args);
+        shards_in(&home, &all)
+    };
+    let keys = [
+        "sysctl",
+        "net.ipv4.ping_group_range",
+        "net.ipv4.ip_unprivileged_port_start",
+    ];
+    let mut args = vec![ALPINE];
+    args.extend(keys);
+    let r = run(&args);
+    assert_eq!(
+        (r.status, r.stdout.as_str()),
+        (
+            Some(0),
+            "net.ipv4.ping_group_range = 0\t2147483647\nnet.ipv4.ip_unprivileged_port_start = 0\n"
+        ),
+        "{r}"
+    );
+    let mut args = vec!["--sysctl", "net.ipv4.ip_unprivileged_port_start=1024", ALPINE];
+    args.extend(keys);
+    let r = run(&args);
+    assert!(
+        r.stdout.ends_with("net.ipv4.ip_unprivileged_port_start = 1024\n"),
+        "{r}"
+    );
+    let r = run(&[
+        "--cap-drop",
+        "NET_RAW",
+        "-u",
+        "1000",
+        ALPINE,
+        "ping",
+        "-c",
+        "1",
+        "-W",
+        "2",
+        "127.0.0.1",
+    ]);
+    assert!(
+        r.status == Some(0) && r.stdout.contains("1 packets received"),
+        "{r}"
+    );
+}
+
+/// linuxserver.io's Alpine base image, whose entrypoint, s6-overlay's `/init`, runs only
+/// as PID 1, as Docker 29.3.1 ran it in shards-dind (M145): its services up and its
+/// command run; under `--init` or `--pid host`, refused by s6 itself.
+const S6: &str = "ghcr.io/linuxserver/baseimage-alpine:3.22@sha256:ab81abc99e45ef5b045a6c6f41fb2f3ac3651b89f81b0942e1d8861650605cb0";
+
+#[test]
+fn an_s6_overlay_image_runs_as_pid_1() {
+    let Some(home) = pulled("containers-s6", S6) else {
+        return;
+    };
+    let run = |args: &[&str]| {
+        let mut all = vec!["run", "--rm"];
+        all.extend_from_slice(args);
+        all.extend([S6, "echo", "hello from s6"]);
+        shards_in(&home, &all)
+    };
+    let r = run(&[]);
+    assert!(
+        r.status == Some(0) && r.stdout.contains("[ls.io-init] done.\nhello from s6\n"),
+        "{r}"
+    );
+    for refused in [&["--init"][..], &["--pid", "host"][..]] {
+        let r = run(refused);
+        assert!(
+            r.status == Some(100)
+                && format!("{}{}", r.stdout, r.stderr)
+                    .contains("s6-overlay-suexec: fatal: can only run as pid 1"),
+            "{refused:?}: {r}"
+        );
+    }
+}
+
 #[test]
 fn pause_freezes_a_microvm_until_unpause_or_stop() {
     let Some((home, image)) = home("containers-pause") else {
         return;
     };
-    let mut spinner = start(&home, &image, &["--name", "frozen"], &["spin"]);
+    // Under --init, so that the spinner hears stop's SIGTERM, which it does not handle.
+    let mut spinner = start(&home, &image, &["--name", "frozen", "--init"], &["spin"]);
     let shards = |args: &[&str]| shards_in(&home, args);
     // Its share of a CPU, as `stats` measures it over a second.
     let cpu = || -> f64 {
@@ -474,7 +840,10 @@ fn events_tell_a_microvms_life_as_docker_events_does() {
         .stdout(Stdio::piped())
         .spawn()
         .unwrap();
-    let mut sleeper = start(&home, &image, &["--name", "lived"], &["sleep"]);
+    // Under --init, so that stop's SIGTERM ends the command, which does not handle it: as
+    // PID 1 it would not hear it, and stop would end it with SIGKILL after ten seconds,
+    // a second kill (`a_command_is_pid_1_as_a_containers_is`).
+    let mut sleeper = start(&home, &image, &["--name", "lived", "--init"], &["sleep"]);
     for step in [
         &["pause", "lived"][..],
         &["unpause", "lived"],
@@ -1970,7 +2339,9 @@ fn ps_lists_containers_as_docker_ps_does() {
         run_in(&home, &image, &["--name", "done"], &["exit", "0"]).status,
         Some(0)
     );
-    let mut sleeper = start(&home, &image, &["--name", "up"], &["sleep"]);
+    // Under --init, so that it ends of the SIGTERM it does not handle, which as PID 1 it
+    // would not hear.
+    let mut sleeper = start(&home, &image, &["--name", "up", "--init"], &["sleep"]);
     let header = "CONTAINER ID   IMAGE";
     let running = shards_in(&home, &["ps"]);
     assert_eq!(running.status, Some(0), "{}", running.stderr);
@@ -2089,7 +2460,9 @@ fn logs_keep_what_a_container_wrote() {
     let logs = shards_in(&home, &["logs", "errs"]);
     assert_eq!((logs.stdout.as_str(), logs.stderr.as_str()), ("", "to stderr"));
 
-    let mut sleeper = start(&home, &image, &["--name", "follow"], &["sleep"]);
+    // Under --init, so that it ends of the SIGTERM it does not handle, which as PID 1 it
+    // would not hear.
+    let mut sleeper = start(&home, &image, &["--name", "follow", "--init"], &["sleep"]);
     let follower = common::command()
         .args(["logs", "-f", "follow"])
         .env("SHARDS_HOME", &*home)
@@ -2126,7 +2499,9 @@ fn detached_runs_print_their_id_and_go_on() {
     let Some((home, image)) = home("containers-detached") else {
         return;
     };
-    let run = run_in(&home, &image, &["-d", "--name", "bg"], &["sleep"]);
+    // Under --init, so that it ends of the SIGTERM it does not handle, which as PID 1 it
+    // would not hear.
+    let run = run_in(&home, &image, &["-d", "--name", "bg", "--init"], &["sleep"]);
     assert_eq!(run.status, Some(0), "{run}");
     let id = run.stdout.trim_end().to_string();
     assert_eq!(run.stdout, format!("{id}\n"), "the ID alone, on stdout");
@@ -2945,8 +3320,10 @@ fn a_run_on_a_network_it_cannot_have_says_why_as_dockerd_does() {
 }
 
 /// `stop` sends a container its own stop signal, `--stop-signal`'s, unless told one
-/// (moby container.StopSignal): here SIGUSR1, which ends the command 128 + 10. One no
-/// signal's name is refused as dockerd refuses it, before a container is made.
+/// (moby container.StopSignal): here SIGUSR1, which ends the command 128 + 10 under
+/// --init, where it is not PID 1, which hears only what it handles (Docker 29.3.1 the
+/// same, M145). One no signal's name is refused as dockerd refuses it, before a container
+/// is made.
 #[test]
 fn stop_sends_a_containers_own_stop_signal() {
     let Some((home, image)) = home("containers-stopsignal") else {
@@ -2955,7 +3332,7 @@ fn stop_sends_a_containers_own_stop_signal() {
     let mut run = start(
         &home,
         &image,
-        &["--name", "usr1", "--stop-signal", "SIGUSR1"],
+        &["--name", "usr1", "--stop-signal", "SIGUSR1", "--init"],
         &["sleep"],
     );
     let stopped = shards_in(&home, &["stop", "usr1"]);
@@ -6576,7 +6953,9 @@ fn attach_joins_a_running_container_as_docker_attach_does() {
         return;
     };
     let shards = |args: &[&str]| shards_in(&home, args);
-    let made = run_in(&home, &image, &["-d", "-i", "--name", "echo"], &["cat"]);
+    // Under --init, so that it ends of the SIGTERM it does not handle, which as PID 1 it
+    // would not hear.
+    let made = run_in(&home, &image, &["-d", "-i", "--name", "echo", "--init"], &["cat"]);
     assert_eq!(made.status, Some(0), "{made}");
     let attach = || {
         common::command()

@@ -59,6 +59,7 @@ performance and resource usage.
 | D12 | vsock is the host↔guest control plane (exec, stdio, lifecycle, engine API). Built (a7b32ab): guest ports map to host Unix sockets as in Firecracker (`CONNECT <port>`; the guest reaches `<path>_P`). Unlike Firecracker, host EOF is a half-close, so a guest can answer after stdin ends. Each restored copy binds its own socket, where it is given a path; the ports its own process serves (the run's) take no socket file (D30). A snapshot keeps the streams the device held. The restored device resets each of them with an RST on its RX queue, ahead of every other packet, and continues host port allocation past the snapshot's, never reusing a held port. It posts no TRANSPORT_RESET: Linux handles that event in a work item apart from RX, and on one interrupt it visits RX first. So a connection made right after the restore could be established and then reset (13 of 350 restores under CPU load). | Rootless and portable; Firecracker's AF_UNIX mapping [VIO R7]; macOS poll reports POLLHUP on a half-close, so the device waits with kqueue there; restores [PM M20]: Linux 7.2 net/vmw_vsock/virtio_transport.c (`event_work`, `rx_work` handles RX in order), drivers/virtio/virtio_mmio.c `vm_interrupt` over queues in setup order (virtio_ring.c `list_add_tail`); a REQUEST matching a closing socket is dropped (virtio_transport_common.c `virtio_transport_recv_disconnecting`) |
 | D26 | `shards run` is served by a per-user daemon that hands each request to a warm VM process of the image's template: resumed, connected, waiting for its command. The client's stdio and connection pass by `SCM_RIGHTS`, and the daemon keeps its copies until the warm VM has taken them. The CLI is a thin binary. | Handoff 31 µs p50; warm VM 12.3 MiB, no CPU; a thin client costs 1.4 ms against 3.5 ms for a binary linking the VMM's frameworks [PM M23]; XNU flushes a socket in flight that no process holds [PM M24]; a pooled run takes 3.4 ms at p50 and 3.9 ms at p99 with the thin client [PM M26]; pre-created VM shells [Manco17 §5.2; Wanninger22 §5.2] |
 | D27 | Every `shards run` is a container, as `docker run`'s is: an ID and a name, running until its command ends, then exited until `shards rm` or `--rm` removes it. Command lines are read as the Docker CLI reads them, by one crate (`shards-cmdline`) in the client and the daemon: the client answers `--help` and usage mistakes itself, and the daemon keeps the records and answers `ps`, `wait`, `logs`, `stop`, `kill` and `rm`. | The Docker CLI's own answers: a differential test against docker/cli v29.8.1's command tree [scripts/docker-cli]; dockerd's names, IDs, start failures and stop semantics [moby daemon/names.go, daemon/errors.go, daemon/stop.go, daemon/kill.go @ docker-v29.8.1]; docs/research/container-lifecycle-cli.md; a record costs no run anything it waits for (a spare container made ahead) |
+| D115 | A run of an Agentfile's image gives its own command no reach into the image's agents and harnesses, whatever the CLI asks. The command is PID 1 of a PID namespace of its own, as a container's command is (under `--init` a reaper is, in docker-init's place), so it sees none of their processes; and the daemon, its init, and the build refuse — in Docker's words where Docker defines the flag, shards' otherwise — `--privileged`, the capabilities that would cross into a domain, `systempaths=unconfined`, a `net.*` sysctl where the domains' flows cross the command's network namespace, a uid or gid of the domains' or their servers', `--pid host`, `--network none` where the Agentfile grants egress, and `--volumes-from` or a named-volume mount that would take a scoped volume; Docker's default `CAP_NET_RAW`, withheld there, is said to be. | Docker's default capabilities include CAP_KILL [moby oci/caps/defaults.go]; a shared PID namespace lets the workload signal, `/proc/<pid>/root`- and ptrace-reach the domains [Linux 6.18 kernel/signal.c check_kill_permission, fs/proc, kernel/ptrace.c ptrace_may_access]; the kernel ends a PID namespace's processes with its init, which hears only the signals it handles [pid_namespaces(7)]; Docker 29.3.1's own answers [PM M145]; every check twice (D109): [[feedback-runtime-and-buildtime-checks]] |
 
 ### Snapshots (D14)
 
@@ -1661,6 +1662,15 @@ devices. The code is `crates/vmm/src/memory.rs`.
   writes has two host threads race, which Rust leaves undefined, though no decision rides
   on the bytes copied (audit V). Copying under an `Access`, word by word, is on the path
   throughput depends on, and waits for its measurement.
+- **Huge pages, where a boot touches much (2026-10-10, PM M157).** A cold boot's guest
+  memory is advised MADV_HUGEPAGE, which halves the boot (2.1 to 2.4 times) and makes the
+  guest's first touch of memory 4.7 to 5.6 times faster on x86_64 KVM. A huge page is
+  resident whole once touched, so the layout decides what a boot holds: on x86_64 the
+  initrd sits at the top of low RAM, beside what the guest kernel takes there from the
+  top down, as Firecracker and QEMU place it, and the first 2 MiB, whose boot structures
+  touch 78 of its 512 pages, stays on small pages. A boot then holds 56.3 MiB of
+  anonymous memory at p50 against Firecracker's 60.2, and 58.3 at most. arm64's layout
+  is unmeasured and unchanged. A run's restore maps its memory file, on small pages.
 - **Tests:** `memory::tests` (copies at every alignment, threads taking turns, a nested
   access refused, ranges in any order, a reused file) and
   `queue::tests::queues_laid_over_each_other_work_on_two_threads`, under
@@ -1886,10 +1896,11 @@ stack inside the VMM, is superseded by it.
     signals and reaps its children by pid as before, the spawner reaping none until the
     daemon asks, so a pid stays its child's. Binding the listeners in the network process
     instead, which makes no children (M134's note), would have freed ports alone, not
-    clients' pipes; and a spawn through the spawner costs a round trip (7 to 39 µs at
-    p50), where posix_spawn took 22 to 57 µs less at p50 in the spawner than in a process
-    holding up to 100 descriptors more, as a daemon of tens of runs does (2 a run), and
-    190 to 250 µs less than in one holding a thousand, each copied into every child.
+    clients' pipes. A spawn through the spawner costs two wakeups across processes: as
+    its requester sees it, 9 to 36 µs more at p50 than one made in place on quiet x86_64
+    and arm64 Linux hosts, and no more at p99 with four at once; 0.5 to 1.7 ms more on a
+    Mac at load 50. Few spawns are on a run's path (a `-v` run's share process, a cold
+    start's VM and network process); a warm run's successor is spawned after it starts.
   - *Frames, and what the guest loses of them (PM M104).* The VM's device returns a
     received frame's buffers to the guest together (virtio 1.2 §5.1.6.4.1), and a
     segment's bytes go from a connection's queue to the ring in one copy. A guest short of
@@ -2908,11 +2919,10 @@ is cached and the image's layers are the same; a changed context file runs again
 reads it and what follows, not what came before; `--no-cache` runs all; `system df` and
 `system prune` count and remove the records.
 
-Open: a `COPY`'s key from the paths it copies alone, where it is from the whole context,
-so that a change elsewhere in it runs again what BuildKit's checksums would keep;
-`--no-cache-filter`; `--cache-from` and `--cache-to`; `docker builder prune` and its
-filters; a bound on what the cache keeps (BuildKit's default GC policy); `RUN
---mount=type=cache` kept across builds.
+What this left open is done since: `--no-cache-filter`, `--cache-from` and `--cache-to`
+(D62); `docker builder prune` and its filters (D65); a step keyed by what it reads, a bound
+on what the cache keeps (dockerd's default GC policy) and `RUN --mount=type=cache` kept
+across builds (D114).
 
 ### RUN steps reach the client's SSH agent (D51)
 
@@ -3317,6 +3327,71 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode
 waits on the user.
 
+### D117. Templates no VM process can forge, and VM starts the host has not admitted
+
+A template is saved by a VM process into the directory it is granted, and every later run
+of its image restores it. Review 8.2 took the directory from the VM before the run's
+command reaches the guest: a second Landlock layer on Linux, the rename into place on
+macOS (M102). Audit Q asked what a VM taken over while it still held the directory could
+leave there, and what reads it.
+- **Measured (M165).** On macOS the rename seals it: after it, neither a descriptor of the
+  directory opened before nor the bookmark resolved again makes or rewrites anything. A
+  link planted before stays in the template, as Linux keeps what was made before its
+  layer.
+- **Found.** Three readers followed what such a VM leaves:
+  - the daemon wrote its record of the template (`origin.json`, the root filesystem
+    restores are given as `--backing`, D25) into the template, with `std::fs::write`,
+    while the VM could still write there: a link planted at that name had the daemon
+    write its JSON into a file of the user's (`a_templates_saver_leaves_nothing_the_daemon_writes_through`,
+    on the code before); a record planted there named the file every restore of the
+    template was given, once a daemon read it back (refill);
+  - the daemon and the restoring VM read the pointer, state, memory and working set by
+    path, following links and waiting on FIFOs;
+  - the macOS grant broker opened whatever a restoring VM asked for, following links: a
+    generation's memory planted as a link opened any file of the user's for every restore
+    of the template, a FIFO held the broker (`a_restore_reaches_nothing_its_saver_left_in_its_template`).
+- **Now.**
+  - The daemon's record is beside the template (`templates/<name>.origin`), in the
+    directory no VM process is granted, written whole under a name of its own and renamed
+    into place, read through no link and as a regular file alone; the collector removes
+    it with its template, and one whose template is gone.
+  - A snapshot's files are opened beneath its directory, a component at a time, through
+    no link, regular files alone, refused before they are opened and checked again after
+    (vmm `open_beneath`): the pointer, state, memory and working set, by the daemon, the
+    restoring VM and its broker; a working set is written into a generation opened so.
+  - The broker knows a restore's template (the pool's directory; `--template` for
+    `shards grants`): what is asked beneath it is opened so, and nothing of it is granted
+    for writing.
+- **Why a check of each name is enough.** A template is read only once it is given up
+  (renamed out of the VM's grant, or behind Linux's second layer): what was left in it no
+  longer changes, so each directory below it is checked with `lstat`, the file too, which
+  must be regular (a FIFO is never opened), and the file is then opened `O_NOFOLLOW` and
+  checked again. A restore's four files cost 12 µs more at p50 so (M165).
+- **Tested.** The two E2E escape tests above, each written as a taken-over VM would act and
+  each failing on the code before (c1c2525's record; the broker's rule off); unit tests
+  of the walk, the broker and the record; mutation-checked.
+- **Recorded difference.** A template saved before has its record inside it and none
+  beside it: it is saved again, once.
+
+**VM starts the host has not admitted (M166).** On macOS a launch runs nothing until the
+system has assessed the executable (amfid; syspolicyd's Gatekeeper scan, with a network
+lookup of its notarization and XProtect's analysis; secinitd's App Sandbox set-up), and
+every launch waits behind the executables launched before it, assessed about one at a
+time. The VM process launched before starts in 21 ms at p50 and 60 at p99 (10,000, 16 at
+once, load 60); a new copy in 200 ms alone and 8.6 s at p50 behind 64 others; while those
+are assessed, the established one's launches take 1.6 s at p90 and 2.9 s at p99. A
+process waiting there has run nothing, no system call and no user time, and sample(1)
+shows nothing of it.
+- Such a VM asked for nothing, and the daemon counted its wait a failure of its template:
+  three removed the template and booted instead, adding another launch to the same wait.
+  Now a VM the host has not let run is told apart (`platform::launched`), logged as the
+  host's at the stall check rather than sampled, and counts against no template; a
+  builder that does not dial back in BOOT_PATIENCE says whether the host had started it.
+  No budget changes.
+- The "VM grant stall" (60 s) and "the builder did not start" (30 s) fit this at a
+  backlog of a few hundred new executables, as parallel builds make on this host. Those
+  incidents were not captured; the next one is attributed in daemon.log.
+
 ### D116. Signatures and SBOMs of agents, harnesses and MCP servers, as OCI 1.1 referrers
 
 §8 Q1 gave OSI artifacts "signatures and SBOMs as its referrers". Now they have them,
@@ -3429,6 +3504,306 @@ from the registry layer up to the build's policies.
   - An SBOM signed as an attestation.
   - Conditional (`If-Match`) updates of the tag schema's list. The spec's MAY;
     distribution takes none; concurrent pushers can lose an entry (spec.md:733-735).
+
+### D115. A run's command reaches none of its image's agents and harnesses
+
+An Agentfile's image runs its agents and harnesses beside the run's own command (D59),
+each a domain confined in namespaces, IDs, a cgroup, Landlock and seccomp of its own. But
+the command itself — the workload the run's `docker run`-style request starts — ran in the
+microVM's own namespaces: its PID namespace was init's, which holds every process of the
+microVM. So the command saw each agent's processes in `/proc`, and Docker's default
+capabilities include `CAP_KILL`, so a root command could signal them; with `--privileged`
+or `--cap-add`, it could trace them, read their memory and environment, enter their network
+namespaces and use their grants, or reach the kernel they share. The agents were confined
+from each other and from the world; the command was not confined from them.
+
+The user's standing rule (2026-10-09): every security property needs a build-time check
+*and* a run-time check, because an image can be crafted and the CLI mutates a run
+([[feedback-runtime-and-buildtime-checks]]). D109 did this for volumes; D115 does it for
+the rest of a run's reach into its domains.
+
+- **The command is PID 1 of a PID namespace of its own, as a container's is.** Every domain
+  already has a PID namespace of its own (D59), but each is a child of init's, which the
+  command shared; a parent namespace sees into its children, so the command saw every
+  agent's processes. shards-init now forks the run's standby (before the template's
+  snapshot, M27) as the first process of a new PID namespace, a sibling of the domains':
+  siblings do not see into each other, so the command sees none of the microVM's other
+  processes — no agent, no in-VM server, no init — and is that namespace's PID 1, as
+  Docker makes a container's command (`docker run alpine sh -c 'echo $$'` prints 1; every
+  case here measured against Docker 29.3.1, PM M145). It has PID 1's signals
+  (pid_namespaces(7); kernel/signal.c, sig_task_ignored): from inside the namespace only
+  those it handles (`kill -TERM 1` and `kill -KILL 1` go unheard); from outside SIGKILL
+  and SIGSTOP always, any other only where it handles it, so `stop` of a command that does
+  not handle SIGTERM waits out its timeout and kills it, 137, with a second `kill` event,
+  as dockerd's does. The kernel ends the namespace, and the execs in it, with it; the
+  orphans there are its to reap, as a container's command's are (`--init` takes them);
+  init still waits for it and signals it across the namespace boundary.
+  An exec joins its namespace (its `$$` is not 1; `/proc/1` is the command); a restart is
+  a new microVM and a new namespace, the command PID 1 again. init takes its own PID
+  namespace back after each `unshare` or `setns`, so its later children — the agents among
+  them — are born in init's own, not where the command would see them. A `cp`, `diff` or
+  `export` visit reads the container's files in a mount namespace where `/proc`, `/sys` and
+  `/dev` are unmounted, so init's `/proc` — which reaches every domain's root — is not under
+  the path it serves.
+- **`--init`: a reaper in docker-init's place.** Under `--init` (until now accepted and
+  dropped) PID 1 is a **reaper** and the command PID 2, as tini is PID 1 under `docker run
+  --init`: it reaps orphans and forwards to the command each signal sent to it (a process's
+  `kill -TERM 1` ends the command, 143, as under tini); `stop`, `kill` and `wait` reach the
+  command directly, as tini's forwarding makes them. It runs as the command's user and
+  group, as tini does, so each may signal the other, and holds nothing else: no
+  descriptor, no capability, `no_new_privs`, not dumpable, an empty read-only root in a
+  mount namespace of its own, the workload's cgroup. init forks nothing into its namespace
+  until it is ready — its IDs taken, its signals blocked, init's descriptors closed, which
+  is how it says so: a process born earlier would find it root with init's privileges,
+  could not signal it as the command's user, and would lose a signal sent before it
+  blocked its own, which a namespace's first process discards where it neither handles nor
+  blocks it. `top` lists it, as `docker top` lists docker-init. The template keeps the
+  default standby; an `--init` run forks the reaper and its standby as it starts (PM M147).
+  Recorded differences, of names and numbers Docker's runtime makes: the command's PID is 2
+  (Docker's 7, which runc's own threads take first), its PPID 0 (Docker's 1: its parent is
+  init, outside the namespace), the reaper's name `init` (`docker-init`).
+- **`--pid host`: the microVM's own.** For a plain image the command runs in init's PID
+  namespace, as Docker runs a container in its host's: it sees init and the kernel's
+  threads (`/proc/2/comm` is `kthreadd`) and, without `CAP_SYS_PTRACE`, reaches into none
+  (`/proc/1/root` denied, as under Docker). Beside an Agentfile's domains it is refused, by
+  the daemon and by init: that namespace is the parent of theirs. Under `--pid host`,
+  `--init` adds nothing, shards-init being that namespace's init. `--pid container:NAME`
+  names another container, a microVM of its own: refused, not supported, as `--network
+  container:NAME` is; one that is not, dockerd's `No such container`; a value Docker
+  refuses, the CLI's `--pid: invalid PID mode`. inspect's `HostConfig.Init` and `PidMode`
+  say what was asked, `Init` a `*bool` as dockerd's (`--init=false` is `false`, kept by
+  `omitempty`, true in a template's condition).
+- **Refused, at run and at build.** Beside an image's domains, the daemon (reading the
+  verified Agentfile, never labels, D109), shards-init (as it starts the command and each
+  exec), and the build (of the image's `USER`) each refuse: a privileged command;
+  `--security-opt systempaths=unconfined`; each capability that reaches a domain across the
+  command's PID namespace (`SYS_MODULE`, `SYS_RAWIO`, `SYS_PTRACE`, `SYS_PACCT`,
+  `SYS_ADMIN`, `SYS_NICE`, `SYS_TIME`, `AUDIT_CONTROL`, `SYSLOG`, `AUDIT_READ`, `PERFMON`,
+  `BPF`), and, where the domains' flows past the microVM cross the command's network
+  namespace (init's, which routes them to eth0), `NET_ADMIN` and `NET_RAW`; a `net.*`
+  sysctl there; a uid or gid — numeric at run, resolved in the image's own databases at
+  build — that the domains or their in-VM servers run as (`200000+n`, `4194304+200000+n`);
+  `--pid host`; and `--network none` where the Agentfile grants its agents egress, DNS or a
+  remote MCP server, which such a run could not honour. The words are Docker's where Docker
+  defines the flag, shards' otherwise, shared by one module (`shards_abi::run::beside`) so
+  the daemon and init say the same.
+- **`CAP_NET_RAW`, withheld and said.** Where the domains' flows cross the command's
+  network namespace, Docker's default `CAP_NET_RAW` is withheld from the command (refused
+  where the run adds it), and the run says so on stderr as it is made, as the CLI prints
+  dockerd's warnings: `WARNING: CAP_NET_RAW withheld from the command: the image's
+  Agentfile runs agents and harnesses beside the command, and CAP_NET_RAW reads and writes
+  the packets of their flows past the microVM, which cross the command's network
+  namespace`. Docker's own sysctls for a container's network namespace, which shards had
+  not set, are now every run's, set before the snapshot, a run's `--sysctl` written over
+  them (moby daemon/oci_linux.go): `net.ipv4.ping_group_range = 0 2147483647`, so `ping`
+  works without `CAP_NET_RAW` as under Docker, and `net.ipv4.ip_unprivileged_port_start =
+  0`. Recorded difference: Docker prints no such warning, withholding nothing.
+- **Scoped volumes are no run's but the image's.** A named volume an Agentfile gives some
+  of its agents and harnesses alone (`VOLUME name path FOR …`) is labelled
+  `vnd.osi.agentfile.scoped` as its run first mounts it; another run mounts it by name only
+  where its own image's Agentfile puts it (a stand-in, D109), and `--volumes-from` a
+  container skips the volumes its image scoped. The `vnd.osi.agentfile.*` label namespace,
+  already refused in a build `LABEL` and a run `--label` (D109), is refused in `volume
+  create` and a `--mount volume-label` too.
+- **Firewall.** init's own namespace, which the command shares, drops in nf_tables (of both
+  IP families) whatever it sends down the agents' uplink (`agents0`): the command serves no
+  domain and holds none of their grants, so a packet of its there — a forged answer to an
+  agent's flow — crosses nothing. `kernel.dmesg_restrict` is set before any domain starts,
+  so a command with `CAP_SYSLOG` (which it cannot hold) or `/dev/kmsg` reads nothing the
+  kernel logged of a domain.
+- **Every CLI path, decided.** Each way the CLI changes or reaches into a run beside an
+  Agentfile's domains, given as the grants say or refused with its reason, none dropped
+  unsaid. What the command shares with the domains is the kernel, the initial user
+  namespace (their IDs differ), the microVM's devices and image, and, where they reach
+  past the microVM, the network namespace their flows cross; each domain has mount, PID,
+  IPC, network, UTS and cgroup namespaces of its own (D59).
+
+  | Path | Beside the domains | Why |
+  |---|---|---|
+  | `--privileged` (run, exec); `--cap-add` of the twelve that cross the PID namespace, or `NET_ADMIN`/`NET_RAW` where the flows cross, or `ALL`; `systempaths=unconfined`; a `net.*` sysctl where the flows cross; `-u`/`--group-add`/exec `-u` of a domain's or server's ID; `--pid host`; `--network none` with egress granted | refused (daemon and init; the image's `USER` at build) | each reaches a domain (above) |
+  | Docker's default `CAP_NET_RAW` where the flows cross | withheld, said (`WARNING:`) | it reads and writes their packets |
+  | `--volumes-from`, a named mount of a scoped volume; `vnd.osi.agentfile.*` labels (`--label`, `volume create`, `--mount volume-label`); `-p` of a port declared `AS egress` | refused (D109, D59) | a domain's alone |
+  | `--ipc`, `--uts`, `--userns`, `--cgroupns`, `--network host`, `--network container:`, `--pid container:`, `--link`, `--mac-address`, `--log-*`, `--runtime`, `--isolation`, `--storage-opt` | refused for every run, not supported by shards | |
+  | `--cap-add` of any other: `DAC_READ_SEARCH`, `IPC_OWNER`, `IPC_LOCK`, `SYS_BOOT`, `SYS_RESOURCE`, `CHECKPOINT_RESTORE` among them | given | `open_by_handle_at` opens only on filesystems the command holds a mount of, a domain's own being none of them; IPC namespaces differ; `reboot(2)` ends the caller's own PID namespace's init (pid_namespaces(7)); the rest bound the command's own resources or namespaces |
+  | `--cap-drop`, `no-new-privileges`, `writable-cgroups=true` (its cgroup namespace's subtree), `apparmor=`, `label=` (no LSM in the microVM: accepted, as on a Docker host without one) | given | narrows the command, or touches only its own |
+  | `seccomp=` a profile or `unconfined` | given, recorded | its own filter; the domains keep theirs. Measured: unconfined, any uid makes a user namespace (`max_user_namespaces` 994), owning none of the domains' namespaces but reaching more of the kernel they share |
+  | `--device`, `--device-cgroup-rule` | given, recorded | measured: the microVM's nodes (its image's `pmem0`, loop, `mem`, `port`, `kmsg`, `rtc0`, `snapshot`, consoles, `fuse`, `vsock`, `userfaultfd`) reach no domain without a capability refused above; `/dev/userfaultfd` widens the kernel's surface as `seccomp=unconfined` does |
+  | `--oom-score-adj` | given, recorded | biases which process the microVM's OOM killer picks; the domains' memory is D59's partition |
+  | other `--sysctl`s; `--ulimit`; resources (`-m`, `--cpus`, `--pids-limit`, block I/O); `--shm-size`, `--tmpfs`, `--read-only`, `-v`/`--mount` (D109's rules); `--init`; `--restart`, `--rm`, `--stop-*`, `--health-*`; `-e`, `--env-file`, `-w`, `--entrypoint`, `-h`, `--domainname`, `--dns*`, `--add-host`; `--name`, `--label`, `--expose`, `-p`; `-i`/`-t`/`-a`, `--sig-proxy`, `--detach-keys`, `--platform`, `--pull`, `--cidfile`; user networks (D46) | given | the command's own namespaces, cgroup, files and identity |
+  | exec `-e`, `-w`, `-i`, `-t`, `--detach-keys` | given | in the command's namespaces, under its rules |
+  | `cp`, `diff`, `export`; `commit`; `top`, `stats`, `logs`, `attach`, `wait`, `port`, `inspect`, `events`, `rename` | given | the command's files, with `/proc`, `/sys` and `/dev` unmounted (`commit` pauses the microVM whole, agents included, as dockerd pauses a container); the rest are the host's view, the host being trusted |
+  | `kill`, `stop`, `restart`, `pause`/`unpause`, `update`, `rm -f` | given | the command's namespace and cgroup (`update`), or the microVM whole, agents with it; a restart is a new microVM |
+
+Tested (E2E; each guard mutation-checked, the mutant built and run, killed unless said):
+- `a_run_reaches_none_of_its_images_agents` builds an image with an agent that reaches past
+  the microVM and runs the workload's `beside` in both layouts: alone, the command sees
+  exactly itself, PID 1; under `--init`, the reaper (PID 1) and itself (PID 2), and of the
+  reaper neither environment nor network namespace (it may signal it, as tini). It asserts
+  the `CAP_NET_RAW` warning, then each CLI escape refused at run (`--pid host` and `--init
+  -u 200000` among them) and at exec. Mutants: the default standby forked in init's own
+  namespace (the command sees init, kthreadd, the kernel's threads, `shards-server` and
+  the agent's `confined-ready`); the reaper left dumpable (its environment and network
+  namespace read); both `--pid host` refusals removed (the run allowed; either alone still
+  refuses: twins, as every refusal here but `--network none`, which init fails on another
+  path); the warning removed.
+- `a_command_is_pid_1_as_a_containers_is` (alpine by digest): `echo $$`, PID 1's signals
+  from inside and outside, `--init`'s layout and its forwarding as root and as uid 1000,
+  `stop` and `kill` times and codes, the PID-1 stop's events, an exec's view, restarts,
+  `top`, `--pid host` and every `--pid` text, inspect. Mutants: the namespace removed (`$$`
+  100); the reaper forwarding nothing; the reaper root whatever the command's user; init
+  forking the standby before the reaper is ready, the reaper made 500 ms late (its first
+  act a sleep): the forwarded SIGTERM lost, killed; with the wait kept, the same late
+  reaper passes.
+- `an_s6_overlay_image_runs_as_pid_1` (linuxserver.io's base by digest: its services up
+  and its command run; under `--init` and `--pid host`, s6's own refusal, 100, as under
+  Docker); `dockers_default_sysctls_let_ping_go_without_net_raw` (the values, the
+  override, ping as uid 1000 without `CAP_NET_RAW`).
+- Thirteen tests asserted the old layout, a handler-less command ending of a signal that
+  Docker's PID 1 does not hear (PM M145, with the tests' own testguest under Docker): they
+  run under `--init`, where Docker's answers are theirs, or say Docker's PID-1 answer where
+  the path has no `--init` (`run --kernel`'s self-SIGKILL: 1). The isolation and OOM tests
+  that watched agents from the workload's own `/proc` watch them from the host (`shards
+  top`, a look every 250 ms) and release the workload with a signal; one c099c09 missed
+  (`unix-listen`, awaiting inside its verb) the full suite found. One assertion is gone:
+  that each in-VM server instance has a network namespace of its own, which no `shards
+  top` column shows; their uids, gids, group and memory are still asserted, from the host.
+- The workspace's whole suite passes but `snapshot.rs`'s two `storm` tests, whose vsock
+  path under this worktree is 113 bytes, past macOS's 104 (`sun_path`), as it is at the
+  base; they boot the test guest as init, none of D115's code.
+- Unit tests pin the shared rules (`shards_abi::run::beside`), the daemon's refusals
+  (`agentfile`), the scoped-volume rules (`volumes`), the build's `USER` check
+  (`build::domains`), `--init` and `--pid` in the request (ipc) and inspect's `*bool`
+  (`shards_template`); docker/cli's own answers to `--pid` (`scripts/docker-cli`).
+
+- **Docker's texts, measured (PM M145):** every case above against Docker 29.3.1 in
+  shards-dind; the recorded differences are its numbers and names under `--init`, and
+  events: shards logs `die` before `stop`, Docker `stop` before `die` (40 of 40), since
+  before D115.
+- **Unmeasured until PM M146 and M147:** the start path's cost of the command's PID
+  namespace, and of `--init`'s reaper, forked as such a run starts.
+
+### D114. The build cache: cache mounts kept across builds, steps keyed by what they read, and its collection
+
+D50 left three things open: `RUN --mount=type=cache` lived in the builder microVM, gone
+with its build; a step was keyed by the whole of its inputs, so a change to a context file
+it never reads ran it again; and nothing bounded what the cache kept.
+
+- **Cache mounts kept across builds.** Each cache is a record of the store's
+  (`cachemounts/v1`), its content the layers its steps' changes made, in order, and taken
+  for a step as BuildKit's mount manager takes a cache directory (v0.28.1
+  solver/llbsolver/mounts/mount.go `getRefCacheDir`), among every build of the home,
+  whichever process runs it: by its key (the id after the Dockerfile's namespace, and `:`
+  and its source's key where `from=` gives one); `shared` the one others hold now, else
+  the first free, else a new one; `private` the first free, else a new one; `locked` the
+  first free, waited for every 100 ms while each is held. First is by ID, the order
+  BuildKit's metadata index looks them up in (cache/metadata `Search`). A lock file per
+  record (flock(2)) holds it for its step, shared or alone; a key's records are looked
+  through and made under the key's lock. A new record's first content is what it is from,
+  whole (`from=`'s state, `source=` the directory shown), its root's owner its source's,
+  mode 0755, as containerd's snapshotter makes a child's.
+- **Where it lives** (PM M140, measured before choosing): under load virtio-fs took 0.64
+  to 10.8 ms a small file at the median, 1,251 to 6,828 times the builder's tmpfs, for a
+  package manager's cache of thousands of them. So a cache is mounted in the guest as a
+  writable tree is: an overlay of its layers under a fresh upper directory in the
+  builder's memory, once for the step however many of its mounts name it (one id at two
+  targets is one directory, as an exec has one ref per key), bound at each target,
+  read-only where asked: 1.26 to 1.86 times tmpfs for a small file, 0.99 to 1.03 for a
+  large one. After the step, whatever its status (a cache's writes are BuildKit's whether
+  or not its step succeeds), the guest sends what it changed; the host makes it the
+  record's next layer (none where nothing changed) and keeps its root's owner and mode,
+  which no layer holds (the upper directory's, as overlayfs shows a mount's root). The
+  guest keeps the upper as a layer, so the build's next step with that cache sends
+  nothing.
+- **A step not answered from the cache** (`--no-cache`, `--no-cache-filter`'s stages)
+  starts its caches empty: before any step runs, their records are let go of, as
+  BuildKit's solver lets them go as it loads the definition (llbsolver
+  `detectPrunedCacheID`, the worker's `PruneCacheMounts`, measured in M141): one no build
+  holds is removed, one held is taken no more.
+- **The records** are BuildKit's `exec.cachemount` records: `system df -v` lists them
+  (type, size of their own layers, in use while a step holds one), `builder prune` removes
+  them unless held, with or without `--all`, filters `type`, `mutable`, `description` as
+  `adaptUsageInfo` gives them, IDs marked `*` as mutable, each described as BuildKit
+  describes it (`cached mount /c from exec /bin/sh -c … with id "//c"`, M141); `--verbose`
+  prints no `Type:` line for any record, as buildx's never does (M141; D65's printed one).
+  `system prune` removes them as Docker's does. Their layers are roots of the store's
+  collector while they are there.
+- **Steps keyed by what they read.** A step has two keys, as a vertex has in BuildKit's
+  solver: one from its inputs' own keys, which a build that changed nothing it reads finds
+  at once; and, asked only where that one finds nothing, one from what it reads of each
+  input, where BuildKit takes a content checksum (ops/file.go: a copy's sources, and
+  `/etc/passwd` and `/etc/group` for a name, of an input no action writes on; ops/exec.go
+  `getMountDeps`: a mount none of whose writes are kept, or read-only, or of all its
+  input, the root mount aside). Its result is known by the second, recorded under both, so
+  what follows a step kept for what it read is kept too. The definition a key covers
+  leaves out what BuildKit's CacheMap leaves out: an exec's proxy variables, its extra
+  hosts' addresses, its mounts' selectors, a cache mount's id and sharing but a
+  Dockerfile's default one's; a copy's source but its last name. Content is digested as
+  BuildKit's contenthash takes it: a file's tar header fields (permission and set-id bits,
+  owner, size, type, link target, device numbers, extended attributes but `security.*`
+  other than `security.capability` and `system.*`; no times) and its bytes; a directory's
+  header and each entry's name and digest; a wildcard's matches as the copy finds them;
+  under include and exclude patterns, the directory headers and files they take with the
+  headers above them (`includedPaths`). Each node's digest is taken once a build. Keys
+  were never BuildKit's (D62), so a step's key format moved (`shards build cache 2`).
+- **Collection.** Once a build is done, the build cache is pruned by the default policy
+  dockerd gives its builder (moby daemon/internal/builder-next/worker/gc.go
+  `DefaultGCPolicy`), derived from the disk as dockerd derives it: what is easiest to make
+  again unused for two days past e·π·φ % of the reserve (512 MB at least); anything unused
+  for 60 days; the unshared cache under the cap; then all of it under the cap; the
+  reserve, cap and free space 10, 80 and 20 % of the disk, its GiB counted and one more in
+  decimal gigabytes, or 2 GB reserved where the disk cannot be read. At most once a minute
+  in a home (its `buildcache-gc`), as BuildKit's controller throttles its GC to a minute
+  after each build. Each rule prunes as `builder prune` does (one module, `build/gc.rs`,
+  for both).
+- **Recorded differences.** Two builds sharing a cache `shared` at once each mount it as
+  it was when taken and keep their own changes, both, in the order their steps end, where
+  BuildKit's share one directory as they write it (M141: a build saw the file another
+  wrote 3 s before, while that one's step still ran); sharing one live directory between
+  microVMs would take virtio-fs, which M140 rules out. A cache from something (`from=`, or
+  `uid`, `gid` or `mode`, which the frontend mounts from a directory of its own) holds its
+  source's files in its own record, where BuildKit's names its source's record as its
+  parent (`Parents` in `buildx du --verbose`, M141). A cache from something is keyed by
+  its source's key, which stays where BuildKit's ref ID changes as its record is made
+  again. A copy of a single file under include or exclude patterns is keyed by that file's
+  content, where BuildKit's checksum of it is empty whatever the file holds (it walks only
+  what lies under it), which keeps a stale copy. The collection runs once a build is done,
+  unless one ran in the home within the minute; BuildKit's throttle runs a collection
+  asked for within the minute at the minute's end (util/throttle `After`), and BuildKit
+  also collects a second after its controller starts (control.go `NewController`), so a
+  home whose last builds came within a minute of a collection keeps their records until a
+  later build's.
+- **Tested** on real microVMs: `run_caches_are_kept_across_builds` (a cache's files in no
+  layer, the next step without it finding none of them; its files, a failing step's among
+  them, in the next build; one id at two targets and in another build; a root's owner and
+  mode kept; another namespace another cache; `uid`, `gid`, `mode` and `mode` alone as
+  BuildKit makes them; `--no-cache` an empty cache; the records counted and pruned; a
+  collection once a minute),
+  `run_caches_are_taken_as_buildkit_takes_them_among_concurrent_builds` (two builds at
+  once under each mode: `shared` takes the record the other holds, `private` makes another
+  while it is held, `locked` waits and finds the other's files; both builds' writes in one
+  record after) and `steps_are_kept_by_what_they_read` (a context file no step reads runs
+  nothing; one a copy reads runs it and what follows; a stage built again to the same file
+  keeps the copy of it and what follows); the store's takers, waiters and prunes, the
+  keys, digests, the GC's choice and order and the default policy as unit tests; every
+  build E2E (98) with the new keys. Mutation-checked, 27 mutants, each killed by its own
+  assertion: the store's four guards (a shared taker's search for the held record, a
+  locked taker's wait, pruned records skipped, a held record kept); ten of the keys and
+  digests (an exec's proxy variables, extra hosts' addresses and mount selectors left out,
+  a default cache's options, written inputs not checksummed, which mounts are read,
+  extended attributes, mode bits, owner, excludes); four of the collection (the disk's
+  GiB, the floor of what is easiest to make again, the stop under the target, records in
+  use left out); and nine on real microVMs (a cache left unbound, its writes landing in
+  the root; `--no-cache` letting caches go, keys from what is read, the key a record is
+  known by, a collection once a minute, a cache's changes kept, and each sharing mode
+  taken as another). Two survived until a test was added: extended attributes
+  (`a_files_digest_takes_the_attributes_buildkits_takes`) and records in use left out,
+  which a change had dropped as redundant though BuildKit ranks only what it may delete
+  (`what_a_step_holds_is_neither_removed_nor_ranked`).
+- **Open.** Moving a large cache in and out of the builder costs a build time: with 10,000
+  files of 4 KiB and 256 MiB in it, mounting it made a build's median 11.2 s against 3.9
+  s, and filling it 16.1 s against 3.7 s (M140). Where that time goes, and whether
+  carrying layers and changes on a virtio-blk device (one per cache, or for every step's
+  layers) would cut it, is unmeasured by a committed harness.
 
 ### D113. A BuildKit frontend: `docker buildx build` builds an Agentfile with Docker alone
 
@@ -3738,6 +4113,133 @@ read from that context; before D111 shards refused a policy with one ("not suppo
   mutant killed: the remote name's rule, names read in the context, a missing file, the
   context asked and its refusal's words, the message's size, its bound and exit 102,
   `-f`'s policy, and the reads the build's thread serves.
+
+### D110. buildx's `exec.proxy` cap: a build's network through a proxy its policies check
+
+buildx v0.37.1's policies may ask for the `exec.proxy` cap (`caps := {"exec.proxy":
+true}`, asked once as the build begins with `input.env.capsRequest`); BuildKit v0.33.0 then
+runs every `RUN` step's network through a proxy of its own, each HTTP request and each
+request in an HTTPS tunnel checked by the policies as an HTTP source. Before D110 shards
+refused such a build (`network proxy requested by policy is not supported by shards yet`).
+What BuildKit does was measured first in `shards-dind` (builders `shards-d110-*`, buildx
+v0.37.1 on BuildKit v0.33.0): the `policy enabled network proxy` line, said once; the
+step's eight variables; the CA in the step's first trust bundle and out again after it;
+http.Error's 403 for a plain request and an exact 403 in a tunnel; the step's log ending
+`proxy network requests:`; the provenance's materials, `network.proxy.incomplete` and
+completeness; `--network=none` and `host` steps.
+- **The proxy is the build's.** It runs in the build process, on a Unix socket in a
+  directory of its own (mode 0700), made with the builder. Under the cap the builder's
+  network process allows one flow alone, TCP to the gateway's port 3128, carried to that
+  socket; the Internet, the host's networks, the gateway's other ports, UDP and DNS are
+  refused (default deny). A step whose network is the builder's (BuildKit's default and
+  host modes; `--network=none` keeps none) gets BuildKit's variables (`HTTP_PROXY`,
+  `HTTPS_PROXY`, `ALL_PROXY`, each in lower case too, `http://<gateway>:3128`; `NO_PROXY`
+  `127.0.0.1,localhost,::1`) in place of its own (ReplaceEnv), and the build's CA in its
+  root's first trust bundle while it runs, put there and taken out by shards-init as
+  BuildKit's InjectProxyCA does (between `# buildkit proxy CA begin/end`, a bundle of 10
+  MiB at most, written beside and renamed over it with its mode and owner).
+- **Each request is asked of the build's policies** on the build's thread, which the
+  proxy wakes as the builder's frames come: its URL as BuildKit's handler checks it
+  (`http://` and its Host for a path, its own where absolute; in a tunnel `https://` and
+  the CONNECT's authority whatever the request says), credentials redacted as urlutil
+  redacts them. A refusal is http.Error's 403 plain, and `HTTP/1.1 403 Forbidden` with
+  `Connection: close` in a tunnel, which it ends. Requests are read as Go 1.26.3's server
+  reads them (head.rs: its 400s, 431, 501, 505 and 417, `OPTIONS *` answered itself,
+  heads of 1 MiB and 4 KiB within 30 s, 512 connections a step) and passed on as Go's
+  server writes BuildKit's handler's response (the body's first 512 bytes before the
+  head, its length or chunked, a body of no type sniffed as DetectContentType says).
+  CONNECT is answered `200 Connection Established`, then TLS for the tunnel's host
+  (HTTP/1.1 by ALPN) with a certificate the build's CA signs, 1024 kept, each made again
+  an hour before its day ends; however a tunnel ends, its TLS ends with a close_notify, as
+  Go's `tls.Conn.Close` ends BuildKit's. Upstream, requests trust what the host trusts
+  (never weakened: an untrusted server is a 502) and go through the build's own
+  `HTTP_PROXY` and `HTTPS_PROXY`, each checked as BuildKit's parseProxyEnvironmentValue
+  checks it; a request whose body cannot be read is a 502 recorded as an upstream error, as
+  Go's transport fails to send it on. A question the build's thread can no longer answer
+  is a refusal.
+- **What the requests came to** is recorded as BuildKit's ProxyCapture records it: the
+  step's log lines; each GET answered whole with a 2xx a material by its body's digest (a
+  redirect's source by its target's); each request that is not one, and why
+  (`method_not_materializable`, `partial_response`, `body_read_failed`,
+  `unsuccessful_response`, `upstream_error`; BuildKit's `response_transformed` cannot
+  come of a transport that asks for no compression), under the step's vertex as
+  BuildKit's solver names it (its bytes and `\0buildkit.proxy-network.v0`), which makes
+  the build's dependencies incomplete and not hermetic; `network.mode` is `proxy`.
+- **Cached steps.** A proxied step is keyed apart, so a step made with the network open
+  is never taken for one whose every request was checked, nor the other way round (BuildKit's
+  key leaves its mark out and takes either for the other). Its record keeps the requests
+  the policies let go: each is asked again before the record is taken, and one refused
+  now runs the step again (BuildKit asks nothing of a cached step); a record taken brings
+  its materials and incomplete requests into the build's provenance (BuildKit's leaves a
+  cached step's out).
+- Held to BuildKit by `scripts/proxy/generate`, which builds tests into BuildKit v0.33.0
+  (Go 1.26.3) and runs its own handler on Go's server in `shards-dind`: 77 raw requests
+  refused (the URLs asked, every byte answered), 19 refused tunnels, 45 plain and 20
+  tunnelled requests passed on to upstreams answering a table of raw responses (the
+  client's bytes, the URLs asked, the capture), 30 URLs and 15 redirects, 80 sniffed
+  bodies, 31 upstream proxy values, and 28 trust bundles through InjectProxyCA and its
+  cleanup. It found, and shards now does as BuildKit: `OPTIONS *`; a HEAD's 403 of no
+  body; the 512 bytes before a head (shards waited for 2048, Go's buffer, which the
+  handler's ReadFrom never fills); sniffing; a tunnelled 204 or 304 keeping its tunnel.
+- **Recorded differences**, each measured against BuildKit's own:
+  - The CA's and hosts' keys are P-256 where BuildKit's are RSA-2048: a CA in 61 µs and a
+    host's certificate in 82 µs where RSA-2048 takes 47 to 51 ms, BuildKit's Go included
+    (PM M150), and the stronger key (128-bit security against 112, NIST SP 800-57 Part 1
+    Rev. 5, Table 2).
+  - The CA is each build's, its key never leaving the build process, where buildkitd makes
+    one as it starts and keeps it for every build.
+  - The proxy is the gateway's port 3128 where BuildKit's listens on a port the kernel
+    picks, on an address of a namespace of its own; the variables say where it is.
+  - The build's host is never reached through the proxy: its loopback, unspecified,
+    link-local, multicast and broadcast addresses, IPv4 in IPv6, refused before a dial, a
+    502 (`no address a build step may reach`), as the builder never reaches the host (D31);
+    BuildKit's proxy reaches whatever buildkitd's namespace reaches.
+  - The bundle is found and reopened in the step's root (openat2 `RESOLVE_IN_ROOT`) each
+    time; BuildKit's cleanup reopens the host path it resolved before the step, which a
+    step's symlink could move.
+  - A response's hop-by-hop fields go, as RFC 9110 §7.6.1 has a proxy remove them
+    (`Connection` and each field it names, `Keep-Alive`, `Proxy-Connection`,
+    `Proxy-Authenticate`, `TE`, `Trailer`, `Transfer-Encoding`, `Upgrade`); BuildKit's
+    handler copies them on.
+  - A TLS body of no length ended without close_notify is no material (`body_read_failed`),
+    as RFC 9112 §9.8 has a client treat it; Go's client takes the bare end for the body's.
+  - A request field whose value is not UTF-8 (obs-text) is refused, a 400, where Go's
+    server passes it on: shards' client writes fields as text.
+  - A request's body is read whole before it goes upstream (in memory to 64 KiB, then a
+    file of the proxy's, within the room SHARDS_KEEP_FREE keeps, a 413 past it), and goes
+    with its length; BuildKit's streams it, chunked where it came chunked.
+  - Chunk boundaries follow each proxy's reads of its upstream after the first 512 bytes
+    (Go's too); a 502's text is shards' client's error, not Go's transport's.
+  - What a server sees of a request is shards' client's writing of it: HTTP/1.1, where Go's
+    transport may agree on HTTP/2 with an HTTPS server; its fields in shards' order; and no
+    `User-Agent` where the step sent none, where Go's transport sends `Go-http-client/1.1`.
+    None of it reaches the step.
+  - An invalid proxy in the build's environment fails the step as `invalid HTTP_PROXY in
+    the build's environment`, where BuildKit names buildkitd's.
+- Cost (PM M150): the proxy adds 40 µs to a plain request and 175 µs to an HTTPS one;
+  checking each request against the build's policies adds 1.7 ms, most of the 2.1 to 2.3
+  ms a step's request pays over going straight. That check compiles the policy afresh,
+  twice, as every check does (PM M127); compiling once a build is open.
+- Tested: in-process against plain and HTTPS servers (refusals, the reach, upstream TLS,
+  each reason a request is no material, a bare TLS end, the disk's room, a head's time and
+  the connection bound, an HTTP/1.0 body of no length, a body that cannot be read,
+  questions no one answers, a response's hop fields), the oracle's records, shards-init's
+  on Linux (in `shards-dind`), and on microVMs by
+  `steps_under_the_proxy_cap_reach_the_network_through_it_alone`: `policy enabled network
+  proxy`, the variables, the CA in and out, 200s, both 403s, a redirect, a POST and a part,
+  an untrusted HTTPS host's 502, nothing past the proxy, the step's log lines byte for
+  byte, the provenance, the step from the cache with its requests asked again, run again
+  under a policy refusing one, and run with the network open once no cap is asked for.
+  Mutation-checked, 68 guards, each mutant killed: the network process's one flow (4); the
+  CA's PEM reading, markers, bound, regular file, mode and cleanup (11); the proxy's
+  questions, URLs, Go's head checks and bounds, keep-alive and discards, the reach,
+  OPTIONS, HEAD, sniffing, hop fields, capture, the disk's room, a head's time, the
+  connection bound, close_notify, the variables and upstream proxies (43); the vertex,
+  completeness and cache key (3); and on microVMs the network policy, the CA and variables
+  given, the CA taken out, cached requests asked again, open builds keyed apart, and the
+  cap said (7). The first round left three alive (a PEM type line, an HTTP/1.0 body of no
+  length closing its connection, each head's time its own), killed by the tests added
+  for them.
 
 ### D109. An Agentfile's volumes at run, and every grant checked at build and at run
 

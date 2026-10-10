@@ -1,0 +1,3207 @@
+{
+  "finals": [
+    {
+      "request": "http://example.com/a/b?c",
+      "location": "",
+      "final": ""
+    },
+    {
+      "request": "http://example.com/a/b?c",
+      "location": "/x",
+      "final": "http://example.com/x"
+    },
+    {
+      "request": "http://example.com/a/b?c",
+      "location": "x/y",
+      "final": "http://example.com/a/x/y"
+    },
+    {
+      "request": "http://example.com/a/b?c",
+      "location": "../x",
+      "final": "http://example.com/x"
+    },
+    {
+      "request": "http://example.com/a/b?c",
+      "location": "?q",
+      "final": "http://example.com/a/b?q"
+    },
+    {
+      "request": "http://example.com/a/b?c",
+      "location": "#f",
+      "final": "http://example.com/a/b?c#f"
+    },
+    {
+      "request": "http://example.com/a/b?c",
+      "location": "//other.example/p",
+      "final": "http://other.example/p"
+    },
+    {
+      "request": "http://example.com/a/b?c",
+      "location": "https://other.example:443/p",
+      "final": "https://other.example:443/p"
+    },
+    {
+      "request": "https://example.com:443/a",
+      "location": "http://u:p@other.example/",
+      "final": "http://u:p@other.example/"
+    },
+    {
+      "request": "http://example.com/a/b",
+      "location": "%zz",
+      "final": "%zz"
+    },
+    {
+      "request": "http://example.com/a/b",
+      "location": "http://[::1",
+      "final": "http://[::1"
+    },
+    {
+      "request": "http://example.com/a/b",
+      "location": "./",
+      "final": "http://example.com/a/"
+    },
+    {
+      "request": "http://example.com/a/b",
+      "location": "../../../../x",
+      "final": "http://example.com/x"
+    },
+    {
+      "request": "http://example.com/a/b",
+      "location": "x y",
+      "final": "http://example.com/a/x%20y"
+    },
+    {
+      "request": "http://example.com/",
+      "location": "mailto:x@example.com",
+      "final": "mailto:x@example.com"
+    }
+  ],
+  "passed": [
+    {
+      "name": "passed on",
+      "request": "GET http://{upstream}/hello HTTP/1.1\r\nHost: {upstream}\r\nUser-Agent: t/1\r\nAccept-Encoding: gzip\r\nProxy-Authorization: p\r\n\r\n",
+      "checked": [
+        "http://{upstream}/hello"
+      ],
+      "response": "HTTP/1.1 200 OK\r\nContent-Length: 6\r\nContent-Type: text/plain\r\nX-A: 1\r\nX-B: 2\r\nDate: DATE\r\n\r\nhello\n",
+      "capture": {
+        "requests": [
+          {
+            "method": "GET",
+            "redirect": "",
+            "status": 200,
+            "url": "http://{upstream}/hello"
+          }
+        ],
+        "materials": [
+          {
+            "digest": "sha256:5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03",
+            "url": "http://{upstream}/hello"
+          }
+        ],
+        "incomplete": []
+      }
+    },
+    {
+      "name": "origin form",
+      "request": "GET /hello HTTP/1.1\r\nHost: {upstream}\r\n\r\n",
+      "checked": [
+        "http://{upstream}/hello"
+      ],
+      "response": "HTTP/1.1 200 OK\r\nContent-Length: 6\r\nContent-Type: text/plain\r\nX-A: 1\r\nX-B: 2\r\nDate: DATE\r\n\r\nhello\n",
+      "capture": {
+        "requests": [
+          {
+            "method": "GET",
+            "redirect": "",
+            "status": 200,
+            "url": "http://{upstream}/hello"
+          }
+        ],
+        "materials": [
+          {
+            "digest": "sha256:5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03",
+            "url": "http://{upstream}/hello"
+          }
+        ],
+        "incomplete": []
+      }
+    },
+    {
+      "name": "chunked",
+      "request": "GET http://{upstream}/chunked HTTP/1.1\r\nHost: {upstream}\r\n\r\n",
+      "checked": [
+        "http://{upstream}/chunked"
+      ],
+      "response": "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nDate: DATE\r\nContent-Length: 3\r\n\r\nabc",
+      "capture": {
+        "requests": [
+          {
+            "method": "GET",
+            "redirect": "",
+            "status": 200,
+            "url": "http://{upstream}/chunked"
+          }
+        ],
+        "materials": [
+          {
+            "digest": "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+            "url": "http://{upstream}/chunked"
+          }
+        ],
+        "incomplete": []
+      }
+    },
+    {
+      "name": "chunked, long",
+      "request": "GET http://{upstream}/chunked-long HTTP/1.1\r\nHost: {upstream}\r\n\r\n",
+      "checked": [
+        "http://{upstream}/chunked-long"
+      ],
+      "response": "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nDate: DATE\r\nTransfer-Encoding: chunked\r\n\r\n200\r\ncccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\r\n9b8\r\ncccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\r\n0\r\n\r\n",
+      "capture": {
+        "requests": [
+          {
+            "method": "GET",
+            "redirect": "",
+            "status": 200,
+            "url": "http://{upstream}/chunked-long"
+          }
+        ],
+        "materials": [
+          {
+            "digest": "sha256:0828357fc4d85de76348492ed9a7df93e9d01a2e561c5f280c68a8c357fd6e65",
+            "url": "http://{upstream}/chunked-long"
+          }
+        ],
+        "incomplete": []
+      }
+    },
+    {
+      "name": "unframed",
+      "request": "GET http://{upstream}/unframed HTTP/1.1\r\nHost: {upstream}\r\n\r\n",
+      "checked": [
+        "http://{upstream}/unframed"
+      ],
+      "response": "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nDate: DATE\r\nContent-Length: 9\r\n\r\nabc#close",
+      "capture": {
+        "requests": [
+          {
+            "method": "GET",
+            "redirect": "",
+            "status": 200,
+            "url": "http://{upstream}/unframed"
+          }
+        ],
+        "materials": [
+          {
+            "digest": "sha256:060e3ba394fc3b8aa09bb30241f0d2304324c516ee083dd7594c3d44a0814f14",
+            "url": "http://{upstream}/unframed"
+          }
+        ],
+        "incomplete": []
+      }
+    },
+    {
+      "name": "unframed, long",
+      "request": "GET http://{upstream}/unframed-long HTTP/1.1\r\nHost: {upstream}\r\n\r\n",
+      "checked": [
+        "http://{upstream}/unframed-long"
+      ],
+      "response": "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nDate: DATE\r\nTransfer-Encoding: chunked\r\n\r\n200\r\nuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuu\r\ndc0\r\nuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuu\r\n3ce\r\nuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuu#close\r\n0\r\n\r\n",
+      "capture": {
+        "requests": [
+          {
+            "method": "GET",
+            "redirect": "",
+            "status": 200,
+            "url": "http://{upstream}/unframed-long"
+          }
+        ],
+        "materials": [
+          {
+            "digest": "sha256:88d5bda3b3f3e6d5bbdfb8958b55df2def78017346468979c682c3d542482394",
+            "url": "http://{upstream}/unframed-long"
+          }
+        ],
+        "incomplete": []
+      }
+    },
+    {
+      "name": "a redirect",
+      "request": "GET http://{upstream}/redirect HTTP/1.1\r\nHost: {upstream}\r\n\r\n",
+      "checked": [
+        "http://{upstream}/redirect"
+      ],
+      "response": "HTTP/1.1 302 Found\r\nContent-Length: 0\r\nLocation: /hello\r\nDate: DATE\r\n\r\n",
+      "capture": {
+        "requests": [
+          {
+            "method": "GET",
+            "redirect": "http://{upstream}/hello",
+            "status": 302,
+            "url": "http://{upstream}/redirect"
+          }
+        ],
+        "materials": [],
+        "incomplete": []
+      }
+    },
+    {
+      "name": "a redirect away",
+      "request": "GET http://{upstream}/away HTTP/1.1\r\nHost: {upstream}\r\n\r\n",
+      "checked": [
+        "http://{upstream}/away"
+      ],
+      "response": "HTTP/1.1 301 Moved Permanently\r\nContent-Length: 0\r\nLocation: http://user:pw@other.example:80/x\r\nDate: DATE\r\n\r\n",
+      "capture": {
+        "requests": [
+          {
+            "method": "GET",
+            "redirect": "http://xxxxx:xxxxx@other.example/x",
+            "status": 301,
+            "url": "http://{upstream}/away"
+          }
+        ],
+        "materials": [],
+        "incomplete": []
+      }
+    },
+    {
+      "name": "missing",
+      "request": "GET http://{upstream}/missing HTTP/1.1\r\nHost: {upstream}\r\n\r\n",
+      "checked": [
+        "http://{upstream}/missing"
+      ],
+      "response": "HTTP/1.1 404 Not Found\r\nContent-Length: 4\r\nContent-Type: text/plain\r\nDate: DATE\r\n\r\ngone",
+      "capture": {
+        "requests": [
+          {
+            "method": "GET",
+            "redirect": "",
+            "status": 404,
+            "url": "http://{upstream}/missing"
+          }
+        ],
+        "materials": [],
+        "incomplete": [
+          {
+            "method": "GET",
+            "reason": "unsuccessful_response",
+            "url": "http://{upstream}/missing"
+          }
+        ]
+      }
+    },
+    {
+      "name": "no content",
+      "request": "GET http://{upstream}/empty HTTP/1.1\r\nHost: {upstream}\r\n\r\n",
+      "checked": [
+        "http://{upstream}/empty"
+      ],
+      "response": "HTTP/1.1 204 No Content\r\nX-E: 1\r\nDate: DATE\r\n\r\n",
+      "capture": {
+        "requests": [
+          {
+            "method": "GET",
+            "redirect": "",
+            "status": 204,
+            "url": "http://{upstream}/empty"
+          }
+        ],
+        "materials": [
+          {
+            "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "url": "http://{upstream}/empty"
+          }
+        ],
+        "incomplete": []
+      }
+    },
+    {
+      "name": "not modified",
+      "request": "GET http://{upstream}/unchanged HTTP/1.1\r\nHost: {upstream}\r\n\r\n",
+      "checked": [
+        "http://{upstream}/unchanged"
+      ],
+      "response": "HTTP/1.1 304 Not Modified\r\nEtag: \"v1\"\r\nDate: DATE\r\n\r\n",
+      "capture": {
+        "requests": [
+          {
+            "method": "GET",
+            "redirect": "",
+            "status": 304,
+            "url": "http://{upstream}/unchanged"
+          }
+        ],
+        "materials": [],
+        "incomplete": []
+      }
+    },
+    {
+      "name": "its own date",
+      "request": "GET http://{upstream}/dated HTTP/1.1\r\nHost: {upstream}\r\n\r\n",
+      "checked": [
+        "http://{upstream}/dated"
+      ],
+      "response": "HTTP/1.1 200 OK\r\nContent-Length: 1\r\nContent-Type: text/plain\r\nDate: DATE\r\n\r\nd",
+      "capture": {
+        "requests": [
+          {
+            "method": "GET",
+            "redirect": "",
+            "status": 200,
+            "url": "http://{upstream}/dated"
+          }
+        ],
+        "materials": [
+          {
+            "digest": "sha256:18ac3e7343f016890c510e93f935261169d9e3f565436429830faf0934f4f8e4",
+            "url": "http://{upstream}/dated"
+          }
+        ],
+        "incomplete": []
+      }
+    },
+    {
+      "name": "hop-by-hop fields",
+      "request": "GET http://{upstream}/hops HTTP/1.1\r\nHost: {upstream}\r\n\r\n",
+      "checked": [
+        "http://{upstream}/hops"
+      ],
+      "response": "HTTP/1.1 200 OK\r\nConnection: keep-alive, X-Hop\r\nContent-Length: 2\r\nContent-Type: text/plain\r\nKeep-Alive: timeout=5\r\nProxy-Authenticate: Basic\r\nUpgrade: h2c\r\nX-Hop: 1\r\nDate: DATE\r\n\r\nok",
+      "capture": {
+        "requests": [
+          {
+            "method": "GET",
+            "redirect": "",
+            "status": 200,
+            "url": "http://{upstream}/hops"
+          }
+        ],
+        "materials": [
+          {
+            "digest": "sha256:2689367b205c16ce32ed4200942b8b8b1e262dfc70d9bc9fbc77c49699a4f1df",
+            "url": "http://{upstream}/hops"
+          }
+        ],
+        "incomplete": []
+      }
+    },
+    {
+      "name": "repeated fields",
+      "request": "GET http://{upstream}/cookies HTTP/1.1\r\nHost: {upstream}\r\n\r\n",
+      "checked": [
+        "http://{upstream}/cookies"
+      ],
+      "response": "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nSet-Cookie: a=1\r\nSet-Cookie: b=2\r\nX-Lower: l\r\nDate: DATE\r\n\r\n",
+      "capture": {
+        "requests": [
+          {
+            "method": "GET",
+            "redirect": "",
+            "status": 200,
+            "url": "http://{upstream}/cookies"
+          }
+        ],
+        "materials": [
+          {
+            "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "url": "http://{upstream}/cookies"
+          }
+        ],
+        "incomplete": []
+      }
+    },
+    {
+      "name": "a part",
+      "request": "GET http://{upstream}/part HTTP/1.1\r\nHost: {upstream}\r\nRange: bytes=0-1\r\n\r\n",
+      "checked": [
+        "http://{upstream}/part"
+      ],
+      "response": "HTTP/1.1 206 Partial Content\r\nContent-Length: 2\r\nContent-Range: bytes 0-1/6\r\nContent-Type: text/plain\r\nDate: DATE\r\n\r\nhe",
+      "capture": {
+        "requests": [
+          {
+            "method": "GET",
+            "redirect": "",
+            "status": 206,
+            "url": "http://{upstream}/part"
+          }
+        ],
+        "materials": [],
+        "incomplete": [
+          {
+            "method": "GET",
+            "reason": "partial_response",
+            "url": "http://{upstream}/part"
+          }
+        ]
+      }
+    },
+    {
+      "name": "a status of no text",
+      "request": "GET http://{upstream}/odd-status HTTP/1.1\r\nHost: {upstream}\r\n\r\n",
+      "checked": [
+        "http://{upstream}/odd-status"
+      ],
+      "response": "HTTP/1.1 299 status code 299\r\nContent-Length: 0\r\nDate: DATE\r\n\r\n",
+      "capture": {
+        "requests": [
+          {
+            "method": "GET",
+            "redirect": "",
+            "status": 299,
+            "url": "http://{upstream}/odd-status"
+          }
+        ],
+        "materials": [
+          {
+            "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "url": "http://{upstream}/odd-status"
+          }
+        ],
+        "incomplete": []
+      }
+    },
+    {
+      "name": "a reason of its own",
+      "request": "GET http://{upstream}/reason HTTP/1.1\r\nHost: {upstream}\r\n\r\n",
+      "checked": [
+        "http://{upstream}/reason"
+      ],
+      "response": "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nDate: DATE\r\n\r\n",
+      "capture": {
+        "requests": [
+          {
+            "method": "GET",
+            "redirect": "",
+            "status": 200,
+            "url": "http://{upstream}/reason"
+          }
+        ],
+        "materials": [
+          {
+            "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "url": "http://{upstream}/reason"
+          }
+        ],
+        "incomplete": []
+      }
+    },
+    {
+      "name": "100 Continue first",
+      "request": "GET http://{upstream}/continue-first HTTP/1.1\r\nHost: {upstream}\r\n\r\n",
+      "checked": [
+        "http://{upstream}/continue-first"
+      ],
+      "response": "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nContent-Type: text/plain\r\nDate: DATE\r\n\r\nok",
+      "capture": {
+        "requests": [
+          {
+            "method": "GET",
+            "redirect": "",
+            "status": 200,
+            "url": "http://{upstream}/continue-first"
+          }
+        ],
+        "materials": [
+          {
+            "digest": "sha256:2689367b205c16ce32ed4200942b8b8b1e262dfc70d9bc9fbc77c49699a4f1df",
+            "url": "http://{upstream}/continue-first"
+          }
+        ],
+        "incomplete": []
+      }
+    },
+    {
+      "name": "cut short",
+      "request": "GET http://{upstream}/cut HTTP/1.1\r\nHost: {upstream}\r\n\r\n",
+      "checked": [
+        "http://{upstream}/cut"
+      ],
+      "response": "HTTP/1.1 200 OK\r\nContent-Length: 10\r\nContent-Type: text/plain\r\nDate: DATE\r\n\r\nabc#close",
+      "capture": {
+        "requests": [
+          {
+            "method": "GET",
+            "redirect": "",
+            "status": 200,
+            "url": "http://{upstream}/cut"
+          }
+        ],
+        "materials": [],
+        "incomplete": [
+          {
+            "method": "GET",
+            "reason": "body_read_failed",
+            "url": "http://{upstream}/cut"
+          }
+        ]
+      }
+    },
+    {
+      "name": "HEAD",
+      "request": "HEAD http://{upstream}/head HTTP/1.1\r\nHost: {upstream}\r\n\r\n",
+      "checked": [
+        "http://{upstream}/head"
+      ],
+      "response": "HTTP/1.1 200 OK\r\nContent-Length: 1234\r\nContent-Type: text/plain\r\nDate: DATE\r\n\r\n",
+      "capture": {
+        "requests": [
+          {
+            "method": "HEAD",
+            "redirect": "",
+            "status": 200,
+            "url": "http://{upstream}/head"
+          }
+        ],
+        "materials": [],
+        "incomplete": [
+          {
+            "method": "HEAD",
+            "reason": "method_not_materializable",
+            "url": "http://{upstream}/head"
+          }
+        ]
+      }
+    },
+    {
+      "name": "an HTTP/1.0 upstream",
+      "request": "GET http://{upstream}/http10 HTTP/1.1\r\nHost: {upstream}\r\n\r\n",
+      "checked": [
+        "http://{upstream}/http10"
+      ],
+      "response": "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nContent-Type: text/plain\r\nDate: DATE\r\n\r\nok",
+      "capture": {
+        "requests": [
+          {
+            "method": "GET",
+            "redirect": "",
+            "status": 200,
+            "url": "http://{upstream}/http10"
+          }
+        ],
+        "materials": [
+          {
+            "digest": "sha256:2689367b205c16ce32ed4200942b8b8b1e262dfc70d9bc9fbc77c49699a4f1df",
+            "url": "http://{upstream}/http10"
+          }
+        ],
+        "incomplete": []
+      }
+    },
+    {
+      "name": "an HTTP/1.0 upstream, unframed",
+      "request": "GET http://{upstream}/http10-unframed HTTP/1.1\r\nHost: {upstream}\r\n\r\n",
+      "checked": [
+        "http://{upstream}/http10-unframed"
+      ],
+      "response": "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nDate: DATE\r\nContent-Length: 9\r\n\r\nold#close",
+      "capture": {
+        "requests": [
+          {
+            "method": "GET",
+            "redirect": "",
+            "status": 200,
+            "url": "http://{upstream}/http10-unframed"
+          }
+        ],
+        "materials": [
+          {
+            "digest": "sha256:dc5d9e10e6e6a3f39cca50324dff15748aed42f2bcd69fcc32c81bc1d10dc614",
+            "url": "http://{upstream}/http10-unframed"
+          }
+        ],
+        "incomplete": []
+      }
+    },
+    {
+      "name": "a server error",
+      "request": "GET http://{upstream}/server-error HTTP/1.1\r\nHost: {upstream}\r\n\r\n",
+      "checked": [
+        "http://{upstream}/server-error"
+      ],
+      "response": "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 3\r\nContent-Type: text/plain\r\nDate: DATE\r\n\r\nbad",
+      "capture": {
+        "requests": [
+          {
+            "method": "GET",
+            "redirect": "",
+            "status": 500,
+            "url": "http://{upstream}/server-error"
+          }
+        ],
+        "materials": [],
+        "incomplete": [
+          {
+            "method": "GET",
+            "reason": "unsuccessful_response",
+            "url": "http://{upstream}/server-error"
+          }
+        ]
+      }
+    },
+    {
+      "name": "sniffed",
+      "request": "GET http://{upstream}/sniffed HTTP/1.1\r\nHost: {upstream}\r\n\r\n",
+      "checked": [
+        "http://{upstream}/sniffed"
+      ],
+      "response": "HTTP/1.1 200 OK\r\nContent-Length: 15\r\nDate: DATE\r\nContent-Type: text/html; charset=utf-8\r\n\r\n\u003chtml\u003ehi\u003c/html\u003e",
+      "capture": {
+        "requests": [
+          {
+            "method": "GET",
+            "redirect": "",
+            "status": 200,
+            "url": "http://{upstream}/sniffed"
+          }
+        ],
+        "materials": [
+          {
+            "digest": "sha256:beb6d42e2e372ff35ff73af2a4bd53d0e440f07180b89ea67136a92c8f80a8ba",
+            "url": "http://{upstream}/sniffed"
+          }
+        ],
+        "incomplete": []
+      }
+    },
+    {
+      "name": "sniffed as text",
+      "request": "GET http://{upstream}/sniffed-text HTTP/1.1\r\nHost: {upstream}\r\n\r\n",
+      "checked": [
+        "http://{upstream}/sniffed-text"
+      ],
+      "response": "HTTP/1.1 200 OK\r\nContent-Length: 3\r\nDate: DATE\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nabc",
+      "capture": {
+        "requests": [
+          {
+            "method": "GET",
+            "redirect": "",
+            "status": 200,
+            "url": "http://{upstream}/sniffed-text"
+          }
+        ],
+        "materials": [
+          {
+            "digest": "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+            "url": "http://{upstream}/sniffed-text"
+          }
+        ],
+        "incomplete": []
+      }
+    },
+    {
+      "name": "encoded, not sniffed",
+      "request": "GET http://{upstream}/not-sniffed HTTP/1.1\r\nHost: {upstream}\r\n\r\n",
+      "checked": [
+        "http://{upstream}/not-sniffed"
+      ],
+      "response": "HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: 5\r\nDate: DATE\r\n\r\nzzzzz",
+      "capture": {
+        "requests": [
+          {
+            "method": "GET",
+            "redirect": "",
+            "status": 200,
+            "url": "http://{upstream}/not-sniffed"
+          }
+        ],
+        "materials": [
+          {
+            "digest": "sha256:68a55e5b1e43c67f4ef34065a86c4c583f532ae8e3cda7e36cc79b611802ac07",
+            "url": "http://{upstream}/not-sniffed"
+          }
+        ],
+        "incomplete": []
+      }
+    },
+    {
+      "name": "empty",
+      "request": "GET http://{upstream}/empty-200 HTTP/1.1\r\nHost: {upstream}\r\n\r\n",
+      "checked": [
+        "http://{upstream}/empty-200"
+      ],
+      "response": "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nDate: DATE\r\n\r\n",
+      "capture": {
+        "requests": [
+          {
+            "method": "GET",
+            "redirect": "",
+            "status": 200,
+            "url": "http://{upstream}/empty-200"
+          }
+        ],
+        "materials": [
+          {
+            "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "url": "http://{upstream}/empty-200"
+          }
+        ],
+        "incomplete": []
+      }
+    },
+    {
+      "name": "unframed, just short of what is sniffed",
+      "request": "GET http://{upstream}/unframed-505 HTTP/1.1\r\nHost: {upstream}\r\n\r\n",
+      "checked": [
+        "http://{upstream}/unframed-505"
+      ],
+      "response": "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nDate: DATE\r\nContent-Length: 511\r\n\r\nvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv#close",
+      "capture": {
+        "requests": [
+          {
+            "method": "GET",
+            "redirect": "",
+            "status": 200,
+            "url": "http://{upstream}/unframed-505"
+          }
+        ],
+        "materials": [
+          {
+            "digest": "sha256:8ffd6d6d2cd9433be23afeadc76dbbf8083c76f41f5ed1ac63211d7d24a031b4",
+            "url": "http://{upstream}/unframed-505"
+          }
+        ],
+        "incomplete": []
+      }
+    },
+    {
+      "name": "unframed, what is sniffed",
+      "request": "GET http://{upstream}/unframed-506 HTTP/1.1\r\nHost: {upstream}\r\n\r\n",
+      "checked": [
+        "http://{upstream}/unframed-506"
+      ],
+      "response": "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nDate: DATE\r\nTransfer-Encoding: chunked\r\n\r\n200\r\nvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv#close\r\n0\r\n\r\n",
+      "capture": {
+        "requests": [
+          {
+            "method": "GET",
+            "redirect": "",
+            "status": 200,
+            "url": "http://{upstream}/unframed-506"
+          }
+        ],
+        "materials": [
+          {
+            "digest": "sha256:992bd5dfcf881338a919a3933405ad8216d130c87470ae62f6ba7906b1f5b6e5",
+            "url": "http://{upstream}/unframed-506"
+          }
+        ],
+        "incomplete": []
+      }
+    },
+    {
+      "name": "chunked, past what is sniffed",
+      "request": "GET http://{upstream}/chunked-1000 HTTP/1.1\r\nHost: {upstream}\r\n\r\n",
+      "checked": [
+        "http://{upstream}/chunked-1000"
+      ],
+      "response": "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nDate: DATE\r\nTransfer-Encoding: chunked\r\n\r\n200\r\nkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk\r\n1e8\r\nkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk\r\n0\r\n\r\n",
+      "capture": {
+        "requests": [
+          {
+            "method": "GET",
+            "redirect": "",
+            "status": 200,
+            "url": "http://{upstream}/chunked-1000"
+          }
+        ],
+        "materials": [
+          {
+            "digest": "sha256:27fed049cf80e0eff71ab837c82a50327b7677ebda22305d3f353f0989488669",
+            "url": "http://{upstream}/chunked-1000"
+          }
+        ],
+        "incomplete": []
+      }
+    },
+    {
+      "name": "sniffed as binary",
+      "request": "GET http://{upstream}/sniffed-binary HTTP/1.1\r\nHost: {upstream}\r\n\r\n",
+      "checked": [
+        "http://{upstream}/sniffed-binary"
+      ],
+      "response": "HTTP/1.1 200 OK\r\nContent-Length: 4\r\nDate: DATE\r\nContent-Type: application/octet-stream\r\n\r\n\u0001\u0002ab",
+      "capture": {
+        "requests": [
+          {
+            "method": "GET",
+            "redirect": "",
+            "status": 200,
+            "url": "http://{upstream}/sniffed-binary"
+          }
+        ],
+        "materials": [
+          {
+            "digest": "sha256:36108c2257e69cc56383a708267c420bd16ee2750feaf5e8690fb34159bd261b",
+            "url": "http://{upstream}/sniffed-binary"
+          }
+        ],
+        "incomplete": []
+      }
+    },
+    {
+      "name": "typed, empty",
+      "request": "GET http://{upstream}/typed-empty HTTP/1.1\r\nHost: {upstream}\r\n\r\n",
+      "checked": [
+        "http://{upstream}/typed-empty"
+      ],
+      "response": "HTTP/1.1 200 OK\r\nContent-Length: 3\r\nContent-Type: \r\nDate: DATE\r\n\r\nabc",
+      "capture": {
+        "requests": [
+          {
+            "method": "GET",
+            "redirect": "",
+            "status": 200,
+            "url": "http://{upstream}/typed-empty"
+          }
+        ],
+        "materials": [
+          {
+            "digest": "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+            "url": "http://{upstream}/typed-empty"
+          }
+        ],
+        "incomplete": []
+      }
+    },
+    {
+      "name": "sniffed past its first bytes",
+      "request": "GET http://{upstream}/sniffed-late HTTP/1.1\r\nHost: {upstream}\r\n\r\n",
+      "checked": [
+        "http://{upstream}/sniffed-late"
+      ],
+      "response": "HTTP/1.1 200 OK\r\nContent-Length: 600\r\nDate: DATE\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "capture": {
+        "requests": [
+          {
+            "method": "GET",
+            "redirect": "",
+            "status": 200,
+            "url": "http://{upstream}/sniffed-late"
+          }
+        ],
+        "materials": [
+          {
+            "digest": "sha256:cd231bb8ce93fe9834b32c6d7df6884b29bc20561bf154b7f549b26836fc3b9f",
+            "url": "http://{upstream}/sniffed-late"
+          }
+        ],
+        "incomplete": []
+      }
+    },
+    {
+      "name": "encoded, empty",
+      "request": "GET http://{upstream}/encoded-empty HTTP/1.1\r\nHost: {upstream}\r\n\r\n",
+      "checked": [
+        "http://{upstream}/encoded-empty"
+      ],
+      "response": "HTTP/1.1 200 OK\r\nContent-Encoding: \r\nContent-Length: 3\r\nDate: DATE\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nabc",
+      "capture": {
+        "requests": [
+          {
+            "method": "GET",
+            "redirect": "",
+            "status": 200,
+            "url": "http://{upstream}/encoded-empty"
+          }
+        ],
+        "materials": [
+          {
+            "digest": "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+            "url": "http://{upstream}/encoded-empty"
+          }
+        ],
+        "incomplete": []
+      }
+    },
+    {
+      "name": "unframed, what is sniffed, to an HTTP/1.0 client",
+      "request": "GET http://{upstream}/unframed-506 HTTP/1.0\r\n\r\n",
+      "checked": [
+        "http://{upstream}/unframed-506"
+      ],
+      "response": "HTTP/1.0 200 OK\r\nContent-Type: text/plain\r\nDate: DATE\r\n\r\nvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv#close",
+      "capture": {
+        "requests": [
+          {
+            "method": "GET",
+            "redirect": "",
+            "status": 200,
+            "url": "http://{upstream}/unframed-506"
+          }
+        ],
+        "materials": [
+          {
+            "digest": "sha256:992bd5dfcf881338a919a3933405ad8216d130c87470ae62f6ba7906b1f5b6e5",
+            "url": "http://{upstream}/unframed-506"
+          }
+        ],
+        "incomplete": []
+      }
+    },
+    {
+      "name": "a body passed on",
+      "request": "POST http://{upstream}/hello HTTP/1.1\r\nHost: {upstream}\r\nContent-Length: 5\r\n\r\nhello",
+      "checked": [
+        "http://{upstream}/hello"
+      ],
+      "response": "HTTP/1.1 200 OK\r\nContent-Length: 6\r\nContent-Type: text/plain\r\nX-A: 1\r\nX-B: 2\r\nDate: DATE\r\n\r\nhello\n",
+      "capture": {
+        "requests": [
+          {
+            "method": "POST",
+            "redirect": "",
+            "status": 200,
+            "url": "http://{upstream}/hello"
+          }
+        ],
+        "materials": [],
+        "incomplete": [
+          {
+            "method": "POST",
+            "reason": "method_not_materializable",
+            "url": "http://{upstream}/hello"
+          }
+        ]
+      }
+    },
+    {
+      "name": "a chunked body passed on",
+      "request": "POST http://{upstream}/hello HTTP/1.1\r\nHost: {upstream}\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n",
+      "checked": [
+        "http://{upstream}/hello"
+      ],
+      "response": "HTTP/1.1 200 OK\r\nContent-Length: 6\r\nContent-Type: text/plain\r\nX-A: 1\r\nX-B: 2\r\nDate: DATE\r\n\r\nhello\n",
+      "capture": {
+        "requests": [
+          {
+            "method": "POST",
+            "redirect": "",
+            "status": 200,
+            "url": "http://{upstream}/hello"
+          }
+        ],
+        "materials": [],
+        "incomplete": [
+          {
+            "method": "POST",
+            "reason": "method_not_materializable",
+            "url": "http://{upstream}/hello"
+          }
+        ]
+      }
+    },
+    {
+      "name": "100-continue passed on",
+      "request": "POST http://{upstream}/hello HTTP/1.1\r\nHost: {upstream}\r\nExpect: 100-continue\r\nContent-Length: 5\r\n\r\nhello",
+      "checked": [
+        "http://{upstream}/hello"
+      ],
+      "response": "HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200 OK\r\nContent-Length: 6\r\nContent-Type: text/plain\r\nX-A: 1\r\nX-B: 2\r\nDate: DATE\r\n\r\nhello\n",
+      "capture": {
+        "requests": [
+          {
+            "method": "POST",
+            "redirect": "",
+            "status": 200,
+            "url": "http://{upstream}/hello"
+          }
+        ],
+        "materials": [],
+        "incomplete": [
+          {
+            "method": "POST",
+            "reason": "method_not_materializable",
+            "url": "http://{upstream}/hello"
+          }
+        ]
+      }
+    },
+    {
+      "name": "an HTTP/1.0 client",
+      "request": "GET http://{upstream}/hello HTTP/1.0\r\n\r\n",
+      "checked": [
+        "http://{upstream}/hello"
+      ],
+      "response": "HTTP/1.0 200 OK\r\nContent-Length: 6\r\nContent-Type: text/plain\r\nX-A: 1\r\nX-B: 2\r\nDate: DATE\r\n\r\nhello\n",
+      "capture": {
+        "requests": [
+          {
+            "method": "GET",
+            "redirect": "",
+            "status": 200,
+            "url": "http://{upstream}/hello"
+          }
+        ],
+        "materials": [
+          {
+            "digest": "sha256:5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03",
+            "url": "http://{upstream}/hello"
+          }
+        ],
+        "incomplete": []
+      }
+    },
+    {
+      "name": "an HTTP/1.0 client kept alive",
+      "request": "GET http://{upstream}/hello HTTP/1.0\r\nConnection: keep-alive\r\n\r\n",
+      "checked": [
+        "http://{upstream}/hello"
+      ],
+      "response": "HTTP/1.0 200 OK\r\nContent-Length: 6\r\nContent-Type: text/plain\r\nX-A: 1\r\nX-B: 2\r\nDate: DATE\r\nConnection: keep-alive\r\n\r\nhello\n",
+      "capture": {
+        "requests": [
+          {
+            "method": "GET",
+            "redirect": "",
+            "status": 200,
+            "url": "http://{upstream}/hello"
+          }
+        ],
+        "materials": [
+          {
+            "digest": "sha256:5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03",
+            "url": "http://{upstream}/hello"
+          }
+        ],
+        "incomplete": []
+      }
+    },
+    {
+      "name": "an HTTP/1.0 client, unframed",
+      "request": "GET http://{upstream}/unframed-long HTTP/1.0\r\nConnection: keep-alive\r\n\r\n",
+      "checked": [
+        "http://{upstream}/unframed-long"
+      ],
+      "response": "HTTP/1.0 200 OK\r\nContent-Type: text/plain\r\nDate: DATE\r\n\r\nuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuu#close",
+      "capture": {
+        "requests": [
+          {
+            "method": "GET",
+            "redirect": "",
+            "status": 200,
+            "url": "http://{upstream}/unframed-long"
+          }
+        ],
+        "materials": [
+          {
+            "digest": "sha256:88d5bda3b3f3e6d5bbdfb8958b55df2def78017346468979c682c3d542482394",
+            "url": "http://{upstream}/unframed-long"
+          }
+        ],
+        "incomplete": []
+      }
+    },
+    {
+      "name": "close asked",
+      "request": "GET http://{upstream}/hello HTTP/1.1\r\nHost: {upstream}\r\nConnection: close\r\n\r\n",
+      "checked": [
+        "http://{upstream}/hello"
+      ],
+      "response": "HTTP/1.1 200 OK\r\nContent-Length: 6\r\nContent-Type: text/plain\r\nX-A: 1\r\nX-B: 2\r\nDate: DATE\r\nConnection: close\r\n\r\nhello\n",
+      "capture": {
+        "requests": [
+          {
+            "method": "GET",
+            "redirect": "",
+            "status": 200,
+            "url": "http://{upstream}/hello"
+          }
+        ],
+        "materials": [
+          {
+            "digest": "sha256:5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03",
+            "url": "http://{upstream}/hello"
+          }
+        ],
+        "incomplete": []
+      }
+    },
+    {
+      "name": "pipelined",
+      "request": "GET http://{upstream}/hello HTTP/1.1\r\nHost: {upstream}\r\n\r\nGET http://{upstream}/chunked HTTP/1.1\r\nHost: {upstream}\r\n\r\n",
+      "checked": [
+        "http://{upstream}/hello",
+        "http://{upstream}/chunked"
+      ],
+      "response": "HTTP/1.1 200 OK\r\nContent-Length: 6\r\nContent-Type: text/plain\r\nX-A: 1\r\nX-B: 2\r\nDate: DATE\r\n\r\nhello\nHTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nDate: DATE\r\nContent-Length: 3\r\n\r\nabc",
+      "capture": {
+        "requests": [
+          {
+            "method": "GET",
+            "redirect": "",
+            "status": 200,
+            "url": "http://{upstream}/hello"
+          },
+          {
+            "method": "GET",
+            "redirect": "",
+            "status": 200,
+            "url": "http://{upstream}/chunked"
+          }
+        ],
+        "materials": [
+          {
+            "digest": "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+            "url": "http://{upstream}/chunked"
+          },
+          {
+            "digest": "sha256:5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03",
+            "url": "http://{upstream}/hello"
+          }
+        ],
+        "incomplete": []
+      }
+    },
+    {
+      "name": "refused after passed",
+      "request": "GET http://{upstream}/hello HTTP/1.1\r\nHost: {upstream}\r\n\r\nGET http://{upstream}/denied HTTP/1.1\r\nHost: {upstream}\r\n\r\n",
+      "checked": [
+        "http://{upstream}/hello",
+        "http://{upstream}/denied"
+      ],
+      "response": "HTTP/1.1 200 OK\r\nContent-Length: 6\r\nContent-Type: text/plain\r\nX-A: 1\r\nX-B: 2\r\nDate: DATE\r\n\r\nhello\nHTTP/1.1 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nX-Content-Type-Options: nosniff\r\nDate: DATE\r\nContent-Length: 10\r\n\r\nForbidden\n",
+      "capture": {
+        "requests": [
+          {
+            "method": "GET",
+            "redirect": "",
+            "status": 200,
+            "url": "http://{upstream}/hello"
+          }
+        ],
+        "materials": [
+          {
+            "digest": "sha256:5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03",
+            "url": "http://{upstream}/hello"
+          }
+        ],
+        "incomplete": []
+      }
+    },
+    {
+      "name": "redirect then target",
+      "request": "GET http://{upstream}/redirect HTTP/1.1\r\nHost: {upstream}\r\n\r\nGET http://{upstream}/hello HTTP/1.1\r\nHost: {upstream}\r\n\r\n",
+      "checked": [
+        "http://{upstream}/redirect",
+        "http://{upstream}/hello"
+      ],
+      "response": "HTTP/1.1 302 Found\r\nContent-Length: 0\r\nLocation: /hello\r\nDate: DATE\r\n\r\nHTTP/1.1 200 OK\r\nContent-Length: 6\r\nContent-Type: text/plain\r\nX-A: 1\r\nX-B: 2\r\nDate: DATE\r\n\r\nhello\n",
+      "capture": {
+        "requests": [
+          {
+            "method": "GET",
+            "redirect": "http://{upstream}/hello",
+            "status": 302,
+            "url": "http://{upstream}/redirect"
+          },
+          {
+            "method": "GET",
+            "redirect": "",
+            "status": 200,
+            "url": "http://{upstream}/hello"
+          }
+        ],
+        "materials": [
+          {
+            "digest": "sha256:5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03",
+            "url": "http://{upstream}/hello"
+          },
+          {
+            "digest": "sha256:5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03",
+            "url": "http://{upstream}/redirect"
+          }
+        ],
+        "incomplete": []
+      }
+    }
+  ],
+  "passed_tunnels": [
+    {
+      "name": "passed in a tunnel",
+      "request": "GET /hello HTTP/1.1\r\nHost: {upstream_tls}\r\n\r\n",
+      "checked": [
+        "https://{upstream_tls}/hello"
+      ],
+      "response": "HTTP/1.1 200 OK\r\nContent-Length: 6\r\nContent-Type: text/plain\r\nX-A: 1\r\nX-B: 2\r\n\r\nhello\n",
+      "capture": {
+        "requests": [
+          {
+            "method": "GET",
+            "redirect": "",
+            "status": 200,
+            "url": "https://{upstream_tls}/hello"
+          }
+        ],
+        "materials": [
+          {
+            "digest": "sha256:5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03",
+            "url": "https://{upstream_tls}/hello"
+          }
+        ],
+        "incomplete": []
+      }
+    },
+    {
+      "name": "chunked",
+      "request": "GET /chunked HTTP/1.1\r\nHost: {upstream_tls}\r\n\r\n",
+      "checked": [
+        "https://{upstream_tls}/chunked"
+      ],
+      "response": "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Type: text/plain\r\n\r\n3\r\nabc\r\n0\r\n\r\n",
+      "capture": {
+        "requests": [
+          {
+            "method": "GET",
+            "redirect": "",
+            "status": 200,
+            "url": "https://{upstream_tls}/chunked"
+          }
+        ],
+        "materials": [
+          {
+            "digest": "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+            "url": "https://{upstream_tls}/chunked"
+          }
+        ],
+        "incomplete": []
+      }
+    },
+    {
+      "name": "chunked, long",
+      "request": "GET /chunked-long HTTP/1.1\r\nHost: {upstream_tls}\r\n\r\n",
+      "checked": [
+        "https://{upstream_tls}/chunked-long"
+      ],
+      "response": "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Type: text/plain\r\n\r\nbb8\r\ncccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\r\n0\r\n\r\n",
+      "capture": {
+        "requests": [
+          {
+            "method": "GET",
+            "redirect": "",
+            "status": 200,
+            "url": "https://{upstream_tls}/chunked-long"
+          }
+        ],
+        "materials": [
+          {
+            "digest": "sha256:0828357fc4d85de76348492ed9a7df93e9d01a2e561c5f280c68a8c357fd6e65",
+            "url": "https://{upstream_tls}/chunked-long"
+          }
+        ],
+        "incomplete": []
+      }
+    },
+    {
+      "name": "unframed",
+      "request": "GET /unframed HTTP/1.1\r\nHost: {upstream_tls}\r\n\r\n",
+      "checked": [
+        "https://{upstream_tls}/unframed"
+      ],
+      "response": "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: text/plain\r\n\r\nabc#close",
+      "capture": {
+        "requests": [
+          {
+            "method": "GET",
+            "redirect": "",
+            "status": 200,
+            "url": "https://{upstream_tls}/unframed"
+          }
+        ],
+        "materials": [
+          {
+            "digest": "sha256:060e3ba394fc3b8aa09bb30241f0d2304324c516ee083dd7594c3d44a0814f14",
+            "url": "https://{upstream_tls}/unframed"
+          }
+        ],
+        "incomplete": []
+      }
+    },
+    {
+      "name": "a redirect",
+      "request": "GET /redirect HTTP/1.1\r\nHost: {upstream_tls}\r\n\r\n",
+      "checked": [
+        "https://{upstream_tls}/redirect"
+      ],
+      "response": "HTTP/1.1 302 Found\r\nLocation: /hello\r\nContent-Length: 0\r\n\r\n",
+      "capture": {
+        "requests": [
+          {
+            "method": "GET",
+            "redirect": "https://{upstream_tls}/hello",
+            "status": 302,
+            "url": "https://{upstream_tls}/redirect"
+          }
+        ],
+        "materials": [],
+        "incomplete": []
+      }
+    },
+    {
+      "name": "missing",
+      "request": "GET /missing HTTP/1.1\r\nHost: {upstream_tls}\r\n\r\n",
+      "checked": [
+        "https://{upstream_tls}/missing"
+      ],
+      "response": "HTTP/1.1 404 Not Found\r\nContent-Length: 4\r\nContent-Type: text/plain\r\n\r\ngone",
+      "capture": {
+        "requests": [
+          {
+            "method": "GET",
+            "redirect": "",
+            "status": 404,
+            "url": "https://{upstream_tls}/missing"
+          }
+        ],
+        "materials": [],
+        "incomplete": [
+          {
+            "method": "GET",
+            "reason": "unsuccessful_response",
+            "url": "https://{upstream_tls}/missing"
+          }
+        ]
+      }
+    },
+    {
+      "name": "no content",
+      "request": "GET /empty HTTP/1.1\r\nHost: {upstream_tls}\r\n\r\n",
+      "checked": [
+        "https://{upstream_tls}/empty"
+      ],
+      "response": "HTTP/1.1 204 No Content\r\nX-E: 1\r\n\r\n",
+      "capture": {
+        "requests": [
+          {
+            "method": "GET",
+            "redirect": "",
+            "status": 204,
+            "url": "https://{upstream_tls}/empty"
+          }
+        ],
+        "materials": [
+          {
+            "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "url": "https://{upstream_tls}/empty"
+          }
+        ],
+        "incomplete": []
+      }
+    },
+    {
+      "name": "not modified",
+      "request": "GET /unchanged HTTP/1.1\r\nHost: {upstream_tls}\r\n\r\n",
+      "checked": [
+        "https://{upstream_tls}/unchanged"
+      ],
+      "response": "HTTP/1.1 304 Not Modified\r\nEtag: \"v1\"\r\n\r\n",
+      "capture": {
+        "requests": [
+          {
+            "method": "GET",
+            "redirect": "",
+            "status": 304,
+            "url": "https://{upstream_tls}/unchanged"
+          }
+        ],
+        "materials": [],
+        "incomplete": []
+      }
+    },
+    {
+      "name": "hop-by-hop fields",
+      "request": "GET /hops HTTP/1.1\r\nHost: {upstream_tls}\r\n\r\n",
+      "checked": [
+        "https://{upstream_tls}/hops"
+      ],
+      "response": "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: keep-alive, X-Hop\r\nContent-Type: text/plain\r\nKeep-Alive: timeout=5\r\nProxy-Authenticate: Basic\r\nUpgrade: h2c\r\nX-Hop: 1\r\n\r\nok",
+      "capture": {
+        "requests": [
+          {
+            "method": "GET",
+            "redirect": "",
+            "status": 200,
+            "url": "https://{upstream_tls}/hops"
+          }
+        ],
+        "materials": [
+          {
+            "digest": "sha256:2689367b205c16ce32ed4200942b8b8b1e262dfc70d9bc9fbc77c49699a4f1df",
+            "url": "https://{upstream_tls}/hops"
+          }
+        ],
+        "incomplete": []
+      }
+    },
+    {
+      "name": "a status of no text",
+      "request": "GET /odd-status HTTP/1.1\r\nHost: {upstream_tls}\r\n\r\n",
+      "checked": [
+        "https://{upstream_tls}/odd-status"
+      ],
+      "response": "HTTP/1.1 299 Whatever\r\nContent-Length: 0\r\n\r\n",
+      "capture": {
+        "requests": [
+          {
+            "method": "GET",
+            "redirect": "",
+            "status": 299,
+            "url": "https://{upstream_tls}/odd-status"
+          }
+        ],
+        "materials": [
+          {
+            "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "url": "https://{upstream_tls}/odd-status"
+          }
+        ],
+        "incomplete": []
+      }
+    },
+    {
+      "name": "a reason of its own",
+      "request": "GET /reason HTTP/1.1\r\nHost: {upstream_tls}\r\n\r\n",
+      "checked": [
+        "https://{upstream_tls}/reason"
+      ],
+      "response": "HTTP/1.1 200 Fine Thanks\r\nContent-Length: 0\r\n\r\n",
+      "capture": {
+        "requests": [
+          {
+            "method": "GET",
+            "redirect": "",
+            "status": 200,
+            "url": "https://{upstream_tls}/reason"
+          }
+        ],
+        "materials": [
+          {
+            "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "url": "https://{upstream_tls}/reason"
+          }
+        ],
+        "incomplete": []
+      }
+    },
+    {
+      "name": "cut short",
+      "request": "GET /cut HTTP/1.1\r\nHost: {upstream_tls}\r\n\r\n",
+      "checked": [
+        "https://{upstream_tls}/cut"
+      ],
+      "response": "HTTP/1.1 200 OK\r\nContent-Length: 10\r\nContent-Type: text/plain\r\n\r\nabc#close",
+      "capture": {
+        "requests": [
+          {
+            "method": "GET",
+            "redirect": "",
+            "status": 200,
+            "url": "https://{upstream_tls}/cut"
+          }
+        ],
+        "materials": [],
+        "incomplete": [
+          {
+            "method": "GET",
+            "reason": "body_read_failed",
+            "url": "https://{upstream_tls}/cut"
+          }
+        ]
+      }
+    },
+    {
+      "name": "HEAD",
+      "request": "HEAD /head HTTP/1.1\r\nHost: {upstream_tls}\r\n\r\n",
+      "checked": [
+        "https://{upstream_tls}/head"
+      ],
+      "response": "HTTP/1.1 200 OK\r\nContent-Length: 1234\r\nContent-Type: text/plain\r\n\r\n",
+      "capture": {
+        "requests": [
+          {
+            "method": "HEAD",
+            "redirect": "",
+            "status": 200,
+            "url": "https://{upstream_tls}/head"
+          }
+        ],
+        "materials": [],
+        "incomplete": [
+          {
+            "method": "HEAD",
+            "reason": "method_not_materializable",
+            "url": "https://{upstream_tls}/head"
+          }
+        ]
+      }
+    },
+    {
+      "name": "an HTTP/1.0 upstream, unframed",
+      "request": "GET /http10-unframed HTTP/1.1\r\nHost: {upstream_tls}\r\n\r\n",
+      "checked": [
+        "https://{upstream_tls}/http10-unframed"
+      ],
+      "response": "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: text/plain\r\n\r\nold#close",
+      "capture": {
+        "requests": [
+          {
+            "method": "GET",
+            "redirect": "",
+            "status": 200,
+            "url": "https://{upstream_tls}/http10-unframed"
+          }
+        ],
+        "materials": [
+          {
+            "digest": "sha256:dc5d9e10e6e6a3f39cca50324dff15748aed42f2bcd69fcc32c81bc1d10dc614",
+            "url": "https://{upstream_tls}/http10-unframed"
+          }
+        ],
+        "incomplete": []
+      }
+    },
+    {
+      "name": "sniffed",
+      "request": "GET /sniffed HTTP/1.1\r\nHost: {upstream_tls}\r\n\r\n",
+      "checked": [
+        "https://{upstream_tls}/sniffed"
+      ],
+      "response": "HTTP/1.1 200 OK\r\nContent-Length: 15\r\n\r\n\u003chtml\u003ehi\u003c/html\u003e",
+      "capture": {
+        "requests": [
+          {
+            "method": "GET",
+            "redirect": "",
+            "status": 200,
+            "url": "https://{upstream_tls}/sniffed"
+          }
+        ],
+        "materials": [
+          {
+            "digest": "sha256:beb6d42e2e372ff35ff73af2a4bd53d0e440f07180b89ea67136a92c8f80a8ba",
+            "url": "https://{upstream_tls}/sniffed"
+          }
+        ],
+        "incomplete": []
+      }
+    },
+    {
+      "name": "a body",
+      "request": "POST /hello HTTP/1.1\r\nHost: {upstream_tls}\r\nContent-Length: 5\r\n\r\nhello",
+      "checked": [
+        "https://{upstream_tls}/hello"
+      ],
+      "response": "HTTP/1.1 200 OK\r\nContent-Length: 6\r\nContent-Type: text/plain\r\nX-A: 1\r\nX-B: 2\r\n\r\nhello\n",
+      "capture": {
+        "requests": [
+          {
+            "method": "POST",
+            "redirect": "",
+            "status": 200,
+            "url": "https://{upstream_tls}/hello"
+          }
+        ],
+        "materials": [],
+        "incomplete": [
+          {
+            "method": "POST",
+            "reason": "method_not_materializable",
+            "url": "https://{upstream_tls}/hello"
+          }
+        ]
+      }
+    },
+    {
+      "name": "an HTTP/1.0 request",
+      "request": "GET /hello HTTP/1.0\r\n\r\n",
+      "checked": [
+        "https://{upstream_tls}/hello"
+      ],
+      "response": "HTTP/1.0 200 OK\r\nConnection: close\r\nContent-Length: 6\r\nContent-Type: text/plain\r\nX-A: 1\r\nX-B: 2\r\n\r\nhello\n",
+      "capture": {
+        "requests": [
+          {
+            "method": "GET",
+            "redirect": "",
+            "status": 200,
+            "url": "https://{upstream_tls}/hello"
+          }
+        ],
+        "materials": [
+          {
+            "digest": "sha256:5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03",
+            "url": "https://{upstream_tls}/hello"
+          }
+        ],
+        "incomplete": []
+      }
+    },
+    {
+      "name": "close asked",
+      "request": "GET /hello HTTP/1.1\r\nHost: {upstream_tls}\r\nConnection: close\r\n\r\n",
+      "checked": [
+        "https://{upstream_tls}/hello"
+      ],
+      "response": "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 6\r\nContent-Type: text/plain\r\nX-A: 1\r\nX-B: 2\r\n\r\nhello\n",
+      "capture": {
+        "requests": [
+          {
+            "method": "GET",
+            "redirect": "",
+            "status": 200,
+            "url": "https://{upstream_tls}/hello"
+          }
+        ],
+        "materials": [
+          {
+            "digest": "sha256:5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03",
+            "url": "https://{upstream_tls}/hello"
+          }
+        ],
+        "incomplete": []
+      }
+    },
+    {
+      "name": "pipelined",
+      "request": "GET /hello HTTP/1.1\r\nHost: {upstream_tls}\r\n\r\nGET /chunked HTTP/1.1\r\nHost: {upstream_tls}\r\n\r\n",
+      "checked": [
+        "https://{upstream_tls}/hello",
+        "https://{upstream_tls}/chunked"
+      ],
+      "response": "HTTP/1.1 200 OK\r\nContent-Length: 6\r\nContent-Type: text/plain\r\nX-A: 1\r\nX-B: 2\r\n\r\nhello\nHTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Type: text/plain\r\n\r\n3\r\nabc\r\n0\r\n\r\n",
+      "capture": {
+        "requests": [
+          {
+            "method": "GET",
+            "redirect": "",
+            "status": 200,
+            "url": "https://{upstream_tls}/hello"
+          },
+          {
+            "method": "GET",
+            "redirect": "",
+            "status": 200,
+            "url": "https://{upstream_tls}/chunked"
+          }
+        ],
+        "materials": [
+          {
+            "digest": "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+            "url": "https://{upstream_tls}/chunked"
+          },
+          {
+            "digest": "sha256:5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03",
+            "url": "https://{upstream_tls}/hello"
+          }
+        ],
+        "incomplete": []
+      }
+    },
+    {
+      "name": "refused after passed",
+      "request": "GET /hello HTTP/1.1\r\nHost: {upstream_tls}\r\n\r\nGET /denied HTTP/1.1\r\nHost: {upstream_tls}\r\n\r\n",
+      "checked": [
+        "https://{upstream_tls}/hello",
+        "https://{upstream_tls}/denied"
+      ],
+      "response": "HTTP/1.1 200 OK\r\nContent-Length: 6\r\nContent-Type: text/plain\r\nX-A: 1\r\nX-B: 2\r\n\r\nhello\nHTTP/1.1 403 Forbidden\r\nContent-Length: 10\r\nConnection: close\r\n\r\nForbidden\n",
+      "capture": {
+        "requests": [
+          {
+            "method": "GET",
+            "redirect": "",
+            "status": 200,
+            "url": "https://{upstream_tls}/hello"
+          }
+        ],
+        "materials": [
+          {
+            "digest": "sha256:5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03",
+            "url": "https://{upstream_tls}/hello"
+          }
+        ],
+        "incomplete": []
+      }
+    }
+  ],
+  "plain": [
+    {
+      "name": "absolute form",
+      "request": "GET http://example.com/a?b=c HTTP/1.1\r\nHost: example.com\r\n\r\n",
+      "checked": [
+        "http://example.com/a?b=c"
+      ],
+      "response": "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nX-Content-Type-Options: nosniff\r\nDate: DATE\r\nContent-Length: 10\r\n\r\nForbidden\n"
+    },
+    {
+      "name": "origin form",
+      "request": "GET /a?b=c HTTP/1.1\r\nHost: example.com:8080\r\n\r\n",
+      "checked": [
+        "http://example.com:8080/a?b=c"
+      ],
+      "response": "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nX-Content-Type-Options: nosniff\r\nDate: DATE\r\nContent-Length: 10\r\n\r\nForbidden\n"
+    },
+    {
+      "name": "absolute form over another Host",
+      "request": "GET http://a.example/x HTTP/1.1\r\nHost: b.example\r\n\r\n",
+      "checked": [
+        "http://a.example/x"
+      ],
+      "response": "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nX-Content-Type-Options: nosniff\r\nDate: DATE\r\nContent-Length: 10\r\n\r\nForbidden\n"
+    },
+    {
+      "name": "user and password",
+      "request": "GET http://user:pass@example.com/p HTTP/1.1\r\nHost: example.com\r\n\r\n",
+      "checked": [
+        "http://xxxxx:xxxxx@example.com/p"
+      ],
+      "response": "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nX-Content-Type-Options: nosniff\r\nDate: DATE\r\nContent-Length: 10\r\n\r\nForbidden\n"
+    },
+    {
+      "name": "user alone",
+      "request": "GET http://user@example.com/p HTTP/1.1\r\nHost: example.com\r\n\r\n",
+      "checked": [
+        "http://xxxxx@example.com/p"
+      ],
+      "response": "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nX-Content-Type-Options: nosniff\r\nDate: DATE\r\nContent-Length: 10\r\n\r\nForbidden\n"
+    },
+    {
+      "name": "password alone",
+      "request": "GET http://:pass@example.com/p HTTP/1.1\r\nHost: example.com\r\n\r\n",
+      "checked": [
+        "http://:xxxxx@example.com/p"
+      ],
+      "response": "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nX-Content-Type-Options: nosniff\r\nDate: DATE\r\nContent-Length: 10\r\n\r\nForbidden\n"
+    },
+    {
+      "name": "escapes kept",
+      "request": "GET http://example.com/a%2Fb/%7e/c%20d?x=%20\u0026y=%zz HTTP/1.1\r\nHost: example.com\r\n\r\n",
+      "checked": [
+        "http://example.com/a%2Fb/%7e/c%20d?x=%20\u0026y=%zz"
+      ],
+      "response": "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nX-Content-Type-Options: nosniff\r\nDate: DATE\r\nContent-Length: 10\r\n\r\nForbidden\n"
+    },
+    {
+      "name": "a fragment in the target",
+      "request": "GET http://example.com/a#frag HTTP/1.1\r\nHost: example.com\r\n\r\n",
+      "checked": [
+        "http://example.com/a%23frag"
+      ],
+      "response": "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nX-Content-Type-Options: nosniff\r\nDate: DATE\r\nContent-Length: 10\r\n\r\nForbidden\n"
+    },
+    {
+      "name": "default port",
+      "request": "GET http://example.com:80/ HTTP/1.1\r\nHost: example.com\r\n\r\n",
+      "checked": [
+        "http://example.com:80/"
+      ],
+      "response": "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nX-Content-Type-Options: nosniff\r\nDate: DATE\r\nContent-Length: 10\r\n\r\nForbidden\n"
+    },
+    {
+      "name": "https over plain",
+      "request": "GET https://example.com/ HTTP/1.1\r\nHost: example.com\r\n\r\n",
+      "checked": [
+        "https://example.com/"
+      ],
+      "response": "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nX-Content-Type-Options: nosniff\r\nDate: DATE\r\nContent-Length: 10\r\n\r\nForbidden\n"
+    },
+    {
+      "name": "scheme and host cased",
+      "request": "GET HTTP://Example.COM/A HTTP/1.1\r\nHost: Example.COM\r\n\r\n",
+      "checked": [
+        "http://Example.COM/A"
+      ],
+      "response": "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nX-Content-Type-Options: nosniff\r\nDate: DATE\r\nContent-Length: 10\r\n\r\nForbidden\n"
+    },
+    {
+      "name": "IPv6 literal",
+      "request": "GET http://[::1]:8080/ HTTP/1.1\r\nHost: [::1]:8080\r\n\r\n",
+      "checked": [
+        "http://[::1]:8080/"
+      ],
+      "response": "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nX-Content-Type-Options: nosniff\r\nDate: DATE\r\nContent-Length: 10\r\n\r\nForbidden\n"
+    },
+    {
+      "name": "IPv6 zone",
+      "request": "GET http://[fe80::1%25en0]:8080/ HTTP/1.1\r\nHost: [fe80::1%25en0]:8080\r\n\r\n",
+      "checked": [
+        "http://[fe80::1%25en0]:8080/"
+      ],
+      "response": "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nX-Content-Type-Options: nosniff\r\nDate: DATE\r\nContent-Length: 10\r\n\r\nForbidden\n"
+    },
+    {
+      "name": "percent in host",
+      "request": "GET http://ex%41mple.com/ HTTP/1.1\r\nHost: example.com\r\n\r\n",
+      "checked": [],
+      "response": "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\n400 Bad Request"
+    },
+    {
+      "name": "port not numeric",
+      "request": "GET http://example.com:abc/ HTTP/1.1\r\nHost: example.com\r\n\r\n",
+      "checked": [],
+      "response": "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\n400 Bad Request"
+    },
+    {
+      "name": "asterisk",
+      "request": "OPTIONS * HTTP/1.1\r\nHost: example.com\r\n\r\n",
+      "checked": [],
+      "response": "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nDate: DATE\r\n\r\n"
+    },
+    {
+      "name": "asterisk, HTTP/1.0",
+      "request": "OPTIONS * HTTP/1.0\r\n\r\n",
+      "checked": [],
+      "response": "HTTP/1.0 200 OK\r\nContent-Length: 0\r\nDate: DATE\r\n\r\n"
+    },
+    {
+      "name": "asterisk, HTTP/1.0 keep-alive",
+      "request": "OPTIONS * HTTP/1.0\r\nConnection: keep-alive\r\n\r\n",
+      "checked": [],
+      "response": "HTTP/1.0 200 OK\r\nContent-Length: 0\r\nDate: DATE\r\nConnection: keep-alive\r\n\r\n"
+    },
+    {
+      "name": "asterisk with a body",
+      "request": "OPTIONS * HTTP/1.1\r\nHost: example.com\r\nContent-Length: 5\r\n\r\nhello",
+      "checked": [],
+      "response": "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nDate: DATE\r\n\r\n"
+    },
+    {
+      "name": "asterisk with a short body",
+      "request": "OPTIONS * HTTP/1.1\r\nHost: example.com\r\nContent-Length: 50\r\n\r\nhello",
+      "checked": [],
+      "response": "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nDate: DATE\r\n\r\n"
+    },
+    {
+      "name": "asterisk with a bad chunk",
+      "request": "OPTIONS * HTTP/1.1\r\nHost: example.com\r\nTransfer-Encoding: chunked\r\n\r\nzz\r\n",
+      "checked": [],
+      "response": "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nDate: DATE\r\nConnection: close\r\n\r\n"
+    },
+    {
+      "name": "asterisk with 100-continue",
+      "request": "OPTIONS * HTTP/1.1\r\nHost: example.com\r\nExpect: 100-continue\r\nContent-Length: 5\r\n\r\nhello",
+      "checked": [],
+      "response": "HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200 OK\r\nContent-Length: 0\r\nDate: DATE\r\n\r\n"
+    },
+    {
+      "name": "asterisk, then another",
+      "request": "OPTIONS * HTTP/1.1\r\nHost: example.com\r\n\r\nGET http://example.com/after HTTP/1.1\r\nHost: example.com\r\n\r\n",
+      "checked": [
+        "http://example.com/after"
+      ],
+      "response": "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nDate: DATE\r\n\r\nHTTP/1.1 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nX-Content-Type-Options: nosniff\r\nDate: DATE\r\nContent-Length: 10\r\n\r\nForbidden\n"
+    },
+    {
+      "name": "asterisk asking to close",
+      "request": "OPTIONS * HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n",
+      "checked": [],
+      "response": "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nDate: DATE\r\nConnection: close\r\n\r\n"
+    },
+    {
+      "name": "asterisk of another method",
+      "request": "GET * HTTP/1.1\r\nHost: example.com\r\n\r\n",
+      "checked": [
+        "http://example.com/*"
+      ],
+      "response": "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nX-Content-Type-Options: nosniff\r\nDate: DATE\r\nContent-Length: 10\r\n\r\nForbidden\n"
+    },
+    {
+      "name": "empty host, absolute",
+      "request": "GET http:///path HTTP/1.1\r\nHost: h\r\n\r\n",
+      "checked": [
+        "http:///path"
+      ],
+      "response": "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nX-Content-Type-Options: nosniff\r\nDate: DATE\r\nContent-Length: 10\r\n\r\nForbidden\n"
+    },
+    {
+      "name": "scheme alone",
+      "request": "GET http: HTTP/1.1\r\nHost: h\r\n\r\n",
+      "checked": [
+        "http:"
+      ],
+      "response": "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nX-Content-Type-Options: nosniff\r\nDate: DATE\r\nContent-Length: 10\r\n\r\nForbidden\n"
+    },
+    {
+      "name": "opaque",
+      "request": "GET mailto:x@example.com HTTP/1.1\r\nHost: h\r\n\r\n",
+      "checked": [
+        "mailto:x@example.com"
+      ],
+      "response": "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nX-Content-Type-Options: nosniff\r\nDate: DATE\r\nContent-Length: 10\r\n\r\nForbidden\n"
+    },
+    {
+      "name": "absolute without a path",
+      "request": "GET http://example.com HTTP/1.1\r\nHost: example.com\r\n\r\n",
+      "checked": [
+        "http://example.com"
+      ],
+      "response": "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nX-Content-Type-Options: nosniff\r\nDate: DATE\r\nContent-Length: 10\r\n\r\nForbidden\n"
+    },
+    {
+      "name": "query alone",
+      "request": "GET http://example.com?q HTTP/1.1\r\nHost: example.com\r\n\r\n",
+      "checked": [
+        "http://example.com?q"
+      ],
+      "response": "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nX-Content-Type-Options: nosniff\r\nDate: DATE\r\nContent-Length: 10\r\n\r\nForbidden\n"
+    },
+    {
+      "name": "double slash",
+      "request": "GET //example.com/a HTTP/1.1\r\nHost: h\r\n\r\n",
+      "checked": [
+        "http://h//example.com/a"
+      ],
+      "response": "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nX-Content-Type-Options: nosniff\r\nDate: DATE\r\nContent-Length: 10\r\n\r\nForbidden\n"
+    },
+    {
+      "name": "Host of a port alone",
+      "request": "GET /a HTTP/1.1\r\nHost: :80\r\n\r\n",
+      "checked": [
+        "http://:80/a"
+      ],
+      "response": "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nX-Content-Type-Options: nosniff\r\nDate: DATE\r\nContent-Length: 10\r\n\r\nForbidden\n"
+    },
+    {
+      "name": "Host with a user",
+      "request": "GET /a HTTP/1.1\r\nHost: user@example.com\r\n\r\n",
+      "checked": [],
+      "response": "HTTP/1.1 400 Bad Request: malformed Host header\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\n400 Bad Request: malformed Host header"
+    },
+    {
+      "name": "HTTP/1.0 without Host",
+      "request": "GET /a HTTP/1.0\r\n\r\n",
+      "checked": [
+        "http:///a"
+      ],
+      "response": "HTTP/1.0 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nX-Content-Type-Options: nosniff\r\nDate: DATE\r\nContent-Length: 10\r\n\r\nForbidden\n"
+    },
+    {
+      "name": "HTTP/1.0 keep-alive",
+      "request": "GET http://example.com/ HTTP/1.0\r\nConnection: keep-alive\r\n\r\n",
+      "checked": [
+        "http://example.com/"
+      ],
+      "response": "HTTP/1.0 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nX-Content-Type-Options: nosniff\r\nDate: DATE\r\nContent-Length: 10\r\nConnection: keep-alive\r\n\r\nForbidden\n"
+    },
+    {
+      "name": "HTTP/1.0 pipelined",
+      "request": "GET http://example.com/1 HTTP/1.0\r\n\r\nGET http://example.com/2 HTTP/1.0\r\n\r\n",
+      "checked": [
+        "http://example.com/1"
+      ],
+      "response": "HTTP/1.0 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nX-Content-Type-Options: nosniff\r\nDate: DATE\r\nContent-Length: 10\r\n\r\nForbidden\n"
+    },
+    {
+      "name": "HTTP/1.0 kept alive, pipelined",
+      "request": "GET http://example.com/1 HTTP/1.0\r\nConnection: keep-alive\r\n\r\nGET http://example.com/2 HTTP/1.0\r\n\r\nGET http://example.com/3 HTTP/1.0\r\n\r\n",
+      "checked": [
+        "http://example.com/1",
+        "http://example.com/2"
+      ],
+      "response": "HTTP/1.0 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nX-Content-Type-Options: nosniff\r\nDate: DATE\r\nContent-Length: 10\r\nConnection: keep-alive\r\n\r\nForbidden\nHTTP/1.0 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nX-Content-Type-Options: nosniff\r\nDate: DATE\r\nContent-Length: 10\r\n\r\nForbidden\n"
+    },
+    {
+      "name": "HTTP/1.1 without Host",
+      "request": "GET /a HTTP/1.1\r\n\r\n",
+      "checked": [],
+      "response": "HTTP/1.1 400 Bad Request: missing required Host header\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\n400 Bad Request: missing required Host header"
+    },
+    {
+      "name": "two Hosts",
+      "request": "GET /a HTTP/1.1\r\nHost: a\r\nHost: b\r\n\r\n",
+      "checked": [],
+      "response": "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\n400 Bad Request"
+    },
+    {
+      "name": "malformed Host",
+      "request": "GET /a HTTP/1.1\r\nHost: a b\r\n\r\n",
+      "checked": [],
+      "response": "HTTP/1.1 400 Bad Request: malformed Host header\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\n400 Bad Request: malformed Host header"
+    },
+    {
+      "name": "invalid header name",
+      "request": "GET http://example.com/ HTTP/1.1\r\nHost: example.com\r\nBad Name: x\r\n\r\n",
+      "checked": [],
+      "response": "HTTP/1.1 400 Bad Request: invalid header name\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\n400 Bad Request: invalid header name"
+    },
+    {
+      "name": "field without a colon",
+      "request": "GET http://example.com/ HTTP/1.1\r\nHost: example.com\r\nNoColon\r\n\r\n",
+      "checked": [],
+      "response": "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\n400 Bad Request"
+    },
+    {
+      "name": "space before the colon",
+      "request": "GET http://example.com/ HTTP/1.1\r\nHost: example.com\r\nX-A : x\r\n\r\n",
+      "checked": [],
+      "response": "HTTP/1.1 400 Bad Request: invalid header name\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\n400 Bad Request: invalid header name"
+    },
+    {
+      "name": "bad version",
+      "request": "GET http://example.com/ HTTP/1.x\r\nHost: example.com\r\n\r\n",
+      "checked": [],
+      "response": "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\n400 Bad Request"
+    },
+    {
+      "name": "HTTP/2.0",
+      "request": "GET / HTTP/2.0\r\nHost: h\r\n\r\n",
+      "checked": [],
+      "response": "HTTP/1.1 505 HTTP Version Not Supported: unsupported protocol version\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\n505 HTTP Version Not Supported: unsupported protocol version"
+    },
+    {
+      "name": "HTTP/1.2",
+      "request": "GET http://example.com/ HTTP/1.2\r\nHost: example.com\r\n\r\n",
+      "checked": [
+        "http://example.com/"
+      ],
+      "response": "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nX-Content-Type-Options: nosniff\r\nDate: DATE\r\nContent-Length: 10\r\n\r\nForbidden\n"
+    },
+    {
+      "name": "space in the target",
+      "request": "GET http://example.com/a b HTTP/1.1\r\nHost: example.com\r\n\r\n",
+      "checked": [],
+      "response": "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\n400 Bad Request"
+    },
+    {
+      "name": "invalid escape in the path",
+      "request": "GET http://example.com/%zz HTTP/1.1\r\nHost: example.com\r\n\r\n",
+      "checked": [],
+      "response": "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\n400 Bad Request"
+    },
+    {
+      "name": "lowercase method",
+      "request": "get http://example.com/ HTTP/1.1\r\nHost: example.com\r\n\r\n",
+      "checked": [
+        "http://example.com/"
+      ],
+      "response": "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nX-Content-Type-Options: nosniff\r\nDate: DATE\r\nContent-Length: 10\r\n\r\nForbidden\n"
+    },
+    {
+      "name": "bad method",
+      "request": "G(ET http://example.com/ HTTP/1.1\r\nHost: example.com\r\n\r\n",
+      "checked": [],
+      "response": "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\n400 Bad Request"
+    },
+    {
+      "name": "HEAD",
+      "request": "HEAD http://example.com/ HTTP/1.1\r\nHost: example.com\r\n\r\n",
+      "checked": [
+        "http://example.com/"
+      ],
+      "response": "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nX-Content-Type-Options: nosniff\r\nDate: DATE\r\nContent-Length: 10\r\n\r\n"
+    },
+    {
+      "name": "a body",
+      "request": "POST http://example.com/form HTTP/1.1\r\nHost: example.com\r\nContent-Length: 5\r\n\r\nhello",
+      "checked": [
+        "http://example.com/form"
+      ],
+      "response": "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nX-Content-Type-Options: nosniff\r\nDate: DATE\r\nContent-Length: 10\r\n\r\nForbidden\n"
+    },
+    {
+      "name": "a chunked body",
+      "request": "POST http://example.com/form HTTP/1.1\r\nHost: example.com\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n",
+      "checked": [
+        "http://example.com/form"
+      ],
+      "response": "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nX-Content-Type-Options: nosniff\r\nDate: DATE\r\nContent-Length: 10\r\n\r\nForbidden\n"
+    },
+    {
+      "name": "a short body",
+      "request": "POST http://example.com/form HTTP/1.1\r\nHost: example.com\r\nContent-Length: 50\r\n\r\nhello",
+      "checked": [
+        "http://example.com/form"
+      ],
+      "response": "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nX-Content-Type-Options: nosniff\r\nDate: DATE\r\nContent-Length: 10\r\nConnection: close\r\n\r\nForbidden\n"
+    },
+    {
+      "name": "a bad length",
+      "request": "POST http://example.com/ HTTP/1.1\r\nHost: example.com\r\nContent-Length: x\r\n\r\n",
+      "checked": [],
+      "response": "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\n400 Bad Request"
+    },
+    {
+      "name": "two lengths",
+      "request": "POST http://example.com/ HTTP/1.1\r\nHost: example.com\r\nContent-Length: 1\r\nContent-Length: 2\r\n\r\nab",
+      "checked": [],
+      "response": "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\n400 Bad Request"
+    },
+    {
+      "name": "the same length twice",
+      "request": "POST http://example.com/ HTTP/1.1\r\nHost: example.com\r\nContent-Length: 2\r\nContent-Length: 2\r\n\r\nab",
+      "checked": [
+        "http://example.com/"
+      ],
+      "response": "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nX-Content-Type-Options: nosniff\r\nDate: DATE\r\nContent-Length: 10\r\n\r\nForbidden\n"
+    },
+    {
+      "name": "gzip transfer coding",
+      "request": "POST http://example.com/ HTTP/1.1\r\nHost: example.com\r\nTransfer-Encoding: gzip\r\n\r\n",
+      "checked": [],
+      "response": "HTTP/1.1 501 Not Implemented\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\nUnsupported transfer encoding"
+    },
+    {
+      "name": "a length and chunked",
+      "request": "POST http://example.com/ HTTP/1.1\r\nHost: example.com\r\nContent-Length: 3\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n0\r\n\r\n",
+      "checked": [
+        "http://example.com/"
+      ],
+      "response": "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nX-Content-Type-Options: nosniff\r\nDate: DATE\r\nContent-Length: 10\r\n\r\nForbidden\n"
+    },
+    {
+      "name": "100-continue",
+      "request": "POST http://example.com/ HTTP/1.1\r\nHost: example.com\r\nExpect: 100-continue\r\nContent-Length: 5\r\n\r\nhello",
+      "checked": [
+        "http://example.com/"
+      ],
+      "response": "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nX-Content-Type-Options: nosniff\r\nDate: DATE\r\nContent-Length: 10\r\nConnection: close\r\n\r\nForbidden\n"
+    },
+    {
+      "name": "another expectation",
+      "request": "GET http://example.com/ HTTP/1.1\r\nHost: example.com\r\nExpect: something\r\n\r\n",
+      "checked": [],
+      "response": "HTTP/1.1 417 Expectation Failed\r\nConnection: close\r\nDate: DATE\r\nContent-Length: 0\r\n\r\n"
+    },
+    {
+      "name": "pipelined",
+      "request": "GET http://example.com/1 HTTP/1.1\r\nHost: example.com\r\n\r\nGET http://example.com/2 HTTP/1.1\r\nHost: example.com\r\n\r\n",
+      "checked": [
+        "http://example.com/1",
+        "http://example.com/2"
+      ],
+      "response": "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nX-Content-Type-Options: nosniff\r\nDate: DATE\r\nContent-Length: 10\r\n\r\nForbidden\nHTTP/1.1 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nX-Content-Type-Options: nosniff\r\nDate: DATE\r\nContent-Length: 10\r\n\r\nForbidden\n"
+    },
+    {
+      "name": "close asked",
+      "request": "GET http://example.com/ HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\nGET http://example.com/never HTTP/1.1\r\nHost: example.com\r\n\r\n",
+      "checked": [
+        "http://example.com/"
+      ],
+      "response": "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nX-Content-Type-Options: nosniff\r\nDate: DATE\r\nContent-Length: 10\r\nConnection: close\r\n\r\nForbidden\n"
+    },
+    {
+      "name": "a continuation line",
+      "request": "GET http://example.com/ HTTP/1.1\r\nHost: example.com\r\nX-A: a\r\n b\r\n\r\n",
+      "checked": [
+        "http://example.com/"
+      ],
+      "response": "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nX-Content-Type-Options: nosniff\r\nDate: DATE\r\nContent-Length: 10\r\n\r\nForbidden\n"
+    },
+    {
+      "name": "blank lines first",
+      "request": "\r\n\r\nGET http://example.com/ HTTP/1.1\r\nHost: example.com\r\n\r\n",
+      "checked": [],
+      "response": "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\n400 Bad Request"
+    },
+    {
+      "name": "bare LF",
+      "request": "GET http://example.com/ HTTP/1.1\nHost: example.com\n\n",
+      "checked": [
+        "http://example.com/"
+      ],
+      "response": "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nX-Content-Type-Options: nosniff\r\nDate: DATE\r\nContent-Length: 10\r\n\r\nForbidden\n"
+    },
+    {
+      "name": "a control in a value",
+      "request": "GET http://example.com/ HTTP/1.1\r\nHost: example.com\r\nX-A: a\u0001b\r\n\r\n",
+      "checked": [],
+      "response": "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\n400 Bad Request"
+    },
+    {
+      "name": "a value not UTF-8",
+      "request": {
+        "base64": "R0VUIGh0dHA6Ly9leGFtcGxlLmNvbS8gSFRUUC8xLjENCkhvc3Q6IGV4YW1wbGUuY29tDQpYLUE6IP8NCg0K"
+      },
+      "checked": [
+        "http://example.com/"
+      ],
+      "response": "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nX-Content-Type-Options: nosniff\r\nDate: DATE\r\nContent-Length: 10\r\n\r\nForbidden\n"
+    },
+    {
+      "name": "a large body",
+      "request": {
+        "fill": "b",
+        "prefix": "POST http://example.com/ HTTP/1.1\r\nHost: example.com\r\nContent-Length: 300000\r\n\r\n",
+        "suffix": "",
+        "times": 300000
+      },
+      "checked": [
+        "http://example.com/"
+      ],
+      "response": "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nX-Content-Type-Options: nosniff\r\nDate: DATE\r\nContent-Length: 10\r\nConnection: close\r\n\r\nForbidden\n"
+    },
+    {
+      "name": "a body past what is discarded",
+      "request": {
+        "fill": "b",
+        "prefix": "POST http://example.com/ HTTP/1.1\r\nHost: example.com\r\nContent-Length: 262145\r\n\r\n",
+        "suffix": "GET http://example.com/next HTTP/1.1\r\nHost: example.com\r\n\r\n",
+        "times": 262145
+      },
+      "checked": [
+        "http://example.com/"
+      ],
+      "response": "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nX-Content-Type-Options: nosniff\r\nDate: DATE\r\nContent-Length: 10\r\nConnection: close\r\n\r\nForbidden\n"
+    },
+    {
+      "name": "a body just discarded",
+      "request": {
+        "fill": "b",
+        "prefix": "POST http://example.com/ HTTP/1.1\r\nHost: example.com\r\nContent-Length: 262144\r\n\r\n",
+        "suffix": "GET http://example.com/next HTTP/1.1\r\nHost: example.com\r\n\r\n",
+        "times": 262144
+      },
+      "checked": [
+        "http://example.com/"
+      ],
+      "response": "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nX-Content-Type-Options: nosniff\r\nDate: DATE\r\nContent-Length: 10\r\nConnection: close\r\n\r\nForbidden\n"
+    },
+    {
+      "name": "asterisk with a large body",
+      "request": {
+        "fill": "b",
+        "prefix": "OPTIONS * HTTP/1.1\r\nHost: example.com\r\nContent-Length: 5000\r\n\r\n",
+        "suffix": "",
+        "times": 5000
+      },
+      "checked": [],
+      "response": "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 0\r\nDate: DATE\r\n\r\n"
+    },
+    {
+      "name": "asterisk with a body at its bound",
+      "request": {
+        "fill": "b",
+        "prefix": "OPTIONS * HTTP/1.1\r\nHost: example.com\r\nContent-Length: 4096\r\n\r\n",
+        "suffix": "",
+        "times": 4096
+      },
+      "checked": [],
+      "response": "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nDate: DATE\r\n\r\n"
+    },
+    {
+      "name": "asterisk with a body one past its bound",
+      "request": {
+        "fill": "b",
+        "prefix": "OPTIONS * HTTP/1.1\r\nHost: example.com\r\nContent-Length: 4097\r\n\r\n",
+        "suffix": "",
+        "times": 4097
+      },
+      "checked": [],
+      "response": "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 0\r\nDate: DATE\r\n\r\n"
+    },
+    {
+      "name": "a large head",
+      "request": {
+        "fill": "a",
+        "prefix": "GET http://example.com/ HTTP/1.1\r\nHost: example.com\r\nX-Big: ",
+        "suffix": "\r\n\r\n",
+        "times": 1056768
+      },
+      "checked": [],
+      "response": "HTTP/1.1 431 Request Header Fields Too Large\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\n431 Request Header Fields Too Large"
+    },
+    {
+      "name": "a head at the bound",
+      "request": {
+        "fill": "a",
+        "prefix": "GET http://example.com/ HTTP/1.1\r\nHost: example.com\r\nX-Big: ",
+        "suffix": "\r\n\r\n",
+        "times": 1052608
+      },
+      "checked": [
+        "http://example.com/"
+      ],
+      "response": "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nX-Content-Type-Options: nosniff\r\nDate: DATE\r\nContent-Length: 10\r\n\r\nForbidden\n"
+    },
+    {
+      "name": "a head one past the bound",
+      "request": {
+        "fill": "a",
+        "prefix": "GET http://example.com/ HTTP/1.1\r\nHost: example.com\r\nX-Big: ",
+        "suffix": "\r\n\r\n",
+        "times": 1052609
+      },
+      "checked": [],
+      "response": "HTTP/1.1 431 Request Header Fields Too Large\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\n431 Request Header Fields Too Large"
+    }
+  ],
+  "sniff": [
+    {
+      "data": "",
+      "type": "text/plain; charset=utf-8"
+    },
+    {
+      "data": "abc",
+      "type": "text/plain; charset=utf-8"
+    },
+    {
+      "data": "\u0001",
+      "type": "application/octet-stream"
+    },
+    {
+      "data": "a\u000bb",
+      "type": "application/octet-stream"
+    },
+    {
+      "data": "a\u001bb",
+      "type": "text/plain; charset=utf-8"
+    },
+    {
+      "data": "a\fb",
+      "type": "text/plain; charset=utf-8"
+    },
+    {
+      "data": " \t\r\n\f",
+      "type": "text/plain; charset=utf-8"
+    },
+    {
+      "data": {
+        "base64": "f4D/"
+      },
+      "type": "text/plain; charset=utf-8"
+    },
+    {
+      "data": "\u003c!DOCTYPE HTML\u003e",
+      "type": "text/html; charset=utf-8"
+    },
+    {
+      "data": "\u003c!doctype html ",
+      "type": "text/html; charset=utf-8"
+    },
+    {
+      "data": "\u003c!DOCTYPE HTMLx",
+      "type": "text/plain; charset=utf-8"
+    },
+    {
+      "data": "  \u003chtml\u003e",
+      "type": "text/html; charset=utf-8"
+    },
+    {
+      "data": "\u003cHTML",
+      "type": "text/plain; charset=utf-8"
+    },
+    {
+      "data": "\u003chtml\u003e",
+      "type": "text/html; charset=utf-8"
+    },
+    {
+      "data": "\u003chead\u003e",
+      "type": "text/html; charset=utf-8"
+    },
+    {
+      "data": "\u003cscript\u003e",
+      "type": "text/html; charset=utf-8"
+    },
+    {
+      "data": "\u003ciframe ",
+      "type": "text/html; charset=utf-8"
+    },
+    {
+      "data": "\u003ch1\u003e",
+      "type": "text/html; charset=utf-8"
+    },
+    {
+      "data": "\u003cdiv\u003e",
+      "type": "text/html; charset=utf-8"
+    },
+    {
+      "data": "\u003cfont\u003e",
+      "type": "text/html; charset=utf-8"
+    },
+    {
+      "data": "\u003ctable\u003e",
+      "type": "text/html; charset=utf-8"
+    },
+    {
+      "data": "\u003ca\u003e",
+      "type": "text/html; charset=utf-8"
+    },
+    {
+      "data": "\u003ca href=x\u003e",
+      "type": "text/html; charset=utf-8"
+    },
+    {
+      "data": "\u003cabbr\u003e",
+      "type": "text/plain; charset=utf-8"
+    },
+    {
+      "data": "\u003cstyle\u003e",
+      "type": "text/html; charset=utf-8"
+    },
+    {
+      "data": "\u003ctitle\u003e",
+      "type": "text/html; charset=utf-8"
+    },
+    {
+      "data": "\u003cb\u003e",
+      "type": "text/html; charset=utf-8"
+    },
+    {
+      "data": "\u003cbody\u003e",
+      "type": "text/html; charset=utf-8"
+    },
+    {
+      "data": "\u003cbr\u003e",
+      "type": "text/html; charset=utf-8"
+    },
+    {
+      "data": "\u003cp\u003e",
+      "type": "text/html; charset=utf-8"
+    },
+    {
+      "data": "\u003c!--\u003e",
+      "type": "text/html; charset=utf-8"
+    },
+    {
+      "data": "\u003c!-- x",
+      "type": "text/html; charset=utf-8"
+    },
+    {
+      "data": "\n\u003c?xml version",
+      "type": "text/xml; charset=utf-8"
+    },
+    {
+      "data": "\u003c?XML",
+      "type": "text/plain; charset=utf-8"
+    },
+    {
+      "data": "%PDF-1.7",
+      "type": "application/pdf"
+    },
+    {
+      "data": "%!PS-Adobe-3.0",
+      "type": "application/postscript"
+    },
+    {
+      "data": {
+        "base64": "/v8AAA=="
+      },
+      "type": "text/plain; charset=utf-16be"
+    },
+    {
+      "data": {
+        "base64": "/v8="
+      },
+      "type": "text/plain; charset=utf-8"
+    },
+    {
+      "data": {
+        "base64": "//4AAA=="
+      },
+      "type": "text/plain; charset=utf-16le"
+    },
+    {
+      "data": "﻿\u0000",
+      "type": "text/plain; charset=utf-8"
+    },
+    {
+      "data": "﻿abc",
+      "type": "text/plain; charset=utf-8"
+    },
+    {
+      "data": "\u0000\u0000\u0001\u0000",
+      "type": "image/x-icon"
+    },
+    {
+      "data": "\u0000\u0000\u0002\u0000",
+      "type": "image/x-icon"
+    },
+    {
+      "data": "BM",
+      "type": "image/bmp"
+    },
+    {
+      "data": "GIF87a",
+      "type": "image/gif"
+    },
+    {
+      "data": "GIF89a",
+      "type": "image/gif"
+    },
+    {
+      "data": "GIF88a",
+      "type": "text/plain; charset=utf-8"
+    },
+    {
+      "data": "RIFF\u0001\u0002\u0003\u0004WEBPVP8 ",
+      "type": "image/webp"
+    },
+    {
+      "data": "RIFF\u0001\u0002\u0003\u0004WEBPXX",
+      "type": "application/octet-stream"
+    },
+    {
+      "data": {
+        "base64": "iVBORw0KGgo="
+      },
+      "type": "image/png"
+    },
+    {
+      "data": {
+        "base64": "/9j/4A=="
+      },
+      "type": "image/jpeg"
+    },
+    {
+      "data": "FORM\u0000\u0000\u0000\u0000AIFF",
+      "type": "audio/aiff"
+    },
+    {
+      "data": "ID3\u0004",
+      "type": "audio/mpeg"
+    },
+    {
+      "data": "OggS\u0000\u0002",
+      "type": "application/ogg"
+    },
+    {
+      "data": "OggS\u0001",
+      "type": "application/octet-stream"
+    },
+    {
+      "data": "MThd\u0000\u0000\u0000\u0006",
+      "type": "audio/midi"
+    },
+    {
+      "data": "RIFF\u0000\u0000\u0000\u0000AVI ",
+      "type": "video/avi"
+    },
+    {
+      "data": "RIFF\u0000\u0000\u0000\u0000WAVE",
+      "type": "audio/wave"
+    },
+    {
+      "data": "\u0000\u0000\u0000\u0018ftypmp42\u0000\u0000\u0000\u0000mp41isom",
+      "type": "video/mp4"
+    },
+    {
+      "data": "\u0000\u0000\u0000\u0014ftypisom\u0000\u0000\u0000\u0000mp41",
+      "type": "video/mp4"
+    },
+    {
+      "data": "\u0000\u0000\u0000\u0010ftypmp42\u0000\u0000\u0000\u0000",
+      "type": "video/mp4"
+    },
+    {
+      "data": "\u0000\u0000\u0000\fftypmp42",
+      "type": "video/mp4"
+    },
+    {
+      "data": "\u0000\u0000\u0000\u0013ftypmp42\u0000\u0000\u0000\u0000mp41",
+      "type": "application/octet-stream"
+    },
+    {
+      "data": {
+        "base64": "AAAA/2Z0eXBtcDQy"
+      },
+      "type": "application/octet-stream"
+    },
+    {
+      "data": "\u001aEߣ",
+      "type": "video/webm"
+    },
+    {
+      "data": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000LP",
+      "type": "application/vnd.ms-fontobject"
+    },
+    {
+      "data": "\u0001\u0001\u0001\u0001\u0001\u0001\u0001\u0001\u0001\u0001\u0001\u0001\u0001\u0001\u0001\u0001\u0001\u0001\u0001\u0001\u0001\u0001\u0001\u0001\u0001\u0001\u0001\u0001\u0001\u0001\u0001\u0001\u0001\u0001LP",
+      "type": "application/vnd.ms-fontobject"
+    },
+    {
+      "data": "\u0000\u0001\u0000\u0000",
+      "type": "font/ttf"
+    },
+    {
+      "data": "OTTO",
+      "type": "font/otf"
+    },
+    {
+      "data": "ttcf",
+      "type": "font/collection"
+    },
+    {
+      "data": "wOFF",
+      "type": "font/woff"
+    },
+    {
+      "data": "wOF2",
+      "type": "font/woff2"
+    },
+    {
+      "data": {
+        "base64": "H4sI"
+      },
+      "type": "application/x-gzip"
+    },
+    {
+      "data": "PK\u0003\u0004",
+      "type": "application/zip"
+    },
+    {
+      "data": "Rar!\u001a\u0007\u0000",
+      "type": "application/x-rar-compressed"
+    },
+    {
+      "data": "Rar!\u001a\u0007\u0001\u0000",
+      "type": "application/x-rar-compressed"
+    },
+    {
+      "data": "\u0000asm",
+      "type": "application/wasm"
+    },
+    {
+      "data": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u0001",
+      "type": "text/plain; charset=utf-8"
+    },
+    {
+      "data": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u0001",
+      "type": "application/octet-stream"
+    },
+    {
+      "data": "                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        ",
+      "type": "text/plain; charset=utf-8"
+    }
+  ],
+  "tunnels": [
+    {
+      "name": "origin form",
+      "connect": "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n",
+      "server_name": "example.com",
+      "request": "GET /a?b HTTP/1.1\r\nHost: example.com\r\n\r\n",
+      "established": "HTTP/1.1 200 Connection Established\r\n\r\n",
+      "handshake": true,
+      "checked": [
+        "https://example.com:443/a?b"
+      ],
+      "response": "HTTP/1.1 403 Forbidden\r\nContent-Length: 10\r\nConnection: close\r\n\r\nForbidden\n"
+    },
+    {
+      "name": "another port",
+      "connect": "CONNECT example.com:8443 HTTP/1.1\r\nHost: example.com:8443\r\n\r\n",
+      "server_name": "example.com",
+      "request": "GET / HTTP/1.1\r\nHost: other.example\r\n\r\n",
+      "established": "HTTP/1.1 200 Connection Established\r\n\r\n",
+      "handshake": true,
+      "checked": [
+        "https://example.com:8443/"
+      ],
+      "response": "HTTP/1.1 403 Forbidden\r\nContent-Length: 10\r\nConnection: close\r\n\r\nForbidden\n"
+    },
+    {
+      "name": "absolute form inside",
+      "connect": "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n",
+      "server_name": "example.com",
+      "request": "GET http://evil.example/x HTTP/1.1\r\nHost: evil.example\r\n\r\n",
+      "established": "HTTP/1.1 200 Connection Established\r\n\r\n",
+      "handshake": true,
+      "checked": [
+        "https://example.com:443/x"
+      ],
+      "response": "HTTP/1.1 403 Forbidden\r\nContent-Length: 10\r\nConnection: close\r\n\r\nForbidden\n"
+    },
+    {
+      "name": "a user inside",
+      "connect": "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n",
+      "server_name": "example.com",
+      "request": "GET http://u:p@evil.example/x HTTP/1.1\r\nHost: evil.example\r\n\r\n",
+      "established": "HTTP/1.1 200 Connection Established\r\n\r\n",
+      "handshake": true,
+      "checked": [
+        "https://xxxxx:xxxxx@example.com:443/x"
+      ],
+      "response": "HTTP/1.1 403 Forbidden\r\nContent-Length: 10\r\nConnection: close\r\n\r\nForbidden\n"
+    },
+    {
+      "name": "no port",
+      "connect": "CONNECT example.com HTTP/1.1\r\nHost: example.com\r\n\r\n",
+      "server_name": "example.com",
+      "request": "GET / HTTP/1.1\r\nHost: example.com\r\n\r\n",
+      "established": "HTTP/1.1 200 Connection Established\r\n\r\n",
+      "handshake": true,
+      "checked": [
+        "https://example.com/"
+      ],
+      "response": "HTTP/1.1 403 Forbidden\r\nContent-Length: 10\r\nConnection: close\r\n\r\nForbidden\n"
+    },
+    {
+      "name": "IPv4",
+      "connect": "CONNECT 192.0.2.1:443 HTTP/1.1\r\nHost: 192.0.2.1:443\r\n\r\n",
+      "server_name": "192.0.2.1",
+      "request": "GET / HTTP/1.1\r\nHost: 192.0.2.1\r\n\r\n",
+      "established": "HTTP/1.1 200 Connection Established\r\n\r\n",
+      "handshake": true,
+      "checked": [
+        "https://192.0.2.1:443/"
+      ],
+      "response": "HTTP/1.1 403 Forbidden\r\nContent-Length: 10\r\nConnection: close\r\n\r\nForbidden\n"
+    },
+    {
+      "name": "IPv6",
+      "connect": "CONNECT [2001:db8::1]:443 HTTP/1.1\r\nHost: [2001:db8::1]:443\r\n\r\n",
+      "server_name": "2001:db8::1",
+      "request": "GET / HTTP/1.1\r\nHost: [2001:db8::1]\r\n\r\n",
+      "established": "HTTP/1.1 200 Connection Established\r\n\r\n",
+      "handshake": true,
+      "checked": [
+        "https://[2001:db8::1]:443/"
+      ],
+      "response": "HTTP/1.1 403 Forbidden\r\nContent-Length: 10\r\nConnection: close\r\n\r\nForbidden\n"
+    },
+    {
+      "name": "a Host other than the authority",
+      "connect": "CONNECT a.example:443 HTTP/1.1\r\nHost: b.example:443\r\n\r\n",
+      "server_name": "a.example",
+      "request": "GET / HTTP/1.1\r\nHost: a.example\r\n\r\n",
+      "established": "HTTP/1.1 200 Connection Established\r\n\r\n",
+      "handshake": true,
+      "checked": [
+        "https://a.example:443/"
+      ],
+      "response": "HTTP/1.1 403 Forbidden\r\nContent-Length: 10\r\nConnection: close\r\n\r\nForbidden\n"
+    },
+    {
+      "name": "no Host",
+      "connect": "CONNECT a.example:443 HTTP/1.1\r\n\r\n",
+      "server_name": "a.example",
+      "request": "GET / HTTP/1.1\r\nHost: a.example\r\n\r\n",
+      "established": "HTTP/1.1 200 Connection Established\r\n\r\n",
+      "handshake": true,
+      "checked": [
+        "https://a.example:443/"
+      ],
+      "response": "HTTP/1.1 403 Forbidden\r\nContent-Length: 10\r\nConnection: close\r\n\r\nForbidden\n"
+    },
+    {
+      "name": "a path after the authority",
+      "connect": "CONNECT a.example:443/x HTTP/1.1\r\nHost: a.example:443\r\n\r\n",
+      "server_name": "a.example",
+      "request": "GET / HTTP/1.1\r\nHost: a.example\r\n\r\n",
+      "established": "HTTP/1.1 200 Connection Established\r\n\r\n",
+      "handshake": true,
+      "checked": [
+        "https://a.example:443/"
+      ],
+      "response": "HTTP/1.1 403 Forbidden\r\nContent-Length: 10\r\nConnection: close\r\n\r\nForbidden\n"
+    },
+    {
+      "name": "origin-form CONNECT",
+      "connect": "CONNECT /x HTTP/1.1\r\nHost: a.example:443\r\n\r\n",
+      "server_name": "a.example",
+      "request": "GET / HTTP/1.1\r\nHost: a.example\r\n\r\n",
+      "established": "HTTP/1.1 200 Connection Established\r\n\r\n",
+      "handshake": true,
+      "checked": [
+        "https://a.example:443/"
+      ],
+      "response": "HTTP/1.1 403 Forbidden\r\nContent-Length: 10\r\nConnection: close\r\n\r\nForbidden\n"
+    },
+    {
+      "name": "pipelined inside",
+      "connect": "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n",
+      "server_name": "example.com",
+      "request": "GET /1 HTTP/1.1\r\nHost: example.com\r\n\r\nGET /2 HTTP/1.1\r\nHost: example.com\r\n\r\n",
+      "established": "HTTP/1.1 200 Connection Established\r\n\r\n",
+      "handshake": true,
+      "checked": [
+        "https://example.com:443/1"
+      ],
+      "response": "HTTP/1.1 403 Forbidden\r\nContent-Length: 10\r\nConnection: close\r\n\r\nForbidden\n"
+    },
+    {
+      "name": "HTTP/1.0 inside",
+      "connect": "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n",
+      "server_name": "example.com",
+      "request": "GET /a HTTP/1.0\r\n\r\n",
+      "established": "HTTP/1.1 200 Connection Established\r\n\r\n",
+      "handshake": true,
+      "checked": [
+        "https://example.com:443/a"
+      ],
+      "response": "HTTP/1.1 403 Forbidden\r\nContent-Length: 10\r\nConnection: close\r\n\r\nForbidden\n"
+    },
+    {
+      "name": "malformed inside",
+      "connect": "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n",
+      "server_name": "example.com",
+      "request": "GARBAGE\r\n\r\n",
+      "established": "HTTP/1.1 200 Connection Established\r\n\r\n",
+      "handshake": true,
+      "checked": [],
+      "response": ""
+    },
+    {
+      "name": "a body inside",
+      "connect": "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n",
+      "server_name": "example.com",
+      "request": "POST /f HTTP/1.1\r\nHost: example.com\r\nContent-Length: 3\r\n\r\nabc",
+      "established": "HTTP/1.1 200 Connection Established\r\n\r\n",
+      "handshake": true,
+      "checked": [
+        "https://example.com:443/f"
+      ],
+      "response": "HTTP/1.1 403 Forbidden\r\nContent-Length: 10\r\nConnection: close\r\n\r\nForbidden\n"
+    },
+    {
+      "name": "escapes inside",
+      "connect": "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n",
+      "server_name": "example.com",
+      "request": "GET /a%2Fb?c=%zz HTTP/1.1\r\nHost: example.com\r\n\r\n",
+      "established": "HTTP/1.1 200 Connection Established\r\n\r\n",
+      "handshake": true,
+      "checked": [
+        "https://example.com:443/a%2Fb?c=%zz"
+      ],
+      "response": "HTTP/1.1 403 Forbidden\r\nContent-Length: 10\r\nConnection: close\r\n\r\nForbidden\n"
+    },
+    {
+      "name": "asterisk inside",
+      "connect": "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n",
+      "server_name": "example.com",
+      "request": "OPTIONS * HTTP/1.1\r\nHost: example.com\r\n\r\n",
+      "established": "HTTP/1.1 200 Connection Established\r\n\r\n",
+      "handshake": true,
+      "checked": [
+        "https://example.com:443/*"
+      ],
+      "response": "HTTP/1.1 403 Forbidden\r\nContent-Length: 10\r\nConnection: close\r\n\r\nForbidden\n"
+    },
+    {
+      "name": "invalid escape inside",
+      "connect": "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n",
+      "server_name": "example.com",
+      "request": "GET /%zz HTTP/1.1\r\nHost: example.com\r\n\r\n",
+      "established": "HTTP/1.1 200 Connection Established\r\n\r\n",
+      "handshake": true,
+      "checked": [],
+      "response": ""
+    },
+    {
+      "name": "a bad CONNECT",
+      "connect": "CONNECT a b HTTP/1.1\r\nHost: a\r\n\r\n",
+      "server_name": "a",
+      "request": "GET / HTTP/1.1\r\n\r\n",
+      "established": "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\n400 Bad Request",
+      "handshake": false,
+      "checked": [],
+      "response": ""
+    }
+  ],
+  "upstream": {
+    "/away": "HTTP/1.1 301 Moved Permanently\r\nLocation: http://user:pw@other.example:80/x\r\nContent-Length: 0\r\n\r\n",
+    "/chunked": "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Type: text/plain\r\n\r\n3\r\nabc\r\n0\r\n\r\n",
+    "/chunked-1000": "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Type: text/plain\r\n\r\n3e8\r\nkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk\r\n0\r\n\r\n",
+    "/chunked-long": "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Type: text/plain\r\n\r\nbb8\r\ncccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\r\n0\r\n\r\n",
+    "/continue-first": "HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\n\r\nok",
+    "/cookies": "HTTP/1.1 200 OK\r\nSet-Cookie: a=1\r\nSet-Cookie: b=2\r\nx-lower: l\r\nContent-Length: 0\r\n\r\n",
+    "/cut": "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 10\r\n\r\nabc#close",
+    "/dated": "HTTP/1.1 200 OK\r\nDate: Mon, 02 Jan 2006 15:04:05 GMT\r\nContent-Type: text/plain\r\nContent-Length: 1\r\n\r\nd",
+    "/denied": "HTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\nnever\n",
+    "/empty": "HTTP/1.1 204 No Content\r\nX-E: 1\r\n\r\n",
+    "/empty-200": "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n",
+    "/encoded-empty": "HTTP/1.1 200 OK\r\nContent-Encoding: \r\nContent-Length: 3\r\n\r\nabc",
+    "/head": "HTTP/1.1 200 OK\r\nContent-Length: 1234\r\nContent-Type: text/plain\r\n\r\n",
+    "/hello": "HTTP/1.1 200 OK\r\nContent-Length: 6\r\nContent-Type: text/plain\r\nX-B: 2\r\nX-A: 1\r\n\r\nhello\n",
+    "/hops": "HTTP/1.1 200 OK\r\nConnection: keep-alive, X-Hop\r\nKeep-Alive: timeout=5\r\nX-Hop: 1\r\nProxy-Authenticate: Basic\r\nUpgrade: h2c\r\nContent-Type: text/plain\r\nContent-Length: 2\r\n\r\nok",
+    "/http10": "HTTP/1.0 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\n\r\nok",
+    "/http10-unframed": "HTTP/1.0 200 OK\r\nContent-Type: text/plain\r\n\r\nold#close",
+    "/missing": "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nContent-Length: 4\r\n\r\ngone",
+    "/not-sniffed": "HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: 5\r\n\r\nzzzzz",
+    "/odd-status": "HTTP/1.1 299 Whatever\r\nContent-Length: 0\r\n\r\n",
+    "/part": "HTTP/1.1 206 Partial Content\r\nContent-Type: text/plain\r\nContent-Range: bytes 0-1/6\r\nContent-Length: 2\r\n\r\nhe",
+    "/reason": "HTTP/1.1 200 Fine Thanks\r\nContent-Length: 0\r\n\r\n",
+    "/redirect": "HTTP/1.1 302 Found\r\nLocation: /hello\r\nContent-Length: 0\r\n\r\n",
+    "/server-error": "HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\nContent-Length: 3\r\n\r\nbad",
+    "/sniffed": "HTTP/1.1 200 OK\r\nContent-Length: 15\r\n\r\n\u003chtml\u003ehi\u003c/html\u003e",
+    "/sniffed-binary": "HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\n\u0001\u0002ab",
+    "/sniffed-late": "HTTP/1.1 200 OK\r\nContent-Length: 600\r\n\r\n                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "/sniffed-text": "HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nabc",
+    "/typed-empty": "HTTP/1.1 200 OK\r\nContent-Type: \r\nContent-Length: 3\r\n\r\nabc",
+    "/unchanged": "HTTP/1.1 304 Not Modified\r\nEtag: \"v1\"\r\n\r\n",
+    "/unframed": "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nabc#close",
+    "/unframed-505": "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv#close",
+    "/unframed-506": "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv#close",
+    "/unframed-long": "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuu#close"
+  },
+  "upstream_proxies": [
+    {
+      "value": "http://proxy:3128",
+      "valid": true
+    },
+    {
+      "value": "proxy:3128",
+      "valid": true
+    },
+    {
+      "value": "proxy",
+      "valid": true
+    },
+    {
+      "value": "https://user:secret@proxy",
+      "valid": true
+    },
+    {
+      "value": "socks5://proxy:1080",
+      "valid": true
+    },
+    {
+      "value": "socks5h://proxy",
+      "valid": true
+    },
+    {
+      "value": "http://[::1]:3128",
+      "valid": true
+    },
+    {
+      "value": "[::1]:3128",
+      "valid": true
+    },
+    {
+      "value": "ftp://proxy",
+      "valid": false
+    },
+    {
+      "value": "socks4://proxy",
+      "valid": false
+    },
+    {
+      "value": "socks5://",
+      "valid": true
+    },
+    {
+      "value": "http://",
+      "valid": true
+    },
+    {
+      "value": "http://:3128",
+      "valid": false
+    },
+    {
+      "value": "://x",
+      "valid": false
+    },
+    {
+      "value": "http://user:secret@",
+      "valid": true
+    },
+    {
+      "value": ":3128",
+      "valid": false
+    },
+    {
+      "value": "proxy:abc",
+      "valid": false
+    },
+    {
+      "value": "http://proxy:abc",
+      "valid": true
+    },
+    {
+      "value": "HTTP://Proxy",
+      "valid": true
+    },
+    {
+      "value": "http:proxy",
+      "valid": false
+    },
+    {
+      "value": "//proxy",
+      "valid": false
+    },
+    {
+      "value": "http:///p",
+      "valid": true
+    },
+    {
+      "value": "user@proxy:1",
+      "valid": true
+    },
+    {
+      "value": "a b",
+      "valid": false
+    },
+    {
+      "value": "http://a b",
+      "valid": true
+    },
+    {
+      "value": "http://%zz",
+      "valid": false
+    },
+    {
+      "value": "%zz",
+      "valid": false
+    },
+    {
+      "value": "http://[::1",
+      "valid": true
+    },
+    {
+      "value": "1.2.3.4",
+      "valid": true
+    },
+    {
+      "value": "http://proxy/path?q#f",
+      "valid": true
+    },
+    {
+      "value": " http://proxy",
+      "valid": false
+    }
+  ],
+  "urls": [
+    {
+      "in": "",
+      "capture": "",
+      "redact": ""
+    },
+    {
+      "in": "http://example.com/a",
+      "capture": "http://example.com/a",
+      "redact": "http://example.com/a"
+    },
+    {
+      "in": "http://example.com:80/a",
+      "capture": "http://example.com/a",
+      "redact": "http://example.com:80/a"
+    },
+    {
+      "in": "https://example.com:443/a",
+      "capture": "https://example.com/a",
+      "redact": "https://example.com:443/a"
+    },
+    {
+      "in": "http://example.com:443/a",
+      "capture": "http://example.com:443/a",
+      "redact": "http://example.com:443/a"
+    },
+    {
+      "in": "https://example.com:80/a",
+      "capture": "https://example.com:80/a",
+      "redact": "https://example.com:80/a"
+    },
+    {
+      "in": "http://example.com:8080/a",
+      "capture": "http://example.com:8080/a",
+      "redact": "http://example.com:8080/a"
+    },
+    {
+      "in": "http://[::1]:80/a",
+      "capture": "http://[::1]/a",
+      "redact": "http://[::1]:80/a"
+    },
+    {
+      "in": "https://[2001:db8::1]:443/a?b",
+      "capture": "https://[2001:db8::1]/a?b",
+      "redact": "https://[2001:db8::1]:443/a?b"
+    },
+    {
+      "in": "http://[fe80::1%25en0]:80/",
+      "capture": "http://[fe80::1%25en0]/",
+      "redact": "http://[fe80::1%25en0]:80/"
+    },
+    {
+      "in": "http://user:pass@example.com/a",
+      "capture": "http://xxxxx:xxxxx@example.com/a",
+      "redact": "http://xxxxx:xxxxx@example.com/a"
+    },
+    {
+      "in": "http://user@example.com:80/a",
+      "capture": "http://xxxxx@example.com/a",
+      "redact": "http://xxxxx@example.com:80/a"
+    },
+    {
+      "in": "http://:pass@example.com/a",
+      "capture": "http://:xxxxx@example.com/a",
+      "redact": "http://:xxxxx@example.com/a"
+    },
+    {
+      "in": "http://@example.com/a",
+      "capture": "http://@example.com/a",
+      "redact": "http://@example.com/a"
+    },
+    {
+      "in": "http://user:@example.com/a",
+      "capture": "http://xxxxx:xxxxx@example.com/a",
+      "redact": "http://xxxxx:xxxxx@example.com/a"
+    },
+    {
+      "in": "http://us%20er:pa%2Fss@example.com/a",
+      "capture": "http://xxxxx:xxxxx@example.com/a",
+      "redact": "http://xxxxx:xxxxx@example.com/a"
+    },
+    {
+      "in": "HTTP://Example.COM:80/A",
+      "capture": "http://Example.COM/A",
+      "redact": "http://Example.COM:80/A"
+    },
+    {
+      "in": "http://example.com/a%2Fb/%7e?x=%20#frag",
+      "capture": "http://example.com/a%2Fb/%7e?x=%20#frag",
+      "redact": "http://example.com/a%2Fb/%7e?x=%20#frag"
+    },
+    {
+      "in": "http://example.com/a b",
+      "capture": "http://example.com/a%20b",
+      "redact": "http://example.com/a%20b"
+    },
+    {
+      "in": "http://example.com/%zz",
+      "capture": "http://example.com/%zz",
+      "redact": "http://example.com/%zz"
+    },
+    {
+      "in": "http://example.com:abc/",
+      "capture": "http://example.com:abc/",
+      "redact": "http://example.com:abc/"
+    },
+    {
+      "in": "http://example.com?q",
+      "capture": "http://example.com?q",
+      "redact": "http://example.com?q"
+    },
+    {
+      "in": "http://example.com",
+      "capture": "http://example.com",
+      "redact": "http://example.com"
+    },
+    {
+      "in": "http:///path",
+      "capture": "http:///path",
+      "redact": "http:///path"
+    },
+    {
+      "in": "http:",
+      "capture": "http:",
+      "redact": "http:"
+    },
+    {
+      "in": "mailto:user@example.com",
+      "capture": "mailto:user@example.com",
+      "redact": "mailto:user@example.com"
+    },
+    {
+      "in": "/relative/path",
+      "capture": "/relative/path",
+      "redact": "/relative/path"
+    },
+    {
+      "in": "example.com:80/a",
+      "capture": "example.com:80/a",
+      "redact": "example.com:80/a"
+    },
+    {
+      "in": "not a url",
+      "capture": "not a url",
+      "redact": "not a url"
+    },
+    {
+      "in": "https://xxxxx:xxxxx@example.com/",
+      "capture": "https://xxxxx:xxxxx@example.com/",
+      "redact": "https://xxxxx:xxxxx@example.com/"
+    }
+  ]
+}

@@ -17,6 +17,10 @@ use std::sync::{Mutex, PoisonError};
 
 use sha2::{Digest as _, Sha256, Sha384, Sha512};
 
+mod mounts;
+
+pub use mounts::{HeldMount, MountEntry, MountLayer, MountRoot, Sharing};
+
 use crate::erofs;
 use crate::layer::{self, Archives};
 use crate::oci::{self, Descriptor};
@@ -881,9 +885,15 @@ impl Store {
         let refs = format!("refs/v{REFS_VERSION}");
         let rootfs = format!("rootfs/v{ROOTFS_VERSION}");
         let cache = format!("buildcache/v{CACHE_VERSION}");
+        let mounts = format!("cachemounts/v{}", mounts::VERSION);
+        let (records, keys) = (format!("{mounts}/records"), format!("{mounts}/keys"));
         for dir in [
             "buildcache",
             &cache,
+            "cachemounts",
+            &mounts,
+            &records,
+            &keys,
             "blobs",
             "blobs/sha256",
             "blobs/sha384",
@@ -1856,11 +1866,13 @@ impl Store {
                 }
             }
         }
-        let current = format!("v{CACHE_VERSION}");
-        for entry in fs::read_dir(self.root.join("buildcache"))? {
-            let entry = entry?;
-            if entry.file_name() != current.as_str() {
-                let _ = fs::remove_dir_all(entry.path());
+        for (dir, version) in [("buildcache", CACHE_VERSION), ("cachemounts", mounts::VERSION)] {
+            let current = format!("v{version}");
+            for entry in fs::read_dir(self.root.join(dir))? {
+                let entry = entry?;
+                if entry.file_name() != current.as_str() {
+                    let _ = fs::remove_dir_all(entry.path());
+                }
             }
         }
         let current = format!("v{REFS_VERSION}");
@@ -1893,6 +1905,14 @@ impl Store {
             };
             for b in &record.blobs {
                 if let Ok(d) = Digest::parse(b) {
+                    blobs.insert(self.blob_path(&d));
+                }
+            }
+        }
+        // And the cache mounts' records theirs (D114).
+        if with_cache {
+            for b in self.mount_blobs()? {
+                if let Ok(d) = Digest::parse(&b) {
                     blobs.insert(self.blob_path(&d));
                 }
             }

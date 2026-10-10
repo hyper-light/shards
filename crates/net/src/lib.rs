@@ -217,6 +217,10 @@ pub enum Policy {
     /// What `AllowAll` reaches, on these ports alone: an Agentfile's egress grants, the
     /// union of its agents' (D59), each agent held to its own by its microVM's switch.
     Ports(Ports),
+    /// A build's proxy alone (D110, BuildKit's `exec.proxy`): TCP to the gateway's `port`,
+    /// carried to the proxy's Unix socket on the host; nothing else, neither the host's
+    /// networks nor the Internet, nor a resolver.
+    Proxy { port: u16, socket: std::path::PathBuf },
 }
 
 /// The guest's link: its address and MAC, the gateway's, and the VM's policy.
@@ -350,6 +354,17 @@ impl Config {
         }
     }
 
+    /// Where a connection to `to`'s `port` goes under a build's proxy (D110): to the
+    /// proxy's socket where it is the gateway's proxy port; none for anything else.
+    fn proxy_flow(&self, to: IpAddr, port: u16) -> Option<std::path::PathBuf> {
+        match &self.policy {
+            Policy::Proxy { port: p, socket } if to == IpAddr::V4(self.gateway_ip) && port == *p => {
+                Some(socket.clone())
+            }
+            _ => None,
+        }
+    }
+
     fn allows(&self, to: IpAddr, proto: Proto, port: u16) -> bool {
         // An IPv4 address carried in IPv6 (`::ffff:a.b.c.d`) is that address, and is
         // judged as it is: a host socket to it reaches it.
@@ -360,7 +375,8 @@ impl Config {
                     *p == port && h.parse::<IpAddr>().ok().map(|a| a.to_canonical()) == Some(to)
                 }));
         match &self.policy {
-            Policy::DenyAll => false,
+            // The proxy's one flow is the stack's own (`proxy_flow`), past this.
+            Policy::DenyAll | Policy::Proxy { .. } => false,
             Policy::Ports(p) if !p.has(proto, port) && !named => false,
             // The gateway would be the host itself: never by default (rootless-security.md
             // R4.16).
@@ -1642,7 +1658,8 @@ impl<'r> Stack<'r> {
                 && matches!(self.cfg.policy, Policy::Ports(_)))
             .then(|| self.cfg.resolvers.first().map(|&(a, p)| (IpAddr::V4(a), p)))
             .flatten();
-            if resolver.is_none() && !self.cfg.allows(ip.dst, Proto::Tcp, seg.dst_port) {
+            let proxy = self.cfg.proxy_flow(ip.dst, seg.dst_port);
+            if resolver.is_none() && proxy.is_none() && !self.cfg.allows(ip.dst, Proto::Tcp, seg.dst_port) {
                 let mut o = self.out();
                 o.segment(
                     &key,
@@ -1666,7 +1683,10 @@ impl<'r> Stack<'r> {
                     c.dns = Some(dns::Stream::new(self.cfg.dns_all, names));
                     c
                 }),
-                None => Conn::open(key, &seg, self.isn(&key)),
+                None => match proxy {
+                    Some(socket) => Conn::open_unix(key, &socket, &seg, self.isn(&key)),
+                    None => Conn::open(key, &seg, self.isn(&key)),
+                },
             };
             match opened {
                 Ok(c) => (self.tcp.reserve(key), c),
@@ -2088,6 +2108,92 @@ mod tests {
         ] {
             assert!(!allow.allows(to.parse().unwrap(), Proto::Tcp, 443), "{to}");
         }
+    }
+
+    /// A build's proxy (D110): its one flow, to the gateway's proxy port, reaches the
+    /// proxy's socket; every other, the Internet, the host's networks, another port of the
+    /// gateway's and UDP included, is refused.
+    #[test]
+    fn a_proxy_policy_reaches_its_proxy_alone() {
+        let dir = std::env::temp_dir().join(format!("shards-net-proxy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let socket = dir.join("p");
+        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let bridge = bridge::Bridge::elect(&[]).unwrap();
+        let policy = Policy::Proxy {
+            port: 3128,
+            socket: socket.clone(),
+        };
+        let cfg = Config::on_bridge(policy, [2, 0, 0, 0, 0, 1], &bridge);
+        let gateway = IpAddr::V4(cfg.gateway_ip);
+        for (to, proto, port) in [
+            (IpAddr::from([8, 8, 8, 8]), Proto::Tcp, 443),
+            (IpAddr::from([172, 17, 0, 3]), Proto::Tcp, 3128),
+            (gateway, Proto::Tcp, 3128),
+            (gateway, Proto::Udp, 53),
+            (IpAddr::from([8, 8, 8, 8]), Proto::Udp, 53),
+        ] {
+            assert!(!cfg.allows(to, proto, port), "{to} {proto:?} {port}");
+        }
+        assert_eq!(cfg.proxy_flow(gateway, 3128), Some(socket.clone()));
+        assert_eq!(cfg.proxy_flow(gateway, 3129), None);
+        assert_eq!(cfg.proxy_flow(IpAddr::from([8, 8, 8, 8]), 3128), None);
+        // A guest's SYN to it connects to the socket; one elsewhere is reset, unconnected.
+        let region = Region::map(shards_netring::memory().unwrap()).unwrap();
+        let (_, rings) = shards_netring::doorbell().unwrap();
+        let guest_ip = cfg.guest_ip;
+        let mut stack = Stack {
+            frames: Frames {
+                gateway_mac: cfg.gateway_mac,
+                guest_mac: cfg.guest_mac,
+            },
+            cfg,
+            to_guest: region.producer(1, rings),
+            backlog: VecDeque::new(),
+            tcp: Tcp::default(),
+            udp: HashMap::new(),
+            udp_ids: HashMap::new(),
+            next_udp: 0,
+            poller: poll::Poller::new().unwrap(),
+            timers: BinaryHeap::new(),
+            blocked: VecDeque::new(),
+            buf: vec![0u8; 2048],
+            scratch: Vec::new(),
+            isn_key: [0; 16],
+            began: Instant::now(),
+            published: Vec::new(),
+            inbound: HashMap::new(),
+            inbound_ports: HashMap::new(),
+            next_port: *EPHEMERAL.start(),
+            peers: Vec::new(),
+            names: None,
+        };
+        let syn = |stack: &mut Stack<'_>, to: IpAddr, port: u16| {
+            let mut frame = Vec::new();
+            stack.frames.tcp_headers(
+                &mut frame,
+                (IpAddr::V4(guest_ip), 40_000),
+                (to, port),
+                7,
+                0,
+                wire::SYN,
+                65_535,
+                Some((1460, Some(7))),
+                0,
+            );
+            let ip = wire::ipv4(frame.get(wire::VNET + wire::ETH..).unwrap()).unwrap();
+            stack.on_guest_tcp(&ip);
+        };
+        syn(&mut stack, IpAddr::from([8, 8, 8, 8]), 443);
+        syn(&mut stack, gateway, 3129);
+        assert!(stack.tcp.by_key.is_empty(), "no connection but the proxy's");
+        assert!(listener.accept().is_err(), "nothing reached the proxy");
+        syn(&mut stack, gateway, 3128);
+        assert_eq!(stack.tcp.by_key.len(), 1);
+        assert!(listener.accept().is_ok(), "the proxy took it");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// An Agentfile's egress grants: their ports alone, of their protocol, and never

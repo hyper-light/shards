@@ -26,7 +26,7 @@ use std::time::{Duration, Instant};
 
 #[cfg(unix)]
 use shards_abi::build::{self, kind};
-use shards_abi::build::{Step, Tree};
+use shards_abi::build::{Root, Step, Tree};
 #[cfg(unix)]
 use shards_abi::run;
 #[cfg(unix)]
@@ -78,6 +78,17 @@ pub fn origin_id() -> u64 {
 /// A step's output mounts' changes: each the layer it became and its changes' stream.
 pub type Outputs = Vec<(u32, Vec<u8>)>;
 
+/// What a step came to: how it ended, the layer its changes are in the guest, each output
+/// mount's changes with its layer, the layer each cache it writes becomes (D114), and what
+/// its requests came to under the build's proxy (D110).
+pub type Ran = (
+    Ended,
+    u32,
+    Outputs,
+    Vec<u32>,
+    Option<super::proxy::capture::Capture>,
+);
+
 /// How a step's process ended.
 #[derive(Debug)]
 #[cfg_attr(not(unix), allow(dead_code))]
@@ -102,6 +113,36 @@ pub struct Builder {
     /// The layer each origin's own part is, once the guest has it, by the origin's id.
     layers: HashMap<u64, u32>,
     next: u32,
+    /// The build's proxy's URL, as its steps reach it (the gateway's [`super::proxy::PORT`]),
+    /// where its network is the proxy's alone (D110).
+    proxy_url: Option<String>,
+}
+
+/// A step's proxy, where it has one (D110): the build's, and what answers its requests'
+/// questions on the build's thread.
+pub type StepProxy<'a, 'p> = Option<(&'p super::proxy::Proxy, &'a mut dyn FnMut(&str, &str) -> bool)>;
+
+/// A step's questions of the build's policies, and what answers them (D110).
+#[cfg(unix)]
+type Asked<'q, 'a> = Option<(&'q super::proxy::Questions, &'a mut dyn FnMut(&str, &str) -> bool)>;
+
+/// The build's proxy (D110), listening in a directory of its own as the builder's sockets
+/// are, its files of request bodies leaving the disk what `limits` keeps free.
+#[cfg(unix)]
+pub fn proxy(limits: &shards_image::store::Limits) -> Result<super::proxy::Proxy, String> {
+    let guard = DirGuard(Some(socket_dir()?));
+    let dir = guard.0.clone().unwrap_or_default();
+    let proxy = super::proxy::Proxy::new(dir, limits)?;
+    // The proxy removes it as it goes.
+    let mut guard = guard;
+    guard.0 = None;
+    Ok(proxy)
+}
+
+/// Where shards starts no builder, it starts no proxy either.
+#[cfg(not(unix))]
+pub fn proxy(_: &shards_image::store::Limits) -> Result<super::proxy::Proxy, String> {
+    Err("RUN steps run in a builder microVM, which shards starts on Linux and macOS hosts only so far".into())
 }
 
 /// Where shards starts no builder yet: Windows, whose daemon and VM transport are still
@@ -130,8 +171,17 @@ impl Builder {
         _: &mut Applier<'_>,
         _: &super::Agents,
         _: u64,
-    ) -> Result<(Ended, u32, Outputs), String> {
+        _: StepProxy<'_, '_>,
+    ) -> Result<Ran, String> {
         Err("no builder".into())
+    }
+
+    pub fn kept(&mut self, _: &mut dyn FnMut(&[u8]) -> Result<(), String>) -> Result<Root, String> {
+        Err("no builder".into())
+    }
+
+    pub fn proxy_url(&self) -> Option<&str> {
+        None
     }
 }
 
@@ -154,6 +204,9 @@ pub struct Boot<'a> {
     pub cpus: u32,
     pub memory_mib: u64,
     pub bases: &'a [PathBuf],
+    /// The build's proxy (D110): where there is one, the builder's network reaches it
+    /// alone.
+    pub proxy: Option<&'a super::proxy::Proxy>,
 }
 
 /// Removes a directory as it goes out of scope, unless it was let go.
@@ -218,12 +271,23 @@ impl Builder {
         ssh.set_nonblocking(true)
             .map_err(|e| format!("the builder's SSH port: {e}"))?;
         // The builder's network: BuildKit's steps reach what their host does, so the
-        // network process allows every flow but to the host itself (D31).
+        // network process allows every flow but to the host itself (D31); under the build's
+        // proxy (D110), the gateway's proxy port alone, carried to the proxy's socket.
         let mac = shards_net::random_mac().map_err(|e| format!("the builder's MAC: {e}"))?;
         // On the default bridge, as dockerd's builder runs its steps, elected as the
         // daemon elects it: a host on 172.17.0.0/16 keeps its own network reachable.
         let bridge = shards_net::bridge::elected_here(&mut |_| {}).ok_or(shards_net::bridge::NO_SUBNET)?;
-        let (net, side) = crate::netproc::start(shards_net::Policy::AllowAll, &mac, &bridge)?;
+        let policy = match boot.proxy {
+            Some(p) => shards_net::Policy::Proxy {
+                port: super::proxy::PORT,
+                socket: p.socket().to_path_buf(),
+            },
+            None => shards_net::Policy::AllowAll,
+        };
+        let proxy_url = boot
+            .proxy
+            .map(|_| format!("http://{}:{}", bridge.gateway(), super::proxy::PORT));
+        let (net, side) = crate::netproc::start(policy, &mac, &bridge)?;
         let mut args: Vec<OsString> = vec![
             "run".into(),
             "--kernel".into(),
@@ -300,7 +364,7 @@ impl Builder {
             std::thread::Builder::new()
                 .name("builder grants".into())
                 .spawn(move || {
-                    let _ = crate::grant_answer::serve(&ours);
+                    let _ = crate::grant_answer::serve(&ours, None);
                 })
                 .map_err(|e| format!("answering the builder: {e}"))?;
             #[cfg(not(target_os = "macos"))]
@@ -312,7 +376,17 @@ impl Builder {
                 Ok((conn, _)) => break conn,
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                     if began.elapsed() > BOOT_PATIENCE {
+                        // One the host has not let run yet is not the builder's failure
+                        // to boot, and says so (PM M166).
+                        let unstarted = shards_vmm::platform::launched(vm.id()) == Some(false);
                         let _ = vm.kill(libc::SIGKILL);
+                        if unstarted {
+                            return Err(format!(
+                                "the builder was not started by the host in {BOOT_PATIENCE:?}: its \
+                                 process ran nothing, as macOS admits each launch after it has \
+                                 assessed the executables launched before it"
+                            ));
+                        }
                         return Err("the builder did not start".into());
                     }
                     if vm.try_wait().is_some() {
@@ -335,7 +409,13 @@ impl Builder {
             dir,
             layers: HashMap::new(),
             next: 0,
+            proxy_url,
         })
+    }
+
+    /// The URL its steps reach the build's proxy at, where it has one (D110).
+    pub fn proxy_url(&self) -> Option<&str> {
+        self.proxy_url.as_deref()
     }
 
     fn frame(&self, which: u8, payload: &[u8]) -> Result<(), String> {
@@ -447,10 +527,16 @@ impl Builder {
     }
 
     /// Runs `step` (its `upper` set here), passing its output to `out` as it comes; once
-    /// it succeeds, puts what it changed into `applier`. How it ended, and the layer its
-    /// changes are in the guest.
-    /// Runs `step`, its root's changes to `applier` and each output mount's (`outputs`'
-    /// indexes, at most `max` bytes each) returned with the layer it became.
+    /// it succeeds, puts what it changed into `applier`, and returns each output mount's
+    /// changes (`outputs`' indexes, at most `max` bytes each) with the layer it became.
+    /// How it ended, the layer its changes are in the guest, the layer each cache it
+    /// writes becomes, in order (their changes come next, whatever its end, each for
+    /// [`Builder::kept`]), and what its requests came to under the build's proxy.
+    ///
+    /// Under the build's proxy (`proxy`, D110), its connections to the proxy are served
+    /// while it runs, each request's question answered here, on the build's thread, by
+    /// the proxy's `check`; as it ends they are shut.
+    #[allow(clippy::too_many_arguments)]
     pub fn run(
         &mut self,
         mut step: Step,
@@ -458,12 +544,34 @@ impl Builder {
         applier: &mut Applier<'_>,
         agents: &super::Agents,
         max: u64,
-    ) -> Result<(Ended, u32, Outputs), String> {
+        proxy: StepProxy<'_, '_>,
+    ) -> Result<Ran, String> {
         step.upper = self.layer_id();
         for o in &mut step.outputs {
             o.1 = self.layer_id();
         }
+        for c in step.caches.iter_mut().filter(|c| c.writable) {
+            c.layer = self.layer_id();
+        }
         let layers: Vec<u32> = step.outputs.iter().map(|o| o.1).collect();
+        let kept: Vec<u32> = step
+            .caches
+            .iter()
+            .filter(|c| c.writable)
+            .map(|c| c.layer)
+            .collect();
+        // Its session, begun before it starts: its requests go upstream through the
+        // proxies the build's environment names, as BuildKit's through its daemon's.
+        let (session, questions, mut check) = match proxy {
+            Some((p, check)) => {
+                let upstream = shards_registry::proxy::Proxies::from_env(&|k| std::env::var(k).ok());
+                let (session, questions) = super::proxy::Session::begin(p, upstream)?;
+                (Some(session), Some(questions), Some(check))
+            }
+            None => (None, None, None),
+        };
+        let (stop_proxy, proxy_stopped) =
+            UnixStream::pair().map_err(|e| format!("the build's proxy: {e}"))?;
         self.frame(kind::STEP, &step.encode())?;
         // The SSH agents this step may reach: each mount's token and the agent's id.
         let grants: Vec<([u8; 16], Vec<u8>)> = step
@@ -482,18 +590,92 @@ impl Builder {
             .try_clone()
             .map_err(|e| format!("the builder's SSH port: {e}"))?;
         let (wake, woken) = UnixStream::pair().map_err(|e| format!("the builder's SSH port: {e}"))?;
-        std::thread::scope(|scope| {
+        let ran = std::thread::scope(|scope| {
             let (ssh, grants, woken) = (&ssh, &grants, &woken);
             let _ = std::thread::Builder::new()
                 .name("ssh agents".into())
                 .spawn_scoped(scope, move || accept_agents(scope, ssh, grants, agents, woken));
-            let r = self.frames(step.upper, out, applier, &layers, max);
+            if let Some(s) = &session {
+                let stopped = &proxy_stopped;
+                let _ = std::thread::Builder::new()
+                    .name("build proxy".into())
+                    .spawn_scoped(scope, move || s.serve(scope, stopped));
+            }
+            let asked = match (&questions, check.take()) {
+                (Some(q), Some(c)) => Some((q, c)),
+                _ => None,
+            };
+            let r = self.frames(step.upper, out, applier, &layers, max, asked);
             drop(wake);
+            // The step is over: its proxy takes no more, its connections shut, its
+            // questions unanswered refused.
+            drop(stop_proxy);
+            if let Some(s) = &session {
+                s.end();
+            }
+            drop(questions);
             r
-        })
+        });
+        let (ended, upper, outputs) = ran?;
+        Ok((ended, upper, outputs, kept, session.map(|s| s.capture())))
+    }
+
+    /// Waits until the builder has a frame to read, answering the step's questions of the
+    /// build's policies as they come (D110).
+    fn wait_frame(
+        &self,
+        questions: &super::proxy::Questions,
+        check: &mut dyn FnMut(&str, &str) -> bool,
+    ) -> Result<(), String> {
+        use std::os::fd::AsRawFd as _;
+        loop {
+            questions.answer(check);
+            let mut polled = [self.conn.as_raw_fd(), questions.woken.as_raw_fd()].map(|fd| libc::pollfd {
+                fd,
+                events: libc::POLLIN,
+                revents: 0,
+            });
+            // SAFETY: poll(2) on two descriptors of ours, until either has something.
+            if unsafe { libc::poll(polled.as_mut_ptr(), 2, -1) } < 0 {
+                let e = io::Error::last_os_error();
+                if e.kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(format!("hearing the builder: {e}"));
+            }
+            if polled[0].revents != 0 {
+                return Ok(());
+            }
+        }
+    }
+
+    /// The next kept mount's changes, as they come, each passed to `feed`, and the root
+    /// they left it; read to their end whatever `feed` says, so that the frames after them
+    /// are read as theirs, and then the first error `feed` gave.
+    pub fn kept(&mut self, feed: &mut dyn FnMut(&[u8]) -> Result<(), String>) -> Result<Root, String> {
+        let mut buf = Vec::new();
+        let mut failed = None;
+        loop {
+            match self.read_frame(&mut buf)? {
+                kind::MOUNT_CHANGES => {
+                    if failed.is_none()
+                        && let Err(e) = feed(&buf)
+                    {
+                        failed = Some(e);
+                    }
+                }
+                kind::MOUNT_END => {
+                    let root = Root::decode(&buf).ok_or("the builder sent a malformed cache root")?;
+                    return failed.map_or(Ok(root), Err);
+                }
+                other => return Err(format!("the builder sent frame {other} for a cache's changes")),
+            }
+        }
     }
 
     /// A step's frames: its output, then its status, then, if it succeeded, its changes.
+    /// Its questions of the build's policies, where it is under the build's proxy, are
+    /// answered until its status comes.
     fn frames(
         &mut self,
         upper: u32,
@@ -501,10 +683,14 @@ impl Builder {
         applier: &mut Applier<'_>,
         layers: &[u32],
         max: u64,
+        mut asked: Asked<'_, '_>,
     ) -> Result<(Ended, u32, Outputs), String> {
         let mut buf = Vec::new();
         let mut not_run: Option<String> = None;
         let status = loop {
+            if let Some((questions, check)) = &mut asked {
+                self.wait_frame(questions, &mut **check)?;
+            }
             match self.read_frame(&mut buf)? {
                 which @ (run::kind::STDOUT | run::kind::STDERR) => out(which, &buf),
                 run::kind::SYSTEM_ERR => {

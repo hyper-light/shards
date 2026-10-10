@@ -112,10 +112,24 @@ pub struct Capture {
     pub ssh: Vec<(String, bool)>,
     /// Whether any step had the network, which makes a build not hermetic.
     pub network: bool,
+    /// Where a step had the network through the build's proxy (D110): what its requests
+    /// came to that is no material, each step's in order.
+    pub proxy: Option<Vec<ProxyIncomplete>>,
     /// `mode=max`'s records, where it was asked for.
     pub max: Option<Max>,
     /// The SBOMs the build's scanner wrote (D81), the core target's first.
     pub sboms: Vec<super::sbom::Scanned>,
+}
+
+/// A request of a step's through the build's proxy that is no material
+/// (`ProxyCaptureIncomplete`): the step's vertex, its command, the request, and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProxyIncomplete {
+    pub op: String,
+    pub name: String,
+    pub method: String,
+    pub uri: String,
+    pub reason: String,
 }
 
 /// The run's own facts: its invocation's ID (the build's reference), when it started and
@@ -480,13 +494,17 @@ pub fn predicate(c: &Capture, run: &Run) -> Json {
     }
     internal.push(("builderPlatform", Json::s(run.builder_platform.clone())));
     definition.push(("internalParameters", Json::obj(internal)));
-    // Locals are materials no digest pins: never complete, so never hermetic.
-    let complete_materials = c.locals.is_empty();
+    // Locals are materials no digest pins, and so is a request through the build's proxy
+    // that is no material (D110): never complete, so never hermetic.
+    let complete_materials = c.locals.is_empty() && c.proxy.as_ref().is_none_or(Vec::is_empty);
     let mut metadata = vec![
         ("invocationId", Json::s(run.invocation_id.clone())),
         ("startedOn", Json::s(rfc3339_nano(run.started))),
         ("finishedOn", Json::s(rfc3339_nano(run.finished))),
-        ("buildkit_metadata", buildkit_metadata(c.max.as_ref())),
+        (
+            "buildkit_metadata",
+            buildkit_metadata(c.max.as_ref(), c.proxy.as_deref()),
+        ),
     ];
     if complete_materials && !c.network {
         metadata.push(("buildkit_hermetic", Json::Bool(true)));
@@ -537,15 +555,62 @@ pub fn image_statements(
 }
 
 /// `BuildKitMetadata`: for `mode=max`, its source map and its steps' layers.
-fn buildkit_metadata(max: Option<&Max>) -> Json {
-    let Some(m) = max else {
-        return Json::Obj(Vec::new());
-    };
-    let mut f = vec![("source", m.source.clone())];
-    if !m.layers.is_empty() {
-        f.push(("layers", Json::Obj(m.layers.clone())));
+fn buildkit_metadata(max: Option<&Max>, proxy: Option<&[ProxyIncomplete]>) -> Json {
+    let mut f = Vec::new();
+    if let Some(m) = max {
+        f.push(("source", m.source.clone()));
+        if !m.layers.is_empty() {
+            f.push(("layers", Json::Obj(m.layers.clone())));
+        }
+    }
+    // The build's proxy (NetworkMetadata): its mode, and what was no material, sorted by
+    // vertex, URI, method and reason as BuildKit's capture sorts them.
+    if let Some(incomplete) = proxy {
+        let mut network = vec![("mode", Json::s("proxy"))];
+        if !incomplete.is_empty() {
+            let mut sorted = incomplete.to_vec();
+            sorted.sort_by(|a, b| {
+                (&a.op, &a.uri, &a.method, &a.reason).cmp(&(&b.op, &b.uri, &b.method, &b.reason))
+            });
+            let entries = sorted
+                .into_iter()
+                .map(|i| {
+                    Json::obj(vec![
+                        ("op", Json::s(i.op)),
+                        ("name", Json::s(i.name)),
+                        ("method", Json::s(i.method)),
+                        ("uri", Json::s(i.uri)),
+                        ("reason", Json::s(i.reason)),
+                    ])
+                })
+                .collect();
+            network.push(("proxy", Json::obj(vec![("incomplete", Json::Arr(entries))])));
+        }
+        f.push(("network", Json::obj(network)));
     }
     Json::obj(f)
+}
+
+/// Each op's digest as BuildKit's solver knows its vertex (llbsolver loadLLB's
+/// `recomputeDigests`): its marshalled bytes, its inputs' own digests in them, and under
+/// the build's proxy (D110) an exec op with the network marked so
+/// (`\0buildkit.proxy-network.v0` after its bytes), which every op after it then shows.
+pub fn vertex_digests(def: &shards_dockerfile::llb::Definition, proxy: bool) -> Vec<String> {
+    use shards_dockerfile::llb::{NetMode, OpKind};
+    let mut digests: Vec<String> = Vec::with_capacity(def.ops.len());
+    for op in &def.ops {
+        let inputs: Vec<Vec<u8>> = op
+            .inputs
+            .iter()
+            .map(|i| digests.get(i.op).cloned().unwrap_or_default().into_bytes())
+            .collect();
+        let mut bytes = shards_dockerfile::pb::op(op, &inputs).unwrap_or_default();
+        if proxy && matches!(&op.kind, OpKind::Exec { network, .. } if *network != NetMode::None) {
+            bytes.extend_from_slice(b"\0buildkit.proxy-network.v0");
+        }
+        digests.push(sha256(&bytes));
+    }
+    digests
 }
 
 /// The in-toto statement the attestation layer holds. Its subjects are the image's
@@ -1475,6 +1540,164 @@ mod tests {
         }
     }
 
+    /// curlimages/curl:8.11.1 for linux/arm64, as the build measured for D110 resolved it:
+    /// its digest, and the parts of its config a plan reads.
+    struct Curl;
+
+    impl shards_dockerfile::plan::Resolver for Curl {
+        fn resolve(
+            &self,
+            name: &[u8],
+            _: &shards_dockerfile::platform::Platform,
+            _: &[u8],
+        ) -> Result<shards_dockerfile::plan::Resolved, Vec<u8>> {
+            const DIGEST: &[u8] = b"sha256:c1fe1679c34d9784c1b0d1e5f62ac0a79fca01fb6377cdd33e90473c6f9f9a69";
+            Ok(shards_dockerfile::plan::Resolved {
+                reference: [name, b"@", DIGEST].concat(),
+                digest: Some(DIGEST.to_vec()),
+                config: br#"{"architecture":"arm64","os":"linux","config":{"User":"curl_user","Env":["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin","CURL_CA_BUNDLE=/cacert.pem"],"WorkingDir":"/home/curl_user"},"rootfs":{"type":"layers","diff_ids":["sha256:0000000000000000000000000000000000000000000000000000000000000001"]}}"#.to_vec(),
+            })
+        }
+
+        fn epoch(&self, _: &shards_dockerfile::plan::EpochSource) -> Result<Option<(i64, u32)>, Vec<u8>> {
+            Ok(None)
+        }
+    }
+
+    /// The build measured for D110 (shards-dind: buildx v0.37.1 on a BuildKit v0.33.0
+    /// docker-container builder, the exec.proxy cap on): its steps' digests as its
+    /// provenance mapped them, and its curl step's vertex under the proxy, as its
+    /// incomplete requests named it (`sha256:eb76…`): the step's bytes marked, after
+    /// the step before it was.
+    #[test]
+    fn proxied_steps_are_named_as_buildkits_solver_names_them() {
+        let opts = shards_dockerfile::plan::Options {
+            target_platform: shards_dockerfile::platform::Platform::new("linux", "arm64"),
+            build_platforms: vec![shards_dockerfile::platform::Platform::new("linux", "arm64")],
+            ..Default::default()
+        };
+        let def = shards_dockerfile::plan::plan(include_bytes!("testdata/proxy.Dockerfile"), &opts, &Curl)
+            .unwrap()
+            .definition();
+        let mut mapping = steps(&def).mapping;
+        mapping.sort();
+        assert_eq!(
+            mapping,
+            [
+                (
+                    "sha256:72e654a27389829d981871827171ecf37a033a8ccbf819cbe96215b625cb8487",
+                    "step5"
+                ),
+                (
+                    "sha256:779fe71a657ffa1d4ef54752aa4ab0b0a7e2c109bbd617919516f598c0f443cd",
+                    "step0"
+                ),
+                (
+                    "sha256:a6e89a2c42d3414baadd136bfb3dd28eaeabf347527bc785d60a58431c2d9be5",
+                    "step2"
+                ),
+                (
+                    "sha256:b348a50cc40a50e9a5a7b1eb7142f3a6900e382dd5bffdf02d99bd659a9bbe81",
+                    "step1"
+                ),
+                (
+                    "sha256:d799953d584596fa39e6059dcb6d766c169277b57740d41db09866bde60208b8",
+                    "step4"
+                ),
+                (
+                    "sha256:f71675f5f9c3f270eec58be40b68fe7ef9bcd663ba59253e8391af562b376611",
+                    "step3"
+                ),
+            ]
+            .map(|(d, s)| (d.to_string(), s.to_string()))
+        );
+        let curl = def
+            .ops
+            .iter()
+            .position(|op| {
+                matches!(&op.kind, shards_dockerfile::llb::OpKind::Exec { process, .. }
+                    if process.args.last().is_some_and(|a| a.starts_with(b"C=")))
+            })
+            .unwrap();
+        assert_eq!(
+            vertex_digests(&def, true)[curl],
+            "sha256:eb768244190df581f100522f34cb88bacf8970b14ae34667fca49c0eeabdf7ec"
+        );
+        // Without the proxy, a vertex is its definition's digest.
+        let unmarked = vertex_digests(&def, false);
+        assert!(mapping.iter().any(|(d, _)| *d == unmarked[curl]));
+    }
+
+    /// The same build's provenance, as the proxy's capture makes it: its materials, its
+    /// network metadata (the step's requests that are no material, sorted as BuildKit
+    /// sorts them), its dependencies incomplete and the build not hermetic.
+    #[test]
+    fn a_proxied_builds_provenance_is_buildkits() {
+        let want: serde_json::Value =
+            serde_json::from_str(include_str!("testdata/proxy-provenance.json")).unwrap();
+        let materials: Vec<Material> = want["materials"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| Material {
+                uri: m["uri"].as_str().unwrap().to_string(),
+                algorithm: "sha256".into(),
+                hex: m["digest"]["sha256"].as_str().unwrap().to_string(),
+            })
+            .collect();
+        let op = "sha256:eb768244190df581f100522f34cb88bacf8970b14ae34667fca49c0eeabdf7ec";
+        let name = want["network"]["proxy"]["incomplete"][0]["name"]
+            .as_str()
+            .unwrap();
+        // As the step recorded them: in the order its requests came.
+        let incomplete = [
+            ("POST", "http://172.18.0.2/hello", "method_not_materializable"),
+            ("GET", "http://172.18.0.2/hello", "partial_response"),
+            ("GET", "http://172.18.0.2:81/", "upstream_error"),
+        ]
+        .map(|(method, uri, reason)| ProxyIncomplete {
+            op: op.into(),
+            name: name.into(),
+            method: method.into(),
+            uri: uri.into(),
+            reason: reason.into(),
+        })
+        .to_vec();
+        let capture = Capture {
+            materials,
+            network: true,
+            proxy: Some(incomplete),
+            ..Capture::default()
+        };
+        let run = Run {
+            invocation_id: "x".into(),
+            started: (0, 0),
+            finished: (0, 0),
+            builder_platform: "linux/arm64".into(),
+            builder_id: String::new(),
+            reproducible: false,
+        };
+        let got: serde_json::Value = serde_json::from_str(&predicate(&capture, &run).compact()).unwrap();
+        let metadata = &got["runDetails"]["metadata"];
+        assert_eq!(metadata["buildkit_metadata"]["network"], want["network"]);
+        assert_eq!(metadata["buildkit_completeness"], want["completeness"]);
+        assert!(metadata.get("buildkit_hermetic").is_none());
+        assert_eq!(got["buildDefinition"]["resolvedDependencies"], want["materials"]);
+        // Every request a material: the mode alone, and complete.
+        let whole = Capture {
+            network: true,
+            proxy: Some(Vec::new()),
+            ..Capture::default()
+        };
+        let got: serde_json::Value = serde_json::from_str(&predicate(&whole, &run).compact()).unwrap();
+        let metadata = &got["runDetails"]["metadata"];
+        assert_eq!(
+            metadata["buildkit_metadata"],
+            serde_json::json!({"network": {"mode": "proxy"}})
+        );
+        assert_eq!(metadata["buildkit_completeness"]["resolvedDependencies"], true);
+    }
+
     fn plan_of(dockerfile: &str) -> shards_dockerfile::llb::Definition {
         let opts = shards_dockerfile::plan::Options {
             target_platform: shards_dockerfile::platform::Platform::new("linux", "arm64"),
@@ -1638,6 +1861,7 @@ mod tests {
                 secrets,
                 ssh,
                 network,
+                proxy: None,
                 max: None,
                 sboms: Vec::new(),
             };

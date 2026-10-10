@@ -71,8 +71,7 @@ pub static RUN: Command = Command {
         ),
         Flag::bool("help", None, "Print usage"),
         Flag::string("hostname", Some(b'h'), "", "Container host name"),
-        // shards-init is every guest's PID 1, and does what docker-init does: it forwards
-        // signals to the command and reaps orphans.
+        // A reaper as PID 1 of the command's PID namespace, docker-init's part (D115).
         Flag::bool(
             "init",
             None,
@@ -199,6 +198,7 @@ pub static RUN: Command = Command {
             "0",
             "Tune host's OOM preferences (-1000 to 1000)",
         ),
+        Flag::string("pid", None, "", "PID namespace to use"),
         Flag::bool("privileged", None, "Give extended privileges to this container"),
         Flag::many("security-opt", None, "list", "Security Options"),
         Flag::many("device", None, "list", "Add a host device to the container"),
@@ -347,7 +347,6 @@ link-local-ip - m - -\n\
 log-driver - s - -\n\
 log-opt - m - -\n\
 mac-address - s - -\n\
-pid - s - -\n\
 runtime - s - -\n\
 storage-opt - m - -\n\
 umask - s - -\n\
@@ -410,8 +409,7 @@ pub static CREATE: Command = Command {
         ),
         Flag::bool("help", None, "Print usage"),
         Flag::string("hostname", Some(b'h'), "", "Container host name"),
-        // shards-init is every guest's PID 1, and does what docker-init does: it forwards
-        // signals to the command and reaps orphans.
+        // A reaper as PID 1 of the command's PID namespace, docker-init's part (D115).
         Flag::bool(
             "init",
             None,
@@ -538,6 +536,7 @@ pub static CREATE: Command = Command {
             "0",
             "Tune host's OOM preferences (-1000 to 1000)",
         ),
+        Flag::string("pid", None, "", "PID namespace to use"),
         Flag::bool("privileged", None, "Give extended privileges to this container"),
         Flag::many("security-opt", None, "list", "Security Options"),
         Flag::many("device", None, "list", "Add a host device to the container"),
@@ -686,7 +685,6 @@ link-local-ip - m - -\n\
 log-driver - s - -\n\
 log-opt - m - -\n\
 mac-address - s - -\n\
-pid - s - -\n\
 runtime - s - -\n\
 storage-opt - m - -\n\
 umask - s - -\n\

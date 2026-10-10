@@ -488,6 +488,12 @@ fn request(parsed: &Parsed) -> Result<Run, String> {
         labels.extend(kv_file(file, false)?);
     }
     labels.extend(parsed.many("label").iter().cloned());
+    // `--pid`, as the CLI checks it next (container/opts.go parse, PidMode.Valid): none,
+    // `host`, or `container:` and a name.
+    let pid = parsed.string("pid");
+    if !(pid.is_empty() || pid == "host" || pid.strip_prefix("container:").is_some_and(|c| !c.is_empty())) {
+        return Err("--pid: invalid PID mode".into());
+    }
     // container/opts.go parse: swappiness is -1 (unset) or 0 to 100.
     let swappiness = parsed.int("memory-swappiness");
     if swappiness != -1 && !(0..=100).contains(&swappiness) {
@@ -606,6 +612,9 @@ fn request(parsed: &Parsed) -> Result<Run, String> {
         volumes_from: parsed.many("volumes-from").to_vec(),
         volume_driver: parsed.string("volume-driver").to_string(),
         restart_policy,
+        // HostConfig.Init, set where the flag is given (container/opts.go parse).
+        docker_init: parsed.changed("init").then(|| parsed.bool("init")),
+        pid: pid.to_string(),
         // The flag's default is DOCKER_DEFAULT_PLATFORM (docker/cli run.go, create.go).
         platform: if parsed.changed("platform") {
             parsed.string("platform").to_string()

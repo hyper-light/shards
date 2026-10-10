@@ -268,13 +268,14 @@ pub fn render(sheet: &shards_ipc::Sheet, asked: &Asked, clock: &Clock<'_>) -> Re
                             let text =
                                 |k: &str| r.get(k).and_then(serde_json::Value::as_str).unwrap_or_default();
                             let ns = |k: &str| text(k).parse::<i128>().unwrap_or(0);
+                            let flag =
+                                |k: &str| r.get(k).and_then(serde_json::Value::as_bool).unwrap_or(false);
                             format::disk::BuildCache {
                                 id: text("id").to_string(),
                                 kind: text("type").to_string(),
-                                shared: r
-                                    .get("shared")
-                                    .and_then(serde_json::Value::as_bool)
-                                    .unwrap_or(false),
+                                description: text("description").to_string(),
+                                in_use: flag("in_use"),
+                                shared: flag("shared"),
                                 size: r.get("size").and_then(serde_json::Value::as_i64).unwrap_or(0),
                                 created_at: ns("created"),
                                 last_used_at: Some(ns("last_used")),

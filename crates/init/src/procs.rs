@@ -11,7 +11,8 @@
 //! any of them become `?`, as ps shows any control character.
 //!
 //! Left out: this process, kernel threads, and processes of this program not yet
-//! anything else (shards-init's standby forks), which are not the container's.
+//! anything else (shards-init's standby forks), which are not the container's, but its
+//! reaper under `--init`, docker-init's part, which `docker top` lists (D115).
 
 use std::io;
 
@@ -21,8 +22,8 @@ const US: u8 = 0x1f;
 /// `PF_KTHREAD` in `/proc/PID/stat`'s flags (include/linux/sched.h).
 const PF_KTHREAD: u64 = 0x0020_0000;
 
-/// The dump.
-pub fn dump() -> Vec<u8> {
+/// The dump, with the run's `reaper`, where it has one.
+pub fn dump(reaper: Option<libc::pid_t>) -> Vec<u8> {
     let mut out = Vec::new();
     let read = |path: &str| std::fs::read(path).unwrap_or_default();
     let stat = String::from_utf8_lossy(&read("/proc/stat")).into_owned();
@@ -96,7 +97,8 @@ pub fn dump() -> Vec<u8> {
         if flags(&stat).is_none_or(|f| f & PF_KTHREAD != 0) {
             continue;
         }
-        if mine.is_some() && std::fs::read_link(format!("{base}/exe")).ok() == mine {
+        let reaped = reaper.is_some_and(|r| u32::try_from(r) == Ok(pid));
+        if !reaped && mine.is_some() && std::fs::read_link(format!("{base}/exe")).ok() == mine {
             continue;
         }
         let Ok(status) = std::fs::read(format!("{base}/status")) else {
@@ -137,5 +139,5 @@ fn flags(stat: &[u8]) -> Option<u64> {
 /// tests that hold the host's layout to procps's own (scripts/top/generate).
 pub fn print() -> io::Result<()> {
     use std::io::Write as _;
-    io::stdout().write_all(&dump())
+    io::stdout().write_all(&dump(None))
 }

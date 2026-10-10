@@ -266,6 +266,8 @@ fn errors_reach_the_client() {
 
 /// `stop` ends the runs in progress as dockerd ends its containers when it shuts down:
 /// SIGTERM to the command, whose client gets its status. The pool's waiting VMs end too.
+/// The run is under --init, so that its command, which does not handle SIGTERM, is not
+/// PID 1, which would not hear it and would be killed at the stop timeout instead (D115).
 #[test]
 fn stop_ends_runs_and_waiting_vms() {
     if cannot_run_vms() || cannot_snapshot() {
@@ -274,7 +276,7 @@ fn stop_ends_runs_and_waiting_vms() {
     let (image, _) = served();
     let home = home("daemon-stop", &image);
     let templates = home.join("templates").to_string_lossy().into_owned();
-    let mut sleeper = spawn_run(&home, &["--pull", "never", &image, "sleep"]);
+    let mut sleeper = spawn_run(&home, &["--pull", "never", "--init", &image, "sleep"]);
     let mut out = BufReader::new(sleeper.stdout.take().unwrap());
     let mut line = String::new();
     out.read_line(&mut line).unwrap();
@@ -1454,7 +1456,8 @@ fn what_a_moved_tag_named_is_collected() {
             .unwrap_or_default();
         paths.retain(|p| {
             let name = p.file_name().unwrap().to_string_lossy();
-            !name.starts_with('.') && !name.contains(".new-")
+            // A template's origin is a record beside it (D117), not a template.
+            !name.starts_with('.') && !name.contains(".new-") && !name.ends_with(".origin")
         });
         paths.sort();
         paths
@@ -1522,9 +1525,11 @@ fn a_daemon_whose_home_is_removed_exits_without_making_it_again() {
     let (image, _) = served();
     let home = home("daemon-home-removed", &image);
     let env = [("SHARDS_HOME", home.as_os_str())];
+    // Under --init, so that its command, which does not handle SIGTERM, ends at once: as
+    // PID 1 it would not hear it, and the daemon would end it at its stop timeout (D115).
     let up = run_shards_env(
         &["run"],
-        &["-d", "--name", "up", "--pull", "never", &image, "sleep"],
+        &["-d", "--init", "--name", "up", "--pull", "never", &image, "sleep"],
         &env,
         TIMEOUT,
     );

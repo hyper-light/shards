@@ -4,13 +4,8 @@
 # decided again.
 
 [[allow]]
-metric = "firecracker/peak_rss"
-reason = "0.3 MiB above Firecracker at boot (ccf5bbc), all of it glibc's pages, which shards-vm maps dynamically and every process on the host shares: its PSS is 1.4 MiB below Firecracker's, its file-backed PSS 0.8 against 2.2 MiB"
-expires = 2026-12-31
-
-[[allow]]
 metric = "firecracker/rss_file"
-reason = "0.4 MiB more file-backed memory at boot (ccf5bbc): glibc's shared pages, as above; the file-backed PSS is 1.4 MiB below Firecracker's"
+reason = "0.4 MiB more file-backed memory at boot (ccf5bbc): glibc's pages, which shards-vm maps dynamically and every process on the host shares; the file-backed PSS is 1.4 MiB below Firecracker's"
 expires = 2026-12-31
 
 [[allow]]

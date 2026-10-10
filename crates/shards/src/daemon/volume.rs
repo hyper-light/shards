@@ -63,6 +63,17 @@ impl<D: Disk> Daemon<D> {
                 .collect()
         };
         let (labels, options) = (kv(parsed.many("label")), kv(parsed.many("opt")));
+        // shards' own namespace, which marks the volumes an Agentfile scopes (D115).
+        if let Some(k) = labels
+            .keys()
+            .find(|k| shards_dockerfile::agentfile::reserved_label(k.as_bytes()))
+        {
+            reply.err(&format!(
+                "Error response from daemon: {}",
+                crate::volumes::reserved(k)
+            ));
+            return 1;
+        }
         let made = {
             let _held = crate::volumes::lock();
             Store::new(&self.home).create(&name, &labels, &options)

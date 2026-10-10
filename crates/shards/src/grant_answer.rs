@@ -64,8 +64,59 @@ enum Answer {
     Bound(std::os::fd::OwnedFd),
 }
 
-fn answer(access: Access, path: &Path) -> Result<Answer, String> {
+/// The names of `path` below `template`, the directory of the snapshot a restoring VM
+/// reads, if it is beneath it: as given, or as its links resolve. `None` for a path
+/// elsewhere; an error for one beneath it that is not plain names.
+fn beneath(path: &Path, template: &Path) -> Result<Option<Vec<String>>, String> {
+    let rest = match path.strip_prefix(template) {
+        Ok(rest) => rest.to_path_buf(),
+        Err(_) => {
+            let real = std::fs::canonicalize(template).ok();
+            match real.as_deref().and_then(|t| path.strip_prefix(t).ok()) {
+                Some(rest) => rest.to_path_buf(),
+                None => return Ok(None),
+            }
+        }
+    };
+    names(path, &rest).map(Some)
+}
+
+fn names(path: &Path, rest: &Path) -> Result<Vec<String>, String> {
+    rest.components()
+        .map(|c| match c {
+            std::path::Component::Normal(n) => n.to_str().map(str::to_string),
+            _ => None,
+        })
+        .collect::<Option<Vec<String>>>()
+        .filter(|n| !n.is_empty())
+        .ok_or_else(|| format!("{}: not a file of the template", path.display()))
+}
+
+fn answer(access: Access, path: &Path, template: Option<&Path>) -> Result<Answer, String> {
     let at = |e: std::io::Error| format!("{}: {e}", path.display());
+    // A restore's template was written by a VM process, which may have left in it
+    // anything it liked before it gave it up: its files are opened beneath it, never
+    // through a link it holds, regular files alone, and nothing of it for writing
+    // (PM M165).
+    if let Some(template) = template
+        && let Some(rel) = beneath(path, template)?
+    {
+        let rel: Vec<&str> = rel.iter().map(String::as_str).collect();
+        return match access {
+            Access::Read => shards_vmm::platform::open_beneath(template, &rel)
+                .map(Answer::File)
+                .map_err(at),
+            Access::ReadIfThere => match shards_vmm::platform::open_beneath(template, &rel) {
+                Ok(file) => Ok(Answer::File(file)),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Answer::Absent),
+                Err(e) => Err(at(e)),
+            },
+            _ => Err(format!(
+                "{}: a restore writes nothing of its template",
+                path.display()
+            )),
+        };
+    }
     let open = |write: bool| {
         std::fs::OpenOptions::new()
             .read(true)
@@ -160,7 +211,7 @@ fn dial(listening: Option<&Path>, port: u32) -> Result<std::os::unix::net::UnixS
 /// Answers the VM on `link` as it asks, until it closes it: a bookmark for each path it
 /// names, making the directories it writes in first. A path that cannot be granted ends
 /// the answers with why.
-pub fn serve(link: &std::os::unix::net::UnixStream) -> Result<(), String> {
+pub fn serve(link: &std::os::unix::net::UnixStream, template: Option<&Path>) -> Result<(), String> {
     use shards_ipc::kind;
     use std::os::fd::AsFd as _;
     // The vsock path granted, beside which alone dials go.
@@ -211,7 +262,7 @@ pub fn serve(link: &std::os::unix::net::UnixStream) -> Result<(), String> {
         }
         started = wanted.iter().any(|(access, _)| *access == Access::Listen);
         for (access, path) in wanted {
-            let sent = match answer(access, &path) {
+            let sent = match answer(access, &path, template) {
                 Ok(Answer::File(file)) => {
                     let sent = shards_ipc::send(link, kind::GRANTED, &[], &[file.as_fd()]);
                     held.push(file.into());
@@ -258,7 +309,10 @@ pub fn broker() -> std::process::ExitCode {
     }
     // SAFETY: the socket the CLI left at descriptor 3 for this process alone.
     let link = unsafe { std::os::unix::net::UnixStream::from_raw_fd(3) };
-    match serve(&link) {
+    // The template a restore reads (`--template DIR`), whose files are granted beneath it.
+    let mut args = std::env::args_os().skip_while(|a| a != "--template").skip(1);
+    let template = args.next().map(PathBuf::from);
+    match serve(&link, template.as_deref()) {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(_) => std::process::ExitCode::FAILURE,
     }
@@ -320,7 +374,7 @@ mod tests {
         std::fs::write(&disk, b"d").unwrap();
         let (vm, spawner) = std::os::unix::net::UnixStream::pair().unwrap();
         std::thread::scope(|scope| {
-            let serving = scope.spawn(|| serve(&spawner));
+            let serving = scope.spawn(|| serve(&spawner, None));
             obtain(
                 &vm,
                 &[
@@ -358,6 +412,97 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A restoring VM's template, which a VM process wrote and may have left anything in
+    /// (PM M165), is granted beneath it alone: its regular files are, a link to a file
+    /// outside, a link to a directory on the way to one and a FIFO are each refused, the
+    /// FIFO without waiting on it, and nothing of it is granted for writing; a path outside
+    /// it, as the VM's other files are, is granted as before.
+    #[test]
+    fn a_restores_template_is_granted_beneath_it_alone() {
+        use shards_vmm::platform::open_input;
+        use std::io::Read as _;
+        let dir = std::env::temp_dir().join(format!("shards-grant-template-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (template, outside) = (dir.join("template"), dir.join("outside"));
+        std::fs::create_dir_all(template.join("g-1")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(template.join("current"), b"g-1\n").unwrap();
+        std::fs::write(template.join("g-1/state"), b"state").unwrap();
+        std::fs::write(outside.join("memory"), b"secret").unwrap();
+        std::fs::write(outside.join("state"), b"secret").unwrap();
+        std::os::unix::fs::symlink(outside.join("memory"), template.join("g-1/memory")).unwrap();
+        std::os::unix::fs::symlink(&outside, template.join("g-2")).unwrap();
+        let fifo = std::ffi::CString::new(
+            template
+                .join("g-1/working-set")
+                .into_os_string()
+                .into_encoded_bytes(),
+        )
+        .unwrap();
+        // SAFETY: mkfifo(2) of a NUL-terminated path.
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+        let kernel = outside.join("kernel");
+        std::fs::write(&kernel, b"k").unwrap();
+        // One broker a request: a refusal ends its answers. Each is answered within the
+        // deadline, or the test fails rather than waits.
+        let ask = |wanted: Vec<(Access, PathBuf)>| -> Result<(), String> {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let template = template.clone();
+            std::thread::spawn(move || {
+                let (vm, spawner) = std::os::unix::net::UnixStream::pair().unwrap();
+                let got = std::thread::scope(|scope| {
+                    let serving = scope.spawn(|| serve(&spawner, Some(&template)));
+                    let got = obtain(&vm, &wanted);
+                    drop(vm);
+                    let _ = serving.join();
+                    got
+                });
+                let _ = tx.send(got);
+            });
+            rx.recv_timeout(std::time::Duration::from_secs(20))
+                .expect("answered, not waiting on a FIFO")
+        };
+        ask(vec![
+            (Access::Read, template.join("current")),
+            (Access::Read, template.join("g-1/state")),
+            (Access::Read, kernel.clone()),
+        ])
+        .unwrap();
+        let mut got = String::new();
+        open_input(&template.join("g-1/state"), false)
+            .unwrap()
+            .read_to_string(&mut got)
+            .unwrap();
+        assert_eq!(got, "state");
+        for (access, path, why) in [
+            (Access::Read, template.join("g-1/memory"), "not a regular file"),
+            (
+                Access::ReadIfThere,
+                template.join("g-1/working-set"),
+                "not a regular file",
+            ),
+            (Access::Read, template.join("g-2/state"), "g-2/state"),
+            (
+                Access::Write,
+                template.join("g-1/state"),
+                "writes nothing of its template",
+            ),
+            (
+                Access::MakeDir,
+                template.join("g-3"),
+                "writes nothing of its template",
+            ),
+        ] {
+            let e = ask(vec![(access, path.clone())]).unwrap_err();
+            assert!(e.contains(why), "{}: {e}", path.display());
+        }
+        assert_eq!(
+            ask(vec![(Access::ReadIfThere, template.join("g-1/absent"))]),
+            Ok(())
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A VM's vsock path is bound for it, replacing a socket an earlier VM left there that
     /// nothing answers on; its dials reach `<path>_<port>` and nothing else; a dial before
     /// any vsock path is granted, and a second vsock path, are refused; a path in use is not
@@ -377,7 +522,7 @@ mod tests {
         let host = UnixListener::bind(dir.join("v_5000")).unwrap();
         let (vm, spawner) = UnixStream::pair().unwrap();
         std::thread::scope(|scope| {
-            let serving = scope.spawn(|| serve(&spawner));
+            let serving = scope.spawn(|| serve(&spawner, None));
             assert!(
                 dial(&vm, 5000).is_err(),
                 "a dial before any vsock path is granted"
@@ -424,7 +569,7 @@ mod tests {
         let live = dir.join("live");
         let _held = UnixListener::bind(&live).unwrap();
         std::thread::scope(|scope| {
-            let serving = scope.spawn(|| serve(&spawner));
+            let serving = scope.spawn(|| serve(&spawner, None));
             assert!(obtain(&vm, &[(Access::Listen, live.clone())]).is_err());
             drop(vm);
             let _ = serving.join();

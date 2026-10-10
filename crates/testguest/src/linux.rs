@@ -20,6 +20,7 @@ pub fn main() {
             "storm" => storm(),
             "resume" => resume(),
             "idle" => idle(),
+            "walk" => memory_walk(),
             "work" => work(),
             "kmsg" => kmsg(),
             "beat" => beat(),
@@ -1004,6 +1005,50 @@ fn idle() -> Result<(), String> {
         // SAFETY: pause(2) takes no arguments; it returns only after a signal handler ran.
         unsafe { libc::pause() };
     }
+}
+
+/// A guest at work over its memory, for measuring what the host's pages cost it (THP's
+/// A/B, PM M157): prints `SHARDS-TEST READY`, writes a byte to each page of
+/// `shards_walk_mib` MiB, reads a byte at each of `shards_walk_reads` places in it, spread
+/// by an LCG (a TLB miss nearly every read), then prints `SHARDS-TEST WALK TOUCH_NS
+/// READ_NS` and idles.
+fn memory_walk() -> Result<(), String> {
+    let number = |name: &str, default: u64| {
+        std::env::var(name)
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(default)
+    };
+    let mib = usize::try_from(number("shards_walk_mib", 512)).map_err(|e| e.to_string())?;
+    let reads = number("shards_walk_reads", 20_000_000);
+    let _ = writeln!(io::stdout(), "SHARDS-TEST READY");
+    let began = Instant::now();
+    let mut buf = vec![0u8; mib << 20];
+    for page in buf.chunks_mut(4096) {
+        if let Some(b) = page.first_mut() {
+            *b = 1;
+        }
+    }
+    let touched = began.elapsed();
+    let began = Instant::now();
+    let (mut x, mut sum) = (0x9e37_79b9_7f4a_7c15u64, 0u64);
+    let len = buf.len() as u64;
+    for _ in 0..reads {
+        x = x
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        let at = usize::try_from((x >> 11) % len.max(1)).unwrap_or(0);
+        sum = sum.wrapping_add(u64::from(buf.get(at).copied().unwrap_or(0)));
+    }
+    let read = began.elapsed();
+    std::hint::black_box(sum);
+    let _ = writeln!(
+        io::stdout(),
+        "SHARDS-TEST WALK {} {}",
+        touched.as_nanos(),
+        read.as_nanos()
+    );
+    idle()
 }
 
 /// A running guest, for measuring any VMM that restores it (the Firecracker comparison):

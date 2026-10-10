@@ -346,8 +346,16 @@ fn ctrl_c_interrupts_and_the_detach_keys_leave_it_running() {
     let Some((home, image)) = home("tty-keys") else {
         return;
     };
-    // ^C reaches the command as SIGINT from its own terminal: the client's is raw.
-    let mut term = Terminal::run(&home, &["run", "--pull", "never", "-it", &image, "sleep"], 24, 80);
+    // ^C reaches the command as SIGINT from its own terminal: the client's is raw. Under
+    // --init, where the command, which does not handle SIGINT, is not PID 1, which would
+    // not hear it, as under `docker run -it` (Docker 29.3.1: exit 130 with `--init`; with
+    // none, the ^C unheard, PM M145).
+    let mut term = Terminal::run(
+        &home,
+        &["run", "--pull", "never", "-it", "--init", &image, "sleep"],
+        24,
+        80,
+    );
     term.wait_for("ready\r\n");
     term.type_in(&[3]);
     let (_, status, restored) = term.exit();

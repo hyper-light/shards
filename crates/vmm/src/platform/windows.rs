@@ -46,6 +46,9 @@ pub fn reserve_ram(len: usize) -> io::Result<NonNull<u8>> {
     reserve(len)
 }
 
+/// Guest RAM on base pages, as `reserve_ram`'s always is here: nothing to do.
+pub fn small_pages(_ptr: NonNull<u8>, _len: usize) {}
+
 /// # Safety
 /// `ptr` must come from `reserve` or `reserve_ram` and not be used afterwards.
 pub unsafe fn release(ptr: NonNull<u8>, _len: usize) {
@@ -145,6 +148,24 @@ pub fn open_dir(path: &std::path::Path) -> io::Result<File> {
         .read(true)
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
         .open(path)
+}
+
+/// A snapshot's file beneath `root` (unix.rs `open_beneath`). No snapshots are read on
+/// Windows.
+pub fn open_beneath_input(_root: &std::path::Path, _rel: &[&str]) -> io::Result<File> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "a snapshot's files are not read on Windows",
+    ))
+}
+
+/// A snapshot's directories beneath `root` (unix.rs `open_dir_beneath`). No snapshots are
+/// written on Windows.
+pub fn open_dir_beneath(_root: &std::path::Path, _rel: &[&str]) -> io::Result<File> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "a snapshot's directories are not opened on Windows",
+    ))
 }
 
 /// Opens `name` in the directory `dir` holds open. No snapshots are read on Windows.

@@ -344,6 +344,11 @@ fn assemble(
 pub fn build(cfg: &Config) -> Result<Machine, String> {
     let (ram, ranges) = ram_ranges(cfg.memory_mib)?;
     let memory = Arc::new(GuestMemory::anonymous(&ranges).map_err(|e| format!("guest RAM: {e}"))?);
+    // Before anything touches it: on huge pages, its first 2 MiB would be resident whole
+    // for its boot structures' few pages (layout::SPARSE, PM M157).
+    memory
+        .small_pages(0, layout::SPARSE)
+        .map_err(|e| format!("guest RAM: {e}"))?;
     let low_ram_end = ram.min(layout::MMIO_GAP);
 
     let kernel_file = crate::platform::open_input(&cfg.kernel, false)
@@ -368,10 +373,8 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
     drop(access);
     a.vmgenid.write_new_id()?;
 
-    // Between the kernel, at the next 2 MiB, and the end of low RAM (boot.rs, load_initrd).
-    let room = low_ram_end
-        .min(layout::MMIO_GAP)
-        .saturating_sub(kernel.end.next_multiple_of(2 << 20));
+    // Between the kernel and the end of low RAM, at its top (boot.rs, load_initrd).
+    let room = low_ram_end.min(layout::MMIO_GAP).saturating_sub(kernel.end);
     let initrd_bytes = super::initrd(cfg, room)?;
     let initrd = match initrd_bytes {
         None => None,

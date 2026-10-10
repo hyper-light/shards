@@ -124,7 +124,22 @@ fn a_local_mcp_server_reaches_only_what_its_caller_reaches() {
     .unwrap();
     let built = shards(&["build", "-t", "isolation-mcp:1", ctx.to_str().unwrap()]);
     assert_eq!(built.status, Some(0), "{}", built.stderr);
-    let ran = shards(&["run", "--rm", "isolation-mcp:1", "await", "confined-ready", "2"]);
+    let ran = common::run_awaiting(
+        &env,
+        &[
+            "run",
+            "--rm",
+            "--name",
+            "aw-mcp",
+            "isolation-mcp:1",
+            "await",
+            "confined-ready",
+            "2",
+        ],
+        "aw-mcp",
+        ("confined-ready", 2),
+        TIMEOUT,
+    );
     let all = format!("{}{}", ran.stdout, ran.stderr);
     assert_eq!(ran.status, Some(0), "{all}");
     for want in [

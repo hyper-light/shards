@@ -1,6 +1,8 @@
 //! An image's Agentfile as the daemon holds a run to it (D109): read in the image's root
 //! as its microVM mounts it, checked against the image's digest and as its build checks
 //! it, its volumes and grants derived from its directives, never from its labels.
+// Only Unix has the daemon, so far.
+#![cfg_attr(not(unix), allow(dead_code))]
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -25,6 +27,108 @@ const AGENTFILE_MOST: u64 = 1 << 20;
 pub struct Agentfile {
     pub volumes: Vec<AgentVolume>,
     pub grants: shards_dockerfile::agentfile::Grants,
+    /// How many agents and harnesses it declares, the domains its init numbers (D59) and
+    /// whose IDs no other process takes (D115).
+    pub domains: u32,
+    /// Whether their flows past the microVM, out or in, or their names, cross init's
+    /// network namespace, the command's, on their way to eth0 (D59, D115).
+    pub uplink: bool,
+}
+
+impl Agentfile {
+    /// What of `run` reaches the image's domains (D115), in the words its init refuses
+    /// it with again (`shards_abi::run::beside`): a privileged command, `/proc` unmasked,
+    /// a capability that reaches them, a net.* sysctl where their flows cross the
+    /// command's network namespace, a uid or gid of theirs, and no network where they are
+    /// granted what lies past the microVM. None where it declares no domain.
+    pub fn refuse(&self, run: &shards_ipc::Run) -> Result<(), String> {
+        use shards_abi::run::beside;
+        if self.domains == 0 {
+            return Ok(());
+        }
+        if run.privileged {
+            return Err(beside::privileged("run"));
+        }
+        if run.system_paths {
+            return Err(beside::unmasked());
+        }
+        if run.pid == "host" {
+            return Err(beside::pid_host());
+        }
+        if let Some((cap, reach)) = beside::crossing(self.caps(run), self.uplink) {
+            let name = shards_abi::run::CAP_NAMES
+                .get(cap as usize)
+                .copied()
+                .unwrap_or("a capability");
+            return Err(beside::capability(name, reach));
+        }
+        if self.uplink
+            && let Some(s) = run.sysctls.iter().find(|s| s.starts_with("net."))
+        {
+            return Err(beside::sysctl(s.split_once('=').map_or(s.as_str(), |(k, _)| k)));
+        }
+        self.ids(&run.user, &run.group_add)?;
+        let granted = !self.grants.egress.is_empty() || !self.grants.mcp.is_empty() || self.grants.dns;
+        if run.network == "none" && (granted || self.uplink) {
+            return Err(
+                "cannot run without a network: the image's Agentfile grants its agents what lies past the microVM, and --network none gives the microVM none".into(),
+            );
+        }
+        Ok(())
+    }
+
+    /// The capabilities `run` gives its command: Docker's, as moby tweaks them, less
+    /// Docker's default `CAP_NET_RAW` where the domains' flows cross the command's network
+    /// namespace; one the run adds itself stays, for [`Agentfile::refuse`] to refuse.
+    pub fn caps(&self, run: &shards_ipc::Run) -> u64 {
+        let caps = crate::setup::capabilities(run);
+        if self.domains == 0 || !self.uplink {
+            return caps;
+        }
+        let added = |name: &str| run.privileged || run.cap_add.iter().any(|c| c == name || c == "ALL");
+        shards_abi::run::beside::UPLINK
+            .iter()
+            .filter(|&&(c, _)| {
+                !shards_abi::run::CAP_NAMES
+                    .get(c as usize)
+                    .is_some_and(|n| added(n))
+            })
+            .fold(caps, |m, &(c, _)| m & !(1 << c))
+    }
+
+    /// The capabilities Docker would give `run`'s command that [`Agentfile::caps`]
+    /// withholds, each by number and what it reaches of the domains: CAP_NET_RAW, one of
+    /// Docker's defaults, where their flows past the microVM cross the command's network
+    /// namespace. The run says so as it is made, as dockerd's warnings are said.
+    pub fn withheld(&self, run: &shards_ipc::Run) -> Vec<(u32, &'static str)> {
+        let (docker, kept) = (crate::setup::capabilities(run), self.caps(run));
+        shards_abi::run::beside::UPLINK
+            .iter()
+            .copied()
+            .filter(|&(c, _)| c < 64 && docker & (1 << c) != 0 && kept & (1 << c) == 0)
+            .collect()
+    }
+
+    /// Refuses a numeric `user` (`uid[:gid]`) or `--group-add` gid of the domains' IDs; a
+    /// name, which the image's own databases resolve, its init refuses as it resolves it.
+    pub fn ids(&self, user: &str, groups: &[String]) -> Result<(), String> {
+        use shards_abi::run::beside;
+        if self.domains == 0 {
+            return Ok(());
+        }
+        let (u, g) = user.split_once(':').unwrap_or((user, ""));
+        for (which, id) in [("uid", u), ("gid", g)]
+            .into_iter()
+            .chain(groups.iter().map(|g| ("gid", g.as_str())))
+        {
+            if let Ok(n) = id.parse::<u32>()
+                && beside::taken(n, self.domains)
+            {
+                return Err(beside::id(which, n, self.domains));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// An image's Agentfile, from its normalized Agentfile, `/.agentfile.json` (D35), as the
@@ -87,9 +191,25 @@ pub fn agentfile(rootfs: &std::path::Path, digest: &str) -> Result<Agentfile, St
             return Err(fail(format!("two of its volumes mount {p}")));
         }
     }
+    let grants = af::grants(&directives);
+    let domains = directives
+        .iter()
+        .filter(|d| matches!(d, Directive::Agent(_) | Directive::Harness(_)))
+        .count();
+    // Ports let in past the microVM, of a network a `CONNECT` joins, as its init lets
+    // them in (D59).
+    let ingress = directives.iter().any(|d| match d {
+        Directive::Connect(c) => {
+            c.on.iter()
+                .any(|n| !af::boundary(&directives, n, false).is_empty())
+        }
+        _ => false,
+    });
     let agentfile = Agentfile {
         volumes,
-        grants: af::grants(&directives),
+        uplink: !grants.egress.is_empty() || !grants.mcp.is_empty() || grants.dns || ingress,
+        grants,
+        domains: u32::try_from(domains).map_err(|_| fail("more agents and harnesses than uids".into()))?,
     };
     read.lock()
         .unwrap_or_else(PoisonError::into_inner)
@@ -100,6 +220,122 @@ pub fn agentfile(rootfs: &std::path::Path, digest: &str) -> Result<Agentfile, St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What a run may give its command beside an image's agents and harnesses (D115): it is
+    /// refused a privileged command, `/proc` unmasked, each capability that reaches them
+    /// (CAP_NET_RAW and CAP_NET_ADMIN where their flows cross its network namespace), a
+    /// net.* sysctl there, a numeric uid or gid of theirs, and no network where they are
+    /// granted what lies past the microVM; Docker's default CAP_NET_RAW is not its own
+    /// there. An image that declares no domain is refused none of it.
+    #[test]
+    fn a_run_gives_its_command_nothing_that_reaches_its_domains() {
+        use shards_ipc::Run;
+        let beside = |uplink: bool| Agentfile {
+            domains: 2,
+            uplink,
+            grants: shards_dockerfile::agentfile::Grants {
+                egress: if uplink { vec![b"443".to_vec()] } else { Vec::new() },
+                ..Default::default()
+            },
+            ..Agentfile::default()
+        };
+        let run = |f: &dyn Fn(&mut Run)| {
+            let mut r = Run::default();
+            f(&mut r);
+            r
+        };
+        let caps = |list: &[&str]| run(&|r| r.cap_add = list.iter().map(|s| (*s).to_string()).collect());
+        for (r, uplink, said) in [
+            (run(&|r| r.privileged = true), false, "cannot run privileged"),
+            (
+                run(&|r| r.system_paths = true),
+                false,
+                "cannot leave /proc unmasked",
+            ),
+            (
+                caps(&["CAP_SYS_ADMIN"]),
+                false,
+                "cannot give the command CAP_SYS_ADMIN",
+            ),
+            (
+                caps(&["CAP_SYS_PTRACE"]),
+                false,
+                "cannot give the command CAP_SYS_PTRACE",
+            ),
+            (caps(&["ALL"]), false, "cannot give the command CAP_SYS_MODULE"),
+            (
+                caps(&["CAP_NET_RAW"]),
+                true,
+                "cannot give the command CAP_NET_RAW",
+            ),
+            (
+                caps(&["CAP_NET_ADMIN"]),
+                true,
+                "cannot give the command CAP_NET_ADMIN",
+            ),
+            (
+                run(&|r| r.sysctls = vec!["net.ipv4.ip_forward=0".into()]),
+                true,
+                "cannot set sysctl net.ipv4.ip_forward",
+            ),
+            (
+                run(&|r| r.user = "200001".into()),
+                false,
+                "cannot run as uid 200001",
+            ),
+            (
+                run(&|r| r.user = "app:4394305".into()),
+                false,
+                "cannot run as gid 4394305",
+            ),
+            (
+                run(&|r| r.group_add = vec!["200000".into()]),
+                false,
+                "cannot run as gid 200000",
+            ),
+            (
+                run(&|r| r.network = "none".into()),
+                true,
+                "cannot run without a network",
+            ),
+        ] {
+            let got = beside(uplink).refuse(&r);
+            assert!(
+                got.as_ref().is_err_and(|e| e.starts_with(said)),
+                "{said}: {got:?}"
+            );
+            let none = Agentfile {
+                domains: 0,
+                ..beside(uplink)
+            };
+            assert_eq!(none.refuse(&r), Ok(()), "{said}");
+        }
+        // What reaches nothing of theirs, given as asked.
+        for r in [
+            caps(&["CAP_NET_RAW", "CAP_NET_ADMIN", "CAP_KILL", "CAP_SYS_BOOT"]),
+            run(&|r| r.sysctls = vec!["net.ipv4.ip_forward=0".into(), "kernel.shmmax=1".into()]),
+            run(&|r| r.user = "1000:200002".into()),
+            run(&|r| r.security_opt = vec!["seccomp=unconfined".into()]),
+        ] {
+            assert_eq!(beside(false).refuse(&r), Ok(()));
+        }
+        assert_eq!(
+            beside(true).refuse(&run(&|r| r.sysctls = vec!["kernel.shmmax=1".into()])),
+            Ok(())
+        );
+        let net_raw = 1u64 << 13;
+        let docker = crate::setup::capabilities(&Run::default());
+        assert_ne!(docker & net_raw, 0);
+        assert_eq!(beside(true).caps(&Run::default()), docker & !net_raw);
+        assert_eq!(beside(false).caps(&Run::default()), docker);
+        let booted = caps(&["CAP_SYS_BOOT"]);
+        assert_eq!(
+            beside(true).caps(&booted),
+            crate::setup::capabilities(&booted) & !net_raw
+        );
+        let raw = caps(&["CAP_NET_RAW"]);
+        assert_ne!(beside(true).caps(&raw) & net_raw, 0);
+    }
 
     /// An image's Agentfile read from its root as its microVM mounts it, and checked as
     /// its build checks it, its grants derived from its directives: its digest, no volume

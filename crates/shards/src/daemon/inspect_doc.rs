@@ -812,7 +812,7 @@ fn host_config(f: &Facts<'_>) -> Value {
         .field("Cgroup", s(""))
         .field("Links", Value::NilList(Kind::String))
         .field("OomScoreAdj", int(run.oom_score_adj))
-        .field("PidMode", s(""))
+        .field("PidMode", s(&run.pid))
         .field("Privileged", Value::Bool(run.privileged))
         .field("PublishAllPorts", Value::Bool(run.publish_all))
         .field("ReadonlyRootfs", Value::Bool(run.read_only))
@@ -963,7 +963,15 @@ fn host_config(f: &Facts<'_>) -> Value {
                 Value::strings(READONLY)
             },
         )
-        .tagged("Init", Some("Init"), true, Struct::nil("bool"))
+        .tagged(
+            "Init",
+            Some("Init"),
+            true,
+            run.docker_init.map_or_else(
+                || Struct::nil("bool"),
+                |b| Struct::pointing("bool", Value::Bool(b)),
+            ),
+        )
         .value()
 }
 

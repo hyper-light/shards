@@ -854,9 +854,21 @@ fn vm(args: &[OsString]) -> ExitCode {
     // SAFETY: signal(2) setting SIGCHLD's disposition, before any thread starts.
     unsafe { libc::signal(libc::SIGCHLD, libc::SIG_IGN) };
     let stderr = std::io::stderr();
+    // A restore's template, whose files its broker grants beneath it alone (PM M165).
+    let template = match (args.first().and_then(|a| a.to_str()), args.get(1)) {
+        (Some("restore"), Some(dir)) => match std::path::absolute(dir) {
+            Ok(dir) => Some(dir),
+            Err(e) => return failed(&format!("{}: {e}", std::path::Path::new(dir).display())),
+        },
+        _ => None,
+    };
+    let mut broker_args: Vec<&std::ffi::OsStr> = vec!["grants".as_ref()];
+    if let Some(dir) = &template {
+        broker_args.extend(["--template".as_ref(), dir.as_os_str()]);
+    }
     let spawned = shards_ipc::spawn(
         &broker,
-        &["grants".as_ref()],
+        &broker_args,
         &[(theirs.as_fd(), 3), (stderr.as_fd(), 2)],
         true,
     );

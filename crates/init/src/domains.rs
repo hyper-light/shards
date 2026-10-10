@@ -997,6 +997,14 @@ fn gate_of(
     }
 }
 
+/// Whether `d`'s flows past the microVM, out or in, or its names, cross init's namespace,
+/// which the run's command shares, up the switch's link to eth0 ([`switch`]).
+pub fn uplinked(d: &Domain) -> bool {
+    d.link
+        .as_ref()
+        .is_some_and(|l| !l.egress.is_empty() || !l.ingress.is_empty() || l.dns || !l.mcp.is_empty())
+}
+
 /// The switch `domains` link to: `pairs` of them allowed to open connections to each
 /// other, and those with egress grants up through init's namespace and eth0.
 fn switch(
@@ -1153,6 +1161,13 @@ pub fn start(
     if domains.is_empty() {
         return Ok(Vec::new());
     }
+    // The kernel's log holds what it says of the domains' processes (a fault, an OOM kill
+    // naming each process of their cgroup): only for CAP_SYSLOG, which no run of an
+    // Agentfile's image is given (D115), not for any process that calls syslog(2) or
+    // reads /dev/kmsg, as with `dmesg_restrict` 0 (Documentation/admin-guide/sysctl/
+    // kernel.rst), which a workload's `seccomp=unconfined` or `--device /dev/kmsg` would
+    // leave it.
+    crate::setup::write_sysctl("kernel.dmesg_restrict", "1")?;
     match std::fs::create_dir(CGROUPS) {
         Err(e) if e.kind() != io::ErrorKind::AlreadyExists => return Err(format!("{CGROUPS}: {e}")),
         _ => {}

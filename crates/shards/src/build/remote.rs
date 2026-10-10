@@ -395,8 +395,12 @@ pub fn inline(
 ) -> Result<Vec<u8>, String> {
     let (mut records, _) = chosen(keys, store, image, false)?;
     for record in records.values_mut() {
-        for layer in record
-            .as_array_mut()
+        // A record's outputs: its body's `outputs` (D114), or the body itself (D50).
+        let outputs = match record.get_mut("outputs") {
+            Some(o) => o.as_array_mut(),
+            None => record.as_array_mut(),
+        };
+        for layer in outputs
             .into_iter()
             .flatten()
             .filter_map(serde_json::Value::as_array_mut)

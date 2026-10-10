@@ -8,7 +8,8 @@
 //! ([`crate::changes`]) in [`kind::LAYER`] frames; each step names its trees as stacks of
 //! layers over a base image, so the guest keeps no tree of its own. A step's output is
 //! its stdout and stderr ([`crate::run::kind`]), its status, and, if it succeeded, what it
-//! changed, which the guest keeps as the layer the step names.
+//! changed, which the guest keeps as the layer the step names; and, whatever its status,
+//! what it changed in the mounts it keeps, its caches.
 
 use alloc::vec::Vec;
 
@@ -34,10 +35,53 @@ pub mod kind {
     /// Guest to host: the layer whose stream just ended is written.
     pub const LAYERED: u8 = 35;
     /// Guest to host, after a step's `CHANGES`: the next bytes of what it changed in its
-    /// next output mount (`Step::outputs`, in order), as a stream that `MOUNT_END` ends.
+    /// next output mount (`Step::outputs`, in order), as a stream that `MOUNT_END` ends;
+    /// then, whatever the step's status, in each cache it writes (`Step::caches`).
     pub const MOUNT_CHANGES: u8 = 36;
-    /// Guest to host: the output mount's changes are all sent.
+    /// Guest to host: the output mount's changes are all sent; for a cache, with the
+    /// [`Root`](super::Root) its changes left it.
     pub const MOUNT_END: u8 = 37;
+}
+
+/// A cache's root directory: what overlayfs shows of the directory its upper layer is,
+/// which no layer records.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Root {
+    pub mode: u32,
+    pub uid: u32,
+    pub gid: u32,
+}
+
+impl Root {
+    pub fn encode(&self) -> [u8; 12] {
+        let mut out = Vec::with_capacity(12);
+        for v in [self.mode, self.uid, self.gid] {
+            put_u32(&mut out, v);
+        }
+        out.try_into().unwrap_or([0; 12])
+    }
+
+    pub fn decode(bytes: &[u8]) -> Option<Root> {
+        let mut r = Cursor(bytes);
+        let root = Root {
+            mode: r.u32()?,
+            uid: r.u32()?,
+            gid: r.u32()?,
+        };
+        r.0.is_empty().then_some(root)
+    }
+}
+
+/// A cache a step mounts (D114): its content, mounted once for the step however many of its
+/// mounts name it, as BuildKit gives an exec one ref for a cache; and, if any of them
+/// writes, the layer its changes become, kept whatever the step's status, as a cache's
+/// writes are BuildKit's whether or not its step succeeds, over the root it starts with.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Cache {
+    pub tree: Tree,
+    pub writable: bool,
+    pub layer: u32,
+    pub root: Root,
 }
 
 /// A tree: layers stacked over a base image, the last layer on top.
@@ -68,14 +112,11 @@ pub enum Mount {
         uid: u32,
         gid: u32,
     },
-    /// A directory the guest keeps by `id` across the steps of one build, made with
-    /// `mode` and `uid:gid` the first time. `id` is the host's short name for the cache,
-    /// one per cache id the build's steps give, however long theirs is.
+    /// The directory `subpath` of the step's cache `cache` (`Step::caches`), read-only if
+    /// `readonly`.
     Cache {
-        id: Vec<u8>,
-        mode: u32,
-        uid: u32,
-        gid: u32,
+        cache: u32,
+        subpath: Vec<u8>,
         readonly: bool,
     },
     /// A socket of mode `mode` owned `uid:gid`, relayed to the client's SSH agent `id` with
@@ -136,8 +177,14 @@ pub struct Step {
     /// mount's can be (an SBOM scan's `/run/out`, D81): each its index in `mounts` and the
     /// layer its changes become.
     pub outputs: Vec<(u32, u32)>,
+    /// The caches its mounts name.
+    pub caches: Vec<Cache>,
     /// The device nodes its CDI devices bring (D96), made in its `/dev`.
     pub devices: Vec<Device>,
+    /// The build's proxy's CA (D110), PEM, added to its root's trust bundle while it runs
+    /// and taken out after, as BuildKit's executor adds it (InjectProxyCA); empty where its
+    /// network is not the proxy's.
+    pub proxy_ca: Vec<u8>,
 }
 
 /// A device node a step is given: its path in the step, the guest's device it is (`from`,
@@ -235,17 +282,13 @@ impl Step {
                     put_u32(&mut out, *gid);
                 }
                 Mount::Cache {
-                    id,
-                    mode,
-                    uid,
-                    gid,
+                    cache,
+                    subpath,
                     readonly,
                 } => {
                     out.push(3);
-                    put_bytes(&mut out, id);
-                    put_u32(&mut out, *mode);
-                    put_u32(&mut out, *uid);
-                    put_u32(&mut out, *gid);
+                    put_u32(&mut out, *cache);
+                    put_bytes(&mut out, subpath);
                     out.push(u8::from(*readonly));
                 }
                 Mount::Ssh {
@@ -281,6 +324,13 @@ impl Step {
             put_u32(&mut out, mount);
             put_u32(&mut out, layer);
         }
+        put_len(&mut out, self.caches.len());
+        for c in &self.caches {
+            put_tree(&mut out, &c.tree);
+            out.push(u8::from(c.writable));
+            put_u32(&mut out, c.layer);
+            out.extend_from_slice(&c.root.encode());
+        }
         put_len(&mut out, self.devices.len());
         for d in &self.devices {
             put_bytes(&mut out, &d.path);
@@ -291,6 +341,7 @@ impl Step {
             put_u32(&mut out, d.uid);
             put_u32(&mut out, d.gid);
         }
+        put_bytes(&mut out, &self.proxy_ca);
         out
     }
 
@@ -339,10 +390,8 @@ impl Step {
                     gid: r.u32()?,
                 },
                 3 => Mount::Cache {
-                    id: r.bytes()?,
-                    mode: r.u32()?,
-                    uid: r.u32()?,
-                    gid: r.u32()?,
+                    cache: r.u32()?,
+                    subpath: r.bytes()?,
                     readonly: r.flag()?,
                 },
                 4 => Mount::Ssh {
@@ -375,6 +424,16 @@ impl Step {
         for _ in 0..n {
             outputs.push((r.u32()?, r.u32()?));
         }
+        let n = r.count(22)?;
+        let mut caches = Vec::with_capacity(n);
+        for _ in 0..n {
+            caches.push(Cache {
+                tree: r.tree()?,
+                writable: r.flag()?,
+                layer: r.u32()?,
+                root: Root::decode(r.take(12)?)?,
+            });
+        }
         let n = r.count(19)?;
         let mut devices = Vec::with_capacity(n);
         for _ in 0..n {
@@ -392,6 +451,7 @@ impl Step {
                 gid: r.u32()?,
             });
         }
+        let proxy_ca = r.bytes()?;
         r.0.is_empty().then_some(Step {
             root,
             upper,
@@ -411,7 +471,9 @@ impl Step {
             seccomp,
             cgroup,
             outputs,
+            caches,
             devices,
+            proxy_ca,
         })
     }
 }
@@ -541,11 +603,9 @@ mod tests {
                 (
                     b"/root/.cache".to_vec(),
                     Mount::Cache {
-                        id: b"/root/.cache".to_vec(),
-                        mode: 0o755,
-                        uid: 0,
-                        gid: 0,
-                        readonly: false,
+                        cache: 0,
+                        subpath: b"/sub".to_vec(),
+                        readonly: true,
                     },
                 ),
             ],
@@ -553,6 +613,19 @@ mod tests {
             seccomp: vec![0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 255, 127],
             cgroup: vec![(b"memory.max".to_vec(), b"67108864".to_vec())],
             outputs: vec![(1, 9)],
+            caches: vec![Cache {
+                tree: Tree {
+                    base: Some(1),
+                    layers: vec![4, 5],
+                },
+                writable: true,
+                layer: 10,
+                root: Root {
+                    mode: 0o700,
+                    uid: 1000,
+                    gid: 50,
+                },
+            }],
             devices: vec![
                 Device {
                     path: b"/dev/fuse".to_vec(),
@@ -571,6 +644,7 @@ mod tests {
                     gid: 44,
                 },
             ],
+            proxy_ca: b"-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n".to_vec(),
         };
         let bytes = step.encode();
         assert_eq!(Step::decode(&bytes), Some(step));

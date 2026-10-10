@@ -205,6 +205,127 @@ pub const CAP_NAMES: [&str; 41] = [
     "CAP_CHECKPOINT_RESTORE",
 ];
 
+/// What a run of an image whose Agentfile declares agents or harnesses keeps from its own
+/// command, beside them (D115): the daemon refuses each as it reads the run, and shards-init
+/// again as it starts the command, in the same words.
+pub mod beside {
+    use alloc::format;
+    use alloc::string::String;
+
+    /// The capabilities a command may not hold beside an image's domains, by number, and
+    /// what each reaches of theirs: across the PID namespace of the command's own, which
+    /// hides their processes and init's, the kernel and the microVM they share.
+    pub const DOMAINS: [(u32, &str); 12] = [
+        (16, "loads code into the kernel they share"),
+        (17, "reaches the microVM's memory-mapped devices and I/O ports"),
+        (
+            19,
+            "traces the processes init starts beside the command before they give up init's privileges",
+        ),
+        (
+            20,
+            "records the exit of every process of the microVM, theirs among them",
+        ),
+        (
+            21,
+            "mounts their volumes and devices and lifts the masks on /proc",
+        ),
+        (23, "schedules the command ahead of theirs in real time"),
+        (25, "sets the clock they share"),
+        (30, "has the kernel audit their system calls"),
+        (34, "reads what the kernel logs of their processes"),
+        (37, "reads the kernel's audit of their system calls"),
+        (38, "observes every process of the kernel they share"),
+        (39, "loads programs into the kernel they share"),
+    ];
+
+    /// Those a command may not hold where its domains' flows past the microVM cross its
+    /// network namespace, init's, on their way to eth0 (D59).
+    pub const UPLINK: [(u32, &str); 2] = [
+        (
+            12,
+            "changes the network namespace their flows past the microVM cross",
+        ),
+        (
+            13,
+            "reads and writes the packets of their flows past the microVM, which cross the command's network namespace",
+        ),
+    ];
+
+    /// The first capability of `caps` (a bit for each by number) a command may not hold
+    /// beside an image's domains, with or without an `uplink`, and what it reaches.
+    pub fn crossing(caps: u64, uplink: bool) -> Option<(u32, &'static str)> {
+        let uplinked: &[(u32, &str)] = if uplink { &UPLINK } else { &[] };
+        DOMAINS
+            .iter()
+            .chain(uplinked)
+            .copied()
+            .filter(|&(c, _)| c < 64 && caps & (1 << c) != 0)
+            .min_by_key(|&(c, _)| c)
+    }
+
+    /// Whether `id`, a uid or gid, is one an image declaring `domains` agents and
+    /// harnesses runs them or their in-VM servers as (D59, D60).
+    pub fn taken(id: u32, domains: u32) -> bool {
+        [crate::DOMAIN_FIRST_ID, crate::SERVER_FIRST_ID]
+            .iter()
+            .any(|&first| id.checked_sub(first).is_some_and(|n| n < domains))
+    }
+
+    const WHY: &str = "the image's Agentfile runs agents and harnesses beside the command";
+
+    /// Refusing capability `name`, which reaches the domains as `what` says.
+    pub fn capability(name: &str, what: &str) -> String {
+        format!("cannot give the command {name}: {WHY}, and {name} {what}")
+    }
+
+    /// Refusing a privileged command, or exec (`what`).
+    pub fn privileged(what: &str) -> String {
+        format!(
+            "cannot {what} privileged: {WHY}, and a privileged command has every capability and device, which reach them"
+        )
+    }
+
+    /// Refusing `--security-opt systempaths=unconfined`.
+    pub fn unmasked() -> String {
+        format!(
+            "cannot leave /proc unmasked: {WHY}, and /proc/sysrq-trigger signals their processes and /proc/sched_debug lists them"
+        )
+    }
+
+    /// Saying that the command runs without capability `name`, which Docker gives by
+    /// default, and which reaches the domains as `what` says.
+    pub fn withheld(name: &str, what: &str) -> String {
+        format!("{name} withheld from the command: {WHY}, and {name} {what}")
+    }
+
+    /// Refusing `--pid host`: the microVM's PID namespace, the parent of theirs.
+    pub fn pid_host() -> String {
+        format!(
+            "cannot run the command in the microVM's PID namespace (--pid host): {WHY}, and that namespace holds their processes and init's, which the command would see and signal"
+        )
+    }
+
+    /// Refusing sysctl `key` where the domains' flows cross the command's namespace.
+    pub fn sysctl(key: &str) -> String {
+        format!(
+            "cannot set sysctl {key}: the image's agents reach past the microVM through the command's network namespace, which net.* sysctls change"
+        )
+    }
+
+    /// Refusing `which` ("uid", "gid") `id`, one of an image's `domains`'s.
+    pub fn id(which: &str, id: u32, domains: u32) -> String {
+        let last = |first: u32| first.saturating_add(domains.saturating_sub(1));
+        format!(
+            "cannot run as {which} {id}: the image's Agentfile runs its agents and harnesses as {} to {}, and their in-VM servers as {} to {}, which no other process of the microVM takes",
+            crate::DOMAIN_FIRST_ID,
+            last(crate::DOMAIN_FIRST_ID),
+            crate::SERVER_FIRST_ID,
+            last(crate::SERVER_FIRST_ID)
+        )
+    }
+}
+
 /// What shards-init does itself for an exec ([`Spec::builtin`]).
 pub mod builtin {
     /// The guest's processes as `/proc` has them, for `shards top` (init procs.rs).
@@ -469,6 +590,45 @@ mod tests {
     use alloc::vec;
 
     use super::*;
+
+    /// What a command may not hold beside an image's domains (D115): none of Docker's
+    /// defaults, but CAP_NET_RAW where their flows cross its network namespace; each
+    /// capability that reaches them across a PID namespace, and none that does not; the
+    /// domains' IDs and their servers', and no other.
+    #[test]
+    fn a_command_beside_domains_holds_nothing_that_reaches_them() {
+        use beside::{crossing, taken};
+        let caps = |list: &[u32]| list.iter().fold(0u64, |m, &c| m | 1 << c);
+        let defaults = caps(&CAPS);
+        assert_eq!(crossing(defaults, false), None);
+        assert_eq!(crossing(defaults, true).map(|(c, _)| c), Some(13));
+        for c in [16, 17, 19, 20, 21, 23, 25, 30, 34, 37, 38, 39] {
+            assert_eq!(crossing(caps(&[c]), false).map(|(c, _)| c), Some(c), "{c}");
+        }
+        // KILL, NET_ADMIN and NET_RAW without the uplink, SYS_BOOT, CHECKPOINT_RESTORE.
+        assert_eq!(crossing(caps(&[5, 12, 13, 22, 40]), false), None);
+        assert_eq!(crossing(caps(&[12]), true).map(|(c, _)| c), Some(12));
+        // Every capability: the lowest that reaches them.
+        assert_eq!(crossing(u64::MAX, false).map(|(c, _)| c), Some(16));
+        assert_eq!(crossing(u64::MAX, true).map(|(c, _)| c), Some(12));
+        for (id, domains, held) in [
+            (crate::DOMAIN_FIRST_ID, 1, true),
+            (crate::DOMAIN_FIRST_ID + 1, 1, false),
+            (crate::DOMAIN_FIRST_ID + 1, 2, true),
+            (crate::DOMAIN_FIRST_ID - 1, 2, false),
+            (crate::SERVER_FIRST_ID, 1, true),
+            (crate::SERVER_FIRST_ID + 2, 2, false),
+            (crate::DOMAIN_FIRST_ID, 0, false),
+            (0, 3, false),
+            (u32::MAX, 1, false),
+        ] {
+            assert_eq!(taken(id, domains), held, "{id} of {domains}");
+        }
+        assert_eq!(
+            beside::id("uid", 200_001, 2),
+            "cannot run as uid 200001: the image's Agentfile runs its agents and harnesses as 200000 to 200001, and their in-VM servers as 4394304 to 4394305, which no other process of the microVM takes"
+        );
+    }
 
     #[test]
     fn specs_round_trip_and_bad_ones_are_refused() {

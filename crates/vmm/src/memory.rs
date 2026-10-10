@@ -290,6 +290,16 @@ impl GuestMemory {
         // SAFETY: offset is within the region's mapping (checked above).
         Ok(unsafe { r.host.as_ptr().add((gpa - r.gpa) as usize) })
     }
+
+    /// Keeps `gpa..gpa+len`, within one region, on the host's base pages
+    /// ([`platform::small_pages`]): guest RAM the guest touches sparsely. Before it does.
+    pub fn small_pages(&self, gpa: u64, len: usize) -> Result<(), OutOfBounds> {
+        let at = self.host_ptr(gpa, len)?;
+        if let Some(at) = std::ptr::NonNull::new(at) {
+            platform::small_pages(at, len);
+        }
+        Ok(())
+    }
 }
 
 impl Drop for GuestMemory {
@@ -493,6 +503,38 @@ mod tests {
     fn mem() -> GuestMemory {
         let p = page_size().unwrap();
         GuestMemory::anonymous(&[(0x8000_0000, 4 * p), (0x1_0000_0000, p)]).unwrap()
+    }
+
+    /// Guest RAM kept on small pages has its own mapping, advised so (smaps' `nh`), and
+    /// the rest keeps its huge pages' advice (`hg`), where the kernel has THP.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn small_pages_are_advised_apart_from_the_rest() {
+        if !std::path::Path::new("/sys/kernel/mm/transparent_hugepage/hpage_pmd_size").exists() {
+            return;
+        }
+        let m = GuestMemory::anonymous(&[(0, 64 << 20)]).unwrap();
+        m.small_pages(0, 2 << 20).unwrap();
+        let flags = |gpa: u64| {
+            let at = m.host_ptr(gpa, 1).unwrap() as u64;
+            let smaps = std::fs::read_to_string("/proc/self/smaps").unwrap();
+            let mut ours = false;
+            for line in smaps.lines() {
+                if let Some((range, _)) = line.split_once(' ')
+                    && let Some((s, _)) = range.split_once('-')
+                    && let Ok(s) = u64::from_str_radix(s, 16)
+                {
+                    ours = s == at;
+                } else if ours && let Some(flags) = line.strip_prefix("VmFlags:") {
+                    return flags.split_whitespace().map(String::from).collect::<Vec<_>>();
+                }
+            }
+            Vec::new()
+        };
+        let (small, rest) = (flags(0), flags(2 << 20));
+        assert!(small.iter().any(|f| f == "nh"), "{small:?}");
+        assert!(rest.iter().any(|f| f == "hg"), "{rest:?}");
+        assert!(m.small_pages(63 << 20, 2 << 20).is_err());
     }
 
     #[test]

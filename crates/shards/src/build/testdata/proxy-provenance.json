@@ -1,0 +1,61 @@
+{
+ "network": {
+  "mode": "proxy",
+  "proxy": {
+   "incomplete": [
+    {
+     "op": "sha256:eb768244190df581f100522f34cb88bacf8970b14ae34667fca49c0eeabdf7ec",
+     "name": "/bin/sh -c C=\"--cacert /etc/ssl/certs/ca-certificates.crt\"; curl -sS $C http://172.18.0.2/hello; curl -sS $C -o /dev/null -w \"redirect %{http_code}\\n\" http://172.18.0.2/redirect; curl -sS $C -L http://172.18.0.2/redirect; curl -sS $C -X POST -d x http://172.18.0.2/hello; curl -sS $C -r 0-1 http://172.18.0.2/hello; echo; curl -sS $C -D - -o /dev/null http://172.18.0.2/denied; curl -sS $C -D - -o /dev/null https://example.com/denied; curl -sS $C -o /dev/null -w \"https %{http_code}\\n\" https://example.com/; curl -sS $C --max-time 5 -o /dev/null -w \"refused %{http_code}\\n\" http://172.18.0.2:81/; echo done",
+     "method": "GET",
+     "uri": "http://172.18.0.2/hello",
+     "reason": "partial_response"
+    },
+    {
+     "op": "sha256:eb768244190df581f100522f34cb88bacf8970b14ae34667fca49c0eeabdf7ec",
+     "name": "/bin/sh -c C=\"--cacert /etc/ssl/certs/ca-certificates.crt\"; curl -sS $C http://172.18.0.2/hello; curl -sS $C -o /dev/null -w \"redirect %{http_code}\\n\" http://172.18.0.2/redirect; curl -sS $C -L http://172.18.0.2/redirect; curl -sS $C -X POST -d x http://172.18.0.2/hello; curl -sS $C -r 0-1 http://172.18.0.2/hello; echo; curl -sS $C -D - -o /dev/null http://172.18.0.2/denied; curl -sS $C -D - -o /dev/null https://example.com/denied; curl -sS $C -o /dev/null -w \"https %{http_code}\\n\" https://example.com/; curl -sS $C --max-time 5 -o /dev/null -w \"refused %{http_code}\\n\" http://172.18.0.2:81/; echo done",
+     "method": "POST",
+     "uri": "http://172.18.0.2/hello",
+     "reason": "method_not_materializable"
+    },
+    {
+     "op": "sha256:eb768244190df581f100522f34cb88bacf8970b14ae34667fca49c0eeabdf7ec",
+     "name": "/bin/sh -c C=\"--cacert /etc/ssl/certs/ca-certificates.crt\"; curl -sS $C http://172.18.0.2/hello; curl -sS $C -o /dev/null -w \"redirect %{http_code}\\n\" http://172.18.0.2/redirect; curl -sS $C -L http://172.18.0.2/redirect; curl -sS $C -X POST -d x http://172.18.0.2/hello; curl -sS $C -r 0-1 http://172.18.0.2/hello; echo; curl -sS $C -D - -o /dev/null http://172.18.0.2/denied; curl -sS $C -D - -o /dev/null https://example.com/denied; curl -sS $C -o /dev/null -w \"https %{http_code}\\n\" https://example.com/; curl -sS $C --max-time 5 -o /dev/null -w \"refused %{http_code}\\n\" http://172.18.0.2:81/; echo done",
+     "method": "GET",
+     "uri": "http://172.18.0.2:81/",
+     "reason": "upstream_error"
+    }
+   ]
+  }
+ },
+ "completeness": {
+  "request": true,
+  "resolvedDependencies": false
+ },
+ "hermetic": null,
+ "materials": [
+  {
+   "uri": "pkg:docker/curlimages/curl@8.11.1?platform=linux%2Farm64",
+   "digest": {
+    "sha256": "c1fe1679c34d9784c1b0d1e5f62ac0a79fca01fb6377cdd33e90473c6f9f9a69"
+   }
+  },
+  {
+   "uri": "http://172.18.0.2/hello",
+   "digest": {
+    "sha256": "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03"
+   }
+  },
+  {
+   "uri": "http://172.18.0.2/redirect",
+   "digest": {
+    "sha256": "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03"
+   }
+  },
+  {
+   "uri": "https://example.com/",
+   "digest": {
+    "sha256": "25ddf2c883e0d1958ea971d279a7e4f0fd446724ee3db7db19dadabd4a62e484"
+   }
+  }
+ ]
+}

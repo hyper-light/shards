@@ -187,10 +187,13 @@ fn repeat_runs_restore_a_template_of_the_image() {
     let recorded = run_shards_env(&["guest"], &args, &env, TIMEOUT);
     assert_eq!(recorded.status, Some(0), "{}", recorded.stderr);
     let booted = |run: &common::Run| run.marker_us(shards_abi::marker::INIT_STARTED).is_some();
+    // The templates, each a directory: the daemon's record of each is a file beside it.
     let templates = || -> Vec<String> {
         std::fs::read_dir(home.join("templates"))
             .map(|d| {
-                d.map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                d.map(|e| e.unwrap())
+                    .filter(|e| e.path().is_dir())
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
                     .collect()
             })
             .unwrap_or_default()
@@ -352,6 +355,154 @@ fn an_agentfiles_image_restores_its_template_too() {
     }
     let log = std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default();
     assert!(!log.contains("names files it was not given"), "{log}");
+    let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
+    assert_eq!(stopped.status, Some(0), "{}", stopped.stderr);
+}
+
+/// The guest `kernel()` and `guest_init()` recorded in `home`, as users run, so that runs
+/// save and restore templates.
+fn record_guest(env: &[(&str, &std::ffi::OsStr)]) {
+    let args = [
+        "use".as_ref(),
+        "--kernel".as_ref(),
+        kernel().as_os_str(),
+        "--init".as_ref(),
+        guest_init().as_os_str(),
+    ];
+    let recorded = run_shards_env(&["guest"], &args, env, TIMEOUT);
+    assert_eq!(recorded.status, Some(0), "{}", recorded.stderr);
+}
+
+/// The one template in `home`.
+fn the_template(home: &std::path::Path) -> std::path::PathBuf {
+    let dirs: Vec<std::path::PathBuf> = std::fs::read_dir(home.join("templates"))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.is_dir())
+        .collect();
+    assert_eq!(dirs.len(), 1, "{dirs:?}");
+    dirs.into_iter().next().unwrap()
+}
+
+/// A VM taken over while it saves a template leaves what it likes in the directory it was
+/// granted, which every later run restores (PM M165); here, as one would, a link named for
+/// the daemon's record to a file of the user's (a VM process wrapped by
+/// `SHARDS_VM_BINARY`, which plants it and becomes this build's). The daemon writes its
+/// record beside the template, through nothing the VM left: the file is untouched, and the
+/// template still restores.
+#[test]
+fn a_templates_saver_leaves_nothing_the_daemon_writes_through() {
+    use std::os::unix::fs::PermissionsExt as _;
+    if cannot_run_vms() || !shards_vmm::vm::SNAPSHOTS {
+        eprintln!("SKIP: this host saves no templates");
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("saver-plants");
+    let victim = TempDir::new("saver-plants-victim");
+    let canary = victim.join("canary");
+    std::fs::write(&canary, b"the user's\n").unwrap();
+    let wrapper = victim.join("shards-vm");
+    std::fs::write(
+        &wrapper,
+        format!(
+            "#!/bin/sh\nprev=\nfor a in \"$@\"; do\n  if [ \"$prev\" = --snapshot-dir ]; then mkdir -p \"$a\" && ln -s '{canary}' \"$a/origin.json\"; fi\n  prev=$a\ndone\nexec '{vm}' \"$@\"\n",
+            canary = canary.display(),
+            vm = common::shards_vm().display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_VM_BINARY", wrapper.as_os_str()),
+    ];
+    record_guest(&env);
+    let booted = |run: &common::Run| run.marker_us(shards_abi::marker::INIT_STARTED).is_some();
+    let first = run_shards_env(&["run"], &[image.as_str()], &env, TIMEOUT);
+    assert_eq!(first.status, Some(0), "{}", first.stderr);
+    assert!(booted(&first), "{}", first.stderr);
+    let template = the_template(&home);
+    assert!(
+        std::fs::symlink_metadata(template.join("origin.json")).is_ok_and(|m| m.file_type().is_symlink()),
+        "the wrapped VM planted its link"
+    );
+    assert_eq!(
+        std::fs::read(&canary).unwrap(),
+        b"the user's\n",
+        "written through the link"
+    );
+    let second = run_shards_env(&["run"], &["--pull", "never", image.as_str()], &env, TIMEOUT);
+    assert_eq!(second.status, Some(0), "{}", second.stderr);
+    assert!(!booted(&second), "restored, not booted: {}", second.stderr);
+    assert_eq!(std::fs::read(&canary).unwrap(), b"the user's\n");
+    let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
+    assert_eq!(stopped.status, Some(0), "{}", stopped.stderr);
+}
+
+/// What a VM taken over while it saved a template could have left in it, for every later
+/// restore to meet (PM M165): its memory a link to a FIFO outside the template, and its
+/// working set a FIFO. A restore opens neither, nor waits on either: no reader ever holds
+/// either FIFO while the next run happens, which boots instead, the template refused.
+#[test]
+fn a_restore_reaches_nothing_its_saver_left_in_its_template() {
+    use std::os::unix::fs::OpenOptionsExt as _;
+    if cannot_run_vms() || !shards_vmm::vm::SNAPSHOTS {
+        eprintln!("SKIP: this host saves no templates");
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("saver-left");
+    let outside = TempDir::new("saver-left-outside");
+    let env = [("SHARDS_HOME", home.as_os_str())];
+    record_guest(&env);
+    let first = run_shards_env(&["run"], &[image.as_str()], &env, TIMEOUT);
+    assert_eq!(first.status, Some(0), "{}", first.stderr);
+    let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
+    assert_eq!(stopped.status, Some(0), "{}", stopped.stderr);
+    let template = the_template(&home);
+    let fifo = |path: &std::path::Path| {
+        let _ = std::fs::remove_file(path);
+        let c = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY: mkfifo(2) of a NUL-terminated path.
+        let made = unsafe { libc::mkfifo(c.as_ptr(), 0o600) };
+        assert_eq!(made, 0, "{}", path.display());
+    };
+    let target = outside.join("memory");
+    fifo(&target);
+    let memory = common::snapshot_file(&template, "memory");
+    std::fs::remove_file(&memory).unwrap();
+    std::os::unix::fs::symlink(&target, &memory).unwrap();
+    let working_set = common::snapshot_file(&template, "working-set");
+    fifo(&working_set);
+
+    let (again, home_path) = (image.clone(), home.to_path_buf());
+    let runner = std::thread::spawn(move || {
+        let env = [("SHARDS_HOME", home_path.as_os_str())];
+        run_shards_env(&["run"], &["--pull", "never", again.as_str()], &env, TIMEOUT)
+    });
+    // A FIFO opened for writing without waiting is opened only while a reader holds it.
+    let mut held: Vec<String> = Vec::new();
+    while !runner.is_finished() {
+        for path in [&target, &working_set] {
+            let opened = std::fs::OpenOptions::new()
+                .write(true)
+                .custom_flags(libc::O_NONBLOCK)
+                .open(path);
+            if opened.is_ok() {
+                held.push(path.display().to_string());
+            }
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let second = runner.join().unwrap();
+    assert!(held.is_empty(), "read by a restore: {held:?}");
+    assert_eq!(second.status, Some(0), "{}", second.stderr);
+    assert!(
+        second.stderr.contains("does not restore; booting instead"),
+        "{}",
+        second.stderr
+    );
     let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
     assert_eq!(stopped.status, Some(0), "{}", stopped.stderr);
 }

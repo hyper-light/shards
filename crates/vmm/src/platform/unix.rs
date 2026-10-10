@@ -86,6 +86,20 @@ pub fn reserve_ram(len: usize) -> io::Result<NonNull<u8>> {
     reserve(len)
 }
 
+/// Keeps `ptr..ptr+len`, guest RAM from [`reserve_ram`], on the host's base pages: memory
+/// the guest touches sparsely, where each huge page would hold 2 MiB resident for the few
+/// KiB it uses (x86_64's first 2 MiB: 78 of 512 pages, PM M157). Advice only, given before
+/// the first touch: where it fails, or the kernel has no THP, the memory stays as it was.
+pub fn small_pages(ptr: NonNull<u8>, len: usize) {
+    #[cfg(all(target_os = "linux", not(miri)))]
+    // SAFETY: madvise(2) of guest RAM, which the caller maps.
+    if unsafe { libc::madvise(ptr.as_ptr().cast(), len, libc::MADV_NOHUGEPAGE) } != 0 {
+        crate::debug!("MADV_NOHUGEPAGE: {}", io::Error::last_os_error());
+    }
+    #[cfg(not(all(target_os = "linux", not(miri))))]
+    let _ = (ptr, len);
+}
+
 /// The kernel's transparent huge page size, if it has transparent huge pages.
 #[cfg(all(target_os = "linux", not(miri)))]
 fn huge_page_size() -> Option<usize> {
@@ -503,6 +517,69 @@ pub fn open_dir(path: &std::path::Path) -> io::Result<File> {
         .read(true)
         .custom_flags(libc::O_DIRECTORY)
         .open(path)
+}
+
+/// `root` joined with `rel`'s directories, each checked to be one (`lstat`), not a link to
+/// one elsewhere, and its names plain. A snapshot's directory is written by a VM process,
+/// which may leave links and FIFOs there before it gives the directory up (PM M165); it is
+/// read only once given up, so what is there no longer changes, and a check of each name
+/// holds for the open that follows. `root`, its reader's own, is followed as given.
+fn dirs_beneath(root: &std::path::Path, rel: &[&str]) -> io::Result<std::path::PathBuf> {
+    let mut path = root.to_path_buf();
+    for name in rel {
+        plain_name(name)?;
+        path.push(name);
+        if !std::fs::symlink_metadata(&path)?.is_dir() {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "not a directory"));
+        }
+    }
+    Ok(path)
+}
+
+/// The directory `rel` names beneath the directory at `root`, opened: no component below
+/// `root` a link ([`dirs_beneath`]).
+pub fn open_dir_beneath(root: &std::path::Path, rel: &[&str]) -> io::Result<File> {
+    open_dir(&dirs_beneath(root, rel)?)
+}
+
+/// The regular file `rel` names beneath the directory at `root`, opened for reading: no
+/// component below `root` a link, and a file that is not a regular one refused unopened
+/// (`lstat`), so that no FIFO is waited on, then checked again once open (PM M165).
+/// [`dirs_beneath`] says why a check of each name is enough.
+pub fn open_beneath(root: &std::path::Path, rel: &[&str]) -> io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let (name, dirs) = rel
+        .split_last()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no file named"))?;
+    plain_name(name)?;
+    let path = dirs_beneath(root, dirs)?.join(name);
+    let regular = |m: std::fs::Metadata| {
+        if m.file_type().is_file() {
+            Ok(())
+        } else {
+            Err(io::Error::new(io::ErrorKind::InvalidData, "not a regular file"))
+        }
+    };
+    regular(std::fs::symlink_metadata(&path)?)?;
+    // O_NONBLOCK leaves a regular file's reads as they are.
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(&path)?;
+    regular(file.metadata()?)?;
+    Ok(file)
+}
+
+/// `name`, if it names an entry of a directory and no more: not empty, `.` or `..`, and
+/// holding no `/` or NUL.
+fn plain_name(name: &str) -> io::Result<()> {
+    if name.is_empty() || name == "." || name == ".." || name.contains('/') || name.contains('\0') {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{name:?}: not a plain name"),
+        ));
+    }
+    Ok(())
 }
 
 /// Opens `name` for reading in the directory `dir` holds open: the file there, even if the
@@ -1177,6 +1254,34 @@ pub struct Usage {
     pub cpu_ns: u64,
 }
 
+/// Whether process `pid` has run anything of its own yet: `Some(false)` for one the host
+/// has made and not yet let run, which has made no system call and spent no user time.
+/// macOS admits each launch of an executable after it has assessed it, and the
+/// executables launched before it (PM M166): a process waiting there runs nothing, and
+/// what its stacks would show is nothing. `None` where it cannot be told, and on hosts
+/// without such a wait.
+pub fn launched(pid: u32) -> Option<bool> {
+    #[cfg(target_os = "macos")]
+    {
+        // SAFETY: a zeroed proc_taskinfo is a valid out-parameter, which proc_pidinfo
+        // fills up to its size.
+        let mut info: libc::proc_taskinfo = unsafe { std::mem::zeroed() };
+        let size = libc::c_int::try_from(std::mem::size_of::<libc::proc_taskinfo>()).ok()?;
+        let pid = libc::c_int::try_from(pid).ok()?;
+        // SAFETY: proc_pidinfo(3) writes at most `size` bytes into `info`.
+        let got = unsafe { libc::proc_pidinfo(pid, libc::PROC_PIDTASKINFO, 0, (&raw mut info).cast(), size) };
+        if got != size {
+            return None;
+        }
+        Some(info.pti_total_user > 0 || info.pti_syscalls_unix > 0 || info.pti_syscalls_mach > 0)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
 /// [`Usage`] of process `pid`, as the kernel keeps it: macOS's proc_pidinfo
 /// (PROC_PIDTASKINFO), its times in Mach absolute-time units converted by the timebase;
 /// Linux's /proc/PID/stat (utime, stime, in clock ticks) and /proc/PID/statm (resident
@@ -1268,5 +1373,185 @@ mod usage_tests {
         std::hint::black_box(x);
         assert!(after.resident > 0);
         assert!(after.cpu_ns > before.cpu_ns, "{before:?} {after:?}");
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+#[allow(clippy::unwrap_used)]
+mod launched_tests {
+    use super::*;
+
+    /// A process made and not yet let run, as one waiting in its launch is (PM M166),
+    /// has run nothing; this one, running, has.
+    #[test]
+    fn a_process_not_yet_run_is_told_from_one_running() {
+        let path = std::ffi::CString::new("/usr/bin/true").unwrap();
+        let argv = [path.as_ptr(), std::ptr::null()];
+        let env: [*const libc::c_char; 1] = [std::ptr::null()];
+        // SAFETY: an attribute object initialized, set and destroyed here; posix_spawn(2)
+        // of a NUL-terminated path with NULL-terminated argv and envp.
+        let pid = unsafe {
+            let mut attr: libc::posix_spawnattr_t = std::ptr::null_mut();
+            assert_eq!(libc::posix_spawnattr_init(&mut attr), 0);
+            let flags = libc::c_short::try_from(libc::POSIX_SPAWN_START_SUSPENDED).unwrap();
+            assert_eq!(libc::posix_spawnattr_setflags(&mut attr, flags), 0);
+            let mut pid: libc::pid_t = 0;
+            let rc = libc::posix_spawn(
+                &mut pid,
+                path.as_ptr(),
+                std::ptr::null(),
+                &attr,
+                argv.as_ptr().cast_mut().cast(),
+                env.as_ptr().cast_mut().cast(),
+            );
+            libc::posix_spawnattr_destroy(&mut attr);
+            assert_eq!(rc, 0);
+            pid
+        };
+        let suspended = launched(u32::try_from(pid).unwrap());
+        // SAFETY: kill(2) and waitpid(2) of the child made above.
+        unsafe {
+            libc::kill(pid, libc::SIGKILL);
+            libc::waitpid(pid, std::ptr::null_mut(), 0);
+        }
+        assert_eq!(suspended, Some(false));
+        assert_eq!(launched(std::process::id()), Some(true));
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod beneath_tests {
+    use super::*;
+    use std::io::Read as _;
+
+    /// What a VM process can leave in the directory of a snapshot it saves, before it
+    /// gives the directory up (PM M165), opened beneath it as a snapshot's files are: a
+    /// regular file is read; a link to a file outside, a link to a directory on the way
+    /// to one, a FIFO and a name that leaves are each refused, the FIFO unopened (opened,
+    /// it would wait here for a writer); a file not there is not found.
+    #[test]
+    fn a_snapshots_files_are_opened_beneath_it_alone() {
+        let root = std::env::temp_dir().join(format!("shards-beneath-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let outside = root.with_extension("outside");
+        std::fs::create_dir_all(root.join("g-1")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(root.join("g-1/state"), b"state").unwrap();
+        std::fs::write(outside.join("memory"), b"secret").unwrap();
+        std::os::unix::fs::symlink(outside.join("memory"), root.join("g-1/memory")).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("g-2")).unwrap();
+        let fifo = std::ffi::CString::new(root.join("g-1/working-set").into_os_string().into_encoded_bytes())
+            .unwrap();
+        // SAFETY: mkfifo(2) of a NUL-terminated path.
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+
+        let mut read = String::new();
+        open_beneath(&root, &["g-1", "state"])
+            .unwrap()
+            .read_to_string(&mut read)
+            .unwrap();
+        assert_eq!(read, "state");
+        // A writer waits on the FIFO until a reader opens it: the FIFO refused, it waits on.
+        let (tx, rx) = std::sync::mpsc::channel();
+        let writer_path = root.join("g-1/working-set");
+        let writer = std::thread::spawn(move || {
+            let opened = std::fs::OpenOptions::new().write(true).open(&writer_path);
+            let _ = tx.send(opened.is_ok());
+        });
+        assert_eq!(
+            open_beneath(&root, &["g-1", "working-set"]).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        assert!(
+            rx.recv_timeout(std::time::Duration::from_millis(200)).is_err(),
+            "the FIFO was opened for reading"
+        );
+        // Let the writer go.
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            let _reader = std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NONBLOCK)
+                .open(root.join("g-1/working-set"))
+                .unwrap();
+            assert!(rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap());
+        }
+        writer.join().unwrap();
+        for (rel, kind) in [
+            (&["g-1", "memory"][..], io::ErrorKind::InvalidData),
+            (&["g-1", "working-set"][..], io::ErrorKind::InvalidData),
+            (&["g-1", "absent"][..], io::ErrorKind::NotFound),
+            (&["..", "outside"][..], io::ErrorKind::InvalidInput),
+            (&["g-1/state"][..], io::ErrorKind::InvalidInput),
+        ] {
+            assert_eq!(open_beneath(&root, rel).unwrap_err().kind(), kind, "{rel:?}");
+        }
+        // A link to a directory on the way: refused by the open itself (ELOOP).
+        assert!(open_beneath(&root, &["g-2", "memory"]).is_err());
+        assert!(open_dir_beneath(&root, &["g-2"]).is_err());
+        assert!(open_dir_beneath(&root, &["g-1"]).is_ok());
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    /// What opening a snapshot's four files beneath its directory costs a restore, against
+    /// opening them by path as it did (PM M165): the pointer, state, memory and working
+    /// set, alternately one way and the other, ROUNDS times (`BENEATH_ROUNDS`, default
+    /// 20,000); nanoseconds a round.
+    #[test]
+    #[ignore = "a measurement: cargo test -p shards-vmm --release --lib -- --ignored --nocapture what_opening"]
+    fn what_opening_beneath_costs() {
+        let root = std::env::temp_dir().join(format!("shards-beneath-cost-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("g-1")).unwrap();
+        std::fs::write(root.join("current"), b"g-1\n").unwrap();
+        for name in ["state", "memory", "working-set"] {
+            std::fs::write(root.join("g-1").join(name), b"x").unwrap();
+        }
+        let rounds: usize = std::env::var("BENEATH_ROUNDS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(20_000);
+        let files: [&[&str]; 4] = [
+            &["current"],
+            &["g-1", "state"],
+            &["g-1", "memory"],
+            &["g-1", "working-set"],
+        ];
+        let (mut by_path, mut beneath) = (Vec::with_capacity(rounds), Vec::with_capacity(rounds));
+        for i in 0..rounds {
+            let path_round = || {
+                let t = std::time::Instant::now();
+                for rel in files {
+                    let p = rel.iter().fold(root.clone(), |p, n| p.join(n));
+                    drop(std::fs::File::open(p).unwrap());
+                }
+                t.elapsed().as_nanos()
+            };
+            let beneath_round = || {
+                let t = std::time::Instant::now();
+                for rel in files {
+                    drop(open_beneath(&root, rel).unwrap());
+                }
+                t.elapsed().as_nanos()
+            };
+            if i % 2 == 0 {
+                by_path.push(path_round());
+                beneath.push(beneath_round());
+            } else {
+                beneath.push(beneath_round());
+                by_path.push(path_round());
+            }
+        }
+        let stats = |v: &mut Vec<u128>| {
+            v.sort_unstable();
+            let q = |p: f64| v[((v.len() - 1) as f64 * p) as usize];
+            (q(0.5), q(0.9), q(0.99), v[v.len() - 1])
+        };
+        println!("n {rounds}, ns a round of four files: p50, p90, p99, max");
+        println!("by path:  {:?}", stats(&mut by_path));
+        println!("beneath:  {:?}", stats(&mut beneath));
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

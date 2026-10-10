@@ -8,12 +8,13 @@
 // else still holds, while THREADS threads have /usr/bin/true spawned as shards_ipc::spawn
 // spawns (posix_spawn, three descriptors given at 3 to 5, POSIX_SPAWN_CLOEXEC_DEFAULT on
 // macOS): here (`direct`), with FDS more descriptors open, as a daemon holds its VMs'; or
-// by a spawner (`spawner`), forked before this process opened anything else, to which
-// each thread sends the three descriptors and which answers once posix_spawn returns.
-// Also timed: posix_spawn itself, here or there; and, for `spawner`, the round trip alone
+// by a spawner, forked before this process opened anything else (`spawner`) or made from
+// this program anew (`exec-spawner`, as the daemon makes `shards spawner`), to which each
+// thread sends the three descriptors and which answers once posix_spawn returns. Also
+// timed: posix_spawn itself, here or there; and, through a spawner, the round trip alone
 // (a request whose three descriptors the spawner closes and answers at once), first.
 //
-//     cargo run --release -- direct|spawner THREADS SECONDS FDS
+//     cargo run --release -- direct|spawner|exec-spawner THREADS SECONDS FDS [PACE_US]
 use std::io::{ErrorKind, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
@@ -154,6 +155,39 @@ fn spawner(conns: Vec<UnixStream>) -> ! {
     unsafe { libc::_exit(0) }
 }
 
+/// This program made again as a spawner (`serve`), `conns` at 3 and on, and nothing else:
+/// as the daemon makes `shards spawner`.
+fn serve(conns: &[UnixStream]) {
+    // Above every number they go to, so that none is overwritten before it is read.
+    let high: Vec<OwnedFd> = conns
+        .iter()
+        // SAFETY: fcntl(2) duplicating a descriptor we hold, into one we then own.
+        .map(|c| unsafe { OwnedFd::from_raw_fd(libc::fcntl(c.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 100)) })
+        .collect();
+    let exe = std::ffi::CString::new(std::env::current_exe().unwrap().into_os_string().into_encoded_bytes()).unwrap();
+    let n = std::ffi::CString::new(conns.len().to_string()).unwrap();
+    let serve_arg = c"serve";
+    // SAFETY: as spawn's.
+    unsafe {
+        let mut actions: libc::posix_spawn_file_actions_t = std::mem::zeroed();
+        libc::posix_spawn_file_actions_init(&mut actions);
+        for (i, fd) in high.iter().enumerate() {
+            libc::posix_spawn_file_actions_adddup2(&mut actions, fd.as_raw_fd(), 3 + i as RawFd);
+        }
+        let mut attr: libc::posix_spawnattr_t = std::mem::zeroed();
+        libc::posix_spawnattr_init(&mut attr);
+        #[cfg(target_vendor = "apple")]
+        libc::posix_spawnattr_setflags(&mut attr, libc::POSIX_SPAWN_CLOEXEC_DEFAULT as libc::c_short);
+        let argv = [exe.as_ptr().cast_mut(), serve_arg.as_ptr().cast_mut(), n.as_ptr().cast_mut(), std::ptr::null_mut()];
+        let envp: [*mut libc::c_char; 1] = [std::ptr::null_mut()];
+        let mut pid = 0;
+        let rc = libc::posix_spawn(&mut pid, exe.as_ptr(), &actions, &attr, argv.as_ptr(), envp.as_ptr());
+        assert_eq!(rc, 0, "spawning the spawner: {}", std::io::Error::from_raw_os_error(rc));
+        libc::posix_spawnattr_destroy(&mut attr);
+        libc::posix_spawn_file_actions_destroy(&mut actions);
+    }
+}
+
 fn null() -> OwnedFd {
     std::fs::File::open("/dev/null").unwrap().into()
 }
@@ -217,24 +251,41 @@ fn main() {
     let threads: usize = arg(2).and_then(|v| v.parse().ok()).unwrap_or(4);
     let secs: u64 = arg(3).and_then(|v| v.parse().ok()).unwrap_or(10);
     let extra: usize = arg(4).and_then(|v| v.parse().ok()).unwrap_or(0);
-    let via_spawner = match mode.as_str() {
-        "direct" => false,
-        "spawner" => true,
-        other => panic!("unknown mode {other:?}: direct or spawner"),
+    // With PACE_US, each thread waits that long between spawns, and nothing is let go of:
+    // a spawn on a quiet host, timed as its requester sees it.
+    let pace: u64 = arg(5).and_then(|v| v.parse().ok()).unwrap_or(0);
+    // The spawner `exec-spawner` makes, this program again: its connections at 3 and on.
+    if mode == "serve" {
+        let n: RawFd = arg(2).and_then(|v| v.parse().ok()).unwrap_or(0);
+        // SAFETY: descriptors 3 to 3+n are the connections this process was made with.
+        let conns = (3..3 + n).map(|fd| unsafe { UnixStream::from_raw_fd(fd) }).collect();
+        spawner(conns)
+    }
+    let (via_spawner, exec) = match mode.as_str() {
+        "direct" => (false, false),
+        "spawner" => (true, false),
+        "exec-spawner" => (true, true),
+        other => panic!("unknown mode {other:?}: direct, spawner or exec-spawner"),
     };
-    // The spawner first, while this process holds nothing but its connections to it.
+    // The spawner first, while this process holds nothing but its connections to it:
+    // forked, or this program made again (`serve`), as the daemon makes `shards spawner`.
     let mut conns = Vec::new();
     if via_spawner {
         let (ours, theirs): (Vec<_>, Vec<_>) = (0..threads).map(|_| UnixStream::pair().unwrap()).unzip();
-        // SAFETY: fork(2) while this process has one thread; the child runs only the
-        // spawner, which ends with _exit.
-        match unsafe { libc::fork() } {
-            0 => {
-                drop(ours);
-                spawner(theirs)
+        if exec {
+            serve(&theirs);
+            conns = ours;
+        } else {
+            // SAFETY: fork(2) while this process has one thread; the child runs only the
+            // spawner, which ends with _exit.
+            match unsafe { libc::fork() } {
+                0 => {
+                    drop(ours);
+                    spawner(theirs)
+                }
+                -1 => panic!("fork: {}", std::io::Error::last_os_error()),
+                _ => conns = ours,
             }
-            -1 => panic!("fork: {}", std::io::Error::last_os_error()),
-            _ => conns = ours,
         }
     }
     let held: Vec<OwnedFd> = (0..extra).map(|_| null()).collect();
@@ -252,19 +303,22 @@ fn main() {
     }
     let stop = AtomicBool::new(false);
     let spawns = Mutex::new(Vec::<Duration>::new());
+    let seen = Mutex::new(Vec::<Duration>::new());
     let (mut listener_holds, mut pipe_holds) = (Vec::new(), Vec::new());
     let (mut listener_drops, mut pipe_drops) = (0u64, 0u64);
     std::thread::scope(|s| {
         for t in 0..threads {
-            let (stop, spawns, conn) = (&stop, &spawns, conns.get(t));
+            let (stop, spawns, seen, conn) = (&stop, &spawns, &seen, conns.get(t));
             s.spawn(move || {
                 let given = [null(), null(), null()];
                 let raw = given.each_ref().map(|f| f.as_raw_fd());
-                let mut took = Vec::new();
+                let (mut took, mut saw) = (Vec::new(), Vec::new());
                 while !stop.load(Ordering::Relaxed) {
+                    let began = Instant::now();
                     match conn {
                         None => {
                             let (pid, t) = spawn(&raw);
+                            saw.push(began.elapsed());
                             took.push(t);
                             reap(pid);
                         }
@@ -272,22 +326,30 @@ fn main() {
                             send_fds(conn.as_raw_fd(), b's', &raw);
                             let mut reply = [0u8; 8];
                             (&*conn).read_exact(&mut reply).unwrap();
+                            saw.push(began.elapsed());
                             took.push(Duration::from_nanos(u64::from_le_bytes(reply)));
                         }
                     }
+                    if pace > 0 {
+                        std::thread::sleep(Duration::from_micros(pace));
+                    }
                 }
                 spawns.lock().unwrap().extend(took);
+                seen.lock().unwrap().extend(saw);
             });
         }
         let port = std::net::TcpListener::bind("0.0.0.0:0").unwrap().local_addr().unwrap().port();
         let end = Instant::now() + Duration::from_secs(secs);
-        while Instant::now() < end {
+        while pace == 0 && Instant::now() < end {
             if let Some(hold) = listener_round(port) {
                 listener_drops += 1;
                 listener_holds.extend(hold);
             }
             pipe_drops += 1;
             pipe_holds.extend(pipe_round());
+        }
+        if pace > 0 {
+            std::thread::sleep(end.saturating_duration_since(Instant::now()));
         }
         stop.store(true, Ordering::Relaxed);
     });
@@ -300,6 +362,7 @@ fn main() {
         println!("  round trip alone: {}", stats(pings, "us"));
     }
     println!("  posix_spawn: {}", stats(spawns.into_inner().unwrap(), "us"));
+    println!("  spawn as its requester saw it: {}", stats(seen.into_inner().unwrap(), "us"));
     println!(
         "  listener: {listener_drops} let go, {} held: {}",
         listener_holds.len(),

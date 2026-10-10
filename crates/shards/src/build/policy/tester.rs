@@ -780,6 +780,8 @@ fn run(path: &str, opts: &TestOptions, provider: Option<&dyn TestProvider>) -> R
             names: Vec::new(),
             denied: RefCell::new(Vec::new()),
             trust: signatures::Trust::default(),
+            // A test's policies ask for no network proxy (D110).
+            proxy: false,
         },
     });
     let mut summary = TestSummary {

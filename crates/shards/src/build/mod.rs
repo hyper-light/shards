@@ -42,6 +42,7 @@ mod compress;
 pub(crate) mod domains;
 mod estargz;
 mod exec;
+pub mod gc;
 mod gha;
 mod git;
 pub(crate) mod http;
@@ -52,6 +53,7 @@ mod output;
 mod policy;
 pub(crate) mod policy_command;
 mod provenance;
+mod proxy;
 mod remote;
 mod s3;
 pub(crate) mod sbom;
@@ -118,6 +120,13 @@ pub fn build(args: impl Iterator<Item = OsString>) -> ExitCode {
     // What a check (`--call=check`) ends with, which says no error of its own.
     let status = std::cell::Cell::new(0u8);
     let r = run(&parsed, &status);
+    // The build cache collected once a build is done, as BuildKit's controller runs its
+    // GC after each (D114); its failure is no build's.
+    if let Ok(home) = shards_ipc::home()
+        && let Ok(store) = crate::pull::store(&home)
+    {
+        let _ = gc::after_build(&home, &store);
+    }
     if let Some(s) = stdin {
         let _ = std::fs::remove_file(&s.path);
     }
@@ -701,6 +710,38 @@ impl StepLog {
 }
 
 /// How many vCPUs a builder has: the host's, as BuildKit's steps may use them all.
+/// Step `op`'s key from what it reads of its inputs (D114): of each input it reads, the
+/// digest of what it reads ([`cache::reads`]), of the others their keys (`keys`). None where
+/// a path it reads is not there, which the step then finds as it runs.
+fn read_key(
+    op: &shards_dockerfile::llb::Op,
+    reads: &[Option<Vec<cache::Selector>>],
+    inputs: &[exec::Ref],
+    keys: &[&str],
+    digests: &mut cache::Digests,
+    sources: &mut shards_build::data::Sources,
+) -> Result<Option<String>, String> {
+    let mut read: Vec<Option<String>> = Vec::with_capacity(reads.len());
+    for (sels, input) in reads.iter().zip(inputs) {
+        read.push(match sels {
+            Some(sels) => match digests.reads(&input.fs, sels, sources)? {
+                Some(d) => Some(d),
+                None => return Ok(None),
+            },
+            None => None,
+        });
+    }
+    let deps: Vec<cache::Dep<'_>> = read
+        .iter()
+        .zip(keys)
+        .map(|(d, k)| match d {
+            Some(d) => cache::Dep::Read(d),
+            None => cache::Dep::Key(k),
+        })
+        .collect();
+    Ok(Some(cache::op_key(op, &deps)))
+}
+
 fn builder_cpus() -> u32 {
     std::thread::available_parallelism().map_or(1, |n| u32::try_from(n.get()).unwrap_or(u32::MAX))
 }
@@ -1613,6 +1654,35 @@ impl policy::Resolve for NoMeta {
     }
 }
 
+/// What a step's requests through the build's proxy came to, in the build's provenance
+/// (D110): each material an HTTP source of its, and each that is none named by the step's
+/// `vertex` and `command`, as BuildKit's provenance names them.
+fn proxy_provenance(
+    c: &proxy::capture::Capture,
+    vertex: &str,
+    command: &str,
+    materials: &mut Vec<provenance::Material>,
+    incomplete: &mut Vec<provenance::ProxyIncomplete>,
+) {
+    for m in c.materials() {
+        let (algorithm, hex) = m.digest.split_once(':').unwrap_or(("sha256", &m.digest));
+        materials.push(provenance::Material {
+            uri: m.url,
+            algorithm: algorithm.to_string(),
+            hex: hex.to_string(),
+        });
+    }
+    for i in &c.incomplete {
+        incomplete.push(provenance::ProxyIncomplete {
+            op: vertex.to_string(),
+            name: command.to_string(),
+            method: i.method.clone(),
+            uri: i.url.clone(),
+            reason: i.reason.to_string(),
+        });
+    }
+}
+
 /// buildx's main: each message of a policy's refusal, before the error
 /// (policysession.DenyMessages).
 fn policy_said(messages: &[String]) {
@@ -1879,7 +1949,12 @@ fn policies_of(
         return Ok(None);
     };
     *step.name.borrow_mut() = format!("loading policies {}", policies.names.join(", "));
-    policies.check_caps(step)?;
+    let mut policies = policies;
+    policies.proxy = policies.check_caps(step)?;
+    // Said once a build, after every policy's caps, as buildx says it (build/opt.go).
+    if policies.proxy && multi::with(|sub| sub.first).unwrap_or(true) {
+        policy::Log::line(step, "policy enabled network proxy");
+    }
     Ok(Some(policies))
 }
 
@@ -3069,6 +3144,32 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
         }
     }
     let log_limits = LogLimits::from_env();
+    // The build's proxy, where its policies ask for it (D110), made with its builder, which
+    // goes before it; each step's vertex as BuildKit's solver knows it, to name the step a
+    // request that is no material came from.
+    let proxy_cap = policies.as_ref().is_some_and(|p| p.proxy);
+    // Each request through the proxy, checked by the build's policies as an HTTP source,
+    // as BuildKit's handler asks them, on the build's thread: refused where they refuse
+    // it, their denial never left for a later error. Only an image's pin converts a
+    // source, so a request is allowed or refused.
+    let check_request = |_method: &str, url: &str| -> bool {
+        let Some(p) = &policies else { return true };
+        let verdict = p.evaluate(
+            &policy::Source::new(url),
+            None,
+            &PolicyMeta { bases: &bases },
+            &policy_step,
+        );
+        p.denied.borrow_mut().clear();
+        matches!(verdict, Ok(None))
+    };
+    let mut build_proxy: Option<proxy::Proxy> = None;
+    let vertices = if proxy_cap {
+        provenance::vertex_digests(&def, true)
+    } else {
+        Vec::new()
+    };
+    let mut proxy_incomplete: Vec<provenance::ProxyIncomplete> = Vec::new();
     let mut builder: Option<builder::Builder> = None;
     // Its steps' seccomp filter, compiled once for the kernel the builder boots.
     let mut step_filter: Vec<u8> = Vec::new();
@@ -3077,9 +3178,31 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
     // provenance.
     let (mut git_materials, mut http_materials): (Vec<provenance::Material>, Vec<provenance::Material>) =
         (Vec::new(), Vec::new());
-    // Each operation's cache key (D50), where it has one: none where an input has none.
+    // Each operation's cache key (D50), the one its result is known by, where it has one:
+    // none where an input has none. And the digests of what the build's steps read
+    // (D114), each taken once.
     let mut keys: Vec<Option<String>> = Vec::with_capacity(def.ops.len());
+    let mut digests = cache::Digests::default();
     let no_cache = parsed.bool("no-cache");
+    // The caches of each step not answered from the cache start empty: their records are
+    // let go of before any step runs, as BuildKit's solver lets them go as it loads the
+    // definition (D114; llbsolver `detectPrunedCacheID`).
+    for (op, meta) in def.ops.iter().zip(&def.metadata) {
+        let OpKind::Exec { mounts, .. } = &op.kind else {
+            continue;
+        };
+        if !no_cache && !meta.ignore_cache {
+            continue;
+        }
+        for m in mounts {
+            if let shards_dockerfile::llb::OpMountKind::Cache { id, .. } = &m.kind {
+                let id = if id.is_empty() { &m.dest } else { id };
+                store
+                    .prune_mounts(&show(id), m.input != -1)
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+    }
     // What other operations read, so a base image is unpacked only when one does.
     let read: std::collections::HashSet<usize> = def
         .ops
@@ -3149,42 +3272,115 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
             op.kind,
             OpKind::Exec { .. } | OpKind::File { .. } | OpKind::Merge | OpKind::Skills { .. }
         );
-        let key = if step {
-            op.inputs
-                .iter()
-                .map(|inp| keys.get(inp.op).and_then(|k| k.as_deref()))
-                .collect::<Option<Vec<&str>>>()
-                .map(|ks| cache::op_key(op, &ks))
-        } else {
-            None
+        // A step with the network under the build's proxy (D110) is keyed apart, by
+        // either of its keys.
+        let proxied = proxy_cap
+            && matches!(&op.kind, OpKind::Exec { network, .. } if *network != shards_dockerfile::llb::NetMode::None);
+        let apart = |k: String| if proxied { cache::proxied_key(&k) } else { k };
+        // Its keys (D114): from each input's own key, which a build that changed nothing
+        // the step reads finds at once; and, asked only where that one finds nothing, from
+        // what it reads of each input, as BuildKit's solver asks a content checksum. Its
+        // result is known by the second, where it reads any input.
+        let input_keys: Option<Vec<&str>> = op
+            .inputs
+            .iter()
+            .map(|inp| keys.get(inp.op).and_then(|k| k.as_deref()))
+            .collect();
+        let fast = match (step, &input_keys) {
+            (true, Some(ks)) => Some(apart(cache::op_key(
+                op,
+                &ks.iter().map(|k| cache::Dep::Key(k)).collect::<Vec<_>>(),
+            ))),
+            _ => None,
+        };
+        let reads = if step { cache::reads(op) } else { Vec::new() };
+        let reads_any = reads.iter().any(Option::is_some);
+        let mut slow: Option<String> = None;
+        // Its record, here or in a --cache-from cache, its layers fetched now.
+        let lookup = |k: &str| -> Result<Option<Vec<u8>>, String> {
+            match store.cache_get(k).map_err(|e| e.to_string())? {
+                None if imported.take(k, &store)? => store.cache_get(k).map_err(|e| e.to_string()),
+                held => Ok(held),
+            }
         };
         // A step marked IgnoreCache (--no-cache-filter's stages) is run, and its result
         // kept, as BuildKit's solver does: the cache is not asked for it.
+        let mut hit: Option<(String, Vec<u8>)> = None;
         if !no_cache
             && !meta.ignore_cache
-            && let Some(k) = key.as_deref()
-            && let Some(body) = match store.cache_get(k).map_err(|e| e.to_string())? {
-                // Not here: from a --cache-from cache, its layers fetched now.
-                None if imported.take(k, &store)? => store.cache_get(k).map_err(|e| e.to_string())?,
-                held => held,
-            }
+            && let Some(f) = fast.as_deref()
         {
+            if let Some(body) = lookup(f)? {
+                hit = Some((f.to_string(), body));
+            } else if reads_any && let Some(ks) = &input_keys {
+                slow = read_key(op, &reads, &inputs, ks, &mut digests, &mut exec.sources)?.map(apart);
+                if let Some(s) = slow.as_deref()
+                    && s != f
+                    && let Some(body) = lookup(s)?
+                {
+                    hit = Some((s.to_string(), body));
+                }
+            }
+        }
+        // A proxied step's record is taken only where the build's policies still let each
+        // of its requests go (D110); one they refuse now runs the step again, its requests
+        // asked again as they come. BuildKit asks nothing of a cached step.
+        let hit = match hit {
+            Some((k, body)) if proxied => match cache::decode_proxied(&body) {
+                Ok((outputs, c)) => c
+                    .allowed
+                    .iter()
+                    .all(|(method, url)| check_request(method, url))
+                    .then_some((k, body, Ok((outputs, Some(c))))),
+                Err(e) => Some((k, body, Err(e))),
+            },
+            Some((k, body)) => {
+                let decoded = cache::decode(&body).map(|outputs| (outputs, None));
+                Some((k, body, decoded))
+            }
+            None => None,
+        };
+        if let Some((k, body, decoded)) = hit {
             let v = progress.borrow_mut().start(&name);
-            let outs: Vec<exec::Ref> = cache::decode(&body)
-                .and_then(|outputs| {
-                    outputs
-                        .into_iter()
-                        .map(|layers| exec.image(layers, None))
-                        .collect()
-                })
+            let (outputs, captured) = decoded.map_err(|e| fail(&v, &e))?;
+            // Found by what it reads: its inputs' own keys find it next time.
+            if let Some(f) = fast.as_deref()
+                && f != k
+            {
+                let blobs = outputs
+                    .iter()
+                    .flatten()
+                    .map(|l| Digest::parse(&show(&l.digest)).map_err(|e| e.to_string()))
+                    .collect::<Result<Vec<_>, String>>()?;
+                let own = outputs.first().and_then(|o| o.last()).map_or(0, |l| l.size);
+                store
+                    .cache_put(f, &blobs, own, &String::from_utf8_lossy(&body))
+                    .map_err(|e| e.to_string())?;
+            }
+            let outs: Vec<exec::Ref> = outputs
+                .into_iter()
+                .map(|layers| exec.image(layers, None))
+                .collect::<Result<_, String>>()
                 .map_err(|e| fail(&v, &e))?;
             progress.borrow().cached(&v);
             guard(meta, &inputs, &outs, &plan.domains, &store).map_err(|e| fail(&v, &e))?;
-            store.cache_used(k).map_err(|e| e.to_string())?;
+            store.cache_used(&k).map_err(|e| e.to_string())?;
+            // What its requests came to when it ran, in this build's provenance too.
+            if let (Some(c), OpKind::Exec { process, .. }) = (&captured, &op.kind) {
+                proxy_provenance(
+                    c,
+                    vertices.get(i).map_or("", String::as_str),
+                    &show(&process.args.join(&b' ')),
+                    &mut http_materials,
+                    &mut proxy_incomplete,
+                );
+            }
             results.push(outs);
-            keys.push(key);
+            keys.push(Some(cache::known_as(&body).unwrap_or(k)));
             continue;
         }
+        // What a proxied step's requests came to, for its record.
+        let mut step_capture: Option<proxy::capture::Capture> = None;
         let outs = match &op.kind {
             OpKind::Source { identifier, .. }
                 if identifier.starts_with(b"docker-image://") || identifier.starts_with(b"oci-layout://") =>
@@ -3427,12 +3623,16 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
                             (g.kernel, g.init)
                         }
                     };
+                    if proxy_cap {
+                        build_proxy = Some(builder::proxy(&limits).map_err(|e| fail(&v, &e))?);
+                    }
                     let boot = builder::Boot {
                         kernel: &guest.0,
                         init: &guest.1,
                         cpus: builder_cpus(),
                         memory_mib: builder_memory_mib(),
                         bases: &run_bases,
+                        proxy: build_proxy.as_ref(),
                     };
                     let kernel = crate::guest::version_of(&guest.0).map_err(|e| fail(&v, &e))?;
                     step_filter = crate::setup::step_seccomp(kernel).map_err(|e| fail(&v, &e))?;
@@ -3441,6 +3641,11 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
                 let Some(b) = builder.as_mut() else {
                     return Err(fail(&v, "the builder is gone"));
                 };
+                let input_keys: Vec<Option<String>> = op
+                    .inputs
+                    .iter()
+                    .map(|inp| keys.get(inp.op).cloned().flatten())
+                    .collect();
                 let op = exec::RunOp {
                     process,
                     mounts,
@@ -3457,14 +3662,31 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
                     agents: &agents,
                     resources: meta.linux_resources.as_ref(),
                     cdi: cdi_edits.get(&i),
+                    proxy: build_proxy.as_ref(),
+                    input_keys: &input_keys,
                 };
                 let mut log = StepLog::new(log_limits);
-                let r = exec.run(b, &inputs, &op, &name, &mut |which, bytes| {
-                    log.write(&progress.borrow(), &v, which, bytes)
-                });
+                let r = exec.run(
+                    b,
+                    &inputs,
+                    &op,
+                    &name,
+                    &mut |which, bytes| log.write(&progress.borrow(), &v, which, bytes),
+                    &mut |method, url| check_request(method, url),
+                );
                 log.end(&progress.borrow(), &v);
-                let r = r.map_err(|e| fail(&v, &e))?;
+                let (r, capture) = r.map_err(|e| fail(&v, &e))?;
                 progress.borrow().done(&v);
+                if let Some(c) = &capture {
+                    proxy_provenance(
+                        c,
+                        vertices.get(i).map_or("", String::as_str),
+                        &show(&process.args.join(&b' ')),
+                        &mut http_materials,
+                        &mut proxy_incomplete,
+                    );
+                }
+                step_capture = capture;
                 r
             }
         };
@@ -3490,16 +3712,24 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
             // (`local.unique`), which differ from build to build where its files do not.
             OpKind::Source { identifier, .. } => match outs.first() {
                 Some(r) => {
-                    let content = cache::content_key(&r.fs, &mut exec.sources)?;
+                    let content = digests.root(&r.fs, &mut exec.sources)?;
                     Some(cache::source_key(identifier, &content))
                 }
                 None => None,
             },
             _ => {
+                // Known by what it reads, where it reads any input.
+                if reads_any
+                    && slow.is_none()
+                    && let Some(ks) = &input_keys
+                {
+                    slow = read_key(op, &reads, &inputs, ks, &mut digests, &mut exec.sources)?.map(apart);
+                }
+                let known = slow.clone().or_else(|| fast.clone());
                 let layered = outs.iter().all(|r| {
                     matches!(r.stack, shards_build::stack::Stack::Known(_)) && r.stack.follows(r.fs.tree())
                 });
-                if let Some(k) = key.as_deref()
+                if let Some(k) = known.as_deref()
                     && layered
                 {
                     let layers: Vec<Vec<Layer>> = outs.iter().map(|r| r.layers.clone()).collect();
@@ -3510,11 +3740,21 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
                         .collect::<Result<Vec<_>, String>>()?;
                     // What the step made itself: its root output's last layer.
                     let own = outs.first().and_then(|r| r.layers.last()).map_or(0, |l| l.size);
-                    store
-                        .cache_put(k, &blobs, own, &cache::encode(&layers)?)
-                        .map_err(|e| e.to_string())?;
+                    // A proxied step's record keeps its requests (D110).
+                    let body = match &step_capture {
+                        Some(c) if proxied => cache::encode_proxied(k, &layers, c)?,
+                        _ => cache::encode(k, &layers)?,
+                    };
+                    for under in [Some(k), fast.as_deref().filter(|f| *f != k)]
+                        .into_iter()
+                        .flatten()
+                    {
+                        store
+                            .cache_put(under, &blobs, own, &body)
+                            .map_err(|e| e.to_string())?;
+                    }
                 }
-                key
+                known
             }
         };
         results.push(outs);
@@ -3609,6 +3849,8 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
             secrets,
             ssh,
             network,
+            // Every step with the network had the proxy's alone (D110).
+            proxy: (proxy_cap && network).then(|| std::mem::take(&mut proxy_incomplete)),
             max: None,
             sboms,
         }
@@ -3670,6 +3912,20 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
             .borrow_mut()
             .start("[internal] checking the domains' isolation");
         domains::check(&r.fs, &plan.domains).map_err(|e| fail_export(&progress, &v, &e))?;
+        // Its command beside them, as its run holds it (D115): none of their IDs.
+        let passwd = exec
+            .user_file(&r.fs, b"/etc/passwd")
+            .map_err(|e| fail_export(&progress, &v, &e))?;
+        let group = exec
+            .user_file(&r.fs, b"/etc/group")
+            .map_err(|e| fail_export(&progress, &v, &e))?;
+        domains::user(
+            &plan.image.config.user,
+            passwd.as_deref(),
+            group.as_deref(),
+            plan.domains.len(),
+        )
+        .map_err(|e| fail_export(&progress, &v, &e))?;
         progress.borrow().done(&v);
     }
     // The filesystem outputs, from the snapshot itself: its times to the nanosecond,

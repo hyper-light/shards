@@ -1179,8 +1179,13 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             .map(|(_, size, _)| (*size).max(0))
             .sum();
         let templates = self.home.join("templates");
+        // Each template a directory: the daemon's record of each is a file beside it.
         let t_total = std::fs::read_dir(&templates)
-            .map(|d| d.flatten().count())
+            .map(|d| {
+                d.flatten()
+                    .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+                    .count()
+            })
             .unwrap_or(0);
         let t_size = i64::try_from(on_disk(&templates)).unwrap_or(i64::MAX);
         let (format, verbose) = (parsed.string("format"), parsed.bool("verbose"));
@@ -1213,7 +1218,10 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                 .collect();
             // The build cache's records (D50): each step's own layer, shared where an image
             // holds it too, reclaimable where not; none is in use, no build running here.
-            let (mut b_total, mut b_size, mut b_free, mut cache_rows) = (0usize, 0i64, 0i64, Vec::new());
+            // Then the cache mounts' (D114), in use while a step holds one.
+            let (mut b_total, mut b_active, mut b_size, mut b_free, mut cache_rows) =
+                (0usize, 0usize, 0i64, 0i64, Vec::new());
+            let ns = |s: i64| i128::from(s) * 1_000_000_000;
             if let Ok(Some(store)) = self.store() {
                 let held = store.referenced_blobs().unwrap_or_default();
                 for e in store.cache_entries().unwrap_or_default() {
@@ -1224,11 +1232,26 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                     if !shared {
                         b_free = b_free.saturating_add(size);
                     }
-                    let ns = |s: i64| i128::from(s) * 1_000_000_000;
                     cache_rows.push(serde_json::json!({
                         "id": e.key.get(..25).unwrap_or(&e.key), "type": "regular", "size": size,
                         "shared": shared, "created": ns(e.created).to_string(),
                         "last_used": ns(e.last_used).to_string(), "usage": e.usage,
+                    }));
+                }
+                for e in store.mount_entries().unwrap_or_default() {
+                    let size = i64::try_from(e.size).unwrap_or(i64::MAX);
+                    b_total += 1;
+                    b_size = b_size.saturating_add(size);
+                    if e.in_use {
+                        b_active += 1;
+                    } else {
+                        b_free = b_free.saturating_add(size);
+                    }
+                    cache_rows.push(serde_json::json!({
+                        "id": e.id, "type": "exec.cachemount", "size": size, "shared": false,
+                        "in_use": e.in_use, "description": e.description,
+                        "created": ns(e.created).to_string(), "last_used": ns(e.last_used).to_string(),
+                        "usage": e.usage,
                     }));
                 }
             }
@@ -1245,7 +1268,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                         "UsageData": {"RefCount": refs, "Size": size},
                     }))
                     .collect()),
-                "build_cache": kind(b_total, 0, b_size, b_free, cache_rows),
+                "build_cache": kind(b_total, b_active, b_size, b_free, cache_rows),
             });
             let mut sheet = shards_ipc::Sheet::new("df-rows");
             sheet.record(&[("rows", rows.to_string())]);
@@ -1502,6 +1525,13 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                     reclaimed = reclaimed.saturating_add(i64::try_from(e.size).unwrap_or(i64::MAX));
                 }
                 removed_cache.push(e.key.get(..25).unwrap_or(&e.key).to_string());
+            }
+            // And the cache mounts' records no step holds (D114).
+            for e in store.mount_entries().unwrap_or_default() {
+                if store.remove_mount(&e.id).unwrap_or(false) {
+                    reclaimed = reclaimed.saturating_add(i64::try_from(e.size).unwrap_or(i64::MAX));
+                    removed_cache.push(e.id);
+                }
             }
             if !removed_cache.is_empty() {
                 self.collect_soon();

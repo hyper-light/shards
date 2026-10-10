@@ -4662,6 +4662,115 @@ revision before comparing a changed API/implementation.
   - In those runs the frontend's own time was 4.4–7.8 ms for shards and 11.4–13.8 ms for
     docker/dockerfile.
 
+### M140. Where a cache mount keeps its files, and what keeping them costs a build
+
+- **Question.** `RUN --mount=type=cache` kept across builds (D114) needs a home outside
+  the builder microVM, which goes with its build. The candidates were the virtio-fs share
+  (`shards run -v`'s device, D38) and the guest's own filesystems over something the host
+  keeps (a block device, or the layers a build keeps). How fast is each for what package
+  managers do with a cache, and what does moving a cache in and out cost a build?
+- **Method.** `docs/research/measurements/cachefs/cachefs.py` with `fsbench.rs` (built
+  static for the guest): in one builder step, each phase in turn on a cache mount (the
+  record's layers under the builder's memory, D114) and on a tmpfs mount (the builder's
+  memory, where caches lived before D114), interleaved and each first in turn; the same
+  phases on a virtio-fs share and the run's tmpfs (`shards run -v`, `--tmpfs`); a cache an
+  earlier build filled (10,000 files of 4 KiB in 100 directories, 2 of 128 MiB) read back;
+  and the wall time of builds that mount that cache and do nothing, or fill a cache, each
+  against its empty or tmpfs twin. Phases: create, stat, read, rename and delete of the
+  small files, then the large ones written and read, a MiB at a time. Apple M5 Max, macOS
+  26.4.1, revision f6d11c2 (D114), 2026-10-09, load averages 68.7, 72.3 and 74.9 at its end
+  (other builds and Docker Desktop's VM). That run passed `--no-cache` to every build,
+  which at f6d11c2 kept a step's caches; since D114 lets them go, the harness gives each
+  build's step an `ENV` of its own instead, and refuses a warm build whose cache it had to
+  fill (fsbench says so). Milliseconds:
+
+  | phase | cache mount, n=20, p50 / p90 / p99 / max | builder tmpfs, n=20 | virtio-fs share, n=3 |
+  |---|---|---|---|
+  | create | 28.3 / 32.3 / 38.3 / 38.3 | 15.8 / 16.8 / 23.4 / 23.4 | 107889 / 114197 / 114197 / 114197 |
+  | stat | 7.4 / 8.4 / 10.8 / 10.8 | 5.1 / 5.9 / 7.2 / 7.2 | 6380 / 15723 / 15723 / 15723 |
+  | read | 16.6 / 17.2 / 23.1 / 23.1 | 13.2 / 15.3 / 16.2 / 16.2 | 22242 / 49611 / 49611 / 49611 |
+  | rename | 18.4 / 19.6 / 23.3 / 23.3 | 9.9 / 12.4 / 12.8 / 12.8 | 50484 / 126640 / 126640 / 126640 |
+  | delete | 16.9 / 18.3 / 25.0 / 25.0 | 9.3 / 11.6 / 13.7 / 13.7 | 31659 / 90593 / 90593 / 90593 |
+  | 256 MiB written | 14.7 / 33.4 / 34.3 / 34.3 | 14.3 / 18.3 / 20.6 / 20.6 | 4490 / 6548 / 6548 / 6548 |
+  | 256 MiB read | 9.9 / 10.4 / 12.3 / 12.3 | 10.0 / 12.5 / 13.3 / 13.3 | 5002 / 6000 / 6000 / 6000 |
+
+  All p50 / p90 / p99 / max; with n=3 or n=5 the last three are the slowest. The run's own
+  tmpfs beside the share (n=3): create 15.8 / 17.0 / 17.0 / 17.0, stat 4.7 / 4.7 / 4.7 /
+  4.7, read 12.6 / 12.8 / 12.8 / 12.8, rename 10.0 / 10.2 / 10.2 / 10.2, delete 8.7 / 8.9 /
+  8.9 / 8.9, large write 16.0 / 18.8 / 18.8 / 18.8, large read 11.5 / 11.6 / 11.6 / 11.6. A
+  cache an earlier build filled, read back (n=20): stat 9.3 / 14.8 / 15.2 / 15.2, read 20.3
+  / 22.6 / 23.0 / 23.0, large read 9.0 / 12.2 / 15.8 / 15.8, against the step's tmpfs filled
+  in place: stat 6.4 / 6.7 / 7.3 / 7.3, read 13.3 / 14.0 / 14.5 / 14.5, large read 8.8 /
+  13.0 / 13.5 / 13.5. Build wall times (n=5): a cache of those files mounted and left alone
+  11177 / 14745 / 14745 / 14745 against an empty one's 3915 / 7217 / 7217 / 7217; filling a
+  cache 16095 / 18723 / 18723 / 18723 against filling a tmpfs 3657 / 5797 / 5797 / 5797.
+- **Consequence.** At the median virtio-fs took 0.64 to 10.8 ms a small file (stat to
+  create), 1,251 to 6,828 times the builder's tmpfs, and 314 and 500 times for the large
+  files written and read. Caches live in the guest's filesystems instead (D114): a record's
+  layers under the builder's memory took 1.26 to 1.86 times tmpfs for a small file and 0.99
+  to 1.03 for the large ones. What stays costly is moving a large cache in and out of the
+  builder: mounting the filled cache made a build's median 11.2 s against 3.9 s, filling one
+  16.1 s against 3.7 s.
+- **Not measured here.** Where that time goes within a build (moving layers over vsock,
+  applying them, making a layer of the changes), and what a block device per cache would
+  cost instead: the builds that looked were instrumented by hand and are not in the tree,
+  so their numbers are not recorded. Both are D114's open item.
+
+### M141. What Docker 29.3.1's BuildKit does with cache mounts
+
+- **Question.** What D114 must hold to: BuildKit v0.28.1 (Docker 29.3.1's) with cache
+  mounts across builds, their records as `buildx du`, `system df` and `buildx prune` show
+  them, and the GC policy dockerd gives its builder.
+- **Method.** `docs/research/measurements/cachefs/buildkit.sh` against `shards-dind`
+  (docker:29.3.1-dind, BuildKit v0.28.1), every name holding the run's token, `--output
+  type=cacheonly`, only the run's own records pruned; 2026-10-10, the results below from
+  one run of the committed script (token `forkt1791629692`). In P7 two builds of one cache
+  start 3 s apart: A writes `a` and sleeps 8 s, B writes `b` and sleeps 1 s, each then
+  listing the cache and printing when it started and ended; a third build lists it after.
+- **Results.**
+  - What a step writes in a cache is there for the next build's step, a failing step's
+    writes too.
+  - `uid=1000,gid=1001,mode=0750` makes the directory `750 1000:1001`; `mode=0700` alone
+    `700 0:0`; none `755 0:0`. A root a step gives another owner and mode keeps them
+    (`700 7:8` the next build). Another `BUILDKIT_CACHE_MOUNT_NS` finds the cache empty.
+  - One id at two targets of one step is one directory (written at one, read at the other).
+  - `from=` a stage and `source=/seed` shows that directory with its owner (`755 5:6`);
+    `source=/seed/sub` the subdirectory, from the same record.
+  - A record: `Mutable: true`, `Type: exec.cachemount`, described as `cached mount /m from
+    exec /bin/sh -c stat -c "%a %u:%g" /m with id "/<id>"` (the id after the Dockerfile's
+    namespace and its `/`). A cache from something has its source's record as `Parents`:
+    `from=`, and `uid`, `gid` or `mode`, which the frontend mounts from a directory of its
+    own (`setCacheUIDGID`: `Mkdir("/cache", mode, uid:gid)`, its selector `/cache`). `system
+    df -v` lists each with its type, size, shared and in-use.
+  - `buildx prune --filter type=exec.cachemount` lists each removed with its ID marked `*`;
+    `--verbose` prints no `Type:` line for any record (BuildKit's prune results carry no
+    type).
+  - A copy of `a.txt` stays `CACHED`, and the step after it, when only `c.txt` changes.
+  - `docker buildx inspect`: rule 0 types `source.local`, `exec.cachemount`,
+    `source.git.checkout`, kept 48h, max used 25.99GiB; rule 1 kept 1440h, reserved
+    188.1GiB, max used 1.466TiB, min free 375.3GiB; rules 2 and 3 the same space without
+    the duration, rule 3 for all records: dockerd's `DefaultGCPolicy` for a disk of 2,014
+    GiB, as `build/gc.rs` derives it (its unit test reproduces these figures).
+  - A step not answered from the cache (`--no-cache`) finds its cache empty, and so does
+    the next build's: BuildKit lets go of such a step's cache mounts as it loads the
+    definition (llbsolver `detectPrunedCacheID`, the worker's `PruneCacheMounts`). The
+    script's first version passed `--no-cache` to every build and found every cache empty.
+  - Two builds at once (P7, seconds from the epoch as each step printed them):
+
+    | sharing | A's step | B's step | B listed | A listed | then listed |
+    |---|---|---|---|---|---|
+    | `shared` | 707 to 715 | 710 to 711 | `a b` | `a b` | `a b` |
+    | `private` | 717 to 725 | 720 to 721 | `b` | `a` | `a` |
+    | `locked` | 727 to 735 | 735 to 736 | `a b` | `a` | `a b` |
+
+    `shared` is one directory both steps write at once; `private` a record of B's own
+    while A holds the first, a later build taking the record whose ID sorts first (A's
+    in both runs: BuildKit looks a key's records up in its metadata index's byte order,
+    `SearchCacheDir` and cache/metadata `Search`); under `locked` B's step began as A's
+    ended (5.4 s into its vertex). A second run of P7 alone (`private` and `locked`) gave
+    the same lists. During an earlier run, while two builds of one cache ran, `shards-dind`
+    exited (status 2, 09:09:39 UTC); it was started again at 09:10:51, not by this probe.
+
 ### M155. What a run's guest keeps of a microVM's memory, on the path a run takes
 
 - **Question.** `shards run -m LIMIT` sizes its microVM so that the guest's MemAvailable
@@ -4785,6 +4894,69 @@ revision before comparing a changed API/implementation.
   smaller frames no longer hold it to, are tested on release on their own (M159), and
   the musl job's release build runs in a job of its own.
 
+### M157. What huge pages under guest memory buy a cold boot, and what they cost against Firecracker (CI: the envelope's rss_anon)
+
+- **Question.** shards advises guest memory MADV_HUGEPAGE (platform `reserve_ram`), so a
+  boot's first touch of each 2 MiB makes all of it resident. Firecracker advises nothing,
+  and under THP `always` gets huge pages too; against it, a boot's anonymous memory came
+  out 2 MiB more in some runs (the envelope's `firecracker/rss_anon`). Do huge pages buy
+  the start path enough to keep, and where does the 2 MiB come from?
+- **Method.** GitHub ubuntu-24.04 runners, KVM, THP `always`, defrag `madvise`; the pinned
+  guest kernel (vmlinux, loaded at 16 to 40.2 MiB) and the test guest's 3 MiB initrd; a
+  128 MiB guest booted to its ready line, its VMM's memory read as the Firecracker
+  comparison reads it; arms interleaved, each order turned, n 30 an arm.
+  1. Huge pages or none: `cargo bench -p shards --bench firecracker -- --thp-ab all,never`,
+     the VM process's THP disabled for `never` (PR_SET_THP_DISABLE, held across exec);
+     and a 1 GiB guest writing a byte to each page of 512 MiB, then reading a byte at
+     20,000,000 places in it spread by an LCG (testguest `walk`). AMD EPYC 7763,
+     revision 0b602c7. An earlier run (Intel Xeon 6973P-C, 41839c7) set the advice by a
+     knob instead: MADV_NOHUGEPAGE on all of guest memory, or below 64 MiB alone.
+  2. Where: which 2 MiB stretches of guest memory each VMM held, and the 4 KiB pages in
+     each, from /proc/PID/pagemap, with THP and with it off for both VMMs; then shards'
+     layout changed, against Firecracker: `measurements/guest-layout` (its README).
+- **Results.** Huge pages or none, AMD; to ready in ms, memory in MiB, p50 / p90 / p99 /
+  max:
+
+  | | all | never |
+  |---|---|---|
+  | boot to ready | 125.0 / 196.3 / 199.2 / 199.2 | 259.1 / 342.1 / 345.7 / 345.7 |
+  | boot rss_anon | 60.2 / 60.2 / 62.2 / 62.2 | 49.5 / 49.9 / 50.0 / 50.0 |
+  | 512 MiB written | 335.0 / 336.5 / 337.6 / 337.6 | 1,884.4 / 1,900.3 / 1,914.6 / 1,914.6 |
+  | 20,000,000 reads | 208.3 / 210.4 / 218.2 / 218.2 | 230.8 / 234.6 / 241.9 / 241.9 |
+
+  Intel, at p50: boot 71.8 ms with huge pages, 169.6 without, 154.1 without below 64 MiB
+  (the boot's touches are low); 512 MiB written in 255.0 ms against 1,197.7.
+
+  Where: with THP off, both guests touched the same pages, 12,675 for Firecracker and
+  12,613 for shards at the median (13 boots each), but placed apart: shards put its
+  initrd at the first 2 MiB after the kernel (42 to 45 MiB), Firecracker at the top of
+  RAM, beside what the guest kernel allocates there from the top down early in boot. Its
+  initrd moved to the top, shards' guest touched Firecracker's pages stretch for
+  stretch. Under huge pages, every stretch touched is resident whole: in 33 boots each,
+  Firecracker held 29 (in 30 boots), shards 30 (in 31); the first stretch holds the boot
+  structures, 77 and 78 touched pages.
+
+  Shards' layout against Firecracker v1.17.0, AMD, 6c9db11 (757c980 with the patch), n 30
+  an arm; to ready in ms at p50, memory in MiB at p50 and the most:
+
+  | arm | to ready | rss_anon | its most | peak RSS |
+  |---|---:|---:|---:|---:|
+  | Firecracker | 125.5 | 60.2 | 60.2 | 62.5 |
+  | shards as it was | 122.1 | 60.2 | 62.2 | 63.0 |
+  | initrd at the top of RAM | 121.7 | 58.2 | 60.2 | 61.0 |
+  | first 2 MiB on small pages | 122.1 | 58.3 | 60.3 | 61.1 |
+  | both | 119.9 | 56.3 | 58.3 | 59.1 |
+
+- **Consequence.** Huge pages halve a cold boot (2.1 to 2.4 times) and make its first
+  touch of memory 4.7 to 5.6 times faster: they stay. The 2 MiB was the initrd's place,
+  and the first 2 MiB's few pages held resident whole. The x86_64 VMM now puts the
+  initrd at the top of low RAM (boot::load_initrd), as Firecracker and QEMU do, and
+  keeps the first 2 MiB on small pages (layout::SPARSE): a boot's anonymous memory is
+  56.3 MiB at p50 and 58.3 at most, below Firecracker's least, its peak RSS 3.4 MiB
+  below Firecracker's, and its boot time the same. A run's path, a template restored
+  from its memory file, maps no huge pages and is not changed. arm64's layout is not
+  measured (GitHub's arm64 runners have no /dev/kvm) and stays.
+
 ### M158. What a child holds of what its parent lets go of, made there or by a spawner
 
 - **Question.** A child holds every descriptor its parent had at the spawn until it
@@ -4806,7 +4978,12 @@ revision before comparing a changed API/implementation.
   in turn, 3 rounds at each count. Apple M5 Max, macOS 26.4.1, 2026-10-10, load average
   17 to 33 for 1,000 more and 40 to 56 for the rest. And what a daemon holds: `lsof` of
   one (a debug build of 5994c0c) with 0, 5, 10 and 20 detached `alpine sleep 600` runs
-  going.
+  going. Then a spawn as its requester sees it, from the request to the child's pid
+  (`PACE_US` 5000): 1 or 4 threads, each asking for a spawn every 5 ms, nothing let go of;
+  the spawn made here, or by a spawner made from the program anew (`exec-spawner`, as
+  the daemon makes `shards spawner`); 10 s a run, in turn, 3 rounds. GitHub runners
+  (ubuntu-24.04: x86_64 AMD EPYC 9V74, 4 vCPUs; arm64 Neoverse-N2, 4 vCPUs; load under
+  1.1; revision b781615) and the M5 Max (load 50 to 56).
 - **Results.** Holds, n held of those let go and the longest, and posix_spawn's p50, by
   round:
 
@@ -4825,15 +5002,33 @@ revision before comparing a changed API/implementation.
   24,662 spawns a run; round trips 8,000 a run, p99 30 to 645 µs). The daemon held 29
   descriptors with no run going, and 41, 51 and 71 with 5, 10 and 20: 2 more a run, so
   a thousand more is a daemon of some 485 runs.
+
+  A spawn as its requester saw it, µs, p50 by round, and its p99 at most:
+
+  | host | threads | here | by the spawner | p99 here | p99 by the spawner |
+  |---|---:|---|---|---:|---:|
+  | x86_64 Linux | 1 | 131, 136, 142 | 166, 168, 172 | 222 | 283 |
+  | x86_64 Linux | 4 | 140, 144, 158 | 166, 162, 167 | 606 | 505 |
+  | arm64 Linux | 1 | 194, 191, 189 | 222, 218, 214 | 252 | 294 |
+  | arm64 Linux | 4 | 223, 220, 222 | 245, 241, 249 | 655 | 626 |
+  | M5 Max, load 50 | 1 | 630, 599, 965 | 2,231, 1,584, 1,470 | 10,029 | 17,382 |
+  | M5 Max, load 50 | 4 | 1,145, 696, 576 | 2,803, 1,956, 1,968 | 8,615 | 21,138 |
+
+  posix_spawn itself took as long in the spawner as here, paced (x86_64: 119 to 133 µs
+  there, 127 to 154 here). With four threads spawning as fast as they could on the
+  runners (6c9db11), it took 2 to 2.5 times as long in a spawner, forked or made anew,
+  as here (x86_64 256 to 337 µs at p50 against 142 to 147; arm64 432 to 445 against 162
+  to 197): contention, which spacing the spawns took away.
 - **Consequence.** A child made here held 13 to 20 in 100 listeners let go of while it
   was made, up to 299 ms, and some pipes up to 127 ms; one made by the spawner held none
   of 207,836 listeners and as many pipes. Binding the listeners where no child is made
-  would have freed ports alone, not clients' pipes. Through the spawner a spawn costs a
-  round trip, 7 to 39 µs at p50, and posix_spawn there took less than here at every
-  count: 22 to 57 µs less at p50 with up to 100 more open, as a daemon of tens of runs
-  holds, and 190 to 250 µs with a thousand more, as XNU copies the parent's whole table
-  into each child. Every child of the daemon
-  is now its spawner's (shards_ipc::start_spawner, architecture.md D31), and
+  would have freed ports alone, not clients' pipes. A spawn through the spawner costs
+  two wakeups across processes: on a quiet Linux host 9 to 36 µs more at p50 than one
+  made here, and no more at p99 with four at once; on a Mac at load 50, 0.5 to 1.7 ms
+  more at p50, and 1.7 to 2.5 times the p99. Few spawns are on a run's path: a `-v`
+  run's share process, a cold start's VM and network process; warm runs spawn their
+  successors after they start. Every child of the daemon is now its spawner's
+  (shards_ipc::start_spawner, architecture.md D31), and
   `published_ports_are_free_at_once_while_the_daemon_makes_vms` holds a run's port free
   once its end is told while other runs make VMs.
 
@@ -4945,3 +5140,237 @@ revision before comparing a changed API/implementation.
   stack its evaluation has; OPA's times and memory grow with the square of the depth or,
   for nested closures, double with each level. The open shapes stay in `nesting.json`
   for the harness (`--shape NAME --depth N`).
+
+### M150. What a build's proxy costs (D110): its certificates, and a request through it
+
+- **Question.** Under buildx's `exec.proxy` cap every request a step makes goes through
+  the build's proxy, each asked of the build's policies, HTTPS through a tunnel the proxy
+  serves with a certificate of its own CA. What does that add to a request, plain and
+  HTTPS, in-process and from a microVM, and what do the certificates cost: P-256, which
+  shards makes, against RSA-2048, which BuildKit v0.33.0 makes (`newCA`, `certForHost`)?
+- **Method.** `docs/research/measurements/build-proxy/run.sh` runs three ignored tests,
+  release builds:
+  - `certificate_costs`: a CA, a host's certificate with its TLS config, and one kept,
+    P-256 against RSA-2048 made the same way (rcgen and AWS-LC both), n = 200 each,
+    interleaved, wall and the thread's CPU time (`CLOCK_THREAD_CPUTIME_ID`);
+  - `request_costs`: a request through the proxy against the same request straight to its
+    server, a connection each, n = 1000 each, interleaved: plain HTTP (its question
+    answered at once, and by a real policy, `allow if input.http`, evaluated as a build
+    evaluates one, on a thread woken as the builder's is), and HTTPS (TLS straight against
+    a CONNECT tunnel, the proxy's TLS to the client and its own to the server);
+  - `proxy_request_costs_in_microvms`: a `RUN` making 200 requests (testguest's `fetch
+    --repeat`, a connection each) to a server on this host, straight through the builder's
+    network (no cap) against through the proxy with each request checked by the build's
+    policy, twice in turn, timed by the step's client.
+
+  `docs/research/measurements/build-proxy/buildkit.sh` times BuildKit v0.33.0's own
+  `newCA` and `certForHost` (Go 1.26.3, RSA-2048) as `certificate_costs` times shards',
+  in `shards-dind` (Linux 6.12.76-linuxkit on the same host). Apple M5 Max, macOS 26.4.1,
+  revision 0f4df5e, 2026-10-10, load average 26 to 36 (other builds running); earlier runs
+  at 90ece32 and 0ab09ef, load 53 to 94, below.
+- **Results.** Microseconds, p50 / p90 / p99 / max.
+
+  | certificates (n = 200) | wall | thread CPU |
+  |---|---|---|
+  | CA, P-256 (shards) | 61 / 73 / 282 / 775 | 62 / 72 / 113 / 118 |
+  | CA, RSA-2048 (AWS-LC) | 47372 / 101877 / 250083 / 314010 | 44606 / 85337 / 175681 / 270935 |
+  | CA, RSA-2048 (BuildKit's Go) | 50947 / 115109 / 184034 / 226113 | 49879 / 107601 / 173302 / 217373 |
+  | host certificate and TLS, P-256 (shards) | 82 / 102 / 237 / 601 | 83 / 99 / 129 / 163 |
+  | host certificate and TLS, RSA-2048 (AWS-LC) | 48137 / 95607 / 173877 / 196114 | 44519 / 85993 / 121174 / 121544 |
+  | host certificate and TLS, RSA-2048 (BuildKit's Go) | 49226 / 96872 / 221056 / 250485 | 49279 / 96441 / 206518 / 243280 |
+  | host certificate kept (shards) | 1 / 1 / 2 / 5 | 1 / 2 / 2 / 5 |
+
+  | a request, in-process (n = 1000) | p50 / p90 / p99 / max |
+  |---|---|
+  | plain, straight | 137 / 269 / 3121 / 12623 |
+  | plain, through the proxy | 177 / 344 / 2638 / 25769 |
+  | plain, through the proxy, a policy checking it | 1887 / 2396 / 4851 / 13075 |
+  | HTTPS, straight | 408 / 710 / 2946 / 34662 |
+  | HTTPS, through the proxy's tunnel | 583 / 963 / 4950 / 28651 |
+
+  | a step's request from a microVM (n = 200) | round 0 | round 1 |
+  |---|---|---|
+  | straight through the builder's network | 304 / 413 / 570 / 1195 | 353 / 486 / 2649 / 11953 |
+  | through the proxy, each checked by the policy | 2610 / 3119 / 6760 / 7012 | 2470 / 3054 / 6151 / 7187 |
+
+  - At load 53 to 94 (three runs), p50s: P-256 CA 52 to 58, RSA-2048 CA 48000 to 104280;
+    a request in-process straight 160 to 241, through the proxy 195 to 538, checked 1852
+    to 4138; from a microVM straight 580 to 1629, through the proxy and checked 4406 to
+    12024. Those runs' P-256 tails reached 44 ms of wall clock where the thread's own CPU
+    time never passed 141 µs: the tail is the busy host's scheduling, not the work.
+- **Consequence.** P-256 makes a CA in 61 µs and a host's certificate in 82 µs where
+  RSA-2048 takes 47 to 51 ms for either, BuildKit's own Go code included: 600 to 800
+  times less, and P-256 is the stronger key (128-bit security against RSA-2048's 112, NIST
+  SP 800-57 Part 1 Rev. 5, Table 2). A build pays its CA once, as its first step under the
+  proxy starts, and each host a step tunnels to its certificate once (again after 23
+  hours). The proxy itself adds 40 µs to a plain request and 175 µs to an HTTPS one (the
+  tunnel's TLS); checking each request against the build's policies adds 1.7 ms, most of
+  what a request through the proxy costs from a microVM (2.1 to 2.3 ms over straight).
+  That check compiles the policy afresh, twice (partial, then whole), each on a thread of
+  its own, as M127 found of every check; compiling once a build on a long-lived
+  evaluation thread is that measurement's open question, now paid per request.
+
+### M165. What a VM in App Sandbox reaches of a template once it is renamed out of its grant
+
+- **Question.** A VM saves a template into a directory it is granted, then serves a run;
+  the daemon renames the template into place before the run's command reaches the guest
+  (run.rs `settle`, M102). M102 found a file made at the new path refused. What else might
+  a VM taken over then try: a descriptor of the directory opened before the rename, the
+  same bookmark resolved again (bookmarks track a file, not its path), or a link planted
+  before the rename? (D117, audit Q.)
+- **Method.** `docs/research/measurements/app-sandbox/reresolve.py`, the probe (`probe.c`,
+  `reresolve`) built and signed as `run.sh` signs it: the probe resolves its directory
+  bookmark, makes a file, opens a descriptor of the directory and plants a link to
+  `/etc/hosts`; the unsandboxed parent renames the directory; the probe makes, rewrites
+  and links through the descriptor, then resolves the bookmark again, starts its scope,
+  and makes and rewrites at the new path. Under `$HOME` and the per-user temporary
+  directory. macOS 26.4.1, Apple M5 Max, 2026-10-10.
+- **Results.** In both places: through the descriptor after the rename, every make,
+  rewrite and link refused (EPERM); the bookmark resolved again names the new path
+  (stale 1) and its scope starts (1), yet every make and rewrite there is refused (EPERM).
+  The link planted before the rename is in the renamed directory.
+- **Consequence.** The seal holds: a VM process loses its template at the rename, by any
+  means it holds. What it planted before stays for every later reader, and on Linux what
+  it made before its second Landlock layer stays alike. So nothing that reads a template
+  may follow a link or wait on a FIFO in it, and the daemon's own record of a template
+  lives outside it (D117).
+- **Cost of reading a template so.** vmm `what_opening_beneath_costs`: a snapshot's four
+  files (pointer, state, memory, working set) opened by path as before, and beneath its
+  directory (each directory below it and each file checked by `lstat`, the file opened
+  `O_NOFOLLOW` and checked again), alternately, n = 20,000 each, load average 45–56.
+  Microseconds a restore's four files, p50 / p90 / p99: by path 42.6 / 77.1 / 149.8;
+  beneath 55.1 / 97.6 / 201.1 (a second run: 41.1 / 71.2 / 206.0 against 53.4 / 90.6 /
+  284.6). About 12 µs more at the median. A first form, which opened the directory again
+  for each file and walked it with `openat`, cost 107.5 µs at the median and 1.0 ms at p99,
+  and was not kept.
+- **End to end.** `build-ab/ab.py` over c1c2525 and a5a378c's release builds, each its own
+  home with busybox:1.36 and its template saved, `run --pull never busybox:1.36 true`,
+  n = 200 a side, interleaved; microseconds, wall p50 / p90 / p99 / max:
+  - pooled (the restore off the run's path), load 68–76: old 18,923 / 41,750 / 73,092 /
+    85,574, new 20,658 / 42,896 / 69,357 / 105,235; paired median new − old +1,681, 95%
+    [−2,686, +4,007];
+  - `SHARDS_POOL=0` (each run restores its own VM, its launch and grants included), load
+    59–70: old 93,214 / 153,079 / 203,267 / 220,727, new 90,680 / 144,029 / 196,573 /
+    203,325; paired median +6,741, 95% [−13,588, +22,085].
+
+  Neither distinguishable from nothing at this load, whose noise is a thousand times
+  the 12 µs measured above.
+
+### M166. How long a VM process takes to start, and what it waits for
+
+- **Question.** VM processes sometimes asked nothing for tens of seconds: the daemon's
+  "VM grant stall" (60 s, READY_TIMEOUT), and a builder that "did not start" in 30 s
+  (BOOT_PATIENCE), both under the load of parallel builds. Where does a VM process's
+  start go, and what does it wait for? (D117, audit Q.)
+- **Method.** `docs/research/measurements/vm-launch/launch.py`: `shards-vm run --kernel K
+  --grants 3`, spawned with a socket at descriptor 3, timed from its spawn to the first
+  byte of its first request for access, which is the first thing it does once it runs
+  (vm_run.rs `start` → `confine`); then ended. The signed VM process of this build
+  (App Sandbox, the hypervisor entitlement), as launched before, or a new copy of it
+  for each launch (the same bytes, a path and file of its own, as each new build's
+  helper is); W at once. `stuck.py` reads the task info (proc_pidinfo PROC_PIDTASKINFO)
+  of a launch while it waits. The security daemons' log (`log stream`, syspolicyd,
+  amfid, secinitd) during three new copies' launches. Load average 50–65 throughout from
+  other work on the host, the norm here. macOS 26.4.1, Apple M5 Max, 2026-10-10,
+  revision a17bc1e.
+- **Results** (ms: p50 / p90 / p99 / max).
+
+| Launches | n | W | p50 | p90 | p99 | max |
+|---|---|---|---|---|---|---|
+| launched before | 400 | 4 | 17.1 | 32.7 | 82.0 | 87.4 |
+| launched before | 10,000 | 16 | 21.4 | 35.6 | 59.5 | 134.7 |
+| a new copy each, first launch | 3 | 1 | 202.6 | | | 205.6 |
+| the same copies, second launch | 3 | 1 | 10.6 | | | 11.7 |
+| a new copy each, first launch | 100 | 4 | 485.7 | 911.6 | 1,127.7 | 1,127.7 |
+| a new copy each, first launch | 128 | 64 | 8,610.6 | 10,455.8 | 10,878.6 | 10,894.2 |
+| the same copies, second launch | 128 | 64 | 1,805.3 | | 2,687.8 | 2,710.6 |
+| one new copy, launched by all at once (10 rounds) | 160 | 16 | 203.0 | 234.0 | 241.0 | 246.8 |
+| launched before, while 192 new copies (64 at once) were assessed | 100 | 1 | 14.5 | 1,613.1 | 2,918.5 | 2,918.5 |
+
+  - A new executable's first launch: amfid finds it ad-hoc signed; syspolicyd scans it
+    (Gatekeeper: a network lookup of its notarization, about 30 ms, then XProtect's
+    analysis), about 120 ms in all; secinitd sets up its App Sandbox, 62–72 ms, against
+    3 ms on a second launch. The process then runs.
+  - While it waits it has run nothing: through 5.1 s behind 48 new copies, 0 user time,
+    0 Unix and 0 Mach system calls, one thread; 211 system calls by its first request
+    once let run. sample(1) of it shows no stack.
+  - New executables are assessed about one at a time (about 130 ms each at 64 at once),
+    and launches of one executable at once share one assessment.
+- **Consequence.** A VM process's start is the host's to admit, and waits behind every
+  new executable the host is assessing, the established VM process's own launches
+  included: a backlog of a few hundred, as parallel builds make, reaches the stalls seen.
+  A VM the host has not let run is told apart (`platform::launched`) and counts against
+  no template; a builder not started says so (D117). The incidents themselves were not
+  captured; the daemon's log now attributes the next.
+
+### M145. A container's command as PID 1, and its signals, under Docker and under shards
+
+- **Question.** D115 gives a run's command a PID namespace of its own. What does Docker do
+  with a container's command there (its PID, PID 1's signals, `--init`, `--pid`, `stop`,
+  exec, restarts, inspect), so that shards does the same, and what did shards' tests of
+  its old layout, in which the command was never PID 1, assert that Docker does not?
+- **Method.** `docs/research/measurements/pid1/`: `docker.py` runs each case in shards-dind
+  (Docker 29.3.1, client and engine, arm64) on alpine:3.22 (`sha256:5291449c…`) and
+  linuxserver.io's baseimage-alpine 3.22, an s6-overlay image (`sha256:ab81abc9…`, 13 MB);
+  `testguest.py` the containers tests' own scenarios, with their test image built in
+  shards-dind from the same files (testguest, its user `app`, its passwd and group);
+  `order.py` 20 stops each way, reading the order of dockerd's `stop` and `die` events;
+  `ctrlc.py` ^C typed at `docker run -it`; `shards.py` the same cases through a shards
+  build. Apple M5 Max, macOS 26.4.1, D115's
+  branch, 2026-10-10. Times are wall times of the CLI, Docker's through `docker exec`
+  (37 ms alone).
+- **Results.**
+
+  | Case | Docker 29.3.1 | shards |
+  |---|---|---|
+  | `sh -c 'echo $$'` | 1 | 1 |
+  | `--init`, `ps -o pid,ppid,comm` | 1 0 docker-init; 7 1 ps | 1 0 init; 2 0 ps |
+  | from inside, `kill -TERM 1; kill -KILL 1` | unheard | unheard |
+  | `--init`, from inside, `kill -TERM 1`, as root and as uid 1000 | 143 | 143 |
+  | `stop -t 2`, PID 1 handling no signal | 2.16 s, 137 | 2.01 s, 137 |
+  | `--init`, `stop -t 2` | 0.15 s, 143 | 0.01 s, 143 |
+  | `stop -t 5`, PID 1 trapping SIGTERM (`exit 7`) | 0.22 s, 7 | 0.07 s, 7 |
+  | `kill -s TERM`, PID 1; then `kill` | running; 137 | running; 137 |
+  | exec: `$$`; `/proc/1/cmdline` | 7; the command | 2; the command |
+  | `--restart on-failure:2`, `echo $$; exit 3` | logs 1, 1, 1; RestartCount 2 | the same |
+  | `--pid host`: `$$`; `/proc/1/root` | 1474; denied | 100; denied (`/proc/2` is kthreadd) |
+  | `--pid foo`; `create --pid container:nope` | `--pid: invalid PID mode`, 125; `No such container: nope`, 1 | the same |
+  | inspect `Init`, `PidMode`, `{{if .HostConfig.Init}}`: none, `--init`, `--init=false`, `--pid host` | `null ""` unset; `true ""` set; `false ""` set; `null "host"` unset | the same |
+  | `sysctl net.ipv4.ping_group_range ip_unprivileged_port_start` | `0 2147483647`; `0` | the same (none before D115) |
+  | `ping` with `--cap-drop NET_RAW`, as root and as uid 1000 | answered | answered |
+  | default capabilities (`CapEff`) | `00000000a80425fb` | the same |
+  | s6-overlay: run; `--init`; `--pid host` | 0 in 3.5 s; 100, `s6-overlay-suexec: fatal: can only run as pid 1`; the same | 0 in 3.4 s; the same; the same |
+  | `run -it … sleep 6`, ^C after 3 s (`ctrlc.py`, a host pseudo-terminal) | unheard, 0 after 6.6 s; `--init`: 130 after 3.2 s | the same (`tty.rs`) |
+  | `top` under `--init`, CMD | `/sbin/docker-init -- sleep 1000`, `sleep 1000` | `/init`, `sleep 1000` |
+  | `--privileged`, `--cap-add SYS_ADMIN` or `NET_ADMIN`, `systempaths=unconfined`, `--sysctl net.ipv4.ip_forward=1`, `-u 200000`, `--pid host` | each accepted, exit 0 | each refused beside an Agentfile's domains (D115) |
+
+  - The containers tests' scenarios, their own testguest and image, under Docker:
+
+    | Scenario | PID 1 | `--init` |
+    |---|---|---|
+    | `sleep`, `stop -t 1` | 1.24 s, 137 | 0.25 s, 143 |
+    | `sleep` with `--stop-signal SIGUSR1`, `stop` | 10.28 s, 137 | 0.23 s, 138 |
+    | `-i cat`, `stop` | 10.33 s, 137 | 0.26 s, 143 |
+    | `kill`: SIGKILL to itself, then exit 1 | 1 | 137 |
+    | events of pause, unpause, rename, `stop -t 1` | rename, kill (15), kill (9), stop, die (137), destroy | |
+
+  - dockerd's event order, 20 stops each: where SIGTERM ends the command (`--init`), `kill
+    stop die` 20/20; where the timeout's SIGKILL does (PID 1), `kill kill stop die` 20/20.
+    moby's `handleContainerExit` marks the container stopped, which wakes `containerStop`
+    to log `stop`, before it writes the container's checkpoint and logs `die`.
+- **Consequence.**
+  - The command is PID 1 of a namespace of its own; `--init` puts a reaper there, which
+    forwards what PID 1 hears, as the command's user; `--pid host` is the microVM's own
+    (D115).
+  - Thirteen tests asserted shards' old layout: a handler-less command ending of stop's
+    signal (143, 138), of a forwarded SIGTERM, of the terminal's ^C, of its own SIGKILL,
+    with one `kill` event, within a daemon's shutdown before its stop timeout. Docker, with
+    the same program, answers so only under `--init`; those tests now run under `--init`
+    where the path has it, and say Docker's PID-1 answer where it has not (`run
+    --kernel`), and `a_command_is_pid_1_as_a_containers_is` asserts the PID-1 answers.
+  - shards logs `die` before `stop` (since before D115), Docker `stop` before `die`:
+    recorded, not D115's to change.
+  - Recorded differences, of numbers and names Docker's runtime makes: under `--init` the
+    command is PID 2 (Docker's 7, which runc's threads take first) with PPID 0 (Docker's
+    1, docker-init being its parent; init, its parent here, is outside the namespace), and
+    the reaper is `init` (`docker-init`, shown with its arguments).

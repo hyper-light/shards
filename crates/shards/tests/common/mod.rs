@@ -747,6 +747,93 @@ pub fn run_shards_env<S: AsRef<std::ffi::OsStr>>(
     run_shards_with(command, args, env, None, timeout)
 }
 
+/// `shards <args>` (`run` or `start -a`) of container `container`, whose command waits for
+/// SIGUSR1 (the test guest's `await`): the command sees none of its microVM's agents, its
+/// PID namespace being its own (D115), so the host watches them in `shards top container
+/// -o fields`, each process a row of its columns, until `ready` says of the rows that it
+/// is, and then sends the command the signal. What the run said, as [`run_shards_env`]
+/// says it.
+pub fn run_watching(
+    env: &[(&str, &std::ffi::OsStr)],
+    args: &[&str],
+    container: &str,
+    fields: &str,
+    ready: &mut dyn FnMut(&[Vec<String>]) -> bool,
+    timeout: Duration,
+) -> Run {
+    // `shards top`'s table needs a `pid` column to key its rows (procps ps), so every
+    // field list leads with it; a row is pid, then the fields asked.
+    let with_pid = format!("pid,{fields}");
+    let start = Instant::now();
+    std::thread::scope(|scope| {
+        let ran = scope.spawn(|| run_shards_env(&[], args, env, timeout));
+        let mut last = String::new();
+        let mut signalled = false;
+        while !ran.is_finished() && start.elapsed() < timeout {
+            let top = run_shards_env(
+                &["top"],
+                &[container, "-o", &with_pid],
+                env,
+                Duration::from_secs(30),
+            );
+            // The pid column dropped: each row is its fields, in the order asked.
+            let rows: Vec<Vec<String>> = top
+                .stdout
+                .lines()
+                .skip(1)
+                .map(|l| l.split_whitespace().skip(1).map(str::to_string).collect())
+                .collect();
+            if top.status == Some(0) && ready(&rows) {
+                let sent = run_shards_env(
+                    &["kill"],
+                    &["-s", "USR1", container],
+                    env,
+                    Duration::from_secs(30),
+                );
+                assert_eq!(sent.status, Some(0), "{sent}");
+                signalled = true;
+                break;
+            }
+            // What the host last saw, for a handshake that never completes (libtest shows
+            // a test's output only when it fails).
+            last = format!(
+                "top status={:?} rows={rows:?} stderr={:?}",
+                top.status,
+                top.stderr.trim()
+            );
+            // Each look is a whole `shards top`: the client, the daemon, and an exec in the
+            // microVM that reads its /proc. Agents take hundreds of milliseconds to come up,
+            // so a look every 250 ms costs little and loads no parallel test's daemon or VM.
+            std::thread::sleep(Duration::from_millis(250));
+        }
+        if !signalled {
+            // Straight to stderr: a helper is not a `#[test]`, where clippy allows the
+            // print macros, so it writes as `show_why` does.
+            let _ = writeln!(io::stderr(), "run_watching {container} never ready: {last}");
+        }
+        ran.join().expect("the run's thread")
+    })
+}
+
+/// [`run_watching`] until `ready`'s count of processes named `ready`'s name run: the test
+/// guest's `await NAME COUNT [THEN]`.
+pub fn run_awaiting(
+    env: &[(&str, &std::ffi::OsStr)],
+    args: &[&str],
+    container: &str,
+    ready: (&str, usize),
+    timeout: Duration,
+) -> Run {
+    let (name, count) = ready;
+    let mut seen = |rows: &[Vec<String>]| {
+        rows.iter()
+            .filter(|r| r.first().is_some_and(|c| c == name))
+            .count()
+            >= count
+    };
+    run_watching(env, args, container, "comm", &mut seen, timeout)
+}
+
 /// [`run_shards_env`], in the working directory `dir`.
 pub fn run_shards_env_in<S: AsRef<std::ffi::OsStr>>(
     dir: &Path,

@@ -52,6 +52,15 @@ impl Struct {
         })
     }
 
+    /// A pointer, not nil, to `value` of type `type_name`, no struct (`bool`): what an API
+    /// type's optional field holds where it was given (HostConfig.Init's `*bool`).
+    pub fn pointing(type_name: &str, value: Value) -> Value {
+        Value::object(Pointee {
+            type_name: format!("*{type_name}"),
+            value,
+        })
+    }
+
     /// Field `name`, its JSON name the same.
     #[must_use]
     pub fn field(self, name: &str, value: Value) -> Struct {
@@ -73,6 +82,29 @@ impl Struct {
     /// The struct as a template value.
     pub fn value(self) -> Value {
         Value::object(self)
+    }
+}
+
+/// [`Struct::pointing`]'s: printed and encoded as what it points to, as exec.go's
+/// printableValue and encoding/json follow it, and, being no nil pointer, true in a
+/// condition and kept by `omitempty`, however false that is.
+#[derive(Debug, Clone)]
+struct Pointee {
+    type_name: String,
+    value: Value,
+}
+
+impl Object for Pointee {
+    fn type_name(&self) -> &str {
+        &self.type_name
+    }
+
+    fn format(&self, out: &mut String) {
+        out.push_str(&crate::fmt::sprint(std::slice::from_ref(&self.value)));
+    }
+
+    fn json(&self, out: &mut String) -> Result<(), String> {
+        self.value.json(out)
     }
 }
 
@@ -207,5 +239,23 @@ mod tests {
             run("{{json .}}", &doc),
             Ok(r#"{"Id":"abc","State":{"Status":"running","Pid":7},"ExecIDs":null}"#.into())
         );
+    }
+
+    /// As dockerd's HostConfig.Init reads with `--init=false` and without `--init`, each
+    /// as Docker 29.3.1 printed it (docs/research/platform-measurements.md M145, D115).
+    #[test]
+    fn a_pointer_to_false_is_set_and_kept() {
+        let host = |init: Value| {
+            Struct::new("container.HostConfig")
+                .tagged("Init", Some("Init"), true, init)
+                .value()
+        };
+        let given = host(Struct::pointing("bool", Value::Bool(false)));
+        let text = "{{if .Init}}set{{else}}unset{{end}} {{.Init}} {{json .Init}}";
+        assert_eq!(run(text, &given), Ok("set false false".into()));
+        assert_eq!(run("{{json .}}", &given), Ok(r#"{"Init":false}"#.into()));
+        let unset = host(Struct::nil("bool"));
+        assert_eq!(run(text, &unset), Ok("unset <nil> null".into()));
+        assert_eq!(run("{{json .}}", &unset), Ok("{}".into()));
     }
 }
