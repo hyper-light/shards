@@ -1,7 +1,8 @@
 #!/bin/sh
-# CI's musl job, inside its pinned rust:alpine image on the runner's own architecture
-# (.github/workflows/ci.yml, `musl`): lints, tests and builds $TARGET; with MUSL_CI=build
-# (.github/workflows/release.yml), builds it alone. Packages are added
+# CI's musl jobs, inside their pinned rust:alpine image on the runner's own architecture
+# (.github/workflows/ci.yml, `musl`): lints, tests and builds $TARGET; with MUSL_CI=test,
+# lints and tests it alone, and with MUSL_CI=build (.github/workflows/release.yml, and
+# CI's other musl job), builds it alone. Packages are added
 # as root; everything else runs as the user that owns the checkout, as shards runs: never
 # as root, which permission bits and much else do not stop.
 #
@@ -27,6 +28,10 @@ exec su -m shards -s /bin/sh -c '
 	if [ "${MUSL_CI:-}" != build ]; then
 		cargo clippy --locked --workspace --all-targets --target "$TARGET" -- -D warnings
 		cargo test --locked --workspace --profile test-release --no-fail-fast --target "$TARGET"
+		# The stack guards, on release, which they were measured on (M159).
+		cargo test --locked --release -p shards-rego --test builtins --test deep --test depth --target "$TARGET"
 	fi
-	cargo build --locked --release -p shards --target "$TARGET"
+	if [ "${MUSL_CI:-}" != test ]; then
+		cargo build --locked --release -p shards --target "$TARGET"
+	fi
 '
