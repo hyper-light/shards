@@ -1532,12 +1532,31 @@ fn outside6(sock: &OwnedFd, eth0: u32, u: &Uplink6) -> io::Result<()> {
 /// - `in` drops what comes up from the switch but answers: the run's own processes serve
 ///   no domain;
 /// - `post` gives what is marked eth0's address, so that the network process, which takes
-///   frames from the guest's address alone, takes it.
+///   frames from the guest's address alone, takes it;
+/// - `own` drops whatever this namespace's own processes send down `agents0`, of both IP
+///   versions (D115): the run's, which share this namespace, serve no domain and are
+///   granted none, so a packet of theirs there, a forged answer to an agent's flow
+///   (`IP_FREEBIND` takes any source address and needs no capability, ip(7)) or one that
+///   conntrack turns back into one, crosses no grant. Its answers are not let past:
+///   nothing here opens a flow to a domain. IPv6's neighbor discovery is, which forwarding
+///   down the link takes (D99).
 ///
 /// The run's own processes were kept to eth0's subnet before its command started
 /// ([`confine_eth0`]).
 fn outside(sock: &OwnedFd, eth0: u32, u: &Uplink) -> io::Result<()> {
     let ((addr, _, _), ingress) = (u.eth0, &u.ingress);
+    for family in [nft::NFPROTO_IPV4, nft::NFPROTO_IPV6] {
+        let mut b = Batch::of(family);
+        b.chain(b"own\0", b"filter\0", nft::NF_INET_LOCAL_OUT, 0, nft::NF_ACCEPT);
+        if family == nft::NFPROTO_IPV6 {
+            b.rule(b"own\0", neighbor_discovery());
+        }
+        let mut e = Vec::new();
+        on(&mut e, nft::NFT_META_OIF, UPLINK_IFINDEX as u32);
+        drop_verdict(&mut e);
+        b.rule(b"own\0", e);
+        b.commit(sock)?;
+    }
     let mut b = Batch::new();
     b.chain(b"in\0", b"filter\0", nft::NF_INET_LOCAL_IN, 0, nft::NF_ACCEPT);
     b.rule(b"in\0", answers());

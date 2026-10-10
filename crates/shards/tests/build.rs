@@ -7570,7 +7570,22 @@ fn agents_run_in_their_domains() {
     let built = shards(&["build", "-t", "confined:1", ctx.to_str().unwrap()]);
     assert_eq!(built.status, Some(0), "{}", built.stderr);
     // The workload ends once the agent has said what it sees.
-    let ran = shards(&["run", "--rm", "confined:1", "await", "confined-ready", "2"]);
+    let ran = common::run_awaiting(
+        &env,
+        &[
+            "run",
+            "--rm",
+            "--name",
+            "aw-confined",
+            "confined:1",
+            "await",
+            "confined-ready",
+            "2",
+        ],
+        "aw-confined",
+        ("confined-ready", 2),
+        TIMEOUT,
+    );
     assert_eq!(ran.status, Some(0), "{}{}", ran.stdout, ran.stderr);
     assert_eq!(ran.stdout, "", "the workload's stdout is its own");
     let said: Vec<&str> = ran
@@ -7697,7 +7712,22 @@ fn agents_reach_by_ipv6_only_what_connect_grants() {
     .unwrap();
     let built = shards(&["build", "-t", "links6:1", ctx.to_str().unwrap()]);
     assert_eq!(built.status, Some(0), "{}", built.stderr);
-    let ran = shards(&["run", "--rm", "links6:1", "await", "confined-ready", "3"]);
+    let ran = common::run_awaiting(
+        &env,
+        &[
+            "run",
+            "--rm",
+            "--name",
+            "aw-links6",
+            "links6:1",
+            "await",
+            "confined-ready",
+            "3",
+        ],
+        "aw-links6",
+        ("confined-ready", 3),
+        TIMEOUT,
+    );
     assert_eq!(ran.status, Some(0), "{}{}", ran.stdout, ran.stderr);
     let said = |who: &str| -> Vec<String> {
         let prefix = format!("[agent {who}] ");
@@ -7820,16 +7850,24 @@ fn agents_reach_past_the_microvm_by_ipv6_what_their_networks_grant() {
     assert_eq!(built.status, Some(0), "{}", built.stderr);
     let made = shards(&["network", "create", "--ipv6", "--subnet", "fd7a::/64", "six"]);
     assert_eq!(made.status, Some(0), "{}", made.stderr);
-    let ran = shards(&[
-        "run",
-        "--rm",
-        "--network",
-        "six",
-        "egress6:1",
-        "await",
-        "confined-ready",
-        "1",
-    ]);
+    let ran = common::run_awaiting(
+        &env,
+        &[
+            "run",
+            "--rm",
+            "--name",
+            "aw-egress6",
+            "--network",
+            "six",
+            "egress6:1",
+            "await",
+            "confined-ready",
+            "1",
+        ],
+        "aw-egress6",
+        ("confined-ready", 1),
+        TIMEOUT,
+    );
     assert_eq!(ran.status, Some(0), "{}{}", ran.stdout, ran.stderr);
     for want in [
         format!("[agent a] confined reach {}: ok", to(granted)),
@@ -7917,7 +7955,22 @@ fn agents_reach_only_what_connect_grants() {
     .unwrap();
     let built = shards(&["build", "-t", "links:1", ctx.to_str().unwrap()]);
     assert_eq!(built.status, Some(0), "{}", built.stderr);
-    let ran = shards(&["run", "--rm", "links:1", "await", "confined-ready", "4"]);
+    let ran = common::run_awaiting(
+        &env,
+        &[
+            "run",
+            "--rm",
+            "--name",
+            "aw-links",
+            "links:1",
+            "await",
+            "confined-ready",
+            "4",
+        ],
+        "aw-links",
+        ("confined-ready", 4),
+        TIMEOUT,
+    );
     assert_eq!(ran.status, Some(0), "{}{}", ran.stdout, ran.stderr);
     let said = |who: &str| -> Vec<String> {
         let prefix = format!("[agent {who}] ");
@@ -8143,15 +8196,23 @@ fn agents_reach_past_the_microvm_what_their_networks_grant() {
     .unwrap();
     let built = shards(&["build", "-t", "egress:1", ctx.to_str().unwrap()]);
     assert_eq!(built.status, Some(0), "{}", built.stderr);
-    let ran = shards(&[
-        "run",
-        "--rm",
-        "egress:1",
-        "await",
-        "confined-ready",
-        "4",
-        &to(granted),
-    ]);
+    let ran = common::run_awaiting(
+        &env,
+        &[
+            "run",
+            "--rm",
+            "--name",
+            "aw-egress",
+            "egress:1",
+            "await",
+            "confined-ready",
+            "4",
+            &to(granted),
+        ],
+        "aw-egress",
+        ("confined-ready", 4),
+        TIMEOUT,
+    );
     assert_eq!(ran.status, Some(0), "{}{}", ran.stdout, ran.stderr);
     let said = |who: &str| -> Vec<String> {
         let prefix = format!("[agent {who}] ");
@@ -8510,7 +8571,22 @@ fn a_remote_mcp_server_is_a_grant_of_that_server_alone() {
     .unwrap();
     let built = shards(&["build", "-t", "mcp:1", ctx.to_str().unwrap()]);
     assert_eq!(built.status, Some(0), "{}", built.stderr);
-    let ran = shards(&["run", "--rm", "mcp:1", "await", "confined-ready", "3"]);
+    let ran = common::run_awaiting(
+        &env,
+        &[
+            "run",
+            "--rm",
+            "--name",
+            "aw-mcp",
+            "mcp:1",
+            "await",
+            "confined-ready",
+            "3",
+        ],
+        "aw-mcp",
+        ("confined-ready", 3),
+        TIMEOUT,
+    );
     assert_eq!(ran.status, Some(0), "{}{}", ran.stdout, ran.stderr);
     let said = |who: &str| -> Vec<String> {
         let prefix = format!("[agent {who}] ");
@@ -8812,29 +8888,43 @@ fn agents_out_of_memory_end_whole_and_spare_the_run() {
     };
     let x = agent("x", "fill", r#","asks":{"memory":67108864}"#);
     let yz = agent("y", "fill", "") + &agent("z", "hold", "");
-    let run = |tag: &str, agents: &str| {
+    // The run's own command holds 64 MiB and waits for the host (D115: it sees none of the
+    // agents' processes, so the host watches them in `shards top`). The host waits until a
+    // domain has filled (`filling` seen) and then been ended whole (`filling` and its
+    // `held` sibling gone), takes that snapshot, and signals the command; its survival
+    // proves it was spared. `innocent` (the holding agent z) still there means z was
+    // spared. The command's survival and the agents' own output are the rest of the proof.
+    let run = |name: &str, tag: &str, agents: &str| -> (Vec<String>, String) {
         let ctx = context(&format!("oom-ctx-{tag}"), &format!("FROM {image}\n"));
         std::fs::write(ctx.join("Agentfile"), format!("FROM {image}\n{agents}")).unwrap();
         let built = shards(&["build", "-t", tag, ctx.to_str().unwrap()]);
         assert_eq!(built.status, Some(0), "{}", built.stderr);
-        let ran = shards(&["run", "--rm", "-m", "128m", tag, "outlive", "64"]);
-        let all = format!("{}{}", ran.stdout, ran.stderr);
-        assert_eq!(ran.status, Some(0), "{all}");
-        // The run's command outlived them, and every domain the kernel ended lost its
-        // holder with it: those `held` left are of domains whose writes failed.
-        let outlived = all
-            .lines()
-            .find_map(|l| l.strip_prefix("outlived "))
-            .unwrap_or_else(|| panic!("the run's command did not outlive its agents:\n{all}"))
-            .to_string();
-        let n = |k: &str| -> usize {
-            outlived
-                .split(' ')
-                .find_map(|f| f.strip_prefix(k))
-                .and_then(|v| v.parse().ok())
-                .unwrap()
+        let mut seen_filling = false;
+        let mut ended: Vec<String> = Vec::new();
+        let mut ready = |rows: &[Vec<String>]| {
+            let comms: Vec<&str> = rows.iter().filter_map(|r| r.last().map(String::as_str)).collect();
+            seen_filling |= comms.contains(&"filling");
+            let gone = seen_filling && !comms.contains(&"filling") && !comms.contains(&"held");
+            if gone {
+                ended = comms.iter().map(|c| (*c).to_string()).collect();
+            }
+            gone
         };
-        assert_eq!(n("held="), n("stopped="), "{all}");
+        let ran = common::run_watching(
+            &env,
+            &["run", "--rm", "--name", name, "-m", "128m", tag, "outlive", "64"],
+            name,
+            "comm",
+            &mut ready,
+            TIMEOUT,
+        );
+        let all = format!("{}{}", ran.stdout, ran.stderr);
+        // The command held 64 MiB throughout and was not ended with the agents.
+        assert_eq!(
+            ran.status,
+            Some(0),
+            "the run's command did not outlive its agents:\n{all}"
+        );
         let filled = |a: &str| {
             all.lines()
                 .filter_map(|l| l.strip_prefix(&format!("[agent {a}] confined filled ")))
@@ -8843,18 +8933,29 @@ fn agents_out_of_memory_end_whole_and_spare_the_run() {
                 .unwrap_or(0)
         };
         eprintln!(
-            "{tag}: x {} y {} z {}; {outlived}",
+            "{tag}: x {} y {} z {}; ended-with {ended:?}",
             filled("x"),
             filled("y"),
             filled("z")
         );
-        (filled("x"), n("innocent="), all)
+        (ended, all)
     };
     // x ends at its own limit, where its memory is its resident 9 MiB and its scratch.
-    let (x_filled, _, all) = run("oom-x:1", &x);
+    let (_, all) = run("aw-oom-x", "oom-x:1", &x);
+    let x_filled = all
+        .lines()
+        .filter_map(|l| l.strip_prefix("[agent x] confined filled "))
+        .filter_map(|v| v.parse::<u64>().ok())
+        .max()
+        .unwrap_or(0);
     assert!(x_filled > 32 && x_filled < 64, "x filled {x_filled} MiB:\n{all}");
-    let (_, innocent, all) = run("oom-yz:1", &yz);
-    assert_eq!(innocent, 1, "z, holding no scratch, was ended:\n{all}");
+    let (ended, all) = run("aw-oom-yz", "oom-yz:1", &yz);
+    // z, holding memory but no scratch, is spared where the kernel's own choice (most
+    // resident memory) would have ended it: it is still there when y's domain is gone.
+    assert!(
+        ended.contains(&"innocent".to_string()),
+        "z was ended with y:\n{all}"
+    );
     assert!(
         all.lines()
             .any(|l| l.starts_with("[agent y] shards-init: ended: the agents' memory")),
@@ -8921,7 +9022,22 @@ fn agents_reach_only_the_unix_sockets_granted() {
     .unwrap();
     let built = shards(&["build", "-t", "sock:1", ctx.to_str().unwrap()]);
     assert_eq!(built.status, Some(0), "{}", built.stderr);
-    let ran = shards(&["run", "--rm", "sock:1", "await", "confined-ready", "4"]);
+    let ran = common::run_awaiting(
+        &env,
+        &[
+            "run",
+            "--rm",
+            "--name",
+            "aw-sock",
+            "sock:1",
+            "await",
+            "confined-ready",
+            "4",
+        ],
+        "aw-sock",
+        ("confined-ready", 4),
+        TIMEOUT,
+    );
     let all = format!("{}{}", ran.stdout, ran.stderr);
     assert_eq!(ran.status, Some(0), "{all}");
     let said = |agent: &str, line: &str| {
@@ -8993,7 +9109,22 @@ fn an_agents_flood_of_flows_takes_no_others() {
     .unwrap();
     let built = shards(&["build", "-t", "flood:1", ctx.to_str().unwrap()]);
     assert_eq!(built.status, Some(0), "{}", built.stderr);
-    let ran = shards(&["run", "--rm", "flood:1", "await", "confined-ready", "3"]);
+    let ran = common::run_awaiting(
+        &env,
+        &[
+            "run",
+            "--rm",
+            "--name",
+            "aw-flood",
+            "flood:1",
+            "await",
+            "confined-ready",
+            "3",
+        ],
+        "aw-flood",
+        ("confined-ready", 3),
+        TIMEOUT,
+    );
     let all = format!("{}{}", ran.stdout, ran.stderr);
     assert_eq!(ran.status, Some(0), "{all}");
     for l in all
@@ -9072,7 +9203,22 @@ fn an_agents_assured_flows_take_no_others() {
     .unwrap();
     let built = shards(&["build", "-t", "assured:1", ctx.to_str().unwrap()]);
     assert_eq!(built.status, Some(0), "{}", built.stderr);
-    let ran = shards(&["run", "--rm", "assured:1", "await", "confined-ready", "4"]);
+    let ran = common::run_awaiting(
+        &env,
+        &[
+            "run",
+            "--rm",
+            "--name",
+            "aw-assured",
+            "assured:1",
+            "await",
+            "confined-ready",
+            "4",
+        ],
+        "aw-assured",
+        ("confined-ready", 4),
+        TIMEOUT,
+    );
     let all = format!("{}{}", ran.stdout, ran.stderr);
     assert_eq!(ran.status, Some(0), "{all}");
     for l in all
@@ -9160,7 +9306,22 @@ fn an_agents_own_flows_take_no_port_it_accepts() {
     .unwrap();
     let built = shards(&["build", "-t", "ports:1", ctx.to_str().unwrap()]);
     assert_eq!(built.status, Some(0), "{}", built.stderr);
-    let ran = shards(&["run", "--rm", "ports:1", "await", "confined-ready", "3"]);
+    let ran = common::run_awaiting(
+        &env,
+        &[
+            "run",
+            "--rm",
+            "--name",
+            "aw-ports",
+            "ports:1",
+            "await",
+            "confined-ready",
+            "3",
+        ],
+        "aw-ports",
+        ("confined-ready", 3),
+        TIMEOUT,
+    );
     let all = format!("{}{}", ran.stdout, ran.stderr);
     assert_eq!(ran.status, Some(0), "{all}");
     assert!(
@@ -9246,15 +9407,23 @@ fn an_agent_reaches_nothing_past_its_grants() {
     .unwrap();
     let built = shards(&["build", "-t", "sweep:1", ctx.to_str().unwrap()]);
     assert_eq!(built.status, Some(0), "{}", built.stderr);
-    let ran = shards(&[
-        "run",
-        "--rm",
-        "sweep:1",
-        "sweep-target",
-        "7100",
-        "confined-ready",
-        "3",
-    ]);
+    let ran = common::run_awaiting(
+        &env,
+        &[
+            "run",
+            "--rm",
+            "--name",
+            "aw-sweep",
+            "sweep:1",
+            "sweep-target",
+            "7100",
+            "confined-ready",
+            "3",
+        ],
+        "aw-sweep",
+        ("confined-ready", 3),
+        TIMEOUT,
+    );
     let all = format!("{}{}", ran.stdout, ran.stderr);
     assert_eq!(ran.status, Some(0), "{all}");
     // The run swept the addresses the probe saw.
@@ -9332,13 +9501,38 @@ fn an_agents_daemon_ends_with_it() {
     .unwrap();
     let built = shards(&["build", "-t", "daemon:1", ctx.to_str().unwrap()]);
     assert_eq!(built.status, Some(0), "{}", built.stderr);
-    let ran = shards(&["run", "--rm", "daemon:1", "vanish", "escaped"]);
+    // Seen by the host (`shards top`), as the run's own command sees no agent's process
+    // (D115): the daemon there, then gone with its agent.
+    let (mut seen, mut vanished) = (false, false);
+    let mut watch = |rows: &[Vec<String>]| {
+        let there = rows.iter().any(|r| r.first().is_some_and(|c| c == "escaped"));
+        seen |= there;
+        vanished = seen && !there;
+        vanished
+    };
+    let ran = common::run_watching(
+        &env,
+        &[
+            "run",
+            "--rm",
+            "--name",
+            "aw-daemon",
+            "daemon:1",
+            "await",
+            "escaped",
+            "1",
+        ],
+        "aw-daemon",
+        "comm",
+        &mut watch,
+        TIMEOUT,
+    );
     let all = format!("{}{}", ran.stdout, ran.stderr);
     assert!(
         all.lines().any(|l| l == "[agent x] confined daemonize: done"),
         "{all}"
     );
-    assert!(all.lines().any(|l| l == "vanish escaped: vanished"), "{all}");
+    assert!(seen && vanished, "seen {seen}, vanished {vanished}:\n{all}");
     assert_eq!(ran.status, Some(0), "{all}");
 }
 
@@ -9385,7 +9579,22 @@ fn no_kernel_channel_joins_two_agents() {
     let built = shards(&["build", "-t", "chan:1", ctx.to_str().unwrap()]);
     assert_eq!(built.status, Some(0), "{}", built.stderr);
     // Both still running once b has tried: its signal ended no one of a's.
-    let ran = shards(&["run", "--rm", "chan:1", "await", "confined-ready", "2"]);
+    let ran = common::run_awaiting(
+        &env,
+        &[
+            "run",
+            "--rm",
+            "--name",
+            "aw-chan",
+            "chan:1",
+            "await",
+            "confined-ready",
+            "2",
+        ],
+        "aw-chan",
+        ("confined-ready", 2),
+        TIMEOUT,
+    );
     let all = format!("{}{}", ran.stdout, ran.stderr);
     assert_eq!(ran.status, Some(0), "{all}");
     let said = |line: String| assert!(all.lines().any(|l| l == line), "no {line:?} in\n{all}");
@@ -9438,27 +9647,63 @@ fn the_in_vm_server_knows_each_agent() {
     std::fs::write(ctx.join("Agentfile"), format!("FROM {image}\n{agents}")).unwrap();
     let built = shards(&["build", "-t", "server:1", ctx.to_str().unwrap()]);
     assert_eq!(built.status, Some(0), "{}", built.stderr);
-    let ran = shards(&[
-        "run",
-        "--rm",
-        "server:1",
-        "inspect-servers",
-        "confined-ready",
-        "2",
-    ]);
+    // The instances, as the host sees them (`shards top`): the run's own command sees none,
+    // its PID namespace being its own (D115). The host's view is init's dump of each
+    // process's stat and status, which carries no namespace (`netns` reads alike for all):
+    // its network namespace of its own, which the run's command once read in their
+    // `/proc/PID/net/dev`, no `shards top` column shows.
+    let fields = "euid,ruid,suid,fsuid,egid,rgid,sgid,fsgid,supgid,rss,comm";
+    let mut rows: Vec<Vec<String>> = Vec::new();
+    let mut ready = |seen: &[Vec<String>]| {
+        let up = seen
+            .iter()
+            .filter(|r| r.last().is_some_and(|c| c == "confined-ready"))
+            .count()
+            >= 2;
+        if up {
+            rows = seen.to_vec();
+        }
+        up
+    };
+    let ran = common::run_watching(
+        &env,
+        &[
+            "run",
+            "--rm",
+            "--name",
+            "aw-server",
+            "server:1",
+            "await",
+            "confined-ready",
+            "2",
+        ],
+        "aw-server",
+        fields,
+        &mut ready,
+        TIMEOUT,
+    );
     let all = format!("{}{}", ran.stdout, ran.stderr);
     assert_eq!(ran.status, Some(0), "{all}");
-    let servers: Vec<&str> = all.lines().filter_map(|l| l.strip_prefix("server ")).collect();
-    assert_eq!(servers.len(), 2, "{all}");
+    let shown = format!("{rows:?}\n{all}");
+    let servers: Vec<&Vec<String>> = rows
+        .iter()
+        .filter(|r| r.last().is_some_and(|c| c == "shards-server"))
+        .collect();
+    assert_eq!(servers.len(), 2, "{shown}");
     for (n, agent) in [(0u32, 200_000u32), (1, 200_001)] {
-        let id = 200_000 + 4 * 1024 * 1024 + n;
-        let want = format!(
-            "uid={id},{id},{id},{id} gid={id},{id},{id},{id} groups={agent} capeff=0000000000000000 \
-             capprm=0000000000000000 capbnd=0000000000000000 nnp=1 seccomp=2 links=lo rss_anon_kb="
+        let id = (200_000 + 4 * 1024 * 1024 + n).to_string();
+        let found = servers.iter().find(|r| r.first() == Some(&id));
+        let r = found.unwrap_or_else(|| panic!("no instance as {id} in {shown}"));
+        // Every uid and gid its own, its one group its agent's, and memory of its own.
+        assert!(r.iter().take(8).all(|v| *v == id), "{r:?}");
+        assert_eq!(r.get(8), Some(&agent.to_string()), "{r:?}");
+        assert!(
+            r.get(9)
+                .and_then(|v| v.parse::<u64>().ok())
+                .is_some_and(|kb| kb > 0),
+            "{r:?}"
         );
-        let line = servers.iter().find(|s| s.starts_with(&want));
-        assert!(line.is_some(), "no instance as {want:?} in\n{all}");
-        eprintln!("instance {n}: {}", line.unwrap_or(&""));
+        eprintln!("instance {n}: {r:?}");
     }
     for name in ["x", "y"] {
         let want = format!("[agent {name}] confined whoami: agent {name}");
@@ -9517,7 +9762,22 @@ fn agents_message_one_another_as_granted() {
     .unwrap();
     let built = shards(&["build", "-t", "msg:1", ctx.to_str().unwrap()]);
     assert_eq!(built.status, Some(0), "{}", built.stderr);
-    let ran = shards(&["run", "--rm", "msg:1", "await", "confined-ready", "3"]);
+    let ran = common::run_awaiting(
+        &env,
+        &[
+            "run",
+            "--rm",
+            "--name",
+            "aw-msg",
+            "msg:1",
+            "await",
+            "confined-ready",
+            "3",
+        ],
+        "aw-msg",
+        ("confined-ready", 3),
+        TIMEOUT,
+    );
     let all = format!("{}{}", ran.stdout, ran.stderr);
     assert_eq!(ran.status, Some(0), "{all}");
     for want in [
@@ -9581,7 +9841,22 @@ fn mcp_servers_are_offered_to_those_in_scope() {
     .unwrap();
     let built = shards(&["build", "-t", "offer:1", ctx.to_str().unwrap()]);
     assert_eq!(built.status, Some(0), "{}", built.stderr);
-    let ran = shards(&["run", "--rm", "offer:1", "await", "confined-ready", "2"]);
+    let ran = common::run_awaiting(
+        &env,
+        &[
+            "run",
+            "--rm",
+            "--name",
+            "aw-offer",
+            "offer:1",
+            "await",
+            "confined-ready",
+            "2",
+        ],
+        "aw-offer",
+        ("confined-ready", 2),
+        TIMEOUT,
+    );
     let all = format!("{}{}", ran.stdout, ran.stderr);
     assert_eq!(ran.status, Some(0), "{all}");
     let local = r#"{"name":"tools","remote":false,"dir":"/mcp/tools","command":[]}"#;
@@ -12129,7 +12404,22 @@ fn harnesses_message_their_attached_agents() {
     .unwrap();
     let built = shards(&["build", "-t", "attach:1", ctx.to_str().unwrap()]);
     assert_eq!(built.status, Some(0), "{}", built.stderr);
-    let ran = shards(&["run", "--rm", "attach:1", "await", "confined-ready", "3"]);
+    let ran = common::run_awaiting(
+        &env,
+        &[
+            "run",
+            "--rm",
+            "--name",
+            "aw-attach",
+            "attach:1",
+            "await",
+            "confined-ready",
+            "3",
+        ],
+        "aw-attach",
+        ("confined-ready", 3),
+        TIMEOUT,
+    );
     let all = format!("{}{}", ran.stdout, ran.stderr);
     assert_eq!(ran.status, Some(0), "{all}");
     for want in [
@@ -12221,10 +12511,10 @@ fn agentfile_volumes_reach_whom_they_are_for() {
     assert_eq!(built.status, Some(0), "{}", built.stderr);
     let (a, b) = (200_000, 200_001);
     let run_with = |extra: &[&str]| {
-        let mut args = vec!["run", "--rm"];
+        let mut args = vec!["run", "--rm", "--name", "aw-agvol"];
         args.extend_from_slice(extra);
         args.extend_from_slice(&["agvol:1", "await", "confined-ready", "2"]);
-        let ran = shards(&args);
+        let ran = common::run_awaiting(&env, &args, "aw-agvol", ("confined-ready", 2), TIMEOUT);
         let all = format!("{}{}", ran.stdout, ran.stderr);
         assert_eq!(ran.status, Some(0), "{all}");
         all
@@ -12409,7 +12699,13 @@ fn agentfile_volumes_reach_whom_they_are_for() {
         &format!("agvol-cp:{dir}.d/osi.json"),
     ]);
     assert_eq!(put.status, Some(0), "{}", put.stderr);
-    let started = shards(&["start", "-a", "agvol-cp"]);
+    let started = common::run_awaiting(
+        &env,
+        &["start", "-a", "agvol-cp"],
+        "agvol-cp",
+        ("confined-ready", 2),
+        TIMEOUT,
+    );
     let all = format!("{}{}", started.stdout, started.stderr);
     assert_eq!(started.status, Some(0), "{all}");
     has(&all, "[agent b] confined see /data: seed");
@@ -12417,4 +12713,194 @@ fn agentfile_volumes_reach_whom_they_are_for() {
     has(&all, "[agent a] confined cat /data/seed: seeded");
     assert!(!all.contains("[agent a] confined see /: "), "{all}");
     let _ = shards(&["rm", "-f", "agvol-cp"]);
+}
+
+/// A run of an Agentfile's image gives its command nothing that reaches its agents and
+/// harnesses, whatever the CLI asks (D115, AGENTFILE_ARCH.md §9.3, §9.10): the command
+/// runs in a PID namespace of its own, so it sees none of their processes; it is refused
+/// --privileged, a capability that would cross into them, systempaths=unconfined, a net.*
+/// sysctl, a uid or gid of theirs, and --network none while the Agentfile grants egress;
+/// an exec is held to the same. Each guard is mutation-checked: without it, the escape
+/// the test asks for would succeed.
+#[test]
+fn a_run_reaches_none_of_its_images_agents() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let (port, _repos) = common::writable_registry();
+    let home = TempDir::new("beside-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    // One agent that reaches past the microVM (egress), so its flows cross the command's
+    // network namespace: it holds until the run ends.
+    let dir = TempDir::new("beside-agent");
+    std::fs::create_dir_all(dir.join("bin")).unwrap();
+    std::fs::copy(common::test_guest(), dir.join("bin/testguest")).unwrap();
+    std::fs::write(
+        dir.join("agent.json"),
+        r#"{"name":"keeper","run":{"command":["bin/testguest","confined"]}}"#,
+    )
+    .unwrap();
+    let tag = format!("127.0.0.1:{port}/team/beside-keeper:1");
+    assert_eq!(
+        shards(&["build", "agent", dir.to_str().unwrap(), "-t", &tag]).status,
+        Some(0)
+    );
+    assert_eq!(shards(&["push", "agent", &tag]).status, Some(0));
+    let ctx = context("beside-ctx", &format!("FROM {image}\n"));
+    std::fs::write(
+        ctx.join("Agentfile"),
+        format!(
+            "FROM {image}\nAGENT keeper FROM {tag}\n\
+             NETWORK --egress=443 out\nEXPOSE 443 AS egress FOR out\nCONNECT keeper WITH keeper ON out\n"
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        shards(&["build", "-t", "beside:1", ctx.to_str().unwrap()]).status,
+        Some(0),
+        "building the Agentfile image"
+    );
+
+    // The command runs in its own PID namespace: it sees itself and the reaper, PID 1
+    // there, and no agent's process; it may signal, read the environment of and enter the
+    // network namespace of nothing but its own. The host waits for the agent to be up (its
+    // process renamed `confined-ready`), which the workload's own is not.
+    let ran = common::run_awaiting(
+        &env,
+        &[
+            "run",
+            "--rm",
+            "--name",
+            "beside",
+            "beside:1",
+            "beside",
+            "confined-ready",
+            "1",
+        ],
+        "beside",
+        ("confined-ready", 1),
+        TIMEOUT,
+    );
+    let all = format!("{}{}", ran.stdout, ran.stderr);
+    assert_eq!(ran.status, Some(0), "{all}");
+    let rows: Vec<Vec<&str>> = all
+        .lines()
+        .filter_map(|l| l.strip_prefix("beside "))
+        .map(|l| l.split(' ').collect())
+        .collect();
+    let names: Vec<&str> = rows
+        .iter()
+        .filter(|r| r.first() != Some(&"caps"))
+        .filter_map(|r| r.get(1).copied())
+        .collect();
+    // Only the command's own tree: shards-init's reaper (PID 1 of the namespace) and the
+    // command. Never keeper (`confined-ready`), nor shards-init, nor a server instance.
+    assert!(
+        names
+            .iter()
+            .all(|n| *n != "confined-ready" && *n != "shards-init" && *n != "shards-server"),
+        "the command saw another domain's process:\n{all}"
+    );
+    assert!(names.contains(&"testguest"), "{all}");
+    assert!(rows.len() <= 4, "the command sees only its own tree:\n{all}");
+    for r in rows
+        .iter()
+        .filter(|r| r.first() != Some(&"caps") && r.get(2) != Some(&"self=true"))
+    {
+        for field in ["signal=", "environ=", "netns="] {
+            let got = r.iter().find_map(|f| f.strip_prefix(field)).unwrap_or("");
+            assert!(got != "ok", "reached {field} of {r:?}:\n{all}");
+        }
+    }
+
+    // What the CLI cannot ask for at run. Each is Docker's input, refused with shards'
+    // reason; the run is refused before its command starts.
+    for (args, said) in [
+        (vec!["--privileged"], "cannot run privileged"),
+        (
+            vec!["--cap-add", "SYS_PTRACE"],
+            "cannot give the command CAP_SYS_PTRACE",
+        ),
+        (
+            vec!["--cap-add", "SYS_ADMIN"],
+            "cannot give the command CAP_SYS_ADMIN",
+        ),
+        (
+            vec!["--cap-add", "NET_ADMIN"],
+            "cannot give the command CAP_NET_ADMIN",
+        ),
+        // Every capability: the lowest that reaches them, here CAP_NET_ADMIN, the image's
+        // agent reaching past the microVM through the command's network namespace.
+        (vec!["--cap-add", "ALL"], "cannot give the command CAP_NET_ADMIN"),
+        (
+            vec!["--security-opt", "systempaths=unconfined"],
+            "cannot leave /proc unmasked",
+        ),
+        (
+            vec!["--sysctl", "net.ipv4.ip_forward=1"],
+            "cannot set sysctl net.ipv4.ip_forward",
+        ),
+        (vec!["-u", "200000"], "cannot run as uid 200000"),
+        (vec!["--network", "none"], "cannot run without a network"),
+    ] {
+        let mut run = vec!["run", "--rm"];
+        run.extend_from_slice(&args);
+        run.extend(["beside:1", "report"]);
+        let refused = shards(&run);
+        assert_ne!(
+            refused.status,
+            Some(0),
+            "run {args:?} was allowed:\n{}",
+            refused.stderr
+        );
+        assert!(
+            refused.stderr.contains(said),
+            "run {args:?}: {said:?} not in\n{}",
+            refused.stderr
+        );
+    }
+
+    // An exec beside the agents is held the same way: a long-lived run, then execs on it.
+    let created = shards(&["run", "-d", "--name", "beside-live", "beside:1", "sleep", "600"]);
+    assert_eq!(created.status, Some(0), "{}", created.stderr);
+    for (args, said) in [
+        (vec!["--privileged"], "cannot exec privileged"),
+        (vec!["-u", "200000"], "cannot run as uid 200000"),
+    ] {
+        let mut exec = vec!["exec"];
+        exec.extend_from_slice(&args);
+        exec.extend(["beside-live", "report"]);
+        let refused = shards(&exec);
+        assert_ne!(
+            refused.status,
+            Some(0),
+            "exec {args:?} was allowed:\n{}",
+            refused.stderr
+        );
+        assert!(
+            refused.stderr.contains(said),
+            "exec {args:?}: {said:?} not in\n{}",
+            refused.stderr
+        );
+    }
+    // An ordinary exec runs, in the command's PID namespace: it sees no agent's process.
+    // An exec takes no entrypoint, so the test guest is named by its path.
+    let ok = shards(&["exec", "beside-live", "/bin/testguest", "beside", "none", "0"]);
+    let ok_all = format!("{}{}", ok.stdout, ok.stderr);
+    assert_eq!(ok.status, Some(0), "{ok_all}");
+    assert!(
+        ok_all
+            .lines()
+            .filter_map(|l| l.strip_prefix("beside "))
+            .filter_map(|l| l.split(' ').nth(1))
+            .all(|n| n != "confined-ready" && n != "shards-init" && n != "shards-server"),
+        "an exec saw an agent:\n{ok_all}"
+    );
+    let _ = shards(&["rm", "-f", "beside-live"]);
 }

@@ -81,7 +81,7 @@ pub fn main(device: &str, template: bool) -> ! {
     let signals = dial(run::SIGNAL_PORT, false).ok();
     let started = standby.and_then(|standby| {
         let spec = receive(&conn)?;
-        let mut workload = standby.start(&spec)?;
+        let (mut workload, declared) = standby.start(&spec)?;
         // A visit to a stopped container's files (`HOLD`, D37) runs nothing of the image's:
         // no command, and no agent or harness.
         if spec.builtin == run::builtin::HOLD {
@@ -95,7 +95,8 @@ pub fn main(device: &str, template: bool) -> ! {
             crate::setup::filter_named(&spec.setup, b"domains-seccomp="),
             crate::setup::filter_named(&spec.setup, b"domains-seccomp-none="),
         ];
-        match crate::domains::read().and_then(|(all, domains, pairs)| {
+        let declared = declared.map_or_else(crate::domains::read, Ok);
+        match declared.and_then(|(all, domains, pairs)| {
             crate::domains::start(&all, &domains, &pairs, &filters, &spec.setup)
         }) {
             Ok(domains) if domains.is_empty() => {}
@@ -328,6 +329,72 @@ struct Inherited {
 /// The workload's [`Inherited`], once it starts.
 static WORKLOAD: std::sync::OnceLock<Inherited> = std::sync::OnceLock::new();
 
+/// What the image's Agentfile declares that the run keeps from its command and its execs
+/// (D115), as the daemon does (`shards_abi::run::beside`): how many agents and harnesses,
+/// whose IDs no other process takes, and whether their flows past the microVM cross the
+/// command's network namespace.
+#[derive(Clone, Copy)]
+struct Beside {
+    domains: u32,
+    uplink: bool,
+}
+
+/// The run's [`Beside`], where its image's Agentfile declares any domain.
+static BESIDE: std::sync::OnceLock<Beside> = std::sync::OnceLock::new();
+
+impl Beside {
+    /// Refuses what of `setup` reaches the domains: a privileged command (`what`, `run`
+    /// or `exec`), `/proc` unmasked, a capability of [`shards_abi::run::beside`]'s, a
+    /// net.* sysctl where their flows cross the command's network namespace.
+    fn refuse(&self, setup: &[Vec<u8>], what: &str) -> Result<(), Failure> {
+        use shards_abi::run::beside;
+        for entry in setup {
+            if entry == b"privileged" {
+                return Err(setup_failed(beside::privileged(what)));
+            }
+            if entry == b"unmasked" {
+                return Err(setup_failed(beside::unmasked()));
+            }
+            if let Some(caps) = entry.strip_prefix(b"caps=") {
+                let caps = std::str::from_utf8(caps)
+                    .ok()
+                    .and_then(|c| c.parse::<u64>().ok())
+                    .ok_or_else(|| setup_failed("a malformed caps entry"))?;
+                if let Some((cap, reach)) = beside::crossing(caps, self.uplink) {
+                    let name = run::CAP_NAMES
+                        .get(cap as usize)
+                        .copied()
+                        .unwrap_or("a capability");
+                    return Err(setup_failed(beside::capability(name, reach)));
+                }
+            }
+            if let Some(kv) = entry.strip_prefix(b"sysctl=")
+                && self.uplink
+                && kv.starts_with(b"net.")
+            {
+                let kv = String::from_utf8_lossy(kv);
+                return Err(setup_failed(beside::sysctl(
+                    kv.split_once('=').map_or(&*kv, |(k, _)| k),
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The capabilities a command has where none are said: Docker's defaults, less those the
+/// run keeps from its command beside its domains, `CAP_NET_RAW` where their flows past
+/// the microVM cross its network namespace (D115).
+fn default_caps() -> u64 {
+    let all = CAPS.iter().fold(0, |m, &c| m | 1 << c);
+    match BESIDE.get() {
+        Some(b) if b.uplink => shards_abi::run::beside::UPLINK
+            .iter()
+            .fold(all, |m, &(c, _)| m & !(1 << c)),
+        _ => all,
+    }
+}
+
 /// [`Inherited`]'s, and the standby's own, of a spec's setup entries; sysctls are
 /// written here, by init.
 fn sort_setup(entries: &[Vec<u8>], into: &mut Inherited) -> Result<Vec<Vec<u8>>, Failure> {
@@ -555,7 +622,203 @@ fn isolate(join: Option<libc::pid_t>) -> Result<(), i32> {
             return Err(last());
         }
     }
+    own_proc()
+}
+
+/// A `/proc` of the PID namespace this process was born in, the workload's own (D115), in
+/// place of init's, which shows every process of the microVM, its agents' among them;
+/// masked and read-only where init's is (`masked`), as runc mounts a container's.
+fn own_proc() -> Result<(), i32> {
+    let last = || io::Error::last_os_error().raw_os_error().unwrap_or(libc::EIO);
+    let (nosuid, noexec, nodev) = (libc::MS_NOSUID, libc::MS_NOEXEC, libc::MS_NODEV);
+    // SAFETY: umount2(2) and mount(2) of NUL-terminated literals.
+    unsafe {
+        if libc::umount2(c"/proc".as_ptr(), libc::MNT_DETACH) != 0
+            || libc::mount(
+                c"proc".as_ptr(),
+                c"/proc".as_ptr(),
+                c"proc".as_ptr(),
+                nosuid | noexec | nodev,
+                std::ptr::null(),
+            ) != 0
+        {
+            return Err(last());
+        }
+    }
+    let mount = |src: &str, dst: &str, fstype: &str, flags: libc::c_ulong| -> Result<(), i32> {
+        let (src, dst, fstype) = (
+            CString::new(src).map_err(|_| libc::EINVAL)?,
+            CString::new(dst).map_err(|_| libc::EINVAL)?,
+            CString::new(fstype).map_err(|_| libc::EINVAL)?,
+        );
+        // SAFETY: mount(2) of NUL-terminated strings that outlive the call.
+        if unsafe {
+            libc::mount(
+                src.as_ptr(),
+                dst.as_ptr(),
+                fstype.as_ptr(),
+                flags,
+                std::ptr::null(),
+            )
+        } != 0
+        {
+            return Err(last());
+        }
+        Ok(())
+    };
+    for p in MASKED.iter().filter(|p| p.starts_with("/proc/")) {
+        match std::fs::symlink_metadata(p) {
+            Ok(m) if m.is_dir() => mount("tmpfs", p, "tmpfs", libc::MS_RDONLY)?,
+            Ok(_) => mount("/dev/null", p, "", libc::MS_BIND)?,
+            Err(_) => {}
+        }
+    }
+    for p in READONLY.iter().filter(|p| p.starts_with("/proc/")) {
+        if std::fs::symlink_metadata(p).is_ok() {
+            mount(p, p, "", libc::MS_BIND | libc::MS_REC)?;
+            let flags = libc::MS_BIND | libc::MS_REMOUNT | libc::MS_RDONLY | nosuid | noexec | nodev;
+            mount("", p, "", flags)?;
+        }
+    }
     Ok(())
+}
+
+/// Init's own PID namespace, which it takes back after each child it makes in the
+/// workload's ([`fork_in`]).
+static OWN_PID_NS: std::sync::OnceLock<OwnedFd> = std::sync::OnceLock::new();
+
+/// The PID namespace `pid` runs in.
+fn pid_ns_of(pid: libc::pid_t) -> Result<OwnedFd, Failure> {
+    File::open(format!("/proc/{pid}/ns/pid"))
+        .map(OwnedFd::from)
+        .map_err(|e| setup_failed(format!("the workload's PID namespace: {e}")))
+}
+
+/// fork(2), the child born in the PID namespace `ns`: setns(2) gives the children made
+/// after it (pid_namespaces(7)), and init takes its own back before anything else. Init's
+/// later children, its agents' domains among them, must not be born there, where the
+/// workload would see them: past a failure to take it back, init goes no further.
+fn fork_in(ns: &OwnedFd) -> Result<libc::pid_t, Failure> {
+    let own = match OWN_PID_NS.get() {
+        Some(own) => own,
+        None => {
+            let own = File::open("/proc/self/ns/pid")
+                .map(OwnedFd::from)
+                .map_err(|e| setup_failed(format!("init's PID namespace: {e}")))?;
+            OWN_PID_NS.get_or_init(|| own)
+        }
+    };
+    // SAFETY: setns(2) on a descriptor this process holds.
+    if unsafe { libc::setns(ns.as_raw_fd(), libc::CLONE_NEWPID) } != 0 {
+        return Err(setup_failed(format!(
+            "entering the workload's PID namespace: {}",
+            io::Error::last_os_error()
+        )));
+    }
+    // SAFETY: init is single-threaded, so its child may run anything until it execs.
+    let pid = unsafe { libc::fork() };
+    if pid == 0 {
+        return Ok(0);
+    }
+    let forked = io::Error::last_os_error();
+    // SAFETY: setns(2) back into init's own namespace, which it holds.
+    if unsafe { libc::setns(own.as_raw_fd(), libc::CLONE_NEWPID) } != 0 {
+        let _ = writeln!(
+            io::stderr(),
+            "shards-init: taking back its own PID namespace: {}",
+            io::Error::last_os_error()
+        );
+        power_off()
+    }
+    if pid < 0 {
+        return Err(setup_failed(format!("fork: {forked}")));
+    }
+    Ok(pid)
+}
+
+/// A new PID namespace for the workload (D115), its first process [`reaper`]'s: so the
+/// workload and its execs see none of the microVM's other processes, an agent's or
+/// init's, as a container sees none of its host's, and signal, trace and enter none.
+fn clone_reaper() -> Result<libc::pid_t, Failure> {
+    let failed = |e: io::Error| setup_failed(format!("the workload's PID namespace: {e}"));
+    let cgroup = File::open(WORKLOAD_CGROUP).map_err(failed)?;
+    let last_cap = defaults::last_cap();
+    let mut args = crate::domains::CloneArgs {
+        flags: (libc::CLONE_NEWPID | libc::CLONE_NEWNS) as u64 | crate::domains::CLONE_INTO_CGROUP,
+        exit_signal: libc::SIGCHLD as u64,
+        cgroup: cgroup.as_raw_fd() as u64,
+        ..Default::default()
+    };
+    // SAFETY: clone3(2) as fork(2), with a clone_args of the size given; the child calls
+    // only the kernel ([`reaper`]), never musl's thread list, which is init's.
+    let pid = unsafe {
+        libc::syscall(
+            libc::SYS_clone3,
+            &raw mut args,
+            std::mem::size_of::<crate::domains::CloneArgs>(),
+        )
+    };
+    if pid < 0 {
+        return Err(failed(io::Error::last_os_error()));
+    }
+    if pid == 0 {
+        reaper(last_cap)
+    }
+    libc::pid_t::try_from(pid).map_err(|_| setup_failed("the workload's PID namespace: a pid out of range"))
+}
+
+/// The first process of the workload's PID namespace: it reaps what the workload leaves
+/// orphaned there, as shards-init reaps for every run what docker-init does with `--init`;
+/// the workload stays init's child, signalled and waited for as before. In the workload's
+/// cgroup, it holds nothing a process of the namespace could take from it, should one
+/// trace it: no descriptor, no capability, `no_new_privs`, and an empty read-only root in
+/// a mount namespace of its own, so that its `/proc/1/root` leads to no file of init's
+/// (D115). A copy of init's memory before any run's. Ended with the run (`relay`).
+fn reaper(last_cap: u32) -> ! {
+    // SAFETY: system calls on local values and literals alone: close_range(2) of every
+    // descriptor past stdio; mount(2), chroot(2) and chdir(2) to an empty root; prctl(2)
+    // and capset(2) to none of init's privileges; then waitpid(2) and sigwaitinfo(2) for
+    // ever. SIGCHLD stays blocked, so that one sent between the two waits for sigwaitinfo.
+    unsafe {
+        libc::syscall(
+            libc::SYS_close_range,
+            3 as libc::c_long,
+            libc::c_long::from(u32::MAX),
+            0 as libc::c_long,
+        );
+        let shut = libc::MS_RDONLY | libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC;
+        let alone = libc::mount(
+            std::ptr::null(),
+            c"/".as_ptr(),
+            std::ptr::null(),
+            libc::MS_REC | libc::MS_PRIVATE,
+            std::ptr::null(),
+        ) == 0
+            && libc::mount(
+                c"tmpfs".as_ptr(),
+                c"/proc".as_ptr(),
+                c"tmpfs".as_ptr(),
+                shut,
+                std::ptr::null(),
+            ) == 0
+            && libc::chroot(c"/proc".as_ptr()) == 0
+            && libc::chdir(c"/".as_ptr()) == 0
+            && defaults::bound(last_cap, |_| false)
+            && defaults::set(last_cap, |_| false)
+            && libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) == 0;
+        if !alone {
+            // Its namespace ends with it: no standby is born there, and the run fails.
+            libc::_exit(1);
+        }
+        let mut set: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut set);
+        libc::sigaddset(&mut set, libc::SIGCHLD);
+        libc::sigprocmask(libc::SIG_BLOCK, &set, std::ptr::null_mut());
+        loop {
+            while libc::waitpid(-1, std::ptr::null_mut(), libc::WNOHANG) > 0 {}
+            libc::sigwaitinfo(&set, std::ptr::null_mut());
+        }
+    }
 }
 
 /// Whether the kernel killed a process of the workload's cgroup for want of memory: its
@@ -1107,6 +1370,9 @@ impl Pty {
 /// waits for a fork (docs/research/platform-measurements.md M27).
 struct Standby {
     pid: libc::pid_t,
+    /// The first process of the PID namespace it was born in, its reaper (D115); none for
+    /// an exec's, born in the workload's.
+    reaper: Option<libc::pid_t>,
     /// Where init writes the standby's orders: what to exec, and as whom.
     orders: OwnedFd,
     /// Closes when the standby execs: bytes on it mean it could not.
@@ -1153,11 +1419,16 @@ impl Standby {
         }
         // SAFETY: a fresh descriptor nothing else owns.
         let sigchld = unsafe { OwnedFd::from_raw_fd(sigchld) };
-        // SAFETY: init is single-threaded, so its child may run anything until it execs.
-        let pid = unsafe { libc::fork() };
-        if pid < 0 {
-            return Err(setup_failed(format!("fork: {}", io::Error::last_os_error())));
-        }
+        // The PID namespace it is born in (D115): with `join`, the workload's, as an exec
+        // enters a container's; else one of its own, its reaper the first process there.
+        let (ns, reaper) = match join {
+            Some(pid) => (pid_ns_of(pid)?, None),
+            None => {
+                let reaper = clone_reaper()?;
+                (pid_ns_of(reaper)?, Some(reaper))
+            }
+        };
+        let pid = fork_in(&ns)?;
         if pid == 0 {
             standby(
                 Ends {
@@ -1172,6 +1443,7 @@ impl Standby {
         drop((stdin_r, stdout_w, stderr_w, err_w, orders_r));
         Ok(Standby {
             pid,
+            reaper,
             orders: orders_w,
             err: err_r,
             stdin: stdin_w,
@@ -1184,12 +1456,21 @@ impl Standby {
     }
 
     /// Sets the container up as the spec says, then has the standby exec the workload. A
-    /// standby that has ended is replaced first.
-    fn start(self, spec: &Spec) -> Result<Workload, Failure> {
+    /// standby that has ended is replaced first. With it, the image's Agentfile as read
+    /// before the workload starts, for a run that starts its domains (D115).
+    fn start(self, spec: &Spec) -> Result<(Workload, Option<crate::domains::Read>), Failure> {
         let mut status = 0;
         // SAFETY: waitpid(2) for our own child, without blocking.
         let ended = unsafe { libc::waitpid(self.pid, &mut status, libc::WNOHANG) } == self.pid;
-        let standby = if ended { Standby::fork(None)? } else { self };
+        let standby = if ended {
+            if let Some(reaper) = self.reaper {
+                // SAFETY: kill(2) of our own child, the reaper of the namespace it held.
+                unsafe { libc::kill(reaper, libc::SIGKILL) };
+            }
+            Standby::fork(None)?
+        } else {
+            self
+        };
         // A network's address, where it is not the template's (D46): before /etc/hosts,
         // which names it.
         if let Some(to) = spec.setup.iter().find_map(|e| e.strip_prefix(b"address=")) {
@@ -1209,6 +1490,26 @@ impl Standby {
                 .and_then(crate::net::parse6)
                 .ok_or_else(|| setup_failed("a malformed address6 entry"))?;
             crate::net::address6(to).map_err(|e| setup_failed(format!("eth0's IPv6 address: {e}")))?;
+        }
+        // The image's Agentfile, for a run that starts its domains (the daemon sends their
+        // filter, D59), read now that eth0 has its address and before the command starts,
+        // so that the run gives its command nothing that reaches them (D115), as the
+        // daemon refuses it: what the image declares, in the image as built (D109).
+        let declared = match crate::setup::filter_named(&spec.setup, b"domains-seccomp=") {
+            Some(_) if spec.builtin != run::builtin::HOLD => {
+                Some(crate::domains::read().map_err(setup_failed)?)
+            }
+            _ => None,
+        };
+        if let Some((all, domains, _)) = &declared
+            && !all.is_empty()
+        {
+            let beside = Beside {
+                domains: u32::try_from(all.len()).map_err(|_| setup_failed("more domains than uids"))?,
+                uplink: domains.iter().any(crate::domains::uplinked),
+            };
+            beside.refuse(&spec.setup, "run")?;
+            let _ = BESIDE.set(beside);
         }
         // An image whose agents have grants past the microVM: the run's own processes kept
         // from them before its command can start (D59, D99).
@@ -1239,7 +1540,7 @@ impl Standby {
                 sigchld,
                 ..
             } = standby;
-            return Ok(Workload {
+            let held = Workload {
                 pid,
                 stdin: None,
                 stdout: Some(stdout),
@@ -1249,7 +1550,8 @@ impl Standby {
                 _held: Some(orders),
                 domains: Vec::new(),
                 memory: None,
-            });
+            };
+            return Ok((held, None));
         }
         // Its devices first, as dockerd finds them and runc makes their nodes, init's: in
         // the /dev it shares with the workload, the limits and filter on the cgroup it is
@@ -1266,7 +1568,9 @@ impl Standby {
         let mut inherited = Inherited::default();
         let setup = sort_setup(&spec.setup, &mut inherited)?;
         let _ = WORKLOAD.set(inherited.clone());
-        standby.launch(spec, false, setup, &inherited)
+        standby
+            .launch(spec, false, setup, &inherited)
+            .map(|w| (w, declared))
     }
 
     /// Resolves the spec as Docker and runc do, then has the standby exec it. The
@@ -1298,6 +1602,18 @@ impl Standby {
                 ..setup_failed(m)
             })?;
             groups.extend(added);
+        }
+        // Beside an Agentfile's domains, none of their IDs (D115): the kernel counts a
+        // user's processes, inotify instances, pipe buffers and queued signals as one, and
+        // their files are theirs.
+        if let Some(b) = BESIDE.get() {
+            let taken = |id: u32| shards_abi::run::beside::taken(id, b.domains);
+            if taken(uid) {
+                return Err(setup_failed(shards_abi::run::beside::id("uid", uid, b.domains)));
+            }
+            if let Some(&g) = std::iter::once(&gid).chain(&groups).find(|&&g| taken(g)) {
+                return Err(setup_failed(shards_abi::run::beside::id("gid", g, b.domains)));
+            }
         }
         let env = user::prepare_env(&spec.env, uid, passwd).map_err(setup_failed)?;
         let cwd = if exec {
@@ -1367,9 +1683,7 @@ impl Standby {
             tty: pty.as_ref().map(|p| p.peer.clone()).unwrap_or_default(),
             null_stdin,
             setup: setup.clone(),
-            caps: process
-                .caps
-                .unwrap_or_else(|| CAPS.iter().fold(0, |m, &c| m | 1 << c)),
+            caps: process.caps.unwrap_or_else(default_caps),
         }
         .encode();
         let Standby {
@@ -1589,6 +1903,15 @@ fn builtin(kind: u8, args: &[Vec<u8>]) -> Result<Started, Failure> {
             run::builtin::STAT | run::builtin::ARCHIVE | run::builtin::EXTRACT
         ) {
             let path = args.first().map_or(&[][..], Vec::as_slice);
+            // The container's files, as dockerd's are in its root: without init's /proc,
+            // /sys and /dev, kernel filesystems no file of the run's is in, and whose
+            // /proc reaches every process of the microVM, an agent's root among them
+            // (`/proc/PID/root`), which this process, init's, could read and write (D115).
+            if let Err(e) = files_alone() {
+                let _ = writeln!(File::from(stderr_w), "the container's files: {e}");
+                // SAFETY: _exit(2) ends the child without running init's exit paths.
+                unsafe { libc::_exit(1) }
+            }
             let done = match kind {
                 run::builtin::STAT => crate::copy::stat(path, &mut out),
                 run::builtin::ARCHIVE => crate::copy::archive(path, &mut out),
@@ -1665,6 +1988,33 @@ fn builtin(kind: u8, args: &[Vec<u8>]) -> Result<Started, Failure> {
     })
 }
 
+/// Leaves this process, a child of init's, in a mount namespace of its own in which the
+/// run's root holds its files alone: init's `/proc`, `/sys` and `/dev`, and what is
+/// mounted on them, unmounted, so that each is the directory the image has there.
+fn files_alone() -> io::Result<()> {
+    // SAFETY: unshare(2), mount(2) and umount2(2) of NUL-terminated literals, in a
+    // single-threaded child of init's.
+    unsafe {
+        if libc::unshare(libc::CLONE_NEWNS) != 0
+            || libc::mount(
+                std::ptr::null(),
+                c"/".as_ptr(),
+                std::ptr::null(),
+                libc::MS_REC | libc::MS_PRIVATE,
+                std::ptr::null(),
+            ) != 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        for kernel in [c"/proc", c"/sys", c"/dev"] {
+            if libc::umount2(kernel.as_ptr(), libc::MNT_DETACH) != 0 {
+                return Err(io::Error::last_os_error());
+            }
+        }
+    }
+    Ok(())
+}
+
 /// The container's files as a tar archive, as dockerd exports its root (moby
 /// daemon/export.go: go-archive's Tar of the container's mounted root): what is
 /// mounted over the root is not its files, and the files init writes in `/etc` are
@@ -1731,12 +2081,16 @@ impl Exec {
         let started = if spec.builtin != 0 && running {
             builtin(spec.builtin, &spec.argv)
         } else if running {
-            // The workload's process, but for what the exec says (`--privileged`).
+            // The workload's process, but for what the exec says (`--privileged`), which
+            // the run refuses beside its domains as it refused the workload's (D115).
             let mut process = WORKLOAD.get().cloned().unwrap_or_default();
             if let Some(caps) = spec.setup.iter().find_map(|e| e.strip_prefix(b"caps=")) {
                 process.caps = std::str::from_utf8(caps).ok().and_then(|c| c.parse().ok());
             }
-            Standby::fork(Some(workload))
+            BESIDE
+                .get()
+                .map_or(Ok(()), |b| b.refuse(&spec.setup, "exec"))
+                .and_then(|()| Standby::fork(Some(workload)))
                 .and_then(|standby| standby.launch(&spec, true, process.setup.clone(), &process))
                 .map(|w| Started {
                     pid: w.pid,
