@@ -4729,6 +4729,13 @@ fn run_caches_are_kept_across_builds() {
         &format!("RUN {c} [\"/bin/testguest\", \"fs\", \"write:/c/one=1\"]\n"),
         &[],
     );
+    // The build's collection ran once it was done; the next, within a minute, runs none.
+    let collected = || {
+        std::fs::metadata(home.join("buildcache-gc"))
+            .and_then(|m| m.modified())
+            .unwrap()
+    };
+    let first_collection = collected();
     // A failing step's writes are kept.
     let failed = build(
         &format!("RUN {c} [\"/bin/testguest\", \"fs\", \"write:/c/two=2\", \"open:r:/nowhere\"]\n"),
@@ -4741,6 +4748,7 @@ fn run_caches_are_kept_across_builds() {
     );
     assert!(seen.contains("/c/one file 644 0:0 1\n"), "{seen}");
     assert!(seen.contains("/c/two file 644 0:0 1\n"), "{seen}");
+    assert_eq!(collected(), first_collection);
     // One id, two targets of one step: one directory; another step's by that id.
     let twice = ok(
         "RUN --mount=type=cache,target=/x,id=both --mount=type=cache,target=/y,id=both,ro [\"/bin/testguest\", \"fs\", \"write:/x/f=3\", \"print:/y/f\"]\n",

@@ -42,6 +42,7 @@ mod compress;
 pub(crate) mod domains;
 mod estargz;
 mod exec;
+pub mod gc;
 mod gha;
 mod git;
 pub(crate) mod http;
@@ -119,6 +120,13 @@ pub fn build(args: impl Iterator<Item = OsString>) -> ExitCode {
     // What a check (`--call=check`) ends with, which says no error of its own.
     let status = std::cell::Cell::new(0u8);
     let r = run(&parsed, &status);
+    // The build cache collected once a build is done, as BuildKit's controller runs its
+    // GC after each (D114); its failure is no build's.
+    if let Ok(home) = shards_ipc::home()
+        && let Ok(store) = crate::pull::store(&home)
+    {
+        let _ = gc::after_build(&home, &store);
+    }
     if let Some(s) = stdin {
         let _ = std::fs::remove_file(&s.path);
     }
