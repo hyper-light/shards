@@ -789,16 +789,21 @@ impl<'p> Session<'p> {
     /// and refused where it no longer answers.
     fn ask(&self, method: &str, url: &str) -> bool {
         let (reply, answer) = mpsc::sync_channel(1);
+        let asked = capture::redact(url);
         let ask = Ask {
             method: method.to_string(),
-            url: capture::redact(url),
+            url: asked.clone(),
             reply,
         };
         if self.asks.send(ask).is_err() {
             return false;
         }
         let _ = (&self.wake).write(&[1]);
-        answer.recv().unwrap_or(false)
+        let allowed = answer.recv().unwrap_or(false);
+        if allowed {
+            self.record(|c| c.allowed.push((method.to_string(), asked)));
+        }
+        allowed
     }
 
     fn record(&self, f: impl FnOnce(&mut Capture)) {

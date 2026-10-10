@@ -1614,6 +1614,35 @@ impl policy::Resolve for NoMeta {
     }
 }
 
+/// What a step's requests through the build's proxy came to, in the build's provenance
+/// (D110): each material an HTTP source of its, and each that is none named by the step's
+/// `vertex` and `command`, as BuildKit's provenance names them.
+fn proxy_provenance(
+    c: &proxy::capture::Capture,
+    vertex: &str,
+    command: &str,
+    materials: &mut Vec<provenance::Material>,
+    incomplete: &mut Vec<provenance::ProxyIncomplete>,
+) {
+    for m in c.materials() {
+        let (algorithm, hex) = m.digest.split_once(':').unwrap_or(("sha256", &m.digest));
+        materials.push(provenance::Material {
+            uri: m.url,
+            algorithm: algorithm.to_string(),
+            hex: hex.to_string(),
+        });
+    }
+    for i in &c.incomplete {
+        incomplete.push(provenance::ProxyIncomplete {
+            op: vertex.to_string(),
+            name: command.to_string(),
+            method: i.method.clone(),
+            uri: i.url.clone(),
+            reason: i.reason.to_string(),
+        });
+    }
+}
+
 /// buildx's main: each message of a policy's refusal, before the error
 /// (policysession.DenyMessages).
 fn policy_said(messages: &[String]) {
@@ -3079,6 +3108,21 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
     // goes before it; each step's vertex as BuildKit's solver knows it, to name the step a
     // request that is no material came from.
     let proxy_cap = policies.as_ref().is_some_and(|p| p.proxy);
+    // Each request through the proxy, checked by the build's policies as an HTTP source,
+    // as BuildKit's handler asks them, on the build's thread: refused where they refuse
+    // it, their denial never left for a later error. Only an image's pin converts a
+    // source, so a request is allowed or refused.
+    let check_request = |_method: &str, url: &str| -> bool {
+        let Some(p) = &policies else { return true };
+        let verdict = p.evaluate(
+            &policy::Source::new(url),
+            None,
+            &PolicyMeta { bases: &bases },
+            &policy_step,
+        );
+        p.denied.borrow_mut().clear();
+        matches!(verdict, Ok(None))
+    };
     let mut build_proxy: Option<proxy::Proxy> = None;
     let vertices = if proxy_cap {
         provenance::vertex_digests(&def, true)
@@ -3166,42 +3210,73 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
             op.kind,
             OpKind::Exec { .. } | OpKind::File { .. } | OpKind::Merge | OpKind::Skills { .. }
         );
+        // A step with the network under the build's proxy (D110) is keyed apart.
+        let proxied = proxy_cap
+            && matches!(&op.kind, OpKind::Exec { network, .. } if *network != shards_dockerfile::llb::NetMode::None);
         let key = if step {
             op.inputs
                 .iter()
                 .map(|inp| keys.get(inp.op).and_then(|k| k.as_deref()))
                 .collect::<Option<Vec<&str>>>()
                 .map(|ks| cache::op_key(op, &ks))
+                .map(|k| if proxied { cache::proxied_key(&k) } else { k })
         } else {
             None
         };
         // A step marked IgnoreCache (--no-cache-filter's stages) is run, and its result
         // kept, as BuildKit's solver does: the cache is not asked for it.
-        if !no_cache
-            && !meta.ignore_cache
-            && let Some(k) = key.as_deref()
-            && let Some(body) = match store.cache_get(k).map_err(|e| e.to_string())? {
-                // Not here: from a --cache-from cache, its layers fetched now.
-                None if imported.take(k, &store)? => store.cache_get(k).map_err(|e| e.to_string())?,
-                held => held,
+        let held = match key.as_deref() {
+            Some(k) if !no_cache && !meta.ignore_cache => {
+                match store.cache_get(k).map_err(|e| e.to_string())? {
+                    // Not here: from a --cache-from cache, its layers fetched now.
+                    None if imported.take(k, &store)? => store.cache_get(k).map_err(|e| e.to_string())?,
+                    held => held,
+                }
             }
-        {
+            _ => None,
+        };
+        // A proxied step's record is taken only where the build's policies still let each
+        // of its requests go (D110); one they refuse now runs the step again, its requests
+        // asked again as they come. BuildKit asks nothing of a cached step.
+        let held = match held {
+            Some(body) if proxied => match cache::decode_proxied(&body) {
+                Ok((outputs, c)) => c
+                    .allowed
+                    .iter()
+                    .all(|(method, url)| check_request(method, url))
+                    .then_some(Ok((outputs, Some(c)))),
+                Err(e) => Some(Err(e)),
+            },
+            Some(body) => Some(cache::decode(&body).map(|outputs| (outputs, None))),
+            None => None,
+        };
+        if let (Some(k), Some(decoded)) = (key.as_deref(), held) {
             let v = progress.borrow_mut().start(&name);
-            let outs: Vec<exec::Ref> = cache::decode(&body)
-                .and_then(|outputs| {
-                    outputs
-                        .into_iter()
-                        .map(|layers| exec.image(layers, None))
-                        .collect()
-                })
+            let (outputs, captured) = decoded.map_err(|e| fail(&v, &e))?;
+            let outs: Vec<exec::Ref> = outputs
+                .into_iter()
+                .map(|layers| exec.image(layers, None))
+                .collect::<Result<_, String>>()
                 .map_err(|e| fail(&v, &e))?;
             progress.borrow().cached(&v);
             guard(meta, &inputs, &outs, &plan.domains, &store).map_err(|e| fail(&v, &e))?;
             store.cache_used(k).map_err(|e| e.to_string())?;
+            // What its requests came to when it ran, in this build's provenance too.
+            if let (Some(c), OpKind::Exec { process, .. }) = (&captured, &op.kind) {
+                proxy_provenance(
+                    c,
+                    vertices.get(i).map_or("", String::as_str),
+                    &show(&process.args.join(&b' ')),
+                    &mut http_materials,
+                    &mut proxy_incomplete,
+                );
+            }
             results.push(outs);
             keys.push(key);
             continue;
         }
+        // What a proxied step's requests came to, for its record.
+        let mut step_capture: Option<proxy::capture::Capture> = None;
         let outs = match &op.kind {
             OpKind::Source { identifier, .. }
                 if identifier.starts_with(b"docker-image://") || identifier.starts_with(b"oci-layout://") =>
@@ -3480,21 +3555,6 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
                     cdi: cdi_edits.get(&i),
                     proxy: build_proxy.as_ref(),
                 };
-                // Each request through the proxy, checked by the build's policies as an
-                // HTTP source, as BuildKit's handler asks them (D110), here on the build's
-                // thread: refused where they refuse it. Only an image's pin converts a
-                // source, so a request is allowed or refused.
-                let mut check = |_method: &str, url: &str| -> bool {
-                    let Some(p) = &policies else { return true };
-                    let verdict = p.evaluate(
-                        &policy::Source::new(url),
-                        None,
-                        &PolicyMeta { bases: &bases },
-                        &policy_step,
-                    );
-                    p.denied.borrow_mut().clear();
-                    matches!(verdict, Ok(None))
-                };
                 let mut log = StepLog::new(log_limits);
                 let r = exec.run(
                     b,
@@ -3502,33 +3562,21 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
                     &op,
                     &name,
                     &mut |which, bytes| log.write(&progress.borrow(), &v, which, bytes),
-                    &mut check,
+                    &mut |method, url| check_request(method, url),
                 );
                 log.end(&progress.borrow(), &v);
                 let (r, capture) = r.map_err(|e| fail(&v, &e))?;
                 progress.borrow().done(&v);
-                // What its requests came to, in the build's provenance: each material an
-                // HTTP source of its, each that is none named by its step.
-                if let Some(c) = capture {
-                    for m in c.materials() {
-                        let (algorithm, hex) = m.digest.split_once(':').unwrap_or(("sha256", &m.digest));
-                        http_materials.push(provenance::Material {
-                            uri: m.url,
-                            algorithm: algorithm.to_string(),
-                            hex: hex.to_string(),
-                        });
-                    }
-                    let command = show(&process.args.join(&b' '));
-                    for incomplete in c.incomplete {
-                        proxy_incomplete.push(provenance::ProxyIncomplete {
-                            op: vertices.get(i).cloned().unwrap_or_default(),
-                            name: command.clone(),
-                            method: incomplete.method,
-                            uri: incomplete.url,
-                            reason: incomplete.reason.to_string(),
-                        });
-                    }
+                if let Some(c) = &capture {
+                    proxy_provenance(
+                        c,
+                        vertices.get(i).map_or("", String::as_str),
+                        &show(&process.args.join(&b' ')),
+                        &mut http_materials,
+                        &mut proxy_incomplete,
+                    );
                 }
+                step_capture = capture;
                 r
             }
         };
@@ -3574,8 +3622,13 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
                         .collect::<Result<Vec<_>, String>>()?;
                     // What the step made itself: its root output's last layer.
                     let own = outs.first().and_then(|r| r.layers.last()).map_or(0, |l| l.size);
+                    // A proxied step's record keeps its requests (D110).
+                    let body = match &step_capture {
+                        Some(c) if proxied => cache::encode_proxied(&layers, c)?,
+                        _ => cache::encode(&layers)?,
+                    };
                     store
-                        .cache_put(k, &blobs, own, &cache::encode(&layers)?)
+                        .cache_put(k, &blobs, own, &body)
                         .map_err(|e| e.to_string())?;
                 }
                 key

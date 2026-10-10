@@ -46,6 +46,88 @@ pub fn op_key(op: &Op, inputs: &[&str]) -> String {
     hex(&h.finalize())
 }
 
+/// A step's key where it reached the network through the build's proxy (D110): its own,
+/// marked as BuildKit's solver marks its vertex (`\0buildkit.proxy-network.v0`), so a step
+/// made with the network open is never taken for one made through the proxy, nor the
+/// other way round. BuildKit's cache key leaves the mark out.
+pub fn proxied_key(key: &str) -> String {
+    let mut h = Sha256::new();
+    framed(&mut h, FORMAT);
+    framed(&mut h, b"\0buildkit.proxy-network.v0");
+    framed(&mut h, key.as_bytes());
+    hex(&h.finalize())
+}
+
+/// A proxied step's record (D110): its outputs' layers, and what its requests came to, the
+/// requests the policies let go first, which are asked again before the record is taken.
+pub fn encode_proxied(
+    outputs: &[Vec<Layer>],
+    capture: &super::proxy::capture::Capture,
+) -> Result<String, String> {
+    let outputs: serde_json::Value = serde_json::from_str(&encode(outputs)?).map_err(|e| e.to_string())?;
+    let pairs = |list: &[(String, String)]| -> serde_json::Value {
+        list.iter().map(|(a, b)| serde_json::json!([a, b])).collect()
+    };
+    let materials: Vec<(String, String)> = capture
+        .materials()
+        .into_iter()
+        .map(|m| (m.url, m.digest))
+        .collect();
+    let incomplete: serde_json::Value = capture
+        .incomplete
+        .iter()
+        .map(|i| serde_json::json!([i.method, i.url, i.reason]))
+        .collect();
+    serde_json::to_string(&serde_json::json!({
+        "outputs": outputs,
+        "proxy": {
+            "allowed": pairs(&capture.allowed),
+            "materials": pairs(&materials),
+            "incomplete": incomplete,
+        },
+    }))
+    .map_err(|e| e.to_string())
+}
+
+/// What [`encode_proxied`] made: the outputs, and the capture, its materials whole.
+pub fn decode_proxied(body: &[u8]) -> Result<(Vec<Vec<Layer>>, super::proxy::capture::Capture), String> {
+    use super::proxy::capture::{Capture, Incomplete, Material, REASONS};
+    let v: serde_json::Value = serde_json::from_slice(body).map_err(|e| e.to_string())?;
+    let bad = || "a proxied step's record without its requests".to_string();
+    let outputs = decode(v.get("outputs").ok_or_else(bad)?.to_string().as_bytes())?;
+    let strings = |item: &serde_json::Value| -> Result<Vec<String>, String> {
+        item.as_array()
+            .ok_or_else(bad)?
+            .iter()
+            .map(|s| s.as_str().map(str::to_string).ok_or_else(bad))
+            .collect()
+    };
+    let list = |key: &str| -> Result<Vec<Vec<String>>, String> {
+        v.get("proxy")
+            .and_then(|p| p.get(key))
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(bad)?
+            .iter()
+            .map(strings)
+            .collect()
+    };
+    let mut capture = Capture::default();
+    for item in list("allowed")? {
+        let [method, url] = <[String; 2]>::try_from(item).map_err(|_| bad())?;
+        capture.allowed.push((method, url));
+    }
+    for item in list("materials")? {
+        let [url, digest] = <[String; 2]>::try_from(item).map_err(|_| bad())?;
+        capture.materials.push(Material { url, digest });
+    }
+    for item in list("incomplete")? {
+        let [method, url, reason] = <[String; 3]>::try_from(item).map_err(|_| bad())?;
+        let reason = REASONS.into_iter().find(|r| *r == reason).ok_or_else(bad)?;
+        capture.incomplete.push(Incomplete { method, url, reason });
+    }
+    Ok((outputs, capture))
+}
+
 /// A source's key, from what it is (`identifier`) and what it holds (`content`).
 pub fn source_key(identifier: &[u8], content: &str) -> String {
     let mut h = Sha256::new();
@@ -235,6 +317,56 @@ mod tests {
             source_key(b"local://context", "x"),
             source_key(b"local://context", "y")
         );
+    }
+
+    /// A step under the build's proxy is keyed apart from the same step without it (D110),
+    /// and its record keeps what its requests came to: the requests the policies let go,
+    /// its materials (a redirect's source by its target's digest) and what is none.
+    #[test]
+    fn proxied_steps_keep_their_requests() {
+        use super::super::proxy::capture::{Capture, Incomplete, Material, Request};
+        let key = op_key(&source("docker-image://a"), &[]);
+        assert_ne!(proxied_key(&key), key);
+        assert_eq!(proxied_key(&key), proxied_key(&key));
+        let capture = Capture {
+            requests: vec![Request {
+                method: "GET".into(),
+                url: "http://h/r".into(),
+                redirect: "http://h/x".into(),
+                status: 302,
+            }],
+            materials: vec![Material {
+                url: "http://h/x".into(),
+                digest: "sha256:aa".into(),
+            }],
+            incomplete: vec![Incomplete {
+                method: "POST".into(),
+                url: "http://h/p".into(),
+                reason: "method_not_materializable",
+            }],
+            allowed: vec![
+                ("GET".into(), "http://h/r".into()),
+                ("POST".into(), "http://h/p".into()),
+            ],
+        };
+        let outputs = vec![Vec::new()];
+        let (back, held) = decode_proxied(encode_proxied(&outputs, &capture).unwrap().as_bytes()).unwrap();
+        assert_eq!(back, outputs);
+        assert_eq!(held.allowed, capture.allowed);
+        assert_eq!(held.incomplete, capture.incomplete);
+        let mut materials: Vec<String> = held
+            .materials()
+            .into_iter()
+            .map(|m| format!("{} {}", m.url, m.digest))
+            .collect();
+        materials.sort();
+        assert_eq!(materials, ["http://h/r sha256:aa", "http://h/x sha256:aa"]);
+        // An unproxied record, or one with a reason no request has, is refused.
+        assert!(decode_proxied(encode(&outputs).unwrap().as_bytes()).is_err());
+        let odd = encode_proxied(&outputs, &capture)
+            .unwrap()
+            .replace("method_not_materializable", "other");
+        assert!(decode_proxied(odd.as_bytes()).is_err());
     }
 
     #[test]

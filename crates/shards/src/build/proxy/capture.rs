@@ -40,7 +40,19 @@ pub struct Capture {
     pub requests: Vec<Request>,
     pub materials: Vec<Material>,
     pub incomplete: Vec<Incomplete>,
+    /// Each request the policies let go, as they were asked of it (method, URL): asked
+    /// again before the step is taken from the build cache.
+    pub allowed: Vec<(String, String)>,
 }
+
+/// Every reason a request is no material.
+pub const REASONS: [&str; 5] = [
+    "method_not_materializable",
+    "partial_response",
+    "body_read_failed",
+    "unsuccessful_response",
+    "upstream_error",
+];
 
 impl Capture {
     /// `Materials`: each material, then the source of each redirect that leads to one, with
@@ -255,6 +267,7 @@ mod tests {
                 digest: digest.into(),
             }],
             incomplete: Vec::new(),
+            allowed: Vec::new(),
         };
         assert_eq!(
             String::from_utf8(c.summary()).unwrap(),
@@ -301,6 +314,7 @@ mod tests {
                 digest: "sha256:c".into(),
             }],
             incomplete: Vec::new(),
+            allowed: Vec::new(),
         };
         let mut got: Vec<String> = c
             .materials()
