@@ -1073,6 +1073,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "shards-gateway"
+version = "0.1.0"
+
+[[package]]
 name = "shards-git"
 version = "0.1.0"
 dependencies = [
