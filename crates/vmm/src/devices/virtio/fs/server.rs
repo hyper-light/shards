@@ -131,11 +131,11 @@ struct Node {
     key: (u64, u64),
 }
 
-/// An open file, or a directory's entries as they were when it was opened.
+/// An open file, or an open directory.
 #[derive(Debug)]
 enum Handle {
     File(OwnedFd),
-    Dir(Vec<(CString, u64, u32)>),
+    Dir(DirStream),
 }
 
 #[derive(Debug)]
@@ -896,11 +896,7 @@ impl Server {
             op::SYNCFS => {}
             op::OPENDIR => {
                 let dir = dir_fd(s, nodeid).map_err(|_| ENOTDIR)?;
-                let mut entries = read_dir(dir)?;
-                if let (Some(only), ROOT) = (&self.only, nodeid) {
-                    entries.retain(|(name, _, _)| matches!(name.to_bytes(), b"." | b"..") || name == only);
-                }
-                let fh = add_handle(s, Handle::Dir(entries));
+                let fh = add_handle(s, Handle::Dir(DirStream::open(dir)?));
                 r.u64(fh).u32(0).u32(0);
             }
             op::READDIR | op::READDIRPLUS => {
@@ -909,28 +905,37 @@ impl Server {
                 // At most a largest read, as INIT told the guest: a larger reply would not
                 // fit the frame the device takes (audit V06).
                 let size = (a.u32()? as usize).min(MAX_WRITE as usize);
-                let Some(Handle::Dir(entries)) = s.handles.get(&fh) else {
+                let plus = opcode == op::READDIRPLUS;
+                let base = if plus { 152 } else { 24 };
+                // A file bound alone: its directory shows it alone.
+                let only = self.only.as_ref().filter(|_| nodeid == ROOT);
+                let Some(Handle::Dir(dir)) = s.handles.get_mut(&fh) else {
                     return Err(EBADF);
                 };
-                let entries: Vec<(CString, u64, u32)> = entries
-                    .iter()
-                    .skip(usize::try_from(offset).unwrap_or(usize::MAX))
-                    .cloned()
-                    .collect();
-                let plus = opcode == op::READDIRPLUS;
-                for (i, (name, ino, kind)) in entries.into_iter().enumerate() {
-                    let bytes = name.as_bytes();
-                    let base = if plus { 152 } else { 24 };
-                    let len = (base + bytes.len() + 7) & !7;
-                    if r.0.len() + len > size {
-                        break;
+                // The entries that fit, each with the offset after it, looked up (PLUS)
+                // once the handle is let go.
+                let mut fits = Vec::new();
+                let mut used = 0;
+                dir.read(offset, size, |entry, next| {
+                    let bytes = entry.name.to_bytes();
+                    if only.is_some_and(|only| !matches!(bytes, b"." | b"..") && entry.name != *only) {
+                        return true;
                     }
-                    let next = offset.saturating_add(i as u64 + 1);
+                    let len = (base + bytes.len() + 7) & !7;
+                    if used + len > size {
+                        return false;
+                    }
+                    used += len;
+                    fits.push((entry.clone(), next));
+                    true
+                })?;
+                for (entry, next) in fits {
+                    let bytes = entry.name.to_bytes();
                     if plus {
                         if bytes == b"." || bytes == b".." {
                             r.bytes(&[0u8; 128]);
                         } else {
-                            match lookup(s, nodeid, &name) {
+                            match lookup(s, nodeid, &entry.name) {
                                 Ok((id, st, owner)) => {
                                     r.entry(id, &st, owner);
                                 }
@@ -942,12 +947,12 @@ impl Server {
                             }
                         }
                     }
-                    r.u64(ino)
+                    r.u64(entry.ino)
                         .u64(next)
                         .u32(u32::try_from(bytes.len()).unwrap_or(0))
-                        .u32(kind)
+                        .u32(entry.kind)
                         .bytes(bytes);
-                    let pad = len - base - bytes.len();
+                    let pad = ((base + bytes.len() + 7) & !7) - base - bytes.len();
                     r.bytes([0u8; 8].get(..pad).unwrap_or_default());
                 }
             }
@@ -1389,44 +1394,171 @@ fn add_handle(s: &mut State, h: Handle) -> u64 {
     fh
 }
 
-/// The entries of directory `dir`, with their inode numbers and Linux dirent types.
-fn read_dir(dir: RawFd) -> Result<Vec<(CString, u64, u32)>, Errno> {
-    // SAFETY: dup(2) of a descriptor we hold; fdopendir takes the copy.
-    let copy = unsafe { libc::dup(dir) };
-    if copy < 0 {
-        return Err(last());
+/// A directory's entry: its name, inode number and Linux dirent type.
+#[derive(Debug, Clone)]
+struct Entry {
+    name: CString,
+    ino: u64,
+    kind: u32,
+}
+
+/// A directory the guest opened, read as it asks from a descriptor of its own. A handle
+/// holds none of the listing: a copy of it each, taken at OPENDIR, made a guest that opened
+/// a large directory again and again, never releasing it, cost the host memory without
+/// bound (audit V05). Handles are as many as the descriptors the process may have.
+///
+/// Linux: read by getdents64(2) at the offset each request carries, the kernel's cookie
+/// for what follows an entry (`d_off`), as virtiofsd reads one; nothing but the
+/// descriptor is kept between requests (glibc's own stream keeps 32 KiB, PM M130).
+#[cfg(target_os = "linux")]
+#[derive(Debug)]
+struct DirStream(OwnedFd);
+
+#[cfg(target_os = "linux")]
+impl DirStream {
+    fn open(dir: RawFd) -> Result<DirStream, Errno> {
+        open_at(dir, c".", libc::O_RDONLY | libc::O_DIRECTORY, 0).map(DirStream)
     }
-    // SAFETY: fdopendir(3) of a fresh descriptor, which the stream then owns.
-    let stream = unsafe { libc::fdopendir(copy) };
-    if stream.is_null() {
-        let e = last();
-        // SAFETY: closing the copy fdopendir did not take.
-        unsafe { libc::close(copy) };
-        return Err(e);
-    }
-    // SAFETY: rewinddir(3) of the open stream: dup shares the offset.
-    unsafe { libc::rewinddir(stream) };
-    let mut out = Vec::new();
-    loop {
-        // SAFETY: readdir(3) of our open stream; the entry is copied before the next call.
-        let entry = unsafe { libc::readdir(stream) };
-        if entry.is_null() {
-            break;
+
+    /// Gives `each` the entries from `offset` on, with the offset that follows each, until
+    /// it says to stop or the directory ends; `want` bytes of them are read at a time.
+    fn read(
+        &mut self,
+        offset: u64,
+        want: usize,
+        mut each: impl FnMut(&Entry, u64) -> bool,
+    ) -> Result<(), Errno> {
+        let fd = self.0.as_raw_fd();
+        // SAFETY: lseek(2) of a descriptor we hold.
+        if unsafe { libc::lseek(fd, offset as libc::off_t, libc::SEEK_SET) } < 0 {
+            return Err(last());
         }
-        // SAFETY: readdir returned a valid entry, its name NUL-terminated.
-        let (name, ino, kind) = unsafe {
-            let e = &*entry;
-            (
-                CStr::from_ptr(e.d_name.as_ptr()).to_owned(),
-                e.d_ino as u64,
-                u32::from(e.d_type),
-            )
-        };
-        out.push((name, ino, kind));
+        // Room for a record of the longest name, 280 bytes, whatever the guest wants.
+        let mut buf = vec![0u8; want.clamp(1024, MAX_WRITE as usize)];
+        loop {
+            // SAFETY: getdents64(2) into a buffer of its length.
+            let n = unsafe { libc::syscall(libc::SYS_getdents64, fd, buf.as_mut_ptr(), buf.len()) };
+            let got = usize::try_from(n).map_err(|_| last())?;
+            if got == 0 {
+                return Ok(());
+            }
+            let mut records = buf.get(..got).unwrap_or_default();
+            // struct linux_dirent64: d_ino, d_off, d_reclen, d_type, then the name.
+            while !records.is_empty() {
+                let u64_at = |at: usize| {
+                    let bytes = records.get(at..at + 8)?;
+                    Some(u64::from_ne_bytes(bytes.try_into().ok()?))
+                };
+                let (Some(ino), Some(next)) = (u64_at(0), u64_at(8)) else {
+                    return Err(EIO);
+                };
+                let reclen = records
+                    .get(16..18)
+                    .and_then(|b| b.try_into().ok())
+                    .map(u16::from_ne_bytes)
+                    .ok_or(EIO)?;
+                let record = records
+                    .get(..usize::from(reclen))
+                    .filter(|r| r.len() > 19)
+                    .ok_or(EIO)?;
+                let name = record.get(19..).unwrap_or_default();
+                let entry = Entry {
+                    name: CStr::from_bytes_until_nul(name).map_err(|_| EIO)?.to_owned(),
+                    ino,
+                    kind: u32::from(record.get(18).copied().unwrap_or(0)),
+                };
+                if !each(&entry, next) {
+                    return Ok(());
+                }
+                records = records.get(usize::from(reclen)..).unwrap_or_default();
+            }
+        }
     }
-    // SAFETY: closedir(3) of our stream, which closes the copy.
-    unsafe { libc::closedir(stream) };
-    Ok(out)
+}
+
+/// macOS: a directory stream of the handle's own (2.2 KiB, PM M130), its position counted
+/// in entries, the offsets requests carry, with the entry the last reply had no room for;
+/// a request at any other offset reads again from the start.
+#[cfg(target_os = "macos")]
+#[derive(Debug)]
+struct DirStream {
+    stream: std::ptr::NonNull<libc::DIR>,
+    /// Entries read since the stream's start.
+    at: u64,
+    /// The entry at `at`, read already, which the last reply had no room for.
+    held: Option<Entry>,
+}
+
+// SAFETY: the stream is this value's alone, used by one thread at a time (under the
+// server's state lock); a DIR holds nothing tied to the thread that opened it.
+#[cfg(target_os = "macos")]
+unsafe impl Send for DirStream {}
+
+#[cfg(target_os = "macos")]
+impl Drop for DirStream {
+    fn drop(&mut self) {
+        // SAFETY: closedir(3) of the stream this value owns, which closes its descriptor.
+        unsafe { libc::closedir(self.stream.as_ptr()) };
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl DirStream {
+    fn open(dir: RawFd) -> Result<DirStream, Errno> {
+        use std::os::fd::IntoRawFd as _;
+        let fd = open_at(dir, c".", libc::O_RDONLY | libc::O_DIRECTORY, 0)?;
+        // SAFETY: fdopendir(3) of a descriptor we own; the stream owns it once it exists.
+        let stream = std::ptr::NonNull::new(unsafe { libc::fdopendir(fd.as_raw_fd()) }).ok_or_else(last)?;
+        let _ = fd.into_raw_fd();
+        Ok(DirStream {
+            stream,
+            at: 0,
+            held: None,
+        })
+    }
+
+    fn next(&mut self) -> Option<Entry> {
+        // SAFETY: readdir(3) of our open stream; the entry is copied before the next call.
+        let entry = unsafe { libc::readdir(self.stream.as_ptr()).as_ref() }?;
+        Some(Entry {
+            // SAFETY: readdir's entry, its name NUL-terminated.
+            name: unsafe { CStr::from_ptr(entry.d_name.as_ptr()) }.to_owned(),
+            ino: entry.d_ino,
+            kind: u32::from(entry.d_type),
+        })
+    }
+
+    /// Gives `each` the entries from `offset` on, with the offset that follows each, until
+    /// it says to stop or the directory ends.
+    fn read(
+        &mut self,
+        offset: u64,
+        _want: usize,
+        mut each: impl FnMut(&Entry, u64) -> bool,
+    ) -> Result<(), Errno> {
+        if offset != self.at {
+            // SAFETY: rewinddir(3) of our open stream.
+            unsafe { libc::rewinddir(self.stream.as_ptr()) };
+            self.at = 0;
+            self.held = None;
+            while self.at < offset {
+                if self.next().is_none() {
+                    return Ok(());
+                }
+                self.at += 1;
+            }
+        }
+        loop {
+            let Some(entry) = self.held.take().or_else(|| self.next()) else {
+                return Ok(());
+            };
+            if !each(&entry, self.at.saturating_add(1)) {
+                self.held = Some(entry);
+                return Ok(());
+            }
+            self.at += 1;
+        }
+    }
 }
 
 fn rename(s: &mut State, olddir: u64, old: &CStr, newdir: u64, new: &CStr, flags: u32) -> Result<(), Errno> {
@@ -1911,6 +2043,66 @@ mod tests {
             );
             assert!(out.len() <= super::super::MAX_FRAME, "opcode {opcode}");
         }
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    /// A page of a listing: each entry's name and the offset that follows it (READDIRPLUS's
+    /// with its entry before each).
+    fn page(listed: &[u8], plus: bool) -> Vec<(String, u64)> {
+        let mut out = Vec::new();
+        let mut rest = listed;
+        while !rest.is_empty() {
+            let dirent = if plus { &rest[128..] } else { rest };
+            let off = u64::from_le_bytes(dirent[8..16].try_into().unwrap());
+            let len = u32::from_le_bytes(dirent[16..20].try_into().unwrap()) as usize;
+            out.push((String::from_utf8(dirent[24..24 + len].to_vec()).unwrap(), off));
+            let record = if plus { 152 } else { 24 } + len;
+            rest = &rest[(record + 7) & !7..];
+        }
+        out
+    }
+
+    /// A directory read a page at a time, as a guest reads it, lists every entry once,
+    /// two handles reading it in turns, one READDIR and one READDIRPLUS, each from where it
+    /// left off; and lists it again from its start.
+    #[test]
+    fn a_directory_is_read_whole_a_page_at_a_time() {
+        let (path, s) = dir();
+        let mut all: Vec<String> = (0..300).map(|i| format!("entry-{i}")).collect();
+        for name in &all {
+            std::fs::write(path.join(name), "").unwrap();
+        }
+        all.extend([".".to_string(), "..".to_string()]);
+        all.sort();
+        let open = || {
+            let (_, opened) = answer(&s, &req(op::OPENDIR, ROOT, 0, &[0u8; 8]));
+            u64::from_le_bytes(opened[0..8].try_into().unwrap())
+        };
+        let readers = [(open(), op::READDIR), (open(), op::READDIRPLUS)];
+        let mut offsets = [0u64; 2];
+        let mut seen = [Vec::new(), Vec::new()];
+        let mut first = Vec::new();
+        while offsets.iter().any(|&o| o != u64::MAX) {
+            for (i, &(fh, opcode)) in readers.iter().enumerate() {
+                if offsets[i] == u64::MAX {
+                    continue;
+                }
+                let (e, listed) = answer(&s, &req(opcode, ROOT, 0, &readdir(fh, offsets[i], 700)));
+                assert_eq!(e, 0);
+                let entries = page(&listed, opcode == op::READDIRPLUS);
+                if first.is_empty() {
+                    first = entries.clone();
+                }
+                offsets[i] = entries.last().map_or(u64::MAX, |&(_, off)| off);
+                seen[i].extend(entries.into_iter().map(|(name, _)| name));
+            }
+        }
+        for mut names in seen {
+            names.sort();
+            assert_eq!(names, all);
+        }
+        let (_, again) = answer(&s, &req(op::READDIR, ROOT, 0, &readdir(readers[0].0, 0, 700)));
+        assert_eq!(page(&again, false), first);
         let _ = std::fs::remove_dir_all(&path);
     }
 
