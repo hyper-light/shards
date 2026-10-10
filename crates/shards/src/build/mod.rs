@@ -39,7 +39,7 @@ mod builder;
 mod cache;
 mod cdi;
 mod compress;
-mod domains;
+pub(crate) mod domains;
 mod estargz;
 mod exec;
 mod gha;

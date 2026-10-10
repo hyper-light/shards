@@ -31,6 +31,8 @@ use shards_gateway::grpc;
 
 use crate::build::skills;
 
+mod check;
+
 /// The most a file the frontend reads may be: dockerui's maxFileSize, containerd's
 /// DefaultMaxRecvMsgSize, 16 MiB.
 const MAX_FILE: i64 = 16 << 20;
@@ -837,6 +839,17 @@ impl<R: Read, W: Write> Resolver for Gateway<'_, R, W> {
         })
     }
 
+    fn artifact(&self, name: &[u8], kind: &[u8], log: &[u8]) -> Result<Resolved, Vec<u8>> {
+        let _ = log;
+        Err([
+            name,
+            b": shards' frontend takes no OSI artifacts yet (an ",
+            kind,
+            b" from a registry): build this file with shards build",
+        ]
+        .concat())
+    }
+
     fn epoch(&self, source: &EpochSource) -> Result<Option<(i64, u32)>, Vec<u8>> {
         let _ = source;
         Err(b"shards' frontend takes SOURCE_DATE_EPOCH as a number of seconds only yet".to_vec())
@@ -1012,6 +1025,12 @@ pub(crate) fn frontend(args: impl Iterator<Item = OsString>) -> ExitCode {
             "Usage:  shards frontend\n\nRun as BuildKit's frontend: the gateway on stdin and stdout, as a `# syntax=` line\nnaming shards' image has BuildKit run it."
         );
         return ExitCode::SUCCESS;
+    }
+    // The isolation checks the frontend has BuildKit run in its own image (check.rs).
+    if let [mode, spec] = args.as_slice()
+        && mode == "check"
+    {
+        return check::run(&spec.to_string_lossy());
     }
     if let Some(a) = args.first() {
         // Nothing to run with: BuildKit runs the image's entrypoint as it is.
@@ -1429,6 +1448,15 @@ fn build_platforms<R: Read, W: Write>(
         };
         let mut plan_def = planned.definition();
         lay_skills(g, &mut plan_def, &carried, entry)?;
+        if !planned.domains.is_empty() {
+            check_domains(g, self_image(), &plan_def, &planned.domains, &carried, entry)?;
+        }
+        // The guards' marks are shards' own, for the checks just run: BuildKit is given
+        // none of them.
+        for md in &mut plan_def.metadata {
+            md.description.remove(plan::GUARD);
+            md.description.remove(plan::OWN);
+        }
         let def = pb::definition(&plan_def, &carried)
             .ok_or_else(|| Failure::new("failed to marshal LLB definition"))?;
         let r = g.solve(&def, &config.cache_imports, false)?.unwrap_or_default();
@@ -1459,6 +1487,16 @@ fn build_platforms<R: Read, W: Write>(
         returned
             .metadata
             .insert(key("containerimage.config"), config_json.into_bytes());
+        // An Agentfile's manifest annotations (D57), as shards build writes them, given to
+        // BuildKit's image exporter as the result's `annotation-manifest` metadata.
+        for (k, v) in agentfile_annotations(&planned) {
+            let name = if config.multi_platform {
+                format!("annotation-manifest[{id}].{k}")
+            } else {
+                format!("annotation-manifest.{k}")
+            };
+            returned.metadata.insert(name, v);
+        }
         if let Some(b) = base_json {
             returned
                 .metadata
@@ -1485,6 +1523,38 @@ fn build_platforms<R: Read, W: Write>(
         format!("{{\"Platforms\":[{}]}}", platforms_json.join(",")).into_bytes(),
     );
     Ok(Outcome::Built(returned))
+}
+
+/// An Agentfile's image's manifest annotations (D57): the normalized Agentfile's digest,
+/// its config label's, and its agents' and harnesses' names, each list comma-separated in
+/// name order, as shards build annotates its manifest.
+fn agentfile_annotations(planned: &plan::Plan) -> Vec<(String, Vec<u8>)> {
+    use shards_dockerfile::agentfile;
+    let mut out = Vec::new();
+    let Some(digest) = planned.image.config.labels.get(agentfile::DIGEST_LABEL) else {
+        return out;
+    };
+    out.push((
+        String::from_utf8_lossy(agentfile::DIGEST_LABEL).into_owned(),
+        digest.clone(),
+    ));
+    for (key, harness) in [
+        (agentfile::AGENTS_ANNOTATION, false),
+        (agentfile::HARNESSES_ANNOTATION, true),
+    ] {
+        let mut names: Vec<&[u8]> = planned
+            .domains
+            .iter()
+            .filter(|d| d.harness == harness)
+            .map(|d| d.name.as_slice())
+            .collect();
+        names.sort_unstable();
+        names.dedup();
+        if !names.is_empty() {
+            out.push((String::from_utf8_lossy(key).into_owned(), names.join(&b","[..])));
+        }
+    }
+    out
 }
 
 /// The ops `def` needs for `input`, in its order, numbered anew, and `input` among them.
@@ -1520,6 +1590,261 @@ fn closure(def: &Definition, input: Input) -> Option<Definition> {
         index: input.index,
     });
     Some(out)
+}
+
+/// The frontend's own image as BuildKit gave its definition (gateway.go's metadataMount,
+/// /run/config/buildkit/metadata/frontend.bin): its source op, that the isolation checks
+/// run in it.
+fn self_image() -> Option<Op> {
+    let bytes = std::fs::read("/run/config/buildkit/metadata/frontend.bin").ok()?;
+    source_op_of(&bytes)
+}
+
+/// The first source op of a pb.Definition: its identifier, attributes and platform.
+fn source_op_of(def: &[u8]) -> Option<Op> {
+    use shards_gateway::wire::Reader;
+    let text = |v: shards_gateway::wire::Value<'_>| v.bytes().ok().map(<[u8]>::to_vec);
+    for f in Reader::new(def) {
+        let (1, v) = f.ok()? else { continue };
+        let mut source = None;
+        let mut platform = None;
+        for of in Reader::new(v.bytes().ok()?) {
+            match of.ok()? {
+                (3, s) => {
+                    let mut identifier = Vec::new();
+                    let mut attrs = BTreeMap::new();
+                    for sf in Reader::new(s.bytes().ok()?) {
+                        match sf.ok()? {
+                            (1, x) => identifier = text(x)?,
+                            (2, e) => {
+                                let (mut k, mut val) = (Vec::new(), Vec::new());
+                                for ef in Reader::new(e.bytes().ok()?) {
+                                    match ef.ok()? {
+                                        (1, x) => k = text(x)?,
+                                        (2, x) => val = text(x)?,
+                                        _ => {}
+                                    }
+                                }
+                                attrs.insert(k, val);
+                            }
+                            _ => {}
+                        }
+                    }
+                    source = Some((identifier, attrs));
+                }
+                (10, p) => {
+                    let mut out = Platform::default();
+                    for pf in Reader::new(p.bytes().ok()?) {
+                        match pf.ok()? {
+                            (1, x) => out.architecture = text(x)?,
+                            (2, x) => out.os = text(x)?,
+                            (3, x) => out.variant = text(x)?,
+                            (4, x) => out.os_version = text(x)?,
+                            (5, x) => out.os_features.push(text(x)?),
+                            _ => {}
+                        }
+                    }
+                    platform = Some(out);
+                }
+                _ => {}
+            }
+        }
+        if let Some((identifier, attrs)) = source {
+            return Some(Op {
+                inputs: Vec::new(),
+                kind: OpKind::Source { identifier, attrs },
+                platform,
+            });
+        }
+    }
+    None
+}
+
+/// An op's tree before it ran and after (D55's guard): a command's root mount's input
+/// and output; a file op's base and its output. None for scratch before.
+fn before_after(op: &Op, k: usize) -> Option<(Option<Input>, Input)> {
+    match &op.kind {
+        OpKind::Exec { mounts, .. } => {
+            let root = mounts.iter().find(|m| m.dest == b"/")?;
+            let before = usize::try_from(root.input)
+                .ok()
+                .and_then(|i| op.inputs.get(i).copied());
+            Some((
+                before,
+                Input {
+                    op: k,
+                    index: root.output,
+                },
+            ))
+        }
+        OpKind::File { actions } => {
+            let base = actions.first()?.input;
+            let before = usize::try_from(base).ok().and_then(|i| op.inputs.get(i).copied());
+            Some((before, Input { op: k, index: 0 }))
+        }
+        _ => None,
+    }
+}
+
+/// D55's isolation checks of an Agentfile's build, run by BuildKit in the frontend's own
+/// image (check.rs): each guarded step's writes and the image's domains, every check one
+/// step whose report the frontend reads back, all solved at once; the first finding in
+/// the definition's order fails the build, a step's on its lines.
+fn check_domains<R: Read, W: Write>(
+    g: &Gateway<'_, R, W>,
+    me: Option<Op>,
+    plan_def: &Definition,
+    domains: &[plan::DomainDir],
+    carried: &Carried<'_>,
+    entry: &Entrypoint,
+) -> Result<(), Failure> {
+    let Some(me) = me else {
+        return Err(Failure::new(
+            "shards' frontend checks an Agentfile's domains in its own image, which BuildKit gave no definition of (/run/config/buildkit/metadata/frontend.bin)",
+        ));
+    };
+    let platform = me.platform.clone();
+    let mut def = plan_def.clone();
+    let image = def
+        .root
+        .ok_or_else(|| Failure::new("an Agentfile's image of nothing"))?;
+    def.ops.push(me);
+    def.metadata.push(Meta::default());
+    let me = Input {
+        op: def.ops.len() - 1,
+        index: 0,
+    };
+    // Each check: its report's name, its op, and the lines a finding is said on.
+    let mut checks: Vec<(String, usize, Vec<shards_dockerfile::instructions::Location>)> = Vec::new();
+    let add = |def: &mut Definition, spec: check::Spec, before: Option<Input>, target: Input, shown: &str| {
+        let mut inputs = vec![me];
+        let mut mounts = vec![shards_dockerfile::llb::OpMount {
+            input: 0,
+            selector: Vec::new(),
+            dest: b"/".to_vec(),
+            output: -1,
+            readonly: true,
+            kind: shards_dockerfile::llb::OpMountKind::Bind,
+        }];
+        let mount = |dest: &[u8], from: Option<Input>, inputs: &mut Vec<Input>| {
+            let input = match from {
+                Some(i) => {
+                    inputs.push(i);
+                    inputs.len() as i64 - 1
+                }
+                None => -1,
+            };
+            shards_dockerfile::llb::OpMount {
+                input,
+                selector: Vec::new(),
+                dest: dest.to_vec(),
+                output: -1,
+                readonly: true,
+                kind: shards_dockerfile::llb::OpMountKind::Bind,
+            }
+        };
+        if spec.guard.is_some() {
+            mounts.push(mount(b"/after", Some(target), &mut inputs));
+            mounts.push(mount(b"/before", before, &mut inputs));
+        } else {
+            mounts.push(mount(b"/target", Some(target), &mut inputs));
+        }
+        mounts.push(shards_dockerfile::llb::OpMount {
+            input: -1,
+            selector: Vec::new(),
+            dest: b"/out".to_vec(),
+            output: 0,
+            readonly: false,
+            kind: shards_dockerfile::llb::OpMountKind::Bind,
+        });
+        let process = shards_dockerfile::llb::Process {
+            args: vec![
+                b"/shards".to_vec(),
+                b"frontend".to_vec(),
+                b"check".to_vec(),
+                spec.json().into_bytes(),
+            ],
+            cwd: b"/".to_vec(),
+            ..Default::default()
+        };
+        def.ops.push(Op {
+            inputs,
+            kind: OpKind::Exec {
+                process: Box::new(process),
+                mounts,
+                network: shards_dockerfile::llb::NetMode::None,
+                security: shards_dockerfile::llb::Security::Sandbox,
+                secret_env: Vec::new(),
+                devices: Vec::new(),
+            },
+            platform: platform.clone(),
+        });
+        let mut meta = Meta::default();
+        meta.description.insert(
+            b"llb.customname".to_vec(),
+            format!("[internal] {shown}").into_bytes(),
+        );
+        def.metadata.push(meta);
+        def.ops.len() - 1
+    };
+    for (k, (op, md)) in plan_def.ops.iter().zip(&plan_def.metadata).enumerate() {
+        if !md.description.contains_key(plan::GUARD) {
+            continue;
+        }
+        let Some((before, after)) = before_after(op, k) else {
+            continue;
+        };
+        let report = format!("guard-{k}");
+        let spec = check::Spec {
+            domains: domains.to_vec(),
+            guard: Some(md.description.get(plan::OWN).cloned()),
+            report: report.clone(),
+        };
+        let at = add(
+            &mut def,
+            spec,
+            before,
+            after,
+            "check a step's writes against the domains",
+        );
+        checks.push((report, at, md.locations.clone()));
+    }
+    let spec = check::Spec {
+        domains: domains.to_vec(),
+        guard: None,
+        report: "image".into(),
+    };
+    let at = add(&mut def, spec, None, image, "check the image's domains");
+    checks.push(("image".into(), at, Vec::new()));
+    // Every check's report, side by side in one tree.
+    let outputs: Vec<Input> = checks
+        .iter()
+        .map(|(_, at, _)| Input { op: *at, index: 0 })
+        .collect();
+    def.root = Some(match outputs.as_slice() {
+        [one] => *one,
+        _ => {
+            def.ops.push(Op {
+                inputs: outputs,
+                kind: OpKind::Merge,
+                platform: None,
+            });
+            def.metadata.push(Meta::default());
+            Input {
+                op: def.ops.len() - 1,
+                index: 0,
+            }
+        }
+    });
+    let m = pb::definition(&def, carried).ok_or_else(|| Failure::new("failed to marshal LLB definition"))?;
+    let r = g.solve(&m, &[], true)?.unwrap_or_default();
+    for (report, _, locations) in &checks {
+        let finding = g.read_file(&r, report).map_err(ReadError::failure)?;
+        if !finding.is_empty() {
+            return Err(entry.wrap(Failure::new(String::from_utf8_lossy(&finding)), locations));
+        }
+    }
+    Ok(())
 }
 
 /// A solved tree as a skills step reads it, through the gateway: its directories'
@@ -1687,8 +2012,8 @@ mod tests {
 
     /// BuildKit's half of docker/dockerfile:1's build in the capture (BuildKit v0.28.1,
     /// Docker 29.3.1, D113's spy in shards-dind), and docker/dockerfile's own half.
-    const SERVER: &[u8] = include_bytes!("../../gateway/testdata/dockerfile-1.server.bin");
-    const CLIENT: &[u8] = include_bytes!("../../gateway/testdata/dockerfile-1.client.bin");
+    const SERVER: &[u8] = include_bytes!("../../../gateway/testdata/dockerfile-1.server.bin");
+    const CLIENT: &[u8] = include_bytes!("../../../gateway/testdata/dockerfile-1.client.bin");
 
     /// The environment BuildKit gave docker/dockerfile in the capture.
     fn captured_env() -> Env {
@@ -1968,8 +2293,18 @@ mod tests {
             disabled_reason_msg: String::new(),
         })
         .collect();
+        // The LLB capabilities BuildKit v0.28.1 said it has in the capture.
+        let llb_caps = "cache.azblob,cache.gha,cache.s3,constraints,diffop,exec.cgroup,exec.meta.base,exec.meta.cdi,exec.meta.cgroup.parent,exec.meta.network,exec.meta.proxyenv,exec.meta.security,exec.meta.security.devices.v1,exec.meta.setsdefaultpath,exec.meta.ulimit,exec.mount.bind,exec.mount.bind.readwrite-nooutput,exec.mount.cache,exec.mount.cache.content,exec.mount.cache.sharing,exec.mount.secret,exec.mount.selector,exec.mount.ssh,exec.mount.tmpfs,exec.mount.tmpfs.size,exec.secretenv,exec.validexitcode,exporter.image.annotations,exporter.image.attestations,exporter.multiple,exporter.session,exporter.sourcedateepoch,file.base,file.copy.alwaysreplaceexistingdestpaths,file.copy.includeexcludepatterns,file.copy.requiredpaths,file.rm.nofollowsymlink,file.rm.wildcard,file.symlink.create,gc.freespacefilter,history.filter,mergeop,meta.description,meta.exportcache,meta.ignorecache,platform,soruce.http.uidgid,source.buildop.llbfilename,source.git,source.git.checksum,source.git.fullurl,source.git.httpauth,source.git.keepgitdir,source.git.knownsshhosts,source.git.mountsshsock,source.git.signatureverify,source.git.skipsubmodules,source.git.subdir,source.http,source.http.auth,source.http.checksum,source.http.header,source.http.perm,source.http.signatureverify,source.image,source.image.checksum,source.image.layerlimit,source.image.resolvemode,source.imageblob,source.local,source.local.differ,source.local.excludepatterns,source.local.followpaths,source.local.includepatterns,source.local.metadatatransfer,source.local.sessionid,source.local.sharedkeyhint,source.local.unique,source.ocilayout,source.policy,source.policy.session"
+            .split(',')
+            .map(|id| gw::Cap {
+                id: id.to_string(),
+                enabled: true,
+                disabled_reason_msg: String::new(),
+            })
+            .collect();
         let caps = Caps::of(&Pong {
             frontend_caps,
+            llb_caps,
             ..Pong::default()
         });
         let g = Gateway {
@@ -2131,11 +2466,196 @@ mod tests {
         });
     }
 
+    /// The frontend's own image, as a source op of its definition.
+    fn my_image() -> Op {
+        Op {
+            inputs: Vec::new(),
+            kind: OpKind::Source {
+                identifier: b"docker-image://127.0.0.1:15113/shards-d113-frontend:1@sha256:0000000000000000000000000000000000000000000000000000000000000001".to_vec(),
+                attrs: BTreeMap::from([(b"image.recordtype".to_vec(), b"frontend".to_vec())]),
+            },
+            platform: Some(Platform::new("linux", "arm64")),
+        }
+    }
+
+    /// The source op of the definition BuildKit mounts for its frontend reads back as it
+    /// was written.
+    #[test]
+    fn the_frontends_own_image_reads_from_its_definition() {
+        let def = Definition {
+            ops: vec![my_image()],
+            metadata: vec![Meta::default()],
+            root: Some(Input { op: 0, index: 0 }),
+        };
+        let m = pb::definition(&def, &Carried::default()).unwrap();
+        assert_eq!(source_op_of(&m.bytes), Some(my_image()));
+    }
+
+    /// An Agentfile's checks: each guarded step's writes and the image's domains, steps of
+    /// the frontend's own image, solved at once; a finding fails the build on its step's
+    /// lines, the image's on none.
+    #[test]
+    fn an_agentfiles_domains_are_checked_in_the_frontends_image() {
+        let domains = vec![plan::DomainDir {
+            name: b"a".to_vec(),
+            harness: false,
+            dir: b"/agents/a".to_vec(),
+        }];
+        // The context, a guarded RUN on it, as the planner marks one.
+        let mut guarded = Meta::default();
+        guarded.description.insert(plan::GUARD.to_vec(), b"1".to_vec());
+        guarded.locations.push(vec![(2, 2)]);
+        let def = Definition {
+            ops: vec![
+                Op {
+                    inputs: Vec::new(),
+                    kind: OpKind::Source {
+                        identifier: b"docker-image://docker.io/library/alpine:3.20".to_vec(),
+                        attrs: BTreeMap::new(),
+                    },
+                    platform: Some(Platform::new("linux", "arm64")),
+                },
+                Op {
+                    inputs: vec![Input { op: 0, index: 0 }],
+                    kind: OpKind::Exec {
+                        process: Box::new(shards_dockerfile::llb::Process {
+                            args: vec![
+                                b"/bin/sh".to_vec(),
+                                b"-c".to_vec(),
+                                b"echo > /agents/a/x".to_vec(),
+                            ],
+                            ..Default::default()
+                        }),
+                        mounts: vec![shards_dockerfile::llb::OpMount {
+                            input: 0,
+                            selector: Vec::new(),
+                            dest: b"/".to_vec(),
+                            output: 0,
+                            readonly: false,
+                            kind: shards_dockerfile::llb::OpMountKind::Bind,
+                        }],
+                        network: shards_dockerfile::llb::NetMode::Sandbox,
+                        security: shards_dockerfile::llb::Security::Sandbox,
+                        secret_env: Vec::new(),
+                        devices: Vec::new(),
+                    },
+                    platform: Some(Platform::new("linux", "arm64")),
+                },
+            ],
+            metadata: vec![Meta::default(), guarded],
+            root: Some(Input { op: 1, index: 0 }),
+        };
+        let said = "it writes /agents/a/x in the agent a's domain, which only that domain's own directives write (AGENTFILE_ARCH.md §9.2)";
+        let server = fake_server(&[
+            Ok(solved("checks")),
+            Ok(stated(stat("guard-1", 0o644, said.len() as u64))),
+            Ok(read(said.as_bytes())),
+        ]);
+        let mut out = Vec::new();
+        gateway_over(server, &mut out, |g| {
+            let f = check_domains(g, Some(my_image()), &def, &domains, &Carried::default(), &entry())
+                .unwrap_err();
+            assert_eq!(f.message, said);
+            let detail = String::from_utf8(f.details[0].1.clone()).unwrap();
+            assert!(
+                detail.ends_with(r#""ranges":[{"start":{"line":2},"end":{"line":2}}]}"#),
+                "{detail}"
+            );
+        });
+        // What BuildKit was asked: the build's ops, the frontend's image, a check of the
+        // RUN and one of the image, each `/shards frontend check`, merged.
+        let asked = messages(&out);
+        let solve = &asked[&1][0];
+        let definition = fields(solve)
+            .into_iter()
+            .find(|(tag, _)| tag >> 3 == 1)
+            .map(|(_, v)| v)
+            .unwrap();
+        let ops: Vec<Vec<u8>> = fields(&definition)
+            .into_iter()
+            .filter(|(tag, _)| tag >> 3 == 1)
+            .map(|(_, v)| v)
+            .collect();
+        // alpine, the RUN, the frontend's image, two checks, the merge, the root.
+        assert_eq!(ops.len(), 7);
+        let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
+        assert!(text(&ops[2]).contains("shards-d113-frontend"));
+        for (op, report) in [(&ops[3], "guard-1"), (&ops[4], "image")] {
+            let t = text(op);
+            assert!(
+                t.contains("/shards") && t.contains("frontend") && t.contains("check"),
+                "{t}"
+            );
+            assert!(t.contains(&format!("\"report\":\"{report}\"")), "{t}");
+        }
+        // With no image of its own the frontend refuses rather than skip the checks.
+        let mut out = Vec::new();
+        gateway_over(fake_server(&[]), &mut out, |g| {
+            let f = check_domains(g, None, &def, &domains, &Carried::default(), &entry()).unwrap_err();
+            assert!(f.message.contains("frontend.bin"), "{}", f.message);
+        });
+    }
+
+    /// A resolver of no images: a scratch Agentfile needs none.
+    struct NoImages;
+
+    impl Resolver for NoImages {
+        fn resolve(&self, name: &[u8], _: &Platform, _: &[u8]) -> Result<Resolved, Vec<u8>> {
+            Err([b"no image ".as_slice(), name].concat())
+        }
+
+        fn epoch(&self, _: &EpochSource) -> Result<Option<(i64, u32)>, Vec<u8>> {
+            Ok(None)
+        }
+    }
+
+    /// An Agentfile's image is annotated as shards build annotates it (D57): the
+    /// normalized Agentfile's digest, its config label's, and its agents' and harnesses'
+    /// names in order.
+    #[test]
+    fn an_agentfiles_manifest_is_annotated_as_shards_build_annotates_it() {
+        let opts = Options {
+            target_platform: Platform::new("linux", "arm64"),
+            build_platforms: vec![Platform::new("linux", "arm64")],
+            dialect: Dialect::Agentfile,
+            ..Options::default()
+        };
+        let text = b"FROM scratch\nAGENT zed FROM ./z\nAGENT main FROM ./m\nHARNESS ci FROM ./h\n";
+        let planned = plan::plan(text, &opts, &NoImages).unwrap();
+        let ann = agentfile_annotations(&planned);
+        let digest = planned
+            .image
+            .config
+            .labels
+            .get(shards_dockerfile::agentfile::DIGEST_LABEL)
+            .unwrap()
+            .clone();
+        assert_eq!(
+            ann,
+            vec![
+                ("vnd.osi.agentfile.digest".to_string(), digest),
+                ("vnd.osi.agentfile.agents".to_string(), b"main,zed".to_vec()),
+                ("vnd.osi.agentfile.harnesses".to_string(), b"ci".to_vec()),
+            ]
+        );
+        // A Dockerfile's has none.
+        let plain = plan::plan(
+            b"FROM scratch\n",
+            &Options {
+                dialect: Dialect::Dockerfile,
+                ..opts
+            },
+            &NoImages,
+        )
+        .unwrap();
+        assert!(agentfile_annotations(&plain).is_empty());
+    }
+
     /// The image's label lists what the frontend can do, so that BuildKit refuses a build
     /// asking more before it runs it.
     #[test]
     fn the_images_caps_label_is_what_the_frontend_does() {
-        let dockerfile = include_str!("../../../scripts/frontend/Dockerfile");
+        let dockerfile = include_str!("../../../../scripts/frontend/Dockerfile");
         let label = format!("LABEL moby.buildkit.frontend.caps=\"{}\"", CAPS.join(","));
         assert!(dockerfile.lines().any(|l| l == label), "{label}");
         assert!(

@@ -576,6 +576,11 @@ struct Planner<'a> {
 /// the same frontend's upstream builds.
 const FRONTENDS: [&str; 2] = ["docker/dockerfile", "docker/dockerfile-upstream"];
 
+/// shards' own frontend (D113), at any tag: the image of `shards` itself, which an
+/// Agentfile's `# syntax=` line names so that `docker buildx build` builds it too, and
+/// which `shards build` therefore builds as its own.
+pub const SHARDS_FRONTEND: (&str, &str) = ("ghcr.io", "hyper-light/shards");
+
 /// What builder.Build does with the frontend BUILDKIT_SYNTAX or `# syntax=` names, which is
 /// to hand the build to it: the Dockerfile frontend's own is this one, its image asked of
 /// `resolver` as BuildKit asks of it before it runs it (a refusal fails the build where it
@@ -590,7 +595,10 @@ fn check_frontend(text: &[u8], opts: &Options, resolver: &dyn Resolver) -> Resul
         std::str::from_utf8(r)
             .ok()
             .and_then(|r| Reference::parse_normalized(r).ok())
-            .is_some_and(|r| r.domain == "docker.io" && FRONTENDS.contains(&r.path.as_str()))
+            .is_some_and(|r| {
+                (r.domain == "docker.io" && FRONTENDS.contains(&r.path.as_str()))
+                    || (r.domain == SHARDS_FRONTEND.0 && r.path == SHARDS_FRONTEND.1)
+            })
     };
     let refused = |r: &[u8]| {
         errb(&[
@@ -5989,9 +5997,13 @@ mod tests {
             "# syntax = docker.io/docker/dockerfile:1.4-labs --x\nFROM scratch\n",
             "#syntax=docker/dockerfile-upstream:master@sha256:24454f830cdb571e2c4ad15481119c43b3cafd48dd869a9b2945d1036d1dc68d\nFROM scratch\n",
             "# check=skip=all\n# syntax=docker/dockerfile\nFROM scratch\n",
+            // shards' own frontend's image (D113), at any tag.
+            "# syntax=ghcr.io/hyper-light/shards:0.5\nFROM scratch\n",
+            "# syntax=ghcr.io/hyper-light/shards\nFROM scratch\n",
         ] {
             assert_eq!(plans(text, &[]), Ok(()), "{text}");
         }
+        assert!(plans("# syntax=ghcr.io/hyper-light/other:1\nFROM scratch\n", &[]).is_err());
         let refused = |r: &str| {
             format!(
                 "shards cannot run frontend {r}: it builds Dockerfiles with its own port of docker/dockerfile 1.27.1"
