@@ -293,6 +293,12 @@ pub mod beside {
         )
     }
 
+    /// Saying that the command runs without capability `name`, which Docker gives by
+    /// default, and which reaches the domains as `what` says.
+    pub fn withheld(name: &str, what: &str) -> String {
+        format!("{name} withheld from the command: {WHY}, and {name} {what}")
+    }
+
     /// Refusing `--pid host`: the microVM's PID namespace, the parent of theirs.
     pub fn pid_host() -> String {
         format!(

@@ -12726,8 +12726,10 @@ fn agentfile_volumes_reach_whom_they_are_for() {
 /// is PID 1 of a PID namespace of its own, or under `--init` its reaper is, so it sees
 /// none of their processes; it is refused --privileged, a capability that would cross
 /// into them, systempaths=unconfined, a net.* sysctl, a uid or gid of theirs, --pid host,
-/// and --network none while the Agentfile grants egress; an exec is held to the same. Each
-/// guard is mutation-checked: without it, the escape the test asks for would succeed.
+/// and --network none while the Agentfile grants egress; an exec is held to the same; and
+/// CAP_NET_RAW, which Docker gives by default, is withheld where their flows cross the
+/// command's network namespace, and said to be. Each guard is mutation-checked: without
+/// it, the escape the test asks for would succeed.
 #[test]
 fn a_run_reaches_none_of_its_images_agents() {
     if cannot_run_vms() {
@@ -12812,6 +12814,14 @@ fn a_run_reaches_none_of_its_images_agents() {
                 assert!(got != "ok", "{args:?}: reached {field} of {r:?}:\n{all}");
             }
         }
+        // What the run withholds of Docker's defaults beside the agent, which reaches past
+        // the microVM through the command's network namespace, it says, in shards' words.
+        assert!(
+            ran.stderr.contains(
+                "WARNING: CAP_NET_RAW withheld from the command: the image's Agentfile runs agents and harnesses beside the command, and CAP_NET_RAW reads and writes the packets of their flows past the microVM, which cross the command's network namespace\n"
+            ),
+            "{args:?}: no warning of CAP_NET_RAW:\n{all}"
+        );
     }
 
     // What the CLI cannot ask for at run. Each is Docker's input, refused with shards'

@@ -96,6 +96,19 @@ impl Agentfile {
             .fold(caps, |m, &(c, _)| m & !(1 << c))
     }
 
+    /// The capabilities Docker would give `run`'s command that [`Agentfile::caps`]
+    /// withholds, each by number and what it reaches of the domains: CAP_NET_RAW, one of
+    /// Docker's defaults, where their flows past the microVM cross the command's network
+    /// namespace. The run says so as it is made, as dockerd's warnings are said.
+    pub fn withheld(&self, run: &shards_ipc::Run) -> Vec<(u32, &'static str)> {
+        let (docker, kept) = (crate::setup::capabilities(run), self.caps(run));
+        shards_abi::run::beside::UPLINK
+            .iter()
+            .copied()
+            .filter(|&(c, _)| c < 64 && docker & (1 << c) != 0 && kept & (1 << c) == 0)
+            .collect()
+    }
+
     /// Refuses a numeric `user` (`uid[:gid]`) or `--group-add` gid of the domains' IDs; a
     /// name, which the image's own databases resolve, its init refuses as it resolves it.
     pub fn ids(&self, user: &str, groups: &[String]) -> Result<(), String> {

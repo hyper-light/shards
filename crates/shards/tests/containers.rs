@@ -576,6 +576,62 @@ fn a_command_is_pid_1_as_a_containers_is() {
     );
 }
 
+/// Docker's own sysctls for a container's network namespace (moby daemon/oci_linux.go),
+/// which a run's `--sysctl` overrides: ICMP echo sockets for every group, so that ping
+/// works without CAP_NET_RAW, and every port bindable without CAP_NET_BIND_SERVICE; as
+/// Docker 29.3.1 answered (M145).
+#[test]
+fn dockers_default_sysctls_let_ping_go_without_net_raw() {
+    let Some(home) = pulled("containers-sysctls", ALPINE) else {
+        return;
+    };
+    let run = |args: &[&str]| {
+        let mut all = vec!["run", "--rm"];
+        all.extend_from_slice(args);
+        shards_in(&home, &all)
+    };
+    let keys = [
+        "sysctl",
+        "net.ipv4.ping_group_range",
+        "net.ipv4.ip_unprivileged_port_start",
+    ];
+    let mut args = vec![ALPINE];
+    args.extend(keys);
+    let r = run(&args);
+    assert_eq!(
+        (r.status, r.stdout.as_str()),
+        (
+            Some(0),
+            "net.ipv4.ping_group_range = 0\t2147483647\nnet.ipv4.ip_unprivileged_port_start = 0\n"
+        ),
+        "{r}"
+    );
+    let mut args = vec!["--sysctl", "net.ipv4.ip_unprivileged_port_start=1024", ALPINE];
+    args.extend(keys);
+    let r = run(&args);
+    assert!(
+        r.stdout.ends_with("net.ipv4.ip_unprivileged_port_start = 1024\n"),
+        "{r}"
+    );
+    let r = run(&[
+        "--cap-drop",
+        "NET_RAW",
+        "-u",
+        "1000",
+        ALPINE,
+        "ping",
+        "-c",
+        "1",
+        "-W",
+        "2",
+        "127.0.0.1",
+    ]);
+    assert!(
+        r.status == Some(0) && r.stdout.contains("1 packets received"),
+        "{r}"
+    );
+}
+
 /// linuxserver.io's Alpine base image, whose entrypoint, s6-overlay's `/init`, runs only
 /// as PID 1, as Docker 29.3.1 ran it in shards-dind (M145): its services up and its
 /// command run; under `--init` or `--pid host`, refused by s6 itself.

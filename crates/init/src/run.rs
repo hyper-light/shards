@@ -309,6 +309,19 @@ fn mount_root(device: &str) -> Result<(), Failure> {
     // Docker's device rules, before any snapshot: a run with them does nothing more.
     crate::devices::confine_by_default(WORKLOAD_CGROUP).map_err(setup_failed)?;
     crate::setup::keep_proc_sys().map_err(|e| setup_failed(format!("/proc/sys: {e}")))?;
+    // Docker's own sysctls for a container with a network namespace of its own, where the
+    // kernel has them, before any snapshot; a run's `--sysctl` is written after, as
+    // dockerd merges the run's over them (moby daemon/oci_linux.go): ICMP echo sockets for
+    // every group, without CAP_NET_RAW, and every port bindable without
+    // CAP_NET_BIND_SERVICE.
+    for (key, value) in [
+        ("net.ipv4.ping_group_range", "0 2147483647"),
+        ("net.ipv4.ip_unprivileged_port_start", "0"),
+    ] {
+        if std::path::Path::new(&format!("/proc/sys/{}", key.replace('.', "/"))).exists() {
+            crate::setup::write_sysctl(key, value).map_err(setup_failed)?;
+        }
+    }
     // Last: init writes /proc/sys above, and no more after but through what it kept.
     masked()
 }

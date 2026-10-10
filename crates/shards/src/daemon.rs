@@ -1950,6 +1950,17 @@ impl<D: Disk> Daemon<D> {
                 for w in warned.unwrap_or_default() {
                     say(&format!("WARNING: {w}"));
                 }
+                // What the run withholds of Docker's beside its domains, never silently (D115).
+                for (cap, what) in prepared.agentfile.iter().flat_map(|a| a.withheld(&run)) {
+                    let name = shards_abi::run::CAP_NAMES
+                        .get(cap as usize)
+                        .copied()
+                        .unwrap_or("a capability");
+                    say(&format!(
+                        "WARNING: {}",
+                        shards_abi::run::beside::withheld(name, what)
+                    ));
+                }
                 name
             }
             Ok(name) => name,
