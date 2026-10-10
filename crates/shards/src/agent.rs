@@ -616,6 +616,9 @@ pub fn fetch(
             store
                 .tag(&name.to_string(), &desc, index.as_ref().unwrap_or(&digest), &held)
                 .map_err(|e| e.to_string())?;
+            // Its signatures and SBOMs with it, for its policies to read (D116).
+            let subject = subject_of(store, name, &desc)?;
+            take_referrers(store, &registry, name, &subject, say)?;
             desc
         }
     };
@@ -647,12 +650,30 @@ fn pull_cmd(kind: Kind, args: &[String]) -> Result<(), String> {
         config.name,
         desc.digest
     );
-    // Its signatures and SBOMs, as the registry lists them (D116), each a manifest that
-    // refers to it, kept with it.
-    let subject = subject_of(&store, &name, &desc)?;
-    let registry = crate::pull::registry(&name, None, &|k| std::env::var(k).ok())?;
+    // Its signatures and SBOMs, as the pull took them (D116).
+    for r in store.referrers_of(&name.to_string()).map_err(|e| e.to_string())? {
+        let _ = writeln!(io::stdout(), "{name}: {} {}", referrer_kind(&store, &r), r.digest);
+    }
+    Ok(())
+}
+
+/// The referrers of `subject`, what `name` was just pulled as, as the registry lists them
+/// (D116): each a manifest that refers to it, taken with its blobs and kept with the name,
+/// in place of those kept before, so that one deleted there is let go of here too. A
+/// list under the tag schema is anyone's who may push: what refers to another is left,
+/// said, and so is a referrer that is no manifest.
+fn take_referrers(
+    store: &Store,
+    registry: &shards_registry::registry::Registry,
+    name: &Reference,
+    subject: &Descriptor,
+    say: &dyn Fn(&str),
+) -> Result<(), String> {
     let limits = crate::pull::limits()?;
-    for r in shards_registry::referrers::list(&registry, &subject.digest, &[]).map_err(|e| e.to_string())? {
+    let listed =
+        shards_registry::referrers::list(registry, &subject.digest, &[]).map_err(|e| e.to_string())?;
+    let mut taken = Vec::new();
+    for r in &listed {
         let desc = Descriptor {
             media_type: r.media_type.clone(),
             digest: r.digest.clone(),
@@ -661,27 +682,19 @@ fn pull_cmd(kind: Kind, args: &[String]) -> Result<(), String> {
             annotations: BTreeMap::new(),
         };
         if desc.media_type != oci::media::OCI_MANIFEST {
-            let _ = writeln!(
-                io::stderr(),
+            say(&format!(
                 "{name}: referrer {} of type {} left",
-                r.digest,
-                r.media_type
-            );
+                r.digest, r.media_type
+            ));
             continue;
         }
-        let bytes = registry
-            .fetch_document(&store, &desc)
-            .map_err(|e| e.to_string())?;
-        // A list under the tag schema is anyone's who may push: what refers to another
-        // is left, said.
+        let bytes = registry.fetch_document(store, &desc).map_err(|e| e.to_string())?;
         let refers_to = shards_registry::referrers::entry(&desc, &bytes).map(|(_, s)| s);
         if refers_to.as_deref().ok() != Some(subject.digest.as_str()) {
-            let _ = writeln!(
-                io::stderr(),
+            say(&format!(
                 "{name}: referrer {} left: it does not refer to {}",
-                r.digest,
-                subject.digest
-            );
+                r.digest, subject.digest
+            ));
             continue;
         }
         let Document::Manifest(m) =
@@ -691,20 +704,53 @@ fn pull_cmd(kind: Kind, args: &[String]) -> Result<(), String> {
         };
         for part in std::iter::once(&m.config).chain(&m.layers) {
             registry
-                .fetch_blob(&store, part, &limits, &|_| {})
+                .fetch_blob(store, part, &limits, &|_| {})
                 .map_err(|e| e.to_string())?;
         }
-        store
-            .keep_referrer(&name.to_string(), &desc)
-            .map_err(|e| e.to_string())?;
-        let _ = writeln!(
-            io::stdout(),
-            "{name}: {} {}",
-            referrer_kind(&store, &desc),
-            desc.digest
-        );
+        taken.push(desc);
+    }
+    let reference = name.to_string();
+    for kept in store.referrers_of(&reference).map_err(|e| e.to_string())? {
+        if !taken.iter().any(|t| t.digest == kept.digest) {
+            store
+                .drop_referrer(&reference, &kept.digest)
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    for desc in &taken {
+        store.keep_referrer(&reference, desc).map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+/// The signature bundles among the referrers kept with `name` (D116): each of cosign's
+/// signature manifests' one layer, at most a manifest's size.
+pub fn signature_bundles(store: &Store, name: &str) -> Result<Vec<Vec<u8>>, String> {
+    let mut out = Vec::new();
+    for r in store.referrers_of(name).map_err(|e| e.to_string())? {
+        let Some(bytes) = store.content(&r, oci::MAX_MANIFEST).map_err(|e| e.to_string())? else {
+            continue;
+        };
+        let Ok(Document::Manifest(m)) = oci::parse_document(&bytes, &r.media_type) else {
+            continue;
+        };
+        if m.artifact_type.as_deref() != Some(shards_sigstore::image::ARTIFACT_SIGSTORE_BUNDLE) {
+            continue;
+        }
+        for layer in m
+            .layers
+            .iter()
+            .filter(|l| l.media_type == shards_sigstore::image::ARTIFACT_SIGSTORE_BUNDLE)
+        {
+            if let Some(b) = store
+                .content(layer, oci::MAX_MANIFEST)
+                .map_err(|e| e.to_string())?
+            {
+                out.push(b);
+            }
+        }
+    }
+    Ok(out)
 }
 
 fn push(kind: Kind, args: &[String]) -> Result<(), String> {

@@ -251,6 +251,11 @@ pub struct Image {
     /// the attestation chain), each as its JSON. `None` until that is in; written after
     /// `provenance`, and only when it holds any (omitempty).
     pub signatures: Option<Vec<Json>>,
+    /// An OSI artifact's type (D116), written last and only for one: an image has none.
+    pub artifact_type: String,
+    /// An OSI artifact's signature bundles, each its JSON, for `verify_image_signature`;
+    /// never written.
+    pub bundles: Option<Vec<Vec<u8>>>,
 }
 
 impl Image {
@@ -282,6 +287,7 @@ impl Image {
                     .filter(|s| !s.is_empty())
                     .map(|s| Json::Arr(s.clone())),
             )
+            .str("artifactType", &self.artifact_type)
             .done()
     }
 }
@@ -621,6 +627,62 @@ pub fn of_source(
             inp.git = Some(git);
         }
         "local" => inp.local = Some(rest.to_string()),
+        // An OSI artifact (D116): to a policy, an object of a registry as an image is,
+        // its name's parts, the digest it resolves to, its signatures as an image's, and
+        // its artifact type, which no image has.
+        "osi-artifact" => {
+            let r = Reference::parse_normalized(rest)
+                .map_err(|e| format!("failed to parse OSI artifact source reference: {e}"))?;
+            let kind = match source.attrs.get("osi.kind").map(String::as_str) {
+                Some("agent") | None => shards_image::osi::Kind::Agent,
+                Some("harness") => shards_image::osi::Kind::Harness,
+                Some("mcp") => shards_image::osi::Kind::Mcp,
+                Some(other) => return Err(format!("unsupported OSI artifact kind: {other}")),
+            };
+            let mut img = Image {
+                reference: r.to_string(),
+                host: r.domain.clone(),
+                repo: r.familiar_name(),
+                full_repo: r.name(),
+                artifact_type: kind.artifact_type().to_string(),
+                ..Image::default()
+            };
+            if let Some(d) = &r.digest {
+                img.checksum = d.to_string();
+                img.is_canonical = true;
+            }
+            if let Some(t) = &r.tag {
+                img.tag = t.clone();
+            }
+            if let Some(p) = wanted {
+                img.platform = String::from_utf8_lossy(&platform::format(p)).into_owned();
+                img.os = String::from_utf8_lossy(&p.os).into_owned();
+                img.arch = String::from_utf8_lossy(&p.architecture).into_owned();
+                img.variant = String::from_utf8_lossy(&p.variant).into_owned();
+            }
+            match &meta.artifact {
+                None => {
+                    if !img.is_canonical {
+                        inp.unknowns.push("image.checksum".into());
+                    }
+                    inp.unknowns.push("image.signatures".into());
+                }
+                Some(a) => {
+                    // What its referrers refer to: the index of several platforms.
+                    img.checksum = a.digest.clone();
+                    match (&a.signatures, trust) {
+                        (Some(bundles), Some(trust)) => {
+                            img.signatures =
+                                Some(signatures::artifact_signatures(bundles, &a.digest, trust, log));
+                            img.bundles = Some(bundles.clone());
+                        }
+                        (Some(bundles), None) => img.bundles = Some(bundles.clone()),
+                        (None, _) => inp.unknowns.push("image.signatures".into()),
+                    }
+                }
+            }
+            inp.image = Some(img);
+        }
         _ => return Err(format!("unsupported source scheme: {scheme}")),
     }
     Ok(inp)

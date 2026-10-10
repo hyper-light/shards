@@ -343,6 +343,53 @@ pub fn parse_signatures(
     Ok(Some(vec![attestation_signature(&si)]))
 }
 
+/// An OSI artifact's signatures (D116), as the policy input lists an image's: each of
+/// cosign's signature bundles among its referrers that a Sigstore certificate signed,
+/// verified as the policy helpers' VerifyArtifact verifies an artifact's (Fulcio, its
+/// certificate transparency, a log entry and its time) over `subject`, the digest its
+/// name resolves to, of cosign's signature predicate; any identity. A bundle a key signed
+/// is `verify_image_signature`'s, with the key a policy names. What fails is the debug
+/// log's, as parseSignatures' failure is.
+pub fn artifact_signatures(
+    bundles: &[Vec<u8>],
+    subject: &str,
+    trust: &Trust,
+    log: &mut dyn FnMut(LogLevel, &str),
+) -> Vec<Json> {
+    let mut out = Vec::new();
+    for b in bundles {
+        match shards_sigstore::sign::unverified(b) {
+            Ok(u) if u.keyed => continue,
+            Ok(u) if u.predicate.as_deref() == Some(shards_sigstore::sign::COSIGN_SIGN_PREDICATE) => {}
+            Ok(u) => {
+                log(
+                    LogLevel::Debug,
+                    &format!(
+                        "skipping artifact attestation of predicate type {:?}: not a signature",
+                        u.predicate
+                    ),
+                );
+                continue;
+            }
+            Err(e) => {
+                log(
+                    LogLevel::Debug,
+                    &format!("failed to parse artifact signature: {}", e.0),
+                );
+                continue;
+            }
+        }
+        match shards_sigstore::helpers::verify_artifact(subject, b, &|| trust.root(), local_offset, true) {
+            Ok(si) => out.push(attestation_signature(&si)),
+            Err(e) => log(
+                LogLevel::Debug,
+                &format!("failed to verify artifact signature: {}", e.0),
+            ),
+        }
+    }
+    out
+}
+
 /// AttestationSignature's JSON (toAttestationSignature), each field omitted where empty
 /// but the signer's issuer and name.
 pub fn attestation_signature(si: &SignatureInfo) -> Json {

@@ -36,6 +36,151 @@ fn cosign_key() -> (String, String, Vec<u8>) {
     )
 }
 
+/// The PKCS #8 of the oracle's key `name`.
+fn oracle_pkcs8(name: &str) -> Vec<u8> {
+    let oracle: serde_json::Value =
+        serde_json::from_str(include_str!("../../sigstore/testdata/cosign/oracle.json")).unwrap();
+    let k = oracle["keys"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|k| k["name"] == name)
+        .unwrap();
+    let hex = k["pkcs8"].as_str().unwrap();
+    (0..hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(hex.get(i..i + 2).unwrap(), 16).unwrap())
+        .collect()
+}
+
+/// Build policies see an OSI artifact as an object of a registry, as they see an image,
+/// with its artifact type and its signatures (D116): `AGENT … FROM` is checked by its name
+/// before it is taken, then pinned with the build's definition; `verify_image_signature`
+/// holds it to a signature by the key the policy names. Unsigned, it is refused, the
+/// policy's message said; signed, allowed, from the store where it was signed and from
+/// the registry by a build that pulls it with its signature; with another key named,
+/// refused again.
+#[test]
+fn policies_hold_an_agent_to_its_signature() {
+    let (image, _) = common::served();
+    let (pem, password, pkcs8) = cosign_key();
+    let keys = TempDir::new("referrers-policy-key");
+    let key = keys.join("cosign.key");
+    std::fs::write(&key, &pem).unwrap();
+    let ours = shards_sigstore::sign::Signer::from_pkcs8(&pkcs8).unwrap();
+    let theirs = shards_sigstore::sign::Signer::from_pkcs8(&oracle_pkcs8("ecdsa p384 standard")).unwrap();
+    let (port, _repos) = common::writable_registry();
+    let home = TempDir::new("referrers-policy-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("COSIGN_PASSWORD", std::ffi::OsStr::new(&password)),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let dir = TempDir::new("referrers-policy-agent");
+    std::fs::write(dir.join("run.sh"), "#!/bin/sh\necho agent\n").unwrap();
+    std::fs::write(dir.join("agent.json"), r#"{"name":"main","version":"1.0.0"}"#).unwrap();
+    let name = format!("127.0.0.1:{port}/team/agent:1");
+    let made = shards(&["build", "agent", dir.to_str().unwrap(), "-t", &name]);
+    assert_eq!(made.status, Some(0), "{}", made.stderr);
+    let pushed = shards(&["push", "agent", &name]);
+    assert_eq!(pushed.status, Some(0), "{}", pushed.stderr);
+
+    let ctx = TempDir::new("referrers-policy-ctx");
+    std::fs::write(
+        ctx.join("Agentfile"),
+        format!("FROM {image}\nAGENT main FROM {name}\n"),
+    )
+    .unwrap();
+    std::fs::write(
+        ctx.join("Agentfile.rego"),
+        "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if {\n  not input.image.artifactType\n  startswith(input.image.repo, \"127.0.0.1:\")\n}\n\nallow if {\n  input.image.artifactType == \"application/vnd.osi.agent.v1\"\n  verify_image_signature(input.image, \"cosign.pub\")\n}\n\ndeny_msg contains msg if {\n  not allow\n  input.image.artifactType\n  msg := sprintf(\"agent %s is not signed by our key\", [input.image.ref])\n}\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n",
+    )
+    .unwrap();
+    let build = |home: &TempDir, public: &shards_sigstore::sign::Signer| {
+        std::fs::write(
+            ctx.join("cosign.pub"),
+            shards_sigstore::sign::public_key_pem(public.public_key_der()),
+        )
+        .unwrap();
+        common::run_shards_env_in(
+            &ctx,
+            &[],
+            &["build", "--progress=plain", "--no-cache", "."],
+            &[("SHARDS_HOME", home.as_os_str())],
+            TIMEOUT,
+        )
+    };
+
+    // Unsigned: refused by name, before it is taken.
+    let refused = build(&home, &ours);
+    assert_eq!(refused.status, Some(1), "{}", refused.stderr);
+    assert!(
+        refused
+            .stderr
+            .contains(&format!("Policy: agent {name} is not signed by our key")),
+        "{}",
+        refused.stderr
+    );
+    assert!(
+        refused.stderr.contains(&format!(
+            "could not resolve OSI artifact due to policy: source \"osi-artifact://{name}\" not allowed by policy: action DENY"
+        )),
+        "{}",
+        refused.stderr
+    );
+
+    // Signed here: allowed, checked by name and then pinned.
+    let signed = shards(&["sign", "agent", &name, "--key", key.to_str().unwrap()]);
+    assert_eq!(signed.status, Some(0), "{}", signed.stderr);
+    let allowed = build(&home, &ours);
+    assert_eq!(allowed.status, Some(0), "{}", allowed.stderr);
+    assert!(
+        allowed.stderr.contains(&format!(
+            "policy decision for source osi-artifact://{name}: ALLOW"
+        )),
+        "{}",
+        allowed.stderr
+    );
+    assert!(
+        allowed.stderr.contains(&format!(
+            "policy decision for source osi-artifact://{name}@sha256:"
+        )),
+        "{}",
+        allowed.stderr
+    );
+
+    // Another key named: refused.
+    let other = build(&home, &theirs);
+    assert_eq!(other.status, Some(1), "{}", other.stderr);
+
+    // Pushed, and taken by a build elsewhere with its signature.
+    let pushed = shards(&["push", "agent", &name]);
+    assert_eq!(pushed.status, Some(0), "{}", pushed.stderr);
+    let elsewhere = TempDir::new("referrers-policy-elsewhere");
+    let pulled = build(&elsewhere, &ours);
+    assert_eq!(pulled.status, Some(0), "{}", pulled.stderr);
+
+    // Only an image's pin converts a source: a policy that pins an OSI artifact is
+    // refused in BuildKit's words.
+    std::fs::write(
+        ctx.join("Agentfile.rego"),
+        format!(
+            "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if {{\n  not input.image.artifactType\n  startswith(input.image.repo, \"127.0.0.1:\")\n}}\n\nallow if {{\n  input.image.artifactType\n  pin_image(input.image, \"sha256:{}\")\n}}\n\ndecision := {{\"allow\": allow}}\n",
+            "1".repeat(64)
+        ),
+    )
+    .unwrap();
+    let pinned = build(&home, &ours);
+    assert_eq!(pinned.status, Some(1), "{}", pinned.stderr);
+    assert!(
+        pinned
+            .stderr
+            .contains(&format!("cannot pin non-image source: \"osi-artifact://{name}\"")),
+        "{}",
+        pinned.stderr
+    );
+}
+
 /// An agent of several platforms is signed as its index: the index is what its name
 /// resolves to, in the store and in the registry, as cosign signs the digest a name
 /// resolves to.

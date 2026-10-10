@@ -233,6 +233,34 @@ pub fn bundle(signer: &Signer, payload: &[u8]) -> Result<Vec<u8>, String> {
     .into_bytes())
 }
 
+/// What a bundle says of itself before it is verified; verifying it is what makes any of
+/// it true.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Unverified {
+    /// Whether a key signed it: its material a key's hint, not a certificate.
+    pub keyed: bool,
+    /// Its envelope's predicate type, if it holds an in-toto statement.
+    pub predicate: Option<String>,
+    /// Whether it holds transparency log entries, which only a trusted root verifies.
+    pub logged: bool,
+}
+
+/// [`Unverified`] of `bundle`.
+pub fn unverified(bundle: &[u8]) -> Result<Unverified, crate::Error> {
+    let b = crate::bundle::parse(bundle)?;
+    let predicate = match b.signature_content() {
+        Ok(crate::bundle::SignatureContent::Envelope(env)) => {
+            crate::signature::statement(&env).ok().map(|s| s.predicate_type)
+        }
+        _ => None,
+    };
+    Ok(Unverified {
+        keyed: matches!(b.material, crate::bundle::Material::PublicKey { .. }),
+        predicate,
+        logged: !b.entries.is_empty(),
+    })
+}
+
 /// The key a PEM block of type `PUBLIC KEY` holds, as cosign.pub holds it, loaded as
 /// `cosign verify --key` loads one (cryptoutils.UnmarshalPEMToPublicKey, then the key's
 /// default verifier, Ed25519 keys prehashed: GetDefaultLoadOptions).
@@ -245,6 +273,11 @@ pub fn public_key(pem: &[u8]) -> Result<crate::verify::KeyMaterial, String> {
         ));
     }
     key_of_spki(&block.bytes)
+}
+
+/// A key's PKIX encoding as cosign.pub holds it: a `PUBLIC KEY` PEM block.
+pub fn public_key_pem(spki: &[u8]) -> Vec<u8> {
+    crate::tlog::pem::encode("PUBLIC KEY", spki)
 }
 
 /// [`public_key`] of a key's PKIX encoding.

@@ -311,6 +311,7 @@ fn with_resolver(f: &dyn Fn(&dyn policy::Resolve) -> Result<(), String>) -> Resu
         resolved: RefCell::new(BTreeMap::new()),
         layouts: BTreeMap::new(),
         artifacts: RefCell::new(BTreeMap::new()),
+        pulled: RefCell::new(std::collections::BTreeSet::new()),
         secrets: &secrets,
         agents: &agents,
         answered: RefCell::new(BTreeMap::new()),
