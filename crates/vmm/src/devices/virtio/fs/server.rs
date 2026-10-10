@@ -36,6 +36,8 @@ const S_IFDIR: u32 = libc::S_IFDIR as u32;
 #[allow(clippy::unnecessary_cast)]
 const S_IFREG: u32 = libc::S_IFREG as u32;
 #[allow(clippy::unnecessary_cast)]
+const S_IFLNK: u32 = libc::S_IFLNK as u32;
+#[allow(clippy::unnecessary_cast)]
 const S_ISUID: u32 = libc::S_ISUID as u32;
 #[allow(clippy::unnecessary_cast)]
 const S_ISGID: u32 = libc::S_ISGID as u32;
@@ -352,6 +354,51 @@ fn open_at(dir: RawFd, name: &CStr, flags: libc::c_int, mode: libc::c_uint) -> R
     }
     // SAFETY: a fresh descriptor nothing else owns.
     Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+}
+
+/// Changes the mode of `name` in `dir` without following it. fchmodat(2) without
+/// AT_SYMLINK_NOFOLLOW follows a final symlink: a guest's link to a host file outside the
+/// share would have that file's mode changed (audit V01). A symlink's own mode is not
+/// changed, as Linux changes none (EOPNOTSUPP: fs/attr.c `notify_change` since 6.6, and
+/// glibc's and musl's fchmodat with AT_SYMLINK_NOFOLLOW before it).
+fn chmod_at(dir: RawFd, name: &CStr, mode: u32) -> Result<(), Errno> {
+    #[cfg(target_os = "linux")]
+    {
+        // Linux's fchmodat(2) takes no AT_SYMLINK_NOFOLLOW before fchmodat2 (6.6). The
+        // name is opened as a path, never followed, and the file changed through its
+        // /proc/self/fd link, which reaches that file whatever is at the name by then
+        // (musl's src/stat/fchmodat.c, virtiofsd's setattr).
+        let fd = open_at(dir, name, libc::O_PATH | libc::O_NOFOLLOW, 0)?;
+        if mode_of(&stat_fd(fd.as_raw_fd())?) & S_IFMT == S_IFLNK {
+            return Err(EOPNOTSUPP);
+        }
+        let link = CString::new(format!("/proc/self/fd/{}", fd.as_raw_fd())).map_err(|_| EINVAL)?;
+        // SAFETY: fchmodat(2) of a NUL-terminated path.
+        if unsafe { libc::fchmodat(libc::AT_FDCWD, link.as_ptr(), mode as libc::mode_t, 0) } != 0 {
+            return Err(last());
+        }
+        Ok(())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        if mode_of(&stat_at(dir, name)?) & S_IFMT == S_IFLNK {
+            return Err(EOPNOTSUPP);
+        }
+        // A symlink put at the name since has its own mode changed, not its target's.
+        // SAFETY: fchmodat(2) of a NUL-terminated name in a directory we hold.
+        if unsafe {
+            libc::fchmodat(
+                dir,
+                name.as_ptr(),
+                mode as libc::mode_t,
+                libc::AT_SYMLINK_NOFOLLOW,
+            )
+        } != 0
+        {
+            return Err(last());
+        }
+        Ok(())
+    }
 }
 
 fn key(st: &libc::stat) -> (u64, u64) {
@@ -1113,14 +1160,14 @@ impl Server {
         owner: &mut Owner,
         had: bool,
     ) -> Result<(), Errno> {
-        let rc = match own {
-            // SAFETY: fchmod(2) of a descriptor we hold.
-            Some(fd) => unsafe { libc::fchmod(fd, mode as libc::mode_t) },
-            // SAFETY: fchmodat(2) of a NUL-terminated name in a directory we hold.
-            None => unsafe { libc::fchmodat(dir, name.as_ptr(), mode as libc::mode_t, 0) },
-        };
-        if rc != 0 {
-            return Err(last());
+        match own {
+            Some(fd) => {
+                // SAFETY: fchmod(2) of a descriptor we hold.
+                if unsafe { libc::fchmod(fd, mode as libc::mode_t) } != 0 {
+                    return Err(last());
+                }
+            }
+            None => chmod_at(dir, name, mode)?,
         }
         // The kept mode follows, where the attribute is kept.
         if had {
@@ -1669,6 +1716,51 @@ mod tests {
         // FORGET takes no reply.
         assert!(s.handle(&req(op::FORGET, node, 0, &1u64.to_le_bytes())).is_none());
         let _ = std::fs::remove_dir_all(&path);
+    }
+
+    /// struct fuse_setattr_in: `valid` and `mode`, everything else zero.
+    fn setattr(valid: u32, mode: u32) -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend_from_slice(&valid.to_le_bytes());
+        b.extend_from_slice(&[0u8; 4 + 6 * 8 + 3 * 4]);
+        b.extend_from_slice(&mode.to_le_bytes());
+        b.extend_from_slice(&[0u8; 4 * 4]);
+        b
+    }
+
+    /// A guest's mode change reaches nothing through a symlink: one the guest made to a
+    /// host file outside the share leaves that file's mode as it was, as Linux changes no
+    /// symlink's mode (EOPNOTSUPP); a regular file's still changes.
+    #[test]
+    fn a_mode_change_follows_no_symlink() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let (path, s) = dir();
+        let outside = path.with_extension("outside");
+        std::fs::write(&outside, "secret").unwrap();
+        std::fs::set_permissions(&outside, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let mut body = name("link");
+        body.extend(name(outside.to_str().unwrap()));
+        assert_eq!(answer(&s, &req(op::SYMLINK, ROOT, 0, &body)).0, 0);
+        let (e, entry) = answer(&s, &req(op::LOOKUP, ROOT, 0, &name("link")));
+        assert_eq!(e, 0);
+        let link = u64::from_le_bytes(entry[0..8].try_into().unwrap());
+        let mode = || std::fs::metadata(&outside).unwrap().permissions().mode() & 0o7777;
+        for valid in [fattr::MODE, fattr::KILL_SUIDGID] {
+            let (e, _) = answer(&s, &req(op::SETATTR, link, 0, &setattr(valid, 0o777)));
+            assert_eq!(e, -EOPNOTSUPP, "valid {valid:#x}");
+            assert_eq!(mode(), 0o600, "valid {valid:#x}: the file outside the share");
+        }
+        std::fs::write(path.join("file"), "f").unwrap();
+        let (_, entry) = answer(&s, &req(op::LOOKUP, ROOT, 0, &name("file")));
+        let file = u64::from_le_bytes(entry[0..8].try_into().unwrap());
+        assert_eq!(
+            answer(&s, &req(op::SETATTR, file, 0, &setattr(fattr::MODE, 0o640))).0,
+            0
+        );
+        let changed = std::fs::metadata(path.join("file")).unwrap().permissions().mode();
+        assert_eq!(changed & 0o7777, 0o640);
+        let _ = std::fs::remove_dir_all(&path);
+        let _ = std::fs::remove_file(&outside);
     }
 
     #[test]
