@@ -594,6 +594,24 @@ fn func_union(a: &Type, b: &Type) -> Type {
 }
 
 /// types.Or: the union of a and b; the superset when one contains the other.
+/// `or`, taking its operands: one nil, the other is the union, moved rather than copied,
+/// as Go returns the pointer it was given.
+pub fn or_owned(a: Type, b: Type) -> Type {
+    fn unwrapped(mut t: Type) -> Type {
+        while let Type::Named { ty, .. } = t {
+            t = *ty;
+        }
+        t
+    }
+    if a.is_nil() {
+        return unwrapped(b);
+    }
+    if b.is_nil() {
+        return unwrapped(a);
+    }
+    or(&a, &b)
+}
+
 pub fn or(a: &Type, b: &Type) -> Type {
     let (a, b) = (a.unwrap(), b.unwrap());
     if a.is_nil() {

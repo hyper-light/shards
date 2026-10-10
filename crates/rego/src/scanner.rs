@@ -1,6 +1,7 @@
 //! OPA's scanner (ast/internal/scanner/scanner.go and tokens/tokens.go, v1.14.1).
 
 use std::collections::HashMap;
+use std::rc::Rc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Token {
@@ -155,7 +156,6 @@ pub fn base_keywords() -> HashMap<&'static str, Token> {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Position {
-    pub tabs: Vec<usize>,
     pub offset: usize,
     pub end: usize,
     pub row: usize,
@@ -174,10 +174,10 @@ const BOM: i32 = 0xFEFF;
 
 #[derive(Debug, Clone)]
 pub struct Scanner<'a> {
-    pub keywords: HashMap<&'static str, Token>,
+    /// Shared by the parser's saved states until one changes it.
+    pub keywords: Rc<HashMap<&'static str, Token>>,
     pub bs: &'a [u8],
     errors: Vec<ScanError>,
-    tabs: Vec<usize>,
     offset: usize,
     row: usize,
     col: usize,
@@ -188,10 +188,9 @@ pub struct Scanner<'a> {
 impl<'a> Scanner<'a> {
     pub fn new(bs: &'a [u8]) -> Scanner<'a> {
         let mut s = Scanner {
-            keywords: base_keywords(),
+            keywords: Rc::new(base_keywords()),
             bs,
             errors: Vec::new(),
-            tabs: Vec::new(),
             offset: 0,
             row: 1,
             col: 0,
@@ -210,9 +209,10 @@ impl<'a> Scanner<'a> {
     }
 
     pub fn add_keyword(&mut self, kw: &'static str, tok: Token) {
-        self.keywords.insert(kw, tok);
+        let keywords = Rc::make_mut(&mut self.keywords);
+        keywords.insert(kw, tok);
         if tok == Token::Every {
-            self.keywords.insert("in", Token::In);
+            keywords.insert("in", Token::In);
         }
     }
 
@@ -231,7 +231,6 @@ impl<'a> Scanner<'a> {
             offset: self.offset.saturating_sub(self.width),
             row: self.row,
             col: self.col,
-            tabs: self.tabs.clone(),
             end: 0,
         };
         let mut lit = String::new();
@@ -567,12 +566,8 @@ impl<'a> Scanner<'a> {
         if self.curr == i32::from(b'\n') {
             self.row += 1;
             self.col = 0;
-            self.tabs.clear();
         } else {
             self.col += 1;
-            if self.curr == i32::from(b'\t') {
-                self.tabs.push(self.col);
-            }
         }
     }
 
@@ -591,7 +586,6 @@ impl<'a> Scanner<'a> {
                 offset: self.offset,
                 row: self.row,
                 col: self.col,
-                tabs: Vec::new(),
                 end: 0,
             },
         });

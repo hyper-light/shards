@@ -535,7 +535,7 @@ pub fn get_value(env: &mut TypeEnv, t: &Term) -> Type {
             let mut tpe = Type::Nil;
             for x in sorted_items(s) {
                 let xt = get_value(env, x);
-                tpe = types::or(&tpe, &xt);
+                tpe = types::or_owned(tpe, xt);
             }
             Type::set(if tpe.is_nil() { A } else { tpe })
         }

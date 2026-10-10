@@ -17,6 +17,8 @@ import (
 	_ "embed"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"hash/fnv"
 	"math/big"
 	"os"
 	"slices"
@@ -985,6 +987,124 @@ func TestShardsCheck(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(os.Getenv("SHARDS_CHECK_OUT"), append(res, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// DepthShape is a policy nesting one construct, as crates/rego/testdata/depth.json
+// describes it: Head, Open n times, Inner, Close n times, then Tail; or, with Sep,
+// Head, n+1 copies of Inner joined by Sep, then Tail. Check runs the whole check of the
+// deepest such policy too: only where OPA ends it in minutes.
+type DepthShape struct {
+	Name  string `json:"name"`
+	Check bool   `json:"check,omitempty"`
+	Head  string `json:"head"`
+	Open  string `json:"open,omitempty"`
+	Inner string `json:"inner"`
+	Close string `json:"close,omitempty"`
+	Sep   string `json:"sep,omitempty"`
+	Tail  string `json:"tail,omitempty"`
+}
+
+func (s DepthShape) text(n int) string {
+	var b strings.Builder
+	b.WriteString(s.Head)
+	if s.Sep != "" {
+		for range n {
+			b.WriteString(s.Inner)
+			b.WriteString(s.Sep)
+		}
+		b.WriteString(s.Inner)
+	} else {
+		b.WriteString(strings.Repeat(s.Open, n))
+		b.WriteString(s.Inner)
+		b.WriteString(strings.Repeat(s.Close, n))
+	}
+	b.WriteString(s.Tail)
+	return b.String()
+}
+
+// longText keeps a text of up to 300 bytes whole, a longer one as its length, its
+// FNV-1a 64-bit hash and its first 300 bytes: what crates/rego/tests/depth.rs compares.
+func longText(s string) any {
+	if len(s) <= 300 {
+		return s
+	}
+	h := fnv.New64a()
+	h.Write([]byte(s))
+	return map[string]any{"len": len(s), "fnv64a": fmt.Sprintf("%016x", h.Sum64()), "head": s[:300]}
+}
+
+// How deep each shape of SHARDS_DEPTH nests before OPA's parser refuses it (its
+// DefaultMaxParsingRecursionDepth, counted as the parser enters its productions): the
+// deepest policy it parses, found by bisection; for the shapes to check, what the whole
+// check (run, as buildx runs a policy) makes of that policy; and the parse error one
+// level deeper.
+func TestShardsDepth(t *testing.T) {
+	dt, err := os.ReadFile(os.Getenv("SHARDS_DEPTH"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var shapes []DepthShape
+	if err := json.Unmarshal(dt, &shapes); err != nil {
+		t.Fatal(err)
+	}
+	caps := &ast.Capabilities{Builtins: builtins(), Features: slices.Clone(ast.Features)}
+	for _, h := range hostDecls {
+		caps.Builtins = append(caps.Builtins, &ast.Builtin{Name: h.name, Decl: h.decl})
+	}
+	popts := ast.ParserOptions{RegoVersion: ast.RegoV1, Capabilities: caps}
+	type answer struct {
+		Name string `json:"name"`
+		// Max is the deepest nesting OPA's parser takes.
+		Max int `json:"max"`
+		// Results, or Error, is what the whole check makes of the policy at Max.
+		Results any `json:"results,omitempty"`
+		Error   any `json:"error,omitempty"`
+		// Refused is the parse error one level deeper.
+		Refused any `json:"refused"`
+	}
+	var out []answer
+	for _, s := range shapes {
+		parses := func(n int) error {
+			_, err := ast.ParseModuleWithOpts("policy.rego", s.text(n), popts)
+			return err
+		}
+		lo, hi := 0, ast.DefaultMaxParsingRecursionDepth
+		if err := parses(lo); err != nil {
+			t.Fatalf("%s at depth 0: %v", s.Name, err)
+		}
+		if parses(hi) == nil {
+			t.Fatalf("%s parses at depth %d", s.Name, hi)
+		}
+		for hi-lo > 1 {
+			mid := lo + (hi-lo)/2
+			if parses(mid) == nil {
+				lo = mid
+			} else {
+				hi = mid
+			}
+		}
+		a := answer{Name: s.Name, Max: lo, Refused: longText(parses(lo + 1).Error())}
+		if s.Check {
+			r := run(Case{Name: s.Name, Modules: [][2]string{{"policy.rego", s.text(lo)}}, Query: "data.docker.decision"})
+			if r.Error != "" {
+				a.Error = longText(r.Error)
+			} else {
+				rs, err := json.Marshal(r.Results)
+				if err != nil {
+					t.Fatal(err)
+				}
+				a.Results = longText(string(rs))
+			}
+		}
+		out = append(out, a)
+	}
+	res, err := json.MarshalIndent(out, "", " ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(os.Getenv("SHARDS_DEPTH_OUT"), append(res, '\n'), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }

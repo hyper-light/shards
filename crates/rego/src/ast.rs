@@ -9,14 +9,15 @@ use crate::goquote;
 use crate::scanner::Token;
 use crate::value::Number;
 
-/// Where a node is in its module.
+/// Where a node is in its module. OPA's Location also lists the columns of the line's
+/// tabs, which only its formatter reads: kept, they made each term's location a copy of
+/// that list.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Location {
     pub file: Rc<str>,
     pub row: usize,
     pub col: usize,
     pub offset: usize,
-    pub tabs: Vec<usize>,
 }
 
 impl Location {

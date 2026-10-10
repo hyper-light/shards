@@ -1,0 +1,184 @@
+[
+ {
+  "name": "array",
+  "max": 49996,
+  "results": "[99993]",
+  "refused": {
+   "fnv64a": "9df6397cf69fd47e",
+   "head": "2 errors occurred:\npolicy.rego:3: rego_parse_error: max parsing recursion depth exceeded\n\tx := [[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[",
+   "len": 300207
+  }
+ },
+ {
+  "name": "object",
+  "max": 33330,
+  "refused": {
+   "fnv64a": "1e50f7f8b76ec9f2",
+   "head": "2 errors occurred:\npolicy.rego:3: rego_parse_error: max parsing recursion depth exceeded\n\tx := {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {\"a\": {",
+   "len": 866838
+  }
+ },
+ {
+  "name": "set",
+  "max": 49996,
+  "refused": {
+   "fnv64a": "b36e8dd8fd7b7dde",
+   "head": "2 errors occurred:\npolicy.rego:3: rego_parse_error: max parsing recursion depth exceeded\n\tx := {{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{",
+   "len": 300207
+  }
+ },
+ {
+  "name": "parens",
+  "max": 12499,
+  "results": "[1]",
+  "refused": {
+   "fnv64a": "95c9b7f33029748a",
+   "head": "2 errors occurred:\npolicy.rego:3: rego_parse_error: max parsing recursion depth exceeded\n\tdecision := ((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((",
+   "len": 75267
+  }
+ },
+ {
+  "name": "builtin",
+  "max": 9999,
+  "refused": {
+   "fnv64a": "415e2db46adde012",
+   "head": "2 errors occurred:\npolicy.rego:3: rego_parse_error: max parsing recursion depth exceeded\n\tdecision := abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(ab",
+   "len": 180267
+  }
+ },
+ {
+  "name": "function",
+  "max": 9999,
+  "refused": {
+   "fnv64a": "055073c3eeadf1a6",
+   "head": "2 errors occurred:\npolicy.rego:5: rego_parse_error: max parsing recursion depth exceeded\n\tdecision := f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(",
+   "len": 100267
+  }
+ },
+ {
+  "name": "array-comprehension",
+  "max": 9999,
+  "refused": {
+   "fnv64a": "30d51e7b538ba686",
+   "head": "2 errors occurred:\npolicy.rego:3: rego_parse_error: max parsing recursion depth exceeded\n\tx := [y | y := [y | y := [y | y := [y | y := [y | y := [y | y := [y | y := [y | y := [y | y := [y | y := [y | y := [y | y := [y | y := [y | y := [y | y := [y | y := [y | y := [y | y := [y | y := [y | y := [y | ",
+   "len": 420226
+  }
+ },
+ {
+  "name": "set-comprehension",
+  "max": 9090,
+  "refused": {
+   "fnv64a": "47dc051bf07bb444",
+   "head": "2 errors occurred:\npolicy.rego:3: rego_parse_error: max parsing recursion depth exceeded\n\tx := {y | y := {y | y := {y | y := {y | y := {y | y := {y | y := {y | y := {y | y := {y | y := {y | y := {y | y := {y | y := {y | y := {y | y := {y | y := {y | y := {y | y := {y | y := {y | y := {y | y := {y | ",
+   "len": 382048
+  }
+ },
+ {
+  "name": "object-comprehension",
+  "max": 8332,
+  "refused": {
+   "fnv64a": "d9c1a6484ed597b5",
+   "head": "2 errors occurred:\npolicy.rego:3: rego_parse_error: unexpected assign token: non-terminated object\n\tx := {\"a\": y | y := {\"a\": y | y := {\"a\": y | y := {\"a\": y | y := {\"a\": y | y := {\"a\": y | y := {\"a\": y | y := {\"a\": y | y := {\"a\": y | y := {\"a\": y | y := {\"a\": y | y := {\"a\": y | y := {\"a\": y | y := ",
+   "len": 266922
+  }
+ },
+ {
+  "name": "negated-comprehension",
+  "max": 4999,
+  "refused": {
+   "fnv64a": "1ae2c151fea35b9e",
+   "head": "2 errors occurred:\npolicy.rego:3: rego_parse_error: max parsing recursion depth exceeded\n\tdecision := count([1 | not count([1 | not count([1 | not count([1 | not count([1 | not count([1 | not count([1 | not count([1 | not count([1 | not count([1 | not count([1 | not count([1 | not count([1 | not cou",
+   "len": 320276
+  }
+ },
+ {
+  "name": "ref",
+  "max": 11110,
+  "refused": {
+   "fnv64a": "bb5ee0a8a483180c",
+   "head": "2 errors occurred:\npolicy.rego:3: rego_parse_error: max parsing recursion depth exceeded\n\tdecision := input[input[input[input[input[input[input[input[input[input[input[input[input[input[input[input[input[input[input[input[input[input[input[input[input[input[input[input[input[input[input[input[input[",
+   "len": 289157
+  }
+ },
+ {
+  "name": "every",
+  "max": 99990,
+  "refused": {
+   "fnv64a": "3ed7e653df595041",
+   "head": "2 errors occurred:\npolicy.rego:4: rego_parse_error: max parsing recursion depth exceeded\n\tevery x in [1] { every x in [1] { every x in [1] { every x in [1] { every x in [1] { every x in [1] { every x in [1] { every x in [1] { every x in [1] { every x in [1] { every x in [1] { every x in [1] { every ",
+   "len": 7199549
+  }
+ },
+ {
+  "name": "plus",
+  "max": 99993,
+  "refused": {
+   "fnv64a": "f5ee44584c24b62b",
+   "head": "1 error occurred: policy.rego:3: rego_parse_error: max parsing recursion depth exceeded\n\tdecision := 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 +",
+   "len": 800069
+  }
+ },
+ {
+  "name": "times",
+  "max": 99993,
+  "refused": {
+   "fnv64a": "274019ded9c7d08b",
+   "head": "1 error occurred: policy.rego:3: rego_parse_error: max parsing recursion depth exceeded\n\tdecision := 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 *",
+   "len": 800069
+  }
+ },
+ {
+  "name": "union",
+  "max": 99981,
+  "refused": {
+   "fnv64a": "78164f6392d7e6ae",
+   "head": "3 errors occurred:\npolicy.rego:3: rego_parse_error: max parsing recursion depth exceeded\n\tdecision := count({1} | {1} | {1} | {1} | {1} | {1} | {1} | {1} | {1} | {1} | {1} | {1} | {1} | {1} | {1} | {1} | {1} | {1} | {1} | {1} | {1} | {1} | {1} | {1} | {1} | {1} | {1} | {1} | {1} | {1} | {1} | {1} | ",
+   "len": 3599775
+  }
+ },
+ {
+  "name": "intersection",
+  "max": 99981,
+  "refused": {
+   "fnv64a": "31836efc8af2341a",
+   "head": "3 errors occurred:\npolicy.rego:3: rego_parse_error: max parsing recursion depth exceeded\n\tdecision := count({1} \u0026 {1} \u0026 {1} \u0026 {1} \u0026 {1} \u0026 {1} \u0026 {1} \u0026 {1} \u0026 {1} \u0026 {1} \u0026 {1} \u0026 {1} \u0026 {1} \u0026 {1} \u0026 {1} \u0026 {1} \u0026 {1} \u0026 {1} \u0026 {1} \u0026 {1} \u0026 {1} \u0026 {1} \u0026 {1} \u0026 {1} \u0026 {1} \u0026 {1} \u0026 {1} \u0026 {1} \u0026 {1} \u0026 {1} \u0026 {1} \u0026 {1} \u0026 ",
+   "len": 3599775
+  }
+ },
+ {
+  "name": "equality",
+  "max": 99993,
+  "refused": {
+   "fnv64a": "ba29dc76dba8f2b9",
+   "head": "1 error occurred: policy.rego:3: rego_parse_error: max parsing recursion depth exceeded\n\tdecision := 1 == 1 == 1 == 1 == 1 == 1 == 1 == 1 == 1 == 1 == 1 == 1 == 1 == 1 == 1 == 1 == 1 == 1 == 1 == 1 == 1 == 1 == 1 == 1 == 1 == 1 == 1 == 1 == 1 == 1 == 1 == 1 == 1 == 1 == 1 == 1 == 1 == 1 == 1 == 1 ==",
+   "len": 1000057
+  }
+ },
+ {
+  "name": "membership",
+  "max": 99991,
+  "refused": {
+   "fnv64a": "5e8c166d231bb925",
+   "head": "1 error occurred: policy.rego:3: rego_parse_error: max parsing recursion depth exceeded\n\tdecision := [1] in [1] in [1] in [1] in [1] in [1] in [1] in [1] in [1] in [1] in [1] in [1] in [1] in [1] in [1] in [1] in [1] in [1] in [1] in [1] in [1] in [1] in [1] in [1] in [1] in [1] in [1] in [1] in [1]",
+   "len": 1400008
+  }
+ },
+ {
+  "name": "object-key",
+  "max": 49995,
+  "refused": {
+   "fnv64a": "39f051195c275b64",
+   "head": "2 errors occurred:\npolicy.rego:3: rego_parse_error: max parsing recursion depth exceeded\n\tx := {{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{",
+   "len": 600190
+  }
+ },
+ {
+  "name": "mixed",
+  "max": 14284,
+  "refused": {
+   "fnv64a": "63c7db3029aeaa38",
+   "head": "2 errors occurred:\npolicy.rego:3: rego_parse_error: max parsing recursion depth exceeded\n\tx := [{\"a\": {[{\"a\": {[{\"a\": {[{\"a\": {[{\"a\": {[{\"a\": {[{\"a\": {[{\"a\": {[{\"a\": {[{\"a\": {[{\"a\": {[{\"a\": {[{\"a\": {[{\"a\": {[{\"a\": {[{\"a\": {[{\"a\": {[{\"a\": {[{\"a\": {[{\"a\": {[{\"a\": {[{\"a\": {[{\"a\": {[{\"a\": {[{\"a\": {[{\"a\"",
+   "len": 543055
+  }
+ }
+]

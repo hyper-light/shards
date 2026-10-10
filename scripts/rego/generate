@@ -7,7 +7,8 @@
 #
 #   scripts/rego/generate [STEP...]
 #
-# With STEPs (rego, numbers, builtins, parse, compile, index, calls, check), regenerates only those.
+# With STEPs (rego, numbers, builtins, parse, compile, index, calls, check, depth), regenerates
+# only those.
 set -eu
 steps=" $* "
 want() {
@@ -92,4 +93,9 @@ if want check; then
 	SHARDS_CHECK="$root/crates/rego/testdata/check.json" \
 		SHARDS_CHECK_OUT="$root/crates/rego/testdata/check-oracle.json" \
 		go test -count=1 -run '^TestShardsCheck$' .
+fi
+if want depth; then
+	SHARDS_DEPTH="$root/crates/rego/testdata/depth.json" \
+		SHARDS_DEPTH_OUT="$root/crates/rego/testdata/depth-oracle.json" \
+		go test -count=1 -timeout 120m -run '^TestShardsDepth$' .
 fi
