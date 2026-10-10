@@ -518,6 +518,341 @@ fn run_steps_reach_the_network_unless_it_is_none() {
     assert!(built.stderr.contains(" tcp error "), "{}", built.stderr);
 }
 
+/// A server on this host for the proxy's E2E: each connection one request, answered as
+/// `answer` says of its path and closed; HTTPS where `tls`. What it was asked of each
+/// connection comes on its channel.
+fn proxied_server(
+    tls: Option<std::sync::Arc<rustls::ServerConfig>>,
+    answer: fn(&str) -> Vec<u8>,
+) -> (u16, std::sync::mpsc::Receiver<String>) {
+    use std::io::{BufRead as _, Write as _};
+    let listener = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (said, asked) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for conn in listener.incoming() {
+            let Ok(conn) = conn else { return };
+            let (tls, said) = (tls.clone(), said.clone());
+            std::thread::spawn(move || {
+                let _ = conn.set_read_timeout(Some(Duration::from_secs(30)));
+                let stream: Box<dyn ProxiedIo> = match tls {
+                    Some(c) => Box::new(rustls::StreamOwned::new(
+                        rustls::ServerConnection::new(c).unwrap(),
+                        conn,
+                    )),
+                    None => Box::new(conn),
+                };
+                let mut r = std::io::BufReader::new(stream);
+                let mut head = String::new();
+                loop {
+                    let mut line = String::new();
+                    if r.read_line(&mut line).unwrap_or(0) == 0 {
+                        return;
+                    }
+                    head.push_str(&line);
+                    if line == "\r\n" {
+                        break;
+                    }
+                }
+                let path = head.split(' ').nth(1).unwrap_or_default().to_string();
+                let _ = said.send(head);
+                let _ = r.get_mut().write_all(&answer(&path));
+                let _ = r.get_mut().flush();
+            });
+        }
+    });
+    (port, asked)
+}
+
+trait ProxiedIo: std::io::Read + std::io::Write + Send {}
+impl<T: std::io::Read + std::io::Write + Send> ProxiedIo for T {}
+
+/// The proxy E2E's answers: `/redirect` to `/hello`; anything else `hello`.
+fn proxied_answer(path: &str) -> Vec<u8> {
+    match path {
+        "/redirect" => {
+            b"HTTP/1.1 302 Found\r\nLocation: /hello\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                .to_vec()
+        }
+        _ => b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\nConnection: close\r\n\r\nhello\n".to_vec(),
+    }
+}
+
+/// buildx v0.37.1's `exec.proxy` policy cap (D110), held to what was measured of BuildKit
+/// v0.33.0 in `shards-dind`: once a build's policies ask for it, its `RUN` reaches the
+/// network through the build's proxy alone. The step is given BuildKit's proxy variables
+/// and the proxy's CA in its trust bundle (taken out again after it); each request is
+/// checked by the policies as an HTTP source (`/denied` refused: http.Error's 403 plain,
+/// BuildKit's exact 403 in a tunnel); its log ends with BuildKit's lines; an HTTPS host the
+/// host does not trust is a 502, never passed on; nothing else is reachable, nor any name
+/// resolved; the provenance has its materials, a redirect's source by its target's digest,
+/// and what was no material under the step's vertex. Built again, the step is taken from
+/// the cache with its requests asked again and its materials kept; a policy that refuses
+/// one runs it again.
+#[test]
+fn steps_under_the_proxy_cap_reach_the_network_through_it_alone() {
+    if cannot_run_vms() {
+        return;
+    }
+    let host = std::net::UdpSocket::bind("0.0.0.0:0")
+        .and_then(|s| s.connect("192.0.2.1:9").map(|()| s))
+        .and_then(|s| s.local_addr());
+    let Ok(host) = host else {
+        eprintln!("SKIP: this host has no route to give a guest an address of it");
+        return;
+    };
+    let h = host.ip();
+    let (plain, plain_asked) = proxied_server(None, proxied_answer);
+    // An HTTPS server whose CA no host trusts.
+    let key = rcgen::KeyPair::generate().unwrap();
+    let cert = rcgen::CertificateParams::new(vec![h.to_string()])
+        .unwrap()
+        .self_signed(&key)
+        .unwrap();
+    let tls = rustls::ServerConfig::builder_with_provider(std::sync::Arc::new(
+        rustls::crypto::aws_lc_rs::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .with_no_client_auth()
+    .with_single_cert(
+        vec![cert.der().clone()],
+        rustls::pki_types::PrivateKeyDer::Pkcs8(key.serialize_der().into()),
+    )
+    .unwrap();
+    let (secure, secure_asked) = proxied_server(Some(std::sync::Arc::new(tls)), proxied_answer);
+    let (image, _) = served();
+    let home = TempDir::new("build-proxy-home");
+    let p = format!("http://{h}:{plain}");
+    let s = format!("https://{h}:{secure}");
+    let fetches = [
+        format!("{p}/hello"),
+        format!("{p}/denied"),
+        "-X".into(),
+        "POST".into(),
+        "-d".into(),
+        "x".into(),
+        format!("{p}/hello"),
+        "-H".into(),
+        "Range: bytes=0-1".into(),
+        format!("{p}/hello"),
+        format!("{p}/redirect"),
+        format!("{s}/"),
+        format!("{s}/denied"),
+        "--direct".into(),
+        format!("{p}/hello"),
+        "--direct".into(),
+        "http://example.com/".into(),
+    ];
+    let quoted: Vec<String> = fetches.iter().map(|f| format!("\"{f}\"")).collect();
+    let dockerfile = format!(
+        "FROM {image}\n\
+         USER root\n\
+         RUN [\"/bin/testguest\", \"fs\", \"mkdir:/etc/ssl\", \"mkdir:/etc/ssl/certs\", \"write:/etc/ssl/certs/ca-certificates.crt=original\"]\n\
+         RUN [\"/bin/testguest\", \"fetch\", {}]\n\
+         RUN --network=none [\"/bin/testguest\", \"fs\", \"print:/etc/ssl/certs/ca-certificates.crt\"]\n\
+         RUN [\"/bin/testguest\", \"report\"]\n",
+        quoted.join(", ")
+    );
+    let ctx = context("build-proxy-ctx", &dockerfile);
+    let policy = |denied: &str| {
+        format!(
+            "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if input.image\n\nallow if {{\n\tinput.http\n\tinput.http.path != \"{denied}\"\n}}\n\ndeny_msg contains \"denied by path\" if {{\n\tinput.http\n\tinput.http.path == \"{denied}\"\n}}\n\ndefault caps := {{}}\n\ncaps := {{\"exec.proxy\": true}} if input.env.capsRequest\n\ndecision := {{\"allow\": allow, \"deny_msg\": deny_msg, \"caps\": caps}}\n"
+        )
+    };
+    std::fs::write(ctx.join("Dockerfile.rego"), policy("/denied")).unwrap();
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+        ("SHARDS_BUILD_MEMORY", "1024".as_ref()),
+    ];
+    let out = home.join("out");
+    let build = || {
+        run_shards_env(
+            &["build"],
+            &[
+                "--progress=plain",
+                "--provenance=mode=max",
+                "-o",
+                &format!("type=local,dest={}", out.display()),
+                ctx.to_str().unwrap(),
+            ],
+            &env,
+            TIMEOUT,
+        )
+    };
+    let built = build();
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    let e = &built.stderr;
+    let policy_lines = policy_log(e);
+    assert!(
+        policy_lines.iter().any(|l| l == "policy enabled network proxy"),
+        "{e}"
+    );
+    assert!(
+        policy_lines
+            .iter()
+            .any(|l| *l == format!("checking policy for source {p}/hello")),
+        "{e}"
+    );
+    assert!(
+        policy_lines
+            .iter()
+            .any(|l| *l == format!("checking policy for source https://{h}:{secure}/")),
+        "{e}"
+    );
+    // What the step's client heard, line by line.
+    let said = |what: &str| e.lines().any(|l| l.trim_end().ends_with(what));
+    for line in [
+        " fetch 200 hello".to_string(),
+        " fetch 403 Forbidden".to_string(),
+        " fetch 302".to_string(),
+    ] {
+        assert!(said(&line), "{line} in\n{e}");
+    }
+    assert_eq!(e.matches(" fetch 403 Forbidden\n").count(), 2, "{e}");
+    assert_eq!(e.matches(" fetch 200 hello\n").count(), 3, "{e}");
+    // The untrusted HTTPS host: TLS to the proxy trusted, the host itself not.
+    assert!(e.lines().any(|l| l.contains(" fetch 502 ")), "{e}");
+    // Nothing reached but through the proxy: its host refused, no name resolved.
+    assert_eq!(e.matches(" fetch error ").count(), 2, "{e}");
+    // BuildKit's lines, as its log ends with them.
+    let summary = format!(
+        "proxy network requests:\n- GET {p}/hello -> 200\n- POST {p}/hello -> 200\n- GET {p}/hello -> 200\n- GET {p}/redirect -> 302\n- GET {s}/ -> 502\n"
+    );
+    let logged: String = e
+        .lines()
+        .filter_map(|l| {
+            let rest = l.split_once(' ')?.1;
+            let rest = rest.split_once(' ').map_or(
+                rest,
+                |(stamp, r)| if stamp.parse::<f64>().is_ok() { r } else { rest },
+            );
+            (rest.starts_with("proxy network requests:") || rest.starts_with("- "))
+                .then(|| format!("{rest}\n"))
+        })
+        .collect();
+    assert!(logged.contains(&summary), "{logged}\n{e}");
+    // The bundle as it was after the step, as BuildKit leaves it: a newline gained.
+    assert!(said(" original"), "{e}");
+    assert!(!e.contains("buildkit proxy CA"), "{e}");
+    // BuildKit's eight variables, the gateway's proxy.
+    let gateway = format!("http://{}:3128", bridge().gateway());
+    for name in [
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+    ] {
+        assert!(said(&format!(" env {name}={gateway}")), "{name} in\n{e}");
+    }
+    assert!(said(" env NO_PROXY=127.0.0.1,localhost,::1"), "{e}");
+    // The servers were asked by the proxy alone: the refused paths never, the client's
+    // credentials and encodings never.
+    let heard: Vec<String> = plain_asked.try_iter().collect();
+    assert_eq!(heard.len(), 4, "{heard:?}");
+    assert!(heard.iter().all(|h| !h.contains("/denied")), "{heard:?}");
+    assert!(
+        secure_asked.try_iter().next().is_none(),
+        "the untrusted host was passed a request"
+    );
+    // The provenance.
+    let statement: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(out.join("provenance.json")).unwrap()).unwrap();
+    let predicate = &statement["predicate"];
+    let hello_digest = common::sha256_digest(b"hello\n");
+    let materials: Vec<(String, String)> = predicate["buildDefinition"]["resolvedDependencies"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| {
+            (
+                m["uri"].as_str().unwrap().to_string(),
+                format!("sha256:{}", m["digest"]["sha256"].as_str().unwrap()),
+            )
+        })
+        .collect();
+    assert!(
+        materials.contains(&(format!("{p}/hello"), hello_digest.clone())),
+        "{materials:?}"
+    );
+    assert!(
+        materials.contains(&(format!("{p}/redirect"), hello_digest.clone())),
+        "{materials:?}"
+    );
+    let metadata = &predicate["runDetails"]["metadata"];
+    let network = &metadata["buildkit_metadata"]["network"];
+    assert_eq!(network["mode"], "proxy", "{metadata}");
+    let incomplete: Vec<(String, String, String)> = network["proxy"]["incomplete"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| {
+            assert!(i["op"].as_str().unwrap().starts_with("sha256:"), "{i}");
+            assert!(
+                i["name"].as_str().unwrap().starts_with("/bin/testguest fetch "),
+                "{i}"
+            );
+            (
+                i["method"].as_str().unwrap().to_string(),
+                i["uri"].as_str().unwrap().to_string(),
+                i["reason"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        incomplete,
+        [
+            (
+                "GET".to_string(),
+                format!("{p}/hello"),
+                "partial_response".to_string()
+            ),
+            (
+                "POST".to_string(),
+                format!("{p}/hello"),
+                "method_not_materializable".to_string()
+            ),
+            ("GET".to_string(), format!("{s}/"), "upstream_error".to_string()),
+        ]
+    );
+    assert_eq!(
+        metadata["buildkit_completeness"]["resolvedDependencies"], false,
+        "{metadata}"
+    );
+    assert!(metadata.get("buildkit_hermetic").is_none(), "{metadata}");
+    // Built again: the step from the cache, its requests asked again, its materials kept.
+    let again = build();
+    assert_eq!(again.status, Some(0), "{}", again.stderr);
+    assert!(!again.stderr.contains(" fetch 200 hello"), "{}", again.stderr);
+    assert!(
+        policy_log(&again.stderr)
+            .iter()
+            .any(|l| *l == format!("checking policy for source {p}/hello")),
+        "{}",
+        again.stderr
+    );
+    let statement: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(out.join("provenance.json")).unwrap()).unwrap();
+    assert_eq!(
+        statement["predicate"]["runDetails"]["metadata"]["buildkit_metadata"]["network"]["proxy"],
+        network["proxy"]
+    );
+    // A policy that now refuses `/hello`: the step runs again, and is refused it.
+    std::fs::write(ctx.join("Dockerfile.rego"), policy("/hello")).unwrap();
+    let refused = build();
+    assert_eq!(refused.status, Some(0), "{}", refused.stderr);
+    assert_eq!(
+        refused.stderr.matches(" fetch 403 Forbidden\n").count(),
+        3,
+        "{}",
+        refused.stderr
+    );
+}
+
 /// A build given no name is kept all the same, dangling, as dockerd keeps it (measured,
 /// Docker 29.3.1): `images -a` lists it as `<untagged>`, and a collection leaves it.
 #[test]

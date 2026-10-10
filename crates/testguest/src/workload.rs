@@ -97,6 +97,7 @@ pub fn main() -> ! {
         "loopback" => loopback(),
         "fs" => fs(args.get(1..).unwrap_or_default()),
         "tcp" => tcp(arg(1)),
+        "fetch" => fetch(args.get(1..).unwrap_or_default()),
         "ask" => ask(arg(1)),
         "resolve" => resolve(arg(1)),
         "udp" => udp(arg(1)),
@@ -575,6 +576,176 @@ fn tcp(addr: &str) -> i32 {
             1
         }
     }
+}
+
+/// Fetches each URL as curl does through the proxy its environment names (a build's,
+/// D110): plain HTTP as an absolute URL to `HTTP_PROXY`; HTTPS through `CONNECT` to
+/// `HTTPS_PROXY`, then TLS trusting the system's bundle alone
+/// (`/etc/ssl/certs/ca-certificates.crt`); with no proxy named, or `--direct`, straight
+/// to its host. Before a URL, `-X METHOD`, `-d BODY` and `-H 'Name: value'` shape its
+/// request. Says `fetch STATUS BODY` of each, or `fetch error E`, and goes on.
+fn fetch(args: &[String]) -> i32 {
+    let mut method = "GET".to_string();
+    let mut body = String::new();
+    let mut headers: Vec<String> = Vec::new();
+    let mut direct = false;
+    let mut i = 0;
+    while let Some(a) = args.get(i) {
+        let next = args.get(i + 1).cloned().unwrap_or_default();
+        match a.as_str() {
+            "-X" => method = next,
+            "-d" => body = next,
+            "-H" => headers.push(next),
+            "--direct" => {
+                direct = true;
+                i += 1;
+                continue;
+            }
+            url => {
+                match fetch_one(&method, url, &headers, &body, direct) {
+                    Ok((status, text)) => {
+                        let _ = writeln!(io::stdout(), "fetch {status} {}", text.trim_end());
+                    }
+                    Err(e) => {
+                        let _ = writeln!(io::stdout(), "fetch error {e}");
+                    }
+                }
+                (method, body, headers, direct) = ("GET".to_string(), String::new(), Vec::new(), false);
+                i += 1;
+                continue;
+            }
+        }
+        i += 2;
+    }
+    0
+}
+
+/// One request of [`fetch`]'s: its status and body.
+fn fetch_one(
+    method: &str,
+    url: &str,
+    headers: &[String],
+    body: &str,
+    direct: bool,
+) -> Result<(u16, String), String> {
+    use rustls::pki_types::pem::PemObject as _;
+    use std::sync::Arc;
+    let (scheme, rest) = url.split_once("://").ok_or("not a URL")?;
+    let (authority, path) = match rest.find('/') {
+        Some(i) => (rest.get(..i).unwrap_or_default(), rest.get(i..).unwrap_or("/")),
+        None => (rest, "/"),
+    };
+    let default = if scheme == "https" { 443 } else { 80 };
+    let target = if authority.contains(':') {
+        authority.to_string()
+    } else {
+        format!("{authority}:{default}")
+    };
+    let proxy = ["HTTPS_PROXY", "https_proxy"]
+        .iter()
+        .filter(|_| scheme == "https")
+        .chain(["HTTP_PROXY", "http_proxy"].iter().filter(|_| scheme == "http"))
+        .find_map(|n| std::env::var(n).ok().filter(|v| !v.is_empty()))
+        .filter(|_| !direct)
+        .map(|p| p.trim_start_matches("http://").trim_end_matches('/').to_string());
+    let mut head = String::new();
+    let line = match (&proxy, scheme) {
+        (Some(_), "http") => format!("{method} {url} HTTP/1.1\r\n"),
+        _ => format!("{method} {path} HTTP/1.1\r\n"),
+    };
+    head.push_str(&line);
+    head.push_str(&format!(
+        "Host: {authority}\r\nUser-Agent: testguest\r\nConnection: close\r\n"
+    ));
+    for h in headers {
+        head.push_str(h);
+        head.push_str("\r\n");
+    }
+    if !body.is_empty() || method == "POST" {
+        head.push_str(&format!("Content-Length: {}\r\n", body.len()));
+    }
+    head.push_str("\r\n");
+    head.push_str(body);
+    let e = |what: &str, x: &dyn std::fmt::Display| format!("{what}: {x}");
+    let mut sock =
+        std::net::TcpStream::connect(proxy.as_deref().unwrap_or(&target)).map_err(|x| e("connect", &x))?;
+    sock.set_read_timeout(Some(std::time::Duration::from_secs(20)))
+        .map_err(|x| e("timeout", &x))?;
+    let mut got = Vec::new();
+    if scheme == "https" {
+        if proxy.is_some() {
+            sock.write_all(format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n\r\n").as_bytes())
+                .map_err(|x| e("connect", &x))?;
+            let mut answer = Vec::new();
+            let mut byte = [0u8; 1];
+            while !answer.ends_with(b"\r\n\r\n") {
+                if sock.read(&mut byte).map_err(|x| e("connect", &x))? == 0 {
+                    return Err("the proxy closed the tunnel".into());
+                }
+                answer.extend_from_slice(&byte);
+            }
+            let first = String::from_utf8_lossy(&answer)
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .to_string();
+            if !first.starts_with("HTTP/1.1 200") {
+                return Err(format!("CONNECT: {first}"));
+            }
+        }
+        let mut roots = rustls::RootCertStore::empty();
+        for c in rustls::pki_types::CertificateDer::pem_file_iter("/etc/ssl/certs/ca-certificates.crt")
+            .map_err(|x| e("bundle", &x))?
+        {
+            let _ = roots.add(c.map_err(|x| e("bundle", &x))?);
+        }
+        let config = rustls::ClientConfig::builder_with_provider(Arc::new(
+            rustls::crypto::aws_lc_rs::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .map_err(|x| e("tls", &x))?
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+        let host = authority.split(':').next().unwrap_or_default().to_string();
+        let name = rustls::pki_types::ServerName::try_from(host).map_err(|x| e("name", &x))?;
+        let conn = rustls::ClientConnection::new(Arc::new(config), name).map_err(|x| e("tls", &x))?;
+        let mut tls = rustls::StreamOwned::new(conn, sock);
+        tls.write_all(head.as_bytes()).map_err(|x| e("tls", &x))?;
+        // A peer that ends without close_notify still said what it said.
+        match tls.read_to_end(&mut got) {
+            Ok(_) => {}
+            Err(x) if x.kind() == io::ErrorKind::UnexpectedEof && !got.is_empty() => {}
+            Err(x) => return Err(e("tls", &x)),
+        }
+    } else {
+        sock.write_all(head.as_bytes()).map_err(|x| e("write", &x))?;
+        sock.read_to_end(&mut got).map_err(|x| e("read", &x))?;
+    }
+    let text = String::from_utf8_lossy(&got).into_owned();
+    let (response_head, rest) = text.split_once("\r\n\r\n").ok_or("no response head")?;
+    let status: u16 = response_head
+        .split(' ')
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .ok_or("no status")?;
+    let chunked = response_head
+        .lines()
+        .any(|l| l.to_ascii_lowercase().replace(' ', "") == "transfer-encoding:chunked");
+    if !chunked {
+        return Ok((status, rest.to_string()));
+    }
+    // Its chunks, joined.
+    let mut out = String::new();
+    let mut rest = rest;
+    while let Some((size, after)) = rest.split_once("\r\n") {
+        let n = usize::from_str_radix(size.trim(), 16).map_err(|x| e("chunk", &x))?;
+        if n == 0 {
+            break;
+        }
+        out.push_str(after.get(..n).ok_or("a chunk cut short")?);
+        rest = after.get(n + 2..).unwrap_or_default();
+    }
+    Ok((status, out))
 }
 
 /// Sends a datagram to `addr` from a connected socket, and waits up to 5 s for an answer:
