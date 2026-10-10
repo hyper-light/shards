@@ -3531,6 +3531,8 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
             list.dedup_by(|a, b| a.uri == b.uri);
             materials.extend(list);
         }
+        // The OSI artifacts it took, after what BuildKit records (D116).
+        materials.extend(provenance::capture_artifacts(&def));
         let (secrets, ssh, network) = provenance::capture_mounts(&def);
         provenance::Capture {
             args: request_attrs.clone(),

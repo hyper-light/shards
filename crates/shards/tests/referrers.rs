@@ -149,6 +149,58 @@ fn policies_hold_an_agent_to_its_signature() {
         allowed.stderr
     );
 
+    // Its provenance names the agent it took, by the digest it took: the record a signed
+    // image vouches for, where a run takes the image (D116).
+    let layout = TempDir::new("referrers-policy-layout");
+    let out = common::run_shards_env_in(
+        &ctx,
+        &[],
+        &[
+            "build",
+            "--progress=plain",
+            "--provenance=mode=min",
+            "-o",
+            &format!("type=oci,dest={},tar=false", layout.display()),
+            ".",
+        ],
+        &[("SHARDS_HOME", home.as_os_str())],
+        TIMEOUT,
+    );
+    assert_eq!(out.status, Some(0), "{}", out.stderr);
+    let blob = |d: &str| -> serde_json::Value {
+        serde_json::from_slice(
+            &std::fs::read(layout.join("blobs/sha256").join(d.trim_start_matches("sha256:"))).unwrap(),
+        )
+        .unwrap()
+    };
+    let top: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(layout.join("index.json")).unwrap()).unwrap();
+    let index = blob(top["manifests"][0]["digest"].as_str().unwrap());
+    let attestation = index["manifests"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["annotations"]["vnd.docker.reference.type"] == "attestation-manifest")
+        .unwrap();
+    let attestation = blob(attestation["digest"].as_str().unwrap());
+    let statement = blob(attestation["layers"][0]["digest"].as_str().unwrap());
+    let predicate = &statement["predicate"];
+    let materials = predicate["materials"]
+        .as_array()
+        .or(predicate["buildDefinition"]["resolvedDependencies"].as_array())
+        .unwrap();
+    let digest = made.stdout.trim().to_string();
+    let hex = digest.trim_start_matches("sha256:");
+    let agent = materials
+        .iter()
+        .find(|m| m["uri"].as_str().is_some_and(|u| u.starts_with("pkg:oci/agent@")))
+        .unwrap_or_else(|| panic!("{materials:#?}"));
+    assert_eq!(
+        agent["uri"],
+        format!("pkg:oci/agent@sha256%3A{hex}?repository_url=127.0.0.1:{port}%2Fteam%2Fagent&tag=1").as_str()
+    );
+    assert_eq!(agent["digest"]["sha256"], hex);
+
     // Another key named: refused.
     let other = build(&home, &theirs);
     assert_eq!(other.status, Some(1), "{}", other.stderr);

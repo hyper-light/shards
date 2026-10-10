@@ -317,6 +317,61 @@ pub fn capture_images(
     out.into_iter().map(|(_, m)| m).collect()
 }
 
+/// The OSI artifacts the build took (D116), which BuildKit has none of, as materials: each
+/// `osi-artifact://` source's digest, the content it took, named as package-url's `oci`
+/// type names an artifact of a registry (purl-spec types/oci-definition.json): its
+/// repository's last name, lowercased, the digest its version, its repository and tag as
+/// qualifiers, sorted. Each once, sorted by its URI.
+pub fn capture_artifacts(def: &shards_dockerfile::llb::Definition) -> Vec<Material> {
+    use shards_dockerfile::llb::OpKind;
+    let mut out: Vec<Material> = Vec::new();
+    for op in &def.ops {
+        let OpKind::Source { identifier, .. } = &op.kind else {
+            continue;
+        };
+        let Some(rest) = identifier.strip_prefix(b"osi-artifact://") else {
+            continue;
+        };
+        let Ok(reference) = shards_image::reference::Reference::parse(&String::from_utf8_lossy(rest)) else {
+            continue;
+        };
+        let Some(m) = artifact_material(&reference) else {
+            continue;
+        };
+        if !out.iter().any(|o| o.uri == m.uri) {
+            out.push(m);
+        }
+    }
+    out.sort_by(|a, b| a.uri.cmp(&b.uri));
+    out
+}
+
+/// The material of an OSI artifact the build took by the pinned `reference`: its
+/// package-url of the `oci` type, and its digest; none where it is not pinned.
+fn artifact_material(reference: &shards_image::reference::Reference) -> Option<Material> {
+    let pin = reference.digest.as_ref()?.to_string();
+    let (algorithm, hex) = pin.split_once(':').unwrap_or(("sha256", pin.as_str()));
+    let repository = format!("{}/{}", reference.domain, reference.path);
+    let name = reference
+        .path
+        .rsplit('/')
+        .next()
+        .unwrap_or(&reference.path)
+        .to_lowercase();
+    let mut uri = format!("pkg:oci/{}@{}", escape(&name, b""), escape(&pin, b""));
+    uri.push_str("?repository_url=");
+    uri.push_str(&escape(&repository, b":"));
+    if let Some(tag) = &reference.tag {
+        uri.push_str("&tag=");
+        uri.push_str(&escape(tag, b""));
+    }
+    Some(Material {
+        uri,
+        algorithm: algorithm.to_string(),
+        hex: hex.to_string(),
+    })
+}
+
 /// `provenance.FilterArgs`: the frontend's options without those of this host (cgroup
 /// parent, image resolve mode, platform, cache imports) or the attestations asked for.
 fn filter_args(args: &BTreeMap<String, String>) -> BTreeMap<String, String> {
@@ -1740,6 +1795,29 @@ mod tests {
             checked += 1;
         }
         assert!(checked >= 10, "{checked}");
+    }
+
+    /// An OSI artifact a build took is a material as package-url's `oci` type names one
+    /// (purl-spec types/oci-definition.json): its repository's last name, the digest its
+    /// version, its repository and tag qualifiers; one taken by digest alone has no tag,
+    /// and one not pinned is no material.
+    #[test]
+    fn artifacts_are_oci_package_urls() {
+        use shards_image::reference::Reference;
+        let hex = "da41a93758ed80c4185f3e8ae4bd3630ff53abd33813412d8c73d15ec231b61c";
+        let m = |r: &str| artifact_material(&Reference::parse(r).unwrap());
+        let tagged = m(&format!("127.0.0.1:5000/team/agent:1@sha256:{hex}")).unwrap();
+        assert_eq!(
+            tagged.uri,
+            format!("pkg:oci/agent@sha256%3A{hex}?repository_url=127.0.0.1:5000%2Fteam%2Fagent&tag=1")
+        );
+        assert_eq!((tagged.algorithm.as_str(), tagged.hex.as_str()), ("sha256", hex));
+        let by_digest = m(&format!("ghcr.io/o/a@sha256:{hex}")).unwrap();
+        assert_eq!(
+            by_digest.uri,
+            format!("pkg:oci/a@sha256%3A{hex}?repository_url=ghcr.io%2Fo%2Fa")
+        );
+        assert!(m("ghcr.io/o/a:1").is_none());
     }
 
     #[test]
