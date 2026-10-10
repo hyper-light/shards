@@ -138,6 +138,10 @@ pub struct Step {
     pub outputs: Vec<(u32, u32)>,
     /// The device nodes its CDI devices bring (D96), made in its `/dev`.
     pub devices: Vec<Device>,
+    /// The build's proxy's CA (D110), PEM, added to its root's trust bundle while it runs
+    /// and taken out after, as BuildKit's executor adds it (InjectProxyCA); empty where its
+    /// network is not the proxy's.
+    pub proxy_ca: Vec<u8>,
 }
 
 /// A device node a step is given: its path in the step, the guest's device it is (`from`,
@@ -291,6 +295,7 @@ impl Step {
             put_u32(&mut out, d.uid);
             put_u32(&mut out, d.gid);
         }
+        put_bytes(&mut out, &self.proxy_ca);
         out
     }
 
@@ -392,6 +397,7 @@ impl Step {
                 gid: r.u32()?,
             });
         }
+        let proxy_ca = r.bytes()?;
         r.0.is_empty().then_some(Step {
             root,
             upper,
@@ -412,6 +418,7 @@ impl Step {
             cgroup,
             outputs,
             devices,
+            proxy_ca,
         })
     }
 }
@@ -571,6 +578,7 @@ mod tests {
                     gid: 44,
                 },
             ],
+            proxy_ca: b"-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n".to_vec(),
         };
         let bytes = step.encode();
         assert_eq!(Step::decode(&bytes), Some(step));

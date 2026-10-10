@@ -1307,6 +1307,7 @@ impl Exec<'_> {
             },
             outputs: outputs.iter().map(|(at, _, _)| (*at, 0)).collect(),
             devices,
+            proxy_ca: Vec::new(),
         };
         let mut fs = (*root.fs).clone();
         fs.begin();
