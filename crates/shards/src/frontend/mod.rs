@@ -1714,8 +1714,10 @@ fn check_domains<R: Read, W: Write>(
         op: def.ops.len() - 1,
         index: 0,
     };
-    // Each check: its report's name, its op, and the lines a finding is said on.
-    let mut checks: Vec<(String, usize, Vec<shards_dockerfile::instructions::Location>)> = Vec::new();
+    // Each check: its report's name, its op, the step a finding is said of (shards build
+    // names the step its guard refuses, as its vertex: the step's own name), and the lines
+    // it is said on.
+    let mut checks: Vec<Check> = Vec::new();
     let add = |def: &mut Definition, spec: check::Spec, before: Option<Input>, target: Input, shown: &str| {
         let mut inputs = vec![me];
         let mut mounts = vec![shards_dockerfile::llb::OpMount {
@@ -1807,7 +1809,12 @@ fn check_domains<R: Read, W: Write>(
             after,
             "check a step's writes against the domains",
         );
-        checks.push((report, at, md.locations.clone()));
+        checks.push(Check {
+            report,
+            at,
+            step: md.description.get(&b"llb.customname"[..]).cloned(),
+            locations: md.locations.clone(),
+        });
     }
     let spec = check::Spec {
         domains: domains.to_vec(),
@@ -1815,12 +1822,14 @@ fn check_domains<R: Read, W: Write>(
         report: "image".into(),
     };
     let at = add(&mut def, spec, None, image, "check the image's domains");
-    checks.push(("image".into(), at, Vec::new()));
+    checks.push(Check {
+        report: "image".into(),
+        at,
+        step: None,
+        locations: Vec::new(),
+    });
     // Every check's report, side by side in one tree.
-    let outputs: Vec<Input> = checks
-        .iter()
-        .map(|(_, at, _)| Input { op: *at, index: 0 })
-        .collect();
+    let outputs: Vec<Input> = checks.iter().map(|c| Input { op: c.at, index: 0 }).collect();
     def.root = Some(match outputs.as_slice() {
         [one] => *one,
         _ => {
@@ -1838,13 +1847,27 @@ fn check_domains<R: Read, W: Write>(
     });
     let m = pb::definition(&def, carried).ok_or_else(|| Failure::new("failed to marshal LLB definition"))?;
     let r = g.solve(&m, &[], true)?.unwrap_or_default();
-    for (report, _, locations) in &checks {
-        let finding = g.read_file(&r, report).map_err(ReadError::failure)?;
+    for c in &checks {
+        let finding = g.read_file(&r, &c.report).map_err(ReadError::failure)?;
         if !finding.is_empty() {
-            return Err(entry.wrap(Failure::new(String::from_utf8_lossy(&finding)), locations));
+            let finding = String::from_utf8_lossy(&finding);
+            let said = match &c.step {
+                Some(step) => format!("{}: {finding}", String::from_utf8_lossy(step)),
+                None => finding.into_owned(),
+            };
+            return Err(entry.wrap(Failure::new(said), &c.locations));
         }
     }
     Ok(())
+}
+
+/// One of an Agentfile's checks, as BuildKit is asked to run it: its report's name, its
+/// op, the step a finding is said of, and the lines it is said on.
+struct Check {
+    report: String,
+    at: usize,
+    step: Option<Vec<u8>>,
+    locations: Vec<shards_dockerfile::instructions::Location>,
 }
 
 /// A solved tree as a skills step reads it, through the gateway: its directories'
@@ -2504,6 +2527,10 @@ mod tests {
         // The context, a guarded RUN on it, as the planner marks one.
         let mut guarded = Meta::default();
         guarded.description.insert(plan::GUARD.to_vec(), b"1".to_vec());
+        guarded.description.insert(
+            b"llb.customname".to_vec(),
+            b"[2/2] RUN echo > /agents/a/x".to_vec(),
+        );
         guarded.locations.push(vec![(2, 2)]);
         let def = Definition {
             ops: vec![
@@ -2555,7 +2582,8 @@ mod tests {
         gateway_over(server, &mut out, |g| {
             let f = check_domains(g, Some(my_image()), &def, &domains, &Carried::default(), &entry())
                 .unwrap_err();
-            assert_eq!(f.message, said);
+            // Said of the step, as shards build says its guard's refusal.
+            assert_eq!(f.message, format!("[2/2] RUN echo > /agents/a/x: {said}"));
             let detail = String::from_utf8(f.details[0].1.clone()).unwrap();
             assert!(
                 detail.ends_with(r#""ranges":[{"start":{"line":2},"end":{"line":2}}]}"#),
