@@ -5,15 +5,15 @@
 //! no inode (cache/util/fsutil.go, fsutil's Stat), so no hard link is seen.
 //!
 //! `shards frontend check SPEC`, SPEC a JSON object:
-//! - `{"domains": [...]}`: the image at `/target`, checked as `shards build` checks one
-//!   before its export (build::domains);
-//! - `{"domains": [...], "own": DIR}`: a guarded step, its tree before at `/before` and after
-//!   at `/after`, writing nothing in a domain but `own`'s (none where the step is no
-//!   domain's directive), as `shards build`'s guard holds a step's layers.
+//! - `{"domains": [...], "report": NAME}`: the image at `/target`, checked as `shards
+//!   build` checks one before its export (build::domains);
+//! - `{"domains": [...], "own": DIR, "report": NAME}`: a guarded step, its tree before at
+//!   `/before` and after at `/after`, writing nothing in a domain but `own`'s (null where
+//!   the step is no domain's directive), as `shards build`'s guard holds a step's layers.
 //!
 //! Each domain is `{"name", "harness", "dir"}`. The finding, or nothing, is written to
-//! `/out/report`: a check that cannot read its trees says so there, so that the build
-//! fails closed.
+//! `/out/NAME`: a check that cannot read its trees says so there, so that the build fails
+//! closed.
 
 use std::collections::BTreeMap;
 use std::io::{self, Write as _};
@@ -22,7 +22,7 @@ use std::process::ExitCode;
 
 use sha2::Digest as _;
 use shards_dockerfile::plan::DomainDir;
-use shards_image::erofs::{DataRef, Dir, Kind, Meta, Node, NodeId, Tree, Xattrs};
+use shards_image::erofs::{DataRef, Dir, Kind, Meta, Node, NodeId, Tree};
 
 /// The check's spec, as the frontend writes it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -332,9 +332,9 @@ fn meta_of(_: &Path, _: &std::fs::Metadata) -> Meta {
 /// A path's own extended attributes (not its symlink target's): Linux's llistxattr and
 /// lgetxattr, where the check runs; none elsewhere.
 #[cfg(target_os = "linux")]
-fn xattrs(path: &Path) -> Xattrs {
+fn xattrs(path: &Path) -> shards_image::erofs::Xattrs {
     use std::os::unix::ffi::OsStrExt as _;
-    let mut out = Xattrs::default();
+    let mut out = shards_image::erofs::Xattrs::default();
     let Ok(c) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
         return out;
     };
@@ -371,8 +371,8 @@ fn xattrs(path: &Path) -> Xattrs {
 }
 
 #[cfg(all(unix, not(target_os = "linux")))]
-fn xattrs(_: &Path) -> Xattrs {
-    Xattrs::default()
+fn xattrs(_: &Path) -> shards_image::erofs::Xattrs {
+    shards_image::erofs::Xattrs::default()
 }
 
 /// A guarded step's writes: what differs between its trees before and after, in no domain
