@@ -1,9 +1,14 @@
-//! Host-OS services behind one API: guest-memory reservation, positional I/O into guest
-//! memory, durable flushes, entropy, the console, and vCPU thread policy. The rest of the
-//! VMM never calls the OS directly.
+//! Host-OS services behind one API: guest-memory reservation, copies between it and the
+//! host's memory, positional I/O into guest memory, durable flushes, entropy, the console,
+//! and vCPU thread policy. The rest of the VMM never calls the OS directly.
 
 use std::fs::File;
 use std::io;
+
+mod copy;
+#[cfg(test)]
+pub use copy::COPIED;
+pub use copy::{copy_in, copy_out};
 
 #[cfg(unix)]
 mod unix;

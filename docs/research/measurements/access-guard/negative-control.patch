@@ -1,6 +1,6 @@
 --- a/crates/vmm/src/memory.rs
 +++ b/crates/vmm/src/memory.rs
-@@ -190,7 +190,8 @@
+@@ -202,7 +202,8 @@
          if self.holder.load(Ordering::Relaxed) == me {
              return Err(Reentered);
          }
@@ -8,5 +8,5 @@
 +        // The negative control: a lock of its own for every access, which excludes nothing.
 +        let held = lock(Box::leak(Box::new(Mutex::new(()))));
          self.holder.store(me, Ordering::Relaxed);
-         Ok(Access {
-             mem: self,
+         #[cfg(test)]
+         TAKES.with(|t| t.set(t.get() + 1));

@@ -418,21 +418,30 @@ impl Consumer<'_> {
         &mut self,
         take: impl FnOnce(usize, &dyn Fn(usize, *mut u8, usize)) -> R,
     ) -> Result<Option<R>, Broken> {
+        self.pop_frame(|frame, n| {
+            let copy = move |from: usize, to: *mut u8, count: usize| {
+                if from <= n && count <= n - from {
+                    // SAFETY: `from .. from + count` lies within the frame's `n` bytes;
+                    // `to` is the caller's.
+                    unsafe { ptr::copy_nonoverlapping(frame.add(from), to, count) };
+                }
+            };
+            take(n, &copy)
+        })
+    }
+
+    /// Takes the next frame, if any, giving `take` where it lies in the ring and its length:
+    /// its `n` bytes there hold still until `take` returns, for a caller that copies them by
+    /// accesses of its own, as the VMM's device does into guest memory (D29).
+    pub fn pop_frame<R>(&mut self, take: impl FnOnce(*const u8, usize) -> R) -> Result<Option<R>, Broken> {
         let head = self.head()?;
         if head == self.tail {
             return Ok(None);
         }
         let (at, n, tail) = self.next(head)?;
-        let start = at + HEADER;
-        let ring = self.ring;
-        let copy = move |from: usize, to: *mut u8, count: usize| {
-            if from <= n && count <= n - from {
-                // SAFETY: `start + from .. + count` lies within the frame, checked above
-                // to lie within the ring; `to` is the caller's.
-                unsafe { ptr::copy_nonoverlapping(ring.add(start + from), to, count) };
-            }
-        };
-        let r = take(n, &copy);
+        // SAFETY: `at + HEADER .. + n` lies within the ring, as `next` checked.
+        let frame = unsafe { self.ring.add(at + HEADER) };
+        let r = take(frame.cast_const(), n);
         self.tail = tail + padded(n) as u64;
         let c = self.control();
         c.tail.0.store(self.tail, Ordering::Release);
