@@ -1160,6 +1160,13 @@ fn options_of(file: &str) -> shards_dockerfile::plan::Options {
                 v.split(',').map(|n| n.as_bytes().to_vec()).collect()
             }
         }),
+        // The oracle's fake gateway: an explicit platform, no session, every capability
+        // (`pb.Caps.All()`).
+        implicit_target: false,
+        session: Vec::new(),
+        local_sessions: Default::default(),
+        llb_caps: None,
+        cmdline: None,
     }
 }
 

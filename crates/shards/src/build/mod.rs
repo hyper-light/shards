@@ -2556,6 +2556,12 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
         main_context: remote.clone().unwrap_or_default(),
         context_subdir: None,
         git_advice,
+        implicit_target: false,
+        // Its own builder's: no session, every capability.
+        session: Vec::new(),
+        local_sessions: BTreeMap::new(),
+        llb_caps: None,
+        cmdline: None,
     };
     let call = call_of(parsed)?;
     let debug = parsed.bool("debug");
