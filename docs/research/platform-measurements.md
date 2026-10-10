@@ -4678,8 +4678,11 @@ revision before comparing a changed API/implementation.
   and the wall time of builds that mount that cache and do nothing, or fill a cache, each
   against its empty or tmpfs twin. Phases: create, stat, read, rename and delete of the
   small files, then the large ones written and read, a MiB at a time. Apple M5 Max, macOS
-  26.4.1, revision f6d11c2 (D114), 2026-10-09, load average 66 to 75 (other builds and
-  Docker Desktop's VM). Milliseconds:
+  26.4.1, revision f6d11c2 (D114), 2026-10-09, load averages 68.7, 72.3 and 74.9 at its end
+  (other builds and Docker Desktop's VM). That run passed `--no-cache` to every build,
+  which at f6d11c2 kept a step's caches; since D114 lets them go, the harness gives each
+  build's step an `ENV` of its own instead, and refuses a warm build whose cache it had to
+  fill (fsbench says so). Milliseconds:
 
   | phase | cache mount, n=20, p50 / p90 / p99 / max | builder tmpfs, n=20 | virtio-fs share, n=3 |
   |---|---|---|---|
@@ -4691,27 +4694,27 @@ revision before comparing a changed API/implementation.
   | 256 MiB written | 14.7 / 33.4 / 34.3 / 34.3 | 14.3 / 18.3 / 20.6 / 20.6 | 4490 / 6548 / 6548 / 6548 |
   | 256 MiB read | 9.9 / 10.4 / 12.3 / 12.3 | 10.0 / 12.5 / 13.3 / 13.3 | 5002 / 6000 / 6000 / 6000 |
 
-  The run's own tmpfs beside the share (n=3): create 15.8, stat 4.7, read 12.6, rename
-  10.0, delete 8.7, large write 16.0, large read 11.5 at the median. A cache an earlier build
-  filled, read back (n=20): stat 9.3 / 14.8 / 15.2 / 15.2, read 20.3 / 22.6 / 23.0 / 23.0,
-  large read 9.0 / 12.2 / 15.8 / 15.8, against the step's tmpfs filled in place: 6.4, 13.3,
-  8.8 at the median. Build wall times, n=5, p50 / p90 / max: a cache of those files mounted
-  and left alone 11177 / 14745 / 14745 against an empty one's 3915 / 7217 / 7217; filling a
-  cache 16095 / 18723 / 18723 against filling a tmpfs 3657 / 5797 / 5797.
-- **Where a build's time goes.** Timings in the build process (a throwaway build, three
-  of each, same host and load): mounting that cache spent 5.4 to 10.6 s sending its layers
-  to the builder over vsock and 0.17 to 0.24 s applying them; filling one spent 9.2 to 11.2 s
-  receiving its changes over vsock and 0.46 to 0.64 s making them a layer. vsock carried
-  28 to 55 MB/s under this load. A step writing and reading a builder's virtio-blk disk
-  (the same throwaway build, a raw disk; `dd` of 296 MiB, `conv=fsync`, five rounds) moved
-  1.4 to 9.7 GB/s written and 5.0 to 5.2 GB/s read, the host file holding the bytes.
-- **Consequence.** virtio-fs answers a small file's request in 0.5 to 13 ms under load,
-  1,800 to 6,800 times the builder's memory: a package manager's cache on it would cost
-  more than downloading again. Caches live in the guest's filesystems instead (D114): a
-  record's layers under the builder's memory, within 1.3 to 1.9 times tmpfs for a small
-  file's metadata and the same for bulk. What remains costly is moving a large cache in and
-  out over vsock, about 25 ms a MiB here; the builder's virtio-blk device is 100 to 300
-  times faster, and carrying layers and changes on it is D114's open item.
+  All p50 / p90 / p99 / max; with n=3 or n=5 the last three are the slowest. The run's own
+  tmpfs beside the share (n=3): create 15.8 / 17.0 / 17.0 / 17.0, stat 4.7 / 4.7 / 4.7 /
+  4.7, read 12.6 / 12.8 / 12.8 / 12.8, rename 10.0 / 10.2 / 10.2 / 10.2, delete 8.7 / 8.9 /
+  8.9 / 8.9, large write 16.0 / 18.8 / 18.8 / 18.8, large read 11.5 / 11.6 / 11.6 / 11.6. A
+  cache an earlier build filled, read back (n=20): stat 9.3 / 14.8 / 15.2 / 15.2, read 20.3
+  / 22.6 / 23.0 / 23.0, large read 9.0 / 12.2 / 15.8 / 15.8, against the step's tmpfs filled
+  in place: stat 6.4 / 6.7 / 7.3 / 7.3, read 13.3 / 14.0 / 14.5 / 14.5, large read 8.8 /
+  13.0 / 13.5 / 13.5. Build wall times (n=5): a cache of those files mounted and left alone
+  11177 / 14745 / 14745 / 14745 against an empty one's 3915 / 7217 / 7217 / 7217; filling a
+  cache 16095 / 18723 / 18723 / 18723 against filling a tmpfs 3657 / 5797 / 5797 / 5797.
+- **Consequence.** At the median virtio-fs took 0.64 to 10.8 ms a small file (stat to
+  create), 1,251 to 6,828 times the builder's tmpfs, and 314 and 500 times for the large
+  files written and read. Caches live in the guest's filesystems instead (D114): a record's
+  layers under the builder's memory took 1.26 to 1.86 times tmpfs for a small file and 0.99
+  to 1.03 for the large ones. What stays costly is moving a large cache in and out of the
+  builder: mounting the filled cache made a build's median 11.2 s against 3.9 s, filling one
+  16.1 s against 3.7 s.
+- **Not measured here.** Where that time goes within a build (moving layers over vsock,
+  applying them, making a layer of the changes), and what a block device per cache would
+  cost instead: the builds that looked were instrumented by hand and are not in the tree,
+  so their numbers are not recorded. Both are D114's open item.
 
 ### M141. What Docker 29.3.1's BuildKit does with cache mounts
 

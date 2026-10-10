@@ -11,7 +11,8 @@
 //! one each time, so that no medium always goes first. A line for each phase:
 //! `DIR<TAB>PHASE<TAB>NANOSECONDS`. `fill` leaves a cache's worth of files in DIR/fill (the
 //! small files and the large); `reread` reads them back in each DIR, filling first any
-//! DIR that has none: a cache a build left, against one in the step's own memory.
+//! DIR that has none, and saying so (`DIR<TAB>filled<TAB>0`): a cache a build left,
+//! against one in the step's own memory.
 
 use std::fs::{self, File};
 use std::io::{Read, Write};
@@ -170,10 +171,11 @@ fn main() {
     };
     if mode == "reread" {
         for dir in dirs {
-            if !Path::new(dir).join("fill").exists()
-                && let Err(e) = fill(dir)
-            {
-                fail(dir, e);
+            if !Path::new(dir).join("fill").exists() {
+                println!("{dir}\tfilled\t0");
+                if let Err(e) = fill(dir) {
+                    fail(dir, e);
+                }
             }
         }
     }

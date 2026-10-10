@@ -13,7 +13,9 @@ files, and what keeping them across builds costs (D114).
     python3 -I cachefs.py SHARDS WORK BUILDS REPS SHARE_REPS
 
 SHARDS is a `shards` with D114, WORK an empty directory with a short path (the builder's
-sockets live under it). Each variant is built BUILDS times, alternating, `--no-cache`.
+sockets live under it). Each variant is built BUILDS times, alternating, each build's step
+new to the build cache by an `ENV` of its own: `--no-cache` would let go of the caches it
+mounts (D114).
 """
 import os, platform, re, statistics, subprocess, sys, time
 
@@ -28,12 +30,16 @@ subprocess.run(["rustc", "--edition", "2024", "-O", "--target", f"{arch}-unknown
 env = dict(os.environ, SHARDS_HOME=os.path.join(work, "home"))
 os.makedirs(env["SHARDS_HOME"], exist_ok=True)
 bind = "--mount=type=bind,source=fsbench,target=/fsbench"
+built = 0
 
 
 def build(run_line, tag=None):
+    global built
+    built += 1
     with open(os.path.join(ctx, "Dockerfile"), "w") as f:
-        f.write(f"FROM scratch\nCOPY fsbench /fsbench\n{run_line}\n" if tag else f"FROM scratch\n{run_line}\n")
-    args = [shards, "build", "--progress=plain", "--no-cache"] + (["-t", tag] if tag else ["-o", os.path.join(work, "out")]) + [ctx]
+        copy = "COPY fsbench /fsbench\n" if tag else ""
+        f.write(f"FROM scratch\n{copy}ENV CACHEFS_BUILD={built}\n{run_line}\n")
+    args = [shards, "build", "--progress=plain"] + (["-t", tag] if tag else ["-o", os.path.join(work, "out")]) + [ctx]
     t = time.monotonic()
     p = subprocess.run(args, env=env, capture_output=True, text=True, cwd=work)
     took = time.monotonic() - t
@@ -42,10 +48,17 @@ def build(run_line, tag=None):
     return took, p.stderr
 
 
+def warm(log):
+    # A cache a build left, read back: fsbench says when it had to fill one instead.
+    if "/warm\tfilled\t" in log:
+        sys.exit(f"the warm cache was empty:\n{log}")
+    return log
+
+
 def phases(log, into):
     for line in log.splitlines():
         m = re.search(r"(/\w+)\t(\w+)\t(\d+)$", line)
-        if m:
+        if m and m.group(2) != "filled":
             into.setdefault((m.group(1), m.group(2)), []).append(int(m.group(3)) / 1e6)
 
 
@@ -82,11 +95,11 @@ show("run: virtio-fs share and tmpfs, ms", shared)
 
 # Warm: a cache an earlier build filled, read back, against a tmpfs the step fills.
 build(f'RUN {bind} --mount=type=cache,target=/warm,id=warm ["/fsbench", "fill", "/warm"]')
-warm = {}
+reread = {}
 for _ in range(builds):
     _, log = build(f'RUN {bind} --mount=type=cache,target=/warm,id=warm --mount=type=tmpfs,target=/tmpfs ["/fsbench", "reread", "{reps}", "/warm", "/tmpfs"]')
-    phases(log, warm)
-show("warm: a filled cache read back, and tmpfs, ms", warm)
+    phases(warm(log), reread)
+show("warm: a filled cache read back, and tmpfs, ms", reread)
 
 # Import and export, by the build's wall time.
 walls = {}
@@ -97,7 +110,8 @@ for i in range(builds):
         ("tmpfs-fill", f'RUN {bind} --mount=type=tmpfs,target=/x ["/fsbench", "fill", "/x"]'),
         ("cache-fill", f'RUN {bind} --mount=type=cache,target=/x,id=x{i} ["/fsbench", "fill", "/x"]'),
     ]:
-        took, _ = build(line)
+        took, log = build(line)
+        warm(log)
         walls.setdefault(("build", name), []).append(took * 1e3)
 show("import and export: a build's wall time, ms", walls)
 print("load %.2f %.2f %.2f" % os.getloadavg())
