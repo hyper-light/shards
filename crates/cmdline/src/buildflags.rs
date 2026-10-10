@@ -847,9 +847,11 @@ fn too_big(id: &str, _len: u64, max: u64) -> String {
     )
 }
 
-/// An error of the OS in Go's words: on Linux its `syscall.Errno` table; elsewhere the C
-/// library's `strerror`, its first letter lowered where the second is lower, as Go's
-/// tables are made from it (mkerrors.sh).
+/// An error of the OS in Go's words: on Linux its `syscall.Errno` table; on Windows
+/// FormatMessage's text as it stands (syscall_windows.go `Errno.Error`, which asks for US
+/// English first where the text here is the system's language: the same on an English
+/// system); elsewhere the C library's `strerror`, its first letter lowered where the
+/// second is lower, as Go's tables are made from it (mkerrors.sh).
 pub fn os_error(e: &std::io::Error) -> String {
     let Some(code) = e.raw_os_error() else {
         return e.to_string();
@@ -859,6 +861,9 @@ pub fn os_error(e: &std::io::Error) -> String {
     }
     let text = std::io::Error::from_raw_os_error(code).to_string();
     let text = text.split(" (os error").next().unwrap_or_default();
+    if cfg!(windows) {
+        return text.to_string();
+    }
     let mut chars = text.chars();
     match (chars.next(), chars.clone().next()) {
         (Some(first), Some(second)) if first.is_ascii_uppercase() && second.is_ascii_lowercase() => {
@@ -1160,6 +1165,19 @@ pub fn validate(flag: &crate::flags::Flag, value: &str) -> Result<String, String
 
 #[cfg(test)]
 mod tests {
+    /// A file not found, in Go's words on each host: errno 2 on Unix (zerrors tables),
+    /// ERROR_FILE_NOT_FOUND on Windows, whose text Go keeps as FormatMessage gives it.
+    #[test]
+    fn os_errors_read_as_go_reads_them() {
+        let text = super::os_error(&std::io::Error::from_raw_os_error(2));
+        let want = if cfg!(windows) {
+            "The system cannot find the file specified."
+        } else {
+            "no such file or directory"
+        };
+        assert_eq!(text, want);
+    }
+
     #[test]
     fn hosts_and_resources_are_sent_as_buildx_sends_them() {
         let gw = || Ok("172.17.0.1".to_string());

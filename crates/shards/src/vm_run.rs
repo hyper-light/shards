@@ -1233,11 +1233,15 @@ fn net_host(spec: &str) -> Result<shards_vmm::devices::virtio::net::NetHost, Str
         .parse::<shards_net::Mac>()
         .map_err(|e| format!("--net: {e}"))?
         .0;
+    // Asked as the command ends, so that what it sent goes before the run does.
+    let flush = shards_vmm::devices::virtio::net::TxFlush::default();
+    crate::warm::adopt_flush(flush.clone());
     Ok(shards_vmm::devices::virtio::net::NetHost {
         region,
         wake_me,
         wake_peer,
         mac,
+        flush,
     })
 }
 

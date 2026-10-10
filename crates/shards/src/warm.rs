@@ -47,6 +47,14 @@ static RELEASE: std::sync::OnceLock<UnixStream> = std::sync::OnceLock::new();
 /// The run publishes ports (`RUN_PUBLISHED`): only then is there anything to close.
 static PUBLISHED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// The VM's network device's flush (`--net`), asked as the run ends.
+static FLUSH: std::sync::OnceLock<shards_vmm::devices::virtio::net::TxFlush> = std::sync::OnceLock::new();
+
+/// Takes `flush` as [`FLUSH`].
+pub fn adopt_flush(flush: shards_vmm::devices::virtio::net::TxFlush) {
+    let _ = FLUSH.set(flush);
+}
+
 /// Takes the socket at `fd` as [`RELEASE`].
 pub fn adopt_release(fd: RawFd) -> Result<(), String> {
     let socket = inherited_socket("--net-release", fd)?;
@@ -60,7 +68,17 @@ pub fn adopt_release(fd: RawFd) -> Result<(), String> {
 /// its exit is (`docker run --rm -p 80 …; docker run -p 80 …` finds it free). A network
 /// process that does not answer within a second is ended with the VM, as the daemon ends
 /// one past its grace (`netproc::GRACE`), and frees them then.
+///
+/// First, what the guest sent before its command ended goes into the network process's
+/// ring, which it takes before UNPUBLISH: a datagram a command sends just before it exits
+/// reaches its peer, as a container's does, rather than going with the run's ports or its
+/// VM (the published UDP flake of 2026-10-06 and 2026-10-10: the guest answered its last
+/// datagram and exited, and the answer never came).
 fn release_ports() {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    if let Some(flush) = FLUSH.get() {
+        flush.flush(deadline);
+    }
     if !PUBLISHED.load(std::sync::atomic::Ordering::Relaxed) {
         return;
     }
@@ -70,10 +88,7 @@ fn release_ports() {
     }
     // Bounded by poll(2), not a socket option: the VM process's seccomp filter refuses
     // setsockopt(2) (confine.rs).
-    let _ = shards_ipc::recv_by(
-        release,
-        std::time::Instant::now() + std::time::Duration::from_secs(1),
-    );
+    let _ = shards_ipc::recv_by(release, deadline);
 }
 
 fn daemon_socket(fd: RawFd) -> Result<UnixStream, String> {
