@@ -4551,8 +4551,8 @@ revision before comparing a changed API/implementation.
   (tests/common `port_free`, `hold_port`). The daemon holds a run's listeners from
   binding them until the run is taken, while its other threads spawn VMs: a spawn then
   holds them until it execs, so a run shorter than that spawn may end before its ports
-  are free. Not seen in a failure; the fix (the listeners bound by the network process,
-  which spawns nothing, so the daemon holds none) is recorded as open.
+  are free. Not seen in a failure; fixed since: every child of the daemon is made by its
+  spawner, which holds none of them (M158, architecture.md D31).
 
 ### M135. Signatures as OCI 1.1 referrers: shards against cosign, on registries with and without the API
 

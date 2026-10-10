@@ -42,7 +42,7 @@ pub fn main() -> ExitCode {
 /// The commands shards has besides the catalog's: the daemon side's own words.
 /// `daemon` and `guest` are what `run daemon`, `stop daemon` and `configure guest` are
 /// said as, and how the client starts the daemon.
-const OWN: [&str; 17] = [
+const OWN: [&str; 18] = [
     "system",
     "agentfile",
     "agent",
@@ -53,6 +53,7 @@ const OWN: [&str; 17] = [
     "grants",
     "share",
     "frontend",
+    "spawner",
     "--version",
     "builder",
     "buildx",

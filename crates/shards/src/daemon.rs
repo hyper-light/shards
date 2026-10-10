@@ -962,6 +962,13 @@ fn serve(ready: Option<File>) -> Result<(), String> {
     let pid_file = home.join("daemon.pid");
     std::fs::write(&pid_file, format!("{}\n", std::process::id()))
         .map_err(|e| format!("{}: {e}", pid_file.display()))?;
+    let exe = std::env::current_exe().map_err(|e| format!("this binary: {e}"))?;
+    // Every child the daemon makes, its spawner makes, made now, before the daemon holds a
+    // run's listener or a client's stdio: what the daemon lets go of, no child holds, as
+    // one made here would until its exec, a port bound past its run's end (PM M158). It
+    // works in the home, with the daemon's limits, as the children it makes do.
+    shards_ipc::start_spawner(&exe, &[OsStr::new("spawner")])
+        .map_err(|e| format!("the daemon's spawner: {e}"))?;
     // Its daemon is gone, since this one holds the lock.
     let _ = std::fs::remove_file(socket);
     let _ = std::fs::remove_file(home.join(shards_ipc::STOPPING));
@@ -969,7 +976,6 @@ fn serve(ready: Option<File>) -> Result<(), String> {
     listener
         .set_nonblocking(true)
         .map_err(|e| format!("{}: {e}", home.join(socket).display()))?;
-    let exe = std::env::current_exe().map_err(|e| format!("this binary: {e}"))?;
     let identity = Identity::of_build(&exe).map_err(|e| format!("{}: {e}", exe.display()))?;
     let vm = crate::helpers::vm()?;
     let containers = Registry::open(&home, &mut |note| log(note))
@@ -4532,15 +4538,16 @@ fn grant(link: &UnixStream, pid: u32) -> Result<(), String> {
         log(format!(
             "VM {pid}: no request for access in {GRANT_STALL:?}; sampling its stacks to {file}"
         ));
-        let spawned = std::process::Command::new("/usr/bin/sample")
-            .args([pid.to_string().as_str(), "3", "-mayDie", "-file", file.as_str()])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn();
+        // Made as every child of the daemon is, by its spawner (PM M158).
+        let spawned = File::open("/dev/null").and_then(|null| {
+            let pid = pid.to_string();
+            let args = [pid.as_str(), "3", "-mayDie", "-file", file.as_str()].map(OsStr::new);
+            let stdio = [0, 1, 2].map(|n| (null.as_fd(), n));
+            shards_ipc::spawn(Path::new("/usr/bin/sample"), &args, &stdio, false)
+        });
         match spawned {
             // Reaped where it ends, on a thread of its own, so that no zombie is left.
-            Ok(mut child) => {
+            Ok(child) => {
                 let _ = std::thread::Builder::new()
                     .name("sample".into())
                     .spawn(move || child.wait());

@@ -84,6 +84,15 @@ pub(crate) fn shardsd(args: Vec<std::ffi::OsString>) -> ExitCode {
         // a run's share process (D38), which the daemon starts: not for people to run.
         #[cfg(unix)]
         Some("share") => share::share(args),
+        // the daemon's spawner (shards_ipc::start_spawner, PM M158): not for people to run.
+        #[cfg(unix)]
+        Some("spawner") => match shards_ipc::serve_spawner() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                let _ = writeln!(std::io::stderr(), "shards spawner: {e}");
+                ExitCode::FAILURE
+            }
+        },
         Some("build") => build::build(args),
         // BuildKit's frontend, which BuildKit runs from shards' image (D113): not for people
         // to run.
