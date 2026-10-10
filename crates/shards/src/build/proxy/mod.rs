@@ -106,3 +106,82 @@ pub fn check_upstream(env: &dyn Fn(&str) -> Option<String>) -> Result<(), String
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The proxy's variables, in BuildKit's order and words (measured in the step's env).
+    #[test]
+    fn a_step_is_given_the_proxy_as_buildkit_gives_it() {
+        let got: Vec<String> = env("http://10.0.2.2:3128")
+            .into_iter()
+            .map(|kv| String::from_utf8(kv).unwrap())
+            .collect();
+        assert_eq!(
+            got,
+            [
+                "HTTP_PROXY=http://10.0.2.2:3128",
+                "HTTPS_PROXY=http://10.0.2.2:3128",
+                "ALL_PROXY=http://10.0.2.2:3128",
+                "http_proxy=http://10.0.2.2:3128",
+                "https_proxy=http://10.0.2.2:3128",
+                "all_proxy=http://10.0.2.2:3128",
+                "NO_PROXY=127.0.0.1,localhost,::1",
+                "no_proxy=127.0.0.1,localhost,::1",
+            ]
+        );
+        // The step's own of those names go; the rest keep their order; the proxy's come last.
+        let step: Vec<Vec<u8>> = [
+            "PATH=/bin",
+            "HTTP_PROXY=http://elsewhere",
+            "no_proxy=*",
+            "HOME",
+            "A=b=c",
+        ]
+        .iter()
+        .map(|s| s.as_bytes().to_vec())
+        .collect();
+        let replaced = replace_env(&step, &env("http://p"));
+        assert_eq!(
+            replaced.get(..3),
+            Some(&[b"PATH=/bin".to_vec(), b"HOME".to_vec(), b"A=b=c".to_vec()][..])
+        );
+        assert_eq!(replaced.get(3..), Some(&env("http://p")[..]));
+    }
+
+    /// The build's own proxies, what its requests go on through: each a URL or
+    /// `host[:port]` of http, https, socks5 or socks5h with a host, else the step fails,
+    /// its value never said; held to BuildKit v0.33.0's parseProxyEnvironmentValue
+    /// (scripts/proxy/generate).
+    #[test]
+    fn the_builds_own_proxies_are_checked_as_buildkit_checks_them() {
+        let check = |vars: &[(&str, &str)]| {
+            let vars: Vec<(String, String)> =
+                vars.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+            check_upstream(&|n| vars.iter().find(|(k, _)| k == n).map(|(_, v)| v.clone()))
+        };
+        let oracle: serde_json::Value =
+            serde_json::from_str(include_str!("../testdata/proxy-oracle.json")).unwrap();
+        let cases = oracle["upstream_proxies"].as_array().unwrap();
+        assert!(cases.len() > 30);
+        for case in cases {
+            let value = case["value"].as_str().unwrap();
+            let want = match case["valid"].as_bool().unwrap() {
+                true => Ok(()),
+                false => Err("invalid HTTP_PROXY in the build's environment".to_string()),
+            };
+            assert_eq!(check(&[("HTTP_PROXY", value)]), want, "{value:?}");
+        }
+        // The upper case name first, then the lower; an empty value is none.
+        assert_eq!(
+            check(&[("HTTPS_PROXY", ""), ("https_proxy", "ftp://x")]),
+            Err("invalid https_proxy in the build's environment".to_string())
+        );
+        assert_eq!(
+            check(&[("HTTPS_PROXY", "http://ok"), ("https_proxy", "ftp://x")]),
+            Ok(())
+        );
+        assert_eq!(check(&[("ALL_PROXY", "ftp://x"), ("NO_PROXY", "::")]), Ok(()));
+    }
+}

@@ -140,12 +140,32 @@ func tunnel(t *testing.T, addr string, roots *x509.CertPool, connect, serverName
 	if err := tc.Handshake(); err != nil {
 		return established, nil, false
 	}
-	go func() {
-		_, _ = tc.Write(raw)
-		_ = tc.CloseWrite()
-	}()
-	response, _ = io.ReadAll(tc)
-	return established, response, true
+	if _, err := tc.Write(raw); err != nil {
+		return established, nil, true
+	}
+	// Its close_notify only once the proxy has gone quiet: one the proxy left unread as it
+	// closed would reset the connection, and with it what the client had yet to read.
+	buf := make([]byte, 32<<10)
+	ended := false
+	for {
+		wait := 20 * time.Second
+		if !ended {
+			wait = 2 * time.Second
+		}
+		_ = c.SetReadDeadline(time.Now().Add(wait))
+		n, err := tc.Read(buf)
+		response = append(response, buf[:n]...)
+		if err == nil {
+			continue
+		}
+		var ne net.Error
+		if !ended && stderrors.As(err, &ne) && ne.Timeout() {
+			ended = true
+			_ = tc.CloseWrite()
+			continue
+		}
+		return established, response, true
+	}
 }
 
 func TestShardsProxy(t *testing.T) {
@@ -392,6 +412,22 @@ func TestShardsProxy(t *testing.T) {
 
 	passed, passedTunnels := passedOn(t)
 
+	type upstreamProxyOut struct {
+		Value string `json:"value"`
+		Valid bool   `json:"valid"`
+	}
+	var upstreamProxies []upstreamProxyOut
+	for _, v := range []string{
+		"http://proxy:3128", "proxy:3128", "proxy", "https://user:secret@proxy", "socks5://proxy:1080",
+		"socks5h://proxy", "http://[::1]:3128", "[::1]:3128", "ftp://proxy", "socks4://proxy", "socks5://",
+		"http://", "http://:3128", "://x", "http://user:secret@", ":3128", "proxy:abc", "http://proxy:abc",
+		"HTTP://Proxy", "http:proxy", "//proxy", "http:///p", "user@proxy:1", "a b", "http://a b",
+		"http://%zz", "%zz", "http://[::1", "1.2.3.4", "http://proxy/path?q#f", " http://proxy",
+	} {
+		_, err := parseProxyEnvironmentValue(v)
+		upstreamProxies = append(upstreamProxies, upstreamProxyOut{Value: v, Valid: err == nil})
+	}
+
 	type sniffOut struct {
 		Data any    `json:"data"`
 		Type string `json:"type"`
@@ -404,7 +440,7 @@ func TestShardsProxy(t *testing.T) {
 	dt, err := json.MarshalIndent(map[string]any{
 		"urls": urls, "finals": finals, "plain": plain, "tunnels": tunnels,
 		"upstream": upstreamResponses, "passed": passed, "passed_tunnels": passedTunnels,
-		"sniff": sniffed,
+		"sniff": sniffed, "upstream_proxies": upstreamProxies,
 	}, "", "  ")
 	if err != nil {
 		t.Fatal(err)
