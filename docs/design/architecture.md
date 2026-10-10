@@ -3739,6 +3739,115 @@ read from that context; before D111 shards refused a policy with one ("not suppo
   context asked and its refusal's words, the message's size, its bound and exit 102,
   `-f`'s policy, and the reads the build's thread serves.
 
+### D110. buildx's `exec.proxy` cap: a build's network through a proxy its policies check
+
+buildx v0.37.1's policies may ask for the `exec.proxy` cap (`caps := {"exec.proxy":
+true}`, asked once as the build begins with `input.env.capsRequest`); BuildKit v0.33.0 then
+runs every `RUN` step's network through a proxy of its own, each HTTP request and each
+request in an HTTPS tunnel checked by the policies as an HTTP source. Before D110 shards
+refused such a build (`network proxy requested by policy is not supported by shards yet`).
+What BuildKit does was measured first in `shards-dind` (builders `shards-d110-*`, buildx
+v0.37.1 on BuildKit v0.33.0): the `policy enabled network proxy` line, said once; the
+step's eight variables; the CA in the step's first trust bundle and out again after it;
+http.Error's 403 for a plain request and an exact 403 in a tunnel; the step's log ending
+`proxy network requests:`; the provenance's materials, `network.proxy.incomplete` and
+completeness; `--network=none` and `host` steps.
+- **The proxy is the build's.** It runs in the build process, on a Unix socket in a
+  directory of its own (mode 0700), made with the builder. Under the cap the builder's
+  network process allows one flow alone, TCP to the gateway's port 3128, carried to that
+  socket; the Internet, the host's networks, the gateway's other ports, UDP and DNS are
+  refused (default deny). A step whose network is the builder's (BuildKit's default and
+  host modes; `--network=none` keeps none) gets BuildKit's variables (`HTTP_PROXY`,
+  `HTTPS_PROXY`, `ALL_PROXY`, each in lower case too, `http://<gateway>:3128`; `NO_PROXY`
+  `127.0.0.1,localhost,::1`) in place of its own (ReplaceEnv), and the build's CA in its
+  root's first trust bundle while it runs, put there and taken out by shards-init as
+  BuildKit's InjectProxyCA does (between `# buildkit proxy CA begin/end`, a bundle of 10
+  MiB at most, written beside and renamed over it with its mode and owner).
+- **Each request is asked of the build's policies** on the build's thread, which the
+  proxy wakes as the builder's frames come: its URL as BuildKit's handler checks it
+  (`http://` and its Host for a path, its own where absolute; in a tunnel `https://` and
+  the CONNECT's authority whatever the request says), credentials redacted as urlutil
+  redacts them. A refusal is http.Error's 403 plain, and `HTTP/1.1 403 Forbidden` with
+  `Connection: close` in a tunnel, which it ends. Requests are read as Go 1.26.3's server
+  reads them (head.rs: its 400s, 431, 501, 505 and 417, `OPTIONS *` answered itself,
+  heads of 1 MiB and 4 KiB within 30 s, 512 connections a step) and passed on as Go's
+  server writes BuildKit's handler's response (the body's first 512 bytes before the
+  head, its length or chunked, a body of no type sniffed as DetectContentType says).
+  CONNECT is answered `200 Connection Established`, then TLS for the tunnel's host
+  (HTTP/1.1 by ALPN) with a certificate the build's CA signs, 1024 kept, each made again
+  an hour before its day ends. Upstream, requests trust what the host trusts (never
+  weakened: an untrusted server is a 502) and go through the build's own `HTTP_PROXY` and
+  `HTTPS_PROXY`, each checked as BuildKit's parseProxyEnvironmentValue checks it.
+- **What the requests came to** is recorded as BuildKit's ProxyCapture records it: the
+  step's log lines; each GET answered whole with a 2xx a material by its body's digest (a
+  redirect's source by its target's); each request that is not one, and why
+  (`method_not_materializable`, `partial_response`, `body_read_failed`,
+  `unsuccessful_response`, `upstream_error`; BuildKit's `response_transformed` cannot
+  come of a transport that asks for no compression), under the step's vertex as
+  BuildKit's solver names it (its bytes and `\0buildkit.proxy-network.v0`), which makes
+  the build's dependencies incomplete and not hermetic; `network.mode` is `proxy`.
+- **Cached steps.** A proxied step is keyed apart, so a step made with the network open
+  is never taken for one whose every request was checked, nor the other way round (BuildKit's
+  key leaves its mark out and takes either for the other). Its record keeps the requests
+  the policies let go: each is asked again before the record is taken, and one refused
+  now runs the step again (BuildKit asks nothing of a cached step); a record taken brings
+  its materials and incomplete requests into the build's provenance (BuildKit's leaves a
+  cached step's out).
+- Held to BuildKit by `scripts/proxy/generate`, which builds tests into BuildKit v0.33.0
+  (Go 1.26.3) and runs its own handler on Go's server in `shards-dind`: 77 raw requests
+  refused (the URLs asked, every byte answered), 19 refused tunnels, 45 plain and 20
+  tunnelled requests passed on to upstreams answering a table of raw responses (the
+  client's bytes, the URLs asked, the capture), 30 URLs and 15 redirects, 80 sniffed
+  bodies, 31 upstream proxy values, and 27 trust bundles through InjectProxyCA and its
+  cleanup. It found, and shards now does as BuildKit: `OPTIONS *`; a HEAD's 403 of no
+  body; the 512 bytes before a head (shards waited for 2048, Go's buffer, which the
+  handler's ReadFrom never fills); sniffing; a tunnelled 204 or 304 keeping its tunnel.
+- **Recorded differences**, each measured against BuildKit's own:
+  - The CA's and hosts' keys are P-256 where BuildKit's are RSA-2048: a CA in 61 µs and a
+    host's certificate in 82 µs where RSA-2048 takes 47 to 51 ms, BuildKit's Go included
+    (PM M150), and the stronger key (128-bit security against 112, NIST SP 800-57 Part 1
+    Rev. 5, Table 2).
+  - The CA is each build's, its key never leaving the build process, where buildkitd makes
+    one as it starts and keeps it for every build.
+  - The proxy is the gateway's port 3128 where BuildKit's listens on a port the kernel
+    picks, on an address of a namespace of its own; the variables say where it is.
+  - The build's host is never reached through the proxy: its loopback, unspecified,
+    link-local, multicast and broadcast addresses, IPv4 in IPv6, refused before a dial, a
+    502 (`no address a build step may reach`), as the builder never reaches the host (D31);
+    BuildKit's proxy reaches whatever buildkitd's namespace reaches.
+  - The bundle is found and reopened in the step's root (openat2 `RESOLVE_IN_ROOT`) each
+    time; BuildKit's cleanup reopens the host path it resolved before the step, which a
+    step's symlink could move.
+  - A response's hop-by-hop fields go, as RFC 9110 §7.6.1 has a proxy remove them
+    (`Connection` and each field it names, `Keep-Alive`, `Proxy-Connection`,
+    `Proxy-Authenticate`, `TE`, `Trailer`, `Transfer-Encoding`, `Upgrade`); BuildKit's
+    handler copies them on.
+  - A TLS body of no length ended without close_notify is no material (`body_read_failed`),
+    as RFC 9112 §9.8 has a client treat it; Go's client takes the bare end for the body's.
+  - A request field whose value is not UTF-8 (obs-text) is refused, a 400, where Go's
+    server passes it on: shards' client writes fields as text.
+  - A request's body is read whole before it goes upstream (in memory to 64 KiB, then a
+    file of the proxy's, within the room SHARDS_KEEP_FREE keeps, a 413 past it), and goes
+    with its length; BuildKit's streams it, chunked where it came chunked.
+  - Chunk boundaries follow each proxy's reads of its upstream after the first 512 bytes
+    (Go's too); a 502's text is shards' client's error, not Go's transport's; requests
+    upstream are HTTP/1.1, where Go's transport may agree on HTTP/2 with an HTTPS server.
+  - An invalid proxy in the build's environment fails the step as `invalid HTTP_PROXY in
+    the build's environment`, where BuildKit names buildkitd's.
+- Cost (PM M150): the proxy adds 40 µs to a plain request and 175 µs to an HTTPS one;
+  checking each request against the build's policies adds 1.7 ms, most of the 2.1 to 2.3
+  ms a step's request pays over going straight. That check compiles the policy afresh,
+  twice, as every check does (PM M127); compiling once a build is open.
+- Tested: in-process against plain and HTTPS servers (refusals, the reach, upstream TLS,
+  each reason a request is no material, a bare TLS end, the disk's room, a head's time and
+  the connection bound), the oracle's records, shards-init's on Linux (in `shards-dind`),
+  and on microVMs by `steps_under_the_proxy_cap_reach_the_network_through_it_alone`:
+  `policy enabled network proxy`, the variables, the CA in and out, 200s, both 403s, a
+  redirect, a POST and a part, an untrusted HTTPS host's 502, nothing past the proxy, the
+  step's log lines byte for byte, the provenance, the step from the cache with its
+  requests asked again, run again under a policy refusing one, and run with the network
+  open once no cap is asked for.
+
 ### D109. An Agentfile's volumes at run, and every grant checked at build and at run
 
 AGENTFILE_ARCH.md §4.5 and §12 answers 8 and 9: `VOLUME <name> <dest>` names a volume, as
