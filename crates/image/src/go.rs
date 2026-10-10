@@ -8,26 +8,26 @@ use std::fmt::Write as _;
 use crate::tables;
 
 /// `b` from `at` on, empty past its end.
-pub(crate) fn tail(b: &[u8], at: usize) -> &[u8] {
+pub fn tail(b: &[u8], at: usize) -> &[u8] {
     b.get(at..).unwrap_or_default()
 }
 
 /// `b` up to `end`, all of it if shorter.
-pub(crate) fn head(b: &[u8], end: usize) -> &[u8] {
+pub fn head(b: &[u8], end: usize) -> &[u8] {
     b.get(..end).unwrap_or(b)
 }
 
 /// `b` from `start` to `end`, empty where that is not within it.
-pub(crate) fn span(b: &[u8], start: usize, end: usize) -> &[u8] {
+pub fn span(b: &[u8], start: usize, end: usize) -> &[u8] {
     b.get(start..end).unwrap_or_default()
 }
 
 /// `utf8.RuneError`, what an invalid byte decodes to.
-pub(crate) const RUNE_ERROR: u32 = 0xFFFD;
+pub const RUNE_ERROR: u32 = 0xFFFD;
 
 /// The rune at the start of `b`, and its width: `utf8.DecodeRune`. An invalid or
 /// incomplete sequence is U+FFFD one byte wide; nothing is U+FFFD zero wide.
-pub(crate) fn decode(b: &[u8]) -> (u32, usize) {
+pub fn decode(b: &[u8]) -> (u32, usize) {
     let Some(&lead) = b.first() else {
         return (RUNE_ERROR, 0);
     };
@@ -48,7 +48,7 @@ pub(crate) fn decode(b: &[u8]) -> (u32, usize) {
 }
 
 /// The rune at the end of `b`, and its width: `utf8.DecodeLastRune`.
-pub(crate) fn decode_last(b: &[u8]) -> (u32, usize) {
+pub fn decode_last(b: &[u8]) -> (u32, usize) {
     let end = b.len();
     let Some(&last) = b.last() else {
         return (RUNE_ERROR, 0);
@@ -73,7 +73,7 @@ pub(crate) fn decode_last(b: &[u8]) -> (u32, usize) {
 }
 
 /// The runes of `b` in order, each with its width.
-pub(crate) fn runes(b: &[u8]) -> impl Iterator<Item = (u32, usize)> + '_ {
+pub fn runes(b: &[u8]) -> impl Iterator<Item = (u32, usize)> + '_ {
     let mut at = 0;
     std::iter::from_fn(move || {
         let rest = b.get(at..).filter(|r| !r.is_empty())?;
@@ -84,7 +84,7 @@ pub(crate) fn runes(b: &[u8]) -> impl Iterator<Item = (u32, usize)> + '_ {
 }
 
 /// Appends `r` as UTF-8: `utf8.AppendRune`, which writes U+FFFD for what is no rune.
-pub(crate) fn push(out: &mut Vec<u8>, r: u32) {
+pub fn push(out: &mut Vec<u8>, r: u32) {
     let c = char::from_u32(r).unwrap_or('\u{FFFD}');
     let mut buf = [0u8; 4];
     out.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
@@ -105,17 +105,17 @@ fn in_table(table: &[(u32, u32)], r: u32) -> bool {
 }
 
 /// `unicode.IsSpace`.
-pub(crate) fn is_space(r: u32) -> bool {
+pub fn is_space(r: u32) -> bool {
     in_table(tables::SPACE, r)
 }
 
 /// `unicode.IsLetter`.
-pub(crate) fn is_letter(r: u32) -> bool {
+pub fn is_letter(r: u32) -> bool {
     in_table(tables::LETTER, r)
 }
 
 /// `unicode.IsDigit`.
-pub(crate) fn is_digit(r: u32) -> bool {
+pub fn is_digit(r: u32) -> bool {
     in_table(tables::DIGIT, r)
 }
 
@@ -133,7 +133,7 @@ fn lower(r: u32) -> u32 {
 
 /// `strings.ToLower`: ASCII lowered byte by byte, and otherwise rune by rune, an invalid
 /// byte becoming U+FFFD.
-pub(crate) fn to_lower(b: &[u8]) -> Vec<u8> {
+pub fn to_lower(b: &[u8]) -> Vec<u8> {
     if b.is_ascii() {
         return b.to_ascii_lowercase();
     }
@@ -157,7 +157,7 @@ fn upper(r: u32) -> u32 {
 }
 
 /// `strings.ToUpper`, as [`to_lower`] lowers.
-pub(crate) fn to_upper(b: &[u8]) -> Vec<u8> {
+pub fn to_upper(b: &[u8]) -> Vec<u8> {
     if b.is_ascii() {
         return b.to_ascii_uppercase();
     }
@@ -169,7 +169,7 @@ pub(crate) fn to_upper(b: &[u8]) -> Vec<u8> {
 }
 
 /// `strconv.ParseBool`'s accepted words.
-pub(crate) fn parse_bool(b: &[u8]) -> Option<bool> {
+pub fn parse_bool(b: &[u8]) -> Option<bool> {
     match b {
         b"1" | b"t" | b"T" | b"TRUE" | b"true" | b"True" => Some(true),
         b"0" | b"f" | b"F" | b"FALSE" | b"false" | b"False" => Some(false),
@@ -178,7 +178,7 @@ pub(crate) fn parse_bool(b: &[u8]) -> Option<bool> {
 }
 
 /// `strconv.ParseInt(s, 10, 32)`, and its error as Go words it.
-pub(crate) fn parse_int32(s: &[u8]) -> Result<i64, Vec<u8>> {
+pub fn parse_int32(s: &[u8]) -> Result<i64, Vec<u8>> {
     let fail = |why: &str| {
         let mut m = b"strconv.ParseInt: parsing ".to_vec();
         m.extend_from_slice(quote(s).as_bytes());
@@ -212,7 +212,7 @@ pub(crate) fn parse_int32(s: &[u8]) -> Result<i64, Vec<u8>> {
 
 /// `time`'s own quoting in its errors: non-ASCII and control bytes as `\xNN`, but a
 /// U+FFFD that ends the string written as its first byte alone (Go's bound is one short).
-pub(crate) fn time_quote(s: &[u8]) -> Vec<u8> {
+pub fn time_quote(s: &[u8]) -> Vec<u8> {
     let mut out = vec![b'"'];
     let mut i = 0;
     while i < s.len() {
@@ -243,7 +243,7 @@ pub(crate) fn time_quote(s: &[u8]) -> Vec<u8> {
 }
 
 /// `time.ParseDuration`, in nanoseconds, with its errors.
-pub(crate) fn parse_duration(orig: &[u8]) -> Result<i64, Vec<u8>> {
+pub fn parse_duration(orig: &[u8]) -> Result<i64, Vec<u8>> {
     let fail = |what: &[u8]| {
         let mut m = b"time: ".to_vec();
         m.extend_from_slice(what);
@@ -366,7 +366,7 @@ pub(crate) fn parse_duration(orig: &[u8]) -> Result<i64, Vec<u8>> {
 }
 
 /// Levenshtein distance over runes (agext/levenshtein's, all costs 1).
-pub(crate) fn levenshtein(a: &[u8], b: &[u8]) -> usize {
+pub fn levenshtein(a: &[u8], b: &[u8]) -> usize {
     let a: Vec<u32> = runes(a).map(|(r, _)| r).collect();
     let b: Vec<u32> = runes(b).map(|(r, _)| r).collect();
     let mut prev: Vec<usize> = (0..=b.len()).collect();
@@ -495,7 +495,7 @@ pub fn is_abs(p: &[u8]) -> bool {
 /// key to a field: the only runes beyond ASCII whose case-folding orbit holds an ASCII
 /// letter are U+212A KELVIN SIGN (with `k`) and U+017F LATIN SMALL LETTER LONG S (with
 /// `s`) (Unicode's CaseFolding.txt; Go's `unicode.SimpleFold`).
-pub(crate) fn equal_fold_ascii(s: &[u8], name: &[u8]) -> bool {
+pub fn equal_fold_ascii(s: &[u8], name: &[u8]) -> bool {
     let mut runes = runes(s).map(|(r, _)| r);
     for &c in name {
         let Some(r) = runes.next() else {
@@ -516,7 +516,7 @@ pub(crate) fn equal_fold_ascii(s: &[u8], name: &[u8]) -> bool {
 /// `strconv.ParseFloat(s, 64)`: decimal and hexadecimal (`0x1p4`) floats, underscores
 /// between digits, `inf`, `infinity` and `nan`; failing as Go does, with `invalid syntax`
 /// or, past the largest float, `value out of range`.
-pub(crate) fn parse_float(s: &[u8]) -> Result<f64, &'static str> {
+pub fn parse_float(s: &[u8]) -> Result<f64, &'static str> {
     const SYNTAX: &str = "invalid syntax";
     const RANGE: &str = "value out of range";
     // special: a sign and inf, infinity or nan, ignoring case, and nothing after.
@@ -798,7 +798,7 @@ fn go_tail_is(s: &[u8], want: &[u8]) -> bool {
 }
 
 /// `time.Duration.String`: `1h2m3.5s`, `1.5ms`, `0s`.
-pub(crate) fn format_duration(d: i64) -> Vec<u8> {
+pub fn format_duration(d: i64) -> Vec<u8> {
     // Built from the end, as Go builds it.
     let mut out: Vec<u8> = Vec::new();
     let neg = d < 0;
@@ -1096,10 +1096,26 @@ impl Time {
         if !(0..=9999).contains(&self.year) {
             return Err(b"Time.MarshalJSON: year outside of range [0,9999]".to_vec());
         }
-        // The wall clock in its own zone is the one parsed: Go adds the offset back.
+        if (self.offset / 60).unsigned_abs() / 60 >= 24 {
+            return Err(b"Time.MarshalJSON: timezone hour outside of range [0,23]".to_vec());
+        }
+        Ok(self.format_rfc3339_nano())
+    }
+
+    /// `Time.Format(time.RFC3339Nano)`, which fails at nothing: as [`Time::rfc3339_nano`]
+    /// writes it, any offset written as it is (`+24:00`).
+    pub fn format_rfc3339_nano(&self) -> String {
+        // The wall clock in its own zone is the one parsed: Go adds the offset back. The
+        // year as `appendInt(b, year, 4)` writes it: at least four digits, after its sign.
         let mut out = format!(
-            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}",
-            self.year, self.month, self.day, self.hour, self.minute, self.second
+            "{}{:04}-{:02}-{:02}T{:02}:{:02}:{:02}",
+            if self.year < 0 { "-" } else { "" },
+            self.year.unsigned_abs(),
+            self.month,
+            self.day,
+            self.hour,
+            self.minute,
+            self.second
         );
         if self.nanosecond != 0 {
             let frac = format!("{:09}", self.nanosecond);
@@ -1108,15 +1124,16 @@ impl Time {
         }
         if self.offset == 0 {
             out.push('Z');
-            return Ok(out);
+            return out;
         }
         let zone = self.offset / 60;
-        let (sign, zone) = if zone < 0 { ('-', -zone) } else { ('+', zone) };
-        if zone / 60 >= 24 {
-            return Err(b"Time.MarshalJSON: timezone hour outside of range [0,23]".to_vec());
-        }
+        let (sign, zone) = if zone < 0 {
+            ('-', zone.unsigned_abs())
+        } else {
+            ('+', zone.unsigned_abs())
+        };
         let _ = write!(out, "{sign}{:02}:{:02}", zone / 60, zone % 60);
-        Ok(out)
+        out
     }
 }
 

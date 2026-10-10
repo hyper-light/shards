@@ -74,7 +74,8 @@ fn overflows(v: &Value) -> bool {
 }
 
 /// What a JSON array of strings is, if `text` is one.
-pub(crate) enum Array {
+#[derive(Debug)]
+pub enum Array {
     /// Valid JSON, an array whose elements are all strings.
     Strings(Vec<Vec<u8>>),
     /// Valid JSON, an array with an element that is no string.
@@ -85,7 +86,7 @@ pub(crate) enum Array {
 
 /// `parseJSON`'s reading of `text`: `json.Unmarshal` into `[]any`, whose failure, a number
 /// past a float64's range included, makes it no JSON array, then each element a string.
-pub(crate) fn array(text: &[u8]) -> Array {
+pub fn array(text: &[u8]) -> Array {
     let Ok(mut v) = parse(text) else {
         return Array::Not;
     };
@@ -514,7 +515,7 @@ fn hex4(b: &[u8]) -> Option<u32> {
 
 /// Appends `s` as a JSON string, as `json.Marshal` writes it: `<`, `>` and `&` escaped for
 /// HTML, U+2028 and U+2029 escaped, an invalid byte as `\ufffd`.
-pub(crate) fn write_string(out: &mut String, s: &[u8]) {
+pub fn write_string(out: &mut String, s: &[u8]) {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     out.push('"');
     let mut at = 0;
@@ -547,7 +548,7 @@ pub(crate) fn write_string(out: &mut String, s: &[u8]) {
 }
 
 /// Appends `items` as a JSON array of strings.
-pub(crate) fn write_strings(out: &mut String, items: &[Vec<u8>]) {
+pub fn write_strings(out: &mut String, items: &[Vec<u8>]) {
     out.push('[');
     for (i, s) in items.iter().enumerate() {
         if i > 0 {

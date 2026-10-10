@@ -114,51 +114,41 @@ impl Manifest {
     }
 }
 
-/// An image config: the platform, the runtime defaults, and the layers' DiffIDs.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+/// An image config: the platform, the runtime defaults, and the layers' DiffIDs, as Docker
+/// reads them ([`crate::config`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImageConfig {
-    #[serde(default)]
     pub architecture: String,
-    #[serde(default)]
     pub os: String,
-    #[serde(default)]
     pub variant: Option<String>,
-    /// When it was made, as RFC 3339 (image-spec config.md).
-    #[serde(default)]
+    /// When it was made, as Docker writes it (`Time.Format(time.RFC3339Nano)`).
     pub created: Option<String>,
-    #[serde(default)]
     pub config: Option<RunConfig>,
     pub rootfs: RootFs,
+    /// What running, creating, tagging or inspecting the image fails with, where it does:
+    /// Go's error reading the config into a `DockerOCIImage` (daemon/containerd
+    /// `GetImage`), which Docker says after `could not deserialize image config: `.
+    pub run_error: Option<String>,
 }
 
-/// The config's defaults for a container, in Docker's field names.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
-#[serde(rename_all = "PascalCase")]
+/// The config's defaults for a container, as Docker's container config takes them from
+/// the image's (daemon/containerd imagespec.go): `None` where Go's is nil or empty.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct RunConfig {
-    #[serde(default)]
     pub user: Option<String>,
-    #[serde(default)]
     pub env: Option<Vec<String>>,
-    #[serde(default)]
     pub entrypoint: Option<Vec<String>>,
-    #[serde(default)]
     pub cmd: Option<Vec<String>>,
-    #[serde(default)]
     pub working_dir: Option<String>,
-    #[serde(default)]
     pub stop_signal: Option<String>,
-    #[serde(default)]
     pub healthcheck: Option<HealthConfig>,
     /// The shell `CMD-SHELL` health checks run in (the image's `SHELL`).
-    #[serde(default)]
     pub shell: Option<Vec<String>>,
-    /// Its `EXPOSE`d ports, `80/tcp` and the like: the keys of the config's object.
-    #[serde(default, deserialize_with = "keys")]
+    /// Its `EXPOSE`d ports as a container's config keeps them: those `network.ParsePort`
+    /// takes, `80/tcp` and the like, each once, in order.
     pub exposed_ports: Vec<String>,
-    /// Its `VOLUME`s: the keys of the config's object.
-    #[serde(default, deserialize_with = "keys")]
+    /// Its `VOLUME`s, in order.
     pub volumes: Vec<String>,
-    #[serde(default)]
     pub labels: Option<std::collections::BTreeMap<String, String>>,
 }
 
@@ -168,39 +158,69 @@ fn list<'de, D: serde::Deserializer<'de>, T: serde::Deserialize<'de>>(d: D) -> R
     Ok(v.unwrap_or_default())
 }
 
-/// An object's keys, or none for `null`.
-fn keys<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
-    let map: Option<std::collections::BTreeMap<String, serde::de::IgnoredAny>> =
-        serde::Deserialize::deserialize(d)?;
-    Ok(map.map(|m| m.into_keys().collect()).unwrap_or_default())
-}
-
 /// A `HEALTHCHECK` as an image config holds it: its test, then durations in nanoseconds,
 /// each 0 for "not set" (moby api/types/container HealthConfig).
-#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct HealthConfig {
-    #[serde(default)]
     pub test: Option<Vec<String>>,
-    #[serde(default)]
     pub interval: i64,
-    #[serde(default)]
     pub timeout: i64,
-    #[serde(default)]
     pub start_period: i64,
-    #[serde(default)]
     pub start_interval: i64,
-    #[serde(default)]
     pub retries: i64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RootFs {
-    #[serde(rename = "type")]
     pub kind: String,
-    /// `null` where an image has no layers, as BuildKit writes it.
-    #[serde(default, deserialize_with = "list")]
+    /// Empty where Go's is nil (`null`, as BuildKit writes an image without layers).
     pub diff_ids: Vec<String>,
+}
+
+impl ImageConfig {
+    /// The image config `image` is, `run_error` what Docker fails with running it.
+    fn new(image: crate::config::Image, run_error: Option<String>) -> ImageConfig {
+        let some = |s: String| (!s.is_empty()).then_some(s);
+        let c = image.config;
+        ImageConfig {
+            architecture: image.architecture,
+            os: image.os,
+            variant: some(image.variant),
+            created: image.created.map(|t| t.format_rfc3339_nano()),
+            config: Some(RunConfig {
+                user: some(c.user),
+                env: c.env,
+                entrypoint: c.entrypoint,
+                cmd: c.cmd,
+                working_dir: some(c.working_dir),
+                stop_signal: some(c.stop_signal),
+                healthcheck: c.healthcheck.map(|h| HealthConfig {
+                    test: h.test,
+                    interval: h.interval,
+                    timeout: h.timeout,
+                    start_period: h.start_period,
+                    start_interval: h.start_interval,
+                    retries: h.retries,
+                }),
+                shell: c.shell,
+                exposed_ports: c
+                    .exposed_ports
+                    .iter()
+                    .flatten()
+                    .filter_map(|p| crate::config::parse_port(p))
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .into_iter()
+                    .collect(),
+                volumes: c.volumes.into_iter().flatten().collect(),
+                labels: c.labels,
+            }),
+            rootfs: RootFs {
+                kind: image.rootfs.kind,
+                diff_ids: image.rootfs.diff_ids.unwrap_or_default(),
+            },
+            run_error,
+        }
+    }
 }
 
 /// What a manifest document turned out to be.
@@ -264,10 +284,16 @@ pub fn parse_document(bytes: &[u8], content_type: &str) -> Result<Document, Erro
     parsed.map_err(|e| Error(format!("manifest: {e}")))
 }
 
-/// Parses an image config, which must describe layers (config.md).
+/// Parses an image config, which must describe layers (config.md), as a pull or a load
+/// takes it: one Go reads into no type is no config, but one only running fails on is
+/// stored, as Docker 29.3.1 stores it (measured: `load` and `pull` of a config whose
+/// `history` is a number, or whose `created` is no date, succeed, and `run`, `create`,
+/// `tag` and `inspect` fail); what running it fails with is kept
+/// ([`ImageConfig::run_error`]).
 pub fn parse_config(bytes: &[u8]) -> Result<ImageConfig, Error> {
-    let config: ImageConfig =
-        serde_json::from_slice(bytes).map_err(|e| Error(format!("image config: {e}")))?;
+    let read = crate::config::Read::new(bytes).map_err(|e| Error(format!("image config: {e}")))?;
+    let run_error = read.error(crate::config::As::Docker);
+    let config = ImageConfig::new(read.into_image(), run_error);
     if config.rootfs.kind != "layers" {
         return bad(format!("rootfs type {:?} is not \"layers\"", config.rootfs.kind));
     }
@@ -419,6 +445,43 @@ mod tests {
         assert_eq!(run.cmd, Some(vec!["-c".to_string(), "true".to_string()]));
         assert_eq!(run.working_dir.as_deref(), Some("/srv"));
         assert!(parse_config(json.replace("\"layers\"", "\"other\"").as_bytes()).is_err());
+    }
+
+    /// A config read as Docker reads it (crate::config): its keys folded and repeated as
+    /// Go takes them, its ports as a container keeps them, its time as Docker writes it;
+    /// one only running fails on stored, with what running it says.
+    #[test]
+    fn configs_are_read_as_docker_reads_them() {
+        let json = r#"{"architecture":"arm64","os":"linux","variant":"","created":"2024-01-02T03:04:05.100000000+24:00",
+            "config":{"User":"root","user":"nobody","Env":["A","B"],"Env":[null],"ExposedPorts":{"80/TCP":{},"x":{},"53/udp":{},"80":{}}},
+            "rootfs":{"type":"layers","diff_ids":[]}}"#;
+        let c = parse_config(json.as_bytes()).unwrap();
+        let run = c.config.as_ref().unwrap();
+        assert_eq!(run.user.as_deref(), Some("nobody"));
+        assert_eq!(run.env, Some(vec!["A".to_string()]));
+        assert_eq!(
+            run.exposed_ports,
+            vec!["53/udp".to_string(), "80/tcp".to_string()]
+        );
+        assert_eq!(c.variant, None);
+        assert_eq!(c.created.as_deref(), Some("2024-01-02T03:04:05.1+24:00"));
+        assert_eq!(c.run_error, None);
+        // Stored, as Docker's load and pull store it; refused to run with Go's words.
+        for (json, said) in [
+            (
+                r#"{"config":{"Healthcheck":5},"rootfs":{"type":"layers","diff_ids":[]}}"#,
+                "json: cannot unmarshal number into Go struct field DockerOCIImageConfig.config.DockerOCIImageConfigExt.Healthcheck of type v1.HealthcheckConfig",
+            ),
+            (
+                r#"{"created":"2024-02-30T00:00:00Z","rootfs":{"type":"layers","diff_ids":[]}}"#,
+                "parsing time \"2024-02-30T00:00:00Z\": day out of range",
+            ),
+        ] {
+            let c = parse_config(json.as_bytes()).unwrap();
+            assert_eq!(c.run_error.as_deref(), Some(said), "{json}");
+        }
+        // No JSON at all is no config.
+        assert!(parse_config(b"{").is_err());
     }
 
     #[test]

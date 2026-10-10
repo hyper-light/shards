@@ -81,11 +81,16 @@ impl<D: crate::containers::Disk> Daemon<D> {
             Some(m) => m,
             None => return refuse(format!("container {id}: its image's manifest is not here")),
         };
-        let base_config: serde_json::Value = base
-            .config
-            .as_deref()
-            .and_then(|c| serde_json::from_slice(c).ok())
-            .unwrap_or(serde_json::Value::Null);
+        // Its image's config as moby's commit reads it (daemon/containerd
+        // image_commit.go), a DockerOCIImage, failing as that fails, and written again as
+        // json.Marshal writes one: what the new image keeps of it is what Go read.
+        let base_config: serde_json::Value = match base.config.as_deref() {
+            None => serde_json::Value::Null,
+            Some(c) => match shards_dockerfile::image::Image::from_json(c).and_then(|i| i.to_json()) {
+                Ok(json) => serde_json::from_str(&json).unwrap_or(serde_json::Value::Null),
+                Err(e) => return refuse(String::from_utf8_lossy(&e).into_owned()),
+            },
+        };
         // The request it was made by: what of its config is the run's.
         let dir = lock(&self.containers).dir(&id);
         let request = std::fs::read(dir.join(super::REQUEST))
@@ -395,6 +400,20 @@ fn container_config(image: Option<&serde_json::Value>, run: Option<&Run>) -> ser
     let Some(obj) = config.as_object_mut() else {
         return serde_json::json!({});
     };
+    // The image's exposed ports as the container's config took them (daemon/containerd
+    // imagespec.go): those network.ParsePort takes, as it writes them.
+    if let Some(ports) = obj.get("ExposedPorts").and_then(serde_json::Value::as_object) {
+        let kept: serde_json::Map<String, serde_json::Value> = ports
+            .keys()
+            .filter_map(|k| shards_image::config::parse_port(k))
+            .map(|k| (k, serde_json::json!({})))
+            .collect();
+        if kept.is_empty() {
+            obj.remove("ExposedPorts");
+        } else {
+            obj.insert("ExposedPorts".into(), kept.into());
+        }
+    }
     if let Some(run) = run {
         if !run.env.is_empty() {
             let mut env: Vec<String> = obj

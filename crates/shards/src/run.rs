@@ -303,6 +303,11 @@ pub fn prepare(
         say,
         cancel,
     )?;
+    // Its config as Docker reads it to run it (daemon/containerd GetImage): one Go reads
+    // into no DockerOCIImage runs nothing.
+    if let Some(e) = &image.config.run_error {
+        return Err(format!("could not deserialize image config: {e}"));
+    }
     let options = compose(image.config.config.as_ref(), request)?;
     let stop_signal = request
         .stop_signal
