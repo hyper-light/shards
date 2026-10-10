@@ -5491,7 +5491,7 @@ revision before comparing a changed API/implementation.
 - **Its basis, pinned.** `tests/fs_dir_budget.rs` sets its process's limit to what it holds
   and 24 more, then has a guest walk 584 directories, work in ones let go long since, and
   fill its handles: every request is answered (it failed EMFILE at directory 25 before),
-  OPEN and OPENDIR are refused EMFILE at the budget and nothing else is, and the worst
+  and the worst
   request, a RENAME between two directories let go with the server at its room, needs all
   of `REQUEST_FDS` = 3: at 2 the kernel refuses it (mutation-checked). What a request holds
   at most: the first directory, while the second's path is walked a component at a time
@@ -5518,7 +5518,10 @@ revision before comparing a changed API/implementation.
 - **Consequence.** A guest walks any tree within 90 descriptors, at 2.1 µs a directory
   more (6%): its directory is opened when first used, not at its lookup, checked by an
   fstat, and one let go closed. A reopen walks its path from the nearest directory held,
-  8 to 10 µs a component on macOS when none above it is held, which the LRU makes rare. A
-  guest may hold 90 files and directories open across its shares on this host, past which
-  OPEN and OPENDIR answer EMFILE: the table's part of the share processes the user may
-  start. Linux's openat2, one call for a whole path, is unmeasured here.
+  8 to 10 µs a component on macOS when none above it is held, which the LRU makes rare.
+  The guest's open files and directories are no longer bounded by it (2026-10-10, D38):
+  their descriptors are the cache's too, opened again by path when let go, and only pins,
+  descriptors no path could open again, count against the budget, so a guest holds as many
+  as its own kernel lets it. What a workload pays past the cache, a reopen for each file
+  read again, is unmeasured end to end; Linux's openat2, one call for a whole path, is
+  unmeasured here.

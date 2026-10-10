@@ -2500,21 +2500,36 @@ microVM as virtio-fs shares (virtio 1.3 §5.11; Linux fs/fuse/virtio_fs.c):
     directory the node was: one renamed or replaced on the host since, or reached through
     a symlink even to itself, is stale (ESTALE), which has Linux's VFS look it up again
     (`retry_estale`).
-  - *Bounded.* Directories' descriptors sit in an LRU let go between requests, never during
-    one. Its size, with the guest's open handles counted against it (OPEN and OPENDIR
-    refused EMFILE past it, as a kernel refuses a process), is derived
-    (`fs::server::Limits`): the process's limit raised as Go's runtime raises its own
-    (`platform::raise_descriptor_limit`, the daemon's too), less what it holds and
-    `REQUEST_FDS` (3) a server; and no more than its part of the system's table with as
+  - *A cache, never a limit the guest meets.* Directories' and the guest's open files'
+    descriptors sit in an LRU, let go between requests and never during one, and opened
+    again along their paths as they are next used: a handle keeps its node, its open flags
+    (O_CREAT, O_EXCL and O_TRUNC acting once) and the identity it opened, so a file the host
+    replaced, removed or took its mode away from since is stale (ESTALE). A held descriptor
+    serves first, as a kernel's open file outlives its unlink. The guest's handles are as
+    many as its own kernel lets its processes have.
+  - *Pins, the budget's alone.* Descriptors no path could open again are pinned: taken
+    before the guest unlinks or renames over a node it has open (let go where the removal
+    fails), before its chmod refuses the access its open handles have, and for a file made
+    with a mode refusing its own handle. Past the budget none is taken: a node the removal
+    leaves another name of is reached by that name, and a last name's handles are stale
+    once their own descriptors go, those opened after reaching what the path then leads to.
+  - *Its size, derived* (`fs::server::Limits`): the process's limit raised as Go's runtime
+    raises its own (`platform::raise_descriptor_limit`, the daemon's too), less what it holds
+    and `REQUEST_FDS` (3) a server; and no more than its part of the system's table with as
     many share processes as runs the user may start. This host: 90 a share process (PM
     M136). A walk costs 2.1 µs a directory more (6%); a reopen 8 to 10 µs a component
-    walked on macOS.
+    walked on macOS. What a guest's workload pays past the cache, a reopen for each file
+    read again (a tree read round and round, a package manager's), is unmeasured end to end.
   - Tests: `tests/fs_dir_budget.rs` (a walk of 584 directories within 24 descriptors,
-    EMFILE at the budget, `REQUEST_FDS` exactly enough),
-    `a_directory_let_go_is_found_by_its_path_or_is_stale` (renames, a host's rename and
-    replacement, symlinks to itself and out of the share),
-    `a_budget_is_reckoned_from_the_hosts_limits`, each mutation-checked. Linux's openat2
-    path runs in CI's Linux jobs only.
+    `REQUEST_FDS` exactly enough), `handles_past_the_budget_each_serve_their_file` (1,000
+    handles past a budget of 4, read round and round), the pins' (an unlink, a rename over,
+    a chmod, a read-only file filled, hard links, a reused inode number, a removal that
+    fails), `a_directory_let_go_is_found_by_its_path_or_is_stale` (renames, a host's rename
+    and replacement, symlinks to itself and out of the share),
+    `a_budget_is_reckoned_from_the_hosts_limits`, and on a real microVM
+    `a_shared_directorys_files_stay_open_past_the_shares_descriptors` (300 files of a `-v`
+    directory open at once, past this host's 90); mutation-checked (handles capped at the
+    budget fails both). Linux's openat2 path runs in CI's Linux jobs only.
 - Open, unmeasured: the forwarding hop's cost per request against an in-process server,
   and throughput against Docker Desktop's virtiofs; DAX windows, which would let file
   data skip the hop; the local driver's other types (NFS and CIFS clients in the guest
