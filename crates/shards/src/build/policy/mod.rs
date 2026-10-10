@@ -790,7 +790,9 @@ impl Host for Funcs<'_> {
                 let Some(image) = self.input.image.as_ref().filter(|i| !i.artifact_type.is_empty()) else {
                     return Ok(Some(Value::Bool(false)));
                 };
-                let arg = args.first().unwrap_or(&Value::Null);
+                // A binding, not a promoted temporary: Value has a Drop of its own.
+                let null = Value::Null;
+                let arg = args.first().unwrap_or(&null);
                 if !matches!(arg, Value::Object(_)) {
                     return Err(undefined(format!(
                         "{NAME}: expected object, got {}",
