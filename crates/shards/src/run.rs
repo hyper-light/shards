@@ -442,17 +442,29 @@ pub struct Origin {
     rootfs: PathBuf,
     kernel_digest: String,
     init_digest: String,
+    /// Whether it was saved with the in-VM server's device after its root filesystem (an
+    /// Agentfile's image, D60), which a restore of it is then given too. Whether, not
+    /// where: the device is the daemon's own (guest::server_device), never a path read
+    /// from the template.
+    #[serde(default)]
+    server: bool,
 }
 
 impl Origin {
     const FILE: &str = "origin.json";
 
-    pub fn of(guest: &Guest, rootfs: &Path) -> Origin {
+    pub fn of(guest: &Guest, rootfs: &Path, server: bool) -> Origin {
         Origin {
             rootfs: rootfs.to_path_buf(),
             kernel_digest: guest.kernel_digest.clone(),
             init_digest: guest.init_digest.clone(),
+            server,
         }
+    }
+
+    /// Whether it was saved with the in-VM server's device.
+    pub fn server(&self) -> bool {
+        self.server
     }
 
     /// Records it in the template `dir`.

@@ -14,7 +14,7 @@
 set -u
 D=/opt/shards-d113
 REG=127.0.0.1:15113
-docker rm -f shards-d113-registry >/dev/null 2>&1
+docker rm -f -v shards-d113-registry >/dev/null 2>&1
 docker run -d --name shards-d113-registry -p 15113:5000 registry:2 >/dev/null
 sleep 2
 rm -rf "$D/spyimg" "$D/ctx" && mkdir -p "$D/spyimg" "$D/ctx"
@@ -29,5 +29,5 @@ echo "SHARDS-D113-MARK BEGIN $(date +%s%N)" >&2
 echo "exit $?" >> "$D/build.txt"
 echo "SHARDS-D113-MARK END $(date +%s%N)" >&2
 docker rmi -f shards-d113-out:1 "$REG/shards-d113-spy:1" >/dev/null 2>&1
-docker rm -f shards-d113-registry >/dev/null 2>&1
+docker rm -f -v shards-d113-registry >/dev/null 2>&1
 tail -5 "$D/build.txt"

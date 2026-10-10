@@ -253,6 +253,9 @@ struct Pool {
     /// run that made it: the one file a restore of it may be given (`--backing`), whatever
     /// the template's state, which a VM process wrote, names.
     rootfs: Option<PathBuf>,
+    /// Whether its template was saved with the in-VM server's device (D60), once read:
+    /// its restores are given the daemon's own, as its cold boots are.
+    server: Option<bool>,
     ready: VecDeque<Ready>,
     starting: usize,
     /// Warm VMs in a row that never became ready.
@@ -3758,7 +3761,7 @@ impl<D: Disk> Daemon<D> {
         let fresh = dir.with_extension(format!("new-{}-{n}", std::process::id()));
         let mut ready = self.cold(threads, &cfg, &prepared.rootfs, Some(&fresh));
         if ready.is_ok()
-            && let Err(e) = crate::run::Origin::of(guest, &prepared.rootfs).write(&fresh)
+            && let Err(e) = crate::run::Origin::of(guest, &prepared.rootfs, server.is_some()).write(&fresh)
         {
             log(format!("{}: {e}", fresh.display()));
         }

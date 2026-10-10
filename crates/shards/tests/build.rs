@@ -6254,6 +6254,142 @@ fn agents_are_osi_artifacts_made_pushed_and_taken() {
     );
 }
 
+/// An OSI artifact given as a named build context (D113): the OCI layout the context names
+/// gives it, as oras and skopeo make one, no registry asked; held to the digest an
+/// Agentfile pins, in the words a fetch by digest uses; and a context of another kind
+/// gives no artifact.
+#[test]
+fn agents_come_from_the_oci_layouts_build_contexts_give() {
+    use sha2::Digest as _;
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let (port, repos) = common::writable_registry();
+    let home = TempDir::new("build-osi-layout-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let dir = TempDir::new("build-osi-layout-agent");
+    std::fs::create_dir_all(dir.join("bin")).unwrap();
+    std::fs::write(dir.join("bin/run"), "#!/bin/sh\necho agent\n").unwrap();
+    std::fs::write(
+        dir.join("agent.json"),
+        r#"{"name":"main","run":{"command":["bin/run"]}}"#,
+    )
+    .unwrap();
+    let pushed_as = format!("127.0.0.1:{port}/team/agent:1");
+    let made = shards(&["build", "agent", dir.to_str().unwrap(), "-t", &pushed_as]);
+    assert_eq!(made.status, Some(0), "{}", made.stderr);
+    let pushed = shards(&["push", "agent", &pushed_as]);
+    assert_eq!(pushed.status, Some(0), "{}", pushed.stderr);
+    // The artifact as an OCI layout, tag `1`, as `oras cp --to-oci-layout` writes one.
+    let layout = TempDir::new("build-osi-layout");
+    let hex = |b: &[u8]| -> String {
+        sha2::Sha256::digest(b)
+            .iter()
+            .map(|x| format!("{x:02x}"))
+            .collect()
+    };
+    let manifest_digest = {
+        let repos = repos.lock().unwrap();
+        let (_, manifest) = repos.manifests["team/agent"]["1"].clone();
+        std::fs::create_dir_all(layout.join("blobs/sha256")).unwrap();
+        for b in repos.blobs["team/agent"]
+            .values()
+            .chain(std::iter::once(&manifest))
+        {
+            std::fs::write(layout.join("blobs/sha256").join(hex(b)), b).unwrap();
+        }
+        std::fs::write(layout.join("oci-layout"), r#"{"imageLayoutVersion":"1.0.0"}"#).unwrap();
+        let digest = format!("sha256:{}", hex(&manifest));
+        std::fs::write(
+            layout.join("index.json"),
+            format!(
+                r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[{{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"{digest}","size":{},"annotations":{{"org.opencontainers.image.ref.name":"1"}}}}]}}"#,
+                manifest.len()
+            ),
+        )
+        .unwrap();
+        digest
+    };
+    // Named for a registry that answers nothing: the layout alone gives it.
+    let name = "127.0.0.1:1/team/agent:1";
+    let ctx = context("build-osi-layout-ctx", &format!("FROM {image}\n"));
+    let agentfile = |reference: &str| {
+        std::fs::write(
+            ctx.join("Agentfile"),
+            format!("FROM {image}\nAGENT main FROM {reference}\n"),
+        )
+        .unwrap();
+    };
+    agentfile(name);
+    let given = format!("{name}=oci-layout://{}:1", layout.display());
+    let out = TempDir::new("build-osi-layout-out");
+    let built = shards(&[
+        "build",
+        "--progress=plain",
+        "--build-context",
+        &given,
+        "-o",
+        out.join("root").to_str().unwrap(),
+        ctx.to_str().unwrap(),
+    ]);
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    let root = out.join("root");
+    assert_eq!(
+        std::fs::read_to_string(root.join("agents/main/bin/run")).unwrap(),
+        "#!/bin/sh\necho agent\n"
+    );
+    let config: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(root.join("agents/main.d/osi.json")).unwrap()).unwrap();
+    assert_eq!(config["name"], "main");
+    assert!(
+        built
+            .stderr
+            .contains(&format!("[context {name}] load metadata for {name}")),
+        "{}",
+        built.stderr
+    );
+
+    // Pinned to another digest: refused as a fetch by digest that got another is.
+    let other = format!("sha256:{}", "0".repeat(64));
+    let pinned = format!("{name}@{other}");
+    agentfile(&pinned);
+    let given = format!("{pinned}=oci-layout://{}:1", layout.display());
+    let refused = shards(&["build", "--build-context", &given, ctx.to_str().unwrap()]);
+    assert_ne!(refused.status, Some(0));
+    assert!(
+        refused.stderr.contains(&format!(
+            "{pinned}: got digest {manifest_digest}, expected {other}"
+        )),
+        "{}",
+        refused.stderr
+    );
+    // Pinned to its own: taken.
+    let pinned = format!("{name}@{manifest_digest}");
+    agentfile(&pinned);
+    let given = format!("{pinned}=oci-layout://{}:1", layout.display());
+    let taken = shards(&["build", "--build-context", &given, ctx.to_str().unwrap()]);
+    assert_eq!(taken.status, Some(0), "{}", taken.stderr);
+
+    // A context of another kind gives no artifact.
+    agentfile(name);
+    let given = format!("{name}=docker-image://{image}");
+    let refused = shards(&["build", "--build-context", &given, ctx.to_str().unwrap()]);
+    assert_ne!(refused.status, Some(0));
+    assert!(
+        refused.stderr.contains(&format!(
+            "the build context {name} for the OSI artifact {name} is docker-image://{image}: an artifact's context is an OCI layout, oci-layout://DIR[:TAG]"
+        )),
+        "{}",
+        refused.stderr
+    );
+}
+
 /// An OSI artifact of several platforms (§8 Q1, D97): `--platform` makes a manifest for
 /// each, its config naming its platform and its content `DIR/<os>_<arch>` where there is
 /// one, else `DIR` without those; the name resolves to an index carrying the artifact
@@ -10548,6 +10684,60 @@ fn policies_read_image_provenance_and_signatures() {
     let want: Vec<&str> = include_str!("../src/build/testdata/buildkit-v0.28.1-policy.buildx.txt")
         .lines()
         .collect();
+    assert_eq!(got, want, "{}", built.stderr);
+}
+
+/// A policy asking for the attestation chain of an image that is one manifest, no index
+/// (D113): answered with none, so the policy sees no provenance and no signatures and
+/// decides, the build going on. BuildKit v0.28.1 answers the same question by
+/// dereferencing nil (source/containerimage/source.go:283), which ends dockerd.
+#[test]
+fn a_policy_asking_a_single_manifests_chain_is_answered() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("policy-single-manifest-home");
+    let env = [("SHARDS_HOME", home.as_os_str())];
+    let ctx = context("policy-single-manifest-ctx", &format!("FROM {image}\n"));
+    std::fs::write(
+        ctx.join("Dockerfile.rego"),
+        "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if {\n\tinput.image\n\tprint(\"PROV\", input.image.hasProvenance)\n\tprint(\"SIG\", count(object.get(input.image, \"signatures\", [])))\n}\n\ndecision := {\"allow\": allow}\n",
+    )
+    .unwrap();
+    let built = common::run_shards_env_in(&ctx, &[], &["build", "--progress=plain", "."], &env, TIMEOUT);
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    let host = match std::env::consts::ARCH {
+        "aarch64" => "arm64",
+        "x86_64" => "amd64",
+        other => other,
+    };
+    // The image by its tag, then pinned: each asked for its chain once, answered, allowed.
+    let got: Vec<String> = policy_log(&built.stderr)
+        .into_iter()
+        .filter(|l| {
+            l.contains(": PROV ")
+                || l.contains(": SIG ")
+                || l.starts_with("policy decision for source docker-image://")
+        })
+        .map(|l| {
+            let l = l.replace(&image, "IMAGE");
+            match l.split_once("@sha256:") {
+                Some((a, b)) => format!("{a}@sha256:DIGEST{}", b.get(64..).unwrap_or_default()),
+                None => l,
+            }
+        })
+        .collect();
+    let mut want = Vec::new();
+    for source in ["IMAGE", "IMAGE@sha256:DIGEST"] {
+        let decision =
+            |d: &str| format!("policy decision for source docker-image://{source} (linux/{host}): {d}");
+        want.push(decision("resolve missing fields [image.hasProvenance]"));
+        want.push("Dockerfile.rego:9: PROV <undefined>".to_string());
+        want.push("Dockerfile.rego:9: PROV <undefined>".to_string());
+        want.push("Dockerfile.rego:10: SIG 0".to_string());
+        want.push(decision("ALLOW"));
+    }
     assert_eq!(got, want, "{}", built.stderr);
 }
 

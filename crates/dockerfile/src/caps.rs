@@ -74,6 +74,12 @@ pub fn op(op: &Op, meta: &Meta, sets_default_path: bool) -> BTreeSet<&'static st
                 );
             } else if identifier.starts_with(b"oci-layout://") {
                 add("source.ocilayout", true);
+            } else if identifier.starts_with(b"docker-image+blob://")
+                || identifier.starts_with(b"oci-layout+blob://")
+            {
+                // A blob by digest, from a registry or a client's layout (llb.ImageBlob,
+                // llb.OCILayoutBlob): the one capability either asks.
+                add("source.imageblob", true);
             }
         }
         OpKind::Exec {
@@ -243,6 +249,42 @@ mod tests {
         assert_eq!(
             refusal("exec.meta.cdi", Lacks::Disabled("no CDI"), "buildkit"),
             "requested experimental feature exec.meta.cdi  has been disabled on the build server: no CDI"
+        );
+    }
+
+    /// A blob by digest, from a registry or from a client's OCI layout, asks
+    /// `source.imageblob` alone, as llb.ImageBlob and llb.OCILayoutBlob add it; a layout's
+    /// image asks `source.ocilayout`.
+    #[test]
+    fn blob_sources_ask_for_image_blobs() {
+        let source = |id: &[u8], attrs: &[(&[u8], &[u8])]| Op {
+            inputs: Vec::new(),
+            kind: OpKind::Source {
+                identifier: id.to_vec(),
+                attrs: attrs.iter().map(|(k, v)| (k.to_vec(), v.to_vec())).collect(),
+            },
+            platform: None,
+        };
+        let caps = |o: &Op| op(o, &Meta::default(), false);
+        let blob = [
+            (&b"http.filename"[..], &b"blob"[..]),
+            (b"oci.session", b"s"),
+            (b"oci.store", b"x"),
+        ];
+        assert_eq!(
+            caps(&source(b"oci-layout+blob://docker.io/library/x@sha256:00", &blob)),
+            BTreeSet::from(["source.imageblob"])
+        );
+        assert_eq!(
+            caps(&source(
+                b"docker-image+blob://docker.io/library/x@sha256:00",
+                &blob[..1]
+            )),
+            BTreeSet::from(["source.imageblob"])
+        );
+        assert_eq!(
+            caps(&source(b"oci-layout://x@sha256:00", &[])),
+            BTreeSet::from(["source.ocilayout"])
         );
     }
 }

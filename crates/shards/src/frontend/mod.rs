@@ -32,6 +32,7 @@ use shards_gateway::grpc;
 use crate::build::skills;
 
 mod check;
+mod osi;
 
 /// The most a file the frontend reads may be: dockerui's maxFileSize, containerd's
 /// DefaultMaxRecvMsgSize, 16 MiB.
@@ -676,6 +677,10 @@ fn local_definition(name: &str, follow: &[&str], session: &str, key: &str, custo
 }
 
 /// What the frontend asks BuildKit, and keeps of its answers while it plans.
+/// The ops that lay an OSI artifact's content out (osi.rs), in a definition's order, the
+/// last the step whose first output is it.
+type Laid = Vec<(Op, Meta)>;
+
 struct Gateway<'c, R, W> {
     client: RefCell<&'c mut Client<R, W>>,
     caps: Caps,
@@ -690,6 +695,13 @@ struct Gateway<'c, R, W> {
     dockerignore: RefCell<Option<Vec<u8>>>,
     /// The file being built, for warnings, while a plan for which they are sent is made.
     warn_into: RefCell<Option<(String, Vec<u8>)>>,
+    /// The OSI artifacts build contexts gave, by the source the planner names each by
+    /// (`osi-artifact://` and its reference with its manifest's digest): the ops that lay
+    /// its content out, the last the step whose first output is it (osi.rs).
+    artifacts: RefCell<BTreeMap<Vec<u8>, Laid>>,
+    /// The frontend's own image, as a source op of the definition BuildKit mounts for it:
+    /// the root of the steps it has BuildKit run (check.rs, osi.rs).
+    me: Option<Op>,
 }
 
 impl<R: Read, W: Write> Gateway<'_, R, W> {
@@ -737,6 +749,214 @@ impl<R: Read, W: Write> Gateway<'_, R, W> {
                 .map_err(Failure::call)?;
         }
         Ok(solved.single)
+    }
+
+    /// One blob of the OCI layout the client serves as content store `store`, by `digest`
+    /// (BuildKit's `oci-layout+blob` source, which `llb.OCILayoutBlob` makes), as a file
+    /// named `blob`.
+    fn layout_blob(&self, store: &[u8], digest: &str) -> Result<Op, Failure> {
+        let store_s = String::from_utf8_lossy(store);
+        let at = shards_image::reference::Reference::parse_normalized(&format!("{store_s}@{digest}"))
+            .map_err(|e| Failure::new(format!("{store_s}@{digest}: {e}")))?;
+        Ok(Op {
+            inputs: Vec::new(),
+            kind: OpKind::Source {
+                identifier: format!("oci-layout+blob://{at}").into_bytes(),
+                attrs: BTreeMap::from([
+                    (b"http.filename".to_vec(), b"blob".to_vec()),
+                    (b"oci.session".to_vec(), self.env.session.clone().into_bytes()),
+                    (b"oci.store".to_vec(), store.to_vec()),
+                ]),
+            },
+            platform: None,
+        })
+    }
+
+    /// A blob of a layout, read whole where it is at most `most` bytes: a manifest's, an
+    /// index's or a config's.
+    fn read_layout_blob(&self, store: &[u8], digest: &str, most: u64) -> Result<Vec<u8>, Failure> {
+        let def = Definition {
+            ops: vec![self.layout_blob(store, digest)?],
+            metadata: vec![Meta::default()],
+            root: Some(Input { op: 0, index: 0 }),
+        };
+        let m = pb::definition(&def, &Carried::default())
+            .ok_or_else(|| Failure::new("failed to marshal LLB definition"))?;
+        let r = self.solve(&m, &[], true)?.unwrap_or_default();
+        let bytes = self.read_file(&r, "blob").map_err(ReadError::failure)?;
+        if bytes.len() as u64 > most {
+            return Err(Failure::new(format!("{digest}: over {most} bytes")));
+        }
+        Ok(bytes)
+    }
+
+    /// An OSI artifact of `kind` from the OCI layout the client serves as `store`, at
+    /// `digest` (D113): held as `shards build` holds one from a registry (agent.rs, the
+    /// same checks and words: D54, §12.17, §9.2), its content checked and laid out by a
+    /// step of the frontend's own image, which the definition takes its place for.
+    fn artifact_from_layout(
+        &self,
+        name: &[u8],
+        kind: &[u8],
+        store: &[u8],
+        digest: &[u8],
+    ) -> Result<Resolved, Failure> {
+        use shards_image::oci::{self, Document};
+        let name_s = String::from_utf8_lossy(name).into_owned();
+        let want = match kind {
+            b"agent" => shards_image::osi::Kind::Agent,
+            b"harness" => shards_image::osi::Kind::Harness,
+            _ => shards_image::osi::Kind::Mcp,
+        };
+        let media = |bytes: &[u8]| {
+            serde_json::from_slice::<serde_json::Value>(bytes)
+                .ok()
+                .and_then(|v| v.get("mediaType").and_then(|m| m.as_str()).map(str::to_string))
+                .unwrap_or_else(|| oci::media::OCI_MANIFEST.to_string())
+        };
+        // The root the context names: an index's manifest for this platform, as
+        // `shards build` takes one (agent::fetch), else the manifest itself.
+        let mut d = String::from_utf8_lossy(digest).into_owned();
+        let mut bytes = self.read_layout_blob(store, &d, oci::MAX_MANIFEST)?;
+        // Each document is the one its digest names, as a fetch into the store holds one.
+        let held = |bytes: &[u8], d: &str| -> Result<(), Failure> {
+            let got = osi::sha256_of(bytes).map_err(|e| Failure::new(format!("{d}: {e}")))?;
+            if got != d {
+                return Err(Failure::new(format!("got digest {got}, expected {d}")));
+            }
+            Ok(())
+        };
+        held(&bytes, &d)?;
+        let document =
+            |bytes: &[u8]| oci::parse_document(bytes, &media(bytes)).map_err(|e| Failure::new(e.to_string()));
+        if let Document::Index(index) = document(&bytes)? {
+            let chosen = shards_image::platform::select(&index, &shards_image::platform::guest())
+                .cloned()
+                .ok_or_else(|| Failure::new(format!("{name_s}: no {} for this platform", want.word())))?;
+            d = chosen.digest.clone();
+            bytes = self.read_layout_blob(store, &d, oci::MAX_MANIFEST)?;
+            held(&bytes, &d)?;
+        }
+        let Document::Manifest(m) = document(&bytes)? else {
+            return Err(Failure::new(format!("{name_s}: an index inside an index")));
+        };
+        let found = crate::agent::check_manifest(&d, &m).map_err(Failure::new)?;
+        if found != want {
+            return Err(Failure::new(crate::agent::not_the_kind(&name_s, found, want)));
+        }
+        let config = self.read_layout_blob(store, &m.config.digest, oci::MAX_CONFIG)?;
+        held(&config, &m.config.digest)?;
+        shards_image::osi::Config::parse(&config).map_err(|e| Failure::new(format!("{name_s}: {e}")))?;
+        // The content: each layer from the layout, held and laid out in the frontend's own
+        // image, with no network (osi.rs).
+        let me = self.me.clone().ok_or_else(|| {
+            Failure::new(
+                "shards' frontend lays out an OSI artifact in its own image, which BuildKit gave no definition of (/run/config/buildkit/metadata/frontend.bin)",
+            )
+        })?;
+        let spec = osi::Spec {
+            kind: want,
+            layers: m
+                .layers
+                .iter()
+                .map(|l| (l.digest.clone(), l.media_type.clone()))
+                .collect(),
+        };
+        let mut ops: Vec<(Op, Meta)> = vec![(me.clone(), Meta::default())];
+        let mut mounts = vec![shards_dockerfile::llb::OpMount {
+            input: 0,
+            selector: Vec::new(),
+            dest: b"/".to_vec(),
+            output: -1,
+            readonly: true,
+            kind: shards_dockerfile::llb::OpMountKind::Bind,
+        }];
+        let mut inputs = vec![Input { op: 0, index: 0 }];
+        for (i, (layer, _)) in spec.layers.iter().enumerate() {
+            ops.push((self.layout_blob(store, layer)?, Meta::default()));
+            inputs.push(Input {
+                op: ops.len() - 1,
+                index: 0,
+            });
+            mounts.push(shards_dockerfile::llb::OpMount {
+                input: inputs.len() as i64 - 1,
+                selector: Vec::new(),
+                dest: format!("/layers/{i}").into_bytes(),
+                output: -1,
+                readonly: true,
+                kind: shards_dockerfile::llb::OpMountKind::Bind,
+            });
+        }
+        for (dest, output) in [(&b"/out"[..], 0), (&b"/report"[..], 1)] {
+            mounts.push(shards_dockerfile::llb::OpMount {
+                input: -1,
+                selector: Vec::new(),
+                dest: dest.to_vec(),
+                output,
+                readonly: false,
+                kind: shards_dockerfile::llb::OpMountKind::Bind,
+            });
+        }
+        let exec = Op {
+            inputs,
+            kind: OpKind::Exec {
+                process: Box::new(shards_dockerfile::llb::Process {
+                    args: vec![
+                        b"/shards".to_vec(),
+                        b"frontend".to_vec(),
+                        b"osi".to_vec(),
+                        spec.json().into_bytes(),
+                    ],
+                    cwd: b"/".to_vec(),
+                    ..Default::default()
+                }),
+                mounts,
+                network: shards_dockerfile::llb::NetMode::None,
+                security: shards_dockerfile::llb::Security::Sandbox,
+                secret_env: Vec::new(),
+                devices: Vec::new(),
+            },
+            platform: me.platform.clone(),
+        };
+        let mut meta = Meta::default();
+        meta.description.insert(
+            b"llb.customname".to_vec(),
+            format!("[internal] load {} {name_s}", want.word()).into_bytes(),
+        );
+        ops.push((exec, meta));
+        // Its report solved and read before the build goes on: a refusal fails it here.
+        let (o, md): (Vec<Op>, Vec<Meta>) = ops.iter().cloned().unzip();
+        let def = Definition {
+            ops: o,
+            metadata: md,
+            root: Some(Input {
+                op: ops.len() - 1,
+                index: 1,
+            }),
+        };
+        let marshalled = pb::definition(&def, &Carried::default())
+            .ok_or_else(|| Failure::new("failed to marshal LLB definition"))?;
+        let r = self.solve(&marshalled, &[], true)?.unwrap_or_default();
+        let finding = self.read_file(&r, "finding").map_err(ReadError::failure)?;
+        if !finding.is_empty() {
+            return Err(Failure::new(format!(
+                "{name_s}: {}",
+                String::from_utf8_lossy(&finding)
+            )));
+        }
+        let mut reference = shards_image::reference::Reference::parse(&name_s)
+            .map_err(|e| Failure::new(format!("{name_s}: {e}")))?;
+        reference.digest =
+            Some(shards_image::reference::Digest::parse(&d).map_err(|e| Failure::new(format!("{d}: {e}")))?);
+        let resolved = reference.to_string();
+        self.artifacts
+            .borrow_mut()
+            .insert([b"osi-artifact://".as_slice(), resolved.as_bytes()].concat(), ops);
+        Ok(Resolved {
+            reference: resolved.into_bytes(),
+            digest: Some(d.into_bytes()),
+            config,
+        })
     }
 
     /// dockerui's ReadFile: `name` of `r`, refused past 16 MiB by its size, read with a
@@ -839,15 +1059,39 @@ impl<R: Read, W: Write> Resolver for Gateway<'_, R, W> {
         })
     }
 
+    /// An OSI artifact named by its reference alone: refused, saying what to give. BuildKit
+    /// gives a frontend no artifact's manifest (D113, measured), so one comes from an OCI
+    /// layout the client gives as a named build context, keyed as a FROM's is.
     fn artifact(&self, name: &[u8], kind: &[u8], log: &[u8]) -> Result<Resolved, Vec<u8>> {
+        let _ = (kind, log);
+        let name = String::from_utf8_lossy(name);
+        let key = shards_image::reference::Reference::parse_normalized(&name).map_or_else(
+            |_| name.to_string(),
+            |r| {
+                let f = r.familiar();
+                f.strip_suffix(":latest").unwrap_or(&f).to_string()
+            },
+        );
+        Err(format!(
+            "{name}: through BuildKit an OSI artifact comes from an OCI layout given as a build context, BuildKit giving a frontend no artifact's manifest: --build-context {key}=oci-layout://DIR:TAG, which `oras cp --to-oci-layout {name} DIR:TAG` or `skopeo copy --preserve-digests docker://{name} oci:DIR:TAG` makes"
+        )
+        .into_bytes())
+    }
+
+    fn artifact_layout(
+        &self,
+        name: &[u8],
+        kind: &[u8],
+        store: &[u8],
+        digest: &[u8],
+        log: &[u8],
+    ) -> Result<Resolved, Vec<u8>> {
         let _ = log;
-        Err([
-            name,
-            b": shards' frontend takes no OSI artifacts yet (an ",
-            kind,
-            b" from a registry): build this file with shards build",
-        ]
-        .concat())
+        self.artifact_from_layout(name, kind, store, digest).map_err(|f| {
+            let message = f.message.clone().into_bytes();
+            *self.failed.borrow_mut() = Some(f);
+            message
+        })
     }
 
     fn epoch(&self, source: &EpochSource) -> Result<Option<(i64, u32)>, Vec<u8>> {
@@ -1026,11 +1270,15 @@ pub(crate) fn frontend(args: impl Iterator<Item = OsString>) -> ExitCode {
         );
         return ExitCode::SUCCESS;
     }
-    // The isolation checks the frontend has BuildKit run in its own image (check.rs).
-    if let [mode, spec] = args.as_slice()
-        && mode == "check"
-    {
-        return check::run(&spec.to_string_lossy());
+    // The isolation checks the frontend has BuildKit run in its own image (check.rs), and
+    // the layout of an OSI artifact a build context gives (osi.rs).
+    if let [mode, spec] = args.as_slice() {
+        if mode == "check" {
+            return check::run(&spec.to_string_lossy());
+        }
+        if mode == "osi" {
+            return osi::run(&spec.to_string_lossy());
+        }
     }
     if let Some(a) = args.first() {
         // Nothing to run with: BuildKit runs the image's entrypoint as it is.
@@ -1114,6 +1362,8 @@ fn build<R: Read, W: Write>(client: &mut Client<R, W>, env: &Env) -> Result<Outc
         resolved: RefCell::new(BTreeMap::new()),
         dockerignore: RefCell::new(None),
         warn_into: RefCell::new(None),
+        artifacts: RefCell::new(BTreeMap::new()),
+        me: self_image(),
     };
     let mut config = config;
     let entry = read_entrypoint(&gateway, &mut config)?;
@@ -1448,8 +1698,9 @@ fn build_platforms<R: Read, W: Write>(
         };
         let mut plan_def = planned.definition();
         lay_skills(g, &mut plan_def, &carried, entry)?;
+        lay_artifacts(g, &mut plan_def)?;
         if !planned.domains.is_empty() {
-            check_domains(g, self_image(), &plan_def, &planned.domains, &carried, entry)?;
+            check_domains(g, g.me.clone(), &plan_def, &planned.domains, &carried, entry)?;
         }
         // The guards' marks are shards' own, for the checks just run: BuildKit is given
         // none of them.
@@ -1868,6 +2119,59 @@ struct Check {
     at: usize,
     step: Option<Vec<u8>>,
     locations: Vec<shards_dockerfile::instructions::Location>,
+}
+
+/// Each OSI artifact a build context gave (D113) laid into `def` in its source's place: the
+/// step of the frontend's own image that lays its content out, from the layout's blobs,
+/// as its source was named.
+fn lay_artifacts<R: Read, W: Write>(g: &Gateway<'_, R, W>, def: &mut Definition) -> Result<(), Failure> {
+    // From the last: a step's inputs go in before it, as a definition's every op follows
+    // its inputs, and the ops before are left where they are.
+    for k in (0..def.ops.len()).rev() {
+        let laid = match def.ops.get(k) {
+            Some(Op {
+                kind: OpKind::Source { identifier, .. },
+                ..
+            }) if identifier.starts_with(b"osi-artifact://") => {
+                g.artifacts.borrow().get(identifier).cloned().ok_or_else(|| {
+                    Failure::new(format!("{}: not resolved", String::from_utf8_lossy(identifier)))
+                })?
+            }
+            _ => continue,
+        };
+        let Some(((exec, _), rest)) = laid.split_last() else {
+            continue;
+        };
+        let n = rest.len();
+        for op in &mut def.ops {
+            for i in &mut op.inputs {
+                if i.op >= k {
+                    i.op += n;
+                }
+            }
+        }
+        if let Some(r) = &mut def.root
+            && r.op >= k
+        {
+            r.op += n;
+        }
+        for (j, (op, meta)) in rest.iter().enumerate() {
+            let mut op = op.clone();
+            for i in &mut op.inputs {
+                i.op += k;
+            }
+            def.ops.insert(k + j, op);
+            def.metadata.insert(k + j, meta.clone());
+        }
+        let mut exec = exec.clone();
+        for i in &mut exec.inputs {
+            i.op += k;
+        }
+        if let Some(op) = def.ops.get_mut(k + n) {
+            *op = exec;
+        }
+    }
+    Ok(())
 }
 
 /// A solved tree as a skills step reads it, through the gateway: its directories'
@@ -2339,6 +2643,8 @@ mod tests {
             resolved: RefCell::new(BTreeMap::new()),
             dockerignore: RefCell::new(None),
             warn_into: RefCell::new(None),
+            artifacts: RefCell::new(BTreeMap::new()),
+            me: Some(my_image()),
         };
         f(&g);
     }
@@ -2441,6 +2747,8 @@ mod tests {
             resolved: RefCell::new(BTreeMap::new()),
             dockerignore: RefCell::new(None),
             warn_into: RefCell::new(None),
+            artifacts: RefCell::new(BTreeMap::new()),
+            me: Some(my_image()),
         };
         assert_eq!(g.solve(&m, &[], true).unwrap().unwrap().id, "r1");
         drop(g);
@@ -2677,6 +2985,168 @@ mod tests {
         )
         .unwrap();
         assert!(agentfile_annotations(&plain).is_empty());
+    }
+
+    /// An OSI artifact named by its reference alone is refused, saying what to give, its
+    /// context keyed as a FROM's is (`:latest` and Docker Hub's names in their familiar
+    /// form).
+    #[test]
+    fn an_artifact_without_its_layout_is_refused_saying_what_to_give() {
+        let mut out = Vec::new();
+        gateway_over(fake_server(&[]), &mut out, |g| {
+            let said = |name: &str| {
+                String::from_utf8(g.artifact(name.as_bytes(), b"agent", b"").unwrap_err()).unwrap()
+            };
+            assert_eq!(
+                said("ghcr.io/org/agent:1"),
+                "ghcr.io/org/agent:1: through BuildKit an OSI artifact comes from an OCI layout given as a build context, BuildKit giving a frontend no artifact's manifest: --build-context ghcr.io/org/agent:1=oci-layout://DIR:TAG, which `oras cp --to-oci-layout ghcr.io/org/agent:1 DIR:TAG` or `skopeo copy --preserve-digests docker://ghcr.io/org/agent:1 oci:DIR:TAG` makes"
+            );
+            assert!(
+                said("docker.io/library/agent:latest").contains("--build-context agent=oci-layout://DIR:TAG")
+            );
+        });
+    }
+
+    /// An OSI artifact from the OCI layout a build context gives (D113): its manifest and
+    /// config read from the client's layout by digest and held as `shards build` holds
+    /// them, its layer held and laid out by a step of the frontend's own image, which the
+    /// build's definition then takes in its source's place.
+    #[test]
+    fn an_artifact_from_a_layout_is_held_and_laid_out_in_the_frontends_image() {
+        let digest_of = |b: &[u8]| osi::sha256_of(b).unwrap();
+        let config = br#"{"schemaVersion":1,"name":"main","run":{"command":["bin/run"]}}"#;
+        let layer = "sha256:".to_string() + &"1".repeat(64);
+        let manifest = format!(
+            r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","artifactType":"application/vnd.osi.agent.v1","config":{{"mediaType":"application/vnd.osi.agent.config.v1+json","digest":"{}","size":{}}},"layers":[{{"mediaType":"application/vnd.osi.agent.content.v1.tar","digest":"{layer}","size":10240}}]}}"#,
+            digest_of(config),
+            config.len()
+        );
+        let m_digest = digest_of(manifest.as_bytes());
+        let blob = |id: &str, bytes: &[u8]| {
+            [
+                Ok(solved(id)),
+                Ok(stated(stat("blob", 0o644, bytes.len() as u64))),
+                Ok(read(bytes)),
+            ]
+        };
+        let mut answers: Vec<Result<Vec<u8>, (u32, &str)>> = Vec::new();
+        answers.extend(blob("m", manifest.as_bytes()));
+        answers.extend(blob("c", config));
+        answers.extend([
+            Ok(solved("osi")),
+            Ok(stated(stat("finding", 0o644, 0))),
+            Ok(read(b"")),
+        ]);
+        let mut out = Vec::new();
+        gateway_over(fake_server(&answers), &mut out, |g| {
+            let r = g
+                .artifact_layout(
+                    b"reg.example/agent:1",
+                    b"agent",
+                    b"store1",
+                    m_digest.as_bytes(),
+                    b"",
+                )
+                .unwrap();
+            assert_eq!(
+                r.reference,
+                format!("reg.example/agent:1@{m_digest}").into_bytes()
+            );
+            assert_eq!(r.config, config.to_vec());
+            // The build's definition: its source in the layout step's place.
+            let mut def = Definition {
+                ops: vec![Op {
+                    inputs: Vec::new(),
+                    kind: OpKind::Source {
+                        identifier: [b"osi-artifact://".as_slice(), &r.reference].concat(),
+                        attrs: BTreeMap::from([(b"osi.kind".to_vec(), b"agent".to_vec())]),
+                    },
+                    platform: None,
+                }],
+                metadata: vec![Meta::default()],
+                root: Some(Input { op: 0, index: 0 }),
+            };
+            lay_artifacts(g, &mut def).unwrap();
+            // Its inputs before it, as every op follows its inputs; the root on it.
+            assert_eq!(def.root, Some(Input { op: 2, index: 0 }));
+            assert!(
+                pb::definition(&def, &Carried::default()).is_some(),
+                "the definition marshals"
+            );
+            let Some(Op {
+                kind:
+                    OpKind::Exec {
+                        process,
+                        mounts,
+                        network,
+                        ..
+                    },
+                inputs,
+                ..
+            }) = def.ops.get(2)
+            else {
+                panic!("{:?}", def.ops);
+            };
+            assert_eq!(
+                process.args[..3],
+                [b"/shards".to_vec(), b"frontend".to_vec(), b"osi".to_vec()]
+            );
+            assert_eq!(*network, shards_dockerfile::llb::NetMode::None);
+            let dests: Vec<&[u8]> = mounts.iter().map(|m| m.dest.as_slice()).collect();
+            assert_eq!(dests, [&b"/"[..], b"/layers/0", b"/out", b"/report"]);
+            // Its inputs: the frontend's image and the layer's blob, appended.
+            let source_of = |i: &Input| match &def.ops[i.op].kind {
+                OpKind::Source { identifier, attrs } => {
+                    (String::from_utf8_lossy(identifier).into_owned(), attrs.clone())
+                }
+                other => panic!("{other:?}"),
+            };
+            assert!(source_of(&inputs[0]).0.contains("shards-d113-frontend"));
+            let (id, attrs) = source_of(&inputs[1]);
+            assert_eq!(id, format!("oci-layout+blob://docker.io/library/store1@{layer}"));
+            assert_eq!(
+                attrs.get(&b"oci.store"[..]).map(Vec::as_slice),
+                Some(&b"store1"[..])
+            );
+            assert_eq!(
+                attrs.get(&b"http.filename"[..]).map(Vec::as_slice),
+                Some(&b"blob"[..])
+            );
+        });
+        // A manifest that is not the one its digest names is refused.
+        let mut answers: Vec<Result<Vec<u8>, (u32, &str)>> = Vec::new();
+        answers.extend(blob("m", manifest.as_bytes()));
+        let mut out = Vec::new();
+        let other = "sha256:".to_string() + &"2".repeat(64);
+        gateway_over(fake_server(&answers), &mut out, |g| {
+            let e = g
+                .artifact_layout(b"reg.example/agent:1", b"agent", b"store1", other.as_bytes(), b"")
+                .unwrap_err();
+            assert_eq!(
+                String::from_utf8(e).unwrap(),
+                format!("got digest {m_digest}, expected {other}")
+            );
+        });
+        // An artifact of another kind than the directive names is refused in shards build's
+        // words.
+        let mut answers: Vec<Result<Vec<u8>, (u32, &str)>> = Vec::new();
+        answers.extend(blob("m", manifest.as_bytes()));
+        let mut out = Vec::new();
+        gateway_over(fake_server(&answers), &mut out, |g| {
+            let e = g
+                .artifact_layout(
+                    b"reg.example/agent:1",
+                    b"harness",
+                    b"store1",
+                    m_digest.as_bytes(),
+                    b"",
+                )
+                .unwrap_err();
+            assert_eq!(
+                String::from_utf8(e).unwrap(),
+                "reg.example/agent:1 is an OSI agent, not an OSI harness"
+            );
+        });
     }
 
     /// The image's label lists what the frontend can do, so that BuildKit refuses a build

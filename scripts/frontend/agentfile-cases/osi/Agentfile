@@ -1,0 +1,5 @@
+# syntax=ghcr.io/hyper-light/shards
+FROM scratch
+COPY testguest /bin/testguest
+AGENT main FROM 127.0.0.1:15113/shards-d113-osi:1
+ENTRYPOINT ["/bin/testguest"]

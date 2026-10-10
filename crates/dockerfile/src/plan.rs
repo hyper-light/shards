@@ -204,6 +204,21 @@ pub trait Resolver {
         let _ = store;
         self.resolve(name, platform, log)
     }
+    /// An OSI artifact of `kind` given as a named build context: the OCI layout the
+    /// client serves as content store `store`, at `digest` (D113). As
+    /// [`Resolver::artifact`], its reference with the digest of the manifest taken, and its
+    /// config's bytes.
+    fn artifact_layout(
+        &self,
+        name: &[u8],
+        kind: &[u8],
+        store: &[u8],
+        digest: &[u8],
+        log: &[u8],
+    ) -> Result<Resolved, Vec<u8>> {
+        let _ = (kind, store, digest, log);
+        Err(errb(&[name, b": OSI artifacts are not resolved here"]))
+    }
 }
 
 /// A resolver given each of the checks' warnings before anything else is asked of it.
@@ -260,6 +275,17 @@ impl Resolver for Warned<'_> {
     ) -> Result<Resolved, Vec<u8>> {
         self.flush();
         self.inner.resolve_layout(name, store, platform, log)
+    }
+    fn artifact_layout(
+        &self,
+        name: &[u8],
+        kind: &[u8],
+        store: &[u8],
+        digest: &[u8],
+        log: &[u8],
+    ) -> Result<Resolved, Vec<u8>> {
+        self.flush();
+        self.inner.artifact_layout(name, kind, store, digest, log)
     }
 }
 
@@ -4253,8 +4279,21 @@ impl Planner<'_> {
         loc: &Location,
         lint: &LinterView<'_>,
     ) -> Result<(), Fail> {
-        let log = errb(&[b"[internal] load metadata for ", reference]);
-        let resolved = self.resolver.artifact(reference, kind, &log).map_err(Fail::new)?;
+        let resolved = match self.named_context(reference, None)? {
+            // Given as a named build context (D113): an OCI layout, held to the digest the
+            // Agentfile pins, if it pins one.
+            Some(n) => {
+                let (store, digest) = Self::artifact_layout_context(reference, &n)?;
+                let log = errb(&[b"[context ", &n.key, b"] load metadata for ", reference]);
+                self.resolver
+                    .artifact_layout(reference, kind, &store, &digest, &log)
+                    .map_err(Fail::new)?
+            }
+            None => {
+                let log = errb(&[b"[internal] load metadata for ", reference]);
+                self.resolver.artifact(reference, kind, &log).map_err(Fail::new)?
+            }
+        };
         let mut attrs = BTreeMap::new();
         attrs.insert(b"osi.kind".to_vec(), kind.to_vec());
         let source = self.graph.source(
@@ -4312,6 +4351,50 @@ impl Planner<'_> {
         )?;
         self.own(first, base.clone());
         Ok(())
+    }
+
+    /// The OCI layout a named build context gives an OSI artifact `reference` as (D113): the
+    /// client's content store and the digest its tag resolved to, `oci-layout://STORE[:TAG]@DIGEST`
+    /// as buildx hands it on. Another kind of context is refused, an image's or a
+    /// directory's being no artifact. Where `reference` pins a digest, the context must name
+    /// the same, refused in the words a fetch by digest that got another uses.
+    fn artifact_layout_context(reference: &[u8], n: &Named) -> Result<(Vec<u8>, Vec<u8>), Fail> {
+        let refused = || {
+            Fail::new(errb(&[
+                b"the build context ",
+                &n.key,
+                b" for the OSI artifact ",
+                reference,
+                b" is ",
+                &n.value,
+                b": an artifact's context is an OCI layout, oci-layout://DIR[:TAG]",
+            ]))
+        };
+        let spec = n.value.strip_prefix(b"oci-layout://").ok_or_else(refused)?;
+        let at = spec.iter().rposition(|&b| b == b'@').ok_or_else(refused)?;
+        let (store, digest) = (go::head(spec, at), go::tail(spec, at + 1));
+        let store = match store.iter().position(|&b| b == b':') {
+            Some(colon) => go::head(store, colon),
+            None => store,
+        };
+        if store.is_empty() || !digest.starts_with(b"sha256:") {
+            return Err(refused());
+        }
+        let pinned = parse_normalized(reference)
+            .ok()
+            .and_then(|r| r.digest.map(|d| d.to_string().into_bytes()));
+        if let Some(pinned) = pinned
+            && pinned.as_slice() != digest
+        {
+            return Err(Fail::new(errb(&[
+                reference,
+                b": got digest ",
+                digest,
+                b", expected ",
+                &pinned,
+            ])));
+        }
+        Ok((store.to_vec(), digest.to_vec()))
     }
 
     /// `SKILL` (§4.3, §8 Q12): its source taken as `ADD` takes one, onto nothing; each
@@ -6227,6 +6310,129 @@ mod tests {
             false,
         ));
         assert_eq!(mtime(&a), Some(b"checkout".to_vec()));
+    }
+
+    /// A resolver of OSI artifacts that says how each was asked for: from a registry, or
+    /// from the OCI layout a build context gives.
+    #[derive(Default)]
+    struct Artifacts {
+        asked: std::cell::RefCell<Vec<String>>,
+    }
+
+    impl Resolver for Artifacts {
+        fn resolve(&self, name: &[u8], _: &Platform, _: &[u8]) -> Result<Resolved, Vec<u8>> {
+            Err(errb(&[b"no image ", name]))
+        }
+
+        fn epoch(&self, _: &EpochSource) -> Result<Option<(i64, u32)>, Vec<u8>> {
+            Ok(None)
+        }
+
+        fn artifact(&self, name: &[u8], kind: &[u8], log: &[u8]) -> Result<Resolved, Vec<u8>> {
+            let s = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
+            self.asked
+                .borrow_mut()
+                .push(format!("registry {} {} [{}]", s(kind), s(name), s(log)));
+            Ok(Resolved {
+                reference: errb(&[name, b"@sha256:", &[b'a'; 64]]),
+                digest: None,
+                config: br#"{"schemaVersion":1,"name":"main"}"#.to_vec(),
+            })
+        }
+
+        fn artifact_layout(
+            &self,
+            name: &[u8],
+            kind: &[u8],
+            store: &[u8],
+            digest: &[u8],
+            log: &[u8],
+        ) -> Result<Resolved, Vec<u8>> {
+            let s = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
+            self.asked.borrow_mut().push(format!(
+                "layout {} {} {} {} [{}]",
+                s(kind),
+                s(name),
+                s(store),
+                s(digest),
+                s(log)
+            ));
+            Ok(Resolved {
+                reference: errb(&[name, b"@", digest]),
+                digest: Some(digest.to_vec()),
+                config: br#"{"schemaVersion":1,"name":"main"}"#.to_vec(),
+            })
+        }
+    }
+
+    /// An OSI artifact a named build context gives (D113) is taken from that context's
+    /// OCI layout, the context keyed as a FROM's is; with none it is the registry's. A
+    /// context of another kind is refused, and so is one whose digest is not the one the
+    /// Agentfile pins, in the words a fetch by digest that got another uses.
+    #[test]
+    fn an_artifact_a_build_context_gives_comes_from_its_layout() {
+        let d = |c: char| format!("sha256:{}", c.to_string().repeat(64));
+        let plan_with = |text: &str, contexts: &[(&str, String)]| {
+            let r = Artifacts::default();
+            let opts = Options {
+                target_platform: Platform::new("linux", "arm64"),
+                build_platforms: vec![Platform::new("linux", "arm64")],
+                dialect: crate::parser::Dialect::Agentfile,
+                contexts: contexts
+                    .iter()
+                    .map(|(k, v)| (k.as_bytes().to_vec(), v.as_bytes().to_vec()))
+                    .collect(),
+                ..Default::default()
+            };
+            let out = plan(text.as_bytes(), &opts, &r)
+                .map(|_| ())
+                .map_err(|e| String::from_utf8_lossy(&e.message).into_owned());
+            (out, r.asked.take())
+        };
+        let text = "FROM scratch\nAGENT main FROM reg.example/team/agent:1\n";
+        assert_eq!(
+            plan_with(text, &[]),
+            (
+                Ok(()),
+                vec!["registry agent reg.example/team/agent:1 [[internal] load metadata for reg.example/team/agent:1]".to_string()]
+            )
+        );
+        let layout = format!("oci-layout://store1:1@{}", d('b'));
+        assert_eq!(
+            plan_with(text, &[("reg.example/team/agent:1", layout.clone())]),
+            (
+                Ok(()),
+                vec![format!(
+                    "layout agent reg.example/team/agent:1 store1 {} [[context reg.example/team/agent:1] load metadata for reg.example/team/agent:1]",
+                    d('b')
+                )]
+            )
+        );
+        // A context of another kind gives no artifact.
+        let (out, asked) = plan_with(
+            text,
+            &[("reg.example/team/agent:1", "docker-image://alpine:3.20".into())],
+        );
+        assert_eq!(
+            out,
+            Err("the build context reg.example/team/agent:1 for the OSI artifact reg.example/team/agent:1 is docker-image://alpine:3.20: an artifact's context is an OCI layout, oci-layout://DIR[:TAG]".into())
+        );
+        assert!(asked.is_empty());
+        // Pinned: the context must give that digest.
+        let pinned = format!(
+            "FROM scratch\nAGENT main FROM reg.example/team/agent:1@{}\n",
+            d('c')
+        );
+        let key = format!("reg.example/team/agent:1@{}", d('c'));
+        let (out, asked) = plan_with(&pinned, &[(&key, layout.clone())]);
+        assert_eq!(
+            out,
+            Err(format!("{key}: got digest {}, expected {}", d('b'), d('c')))
+        );
+        assert!(asked.is_empty());
+        let (out, asked) = plan_with(&pinned, &[(&key, format!("oci-layout://store1@{}", d('c')))]);
+        assert_eq!(out, Ok(()));
+        assert_eq!(asked.len(), 1, "{asked:?}");
     }
 
     /// A build asked for no platform (dockerui's TargetPlatform nil, Dockerfile2LLB's

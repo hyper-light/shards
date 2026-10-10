@@ -45,8 +45,11 @@ def dind(*argv, check=True, timeout=900):
 
 def setup(binary):
     dind("mkdir", "-p", f"{ROOT}/frontend", f"{ROOT}/cases", f"{ROOT}/out")
-    if dind("docker", "inspect", "shards-d113-registry", check=False).returncode != 0:
+    running = dind("docker", "inspect", "--format", "{{.State.Running}}", "shards-d113-registry", check=False)
+    if running.returncode != 0:
         dind("docker", "run", "-d", "--name", "shards-d113-registry", "-p", "15113:5000", "registry:2")
+    elif running.stdout.strip() != "true":
+        dind("docker", "start", "shards-d113-registry")
     run(["docker", "cp", binary, f"{DIND}:{ROOT}/frontend/shards"])
     run(["docker", "cp", os.path.join(HERE, "Dockerfile"), f"{DIND}:{ROOT}/frontend/Dockerfile"])
     with open(binary, "rb") as f:
@@ -67,16 +70,64 @@ def flags_of(case):
 
 
 def normalize(text, frontends):
+    """What buildx printed, as far as a frontend decides it: each step's lines, the steps
+    in their names' order, then what followed them. BuildKit's own timing is set aside:
+    which steps run at once and so their numbers, the order of a step's statuses and
+    whether one is printed before it is done, its durations, the times its logs are
+    stamped with, a warning shown among its step's lines or not, and the order buildx lists
+    the build's warnings in (each varies from run to run with either frontend). So is the
+    frontend's own image, whose name and digest differ by design. A step's logs keep their
+    order."""
     for name in frontends:
         text = text.replace(name, "FRONTEND")
-    text = re.sub(r"\b\d+\.\d+s\b", "Xs", text)
-    # The frontend's own image: its name and digest differ by design.
-    lines = [
-        line
-        for line in text.splitlines()
-        if "FRONTEND" not in line and not re.match(r"^#\d+ resolve image config for docker-image://", line)
-    ]
-    return "\n".join(lines)
+    text = re.sub(r"\x1b\[[0-9;]*m", "", text)
+    steps, rest = {}, []
+    for line in text.splitlines():
+        m = re.match(r"^#(\d+) ?(.*)$", line)
+        if not m:
+            if line:
+                rest.append(line)
+            continue
+        said = re.sub(r"\b\d+\.\d+s\b", "Xs", m.group(2)).replace(" Xs done", " done")
+        said = re.sub(r"^\d+\.\d+ ", "T ", said)
+        steps.setdefault(int(m.group(1)), []).append(said)
+    blocks = []
+    for n, lines in steps.items():
+        if n == 0:
+            continue
+        if any("FRONTEND" in l or l.startswith("resolve image config for docker-image://") for l in lines):
+            continue
+        logs = [l for l in lines if l.startswith("T ")]
+        statuses = set()
+        for i, l in enumerate(lines):
+            later = lines[i + 1:]
+            if l.startswith("T ") or any(x == l + " done" for x in later):
+                continue
+            # A transfer part done, printed again whole.
+            m = re.match(r"^(transferring [^:]+:)( |$)", l)
+            if m and not l.endswith(" done") and any(x.startswith(m.group(1)) and x.endswith(" done") for x in later):
+                continue
+            statuses.add(l)
+        if "CACHED" in statuses:
+            statuses.discard("DONE Xs")
+        # A warning shows in its step's lines where it reached buildx before the step was
+        # printed; every one is in buildx's list after the steps, which is compared.
+        statuses = {l for l in statuses if not l.startswith("WARN: ")}
+        # buildx's mark that a step's lines go on after another's.
+        statuses.discard("...")
+        blocks.append([sorted(statuses), logs])
+    blocks.sort()
+    # buildx's list of the build's warnings, in an order that varies from run to run.
+    after, items = [], []
+    for line in rest:
+        if line.startswith(" - "):
+            items.append(line)
+            continue
+        after += sorted(items)
+        items = []
+        after.append(line)
+    after += sorted(items)
+    return {"steps": blocks, "after": after}
 
 
 def oci(path):
@@ -98,8 +149,10 @@ def oci(path):
             for m in doc.get(k, []) or []:
                 if "json" in m.get("mediaType", ""):
                     todo.append(m["digest"])
-        if "config" in doc:
-            todo.append(doc["config"]["digest"])
+        # A manifest's config descriptor; an image config's own `config` is no descriptor.
+        config = doc.get("config")
+        if isinstance(config, dict) and "digest" in config and "mediaType" in config:
+            todo.append(config["digest"])
     return index, blobs
 
 
@@ -121,13 +174,21 @@ def build(case, frontend, side, flags):
 def compare(case, frontends):
     run(["docker", "cp", os.path.join(HERE, "cases", case), f"{DIND}:{ROOT}/cases/"])
     flags = flags_of(case)
+    # Each frontend twice, in turn: the second builds find BuildKit as the first left it,
+    # each the other's (its cache, the context it synced), and their outputs are compared;
+    # the images of the first.
     theirs = build(case, frontends[0], "dockerfile", flags)
     ours = build(case, frontends[1], "shards", flags)
+    again = [build(case, f, side, flags) for f, side in zip(frontends, ("dockerfile-again", "shards-again"))]
+    for t in again:
+        if t[2]:
+            dind("rm", "-f", t[2], check=False)
     result = {"case": case, "exit": [theirs[0], ours[0]]}
     differs = []
-    if theirs[0] != ours[0]:
+    if theirs[0] != ours[0] or [t[0] for t in again] != [theirs[0], ours[0]]:
         differs.append("exit")
-    said = [normalize(t[1], frontends) for t in (theirs, ours)]
+        result["exit"] += [t[0] for t in again]
+    said = [normalize(t[1], frontends) for t in again]
     if said[0] != said[1]:
         differs.append("output")
         result["output"] = said
@@ -168,7 +229,7 @@ def main():
     dind("rm", "-rf", f"{ROOT}/cases", f"{ROOT}/out", check=False)
     if "--clean" in sys.argv:
         dind("docker", "rmi", "-f", image, check=False)
-        dind("docker", "rm", "-f", "shards-d113-registry", check=False)
+        dind("docker", "rm", "-f", "-v", "shards-d113-registry", check=False)
     sys.exit(1 if failed else 0)
 
 

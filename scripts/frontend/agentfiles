@@ -8,6 +8,13 @@ JSON list of arguments), each image is loaded into shards and run on a microVM, 
 two runs' outputs are held together. Every case's context holds `testguest`, the test
 guest's workload, at its root.
 
+A case's `osi.json` names an OSI artifact it takes from a registry, `{"ref": REF, "dir":
+DIR}`: DIR (with `bin/testguest`) made into an agent by this host's shards and pushed to
+dind's registry (127.0.0.1:15113, which this host reaches through `docker exec … nc`), then
+copied into an OCI layout by oras v1.3.4 in dind, as `oras cp --to-oci-layout` makes one,
+and that layout given to both builds as a named context (D113): `--build-context
+REF=oci-layout://LAYOUT:1`, LAYOUT dind's copy for BuildKit and this host's for shards.
+
     scripts/frontend/agentfiles BINARY SHARDS TESTGUEST [CASE...]
 
 BINARY is a static musl `shards` for dind's architecture, the frontend's image's (see
@@ -17,17 +24,21 @@ shards-testguest --profile guest --target <arch>-unknown-linux-musl`). shards ru
 home of its own and publishes nothing to this host's Docker engine
 (SHARDS_LOCAL_STORE=none). What is made in dind is named shards-d113-* or lives in
 /opt/shards-d113, and is removed at the end but the frontend's image and the registry, as
-compare leaves them. Prints one JSON line a case; exits 1 where any differs.
+compare leaves them. Prints one JSON line a case; exits 1 where any differs. With
+SHARDS_D113_KEEP set, this host's work (both images, each case's context and layout) is
+kept, and its directory named on stderr.
 """
 import importlib.machinery
 import importlib.util
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 _loader = importlib.machinery.SourceFileLoader("compare", os.path.join(HERE, "compare"))
@@ -60,8 +71,10 @@ def layout(path):
                 for m in doc.get(k, []) or []:
                     if "json" in m.get("mediaType", ""):
                         todo.append(m["digest"])
-            if "config" in doc:
-                todo.append(doc["config"]["digest"])
+            # A manifest's config descriptor; an image config's own `config` is none.
+            config = doc.get("config")
+            if isinstance(config, dict) and "digest" in config and "mediaType" in config:
+                todo.append(config["digest"])
     return index, blobs
 
 
@@ -80,6 +93,85 @@ def shards_run(shards, env, argv):
     return p.returncode, p.stdout, p.stderr
 
 
+def vm_said(stderr):
+    """A run's stderr as its microVM said it: shards' own notes on this host (the guest
+    kernel's first download, a template that boots instead of restoring) set aside, which
+    the order of the runs decides."""
+    own = ("Downloading the guest kernel ", "Guest kernel: ", "shards: ")
+    return [line for line in stderr.splitlines() if not line.startswith(own)]
+
+
+ORAS = "ghcr.io/oras-project/oras:v1.3.4"
+
+
+def tunnel():
+    """This host's 127.0.0.1:15113 to dind's own, each connection a `docker exec -i
+    shards-dind nc 127.0.0.1 15113`, so that one reference names dind's registry from
+    here and from BuildKit's in dind alike."""
+    listener = socket.socket()
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(("127.0.0.1", 15113))
+    listener.listen(64)
+
+    def serve(c):
+        p = subprocess.Popen(["docker", "exec", "-i", DIND, "nc", "127.0.0.1", "15113"],
+                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, bufsize=0)
+
+        def up():
+            try:
+                while b := c.recv(65536):
+                    p.stdin.write(b)
+            except OSError:
+                pass
+            try:
+                p.stdin.close()
+            except OSError:
+                pass
+
+        threading.Thread(target=up, daemon=True).start()
+        try:
+            while b := p.stdout.read(65536):
+                c.sendall(b)
+        except OSError:
+            pass
+        c.close()
+        p.kill()
+
+    def accept():
+        while True:
+            c, _ = listener.accept()
+            threading.Thread(target=serve, args=(c,), daemon=True).start()
+
+    threading.Thread(target=accept, daemon=True).start()
+
+
+def osi_layout(case, ctx, shards, env, testguest, work):
+    """The OCI layout of the artifact a case's `osi.json` names, made as the module's doc
+    says: its path in dind and here, and its reference; none for a case without one."""
+    path = os.path.join(ctx, "osi.json")
+    if not os.path.exists(path):
+        return None
+    with open(path) as f:
+        osi = json.load(f)
+    agent = os.path.join(work, f"{case}-osi")
+    shutil.copytree(os.path.join(ctx, osi["dir"]), agent)
+    os.makedirs(os.path.join(agent, "bin"), exist_ok=True)
+    shutil.copy(testguest, os.path.join(agent, "bin", "testguest"))
+    for argv in (["build", "agent", agent, "-t", osi["ref"]], ["push", "agent", osi["ref"]]):
+        code, so, se = shards_run(shards, env, argv)
+        if code != 0:
+            raise SystemExit(f"shards {' '.join(argv)}: {code}\n{so}{se}")
+    remote = f"{ROOT}/osi/{case}"
+    dind("rm", "-rf", remote, check=False)
+    dind("mkdir", "-p", f"{ROOT}/osi")
+    dind("docker", "run", "--rm", "--name", "shards-d113-oras", "--network", "host",
+         "-v", f"{ROOT}/osi:/work", ORAS, "cp", "--from-plain-http", "--to-oci-layout",
+         osi["ref"], f"/work/{case}:1")
+    here = os.path.join(work, f"{case}-layout")
+    run(["docker", "cp", f"{DIND}:{remote}", here])
+    return remote, here, osi["ref"]
+
+
 def case_context(case, testguest, into):
     """The case's directory, its symlinks kept, and testguest at its root."""
     ctx = os.path.join(into, case)
@@ -94,6 +186,16 @@ def agentfile(case, digest, shards, testguest, work):
     out_bk = os.path.join(work, f"{case}-buildkit.tar")
     out_me = os.path.join(work, f"{case}-shards.tar")
     output = f"rewrite-timestamp=true,name={name}"
+    home = os.path.join(work, "home")
+    env = dict(os.environ, SHARDS_HOME=home, SHARDS_LOCAL_STORE="none")
+    given = osi_layout(case, ctx, shards, env, testguest, work)
+    contexts = ([], [])
+    if given is not None:
+        remote_layout, here_layout, ref = given
+        contexts = (
+            ["--build-context", f"{ref}=oci-layout://{remote_layout}:1"],
+            ["--build-context", f"{ref}=oci-layout://{here_layout}:1"],
+        )
     # BuildKit, through the frontend named by BUILDKIT_SYNTAX, which wins over the
     # Agentfile's own `# syntax=` line.
     run(["docker", "cp", ctx, f"{DIND}:{ROOT}/agentfiles/"])
@@ -102,6 +204,7 @@ def agentfile(case, digest, shards, testguest, work):
         BUILDX, "build", "--progress=plain", "--no-cache", "--provenance=false",
         "--build-arg", f"SOURCE_DATE_EPOCH={EPOCH}",
         "--build-arg", f"BUILDKIT_SYNTAX={digest}",
+        *contexts[0],
         "-f", f"{remote}/Agentfile",
         "--output", f"type=oci,dest={ROOT}/out/{case}.tar,{output}",
         remote,
@@ -112,11 +215,10 @@ def agentfile(case, digest, shards, testguest, work):
         run(["docker", "cp", f"{DIND}:{ROOT}/out/{case}.tar", out_bk])
     dind("rm", "-rf", remote, f"{ROOT}/out/{case}.tar", check=False)
     # shards build, here.
-    home = os.path.join(work, "home")
-    env = dict(os.environ, SHARDS_HOME=home, SHARDS_LOCAL_STORE="none")
     code, so, se = shards_run(shards, env, [
         "build", "--progress=plain", "--no-cache", "--provenance=false",
         "--build-arg", f"SOURCE_DATE_EPOCH={EPOCH}",
+        *contexts[1],
         "-f", os.path.join(ctx, "Agentfile"),
         "--output", f"type=oci,dest={out_me},{output}",
         ctx,
@@ -152,7 +254,8 @@ def agentfile(case, digest, shards, testguest, work):
                 if loaded[0] != 0:
                     ran.append(["load", *loaded])
                     continue
-                ran.append(list(shards_run(shards, env, ["run", "--rm", name, *argv])))
+                code, out, err = shards_run(shards, env, ["run", "--rm", name, *argv])
+                ran.append([code, out, vm_said(err)])
             result["run"] = ran[0]
             if ran[0] != ran[1]:
                 differs.append("run")
@@ -175,6 +278,7 @@ def main():
         cases = sorted(os.listdir(os.path.join(HERE, "agentfile-cases")))
     _, digest = compare.setup(binary)
     dind("mkdir", "-p", f"{ROOT}/agentfiles", f"{ROOT}/out")
+    tunnel()
     failed = False
     work = tempfile.mkdtemp(prefix="shards-d113-agentfiles-")
     try:
@@ -185,8 +289,11 @@ def main():
     finally:
         env = dict(os.environ, SHARDS_HOME=os.path.join(work, "home"), SHARDS_LOCAL_STORE="none")
         shards_run(shards, env, ["stop", "daemon"])
-        shutil.rmtree(work, ignore_errors=True)
-        dind("rm", "-rf", f"{ROOT}/agentfiles", f"{ROOT}/out", check=False)
+        if os.environ.get("SHARDS_D113_KEEP"):
+            print(f"kept {work}", file=sys.stderr)
+        else:
+            shutil.rmtree(work, ignore_errors=True)
+        dind("rm", "-rf", f"{ROOT}/agentfiles", f"{ROOT}/out", f"{ROOT}/osi", check=False)
     sys.exit(1 if failed else 0)
 
 

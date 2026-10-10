@@ -961,6 +961,29 @@ impl Resolver for Bases<'_> {
         r.map_err(String::into_bytes)
     }
 
+    fn artifact_layout(
+        &self,
+        name: &[u8],
+        kind: &[u8],
+        store: &[u8],
+        digest: &[u8],
+        log: &[u8],
+    ) -> Result<Resolved, Vec<u8>> {
+        let _ = store;
+        let v = self.progress.borrow_mut().start(&String::from_utf8_lossy(log));
+        let r = self.artifact_in_layout(
+            &String::from_utf8_lossy(name),
+            kind,
+            &String::from_utf8_lossy(digest),
+        );
+        let progress = self.progress.borrow();
+        match &r {
+            Ok(_) => progress.done(&v),
+            Err(e) => progress.error(&v, e),
+        }
+        r.map_err(String::into_bytes)
+    }
+
     /// Each under the name of the step BuildKit's metadata resolution shows
     /// (dockerfile/1.27.1 epoch.go).
     fn epoch(&self, source: &EpochSource) -> Result<Option<(i64, u32)>, Vec<u8>> {
@@ -1045,7 +1068,38 @@ impl Bases<'_> {
         let reference = Reference::parse(name).map_err(|e| format!("{name}: {e}"))?;
         let fresh = self.pull_once(&reference.to_string());
         let (desc, manifest, _) = crate::agent::fetch(self.store, &reference, want, fresh, &|_| {})?;
-        let diff_ids = crate::agent::diff_ids(self.store, want, &manifest)?;
+        self.artifact_taken(name, &reference, &desc, &manifest, want)
+    }
+
+    /// An OSI artifact from the OCI layout a named context gives it as (D113), imported
+    /// with the build's other layouts, held as one from a registry is.
+    fn artifact_in_layout(&self, name: &str, kind: &[u8], digest: &str) -> Result<Resolved, String> {
+        let want = match kind {
+            b"agent" => shards_image::osi::Kind::Agent,
+            b"harness" => shards_image::osi::Kind::Harness,
+            _ => shards_image::osi::Kind::Mcp,
+        };
+        let reference = Reference::parse(name).map_err(|e| format!("{name}: {e}"))?;
+        let desc = self
+            .layouts
+            .get(digest)
+            .cloned()
+            .ok_or_else(|| format!("{name}: {digest}: not in its build context's OCI layout"))?;
+        let (manifest, _, _) = crate::agent::checked(self.store, name, &desc, Some(want))?;
+        self.artifact_taken(name, &reference, &desc, &manifest, want)
+    }
+
+    /// An OSI artifact held: its content layers, read as an image's, for the source the
+    /// planner names it by, its reference with its manifest's digest, and its config.
+    fn artifact_taken(
+        &self,
+        name: &str,
+        reference: &Reference,
+        desc: &Descriptor,
+        manifest: &oci::Manifest,
+        want: shards_image::osi::Kind,
+    ) -> Result<Resolved, String> {
+        let diff_ids = crate::agent::diff_ids(self.store, want, manifest)?;
         let mut layers = Vec::new();
         for (l, diff_id) in manifest.layers.iter().zip(diff_ids) {
             let media = crate::agent::layer_type(want, &l.media_type)
@@ -1392,13 +1446,18 @@ impl Bases<'_> {
 
 impl Bases<'_> {
     /// The image's attestation chain for `wanted`, from its registry (BuildKit fetches it
-    /// whatever its image store holds); none where the image is not an OCI index.
+    /// whatever its image store holds). An image that is one manifest, no index, holds no
+    /// attestation manifest and no signature to chain to it, and is answered so: a chain
+    /// of its own manifest alone, its root that manifest's digest. BuildKit v0.28.1 has no
+    /// chain to answer with and reads its root regardless, a nil dereference that ends
+    /// dockerd (source/containerimage/source.go:283, D113); and buildx, given no chain,
+    /// asks for one again until it gives up ("too many policy requests").
     fn attestation_chain(
         &self,
         name: &str,
         wanted: &Platform,
         resolve_attestations: &[String],
-    ) -> Result<Option<policy::AttestationChain>, String> {
+    ) -> Result<policy::AttestationChain, String> {
         let reference = Reference::parse(name).map_err(|e| e.to_string())?;
         let limits = crate::pull::limits()?;
         let registry = crate::pull::registry(&reference, None, &|k| std::env::var(k).ok())?;
@@ -1411,14 +1470,18 @@ impl Bases<'_> {
             variant: show(&wanted.variant),
             ..Default::default()
         };
-        attest::chain(
+        let chain = attest::chain(
             &registry,
             self.store,
             &limits,
             &top,
             &platform,
             resolve_attestations,
-        )
+        )?;
+        Ok(chain.unwrap_or_else(|| policy::AttestationChain {
+            root: top.digest.clone(),
+            ..policy::AttestationChain::default()
+        }))
     }
 }
 
@@ -1520,15 +1583,13 @@ impl policy::Resolve for PolicyMeta<'_, '_> {
             let chain = self
                 .bases
                 .attestation_chain(name, &platform, &image.resolve_attestations)?;
-            if let Some(c) = &chain
-                && c.root != digest
-            {
+            if chain.root != digest {
                 return Err(format!(
                     "attestation chain root digest {} does not match image digest {digest}",
-                    c.root
+                    chain.root
                 ));
             }
-            chain
+            Some(chain)
         } else {
             None
         };
