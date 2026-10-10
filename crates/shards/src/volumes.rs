@@ -890,15 +890,19 @@ pub fn open(points: &[MountPoint], first: bool, store: &Store) -> Result<Opened,
                 ));
             }
         };
+        // A file shared through its directory, by its own name there: the file a link names,
+        // as a bind mount takes the file its source's links lead to on the host (the
+        // guest would follow a link it was given inside itself).
+        let real;
         let (dir, only) = if meta.is_dir() {
             (source, std::ffi::OsString::new())
         } else {
-            let parent = source
+            real = std::fs::canonicalize(source)
+                .map_err(|e| format!("error mounting \"{}\" to rootfs at \"{dest}\": {e}", p.source))?;
+            let parent = real
                 .parent()
                 .ok_or_else(|| format!("{}: no directory", p.source))?;
-            let name = source
-                .file_name()
-                .ok_or_else(|| format!("{}: no name", p.source))?;
+            let name = real.file_name().ok_or_else(|| format!("{}: no name", p.source))?;
             (parent, name.to_os_string())
         };
         if p.domains && !only.is_empty() {

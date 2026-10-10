@@ -6424,9 +6424,13 @@ fn run_mounts_binds_volumes_and_tmpfs_as_docker_run_does() {
     std::fs::write(shared.join("a"), "host").unwrap();
     let file = home.join("one");
     std::fs::write(&file, "alone").unwrap();
+    // A link to it, bound as the file it leads to on the host, as Docker's bind takes it.
+    let link = home.join("link");
+    std::os::unix::fs::symlink(&file, &link).unwrap();
     let bind = format!("{}:/data", shared.display());
     let ro = format!("{}:/ro:ro", shared.display());
     let single = format!("{}:/etc/one:ro", file.display());
+    let linked = format!("{}:/etc/linked:ro", link.display());
     let ran = run_in(
         &home,
         &image,
@@ -6442,12 +6446,18 @@ fn run_mounts_binds_volumes_and_tmpfs_as_docker_run_does() {
             "tools:/bin",
             "--mount",
             "type=tmpfs,dst=/t,tmpfs-size=1m",
+            "-v",
+            &linked,
         ],
-        &["stat", "/data/a", "/etc/one", "/proc/self/mounts"],
+        &["stat", "/data/a", "/etc/one", "/etc/linked", "/proc/self/mounts"],
     );
     assert_eq!(ran.status, Some(0), "{ran}");
     assert!(ran.stdout.contains("/data/a file 644 0:0 4\n= host\n"), "{ran}");
     assert!(ran.stdout.contains("/etc/one file 644 0:0 5\n= alone\n"), "{ran}");
+    assert!(
+        ran.stdout.contains("/etc/linked file 644 0:0 5\n= alone\n"),
+        "{ran}"
+    );
     for mount in [
         "shards0 /data virtiofs rw,",
         "shards1 /ro virtiofs ro,",
