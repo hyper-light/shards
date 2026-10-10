@@ -132,6 +132,11 @@ fn run() -> Result<(), String> {
             Ok((*role, std::os::unix::net::UnixStream::from(adopt(fd)?)))
         })
         .collect::<Result<_, String>>()?;
+    // Confined before it reads anything a guest sends (D31): no file, no TCP port of its
+    // own, no TCP at all under a build's proxy.
+    #[cfg(target_os = "linux")]
+    shards_net::confine::at_start(matches!(policy, shards_net::Policy::Proxy { .. }))
+        .map_err(|e| e.to_string())?;
     let mut cfg = shards_net::Config::on_bridge(policy, mac, &bridge);
     cfg.resolvers = resolvers;
     shards_net::serve(region, me, peer, cfg, controls).map_err(|e| e.to_string())

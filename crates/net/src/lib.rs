@@ -10,6 +10,8 @@
 #![cfg(unix)]
 
 pub mod bridge;
+#[cfg(target_os = "linux")]
+pub mod confine;
 pub mod dns;
 pub mod pktinfo;
 mod poll;
@@ -588,6 +590,9 @@ struct Stack<'r> {
     /// The names its members answer to, which the gateway's resolver says: none off a
     /// network of its own.
     names: Option<dns::Names>,
+    /// Whether the process is held to an Agentfile's TCP ports already (D31, `NET_POLICY`).
+    #[cfg(target_os = "linux")]
+    ports_confined: bool,
 }
 
 /// A peer on the guest's network (D46): another VM's network process, on a stream socket
@@ -782,6 +787,8 @@ pub fn serve(
         next_port: *EPHEMERAL.start(),
         peers: Vec::new(),
         names: None,
+        #[cfg(target_os = "linux")]
+        ports_confined: false,
     };
     let doorbell = from_guest.waits_on();
     stack.poller.set(
@@ -905,6 +912,30 @@ fn control(
             let Some((ports, named, dns_all)) = decode_policy(&m.payload) else {
                 return false;
             };
+            // The process held to the grants' TCP ports (D31), once: a layer narrows what
+            // the last left and never widens it, so a second policy is refused, and the
+            // daemon, which sends one, lets the VM go. A resolver's port where names may
+            // be resolved past the microVM.
+            #[cfg(target_os = "linux")]
+            {
+                if stack.ports_confined {
+                    return false;
+                }
+                let mut tcp: Vec<u16> = ports
+                    .0
+                    .iter()
+                    .filter(|(proto, _, _)| *proto == Proto::Tcp)
+                    .flat_map(|&(_, first, last)| first..=last)
+                    .chain(named.iter().map(|&(_, port)| port))
+                    .collect();
+                if dns_all || !named.is_empty() {
+                    tcp.push(53);
+                }
+                if confine::to_ports(&tcp).is_err() {
+                    return false;
+                }
+                stack.ports_confined = true;
+            }
             stack.cfg.policy = Policy::Ports(ports);
             stack.cfg.named = named;
             stack.cfg.dns_all = dns_all;
@@ -1962,6 +1993,8 @@ mod tests {
             next_port: *EPHEMERAL.start(),
             peers: Vec::new(),
             names: None,
+            #[cfg(target_os = "linux")]
+            ports_confined: false,
         };
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let _client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
@@ -2169,6 +2202,8 @@ mod tests {
             next_port: *EPHEMERAL.start(),
             peers: Vec::new(),
             names: None,
+            #[cfg(target_os = "linux")]
+            ports_confined: false,
         };
         let syn = |stack: &mut Stack<'_>, to: IpAddr, port: u16| {
             let mut frame = Vec::new();
