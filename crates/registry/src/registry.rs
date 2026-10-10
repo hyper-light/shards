@@ -101,6 +101,24 @@ impl Registry {
         Ok(registry)
     }
 
+    /// `scheme://host/v2/<repository>/`, what its requests are made relative to.
+    pub(crate) fn base(&self) -> &Url {
+        &self.base
+    }
+
+    /// A registry to delete manifests of `reference`'s repository from, and to update the
+    /// referrers it lists: pull, push and delete access to it, as distribution grants a
+    /// DELETE only to a `delete` scope (registry/handlers/app.go, appendAccessRecords).
+    pub fn for_delete(
+        http: Client,
+        reference: &Reference,
+        credentials: Credentials,
+    ) -> Result<Registry, Error> {
+        let mut registry = Registry::new(http, reference, credentials)?;
+        registry.scopes = vec![format!("repository:{}:pull,push,delete", reference.path)];
+        Ok(registry)
+    }
+
     /// Whether the repository has what `desc` describes, as containerd's pusher asks
     /// before it pushes anything (pusher.go v2.4.1): a HEAD of the blob, or of the
     /// manifest or index by `tag` if given, else by its digest, accepting its type or any;
@@ -199,11 +217,73 @@ impl Registry {
 
     /// Puts a manifest or index as `reference` names it (a tag or its digest).
     pub fn put_manifest(&self, reference: &str, media_type: &str, bytes: &[u8]) -> Result<(), Error> {
+        self.put_manifest_subject(reference, media_type, bytes)
+            .map(|_| ())
+    }
+
+    /// [`put_manifest`](Self::put_manifest), and the `OCI-Subject` the registry answers it
+    /// with, if it does: a registry with the referrers API says so of a manifest with a
+    /// `subject` it took (distribution-spec v1.1.1 spec.md:499).
+    pub fn put_manifest_subject(
+        &self,
+        reference: &str,
+        media_type: &str,
+        bytes: &[u8],
+    ) -> Result<Option<String>, Error> {
         let url = self.base.join(&format!("manifests/{reference}"))?;
         let (response, _) = self.send("PUT", &url, &[("Content-Type", media_type)], bytes, None)?;
         match response.status {
-            200 | 201 | 204 => Ok(()),
+            200 | 201 | 204 => Ok(response.header("oci-subject").map(|s| s.trim().to_string())),
             _ => Err(unexpected("PUT", response)),
+        }
+    }
+
+    /// The manifest or index `tag` names: its type and bytes, at most a manifest's size;
+    /// none where the repository has no such tag (a 404).
+    pub fn manifest_at(&self, tag: &str) -> Result<Option<(String, Vec<u8>)>, Error> {
+        let url = self.base.join(&format!("manifests/{tag}"))?;
+        let accept = format!("{}, {}", media::OCI_INDEX, media::OCI_MANIFEST);
+        let (mut response, _) = self.request(
+            "GET",
+            &url,
+            &[("Accept", &accept), ("Accept-Encoding", ENCODINGS)],
+        )?;
+        match response.status {
+            200..=299 => {
+                let kind = response.header("content-type").unwrap_or_default().to_string();
+                let encoding = response
+                    .header("content-encoding")
+                    .unwrap_or_default()
+                    .to_string();
+                let mut body = decoded(&mut response, &encoding)?;
+                let mut bytes = Vec::new();
+                body.by_ref()
+                    .take(MAX_MANIFEST.saturating_add(1))
+                    .read_to_end(&mut bytes)?;
+                if bytes.len() as u64 > MAX_MANIFEST {
+                    return Err(Error::new(format!(
+                        "{tag}: a manifest larger than {MAX_MANIFEST} bytes"
+                    )));
+                }
+                Ok(Some((kind, bytes)))
+            }
+            404 => Ok(None),
+            _ => Err(not_fetched(response, &url)),
+        }
+    }
+
+    /// Deletes the manifest `digest` (spec.md:688-693): 202 is done; a registry that does
+    /// not delete answers 400 or 405, and says so.
+    pub fn delete_manifest(&self, digest: &str) -> Result<(), Error> {
+        let url = self.base.join(&format!("manifests/{digest}"))?;
+        let (response, _) = self.request("DELETE", &url, &[])?;
+        match response.status {
+            200 | 202 | 204 => Ok(()),
+            404 => Err(Error::of(
+                ErrorKind::NotFound,
+                format!("{digest}: not found in the repository"),
+            )),
+            _ => Err(unexpected("DELETE", response)),
         }
     }
 
@@ -241,7 +321,7 @@ impl Registry {
     /// A 429 is tried again, as containerd tries it, but after a wait ([`throttle`]), and
     /// never for a quota spent: Docker Hub counts pulls over hours (§3.2). Returns the
     /// response and the method that got it.
-    fn request<'a>(
+    pub(crate) fn request<'a>(
         &self,
         method: &'a str,
         url: &Url,
@@ -783,7 +863,7 @@ fn read_capped(response: &mut Response, max: u64, what: &dyn fmt::Display) -> Re
 
 /// What content a fetch takes encoded for its transfer, as containerd v2.4.1's fetcher
 /// asks for it (core/remotes/docker/fetcher.go, open).
-const ENCODINGS: &str = "zstd;q=1.0, gzip;q=0.8, deflate;q=0.5";
+pub(crate) const ENCODINGS: &str = "zstd;q=1.0, gzip;q=0.8, deflate;q=0.5";
 
 /// A response body as its `Content-Encoding` says to decode it, as containerd's fetcher
 /// decodes one: each coding undone, last first; zstd, gzip (every member, as Go's reader
@@ -794,7 +874,7 @@ const ENCODINGS: &str = "zstd;q=1.0, gzip;q=0.8, deflate;q=0.5";
 /// nested is its buffers and a level of recursion in each read: a header listing gzip
 /// 50,000 times (300 KB, well within a head's 10 MiB) overflowed a fetch thread's stack,
 /// which ends the daemon. So at most three decoders, whatever the header lists.
-fn decoded<'a>(body: &'a mut dyn Read, encoding: &str) -> Result<Box<dyn Read + 'a>, Error> {
+pub(crate) fn decoded<'a>(body: &'a mut dyn Read, encoding: &str) -> Result<Box<dyn Read + 'a>, Error> {
     const CODINGS: [&str; 3] = ["zstd", "gzip", "deflate"];
     let mut undone = [false; CODINGS.len()];
     let mut body: Box<dyn Read + 'a> = Box::new(body);

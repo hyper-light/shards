@@ -14,6 +14,7 @@ pub mod http;
 pub mod proxy;
 pub mod pull;
 pub mod push;
+pub mod referrers;
 pub mod registry;
 #[cfg(test)]
 mod testing;
