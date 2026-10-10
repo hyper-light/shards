@@ -50,6 +50,9 @@ pub struct DeviceInterrupt {
     status: AtomicU32,
     /// Set by a device that met a malformed ring; reported as DEVICE_NEEDS_RESET.
     failed: AtomicBool,
+    /// Whether a failure has been said in the host's log: once a device, kept across
+    /// resets, as the transport says the driver's faults.
+    said_failure: AtomicBool,
     line: Arc<dyn Interrupt>,
 }
 
@@ -66,6 +69,7 @@ impl DeviceInterrupt {
         DeviceInterrupt {
             status: AtomicU32::new(0),
             failed: AtomicBool::new(false),
+            said_failure: AtomicBool::new(false),
             line,
         }
     }
@@ -81,10 +85,13 @@ impl DeviceInterrupt {
         self.line.set_level(true);
     }
 
-    /// Stops the device from being used until the driver resets it (§2.1.2).
-    pub fn fail(&self) {
+    /// Stops the device from being used until the driver resets it (§2.1.2). True for the
+    /// device's first failure, the one to say: a guest that breaks a ring after every reset
+    /// wrote a line of the host's log each time, which nothing rotates (audit V07).
+    pub fn fail(&self) -> bool {
         self.failed.store(true, Ordering::Release);
         self.config_change();
+        !self.said_failure.swap(true, Ordering::AcqRel)
     }
 
     fn failed(&self) -> bool {
