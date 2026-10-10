@@ -50,8 +50,40 @@ fn host() -> Vec<Function> {
 
 /// `data.docker.decision`'s results as JSON, or the error, on the policy thread.
 fn decide(src: String) -> Result<Vec<String>, String> {
+    decide_on(POLICY_STACK, src)
+}
+
+/// `n` rules, each wrapping the one before in an array.
+fn wrapped(n: usize) -> String {
+    let mut s = String::from("package docker\n\nr0 := 1\n\n");
+    for i in 1..=n {
+        s.push_str(&format!("r{i} := [r{}]\n\n", i - 1));
+    }
+    s.push_str(&format!("decision := count(json.marshal(r{n}))\n"));
+    s
+}
+
+/// Each rule's value is the one before, wrapped: the evaluation goes as deep as the
+/// rules do. OPA answers 2000 such rules [4001] (1.1 s), 10000 [20001] (17 s, 5.4 GB):
+/// its stack grows to 1 GB; a Rust thread's does not, so past what the policy thread
+/// holds the evaluation ends with an error, never overflowing the stack.
+#[test]
+fn rules_nested_as_deep_as_the_stack_holds_answer_as_opa_and_no_deeper() {
+    if cfg!(debug_assertions) {
+        eprintln!("SKIP: the policy stack holds release builds");
+        return;
+    }
+    assert_eq!(decide(wrapped(2000)).unwrap(), ["4001"]);
+    let e = decide_on(16 << 20, wrapped(2000)).unwrap_err();
+    assert!(
+        e.ends_with("eval_internal_error: policy evaluation nests deeper than its thread's stack"),
+        "{e}"
+    );
+}
+
+fn decide_on(stack: usize, src: String) -> Result<Vec<String>, String> {
     std::thread::Builder::new()
-        .stack_size(POLICY_STACK)
+        .stack_size(stack)
         .spawn(move || {
             let mut modules = BTreeMap::new();
             modules.insert(
@@ -119,6 +151,18 @@ fn a_value_a_million_levels_deep_converts_and_drops_on_a_small_stack() {
             }
             let t = shards_rego::eval::to_term(&v);
             let back = shards_rego::eval::to_value(&t).unwrap();
+            // Built apart, compared member by member; written; read for variables.
+            let mut w = Value::array(Vec::new());
+            for _ in 0..1_000_000 {
+                w = Value::array(vec![w]);
+            }
+            assert_eq!(v, w);
+            assert!(v < Value::array(vec![w.clone(), Value::Null]));
+            let u = shards_rego::eval::to_term(&w);
+            assert!(t.equal(&u));
+            assert!(t.is_ground() && t.is_value());
+            assert_eq!(value::to_json(&v).unwrap().len(), 2_000_002);
+            drop((u, w));
             drop(v);
             drop(t);
             let mut depth = 0;

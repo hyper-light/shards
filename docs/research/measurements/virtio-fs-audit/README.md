@@ -1,7 +1,7 @@
 # virtio-fs under hostile requests (audit V)
 
 Evidence for the virtio-fs decisions in docs/design/architecture.md (D38, "Every request
-is the guest's to forge"); results are platform-measurements.md M129 and M130.
+is the guest's to forge"); results are platform-measurements.md M129, M130, M132 and M133.
 
 ## `run.py`
 
@@ -18,6 +18,7 @@ of the processes' medians with a bootstrap 95% interval:
   the share answering at once on a thread;
 - `held`: the share answering after `--delay-us`, how long another thread waits for
   guest memory once the share has the request;
+- `getattr`: a LOOKUP then a GETATTR of one file (M133);
 - `list`, `listplus`: whole listings of a directory of 10,000 entries, READDIR or
   READDIRPLUS pages of 4096 bytes (M130). `--cases` picks among them.
 
@@ -31,5 +32,8 @@ C programs for the primitives the fixes rest on, run by hand (`cc -O2 -o p p.c`)
 - `chmodat.c` (Linux): the steps of `chmod_at` on Linux, `O_PATH`, `fstat`, and the
   `/proc/self/fd` link: a symlink refused, a regular file and an unreadable one changed.
 - `dirbuf.c DIR`: the bytes the C library keeps for an open directory stream (M130).
-- `getdents.rs DIR N` (Linux, `rustc -O`): N files made in DIR, then paged through by
-  getdents64 at `d_off` cookies with three page and buffer sizes, each entry once.
+- `getdents.rs DIR N` (Linux, `rustc --edition 2024 -O`): N files made in DIR, then
+  paged through by getdents64 at `d_off` cookies with three page and buffer sizes, each
+  entry once.
+- `src/main.rs --case fds --dirs D --limit L`: how many of D directories a guest can look
+  up, none forgotten, under a descriptor limit of L (M132).

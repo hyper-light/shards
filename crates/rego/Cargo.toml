@@ -16,12 +16,17 @@ regex = "1.13.1"
 serde_json = "1"
 shards-template = { path = "../template" }
 
+# src/stack.rs reads where the thread's stack ends (pthread_get_stackaddr_np,
+# pthread_getattr_np); benches/policy.rs, the process's peak memory (getrusage).
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
+# src/stack.rs reads where the thread's stack ends (VirtualQuery).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true }
+
 [dev-dependencies]
 serde_json = "1"
-
-# benches/policy.rs reads its peak memory with getrusage(2).
-[target.'cfg(unix)'.dev-dependencies]
-libc = { workspace = true }
 
 [[bench]]
 name = "policy"

@@ -4475,3 +4475,45 @@ revision before comparing a changed API/implementation.
   a day, from one guest. A device's failure is now said once, across resets; the rest go
   to debug. The cycle rates themselves vary fourfold with the host's load, which was
   high and changing throughout.
+
+### M132. How many directories a share can have looked up (audit V, open)
+
+- **Question.** The share's server keeps a descriptor for every directory the guest has
+  looked up and not forgotten, as it does every operation relative to one; a guest
+  kernel forgets only under memory pressure. The share process inherits the daemon's
+  descriptor limit, 256 under macOS's launchd. How many directories can a guest walk?
+- **Method.** `virtio-fs-audit --case fds --dirs D --limit L`: the process's soft
+  RLIMIT_NOFILE set to L, then a LOOKUP of each of D directories through
+  `Server::handle`, none forgotten. Apple M5 Max, macOS 26.4.1, revision ce225fa,
+  2026-10-09.
+- **Results.** Limit 256: 252 of 600 found, then EMFILE (24). Limit 1024: 1,020 of 3,000,
+  then EMFILE.
+- **Consequence.** A guest that walks more directories than its share process may hold
+  descriptors (a `find` over a tree with a few hundred directories, a `node_modules`) is
+  told "Too many open files", and a hostile one can put its own shares there at will.
+  Open: raising the share process's soft limit to its hard one (Go's runtime does so for
+  every program since 1.19; virtiofsd raises it too) lets a guest pin that many kernel
+  file objects instead; letting directories go after a time keeps fewer, but a directory
+  reopened by name loses what holding it gives, its identity through renames.
+
+### M133. What looking before opening a node's attributes costs (audit V08)
+
+- **Question.** The share opens a node to read its attributes (the owner the guest sees)
+  on every LOOKUP and GETATTR, and now looks at it first, so as not to open a device.
+  What does that add?
+- **Method.** `virtio-fs-audit/run.py --cases getattr`: a LOOKUP then a GETATTR of one
+  regular file through `Server::handle`, timed as a pair, 2000 a process after 200, 20
+  processes an arm alternating, the old arm at 996de13. Apple M5 Max, macOS 26.4.1,
+  2026-10-09, load average 70 and 80.
+- **Results.** Microseconds, n / p50 / p90 / p99 / max, and the paired difference of the
+  processes' medians with a bootstrap 95% interval:
+
+  | version | old | new | new − old |
+  |---|---|---|---|
+  | a look of its own in each metadata open | 40000 / 32.42 / 38.04 / 72.46 / 110456 | 40000 / 34.62 / 41.50 / 78.29 / 70812 | +2.21 [1.08, 2.88] |
+  | LOOKUP's and GETATTR's own stat passed on | 40000 / 33.29 / 40.00 / 77.58 / 27689 | 40000 / 32.96 / 37.25 / 78.62 / 48552 | 0.00 [−4.33, 0.75] |
+
+- **Consequence.** A second look at each node cost 2.2 µs, 7%, on the pair a guest's
+  `stat` makes; with the stat each request has just taken passed on (the node's own,
+  never a guest-named open file's), the device check costs nothing measurable. The
+  extended attribute requests, rarer, still look for themselves.

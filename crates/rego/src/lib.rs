@@ -16,5 +16,6 @@ pub mod index;
 pub mod number;
 pub mod parser;
 pub mod scanner;
+pub mod stack;
 pub mod types;
 pub mod value;

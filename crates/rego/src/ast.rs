@@ -94,6 +94,11 @@ impl<T> Shared<T> {
     pub fn get_mut(this: &mut Shared<T>) -> Option<&mut T> {
         Rc::get_mut(&mut this.0)
     }
+
+    /// Whether both share one value.
+    pub fn ptr_eq(a: &Shared<T>, b: &Shared<T>) -> bool {
+        Rc::ptr_eq(&a.0, &b.0)
+    }
 }
 
 impl<A> FromIterator<A> for Shared<Vec<A>> {
@@ -252,17 +257,40 @@ impl Term {
     }
 
     /// Term.IsGround: no variables anywhere.
-    pub fn is_ground(&self) -> bool {
-        match &self.value {
-            TermValue::Null | TermValue::Bool(_) | TermValue::Number(_) | TermValue::String(_) => true,
-            TermValue::Var(_) => false,
-            // A ref's head is a variable naming a document; only the rest counts.
-            TermValue::Ref(r) => r.iter().skip(1).all(Term::is_ground),
-            TermValue::Array(a) | TermValue::Set(a) | TermValue::Call(a) => a.iter().all(Term::is_ground),
-            TermValue::Object(o) => o.iter().all(|(k, v)| k.is_ground() && v.is_ground()),
-            TermValue::ArrayCompr(..) | TermValue::SetCompr(..) | TermValue::ObjectCompr(..) => false,
-            TermValue::TemplateString { .. } => false,
+    /// Whether the term is a value: scalars and collections of them, no variable, ref,
+    /// call or comprehension anywhere in it (a member at a time).
+    pub fn is_value(&self) -> bool {
+        let mut todo = vec![self];
+        while let Some(t) = todo.pop() {
+            match &t.value {
+                TermValue::Null | TermValue::Bool(_) | TermValue::Number(_) | TermValue::String(_) => {}
+                TermValue::Array(a) | TermValue::Set(a) => todo.extend(a.iter()),
+                TermValue::Object(o) => todo.extend(o.iter().flat_map(|(k, v)| [k, v])),
+                _ => return false,
+            }
         }
+        true
+    }
+
+    /// Whether the term has no variables, a member at a time (a term made of a value nests
+    /// as deep as the value).
+    pub fn is_ground(&self) -> bool {
+        let mut todo = vec![self];
+        while let Some(t) = todo.pop() {
+            match &t.value {
+                TermValue::Null | TermValue::Bool(_) | TermValue::Number(_) | TermValue::String(_) => {}
+                // A ref's head is a variable naming a document; only the rest counts.
+                TermValue::Ref(r) => todo.extend(r.iter().skip(1)),
+                TermValue::Array(a) | TermValue::Set(a) | TermValue::Call(a) => todo.extend(a.iter()),
+                TermValue::Object(o) => todo.extend(o.iter().flat_map(|(k, v)| [k, v])),
+                TermValue::Var(_)
+                | TermValue::ArrayCompr(..)
+                | TermValue::SetCompr(..)
+                | TermValue::ObjectCompr(..)
+                | TermValue::TemplateString { .. } => return false,
+            }
+        }
+        true
     }
 
     /// Equality as OPA's Compare decides it (numbers by NumberCompare), locations aside.

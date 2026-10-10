@@ -38,6 +38,10 @@ const S_IFREG: u32 = libc::S_IFREG as u32;
 #[allow(clippy::unnecessary_cast)]
 const S_IFLNK: u32 = libc::S_IFLNK as u32;
 #[allow(clippy::unnecessary_cast)]
+const S_IFCHR: u32 = libc::S_IFCHR as u32;
+#[allow(clippy::unnecessary_cast)]
+const S_IFBLK: u32 = libc::S_IFBLK as u32;
+#[allow(clippy::unnecessary_cast)]
 const S_ISUID: u32 = libc::S_ISUID as u32;
 #[allow(clippy::unnecessary_cast)]
 const S_ISGID: u32 = libc::S_ISGID as u32;
@@ -168,6 +172,7 @@ fn last() -> Errno {
     )
 }
 
+const EPERM: Errno = 1;
 const EIO: Errno = 5;
 const ENOENT: Errno = 2;
 const EACCES: Errno = 13;
@@ -346,7 +351,15 @@ fn stat_at(dir: RawFd, name: &CStr) -> Result<libc::stat, Errno> {
     Ok(st)
 }
 
+#[cfg(test)]
+thread_local! {
+    /// The names this thread's server has opened, for a test of what it never opens.
+    static OPENED: std::cell::RefCell<Vec<CString>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
 fn open_at(dir: RawFd, name: &CStr, flags: libc::c_int, mode: libc::c_uint) -> Result<OwnedFd, Errno> {
+    #[cfg(test)]
+    OPENED.with(|o| o.borrow_mut().push(name.to_owned()));
     // SAFETY: openat(2) of a NUL-terminated name in a directory we hold.
     let fd = unsafe { libc::openat(dir, name.as_ptr(), flags | libc::O_CLOEXEC, mode) };
     if fd < 0 {
@@ -686,22 +699,20 @@ impl Server {
                 let flags = a.u32()?;
                 let _ = a.u32()?;
                 let fh = a.u64()?;
-                let st = if flags & 1 != 0 {
-                    match s.handles.get(&fh) {
-                        Some(Handle::File(fd)) => stat_fd(fd.as_raw_fd())?,
-                        _ => node_stat(s, nodeid)?,
-                    }
-                } else {
-                    node_stat(s, nodeid)?
+                // The node's own stat, or an open file's, which the guest names and need
+                // not be the node's: only the node's stands for its type.
+                let (st, own) = match (flags & 1 != 0).then(|| s.handles.get(&fh)).flatten() {
+                    Some(Handle::File(fd)) => (stat_fd(fd.as_raw_fd())?, false),
+                    _ => (node_stat(s, nodeid)?, true),
                 };
-                let owner = node_owner(s, nodeid)?;
+                let owner = node_owner(s, nodeid, own.then_some(&st))?;
                 r.u64(VALID_S).u32(0).u32(0).attr(&st, owner);
             }
             op::SETATTR => {
                 self.writable()?;
                 self.setattr(s, nodeid, &mut a)?;
                 let st = node_stat(s, nodeid)?;
-                let owner = node_owner(s, nodeid)?;
+                let owner = node_owner(s, nodeid, Some(&st))?;
                 r.u64(VALID_S).u32(0).u32(0).attr(&st, owner);
             }
             op::READLINK => {
@@ -977,8 +988,12 @@ impl Server {
             op::LISTXATTR => {
                 let size = a.u32()?;
                 let _ = a.u32()?;
-                let fd = node_fd(s, nodeid)?;
-                let names = list_xattr(fd.raw())?;
+                let names = match node_fd(s, nodeid) {
+                    Ok(fd) => list_xattr(fd.raw())?,
+                    // A device node: none.
+                    Err(ENODATA) => Vec::new(),
+                    Err(e) => return Err(e),
+                };
                 if size == 0 {
                     r.u32(u32::try_from(names.len()).unwrap_or(u32::MAX)).u32(0);
                 } else if names.len() > size as usize {
@@ -996,7 +1011,7 @@ impl Server {
                 if hidden(&name) {
                     return Err(EOPNOTSUPP);
                 }
-                let fd = node_fd(s, nodeid)?;
+                let fd = node_fd_to_change(s, nodeid)?;
                 fset_xattr(fd.raw(), &name, value, flags)?;
             }
             op::REMOVEXATTR => {
@@ -1005,7 +1020,7 @@ impl Server {
                 if hidden(&name) {
                     return Err(ENODATA);
                 }
-                let fd = node_fd(s, nodeid)?;
+                let fd = node_fd_to_change(s, nodeid)?;
                 // SAFETY: fremovexattr(2) of a NUL-terminated name.
                 #[cfg(target_os = "macos")]
                 let rc = unsafe { libc::fremovexattr(fd.raw(), name.as_ptr(), 0) };
@@ -1057,7 +1072,7 @@ impl Server {
         r: &mut Reply,
     ) -> Result<(), Errno> {
         let parent_st = node_stat(s, parent)?;
-        let parent_owner = node_owner(s, parent)?;
+        let parent_owner = node_owner(s, parent, None)?;
         let gid = if mode_of(&parent_st) & S_ISGID != 0 {
             parent_owner.gid
         } else {
@@ -1065,7 +1080,7 @@ impl Server {
         };
         if caller.0 != 0 || gid != 0 {
             let dir = dir_fd(s, parent)?;
-            if let Ok(fd) = open_meta(dir, name) {
+            if let Ok(fd) = open_meta(dir, name, None) {
                 let owner = Owner {
                     uid: caller.0,
                     gid,
@@ -1100,7 +1115,7 @@ impl Server {
             Some(Kind::Dir(fd)) => Some(fd.as_raw_fd()),
             _ => None,
         };
-        let mut owner = node_owner(s, nodeid)?;
+        let mut owner = node_owner(s, nodeid, None)?;
         let had = node_has_owner(s, nodeid);
         if valid & fattr::KILL_SUIDGID != 0 && valid & fattr::MODE == 0 {
             let st = node_stat(s, nodeid)?;
@@ -1120,7 +1135,7 @@ impl Server {
             if owner.mode.is_none() {
                 owner.mode = Some(mode_of(&node_stat(s, nodeid)?) & 0o7777);
             }
-            let fd = node_fd(s, nodeid)?;
+            let fd = node_fd_to_change(s, nodeid)?;
             fset_xattr(fd.raw(), &owner_xattr()?, owner.encode().as_bytes(), 0)?;
         }
         if valid & fattr::SIZE != 0 {
@@ -1208,7 +1223,7 @@ impl Server {
         // The kept mode follows, where the attribute is kept.
         if had {
             owner.mode = Some(mode);
-            let fd = node_fd(s, nodeid)?;
+            let fd = node_fd_to_change(s, nodeid)?;
             fset_xattr(fd.raw(), &owner_xattr()?, owner.encode().as_bytes(), 0)?;
         }
         Ok(())
@@ -1260,9 +1275,21 @@ impl NodeFd {
     }
 }
 
-/// `name` in `dir`, opened only to read and set its attributes: not followed, and not
-/// waiting on a FIFO's writer.
-fn open_meta(dir: RawFd, name: &CStr) -> Result<NodeFd, Errno> {
+/// `name` in `dir`, opened only to read and set its attributes: not followed, not waiting
+/// on a FIFO's writer, taking no terminal. A device node is not opened, as its driver's
+/// open acts (a serial line raises DTR, a tape rewinds as it closes) where the guest only
+/// looked, as at an `ls -l` of a shared /dev: it has no attributes here (ENODATA), as
+/// Linux gives a special file no `user.` ones (fs/xattr.c `xattr_permission`), the
+/// owner's among them (audit V08). `known` is the node's file type where the caller has
+/// just looked at it, which spares looking again.
+fn open_meta(dir: RawFd, name: &CStr, known: Option<u32>) -> Result<NodeFd, Errno> {
+    let kind = match known {
+        Some(kind) => kind,
+        None => mode_of(&stat_at(dir, name)?) & S_IFMT,
+    };
+    if matches!(kind, S_IFCHR | S_IFBLK) {
+        return Err(ENODATA);
+    }
     #[cfg(target_os = "macos")]
     let flags = libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_NOCTTY | libc::O_SYMLINK;
     #[cfg(target_os = "linux")]
@@ -1271,10 +1298,21 @@ fn open_meta(dir: RawFd, name: &CStr) -> Result<NodeFd, Errno> {
 }
 
 fn node_fd(s: &State, nodeid: u64) -> Result<NodeFd, Errno> {
+    node_fd_known(s, nodeid, None)
+}
+
+/// [`node_fd`] of a node whose file type the caller has just looked at, `known`.
+fn node_fd_known(s: &State, nodeid: u64, known: Option<u32>) -> Result<NodeFd, Errno> {
     match &s.nodes.get(&nodeid).ok_or(ENOENT)?.kind {
         Kind::Dir(fd) => Ok(NodeFd::Borrowed(fd.as_raw_fd())),
-        Kind::Entry { parent, name } => open_meta(dir_fd(s, *parent)?, name),
+        Kind::Entry { parent, name } => open_meta(dir_fd(s, *parent)?, name, known),
     }
+}
+
+/// A node's descriptor to change its attributes: a device node, which has none here, is
+/// refused as Linux refuses a special file `user.` ones (EPERM).
+fn node_fd_to_change(s: &State, nodeid: u64) -> Result<NodeFd, Errno> {
+    node_fd(s, nodeid).map_err(|e| if e == ENODATA { EPERM } else { e })
 }
 
 fn node_has_owner(s: &State, nodeid: u64) -> bool {
@@ -1284,9 +1322,10 @@ fn node_has_owner(s: &State, nodeid: u64) -> bool {
         .is_some()
 }
 
-/// The guest's owner of a node: its attribute's, or root.
-fn node_owner(s: &State, nodeid: u64) -> Result<Owner, Errno> {
-    let Ok(fd) = node_fd(s, nodeid) else {
+/// The guest's owner of a node: its attribute's, or root. `st`, the node's own stat where
+/// the caller has just taken it.
+fn node_owner(s: &State, nodeid: u64, st: Option<&libc::stat>) -> Result<Owner, Errno> {
+    let Ok(fd) = node_fd_known(s, nodeid, st.map(|st| mode_of(st) & S_IFMT)) else {
         return Ok(Owner::default());
     };
     Ok(fget_xattr(fd.raw(), &owner_xattr()?)
@@ -1364,7 +1403,7 @@ fn lookup(s: &mut State, parent: u64, name: &CStr) -> Result<(u64, libc::stat, O
             id
         }
     };
-    let owner = node_owner(s, id)?;
+    let owner = node_owner(s, id, Some(&st))?;
     Ok((id, st, owner))
 }
 
@@ -2104,6 +2143,30 @@ mod tests {
         let (_, again) = answer(&s, &req(op::READDIR, ROOT, 0, &readdir(readers[0].0, 0, 700)));
         assert_eq!(page(&again, false), first);
         let _ = std::fs::remove_dir_all(&path);
+    }
+
+    /// A device node is never opened only to be looked at, which runs its driver's open
+    /// where the guest only looked (a serial line raises DTR): a share of /dev looks up,
+    /// stats and lists the attributes of `null` without opening it, and it has none.
+    #[test]
+    fn a_device_is_never_opened_to_be_looked_at() {
+        let dev = Server::new(std::fs::File::open("/dev").unwrap().into(), true, None).unwrap();
+        OPENED.with(|o| o.borrow_mut().clear());
+        let (e, entry) = answer(&dev, &req(op::LOOKUP, ROOT, 0, &name("null")));
+        assert_eq!(e, 0);
+        let null = u64::from_le_bytes(entry[0..8].try_into().unwrap());
+        assert_eq!(answer(&dev, &req(op::GETATTR, null, 0, &[0u8; 16])).0, 0);
+        let opened = OPENED.with(|o| o.borrow().clone());
+        assert!(!opened.iter().any(|n| n.as_bytes() == b"null"), "{opened:?}");
+        let mut get = 4096u32.to_le_bytes().to_vec();
+        get.extend_from_slice(&[0u8; 4]);
+        get.extend(name("user.a"));
+        assert_eq!(answer(&dev, &req(op::GETXATTR, null, 0, &get)).0, -ENODATA);
+        let mut list = 4096u32.to_le_bytes().to_vec();
+        list.extend_from_slice(&[0u8; 4]);
+        assert_eq!(answer(&dev, &req(op::LISTXATTR, null, 0, &list)), (0, Vec::new()));
+        let opened = OPENED.with(|o| o.borrow().clone());
+        assert!(!opened.iter().any(|n| n.as_bytes() == b"null"), "{opened:?}");
     }
 
     #[test]

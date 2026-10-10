@@ -104,8 +104,65 @@ fn error_text(name: &str, e: &BuiltinError) -> String {
     }
 }
 
+/// Every call of the corpus, each on a thread of [`shards_rego::stack::LEAF`]: the stack
+/// a builtin may take below the evaluator's last look at its stack. `SHARDS_REGO_LEAF`
+/// names another size, to measure with.
 #[test]
 fn builtins_answer_as_opas_answer() {
+    let size = std::env::var("SHARDS_REGO_LEAF")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(shards_rego::stack::LEAF);
+    std::thread::Builder::new()
+        .stack_size(size)
+        .spawn(|| {
+            answer_as_opa();
+            read_and_write_the_deepest_documents();
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+/// The deepest documents Go reads, 10000 levels of JSON and YAML, read and written back
+/// (the oracle's files cannot hold them: Go writes a level an indent).
+#[allow(clippy::unwrap_used)]
+fn read_and_write_the_deepest_documents() {
+    let call = |name: &str, arg: Value| {
+        let f = funcs::lookup(name).unwrap();
+        let mut ctx = Context::default();
+        f(&mut ctx, &[arg]).unwrap().unwrap()
+    };
+    let depth = |mut v: &Value| {
+        let mut n = 0;
+        while let Value::Array(a) = v {
+            n += 1;
+            match a.first() {
+                Some(x) => v = x,
+                None => break,
+            }
+        }
+        n
+    };
+    let doc = format!("{}{}", "[".repeat(10000), "]".repeat(10000));
+    let json = call("json.unmarshal", Value::string(doc.as_str()));
+    assert_eq!(depth(&json), 10000);
+    assert_eq!(
+        call("json.is_valid", Value::string(doc.as_str())),
+        Value::Bool(true)
+    );
+    assert_eq!(call("json.marshal", json.clone()), Value::string(doc.as_str()));
+    let yaml = call("yaml.unmarshal", Value::string(doc.as_str()));
+    assert_eq!(depth(&yaml), 10000);
+    assert_eq!(
+        call("yaml.is_valid", Value::string(doc.as_str())),
+        Value::Bool(true)
+    );
+    assert!(call("yaml.marshal", yaml).as_str().is_some());
+}
+
+#[allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
+fn answer_as_opa() {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata");
     let mut files: Vec<_> = std::fs::read_dir(&dir)
         .unwrap()

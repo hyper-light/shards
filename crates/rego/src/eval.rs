@@ -16,6 +16,7 @@ use crate::compile::vars::{self as cvars, Params, VarSet, VarVisitor};
 use crate::compile::{Compiler, ground_prefix, rule_ref};
 use crate::copyprop::{self, CopyPropagator, eq_expr, is_constant, ref_has_prefix};
 use crate::funcs::{self, BuiltinError};
+use crate::stack;
 use crate::value::{Number, Value};
 
 /// An evaluation error: OPA's topdown.Error.
@@ -863,52 +864,80 @@ impl<'p> Machine<'p> {
         Term::var(v, None)
     }
 
-    /// bindings.PlugNamespaced.
+    /// bindings.PlugNamespaced, a member at a time: a variable's value, and the values its
+    /// own variables are bound to, nest as deep as the rules that bound them.
     fn plug_ns(&self, t: &Term, b: usize, caller: Option<usize>) -> Term {
-        match &t.value {
-            TermValue::Var(v) => {
-                let (nt, nb, bound) = self.apply_flag(t, b);
-                if bound {
-                    return self.plug_ns(&nt, nb, caller);
-                }
-                let mut out = self.namespace_var(v, b, caller);
-                out.loc = t.loc.clone();
-                out
-            }
-            TermValue::Array(a) => {
-                if t.is_ground() {
-                    return t.clone();
-                }
-                Term::new(
-                    TermValue::Array(a.iter().map(|x| self.plug_ns(x, b, caller)).collect()),
-                    t.loc.clone(),
-                )
-            }
-            TermValue::Object(o) => {
-                if t.is_ground() {
-                    return t.clone();
-                }
-                let pairs = o
-                    .iter()
-                    .map(|(k, v)| (self.plug_ns(k, b, caller), self.plug_ns(v, b, caller)))
-                    .collect();
-                crate::ast::object_term(pairs, t.loc.clone())
-            }
-            TermValue::Set(s) => {
-                if t.is_ground() {
-                    return t.clone();
-                }
-                crate::ast::set_term(
-                    s.iter().map(|x| self.plug_ns(x, b, caller)).collect(),
-                    t.loc.clone(),
-                )
-            }
-            TermValue::Ref(r) => Term::new(
-                TermValue::Ref(r.iter().map(|x| self.plug_ns(x, b, caller)).collect()),
-                t.loc.clone(),
-            ),
-            _ => t.clone(),
+        enum Plug {
+            Visit(Term, usize),
+            Array(usize, Option<Location>),
+            Object(usize, Option<Location>),
+            Set(usize, Option<Location>),
+            Ref(usize, Option<Location>),
         }
+        let mut todo = vec![Plug::Visit(t.clone(), b)];
+        let mut out: Vec<Term> = Vec::new();
+        while let Some(p) = todo.pop() {
+            let (t, b) = match p {
+                Plug::Visit(t, b) => (t, b),
+                Plug::Array(n, loc) => {
+                    let items = last(&mut out, n);
+                    out.push(Term::new(TermValue::Array(items.into()), loc));
+                    continue;
+                }
+                Plug::Object(n, loc) => {
+                    let mut flat = last(&mut out, 2 * n).into_iter();
+                    let mut pairs = Vec::with_capacity(n);
+                    while let (Some(k), Some(v)) = (flat.next(), flat.next()) {
+                        pairs.push((k, v));
+                    }
+                    out.push(crate::ast::object_term(pairs, loc));
+                    continue;
+                }
+                Plug::Set(n, loc) => {
+                    let items = last(&mut out, n);
+                    out.push(crate::ast::set_term(items, loc));
+                    continue;
+                }
+                Plug::Ref(n, loc) => {
+                    let items = last(&mut out, n);
+                    out.push(Term::new(TermValue::Ref(items.into()), loc));
+                    continue;
+                }
+            };
+            match &t.value {
+                TermValue::Var(v) => {
+                    let (nt, nb, bound) = self.apply_flag(&t, b);
+                    if bound {
+                        todo.push(Plug::Visit(nt, nb));
+                        continue;
+                    }
+                    let mut var = self.namespace_var(v, b, caller);
+                    var.loc = t.loc.clone();
+                    out.push(var);
+                }
+                TermValue::Array(a) if !t.is_ground() => {
+                    todo.push(Plug::Array(a.len(), t.loc.clone()));
+                    todo.extend(a.iter().rev().map(|x| Plug::Visit(x.clone(), b)));
+                }
+                TermValue::Object(o) if !t.is_ground() => {
+                    todo.push(Plug::Object(o.len(), t.loc.clone()));
+                    for (k, v) in o.iter().rev() {
+                        todo.push(Plug::Visit(v.clone(), b));
+                        todo.push(Plug::Visit(k.clone(), b));
+                    }
+                }
+                TermValue::Set(s) if !t.is_ground() => {
+                    todo.push(Plug::Set(s.len(), t.loc.clone()));
+                    todo.extend(s.iter().rev().map(|x| Plug::Visit(x.clone(), b)));
+                }
+                TermValue::Ref(r) => {
+                    todo.push(Plug::Ref(r.len(), t.loc.clone()));
+                    todo.extend(r.iter().rev().map(|x| Plug::Visit(x.clone(), b)));
+                }
+                _ => out.push(t),
+            }
+        }
+        out.pop().unwrap_or_else(|| t.clone())
     }
 
     /// bindings.Plug.
@@ -1596,7 +1625,29 @@ fn suppress_all(r: R) -> Result<(), EvalError> {
     }
 }
 
+/// The stack a rule's evaluation takes before it reads the next rule: 10000 rules, each
+/// wrapping the one before in an array, took 164 MiB, 16.8 KB a rule (measured on
+/// aarch64-apple-darwin; tests/deep.rs holds every target to it with the guard below).
+const RULE_STEP: usize = 17 << 10;
+
+/// Whether the evaluation may go a step deeper: each step of a body, of a rule a body
+/// reads and of a term within a term takes a frame on a stack fixed when its thread
+/// began, which OPA's growable one never runs out of (to 1 GB). Short of a rule's step
+/// and a builtin call ([`stack::LEAF`]), the evaluation ends with an error rather than
+/// overflow the stack, which would end the process.
+fn enough_stack(f: &Frame) -> R {
+    if stack::enough(RULE_STEP + stack::LEAF) {
+        return Ok(());
+    }
+    Err(err(
+        INTERNAL_ERR,
+        current_loc(f),
+        "policy evaluation nests deeper than its thread's stack",
+    ))
+}
+
 fn eval_expr(m: &mut Machine<'_>, f: &Frame, iter: I<'_>) -> R {
+    enough_stack(f)?;
     if f.index >= f.query.len() {
         if let Err(e) = iter(m, f) {
             return match e {
@@ -2122,9 +2173,20 @@ fn set_path(mut doc: Term, path: &[Term], value: Term) -> Option<Term> {
 
 /// biunify.
 fn unify(m: &mut Machine<'_>, f: &Frame, a: &Term, b: &Term, b1: usize, b2: usize, k: K<'_>) -> R {
+    enough_stack(f)?;
     let (a, b1) = m.apply(a, b1);
     let (b, b2) = m.apply(b, b2);
     use TermValue as V;
+    // Two collections of values unify where they are equal, as their members would one
+    // pair at a time: compared without a frame a level.
+    if matches!(
+        (&a.value, &b.value),
+        (V::Array(_), V::Array(_)) | (V::Object(_), V::Object(_)) | (V::Set(_), V::Set(_))
+    ) && a.is_value()
+        && b.is_value()
+    {
+        return if a.equal(&b) { k(m) } else { Ok(()) };
+    }
     match (&a.value, &b.value) {
         (V::Var(_) | V::Ref(_) | V::ArrayCompr(..) | V::SetCompr(..) | V::ObjectCompr(..), _) => {
             unify_values(m, f, &a, &b, b1, b2, k)
@@ -2323,6 +2385,7 @@ fn eval_term(
     rb: usize,
     k: K<'_>,
 ) -> R {
+    enough_stack(f)?;
     if pos == r.len() {
         return unify(m, f, term, rterm, tb, rb, k);
     }
@@ -4493,4 +4556,60 @@ fn unify_terms(
     unify(m, f, x, y, b1, b2, &mut |m| {
         unify_terms(m, f, a, b, b1, b2, i + 1, k)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use super::{Host, HostError, Machine, Program, Term, TermValue, Value};
+    use crate::compile::Compiler;
+
+    struct NoHost;
+
+    impl Host for NoHost {
+        fn call(&mut self, _: &str, _: &[Value]) -> Result<Option<Value>, HostError> {
+            Ok(None)
+        }
+    }
+
+    /// A variable bound to an array of the variable before it, each in its own bindings,
+    /// 100000 deep, plugs on a stack of 256 KiB: a frame a level would not fit.
+    #[test]
+    fn a_chain_of_bound_variables_plugs_on_a_small_stack() {
+        std::thread::Builder::new()
+            .stack_size(256 << 10)
+            .spawn(|| {
+                let m = crate::parser::parse_module("p.rego", "package p\n\np := 1\n").unwrap();
+                let mut comp = Compiler::new(BTreeMap::from([("p.rego".to_string(), m)]), Vec::new(), true);
+                comp.compile();
+                let program = Program::new(&comp, Vec::new());
+                let mut host = NoHost;
+                let mut m = Machine::new(&program, &mut host, crate::funcs::Context::default());
+                let n = 100_000;
+                let slots: Vec<usize> = (0..=n).map(|i| m.new_bindings(i as u64)).collect();
+                m.bind(
+                    &Term::var("x", None),
+                    &Term::string("leaf", None),
+                    slots[0],
+                    slots[0],
+                );
+                for i in 1..=n {
+                    let inner = Term::new(TermValue::Array(vec![Term::var("x", None)].into()), None);
+                    m.bind(&Term::var("x", None), &inner, slots[i - 1], slots[i]);
+                }
+                let t = m.plug(&Term::var("x", None), slots[n]);
+                let mut depth = 0;
+                let mut at = &t;
+                while let TermValue::Array(a) = &at.value {
+                    depth += 1;
+                    at = &a[0];
+                }
+                assert_eq!(depth, n);
+                assert_eq!(at.as_string(), Some("leaf"));
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
 }

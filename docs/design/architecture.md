@@ -1655,7 +1655,12 @@ devices. The code is `crates/vmm/src/memory.rs`.
   pooled runs moved by 10 µs or less, within their intervals. The word-at-a-time zero
   check made a 256 MiB save three to five times faster [PM M44].
 - **Not yet:** a save still reads every untouched page, and so makes it resident (audit
-  D01); snapshots of a machine whose every CPU and device has stopped (A02).
+  D01); snapshots of a machine whose every CPU and device has stopped (A02). virtio-net's
+  frame copies (`net.rs` `push` and `deliver`) reach guest memory by `copy_nonoverlapping`
+  with no `Access` held: a guest that lays a TX buffer over memory another device's worker
+  writes has two host threads race, which Rust leaves undefined, though no decision rides
+  on the bytes copied (audit V). Copying under an `Access`, word by word, is on the path
+  throughput depends on, and waits for its measurement.
 - **Tests:** `memory::tests` (copies at every alignment, threads taking turns, a nested
   access refused, ranges in any order, a reused file) and
   `queue::tests::queues_laid_over_each_other_work_on_two_threads`, under
@@ -2360,6 +2365,14 @@ microVM as virtio-fs shares (virtio 1.3 §5.11; Linux fs/fuse/virtio_fs.c):
     then opened without waiting or taking a terminal and looked at again, for one put
     there meanwhile; the guest's status flags are then restored. An OPEN with its
     RELEASE costs 1.5 µs more in the share process (PM M129).
+  - *A device node is not opened to be looked at* (V08). A node's attributes, its owner's
+    among them, were read through a descriptor opened for them, so a LOOKUP or GETATTR of
+    a device node ran its driver's open on the host (a serial line raises DTR), from any
+    guest's `ls -l` of a shared /dev. A character or block device is looked at first and
+    not opened: it has no attributes here, ENODATA to read, none listed, EPERM to change,
+    as Linux keeps `user.` attributes off special files (fs/xattr.c `xattr_permission`).
+    LOOKUP and GETATTR pass the stat they just took, a node's own (not a guest-named open
+    file's), so they look no more often than before (PM M133).
   - *A request is bounded before it is read* (V03). A chain may claim 256 descriptors of
     4 GiB; the device allocated what it claimed, a TiB, before reading any of it. One
     longer than any FUSE request (`MAX_FRAME`, a largest write and its headers) is
@@ -2388,12 +2401,18 @@ microVM as virtio-fs shares (virtio 1.3 §5.11; Linux fs/fuse/virtio_fs.c):
     replies. `size` is held to `MAX_WRITE`, the largest read INIT tells the guest.
   - Tests: `fs::server::tests` (`a_mode_change_follows_no_symlink`,
     `special_files_are_never_opened`, `a_listing_comes_a_read_at_a_time`,
-    `a_directory_is_read_whole_a_page_at_a_time`), `tests/fs_dir_handles.rs` and `fs::tests`
-    (`a_request_longer_than_any_is_refused_unread`,
-    `guest_memory_is_free_while_the_share_answers`), each mutation-checked; the
-    after-open look guards only a name replaced between the two looks, which no test can
-    time.
+    `a_directory_is_read_whole_a_page_at_a_time`,
+    `a_device_is_never_opened_to_be_looked_at`), `tests/fs_dir_handles.rs` and
+    `fs::tests` (`a_request_longer_than_any_is_refused_unread`,
+    `guest_memory_is_free_while_the_share_answers`), each mutation-checked. The looks
+    after an open guard only a name replaced between two looks, which no test can time,
+    nor can one put a regular file and a device in one share without root, which a
+    GETATTR naming one's open file for the other's node would need.
 - **The kernel** has `CONFIG_VIRTIO_FS` and `CONFIG_FUSE_DAX` (kernel-6.18.48-98788948976a).
+- Open, measured: the directories a guest can have looked up are as many as its share
+  process's descriptors, 252 under macOS's default limit of 256, past which every
+  directory LOOKUP fails EMFILE (PM M132); raising the limit lets a guest pin as many
+  kernel file objects, and letting directories go loses their identity through renames.
 - Open, unmeasured: the forwarding hop's cost per request against an in-process server,
   and throughput against Docker Desktop's virtiofs; DAX windows, which would let file
   data skip the hop; the local driver's other types (NFS and CIFS clients in the guest
