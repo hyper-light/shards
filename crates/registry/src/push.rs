@@ -72,9 +72,20 @@ fn pushed(
         if registry.exists(target, true, tag)? {
             return Ok(());
         }
-        return put(registry, target, tag, &bytes);
+        return put(registry, target, tag, &bytes).map(|_| ());
     }
-    push_manifest(registry, store, target, tag, from, report)
+    push_manifest(registry, store, target, tag, from, report).map(|_| ())
+}
+
+/// One manifest by its digest, after what it names, and the `OCI-Subject` the registry
+/// answered its PUT with: none where it said none, or where the repository had it
+/// already, which was then not put.
+pub(crate) fn push_manifest_answered(
+    registry: &Registry,
+    store: &Store,
+    desc: &Descriptor,
+) -> Result<Option<String>, Error> {
+    push_manifest(registry, store, desc, None, None, &|_, _| {})
 }
 
 /// The bytes of a stored manifest or index, whole.
@@ -87,7 +98,7 @@ fn document(store: &Store, desc: &Descriptor) -> Result<Vec<u8>, Error> {
 }
 
 /// A manifest: its config and layers, then it, by `tag` or its digest, unless the
-/// repository has it already.
+/// repository has it already; the `OCI-Subject` its PUT was answered with, if any.
 fn push_manifest(
     registry: &Registry,
     store: &Store,
@@ -95,7 +106,7 @@ fn push_manifest(
     tag: Option<&str>,
     from: Option<&str>,
     report: &(dyn Fn(&Digest, Layer) + Sync),
-) -> Result<(), Error> {
+) -> Result<Option<String>, Error> {
     let bytes = document(store, desc)?;
     let Document::Manifest(manifest) = oci::parse_document(&bytes, &desc.media_type)? else {
         return Err(Error::new(format!("{}: an index inside an index", desc.digest)));
@@ -144,14 +155,20 @@ fn push_manifest(
         return Err(e);
     }
     if registry.exists(desc, true, tag)? {
-        return Ok(());
+        return Ok(None);
     }
     put(registry, desc, tag, &bytes)
 }
 
-/// A manifest or index put by `tag`, or by its digest.
-fn put(registry: &Registry, desc: &Descriptor, tag: Option<&str>, bytes: &[u8]) -> Result<(), Error> {
-    registry.put_manifest(tag.unwrap_or(&desc.digest), &desc.media_type, bytes)
+/// A manifest or index put by `tag`, or by its digest; the `OCI-Subject` it was answered
+/// with, if any.
+fn put(
+    registry: &Registry,
+    desc: &Descriptor,
+    tag: Option<&str>,
+    bytes: &[u8],
+) -> Result<Option<String>, Error> {
+    registry.put_manifest_subject(tag.unwrap_or(&desc.digest), &desc.media_type, bytes)
 }
 
 /// One blob: there already, mounted, or uploaded.

@@ -4517,3 +4517,90 @@ revision before comparing a changed API/implementation.
   `stat` makes; with the stat each request has just taken passed on (the node's own,
   never a guest-named open file's), the device check costs nothing measurable. The
   extended attribute requests, rarer, still look for themselves.
+
+### M134. How long a socket a process lets go stays bound while it spawns children (CI: the published-port bind race)
+
+- **Question.** The published-port tests found a port refused (EADDRINUSE) right after
+  the test had bound and let go of it, held for 10 to 106 ms by nothing `ss`, `netstat`
+  or `lsof` could see (project-port-free-flake, 2026-10-06 to 2026-10-10, on this host
+  and a GitHub Linux runner). Does a child another thread spawns hold such a socket?
+- **Method.** `docs/research/measurements/bind-race`: one thread binds a port (std,
+  `SO_REUSEADDR`), lets it go and binds it again, ten seconds; 0, 4 or 16 threads spawn
+  `/usr/bin/true` meanwhile, by std's `Command` or by `posix_spawn` with
+  `POSIX_SPAWN_CLOEXEC_DEFAULT`, as `shards_ipc::spawn` does on macOS. Each second bind
+  refused is retried until it succeeds, and that wait recorded. Apple M5 Max, macOS
+  26.4.1, 2026-10-10, load average 19 to 33.
+- **Results.** Holds of a let-go listener, n / p50 / p90 / p99 / max:
+
+  | spawns | spawning threads | drops | second binds refused | hold |
+  |---|---:|---:|---:|---|
+  | none | 0 | 21,310 | 0 | — |
+  | std | 4 | 17,262 | 2,919 | 2,919 / 0.42 / 1.42 / 3.68 / 7.30 ms |
+  | std | 16 | 12,279 | 2,459 | 2,459 / 0.42 / 1.96 / 18.6 / 238.9 ms |
+  | CLOEXEC_DEFAULT | 4 | 18,830 | 2,906 | 2,906 / 0.36 / 1.20 / 3.28 / 18.2 ms |
+  | CLOEXEC_DEFAULT | 16 | 12,098 | 3,048 | 3,048 / 0.37 / 1.37 / 16.4 / 153.8 ms |
+
+- **Consequence.** A child holds every descriptor its parent had at the spawn until it
+  execs, close-on-exec ones included, `POSIX_SPAWN_CLOEXEC_DEFAULT` too (XNU copies the
+  table before exec closes them); glibc's `posix_spawn` (sysdeps/unix/sysv/linux/spawni.c:
+  `clone(CLONE_VM | CLONE_VFORK)`, the descriptor table copied) does the same until
+  `execve`, by its source, not measured here. So a listener a multithreaded process drops while another of its
+  threads spawns stays bound in the child, up to a quarter of a second under load. The
+  test process, its tests spawning in parallel, held its own probes of the ports it then
+  had a run publish: those probes now run in a process of their own that spawns nothing
+  (tests/common `port_free`, `hold_port`). The daemon holds a run's listeners from
+  binding them until the run is taken, while its other threads spawn VMs: a spawn then
+  holds them until it execs, so a run shorter than that spawn may end before its ports
+  are free. Not seen in a failure; the fix (the listeners bound by the network process,
+  which spawns nothing, so the daemon holds none) is recorded as open.
+
+### M135. Signatures as OCI 1.1 referrers: shards against cosign, on registries with and without the API
+
+- **Question.** What does cosign v3.1.3 write when it signs an OCI artifact with a key, and
+  how does it list the signature on a registry with the referrers API and on one without?
+  Does cosign accept shards' signatures, and shards cosign's, on both? What does signing
+  cost? (D116)
+- **Method.** Registries as host processes: distribution v3.1.2 (built from its v3.1.2
+  module, Go 1.26.1; no darwin release exists) and zot v2.1.22 (its release, checksum
+  checked); cosign v3.1.3's release (checksum checked), signing with a key it made and a
+  signing config naming no service (no Rekor, Fulcio or TSA: nothing left the host).
+  First by hand: an OSI agent artifact pushed, cosign's signature read back from each
+  registry (its referrer manifest, bundle and list kept as
+  `crates/sigstore/testdata/cosign/measured.json`). Then
+  `docs/research/measurements/referrers/run.py` with shards' release build (revision
+  0279c04): for each registry an agent made and pushed by shards, signed by shards and
+  pushed, verified by `cosign verify --key --insecure-ignore-tlog`; signed by cosign too;
+  both pulled by shards; cosign's deleted by shards, then shards'; then `shards sign` and
+  `cosign sign` of one artifact on zot, alternated, 20 each. Apple M5 Max (18 cores),
+  macOS 26.4, 2026-10-09, load average 93 (other forks' builds running). Raw results:
+  `results-2026-10-09.json` beside the harness.
+- **Results.**
+  - cosign's signature: a manifest of `artifactType`
+    `application/vnd.dev.sigstore.bundle.v0.3+json`, the empty config (carrying the same
+    artifact type), one layer, the bundle, annotations `dev.sigstore.bundle.content:
+    dsse-envelope`, `dev.sigstore.bundle.predicateType:
+    https://sigstore.dev/cosign/sign/v1` and `org.opencontainers.image.created` (RFC 3339,
+    UTC, to the second), `subject` the artifact's manifest. The bundle names the key by its
+    hint alone (the SHA-256 of its PKIX encoding, base64) and holds a DSSE envelope of an
+    in-toto v1 statement, the artifact's digest its one subject, an empty predicate; no
+    log entry, no timestamp. shards' statement and manifest are these bytes (given the
+    bundle and the time); the bundle verifies in shards.
+  - Without the API (distribution: `GET referrers/<digest>` is 404 even with none): cosign
+    put the manifest by digest, asked the API (404), read the tag schema's list (404) and
+    put a new one at `sha256-<hex>`, its entry without the manifest's annotations, which
+    the spec says to copy (spec.md:508). shards' push makes the same requests (blobs
+    HEAD, POST and PUT; the manifest HEAD and PUT; `GET referrers` 404; the list's GET
+    and PUT), its entry with the annotations. With the API (zot: 200, an empty index
+    where there are none), each listed it itself.
+  - `cosign verify --key` passed shards' signature on both (exit 0); shards pulled both
+    signatures on both; with cosign's deleted by shards, cosign still verified (shards'
+    remained); with both deleted, cosign found none (exit 10, `no signatures found`).
+  - `shards sign` (local, scrypt N=2^16 included): n 20, p50 195 ms, p90 236, p99 264,
+    max 264. `cosign sign` (scrypt, signing and pushing): n 20, p50 1198 ms, p90 1328,
+    p99 1466, max 1466. Not the same work: shards signs into its store and pushes with
+    `shards push`; most of either is the key's scrypt, which go-securesystemslib sets at
+    about 100 ms of computation by design (encrypted.go:33).
+- **Consequence.** shards signs with the keys cosign makes, in cosign's format, which
+  cosign verifies, and reads cosign's; both registries' kinds of listing work both ways.
+  Unmeasured: registries with the API that answer no `OCI-Subject` (shards then asks the
+  API, as cosign does), and keyless signing, which needs Fulcio and Rekor.

@@ -54,7 +54,7 @@ pub(crate) mod policy_command;
 mod provenance;
 mod remote;
 mod s3;
-mod sbom;
+pub(crate) mod sbom;
 pub(crate) mod skills;
 mod ssh;
 mod sshkey;
@@ -763,6 +763,9 @@ struct Bases<'a> {
     /// The OSI artifacts the build takes, by what the planner names their sources: their
     /// content layers, read as image layers.
     artifacts: RefCell<BTreeMap<String, Vec<Layer>>>,
+    /// The OSI artifacts pulled for this build, by name: `--pull` pulls each once, whether
+    /// its policies (D116) or its plan asks for it first.
+    pulled: RefCell<std::collections::BTreeSet<String>>,
     /// The build's secrets and SSH agents, for a Git source SOURCE_DATE_EPOCH names.
     secrets: &'a BTreeMap<String, buildflags::SecretBytes>,
     agents: &'a Agents,
@@ -924,6 +927,30 @@ impl Resolver for Bases<'_> {
     /// its type, config and content (crate::agent::fetch); its content layers kept for the
     /// source that names it.
     fn artifact(&self, name: &[u8], kind: &[u8], log: &[u8]) -> Result<Resolved, Vec<u8>> {
+        // The policies first (D116), as a base's are asked before its metadata is
+        // resolved: a refusal takes nothing. None converts it: only an image's pin
+        // converts a source, and a pin of another is refused (`pinned`, BuildKit's
+        // `cannot pin non-image source`).
+        if let Some(p) = self.policies {
+            let normalized = Reference::parse(&String::from_utf8_lossy(name))
+                .map(|r| r.to_string())
+                .map_err(|e| e.to_string().into_bytes())?;
+            let source = policy::Source {
+                identifier: format!("osi-artifact://{normalized}"),
+                attrs: [("osi.kind".to_string(), show(kind))].into_iter().collect(),
+            };
+            match p.evaluate(&source, None, &PolicyMeta { bases: self }, self.policy_log) {
+                Ok(_) => {}
+                Err(r) => {
+                    let e = format!(
+                        "failed to resolve source metadata for {normalized}: could not resolve OSI artifact due to policy: {}",
+                        r.error
+                    );
+                    *self.refused.borrow_mut() = Some(r);
+                    return Err(e.into_bytes());
+                }
+            }
+        }
         let v = self.progress.borrow_mut().start(&String::from_utf8_lossy(log));
         let r = self.artifact_of(&String::from_utf8_lossy(name), kind);
         let progress = self.progress.borrow();
@@ -958,6 +985,57 @@ impl Resolver for Bases<'_> {
 }
 
 impl Bases<'_> {
+    /// An OSI artifact's metadata for its policies (D116): the artifact as the build takes
+    /// it (from the store, pulled where it is not, its referrers with it), the digest its
+    /// name resolves to, and, where asked for, the signature bundles among the referrers
+    /// kept with it. `name` is the source's, pinned or not: the store keeps the artifact
+    /// under the name as written, its tag's where it has one.
+    fn artifact_meta(
+        &self,
+        name: &str,
+        source: &policy::Source,
+        request: &policy::MetaRequest,
+    ) -> Result<policy::Meta, String> {
+        // Of the kind its directive names; one named on its own (`policy eval`) is of
+        // whatever kind it is.
+        let want = match source.attrs.get("osi.kind").map(String::as_str) {
+            Some("agent") => Some(shards_image::osi::Kind::Agent),
+            Some("harness") => Some(shards_image::osi::Kind::Harness),
+            Some("mcp") => Some(shards_image::osi::Kind::Mcp),
+            _ => None,
+        };
+        let mut reference = Reference::parse(name).map_err(|e| format!("{name}: {e}"))?;
+        if reference.tag.is_some() {
+            reference.digest = None;
+        }
+        let stored = reference.to_string();
+        let (desc, _, _, kind) =
+            crate::agent::take(self.store, &reference, want, self.pull_once(&stored), &|_| {})?;
+        let digest = self
+            .store
+            .resolved(&stored)
+            .map_err(|e| e.to_string())?
+            .map_or_else(|| desc.digest.clone(), |d| d.to_string());
+        let signatures = match request.image.as_ref().is_some_and(|i| i.attestation_chain) {
+            false => None,
+            true => Some(crate::agent::signature_bundles(self.store, &stored)?),
+        };
+        Ok(policy::Meta {
+            artifact: Some(policy::ArtifactMeta {
+                digest,
+                artifact_type: kind.artifact_type().to_string(),
+                signatures,
+            }),
+            ..policy::Meta::default()
+        })
+    }
+
+    /// Whether the OSI artifact the store keeps as `name` is pulled again: with `--pull`,
+    /// once a build.
+    fn pull_once(&self, name: &str) -> bool {
+        self.pull && self.pulled.borrow_mut().insert(name.to_string())
+    }
+
     fn artifact_of(&self, name: &str, kind: &[u8]) -> Result<Resolved, String> {
         let want = match kind {
             b"agent" => shards_image::osi::Kind::Agent,
@@ -965,7 +1043,8 @@ impl Bases<'_> {
             _ => shards_image::osi::Kind::Mcp,
         };
         let reference = Reference::parse(name).map_err(|e| format!("{name}: {e}"))?;
-        let (desc, manifest, _) = crate::agent::fetch(self.store, &reference, want, self.pull, &|_| {})?;
+        let fresh = self.pull_once(&reference.to_string());
+        let (desc, manifest, _) = crate::agent::fetch(self.store, &reference, want, fresh, &|_| {})?;
         let diff_ids = crate::agent::diff_ids(self.store, want, &manifest)?;
         let mut layers = Vec::new();
         for (l, diff_id) in manifest.layers.iter().zip(diff_ids) {
@@ -1424,6 +1503,9 @@ impl policy::Resolve for PolicyMeta<'_, '_> {
                 }),
                 ..policy::Meta::default()
             });
+        }
+        if let Some(name) = source.identifier.strip_prefix("osi-artifact://") {
+            return self.bases.artifact_meta(name, source, request);
         }
         let Some(image) = &request.image else {
             return Ok(policy::Meta::default());
@@ -2443,6 +2525,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
         resolved: RefCell::new(multi::with(|sub| std::mem::take(&mut sub.bases)).unwrap_or_default()),
         answered: RefCell::new(multi::with(|sub| std::mem::take(&mut sub.answered)).unwrap_or_default()),
         artifacts: RefCell::new(BTreeMap::new()),
+        pulled: RefCell::new(std::collections::BTreeSet::new()),
         secrets: &secrets,
         agents: &agents,
         layouts: named
@@ -3455,6 +3538,8 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
             list.dedup_by(|a, b| a.uri == b.uri);
             materials.extend(list);
         }
+        // The OSI artifacts it took, after what BuildKit records (D116).
+        materials.extend(provenance::capture_artifacts(&def));
         let (secrets, ssh, network) = provenance::capture_mounts(&def);
         provenance::Capture {
             args: request_attrs.clone(),

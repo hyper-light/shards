@@ -409,10 +409,112 @@ pub fn fixed_port() -> u16 {
     let port = (0..SPAN)
         .filter_map(|i| u16::try_from(FIRST + (start + i) % SPAN).ok())
         .filter(|port| !handed.contains(port))
-        .find(|&port| std::net::TcpListener::bind(("0.0.0.0", port)).is_ok())
+        .find(|&port| port_free(port))
         .expect("a free port below the ephemeral ranges");
     handed.push(port);
     port
+}
+
+/// Whether TCP port `port` can be bound at every IPv4 address now, asked of a process of
+/// its own that spawns nothing ([`port_probe`]). A socket a test process makes, however
+/// briefly, stays open in each child another of its threads spawns meanwhile until that
+/// child execs, so a probe made here would hold the very port it found free from the
+/// program that binds it next: measured on macOS under load, a listener dropped beside
+/// four spawning threads was still bound for up to 180 ms, with std's spawns and with
+/// posix_spawn's CLOEXEC_DEFAULT alike (project-port-free-flake).
+pub fn port_free(port: u16) -> bool {
+    port_probe_process(port, false)
+        .and_then(|mut probe| {
+            let said = probe.said();
+            let _ = probe.child.wait();
+            said
+        })
+        .is_some_and(|said| said == "port free")
+}
+
+/// `port` held at every IPv4 address by a process of its own, as another program holds it,
+/// until the holder is dropped: then its socket closes with it, held by no child of this
+/// process meanwhile.
+pub fn hold_port(port: u16) -> PortHolder {
+    let mut probe = port_probe_process(port, true).expect("a process to hold the port");
+    match probe.said() {
+        Some(said) if said == "port held" => probe,
+        said => panic!("{port}: not held: {said:?}"),
+    }
+}
+
+/// A process of this test binary's running [`port_probe`] alone.
+pub struct PortHolder {
+    child: std::process::Child,
+    lines: BufReader<std::process::ChildStdout>,
+}
+
+impl PortHolder {
+    /// The probe's word: `port free`, `port held` or `port taken …`.
+    fn said(&mut self) -> Option<String> {
+        let mut line = String::new();
+        while self.lines.read_line(&mut line).ok()? > 0 {
+            // After libtest's `test common::port_probe ... `, on its line.
+            if let Some((_, said)) = line.trim_end().split_once("PORT_PROBE ") {
+                return Some(said.to_string());
+            }
+            line.clear();
+        }
+        None
+    }
+}
+
+impl Drop for PortHolder {
+    fn drop(&mut self) {
+        // Its stdin closed, the holder lets go and ends.
+        drop(self.child.stdin.take());
+        let _ = self.child.wait();
+    }
+}
+
+fn port_probe_process(port: u16, hold: bool) -> Option<PortHolder> {
+    let mut command = Command::new(std::env::current_exe().ok()?);
+    command
+        .args([
+            "common::port_probe",
+            "--exact",
+            "--ignored",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env("SHARDS_PORT_PROBE", port.to_string())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    if hold {
+        command.env("SHARDS_PORT_HOLD", "1");
+    }
+    let mut child = command.spawn().ok()?;
+    let lines = BufReader::new(child.stdout.take()?);
+    Some(PortHolder { child, lines })
+}
+
+/// The process [`port_free`] and [`hold_port`] ask: it binds the port named by
+/// `SHARDS_PORT_PROBE` and says whether it could, holding it, with `SHARDS_PORT_HOLD`, until
+/// its stdin closes. Nothing else of the test binary runs in it.
+#[test]
+#[ignore = "a process of its own for port_free and hold_port, which run it"]
+fn port_probe() {
+    let Some(port) = std::env::var("SHARDS_PORT_PROBE")
+        .ok()
+        .and_then(|p| p.parse::<u16>().ok())
+    else {
+        return;
+    };
+    match std::net::TcpListener::bind(("0.0.0.0", port)) {
+        Ok(held) if std::env::var_os("SHARDS_PORT_HOLD").is_some() => {
+            println!("PORT_PROBE port held");
+            let _ = io::stdin().read(&mut [0u8; 1]);
+            drop(held);
+        }
+        Ok(_) => println!("PORT_PROBE port free"),
+        Err(e) => println!("PORT_PROBE port taken {e}"),
+    }
 }
 
 /// The network process: each networked VM's.
@@ -1977,6 +2079,48 @@ pub struct Repos {
     pub manifests: std::collections::HashMap<String, std::collections::HashMap<String, (String, Vec<u8>)>>,
     /// Each request's method and path, in order.
     pub log: Vec<String>,
+    /// Whether it serves the referrers API as zot does (D116): a manifest with a subject
+    /// put is answered `OCI-Subject`, and `referrers/<digest>` lists those referring to
+    /// it; else it has none, as distribution has none, and answers 404 there.
+    pub referrers_api: bool,
+}
+
+/// The referrers of `subject` among `manifests`, as the referrers API lists them: each
+/// manifest whose subject it is, its artifact type (else its config's type) and its
+/// annotations.
+fn referrers_of(manifests: &std::collections::HashMap<String, (String, Vec<u8>)>, subject: &str) -> Vec<u8> {
+    let mut seen = std::collections::BTreeMap::new();
+    for (reference, (kind, body)) in manifests {
+        if !reference.starts_with("sha256:") {
+            continue;
+        }
+        let Ok(m) = serde_json::from_slice::<serde_json::Value>(body) else {
+            continue;
+        };
+        if m["subject"]["digest"].as_str() != Some(subject) {
+            continue;
+        }
+        let artifact_type = m["artifactType"]
+            .as_str()
+            .or(m["config"]["mediaType"].as_str())
+            .unwrap_or_default();
+        seen.insert(
+            reference.clone(),
+            serde_json::json!({
+                "mediaType": kind,
+                "size": body.len(),
+                "digest": reference,
+                "artifactType": artifact_type,
+                "annotations": m["annotations"].clone(),
+            }),
+        );
+    }
+    serde_json::to_vec(&serde_json::json!({
+        "schemaVersion": 2,
+        "mediaType": "application/vnd.oci.image.index.v1+json",
+        "manifests": seen.into_values().collect::<Vec<_>>(),
+    }))
+    .unwrap()
 }
 
 /// A registry on loopback that takes pushes as the distribution spec has them: a blob's
@@ -2107,14 +2251,40 @@ pub fn writable_registry_requiring(authorization: Option<String>) -> (u16, Arc<s
                             ),
                             None => ("404 Not Found", vec![], vec![]),
                         }
+                    } else if let Some((repo, subject)) =
+                        rest.split_once("/referrers/").filter(|_| repos.referrers_api)
+                    {
+                        let listed =
+                            referrers_of(repos.manifests.get(repo).unwrap_or(&Default::default()), subject);
+                        (
+                            "200 OK",
+                            vec!["Content-Type: application/vnd.oci.image.index.v1+json".to_string()],
+                            listed,
+                        )
                     } else if let Some((repo, reference)) = rest.split_once("/manifests/") {
                         let repo = repo.to_string();
                         if method == "PUT" {
                             let d = sha256_digest(&body);
+                            let subject = serde_json::from_slice::<serde_json::Value>(&body)
+                                .ok()
+                                .and_then(|m| m["subject"]["digest"].as_str().map(String::from))
+                                .filter(|_| repos.referrers_api);
                             let m = repos.manifests.entry(repo).or_default();
                             m.insert(reference.to_string(), (kind.clone(), body.clone()));
                             m.insert(d.clone(), (kind.clone(), body));
-                            ("201 Created", vec![format!("Docker-Content-Digest: {d}")], vec![])
+                            let mut headers = vec![format!("Docker-Content-Digest: {d}")];
+                            headers.extend(subject.map(|s| format!("OCI-Subject: {s}")));
+                            ("201 Created", headers, vec![])
+                        } else if method == "DELETE" {
+                            // The manifest, by its digest, and every tag naming it.
+                            let m = repos.manifests.entry(repo).or_default();
+                            let before = m.len();
+                            m.retain(|r, (_, b)| r != reference && sha256_digest(b) != reference);
+                            if m.len() == before {
+                                ("404 Not Found", vec![], vec![])
+                            } else {
+                                ("202 Accepted", vec![], vec![])
+                            }
                         } else {
                             match repos.manifests.get(&repo).and_then(|m| m.get(reference)) {
                                 Some((kind, b)) => (

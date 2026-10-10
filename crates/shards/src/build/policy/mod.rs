@@ -323,6 +323,19 @@ pub struct Meta {
     pub image: Option<ImageMeta>,
     pub git: Option<GitMeta>,
     pub http: Option<HttpMeta>,
+    /// An OSI artifact's (D116).
+    pub artifact: Option<ArtifactMeta>,
+}
+
+/// An OSI artifact's metadata (D116): the digest its name resolves to, which its
+/// referrers name as their subject (the index of several platforms, else its manifest),
+/// and, where asked for, the signature bundles among the referrers kept with it.
+#[derive(Debug, Clone, Default)]
+pub struct ArtifactMeta {
+    pub digest: String,
+    /// Its manifest's `artifactType`: what a source that names no kind is.
+    pub artifact_type: String,
+    pub signatures: Option<Vec<Vec<u8>>>,
 }
 
 /// A Git source's metadata (ResolveSourceGitResponse): the ref its name resolves to, the
@@ -498,6 +511,11 @@ fn functions() -> Vec<Function> {
         Function {
             name: "github_attestation".into(),
             decl: f(vec![a(), s()], a()),
+        },
+        // shards' (D116): an OSI artifact's cosign signature by a key the policy names.
+        Function {
+            name: "verify_image_signature".into(),
+            decl: f(vec![a(), s()], Type::Boolean),
         },
     ]
 }
@@ -761,6 +779,70 @@ impl Host for Funcs<'_> {
                 )
                 .map_err(|e| undefined(format!("{NAME}: verification failes: {e}")))?;
                 Ok(Some(Value::Bool(true)))
+            }
+            // shards' (D116): a cosign signature of what the OSI artifact `input.image`
+            // names resolves to, by the key a file of the policy's FS holds (cosign.pub),
+            // as `cosign verify --key` checks one (shards_sigstore::sign::
+            // verify_key_signed); false where the source is no OSI artifact or no such
+            // signature verifies, and unknown until its signatures are read.
+            "verify_image_signature" => {
+                const NAME: &str = "verify_image_signature";
+                let Some(image) = self.input.image.as_ref().filter(|i| !i.artifact_type.is_empty()) else {
+                    return Ok(Some(Value::Bool(false)));
+                };
+                // A binding, not a promoted temporary: Value has a Drop of its own.
+                let null = Value::Null;
+                let arg = args.first().unwrap_or(&null);
+                if !matches!(arg, Value::Object(_)) {
+                    return Err(undefined(format!(
+                        "{NAME}: expected object, got {}",
+                        ast_type(arg)
+                    )));
+                }
+                if self.input_value.get(&Value::string("image")) != Some(arg) {
+                    return Err(undefined(format!("{NAME}: object is not the input's image")));
+                }
+                let Some(bundles) = image.bundles.clone() else {
+                    self.add_unknown(NAME);
+                    return Ok(Some(Value::Bool(false)));
+                };
+                let path = match args.get(1) {
+                    Some(Value::String(p)) => p,
+                    other => {
+                        return Err(undefined(format!(
+                            "{NAME}: expected string path, got {}",
+                            other.map_or("<nil>", ast_type)
+                        )));
+                    }
+                };
+                let pem = self.read_file(path, 128 * 1024)?;
+                let key =
+                    shards_sigstore::sign::public_key(&pem).map_err(|e| undefined(format!("{NAME}: {e}")))?;
+                let none = shards_sigstore::trusted_root::TrustedRoot::default();
+                for b in &bundles {
+                    let Ok(u) = shards_sigstore::sign::unverified(b) else {
+                        continue;
+                    };
+                    if !u.keyed {
+                        continue;
+                    }
+                    // Its log entries, where it has any, are checked against Sigstore's root.
+                    let root = match (u.logged, self.trust) {
+                        (true, Some(t)) => t.root().map_err(|e| undefined(format!("{NAME}: {e}")))?,
+                        _ => &none,
+                    };
+                    let verified = shards_sigstore::sign::verify_key_signed(
+                        b,
+                        &image.checksum,
+                        &key,
+                        root,
+                        signatures::local_offset,
+                    );
+                    if verified.is_ok() {
+                        return Ok(Some(Value::Bool(true)));
+                    }
+                }
+                Ok(Some(Value::Bool(false)))
             }
             // builtinVerifyHTTPPGPSignatureImpl: a detached signature of the download, by
             // the keys of a file, checked over the digest of the content and the
@@ -1056,6 +1138,9 @@ fn runtime_refs(unknowns: &[&str]) -> Vec<String> {
     if unknowns.contains(&"artifact_attestation") || unknowns.contains(&"github_attestation") {
         out.push("http.checksum".to_string());
     }
+    if unknowns.contains(&"verify_image_signature") {
+        out.push("image.signatures".to_string());
+    }
     out
 }
 
@@ -1282,6 +1367,10 @@ fn request_for(unknowns: &[String], request: &mut MetaRequest) -> Result<(), Str
             continue;
         }
         match u {
+            // An OSI artifact's (D116), which its metadata says.
+            "image.artifactType" => {
+                request.image.get_or_insert_with(ImageRequest::default);
+            }
             "image.checksum" | "image.labels" | "image.user" | "image.volumes" | "image.workingDir"
             | "image.env" => {
                 request.image.get_or_insert_with(ImageRequest::default).no_config = false;

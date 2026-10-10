@@ -3519,15 +3519,19 @@ fn published_ports_reach_the_guest_as_dockerd_publishes_them() {
             listening.is_empty(),
             "{p} after a run ended: still listened on by {listening}"
         );
-        if let Err(e) = std::net::TcpListener::bind(("0.0.0.0", p)) {
-            panic!("{p} after a run ended: {e}; {}", catch_holder(p));
-        }
+        // Bound by a program of its own, as the next program to bind it would: a socket
+        // this process made would stay open in whatever child another test spawned
+        // meanwhile, and hold p from the next run (common::port_free).
+        assert!(
+            common::port_free(p),
+            "{p} after a run ended: taken; {}",
+            catch_holder(p)
+        );
         freed = Instant::now();
     }
     // And the daemon holds it no longer: taken by another program, it is refused at once,
     // not after the wait for a run's ports to come free.
-    let held = std::net::TcpListener::bind(("0.0.0.0", p))
-        .unwrap_or_else(|e| panic!("{p}: {e}; {}", catch_holder(p)));
+    let held = common::hold_port(p);
     let began = Instant::now();
     let refused = run_in(
         &home,

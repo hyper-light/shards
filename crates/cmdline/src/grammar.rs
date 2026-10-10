@@ -130,7 +130,8 @@ pub fn rewrite(args: &[String]) -> Option<Vec<String>> {
         }
         // An agent, harness or MCP server: shards' own group, `shards agent build ...`.
         (
-            action @ ("build" | "push" | "pull" | "list" | "ls" | "inspect" | "remove" | "rm" | "delete"),
+            action @ ("build" | "push" | "pull" | "list" | "ls" | "inspect" | "remove" | "rm" | "delete"
+            | "sign"),
             thing @ (Thing::Agent | Thing::Harness | Thing::Mcp),
         ) => {
             let group = match thing {
@@ -605,6 +606,12 @@ mod tests {
         assert_eq!(said("prune volumes -a").as_deref(), Some("volume prune -a"));
         // Docker's own `volume` commands are left as they are.
         assert_eq!(said("volume ls"), None);
+        // OSI artifacts are shards' own groups (D54), signed as cosign signs (D116).
+        assert_eq!(said("push agent r/a:1").as_deref(), Some("agent push r/a:1"));
+        assert_eq!(
+            said("sign mcp r/m:1 --key k").as_deref(),
+            Some("mcp sign r/m:1 --key k")
+        );
     }
 
     #[test]

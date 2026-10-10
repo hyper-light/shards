@@ -3298,6 +3298,119 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode
 waits on the user.
 
+### D116. Signatures and SBOMs of agents, harnesses and MCP servers, as OCI 1.1 referrers
+
+§8 Q1 gave OSI artifacts "signatures and SBOMs as its referrers". Now they have them,
+from the registry layer up to the build's policies.
+
+- **Referrers** as distribution-spec and image-spec v1.1.1 have them
+  (`shards_registry::referrers`).
+  - A referrer is pushed by digest, after what it names.
+  - Where the registry did not answer `OCI-Subject` (spec.md:499) and lists none by the
+    API, the subject's list under the tag schema is updated: `<alg>-<ref>`, the reference
+    cut to 64 characters. The entry is added once, with the manifest's `artifactType`
+    (else its config's type) and its annotations (spec.md:501-511, 722-731). A tag naming
+    something other than an index fails, and nothing is put.
+  - Listing reads every page of the API (`Link: rel="next"`), at most a manifest's size
+    in all, else the tag schema's index. It filters by artifact type where the registry
+    did not.
+  - Deleting needs distribution's `delete` scope. It removes the entry from the list
+    where there is no API (spec.md:695-699).
+  - Measured (PM M135): distribution v3.1.2 has no referrers API; zot v2.1.22 has it.
+- **Signatures, as cosign v3.1.3 makes them with a key** (`shards_sigstore::sign`,
+  `cosignkey`, `secretbox`). `shards sign agent|harness|mcp NAME --key FILE` signs what
+  NAME resolves to: the index of several platforms, else the manifest, as cosign signs
+  the digest a name resolves to.
+  - Format: cosign's `sign/v1` in-toto statement, in a DSSE envelope, in a bundle v0.3
+    naming the key by its hint. The referrer manifest is the one cosign's
+    `WriteReferrer` writes, byte for byte apart from the time.
+  - Keys: cosign's own (generate-key-pair, import-key-pair). They are read as cosign's
+    `LoadPrivateKey` reads them.
+    - go-securesystemslib's JSON, read as Go reads it.
+    - Its three scrypt parameter sets alone, as its `CheckParams` allows (encrypted.go:
+      125-139). AWS-LC's scrypt is given exactly their memory.
+    - NaCl's secretbox: XSalsa20, written here and held to x/crypto, and AWS-LC's
+      Poly1305, the tag compared in constant time.
+    - Each refusal is worded as cosign words it.
+    - Signing follows sigstore's default for each key type: ECDSA P-256, P-384 and P-521,
+      Ed25519ph (as cosign signs Ed25519 keys), and RSA PKCS #1 v1.5.
+    - The password is `COSIGN_PASSWORD`'s, else asked on the terminal, not echoed.
+  - The signature is kept with the name and pushed by `shards push`.
+  - Keyless signing is not done: it needs Fulcio and Rekor, and the public ones are not
+    used without the user. No signature is uploaded to a transparency log. cosign then
+    verifies with `--insecure-ignore-tlog`, as M135 measured.
+  - Held to cosign by:
+    - `scripts/cosign/generate`: LoadPrivateKey's answers for 27 keys, and 14
+      secretboxes x/crypto sealed;
+    - what cosign wrote (`testdata/cosign/measured.json`, verified here);
+    - cosign verifying shards' signatures on both registries (M135).
+- **SBOMs.** `shards build agent --sbom[=…]`, read as buildx reads `--sbom`, runs the
+  scanner over the artifact's content. It is a build of that content alone (`FROM
+  scratch`, `COPY --exclude=<config>`), scanned as D81 scans a result.
+  - The result's SPDX document is the one layer of a referrer of type
+    `application/spdx+json` (IANA-registered to the Linux Foundation). Its config is the
+    empty one, per image-spec's guidelines for artifacts.
+  - There is one for each platform's manifest, kept and pushed.
+- **Pull, inspect, delete.**
+  - `shards pull agent`, and a build's pull of an artifact, takes its referrers as the
+    registry lists them, in place of those kept: one deleted there goes here too.
+  - A tag schema list is written by anyone who may push. A referrer that refers to
+    another object is left, and said.
+  - `shards inspect agent` lists the referrers.
+  - `shards rm agent NAME --referrer DIGEST` deletes one from the registry, and its list
+    entry, and lets go of it here.
+- **Policies** (D101–D107), the one trust mechanism, rather than a new one. An
+  `osi-artifact://` source was refused by `--policy` ("unsupported source scheme"), and
+  was checked only after it was fetched.
+  - To a policy it is now `input.image`, an object of a registry as an image is. It has
+    the digest its name resolves to and `artifactType`, which no image has; an image's
+    input is buildx's, byte for byte, as before.
+  - Its `signatures` are its keyless cosign signatures, verified as the policy helpers'
+    `VerifyArtifact` verifies an artifact's (Fulcio, SCTs, a log entry), of cosign's
+    signature predicate.
+  - `verify_image_signature(input.image, "cosign.pub")` is shards' own function, on
+    buildx's `verify_*` pattern. It holds an artifact to a key the policy names, as
+    `cosign verify --key` does.
+  - It is asked by name before it is taken, as a base is before its metadata, then
+    pinned with the definition. A pin of one is refused in BuildKit's words.
+  - `shards buildx policy eval osi-artifact://NAME` asks the same of an artifact on its
+    own, before or after `shards pull`, its kind read from its manifest.
+- **At run** (the standing rule's twin). The brief assumed the normalized Agentfile names
+  each artifact by digest; it names it as written.
+  - A run re-verifies nothing per start. Signatures need the registry and the build's
+    policy, against a 5 ms start.
+  - A run cannot compare an agent's content to its artifact: the agent's layer is that
+    content under `/agents/<name>`, of another diff ID.
+  - The image as built is what runs: its layers content-addressed, its Agentfile checked
+    against its digest at every run (D109).
+  - So the build now records each artifact it took in the image's provenance, by
+    digest, as a package-url of the `oci` type (purl-spec types/oci-definition.json).
+    A signed image vouches for that list; a policy over the image skips the material
+    with a warning, as buildx does any it cannot read.
+- **Recorded differences from cosign:**
+  - The tag schema's list carries the manifest's annotations, which the spec asks for
+    and cosign leaves out.
+  - A pull replaces the referrers kept with those listed.
+  - An artifact of several platforms has its SBOM per platform.
+- **Tested.**
+  - `signatures_are_referrers_pushed_pulled_and_deleted_as_cosigns_are` covers both
+    kinds of registry and a stray referrer; what it pushed verifies as cosign verifies.
+  - `an_index_is_what_a_signature_of_several_platforms_names`.
+  - `policies_hold_an_agent_to_its_signature` covers:
+    - unsigned refused, signed allowed, another key refused;
+    - a build elsewhere taking the agent with its signature;
+    - a pin refused;
+    - `policy eval`;
+    - the provenance's material.
+  - `an_agents_sbom_is_a_referrer_scanned_as_buildkit_scans`, on microVMs.
+  - Unit and oracle tests in shards-registry, shards-sigstore and shards-image.
+  - 32 mutants killed.
+- **Open:**
+  - Keyless signing (Fulcio, Rekor) and timestamped signatures (a TSA).
+  - An SBOM signed as an attestation.
+  - Conditional (`If-Match`) updates of the tag schema's list. The spec's MAY;
+    distribution takes none; concurrent pushers can lose an entry (spec.md:733-735).
+
 ### D113. A BuildKit frontend: `docker buildx build` builds an Agentfile with Docker alone
 
 AGENTFILE_ARCH.md §8 Q16: a `# syntax=` line naming shards' frontend lets plain Docker

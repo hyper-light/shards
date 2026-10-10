@@ -2182,9 +2182,13 @@ fn outlive(hold: usize) -> i32 {
     let held: Vec<u8> = vec![1; hold << 20];
     let _ = writeln!(io::stdout(), "outlive holding {hold}");
     let _ = io::stdout().flush();
-    // A process going: a zombie, or one with SIGKILL pending, as a domain the kernel ends
-    // whole (memory.oom.group) has each of its processes until each is gone; one at a time,
-    // so the last may be seen after the first is gone.
+    // A process going: a zombie, one with SIGKILL pending, or one already exiting, as a
+    // domain the kernel ends whole (cgroup.kill, memory.oom.group) has each of its processes
+    // until each is gone; one at a time, so the last may be seen after the first is gone.
+    // A domain's PID 1, having taken its SIGKILL, waits in do_exit for the rest of its PID
+    // namespace (zap_pid_ns_processes), neither a zombie nor with a signal pending: its
+    // PF_EXITING says so, set as do_exit begins (kernel/signal.c exit_signals), field 9 of
+    // /proc/PID/stat (CI, 2026-10-10: a holder counted alive in that gap).
     let going = |p: &std::path::Path| {
         let status = std::fs::read_to_string(p.join("status")).unwrap_or_default();
         let field = |k: &str| status.lines().find_map(|l| l.strip_prefix(k)).map(str::trim);
@@ -2193,9 +2197,19 @@ fn outlive(hold: usize) -> i32 {
                 .and_then(|v| u64::from_str_radix(v, 16).ok())
                 .is_some_and(|m| m & (1 << (libc::SIGKILL - 1)) != 0)
         };
+        const PF_EXITING: u64 = 0x4;
+        let stat = std::fs::read_to_string(p.join("stat")).unwrap_or_default();
+        // After the name, which may hold anything, closed by the last parenthesis: state,
+        // ppid, pgrp, session, tty_nr, tpgid, flags.
+        let exiting = stat
+            .rsplit_once(')')
+            .and_then(|(_, rest)| rest.split_whitespace().nth(6))
+            .and_then(|f| f.parse::<u64>().ok())
+            .is_some_and(|flags| flags & PF_EXITING != 0);
         field("State:").is_some_and(|s| s.starts_with('Z') || s.starts_with('X'))
             || killed("SigPnd:")
             || killed("ShdPnd:")
+            || exiting
     };
     let living = |name: &str| -> Vec<std::path::PathBuf> {
         std::fs::read_dir("/proc")

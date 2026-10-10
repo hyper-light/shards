@@ -244,6 +244,12 @@ fn parse_source(input: &str) -> Result<policy::Source, String> {
         }
         return Ok(policy::Source::new(format!("docker-image://{r}")));
     }
+    // An OSI artifact of a registry (D116), of whatever kind it is: shards' own source.
+    if let Some(r) = input.strip_prefix("osi-artifact://") {
+        let r = shards_image::reference::Reference::parse_normalized(r)
+            .map_err(|e| format!("failed to parse OSI artifact source reference: {e}"))?;
+        return Ok(policy::Source::new(format!("osi-artifact://{r}")));
+    }
     if input.starts_with("git://") {
         return match parse_git_ref(input.as_bytes()) {
             Parsed::NotGit => Err(format!("invalid git context {input}")),
@@ -311,6 +317,7 @@ fn with_resolver(f: &dyn Fn(&dyn policy::Resolve) -> Result<(), String>) -> Resu
         resolved: RefCell::new(BTreeMap::new()),
         layouts: BTreeMap::new(),
         artifacts: RefCell::new(BTreeMap::new()),
+        pulled: RefCell::new(std::collections::BTreeSet::new()),
         secrets: &secrets,
         agents: &agents,
         answered: RefCell::new(BTreeMap::new()),

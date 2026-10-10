@@ -20,6 +20,9 @@ use shards_image::osi::{self, Config, Kind};
 use shards_image::reference::{Digest, Reference};
 use shards_image::store::Store;
 
+/// The artifact type of an SBOM referrer: SPDX's JSON (D116).
+pub const SPDX_JSON: &str = "application/spdx+json";
+
 /// The file a directory's config is read from, by kind.
 fn config_file(kind: Kind) -> &'static str {
     match kind {
@@ -59,6 +62,7 @@ pub fn command(word: &str, args: impl Iterator<Item = OsString>) -> ExitCode {
             "ls" | "list" => list(kind),
             "inspect" => inspect(kind, rest),
             "rm" | "remove" | "delete" => remove(kind, rest),
+            "sign" => sign(kind, rest),
             "-h" | "--help" | "help" => {
                 let _ = writeln!(io::stdout(), "{}", usage(kind));
                 Ok(())
@@ -93,7 +97,7 @@ fn usage(kind: Kind) -> String {
         Kind::Mcp => "mcp",
     };
     format!(
-        "Usage:\n  shards build {w} DIR -t NAME [--platform LIST]   make one of DIR and its {}\n  shards push {w} NAME\n  shards pull {w} NAME\n  shards ls {w}\n  shards inspect {w} NAME\n  shards rm {w} NAME",
+        "Usage:\n  shards build {w} DIR -t NAME [--platform LIST]   make one of DIR and its {}\n  shards sign {w} NAME --key FILE                  sign it with a cosign key (COSIGN_PASSWORD)\n  shards push {w} NAME                             with its signatures and SBOMs\n  shards pull {w} NAME\n  shards ls {w}\n  shards inspect {w} NAME\n  shards rm {w} NAME\n  shards rm {w} NAME --referrer DIGEST             delete a signature or SBOM from its registry",
         config_file(kind)
     )
 }
@@ -114,7 +118,7 @@ fn reference(name: &str) -> Result<Reference, String> {
 
 /// `shards build agent DIR -t NAME`.
 fn build(kind: Kind, args: &[String]) -> Result<(), String> {
-    let (mut dir, mut name) = (None, None);
+    let (mut dir, mut name, mut sbom) = (None, None, None);
     let mut platforms: Vec<String> = Vec::new();
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -125,6 +129,8 @@ fn build(kind: Kind, args: &[String]) -> Result<(), String> {
             s if s.starts_with("--platform=") => {
                 platforms.push(s.trim_start_matches("--platform=").to_string())
             }
+            "--sbom" => sbom = Some("true".to_string()),
+            s if s.starts_with("--sbom=") => sbom = Some(s.trim_start_matches("--sbom=").to_string()),
             s if s.starts_with('-') => return Err(format!("unknown flag {s}\n{}", usage(kind))),
             s if dir.is_none() => dir = Some(PathBuf::from(s)),
             s => return Err(format!("one directory only, not {s:?} too")),
@@ -132,18 +138,172 @@ fn build(kind: Kind, args: &[String]) -> Result<(), String> {
     }
     let dir = dir.ok_or_else(|| usage(kind))?;
     let name = reference(&name.ok_or("-t names what it is called")?)?;
+    let sbom = sbom.filter(|s| s != "false");
     let store = store()?;
     let _lease = store.lease().map_err(|e| e.to_string())?;
     if !platforms.is_empty() {
-        return build_index(kind, &dir, &name, &platforms, &store);
+        return build_index(kind, &dir, &name, &platforms, &store, sbom.as_deref());
     }
     let (desc, _) = make(kind, &dir, &store)?;
     let digest = desc.digest().map_err(|e| e.to_string())?;
     store
         .tag(&name.to_string(), &desc, &digest, &contents(&store, &desc)?)
         .map_err(|e| e.to_string())?;
+    if let Some(sbom) = &sbom {
+        attach_sbom(&store, &name, &desc, &dir, &[config_file(kind)], sbom)?;
+    }
     let _ = writeln!(io::stdout(), "{digest}");
     Ok(())
+}
+
+/// An SBOM of the content `content` (`skip` at its root left out), kept with `name` as a
+/// referrer of `subject`, its manifest (D116): the SPDX document of the scanner `--sbom`
+/// names, run over the content as `shards build --sbom` runs one over a build's result
+/// (D81), in a build of the content alone. The scan's progress is said where it fails.
+fn attach_sbom(
+    store: &Store,
+    name: &Reference,
+    subject: &Descriptor,
+    content: &Path,
+    skip: &[&str],
+    sbom: &str,
+) -> Result<(), String> {
+    let stage = store.stage().map_err(|e| e.to_string())?;
+    let file = stage.path().join("Dockerfile");
+    let excludes: String = skip.iter().map(|s| format!(" --exclude={s}")).collect();
+    fs::write(&file, format!("FROM scratch\nCOPY{excludes} . /\n")).map_err(|e| e.to_string())?;
+    let out = stage.path().join("out");
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let ran = std::process::Command::new(exe)
+        .arg("build")
+        .arg("--progress=plain")
+        .arg(format!("--sbom={sbom}"))
+        .arg("--provenance=false")
+        .arg("--output")
+        .arg(format!("type=oci,dest={},tar=false", out.display()))
+        .arg("-f")
+        .arg(&file)
+        .arg(content)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|e| format!("scanning {}: {e}", content.display()))?;
+    if !ran.status.success() {
+        return Err(format!(
+            "scanning {} for an SBOM failed:\n{}",
+            content.display(),
+            String::from_utf8_lossy(&ran.stderr)
+        ));
+    }
+    let doc = scanned_document(&out)?;
+    let referrer = sbom_referrer(store, &doc, subject)?;
+    store
+        .keep_referrer(&name.to_string(), &referrer)
+        .map_err(|e| e.to_string())?;
+    let _ = writeln!(
+        io::stderr(),
+        "{name}: SBOM {} of {}",
+        referrer.digest,
+        subject.digest
+    );
+    Ok(())
+}
+
+/// The SPDX document of the result's SBOM statement in the OCI layout at `layout`: the
+/// first attestation layer of its predicate type, as D81 writes the result's first.
+fn scanned_document(layout: &Path) -> Result<Vec<u8>, String> {
+    let read = |digest: &str| -> Result<Vec<u8>, String> {
+        let hex = digest
+            .strip_prefix("sha256:")
+            .ok_or_else(|| format!("{digest}: not SHA-256"))?;
+        let path = layout.join("blobs/sha256").join(hex);
+        let len = fs::metadata(&path).map_err(|e| format!("{digest}: {e}"))?.len();
+        if len > oci::MAX_MANIFEST {
+            return Err(format!("{digest}: larger than {} bytes", oci::MAX_MANIFEST));
+        }
+        fs::read(&path).map_err(|e| format!("{digest}: {e}"))
+    };
+    let json = |b: &[u8]| -> Result<serde_json::Value, String> {
+        serde_json::from_slice(b).map_err(|e| e.to_string())
+    };
+    // A field of a field: `get` of each in turn.
+    let at = |v: &serde_json::Value, path: &[&str]| -> Option<serde_json::Value> {
+        path.iter().try_fold(v.clone(), |v, k| v.get(k).cloned())
+    };
+    let list = |v: &serde_json::Value, key: &str| -> Vec<serde_json::Value> {
+        v.get(key)
+            .and_then(serde_json::Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+    };
+    let text_of = |v: &serde_json::Value, path: &[&str]| -> String {
+        at(v, path)
+            .and_then(|s| s.as_str().map(String::from))
+            .unwrap_or_default()
+    };
+    let top = json(&fs::read(layout.join("index.json")).map_err(|e| format!("the scan's index: {e}"))?)?;
+    let mut manifests = list(&top, "manifests");
+    // The layout's index names the image's, which holds the attestation manifest.
+    for _ in 0..2 {
+        if let Some(att) = manifests
+            .iter()
+            .find(|m| text_of(m, &["annotations", "vnd.docker.reference.type"]) == "attestation-manifest")
+        {
+            let m = json(&read(&text_of(att, &["digest"]))?)?;
+            for layer in list(&m, "layers") {
+                if text_of(&layer, &["annotations", "in-toto.io/predicate-type"])
+                    == crate::build::sbom::PREDICATE
+                {
+                    let text = read(&text_of(&layer, &["digest"]))?;
+                    return Ok(crate::build::sbom::statement("sbom", &text)?.predicate);
+                }
+            }
+            break;
+        }
+        let Some(index) = manifests
+            .iter()
+            .find(|m| text_of(m, &["mediaType"]) == oci::media::OCI_INDEX)
+            .map(|m| text_of(m, &["digest"]))
+        else {
+            break;
+        };
+        manifests = list(&json(&read(&index)?)?, "manifests");
+    }
+    Err("the scan wrote no SBOM".into())
+}
+
+/// The referrer an SBOM `doc` of `subject` is, its blobs stored: an artifact of type
+/// `application/spdx+json`, the empty config, the document its one layer (image-spec
+/// manifest.md, "Guidelines for Artifact Usage"), made now.
+fn sbom_referrer(store: &Store, doc: &[u8], subject: &Descriptor) -> Result<Descriptor, String> {
+    let layer = ingest(store, doc)?;
+    let config = ingest(store, shards_sigstore::sign::EMPTY_CONFIG)?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_secs();
+    let created = shards_cmdline::format::rfc3339_at(i64::try_from(now).map_err(|e| e.to_string())?, 0);
+    let manifest = serde_json::to_vec(&serde_json::json!({
+        "schemaVersion": 2,
+        "mediaType": oci::media::OCI_MANIFEST,
+        "artifactType": SPDX_JSON,
+        "config": {
+            "mediaType": shards_sigstore::sign::EMPTY_MEDIA_TYPE,
+            "digest": config.to_string(),
+            "size": shards_sigstore::sign::EMPTY_CONFIG.len(),
+        },
+        "layers": [{"mediaType": SPDX_JSON, "digest": layer.to_string(), "size": doc.len()}],
+        "subject": {"mediaType": subject.media_type, "digest": subject.digest, "size": subject.size},
+        "annotations": {"org.opencontainers.image.created": created},
+    }))
+    .map_err(|e| e.to_string())?;
+    let digest = ingest(store, &manifest)?;
+    Ok(Descriptor {
+        media_type: oci::media::OCI_MANIFEST.into(),
+        digest: digest.to_string(),
+        size: i64::try_from(manifest.len()).map_err(|e| e.to_string())?,
+        platform: None,
+        annotations: BTreeMap::new(),
+    })
 }
 
 /// An artifact of several platforms (§8 Q1): an index of a manifest for each, its config
@@ -156,6 +316,7 @@ fn build_index(
     name: &Reference,
     given: &[String],
     store: &Store,
+    sbom: Option<&str>,
 ) -> Result<(), String> {
     let host = crate::build::host_platform();
     let wanted = crate::build::target_platforms(given, &host)?;
@@ -164,6 +325,8 @@ fn build_index(
     let skip: Vec<&str> = subdirs.iter().map(String::as_str).collect();
     let mut manifests = Vec::new();
     let mut all = Vec::new();
+    // Each platform's content, what of it is left out, and its manifest: an SBOM's.
+    let mut scanned: Vec<(PathBuf, Vec<&str>, Descriptor)> = Vec::new();
     for (p, sub) in wanted.iter().zip(&subdirs) {
         let content = dir.join(sub);
         let platform = osi::Platform {
@@ -172,9 +335,15 @@ fn build_index(
             variant: (!p.variant.is_empty()).then(|| text(&p.variant)),
         };
         let (mut desc, _) = if content.is_dir() {
-            make_in(kind, dir, &content, &[], store, Some(&platform))?
+            let made = make_in(kind, dir, &content, &[], store, Some(&platform))?;
+            scanned.push((content.clone(), Vec::new(), made.0.clone()));
+            made
         } else {
-            make_in(kind, dir, dir, &skip, store, Some(&platform))?
+            let made = make_in(kind, dir, dir, &skip, store, Some(&platform))?;
+            let mut left = skip.clone();
+            left.push(config_file(kind));
+            scanned.push((dir.to_path_buf(), left, made.0.clone()));
+            made
         };
         all.extend(contents(store, &desc)?);
         desc.platform = Some(oci::Platform {
@@ -224,6 +393,13 @@ fn build_index(
     store
         .tag(&name.to_string(), &ours, &index_digest, &all)
         .map_err(|e| e.to_string())?;
+    // An SBOM of each platform's content, referring to its manifest, as an image's SBOM
+    // attestation refers to its platform's (D81).
+    if let Some(sbom) = sbom {
+        for (content, left, desc) in &scanned {
+            attach_sbom(store, name, desc, content, left, sbom)?;
+        }
+    }
     let _ = writeln!(io::stdout(), "{index_digest}");
     Ok(())
 }
@@ -557,6 +733,20 @@ pub fn fetch(
     fresh: bool,
     say: &dyn Fn(&str),
 ) -> Result<(Descriptor, oci::Manifest, Config), String> {
+    take(store, name, Some(want), fresh, say).map(|(desc, m, config, _)| (desc, m, config))
+}
+
+/// [`fetch`] of an artifact of the kind `want`, or of any where none is wanted; its kind
+/// too.
+pub fn take(
+    store: &Store,
+    name: &Reference,
+    want: Option<Kind>,
+    fresh: bool,
+    say: &dyn Fn(&str),
+) -> Result<(Descriptor, oci::Manifest, Config, Kind), String> {
+    let wrong = |kind: Kind| want.is_some_and(|w| w != kind);
+    let word = want.map_or("OSI artifact", Kind::word);
     let held = if fresh {
         None
     } else {
@@ -576,7 +766,7 @@ pub fn fetch(
                     Document::Index(index) => {
                         let chosen = shards_image::platform::select(&index, &shards_image::platform::guest())
                             .cloned()
-                            .ok_or_else(|| format!("{name}: no {} for this platform", want.word()))?;
+                            .ok_or_else(|| format!("{name}: no {word} for this platform"))?;
                         let bytes = registry
                             .fetch_document(store, &chosen)
                             .map_err(|e| e.to_string())?;
@@ -604,7 +794,7 @@ pub fn fetch(
             }
             let digest = desc.digest().map_err(|e| e.to_string())?;
             let (_, kind) = manifest_of(store, &desc)?;
-            if kind != want {
+            if let Some(want) = want.filter(|_| wrong(kind)) {
                 return Err(format!("{name} is {}, not {}", a(kind), a(want)));
             }
             let mut held = contents(store, &desc)?;
@@ -612,11 +802,14 @@ pub fn fetch(
             store
                 .tag(&name.to_string(), &desc, index.as_ref().unwrap_or(&digest), &held)
                 .map_err(|e| e.to_string())?;
+            // Its signatures and SBOMs with it, for its policies to read (D116).
+            let subject = subject_of(store, name, &desc)?;
+            take_referrers(store, &registry, name, &subject, say)?;
             desc
         }
     };
     let (m, kind) = manifest_of(store, &desc)?;
-    if kind != want {
+    if let Some(want) = want.filter(|_| wrong(kind)) {
         return Err(format!("{name} is {}, not {}", a(kind), a(want)));
     }
     let config = store
@@ -625,7 +818,7 @@ pub fn fetch(
         .ok_or_else(|| format!("{name}: its config is not here"))?;
     let config = Config::parse(&config).map_err(|e| format!("{name}: {e}"))?;
     check_content(store, kind, &m).map_err(|e| format!("{name}: {e}"))?;
-    Ok((desc, m, config))
+    Ok((desc, m, config, kind))
 }
 
 fn pull_cmd(kind: Kind, args: &[String]) -> Result<(), String> {
@@ -643,7 +836,107 @@ fn pull_cmd(kind: Kind, args: &[String]) -> Result<(), String> {
         config.name,
         desc.digest
     );
+    // Its signatures and SBOMs, as the pull took them (D116).
+    for r in store.referrers_of(&name.to_string()).map_err(|e| e.to_string())? {
+        let _ = writeln!(io::stdout(), "{name}: {} {}", referrer_kind(&store, &r), r.digest);
+    }
     Ok(())
+}
+
+/// The referrers of `subject`, what `name` was just pulled as, as the registry lists them
+/// (D116): each a manifest that refers to it, taken with its blobs and kept with the name,
+/// in place of those kept before, so that one deleted there is let go of here too. A
+/// list under the tag schema is anyone's who may push: what refers to another is left,
+/// said, and so is a referrer that is no manifest.
+fn take_referrers(
+    store: &Store,
+    registry: &shards_registry::registry::Registry,
+    name: &Reference,
+    subject: &Descriptor,
+    say: &dyn Fn(&str),
+) -> Result<(), String> {
+    let limits = crate::pull::limits()?;
+    let listed =
+        shards_registry::referrers::list(registry, &subject.digest, &[]).map_err(|e| e.to_string())?;
+    let mut taken = Vec::new();
+    for r in &listed {
+        let desc = Descriptor {
+            media_type: r.media_type.clone(),
+            digest: r.digest.clone(),
+            size: r.size,
+            platform: None,
+            annotations: BTreeMap::new(),
+        };
+        if desc.media_type != oci::media::OCI_MANIFEST {
+            say(&format!(
+                "{name}: referrer {} of type {} left",
+                r.digest, r.media_type
+            ));
+            continue;
+        }
+        let bytes = registry.fetch_document(store, &desc).map_err(|e| e.to_string())?;
+        let refers_to = shards_registry::referrers::entry(&desc, &bytes).map(|(_, s)| s);
+        if refers_to.as_deref().ok() != Some(subject.digest.as_str()) {
+            say(&format!(
+                "{name}: referrer {} left: it does not refer to {}",
+                r.digest, subject.digest
+            ));
+            continue;
+        }
+        let Document::Manifest(m) =
+            oci::parse_document(&bytes, &desc.media_type).map_err(|e| e.to_string())?
+        else {
+            continue;
+        };
+        for part in std::iter::once(&m.config).chain(&m.layers) {
+            registry
+                .fetch_blob(store, part, &limits, &|_| {})
+                .map_err(|e| e.to_string())?;
+        }
+        taken.push(desc);
+    }
+    let reference = name.to_string();
+    for kept in store.referrers_of(&reference).map_err(|e| e.to_string())? {
+        if !taken.iter().any(|t| t.digest == kept.digest) {
+            store
+                .drop_referrer(&reference, &kept.digest)
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    for desc in &taken {
+        store.keep_referrer(&reference, desc).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// The signature bundles among the referrers kept with `name` (D116): each of cosign's
+/// signature manifests' one layer, at most a manifest's size.
+pub fn signature_bundles(store: &Store, name: &str) -> Result<Vec<Vec<u8>>, String> {
+    let mut out = Vec::new();
+    for r in store.referrers_of(name).map_err(|e| e.to_string())? {
+        let Some(bytes) = store.content(&r, oci::MAX_MANIFEST).map_err(|e| e.to_string())? else {
+            continue;
+        };
+        let Ok(Document::Manifest(m)) = oci::parse_document(&bytes, &r.media_type) else {
+            continue;
+        };
+        if m.artifact_type.as_deref() != Some(shards_sigstore::image::ARTIFACT_SIGSTORE_BUNDLE) {
+            continue;
+        }
+        for layer in m
+            .layers
+            .iter()
+            .filter(|l| l.media_type == shards_sigstore::image::ARTIFACT_SIGSTORE_BUNDLE)
+        {
+            if let Some(b) = store
+                .content(layer, oci::MAX_MANIFEST)
+                .map_err(|e| e.to_string())?
+            {
+                out.push(b);
+            }
+        }
+    }
+    Ok(out)
 }
 
 fn push(kind: Kind, args: &[String]) -> Result<(), String> {
@@ -662,26 +955,42 @@ fn push(kind: Kind, args: &[String]) -> Result<(), String> {
     check_content(&store, kind, &m)?;
     let registry = crate::pull::registry_for_push(&name, None, None, &|k| std::env::var(k).ok())?;
     // Of several platforms, the index: every platform's manifest with it.
-    let resolved = store.resolved(&name.to_string()).map_err(|e| e.to_string())?;
-    let desc = match resolved.filter(|r| r.to_string() != desc.digest) {
-        Some(index) => {
-            let size = std::fs::metadata(store.blob_path(&index))
-                .map_err(|e| format!("{index}: {e}"))?
-                .len();
-            Descriptor {
-                media_type: oci::media::OCI_INDEX.into(),
-                digest: index.to_string(),
-                size: i64::try_from(size).map_err(|e| e.to_string())?,
-                platform: None,
-                annotations: BTreeMap::new(),
-            }
-        }
-        None => desc,
-    };
+    let desc = subject_of(&store, &name, &desc)?;
     shards_registry::push::push(&registry, &store, &desc, name.tag.as_deref(), None, &|_, _| {})
         .map_err(|e| e.to_string())?;
     let _ = writeln!(io::stdout(), "{name}: pushed {}", desc.digest);
+    // Its signatures and SBOMs after it, each listed by the registry or, where it has no
+    // referrers API, in the index the referrers tag schema names (D116).
+    for r in store.referrers_of(&name.to_string()).map_err(|e| e.to_string())? {
+        let listed = shards_registry::referrers::push(&registry, &store, &r).map_err(|e| e.to_string())?;
+        let how = match listed {
+            shards_registry::referrers::Listed::ByApi => "the registry lists it",
+            shards_registry::referrers::Listed::ByTagSchema => "listed under the referrers tag schema",
+        };
+        let _ = writeln!(
+            io::stdout(),
+            "{name}: pushed {} {} ({how})",
+            referrer_kind(&store, &r),
+            r.digest
+        );
+    }
     Ok(())
+}
+
+/// What a kept referrer is, by its artifact type: a signature, an SBOM, or its type.
+fn referrer_kind(store: &Store, r: &Descriptor) -> String {
+    let artifact_type = store
+        .content(r, oci::MAX_MANIFEST)
+        .ok()
+        .flatten()
+        .and_then(|bytes| shards_registry::referrers::entry(r, &bytes).ok())
+        .map(|(e, _)| e.artifact_type)
+        .unwrap_or_default();
+    match artifact_type.as_str() {
+        shards_sigstore::image::ARTIFACT_SIGSTORE_BUNDLE => "signature".into(),
+        crate::agent::SPDX_JSON => "SBOM".into(),
+        other => format!("referrer of type {other}"),
+    }
 }
 
 /// The OSI artifacts of `kind` the store holds: each name, its config's name, version and
@@ -732,12 +1041,23 @@ fn inspect(kind: Kind, args: &[String]) -> Result<(), String> {
         .map_err(|e| e.to_string())?
         .ok_or("its config is not here")?;
     let config: serde_json::Value = serde_json::from_slice(&config).map_err(|e| e.to_string())?;
+    // Its signatures and SBOMs kept with it (D116), as a referrers list names each.
+    let mut referrers = Vec::new();
+    for r in store.referrers_of(&name.to_string()).map_err(|e| e.to_string())? {
+        let bytes = store
+            .content(&r, oci::MAX_MANIFEST)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("{}: not here", r.digest))?;
+        let (entry, _) = shards_registry::referrers::entry(&r, &bytes).map_err(|e| e.to_string())?;
+        referrers.push(entry);
+    }
     let out = serde_json::json!([{
         "Name": name.to_string(),
         "Digest": desc.digest,
         "ArtifactType": kind.artifact_type(),
         "Config": config,
         "Layers": m.layers,
+        "Referrers": referrers,
     }]);
     let _ = writeln!(
         io::stdout(),
@@ -748,11 +1068,29 @@ fn inspect(kind: Kind, args: &[String]) -> Result<(), String> {
 }
 
 fn remove(kind: Kind, args: &[String]) -> Result<(), String> {
-    if args.is_empty() {
+    let (mut names, mut referrer) = (Vec::new(), None);
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--referrer" => referrer = Some(it.next().ok_or("--referrer needs a digest")?.clone()),
+            s if s.starts_with("--referrer=") => {
+                referrer = Some(s.trim_start_matches("--referrer=").to_string())
+            }
+            s if s.starts_with('-') => return Err(format!("unknown flag {s}\n{}", usage(kind))),
+            s => names.push(s.to_string()),
+        }
+    }
+    if names.is_empty() {
         return Err(usage(kind));
     }
+    if let Some(digest) = referrer {
+        let [name] = names.as_slice() else {
+            return Err(format!("--referrer is one name's: {}", names.join(" ")));
+        };
+        return remove_referrer(&reference(name)?, &digest);
+    }
     let store = store()?;
-    for n in args {
+    for n in &names {
         let name = reference(n)?;
         let desc = store
             .tagged(&name.to_string())
@@ -766,6 +1104,203 @@ fn remove(kind: Kind, args: &[String]) -> Result<(), String> {
         let _ = writeln!(io::stdout(), "Untagged: {name}");
     }
     Ok(())
+}
+
+/// `shards rm agent NAME --referrer DIGEST`: deletes the referrer DIGEST of what NAME
+/// names in its registry from there, with its entry in the referrers tag schema's list
+/// where the registry has no referrers API (D116); then lets go of it here. A signature
+/// deleted so no longer vouches for the artifact to anyone who takes it.
+fn remove_referrer(name: &Reference, digest: &str) -> Result<(), String> {
+    Digest::parse(digest).map_err(|e| format!("{digest}: {e}"))?;
+    let store = store()?;
+    let registry = crate::pull::registry_for_delete(name, &|k| std::env::var(k).ok())?;
+    // What the name resolves to there is what its referrers refer to.
+    let subject = registry.resolve(&store, name).map_err(|e| e.to_string())?;
+    shards_registry::referrers::delete(&registry, &subject.digest, digest).map_err(|e| e.to_string())?;
+    let here = store
+        .drop_referrer(&name.to_string(), digest)
+        .map_err(|e| e.to_string())?;
+    let _ = writeln!(
+        io::stdout(),
+        "Deleted: {digest}, a referrer of {name}{}",
+        if here { ", here too" } else { "" }
+    );
+    Ok(())
+}
+
+/// What `name`, whose manifest here `desc` describes, resolved to, as its referrers'
+/// `subject` names it: the index of an artifact of several platforms, else its manifest.
+fn subject_of(store: &Store, name: &Reference, desc: &Descriptor) -> Result<Descriptor, String> {
+    let resolved = store.resolved(&name.to_string()).map_err(|e| e.to_string())?;
+    match resolved.filter(|r| r.to_string() != desc.digest) {
+        Some(index) => {
+            let size = fs::metadata(store.blob_path(&index))
+                .map_err(|e| format!("{index}: {e}"))?
+                .len();
+            Ok(Descriptor {
+                media_type: oci::media::OCI_INDEX.into(),
+                digest: index.to_string(),
+                size: i64::try_from(size).map_err(|e| e.to_string())?,
+                platform: None,
+                annotations: BTreeMap::new(),
+            })
+        }
+        None => Ok(Descriptor {
+            platform: None,
+            annotations: BTreeMap::new(),
+            ..desc.clone()
+        }),
+    }
+}
+
+/// `bytes` into the store, by their SHA-256.
+fn ingest(store: &Store, bytes: &[u8]) -> Result<Digest, String> {
+    let d = sha256(bytes)?;
+    store
+        .ingest(&d, bytes.len() as u64, &mut &bytes[..])
+        .map_err(|e| e.to_string())?;
+    Ok(d)
+}
+
+/// `shards sign agent NAME --key FILE` (and `harness`, `mcp`): a signature of what NAME
+/// names, as cosign v3.1.3 signs one with a key (D116, shards_sigstore::sign), kept with
+/// it and pushed with it. The key is cosign's own (generate-key-pair's, import-key-pair's),
+/// its password COSIGN_PASSWORD's, as cosign takes it, else asked on the terminal.
+fn sign(kind: Kind, args: &[String]) -> Result<(), String> {
+    let (mut name, mut key) = (None, None);
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--key" => key = Some(it.next().ok_or("--key needs a file")?.clone()),
+            s if s.starts_with("--key=") => key = Some(s.trim_start_matches("--key=").to_string()),
+            s if s.starts_with('-') => return Err(format!("unknown flag {s}\n{}", usage(kind))),
+            s if name.is_none() => name = Some(s.to_string()),
+            s => return Err(format!("one name only, not {s:?} too")),
+        }
+    }
+    let name = reference(&name.ok_or_else(|| usage(kind))?)?;
+    let key = key.ok_or("--key names the cosign key to sign with")?;
+    let store = store()?;
+    let _lease = store.lease().map_err(|e| e.to_string())?;
+    let desc = store
+        .tagged(&name.to_string())
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("no {} {name} here", kind.word()))?;
+    let (_, found) = manifest_of(&store, &desc)?;
+    if found != kind {
+        return Err(format!("{name} is {}, not {}", a(found), a(kind)));
+    }
+    let subject = subject_of(&store, &name, &desc)?;
+    let pem = fs::read(&key).map_err(|e| format!("{key}: {e}"))?;
+    let mut password = password()?;
+    let signer = shards_sigstore::cosignkey::load(&pem, &password);
+    password.fill(0);
+    let signer = signer.map_err(|e| format!("{key}: {e}"))?;
+    let referrer = signature(&store, &signer, &subject)?;
+    store
+        .keep_referrer(&name.to_string(), &referrer)
+        .map_err(|e| e.to_string())?;
+    let _ = writeln!(
+        io::stdout(),
+        "{name}: {} signed by the key {}: signature {}",
+        subject.digest,
+        signer.hint(),
+        referrer.digest
+    );
+    Ok(())
+}
+
+/// The referrer a signature of `subject` by `signer` is, its blobs stored: cosign's
+/// bundle, the empty config, and the manifest cosign's WriteReferrer writes, made now.
+pub fn signature(
+    store: &Store,
+    signer: &shards_sigstore::sign::Signer,
+    subject: &Descriptor,
+) -> Result<Descriptor, String> {
+    use shards_sigstore::sign::{self as cosign, Described};
+    let payload = cosign::statement(&subject.digest)?;
+    let bundle = cosign::bundle(signer, &payload)?;
+    let bundle_digest = ingest(store, &bundle)?;
+    ingest(store, cosign::EMPTY_CONFIG)?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_secs();
+    let created = shards_cmdline::format::rfc3339_at(i64::try_from(now).map_err(|e| e.to_string())?, 0);
+    let manifest = cosign::referrer(
+        &Described {
+            media_type: shards_sigstore::image::ARTIFACT_SIGSTORE_BUNDLE.into(),
+            size: i64::try_from(bundle.len()).map_err(|e| e.to_string())?,
+            digest: bundle_digest.to_string(),
+        },
+        &Described {
+            media_type: subject.media_type.clone(),
+            size: subject.size,
+            digest: subject.digest.clone(),
+        },
+        cosign::COSIGN_SIGN_PREDICATE,
+        &created,
+    );
+    let digest = ingest(store, &manifest)?;
+    Ok(Descriptor {
+        media_type: oci::media::OCI_MANIFEST.into(),
+        digest: digest.to_string(),
+        size: i64::try_from(manifest.len()).map_err(|e| e.to_string())?,
+        platform: None,
+        annotations: BTreeMap::new(),
+    })
+}
+
+/// The key's password, as cosign takes it: COSIGN_PASSWORD's if it is set, empty for a key
+/// that has none; else asked on the controlling terminal, not echoed.
+fn password() -> Result<Vec<u8>, String> {
+    if let Some(p) = std::env::var_os("COSIGN_PASSWORD") {
+        return Ok(p.into_encoded_bytes());
+    }
+    ask_password("Enter password for private key: ")
+}
+
+#[cfg(unix)]
+fn ask_password(prompt: &str) -> Result<Vec<u8>, String> {
+    use std::io::BufRead as _;
+    use std::os::fd::AsRawFd as _;
+    let no_terminal = || "no terminal to ask the key's password on: set COSIGN_PASSWORD".to_string();
+    let mut tty = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/tty")
+        .map_err(|_| no_terminal())?;
+    let fd = tty.as_raw_fd();
+    // SAFETY: an all-zero termios is a valid out-parameter.
+    let mut t: libc::termios = unsafe { std::mem::zeroed() };
+    // SAFETY: tcgetattr(3) fills `t` for the terminal.
+    if unsafe { libc::tcgetattr(fd, &mut t) } != 0 {
+        return Err(no_terminal());
+    }
+    let saved = t;
+    t.c_lflag &= !libc::ECHO;
+    // SAFETY: tcsetattr(3) reads `t`.
+    if unsafe { libc::tcsetattr(fd, libc::TCSANOW, &t) } != 0 {
+        return Err(no_terminal());
+    }
+    let _ = tty.write_all(prompt.as_bytes()).and_then(|()| tty.flush());
+    let mut line = Vec::new();
+    // A password is a line; a terminal's line discipline holds no more than 4096 bytes
+    // of one (Linux N_TTY_BUF_SIZE, macOS MAX_CANON 1024).
+    let read = io::BufReader::new(&tty).take(4096).read_until(b'\n', &mut line);
+    // SAFETY: tcsetattr(3) reads `saved`, the settings found.
+    unsafe { libc::tcsetattr(fd, libc::TCSANOW, &saved) };
+    let _ = tty.write_all(b"\n");
+    read.map_err(|e| format!("reading the key's password: {e}"))?;
+    while line.last().is_some_and(|b| *b == b'\n' || *b == b'\r') {
+        line.pop();
+    }
+    Ok(line)
+}
+
+#[cfg(not(unix))]
+fn ask_password(_: &str) -> Result<Vec<u8>, String> {
+    Err("set COSIGN_PASSWORD to the key's password".into())
 }
 
 /// The image layer type an OSI content layer is read as: the same tar, compressed the

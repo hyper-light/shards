@@ -4,7 +4,7 @@
 //! checkpoint (VerifyInclusion for v1, rekor-tiles' VerifyLogEntryWithHash for v2), and
 //! verify/tlog.go's hasRekorV1STH; each failure in the words of the code it ports.
 
-mod gocodec;
+pub(crate) mod gocodec;
 pub mod gojson;
 mod jcs;
 pub mod note;
