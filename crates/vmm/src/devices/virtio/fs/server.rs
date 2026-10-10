@@ -1208,17 +1208,32 @@ impl Server {
     }
 }
 
+/// The bytes of a request's header that an answer of an error alone needs: its length,
+/// opcode and `unique`.
+pub const HEADER_BYTES: usize = 16;
+
 /// The answer to `req` where no directory is shared yet: ENODEV, or none for a request
 /// that takes no reply.
 pub fn unattached(req: &[u8]) -> Option<Vec<u8>> {
+    failed(req, 19)
+}
+
+/// The answer to a request longer than any FUSE request, of which `req` holds the first
+/// [`HEADER_BYTES`]: EINVAL, or none for one that takes no reply.
+pub fn too_long(req: &[u8]) -> Option<Vec<u8>> {
+    failed(req, EINVAL)
+}
+
+/// `errno` as the answer to `req`, from the first [`HEADER_BYTES`] of its header.
+fn failed(req: &[u8], errno: Errno) -> Option<Vec<u8>> {
     let opcode = u32::from_le_bytes(req.get(4..8)?.try_into().ok()?);
     if matches!(opcode, op::FORGET | op::BATCH_FORGET | op::INTERRUPT) {
         return None;
     }
-    let unique = req.get(8..16)?;
-    let mut out = Vec::with_capacity(16);
+    let unique = req.get(8..HEADER_BYTES)?;
+    let mut out = Vec::with_capacity(HEADER_BYTES);
     out.extend_from_slice(&16u32.to_le_bytes());
-    out.extend_from_slice(&(-19i32).to_le_bytes());
+    out.extend_from_slice(&(-errno).to_le_bytes());
     out.extend_from_slice(unique);
     Some(out)
 }
