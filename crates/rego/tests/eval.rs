@@ -197,6 +197,64 @@ fn policies_evaluate_as_opa_evaluates_them() {
     );
 }
 
+/// A rule of 100000 else branches, all but the last unmet, runs on the policy thread's
+/// stack (123 MiB, M126), each branch in turn: OPA v1.14.1 answers [100000] (measured,
+/// in 9 min 6 s on an M5 Max: its compile and evaluation are quadratic in the branches),
+/// [10000] for 10000 branches in 3.1 s. Before the chain was walked without recursion,
+/// shards overflowed its stack at 100000; before branches were copied one by one, 10000
+/// took 6.2 s.
+#[test]
+fn a_rule_of_100000_else_branches_runs_on_the_policy_stack() {
+    if cfg!(debug_assertions) {
+        eprintln!("SKIP: the policy stack holds release builds");
+        return;
+    }
+    let n = 100_000;
+    let mut src = String::from("package docker\n\np := 0 if input.never ");
+    for i in 1..n {
+        src.push_str(&format!("else := {i} if input.never "));
+    }
+    src.push_str(&format!("else := {n}\n\ndecision := p\n"));
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .stack_size(123 << 20)
+        .spawn(move || {
+            let mut modules = BTreeMap::new();
+            modules.insert(
+                "policy.rego".to_string(),
+                parse_module("policy.rego", &src).unwrap(),
+            );
+            let mut comp = Compiler::new(modules, host(), true);
+            comp.compile();
+            assert!(comp.errors.is_empty(), "{:?}", comp.errors);
+            let program = Program::new(&comp, host().into_iter().map(|f| f.name).collect());
+            let mut host = Table(BTreeMap::new());
+            let mut m = Machine::new(&program, &mut host, Context::default());
+            let query = shards_rego::ast::Term::reference(
+                vec![
+                    shards_rego::ast::Term::var("data", None),
+                    shards_rego::ast::Term::string("docker", None),
+                    shards_rego::ast::Term::string("decision", None),
+                ],
+                None,
+            );
+            let got: Vec<String> = eval_query(&mut m, &query, None)
+                .unwrap()
+                .iter()
+                .map(|v| value::to_json(v).unwrap())
+                .collect();
+            drop(m);
+            let _ = tx.send(got);
+        })
+        .unwrap();
+    // Measured: 1.1 s on an M5 Max; the bound leaves room for a busy host, and none for
+    // the quadratic copy of the chain each branch made.
+    let got = rx
+        .recv_timeout(std::time::Duration::from_secs(60))
+        .expect("100000 else branches did not run within 60 s");
+    assert_eq!(got, ["100000"]);
+}
+
 /// A term as rego.Unknowns parses it.
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 fn parse_term(s: &str) -> shards_rego::ast::Term {
@@ -210,7 +268,9 @@ fn parse_term(s: &str) -> shards_rego::ast::Term {
 fn normalize(text: &str) -> String {
     let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
     if lines.iter().all(|l| {
-        l.contains("rego_unsafe_var_error") || l.contains("rego_recursion_error") || l.contains("errors occurred")
+        l.contains("rego_unsafe_var_error")
+            || l.contains("rego_recursion_error")
+            || l.contains("errors occurred")
     }) {
         lines.sort();
     }

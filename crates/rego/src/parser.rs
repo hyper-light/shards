@@ -905,7 +905,7 @@ impl<'a> Parser<'a> {
                 return None;
             }
             let head = rule.head.clone();
-            rule.else_ = Some(Box::new(self.parse_else(&head)?));
+            rule.else_ = Some(self.parse_elses(&head)?);
         }
         let mut rules = vec![rule.clone()];
         while self.s.tok == Token::LBrace {
@@ -937,7 +937,27 @@ impl<'a> Parser<'a> {
         Some(rules)
     }
 
-    fn parse_else(&mut self, head: &Head) -> Option<Rule> {
+    /// parseElse for each else branch in turn, chained: OPA recurses once a branch,
+    /// without a depth limit, which a loop does without a frame a branch.
+    fn parse_elses(&mut self, head: &Head) -> Option<Box<Rule>> {
+        let mut branches = Vec::new();
+        loop {
+            let (branch, more) = self.parse_else(head)?;
+            branches.push(branch);
+            if !more {
+                break;
+            }
+        }
+        let mut tail = None;
+        while let Some(mut b) = branches.pop() {
+            b.else_ = tail;
+            tail = Some(Box::new(b));
+        }
+        tail
+    }
+
+    /// One else branch, and whether another follows it.
+    fn parse_else(&mut self, head: &Head) -> Option<(Rule, bool)> {
         let loc = self.loc();
         let mut h = head.clone();
         h.generated_value = false;
@@ -976,7 +996,7 @@ impl<'a> Parser<'a> {
         if !has_if && !has_lbrace {
             rule.body = ast::true_body(loc);
             rule.generated_body = true;
-            return Some(rule);
+            return Some((rule, false));
         }
         if has_if {
             rule.head.keywords.push(Token::If);
@@ -993,10 +1013,8 @@ impl<'a> Parser<'a> {
             self.illegal("rule body expected");
             return None;
         }
-        if self.s.tok == Token::Else {
-            rule.else_ = Some(Box::new(self.parse_else(head)?));
-        }
-        Some(rule)
+        let more = self.s.tok == Token::Else;
+        Some((rule, more))
     }
 
     fn parse_head(&mut self, default: bool) -> Option<(Head, bool)> {

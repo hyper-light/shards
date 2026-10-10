@@ -11,22 +11,24 @@ pub trait Transformer {
     fn term(&mut self, _t: &mut Term) {}
 }
 
+/// A rule, then each of its else branches in turn.
 pub fn rule<T: Transformer + ?Sized>(t: &mut T, r: &mut Rule) {
-    for x in r.head.reference.iter_mut() {
-        term(t, x);
-    }
-    for x in r.head.args.iter_mut() {
-        term(t, x);
-    }
-    if let Some(k) = r.head.key.as_mut() {
-        term(t, k);
-    }
-    if let Some(v) = r.head.value.as_mut() {
-        term(t, v);
-    }
-    body(t, &mut r.body);
-    if let Some(e) = r.else_.as_mut() {
-        rule(t, e);
+    let mut branch = Some(r);
+    while let Some(r) = branch {
+        for x in r.head.reference.iter_mut() {
+            term(t, x);
+        }
+        for x in r.head.args.iter_mut() {
+            term(t, x);
+        }
+        if let Some(k) = r.head.key.as_mut() {
+            term(t, k);
+        }
+        if let Some(v) = r.head.value.as_mut() {
+            term(t, v);
+        }
+        body(t, &mut r.body);
+        branch = r.else_.as_deref_mut();
     }
 }
 

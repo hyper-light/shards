@@ -409,7 +409,9 @@ impl Head {
     }
 }
 
-#[derive(Debug, Clone)]
+/// A rule, and its else branches in a chain. A rule may have more branches than a thread
+/// has stack for frames (OPA takes 100000 and more), so what walks the chain loops over
+/// it: cloning, dropping and printing a rule included.
 pub struct Rule {
     pub default: bool,
     pub head: Head,
@@ -422,6 +424,74 @@ pub struct Rule {
 impl Rule {
     pub fn is_function(&self) -> bool {
         !self.head.args.is_empty()
+    }
+
+    /// This branch alone, its else branches left out.
+    pub fn branch(&self) -> Rule {
+        Rule {
+            default: self.default,
+            head: self.head.clone(),
+            body: self.body.clone(),
+            else_: None,
+            loc: self.loc.clone(),
+            generated_body: self.generated_body,
+        }
+    }
+
+    /// This rule and its else branches, in order.
+    pub fn branches(&self) -> impl Iterator<Item = &Rule> {
+        std::iter::successors(Some(self), |r| r.else_.as_deref())
+    }
+}
+
+impl Clone for Rule {
+    fn clone(&self) -> Rule {
+        let mut tail = None;
+        let rest: Vec<&Rule> = self.branches().skip(1).collect();
+        for r in rest.into_iter().rev() {
+            let mut b = r.branch();
+            b.else_ = tail;
+            tail = Some(Box::new(b));
+        }
+        let mut out = self.branch();
+        out.else_ = tail;
+        out
+    }
+}
+
+impl Drop for Rule {
+    fn drop(&mut self) {
+        let mut e = self.else_.take();
+        while let Some(mut r) = e {
+            e = r.else_.take();
+        }
+    }
+}
+
+impl std::fmt::Debug for Rule {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        /// A branch's fields but its else.
+        struct Branch<'a>(&'a Rule);
+        impl std::fmt::Debug for Branch<'_> {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.debug_struct("Rule")
+                    .field("default", &self.0.default)
+                    .field("head", &self.0.head)
+                    .field("body", &self.0.body)
+                    .field("loc", &self.0.loc)
+                    .field("generated_body", &self.0.generated_body)
+                    .finish()
+            }
+        }
+        let elses: Vec<Branch<'_>> = self.branches().skip(1).map(Branch).collect();
+        f.debug_struct("Rule")
+            .field("default", &self.default)
+            .field("head", &self.head)
+            .field("body", &self.body)
+            .field("else", &elses)
+            .field("loc", &self.loc)
+            .field("generated_body", &self.generated_body)
+            .finish()
     }
 }
 

@@ -102,10 +102,16 @@ fn compile(case: &Case) -> (Program, f64, f64) {
     let t0 = Instant::now();
     let mut modules = BTreeMap::new();
     for (file, text) in [
-        ("builtin/buildx_defaults.rego", include_str!("../src/buildx_defaults.rego")),
+        (
+            "builtin/buildx_defaults.rego",
+            include_str!("../src/buildx_defaults.rego"),
+        ),
         (case.file.as_str(), case.src.as_str()),
     ] {
-        modules.insert(file.to_string(), shards_rego::parser::parse_module(file, text).unwrap());
+        modules.insert(
+            file.to_string(),
+            shards_rego::parser::parse_module(file, text).unwrap(),
+        );
     }
     let parsed = t0.elapsed();
     let mut comp = Compiler::new(modules, functions(), true);
@@ -122,7 +128,10 @@ fn compile(case: &Case) -> (Program, f64, f64) {
 
 /// One evaluation, its time in µs.
 fn evaluate(case: &Case, program: &Program) -> f64 {
-    let input = case.input.as_deref().map(|t| shards_rego::value::from_json(t).unwrap());
+    let input = case
+        .input
+        .as_deref()
+        .map(|t| shards_rego::value::from_json(t).unwrap());
     let t0 = Instant::now();
     let mut host = NoHost;
     let ctx = shards_rego::funcs::Context {
@@ -160,8 +169,14 @@ fn stats(name: &str, mut v: Vec<f64>) -> (String, String) {
         v[v.len() - 1],
     );
     (
-        format!("{name:<34} {:>6} {p50:>10.1} {p90:>10.1} {p99:>10.1} {max:>10.1}  us", v.len()),
-        format!("\"{name}\":{{\"unit\":\"us\",\"n\":{},\"p50\":{p50:.1},\"p90\":{p90:.1},\"p99\":{p99:.1},\"max\":{max:.1}}}", v.len()),
+        format!(
+            "{name:<34} {:>6} {p50:>10.1} {p90:>10.1} {p99:>10.1} {max:>10.1}  us",
+            v.len()
+        ),
+        format!(
+            "\"{name}\":{{\"unit\":\"us\",\"n\":{},\"p50\":{p50:.1},\"p90\":{p90:.1},\"p99\":{p99:.1},\"max\":{max:.1}}}",
+            v.len()
+        ),
     )
 }
 
@@ -222,13 +237,24 @@ fn stamp() -> (String, String, String, String) {
     (host, os, rev, load)
 }
 
-fn peak_rss_mib() -> u64 {
+/// The process's peak resident memory in MiB (getrusage(2)); none off Unix.
+#[cfg(unix)]
+fn peak_rss_mib() -> Option<u64> {
     // SAFETY: getrusage(2) into a zeroed struct.
     let mut ru: libc::rusage = unsafe { std::mem::zeroed() };
     // SAFETY: as above.
     unsafe { libc::getrusage(libc::RUSAGE_SELF, &raw mut ru) };
-    let max = u64::try_from(ru.ru_maxrss).unwrap_or(0);
-    if cfg!(target_os = "macos") { max >> 20 } else { max >> 10 }
+    let max = u64::try_from(ru.ru_maxrss).ok()?;
+    Some(if cfg!(target_os = "macos") {
+        max >> 20
+    } else {
+        max >> 10
+    })
+}
+
+#[cfg(not(unix))]
+fn peak_rss_mib() -> Option<u64> {
+    None
 }
 
 fn read_cases(path: &Path, only: Option<&str>) -> Vec<Case> {
@@ -246,9 +272,10 @@ fn read_cases(path: &Path, only: Option<&str>) -> Vec<Case> {
                 .get("input")
                 .and_then(|i| i.as_str())
                 .map(|i| std::fs::read_to_string(base.join(i)).unwrap()),
-            unknowns: c.get("unknowns").and_then(|u| u.as_array()).map(|u| {
-                u.iter().map(|x| x.as_str().unwrap().to_string()).collect()
-            }),
+            unknowns: c
+                .get("unknowns")
+                .and_then(|u| u.as_array())
+                .map(|u| u.iter().map(|x| x.as_str().unwrap().to_string()).collect()),
         })
         .collect()
 }
@@ -276,7 +303,8 @@ fn main() {
                 // Warm-up: the registry of builtins and the allocator's first pages.
                 let (program, _, _) = compile(&case);
                 evaluate(&case, &program);
-                let (mut whole, mut parse, mut comp, mut eval) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+                let (mut whole, mut parse, mut comp, mut eval) =
+                    (Vec::new(), Vec::new(), Vec::new(), Vec::new());
                 for _ in 0..n {
                     let t0 = Instant::now();
                     let (program, p, c) = compile(&case);
@@ -304,11 +332,14 @@ fn main() {
         .unwrap();
     let (host, os, rev, load) = stamp();
     println!("policy: n={n}\nhost: {host}\nos: {os}\nrevision: {rev}\nload (1, 5, 15 min): {load}\n");
-    println!("{:<34} {:>6} {:>10} {:>10} {:>10} {:>10}", "case/phase", "n", "p50", "p90", "p99", "max");
+    println!(
+        "{:<34} {:>6} {:>10} {:>10} {:>10} {:>10}",
+        "case/phase", "n", "p50", "p90", "p99", "max"
+    );
     for (row, _) in &rows {
         println!("{row}");
     }
-    let peak = peak_rss_mib();
+    let peak = peak_rss_mib().map_or_else(|| "null".to_string(), |p| p.to_string());
     println!("peak resident: {peak} MiB");
     let json: Vec<&str> = rows.iter().map(|(_, j)| j.as_str()).collect();
     println!(

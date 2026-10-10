@@ -241,7 +241,8 @@ impl Compiler {
     fn resolve_all_refs(&mut self) {
         // getExports: each package's rules' ground prefixes, without repeats.
         let mut exports: HashMap<Vec<String>, Vec<Vec<Term>>> = HashMap::new();
-        let mut seen: std::collections::HashSet<(Vec<String>, Vec<String>)> = std::collections::HashSet::new();
+        let mut seen: std::collections::HashSet<(Vec<String>, Vec<String>)> =
+            std::collections::HashSet::new();
         for m in self.modules.values() {
             let key = ref_key(&m.package.path);
             for r in &m.rules {
@@ -708,16 +709,23 @@ impl Compiler {
     /// rule on a cycle is searched for its way back, as OPA searches every rule; one on no
     /// cycle has none, which the graph's components say for all rules at once.
     fn check_recursion(&mut self) {
-        let graph = self.graph.take().unwrap_or_else(|| graph::DepGraph::new(&self.modules));
+        let graph = self
+            .graph
+            .take()
+            .unwrap_or_else(|| graph::DepGraph::new(&self.modules));
         let cyclic = graph.cyclic();
         let mut errs = Vec::new();
+        // OPA stops at its error limit (c.err); the searches past it would be lost.
+        let room = MAX_ERRS.saturating_sub(self.errors.len()) + 1;
         let paths: Vec<Vec<String>> = self.tree.nodes.keys().cloned().collect();
         for p in &paths {
             for id in self.tree.nodes.get(p).cloned().unwrap_or_default() {
-                let mut depth = 0;
-                while let Some(rule) = self.rule_node(&(id.0.clone(), id.1, depth)) {
+                let Some(head) = self.rule(&id) else { continue };
+                for (depth, rule) in head.branches().enumerate() {
+                    if errs.len() >= room {
+                        break;
+                    }
                     let node = (id.0.clone(), id.1, depth);
-                    depth += 1;
                     let Some(at) = graph.id(&node) else { continue };
                     if !cyclic.get(at).copied().unwrap_or(false) {
                         continue;
@@ -754,33 +762,23 @@ impl Compiler {
         self.err(errs);
     }
 
-    /// Every rule and else branch, each after the rules it depends on (Graph.Sort).
-    fn sorted_rules(&mut self) -> Vec<RuleNode> {
-        let graph = self.graph.take().unwrap_or_else(|| graph::DepGraph::new(&self.modules));
-        graph
-            .sorted()
-            .into_iter()
-            .filter_map(|i| graph.nodes.get(i).cloned())
-            .collect()
-    }
-
-    /// checkTypes: the rules type checked in dependency order, their types kept.
+    /// checkTypes: the rules type checked in dependency order (Graph.Sort), their types
+    /// kept.
     fn check_types(&mut self) {
-        let sorted = self.sorted_rules();
+        let graph = self
+            .graph
+            .take()
+            .unwrap_or_else(|| graph::DepGraph::new(&self.modules));
         let mut env = self.type_env.clone();
         env.wrap();
         let errs = {
-            let mut rules = Vec::with_capacity(sorted.len());
-            for n in &sorted {
-                let pkg = self
-                    .modules
-                    .get(&n.0)
-                    .map(|m| m.package.path.as_slice())
-                    .unwrap_or_default();
-                if let Some(rule) = self.rule_node(n) {
-                    rules.push((rule_ref(pkg, rule), rule));
-                }
-            }
+            let branches = graph::branches(&self.modules);
+            let rules: Vec<(Vec<Term>, &Rule)> = graph
+                .sorted()
+                .into_iter()
+                .filter_map(|i| branches.get(i))
+                .map(|&(pkg, rule)| (rule_ref(pkg, rule), rule))
+                .collect();
             check::Checker::new(Some(&self.rewritten)).check_types(&mut env, &rules)
         };
         self.type_env = env;

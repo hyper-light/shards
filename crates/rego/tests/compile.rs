@@ -126,7 +126,10 @@ fn chain(n: usize) -> String {
             i - 1
         ));
     }
-    s.push_str(&format!("allow if r{}\n\ndecision := {{\"allow\": allow}}\n", n - 1));
+    s.push_str(&format!(
+        "allow if r{}\n\ndecision := {{\"allow\": allow}}\n",
+        n - 1
+    ));
     s
 }
 
@@ -143,9 +146,16 @@ fn a_long_chain_of_rules_compiles_in_time() {
             let mut modules = BTreeMap::new();
             modules.insert(
                 "builtin/buildx_defaults.rego".to_string(),
-                parse_module("builtin/buildx_defaults.rego", include_str!("../src/buildx_defaults.rego")).unwrap(),
+                parse_module(
+                    "builtin/buildx_defaults.rego",
+                    include_str!("../src/buildx_defaults.rego"),
+                )
+                .unwrap(),
             );
-            modules.insert("chain.rego".to_string(), parse_module("chain.rego", &chain(2000)).unwrap());
+            modules.insert(
+                "chain.rego".to_string(),
+                parse_module("chain.rego", &chain(2000)).unwrap(),
+            );
             let mut comp = Compiler::new(modules, host(), true);
             comp.compile();
             let _ = tx.send(comp.errors.len());
@@ -184,9 +194,16 @@ fn a_wide_policy_without_cycles_compiles_in_time() {
             let mut modules = BTreeMap::new();
             modules.insert(
                 "builtin/buildx_defaults.rego".to_string(),
-                parse_module("builtin/buildx_defaults.rego", include_str!("../src/buildx_defaults.rego")).unwrap(),
+                parse_module(
+                    "builtin/buildx_defaults.rego",
+                    include_str!("../src/buildx_defaults.rego"),
+                )
+                .unwrap(),
             );
-            modules.insert("layers.rego".to_string(), parse_module("layers.rego", &layers(500, 12)).unwrap());
+            modules.insert(
+                "layers.rego".to_string(),
+                parse_module("layers.rego", &layers(500, 12)).unwrap(),
+            );
             let mut comp = Compiler::new(modules, host(), true);
             comp.compile();
             let _ = tx.send(comp.errors.iter().map(ToString::to_string).collect::<Vec<_>>());
@@ -207,7 +224,8 @@ fn normalize(text: &str) -> String {
         if l.contains(": rego_recursion_error: ") {
             return Some(String::new());
         }
-        l.split_once(": rego_unsafe_var_error: ").map(|(at, _)| at.to_string())
+        l.split_once(": rego_unsafe_var_error: ")
+            .map(|(at, _)| at.to_string())
     };
     for line in text.lines() {
         if key(line).is_some() {

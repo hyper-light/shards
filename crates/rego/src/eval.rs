@@ -297,10 +297,8 @@ fn add_module(
         let mut elses = Vec::new();
         let mut e = rule.else_.as_deref();
         while let Some(x) = e {
-            let mut r = x.clone();
-            r.else_ = None;
             let rec = Rc::new(RuleRec {
-                rule: r,
+                rule: x.branch(),
                 path: path.clone(),
                 pkg_len,
                 elses: Vec::new(),
@@ -309,10 +307,8 @@ fn add_module(
             elses.push(rec);
             e = x.else_.as_deref();
         }
-        let mut r = rule.clone();
-        r.else_ = None;
         let rec = Rc::new(RuleRec {
-            rule: r,
+            rule: rule.branch(),
             path: path.clone(),
             pkg_len,
             elses,
