@@ -356,6 +356,35 @@ fn open_at(dir: RawFd, name: &CStr, flags: libc::c_int, mode: libc::c_uint) -> R
     Ok(unsafe { OwnedFd::from_raw_fd(fd) })
 }
 
+/// `name` in `dir` opened for a guest's OPEN or CREATE, with `flags` (`host::open_flags`'),
+/// if it is a regular file. A guest kernel opens FIFOs, sockets and device nodes itself and
+/// sends no FUSE request to; one that asks would have this process wait on a FIFO's other
+/// end for good, or open a host device, so they are refused (EBADF), as QEMU's virtiofsd
+/// refuses them (`lo_inode_open`, CVE-2020-35517; audit V02). The name is looked at first,
+/// so no special file is opened, then opened without waiting and looked at again, for one
+/// put there meanwhile.
+fn open_regular(dir: RawFd, name: &CStr, flags: libc::c_int, mode: libc::c_uint) -> Result<OwnedFd, Errno> {
+    let exclusive = flags & (libc::O_CREAT | libc::O_EXCL) == libc::O_CREAT | libc::O_EXCL;
+    match stat_at(dir, name) {
+        // An exclusive create of a name that exists fails at the open, opening nothing.
+        Ok(st) if !exclusive && mode_of(&st) & S_IFMT != S_IFREG => return Err(EBADF),
+        Ok(_) => {}
+        Err(ENOENT) if flags & libc::O_CREAT != 0 => {}
+        Err(e) => return Err(e),
+    }
+    let fd = open_at(dir, name, flags | libc::O_NONBLOCK | libc::O_NOCTTY, mode)?;
+    if mode_of(&stat_fd(fd.as_raw_fd())?) & S_IFMT != S_IFREG {
+        return Err(EBADF);
+    }
+    // The status flags the guest asked for, without O_NONBLOCK: F_SETFL takes those of
+    // `flags` and ignores its access mode and creation flags (POSIX fcntl(2)).
+    // SAFETY: fcntl(2) of a descriptor we hold.
+    if flags & libc::O_NONBLOCK == 0 && unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFL, flags) } != 0 {
+        return Err(last());
+    }
+    Ok(fd)
+}
+
 /// Changes the mode of `name` in `dir` without following it. fchmodat(2) without
 /// AT_SYMLINK_NOFOLLOW follows a final symlink: a guest's link to a host file outside the
 /// share would have that file's mode changed (audit V01). A symlink's own mode is not
@@ -786,7 +815,7 @@ impl Server {
                 if matches!(s.nodes.get(&nodeid).map(|n| &n.kind), Some(Kind::Dir(_))) {
                     return Err(EISDIR);
                 }
-                let fd = open_at(dir, &name, host::open_flags(flags & !linux::O_CREAT), 0)?;
+                let fd = open_regular(dir, &name, host::open_flags(flags & !linux::O_CREAT), 0)?;
                 let fh = add_handle(s, Handle::File(fd));
                 r.u64(fh).u32(0).u32(0);
             }
@@ -798,7 +827,7 @@ impl Server {
                 let _ = a.u32()?;
                 let name = a.name()?;
                 let dir = dir_fd(s, nodeid)?;
-                let fd = open_at(dir, &name, host::open_flags(flags) | libc::O_CREAT, mode & 0o7777)?;
+                let fd = open_regular(dir, &name, host::open_flags(flags) | libc::O_CREAT, mode & 0o7777)?;
                 self.made(s, nodeid, &name, caller, &mut r)?;
                 let fh = add_handle(s, Handle::File(fd));
                 r.u64(fh).u32(0).u32(0);
@@ -1213,9 +1242,9 @@ impl NodeFd {
 /// waiting on a FIFO's writer.
 fn open_meta(dir: RawFd, name: &CStr) -> Result<NodeFd, Errno> {
     #[cfg(target_os = "macos")]
-    let flags = libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_SYMLINK;
+    let flags = libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_NOCTTY | libc::O_SYMLINK;
     #[cfg(target_os = "linux")]
-    let flags = libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK;
+    let flags = libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_NOCTTY;
     open_at(dir, name, flags, 0).map(NodeFd::Owned)
 }
 
@@ -1761,6 +1790,76 @@ mod tests {
         assert_eq!(changed & 0o7777, 0o640);
         let _ = std::fs::remove_dir_all(&path);
         let _ = std::fs::remove_file(&outside);
+    }
+
+    /// `request`'s errno, or none if it is still waiting after ten seconds, when the FIFO
+    /// at `fifo` is opened at both ends to let it go.
+    fn answered_or_stuck(s: &Server, request: &[u8], fifo: &std::path::Path) -> Option<i32> {
+        let mut peer = None;
+        let errno = std::thread::scope(|scope| {
+            let (tx, rx) = std::sync::mpsc::channel();
+            scope.spawn(move || tx.send(answer(s, request).0));
+            let errno = rx.recv_timeout(std::time::Duration::from_secs(10)).ok();
+            if errno.is_none() {
+                peer = std::fs::OpenOptions::new().read(true).write(true).open(fifo).ok();
+            }
+            errno
+        });
+        drop(peer);
+        errno
+    }
+
+    /// Only regular files are opened (CVE-2020-35517; QEMU virtiofsd's `lo_inode_open`): a
+    /// guest's OPEN or CREATE of a FIFO is refused at once, where the open waited on the
+    /// FIFO's other end for good, and a device node a share reaches is never opened. A
+    /// guest kernel sends neither, opening special files itself.
+    #[test]
+    fn special_files_are_never_opened() {
+        let (path, s) = dir();
+        let fields = |v: [u32; 4]| v.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>();
+        #[allow(clippy::unnecessary_cast)]
+        let fifo_mode = libc::S_IFIFO as u32 | 0o644;
+        let mut mknod = fields([fifo_mode, 0, 0, 0]);
+        mknod.extend(name("fifo"));
+        assert_eq!(answer(&s, &req(op::MKNOD, ROOT, 0, &mknod)).0, 0);
+        let (_, entry) = answer(&s, &req(op::LOOKUP, ROOT, 0, &name("fifo")));
+        let fifo = u64::from_le_bytes(entry[0..8].try_into().unwrap());
+        let open = req(op::OPEN, fifo, 0, &[0u8; 8]);
+        let mut create = fields([1 /* O_WRONLY */, 0o644, 0, 0]);
+        create.extend(name("fifo"));
+        let create = req(op::CREATE, ROOT, 0, &create);
+        for (what, request) in [("OPEN", &open), ("CREATE", &create)] {
+            let errno = answered_or_stuck(&s, request, &path.join("fifo"));
+            assert_eq!(errno, Some(-EBADF), "{what} of a FIFO");
+        }
+        let dev = Server::new(std::fs::File::open("/dev").unwrap().into(), true, None).unwrap();
+        let (e, entry) = answer(&dev, &req(op::LOOKUP, ROOT, 0, &name("null")));
+        assert_eq!(e, 0);
+        let null = u64::from_le_bytes(entry[0..8].try_into().unwrap());
+        assert_eq!(answer(&dev, &req(op::OPEN, null, 0, &[0u8; 8])).0, -EBADF);
+        // A regular file opens with the status flags asked for: opened without waiting,
+        // it waits again unless the guest asked otherwise.
+        std::fs::write(path.join("file"), "f").unwrap();
+        let (_, entry) = answer(&s, &req(op::LOOKUP, ROOT, 0, &name("file")));
+        let file = u64::from_le_bytes(entry[0..8].try_into().unwrap());
+        for (guest, nonblocking) in [(linux::O_APPEND | 1, false), (linux::O_NONBLOCK, true)] {
+            let (e, opened) = answer(&s, &req(op::OPEN, file, 0, &fields([guest, 0, 0, 0])[..8]));
+            assert_eq!(e, 0);
+            let fh = u64::from_le_bytes(opened[0..8].try_into().unwrap());
+            let state = s.state.lock().unwrap();
+            let Some(Handle::File(fd)) = state.handles.get(&fh) else {
+                panic!("no file handle {fh}");
+            };
+            // SAFETY: F_GETFL of a descriptor the server holds.
+            let status = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFL) };
+            assert_eq!(status & libc::O_NONBLOCK != 0, nonblocking, "{guest:#o}");
+            assert_eq!(
+                status & libc::O_APPEND != 0,
+                guest & linux::O_APPEND != 0,
+                "{guest:#o}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&path);
     }
 
     #[test]
