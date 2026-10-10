@@ -3220,6 +3220,67 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode
 waits on the user.
 
+### D112. Image configs read as Docker reads them
+
+At run shards read an image's config with serde: exact keys, a repeated key an error.
+Docker's daemon reads it with Go's encoding/json: a key matches a field case-insensitively
+where none matches exactly, a repeated key overwrites, `null` leaves a field as it was. So
+`{"config":{"User":"root","user":"nobody"}}` ran as root in shards and as nobody in Docker
+(audit L, O1).
+- One reader, `shards_image::config`, reads a config once as encoding/json decodes it into
+  each type Docker reads it as: `dockerspec.DockerOCIImage` (`run`, `create`, `tag`, `image
+  inspect`, on the containerd image store Docker 29.3.1 runs), the anonymous struct of
+  `rootfs` and `history` (`history`), and `ocispec.Image` (containerd's unpack), each answer
+  worded with its type's own names. The planner reads through it too, so a repeated key
+  decodes over the slice as Go's does (`"Env":["A","B"],"Env":[null]` is `["A"]`, O4).
+- Times are parsed from their raw text as Go parses them; exposed ports go through
+  `network.ParsePort`; refusals are Docker's, measured in `shards-dind` with crafted
+  images (`could not deserialize image config: …` for `run`, `create` and `tag`; `failed to
+  read image config: …` for `inspect`).
+- Held to Go by `scripts/image-config/generate` (moby 464cd50's own test, Go 1.26.3): 372
+  cases, each in the three types, 1,116 answers; E2E `configs_are_read_as_docker_reads_them`
+  (the case above runs as `app`, uid 1000); 30 mutants killed.
+- Cost (PM M128): 14 µs p50 for a build-sized config where serde took 2; 14.4 ms for one of
+  3.2 MB where serde took 2.4. Where the time goes is unmeasured.
+- Recorded differences: `commit` writes its config with serde_json, its keys in another
+  order than Go's `json.Marshal`; past a time Go cannot parse, Go decodes nothing more
+  (Docker's listing then shows zeros) where shards goes on.
+
+### D111. Build policies over a remote context
+
+buildx v0.37.1 builds a remote context (a Git repository, an HTTP archive) under policies
+read from that context; before D111 shards refused a policy with one ("not supported yet").
+- The policies' files are read in the context, as buildx reads them in the context it
+  fetches to read them (`[internal] load git source …`, which no policy is asked of): the
+  context's own `<Dockerfile>.rego`, `-f`'s name in it or `Dockerfile`, if it is there, and
+  each `--policy`'s names; `cwd://` ones in the working directory. A name is made relative
+  to the context's root, `..` never above it, the root itself refused (`failed to stat
+  policy file ..: invalid remote policy filename ".."`, normalizeRemotePolicyPath). Imports
+  and `load_json` read there too: the policies' thread asks the build's, which reads the
+  fetched context apart from the build (`exec::Reader`: the snapshot's tree, its sources
+  opened again).
+- A file is read as BuildKit's gateway sends one: refused where the message holding it (the
+  file, its field's tag and length) is larger than a gRPC message may be, 16 MiB, `failed
+  to read policy file policies/big.rego: ResourceExhausted: grpc: trying to send message
+  larger than max (16777222 vs. 16777216)`, the build then exiting 102, as buildx's main
+  maps ResourceExhausted (measured).
+- The context's own source is asked first, as BuildKit asks it when the frontend reads the
+  Dockerfile from it, and again as the build loads it: a refusal fails the read of the
+  Dockerfile (`failed to solve: failed to read dockerfile: failed to load LLB: error
+  evaluating the source policy: …`), before any base is resolved. Only an image's pin
+  converts a source (`cannot pin non-image source`), so a context's is allowed or refused.
+- Recorded difference: a directory named as a policy file is refused as `read
+  /policies/dir: is a directory`, its path in the context, where BuildKit names its own
+  temporary mount (`read /var/lib/docker/tmp/buildkit-mount…/policies/dir`).
+- Tested: `policies_hold_over_remote_contexts`, held to buildx's output measured in
+  `shards-dind` over a Git repository served by HTTP: the context's own policy refusing it,
+  a `cwd://` one, `-f sub/Dockerfile`'s, one allowing it whose import and `load_json` are
+  read in the context, the same rooted (`/policies/allow.rego`), a missing file, `..`, a
+  directory, files past and short of the gRPC bound. Mutation-checked, ten guards, each
+  mutant killed: the remote name's rule, names read in the context, a missing file, the
+  context asked and its refusal's words, the message's size, its bound and exit 102,
+  `-f`'s policy, and the reads the build's thread serves.
+
 ### D109. An Agentfile's volumes at run, and every grant checked at build and at run
 
 AGENTFILE_ARCH.md §4.5 and §12 answers 8 and 9: `VOLUME <name> <dest>` names a volume, as
