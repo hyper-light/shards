@@ -4475,3 +4475,23 @@ revision before comparing a changed API/implementation.
   a day, from one guest. A device's failure is now said once, across resets; the rest go
   to debug. The cycle rates themselves vary fourfold with the host's load, which was
   high and changing throughout.
+
+### M132. How many directories a share can have looked up (audit V, open)
+
+- **Question.** The share's server keeps a descriptor for every directory the guest has
+  looked up and not forgotten, as it does every operation relative to one; a guest
+  kernel forgets only under memory pressure. The share process inherits the daemon's
+  descriptor limit, 256 under macOS's launchd. How many directories can a guest walk?
+- **Method.** `virtio-fs-audit --case fds --dirs D --limit L`: the process's soft
+  RLIMIT_NOFILE set to L, then a LOOKUP of each of D directories through
+  `Server::handle`, none forgotten. Apple M5 Max, macOS 26.4.1, revision ce225fa,
+  2026-10-09.
+- **Results.** Limit 256: 252 of 600 found, then EMFILE (24). Limit 1024: 1,020 of 3,000,
+  then EMFILE.
+- **Consequence.** A guest that walks more directories than its share process may hold
+  descriptors (a `find` over a tree with a few hundred directories, a `node_modules`) is
+  told "Too many open files", and a hostile one can put its own shares there at will.
+  Open: raising the share process's soft limit to its hard one (Go's runtime does so for
+  every program since 1.19; virtiofsd raises it too) lets a guest pin that many kernel
+  file objects instead; letting directories go after a time keeps fewer, but a directory
+  reopened by name loses what holding it gives, its identity through renames.

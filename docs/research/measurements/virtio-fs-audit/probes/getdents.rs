@@ -1,7 +1,7 @@
 //! Linux: a directory paged through by getdents64(2), seeking each page to the `d_off` of
 //! the last entry taken, as `DirStream::read` on Linux does, with buffers from 1 KiB up:
-//! every entry comes once. `rustc -O getdents.rs && ./getdents DIR N` makes N files in
-//! DIR (an empty directory) and checks.
+//! every entry comes once. `rustc --edition 2024 -O getdents.rs && ./getdents DIR N`
+//! makes N files in DIR (an empty directory) and checks.
 #![allow(clippy::unwrap_used, clippy::print_stdout)]
 
 use std::collections::BTreeSet;

@@ -249,8 +249,55 @@ fn held(n: usize, delay: Duration) -> Vec<u128> {
     ns
 }
 
+/// How many of `dirs` directories a guest can look up, none forgotten, under a descriptor
+/// limit of `limit`, as a guest's kernel keeps what it has looked up; and the first
+/// failure's errno. Prints `{"case": "fds", "found": N, "errno": E}`.
+fn fds(dirs: usize, limit: u64) {
+    let lim = libc::rlimit {
+        rlim_cur: limit,
+        rlim_max: libc::RLIM_INFINITY,
+    };
+    let mut have = lim;
+    // SAFETY: getrlimit(2) into a struct on this stack.
+    assert_eq!(unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut have) }, 0);
+    let lim = libc::rlimit {
+        rlim_max: have.rlim_max,
+        ..lim
+    };
+    // SAFETY: setrlimit(2) of this process's soft limit, below its hard one.
+    assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &lim) }, 0);
+    let dir = std::env::temp_dir().join(format!("virtio-fs-audit-fds-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    for i in 0..dirs {
+        std::fs::create_dir_all(dir.join(format!("d{i}"))).unwrap();
+    }
+    let server = Server::new(std::fs::File::open(&dir).unwrap().into(), true, None).unwrap();
+    let (mut found, mut errno) = (0, 0);
+    for i in 0..dirs {
+        let out = server.handle(&req(1, 1, format!("d{i}\0").as_bytes())).unwrap();
+        match i32::from_le_bytes(out[4..8].try_into().unwrap()) {
+            0 => found += 1,
+            e => {
+                errno = -e;
+                break;
+            }
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    println!(
+        "{{\"case\": \"fds\", \"dirs\": {dirs}, \"limit\": {limit}, \"found\": {found}, \"errno\": {errno}}}"
+    );
+}
+
 fn main() {
     let case = arg("--case").unwrap();
+    if case == "fds" {
+        fds(
+            arg("--dirs").map_or(600, |v| v.parse().unwrap()),
+            arg("--limit").map_or(256, |v| v.parse().unwrap()),
+        );
+        return;
+    }
     let n: usize = arg("--n").map_or(2000, |v| v.parse().unwrap());
     let ns = match case.as_str() {
         "open" => open(200, n),

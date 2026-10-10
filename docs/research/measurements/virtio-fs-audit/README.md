@@ -31,5 +31,8 @@ C programs for the primitives the fixes rest on, run by hand (`cc -O2 -o p p.c`)
 - `chmodat.c` (Linux): the steps of `chmod_at` on Linux, `O_PATH`, `fstat`, and the
   `/proc/self/fd` link: a symlink refused, a regular file and an unreadable one changed.
 - `dirbuf.c DIR`: the bytes the C library keeps for an open directory stream (M130).
-- `getdents.rs DIR N` (Linux, `rustc -O`): N files made in DIR, then paged through by
-  getdents64 at `d_off` cookies with three page and buffer sizes, each entry once.
+- `getdents.rs DIR N` (Linux, `rustc --edition 2024 -O`): N files made in DIR, then
+  paged through by getdents64 at `d_off` cookies with three page and buffer sizes, each
+  entry once.
+- `src/main.rs --case fds --dirs D --limit L`: how many of D directories a guest can look
+  up, none forgotten, under a descriptor limit of L (M132).
