@@ -137,21 +137,38 @@ pub fn start(
             socket.as_os_str(),
         ]);
     }
-    let child = shards_ipc::spawn_in(
-        &binary,
-        &args,
-        &[
-            (err.as_fd(), 2),
-            (region.as_fd(), 3),
-            (net_sleeps.as_fd(), 4),
-            (net_rings.as_fd(), 5),
-            (theirs.as_fd(), 6),
-            (released.as_fd(), 7),
-        ],
-        false,
-        &env_pairs(&env),
-    )
-    .map_err(|e| format!("starting {}: {e}", binary.display()))?;
+    // The dialer's end joins them on macOS alone.
+    #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
+    let mut fds = vec![
+        (err.as_fd(), 2),
+        (region.as_fd(), 3),
+        (net_sleeps.as_fd(), 4),
+        (net_rings.as_fd(), 5),
+        (theirs.as_fd(), 6),
+        (released.as_fd(), 7),
+    ];
+    // In App Sandbox, the network process reaches no socket by its path (D31): this
+    // process dials the build's proxy for it, over a link of the two's own.
+    #[cfg(target_os = "macos")]
+    let dialer = match &proxy {
+        Some((_, socket)) => {
+            let (ours, theirs) = pair()?;
+            let socket = socket.clone();
+            std::thread::Builder::new()
+                .name("proxy dialer".into())
+                .spawn(move || serve_dials(&ours, &socket))
+                .map_err(|e| format!("the build proxy's dialer: {e}"))?;
+            Some(theirs)
+        }
+        None => None,
+    };
+    #[cfg(target_os = "macos")]
+    if let Some(theirs) = &dialer {
+        args.extend::<[&std::ffi::OsStr; 2]>(["--proxy-dialer".as_ref(), "8".as_ref()]);
+        fds.push((theirs.as_fd(), 8));
+    }
+    let child = shards_ipc::spawn_in(&binary, &args, &fds, false, &env_pairs(&env))
+        .map_err(|e| format!("starting {}: {e}", binary.display()))?;
     Ok((
         child,
         VmSide {
@@ -162,6 +179,37 @@ pub fn start(
             release,
         },
     ))
+}
+
+/// Dials the build's proxy at `socket` for a network process in App Sandbox (D31), each
+/// time it asks over `link` (`kind::DIAL`): the connection given as a descriptor, kept
+/// until the network process says it has it (`kind::TAKEN`), as XNU drops a socket in flight
+/// that no process holds (M24); or `kind::ERR` with why not. Ends as the network process
+/// goes.
+#[cfg(target_os = "macos")]
+fn serve_dials(link: &std::os::unix::net::UnixStream, socket: &std::path::Path) {
+    use shards_ipc::kind;
+    while let Ok(Some(asked)) = shards_ipc::recv(link) {
+        if asked.kind != kind::DIAL {
+            return;
+        }
+        match std::os::unix::net::UnixStream::connect(socket) {
+            Ok(conn) => {
+                if shards_ipc::send(link, kind::GRANTED, &[], &[conn.as_fd()]).is_err() {
+                    return;
+                }
+                match shards_ipc::recv(link) {
+                    Ok(Some(m)) if m.kind == kind::TAKEN => {}
+                    _ => return,
+                }
+            }
+            Err(e) => {
+                if shards_ipc::send(link, kind::ERR, e.to_string().as_bytes(), &[]).is_err() {
+                    return;
+                }
+            }
+        }
+    }
 }
 
 /// How long a network process whose VM is gone has to go before it is ended: it goes as

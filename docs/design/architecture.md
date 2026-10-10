@@ -1828,6 +1828,26 @@ stack inside the VMM, is superseded by it.
   v4 network rules) — the IP part of a policy is its own code's. macOS: App Sandbox with the
   network client and server entitlements and no file access (docs/research/
   macos-confinement.md).
+  - **As built (2026-10-10).** Linux: Landlock (`crates/net/src/confine.rs`), failing closed
+    below ABI v5 as the VM process does: before it reads anything a guest sends, every
+    filesystem right handled and none allowed, no TCP port bound (the ports it serves come
+    bound, from the daemon), signals and abstract Unix sockets kept to itself (v6), and no
+    TCP at all under a build's proxy (D110); then, as an Agentfile's egress grants come
+    (`NET_POLICY`, once, before the run), TCP connections to their ports alone, and a
+    resolver's where names may be resolved. A second policy is refused, a layer only
+    narrowing. macOS: App Sandbox from launch, signed with `resources/net.entitlements`
+    (App Sandbox, network client and server, no file) and an Info.plist of its own
+    (`resources/net-Info.plist`, without which it is killed at launch); one whose signature
+    is not in App Sandbox refuses to serve (`shards_apple::sandbox::sandboxed`). The
+    sandbox keeps it from the build proxy's socket by its path (measured: the proxy E2E
+    fails without what follows), so its spawner dials the proxy for it over a link of the
+    two's own (`kind::DIAL`, as a sandboxed VM's vsock host ports are dialled). Tested:
+    `at_start_leaves_no_file_and_no_port_of_its_own` and
+    `to_ports_reaches_the_granted_ports_alone` (Linux, each in a process of its own),
+    `the_network_process_runs_in_app_sandbox_alone` (macOS; mutation-checked: the
+    self-check off), and every networked E2E through the confined process. Open: seccomp's
+    allowlist, which needs the syscalls it makes measured on Linux first, as the VM
+    process's were (M52).
 - **The guest's side.** A virtio-net device in the VM process, configured before the
   template is saved, with a static address and no DHCP or duplicate-address detection, so
   restores do no network work (networking.md R3; [RFC 2131 §4.4.1; RFC 4862 §5.4]). A VM

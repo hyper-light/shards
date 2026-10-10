@@ -294,6 +294,7 @@ fn compile_helpers(out: &mut impl io::Write) -> Result<PathBuf, String> {
     for input in [
         "crates/vm-process",
         "crates/net-process",
+        "crates/apple",
         "crates/vmm",
         "crates/net",
         "crates/netring",
@@ -310,7 +311,9 @@ fn compile_helpers(out: &mut impl io::Write) -> Result<PathBuf, String> {
         "crates/shards/src/warm.rs",
         "crates/shards/src/workload.rs",
         "resources/vm-Info.plist",
+        "resources/net-Info.plist",
         "resources/vm.entitlements",
+        "resources/net.entitlements",
         "Cargo.toml",
         "Cargo.lock",
     ] {
@@ -380,7 +383,8 @@ fn profile() -> Result<String, String> {
 
 /// On macOS, signs a helper as releases are: the VM process in App Sandbox, with the
 /// hypervisor entitlement and Hardened Runtime (resources/vm.entitlements); the network
-/// process with none.
+/// process in App Sandbox with its network's client and server and no file
+/// (resources/net.entitlements, D31).
 fn sign(name: &str, path: &Path) -> Result<(), String> {
     if !env::var("CARGO_CFG_TARGET_OS").is_ok_and(|os| os == "macos") || !cfg!(target_os = "macos") {
         return Ok(());
@@ -388,10 +392,15 @@ fn sign(name: &str, path: &Path) -> Result<(), String> {
     let resources =
         Path::new(&env::var("CARGO_MANIFEST_DIR").map_err(|e| e.to_string())?).join("../../resources");
     let mut command = Command::new("codesign");
-    if name == "shards-vm" {
+    let entitlements = match name {
+        "shards-vm" => Some("vm.entitlements"),
+        "shards-net" => Some("net.entitlements"),
+        _ => None,
+    };
+    if let Some(file) = entitlements {
         command
             .arg("--entitlements")
-            .arg(resources.join("vm.entitlements"))
+            .arg(resources.join(file))
             .args(["-o", "runtime"]);
     }
     let status = command

@@ -50,6 +50,12 @@ pub struct Api {
     pub SecTrustSetAnchorCertificatesOnly: unsafe extern "C" fn(CFTypeRef, u8) -> OSStatus,
     pub SecTrustEvaluateWithError: unsafe extern "C" fn(CFTypeRef, *mut CFTypeRef) -> bool,
     pub SecCopyErrorMessageString: unsafe extern "C" fn(OSStatus, *const c_void) -> CFTypeRef,
+    pub CFEqual: unsafe extern "C" fn(CFTypeRef, CFTypeRef) -> u8,
+    /// `kCFBooleanTrue`: the object, read from the constant the framework exports.
+    pub kCFBooleanTrue: CFTypeRef,
+    pub SecTaskCreateFromSelf: unsafe extern "C" fn(CFTypeRef) -> CFTypeRef,
+    pub SecTaskCopyValueForEntitlement:
+        unsafe extern "C" fn(CFTypeRef, CFTypeRef, *mut CFTypeRef) -> CFTypeRef,
 }
 
 // SAFETY: function pointers and constants of process-wide frameworks, never written.
@@ -113,12 +119,13 @@ fn load() -> Result<Api, String> {
             // SAFETY: the framework's own function of that name, whose C signature the
             // field it fills declares (Apple's headers: CFBase.h, CFData.h, CFArray.h,
             // CFString.h, CFDate.h, CFError.h, CFURL.h, SecCertificate.h, SecPolicy.h,
-            // SecTrust.h, SecBase.h).
+            // SecTrust.h, SecBase.h, SecTask.h).
             unsafe { function(at) }
         }};
     }
     let callbacks = symbol(cf, c"kCFTypeArrayCallBacks")?;
     let since = symbol(cf, c"kCFAbsoluteTimeIntervalSince1970")?;
+    let yes = symbol(cf, c"kCFBooleanTrue")?;
     Ok(Api {
         CFRelease: f!(cf, c"CFRelease"),
         CFDataCreate: f!(cf, c"CFDataCreate"),
@@ -145,6 +152,11 @@ fn load() -> Result<Api, String> {
         SecTrustSetAnchorCertificatesOnly: f!(sec, c"SecTrustSetAnchorCertificatesOnly"),
         SecTrustEvaluateWithError: f!(sec, c"SecTrustEvaluateWithError"),
         SecCopyErrorMessageString: f!(sec, c"SecCopyErrorMessageString"),
+        CFEqual: f!(cf, c"CFEqual"),
+        // SAFETY: a `const CFBooleanRef` the framework exports, set as it loads.
+        kCFBooleanTrue: unsafe { *(yes as *const CFTypeRef) },
+        SecTaskCreateFromSelf: f!(sec, c"SecTaskCreateFromSelf"),
+        SecTaskCopyValueForEntitlement: f!(sec, c"SecTaskCopyValueForEntitlement"),
     })
 }
 
