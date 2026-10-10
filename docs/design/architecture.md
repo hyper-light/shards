@@ -3474,7 +3474,9 @@ the boundary is a container's, which is what the mode asks for.
   (+642 µs [+226, +994], +1,122 [+790, +1,440]), one not (+95 µs [−304, +383], +15
   [−160, +299]); each reopens its file through the grants broker, which a join disk with
   no file does not. The join disk as built cost no restore anything resolved against none
-  (−513 µs [−1,682, +120]; none less join +330 [−370, +883]).
+  (−513 µs [−1,682, +120]; none less join +330 [−370, +883]), and no memory per VM
+  resolved (`phys_footprint` +0 KiB [−32, +16], PM M170), the RSS it adds being the
+  template's pages every microVM restored from it shares.
 - **Its life.** The joiner is a container of its own: its record, log, exit code, `stop`,
   `kill`, `wait`, `rm`, `inspect` (its NetworkMode its provider's ID, as dockerd keeps it,
   M169; its provider's hostname), and

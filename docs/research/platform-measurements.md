@@ -5665,3 +5665,35 @@ revision before comparing a changed API/implementation.
   takes `--init` there without giving it, and kills what the joiner leaves (D119).
   `--pid container:X` alone is refused: X's PID namespace is in X's microVM, and a
   network of its own there is not built (D115).
+
+### M170. What an empty device costs a microVM's memory (D119)
+
+- **Question.** M168 measured what an empty disk costs a restore's time. What do the join
+  disk and a join share (virtio-fs, served by none) cost a microVM's memory, counted as
+  memory per VM is counted ([M30]: `phys_footprint`, not RSS)?
+- **Method.** `docs/research/measurements/join-disk/restore.py`, as M168's, and two
+  templates of each machine (`#a`, `#b`), for what templates of one machine differ by:
+  none (`0`), a join disk (`join`), a join disk and a join share (`joinshare`), a join
+  disk and a run's shared directory (`share`); 150 restores each of
+  `shards restore TEMPLATE -- /bin/true`, interleaved. The VM process's
+  `phys_footprint` at the timing line (`footprint_kib`, added to it), its peak RSS there
+  (`rss_kib`) and over its life (wait4's `ru_maxrss`). Release builds of bede221 with the
+  device, Apple M5 Max, macOS 26.4.1, 2026-10-10, load 21 to 65.
+- **Results.** KiB, the median difference against the first template of a machine
+  without the device [95%]:
+  - Memory per VM: none resolved. The join disk +0 [−32, +16] and +0 [−16, +16]; the join
+    share with it +0 [−16, +32] and +0 [−16, +32]; two templates of one machine differ by up
+    to 32. With the share's queue workers started as it is activated, or at its first
+    notification: +0 to +32 against templates 16 to 32 apart, alike.
+  - RSS: each device +64 to +208, a run's shared directory alike (+176 [+176, +208]),
+    where two templates of one machine differ by up to 96. These are the pages the guest's
+    drivers allocated as it booted, kept in the template and mapped from it, shared by every
+    microVM restored from it; `phys_footprint` leaves them out. With 16-entry queues, a
+    share's RSS was +64 [+48, +80] where with 256 it was +144 to +176: the guest's queue
+    allocations.
+  - Restore time: none resolved but one round of the join share, +94 µs [+36, +142]; the
+    rest −59 to +42.
+- **Consequence.** Every microVM carries a join share as it carries a join disk (D119), at
+  no resolved memory per VM. A share's workers start as it is activated: the lazy start
+  tried saved nothing resolved, and was left out. RSS, which counts a template's shared
+  pages in each process, is not what a microVM costs.

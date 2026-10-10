@@ -59,6 +59,9 @@ pub(crate) struct Hosts<'a> {
     /// The join disk's ranges, which its VM process gives joining containers' images
     /// (D119).
     pub join: Option<&'static crate::devices::virtio::block::Join>,
+    /// The join share's slot (D119), which a server of its VM's joiners' volumes fills.
+    #[cfg(unix)]
+    pub join_share: Option<&'static crate::devices::virtio::fs::Slot>,
 }
 
 /// A snapshot's vsock and network devices, and the restore's host sides for them, come
@@ -96,6 +99,12 @@ fn check_hosts(snap: &crate::snapshot::Snapshot, hosts: Hosts<'_>) -> Result<(),
     match (snap.config.join, hosts.join) {
         (true, None) => return Err("the snapshot has a join disk: give the restored VM its own".into()),
         (false, Some(_)) => return Err("the snapshot has no join disk for the restore's".into()),
+        _ => {}
+    }
+    #[cfg(unix)]
+    match (snap.config.join_share, hosts.join_share) {
+        (true, None) => return Err("the snapshot has a join share: give the restored VM its own".into()),
+        (false, Some(_)) => return Err("the snapshot has no join share for the restore's".into()),
         _ => {}
     }
     Ok(())
@@ -141,7 +150,8 @@ fn virtio_devices(
         + regions.len()
         + usize::from(config.vsock)
         + usize::from(config.net.is_some())
-        + config.shares as usize;
+        + config.shares as usize
+        + usize::from(config.join_share);
     if slots as u64 > max {
         return Err(format!("at most {max} virtio devices are supported"));
     }
@@ -196,6 +206,18 @@ fn virtio_devices(
             slot,
         )?));
     }
+    // Its join share, after them, which init mounts by its tag once a joiner brings
+    // volumes (D119).
+    #[cfg(unix)]
+    if config.join_share {
+        let slot = hosts
+            .join_share
+            .ok_or("the machine has a join share but no slot for it")?;
+        devices.push(Box::new(crate::devices::virtio::fs::Fs::join(
+            shards_abi::JOIN_SHARE_TAG,
+            slot,
+        )?));
+    }
     Ok(devices)
 }
 
@@ -238,6 +260,10 @@ fn machine_config(cfg: &Config) -> Result<crate::snapshot::MachineConfig, String
         #[cfg(not(unix))]
         shares: 0,
         join: cfg.join.is_some(),
+        #[cfg(unix)]
+        join_share: cfg.join_share.is_some(),
+        #[cfg(not(unix))]
+        join_share: false,
     })
 }
 
@@ -299,6 +325,9 @@ pub struct Config {
     /// A join disk, after the disks: empty until the VM process gives a joining
     /// container's image a range of it (D119).
     pub join: Option<&'static crate::devices::virtio::block::Join>,
+    /// The join share's slot (D119), which a server of its VM's joiners' volumes fills.
+    #[cfg(unix)]
+    pub join_share: Option<&'static crate::devices::virtio::fs::Slot>,
 }
 
 /// The host side of a VM's virtio-vsock device.
@@ -358,6 +387,8 @@ impl Config {
             #[cfg(unix)]
             shares: Vec::new(),
             join: None,
+            #[cfg(unix)]
+            join_share: None,
         }
     }
 }
@@ -386,6 +417,9 @@ pub struct RestoreConfig {
     /// The restored VM's own join disk, where the snapshot has one (D119): empty, as the
     /// snapshot's was.
     pub join: Option<&'static crate::devices::virtio::block::Join>,
+    /// The join share's slot (D119), which a server of its VM's joiners' volumes fills.
+    #[cfg(unix)]
+    pub join_share: Option<&'static crate::devices::virtio::fs::Slot>,
     /// Prefetch the snapshot's working set, if it has one, before the guest runs: for a
     /// restore ahead of its request, which it moves off the request's path (PM M30).
     pub prefetch: bool,
@@ -510,6 +544,7 @@ mod tests {
             net,
             shares: 0,
             join: false,
+            join_share: false,
         }
     }
 
@@ -542,6 +577,8 @@ mod tests {
             net: n.then_some(&net),
             shares: &[],
             join: None,
+            #[cfg(unix)]
+            join_share: None,
         };
         let mac = Some([2, 0, 0, 0, 0, 1]);
         for (has_vsock, has_net) in [(false, false), (true, false), (false, true), (true, true)] {
@@ -613,6 +650,8 @@ mod tests {
             net: Some(&net),
             shares: &[],
             join: None,
+            #[cfg(unix)]
+            join_share: None,
         };
         let e = virtio_devices(&config, &regions, hosts, 4).err().unwrap();
         assert_eq!(e, "at most 4 virtio devices are supported");
@@ -632,6 +671,8 @@ mod tests {
             net: Some(&net),
             shares: &[],
             join: None,
+            #[cfg(unix)]
+            join_share: None,
         };
         let e = virtio_devices(&config, &regions, missing, 5).err().unwrap();
         assert!(e.contains("no host side"), "{e}");
@@ -640,6 +681,8 @@ mod tests {
             net: None,
             shares: &[],
             join: None,
+            #[cfg(unix)]
+            join_share: None,
         };
         let e = virtio_devices(&config, &regions, missing, 5).err().unwrap();
         assert!(e.contains("no network process"), "{e}");

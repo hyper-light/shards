@@ -20,6 +20,10 @@ pub const SERVER_FIRST_ID: u32 = DOMAIN_FIRST_ID + 4 * 1024 * 1024;
 /// whose ranges are the images of containers joining the microVM's network.
 pub const JOIN_DISK_SERIAL: &str = "shards-join";
 
+/// The tag of a microVM's join share (D119): the virtio-fs device, served by no directory
+/// until a container joining its network brings volumes, which init mounts then.
+pub const JOIN_SHARE_TAG: &str = "shards-join-share";
+
 pub mod build;
 pub mod changes;
 pub mod run;

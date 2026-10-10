@@ -764,6 +764,44 @@ pub fn peak_rss_kib() -> u64 {
     }
 }
 
+/// This process's own memory now, in KiB, as memory per VM is counted (PM M30's
+/// `phys_footprint`): macOS's physical footprint, its private and copied pages, without the
+/// file pages it shares with every process mapping them, a template's among them; Linux's
+/// anonymous resident pages (`RssAnon`, proc(5)), which a written page of a private file
+/// mapping becomes. 0 where unknown.
+pub fn footprint_kib() -> u64 {
+    #[cfg(target_os = "linux")]
+    {
+        std::fs::read_to_string("/proc/self/status")
+            .ok()
+            .and_then(|status| {
+                let line = status.lines().find_map(|l| l.strip_prefix("RssAnon:"))?;
+                line.trim().strip_suffix("kB")?.trim().parse().ok()
+            })
+            .unwrap_or(0)
+    }
+    #[cfg(target_vendor = "apple")]
+    {
+        // SAFETY: proc_pid_rusage(2) of this process into a zeroed rusage_info_v2, the
+        // flavor it is asked for, a valid out-parameter.
+        let mut info: libc::rusage_info_v2 = unsafe { std::mem::zeroed() };
+        // SAFETY: as above.
+        let got = unsafe {
+            libc::proc_pid_rusage(
+                libc::getpid(),
+                libc::RUSAGE_INFO_V2,
+                (&raw mut info).cast::<libc::rusage_info_t>(),
+            )
+        };
+        if got != 0 {
+            return 0;
+        }
+        info.ri_phys_footprint / 1024
+    }
+    #[cfg(not(any(target_os = "linux", target_vendor = "apple")))]
+    0
+}
+
 /// The effective user ID of the process at the other end of `sock`, as it connected:
 /// `SO_PEERCRED` on Linux (unix(7)), `getpeereid(3)` elsewhere.
 pub fn peer_uid(sock: &UnixStream) -> io::Result<u32> {

@@ -398,6 +398,8 @@ pub fn restore_from(cfg: &RestoreConfig, pinned: snapshot::Pinned) -> Result<(Ha
             #[cfg(unix)]
             shares: &cfg.shares,
             join: cfg.join,
+            #[cfg(unix)]
+            join_share: cfg.join_share,
         },
         working_set.unwrap_or_default(),
     )?;
@@ -764,6 +766,7 @@ mod tests {
                 net: None,
                 shares: 0,
                 join: false,
+                join_share: false,
             },
             arch: Vec::new(),
             devices: Vec::new(),

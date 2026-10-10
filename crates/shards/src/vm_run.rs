@@ -240,6 +240,9 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
             }
             // A join disk, empty until a container joins the VM's network (D119).
             "--join" => cfg.join = Some(give_join_disk()),
+            // A join share, served by none until a joiner brings volumes (D119).
+            #[cfg(unix)]
+            "--join-share" => cfg.join_share = Some(give_join_share()),
             "--pmem" => cfg.pmem.push(PathBuf::from(value("--pmem")?)),
             "--rootfs" => rootfs = Some(PathBuf::from(value("--rootfs")?)),
             "--warm" => {
@@ -372,8 +375,10 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String
         // Its slots are made once its snapshot is read (`restore_vm`).
         #[cfg(unix)]
         shares: Vec::new(),
-        // As its join disk is, where the snapshot has one.
+        // As its join disk and join share are, where the snapshot has them.
         join: None,
+        #[cfg(unix)]
+        join_share: None,
         // Restored ahead of its request: the prefetch costs the request nothing.
         prefetch: hold || warm.is_some(),
         // A warm VM's request ends the recording as it ends a template's (RECORD_FOR).
@@ -409,6 +414,21 @@ pub fn join_disk() -> Option<&'static shards_vmm::devices::virtio::block::Join> 
     HAS_JOIN
         .load(std::sync::atomic::Ordering::Acquire)
         .then_some(&JOIN)
+}
+
+/// This VM's join share (D119): served by none until a container joining its network brings
+/// volumes; one VM a process, so one share, a `static` its device and its joiners reach.
+#[cfg(unix)]
+static JOIN_SHARE: shards_vmm::devices::virtio::fs::Slot = shards_vmm::devices::virtio::fs::Slot::new();
+/// Whether this VM has [`JOIN_SHARE`]: its device given it.
+#[cfg(unix)]
+static HAS_JOIN_SHARE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// This VM's join share, for its device.
+#[cfg(unix)]
+fn give_join_share() -> &'static shards_vmm::devices::virtio::fs::Slot {
+    HAS_JOIN_SHARE.store(true, std::sync::atomic::Ordering::Release);
+    &JOIN_SHARE
 }
 
 /// Console output that never fails the caller (e.g. with stderr closed).
@@ -945,14 +965,25 @@ fn timing_json(handle: &Handle, workload: Option<&WorkloadTiming>) -> String {
         (0, 0)
     };
     format!(
-        "{{\"released_us\":{},\"entry_us\":{},\"exit_us\":{},\"request_us\":{request},\"answered_us\":{answered},\"prefetched\":{},\"rss_kib\":{},\"markers\":[{}]}}",
+        "{{\"released_us\":{},\"entry_us\":{},\"exit_us\":{},\"request_us\":{request},\"answered_us\":{answered},\"prefetched\":{},\"rss_kib\":{},\"footprint_kib\":{},\"markers\":[{}]}}",
         handle.released_at_us().unwrap_or(0),
         handle.entered_at_us().unwrap_or(0),
         handle.exited_at_us().unwrap_or(0),
         handle.prefetched(),
         max_rss_kib(),
+        footprint_kib(),
         markers.join(",")
     )
+}
+
+/// This process's own memory now, in KiB, as memory per VM is counted; 0 where unknown.
+fn footprint_kib() -> u64 {
+    #[cfg(unix)]
+    {
+        shards_ipc::footprint_kib()
+    }
+    #[cfg(not(unix))]
+    0
 }
 
 /// This process's peak resident set so far, in KiB; 0 where unknown.
@@ -1095,6 +1126,10 @@ fn restore_vm(cfg: &RestoreConfig) -> Result<(Handle, Running), String> {
         }
         if pinned.snapshot.config.join {
             cfg.join = Some(give_join_disk());
+        }
+        #[cfg(unix)]
+        if pinned.snapshot.config.join_share {
+            cfg.join_share = Some(give_join_share());
         }
         cfg
     };
