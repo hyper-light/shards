@@ -477,6 +477,13 @@ pub fn setup(run: &Run, points: &[(String, Vec<u8>)]) -> Result<Vec<Vec<u8>>, St
     if run.read_only {
         out.push(b"readonly".to_vec());
     }
+    // Where the command is born (D115): PID 1 of a PID namespace of its own, but for these.
+    if run.docker_init == Some(true) {
+        out.push(b"init".to_vec());
+    }
+    if run.pid == "host" {
+        out.push(b"pid=host".to_vec());
+    }
     Ok(out)
 }
 

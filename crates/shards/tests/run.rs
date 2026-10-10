@@ -248,7 +248,10 @@ fn exit_statuses_are_the_ones_docker_run_gives() {
     let image = workload_image(&dir);
     for (options, command, status, stderr) in [
         (&[][..], &["/bin/testguest", "exit", "3"][..], 3, ""),
-        (&[], &["/bin/testguest", "kill"], 128 + 9, ""),
+        // One that sends itself SIGKILL, then exits 1: PID 1 of its namespace, as a
+        // container's command, it does not hear it (D115), and exits 1, as under `docker
+        // run` (Docker 29.3.1: 1; 137 under `--init`, PM M145).
+        (&[], &["/bin/testguest", "kill"], 1, ""),
         (&[], &["/bin/testguest", "stderr", "to stderr"], 0, "to stderr"),
         (&[], &["nothere"], 127, "executable file not found in $PATH"),
         // An empty PATH has nothing in it, not even the working directory (Go's
@@ -448,13 +451,15 @@ fn templates_restore_into_runs_of_their_own() {
 /// Runs `command` in the image, sends `signal` to shards once the command says `ready`,
 /// and returns what shards returns.
 fn signaled(image: &Path, command: &[&str], signal: libc::c_int) -> Output {
-    signaled_ignoring(image, command, signal, false)
+    signaled_ignoring(image, command, &[signal], false)
 }
 
 /// [`signaled`], with shards started ignoring SIGINT and SIGQUIT if `ignoring`, as a
 /// non-interactive shell starts `cmd &` (POSIX.1-2024, XCU 2.9.3.1); else with their
 /// default actions, whatever this test was started with.
-fn signaled_ignoring(image: &Path, command: &[&str], signal: libc::c_int, ignoring: bool) -> Output {
+/// Each of `signals` is sent half a second after the one before, so that each reaches
+/// the command before the next is sent.
+fn signaled_ignoring(image: &Path, command: &[&str], signals: &[libc::c_int], ignoring: bool) -> Output {
     use std::io::BufRead;
     use std::os::unix::process::CommandExt;
     let mut run = common::command();
@@ -496,8 +501,13 @@ fn signaled_ignoring(image: &Path, command: &[&str], signal: libc::c_int, ignori
     let mut ready = String::new();
     out.read_line(&mut ready).unwrap();
     assert_eq!(ready, "ready\n");
-    // SAFETY: kill(2) of our own child.
-    unsafe { libc::kill(child.id() as libc::pid_t, signal) };
+    for (i, &signal) in signals.iter().enumerate() {
+        if i > 0 {
+            std::thread::sleep(Duration::from_millis(500));
+        }
+        // SAFETY: kill(2) of our own child.
+        unsafe { libc::kill(child.id() as libc::pid_t, signal) };
+    }
     let mut rest = Vec::new();
     out.read_to_end(&mut rest).unwrap();
     let mut stderr = String::new();
@@ -525,13 +535,23 @@ fn signals_reach_the_command_as_docker_run_forwards_them() {
         assert_eq!(out.stdout, format!("got {linux}\n").into_bytes(), "{name}: {out}");
     }
     // Even one shards was started ignoring, as `docker run`'s signal proxy takes it.
-    let out = signaled_ignoring(&image, &["/bin/testguest", "trap", "INT"], libc::SIGINT, true);
+    let out = signaled_ignoring(&image, &["/bin/testguest", "trap", "INT"], &[libc::SIGINT], true);
     assert_eq!(
         (out.status, out.stdout.as_slice()),
         (Some(0), &b"got 2\n"[..]),
         "{out}"
     );
-    // A signal the command does not catch ends it, and `docker run`'s status says which.
-    let out = signaled(&image, &["/bin/testguest", "sleep"], libc::SIGTERM);
-    assert_eq!(out.status, Some(128 + 15), "{out}");
+    // One it does not catch, PID 1 of its namespace, as a container's command, does not
+    // hear (D115), as under `docker run`: the run goes on, and hears the next it catches.
+    let out = signaled_ignoring(
+        &image,
+        &["/bin/testguest", "trap", "INT"],
+        &[libc::SIGTERM, libc::SIGINT],
+        false,
+    );
+    assert_eq!(
+        (out.status, out.stdout.as_slice()),
+        (Some(0), &b"got 2\n"[..]),
+        "{out}"
+    );
 }

@@ -1765,6 +1765,17 @@ impl<D: Disk> Daemon<D> {
                 v4.chain(v6).collect()
             })
         };
+        // `--pid container:NAME`, as dockerd checks it as it makes the container: one that
+        // is not, in its words; one that is, a microVM of its own, whose PID namespace no
+        // other microVM's process can join (D115).
+        if let Some(name) = run.pid.strip_prefix("container:") {
+            refuse(&if self.resolve(name).is_ok() {
+                "\"--pid container:NAME\" is not supported by shards yet".to_string()
+            } else {
+                format!("No such container: {name}")
+            });
+            return None;
+        }
         let mut start = match network::check(
             &run,
             self.bridge,

@@ -293,6 +293,13 @@ pub mod beside {
         )
     }
 
+    /// Refusing `--pid host`: the microVM's PID namespace, the parent of theirs.
+    pub fn pid_host() -> String {
+        format!(
+            "cannot run the command in the microVM's PID namespace (--pid host): {WHY}, and that namespace holds their processes and init's, which the command would see and signal"
+        )
+    }
+
     /// Refusing sysctl `key` where the domains' flows cross the command's namespace.
     pub fn sysctl(key: &str) -> String {
         format!(

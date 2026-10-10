@@ -54,7 +54,7 @@ pub fn main(device: &str, template: bool) -> ! {
     // Docker's limits for what it starts, inherited by the standby and so the workload.
     defaults::limits();
     // Before any snapshot, so that every copy of a template has one.
-    let standby = mount_root(device).and_then(|()| Standby::fork(None));
+    let standby = mount_root(device).and_then(|()| Standby::fork(Born::Own));
     if template && standby.is_ok() {
         await_crypto_selftests();
         if let Err(e) = crate::linux::control_write(control::SNAPSHOT, control::SNAPSHOT_NOW) {
@@ -344,8 +344,9 @@ static BESIDE: std::sync::OnceLock<Beside> = std::sync::OnceLock::new();
 
 impl Beside {
     /// Refuses what of `setup` reaches the domains: a privileged command (`what`, `run`
-    /// or `exec`), `/proc` unmasked, a capability of [`shards_abi::run::beside`]'s, a
-    /// net.* sysctl where their flows cross the command's network namespace.
+    /// or `exec`), `/proc` unmasked, the microVM's PID namespace, a capability of
+    /// [`shards_abi::run::beside`]'s, a net.* sysctl where their flows cross the
+    /// command's network namespace.
     fn refuse(&self, setup: &[Vec<u8>], what: &str) -> Result<(), Failure> {
         use shards_abi::run::beside;
         for entry in setup {
@@ -354,6 +355,9 @@ impl Beside {
             }
             if entry == b"unmasked" {
                 return Err(setup_failed(beside::unmasked()));
+            }
+            if entry == b"pid=host" {
+                return Err(setup_failed(beside::pid_host()));
             }
             if let Some(caps) = entry.strip_prefix(b"caps=") {
                 let caps = std::str::from_utf8(caps)
@@ -380,6 +384,22 @@ impl Beside {
         }
         Ok(())
     }
+}
+
+/// Refuses, beside an Agentfile's domains, a process of the run's as any of their IDs
+/// (D115): the kernel counts a user's processes, inotify instances, pipe buffers and
+/// queued signals as one, and their files are theirs.
+fn none_of_theirs(uid: libc::uid_t, gid: libc::gid_t, groups: &[libc::gid_t]) -> Result<(), Failure> {
+    if let Some(b) = BESIDE.get() {
+        let taken = |id: u32| shards_abi::run::beside::taken(id, b.domains);
+        if taken(uid) {
+            return Err(setup_failed(shards_abi::run::beside::id("uid", uid, b.domains)));
+        }
+        if let Some(&g) = std::iter::once(&gid).chain(groups).find(|&&g| taken(g)) {
+            return Err(setup_failed(shards_abi::run::beside::id("gid", g, b.domains)));
+        }
+    }
+    Ok(())
 }
 
 /// The capabilities a command has where none are said: Docker's defaults, less those the
@@ -418,6 +438,8 @@ fn sort_setup(entries: &[Vec<u8>], into: &mut Inherited) -> Result<Vec<Vec<u8>>,
         } else if entry.starts_with(b"address=")
             || entry.starts_with(b"address6=")
             || entry == b"confine-eth0"
+            || entry == b"init"
+            || entry == b"pid=host"
         {
             // Init's, as the run starts (`Standby::start`).
         } else if entry.starts_with(b"devices=") {
@@ -694,11 +716,12 @@ fn pid_ns_of(pid: libc::pid_t) -> Result<OwnedFd, Failure> {
         .map_err(|e| setup_failed(format!("the workload's PID namespace: {e}")))
 }
 
-/// fork(2), the child born in the PID namespace `ns`: setns(2) gives the children made
-/// after it (pid_namespaces(7)), and init takes its own back before anything else. Init's
-/// later children, its agents' domains among them, must not be born there, where the
-/// workload would see them: past a failure to take it back, init goes no further.
-fn fork_in(ns: &OwnedFd) -> Result<libc::pid_t, Failure> {
+/// fork(2), the child born in the PID namespace `ns`, or, with none, in a new one whose
+/// first process it is: setns(2) and unshare(2) give the children made after them
+/// (pid_namespaces(7)), and init takes its own back before anything else. Init's later
+/// children, its agents' domains among them, must not be born there, where the workload
+/// would see them: past a failure to take it back, init goes no further.
+fn fork_in(ns: Option<&OwnedFd>) -> Result<libc::pid_t, Failure> {
     let own = match OWN_PID_NS.get() {
         Some(own) => own,
         None => {
@@ -708,10 +731,15 @@ fn fork_in(ns: &OwnedFd) -> Result<libc::pid_t, Failure> {
             OWN_PID_NS.get_or_init(|| own)
         }
     };
-    // SAFETY: setns(2) on a descriptor this process holds.
-    if unsafe { libc::setns(ns.as_raw_fd(), libc::CLONE_NEWPID) } != 0 {
+    let entered = match ns {
+        // SAFETY: setns(2) on a descriptor this process holds.
+        Some(ns) => unsafe { libc::setns(ns.as_raw_fd(), libc::CLONE_NEWPID) },
+        // SAFETY: unshare(2) of the namespace init's next child is born in.
+        None => unsafe { libc::unshare(libc::CLONE_NEWPID) },
+    };
+    if entered != 0 {
         return Err(setup_failed(format!(
-            "entering the workload's PID namespace: {}",
+            "the workload's PID namespace: {}",
             io::Error::last_os_error()
         )));
     }
@@ -736,10 +764,11 @@ fn fork_in(ns: &OwnedFd) -> Result<libc::pid_t, Failure> {
     Ok(pid)
 }
 
-/// A new PID namespace for the workload (D115), its first process [`reaper`]'s: so the
-/// workload and its execs see none of the microVM's other processes, an agent's or
-/// init's, as a container sees none of its host's, and signal, trace and enter none.
-fn clone_reaper() -> Result<libc::pid_t, Failure> {
+/// A new PID namespace for the workload under `--init` (D115), its first process
+/// [`reaper`]'s, its command the second; like the namespace a command is PID 1 of
+/// ([`Born::Own`]), it shows the workload and its execs none of the microVM's other
+/// processes, an agent's or init's, as a container sees none of its host's.
+fn clone_reaper(uid: libc::uid_t, gid: libc::gid_t) -> Result<libc::pid_t, Failure> {
     let failed = |e: io::Error| setup_failed(format!("the workload's PID namespace: {e}"));
     let cgroup = File::open(WORKLOAD_CGROUP).map_err(failed)?;
     let last_cap = defaults::last_cap();
@@ -749,6 +778,8 @@ fn clone_reaper() -> Result<libc::pid_t, Failure> {
         cgroup: cgroup.as_raw_fd() as u64,
         ..Default::default()
     };
+    // Closed by the reaper once it is ready, with every descriptor of init's it holds.
+    let (ready_r, ready_w) = pipe()?;
     // SAFETY: clone3(2) as fork(2), with a clone_args of the size given; the child calls
     // only the kernel ([`reaper`]), never musl's thread list, which is init's.
     let pid = unsafe {
@@ -758,34 +789,91 @@ fn clone_reaper() -> Result<libc::pid_t, Failure> {
             std::mem::size_of::<crate::domains::CloneArgs>(),
         )
     };
+    if pid == 0 {
+        reaper(last_cap, uid, gid)
+    }
     if pid < 0 {
         return Err(failed(io::Error::last_os_error()));
     }
-    if pid == 0 {
-        reaper(last_cap)
+    let pid = libc::pid_t::try_from(pid)
+        .map_err(|_| setup_failed("the workload's PID namespace: a pid out of range"))?;
+    // No process is born in its namespace before it is ready, as none is in docker-init's
+    // before runc has made it the command's user: one would find it root, with init's
+    // privileges and descriptors, be refused signalling it as the command's user (kill(2)),
+    // and lose a signal it sent before the reaper blocked its own, which a namespace's
+    // first process discards where it neither handles nor blocks it (kernel/signal.c,
+    // sig_task_ignored). Its end closes as it is ready, or as it ends.
+    drop(ready_w);
+    let mut ready = File::from(ready_r);
+    let mut byte = [0u8; 1];
+    let waited = loop {
+        match ready.read(&mut byte) {
+            Ok(0) => break Ok(()),
+            Ok(_) => {}
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(e) => break Err(failed(e)),
+        }
+    };
+    let mut status = 0;
+    // SAFETY: waitpid(2) for our own child, without blocking.
+    let gone = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) } == pid;
+    match waited {
+        Ok(()) if !gone => Ok(pid),
+        Ok(()) => Err(setup_failed(
+            "the workload's PID namespace: its reaper could not start",
+        )),
+        Err(e) => {
+            // SAFETY: kill(2) and waitpid(2) of our own child, not yet waited for.
+            unsafe {
+                libc::kill(pid, libc::SIGKILL);
+                libc::waitpid(pid, std::ptr::null_mut(), 0);
+            }
+            Err(e)
+        }
     }
-    libc::pid_t::try_from(pid).map_err(|_| setup_failed("the workload's PID namespace: a pid out of range"))
 }
 
-/// The first process of the workload's PID namespace: it reaps what the workload leaves
-/// orphaned there, as shards-init reaps for every run what docker-init does with `--init`;
-/// the workload stays init's child, signalled and waited for as before. In the workload's
-/// cgroup, it holds nothing a process of the namespace could take from it, should one
-/// trace it: no descriptor, no capability, `no_new_privs`, and an empty read-only root in
-/// a mount namespace of its own, so that its `/proc/1/root` leads to no file of init's
-/// (D115). A copy of init's memory before any run's. Ended with the run (`relay`).
-fn reaper(last_cap: u32) -> ! {
-    // SAFETY: system calls on local values and literals alone: close_range(2) of every
-    // descriptor past stdio; mount(2), chroot(2) and chdir(2) to an empty root; prctl(2)
-    // and capset(2) to none of init's privileges; then waitpid(2) and sigwaitinfo(2) for
-    // ever. SIGCHLD stays blocked, so that one sent between the two waits for sigwaitinfo.
+/// The command's PID in the namespace of a [`reaper`], the second process born there.
+const REAPED: libc::pid_t = 2;
+
+/// The run's [`reaper`], under `--init`: the container's process `top` lists, as `docker
+/// top` lists docker-init.
+static REAPER: std::sync::OnceLock<libc::pid_t> = std::sync::OnceLock::new();
+
+/// The signals a [`reaper`] leaves unblocked, as docker-init (tini) leaves them: those
+/// the kernel raises for a fault, and job control's (tini.c, configure_signals).
+const UNFORWARDED: [libc::c_int; 9] = [
+    libc::SIGFPE,
+    libc::SIGILL,
+    libc::SIGSEGV,
+    libc::SIGBUS,
+    libc::SIGABRT,
+    libc::SIGTRAP,
+    libc::SIGSYS,
+    libc::SIGTTIN,
+    libc::SIGTTOU,
+];
+
+/// The first process of the workload's PID namespace under `--init`, docker-init's part,
+/// as tini does it: it reaps what the workload leaves orphaned there, and forwards to the
+/// command each signal sent to it, PID 1, such as a process of the namespace sends with
+/// `kill 1`. The command stays init's child, signalled and waited for as without it. As
+/// tini runs as the command's user, so does it, `uid` and `gid`: each may signal the
+/// other (kill(2)). In the workload's cgroup, it holds nothing a process of the namespace
+/// could take from it: no descriptor, no capability, `no_new_privs`, and an empty
+/// read-only root in a mount namespace of its own, so that its `/proc/1/root` leads to
+/// no file of init's (D115); and it is not dumpable, so that only a tracer with
+/// CAP_SYS_PTRACE, which the run refuses beside an Agentfile's domains, could trace it
+/// (ptrace(2)). No process is born in its namespace before it is so ([`clone_reaper`]).
+/// A copy of init's memory before any run's. Ended with the run (`relay`).
+fn reaper(last_cap: u32, uid: libc::uid_t, gid: libc::gid_t) -> ! {
+    // SAFETY: system calls on local values and literals alone: mount(2), chroot(2) and
+    // chdir(2) to an empty root; the command's IDs, then prctl(2) and capset(2) to none of
+    // init's privileges; its signals blocked; close_range(2) of every descriptor past
+    // stdio, which says to init that it is ready ([`clone_reaper`]); then waitpid(2),
+    // sigwaitinfo(2) and kill(2) for ever. Its signals stay blocked, so that one sent
+    // between the waits waits for sigwaitinfo.
     unsafe {
-        libc::syscall(
-            libc::SYS_close_range,
-            3 as libc::c_long,
-            libc::c_long::from(u32::MAX),
-            0 as libc::c_long,
-        );
         let shut = libc::MS_RDONLY | libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC;
         let alone = libc::mount(
             std::ptr::null(),
@@ -804,19 +892,32 @@ fn reaper(last_cap: u32) -> ! {
             && libc::chroot(c"/proc".as_ptr()) == 0
             && libc::chdir(c"/".as_ptr()) == 0
             && defaults::bound(last_cap, |_| false)
+            && defaults::take_ids(&[], gid, uid)
             && defaults::set(last_cap, |_| false)
+            && libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) == 0
             && libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) == 0;
         if !alone {
             // Its namespace ends with it: no standby is born there, and the run fails.
             libc::_exit(1);
         }
         let mut set: libc::sigset_t = std::mem::zeroed();
-        libc::sigemptyset(&mut set);
-        libc::sigaddset(&mut set, libc::SIGCHLD);
-        libc::sigprocmask(libc::SIG_BLOCK, &set, std::ptr::null_mut());
+        libc::sigfillset(&mut set);
+        for s in UNFORWARDED {
+            libc::sigdelset(&mut set, s);
+        }
+        libc::sigprocmask(libc::SIG_SETMASK, &set, std::ptr::null_mut());
+        libc::syscall(
+            libc::SYS_close_range,
+            3 as libc::c_long,
+            libc::c_long::from(u32::MAX),
+            0 as libc::c_long,
+        );
         loop {
             while libc::waitpid(-1, std::ptr::null_mut(), libc::WNOHANG) > 0 {}
-            libc::sigwaitinfo(&set, std::ptr::null_mut());
+            let signal = libc::sigwaitinfo(&set, std::ptr::null_mut());
+            if signal > 0 && signal != libc::SIGCHLD {
+                libc::kill(REAPED, signal);
+            }
         }
     }
 }
@@ -1370,8 +1471,9 @@ impl Pty {
 /// waits for a fork (docs/research/platform-measurements.md M27).
 struct Standby {
     pid: libc::pid_t,
-    /// The first process of the PID namespace it was born in, its reaper (D115); none for
-    /// an exec's, born in the workload's.
+    born: Born,
+    /// The first process of the PID namespace it was born in, its reaper, under `--init`
+    /// (D115).
     reaper: Option<libc::pid_t>,
     /// Where init writes the standby's orders: what to exec, and as whom.
     orders: OwnedFd,
@@ -1386,6 +1488,21 @@ struct Standby {
     group: Option<Vec<u8>>,
 }
 
+/// Where a standby is born, and so its command (D115).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Born {
+    /// The first process of a PID namespace of its own, its command that namespace's PID 1
+    /// as a container's is: the kernel ends the namespace, and its execs, with it.
+    Own,
+    /// The second of one whose first is a [`reaper`], docker-init's part (`--init`), as
+    /// the command's user and group, these.
+    Reaped(libc::uid_t, libc::gid_t),
+    /// In the microVM's own, init's (`--pid host`).
+    Host,
+    /// In the namespaces of this process, the workload an exec runs beside.
+    Beside(libc::pid_t),
+}
+
 /// The standby's ends of its pipes, and init's, which it closes.
 struct Ends {
     orders: OwnedFd,
@@ -1395,11 +1512,57 @@ struct Ends {
 }
 
 impl Standby {
-    /// A standby in namespaces of its own, or, with `join`, in those of that process, the
-    /// workload an exec runs beside.
-    fn fork(join: Option<libc::pid_t>) -> Result<Standby, Failure> {
-        let passwd = std::fs::read("/etc/passwd").ok();
-        let group = std::fs::read("/etc/group").ok();
+    /// A standby born as `born`, with the image's user database.
+    fn fork(born: Born) -> Result<Standby, Failure> {
+        let users = (
+            std::fs::read("/etc/passwd").ok(),
+            std::fs::read("/etc/group").ok(),
+        );
+        Standby::forked(born, users)
+    }
+
+    /// Its place taken by a standby born as `born`, with the user database it read: it
+    /// is ended first, killed with its reaper and waited for, but where it has `ended`
+    /// already, waited for by [`Standby::start`].
+    fn reborn(mut self, born: Born, ended: bool) -> Result<Standby, Failure> {
+        let users = (self.passwd.take(), self.group.take());
+        let own = (!ended).then_some(self.pid);
+        for pid in [own, self.reaper].into_iter().flatten() {
+            // SAFETY: kill(2) and waitpid(2) of init's own child, not yet waited for.
+            unsafe {
+                libc::kill(pid, libc::SIGKILL);
+                libc::waitpid(pid, std::ptr::null_mut(), 0);
+            }
+        }
+        drop(self);
+        Standby::forked(born, users)
+    }
+
+    /// Under `--init`, its reaper first, before any pipe of the standby's, so that the
+    /// reaper never holds one: init waits for the last writer of the standby's error pipe
+    /// to close it to know the command started (`launch`). A reaper whose standby was not
+    /// born is ended.
+    fn forked(born: Born, users: (Option<Vec<u8>>, Option<Vec<u8>>)) -> Result<Standby, Failure> {
+        let reaper = match born {
+            Born::Reaped(uid, gid) => Some(clone_reaper(uid, gid)?),
+            _ => None,
+        };
+        Standby::reaped(born, reaper, users).inspect_err(|_| {
+            if let Some(reaper) = reaper {
+                // SAFETY: kill(2) and waitpid(2) of init's own child, not yet waited for.
+                unsafe {
+                    libc::kill(reaper, libc::SIGKILL);
+                    libc::waitpid(reaper, std::ptr::null_mut(), 0);
+                }
+            }
+        })
+    }
+
+    fn reaped(
+        born: Born,
+        reaper: Option<libc::pid_t>,
+        (passwd, group): (Option<Vec<u8>>, Option<Vec<u8>>),
+    ) -> Result<Standby, Failure> {
         let (stdin_r, stdin_w) = pipe()?;
         let (stdout_r, stdout_w) = pipe()?;
         let (stderr_r, stderr_w) = pipe()?;
@@ -1419,16 +1582,24 @@ impl Standby {
         }
         // SAFETY: a fresh descriptor nothing else owns.
         let sigchld = unsafe { OwnedFd::from_raw_fd(sigchld) };
-        // The PID namespace it is born in (D115): with `join`, the workload's, as an exec
-        // enters a container's; else one of its own, its reaper the first process there.
-        let (ns, reaper) = match join {
-            Some(pid) => (pid_ns_of(pid)?, None),
-            None => {
-                let reaper = clone_reaper()?;
-                (pid_ns_of(reaper)?, Some(reaper))
+        // The PID namespace it is born in (D115).
+        let (pid, join) = match born {
+            Born::Own => (fork_in(None)?, None),
+            Born::Reaped(..) => {
+                let reaper = reaper.ok_or_else(|| setup_failed("the workload's PID namespace: no reaper"))?;
+                (fork_in(Some(&pid_ns_of(reaper)?))?, None)
             }
+            Born::Host => {
+                // SAFETY: init is single-threaded, so its child may run anything until it
+                // execs.
+                let pid = unsafe { libc::fork() };
+                if pid < 0 {
+                    return Err(setup_failed(format!("fork: {}", io::Error::last_os_error())));
+                }
+                (pid, None)
+            }
+            Born::Beside(workload) => (fork_in(Some(&pid_ns_of(workload)?))?, Some(workload)),
         };
-        let pid = fork_in(&ns)?;
         if pid == 0 {
             standby(
                 Ends {
@@ -1443,6 +1614,7 @@ impl Standby {
         drop((stdin_r, stdout_w, stderr_w, err_w, orders_r));
         Ok(Standby {
             pid,
+            born,
             reaper,
             orders: orders_w,
             err: err_r,
@@ -1459,18 +1631,6 @@ impl Standby {
     /// standby that has ended is replaced first. With it, the image's Agentfile as read
     /// before the workload starts, for a run that starts its domains (D115).
     fn start(self, spec: &Spec) -> Result<(Workload, Option<crate::domains::Read>), Failure> {
-        let mut status = 0;
-        // SAFETY: waitpid(2) for our own child, without blocking.
-        let ended = unsafe { libc::waitpid(self.pid, &mut status, libc::WNOHANG) } == self.pid;
-        let standby = if ended {
-            if let Some(reaper) = self.reaper {
-                // SAFETY: kill(2) of our own child, the reaper of the namespace it held.
-                unsafe { libc::kill(reaper, libc::SIGKILL) };
-            }
-            Standby::fork(None)?
-        } else {
-            self
-        };
         // A network's address, where it is not the template's (D46): before /etc/hosts,
         // which names it.
         if let Some(to) = spec.setup.iter().find_map(|e| e.strip_prefix(b"address=")) {
@@ -1510,6 +1670,34 @@ impl Standby {
             };
             beside.refuse(&spec.setup, "run")?;
             let _ = BESIDE.set(beside);
+        }
+        // Where its command is born (D115): where the template's standby was, PID 1 of a
+        // namespace of its own, but for `--init` and `--pid host`.
+        let born = if spec.builtin == run::builtin::HOLD {
+            Born::Own
+        } else if spec.setup.iter().any(|e| e == b"pid=host") {
+            Born::Host
+        } else if spec.setup.iter().any(|e| e == b"init") {
+            // As the command's user, as docker-init runs, so that each may signal the
+            // other; refused before it is born where the command's would be (`launch`).
+            let ExecUser { uid, gid, .. } =
+                user::resolve(&spec.user, self.passwd.as_deref(), self.group.as_deref())
+                    .map_err(setup_failed)?;
+            none_of_theirs(uid, gid, &[])?;
+            Born::Reaped(uid, gid)
+        } else {
+            Born::Own
+        };
+        let mut status = 0;
+        // SAFETY: waitpid(2) for our own child, without blocking.
+        let ended = unsafe { libc::waitpid(self.pid, &mut status, libc::WNOHANG) } == self.pid;
+        let standby = if ended || self.born != born {
+            self.reborn(born, ended)?
+        } else {
+            self
+        };
+        if let Some(reaper) = standby.reaper {
+            let _ = REAPER.set(reaper);
         }
         // An image whose agents have grants past the microVM: the run's own processes kept
         // from them before its command can start (D59, D99).
@@ -1603,18 +1791,7 @@ impl Standby {
             })?;
             groups.extend(added);
         }
-        // Beside an Agentfile's domains, none of their IDs (D115): the kernel counts a
-        // user's processes, inotify instances, pipe buffers and queued signals as one, and
-        // their files are theirs.
-        if let Some(b) = BESIDE.get() {
-            let taken = |id: u32| shards_abi::run::beside::taken(id, b.domains);
-            if taken(uid) {
-                return Err(setup_failed(shards_abi::run::beside::id("uid", uid, b.domains)));
-            }
-            if let Some(&g) = std::iter::once(&gid).chain(&groups).find(|&&g| taken(g)) {
-                return Err(setup_failed(shards_abi::run::beside::id("gid", g, b.domains)));
-            }
-        }
+        none_of_theirs(uid, gid, &groups)?;
         let env = user::prepare_env(&spec.env, uid, passwd).map_err(setup_failed)?;
         let cwd = if exec {
             exec_cwd(&spec.cwd)?
@@ -1937,7 +2114,7 @@ fn builtin(kind: u8, args: &[Vec<u8>]) -> Result<Started, Failure> {
             unsafe { libc::_exit(code) }
         }
         let done = match kind {
-            run::builtin::PROCESSES => out.write_all(&crate::procs::dump()),
+            run::builtin::PROCESSES => out.write_all(&crate::procs::dump(REAPER.get().copied())),
             run::builtin::CHANGES => crate::changes::write(&mut out),
             run::builtin::EXPORT => export(&mut out),
             run::builtin::CGROUP => write_cgroup(args).map_err(io::Error::other),
@@ -2090,7 +2267,7 @@ impl Exec {
             BESIDE
                 .get()
                 .map_or(Ok(()), |b| b.refuse(&spec.setup, "exec"))
-                .and_then(|()| Standby::fork(Some(workload)))
+                .and_then(|()| Standby::fork(Born::Beside(workload)))
                 .and_then(|standby| standby.launch(&spec, true, process.setup.clone(), &process))
                 .map(|w| Started {
                     pid: w.pid,

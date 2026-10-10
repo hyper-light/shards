@@ -1446,7 +1446,8 @@ fn add_stops_at_the_image_limits_and_leaves_nothing() {
 }
 
 /// An image's `STOPSIGNAL` is what `stop` sends its containers unless told otherwise
-/// (moby container.StopSignal): SIGUSR1 here, which ends the command 128 + 10.
+/// (moby container.StopSignal): SIGUSR1 here, which ends the command 128 + 10 under
+/// --init, where it is not PID 1, which hears only what it handles (D115, M145).
 #[test]
 fn an_images_stop_signal_is_what_stop_sends() {
     if cannot_run_vms() {
@@ -1470,7 +1471,12 @@ fn an_images_stop_signal_is_what_stop_sends() {
         TIMEOUT,
     );
     assert_eq!(built.status, Some(0), "{}", built.stderr);
-    let ran = run_shards_env(&["run"], &["-d", "--name", "usr1", "usr1:1"], &env, TIMEOUT);
+    let ran = run_shards_env(
+        &["run"],
+        &["-d", "--init", "--name", "usr1", "usr1:1"],
+        &env,
+        TIMEOUT,
+    );
     assert_eq!(ran.status, Some(0), "{}", ran.stderr);
     let stopped = run_shards_env(&["stop"], &["usr1"], &env, TIMEOUT);
     assert_eq!(stopped.status, Some(0), "{}", stopped.stderr);
@@ -12717,11 +12723,11 @@ fn agentfile_volumes_reach_whom_they_are_for() {
 
 /// A run of an Agentfile's image gives its command nothing that reaches its agents and
 /// harnesses, whatever the CLI asks (D115, AGENTFILE_ARCH.md §9.3, §9.10): the command
-/// runs in a PID namespace of its own, so it sees none of their processes; it is refused
-/// --privileged, a capability that would cross into them, systempaths=unconfined, a net.*
-/// sysctl, a uid or gid of theirs, and --network none while the Agentfile grants egress;
-/// an exec is held to the same. Each guard is mutation-checked: without it, the escape
-/// the test asks for would succeed.
+/// is PID 1 of a PID namespace of its own, or under `--init` its reaper is, so it sees
+/// none of their processes; it is refused --privileged, a capability that would cross
+/// into them, systempaths=unconfined, a net.* sysctl, a uid or gid of theirs, --pid host,
+/// and --network none while the Agentfile grants egress; an exec is held to the same. Each
+/// guard is mutation-checked: without it, the escape the test asks for would succeed.
 #[test]
 fn a_run_reaches_none_of_its_images_agents() {
     if cannot_run_vms() {
@@ -12767,55 +12773,44 @@ fn a_run_reaches_none_of_its_images_agents() {
         "building the Agentfile image"
     );
 
-    // The command runs in its own PID namespace: it sees itself and the reaper, PID 1
-    // there, and no agent's process; it may signal, read the environment of and enter the
-    // network namespace of nothing but its own. The host waits for the agent to be up (its
-    // process renamed `confined-ready`), which the workload's own is not.
-    let ran = common::run_awaiting(
-        &env,
-        &[
-            "run",
-            "--rm",
-            "--name",
-            "beside",
-            "beside:1",
-            "beside",
-            "confined-ready",
-            "1",
-        ],
-        "beside",
-        ("confined-ready", 1),
-        TIMEOUT,
-    );
-    let all = format!("{}{}", ran.stdout, ran.stderr);
-    assert_eq!(ran.status, Some(0), "{all}");
-    let rows: Vec<Vec<&str>> = all
-        .lines()
-        .filter_map(|l| l.strip_prefix("beside "))
-        .map(|l| l.split(' ').collect())
-        .collect();
-    let names: Vec<&str> = rows
-        .iter()
-        .filter(|r| r.first() != Some(&"caps"))
-        .filter_map(|r| r.get(1).copied())
-        .collect();
-    // Only the command's own tree: shards-init's reaper (PID 1 of the namespace) and the
-    // command. Never keeper (`confined-ready`), nor shards-init, nor a server instance.
-    assert!(
-        names
+    // The command is PID 1 of a PID namespace of its own, as a container's command is: it
+    // sees itself alone, no agent's process and no process of init's. Under `--init`, its
+    // reaper, docker-init's part, is PID 1 there and the command PID 2: the command may
+    // signal it, as it may tini, which forwards what it hears, but reads nothing of it.
+    // The host waits for the agent to be up (its process renamed `confined-ready`), which
+    // the workload's own is not.
+    for (name, init, seen) in [
+        ("beside", None, &[("1", "testguest")][..]),
+        (
+            "beside-init",
+            Some("--init"),
+            &[("1", "init"), ("2", "testguest")][..],
+        ),
+    ] {
+        let mut args = vec!["run", "--rm", "--name", name];
+        args.extend(init);
+        args.extend(["beside:1", "beside", "confined-ready", "1"]);
+        let ran = common::run_awaiting(&env, &args, name, ("confined-ready", 1), TIMEOUT);
+        let all = format!("{}{}", ran.stdout, ran.stderr);
+        assert_eq!(ran.status, Some(0), "{all}");
+        let rows: Vec<Vec<&str>> = all
+            .lines()
+            .filter_map(|l| l.strip_prefix("beside "))
+            .filter(|l| !l.starts_with("caps "))
+            .map(|l| l.split(' ').collect())
+            .collect();
+        let mut got: Vec<(&str, &str)> = rows
             .iter()
-            .all(|n| *n != "confined-ready" && *n != "shards-init" && *n != "shards-server"),
-        "the command saw another domain's process:\n{all}"
-    );
-    assert!(names.contains(&"testguest"), "{all}");
-    assert!(rows.len() <= 4, "the command sees only its own tree:\n{all}");
-    for r in rows
-        .iter()
-        .filter(|r| r.first() != Some(&"caps") && r.get(2) != Some(&"self=true"))
-    {
-        for field in ["signal=", "environ=", "netns="] {
-            let got = r.iter().find_map(|f| f.strip_prefix(field)).unwrap_or("");
-            assert!(got != "ok", "reached {field} of {r:?}:\n{all}");
+            .filter_map(|r| Some((*r.first()?, *r.get(1)?)))
+            .collect();
+        got.sort_unstable();
+        // Never keeper (`confined-ready`), shards-init or a server instance.
+        assert_eq!(got, seen, "{args:?}: the command saw another's process:\n{all}");
+        for r in rows.iter().filter(|r| r.get(2) != Some(&"self=true")) {
+            for field in ["environ=", "netns="] {
+                let got = r.iter().find_map(|f| f.strip_prefix(field)).unwrap_or("");
+                assert!(got != "ok", "{args:?}: reached {field} of {r:?}:\n{all}");
+            }
         }
     }
 
@@ -12848,6 +12843,12 @@ fn a_run_reaches_none_of_its_images_agents() {
         ),
         (vec!["-u", "200000"], "cannot run as uid 200000"),
         (vec!["--network", "none"], "cannot run without a network"),
+        (
+            vec!["--pid", "host"],
+            "cannot run the command in the microVM's PID namespace (--pid host)",
+        ),
+        // The reaper runs as the command's user: refused before it is born.
+        (vec!["--init", "-u", "200000"], "cannot run as uid 200000"),
     ] {
         let mut run = vec!["run", "--rm"];
         run.extend_from_slice(&args);

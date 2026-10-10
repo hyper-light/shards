@@ -271,6 +271,11 @@ impl Warm {
 
     /// Hands `argv` to the warm VM for a new client, as the daemon does.
     fn run(&self, argv: &[&str], interactive: bool) -> Client {
+        self.run_with(argv, interactive, Vec::new())
+    }
+
+    /// [`Warm::run`], with the spec's `setup` entries (shards_abi::run::Spec).
+    fn run_with(&self, argv: &[&str], interactive: bool, setup: Vec<Vec<u8>>) -> Client {
         let spec = Spec {
             argv: argv.iter().map(|a| a.as_bytes().to_vec()).collect(),
             env: vec![b"PATH=/bin".to_vec()],
@@ -284,7 +289,7 @@ impl Warm {
             hosts: Vec::new(),
             domainname: Vec::new(),
             cgroup: Vec::new(),
-            setup: Vec::new(),
+            setup,
         };
         let (conn, theirs) = UnixStream::pair().unwrap();
         let (stdin_r, stdin_w) = pipe();
@@ -554,10 +559,12 @@ fn a_warm_vms_client_signals_its_command() {
     assert_eq!(client.stdout(), "got 2\n");
     warm.ends(0, None);
 
-    // A signal the command does not catch ends it, and the status says which.
+    // A signal the command does not catch ends it, and the status says which: under
+    // --init's reaper (`init`), where the command is not PID 1, which would not hear it
+    // (D115).
     let mut warm = Warm::spawn(&template);
     warm.ready();
-    let mut client = warm.run(&["/bin/testguest", "sleep"], false);
+    let mut client = warm.run_with(&["/bin/testguest", "sleep"], false, vec![b"init".to_vec()]);
     assert_eq!(client.line(), "ready\n");
     client.signal(15);
     assert_eq!(client.exit(), 128 + 15);

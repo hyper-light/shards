@@ -52,6 +52,9 @@ impl Agentfile {
         if run.system_paths {
             return Err(beside::unmasked());
         }
+        if run.pid == "host" {
+            return Err(beside::pid_host());
+        }
         if let Some((cap, reach)) = beside::crossing(self.caps(run), self.uplink) {
             let name = shards_abi::run::CAP_NAMES
                 .get(cap as usize)
