@@ -239,10 +239,7 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
                 let _ = SHARES.set(cfg.shares.clone());
             }
             // A join disk, empty until a container joins the VM's network (D119).
-            "--join" => {
-                let disk = JOIN.get_or_init(Default::default).clone();
-                cfg.join = Some(disk);
-            }
+            "--join" => cfg.join = Some(give_join_disk()),
             "--pmem" => cfg.pmem.push(PathBuf::from(value("--pmem")?)),
             "--rootfs" => rootfs = Some(PathBuf::from(value("--rootfs")?)),
             "--warm" => {
@@ -394,9 +391,25 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String
 pub static SHARES: std::sync::OnceLock<Vec<shards_vmm::devices::virtio::fs::Share>> =
     std::sync::OnceLock::new();
 
-/// This VM's join disk, which containers joining its network are given ranges of (D119).
-pub static JOIN: std::sync::OnceLock<shards_vmm::devices::virtio::block::JoinDisk> =
-    std::sync::OnceLock::new();
+/// This VM's join disk, which containers joining its network are given ranges of (D119):
+/// one VM a process, so one disk, a `static` its device and its join requests both reach.
+static JOIN: shards_vmm::devices::virtio::block::Join = shards_vmm::devices::virtio::block::Join::new();
+/// Whether this VM has [`JOIN`]: its device given it.
+static HAS_JOIN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// This VM's join disk, for its device.
+fn give_join_disk() -> &'static shards_vmm::devices::virtio::block::Join {
+    HAS_JOIN.store(true, std::sync::atomic::Ordering::Release);
+    &JOIN
+}
+
+/// This VM's join disk, where it has one (D119).
+#[cfg_attr(not(unix), allow(dead_code))]
+pub fn join_disk() -> Option<&'static shards_vmm::devices::virtio::block::Join> {
+    HAS_JOIN
+        .load(std::sync::atomic::Ordering::Acquire)
+        .then_some(&JOIN)
+}
 
 /// Console output that never fails the caller (e.g. with stderr closed).
 fn report(message: impl Display) {
@@ -1081,7 +1094,7 @@ fn restore_vm(cfg: &RestoreConfig) -> Result<(Handle, Running), String> {
             let _ = SHARES.set(cfg.shares.clone());
         }
         if pinned.snapshot.config.join {
-            cfg.join = Some(JOIN.get_or_init(Default::default).clone());
+            cfg.join = Some(give_join_disk());
         }
         cfg
     };

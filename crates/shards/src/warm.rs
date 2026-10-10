@@ -386,7 +386,8 @@ enum From<'a> {
     Daemon(mpsc::Sender<Segment>),
     Client,
     /// A joiner's own connection to the daemon (D119), which brings its log's answers, its
-    /// signals, for its id in the guest once it has one, and execs into it.
+    /// signals, for its id in the guest once it has one, execs into it, and clients to
+    /// attach to it.
     Joiner(mpsc::Sender<Segment>, &'a std::sync::atomic::AtomicU32),
 }
 
@@ -403,7 +404,7 @@ fn relay_signals(conn: &UnixStream, to: &'static ToGuest, from: From<'_>) {
     while let Ok(Some(message)) = shards_ipc::recv(conn) {
         match message.kind {
             kind::SEGMENT => {
-                if let (From::Daemon(segments) | From::Joiner(segments, _), Ok(seq)) =
+                if let (From::Daemon(segments) | From::Joiner(segments, ..), Ok(seq)) =
                     (&from, <[u8; 8]>::try_from(message.payload.as_slice()))
                 {
                     let _ = segments.send((u64::from_be_bytes(seq), message.fds));
@@ -448,7 +449,9 @@ fn relay_signals(conn: &UnixStream, to: &'static ToGuest, from: From<'_>) {
                 if let Some(number) = message.payload.first_chunk::<8>() {
                     let _ = shards_ipc::send(conn, kind::EXEC_TAKEN, number, &[]);
                 }
-                if let Err(e) = attach_request(message, to) {
+                // A joiner's clients attach to the joiner, never to the workload (D119).
+                let into = joiner.map(|id| id.load(std::sync::atomic::Ordering::SeqCst));
+                if let Err(e) = attach_request(message, to, into) {
                     let _ = writeln!(io::stderr(), "shards: an attach: {e}");
                 }
             }
@@ -546,7 +549,7 @@ fn join_request(message: shards_ipc::Message, to: &'static ToGuest) -> Result<()
     };
     let link = UnixStream::from(link);
     // What fails here, the run says as its own start failing, once it has the run.
-    let range = match crate::vm_run::JOIN.get() {
+    let range = match crate::vm_run::join_disk() {
         Some(disk) => disk.attach(File::from(image)),
         None => Err("this microVM has no join disk".into()),
     };
@@ -673,13 +676,21 @@ fn joiner(link: &UnixStream, range: Result<(u64, u64), String>, to: &'static ToG
             )
         });
         joined_finish(link, client.as_ref(), said_to, &ended);
+        // Those attached hear its status as its own client does.
+        workload::end_joiner(
+            id.load(std::sync::atomic::Ordering::SeqCst),
+            match &ended {
+                Ok(e) => e.status,
+                Err(_) => NOT_RUN,
+            },
+        );
         // Its connection's reads end here, whatever the daemon does with its end.
         let _ = link.shutdown(std::net::Shutdown::Both);
         if let Some(r) = relayed {
             let _ = r.join();
         }
     });
-    if let (Some((offset, _)), Some(disk)) = (attached, crate::vm_run::JOIN.get()) {
+    if let (Some((offset, _)), Some(disk)) = (attached, crate::vm_run::join_disk()) {
         let _ = disk.detach(offset);
     }
     Ok(())
@@ -728,7 +739,11 @@ fn joined_finish(
 
 /// Attaches the client the daemon's `ATTACH_RUN` brings (workload::attach): its flag, and
 /// its connection, stdin, stdout and stderr.
-fn attach_request(message: shards_ipc::Message, to: &'static ToGuest) -> Result<(), String> {
+fn attach_request(
+    message: shards_ipc::Message,
+    to: &'static ToGuest,
+    joiner: Option<u32>,
+) -> Result<(), String> {
     let flags = message
         .payload
         .get(8)
@@ -740,16 +755,19 @@ fn attach_request(message: shards_ipc::Message, to: &'static ToGuest) -> Result<
     else {
         return Err("an attach without its client's four descriptors".into());
     };
-    workload::attach(
-        to,
-        workload::AttachRequest {
-            client: UnixStream::from(client),
-            stdin: File::from(stdin),
-            stdout: File::from(stdout),
-            stderr: File::from(stderr),
-            reads_stdin: flags & shards_ipc::ATTACH_STDIN != 0,
-        },
-    )
+    let req = workload::AttachRequest {
+        client: UnixStream::from(client),
+        stdin: File::from(stdin),
+        stdout: File::from(stdout),
+        stderr: File::from(stderr),
+        reads_stdin: flags & shards_ipc::ATTACH_STDIN != 0,
+    };
+    match joiner {
+        // One that has no id in the guest yet has nothing to attach to.
+        Some(0) => Err("an attach to a joiner not yet started".into()),
+        Some(id) => workload::attach_joiner(to, id, req),
+        None => workload::attach(to, req),
+    }
 }
 
 /// Tells the daemon the command runs, before the client has anything the command wrote.

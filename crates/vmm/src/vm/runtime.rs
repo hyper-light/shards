@@ -332,12 +332,7 @@ fn check_vcpus(vcpus: u32) -> Result<(), String> {
 pub fn start(cfg: &Config) -> Result<(Handle, Running), String> {
     check_host()?;
     check_vcpus(cfg.vcpus)?;
-    launch(
-        machine::build(cfg)?,
-        cfg.snapshot.clone(),
-        false,
-        cfg.join.clone(),
-    )
+    launch(machine::build(cfg)?, cfg.snapshot.clone(), false, cfg.join)
 }
 
 /// The most stage-2 pages `snap`'s guest can have, RAM and pmem regions (each its file
@@ -402,7 +397,7 @@ pub fn restore_from(cfg: &RestoreConfig, pinned: snapshot::Pinned) -> Result<(Ha
             net: cfg.net.as_ref(),
             #[cfg(unix)]
             shares: &cfg.shares,
-            join: cfg.join.as_ref(),
+            join: cfg.join,
         },
         working_set.unwrap_or_default(),
     )?;
@@ -417,7 +412,7 @@ pub fn restore_from(cfg: &RestoreConfig, pinned: snapshot::Pinned) -> Result<(Ha
         snap.config.memory_mib,
         cfg.dir.display()
     );
-    let (handle, running) = launch(machine, cfg.snapshot.clone(), cfg.hold, cfg.join.clone())?;
+    let (handle, running) = launch(machine, cfg.snapshot.clone(), cfg.hold, cfg.join)?;
     if recorder.is_some() {
         *lock(&handle.shared.recording) = recorder;
     }
@@ -446,7 +441,7 @@ fn launch(
     m: Machine,
     snapshots: Option<SnapshotPolicy>,
     hold: bool,
-    join: Option<crate::devices::virtio::block::JoinDisk>,
+    join: Option<&'static crate::devices::virtio::block::Join>,
 ) -> Result<(Handle, Running), String> {
     let Machine {
         vm,
@@ -635,7 +630,7 @@ struct Coordinator {
     config: MachineConfig,
     policy: SnapshotPolicy,
     /// The machine's join disk (D119), which a snapshot keeps only empty.
-    join: Option<crate::devices::virtio::block::JoinDisk>,
+    join: Option<&'static crate::devices::virtio::block::Join>,
 }
 
 impl Coordinator {
@@ -676,7 +671,7 @@ impl Coordinator {
         self.bus.pause();
         // A snapshot keeps no range of a join disk: a container's image is the joining
         // run's, and every restore of a template is a microVM no container has joined.
-        if self.join.as_ref().is_some_and(|j| !j.is_empty()) {
+        if self.join.is_some_and(|j| !j.is_empty()) {
             return failed(
                 "snapshot: a container has joined this microVM, whose image a snapshot cannot keep".into(),
                 true,

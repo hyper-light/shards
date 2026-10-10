@@ -810,6 +810,11 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 "container {id} is paused: its changes can be read once it is unpaused"
             ));
         }
+        if self.joined_run(&id) {
+            return refuse(format!(
+                "container {id}: a container joining another's network keeps no layer to read yet"
+            ));
+        }
         let spec = shards_abi::run::Spec {
             builtin: shards_abi::run::builtin::CHANGES,
             ..Default::default()
@@ -975,9 +980,10 @@ impl<D: crate::containers::Disk> Daemon<D> {
             list.sort_by_key(|c| std::cmp::Reverse(c.created));
             list.iter()
                 .map(|c| {
-                    // A joiner's VM is its provider's (D119), whose use is not the joiner's.
+                    // Whether it runs, so is sampled: a joiner's (D119) from its own cgroup,
+                    // as init's STATS reads it in the joiner's context.
                     let pid = match runs.get(&c.id) {
-                        Some(RunState::Tracked(t)) if t.joined.is_none() => Some(t.vm.id()),
+                        Some(RunState::Tracked(t)) => Some(t.vm.id()),
                         _ => None,
                     };
                     (c.id.clone(), c.name.clone(), pid)
@@ -1299,6 +1305,12 @@ impl<D: crate::containers::Disk> Daemon<D> {
     /// Whether the container with `id` runs: its run was handed over, and has not ended.
     pub(super) fn running(&self, id: &str) -> bool {
         matches!(lock(&self.runs).get(id), Some(RunState::Tracked(t)) if !t.visit)
+    }
+
+    /// Whether container `id` runs joined to another's network (D119): in its provider's
+    /// microVM, keeping no layer of its own yet.
+    pub(super) fn joined_run(&self, id: &str) -> bool {
+        matches!(lock(&self.runs).get(id), Some(RunState::Tracked(t)) if t.joined.is_some())
     }
 
     /// Whether container `id` has a VM to read its files in: its run's, or a visit's.

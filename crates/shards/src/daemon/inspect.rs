@@ -600,7 +600,10 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
     pub(super) fn container_sizes(&self, c: &crate::containers::Container) -> (i64, i64) {
         let running =
             matches!(super::lock(&self.runs).get(&c.id), Some(super::RunState::Tracked(t)) if !t.visit);
-        let rw = if running {
+        // A joiner keeps no layer of its own yet (D119): none to count.
+        let rw = if running && self.joined_run(&c.id) {
+            None
+        } else if running {
             let spec = shards_abi::run::Spec {
                 builtin: shards_abi::run::builtin::SIZE,
                 ..Default::default()

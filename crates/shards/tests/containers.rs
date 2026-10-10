@@ -257,6 +257,72 @@ fn a_joiner_is_a_container_of_its_own() {
     let _ = exit(&mut again);
 }
 
+/// A joiner's own commands reach the joiner (D119), never its provider: a client attached
+/// to it writes its stdin and reads its output, and hears its status; `top` lists its
+/// processes alone, `cp` copies from its root (its provider's hostname file bound there),
+/// `stats` samples its cgroup; `diff`, which reads layers a joiner does not keep yet, is
+/// refused by name.
+#[test]
+fn a_joiners_own_commands_reach_the_joiner() {
+    use std::io::Write as _;
+    let Some((home, image)) = home("containers-joiner-own") else {
+        return;
+    };
+    let mut provider = start(&home, &image, &["--name", "prov"], &["sleep"]);
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let joiner = run_in(
+        &home,
+        &image,
+        &["-d", "-i", "--name", "joiner", "--network", "container:prov"],
+        &["cat"],
+    );
+    assert_eq!(joiner.status, Some(0), "{joiner}");
+    let mut attached = common::command()
+        .args(["attach", "joiner"])
+        .env("SHARDS_HOME", home.as_os_str())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    // What it writes comes back through the joiner's `cat`: its stdin and output both the
+    // joiner's.
+    attached.stdin.as_mut().unwrap().write_all(b"hello\n").unwrap();
+    let mut line = String::new();
+    BufReader::new(attached.stdout.as_mut().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    assert_eq!(line, "hello\n");
+    let top = shards(&["top", "joiner", "-o", "pid,args"]);
+    assert_eq!(top.status, Some(0), "{top}");
+    assert!(
+        top.stdout.contains("testguest cat") && !top.stdout.contains("testguest sleep"),
+        "{top}"
+    );
+    let hostname = shards(&["inspect", "-f", "{{.Config.Hostname}}", "prov"]);
+    let copied = shards(&["cp", "joiner:/etc/hostname", "-"]);
+    assert_eq!(copied.status, Some(0), "{copied}");
+    assert!(copied.stdout.contains(hostname.stdout.trim()), "{copied}");
+    let stats = shards(&[
+        "stats",
+        "--no-stream",
+        "--format",
+        "{{.Name}} {{.PIDs}}",
+        "joiner",
+    ]);
+    assert_eq!(stats.stdout, "joiner 1\n", "{stats}");
+    let diff = shards(&["diff", "joiner"]);
+    assert_ne!(diff.status, Some(0), "{diff}");
+    assert!(diff.stderr.contains("keeps no layer to read yet"), "{diff}");
+    // Its command, PID 1 of its namespace, has no handler for SIGTERM: killed past the
+    // timeout, as Docker's would be; the client attached hears its status.
+    let stopped = shards(&["stop", "-t", "1", "joiner"]);
+    assert_eq!(stopped.status, Some(0), "{stopped}");
+    assert_eq!(exit(&mut attached), Some(137));
+    assert_eq!(shards(&["stop", "-t", "1", "prov"]).status, Some(0));
+    let _ = exit(&mut provider);
+}
+
 #[test]
 fn a_run_leaves_its_container_until_rm() {
     let Some((home, image)) = home("containers-rm") else {

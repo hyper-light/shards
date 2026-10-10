@@ -58,7 +58,7 @@ pub(crate) struct Hosts<'a> {
     pub shares: &'a [crate::devices::virtio::fs::Share],
     /// The join disk's ranges, which its VM process gives joining containers' images
     /// (D119).
-    pub join: Option<&'a crate::devices::virtio::block::JoinDisk>,
+    pub join: Option<&'static crate::devices::virtio::block::Join>,
 }
 
 /// A snapshot's vsock and network devices, and the restore's host sides for them, come
@@ -158,8 +158,7 @@ fn virtio_devices(
     if config.join {
         let disk = hosts
             .join
-            .ok_or("the machine has a join disk but no host side for it")?
-            .clone();
+            .ok_or("the machine has a join disk but no host side for it")?;
         devices.push(Box::new(crate::devices::virtio::block::Block::join(
             disk,
             shards_abi::JOIN_DISK_SERIAL,
@@ -299,7 +298,7 @@ pub struct Config {
     pub shares: Vec<crate::devices::virtio::fs::Share>,
     /// A join disk, after the disks: empty until the VM process gives a joining
     /// container's image a range of it (D119).
-    pub join: Option<crate::devices::virtio::block::JoinDisk>,
+    pub join: Option<&'static crate::devices::virtio::block::Join>,
 }
 
 /// The host side of a VM's virtio-vsock device.
@@ -386,7 +385,7 @@ pub struct RestoreConfig {
     pub shares: Vec<crate::devices::virtio::fs::Share>,
     /// The restored VM's own join disk, where the snapshot has one (D119): empty, as the
     /// snapshot's was.
-    pub join: Option<crate::devices::virtio::block::JoinDisk>,
+    pub join: Option<&'static crate::devices::virtio::block::Join>,
     /// Prefetch the snapshot's working set, if it has one, before the guest runs: for a
     /// restore ahead of its request, which it moves off the request's path (PM M30).
     pub prefetch: bool,

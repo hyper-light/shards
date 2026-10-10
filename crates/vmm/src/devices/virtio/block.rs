@@ -53,7 +53,7 @@ enum Store {
     /// One host file, of a capacity fixed when it was opened, in sectors.
     File { file: File, capacity: u64 },
     /// A join disk's ranges.
-    Join(JoinDisk),
+    Join(&'static Join),
 }
 
 impl Backend {
@@ -66,19 +66,28 @@ impl Backend {
     }
 }
 
-/// A join disk, shared by its device and the VM process that gives it ranges (D119).
-pub type JoinDisk = Arc<Join>;
-
 /// A read-only disk whose sectors are the images of the containers that joined the
-/// microVM, each a range of its own from a [`RANGE_ALIGN`] boundary, in the order they
-/// came; the gaps between them read as zeros. It is empty, of no capacity, until a
+/// microVM (D119), each a range of its own from a [`RANGE_ALIGN`] boundary, in the order
+/// they came; the gaps between them read as zeros. It is empty, of no capacity, until a
 /// container joins, and only grows: a range let go reads as an I/O error, and its place
 /// is never given again, so no range's offset ever names another image.
-#[derive(Debug, Default)]
+///
+/// A VM process runs one VM: its join disk is a `static` of that process's, which its
+/// device and the process's join requests both reach, with no count of holders kept.
+#[derive(Debug)]
 pub struct Join {
     ranges: RwLock<Vec<Range>>,
-    /// The device's interrupt while the driver has it, to say the capacity grew.
+    /// The device's interrupt while the driver has it, to say the capacity grew: the
+    /// transport's, which it makes for each activation, so a disk that outlives them holds
+    /// it while one lasts, taken once as the driver activates the device and let go at its
+    /// reset, never on a request's path.
     interrupt: Mutex<Option<Arc<DeviceInterrupt>>>,
+}
+
+impl Default for Join {
+    fn default() -> Join {
+        Join::new()
+    }
 }
 
 #[derive(Debug)]
@@ -92,6 +101,14 @@ struct Range {
 }
 
 impl Join {
+    /// An empty join disk, for a `static`.
+    pub const fn new() -> Join {
+        Join {
+            ranges: RwLock::new(Vec::new()),
+            interrupt: Mutex::new(None),
+        }
+    }
+
     /// Gives `file`, an image whose size is a whole number of sectors, a range after the
     /// last, and tells the driver the disk's new capacity. Returns where the range starts
     /// and its length, in bytes.
@@ -235,7 +252,7 @@ impl Block {
 
     /// A join disk (D119), its serial `id`: read-only, empty until `disk` is given a
     /// range.
-    pub fn join(disk: JoinDisk, id: &str) -> Block {
+    pub fn join(disk: &'static Join, id: &str) -> Block {
         Block::of(Backend {
             store: Store::Join(disk),
             read_only: true,
@@ -608,8 +625,9 @@ mod tests {
             std::fs::remove_file(&path).unwrap();
             file
         };
-        let disk: JoinDisk = Arc::default();
-        let mut b = Block::join(disk.clone(), "shards-join");
+        static DISK: Join = Join::new();
+        let disk = &DISK;
+        let mut b = Block::join(disk, "shards-join");
         let capacity = |b: &Block| {
             let mut c = [0u8; 8];
             b.read_config(0, &mut c);

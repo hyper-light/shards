@@ -550,9 +550,9 @@ fn sort_setup(entries: &[Vec<u8>], into: &mut Inherited) -> Result<Vec<Vec<u8>>,
 /// VM's CPU time in ns from /proc/stat, as dockerd's system usage, and its online CPUs;
 /// and the bytes its interfaces received and sent but loopback's (/proc/net/dev), as
 /// libnetwork counts a container's endpoints.
-fn stats() -> String {
+fn stats(cgroup: &str) -> String {
     let read = |p: &str| std::fs::read_to_string(p).unwrap_or_default();
-    let cg = |f: &str| read(&format!("{WORKLOAD_CGROUP}/{f}"));
+    let cg = |f: &str| read(&format!("{cgroup}/{f}"));
     let field = |text: &str, key: &str| -> u64 {
         text.lines()
             .find_map(|l| l.strip_prefix(key)?.strip_prefix(' ')?.trim().parse().ok())
@@ -2285,7 +2285,30 @@ struct Exec {
 /// One of init's own for an exec ([`Spec::builtin`]), done in a child of init's, so that
 /// the relay goes on, its output on a pipe as a command's: what is asked for on stdout,
 /// status 0; why it could not be had on stderr, status 1.
-fn builtin(kind: u8, args: &[Vec<u8>]) -> Result<Started, Failure> {
+/// Init's built-in `kind`, for the workload, or for joiner `joiner` (D119): in its mount
+/// namespace, whose root and `/proc` are its own, and with its cgroup.
+fn builtin(kind: u8, args: &[Vec<u8>], joiner: Option<libc::pid_t>) -> Result<Started, Failure> {
+    // What a joiner's root does not keep reachable yet: its layers, which the workload's
+    // diff, size and commit read (D119).
+    if joiner.is_some()
+        && matches!(
+            kind,
+            run::builtin::CHANGES | run::builtin::SIZE | run::builtin::LAYER
+        )
+    {
+        return Err(setup_failed(
+            "a container joining another's network keeps no layer to read yet",
+        ));
+    }
+    let cgroup = match joiner {
+        Some(pid) => joiner_cgroup(pid).map_err(|e| {
+            setup_failed(format!(
+                "the joiner's cgroup: {}",
+                io::Error::from_raw_os_error(e)
+            ))
+        })?,
+        None => WORKLOAD_CGROUP.to_string(),
+    };
     let (stdout_r, stdout_w) = pipe()?;
     let (stderr_r, stderr_w) = pipe()?;
     // What reads the host's stdin: unpacking an archive.
@@ -2301,6 +2324,33 @@ fn builtin(kind: u8, args: &[Vec<u8>]) -> Result<Started, Failure> {
     }
     if pid == 0 {
         drop((stdout_r, stderr_r));
+        // A joiner's files and processes: its mount namespace, its root and its `/proc`
+        // with it. Its cgroup's are read where init sees them.
+        if let Some(joined) = joiner.filter(|_| {
+            matches!(
+                kind,
+                run::builtin::STAT
+                    | run::builtin::ARCHIVE
+                    | run::builtin::EXTRACT
+                    | run::builtin::EXPORT
+                    | run::builtin::PROCESSES
+            )
+        }) {
+            let entered = File::open(format!("/proc/{joined}/ns/mnt")).and_then(|ns| {
+                // SAFETY: setns(2) on a descriptor this process holds, a single-threaded
+                // fork of init.
+                if unsafe { libc::setns(ns.as_raw_fd(), libc::CLONE_NEWNS) } == 0 {
+                    Ok(())
+                } else {
+                    Err(io::Error::last_os_error())
+                }
+            });
+            if let Err(e) = entered {
+                let _ = writeln!(File::from(stderr_w), "the joiner's files: {e}");
+                // SAFETY: _exit(2) ends the child without running init's exit paths.
+                unsafe { libc::_exit(1) }
+            }
+        }
         let mut out = io::BufWriter::new(File::from(stdout_w));
         // `cp`'s work, which says how it failed by its status (copy.rs).
         if matches!(
@@ -2342,11 +2392,15 @@ fn builtin(kind: u8, args: &[Vec<u8>]) -> Result<Started, Failure> {
             unsafe { libc::_exit(code) }
         }
         let done = match kind {
-            run::builtin::PROCESSES => out.write_all(&crate::procs::dump(REAPER.get().copied())),
+            run::builtin::PROCESSES => out.write_all(&crate::procs::dump(if joiner.is_some() {
+                None
+            } else {
+                REAPER.get().copied()
+            })),
             run::builtin::CHANGES => crate::changes::write(&mut out),
             run::builtin::EXPORT => export(&mut out),
-            run::builtin::CGROUP => write_cgroup(args).map_err(io::Error::other),
-            run::builtin::STATS => out.write_all(stats().as_bytes()),
+            run::builtin::CGROUP => write_cgroup_in(&cgroup, args).map_err(io::Error::other),
+            run::builtin::STATS => out.write_all(stats(&cgroup).as_bytes()),
             run::builtin::SIZE => crate::changes::upper()
                 .ok_or_else(|| io::Error::other("the writable layer was not kept"))
                 .and_then(|u| crate::layer::usage(std::path::Path::new(&u)))
@@ -2574,6 +2628,8 @@ impl Exec {
             }
         } else if let Some(joiner) = into {
             match joiner.and_then(|j| joiners.iter().find(|(id, _)| *id == j)) {
+                // Init's own work, in the joiner's namespaces and cgroup.
+                Some(&(_, pid)) if spec.builtin != 0 => builtin(spec.builtin, &spec.argv, Some(pid)),
                 Some(&(joiner, pid)) => {
                     // The joiner's process, but for what the exec says (`--privileged`).
                     let mut process = joined()
@@ -2600,7 +2656,7 @@ impl Exec {
                 }),
             }
         } else if spec.builtin != 0 && running {
-            builtin(spec.builtin, &spec.argv)
+            builtin(spec.builtin, &spec.argv, None)
         } else if running {
             // The workload's process, but for what the exec says (`--privileged`), which
             // the run refuses beside its domains as it refused the workload's (D115).

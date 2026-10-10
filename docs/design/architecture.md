@@ -3454,8 +3454,10 @@ the boundary is a container's, which is what the mode asks for.
   no file does not. The join disk as built cost no restore anything resolved against none
   (−513 µs [−1,682, +120]; none less join +330 [−370, +883]).
 - **Its life.** The joiner is a container of its own: its record, log, exit code, `stop`,
-  `kill`, `wait`, `rm`, `exec` (in its own namespaces), `inspect` (its NetworkMode as
-  asked, its provider's hostname). The daemon gives the provider's VM process the
+  `kill`, `wait`, `rm`, `inspect` (its NetworkMode as asked, its provider's hostname), and
+  in its own namespaces and cgroup `exec`, `attach` (its stdin and output, never its
+  provider's), `top`, `cp`, `export`, `stats` and `update`, which init's built-ins do in
+  its context. The daemon gives the provider's VM process the
   joiner's own connection and image (`kind::JOIN`); on that connection the joiner's run
   goes as a warm VM's run goes (`RUN`, `TAKEN`, `STARTED`, its log, `DONE`), so the daemon
   follows it as any run, and no command of the joiner's ever ends, pauses or reads its
@@ -3475,7 +3477,13 @@ the boundary is a container's, which is what the mode asks for.
   `--sysctl` (init writes them in its own namespaces, the provider's), an image's
   `VOLUME`s, an Agentfile's image; `pause` of a joiner alone (its VM is its provider's). A
   joiner's writable layer is not kept as it stops (D37): it lives in a mount namespace
-  that ends with it. `stats` shows none of its own.
+  that ends with it, unreachable by path once it has entered its root, so `diff`,
+  `commit` and its size are refused while it runs; stopped, its files are its image's.
+- **No count of holders.** A VM process runs one VM, so its join disk is a `static` of
+  that process's (`Join::new` is a `const fn`), its device given `&'static Join`; a
+  joiner's attached clients are kept by its id in the guest, as the workload's are. The
+  disk keeps the transport's interrupt only while the driver has the device, taken once
+  at activation.
 
 ### D117. Templates no VM process can forge, and VM starts the host has not admitted
 

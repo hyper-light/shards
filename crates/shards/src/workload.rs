@@ -935,6 +935,157 @@ pub struct JoinRequest {
     pub log: Option<Logger>,
 }
 
+/// Clients attached to joiners (D119), each with its joiner's id in the guest, as
+/// [`ATTACHED`] holds the workload's: where a joiner's output goes besides its own client
+/// and log, and whose connections hear its status.
+#[cfg(unix)]
+static JOIN_ATTACHED: Mutex<Vec<(u32, Attacher)>> = Mutex::new(Vec::new());
+
+/// Each running joiner's way in (D119), by its id in the guest: a writer of its connection
+/// to the guest, for its attached clients' stdin; and a socket pair whose first end closes
+/// as the joiner ends, which each copy of an attached stdin waits on with its stdin.
+#[cfg(unix)]
+static JOIN_INPUTS: Mutex<Vec<(u32, UnixStream, UnixStream, UnixStream)>> = Mutex::new(Vec::new());
+
+#[cfg(unix)]
+fn lock_join_attached() -> std::sync::MutexGuard<'static, Vec<(u32, Attacher)>> {
+    JOIN_ATTACHED.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+#[cfg(unix)]
+fn lock_join_inputs() -> std::sync::MutexGuard<'static, Vec<(u32, UnixStream, UnixStream, UnixStream)>> {
+    JOIN_INPUTS.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Attaches `req`'s client to joiner `id` in the guest (D119), as `docker attach` attaches
+/// to a container: its output from now, its stdin where the joiner reads one, its signals
+/// and terminal sizes; told its status as it ends ([`end_joiner`]).
+#[cfg(unix)]
+pub fn attach_joiner(to: &'static ToGuest, id: u32, req: AttachRequest) -> Result<(), String> {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let number = NEXT.fetch_add(1, Ordering::Relaxed);
+    let AttachRequest {
+        client,
+        stdin,
+        stdout,
+        stderr,
+        reads_stdin,
+    } = req;
+    let listened = client
+        .try_clone()
+        .map_err(|e| format!("the client's connection: {e}"))?;
+    // Its way in, taken before it is attached: none once the joiner has ended.
+    let input = if reads_stdin {
+        lock_join_inputs()
+            .iter()
+            .find(|(j, ..)| *j == id)
+            .and_then(|(_, input, _, wake)| Some((input.try_clone().ok()?, wake.try_clone().ok()?)))
+    } else {
+        None
+    };
+    lock_join_attached().push((
+        id,
+        Attacher {
+            id: number,
+            out: stdout,
+            err: stderr,
+            client,
+        },
+    ));
+    std::thread::Builder::new()
+        .name("join-attached".into())
+        .spawn(move || {
+            while let Ok(Some(m)) = shards_ipc::recv(&listened) {
+                match m.kind {
+                    shards_ipc::kind::SIGNAL if m.payload.len() == 4 => {
+                        let signal = [&id.to_be_bytes()[..], &m.payload].concat();
+                        to_guest(to, kind::EXEC_SIGNAL, &signal);
+                    }
+                    shards_ipc::kind::RESIZE if Size::decode(&m.payload).is_some() => {
+                        let resize = [&id.to_be_bytes()[..], &m.payload].concat();
+                        to_guest(to, kind::EXEC_RESIZE, &resize);
+                    }
+                    _ => {}
+                }
+            }
+            lock_join_attached().retain(|(_, a)| a.id != number);
+        })
+        .map_err(|e| format!("an attached client's thread: {e}"))?;
+    if let Some((input, wake)) = input {
+        std::thread::Builder::new()
+            .name("join-attached-stdin".into())
+            .spawn(move || copy_attached_stdin(stdin, input, &wake))
+            .map_err(|e| format!("an attached client's stdin: {e}"))?;
+    }
+    Ok(())
+}
+
+/// Copies an attached client's `stdin` to a joiner's, on its connection `input`, until
+/// either ends or the joiner does, which closes `wake`'s peer.
+#[cfg(unix)]
+fn copy_attached_stdin(mut stdin: fs::File, mut input: UnixStream, wake: &UnixStream) {
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        let mut polled = [stdin.as_raw_fd(), wake.as_raw_fd()].map(|fd| libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        });
+        // SAFETY: poll(2) on two pollfds of descriptors this thread holds open.
+        if unsafe { libc::poll(polled.as_mut_ptr(), 2, -1) } < 0 {
+            if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return;
+        }
+        let [from, woken] = polled;
+        if woken.revents != 0 {
+            return;
+        }
+        if from.revents != 0 {
+            match stdin.read(&mut buf) {
+                Ok(n @ 1..) => {
+                    if send(&mut input, kind::STDIN, buf.get(..n).unwrap_or_default()).is_err() {
+                        return;
+                    }
+                }
+                _ => return,
+            }
+        }
+    }
+}
+
+/// Joiner `id`'s output to each client attached to it; one gone is let go.
+#[cfg(unix)]
+fn fan_out_joined(id: u32, payload: &[u8], stderr: bool) {
+    lock_join_attached().retain_mut(|(j, a)| {
+        if *j != id {
+            return true;
+        }
+        let to = if stderr { &mut a.err } else { &mut a.out };
+        to.write_all(payload).is_ok()
+    });
+}
+
+/// Joiner `id` has ended with `status` (D119): each client attached to it hears it and is
+/// let go, its connection shut so that its thread ends; its way in goes, which ends the
+/// copies of their stdin.
+#[cfg(unix)]
+pub fn end_joiner(id: u32, status: u8) {
+    lock_join_inputs().retain(|(j, ..)| *j != id);
+    let attached: Vec<Attacher> = {
+        let mut all = lock_join_attached();
+        let (ended, others): (Vec<_>, Vec<_>) =
+            std::mem::take(&mut *all).into_iter().partition(|(j, _)| *j == id);
+        *all = others;
+        ended.into_iter().map(|(_, a)| a).collect()
+    };
+    for a in attached {
+        let _ = shards_ipc::send(&a.client, shards_ipc::kind::EXIT, &[status], &[]);
+        let _ = a.client.shutdown(std::net::Shutdown::Both);
+    }
+}
+
 /// Sends Linux signal `linux` to the guest's exec, or joiner, `id` (D119), as the daemon
 /// signals a container: false where the guest has no connection to take it.
 #[cfg(unix)]
@@ -982,7 +1133,14 @@ pub fn join(
         .recv()
         .map_err(|_| "the container whose network it joins ended first".to_string())??;
     let mut input = conn.try_clone().map_err(|e| e.to_string())?;
-    if interactive {
+    // Its way in, for the clients that attach to it, until it ends (`end_joiner`).
+    let (wake, watched) = UnixStream::pair().map_err(|e| format!("a joiner's attach: {e}"))?;
+    lock_join_inputs().push((id, conn.try_clone().map_err(|e| e.to_string())?, wake, watched));
+    // Its stdin as a run's (`serve`): its client's, closed as the client's ends where it has
+    // no terminal (Docker's StdinOnce); a detached one's open for those who attach; none
+    // without `-i`.
+    let once = spec.tty.is_none();
+    if interactive && !detached {
         let mut stdin = stdin;
         std::thread::Builder::new()
             .name("join-stdin".into())
@@ -993,10 +1151,12 @@ pub fn join(
                         return;
                     }
                 }
-                let _ = send(&mut input, kind::STDIN, &[]);
+                if once {
+                    let _ = send(&mut input, kind::STDIN, &[]);
+                }
             })
             .map_err(|e| format!("a joiner's stdin: {e}"))?;
-    } else {
+    } else if !interactive {
         let _ = send(&mut input, kind::STDIN, &[]);
     }
     if let Some(client) = &client {
@@ -1048,6 +1208,7 @@ pub fn join(
                 if let Some(log) = &mut log {
                     log.keep(stream, payload);
                 }
+                fan_out_joined(id, payload, which == kind::STDERR);
                 // A detached joiner's output goes to its log alone, as a detached run's.
                 if !detached && let Some(o) = out {
                     let _ = o.write_all(payload);
