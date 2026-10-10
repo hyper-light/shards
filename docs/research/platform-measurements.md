@@ -5302,3 +5302,75 @@ revision before comparing a changed API/implementation.
   A VM the host has not let run is told apart (`platform::launched`) and counts against
   no template; a builder not started says so (D117). The incidents themselves were not
   captured; the daemon's log now attributes the next.
+
+### M145. A container's command as PID 1, and its signals, under Docker and under shards
+
+- **Question.** D115 gives a run's command a PID namespace of its own. What does Docker do
+  with a container's command there (its PID, PID 1's signals, `--init`, `--pid`, `stop`,
+  exec, restarts, inspect), so that shards does the same, and what did shards' tests of
+  its old layout, in which the command was never PID 1, assert that Docker does not?
+- **Method.** `docs/research/measurements/pid1/`: `docker.py` runs each case in shards-dind
+  (Docker 29.3.1, client and engine, arm64) on alpine:3.22 (`sha256:5291449c…`) and
+  linuxserver.io's baseimage-alpine 3.22, an s6-overlay image (`sha256:ab81abc9…`, 13 MB);
+  `testguest.py` the containers tests' own scenarios, with their test image built in
+  shards-dind from the same files (testguest, its user `app`, its passwd and group);
+  `order.py` 20 stops each way, reading the order of dockerd's `stop` and `die` events;
+  `ctrlc.py` ^C typed at `docker run -it`; `shards.py` the same cases through a shards
+  build. Apple M5 Max, macOS 26.4.1, D115's
+  branch, 2026-10-10. Times are wall times of the CLI, Docker's through `docker exec`
+  (37 ms alone).
+- **Results.**
+
+  | Case | Docker 29.3.1 | shards |
+  |---|---|---|
+  | `sh -c 'echo $$'` | 1 | 1 |
+  | `--init`, `ps -o pid,ppid,comm` | 1 0 docker-init; 7 1 ps | 1 0 init; 2 0 ps |
+  | from inside, `kill -TERM 1; kill -KILL 1` | unheard | unheard |
+  | `--init`, from inside, `kill -TERM 1`, as root and as uid 1000 | 143 | 143 |
+  | `stop -t 2`, PID 1 handling no signal | 2.16 s, 137 | 2.01 s, 137 |
+  | `--init`, `stop -t 2` | 0.15 s, 143 | 0.01 s, 143 |
+  | `stop -t 5`, PID 1 trapping SIGTERM (`exit 7`) | 0.22 s, 7 | 0.07 s, 7 |
+  | `kill -s TERM`, PID 1; then `kill` | running; 137 | running; 137 |
+  | exec: `$$`; `/proc/1/cmdline` | 7; the command | 2; the command |
+  | `--restart on-failure:2`, `echo $$; exit 3` | logs 1, 1, 1; RestartCount 2 | the same |
+  | `--pid host`: `$$`; `/proc/1/root` | 1474; denied | 100; denied (`/proc/2` is kthreadd) |
+  | `--pid foo`; `create --pid container:nope` | `--pid: invalid PID mode`, 125; `No such container: nope`, 1 | the same |
+  | inspect `Init`, `PidMode`, `{{if .HostConfig.Init}}`: none, `--init`, `--init=false`, `--pid host` | `null ""` unset; `true ""` set; `false ""` set; `null "host"` unset | the same |
+  | `sysctl net.ipv4.ping_group_range ip_unprivileged_port_start` | `0 2147483647`; `0` | the same (none before D115) |
+  | `ping` with `--cap-drop NET_RAW`, as root and as uid 1000 | answered | answered |
+  | default capabilities (`CapEff`) | `00000000a80425fb` | the same |
+  | s6-overlay: run; `--init`; `--pid host` | 0 in 3.5 s; 100, `s6-overlay-suexec: fatal: can only run as pid 1`; the same | 0 in 3.4 s; the same; the same |
+  | `run -it … sleep 6`, ^C after 3 s (`ctrlc.py`, a host pseudo-terminal) | unheard, 0 after 6.6 s; `--init`: 130 after 3.2 s | the same (`tty.rs`) |
+  | `top` under `--init`, CMD | `/sbin/docker-init -- sleep 1000`, `sleep 1000` | `/init`, `sleep 1000` |
+  | `--privileged`, `--cap-add SYS_ADMIN` or `NET_ADMIN`, `systempaths=unconfined`, `--sysctl net.ipv4.ip_forward=1`, `-u 200000`, `--pid host` | each accepted, exit 0 | each refused beside an Agentfile's domains (D115) |
+
+  - The containers tests' scenarios, their own testguest and image, under Docker:
+
+    | Scenario | PID 1 | `--init` |
+    |---|---|---|
+    | `sleep`, `stop -t 1` | 1.24 s, 137 | 0.25 s, 143 |
+    | `sleep` with `--stop-signal SIGUSR1`, `stop` | 10.28 s, 137 | 0.23 s, 138 |
+    | `-i cat`, `stop` | 10.33 s, 137 | 0.26 s, 143 |
+    | `kill`: SIGKILL to itself, then exit 1 | 1 | 137 |
+    | events of pause, unpause, rename, `stop -t 1` | rename, kill (15), kill (9), stop, die (137), destroy | |
+
+  - dockerd's event order, 20 stops each: where SIGTERM ends the command (`--init`), `kill
+    stop die` 20/20; where the timeout's SIGKILL does (PID 1), `kill kill stop die` 20/20.
+    moby's `handleContainerExit` marks the container stopped, which wakes `containerStop`
+    to log `stop`, before it writes the container's checkpoint and logs `die`.
+- **Consequence.**
+  - The command is PID 1 of a namespace of its own; `--init` puts a reaper there, which
+    forwards what PID 1 hears, as the command's user; `--pid host` is the microVM's own
+    (D115).
+  - Thirteen tests asserted shards' old layout: a handler-less command ending of stop's
+    signal (143, 138), of a forwarded SIGTERM, of the terminal's ^C, of its own SIGKILL,
+    with one `kill` event, within a daemon's shutdown before its stop timeout. Docker, with
+    the same program, answers so only under `--init`; those tests now run under `--init`
+    where the path has it, and say Docker's PID-1 answer where it has not (`run
+    --kernel`), and `a_command_is_pid_1_as_a_containers_is` asserts the PID-1 answers.
+  - shards logs `die` before `stop` (since before D115), Docker `stop` before `die`:
+    recorded, not D115's to change.
+  - Recorded differences, of numbers and names Docker's runtime makes: under `--init` the
+    command is PID 2 (Docker's 7, which runc's threads take first) with PPID 0 (Docker's
+    1, docker-init being its parent; init, its parent here, is outside the namespace), and
+    the reaper is `init` (`docker-init`, shown with its arguments).
