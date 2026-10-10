@@ -1089,7 +1089,7 @@ const RLIMITS: [(&str, u32); 16] = [
 impl Exec<'_> {
     /// A user file of `fs` as BuildKit opens one (executor/oci/user.go): resolved within
     /// the snapshot, a regular file, at most 10 MiB; `None` if it cannot be opened.
-    fn user_file(&mut self, fs: &Fs, path: &[u8]) -> Result<Option<Vec<u8>>, String> {
+    pub(super) fn user_file(&mut self, fs: &Fs, path: &[u8]) -> Result<Option<Vec<u8>>, String> {
         let Ok(id) = fs.stat(path) else { return Ok(None) };
         let Some(Node {
             kind: Kind::File { size, data },

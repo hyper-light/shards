@@ -3912,6 +3912,20 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
             .borrow_mut()
             .start("[internal] checking the domains' isolation");
         domains::check(&r.fs, &plan.domains).map_err(|e| fail_export(&progress, &v, &e))?;
+        // Its command beside them, as its run holds it (D115): none of their IDs.
+        let passwd = exec
+            .user_file(&r.fs, b"/etc/passwd")
+            .map_err(|e| fail_export(&progress, &v, &e))?;
+        let group = exec
+            .user_file(&r.fs, b"/etc/group")
+            .map_err(|e| fail_export(&progress, &v, &e))?;
+        domains::user(
+            &plan.image.config.user,
+            passwd.as_deref(),
+            group.as_deref(),
+            plan.domains.len(),
+        )
+        .map_err(|e| fail_export(&progress, &v, &e))?;
         progress.borrow().done(&v);
     }
     // The filesystem outputs, from the snapshot itself: its times to the nanosecond,

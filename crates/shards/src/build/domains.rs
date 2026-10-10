@@ -88,6 +88,32 @@ fn shown(path: &[Vec<u8>]) -> String {
     if s.is_empty() { "/".into() } else { s }
 }
 
+/// Refuses an image whose `USER` runs its command as one of its domains' uids or gids, or
+/// their in-VM servers' (D115), as the run refuses it: resolved in the image's own
+/// databases, `passwd` and `group`, as its run resolves it; one they do not resolve is the
+/// run's to refuse, as Docker's build leaves it.
+pub fn user(user: &[u8], passwd: Option<&[u8]>, group: Option<&[u8]>, domains: usize) -> Result<(), String> {
+    use shards_abi::run::beside;
+    let Ok(domains) = u32::try_from(domains) else {
+        return Err("more agents and harnesses than uids".into());
+    };
+    if domains == 0 || user.is_empty() {
+        return Ok(());
+    }
+    let Ok(u) = shards_user::resolve(user, passwd, group) else {
+        return Ok(());
+    };
+    let taken = |id: u32| beside::taken(id, domains);
+    let said = |e: String| format!("USER {}: {e}", String::from_utf8_lossy(user));
+    if taken(u.uid) {
+        return Err(said(beside::id("uid", u.uid, domains)));
+    }
+    if let Some(&g) = std::iter::once(&u.gid).chain(&u.groups).find(|&&g| taken(g)) {
+        return Err(said(beside::id("gid", g, domains)));
+    }
+    Ok(())
+}
+
 /// Checks `fs` against the domains of `domains`; nothing to check without any.
 pub fn check(fs: &Fs, domains: &[DomainDir]) -> Result<(), String> {
     if domains.is_empty() {
@@ -235,6 +261,41 @@ pub fn check(fs: &Fs, domains: &[DomainDir]) -> Result<(), String> {
 mod tests {
     use super::*;
     use shards_image::erofs::{DataRef, Dir, Meta, Node};
+
+    /// An image's `USER` is refused one of its domains' IDs, or their servers', by number
+    /// or by name in its own databases, as its run refuses it (D115); any other, or one its
+    /// databases lack, is the run's.
+    #[test]
+    fn an_images_user_is_none_of_its_domains() {
+        const PASSWD: &[u8] = b"root:x:0:0::/root:/bin/sh\nagentlike:x:200001:100::/:/bin/sh\n\
+            app:x:1000:200000::/:/bin/sh\nmember:x:1001:100::/:/bin/sh\n";
+        const GROUP: &[u8] = b"root:x:0:\nusers:x:100:\nsneaky:x:4394304:member\n";
+        let check =
+            |user: &str, domains: usize| super::user(user.as_bytes(), Some(PASSWD), Some(GROUP), domains);
+        for (user, domains, said) in [
+            ("200000", 2, "USER 200000: cannot run as uid 200000"),
+            ("agentlike", 2, "USER agentlike: cannot run as uid 200001"),
+            ("app", 2, "USER app: cannot run as gid 200000"),
+            ("1000:4394305", 2, "USER 1000:4394305: cannot run as gid 4394305"),
+            // A supplementary group of its databases', a server's.
+            ("member", 1, "USER member: cannot run as gid 4394304"),
+        ] {
+            let e = check(user, domains).unwrap_err();
+            assert!(e.starts_with(said), "{user}: {e}");
+        }
+        // Past the domains declared, or no ID of theirs, or none its databases resolve.
+        for (user, domains) in [
+            ("", 2),
+            ("root", 2),
+            ("1001:100", 2),
+            ("nobody-here", 2),
+            ("200002", 2),
+            ("agentlike:4394305", 1),
+            ("200000", 0),
+        ] {
+            assert_eq!(check(user, domains), Ok(()), "{user} of {domains}");
+        }
+    }
 
     fn dir(tree: &mut Tree, at: NodeId, name: &str) -> NodeId {
         tree.insert(
