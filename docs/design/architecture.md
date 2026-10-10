@@ -3326,6 +3326,66 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode
 waits on the user.
 
+### D117. Templates no VM process can forge, and VM starts the host has not admitted
+
+A template is saved by a VM process into the directory it is granted, and every later run
+of its image restores it. Review 8.2 took the directory from the VM before the run's
+command reaches the guest: a second Landlock layer on Linux, the rename into place on
+macOS (M102). Audit Q asked what a VM taken over while it still held the directory could
+leave there, and what reads it.
+- **Measured (M165).** On macOS the rename seals it: after it, neither a descriptor of the
+  directory opened before nor the bookmark resolved again makes or rewrites anything. A
+  link planted before stays in the template, as Linux keeps what was made before its
+  layer.
+- **Found.** Three readers followed what such a VM leaves:
+  - the daemon wrote its record of the template (`origin.json`, the root filesystem
+    restores are given as `--backing`, D25) into the template, with `std::fs::write`,
+    while the VM could still write there: a link planted at that name had the daemon
+    write its JSON into a file of the user's (`a_templates_saver_leaves_nothing_the_daemon_writes_through`,
+    on the code before); a record planted there named the file every restore of the
+    template was given, once a daemon read it back (refill);
+  - the daemon and the restoring VM read the pointer, state, memory and working set by
+    path, following links and waiting on FIFOs;
+  - the macOS grant broker opened whatever a restoring VM asked for, following links: a
+    generation's memory planted as a link opened any file of the user's for every restore
+    of the template, a FIFO held the broker (`a_restore_reaches_nothing_its_saver_left_in_its_template`).
+- **Now.**
+  - The daemon's record is beside the template (`templates/<name>.origin`), in the
+    directory no VM process is granted, written whole under a name of its own and renamed
+    into place, read through no link and as a regular file alone; the collector removes
+    it with its template, and one whose template is gone.
+  - A snapshot's files are opened beneath its directory, a component at a time, through
+    no link, regular files alone, refused before they are opened and checked again after
+    (vmm `open_beneath`): the pointer, state, memory and working set, by the daemon, the
+    restoring VM and its broker; a working set is written into a generation opened so.
+  - The broker knows a restore's template (the pool's directory; `--template` for
+    `shards grants`): what is asked beneath it is opened so, and nothing of it is granted
+    for writing.
+- **Tested.** The two E2E escape tests above, each written as a taken-over VM would act and
+  each failing on the code before (c1c2525's record; the broker's rule off); unit tests
+  of the walk, the broker and the record; mutation-checked.
+- **Recorded difference.** A template saved before has its record inside it and none
+  beside it: it is saved again, once.
+
+**VM starts the host has not admitted (M166).** On macOS a launch runs nothing until the
+system has assessed the executable (amfid; syspolicyd's Gatekeeper scan, with a network
+lookup of its notarization and XProtect's analysis; secinitd's App Sandbox set-up), and
+every launch waits behind the executables launched before it, assessed about one at a
+time. The VM process launched before starts in 21 ms at p50 and 60 at p99 (10,000, 16 at
+once, load 60); a new copy in 200 ms alone and 8.6 s at p50 behind 64 others; while those
+are assessed, the established one's launches take 1.6 s at p90 and 2.9 s at p99. A
+process waiting there has run nothing, no system call and no user time, and sample(1)
+shows nothing of it.
+- Such a VM asked for nothing, and the daemon counted its wait a failure of its template:
+  three removed the template and booted instead, adding another launch to the same wait.
+  Now a VM the host has not let run is told apart (`platform::launched`), logged as the
+  host's at the stall check rather than sampled, and counts against no template; a
+  builder that does not dial back in BOOT_PATIENCE says whether the host had started it.
+  No budget changes.
+- The "VM grant stall" (60 s) and "the builder did not start" (30 s) fit this at a
+  backlog of a few hundred new executables, as parallel builds make on this host. Those
+  incidents were not captured; the next one is attributed in daemon.log.
+
 ### D116. Signatures and SBOMs of agents, harnesses and MCP servers, as OCI 1.1 referrers
 
 §8 Q1 gave OSI artifacts "signatures and SBOMs as its referrers". Now they have them,

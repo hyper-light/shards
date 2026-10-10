@@ -5209,3 +5209,75 @@ revision before comparing a changed API/implementation.
   That check compiles the policy afresh, twice (partial, then whole), each on a thread of
   its own, as M127 found of every check; compiling once a build on a long-lived
   evaluation thread is that measurement's open question, now paid per request.
+
+### M165. What a VM in App Sandbox reaches of a template once it is renamed out of its grant
+
+- **Question.** A VM saves a template into a directory it is granted, then serves a run;
+  the daemon renames the template into place before the run's command reaches the guest
+  (run.rs `settle`, M102). M102 found a file made at the new path refused. What else might
+  a VM taken over then try: a descriptor of the directory opened before the rename, the
+  same bookmark resolved again (bookmarks track a file, not its path), or a link planted
+  before the rename? (D117, audit Q.)
+- **Method.** `docs/research/measurements/app-sandbox/reresolve.py`, the probe (`probe.c`,
+  `reresolve`) built and signed as `run.sh` signs it: the probe resolves its directory
+  bookmark, makes a file, opens a descriptor of the directory and plants a link to
+  `/etc/hosts`; the unsandboxed parent renames the directory; the probe makes, rewrites
+  and links through the descriptor, then resolves the bookmark again, starts its scope,
+  and makes and rewrites at the new path. Under `$HOME` and the per-user temporary
+  directory. macOS 26.4.1, Apple M5 Max, 2026-10-10.
+- **Results.** In both places: through the descriptor after the rename, every make,
+  rewrite and link refused (EPERM); the bookmark resolved again names the new path
+  (stale 1) and its scope starts (1), yet every make and rewrite there is refused (EPERM).
+  The link planted before the rename is in the renamed directory.
+- **Consequence.** The seal holds: a VM process loses its template at the rename, by any
+  means it holds. What it planted before stays for every later reader, and on Linux what
+  it made before its second Landlock layer stays alike. So nothing that reads a template
+  may follow a link or wait on a FIFO in it, and the daemon's own record of a template
+  lives outside it (D117).
+
+### M166. How long a VM process takes to start, and what it waits for
+
+- **Question.** VM processes sometimes asked nothing for tens of seconds: the daemon's
+  "VM grant stall" (60 s, READY_TIMEOUT), and a builder that "did not start" in 30 s
+  (BOOT_PATIENCE), both under the load of parallel builds. Where does a VM process's
+  start go, and what does it wait for? (D117, audit Q.)
+- **Method.** `docs/research/measurements/vm-launch/launch.py`: `shards-vm run --kernel K
+  --grants 3`, spawned with a socket at descriptor 3, timed from its spawn to the first
+  byte of its first request for access, which is the first thing it does once it runs
+  (vm_run.rs `start` → `confine`); then ended. The signed VM process of this build
+  (App Sandbox, the hypervisor entitlement), as launched before, or a new copy of it
+  for each launch (the same bytes, a path and file of its own, as each new build's
+  helper is); W at once. `stuck.py` reads the task info (proc_pidinfo PROC_PIDTASKINFO)
+  of a launch while it waits. The security daemons' log (`log stream`, syspolicyd,
+  amfid, secinitd) during three new copies' launches. Load average 50–65 throughout from
+  other work on the host, the norm here. macOS 26.4.1, Apple M5 Max, 2026-10-10,
+  revision a17bc1e.
+- **Results** (ms: p50 / p90 / p99 / max).
+
+| Launches | n | W | p50 | p90 | p99 | max |
+|---|---|---|---|---|---|---|
+| launched before | 400 | 4 | 17.1 | 32.7 | 82.0 | 87.4 |
+| launched before | 10,000 | 16 | 21.4 | 35.6 | 59.5 | 134.7 |
+| a new copy each, first launch | 3 | 1 | 202.6 | | | 205.6 |
+| the same copies, second launch | 3 | 1 | 10.6 | | | 11.7 |
+| a new copy each, first launch | 100 | 4 | 485.7 | 911.6 | 1,127.7 | 1,127.7 |
+| a new copy each, first launch | 128 | 64 | 8,610.6 | 10,455.8 | 10,878.6 | 10,894.2 |
+| the same copies, second launch | 128 | 64 | 1,805.3 | | 2,687.8 | 2,710.6 |
+| one new copy, launched by all at once (10 rounds) | 160 | 16 | 203.0 | 234.0 | 241.0 | 246.8 |
+| launched before, while 192 new copies (64 at once) were assessed | 100 | 1 | 14.5 | 1,613.1 | 2,918.5 | 2,918.5 |
+
+  - A new executable's first launch: amfid finds it ad-hoc signed; syspolicyd scans it
+    (Gatekeeper: a network lookup of its notarization, about 30 ms, then XProtect's
+    analysis), about 120 ms in all; secinitd sets up its App Sandbox, 62–72 ms, against
+    3 ms on a second launch. The process then runs.
+  - While it waits it has run nothing: through 5.1 s behind 48 new copies, 0 user time,
+    0 Unix and 0 Mach system calls, one thread; 211 system calls by its first request
+    once let run. sample(1) of it shows no stack.
+  - New executables are assessed about one at a time (about 130 ms each at 64 at once),
+    and launches of one executable at once share one assessment.
+- **Consequence.** A VM process's start is the host's to admit, and waits behind every
+  new executable the host is assessing, the established VM process's own launches
+  included: a backlog of a few hundred, as parallel builds make, reaches the stalls seen.
+  A VM the host has not let run is told apart (`platform::launched`) and counts against
+  no template; a builder not started says so (D117). The incidents themselves were not
+  captured; the daemon's log now attributes the next.
