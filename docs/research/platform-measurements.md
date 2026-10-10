@@ -5630,3 +5630,38 @@ revision before comparing a changed API/implementation.
   reopens through the grants broker on macOS. The join disk, with no file until a
   container joins, cost no restore anything resolved in either round, its medians the
   lower: every microVM carries one (D119).
+
+### M169. What dockerd does with another container's PID and network namespaces (D119)
+
+- **Question.** `--pid container:NAME` beside `--network container:NAME`: what Docker keeps,
+  shows and does, for a joiner in its provider's microVM to do the same.
+- **Method.** `docs/research/measurements/docker-shared-namespaces/probe.sh`, run in a
+  Docker-in-Docker container (docker:29.3.1-dind, dockerd 29.3.1, its own containerd),
+  alpine:3.20, its containers `sh-p119-*`, removed at the end. Apple M5 Max, macOS 26.4.1,
+  Docker Desktop's VM, 2026-10-10.
+- **Results.**
+  - Both modes are kept by the other container's ID, as it was made:
+    `HostConfig.NetworkMode` and `HostConfig.PidMode` are `container:` and its 64-digit ID
+    (moby daemon/daemon_unix.go, adaptSharedNamespaceContainer). Renamed, the provider
+    holds: `restart` of the joiner after `rename` of the provider runs it.
+  - Sharing its PID namespace, the joiner sees the provider's processes, its PID 1 the
+    provider's command (`ps`: 1 `sleep 300`, 7 `sleep 301`).
+  - `top` lists each container's own processes alone: the joiner's, its `sleep 301`; the
+    provider's, its `sleep 300`, not the joiner's, which are in its PID namespace.
+  - `--init` with another's PID namespace is kept (`HostConfig.Init` true) and not given:
+    no docker-init in the namespace, the command `sleep 302` as it was (moby
+    daemon/oci_linux.go gives it only to a PID namespace of the container's own).
+  - What a joiner sharing it started is killed as its command ends:
+    `sh -c 'sleep 1000 & sleep 2'` exited 0 and left `[sleep]`, a zombie of the provider's
+    PID 1, which reaps nothing.
+  - `--pid container:X` alone runs in X's PID namespace with a network of its own.
+  - Refused, all with status 125: `--pid container:sh-p119-nope`, "docker: Error response
+    from daemon: No such container: sh-p119-nope" as the container is made; one made and
+    never started, "docker: Error response from daemon: failed to join PID namespace:
+    container 4acb55f1…(its ID) is not running" as it starts; `--pid container:` and
+    `--pid bogus`, the CLI's "docker: --pid: invalid PID mode".
+- **Consequence.** shards keeps both modes by ID as dockerd does, lets a joiner share its
+  provider's PID namespace (or the microVM's own, `--pid host`), lists `top` by cgroup,
+  takes `--init` there without giving it, and kills what the joiner leaves (D119).
+  `--pid container:X` alone is refused: X's PID namespace is in X's microVM, and a
+  network of its own there is not built (D115).

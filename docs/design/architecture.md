@@ -3470,7 +3470,8 @@ the boundary is a container's, which is what the mode asks for.
   no file does not. The join disk as built cost no restore anything resolved against none
   (−513 µs [−1,682, +120]; none less join +330 [−370, +883]).
 - **Its life.** The joiner is a container of its own: its record, log, exit code, `stop`,
-  `kill`, `wait`, `rm`, `inspect` (its NetworkMode as asked, its provider's hostname), and
+  `kill`, `wait`, `rm`, `inspect` (its NetworkMode its provider's ID, as dockerd keeps it,
+  M169; its provider's hostname), and
   in its own namespaces and cgroup `exec`, `attach` (its stdin and output, never its
   provider's), `top`, `cp`, `export`, `diff`, `commit`, its size, `stats` and `update`,
   which init's built-ins do in its context. `pause` freezes its cgroup in the guest (init's FREEZE: `cgroup.freeze`,
@@ -3539,9 +3540,28 @@ the boundary is a container's, which is what the mode asks for.
   failed. Tested (`a_joiner_keeps_its_files_as_it_stops`: a file written and one removed,
   one copied in while it was stopped, all there after `start`; mutation-checked: the
   layer's entry left out, the create-time checks made again).
+- **Its provider's PID namespace, or the microVM's** (Docker 29.3.1, PM M169). dockerd
+  keeps another container's namespaces by its ID as the container is made, so that they
+  hold as that one is renamed (daemon/daemon_unix.go, adaptSharedNamespaceContainer):
+  shards keeps both modes so, where it kept the name as given. `--pid container:NAME`
+  beside `--network container:NAME` of the same container gives the joiner its provider's
+  PID namespace, its child born there as an exec is (`pid=workload`); `--pid host`, the
+  microVM's own, init's. Its command is then no namespace's PID 1, whose end the kernel
+  would make the end of the rest, so init kills what is left in its cgroup as it ends, as
+  runc kills what a container sharing one leaves (libcontainer signalAllProcesses), and
+  removes the cgroup once all of it is said. `top` lists a container's processes by its
+  cgroup, as containerd lists a task's: the workload's leave out the joiners' in its
+  namespace. `--init` there is kept and not given, as dockerd gives its init only to a PID
+  namespace of the container's own (daemon/oci_linux.go). Refused: `--pid container:` of
+  a joiner, whose PID namespace is its own in its provider's microVM, known to init by its
+  exec's id; and `--pid container:NAME` without its network, NAME's PID namespace being in
+  NAME's microVM, where a network of its own is not built (D115). Tested
+  (`a_joiner_may_share_its_providers_pid_namespace`: its PID 1 its provider's command,
+  `top` of each, `--init` kept, an exec of its killed as it ends, `--pid host`, the
+  refusals; `a_joiner_is_a_container_of_its_own`: its provider by ID).
 - **Not yet, each refused by name before anything starts:** volumes (the provider's
-  microVM has shares for its own run alone), devices and `--privileged`, `--init`, `--pid`,
-  an image's `VOLUME`s, an Agentfile's image.
+  microVM has shares for its own run alone), devices and `--privileged`, `--init` in a PID
+  namespace of its own, an image's `VOLUME`s, an Agentfile's image.
 - **No count of holders.** A VM process runs one VM, so its join disk is a `static` of
   that process's (`Join::new` is a `const fn`), its device given `&'static Join`; a
   joiner's attached clients are kept by its id in the guest, as the workload's are. The

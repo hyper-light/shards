@@ -535,6 +535,7 @@ fn sort_setup(entries: &[Vec<u8>], into: &mut Inherited) -> Result<Vec<Vec<u8>>,
             || entry == b"confine-eth0"
             || entry == b"init"
             || entry == b"pid=host"
+            || entry == b"pid=workload"
         {
             // Init's, as the run starts (`Standby::start`).
         } else if entry.starts_with(b"devices=") {
@@ -1845,7 +1846,20 @@ impl Standby {
                     ),
                     None => return Err(setup_failed("a joiner without its cgroup")),
                 };
-                (fork_in(None)?, Isolation::Joined { join, cgroup, report })
+                let pid = match join.pid {
+                    crate::join::Pid::Own => fork_in(None)?,
+                    crate::join::Pid::Workload => fork_in(Some(&pid_ns_of(join.workload)?))?,
+                    crate::join::Pid::Host => {
+                        // SAFETY: init is single-threaded, so its child may run anything
+                        // until it execs.
+                        let pid = unsafe { libc::fork() };
+                        if pid < 0 {
+                            return Err(setup_failed(format!("fork: {}", io::Error::last_os_error())));
+                        }
+                        pid
+                    }
+                };
+                (pid, Isolation::Joined { join, cgroup, report })
             }
         };
         if pid == 0 {
@@ -2397,6 +2411,9 @@ fn builtin(kind: u8, args: &[Vec<u8>], joiner: Option<(libc::pid_t, u32)>) -> Re
         }
         None => None,
     };
+    // Whose processes `top` lists: a joiner's by its cgroup, which in a PID namespace of
+    // another's has others' beside its own.
+    let members = joiner.map(|(_, id)| format!("/join-{id}"));
     let joiner = joiner.map(|(pid, _)| pid);
     let cgroup = match joiner {
         Some(pid) => joiner_cgroup(pid).map_err(|e| {
@@ -2501,11 +2518,10 @@ fn builtin(kind: u8, args: &[Vec<u8>], joiner: Option<(libc::pid_t, u32)>) -> Re
             unsafe { libc::_exit(code) }
         }
         let done = match kind {
-            run::builtin::PROCESSES => out.write_all(&crate::procs::dump(if joiner.is_some() {
-                None
-            } else {
-                REAPER.get().copied()
-            })),
+            run::builtin::PROCESSES => out.write_all(&match &members {
+                Some(own) => crate::procs::dump(None, crate::procs::Members::Joiner(own)),
+                None => crate::procs::dump(REAPER.get().copied(), crate::procs::Members::Workload),
+            }),
             run::builtin::CHANGES => match (&layers, procfs) {
                 (Some((lower, upper)), Some(procfs)) => procfs
                     .and_then(|procfs| read_at(&procfs, c"self/mountinfo"))
@@ -2676,6 +2692,7 @@ fn start_joiner(
         len,
         workload,
         layer,
+        pid: crate::join::pid(&spec.setup),
     };
     let standby = Standby::forked(Born::Joined(join, id), (None, None))?;
     let pid = standby.pid;
@@ -2792,8 +2809,6 @@ fn joiner_takes(setup: &[Vec<u8>]) -> Result<(), Failure> {
             "a volume"
         } else if entry == b"init" {
             "--init"
-        } else if entry == b"pid=host" {
-            "--pid host"
         } else if entry.starts_with(b"devices=") || entry == b"privileged" {
             "a device"
         } else if entry.starts_with(b"dns=")
@@ -3134,6 +3149,8 @@ impl Workload {
             }
             for e in execs.iter().filter(|e| e.joined && e.finished()) {
                 join_layers().retain(|(j, _)| *j != e.id);
+                // What it left was killed as it ended, and has gone by now.
+                crate::join::remove_cgroup(e.id);
             }
             execs.retain(|e| !e.finished());
             // Its end said as soon as its own output is, while its joiners go on (D119).
@@ -3307,8 +3324,11 @@ impl Workload {
                                 // A joiner's cgroup, empty now: the kernel ends a PID
                                 // namespace's other processes before its first's end is
                                 // reaped (D119).
+                                // In another's PID namespace, what it started is killed
+                                // as it ends, as runc kills it.
                                 if e.joined {
                                     joined().retain(|(j, _)| *j != e.id);
+                                    crate::join::kill_rest(e.id);
                                     crate::join::remove_cgroup(e.id);
                                 }
                             } else if packing == Some(pid) {

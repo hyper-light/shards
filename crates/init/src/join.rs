@@ -12,14 +12,38 @@ use std::io::{self, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::time::{Duration, Instant};
 
-/// Where a joiner's image lies on the join disk, the workload whose network it joins, and
-/// where its writable layer from before lies on the disk, if it has one to put back (D37).
+/// Where a joiner's image lies on the join disk, the workload whose network it joins,
+/// where its writable layer from before lies on the disk, if it has one to put back (D37),
+/// and whose PID namespace its processes are in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Join {
     pub offset: u64,
     pub len: u64,
     pub workload: libc::pid_t,
     pub layer: Option<(u64, u64)>,
+    pub pid: Pid,
+}
+
+/// Whose PID namespace a joiner's processes are in: one of its own, its command that
+/// namespace's PID 1, as a container's is; the workload's whose network it joins
+/// (`--pid container:NAME`, `pid=workload`), the one other container's the daemon lets it
+/// join; or the microVM's own, init's (`--pid host`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pid {
+    Own,
+    Workload,
+    Host,
+}
+
+/// The PID namespace `setup` asks for.
+pub fn pid(setup: &[Vec<u8>]) -> Pid {
+    if setup.iter().any(|e| e == b"pid=host") {
+        Pid::Host
+    } else if setup.iter().any(|e| e == b"pid=workload") {
+        Pid::Workload
+    } else {
+        Pid::Own
+    }
 }
 
 /// An image's user database, `/etc/passwd` and `/etc/group`, where it has them.
@@ -87,6 +111,35 @@ pub fn make_cgroup(id: u32) -> Result<String, String> {
 /// any is left, and that cgroup is let be.
 pub fn remove_cgroup(id: u32) {
     let _ = std::fs::remove_dir(cgroup(id));
+}
+
+/// Kills what is left in joiner `id`'s cgroup as its command ends: in a PID namespace of
+/// another's, whose end is not its command's (pid_namespaces(7)), what it started goes on,
+/// and runc kills what a container sharing one leaves (libcontainer, signalAllProcesses).
+/// Looked at again until none is left, as one may have forked meanwhile; in a namespace of
+/// its own, the kernel has killed them all.
+pub fn kill_rest(id: u32) {
+    let procs = format!("{}/cgroup.procs", cgroup(id));
+    // A process forks at most once between looks; each look kills what it finds.
+    for _ in 0..64 {
+        let Ok(listed) = std::fs::read_to_string(&procs) else {
+            return;
+        };
+        let mut found = 0;
+        for pid in listed
+            .lines()
+            .filter_map(|l| l.trim().parse::<libc::pid_t>().ok())
+        {
+            // SAFETY: kill(2) of a process of the joiner's cgroup, by its PID in init's
+            // namespace, as cgroup.procs lists it to init.
+            if unsafe { libc::kill(pid, libc::SIGKILL) } == 0 {
+                found += 1;
+            }
+        }
+        if found == 0 {
+            return;
+        }
+    }
 }
 
 // include/uapi/linux/loop.h and include/uapi/linux/major.h.
@@ -282,8 +335,9 @@ fn loop_device(disk: &str, offset: u64, len: u64) -> Result<(String, File), Stri
     Err("no loop device stayed free".into())
 }
 
-/// Builds joiner `join`'s root and namespaces in this process, a standby init forked as PID
-/// 1 of a PID namespace of its own, in init's cgroup: a mount namespace of its own, private;
+/// Builds joiner `join`'s root and namespaces in this process, a standby init forked in the
+/// PID namespace its `pid` says (PID 1 of one of its own, as a container's command is), in
+/// init's cgroup: a mount namespace of its own, private;
 /// the workload's hostname in a UTS namespace of its own; the workload's network namespace;
 /// an IPC namespace of its own; its image's range of the join disk on a loop device, under
 /// a tmpfs overlay, its root; the workload's `/etc/hostname`, `/etc/hosts` and

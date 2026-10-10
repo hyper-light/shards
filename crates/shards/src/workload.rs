@@ -815,7 +815,8 @@ fn exec_session(to: &'static ToGuest, req: &mut ExecRequest) -> Result<(Option<u
     let mut conn = rx
         .recv()
         .map_err(|_| "the container's process ended before the command started".to_string())??;
-    if req.interactive {
+    // A detached exec attaches nothing, `-i` or not (docker/cli exec.go, parseExec).
+    if req.interactive && !req.detached {
         let mut input = conn.try_clone().map_err(|e| e.to_string())?;
         let mut stdin = req.stdin.try_clone().map_err(|e| e.to_string())?;
         std::thread::Builder::new()
@@ -879,6 +880,16 @@ fn exec_session(to: &'static ToGuest, req: &mut ExecRequest) -> Result<(Option<u
             kind::STARTED if req.detached => {
                 let _ = shards_ipc::send(&req.client, shards_ipc::kind::EXIT, &[0], &[]);
                 answered = true;
+                // Its client's stdio is let go of, as `docker exec -d` holds none of it once
+                // the command has started: what reads the client's output to its end is not
+                // held until the command ends.
+                if let Ok(null) = fs::File::open("/dev/null") {
+                    for slot in [&mut req.stdin, &mut req.stdout, &mut req.stderr] {
+                        if let Ok(null) = null.try_clone() {
+                            *slot = null;
+                        }
+                    }
+                }
             }
             kind::STARTED => {}
             // A detached exec's output goes nowhere, as `docker exec -d`'s does.

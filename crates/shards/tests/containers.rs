@@ -192,6 +192,8 @@ fn a_joiner_is_a_container_of_its_own() {
     let hostname = shards(&["inspect", "-f", "{{.Config.Hostname}}", "prov"]);
     let hostname = hostname.stdout.trim().to_string();
     assert_eq!(hostname.len(), 12, "the provider's hostname: {hostname:?}");
+    // Its provider kept by its ID, as dockerd keeps it (adaptSharedNamespaceContainer).
+    let id = shards(&["inspect", "-f", "{{.Id}}", "prov"]).stdout;
     let inspected = shards(&[
         "inspect",
         "-f",
@@ -200,7 +202,7 @@ fn a_joiner_is_a_container_of_its_own() {
     ]);
     assert_eq!(
         inspected.stdout,
-        format!("container:prov {hostname}\n"),
+        format!("container:{} {hostname}\n", id.trim()),
         "{inspected}"
     );
     let reported = shards(&["exec", "joiner", "/bin/testguest", "report"]);
@@ -382,6 +384,106 @@ fn a_joiners_own_commands_reach_the_joiner() {
     let stopped = shards(&["stop", "-t", "1", "joiner"]);
     assert_eq!(stopped.status, Some(0), "{stopped}");
     assert_eq!(exit(&mut attached), Some(137));
+    assert_eq!(shards(&["stop", "-t", "1", "prov"]).status, Some(0));
+    let _ = exit(&mut provider);
+}
+
+/// A joiner may share its provider's PID namespace, `--pid container:NAME` with `--network
+/// container:NAME`, as Docker's may (D119; Docker 29.3.1, PM M169): its PID 1 is its
+/// provider's command; `top` lists each container's own processes, by its cgroup; `--init`
+/// is taken and not given; and what it started is killed as it ends. Both are kept by the
+/// provider's ID. Another's PID namespace alone is refused, a microVM's being its own
+/// (D115), and one not there is refused in dockerd's words.
+#[test]
+fn a_joiner_may_share_its_providers_pid_namespace() {
+    let Some((home, image)) = home("containers-joiner-pid") else {
+        return;
+    };
+    let mut provider = start(&home, &image, &["--name", "prov"], &["sleep"]);
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let id = shards(&["inspect", "-f", "{{.Id}}", "prov"]).stdout;
+    let id = id.trim();
+    let joined = run_in(
+        &home,
+        &image,
+        &[
+            "-d",
+            "--name",
+            "joiner",
+            "--network",
+            "container:prov",
+            "--pid",
+            "container:prov",
+            "--init",
+        ],
+        &["trap", "TERM"],
+    );
+    assert_eq!(joined.status, Some(0), "{joined}");
+    let modes = shards(&[
+        "inspect",
+        "-f",
+        "{{.HostConfig.NetworkMode}} {{.HostConfig.PidMode}} {{.HostConfig.Init}}",
+        "joiner",
+    ]);
+    assert_eq!(
+        modes.stdout,
+        format!("container:{id} container:{id} true\n"),
+        "{modes}"
+    );
+    let first = shards(&["exec", "joiner", "/bin/testguest", "fs", "print:/proc/1/cmdline"]);
+    assert_eq!(first.stdout, "/bin/testguest\0sleep\0", "{first}");
+    let top = |name: &str| shards(&["top", name, "-o", "pid,args"]).stdout;
+    let (theirs, ours) = (top("prov"), top("joiner"));
+    assert!(
+        theirs.contains("testguest sleep") && !theirs.contains("testguest trap"),
+        "{theirs}"
+    );
+    assert!(
+        ours.contains("testguest trap") && !ours.contains("testguest sleep") && !ours.contains("init"),
+        "{ours}"
+    );
+    // What it started, an exec of its, goes as it ends; seen from its provider.
+    let left = shards(&["exec", "-d", "joiner", "/bin/testguest", "fs", "sleep:600000"]);
+    assert_eq!(left.status, Some(0), "{left}");
+    let seen = || shards(&["exec", "prov", "/bin/testguest", "ps"]).stdout;
+    let deadline = Instant::now() + TIMEOUT;
+    while !seen().contains("fs sleep:600000") {
+        assert!(Instant::now() < deadline, "the exec never showed: {}", seen());
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(shards(&["stop", "-t", "1", "joiner"]).status, Some(0));
+    let deadline = Instant::now() + TIMEOUT;
+    while seen().contains("fs sleep:600000") {
+        assert!(
+            Instant::now() < deadline,
+            "what the joiner started outlived it: {}",
+            seen()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // The microVM's own, with `--pid host`: init its PID 1.
+    let host = run_in(
+        &home,
+        &image,
+        &["--rm", "--network", "container:prov", "--pid", "host"],
+        &["fs", "print:/proc/1/cmdline"],
+    );
+    assert_eq!(host.status, Some(0), "{host}");
+    assert!(!host.stdout.starts_with("/bin/testguest"), "{host}");
+    // Refused: another's PID namespace alone, and one that is not there.
+    let refused = |options: &[&str], said: &str| {
+        let r = run_in(&home, &image, options, &["exit", "0"]);
+        assert_eq!(
+            (r.status, r.stderr.contains(said)),
+            (Some(125), true),
+            "{options:?}: {r}"
+        );
+    };
+    refused(
+        &["--pid", "container:prov"],
+        "\"--pid container:NAME\" is not supported by shards yet without \"--network container:NAME\" of the same container",
+    );
+    refused(&["--pid", "container:nope"], "No such container: nope");
     assert_eq!(shards(&["stop", "-t", "1", "prov"]).status, Some(0));
     let _ = exit(&mut provider);
 }
@@ -3893,8 +3995,16 @@ fn exec_runs_commands_in_a_running_container_as_docker_exec_does() {
     ] {
         assert!(tty.stdout.contains(line), "{line:?}\n{tty}");
     }
-    // -d: answered once it starts.
+    // -d: answered once it starts, its client's output ended then while the command runs
+    // on, as `docker exec -d` holds nothing of its client's (before, it was held to the
+    // command's end, and this read waited out its 60 s).
+    let detached = Instant::now();
     assert_eq!(exec(&["-d", "ex", "/bin/testguest", "sleep"]).status, Some(0));
+    assert!(
+        detached.elapsed() < Duration::from_secs(10),
+        "{:?}",
+        detached.elapsed()
+    );
     let refused = |args: &[&str], status: i32, said: &str| {
         let r = exec(args);
         assert_eq!(
