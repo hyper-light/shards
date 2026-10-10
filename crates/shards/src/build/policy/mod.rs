@@ -333,6 +333,8 @@ pub struct Meta {
 #[derive(Debug, Clone, Default)]
 pub struct ArtifactMeta {
     pub digest: String,
+    /// Its manifest's `artifactType`: what a source that names no kind is.
+    pub artifact_type: String,
     pub signatures: Option<Vec<Vec<u8>>>,
 }
 
@@ -1363,6 +1365,10 @@ fn request_for(unknowns: &[String], request: &mut MetaRequest) -> Result<(), Str
             continue;
         }
         match u {
+            // An OSI artifact's (D116), which its metadata says.
+            "image.artifactType" => {
+                request.image.get_or_insert_with(ImageRequest::default);
+            }
             "image.checksum" | "image.labels" | "image.user" | "image.volumes" | "image.workingDir"
             | "image.env" => {
                 request.image.get_or_insert_with(ImageRequest::default).no_config = false;

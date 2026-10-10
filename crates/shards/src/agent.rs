@@ -733,6 +733,20 @@ pub fn fetch(
     fresh: bool,
     say: &dyn Fn(&str),
 ) -> Result<(Descriptor, oci::Manifest, Config), String> {
+    take(store, name, Some(want), fresh, say).map(|(desc, m, config, _)| (desc, m, config))
+}
+
+/// [`fetch`] of an artifact of the kind `want`, or of any where none is wanted; its kind
+/// too.
+pub fn take(
+    store: &Store,
+    name: &Reference,
+    want: Option<Kind>,
+    fresh: bool,
+    say: &dyn Fn(&str),
+) -> Result<(Descriptor, oci::Manifest, Config, Kind), String> {
+    let wrong = |kind: Kind| want.is_some_and(|w| w != kind);
+    let word = want.map_or("OSI artifact", Kind::word);
     let held = if fresh {
         None
     } else {
@@ -752,7 +766,7 @@ pub fn fetch(
                     Document::Index(index) => {
                         let chosen = shards_image::platform::select(&index, &shards_image::platform::guest())
                             .cloned()
-                            .ok_or_else(|| format!("{name}: no {} for this platform", want.word()))?;
+                            .ok_or_else(|| format!("{name}: no {word} for this platform"))?;
                         let bytes = registry
                             .fetch_document(store, &chosen)
                             .map_err(|e| e.to_string())?;
@@ -780,7 +794,7 @@ pub fn fetch(
             }
             let digest = desc.digest().map_err(|e| e.to_string())?;
             let (_, kind) = manifest_of(store, &desc)?;
-            if kind != want {
+            if let Some(want) = want.filter(|_| wrong(kind)) {
                 return Err(format!("{name} is {}, not {}", a(kind), a(want)));
             }
             let mut held = contents(store, &desc)?;
@@ -795,7 +809,7 @@ pub fn fetch(
         }
     };
     let (m, kind) = manifest_of(store, &desc)?;
-    if kind != want {
+    if let Some(want) = want.filter(|_| wrong(kind)) {
         return Err(format!("{name} is {}, not {}", a(kind), a(want)));
     }
     let config = store
@@ -804,7 +818,7 @@ pub fn fetch(
         .ok_or_else(|| format!("{name}: its config is not here"))?;
     let config = Config::parse(&config).map_err(|e| format!("{name}: {e}"))?;
     check_content(store, kind, &m).map_err(|e| format!("{name}: {e}"))?;
-    Ok((desc, m, config))
+    Ok((desc, m, config, kind))
 }
 
 fn pull_cmd(kind: Kind, args: &[String]) -> Result<(), String> {

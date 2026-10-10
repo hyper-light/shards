@@ -129,9 +129,52 @@ fn policies_hold_an_agent_to_its_signature() {
         refused.stderr
     );
 
+    // The same policy asked of the artifact alone, as one about to be taken: `policy eval`
+    // of the source, its kind read from its manifest.
+    let eval = |args: &[&str]| {
+        let mut argv = vec!["buildx", "policy", "eval", "--filename", "Agentfile"];
+        argv.extend_from_slice(args);
+        common::run_shards_env_in(&ctx, &[], &argv, &[("SHARDS_HOME", home.as_os_str())], TIMEOUT)
+    };
+    std::fs::write(
+        ctx.join("cosign.pub"),
+        shards_sigstore::sign::public_key_pem(ours.public_key_der()),
+    )
+    .unwrap();
+    let source = format!("osi-artifact://{name}");
+    let denied = eval(&[&source]);
+    assert_eq!(
+        (denied.status, denied.stderr.as_str()),
+        (
+            Some(1),
+            format!("ERROR: policy denied: agent {name} is not signed by our key\n").as_str()
+        )
+    );
+    let printed = eval(&[
+        "--print",
+        "--fields",
+        "image.artifactType,image.checksum",
+        &source,
+    ]);
+    assert_eq!(printed.status, Some(0), "{}", printed.stderr);
+    assert!(
+        printed
+            .stdout
+            .contains("\"artifactType\": \"application/vnd.osi.agent.v1\""),
+        "{}",
+        printed.stdout
+    );
+
     // Signed here: allowed, checked by name and then pinned.
     let signed = shards(&["sign", "agent", &name, "--key", key.to_str().unwrap()]);
     assert_eq!(signed.status, Some(0), "{}", signed.stderr);
+    let evaluated = eval(&[&source]);
+    assert_eq!(
+        (evaluated.status, evaluated.stderr.as_str()),
+        (Some(0), ""),
+        "{}",
+        evaluated.stdout
+    );
     let allowed = build(&home, &ours);
     assert_eq!(allowed.status, Some(0), "{}", allowed.stderr);
     assert!(

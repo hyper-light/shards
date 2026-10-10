@@ -996,18 +996,21 @@ impl Bases<'_> {
         source: &policy::Source,
         request: &policy::MetaRequest,
     ) -> Result<policy::Meta, String> {
+        // Of the kind its directive names; one named on its own (`policy eval`) is of
+        // whatever kind it is.
         let want = match source.attrs.get("osi.kind").map(String::as_str) {
-            Some("harness") => shards_image::osi::Kind::Harness,
-            Some("mcp") => shards_image::osi::Kind::Mcp,
-            _ => shards_image::osi::Kind::Agent,
+            Some("agent") => Some(shards_image::osi::Kind::Agent),
+            Some("harness") => Some(shards_image::osi::Kind::Harness),
+            Some("mcp") => Some(shards_image::osi::Kind::Mcp),
+            _ => None,
         };
         let mut reference = Reference::parse(name).map_err(|e| format!("{name}: {e}"))?;
         if reference.tag.is_some() {
             reference.digest = None;
         }
         let stored = reference.to_string();
-        let (desc, _, _) =
-            crate::agent::fetch(self.store, &reference, want, self.pull_once(&stored), &|_| {})?;
+        let (desc, _, _, kind) =
+            crate::agent::take(self.store, &reference, want, self.pull_once(&stored), &|_| {})?;
         let digest = self
             .store
             .resolved(&stored)
@@ -1018,7 +1021,11 @@ impl Bases<'_> {
             true => Some(crate::agent::signature_bundles(self.store, &stored)?),
         };
         Ok(policy::Meta {
-            artifact: Some(policy::ArtifactMeta { digest, signatures }),
+            artifact: Some(policy::ArtifactMeta {
+                digest,
+                artifact_type: kind.artifact_type().to_string(),
+                signatures,
+            }),
             ..policy::Meta::default()
         })
     }

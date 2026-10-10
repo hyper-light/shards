@@ -633,18 +633,28 @@ pub fn of_source(
         "osi-artifact" => {
             let r = Reference::parse_normalized(rest)
                 .map_err(|e| format!("failed to parse OSI artifact source reference: {e}"))?;
+            // Its kind as its directive names it; else what its manifest says, once read.
             let kind = match source.attrs.get("osi.kind").map(String::as_str) {
-                Some("agent") | None => shards_image::osi::Kind::Agent,
-                Some("harness") => shards_image::osi::Kind::Harness,
-                Some("mcp") => shards_image::osi::Kind::Mcp,
+                Some("agent") => Some(shards_image::osi::Kind::Agent),
+                Some("harness") => Some(shards_image::osi::Kind::Harness),
+                Some("mcp") => Some(shards_image::osi::Kind::Mcp),
                 Some(other) => return Err(format!("unsupported OSI artifact kind: {other}")),
+                None => None,
+            };
+            let artifact_type = match (kind, &meta.artifact) {
+                (Some(k), _) => k.artifact_type().to_string(),
+                (None, Some(a)) => a.artifact_type.clone(),
+                (None, None) => {
+                    inp.unknowns.push("image.artifactType".into());
+                    String::new()
+                }
             };
             let mut img = Image {
                 reference: r.to_string(),
                 host: r.domain.clone(),
                 repo: r.familiar_name(),
                 full_repo: r.name(),
-                artifact_type: kind.artifact_type().to_string(),
+                artifact_type,
                 ..Image::default()
             };
             if let Some(d) = &r.digest {
