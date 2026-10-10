@@ -975,6 +975,7 @@ dependencies = [
  "shards-cmdline",
  "shards-dockerfile",
  "shards-flate",
+ "shards-gateway",
  "shards-git",
  "shards-gitsign",
  "shards-image",

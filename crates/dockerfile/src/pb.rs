@@ -302,14 +302,7 @@ pub fn definition(def: &Definition, carried: &Carried<'_>) -> Option<Marshalled>
     if let Some(info) = carried.source
         && def.metadata.iter().any(|m| !m.locations.is_empty())
     {
-        let mut i = W::default();
-        i.bytes(1, info.filename);
-        i.bytes(2, info.data);
-        if let Some(d) = info.definition {
-            i.always(3, d);
-        }
-        i.bytes(4, info.language);
-        source.message(2, i);
+        source.always(2, &source_info(&info));
     }
     w.message(3, source);
     Some(Marshalled {
@@ -517,6 +510,26 @@ fn op_metadata_json(md: &Meta, caps: &std::collections::BTreeSet<&'static str>, 
         fields.push(format!("\"linux_resources\":{{{}}}", l.join(",")));
     }
     format!("{{{}}}", fields.join(","))
+}
+
+/// `info` as pb.SourceInfo, protobuf: a warning's source.
+pub fn source_info(info: &SourceInfo<'_>) -> Vec<u8> {
+    let mut i = W::default();
+    i.bytes(1, info.filename);
+    i.bytes(2, info.data);
+    if let Some(d) = info.definition {
+        i.always(3, d);
+    }
+    i.bytes(4, info.language);
+    i.0
+}
+
+/// Lines `start` to `end` as pb.Range, protobuf, their characters 0.
+pub fn range(start: usize, end: usize) -> Vec<u8> {
+    let mut r = W::default();
+    r.message(1, position(start));
+    r.message(2, position(end));
+    r.0
 }
 
 /// A line of the source as `pb.Position` has it, its character 0.
