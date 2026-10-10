@@ -279,6 +279,18 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 ));
             }
         };
+        // Beside its image's agents and harnesses, an exec is held to what its run was
+        // (D115): not privileged, and none of their IDs; its init refuses both again.
+        if let Some(a) = base.agentfile.as_ref().filter(|a| a.domains > 0) {
+            let refused = if exec.privileged {
+                Err(shards_abi::run::beside::privileged("exec"))
+            } else {
+                a.ids(&exec.user, &[])
+            };
+            if let Err(e) = refused {
+                return refuse(&format!("Error response from daemon: {e}"));
+            }
+        }
         let base = &base.options;
         let options = crate::spec::Options {
             argv: exec.cmd,

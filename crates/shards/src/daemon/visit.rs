@@ -157,6 +157,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 layer_pending: true,
                 visit: true,
                 egress: None,
+                agentfile: None,
             },
             || self.warm_for(threads, &prepared, &start, &|_| {}),
         );

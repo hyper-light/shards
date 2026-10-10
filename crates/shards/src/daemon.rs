@@ -328,6 +328,8 @@ enum RunState {
 struct Base {
     options: crate::spec::Options,
     health: Option<(shards_ipc::Health, Vec<String>)>,
+    /// Its image's Agentfile (D109), which its execs are held to as its run was (D115).
+    agentfile: Option<crate::agentfile::Agentfile>,
 }
 
 /// What a run's registration keeps of its request: a detached client, until it is told
@@ -351,6 +353,8 @@ struct Keep<'a> {
     /// The ports its image's Agentfile grants its agents (D59), for its VM's network
     /// process: `NET_POLICY`'s payload.
     egress: Option<Vec<u8>>,
+    /// Its image's Agentfile (D109), for its execs (D115).
+    agentfile: Option<crate::agentfile::Agentfile>,
 }
 
 /// A run in progress: its VM's socket, to signal the command, and the VM itself.
@@ -1985,6 +1989,15 @@ impl<D: Disk> Daemon<D> {
         let shared = crate::volumes::open(&points, first, &crate::volumes::Store::new(&self.home)).and_then(
             |opened| {
                 prepared.spec.setup = crate::setup::setup(&run, &opened.mounts)?;
+                // Beside agents whose flows past the microVM cross the command's network
+                // namespace, Docker's default CAP_NET_RAW is not the command's (D115).
+                if let Some(a) = prepared.agentfile.as_ref().filter(|a| a.domains > 0 && a.uplink) {
+                    prepared.spec.setup.retain(|e| !e.starts_with(b"caps="));
+                    prepared
+                        .spec
+                        .setup
+                        .push(format!("caps={}", a.caps(&run)).into_bytes());
+                }
                 prepared.spec.setup.extend(network_setup.iter().cloned());
                 let kernel = crate::guest::version_of(crate::run::kernel_of(&prepared.boot))?;
                 prepared
@@ -2141,6 +2154,7 @@ impl<D: Disk> Daemon<D> {
                 layer_pending: layer_out.is_some(),
                 visit: false,
                 egress,
+                agentfile: prepared.agentfile.clone(),
             },
             || self.warm_for(threads, &prepared, &start, &say),
         );
@@ -2572,6 +2586,11 @@ impl<D: Disk> Daemon<D> {
         crate::resources::verify(&run.resources, crate::resources::host_cpus(), false)?;
         crate::setup::verify(run)?;
         validate_restart_policy(&run.restart_policy)?;
+        // Then shards' own: beside its image's agents and harnesses, nothing that reaches
+        // them (D115); its init refuses each again as it starts the command.
+        if let Some(a) = &prepared.agentfile {
+            a.refuse(run)?;
+        }
         // A name held by a container that ended with `--rm`, its end not yet taken or its
         // removal not yet durable, is free once that is done, as dockerd's is by the time
         // `docker run --rm` returns: its end is taken, and its removal waited for.
@@ -3032,6 +3051,7 @@ impl<D: Disk> Daemon<D> {
             layer_pending,
             visit,
             egress: _,
+            agentfile,
         } = keep;
         if layer_pending {
             lock(&self.settling).insert(id.to_string());
@@ -3068,7 +3088,11 @@ impl<D: Disk> Daemon<D> {
             visit,
         }));
         let tracked = Tracked {
-            base: Arc::new(Base { options, health }),
+            base: Arc::new(Base {
+                options,
+                health,
+                agentfile,
+            }),
             socket,
             vm: ready.vm,
             inbox: inbox.clone(),
@@ -5056,6 +5080,7 @@ mod tests {
                         layer_pending: false,
                         visit: false,
                         egress: None,
+                        agentfile: None,
                     },
                     acquire,
                 )?;
@@ -5338,6 +5363,7 @@ mod tests {
                             layer_pending: false,
                             visit: false,
                             egress: None,
+                            agentfile: None,
                         },
                         || {
                             offered
@@ -6961,6 +6987,7 @@ mod tests {
                 layer_pending: false,
                 visit: false,
                 egress: None,
+                agentfile: None,
             };
             let _inbox = t.daemon.register(ready, &id, keep);
             say(&vm, kind::STARTED, &[]);
