@@ -91,8 +91,13 @@ pub fn usage(root: &std::path::Path) -> io::Result<u64> {
 /// image has them (Docker's init layer is beneath a container's, not in it).
 pub fn pack(out: &mut impl Write) -> io::Result<()> {
     let upper = crate::changes::upper().ok_or_else(|| io::Error::other("the writable layer was not kept"))?;
+    pack_from(&upper, out)
+}
+
+/// [`pack`] of the writable layer at `upper`: the workload's, or a joiner's (D119).
+pub fn pack_from(upper: &str, out: &mut impl Write) -> io::Result<()> {
     let mut exclude: Vec<Vec<u8>> = MADE.iter().map(|p| p.as_bytes().to_vec()).collect();
-    exclude.extend(made_only(&upper).into_iter().map(String::into_bytes));
+    exclude.extend(made_only(upper).into_iter().map(String::into_bytes));
     let opts = shards_archive::PackOptions {
         exclude_patterns: exclude,
         whiteout: shards_archive::WhiteoutFormat::Overlay,
@@ -101,7 +106,7 @@ pub fn pack(out: &mut impl Write) -> io::Result<()> {
     // The kept descriptor's path is a link to a directory the root hides: entered, it is
     // the directory. Where init stands matters to nothing else (a built-in's own
     // process, or init after its workload).
-    std::env::set_current_dir(&upper)?;
+    std::env::set_current_dir(upper)?;
     shards_archive::pack(std::path::Path::new("."), &opts, out)
         .map(drop)
         .map_err(|e| io::Error::other(e.to_string()))

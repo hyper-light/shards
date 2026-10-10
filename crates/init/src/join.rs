@@ -8,7 +8,7 @@
 
 use std::ffi::CString;
 use std::fs::File;
-use std::io::{self, Read, Write};
+use std::io::{self, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::time::{Duration, Instant};
 
@@ -22,6 +22,18 @@ pub struct Join {
 
 /// An image's user database, `/etc/passwd` and `/etc/group`, where it has them.
 pub type Users = (Option<Vec<u8>>, Option<Vec<u8>>);
+
+/// A joiner's layers, its image's and its writable one, each a directory's `O_PATH`
+/// descriptor kept from before its root moved over them, as init keeps the workload's
+/// (changes.rs, `keep`): what its diff, size and commit read.
+#[derive(Debug)]
+pub struct Kept {
+    pub lower: OwnedFd,
+    pub upper: OwnedFd,
+}
+
+/// What a joiner's child built: its image's users, and its layers kept.
+pub type Built = (Users, Kept);
 
 /// The setup entry that makes an exec a joiner: `join=OFFSET,LEN`, its image's bytes on
 /// the join disk, which the host gave it.
@@ -262,7 +274,7 @@ fn loop_device(disk: &str, offset: u64, len: u64) -> Result<(String, File), Stri
 /// `/etc/resolv.conf` over its own; then its cgroup, `cgroup`, and a cgroup namespace
 /// rooted there; then the mounts Docker gives a container. Returns its image's user
 /// database, `/etc/passwd` and `/etc/group`, which init resolves its user against.
-pub fn build(join: Join, cgroup: &str) -> Result<Users, String> {
+pub fn build(join: Join, cgroup: &str) -> Result<Built, String> {
     let end = join
         .offset
         .checked_add(join.len)
@@ -320,6 +332,20 @@ pub fn build(join: Join, cgroup: &str) -> Result<Users, String> {
         std::fs::read(format!("{ROOT}/etc/passwd")).ok(),
         std::fs::read(format!("{ROOT}/etc/group")).ok(),
     );
+    // Its layers, kept before its root moves over them.
+    let open_path = |path: &str| -> Result<OwnedFd, String> {
+        use std::os::unix::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_PATH | libc::O_DIRECTORY)
+            .open(path)
+            .map(OwnedFd::from)
+            .map_err(|e| format!("{path}: {e}"))
+    };
+    let kept = Kept {
+        lower: open_path(LOWER)?,
+        upper: open_path("/dev/join/rw/upper")?,
+    };
     // The workload's files over its own, the same files: what the workload's run writes in
     // them, it sees.
     etc_dir()?;
@@ -361,7 +387,7 @@ pub fn build(join: Join, cgroup: &str) -> Result<Users, String> {
     let _ = std::fs::remove_file(mtab);
     std::os::unix::fs::symlink("/proc/mounts", mtab).map_err(|e| format!("{mtab}: {e}"))?;
     crate::run::masked().map_err(|f| f.message)?;
-    Ok(users)
+    Ok((users, kept))
 }
 
 /// Makes the joiner's `/etc` a directory, as Docker's init layer does over an image that
@@ -400,47 +426,54 @@ fn pivot() -> Result<(), String> {
     Ok(())
 }
 
-/// What a joiner's child says to init once its root is built: its image's user database,
-/// or why it has no root. Its length first: the child, forked from init, holds init's own
-/// copy of the pipe's other end until it execs, so its end is no end of the report.
-pub fn report(to: OwnedFd, built: &Result<Users, String>) {
-    let mut out = File::from(to);
-    let mut bytes = Vec::new();
+/// What a joiner's child says to init once its root is built: its image's user database
+/// and its layers' descriptors, or why it has no root. Its length first: the child, forked
+/// from init, holds init's own end of the channel until it execs, so the channel's end is
+/// no end of the report. The descriptors come with its first byte (`SCM_RIGHTS`).
+pub fn report(to: OwnedFd, built: &Result<Built, String>) {
+    let mut body = Vec::new();
     match built {
-        Ok((passwd, group)) => {
-            bytes.push(1);
+        Ok(((passwd, group), _)) => {
+            body.push(1);
             for file in [passwd, group] {
                 match file {
                     Some(b) => {
-                        bytes.push(1);
-                        bytes.extend(u32::try_from(b.len()).unwrap_or(u32::MAX).to_be_bytes());
-                        bytes.extend(b.get(..u32::MAX as usize).unwrap_or(b));
+                        body.push(1);
+                        body.extend(u32::try_from(b.len()).unwrap_or(u32::MAX).to_be_bytes());
+                        body.extend(b.get(..u32::MAX as usize).unwrap_or(b));
                     }
-                    None => bytes.push(0),
+                    None => body.push(0),
                 }
             }
         }
         Err(why) => {
-            bytes.push(0);
-            bytes.extend(why.as_bytes());
+            body.push(0);
+            body.extend(why.as_bytes());
         }
     }
-    let len = u32::try_from(bytes.len()).unwrap_or(u32::MAX).to_be_bytes();
-    let _ = out.write_all(&len).and_then(|()| out.write_all(&bytes));
+    let mut bytes = u32::try_from(body.len())
+        .unwrap_or(u32::MAX)
+        .to_be_bytes()
+        .to_vec();
+    bytes.extend(body);
+    let fds = match built {
+        Ok((_, kept)) => vec![kept.lower.as_raw_fd(), kept.upper.as_raw_fd()],
+        Err(_) => Vec::new(),
+    };
+    let _ = send_with(&to, &bytes, &fds);
 }
 
-/// Init's side of [`report`]: the joiner's user database, or why it has no root.
-pub fn reported(from: OwnedFd) -> Result<Users, String> {
-    let mut from = File::from(from);
-    let mut len = [0u8; 4];
-    from.read_exact(&mut len)
-        .map_err(|_| "joining: its process ended before its root was built".to_string())?;
-    let mut bytes = vec![0u8; u32::from_be_bytes(len) as usize];
-    from.read_exact(&mut bytes)
-        .map_err(|e| format!("joining: a truncated report: {e}"))?;
-    let (&ok, mut rest) = bytes
-        .split_first()
+/// Init's side of [`report`]: the joiner's user database and its layers, or why it has no
+/// root.
+pub fn reported(from: OwnedFd) -> Result<Built, String> {
+    let (bytes, mut fds) = receive_with(&from).map_err(|e| format!("joining: {e}"))?;
+    let (len, body) = bytes
+        .split_first_chunk::<4>()
         .ok_or("joining: its process ended before its root was built")?;
+    let body = body
+        .get(..u32::from_be_bytes(*len) as usize)
+        .ok_or("joining: a truncated report")?;
+    let (&ok, mut rest) = body.split_first().ok_or("joining: an empty report")?;
     if ok == 0 {
         return Err(format!("joining: {}", String::from_utf8_lossy(rest)));
     }
@@ -460,19 +493,140 @@ pub fn reported(from: OwnedFd) -> Result<Users, String> {
     };
     let passwd = take()?;
     let group = take()?;
-    Ok((passwd, group))
+    let (upper, lower) = (fds.pop(), fds.pop());
+    let (Some(lower), Some(upper), true) = (lower, upper, fds.is_empty()) else {
+        return Err("joining: its layers did not come with its report".into());
+    };
+    Ok(((passwd, group), Kept { lower, upper }))
 }
 
-/// A pipe for [`report`]: init's end to read, the child's to write.
-pub fn report_pipe() -> Result<(OwnedFd, OwnedFd), String> {
+/// A channel for [`report`]: init's end to read, the child's to write.
+pub fn report_channel() -> Result<(OwnedFd, OwnedFd), String> {
     let mut fds = [0; 2];
-    // SAFETY: pipe2(2) filling a two-int array.
-    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
-        return Err(last("a pipe for joining"));
+    // SAFETY: socketpair(2) filling a two-int array.
+    if unsafe {
+        libc::socketpair(
+            libc::AF_UNIX,
+            libc::SOCK_STREAM | libc::SOCK_CLOEXEC,
+            0,
+            fds.as_mut_ptr(),
+        )
+    } != 0
+    {
+        return Err(last("a channel for joining"));
     }
     let [r, w] = fds;
     // SAFETY: fresh descriptors nothing else owns.
     Ok(unsafe { (OwnedFd::from_raw_fd(r), OwnedFd::from_raw_fd(w)) })
+}
+
+/// The most descriptors a report carries: a joiner's two layers.
+const MAX_FDS: usize = 2;
+
+/// Sends `bytes` on `sock`, `fds` with their first byte (`SCM_RIGHTS`, unix(7)).
+fn send_with(sock: &OwnedFd, bytes: &[u8], fds: &[std::os::fd::RawFd]) -> io::Result<()> {
+    let mut sent = 0;
+    while sent < bytes.len() {
+        let rest = bytes.get(sent..).unwrap_or_default();
+        let mut iov = libc::iovec {
+            iov_base: rest.as_ptr().cast_mut().cast(),
+            iov_len: rest.len(),
+        };
+        let mut control = [0u64; 8];
+        // SAFETY: an all-zero msghdr, then filled with buffers of ours that outlive the call.
+        let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
+        msg.msg_iov = &raw mut iov;
+        msg.msg_iovlen = 1;
+        if sent == 0 && !fds.is_empty() && fds.len() <= MAX_FDS {
+            let data = std::mem::size_of_val(fds);
+            msg.msg_control = control.as_mut_ptr().cast();
+            // SAFETY: CMSG_SPACE, CMSG_LEN and CMSG_FIRSTHDR of a control buffer large enough
+            // for MAX_FDS descriptors, whose header and data are written in it.
+            unsafe {
+                msg.msg_controllen = libc::CMSG_SPACE(u32::try_from(data).unwrap_or(u32::MAX)) as _;
+                let c = libc::CMSG_FIRSTHDR(&raw const msg);
+                if c.is_null() {
+                    return Err(io::Error::other("no room for the layers' descriptors"));
+                }
+                (*c).cmsg_level = libc::SOL_SOCKET;
+                (*c).cmsg_type = libc::SCM_RIGHTS;
+                (*c).cmsg_len = libc::CMSG_LEN(u32::try_from(data).unwrap_or(u32::MAX)) as _;
+                std::ptr::copy_nonoverlapping(fds.as_ptr().cast::<u8>(), libc::CMSG_DATA(c), data);
+            }
+        }
+        // SAFETY: sendmsg(2) of the message just built.
+        let n = unsafe { libc::sendmsg(sock.as_raw_fd(), &raw const msg, libc::MSG_NOSIGNAL) };
+        match usize::try_from(n) {
+            Ok(0) => return Err(io::Error::from(io::ErrorKind::WriteZero)),
+            Ok(n) => sent += n,
+            Err(_) => {
+                let e = io::Error::last_os_error();
+                if e.kind() != io::ErrorKind::Interrupted {
+                    return Err(e);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Reads `sock` to its end: the bytes, and the descriptors that came with them.
+fn receive_with(sock: &OwnedFd) -> io::Result<(Vec<u8>, Vec<OwnedFd>)> {
+    let (mut bytes, mut fds) = (Vec::new(), Vec::new());
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        let mut iov = libc::iovec {
+            iov_base: buf.as_mut_ptr().cast(),
+            iov_len: buf.len(),
+        };
+        let mut control = [0u64; 8];
+        // SAFETY: as in `send_with`.
+        let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
+        msg.msg_iov = &raw mut iov;
+        msg.msg_iovlen = 1;
+        msg.msg_control = control.as_mut_ptr().cast();
+        msg.msg_controllen = std::mem::size_of_val(&control) as _;
+        // SAFETY: recvmsg(2) into the buffers just described, all of ours and alive; with
+        // MSG_CMSG_CLOEXEC, what it brings is closed on exec.
+        let n = unsafe { libc::recvmsg(sock.as_raw_fd(), &raw mut msg, libc::MSG_CMSG_CLOEXEC) };
+        let n = match usize::try_from(n) {
+            Ok(n) => n,
+            Err(_) => {
+                let e = io::Error::last_os_error();
+                if e.kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(e);
+            }
+        };
+        // SAFETY: CMSG_FIRSTHDR and CMSG_NXTHDR walk the control buffer recvmsg filled; an
+        // SCM_RIGHTS header's data is the descriptors it brought, now this process's.
+        unsafe {
+            let mut c = libc::CMSG_FIRSTHDR(&raw const msg);
+            while !c.is_null() {
+                if (*c).cmsg_level == libc::SOL_SOCKET && (*c).cmsg_type == libc::SCM_RIGHTS {
+                    let len = ((*c).cmsg_len as usize).saturating_sub(libc::CMSG_LEN(0) as usize);
+                    let count = len / std::mem::size_of::<std::os::fd::RawFd>();
+                    let data = libc::CMSG_DATA(c).cast::<std::os::fd::RawFd>();
+                    for i in 0..count {
+                        let fd = std::ptr::read_unaligned(data.add(i));
+                        fds.push(OwnedFd::from_raw_fd(fd));
+                    }
+                }
+                c = libc::CMSG_NXTHDR(&raw const msg, c);
+            }
+        }
+        if n == 0 {
+            return Ok((bytes, fds));
+        }
+        bytes.extend_from_slice(buf.get(..n).unwrap_or_default());
+        // The whole report, by its length: init's copy of the child's end may stay open.
+        if let Some((len, body)) = bytes.split_first_chunk::<4>()
+            && body.len() >= u32::from_be_bytes(*len) as usize
+        {
+            return Ok((bytes, fds));
+        }
+    }
 }
 
 #[cfg(test)]
@@ -497,20 +651,37 @@ mod tests {
     }
 
     #[test]
-    fn a_report_says_the_users_or_why() {
-        for built in [
-            Ok((Some(b"root:x:0:0::/root:/bin/sh\n".to_vec()), None)),
-            Ok((None, Some(b"root:x:0:\n".to_vec()))),
-            Ok((None, None)),
-            Err("mounting erofs on /dev/join/lower: Invalid argument".to_string()),
+    fn a_report_says_the_users_and_layers_or_why() {
+        let dir = |name: &str| {
+            use std::os::unix::fs::OpenOptionsExt;
+            let path = std::env::temp_dir().join(format!("shards-join-{name}-{}", std::process::id()));
+            std::fs::create_dir_all(&path).unwrap();
+            let fd: OwnedFd = std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_PATH | libc::O_DIRECTORY)
+                .open(&path)
+                .unwrap()
+                .into();
+            (path, fd)
+        };
+        for users in [
+            (Some(b"root:x:0:0::/root:/bin/sh\n".to_vec()), None),
+            (None, Some(b"root:x:0:\n".to_vec())),
+            (None, None),
         ] {
-            let (r, w) = report_pipe().unwrap();
-            report(w, &built);
-            let back = reported(r);
-            match built {
-                Ok(users) => assert_eq!(back.unwrap(), users),
-                Err(why) => assert_eq!(back.unwrap_err(), format!("joining: {why}")),
-            }
+            let ((lower_path, lower), (upper_path, upper)) = (dir("lower"), dir("upper"));
+            let (r, w) = report_channel().unwrap();
+            report(w, &Ok((users.clone(), Kept { lower, upper })));
+            let (back, kept) = reported(r).unwrap();
+            assert_eq!(back, users);
+            // The descriptors that came name the directories sent.
+            let named =
+                |fd: &OwnedFd| std::fs::read_link(format!("/proc/self/fd/{}", fd.as_raw_fd())).unwrap();
+            assert_eq!((named(&kept.lower), named(&kept.upper)), (lower_path, upper_path));
         }
+        let (r, w) = report_channel().unwrap();
+        let why = "mounting erofs on /dev/join/lower: Invalid argument".to_string();
+        report(w, &Err(why.clone()));
+        assert_eq!(reported(r).unwrap_err(), format!("joining: {why}"));
     }
 }

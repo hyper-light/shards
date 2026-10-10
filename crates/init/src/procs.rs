@@ -78,14 +78,19 @@ pub fn dump(reaper: Option<libc::pid_t>) -> Vec<u8> {
         out.push(US);
         put(&mut out, &f);
     }
-    let me = std::process::id();
+    // This process as the `/proc` read numbers it: getpid(2) answers in this process's
+    // PID namespace, and none in a joiner's (D119), whose `/proc` is read from within its
+    // mount namespace and lists its PID namespace, which this process is not in.
+    let me: Option<u32> = std::fs::read_link("/proc/self")
+        .ok()
+        .and_then(|p| p.to_str()?.parse().ok());
     let mine = std::fs::read_link("/proc/self/exe").ok();
     let Ok(dir) = std::fs::read_dir("/proc") else {
         return out;
     };
     let mut pids: Vec<u32> = dir
         .filter_map(|e| e.ok()?.file_name().to_str()?.parse().ok())
-        .filter(|&pid| pid != me)
+        .filter(|&pid| Some(pid) != me)
         .collect();
     pids.sort_unstable();
     for pid in pids {

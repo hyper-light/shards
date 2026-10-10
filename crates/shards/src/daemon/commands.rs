@@ -810,11 +810,6 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 "container {id} is paused: its changes can be read once it is unpaused"
             ));
         }
-        if self.joined_run(&id) {
-            return refuse(format!(
-                "container {id}: a container joining another's network keeps no layer to read yet"
-            ));
-        }
         let spec = shards_abi::run::Spec {
             builtin: shards_abi::run::builtin::CHANGES,
             ..Default::default()

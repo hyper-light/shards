@@ -125,11 +125,6 @@ impl<D: crate::containers::Disk> Daemon<D> {
                         "container {id} is paused: its files can be committed once it is unpaused"
                     ));
                 }
-                if self.joined_run(&id) {
-                    return refuse(format!(
-                        "container {id}: a container joining another's network keeps no layer to read yet"
-                    ));
-                }
                 // `--pause`, deprecated, says it where given (commit.go).
                 let pause = if parsed.changed("pause") {
                     parsed.bool("pause")
