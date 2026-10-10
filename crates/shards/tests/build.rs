@@ -8818,16 +8818,26 @@ fn an_agent_reaches_no_socket_of_the_runs_own() {
     .unwrap();
     let built = shards(&["build", "-t", "unix:1", ctx.to_str().unwrap()]);
     assert_eq!(built.status, Some(0), "{}", built.stderr);
-    let ran = shards(&[
-        "run",
-        "--rm",
-        "unix:1",
-        "unix-listen",
-        "/work/escape.sock",
-        "shards-escape",
-        "confined-ready",
-        "1",
-    ]);
+    // The host says when the agent is up, which the workload, in a PID namespace of its own,
+    // does not see (D115).
+    let ran = common::run_awaiting(
+        &env,
+        &[
+            "run",
+            "--rm",
+            "--name",
+            "unix",
+            "unix:1",
+            "unix-listen",
+            "/work/escape.sock",
+            "shards-escape",
+            "confined-ready",
+            "1",
+        ],
+        "unix",
+        ("confined-ready", 1),
+        TIMEOUT,
+    );
     assert_eq!(ran.status, Some(0), "{}{}", ran.stdout, ran.stderr);
     let said: Vec<&str> = ran
         .stderr
