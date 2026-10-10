@@ -1300,7 +1300,7 @@ impl Exec<'_> {
             if let Ok(i) = usize::try_from(m.input) {
                 let from = match op.input_keys.get(i).cloned().flatten() {
                     Some(k) => k,
-                    None => super::cache::content_key(&input(m.input)?.fs, &mut self.sources)?,
+                    None => super::cache::Digests::default().root(&input(m.input)?.fs, &mut self.sources)?,
                 };
                 key = format!("{key}:{from}");
             }

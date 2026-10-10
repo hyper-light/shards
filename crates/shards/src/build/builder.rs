@@ -78,6 +78,11 @@ pub fn origin_id() -> u64 {
 /// A step's output mounts' changes: each the layer it became and its changes' stream.
 pub type Outputs = Vec<(u32, Vec<u8>)>;
 
+/// What a step came to: how it ended, the layer its changes are in the guest, each output
+/// mount's changes with its layer, the layer each cache it writes becomes (D114), and what
+/// its requests came to under the build's proxy (D110).
+pub type Ran = (Ended, u32, Outputs, Vec<u32>, Option<super::proxy::capture::Capture>);
+
 /// How a step's process ended.
 #[derive(Debug)]
 #[cfg_attr(not(unix), allow(dead_code))]
@@ -161,7 +166,7 @@ impl Builder {
         _: &super::Agents,
         _: u64,
         _: StepProxy<'_, '_>,
-    ) -> Result<(Ended, u32, Outputs, Vec<u32>, Option<super::proxy::capture::Capture>), String> {
+    ) -> Result<Ran, String> {
         Err("no builder".into())
     }
 
@@ -524,7 +529,7 @@ impl Builder {
         agents: &super::Agents,
         max: u64,
         proxy: StepProxy<'_, '_>,
-    ) -> Result<(Ended, u32, Outputs, Vec<u32>, Option<super::proxy::capture::Capture>), String> {
+    ) -> Result<Ran, String> {
         step.upper = self.layer_id();
         for o in &mut step.outputs {
             o.1 = self.layer_id();

@@ -4603,6 +4603,87 @@ fn builds_reuse_the_steps_they_have_run() {
     }
 }
 
+/// Steps keyed by what they read (D114), as BuildKit's content checksums key them: a
+/// change to a context file no step copies runs nothing again; a change to one copied runs
+/// that copy and what follows, not what came before; a stage built again to the same
+/// files keeps what copies from it, and what follows that.
+#[test]
+fn steps_are_kept_by_what_they_read() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("read-keys-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+        ("SHARDS_BUILD_MEMORY", "1024".as_ref()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let ctx = context(
+        "read-keys-ctx",
+        &format!(
+            "FROM {image} AS made\nUSER root\nARG X\nRUN [\"/bin/testguest\", \"fs\", \"write:/out=same\"]\n\
+             RUN [\"/bin/testguest\", \"fs\", \"write:/x=$X\"]\n\
+             FROM {image}\nUSER root\nCOPY a.txt /a.txt\nRUN [\"/bin/testguest\", \"fs\", \"write:/one=1\"]\n\
+             COPY b.txt /b.txt\nRUN [\"/bin/testguest\", \"fs\", \"write:/two=2\"]\n\
+             COPY --from=made /out /out\nRUN [\"/bin/testguest\", \"fs\", \"write:/three=3\"]\n"
+        ),
+    );
+    for (f, text) in [("a.txt", "a\n"), ("b.txt", "b\n"), ("c.txt", "c\n")] {
+        std::fs::write(ctx.join(f), text).unwrap();
+    }
+    let build = |args: &[&str]| {
+        let mut all = vec!["build", "--progress=plain"];
+        all.extend_from_slice(args);
+        all.push(ctx.to_str().unwrap());
+        let built = shards(&all);
+        assert_eq!(built.status, Some(0), "{}", built.stderr);
+        built.stderr
+    };
+    let cached = |log: &str, step: &str| -> bool {
+        let n = log
+            .lines()
+            .find_map(|l| {
+                l.strip_prefix('#')
+                    .and_then(|r| r.split_once(' '))
+                    .filter(|(_, t)| t.contains(step))
+                    .map(|(n, _)| n.to_string())
+            })
+            .unwrap_or_else(|| panic!("no step {step:?} in\n{log}"));
+        log.lines().any(|l| l == format!("#{n} CACHED"))
+    };
+    let steps = [
+        "COPY a.txt",
+        "write:/one=1",
+        "COPY b.txt",
+        "write:/two=2",
+        "COPY --from=made",
+        "write:/three=3",
+    ];
+    let first = build(&["--build-arg", "X=1"]);
+    assert!(steps.iter().all(|s| !cached(&first, s)), "{first}");
+    // A file no step copies: nothing runs again.
+    std::fs::write(ctx.join("c.txt"), "changed\n").unwrap();
+    let elsewhere = build(&["--build-arg", "X=1"]);
+    for s in steps {
+        assert!(cached(&elsewhere, s), "{s} ran\n{elsewhere}");
+    }
+    // A file copied: that copy and every step after it run, not what came before.
+    std::fs::write(ctx.join("b.txt"), "changed\n").unwrap();
+    let copied = build(&["--build-arg", "X=1"]);
+    for (s, kept) in steps.iter().zip([true, true, false, false, false, false]) {
+        assert_eq!(cached(&copied, s), kept, "{s}\n{copied}");
+    }
+    // A stage built again to the same file: what copies it, and what follows, kept.
+    let rebuilt = build(&["--build-arg", "X=2"]);
+    assert!(!cached(&rebuilt, "write:/x="), "{rebuilt}");
+    for s in steps {
+        assert!(cached(&rebuilt, s), "{s} ran\n{rebuilt}");
+    }
+}
+
 /// `RUN --mount=type=cache` kept across builds (D114), as BuildKit keeps cache mounts:
 /// what a step writes is there for the next build's, a failing step's writes too; one id
 /// is one cache wherever it is mounted, twice in one step too; its root keeps the owner

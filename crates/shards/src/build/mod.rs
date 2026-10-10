@@ -702,6 +702,38 @@ impl StepLog {
 }
 
 /// How many vCPUs a builder has: the host's, as BuildKit's steps may use them all.
+/// Step `op`'s key from what it reads of its inputs (D114): of each input it reads, the
+/// digest of what it reads ([`cache::reads`]), of the others their keys (`keys`). None where
+/// a path it reads is not there, which the step then finds as it runs.
+fn read_key(
+    op: &shards_dockerfile::llb::Op,
+    reads: &[Option<Vec<cache::Selector>>],
+    inputs: &[exec::Ref],
+    keys: &[&str],
+    digests: &mut cache::Digests,
+    sources: &mut shards_build::data::Sources,
+) -> Result<Option<String>, String> {
+    let mut read: Vec<Option<String>> = Vec::with_capacity(reads.len());
+    for (sels, input) in reads.iter().zip(inputs) {
+        read.push(match sels {
+            Some(sels) => match digests.reads(&input.fs, sels, sources)? {
+                Some(d) => Some(d),
+                None => return Ok(None),
+            },
+            None => None,
+        });
+    }
+    let deps: Vec<cache::Dep<'_>> = read
+        .iter()
+        .zip(keys)
+        .map(|(d, k)| match d {
+            Some(d) => cache::Dep::Read(d),
+            None => cache::Dep::Key(k),
+        })
+        .collect();
+    Ok(Some(cache::op_key(op, &deps)))
+}
+
 fn builder_cpus() -> u32 {
     std::thread::available_parallelism().map_or(1, |n| u32::try_from(n.get()).unwrap_or(u32::MAX))
 }
@@ -3138,8 +3170,11 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
     // provenance.
     let (mut git_materials, mut http_materials): (Vec<provenance::Material>, Vec<provenance::Material>) =
         (Vec::new(), Vec::new());
-    // Each operation's cache key (D50), where it has one: none where an input has none.
+    // Each operation's cache key (D50), the one its result is known by, where it has one:
+    // none where an input has none. And the digests of what the build's steps read
+    // (D114), each taken once.
     let mut keys: Vec<Option<String>> = Vec::with_capacity(def.ops.len());
+    let mut digests = cache::Digests::default();
     let no_cache = parsed.bool("no-cache");
     // What other operations read, so a base image is unpacked only when one does.
     let read: std::collections::HashSet<usize> = def
@@ -3210,49 +3245,91 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
             op.kind,
             OpKind::Exec { .. } | OpKind::File { .. } | OpKind::Merge | OpKind::Skills { .. }
         );
-        // A step with the network under the build's proxy (D110) is keyed apart.
+        // A step with the network under the build's proxy (D110) is keyed apart, by
+        // either of its keys.
         let proxied = proxy_cap
             && matches!(&op.kind, OpKind::Exec { network, .. } if *network != shards_dockerfile::llb::NetMode::None);
-        let key = if step {
-            op.inputs
-                .iter()
-                .map(|inp| keys.get(inp.op).and_then(|k| k.as_deref()))
-                .collect::<Option<Vec<&str>>>()
-                .map(|ks| cache::op_key(op, &ks))
-                .map(|k| if proxied { cache::proxied_key(&k) } else { k })
-        } else {
-            None
+        let apart = |k: String| if proxied { cache::proxied_key(&k) } else { k };
+        // Its keys (D114): from each input's own key, which a build that changed nothing
+        // the step reads finds at once; and, asked only where that one finds nothing, from
+        // what it reads of each input, as BuildKit's solver asks a content checksum. Its
+        // result is known by the second, where it reads any input.
+        let input_keys: Option<Vec<&str>> = op
+            .inputs
+            .iter()
+            .map(|inp| keys.get(inp.op).and_then(|k| k.as_deref()))
+            .collect();
+        let fast = match (step, &input_keys) {
+            (true, Some(ks)) => Some(apart(cache::op_key(
+                op,
+                &ks.iter().map(|k| cache::Dep::Key(k)).collect::<Vec<_>>(),
+            ))),
+            _ => None,
+        };
+        let reads = if step { cache::reads(op) } else { Vec::new() };
+        let reads_any = reads.iter().any(Option::is_some);
+        let mut slow: Option<String> = None;
+        // Its record, here or in a --cache-from cache, its layers fetched now.
+        let lookup = |k: &str| -> Result<Option<Vec<u8>>, String> {
+            match store.cache_get(k).map_err(|e| e.to_string())? {
+                None if imported.take(k, &store)? => store.cache_get(k).map_err(|e| e.to_string()),
+                held => Ok(held),
+            }
         };
         // A step marked IgnoreCache (--no-cache-filter's stages) is run, and its result
         // kept, as BuildKit's solver does: the cache is not asked for it.
-        let held = match key.as_deref() {
-            Some(k) if !no_cache && !meta.ignore_cache => {
-                match store.cache_get(k).map_err(|e| e.to_string())? {
-                    // Not here: from a --cache-from cache, its layers fetched now.
-                    None if imported.take(k, &store)? => store.cache_get(k).map_err(|e| e.to_string())?,
-                    held => held,
+        let mut hit: Option<(String, Vec<u8>)> = None;
+        if !no_cache
+            && !meta.ignore_cache
+            && let Some(f) = fast.as_deref()
+        {
+            if let Some(body) = lookup(f)? {
+                hit = Some((f.to_string(), body));
+            } else if reads_any && let Some(ks) = &input_keys {
+                slow = read_key(op, &reads, &inputs, ks, &mut digests, &mut exec.sources)?.map(apart);
+                if let Some(s) = slow.as_deref()
+                    && s != f
+                    && let Some(body) = lookup(s)?
+                {
+                    hit = Some((s.to_string(), body));
                 }
             }
-            _ => None,
-        };
+        }
         // A proxied step's record is taken only where the build's policies still let each
         // of its requests go (D110); one they refuse now runs the step again, its requests
         // asked again as they come. BuildKit asks nothing of a cached step.
-        let held = match held {
-            Some(body) if proxied => match cache::decode_proxied(&body) {
+        let hit = match hit {
+            Some((k, body)) if proxied => match cache::decode_proxied(&body) {
                 Ok((outputs, c)) => c
                     .allowed
                     .iter()
                     .all(|(method, url)| check_request(method, url))
-                    .then_some(Ok((outputs, Some(c)))),
-                Err(e) => Some(Err(e)),
+                    .then_some((k, body, Ok((outputs, Some(c))))),
+                Err(e) => Some((k, body, Err(e))),
             },
-            Some(body) => Some(cache::decode(&body).map(|outputs| (outputs, None))),
+            Some((k, body)) => {
+                let decoded = cache::decode(&body).map(|outputs| (outputs, None));
+                Some((k, body, decoded))
+            }
             None => None,
         };
-        if let (Some(k), Some(decoded)) = (key.as_deref(), held) {
+        if let Some((k, body, decoded)) = hit {
             let v = progress.borrow_mut().start(&name);
             let (outputs, captured) = decoded.map_err(|e| fail(&v, &e))?;
+            // Found by what it reads: its inputs' own keys find it next time.
+            if let Some(f) = fast.as_deref()
+                && f != k
+            {
+                let blobs = outputs
+                    .iter()
+                    .flatten()
+                    .map(|l| Digest::parse(&show(&l.digest)).map_err(|e| e.to_string()))
+                    .collect::<Result<Vec<_>, String>>()?;
+                let own = outputs.first().and_then(|o| o.last()).map_or(0, |l| l.size);
+                store
+                    .cache_put(f, &blobs, own, &String::from_utf8_lossy(&body))
+                    .map_err(|e| e.to_string())?;
+            }
             let outs: Vec<exec::Ref> = outputs
                 .into_iter()
                 .map(|layers| exec.image(layers, None))
@@ -3260,7 +3337,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
                 .map_err(|e| fail(&v, &e))?;
             progress.borrow().cached(&v);
             guard(meta, &inputs, &outs, &plan.domains, &store).map_err(|e| fail(&v, &e))?;
-            store.cache_used(k).map_err(|e| e.to_string())?;
+            store.cache_used(&k).map_err(|e| e.to_string())?;
             // What its requests came to when it ran, in this build's provenance too.
             if let (Some(c), OpKind::Exec { process, .. }) = (&captured, &op.kind) {
                 proxy_provenance(
@@ -3272,7 +3349,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
                 );
             }
             results.push(outs);
-            keys.push(key);
+            keys.push(Some(cache::known_as(&body).unwrap_or(k)));
             continue;
         }
         // What a proxied step's requests came to, for its record.
@@ -3608,16 +3685,24 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
             // (`local.unique`), which differ from build to build where its files do not.
             OpKind::Source { identifier, .. } => match outs.first() {
                 Some(r) => {
-                    let content = cache::content_key(&r.fs, &mut exec.sources)?;
+                    let content = digests.root(&r.fs, &mut exec.sources)?;
                     Some(cache::source_key(identifier, &content))
                 }
                 None => None,
             },
             _ => {
+                // Known by what it reads, where it reads any input.
+                if reads_any
+                    && slow.is_none()
+                    && let Some(ks) = &input_keys
+                {
+                    slow = read_key(op, &reads, &inputs, ks, &mut digests, &mut exec.sources)?.map(apart);
+                }
+                let known = slow.clone().or_else(|| fast.clone());
                 let layered = outs.iter().all(|r| {
                     matches!(r.stack, shards_build::stack::Stack::Known(_)) && r.stack.follows(r.fs.tree())
                 });
-                if let Some(k) = key.as_deref()
+                if let Some(k) = known.as_deref()
                     && layered
                 {
                     let layers: Vec<Vec<Layer>> = outs.iter().map(|r| r.layers.clone()).collect();
@@ -3630,14 +3715,19 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
                     let own = outs.first().and_then(|r| r.layers.last()).map_or(0, |l| l.size);
                     // A proxied step's record keeps its requests (D110).
                     let body = match &step_capture {
-                        Some(c) if proxied => cache::encode_proxied(&layers, c)?,
-                        _ => cache::encode(&layers)?,
+                        Some(c) if proxied => cache::encode_proxied(k, &layers, c)?,
+                        _ => cache::encode(k, &layers)?,
                     };
-                    store
-                        .cache_put(k, &blobs, own, &body)
-                        .map_err(|e| e.to_string())?;
+                    for under in [Some(k), fast.as_deref().filter(|f| *f != k)]
+                        .into_iter()
+                        .flatten()
+                    {
+                        store
+                            .cache_put(under, &blobs, own, &body)
+                            .map_err(|e| e.to_string())?;
+                    }
                 }
-                key
+                known
             }
         };
         results.push(outs);
