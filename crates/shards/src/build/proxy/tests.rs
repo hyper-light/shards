@@ -5,7 +5,7 @@
 #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
 
 use super::*;
-use std::net::TcpListener;
+use std::net::{TcpListener, TcpStream};
 
 /// A directory of its own, removed with the proxy.
 fn scratch(name: &str) -> PathBuf {
@@ -66,12 +66,17 @@ fn upstream(
                         parts.next().unwrap().to_string(),
                         parts.next().unwrap().to_string(),
                     );
+                    let close = head.to_ascii_lowercase().contains("\r\nconnection: close\r\n");
                     let _ = said.send(format!("{head}{}", String::from_utf8_lossy(&body)));
                     let reply = answer(&method, &target);
                     if r.get_mut().write_all(&reply).is_err() || reply.ends_with(b"#close") {
                         return;
                     }
                     let _ = r.get_mut().flush();
+                    // A client that asked to close is answered and let go.
+                    if close {
+                        return;
+                    }
                 }
             });
         }
@@ -573,4 +578,209 @@ fn upstream_tls_is_never_weakened() {
         capture.incomplete.first().map(|i| i.reason),
         Some("upstream_error")
     );
+}
+
+/// The build's thread for a measurement: each question answered as it comes, woken as the
+/// builder is (`poll` on the session's socket, as `Builder::wait_frame` waits), by a real
+/// policy (`allow if input.http`, evaluated as a build evaluates one) where `policy`, else
+/// at once; until `done`.
+/// One request a measurement makes, each time it is called.
+type Measured<'a> = Box<dyn Fn() + 'a>;
+
+fn answering_as_a_build(q: Questions, done: &AtomicBool, policy: bool) {
+    use super::super::super::policy;
+    use std::os::fd::AsRawFd as _;
+    struct Quiet;
+    impl policy::Log for Quiet {
+        fn line(&self, _: &str) {}
+        fn fetch(&self, _: &str, _: &str, _: Option<&str>) -> Result<Vec<u8>, String> {
+            Err("no fetch".into())
+        }
+    }
+    struct Nothing;
+    impl policy::Resolve for Nothing {
+        fn resolve(&self, s: &policy::Source, _: &policy::MetaRequest) -> Result<policy::Meta, String> {
+            Err(format!("{}: no metadata", s.identifier))
+        }
+    }
+    let dir = scratch("policy");
+    let policies = policy::Policies::configure(policy::Setup {
+        default: policy::Opt {
+            files: vec![policy::FileSpec {
+                filename: "Dockerfile.rego".into(),
+                optional: true,
+                data: Some(
+                    b"package docker\n\ndefault allow := false\n\nallow if input.http\n\ndecision := {\"allow\": allow}\n"
+                        .to_vec(),
+                ),
+            }],
+            context_dir: Some(dir.clone()),
+            ..policy::Opt::default()
+        },
+        configs: &[],
+        env: policy::Env::default(),
+        cwd: dir,
+        default_platform: shards_dockerfile::platform::Platform::new("linux", "arm64"),
+        debug: false,
+        default_policy: false,
+        remote: None,
+    })
+    .unwrap()
+    .unwrap();
+    while !done.load(Ordering::SeqCst) {
+        let mut p = libc::pollfd {
+            fd: q.woken.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: poll(2) on one descriptor of ours, 10 ms at most, to see `done`.
+        unsafe { libc::poll(&mut p, 1, 10) };
+        q.answer(&mut |_, url| {
+            !policy
+                || matches!(
+                    policies.evaluate(&policy::Source::new(url), None, &Nothing, &Quiet),
+                    Ok(None)
+                )
+        });
+    }
+}
+
+/// PM M129: what a request through the proxy costs against the same request straight to
+/// its server, each on a connection of its own, as a step's `curl` makes them: plain HTTP,
+/// its question answered at once and by a real policy; HTTPS, straight with TLS against
+/// through CONNECT (the tunnel's TLS, then the proxy's own to the server). Each kind in
+/// turn, so a busy host weighs on all alike. Microseconds, client side.
+#[test]
+#[ignore = "a measurement: docs/research/measurements/build-proxy/run.sh"]
+fn request_costs() {
+    let n = 1000;
+    let quantiles = |mut took: Vec<u128>| {
+        took.sort_unstable();
+        let q = |p: usize| took[(took.len() * p / 100).min(took.len() - 1)];
+        format!(
+            "p50 {} p90 {} p99 {} max {}",
+            q(50),
+            q(90),
+            q(99),
+            took[took.len() - 1]
+        )
+    };
+    let (port, _) = upstream(None, answer);
+    let (tls, root) = https_server();
+    let (sport, _) = upstream(Some(tls), answer);
+    let read_all = |s: &mut dyn Read| {
+        let mut got = Vec::new();
+        let _ = s.read_to_end(&mut got);
+        assert!(got.ends_with(b"hello\n"), "{}", String::from_utf8_lossy(&got));
+    };
+    let direct = || {
+        let mut c = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        c.write_all(
+            format!("GET /hello HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n").as_bytes(),
+        )
+        .unwrap();
+        read_all(&mut c);
+    };
+    let roots = {
+        let mut r = rustls::RootCertStore::empty();
+        r.add(root.clone()).unwrap();
+        Arc::new(
+            rustls::ClientConfig::builder_with_provider(Arc::new(
+                rustls::crypto::aws_lc_rs::default_provider(),
+            ))
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_root_certificates(r)
+            .with_no_client_auth(),
+        )
+    };
+    let direct_tls = || {
+        let c = TcpStream::connect(("127.0.0.1", sport)).unwrap();
+        let name = rustls::pki_types::ServerName::try_from("127.0.0.1").unwrap();
+        let mut tls =
+            rustls::StreamOwned::new(rustls::ClientConnection::new(roots.clone(), name).unwrap(), c);
+        tls.write_all(
+            format!("GET /hello HTTP/1.1\r\nHost: 127.0.0.1:{sport}\r\nConnection: close\r\n\r\n").as_bytes(),
+        )
+        .unwrap();
+        read_all(&mut tls);
+    };
+    let mut timings: Vec<(&str, Vec<u128>)> = Vec::new();
+    for policy in [false, true] {
+        let mut proxy = Proxy::new(scratch("measure"), 1 << 20).unwrap();
+        proxy.tls = shards_registry::tls::client_config(vec![root.clone()], None).unwrap();
+        proxy.reach = |_| true;
+        let (session, questions) =
+            Session::begin(&proxy, shards_registry::proxy::Proxies::default()).unwrap();
+        let (stop, stopped) = UnixStream::pair().unwrap();
+        let done = AtomicBool::new(false);
+        let socket = proxy.socket().to_path_buf();
+        let ca = proxy.ca().to_vec();
+        let mut kinds: Vec<(&str, Measured<'_>)> = Vec::new();
+        if !policy {
+            kinds.push(("plain, straight", Box::new(direct)));
+            kinds.push(("HTTPS, straight", Box::new(direct_tls)));
+        }
+        let plain_name = if policy {
+            "plain, through the proxy, a policy checking it"
+        } else {
+            "plain, through the proxy"
+        };
+        let s = socket.clone();
+        kinds.push((
+            plain_name,
+            Box::new(move || {
+                let mut c = UnixStream::connect(&s).unwrap();
+                c.write_all(
+                    format!(
+                        "GET http://127.0.0.1:{port}/hello HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"
+                    )
+                    .as_bytes(),
+                )
+                .unwrap();
+                read_all(&mut c);
+            }),
+        ));
+        if !policy {
+            let authority = format!("127.0.0.1:{sport}");
+            kinds.push((
+                "HTTPS, through the proxy's tunnel",
+                Box::new(move || {
+                    let mut tls = tunnel_client(&socket, &ca, &authority);
+                    tls.write_all(
+                        format!("GET /hello HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\n\r\n")
+                            .as_bytes(),
+                    )
+                    .unwrap();
+                    read_all(&mut tls);
+                }),
+            ));
+        }
+        std::thread::scope(|scope| {
+            let (session, stopped, done) = (&session, &stopped, &done);
+            std::thread::Builder::new()
+                .spawn_scoped(scope, move || session.serve(scope, stopped))
+                .unwrap();
+            std::thread::Builder::new()
+                .spawn_scoped(scope, move || answering_as_a_build(questions, done, policy))
+                .unwrap();
+            let mut took: Vec<Vec<u128>> = vec![Vec::with_capacity(n); kinds.len()];
+            for _ in 0..n {
+                for (k, (_, f)) in kinds.iter().enumerate() {
+                    let t = Instant::now();
+                    f();
+                    took[k].push(t.elapsed().as_micros());
+                }
+            }
+            for ((name, _), t) in kinds.iter().zip(took) {
+                timings.push((name, t));
+            }
+            done.store(true, Ordering::SeqCst);
+            drop(stop);
+            session.end();
+        });
+    }
+    for (name, t) in timings {
+        println!("{name}: n={n} {}", quantiles(t));
+    }
 }
