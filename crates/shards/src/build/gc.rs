@@ -22,6 +22,8 @@ pub struct Record {
     /// A step's key, or a cache mount's id.
     pub id: String,
     pub size: u64,
+    // Said by `builder prune` alone, which the daemon serves, where there is one (Unix).
+    #[cfg_attr(not(unix), allow(dead_code))]
     pub created: i64,
     pub last_used: i64,
     pub usage: u64,
