@@ -2360,6 +2360,14 @@ microVM as virtio-fs shares (virtio 1.3 §5.11; Linux fs/fuse/virtio_fs.c):
     then opened without waiting or taking a terminal and looked at again, for one put
     there meanwhile; the guest's status flags are then restored. An OPEN with its
     RELEASE costs 1.5 µs more in the share process (PM M129).
+  - *A device node is not opened to be looked at* (V08). A node's attributes, its owner's
+    among them, were read through a descriptor opened for them, so a LOOKUP or GETATTR of
+    a device node ran its driver's open on the host (a serial line raises DTR), from any
+    guest's `ls -l` of a shared /dev. A character or block device is looked at first and
+    not opened: it has no attributes here, ENODATA to read, none listed, EPERM to change,
+    as Linux keeps `user.` attributes off special files (fs/xattr.c `xattr_permission`).
+    LOOKUP and GETATTR pass the stat they just took, a node's own (not a guest-named open
+    file's), so they look no more often than before (PM M133).
   - *A request is bounded before it is read* (V03). A chain may claim 256 descriptors of
     4 GiB; the device allocated what it claimed, a TiB, before reading any of it. One
     longer than any FUSE request (`MAX_FRAME`, a largest write and its headers) is
@@ -2388,11 +2396,13 @@ microVM as virtio-fs shares (virtio 1.3 §5.11; Linux fs/fuse/virtio_fs.c):
     replies. `size` is held to `MAX_WRITE`, the largest read INIT tells the guest.
   - Tests: `fs::server::tests` (`a_mode_change_follows_no_symlink`,
     `special_files_are_never_opened`, `a_listing_comes_a_read_at_a_time`,
-    `a_directory_is_read_whole_a_page_at_a_time`), `tests/fs_dir_handles.rs` and `fs::tests`
-    (`a_request_longer_than_any_is_refused_unread`,
-    `guest_memory_is_free_while_the_share_answers`), each mutation-checked; the
-    after-open look guards only a name replaced between the two looks, which no test can
-    time.
+    `a_directory_is_read_whole_a_page_at_a_time`,
+    `a_device_is_never_opened_to_be_looked_at`), `tests/fs_dir_handles.rs` and
+    `fs::tests` (`a_request_longer_than_any_is_refused_unread`,
+    `guest_memory_is_free_while_the_share_answers`), each mutation-checked. The looks
+    after an open guard only a name replaced between two looks, which no test can time,
+    nor can one put a regular file and a device in one share without root, which a
+    GETATTR naming one's open file for the other's node would need.
 - **The kernel** has `CONFIG_VIRTIO_FS` and `CONFIG_FUSE_DAX` (kernel-6.18.48-98788948976a).
 - Open, unmeasured: the forwarding hop's cost per request against an in-process server,
   and throughput against Docker Desktop's virtiofs; DAX windows, which would let file

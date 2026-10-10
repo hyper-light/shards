@@ -71,6 +71,27 @@ fn open(warm: usize, n: usize) -> Vec<u128> {
     ns
 }
 
+/// A share's LOOKUP then GETATTR of one file, each pair timed: the metadata a guest's
+/// `stat` of a file it has not cached asks for.
+fn getattr(warm: usize, n: usize) -> Vec<u128> {
+    let dir = std::env::temp_dir().join(format!("virtio-fs-audit-attr-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("f"), b"file").unwrap();
+    let server = Server::new(std::fs::File::open(&dir).unwrap().into(), false, None).unwrap();
+    let mut ns = Vec::with_capacity(n);
+    for i in 0..warm + n {
+        let t0 = Instant::now();
+        let node = word(&server.handle(&req(1, 1, b"f\0")).unwrap());
+        let out = server.handle(&req(3, node, &[0u8; 16])).unwrap();
+        assert_eq!(i32::from_le_bytes(out[4..8].try_into().unwrap()), 0);
+        if i >= warm {
+            ns.push(t0.elapsed().as_nanos());
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    ns
+}
+
 /// Whole listings of a directory of `entries` files: OPENDIR, READDIR (or READDIRPLUS) a
 /// page of 4096 bytes at a time from the offset the last page ended at, RELEASEDIR.
 fn list(warm: usize, n: usize, entries: usize, plus: bool) -> Vec<u128> {
@@ -301,6 +322,7 @@ fn main() {
     let n: usize = arg("--n").map_or(2000, |v| v.parse().unwrap());
     let ns = match case.as_str() {
         "open" => open(200, n),
+        "getattr" => getattr(200, n),
         "serve" => serve(200, n),
         "held" => held(
             n,

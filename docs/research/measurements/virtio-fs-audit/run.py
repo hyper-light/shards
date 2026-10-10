@@ -57,6 +57,7 @@ try:
         arms = {"old": build(old_tree), "new": build(repo)}
     cases = {
         "open": ["--case", "open", "--n", str(args.n)],
+        "getattr": ["--case", "getattr", "--n", str(args.n)],
         "serve": ["--case", "serve", "--n", str(args.n)],
         "held": ["--case", "held", "--n", "20", "--delay-us", str(args.delay_us)],
         "list": ["--case", "list", "--n", "30"],
