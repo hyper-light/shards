@@ -3601,14 +3601,63 @@ and BuildKit build an Agentfile, no shards installed. The frontend is `shards` i
   - oras v1.3.4 (`oras cp --to-oci-layout REF DIR:TAG`) and skopeo v1.22.3 (`skopeo copy
     docker://REF oci:DIR:TAG`) each copied the agent from the registry into such a
     layout, its manifest's digest kept.
-- **Pending: OSI artifacts, to be given as named OCI layout contexts.** Decided over
-  the alternatives, with the user's coordinator:
+- **OSI artifacts come from named OCI layout contexts.** Decided over the alternatives
+  with the user's coordinator:
   - BuildKit v0.28.1 gives a frontend no artifact manifest (the measurements above).
   - The frontend could fetch an artifact itself only in an exec step with a network, CA
     roots and the client's registry credentials, none of which the image or a build step
     should hold.
   - A named `oci-layout://` context is Docker's own documented mechanism and works on any
     Docker that runs the frontend. It puts the fetch, and its trust, on the client.
+
+  How it goes:
+  - `AGENT main FROM REF` (HARNESS, MCP alike) takes the context named REF, keyed as a
+    FROM's is (familiar form, `:latest` dropped, with or without `::os/arch`), in the
+    planner, so `shards build` takes it too, with no registry asked.
+  - A context of another kind is refused: "the build context REF for the OSI artifact REF
+    is …: an artifact's context is an OCI layout, oci-layout://DIR[:TAG]".
+  - Where REF pins a digest, the context must name it, or the build is refused in the
+    words a fetch by digest that got another uses: "REF: got digest D, expected PINNED".
+  - The frontend reads each blob from the client's layout by digest (`oci-layout+blob`)
+    and holds each to its digest:
+    - an index's manifest for this platform;
+    - the manifest, its artifactType, config type and layer types each its kind's (D54,
+      §12.17), and its kind the directive's;
+    - the config, as an artifact's config is parsed.
+
+    The checks and their words are `shards build`'s own (`agent::check_manifest`,
+    `not_the_kind`, `Config::parse`).
+  - The content is laid out by an exec step of the frontend's own image, with no network
+    (`shards frontend osi`, osi.rs): each layer blob mounted, held to its digest and to
+    what an artifact's layer may hold (`agent::check_layer`, §9.2), then applied in order
+    as an image's layers are. Its tree's root is at the epoch, as `shards build` gives an
+    artifact's, since a COPY of the tree takes its root's time for where it goes. A
+    refusal fails the build in `shards build`'s words.
+  - That step takes the planner's `osi-artifact://` source's place in the definition, its
+    inputs inserted before it.
+  - With no context, the artifact is refused by name, saying what to give:
+    `--build-context REF=oci-layout://DIR:TAG`, which `oras cp --to-oci-layout REF DIR:TAG`
+    (oras v1.3.4's documented form, `cmd/oras/root/cp.go`) or `skopeo copy
+    --preserve-digests docker://REF oci:DIR:TAG` (skopeo-copy(1),
+    containers-transports(5)) makes. Both were run in `shards-dind` on an OSI agent and
+    kept its manifest's digest.
+  - A build policy over such an artifact is buildx's, on the client, over the named
+    context that gives it. The frontend holds no policy of its own.
+  - Tested:
+    - the planner's choice and both refusals (`plan.rs`);
+    - the frontend's reads, checks, layout step and the definition it makes, which
+      marshals, through a fake gateway;
+    - the layout step over real layers (osi.rs);
+    - `shards build` from a layout, no registry reachable, pinned, mismatched and of
+      another kind (`agents_come_from_the_oci_layouts_build_contexts_give`, real
+      microVMs);
+    - in `shards-dind`, an agent pushed, copied into a layout by oras, and built through
+      BuildKit and the frontend: its image is equal byte for byte to `shards build`'s from
+      the same layout, and both run it confined on a microVM, saying the same.
+
+    Mutation-checked, each mutant killed: the pinned digest, the frontend's and the
+    step's digest checks, the kind check, and the layer check. Before its root was put at
+    the epoch, the dind comparison found the agent's directory's time the one difference.
 
 ### D112. Image configs read as Docker reads them
 

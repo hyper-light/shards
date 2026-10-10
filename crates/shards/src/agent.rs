@@ -494,17 +494,22 @@ pub fn manifest_of(store: &Store, desc: &Descriptor) -> Result<(oci::Manifest, K
             desc.digest
         ));
     };
+    let kind = check_manifest(&desc.digest, &m)?;
+    Ok((m, kind))
+}
+
+/// What an OSI artifact's manifest `digest` says it is, refused where it is none: its
+/// artifactType, its config's type and its layers' types each its kind's (D54, §12.17).
+pub fn check_manifest(digest: &str, m: &oci::Manifest) -> Result<Kind, String> {
     let kind = m.artifact_type.as_deref().and_then(Kind::of).ok_or_else(|| {
         format!(
-            "{}: no OSI artifact (its artifactType is {})",
-            desc.digest,
+            "{digest}: no OSI artifact (its artifactType is {})",
             m.artifact_type.as_deref().unwrap_or("none")
         )
     })?;
     if m.config.media_type != kind.config_type() {
         return Err(format!(
-            "{}: its config is {}, not {}",
-            desc.digest,
+            "{digest}: its config is {}, not {}",
             m.config.media_type,
             kind.config_type()
         ));
@@ -512,14 +517,18 @@ pub fn manifest_of(store: &Store, desc: &Descriptor) -> Result<(oci::Manifest, K
     for l in &m.layers {
         if osi::content_compression(kind, &l.media_type).is_none() {
             return Err(format!(
-                "{}: a layer of type {}, which no {} holds",
-                desc.digest,
+                "{digest}: a layer of type {}, which no {} holds",
                 l.media_type,
                 kind.word()
             ));
         }
     }
-    Ok((m, kind))
+    Ok(kind)
+}
+
+/// The words for an artifact of one kind where another was asked for.
+pub fn not_the_kind(name: &str, found: Kind, want: Kind) -> String {
+    format!("{name} is {}, not {}", a(found), a(want))
 }
 
 /// The tar of `dir`'s files but `skip` at its root: names in order, owned by root,
@@ -667,13 +676,33 @@ pub fn check_content(store: &Store, kind: Kind, m: &oci::Manifest) -> Result<(),
     for l in &m.layers {
         let d = l.digest().map_err(|e| e.to_string())?;
         let file = fs::File::open(store.blob_path(&d)).map_err(|e| format!("{d}: {e}"))?;
-        let file = io::BufReader::new(file);
-        let reader: Box<dyn Read> = match osi::content_compression(kind, &l.media_type) {
-            Some(None) => Box::new(file),
-            Some(Some("gzip")) => Box::new(shards_image::store::gunzip(file)),
-            Some(Some("zstd")) => Box::new(shards_image::store::Zstd::new(file)),
-            _ => return Err(format!("{d}: a layer of type {}", l.media_type)),
-        };
+        check_layer(kind, &l.media_type, &d.to_string(), io::BufReader::new(file))?;
+    }
+    Ok(())
+}
+
+/// An OSI artifact's layer `digest` of `media_type`, read from `blob`, its compression
+/// undone, as [`check_content`] holds each.
+pub fn layer_reader<'a>(
+    kind: Kind,
+    media_type: &str,
+    digest: &str,
+    blob: impl io::BufRead + 'a,
+) -> Result<Box<dyn Read + 'a>, String> {
+    Ok(match osi::content_compression(kind, media_type) {
+        Some(None) => Box::new(blob),
+        Some(Some("gzip")) => Box::new(shards_image::store::gunzip(blob)),
+        Some(Some("zstd")) => Box::new(shards_image::store::Zstd::new(blob)),
+        _ => return Err(format!("{digest}: a layer of type {media_type}")),
+    })
+}
+
+/// One layer of an OSI artifact, read from `blob`, refused where it holds what no
+/// domain may (§9.2): what [`check_content`] holds each of the artifact's layers to.
+pub fn check_layer(kind: Kind, media_type: &str, digest: &str, blob: impl io::BufRead) -> Result<(), String> {
+    let d = digest;
+    {
+        let reader = layer_reader(kind, media_type, digest, blob)?;
         let mut r = shards_archive::tar::Reader::new(reader);
         while let Some(h) = r.next_header().map_err(|e| format!("{d}: {e}"))? {
             let name = String::from_utf8_lossy(&h.name).into_owned();
@@ -795,7 +824,7 @@ pub fn take(
             let digest = desc.digest().map_err(|e| e.to_string())?;
             let (_, kind) = manifest_of(store, &desc)?;
             if let Some(want) = want.filter(|_| wrong(kind)) {
-                return Err(format!("{name} is {}, not {}", a(kind), a(want)));
+                return Err(not_the_kind(&name.to_string(), kind, want));
             }
             let mut held = contents(store, &desc)?;
             held.extend(index.clone());
@@ -808,9 +837,23 @@ pub fn take(
             desc
         }
     };
-    let (m, kind) = manifest_of(store, &desc)?;
-    if let Some(want) = want.filter(|_| wrong(kind)) {
-        return Err(format!("{name} is {}, not {}", a(kind), a(want)));
+    let (m, config, kind) = checked(store, &name.to_string(), &desc, want)?;
+    Ok((desc, m, config, kind))
+}
+
+/// The artifact manifest `desc` names, here, held as one of `want` is, or as any artifact
+/// where none is wanted (D54, §12.17, §9.2): its types its kind's, its kind the one asked
+/// for, its config one an artifact may have, and its content nothing no domain may hold.
+/// `name` is how its failures name it. Returns its manifest, config and kind.
+pub fn checked(
+    store: &Store,
+    name: &str,
+    desc: &Descriptor,
+    want: Option<Kind>,
+) -> Result<(oci::Manifest, Config, Kind), String> {
+    let (m, kind) = manifest_of(store, desc)?;
+    if let Some(want) = want.filter(|&w| w != kind) {
+        return Err(not_the_kind(name, kind, want));
     }
     let config = store
         .content(&m.config, oci::MAX_CONFIG)
@@ -818,7 +861,7 @@ pub fn take(
         .ok_or_else(|| format!("{name}: its config is not here"))?;
     let config = Config::parse(&config).map_err(|e| format!("{name}: {e}"))?;
     check_content(store, kind, &m).map_err(|e| format!("{name}: {e}"))?;
-    Ok((desc, m, config, kind))
+    Ok((m, config, kind))
 }
 
 fn pull_cmd(kind: Kind, args: &[String]) -> Result<(), String> {
