@@ -3815,7 +3815,13 @@ ms before, 7.0 ms after); a Rekor v2 entry body is read no deeper than a valid E
 nests (7), and an interface{}'s numbers walked without recursion; an RSA key's exponent
 past 2^31-1 is refused as crypto/rsa refuses it (`crypto/rsa: public exponent too
 large`), in x509's signatures, the keys' verifiers and SCTs alike (a valid signature by
-such a key was accepted before; vectors from `scripts/sigstore/rsa_exponent.go`).
+such a key was accepted before; vectors from `scripts/sigstore/rsa_exponent.go`). What
+encoding/json reads (`tlog::gojson`: Rekor's entry bodies, bundles, image indexes and
+manifests, a policy test's input) is read, walked, copied and dropped without recursion:
+10,000 levels on a 256 KiB thread, as Go reads them, the next refused in its scanner's
+words (`invalid character '[' exceeded max depth`); before, a referrers index 9,999 deep
+overflowed a 2 MiB thread. `tests/limits.rs` holds Go 1.26's answers at the limit,
+measured (json.Unmarshal into ocispecs.Index).
 
 ### D104. Sigstore's trusted root, by The Update Framework
 
