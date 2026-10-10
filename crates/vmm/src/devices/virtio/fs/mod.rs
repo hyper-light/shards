@@ -15,8 +15,8 @@ use std::sync::Arc;
 use super::queue::{Chain, Queue};
 use super::worker::Worker;
 use super::{Activation, DeviceInterrupt, VirtioDevice, feature};
-use crate::memory::GuestMemory;
-use crate::warn;
+use crate::debug;
+use crate::memory::{Access, GuestMemory};
 
 pub const DEVICE_ID: u32 = 26;
 const QUEUE_SIZE: u16 = 256;
@@ -153,31 +153,33 @@ impl Fs {
 }
 
 /// Answers one request: its readable bytes to the server, its reply into the writable
-/// descriptors. The bytes written.
+/// descriptors. The bytes written. Guest memory is held to read the request and to write
+/// the reply, never while the share answers (D29): a share slow to answer, or never
+/// answering, held every other device's queue work, and a snapshot, off guest memory for
+/// as long (audit V04).
 fn serve(chain: &Chain, mem: &GuestMemory, slot: &Slot) -> u32 {
-    let Ok(access) = mem.access() else {
+    // Every FUSE request fits a frame, the largest write with its headers: a chain that
+    // claims more, up to 256 descriptors of 4 GiB, is answered EINVAL from its header,
+    // with nothing allocated for the rest (audit V03).
+    let total = chain
+        .readable()
+        .try_fold(0usize, |n, d| n.checked_add(d.len as usize))
+        .filter(|&n| n <= MAX_FRAME);
+    let mut req = vec![0u8; total.unwrap_or(server::HEADER_BYTES)];
+    if !mem.access().is_ok_and(|a| gather(chain, &a, &mut req)) {
+        debug!("virtio-fs: a request outside guest memory");
         return 0;
-    };
-    let total: usize = chain.readable().map(|d| d.len as usize).sum();
-    let mut req = vec![0u8; total];
-    let mut at = 0;
-    for d in chain.readable() {
-        let Some(dst) = req.get_mut(at..at + d.len as usize) else {
-            return 0;
-        };
-        if access.read(d.addr, dst).is_err() {
-            warn!("virtio-fs: a request outside guest memory");
-            return 0;
-        }
-        at += d.len as usize;
     }
-    // No directory, or its server gone: the guest is told so (ENODEV), as for a share it
-    // may not mount.
-    let reply = match slot.ask(&req) {
-        Ok(reply) => reply,
-        Err(_) => server::unattached(&req),
+    let reply = match total {
+        // No directory, or its server gone: the guest is told so (ENODEV), as for a share
+        // it may not mount.
+        Some(_) => slot.ask(&req).unwrap_or_else(|_| server::unattached(&req)),
+        None => server::too_long(&req),
     };
     let Some(reply) = reply else {
+        return 0;
+    };
+    let Ok(access) = mem.access() else {
         return 0;
     };
     let mut rest = reply.as_slice();
@@ -195,6 +197,23 @@ fn serve(chain: &Chain, mem: &GuestMemory, slot: &Slot) -> u32 {
         rest = tail;
     }
     written
+}
+
+/// Fills `buf` with the chain's readable bytes, in order, as far as they go; false if one
+/// it needs lies outside guest memory.
+fn gather(chain: &Chain, mem: &Access<'_>, buf: &mut [u8]) -> bool {
+    let mut at = 0;
+    for d in chain.readable() {
+        let Some(dst) = buf.get_mut(at..).filter(|rest| !rest.is_empty()) else {
+            break;
+        };
+        let n = dst.len().min(d.len as usize);
+        if dst.get_mut(..n).is_none_or(|dst| mem.read(d.addr, dst).is_err()) {
+            return false;
+        }
+        at += n;
+    }
+    true
 }
 
 impl VirtioDevice for Fs {
@@ -271,5 +290,147 @@ impl VirtioDevice for Fs {
 impl Drop for Fs {
     fn drop(&mut self) {
         self.reset();
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::indexing_slicing)]
+mod tests {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    use super::super::queue::Descriptor;
+    use super::*;
+
+    const BASE: u64 = 0x8000_0000;
+    const RAM: usize = 4 << 20;
+    const REQUEST: u64 = BASE;
+    const REPLY: u64 = BASE + 0x1000;
+
+    /// A FUSE_GETATTR of the root, `unique` 0x1234, at `REQUEST`.
+    fn guest() -> GuestMemory {
+        let mem = GuestMemory::anonymous(&[(BASE, RAM)]).unwrap();
+        let mut req = Vec::new();
+        for v in [56u32, 3] {
+            req.extend_from_slice(&v.to_le_bytes());
+        }
+        req.extend_from_slice(&0x1234u64.to_le_bytes());
+        req.extend_from_slice(&1u64.to_le_bytes());
+        req.extend_from_slice(&[0u8; 32]);
+        mem.access().unwrap().write(REQUEST, &req).unwrap();
+        mem
+    }
+
+    fn readable(addr: u64, len: u32) -> Descriptor {
+        Descriptor {
+            addr,
+            len,
+            writable: false,
+        }
+    }
+
+    /// `readables`, then a writable buffer of a page at `REPLY`.
+    fn chain(readables: Vec<Descriptor>) -> Chain {
+        let mut descriptors = readables;
+        descriptors.push(Descriptor {
+            addr: REPLY,
+            len: 4096,
+            writable: true,
+        });
+        Chain { head: 0, descriptors }
+    }
+
+    /// The reply's (len, error, unique).
+    fn reply(mem: &GuestMemory) -> (u32, i32, u64) {
+        let mut out = [0u8; 16];
+        mem.access().unwrap().read(REPLY, &mut out).unwrap();
+        mem.access().unwrap().write(REPLY, &[0u8; 16]).unwrap();
+        (
+            u32::from_le_bytes(out[0..4].try_into().unwrap()),
+            i32::from_le_bytes(out[4..8].try_into().unwrap()),
+            u64::from_le_bytes(out[8..16].try_into().unwrap()),
+        )
+    }
+
+    /// A share that answers each request with an empty success, after `hold` lets it.
+    fn share(hold: mpsc::Receiver<()>, asked: mpsc::Sender<Vec<u8>>) -> (Share, std::thread::JoinHandle<()>) {
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        let slot = Share::default();
+        slot.attach(ours);
+        let server = std::thread::spawn(move || {
+            let mut conn = theirs;
+            while let Ok(Some(req)) = read_frame(&mut conn) {
+                let _ = asked.send(req.clone());
+                if hold.recv().is_err() {
+                    return;
+                }
+                let mut out = 16u32.to_le_bytes().to_vec();
+                out.extend_from_slice(&0i32.to_le_bytes());
+                out.extend_from_slice(&req[8..16]);
+                if write_frame(&mut conn, &out).is_err() {
+                    return;
+                }
+            }
+        });
+        (slot, server)
+    }
+
+    /// A chain whose readable descriptors claim more than any FUSE request holds is
+    /// answered EINVAL from its header alone: nothing is allocated for what it claims (256
+    /// descriptors of 4 GiB, a TiB), and nothing reaches the share, which goes on
+    /// answering.
+    #[test]
+    fn a_request_longer_than_any_is_refused_unread() {
+        let mem = guest();
+        let (go, hold) = mpsc::channel();
+        let (asked, requests) = mpsc::channel();
+        let (slot, server) = share(hold, asked);
+        let outside = BASE + RAM as u64;
+        let mut claims = vec![readable(REQUEST, 56)];
+        claims.extend((0..255).map(|_| readable(outside, u32::MAX)));
+        let just_over = u32::try_from(MAX_FRAME + 1 - 56).unwrap();
+        for readables in [
+            claims,
+            vec![readable(REQUEST, 56), readable(BASE + 0x2000, just_over)],
+        ] {
+            assert_eq!(serve(&chain(readables), &mem, &slot), 16);
+            assert_eq!(reply(&mem), (16, -22, 0x1234));
+            assert!(requests.try_recv().is_err(), "the share was asked");
+        }
+        go.send(()).unwrap();
+        assert_eq!(serve(&chain(vec![readable(REQUEST, 56)]), &mem, &slot), 16);
+        assert_eq!(reply(&mem), (16, 0, 0x1234));
+        assert_eq!(requests.recv().unwrap().len(), 56);
+        drop((slot, go));
+        server.join().unwrap();
+    }
+
+    /// Guest memory is not held while the share answers (D29): another device, or a
+    /// snapshot, takes it meanwhile, rather than waiting on the share for as long as it
+    /// takes, or for good.
+    #[test]
+    fn guest_memory_is_free_while_the_share_answers() {
+        let mem = guest();
+        let (go, hold) = mpsc::channel();
+        let (asked, requests) = mpsc::channel();
+        let (slot, server) = share(hold, asked);
+        let free = std::thread::scope(|scope| {
+            let serving = scope.spawn(|| serve(&chain(vec![readable(REQUEST, 56)]), &mem, &slot));
+            requests.recv().unwrap();
+            let (took, taken) = mpsc::channel();
+            let mem = &mem;
+            scope.spawn(move || {
+                let _held = mem.access().unwrap();
+                let _ = took.send(());
+            });
+            let free = taken.recv_timeout(Duration::from_secs(5)).is_ok();
+            go.send(()).unwrap();
+            assert_eq!(serving.join().unwrap(), 16);
+            free
+        });
+        assert!(free, "guest memory was held while the share answered");
+        assert_eq!(reply(&mem), (16, 0, 0x1234));
+        drop((slot, go));
+        server.join().unwrap();
     }
 }
