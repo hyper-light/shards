@@ -1175,6 +1175,7 @@ dependencies = [
  "sha2",
  "shards-apple",
  "shards-image",
+ "shards-ipc",
  "time",
  "windows-sys 0.61.2",
 ]
