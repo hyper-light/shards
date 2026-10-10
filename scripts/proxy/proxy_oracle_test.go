@@ -306,6 +306,8 @@ func TestShardsProxy(t *testing.T) {
 		{"Host with a user", "GET /a HTTP/1.1\r\nHost: user@example.com\r\n\r\n"},
 		{"HTTP/1.0 without Host", "GET /a HTTP/1.0\r\n\r\n"},
 		{"HTTP/1.0 keep-alive", "GET http://example.com/ HTTP/1.0\r\nConnection: keep-alive\r\n\r\n"},
+		{"HTTP/1.0 pipelined", "GET http://example.com/1 HTTP/1.0\r\n\r\nGET http://example.com/2 HTTP/1.0\r\n\r\n"},
+		{"HTTP/1.0 kept alive, pipelined", "GET http://example.com/1 HTTP/1.0\r\nConnection: keep-alive\r\n\r\nGET http://example.com/2 HTTP/1.0\r\n\r\nGET http://example.com/3 HTTP/1.0\r\n\r\n"},
 		{"HTTP/1.1 without Host", "GET /a HTTP/1.1\r\n\r\n"},
 		{"two Hosts", "GET /a HTTP/1.1\r\nHost: a\r\nHost: b\r\n\r\n"},
 		{"malformed Host", "GET /a HTTP/1.1\r\nHost: a b\r\n\r\n"},
@@ -353,6 +355,7 @@ func TestShardsProxy(t *testing.T) {
 		{"a body just discarded", "POST http://example.com/ HTTP/1.1\r\n" + host + "Content-Length: 262144\r\n\r\n", 'b', 262144, "GET http://example.com/next HTTP/1.1\r\n" + host + "\r\n"},
 		{"asterisk with a large body", "OPTIONS * HTTP/1.1\r\n" + host + "Content-Length: 5000\r\n\r\n", 'b', 5000, ""},
 		{"asterisk with a body at its bound", "OPTIONS * HTTP/1.1\r\n" + host + "Content-Length: 4096\r\n\r\n", 'b', 4096, ""},
+		{"asterisk with a body one past its bound", "OPTIONS * HTTP/1.1\r\n" + host + "Content-Length: 4097\r\n\r\n", 'b', 4097, ""},
 		{"a large head", "GET http://example.com/ HTTP/1.1\r\n" + host + "X-Big: ", 'a', (1 << 20) + 8192, "\r\n\r\n"},
 		// The head's 64 bytes besides: at Go's bound (MaxHeaderBytes and 4096), and one past.
 		{"a head at the bound", "GET http://example.com/ HTTP/1.1\r\n" + host + "X-Big: ", 'a', (1 << 20) + 4096 - 64, "\r\n\r\n"},

@@ -1987,6 +1987,23 @@
       "response": "HTTP/1.0 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nX-Content-Type-Options: nosniff\r\nDate: DATE\r\nContent-Length: 10\r\nConnection: keep-alive\r\n\r\nForbidden\n"
     },
     {
+      "name": "HTTP/1.0 pipelined",
+      "request": "GET http://example.com/1 HTTP/1.0\r\n\r\nGET http://example.com/2 HTTP/1.0\r\n\r\n",
+      "checked": [
+        "http://example.com/1"
+      ],
+      "response": "HTTP/1.0 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nX-Content-Type-Options: nosniff\r\nDate: DATE\r\nContent-Length: 10\r\n\r\nForbidden\n"
+    },
+    {
+      "name": "HTTP/1.0 kept alive, pipelined",
+      "request": "GET http://example.com/1 HTTP/1.0\r\nConnection: keep-alive\r\n\r\nGET http://example.com/2 HTTP/1.0\r\n\r\nGET http://example.com/3 HTTP/1.0\r\n\r\n",
+      "checked": [
+        "http://example.com/1",
+        "http://example.com/2"
+      ],
+      "response": "HTTP/1.0 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nX-Content-Type-Options: nosniff\r\nDate: DATE\r\nContent-Length: 10\r\nConnection: keep-alive\r\n\r\nForbidden\nHTTP/1.0 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nX-Content-Type-Options: nosniff\r\nDate: DATE\r\nContent-Length: 10\r\n\r\nForbidden\n"
+    },
+    {
       "name": "HTTP/1.1 without Host",
       "request": "GET /a HTTP/1.1\r\n\r\n",
       "checked": [],
@@ -2263,6 +2280,17 @@
       },
       "checked": [],
       "response": "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nDate: DATE\r\n\r\n"
+    },
+    {
+      "name": "asterisk with a body one past its bound",
+      "request": {
+        "fill": "b",
+        "prefix": "OPTIONS * HTTP/1.1\r\nHost: example.com\r\nContent-Length: 4097\r\n\r\n",
+        "suffix": "",
+        "times": 4097
+      },
+      "checked": [],
+      "response": "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 0\r\nDate: DATE\r\n\r\n"
     },
     {
       "name": "a large head",

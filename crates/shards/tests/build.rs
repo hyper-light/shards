@@ -851,6 +851,29 @@ fn steps_under_the_proxy_cap_reach_the_network_through_it_alone() {
         "{}",
         refused.stderr
     );
+    // No cap asked for: the step runs with the builder's network, never taken for the one
+    // made through the proxy, and reaches the server itself.
+    std::fs::write(
+        ctx.join("Dockerfile.rego"),
+        "package docker\n\ndefault allow := true\n\ndecision := {\"allow\": allow}\n",
+    )
+    .unwrap();
+    let open = build();
+    assert_eq!(open.status, Some(0), "{}", open.stderr);
+    assert!(
+        !policy_log(&open.stderr)
+            .iter()
+            .any(|l| l == "policy enabled network proxy"),
+        "{}",
+        open.stderr
+    );
+    assert!(
+        !open.stderr.contains("proxy network requests:"),
+        "{}",
+        open.stderr
+    );
+    assert!(open.stderr.contains(" fetch 200 hello\n"), "{}", open.stderr);
+    assert!(!open.stderr.contains(" fetch 403 Forbidden\n"), "{}", open.stderr);
 }
 
 /// PM M150's last part: a `RUN`'s requests to a server on this host, each on a connection
