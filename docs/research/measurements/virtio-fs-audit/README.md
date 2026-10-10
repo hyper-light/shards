@@ -1,7 +1,7 @@
 # virtio-fs under hostile requests (audit V)
 
 Evidence for the virtio-fs decisions in docs/design/architecture.md (D38, "Every request
-is the guest's to forge"); results are platform-measurements.md M129, M130, M132 and M133.
+is the guest's to forge"); results are platform-measurements.md M129 to M133, and M136.
 
 ## `run.py`
 
@@ -19,8 +19,16 @@ of the processes' medians with a bootstrap 95% interval:
 - `held`: the share answering after `--delay-us`, how long another thread waits for
   guest memory once the share has the request;
 - `getattr`: a LOOKUP then a GETATTR of one file (M133);
+- `walk --tree DIR`: a walk of a tree `--case mktree --tree DIR --dirs N` made, as `find`
+  walks one, each directory's visit timed (M136);
 - `list`, `listplus`: whole listings of a directory of 10,000 entries, READDIR or
   READDIRPLUS pages of 4096 bytes (M130). `--cases` picks among them.
+
+## `reopen.py BINARY`
+
+A GETATTR of a directory held, and of one let go between requests and opened again
+along its path, at depths 1, 4 and 16, in alternating processes (`--case reopen
+[--let-go]`, M136).
 
 ## `probes/`
 
@@ -34,6 +42,9 @@ C programs for the primitives the fixes rest on, run by hand (`cc -O2 -o p p.c`)
 - `dirbuf.c DIR`: the bytes the C library keeps for an open directory stream (M130).
 - `getdents.rs DIR N` (Linux, `rustc --edition 2024 -O`): N files made in DIR, then
   paged through by getdents64 at `d_off` cookies with three page and buffer sizes, each
-  entry once.
+  entry once (M130).
+- `openat2.c DIR` (Linux): the openat2(2) `open_beneath` makes, RESOLVE_BENEATH and
+  RESOLVE_NO_SYMLINKS, in an empty DIR: a path opens; a symlink in it, even to its own
+  directory, is ELOOP, as is one out; `..` out is EXDEV (M136).
 - `src/main.rs --case fds --dirs D --limit L`: how many of D directories a guest can look
   up, none forgotten, under a descriptor limit of L (M132).

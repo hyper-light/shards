@@ -1860,6 +1860,165 @@
   },
   {
     "argv": [
+      "du",
+      "--help"
+    ],
+    "stdout": "Usage:  shards buildx du\n\nDisk usage\n\nOptions:\n      --builder string     Override the configured builder instance\n  -D, --debug              Enable debug logging\n      --filter filter      Provide filter values\n      --format string      Format the output\n      --timeout duration   Override the default timeout for loading\n                           builder status (default 20s)\n      --verbose            Shorthand for \"--format=pretty\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "du",
+      "-h"
+    ],
+    "stdout": "Flag shorthand -h has been deprecated, use --help\nUsage:  shards buildx du\n\nDisk usage\n\nOptions:\n      --builder string     Override the configured builder instance\n  -D, --debug              Enable debug logging\n      --filter filter      Provide filter values\n      --format string      Format the output\n      --timeout duration   Override the default timeout for loading\n                           builder status (default 20s)\n      --verbose            Shorthand for \"--format=pretty\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "du"
+    ],
+    "stdout": "RUN\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "du",
+      "--verbose"
+    ],
+    "stdout": "RUN --verbose=true\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "du",
+      "--format",
+      "json"
+    ],
+    "stdout": "RUN --format=json\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "du",
+      "--format=pretty",
+      "--filter",
+      "type=regular",
+      "--filter",
+      "until=24h"
+    ],
+    "stdout": "RUN --filter={\"type\":{\"regular\":true},\"until\":{\"24h\":true}} --format=pretty\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "du",
+      "--verbose",
+      "--format",
+      "json"
+    ],
+    "stdout": "RUN --format=json --verbose=true\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "du",
+      "--verbose=false",
+      "--format",
+      "{{.ID}}"
+    ],
+    "stdout": "RUN --format={{.ID}} --verbose=false\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "du",
+      "--filter",
+      "noequals"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"noequals\" for \"--filter\" flag: bad format of filter (expected name=value)\n\nUsage:  shards buildx du\n\nRun 'shards buildx du --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "du",
+      "--filter",
+      ""
+    ],
+    "stdout": "RUN --filter=\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "du",
+      "extra"
+    ],
+    "stdout": "",
+    "stderr": "ERROR: shards: 'shards buildx du' accepts no arguments\n\nUsage:  shards buildx du\n\nRun 'shards buildx du --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "du",
+      "--bogus"
+    ],
+    "stdout": "",
+    "stderr": "unknown flag: --bogus\n\nUsage:  shards buildx du\n\nRun 'shards buildx du --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "du",
+      "-v"
+    ],
+    "stdout": "",
+    "stderr": "unknown shorthand flag: 'v' in -v\n\nUsage:  shards buildx du\n\nRun 'shards buildx du --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "du",
+      "--timeout",
+      "5s",
+      "-D",
+      "--builder",
+      "b"
+    ],
+    "stdout": "RUN --builder=b --debug=true --timeout=5s\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "du",
+      "--timeout",
+      "lots"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"lots\" for \"--timeout\" flag: time: invalid duration \"lots\"\n\nUsage:  shards buildx du\n\nRun 'shards buildx du --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "du",
+      "--format"
+    ],
+    "stdout": "",
+    "stderr": "flag needs an argument: --format\n\nUsage:  shards buildx du\n\nRun 'shards buildx du --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
       "policy"
     ],
     "stdout": "Usage:  shards buildx policy [OPTIONS] COMMAND\n\nCommands for working with build policies\n\nOptions:\n      --builder string   Override the configured builder instance\n  -D, --debug            Enable debug logging\n\nCommands:\n  eval        Evaluate policy for a source\n  test        Run policy tests\n\nRun 'shards buildx policy COMMAND --help' for more information on a command.\n",

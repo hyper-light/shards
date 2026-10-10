@@ -14,7 +14,7 @@
 //! process makes is that process's, and the guest kernel checks permissions
 //! (`default_permissions`) as on any Linux filesystem.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::ffi::{CStr, CString};
 use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd, RawFd};
 use std::sync::{Mutex, PoisonError};
@@ -120,35 +120,132 @@ mod fattr {
     pub const KILL_SUIDGID: u32 = 1 << 11;
 }
 
-/// A node the guest knows: a directory by its own descriptor; anything else by its
-/// parent's and its name. `lookups` is the kernel's count of it (FORGET's).
-#[derive(Debug)]
-enum Kind {
-    Dir(OwnedFd),
-    Entry { parent: u64, name: CString },
-}
-
+/// A node the guest knows: by its parent's node and its name there, kept current through
+/// the guest's renames and lookups, and by what it is (`key`, its device and inode). A
+/// directory's descriptor is in `State::dirs` while there is room for it, and opened again
+/// along its path when it is needed and not there (audit V09). `lookups` is the kernel's
+/// count of it (FORGET's).
 #[derive(Debug)]
 struct Node {
-    kind: Kind,
+    dir: bool,
+    parent: u64,
+    name: CString,
     lookups: u64,
     key: (u64, u64),
 }
 
-/// An open file, or an open directory.
+/// A file or directory the guest opened: its node, and a file's host flags, less those
+/// that act once (O_CREAT, O_EXCL, O_TRUNC). Its descriptor is in `State::fds` while there
+/// is room for it, and opened again along its node's path when it is needed and not there,
+/// checked to be the node still. A node no descriptor could be opened for again (the guest
+/// unlinked it or renamed another over it, or gave it a mode that refuses its handles) serves
+/// them from a descriptor pinned for it (`State::pins`; audit V09).
 #[derive(Debug)]
-enum Handle {
-    File(OwnedFd),
+struct Handle {
+    node: u64,
+    flags: Option<libc::c_int>,
+}
+
+/// A node's open handles, and how many may read and write: what a descriptor pinned for
+/// them must allow.
+#[derive(Debug, Default)]
+struct Opened {
+    handles: u64,
+    reading: u64,
+    writing: u64,
+}
+
+/// What a descriptor in `State::fds` is held for: a directory node, or a handle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum Slot {
+    Node(u64),
+    Handle(u64),
+}
+
+/// A descriptor in `State::fds`: a plain one, or a directory handle's stream.
+#[derive(Debug)]
+enum Held {
+    Fd(OwnedFd),
     Dir(DirStream),
 }
 
 #[derive(Debug)]
 struct State {
+    /// The shared directory, held for as long as the server.
+    root: OwnedFd,
     nodes: HashMap<u64, Node>,
     by_key: HashMap<(u64, u64), u64>,
     next_node: u64,
     handles: HashMap<u64, Handle>,
     next_handle: u64,
+    /// Each node's open handles.
+    opened: HashMap<u64, Opened>,
+    fds: Fds,
+    /// Descriptors of nodes the guest has open that none could be opened for again, with the
+    /// access mode they were opened for: since it unlinked them or renamed another over them,
+    /// or made them or changed them to a mode that refuses their handles. Let go with their
+    /// node's last handle, never before, and the only descriptors counted against the
+    /// budget.
+    pins: HashMap<u64, (OwnedFd, libc::c_int)>,
+    /// Nodes whose last name the guest removed with no room to pin them, and the first handle
+    /// opened after: those before it are stale once their descriptors are let go, as the
+    /// number the node's path might lead to is free to be another file's.
+    unreached: HashMap<u64, u64>,
+    /// The descriptors the server may hold between requests ([`Limits::budget`]): its pins,
+    /// and in the room they leave, its directories' and handles' descriptors.
+    budget: u64,
+}
+
+/// The descriptors of the directories the guest named and of the files and directories it
+/// opened, as many as there is room for, the least recently used let go first. They are let
+/// go between requests, never during one, so that a descriptor a request took stays open
+/// until it answers.
+#[derive(Debug, Default)]
+struct Fds {
+    open: HashMap<Slot, (Held, u64)>,
+    /// Each slot's last use, oldest first.
+    by_use: BTreeMap<u64, Slot>,
+    clock: u64,
+}
+
+impl Fds {
+    fn tick(&mut self) -> u64 {
+        self.clock = self.clock.wrapping_add(1);
+        self.clock
+    }
+
+    /// `slot`'s descriptor, if held, now the most recently used.
+    fn get(&mut self, slot: Slot) -> Option<&mut Held> {
+        let now = self.tick();
+        let (held, used) = self.open.get_mut(&slot)?;
+        self.by_use.remove(used);
+        *used = now;
+        self.by_use.insert(now, slot);
+        Some(held)
+    }
+
+    fn insert(&mut self, slot: Slot, held: Held) {
+        self.remove(slot);
+        let now = self.tick();
+        self.open.insert(slot, (held, now));
+        self.by_use.insert(now, slot);
+    }
+
+    fn remove(&mut self, slot: Slot) {
+        if let Some((_, used)) = self.open.remove(&slot) {
+            self.by_use.remove(&used);
+        }
+    }
+
+    /// Lets go of the least recently used until `room` are held.
+    fn trim(&mut self, room: u64) {
+        while u64::try_from(self.open.len()).unwrap_or(u64::MAX) > room {
+            let Some((_, slot)) = self.by_use.pop_first() else {
+                return;
+            };
+            self.open.remove(&slot);
+        }
+    }
 }
 
 /// The server of one shared directory.
@@ -174,6 +271,12 @@ fn last() -> Errno {
 
 const EPERM: Errno = 1;
 const EIO: Errno = 5;
+const EXDEV: Errno = 18;
+const EMFILE: Errno = 24;
+#[cfg(target_os = "linux")]
+const ENAMETOOLONG: Errno = 36;
+const ELOOP: Errno = 40;
+const ESTALE: Errno = 116;
 const ENOENT: Errno = 2;
 const EACCES: Errno = 13;
 const EBUSY: Errno = 16;
@@ -376,7 +479,12 @@ fn open_at(dir: RawFd, name: &CStr, flags: libc::c_int, mode: libc::c_uint) -> R
 /// refuses them (`lo_inode_open`, CVE-2020-35517; audit V02). The name is looked at first,
 /// so no special file is opened, then opened without waiting and looked at again, for one
 /// put there meanwhile.
-fn open_regular(dir: RawFd, name: &CStr, flags: libc::c_int, mode: libc::c_uint) -> Result<OwnedFd, Errno> {
+fn open_regular(
+    dir: RawFd,
+    name: &CStr,
+    flags: libc::c_int,
+    mode: libc::c_uint,
+) -> Result<(OwnedFd, libc::stat), Errno> {
     let exclusive = flags & (libc::O_CREAT | libc::O_EXCL) == libc::O_CREAT | libc::O_EXCL;
     match stat_at(dir, name) {
         // An exclusive create of a name that exists fails at the open, opening nothing.
@@ -386,7 +494,8 @@ fn open_regular(dir: RawFd, name: &CStr, flags: libc::c_int, mode: libc::c_uint)
         Err(e) => return Err(e),
     }
     let fd = open_at(dir, name, flags | libc::O_NONBLOCK | libc::O_NOCTTY, mode)?;
-    if mode_of(&stat_fd(fd.as_raw_fd())?) & S_IFMT != S_IFREG {
+    let st = stat_fd(fd.as_raw_fd())?;
+    if mode_of(&st) & S_IFMT != S_IFREG {
         return Err(EBADF);
     }
     // The status flags the guest asked for, without O_NONBLOCK: F_SETFL takes those of
@@ -395,7 +504,7 @@ fn open_regular(dir: RawFd, name: &CStr, flags: libc::c_int, mode: libc::c_uint)
     if flags & libc::O_NONBLOCK == 0 && unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFL, flags) } != 0 {
         return Err(last());
     }
-    Ok(fd)
+    Ok((fd, st))
 }
 
 /// Changes the mode of `name` in `dir` without following it. fchmodat(2) without
@@ -519,10 +628,78 @@ impl Reply {
     }
 }
 
+/// The host's limits on open descriptors, from which a share process's servers have what
+/// they may hold between requests (audit V09).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Limits {
+    /// How many descriptors this process may have (`platform::descriptor_limit`), its limit
+    /// raised as far as it may go first (`platform::raise_descriptor_limit`).
+    pub process: u64,
+    /// How many it has open, outside any server's: its standard streams, its connections,
+    /// its shared directories.
+    pub held: u64,
+    /// The system's table of open files: how many it holds, and how many are open.
+    pub table: Option<(u64, u64)>,
+    /// How many processes the user may have.
+    pub processes: Option<u64>,
+}
+
+/// The processes of a run that shares: its VM's and its share process.
+const PROCESSES_A_RUN: u64 = 2;
+
+/// Descriptors one request may hold past its server's room, at its most: a RENAME's two
+/// directories, both let go, the first held while the second's path is walked a component at
+/// a time, which holds two at once (one on Linux, where openat2 walks it), or a pin for what
+/// it renames over once both are held. Nothing else holds more: a directory, its handle and
+/// a file looked at, a handle opened again along its path, or a directory and two of a walk.
+/// `tests/fs_dir_budget.rs` gives a server exactly this much past its room, at its room,
+/// and a request that took more would be refused by the kernel.
+pub const REQUEST_FDS: u64 = 3;
+
+impl Limits {
+    /// This process's, now; none if it cannot say how many descriptors it may have or has.
+    pub fn now() -> Option<Limits> {
+        Some(Limits {
+            process: crate::platform::descriptor_limit()?,
+            held: crate::platform::open_descriptors()?,
+            table: crate::platform::file_table(),
+            processes: crate::platform::user_processes(),
+        })
+    }
+
+    /// What each of `servers` servers in this process may hold between requests: the
+    /// process's room, less what it holds and what each server's requests take past their
+    /// room; and no more than a share process's part of the system's table, as many share
+    /// processes running as the user may start runs, so that they cannot fill it.
+    pub fn budget(&self, servers: u64) -> u64 {
+        let servers = servers.max(1);
+        let mut room = self
+            .process
+            .saturating_sub(self.held)
+            .saturating_sub(REQUEST_FDS.saturating_mul(servers));
+        if let (Some((size, open)), Some(processes)) = (self.table, self.processes) {
+            let runs = (processes / PROCESSES_A_RUN).max(1);
+            room = room.min(size.saturating_sub(open) / runs);
+        }
+        room / servers
+    }
+}
+
 impl Server {
     /// The server of the directory `root` holds, read-only or not, or of its one name
-    /// `only`.
+    /// `only`, alone in its process: it may hold what the process has room for.
     pub fn new(root: OwnedFd, read_only: bool, only: Option<CString>) -> Result<Server, String> {
+        let limits = Limits::now().ok_or("this process's limit on descriptors is unknown")?;
+        Server::with_budget(root, read_only, only, limits.budget(1))
+    }
+
+    /// [`Server::new`], holding at most `budget` descriptors between requests.
+    pub fn with_budget(
+        root: OwnedFd,
+        read_only: bool,
+        only: Option<CString>,
+        budget: u64,
+    ) -> Result<Server, String> {
         let st = stat_fd(root.as_raw_fd()).map_err(|e| format!("the shared directory: errno {e}"))?;
         if !is_dir(&st) {
             return Err("the shared directory is not a directory".into());
@@ -531,7 +708,9 @@ impl Server {
         nodes.insert(
             ROOT,
             Node {
-                kind: Kind::Dir(root),
+                dir: true,
+                parent: ROOT,
+                name: CString::default(),
                 lookups: 1,
                 key: key(&st),
             },
@@ -542,11 +721,17 @@ impl Server {
             read_only,
             only,
             state: Mutex::new(State {
+                root,
                 nodes,
                 by_key,
                 next_node: ROOT + 1,
                 handles: HashMap::new(),
                 next_handle: 1,
+                opened: HashMap::new(),
+                fds: Fds::default(),
+                pins: HashMap::new(),
+                unreached: HashMap::new(),
+                budget,
             }),
         })
     }
@@ -598,6 +783,10 @@ impl Server {
                 Err(e) => Err(e),
             },
         };
+        // Between requests, the descriptors held fit the room the pins leave.
+        let pins = u64::try_from(state.pins.len()).unwrap_or(u64::MAX);
+        let room = state.budget.saturating_sub(pins);
+        state.fds.trim(room);
         let mut out = Vec::new();
         let (error, payload) = match answer {
             Ok(r) => (0i32, r.0),
@@ -701,18 +890,26 @@ impl Server {
                 let fh = a.u64()?;
                 // The node's own stat, or an open file's, which the guest names and need
                 // not be the node's: only the node's stands for its type.
-                let (st, own) = match (flags & 1 != 0).then(|| s.handles.get(&fh)).flatten() {
-                    Some(Handle::File(fd)) => (stat_fd(fd.as_raw_fd())?, false),
-                    _ => (node_stat(s, nodeid)?, true),
+                let (st, own) = if flags & 1 != 0 && is_file(s, fh) {
+                    (stat_fd(file_fd(s, fh)?)?, false)
+                } else {
+                    (node_stat(s, nodeid)?, true)
                 };
                 let owner = node_owner(s, nodeid, own.then_some(&st))?;
                 r.u64(VALID_S).u32(0).u32(0).attr(&st, owner);
             }
             op::SETATTR => {
                 self.writable()?;
+                let valid = Args(body).u32()?;
+                let fh = Args(body.get(8..).unwrap_or_default()).u64()?;
                 self.setattr(s, nodeid, &mut a)?;
-                let st = node_stat(s, nodeid)?;
-                let owner = node_owner(s, nodeid, Some(&st))?;
+                // An open file's, where the guest names one: one unlinked has no path.
+                let (st, own) = if valid & fattr::FH != 0 && is_file(s, fh) {
+                    (stat_fd(file_fd(s, fh)?)?, false)
+                } else {
+                    (node_stat(s, nodeid)?, true)
+                };
+                let owner = node_owner(s, nodeid, own.then_some(&st))?;
                 r.u64(VALID_S).u32(0).u32(0).attr(&st, owner);
             }
             op::READLINK => {
@@ -780,14 +977,17 @@ impl Server {
                 self.writable()?;
                 let name = a.name()?;
                 let dir = dir_fd(s, nodeid)?;
+                let removal = pin_before_removal(s, dir, &name);
                 let flags = if opcode == op::RMDIR {
                     libc::AT_REMOVEDIR
                 } else {
                     0
                 };
                 // SAFETY: unlinkat(2) of a NUL-terminated name in a directory we hold.
-                if unsafe { libc::unlinkat(dir, name.as_ptr(), flags) } != 0 {
-                    return Err(last());
+                let failed = (unsafe { libc::unlinkat(dir, name.as_ptr(), flags) } != 0).then(last);
+                removed(s, removal, failed.is_none());
+                if let Some(e) = failed {
+                    return Err(e);
                 }
             }
             op::RENAME | op::RENAME2 => {
@@ -822,12 +1022,30 @@ impl Server {
                 if flags & linux::O_ACCMODE != 0 || flags & linux::O_TRUNC != 0 {
                     self.writable()?;
                 }
-                let (dir, name) = at(s, nodeid)?;
-                if matches!(s.nodes.get(&nodeid).map(|n| &n.kind), Some(Kind::Dir(_))) {
+                if s.nodes.get(&nodeid).is_some_and(|n| n.dir) {
                     return Err(EISDIR);
                 }
-                let fd = open_regular(dir, &name, host::open_flags(flags & !linux::O_CREAT), 0)?;
-                let fh = add_handle(s, Handle::File(fd));
+                room_for_handle(s)?;
+                let flags = host::open_flags(flags & !linux::O_CREAT);
+                let want = s.nodes.get(&nodeid).ok_or(ENOENT)?.key;
+                // Along its path, checked to be the node: replaced on the host since the guest
+                // looked it up, its kernel looks again (ESTALE).
+                let opened = match at(s, nodeid).and_then(|(dir, name)| open_regular(dir, &name, flags, 0)) {
+                    Ok((fd, st)) if key(&st) == want => Ok(fd),
+                    Ok(_) => Err(ESTALE),
+                    Err(e) => Err(stale(e)),
+                };
+                let held = match opened {
+                    Ok(fd) => Some(Held::Fd(fd)),
+                    // Unlinked or renamed over, open still: another handle on its pin, where
+                    // that allows as much (a guest's open of /proc/self/fd).
+                    Err(ESTALE) => match s.pins.get(&nodeid) {
+                        Some((_, access)) if allows(*access, flags) => None,
+                        _ => return Err(ESTALE),
+                    },
+                    Err(e) => return Err(e),
+                };
+                let fh = add_handle(s, nodeid, Some(once(flags)), held);
                 r.u64(fh).u32(0).u32(0);
             }
             op::CREATE => {
@@ -837,21 +1055,34 @@ impl Server {
                 let _umask = a.u32()?;
                 let _ = a.u32()?;
                 let name = a.name()?;
+                room_for_handle(s)?;
                 let dir = dir_fd(s, nodeid)?;
-                let fd = open_regular(dir, &name, host::open_flags(flags) | libc::O_CREAT, mode & 0o7777)?;
-                self.made(s, nodeid, &name, caller, &mut r)?;
-                let fh = add_handle(s, Handle::File(fd));
+                let flags = host::open_flags(flags) | libc::O_CREAT;
+                let (fd, st) = open_regular(dir, &name, flags, mode & 0o7777)?;
+                let made = self.made(s, nodeid, &name, caller, &mut r)?;
+                // Made with a mode that refuses its own handle (a read-only file opened to be
+                // filled, as tar, cp and git make one): none could be opened for it again, so
+                // this descriptor is its pin.
+                let held = if refuses(mode_of(&st), flags)
+                    && s.nodes.get(&made).is_some_and(|n| n.key == key(&st))
+                    && !s.pins.contains_key(&made)
+                    && room_for_pin(s)
+                {
+                    s.pins.insert(made, (fd, flags & libc::O_ACCMODE));
+                    None
+                } else {
+                    Some(Held::Fd(fd))
+                };
+                let fh = add_handle(s, made, Some(once(flags)), held);
                 r.u64(fh).u32(0).u32(0);
             }
             op::READ => {
                 let fh = a.u64()?;
                 let offset = a.u64()?;
                 let size = a.u32()?.min(MAX_WRITE);
-                let Some(Handle::File(fd)) = s.handles.get(&fh) else {
-                    return Err(EBADF);
-                };
+                let fd = file_fd(s, fh)?;
                 let mut buf = vec![0u8; size as usize];
-                let n = pread(fd.as_raw_fd(), &mut buf, offset)?;
+                let n = pread(fd, &mut buf, offset)?;
                 buf.truncate(n);
                 r.bytes(&buf);
             }
@@ -865,10 +1096,8 @@ impl Server {
                 let _ = a.u32()?;
                 let _ = a.u32()?;
                 let data = a.rest().get(..size as usize).ok_or(EINVAL)?;
-                let Some(Handle::File(fd)) = s.handles.get(&fh) else {
-                    return Err(EBADF);
-                };
-                let n = pwrite(fd.as_raw_fd(), data, offset)?;
+                let fd = file_fd(s, fh)?;
+                let n = pwrite(fd, data, offset)?;
                 r.u32(u32::try_from(n).unwrap_or(0)).u32(0);
             }
             op::STATFS => {
@@ -893,21 +1122,25 @@ impl Server {
             }
             op::RELEASE | op::RELEASEDIR => {
                 let fh = a.u64()?;
-                s.handles.remove(&fh);
+                release(s, fh);
             }
             op::FLUSH => {}
             op::FSYNC | op::FSYNCDIR => {
                 let fh = a.u64()?;
-                let fd = match s.handles.get(&fh) {
-                    Some(Handle::File(fd)) => fd.as_raw_fd(),
-                    _ => dir_fd(s, nodeid)?,
+                let pinned = s.handles.get(&fh).and_then(|h| s.pins.get(&h.node));
+                let fd = match pinned {
+                    Some((pin, _)) => pin.as_raw_fd(),
+                    None if is_file(s, fh) => file_fd(s, fh)?,
+                    None => dir_fd(s, nodeid)?,
                 };
                 durable(fd)?;
             }
             op::SYNCFS => {}
             op::OPENDIR => {
-                let dir = dir_fd(s, nodeid).map_err(|_| ENOTDIR)?;
-                let fh = add_handle(s, Handle::Dir(DirStream::open(dir)?));
+                room_for_handle(s)?;
+                let dir = dir_fd(s, nodeid)?;
+                let stream = DirStream::open(dir)?;
+                let fh = add_handle(s, nodeid, None, Some(Held::Dir(stream)));
                 r.u64(fh).u32(0).u32(0);
             }
             op::READDIR | op::READDIRPLUS => {
@@ -920,9 +1153,7 @@ impl Server {
                 let base = if plus { 152 } else { 24 };
                 // A file bound alone: its directory shows it alone.
                 let only = self.only.as_ref().filter(|_| nodeid == ROOT);
-                let Some(Handle::Dir(dir)) = s.handles.get_mut(&fh) else {
-                    return Err(EBADF);
-                };
+                let dir = dir_stream(s, fh)?;
                 // The entries that fit, each with the offset after it, looked up (PLUS)
                 // once the handle is let go.
                 let mut fits = Vec::new();
@@ -1035,11 +1266,9 @@ impl Server {
                 let fh = a.u64()?;
                 let offset = a.u64()?;
                 let whence = host::whence(a.u32()?).ok_or(EINVAL)?;
-                let Some(Handle::File(fd)) = s.handles.get(&fh) else {
-                    return Err(EBADF);
-                };
+                let fd = file_fd(s, fh)?;
                 // SAFETY: lseek(2) of a descriptor we hold.
-                let at = unsafe { libc::lseek(fd.as_raw_fd(), offset as libc::off_t, whence) };
+                let at = unsafe { libc::lseek(fd, offset as libc::off_t, whence) };
                 if at < 0 {
                     return Err(last());
                 }
@@ -1051,10 +1280,8 @@ impl Server {
                 let offset = a.u64()?;
                 let length = a.u64()?;
                 let mode = a.u32()?;
-                let Some(Handle::File(fd)) = s.handles.get(&fh) else {
-                    return Err(EBADF);
-                };
-                fallocate(fd.as_raw_fd(), mode, offset, length)?;
+                let fd = file_fd(s, fh)?;
+                fallocate(fd, mode, offset, length)?;
             }
             _ => return Err(ENOSYS),
         }
@@ -1070,7 +1297,7 @@ impl Server {
         name: &CStr,
         caller: (u32, u32),
         r: &mut Reply,
-    ) -> Result<(), Errno> {
+    ) -> Result<u64, Errno> {
         let parent_st = node_stat(s, parent)?;
         let parent_owner = node_owner(s, parent, None)?;
         let gid = if mode_of(&parent_st) & S_ISGID != 0 {
@@ -1091,7 +1318,7 @@ impl Server {
         }
         let (id, st, owner) = lookup(s, parent, name)?;
         r.entry(id, &st, owner);
-        Ok(())
+        Ok(id)
     }
 
     fn setattr(&self, s: &mut State, nodeid: u64, a: &mut Args<'_>) -> Result<(), Errno> {
@@ -1111,10 +1338,8 @@ impl Server {
         let uid = a.u32()?;
         let gid = a.u32()?;
         let (dir, name) = at(s, nodeid)?;
-        let own = match s.nodes.get(&nodeid).map(|n| &n.kind) {
-            Some(Kind::Dir(fd)) => Some(fd.as_raw_fd()),
-            _ => None,
-        };
+        // A directory's own descriptor, which `at` gave: its attributes are changed through it.
+        let own = s.nodes.get(&nodeid).is_some_and(|n| n.dir).then_some(dir);
         let mut owner = node_owner(s, nodeid, None)?;
         let had = node_has_owner(s, nodeid);
         if valid & fattr::KILL_SUIDGID != 0 && valid & fattr::MODE == 0 {
@@ -1139,12 +1364,13 @@ impl Server {
             fset_xattr(fd.raw(), &owner_xattr()?, owner.encode().as_bytes(), 0)?;
         }
         if valid & fattr::SIZE != 0 {
-            let truncated = match (valid & fattr::FH != 0).then(|| s.handles.get(&fh)).flatten() {
-                Some(Handle::File(fd)) => {
+            let truncated = match valid & fattr::FH != 0 && is_file(s, fh) {
+                true => {
+                    let fd = file_fd(s, fh)?;
                     // SAFETY: ftruncate(2) of a descriptor we hold.
-                    unsafe { libc::ftruncate(fd.as_raw_fd(), size as libc::off_t) }
+                    unsafe { libc::ftruncate(fd, size as libc::off_t) }
                 }
-                _ => {
+                false => {
                     let fd = open_at(
                         dir,
                         &name,
@@ -1211,6 +1437,8 @@ impl Server {
         owner: &mut Owner,
         had: bool,
     ) -> Result<(), Errno> {
+        // Its open handles a mode refuses keep a descriptor taken before it does (audit V09).
+        pin_before_chmod(s, nodeid, dir, name, mode);
         match own {
             Some(fd) => {
                 // SAFETY: fchmod(2) of a descriptor we hold.
@@ -1297,25 +1525,29 @@ fn open_meta(dir: RawFd, name: &CStr, known: Option<u32>) -> Result<NodeFd, Errn
     open_at(dir, name, flags, 0).map(NodeFd::Owned)
 }
 
-fn node_fd(s: &State, nodeid: u64) -> Result<NodeFd, Errno> {
+fn node_fd(s: &mut State, nodeid: u64) -> Result<NodeFd, Errno> {
     node_fd_known(s, nodeid, None)
 }
 
 /// [`node_fd`] of a node whose file type the caller has just looked at, `known`.
-fn node_fd_known(s: &State, nodeid: u64, known: Option<u32>) -> Result<NodeFd, Errno> {
-    match &s.nodes.get(&nodeid).ok_or(ENOENT)?.kind {
-        Kind::Dir(fd) => Ok(NodeFd::Borrowed(fd.as_raw_fd())),
-        Kind::Entry { parent, name } => open_meta(dir_fd(s, *parent)?, name, known),
+fn node_fd_known(s: &mut State, nodeid: u64, known: Option<u32>) -> Result<NodeFd, Errno> {
+    let node = s.nodes.get(&nodeid).ok_or(ENOENT)?;
+    if node.dir {
+        return Ok(NodeFd::Borrowed(dir_fd(s, nodeid)?));
     }
+    let parent = node.parent;
+    let dir = dir_fd(s, parent)?;
+    let node = s.nodes.get(&nodeid).ok_or(ENOENT)?;
+    open_meta(dir, &node.name, known)
 }
 
 /// A node's descriptor to change its attributes: a device node, which has none here, is
 /// refused as Linux refuses a special file `user.` ones (EPERM).
-fn node_fd_to_change(s: &State, nodeid: u64) -> Result<NodeFd, Errno> {
+fn node_fd_to_change(s: &mut State, nodeid: u64) -> Result<NodeFd, Errno> {
     node_fd(s, nodeid).map_err(|e| if e == ENODATA { EPERM } else { e })
 }
 
-fn node_has_owner(s: &State, nodeid: u64) -> bool {
+fn node_has_owner(s: &mut State, nodeid: u64) -> bool {
     node_fd(s, nodeid)
         .ok()
         .and_then(|fd| fget_xattr(fd.raw(), &owner_xattr().ok()?).ok().flatten())
@@ -1324,7 +1556,7 @@ fn node_has_owner(s: &State, nodeid: u64) -> bool {
 
 /// The guest's owner of a node: its attribute's, or root. `st`, the node's own stat where
 /// the caller has just taken it.
-fn node_owner(s: &State, nodeid: u64, st: Option<&libc::stat>) -> Result<Owner, Errno> {
+fn node_owner(s: &mut State, nodeid: u64, st: Option<&libc::stat>) -> Result<Owner, Errno> {
     let Ok(fd) = node_fd_known(s, nodeid, st.map(|st| mode_of(st) & S_IFMT)) else {
         return Ok(Owner::default());
     };
@@ -1335,66 +1567,177 @@ fn node_owner(s: &State, nodeid: u64, st: Option<&libc::stat>) -> Result<Owner, 
         .unwrap_or_default())
 }
 
-fn dir_fd(s: &State, nodeid: u64) -> Result<RawFd, Errno> {
-    match &s.nodes.get(&nodeid).ok_or(ENOENT)?.kind {
-        Kind::Dir(fd) => Ok(fd.as_raw_fd()),
-        Kind::Entry { .. } => Err(ENOTDIR),
+/// Directory node `nodeid`'s descriptor: the root's; one held; or one opened again along
+/// the node's path from the nearest of its ancestors held, or the root, and checked to be
+/// the directory the node was. One renamed or replaced on the host since is stale
+/// (ESTALE), which has the guest's kernel look it up again (audit V09).
+fn dir_fd(s: &mut State, nodeid: u64) -> Result<RawFd, Errno> {
+    if nodeid == ROOT {
+        return Ok(s.root.as_raw_fd());
+    }
+    let node = s.nodes.get(&nodeid).ok_or(ENOENT)?;
+    if !node.dir {
+        return Err(ENOTDIR);
+    }
+    let want = node.key;
+    if let Some(Held::Fd(fd)) = s.fds.get(Slot::Node(nodeid)) {
+        return Ok(fd.as_raw_fd());
+    }
+    // The names down to it; a chain that breaks (a node the guest forgot) or loops (a
+    // directory found again under one of its own, through a bind mount) leads nowhere.
+    let mut names = Vec::new();
+    let mut at = nodeid;
+    let from = loop {
+        let node = s.nodes.get(&at).ok_or(ESTALE)?;
+        names.push(node.name.clone());
+        at = node.parent;
+        if at == ROOT {
+            break s.root.as_raw_fd();
+        }
+        if let Some(Held::Fd(fd)) = s.fds.get(Slot::Node(at)) {
+            break fd.as_raw_fd();
+        }
+        if names.len() > s.nodes.len() {
+            return Err(ESTALE);
+        }
+    };
+    names.reverse();
+    let fd = open_beneath(from, &names)?;
+    let st = stat_fd(fd.as_raw_fd())?;
+    if !is_dir(&st) || key(&st) != want {
+        return Err(ESTALE);
+    }
+    let raw = fd.as_raw_fd();
+    s.fds.insert(Slot::Node(nodeid), Held::Fd(fd));
+    Ok(raw)
+}
+
+/// The directory `names` lead to under `dir`, a component after another, none followed
+/// if a symlink: on Linux in one openat2(2) refusing symlinks and any way out of `dir`
+/// (RESOLVE_NO_SYMLINKS, RESOLVE_BENEATH; Linux 5.6), and a component at a time with
+/// O_NOFOLLOW where the kernel has no openat2, or the path is too long for one call, and on
+/// macOS. A path that no longer leads to a directory is stale.
+fn open_beneath(dir: RawFd, names: &[CString]) -> Result<OwnedFd, Errno> {
+    #[cfg(target_os = "linux")]
+    if let Some(opened) = openat2_beneath(dir, names) {
+        return opened.map_err(stale);
+    }
+    let mut held: Option<OwnedFd> = None;
+    for name in names {
+        let at = held.as_ref().map_or(dir, std::os::fd::AsRawFd::as_raw_fd);
+        let next = open_at(at, name, libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW, 0);
+        held = Some(next.map_err(stale)?);
+    }
+    held.ok_or(EINVAL)
+}
+
+/// [`open_beneath`] in one openat2(2); none where this kernel has no openat2 (ENOSYS, or a
+/// seccomp filter's EPERM) or the path is longer than one call takes.
+#[cfg(target_os = "linux")]
+fn openat2_beneath(dir: RawFd, names: &[CString]) -> Option<Result<OwnedFd, Errno>> {
+    /// struct open_how (include/uapi/linux/openat2.h), which libc's leaves unbuilt.
+    #[repr(C)]
+    struct OpenHow {
+        flags: u64,
+        mode: u64,
+        resolve: u64,
+    }
+    let mut path = Vec::new();
+    for name in names {
+        if !path.is_empty() {
+            path.push(b'/');
+        }
+        path.extend_from_slice(name.to_bytes());
+    }
+    let path = CString::new(path).ok()?;
+    let how = OpenHow {
+        flags: u64::try_from(libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC).ok()?,
+        mode: 0,
+        resolve: libc::RESOLVE_BENEATH | libc::RESOLVE_NO_SYMLINKS,
+    };
+    // SAFETY: openat2(2) of a NUL-terminated path, with an open_how of the size given.
+    let fd = unsafe {
+        libc::syscall(
+            libc::SYS_openat2,
+            dir,
+            path.as_ptr(),
+            &raw const how,
+            std::mem::size_of::<OpenHow>(),
+        )
+    };
+    if let Ok(fd) = RawFd::try_from(fd)
+        && fd >= 0
+    {
+        // SAFETY: a fresh descriptor nothing else owns.
+        return Some(Ok(unsafe { OwnedFd::from_raw_fd(fd) }));
+    }
+    match last() {
+        ENOSYS | EPERM | ENAMETOOLONG => None,
+        e => Some(Err(e)),
     }
 }
 
-/// A node's parent's descriptor and its name; the root's own and `.`.
-fn at(s: &State, nodeid: u64) -> Result<(RawFd, CString), Errno> {
-    match &s.nodes.get(&nodeid).ok_or(ENOENT)?.kind {
-        Kind::Dir(fd) => Ok((fd.as_raw_fd(), cstring(".")?)),
-        Kind::Entry { parent, name } => Ok((dir_fd(s, *parent)?, name.clone())),
+/// An error opening a node's path, as the guest hears it: a path that no longer leads to a
+/// directory within the share (gone, not one, a symlink, a way out) is stale.
+fn stale(e: Errno) -> Errno {
+    match e {
+        ENOENT | ENOTDIR | ELOOP | EXDEV => ESTALE,
+        e => e,
     }
 }
 
-fn node_stat(s: &State, nodeid: u64) -> Result<libc::stat, Errno> {
-    match &s.nodes.get(&nodeid).ok_or(ENOENT)?.kind {
-        Kind::Dir(fd) => stat_fd(fd.as_raw_fd()),
-        Kind::Entry { parent, name } => stat_at(dir_fd(s, *parent)?, name),
+/// A node's parent's descriptor and its name; a directory's own and `.`.
+fn at(s: &mut State, nodeid: u64) -> Result<(RawFd, CString), Errno> {
+    let node = s.nodes.get(&nodeid).ok_or(ENOENT)?;
+    if node.dir {
+        return Ok((dir_fd(s, nodeid)?, cstring(".")?));
     }
+    let (parent, name) = (node.parent, node.name.clone());
+    Ok((dir_fd(s, parent)?, name))
 }
 
-/// `name` in directory node `parent`: its node, counted once more, its attributes and its
-/// owner.
+fn node_stat(s: &mut State, nodeid: u64) -> Result<libc::stat, Errno> {
+    let node = s.nodes.get(&nodeid).ok_or(ENOENT)?;
+    if node.dir {
+        return stat_fd(dir_fd(s, nodeid)?);
+    }
+    let parent = node.parent;
+    let dir = dir_fd(s, parent)?;
+    let node = s.nodes.get(&nodeid).ok_or(ENOENT)?;
+    stat_at(dir, &node.name)
+}
+
+/// `name` in directory node `parent`: its node, counted once more and known by this name
+/// now, its attributes and its owner. A directory is not opened until it is used.
 fn lookup(s: &mut State, parent: u64, name: &CStr) -> Result<(u64, libc::stat, Owner), Errno> {
     let dir = dir_fd(s, parent)?;
     let st = stat_at(dir, name)?;
     let k = key(&st);
-    let id = match s.by_key.get(&k).copied() {
-        Some(id) if s.nodes.contains_key(&id) => {
+    let id = match s.by_key.get(&k).copied().filter(|id| s.nodes.contains_key(id)) {
+        Some(id) => {
             if let Some(n) = s.nodes.get_mut(&id) {
                 n.lookups = n.lookups.saturating_add(1);
-                // A name it is known by now, where it is not a directory.
-                if let Kind::Entry { parent: p, name: n_ } = &mut n.kind {
-                    *p = parent;
-                    *n_ = name.to_owned();
+                // The root keeps no name.
+                if id != ROOT {
+                    (n.parent, n.name, n.dir) = (parent, name.to_owned(), is_dir(&st));
+                }
+                // Its inode a directory's no longer, deleted and its number taken again: the
+                // descriptor held is that directory's.
+                if !n.dir {
+                    s.fds.remove(Slot::Node(id));
                 }
             }
             id
         }
-        _ => {
-            let kind = if is_dir(&st) {
-                Kind::Dir(open_at(
-                    dir,
-                    name,
-                    libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW,
-                    0,
-                )?)
-            } else {
-                Kind::Entry {
-                    parent,
-                    name: name.to_owned(),
-                }
-            };
+        None => {
             let id = s.next_node;
             s.next_node += 1;
             s.nodes.insert(
                 id,
                 Node {
-                    kind,
+                    dir: is_dir(&st),
+                    parent,
+                    name: name.to_owned(),
                     lookups: 1,
                     key: k,
                 },
@@ -1418,19 +1761,290 @@ fn forget(s: &mut State, nodeid: u64, n: u64) {
         }
         None => false,
     };
-    if gone
-        && let Some(node) = s.nodes.remove(&nodeid)
-        && s.by_key.get(&node.key) == Some(&nodeid)
-    {
-        s.by_key.remove(&node.key);
+    if gone && let Some(node) = s.nodes.remove(&nodeid) {
+        s.fds.remove(Slot::Node(nodeid));
+        if s.by_key.get(&node.key) == Some(&nodeid) {
+            s.by_key.remove(&node.key);
+        }
     }
 }
 
-fn add_handle(s: &mut State, h: Handle) -> u64 {
+/// The handles a server keeps at most: Linux's own bound on a process's open files,
+/// `fs.nr_open`'s default (fs/file.c `sysctl_nr_open`, 1024 * 1024), which a guest's
+/// kernel keeps each of its processes to. A handle takes no descriptor (`State::fds`), but
+/// a hostile guest's would cost the host memory without bound.
+const MAX_HANDLES: usize = 1 << 20;
+
+/// Room for another of the guest's handles: past `MAX_HANDLES`, EMFILE, as a kernel
+/// refuses a process past its limit.
+fn room_for_handle(s: &State) -> Result<(), Errno> {
+    if s.handles.len() >= MAX_HANDLES {
+        return Err(EMFILE);
+    }
+    Ok(())
+}
+
+/// Host open `flags` without those that act once, for a handle's opens after its first.
+fn once(flags: libc::c_int) -> libc::c_int {
+    flags & !(libc::O_CREAT | libc::O_EXCL | libc::O_TRUNC)
+}
+
+/// Whether a descriptor opened with access mode `access` serves `flags`' access.
+fn allows(access: libc::c_int, flags: libc::c_int) -> bool {
+    match flags & libc::O_ACCMODE {
+        libc::O_RDONLY => access != libc::O_WRONLY,
+        libc::O_WRONLY => access != libc::O_RDONLY,
+        _ => access == libc::O_RDWR,
+    }
+}
+
+/// A handle of the guest's on `node`, opened with host `flags` (a file's) or none (a
+/// directory's), its descriptor `held` where the open took one.
+fn add_handle(s: &mut State, node: u64, flags: Option<libc::c_int>, held: Option<Held>) -> u64 {
     let fh = s.next_handle;
     s.next_handle += 1;
-    s.handles.insert(fh, h);
+    let opened = s.opened.entry(node).or_default();
+    opened.handles += 1;
+    if let Some(flags) = flags {
+        let access = flags & libc::O_ACCMODE;
+        if access != libc::O_WRONLY {
+            opened.reading += 1;
+        }
+        if access != libc::O_RDONLY {
+            opened.writing += 1;
+        }
+    }
+    s.handles.insert(fh, Handle { node, flags });
+    if let Some(held) = held {
+        s.fds.insert(Slot::Handle(fh), held);
+    }
     fh
+}
+
+/// Lets go of handle `fh`, and of its node's pin with the node's last handle.
+fn release(s: &mut State, fh: u64) {
+    let Some(h) = s.handles.remove(&fh) else {
+        return;
+    };
+    s.fds.remove(Slot::Handle(fh));
+    let Some(opened) = s.opened.get_mut(&h.node) else {
+        return;
+    };
+    opened.handles = opened.handles.saturating_sub(1);
+    if let Some(flags) = h.flags {
+        let access = flags & libc::O_ACCMODE;
+        if access != libc::O_WRONLY {
+            opened.reading = opened.reading.saturating_sub(1);
+        }
+        if access != libc::O_RDONLY {
+            opened.writing = opened.writing.saturating_sub(1);
+        }
+    }
+    if opened.handles == 0 {
+        s.opened.remove(&h.node);
+        s.pins.remove(&h.node);
+        s.unreached.remove(&h.node);
+    }
+}
+
+/// Whether `fh` is a file handle of the guest's.
+fn is_file(s: &State, fh: u64) -> bool {
+    s.handles.get(&fh).is_some_and(|h| h.flags.is_some())
+}
+
+/// File handle `fh`'s descriptor: its node's pin, where the guest unlinked or renamed over
+/// it; one held; or one opened again along its node's path with the handle's flags, and
+/// checked to be the file it was. A handle whose file no path reaches, unpinned, or whose
+/// path leads to another file now (renamed or replaced on the host), is stale (ESTALE),
+/// which the guest's kernel reports as it reports a stale NFS handle (audit V09).
+fn file_fd(s: &mut State, fh: u64) -> Result<RawFd, Errno> {
+    let h = s.handles.get(&fh).ok_or(EBADF)?;
+    let (node, flags) = (h.node, h.flags.ok_or(EBADF)?);
+    if let Some((pin, _)) = s.pins.get(&node) {
+        return Ok(pin.as_raw_fd());
+    }
+    if let Some(Held::Fd(fd)) = s.fds.get(Slot::Handle(fh)) {
+        return Ok(fd.as_raw_fd());
+    }
+    if s.unreached.get(&node).is_some_and(|&first| fh < first) {
+        return Err(ESTALE);
+    }
+    let want = s.nodes.get(&node).ok_or(ESTALE)?.key;
+    let (dir, name) = at(s, node)?;
+    // Refused for want of access, it is stale too: the host took its mode away.
+    let (fd, st) = open_regular(dir, &name, flags, 0).map_err(|e| match e {
+        EBADF | EACCES | EPERM => ESTALE,
+        e => stale(e),
+    })?;
+    if key(&st) != want {
+        return Err(ESTALE);
+    }
+    let raw = fd.as_raw_fd();
+    s.fds.insert(Slot::Handle(fh), Held::Fd(fd));
+    Ok(raw)
+}
+
+/// Directory handle `fh`'s stream: one held, or one opened again on its node, or on its
+/// pin where the guest removed it; on macOS a stream opened again starts at the
+/// directory's start, and a READDIR at an offset past it reads up to it.
+fn dir_stream(s: &mut State, fh: u64) -> Result<&mut DirStream, Errno> {
+    let h = s.handles.get(&fh).ok_or(EBADF)?;
+    if h.flags.is_some() {
+        return Err(EBADF);
+    }
+    let node = h.node;
+    if !matches!(s.fds.get(Slot::Handle(fh)), Some(Held::Dir(_))) {
+        let dir = match s.pins.get(&node) {
+            Some((pin, _)) => pin.as_raw_fd(),
+            None if s.unreached.get(&node).is_some_and(|&first| fh < first) => return Err(ESTALE),
+            None => dir_fd(s, node)?,
+        };
+        let stream = DirStream::open(dir)?;
+        s.fds.insert(Slot::Handle(fh), Held::Dir(stream));
+    }
+    match s.fds.get(Slot::Handle(fh)) {
+        Some(Held::Dir(stream)) => Ok(stream),
+        _ => Err(EBADF),
+    }
+}
+
+/// Before the guest removes `name` from directory `dir` (unlinks it, or renames another
+/// over it): a node there it has open keeps one descriptor, pinned, with the access its
+/// handles have, so that they go on serving once no path reaches it, as a kernel's open
+/// files do after an unlink. Pins are the descriptors the server cannot let go, and count
+/// against its budget: past it, none is taken, and the node's handles answer ESTALE once it
+/// is removed (audit V09).
+fn pin_before_removal(s: &mut State, dir: RawFd, name: &CStr) -> Removal {
+    let Ok(st) = stat_at(dir, name) else {
+        return Removal::Nothing;
+    };
+    let Some(&node) = s.by_key.get(&key(&st)) else {
+        return Removal::Nothing;
+    };
+    let Some(opened) = s.opened.get(&node) else {
+        return Removal::Nothing;
+    };
+    if s.pins.contains_key(&node) {
+        return Removal::Nothing;
+    }
+    let access = match (opened.reading > 0, opened.writing > 0) {
+        (_, false) => libc::O_RDONLY,
+        (false, true) => libc::O_WRONLY,
+        (true, true) => libc::O_RDWR,
+    };
+    // A file the removal leaves another name of needs no pin where there is no room: that
+    // name reaches it, and the guest's lookup of it makes it the node's path.
+    if !room_for_pin(s) && !is_dir(&st) && st.st_nlink > 1 {
+        return Removal::Nothing;
+    }
+    let fd = if !room_for_pin(s) {
+        None
+    } else if is_dir(&st) {
+        open_at(
+            dir,
+            name,
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW,
+            0,
+        )
+        .ok()
+    } else {
+        open_regular(dir, name, access | libc::O_NOFOLLOW, 0)
+            .ok()
+            .map(|(fd, _)| fd)
+    };
+    match fd.filter(|fd| stat_fd(fd.as_raw_fd()).is_ok_and(|now| key(&now) == key(&st))) {
+        Some(fd) => {
+            s.pins.insert(node, (fd, access));
+            Removal::Pinned(node)
+        }
+        None => {
+            // Its handles opened before now are stale once their own descriptors go;
+            // one opened after reaches what its path leads to then.
+            s.unreached.insert(node, s.next_handle);
+            Removal::Unreached(node)
+        }
+    }
+}
+
+/// Before the guest changes `name`'s mode in `dir` (node `node`) to `mode`: where the mode
+/// refuses the access its open handles have, one descriptor taken while the old mode allows
+/// it, pinned, so that they go on serving, as a kernel's open files do after a chmod. Past
+/// the budget none is taken, and they are stale once their own descriptors go.
+fn pin_before_chmod(s: &mut State, node: u64, dir: RawFd, name: &CStr, mode: u32) {
+    if s.pins.contains_key(&node) || !room_for_pin(s) {
+        return;
+    }
+    let Some(opened) = s.opened.get(&node) else {
+        return;
+    };
+    let access = match (opened.reading > 0, opened.writing > 0) {
+        (_, false) => libc::O_RDONLY,
+        (false, true) => libc::O_WRONLY,
+        (true, true) => libc::O_RDWR,
+    };
+    if !refuses(mode, access) {
+        return;
+    }
+    let Some(want) = s.nodes.get(&node).map(|n| n.key) else {
+        return;
+    };
+    let fd = match stat_at(dir, name) {
+        Ok(st) if is_dir(&st) => open_at(
+            dir,
+            name,
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW,
+            0,
+        )
+        .ok(),
+        Ok(_) => open_regular(dir, name, access | libc::O_NOFOLLOW, 0)
+            .ok()
+            .map(|(fd, _)| fd),
+        Err(_) => None,
+    };
+    if let Some(fd) = fd.filter(|fd| stat_fd(fd.as_raw_fd()).is_ok_and(|now| key(&now) == want)) {
+        s.pins.insert(node, (fd, access));
+    }
+}
+
+/// What [`pin_before_removal`] did, for [`removed`] to undo should the removal fail.
+#[derive(Debug, Clone, Copy)]
+enum Removal {
+    Nothing,
+    Pinned(u64),
+    Unreached(u64),
+}
+
+/// After a removal [`pin_before_removal`] made ready for: where it failed, the name still
+/// reaches the node, so its pin is let go, or it is reached again.
+fn removed(s: &mut State, removal: Removal, done: bool) {
+    if done {
+        return;
+    }
+    match removal {
+        Removal::Nothing => {}
+        Removal::Pinned(node) => {
+            s.pins.remove(&node);
+        }
+        Removal::Unreached(node) => {
+            s.unreached.remove(&node);
+        }
+    }
+}
+
+/// Whether the budget has room for one more pin: pins alone count against it, as the
+/// descriptors the server cannot let go.
+fn room_for_pin(s: &State) -> bool {
+    u64::try_from(s.pins.len()).unwrap_or(u64::MAX) < s.budget
+}
+
+/// Whether a file of `mode`, its owner's, refuses an open with `flags`' access to its owner,
+/// the share process: once its handle's descriptor were let go, none could be opened for it
+/// again by its path.
+fn refuses(mode: u32, flags: libc::c_int) -> bool {
+    let access = flags & libc::O_ACCMODE;
+    let reads = access != libc::O_WRONLY;
+    let writes = access != libc::O_RDONLY;
+    (reads && mode & 0o400 == 0) || (writes && mode & 0o200 == 0)
 }
 
 /// A directory's entry: its name, inode number and Linux dirent type.
@@ -1602,6 +2216,33 @@ impl DirStream {
 
 fn rename(s: &mut State, olddir: u64, old: &CStr, newdir: u64, new: &CStr, flags: u32) -> Result<(), Errno> {
     let (od, nd) = (dir_fd(s, olddir)?, dir_fd(s, newdir)?);
+    // What the rename replaces, unless it is the file renamed (a link of it) or an
+    // exchange, which removes nothing.
+    let same = matches!((stat_at(od, old), stat_at(nd, new)), (Ok(a), Ok(b)) if key(&a) == key(&b));
+    let removal = if flags & linux::RENAME_EXCHANGE == 0 && !same {
+        pin_before_removal(s, nd, new)
+    } else {
+        Removal::Nothing
+    };
+    let rc = renamed(od, old, nd, new, flags);
+    removed(s, removal, rc.is_ok());
+    rc?;
+    // The names nodes are known by follow, directories' as files': a directory let go is
+    // found again by its path.
+    let exchange = flags & linux::RENAME_EXCHANGE != 0;
+    for node in s.nodes.values_mut() {
+        if node.parent == olddir && node.name.as_c_str() == old {
+            (node.parent, node.name) = (newdir, new.to_owned());
+        } else if exchange && node.parent == newdir && node.name.as_c_str() == new {
+            (node.parent, node.name) = (olddir, old.to_owned());
+        }
+    }
+    Ok(())
+}
+
+/// `renameat2(2)` of `old` in `od` to `new` in `nd` with Linux's `flags`, as the host makes
+/// it: `renameat`, macOS's `renameatx_np`, or Linux's own system call.
+fn renamed(od: RawFd, old: &CStr, nd: RawFd, new: &CStr, flags: u32) -> Result<(), Errno> {
     let rc = if flags == 0 {
         // SAFETY: renameat(2) of NUL-terminated names in directories we hold.
         unsafe { libc::renameat(od, old.as_ptr(), nd, new.as_ptr()) }
@@ -1633,17 +2274,6 @@ fn rename(s: &mut State, olddir: u64, old: &CStr, newdir: u64, new: &CStr, flags
     };
     if rc != 0 {
         return Err(last());
-    }
-    // The names nodes are known by follow.
-    let exchange = flags & linux::RENAME_EXCHANGE != 0;
-    for node in s.nodes.values_mut() {
-        if let Kind::Entry { parent, name } = &mut node.kind {
-            if *parent == olddir && name.as_c_str() == old {
-                (*parent, *name) = (newdir, new.to_owned());
-            } else if exchange && *parent == newdir && name.as_c_str() == new {
-                (*parent, *name) = (olddir, old.to_owned());
-            }
-        }
     }
     Ok(())
 }
@@ -2035,7 +2665,7 @@ mod tests {
             assert_eq!(e, 0);
             let fh = u64::from_le_bytes(opened[0..8].try_into().unwrap());
             let state = s.state.lock().unwrap();
-            let Some(Handle::File(fd)) = state.handles.get(&fh) else {
+            let Some((Held::Fd(fd), _)) = state.fds.open.get(&Slot::Handle(fh)) else {
                 panic!("no file handle {fh}");
             };
             // SAFETY: F_GETFL of a descriptor the server holds.
@@ -2167,6 +2797,615 @@ mod tests {
         assert_eq!(answer(&dev, &req(op::LISTXATTR, null, 0, &list)), (0, Vec::new()));
         let opened = OPENED.with(|o| o.borrow().clone());
         assert!(!opened.iter().any(|n| n.as_bytes() == b"null"), "{opened:?}");
+    }
+
+    /// A server over `path` holding at most `budget` descriptors between requests.
+    fn small(path: &std::path::Path, budget: u64) -> Server {
+        let root = std::fs::File::open(path).unwrap();
+        Server::with_budget(root.into(), false, None, budget).unwrap()
+    }
+
+    fn found(s: &Server, parent: u64, n: &str) -> u64 {
+        let (e, entry) = answer(s, &req(op::LOOKUP, parent, 0, &name(n)));
+        assert_eq!(e, 0, "LOOKUP {n}");
+        u64::from_le_bytes(entry[0..8].try_into().unwrap())
+    }
+
+    /// A directory the server let go is found again along its path, which follows the
+    /// guest's renames; one renamed or replaced on the host since, or reached only through a
+    /// symlink, even one to itself, is stale (ESTALE), and nothing outside the share is
+    /// reached through one (audit V09).
+    #[test]
+    fn a_directory_let_go_is_found_by_its_path_or_is_stale() {
+        let (path, _) = dir();
+        std::fs::create_dir_all(path.join("a/b")).unwrap();
+        std::fs::create_dir_all(path.join("other")).unwrap();
+        let outside = path.with_extension("outside");
+        std::fs::create_dir_all(outside.join("b")).unwrap();
+        // A budget of one: each request on one directory lets the other go.
+        let s = small(&path, 1);
+        let a = found(&s, ROOT, "a");
+        let b = found(&s, a, "b");
+        let other = found(&s, ROOT, "other");
+        let getattr = |n: u64| answer(&s, &req(op::GETATTR, n, 0, &[0u8; 16])).0;
+        assert_eq!(getattr(b), 0);
+        assert_eq!(getattr(other), 0);
+        assert_eq!(getattr(b), 0, "along a/b");
+        let mut rename = ROOT.to_le_bytes().to_vec();
+        rename.extend(name("a"));
+        rename.extend(name("z"));
+        assert_eq!(answer(&s, &req(op::RENAME, ROOT, 0, &rename)).0, 0);
+        assert_eq!(getattr(other), 0);
+        assert_eq!(getattr(b), 0, "along z/b, the guest's rename");
+        // Renamed on the host: stale.
+        std::fs::rename(path.join("z"), path.join("y")).unwrap();
+        assert_eq!(getattr(other), 0);
+        assert_eq!(getattr(b), -ESTALE, "renamed on the host");
+        // A symlink in its path, to the very directory it was: not followed.
+        std::os::unix::fs::symlink("y", path.join("z")).unwrap();
+        assert_eq!(getattr(b), -ESTALE, "through a symlink to itself");
+        // A symlink out of the share: not followed, nothing made there.
+        std::fs::remove_file(path.join("z")).unwrap();
+        std::os::unix::fs::symlink(&outside, path.join("z")).unwrap();
+        let mut mkdir = 0o755u32.to_le_bytes().to_vec();
+        mkdir.extend_from_slice(&[0u8; 4]);
+        mkdir.extend(name("made"));
+        assert_eq!(answer(&s, &req(op::MKDIR, b, 0, &mkdir)).0, -ESTALE);
+        assert!(!outside.join("b/made").exists(), "made outside the share");
+        // Back at its path: found again.
+        std::fs::remove_file(path.join("z")).unwrap();
+        std::fs::rename(path.join("y"), path.join("z")).unwrap();
+        assert_eq!(getattr(b), 0, "back along z/b");
+        // Replaced on the host by another directory of its name: stale, and a lookup finds
+        // the new one.
+        assert_eq!(getattr(other), 0);
+        std::fs::rename(path.join("z/b"), path.join("b.old")).unwrap();
+        std::fs::create_dir(path.join("z/b")).unwrap();
+        assert_eq!(getattr(b), -ESTALE, "replaced on the host");
+        let z = found(&s, ROOT, "z");
+        assert_ne!(found(&s, z, "b"), b);
+        let _ = std::fs::remove_dir_all(&path);
+        let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    /// What a share process's servers may hold, from this host's figures (2026-10-09):
+    /// `kern.maxfilesperproc` 245,760; `kern.maxfiles` 491,520 with 10,754 open;
+    /// `kern.maxprocperuid` 10,666, two processes a run that shares. Here the table binds:
+    /// 90 a share process, its servers' part each.
+    #[test]
+    fn a_budget_is_reckoned_from_the_hosts_limits() {
+        let mac = Limits {
+            process: 245_760,
+            held: 6,
+            table: Some((491_520, 10_754)),
+            processes: Some(10_666),
+        };
+        assert_eq!(mac.budget(1), 90);
+        assert_eq!(mac.budget(3), 30);
+        // A table without a bound, as systemd sets Linux's: the process's limit binds.
+        let open_ended = Limits {
+            table: Some((u64::MAX, 2_000)),
+            ..mac
+        };
+        assert_eq!(open_ended.budget(1), 245_760 - 6 - REQUEST_FDS);
+        // Where the system says nothing of its table or its processes.
+        let unsaid = Limits {
+            table: None,
+            processes: None,
+            ..mac
+        };
+        assert_eq!(unsaid.budget(2), (245_760 - 6 - 2 * REQUEST_FDS) / 2);
+        let spent = Limits { process: 8, ..unsaid };
+        assert_eq!(spent.budget(1), 0);
+    }
+
+    /// OPEN of `node` with guest `flags`: its handle.
+    fn open(s: &Server, node: u64, flags: u32) -> u64 {
+        let mut b = flags.to_le_bytes().to_vec();
+        b.extend_from_slice(&[0u8; 4]);
+        let (e, opened) = answer(s, &req(op::OPEN, node, 0, &b));
+        assert_eq!(e, 0, "OPEN {node}");
+        u64::from_le_bytes(opened[0..8].try_into().unwrap())
+    }
+
+    /// READ of `size` bytes at `offset` through handle `fh`: the error and the bytes.
+    fn read(s: &Server, node: u64, fh: u64, offset: u64, size: u32) -> (i32, Vec<u8>) {
+        let mut b = fh.to_le_bytes().to_vec();
+        b.extend_from_slice(&offset.to_le_bytes());
+        b.extend_from_slice(&size.to_le_bytes());
+        b.extend_from_slice(&[0u8; 20]);
+        answer(s, &req(op::READ, node, 0, &b))
+    }
+
+    /// WRITE of `data` at `offset` through handle `fh`: the error.
+    fn write(s: &Server, node: u64, fh: u64, offset: u64, data: &[u8]) -> i32 {
+        let mut b = fh.to_le_bytes().to_vec();
+        b.extend_from_slice(&offset.to_le_bytes());
+        b.extend_from_slice(&u32::try_from(data.len()).unwrap().to_le_bytes());
+        b.extend_from_slice(&[0u8; 20]);
+        b.extend_from_slice(data);
+        answer(s, &req(op::WRITE, node, 0, &b)).0
+    }
+
+    fn release(s: &Server, node: u64, fh: u64) {
+        let mut b = fh.to_le_bytes().to_vec();
+        b.extend_from_slice(&[0u8; 16]);
+        assert_eq!(answer(s, &req(op::RELEASE, node, 0, &b)).0, 0);
+    }
+
+    /// The guest opens `n` other files, reads each and lets them go: more than the server
+    /// has room for, so it lets go of the descriptors it held before.
+    fn crowd(s: &Server, n: usize) {
+        let held: Vec<(u64, u64)> = (0..n)
+            .map(|i| {
+                let node = found(s, ROOT, &format!("crowd{i}"));
+                (node, open(s, node, 0))
+            })
+            .collect();
+        for &(node, fh) in &held {
+            assert_eq!(read(s, node, fh, 0, 8).0, 0);
+        }
+        for &(node, fh) in &held {
+            release(s, node, fh);
+        }
+    }
+
+    fn crowded(path: &std::path::Path, n: usize) {
+        for i in 0..n {
+            std::fs::write(path.join(format!("crowd{i}")), "c").unwrap();
+        }
+    }
+
+    /// A guest holds open as many files as its own kernel lets it, past what the server may
+    /// hold descriptors for, and reads each again and again: each handle's descriptor is
+    /// opened again along its path when it is needed (audit V09).
+    #[test]
+    fn a_guest_reads_ten_thousand_files_it_holds_open() {
+        let (path, _) = dir();
+        for i in 0..10_000 {
+            std::fs::write(path.join(format!("f{i}")), format!("{i}")).unwrap();
+        }
+        let s = small(&path, 90);
+        let held: Vec<(u64, u64)> = (0..10_000)
+            .map(|i| {
+                let node = found(&s, ROOT, &format!("f{i}"));
+                (node, open(&s, node, 0))
+            })
+            .collect();
+        for _ in 0..2 {
+            for (i, &(node, fh)) in held.iter().enumerate() {
+                let (e, got) = read(&s, node, fh, 0, 16);
+                assert_eq!(e, 0, "READ f{i}");
+                assert_eq!(got, format!("{i}").as_bytes(), "f{i}");
+            }
+        }
+        assert!(s.state.lock().unwrap().fds.open.len() <= 90 + REQUEST_FDS as usize);
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    /// A file the guest unlinks while it holds it open goes on being read and written through
+    /// its handle, as on a kernel's own filesystem, however long its descriptor was let go:
+    /// the server pins one for it before the unlink, and lets it go with its last handle.
+    #[test]
+    fn an_unlinked_file_held_open_goes_on_serving() {
+        let (path, _) = dir();
+        std::fs::write(path.join("a"), "before").unwrap();
+        crowded(&path, 20);
+        let s = small(&path, 4);
+        let a = found(&s, ROOT, "a");
+        let fh = open(&s, a, 2);
+        assert_eq!(answer(&s, &req(op::UNLINK, ROOT, 0, &name("a"))).0, 0);
+        assert!(!path.join("a").exists());
+        crowd(&s, 20);
+        assert_eq!(write(&s, a, fh, 0, b"after!"), 0);
+        crowd(&s, 20);
+        assert_eq!(read(&s, a, fh, 0, 16), (0, b"after!".to_vec()));
+        // fstat of it: through its handle, as there is no path to it.
+        let mut getattr = 1u32.to_le_bytes().to_vec();
+        getattr.extend_from_slice(&[0u8; 4]);
+        getattr.extend_from_slice(&fh.to_le_bytes());
+        assert_eq!(answer(&s, &req(op::GETATTR, a, 0, &getattr)).0, 0);
+        assert_eq!(s.state.lock().unwrap().pins.len(), 1);
+        release(&s, a, fh);
+        assert_eq!(s.state.lock().unwrap().pins.len(), 0);
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    /// A file the guest renames another over while it holds it open goes on being read
+    /// through its handle; its name opens the new one.
+    #[test]
+    fn a_file_renamed_over_while_open_goes_on_serving() {
+        let (path, _) = dir();
+        std::fs::write(path.join("a"), "old").unwrap();
+        std::fs::write(path.join("b"), "new").unwrap();
+        crowded(&path, 20);
+        let s = small(&path, 4);
+        let a = found(&s, ROOT, "a");
+        let fh = open(&s, a, 0);
+        let mut rename = ROOT.to_le_bytes().to_vec();
+        rename.extend(name("b"));
+        rename.extend(name("a"));
+        assert_eq!(answer(&s, &req(op::RENAME, ROOT, 0, &rename)).0, 0);
+        crowd(&s, 20);
+        assert_eq!(read(&s, a, fh, 0, 16), (0, b"old".to_vec()));
+        let now = found(&s, ROOT, "a");
+        assert_ne!(now, a);
+        let fresh = open(&s, now, 0);
+        assert_eq!(read(&s, now, fresh, 0, 16), (0, b"new".to_vec()));
+        // A handle opened to truncate is opened again without: what it wrote stays.
+        std::fs::write(path.join("c"), "to be cut").unwrap();
+        let c = found(&s, ROOT, "c");
+        let fc = open(&s, c, 2 | linux::O_TRUNC);
+        assert_eq!(write(&s, c, fc, 0, b"kept"), 0);
+        crowd(&s, 20);
+        assert_eq!(read(&s, c, fc, 0, 16), (0, b"kept".to_vec()));
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    /// A file replaced on the host while the guest holds it open is read through its
+    /// descriptor while the server holds it; once let go, the name leads to another file,
+    /// and the handle is stale (ESTALE), as a stale NFS handle is. So is one removed on the
+    /// host, or whose mode the host takes away, as none can be opened for it again.
+    #[test]
+    fn a_file_replaced_on_the_host_while_open_is_stale_once_let_go() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let (path, _) = dir();
+        std::fs::write(path.join("a"), "old").unwrap();
+        crowded(&path, 20);
+        let s = small(&path, 4);
+        let a = found(&s, ROOT, "a");
+        let fh = open(&s, a, 0);
+        std::fs::write(path.join("a.new"), "new").unwrap();
+        std::fs::rename(path.join("a.new"), path.join("a")).unwrap();
+        assert_eq!(read(&s, a, fh, 0, 16), (0, b"old".to_vec()), "held still");
+        crowd(&s, 20);
+        assert_eq!(read(&s, a, fh, 0, 16).0, -ESTALE);
+        // Removed on the host: stale too.
+        let b = found(&s, ROOT, "a");
+        let fb = open(&s, b, 0);
+        std::fs::remove_file(path.join("a")).unwrap();
+        crowd(&s, 20);
+        assert_eq!(read(&s, b, fb, 0, 16).0, -ESTALE);
+        // Its mode taken away on the host: stale, not refused.
+        std::fs::write(path.join("c"), "c").unwrap();
+        let c = found(&s, ROOT, "c");
+        let fc = open(&s, c, 0);
+        std::fs::set_permissions(path.join("c"), std::fs::Permissions::from_mode(0o200)).unwrap();
+        crowd(&s, 20);
+        assert_eq!(read(&s, c, fc, 0, 16).0, -ESTALE);
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    /// A directory's listing goes on where it was after its handle's stream is let go: each
+    /// entry once, every page read after the server let go of everything it held.
+    #[test]
+    fn a_listing_goes_on_where_it_was_after_its_stream_is_let_go() {
+        let (path, _) = dir();
+        std::fs::create_dir(path.join("d")).unwrap();
+        for i in 0..300 {
+            std::fs::write(path.join(format!("d/e{i}")), "e").unwrap();
+        }
+        crowded(&path, 20);
+        let s = small(&path, 4);
+        let d = found(&s, ROOT, "d");
+        let (e, opened) = answer(&s, &req(op::OPENDIR, d, 0, &[0u8; 8]));
+        assert_eq!(e, 0);
+        let fh = u64::from_le_bytes(opened[0..8].try_into().unwrap());
+        let (mut names, mut offset, mut pages) = (Vec::new(), 0u64, 0);
+        loop {
+            let (e, listed) = answer(&s, &req(op::READDIR, d, 0, &readdir(fh, offset, 512)));
+            assert_eq!(e, 0);
+            let entries = page(&listed, false);
+            let Some(&(_, last)) = entries.last() else {
+                break;
+            };
+            names.extend(entries.into_iter().map(|(n, _)| n));
+            offset = last;
+            pages += 1;
+            assert!(pages < 100, "the listing goes on past its entries");
+            crowd(&s, 8);
+        }
+        assert!(pages > 10, "{pages} pages");
+        let mut want: Vec<String> = (0..300).map(|i| format!("e{i}")).collect();
+        want.extend([".".to_string(), "..".to_string()]);
+        want.sort();
+        names.sort();
+        assert_eq!(names, want);
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    /// Pins are the descriptors a server cannot let go, and only they count against its
+    /// budget: past it, an unlink of a file the guest holds open goes on, and the handle is
+    /// stale (ESTALE) instead of pinned; opens are never refused for it (no EMFILE).
+    #[test]
+    fn pins_past_the_budget_leave_their_handles_stale() {
+        let (path, _) = dir();
+        for i in 0..5 {
+            std::fs::write(path.join(format!("p{i}")), format!("{i}")).unwrap();
+        }
+        crowded(&path, 50);
+        let s = small(&path, 2);
+        let held: Vec<(u64, u64)> = (0..5)
+            .map(|i| {
+                let node = found(&s, ROOT, &format!("p{i}"));
+                (node, open(&s, node, 0))
+            })
+            .collect();
+        for i in 0..5 {
+            assert_eq!(
+                answer(&s, &req(op::UNLINK, ROOT, 0, &name(&format!("p{i}")))).0,
+                0
+            );
+        }
+        crowd(&s, 50);
+        // Between requests, what it holds, pins and all, is within its budget, however
+        // many files the guest has open besides.
+        let more: Vec<(u64, u64)> = (0..10)
+            .map(|i| {
+                let node = found(&s, ROOT, &format!("crowd{i}"));
+                (node, open(&s, node, 0))
+            })
+            .collect();
+        for &(node, fh) in &more {
+            assert_eq!(read(&s, node, fh, 0, 8).0, 0);
+        }
+        let held_now = {
+            let st = s.state.lock().unwrap();
+            st.fds.open.len() + st.pins.len()
+        };
+        assert!(held_now <= 2, "{held_now} held");
+        for &(node, fh) in &more {
+            release(&s, node, fh);
+        }
+        for (i, &(node, fh)) in held.iter().enumerate() {
+            let want = if i < 2 {
+                (0, format!("{i}").into_bytes())
+            } else {
+                (-ESTALE, Vec::new())
+            };
+            assert_eq!(read(&s, node, fh, 0, 16), want, "p{i}");
+        }
+        // A pin let go with its last handle makes room for another.
+        release(&s, held[0].0, held[0].1);
+        std::fs::write(path.join("q"), "q").unwrap();
+        let q = found(&s, ROOT, "q");
+        let fq = open(&s, q, 0);
+        assert_eq!(answer(&s, &req(op::UNLINK, ROOT, 0, &name("q"))).0, 0);
+        crowd(&s, 10);
+        assert_eq!(read(&s, q, fq, 0, 16), (0, b"q".to_vec()));
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    /// CREATE of `n` in `parent` with guest `flags` (O_CREAT added) and `mode`: its node and
+    /// handle.
+    fn create(s: &Server, parent: u64, n: &str, flags: u32, mode: u32) -> (u64, u64) {
+        let mut b = Vec::new();
+        for v in [flags | linux::O_CREAT, 0o100_000 | mode, 0, 0] {
+            b.extend_from_slice(&v.to_le_bytes());
+        }
+        b.extend(name(n));
+        let (e, made) = answer(s, &req(op::CREATE, parent, 0, &b));
+        assert_eq!(e, 0, "CREATE {n}");
+        let node = u64::from_le_bytes(made[0..8].try_into().unwrap());
+        (node, u64::from_le_bytes(made[128..136].try_into().unwrap()))
+    }
+
+    /// Linux's numbers for the host's refusals the tests expect.
+    const EEXIST: i32 = 17;
+    const ENOTEMPTY: i32 = 39;
+
+    /// A file the guest makes read-only and fills through the handle that made it, as tar,
+    /// cp and git make one (an exclusive create of mode 0444, then writes): no descriptor for
+    /// writing could be opened for it again, so the one made is kept, and the handle writes
+    /// however long since the server let go of everything else (audit V09).
+    #[test]
+    fn a_file_made_read_only_is_filled_through_its_handle() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let (path, _) = dir();
+        crowded(&path, 20);
+        let s = small(&path, 4);
+        let (node, fh) = create(&s, ROOT, "ro", 1 | linux::O_EXCL, 0o444);
+        crowd(&s, 20);
+        assert_eq!(write(&s, node, fh, 0, b"filled"), 0);
+        crowd(&s, 20);
+        assert_eq!(write(&s, node, fh, 6, b" twice"), 0);
+        release(&s, node, fh);
+        assert_eq!(std::fs::read(path.join("ro")).unwrap(), b"filled twice");
+        let mode = std::fs::metadata(path.join("ro")).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o444);
+        assert!(s.state.lock().unwrap().pins.is_empty(), "let go with its handle");
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    /// A file whose mode the guest takes away while it has the file open goes on being
+    /// written and read through its handles, as on a kernel's own filesystem: before the
+    /// change the server keeps a descriptor for them, as none could be opened after it. A
+    /// new handle opens its own, with its own flags, where the mode lets it; and a change
+    /// that refuses no handle keeps nothing.
+    #[test]
+    fn a_file_whose_mode_is_taken_away_goes_on_serving_its_handles() {
+        let (path, _) = dir();
+        std::fs::write(path.join("w"), "").unwrap();
+        std::fs::write(path.join("r"), "read me").unwrap();
+        std::fs::write(path.join("x"), "x").unwrap();
+        crowded(&path, 20);
+        let s = small(&path, 4);
+        let chmod =
+            |node: u64, mode: u32| answer(&s, &req(op::SETATTR, node, 0, &setattr(fattr::MODE, mode))).0;
+        let w = found(&s, ROOT, "w");
+        let fw = open(&s, w, 2);
+        assert_eq!(chmod(w, 0o444), 0);
+        crowd(&s, 20);
+        assert_eq!(write(&s, w, fw, 0, b"still"), 0);
+        crowd(&s, 20);
+        assert_eq!(read(&s, w, fw, 0, 16), (0, b"still".to_vec()));
+        // A reader, its file made write-only.
+        let r = found(&s, ROOT, "r");
+        let fr = open(&s, r, 0);
+        assert_eq!(chmod(r, 0o200), 0);
+        crowd(&s, 20);
+        assert_eq!(read(&s, r, fr, 0, 16), (0, b"read me".to_vec()));
+        // A new handle to `w` opens a descriptor of its own, with its own status flags.
+        let fresh = open(&s, w, linux::O_NONBLOCK);
+        {
+            let state = s.state.lock().unwrap();
+            let Some((Held::Fd(fd), _)) = state.fds.open.get(&Slot::Handle(fresh)) else {
+                panic!("no descriptor of its own");
+            };
+            // SAFETY: F_GETFL of a descriptor the server holds.
+            let status = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFL) };
+            assert_ne!(status & libc::O_NONBLOCK, 0);
+        }
+        assert_eq!(read(&s, w, fresh, 0, 16), (0, b"still".to_vec()));
+        // A mode that refuses none of its handles keeps nothing more.
+        let x = found(&s, ROOT, "x");
+        let fx = open(&s, x, 2);
+        let pins = s.state.lock().unwrap().pins.len();
+        assert_eq!(chmod(x, 0o600), 0);
+        assert_eq!(s.state.lock().unwrap().pins.len(), pins);
+        for (node, fh) in [(w, fw), (w, fresh), (r, fr), (x, fx)] {
+            release(&s, node, fh);
+        }
+        assert!(s.state.lock().unwrap().pins.is_empty());
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    /// A removal that fails takes back the pin it took for a node the guest has open, and,
+    /// with no room for one, leaves its handles as they were: the node is still there, its
+    /// path with it.
+    #[test]
+    fn a_removal_that_fails_leaves_open_nodes_as_they_were() {
+        let (path, _) = dir();
+        for n in ["x", "y", "p"] {
+            std::fs::write(path.join(n), n).unwrap();
+        }
+        std::fs::create_dir(path.join("d")).unwrap();
+        std::fs::write(path.join("d/inside"), "i").unwrap();
+        crowded(&path, 20);
+        let s = small(&path, 1);
+        let noreplace = || {
+            let mut b = ROOT.to_le_bytes().to_vec();
+            b.extend_from_slice(&linux::RENAME_NOREPLACE.to_le_bytes());
+            b.extend_from_slice(&[0u8; 4]);
+            b.extend(name("y"));
+            b.extend(name("x"));
+            answer(&s, &req(op::RENAME2, ROOT, 0, &b)).0
+        };
+        let x = found(&s, ROOT, "x");
+        let fx = open(&s, x, 0);
+        assert_eq!(noreplace(), -EEXIST);
+        assert!(s.state.lock().unwrap().pins.is_empty(), "taken back");
+        // Its budget spent on a pin: the same, and x's handle reads on once let go.
+        let p = found(&s, ROOT, "p");
+        let _fp = open(&s, p, 0);
+        assert_eq!(answer(&s, &req(op::UNLINK, ROOT, 0, &name("p"))).0, 0);
+        assert_eq!(noreplace(), -EEXIST);
+        crowd(&s, 20);
+        assert_eq!(read(&s, x, fx, 0, 8), (0, b"x".to_vec()));
+        // A directory not empty: refused, and its handle lists on.
+        let d = found(&s, ROOT, "d");
+        let (e, opened) = answer(&s, &req(op::OPENDIR, d, 0, &[0u8; 8]));
+        assert_eq!(e, 0);
+        let fd = u64::from_le_bytes(opened[0..8].try_into().unwrap());
+        assert_eq!(answer(&s, &req(op::RMDIR, ROOT, 0, &name("d"))).0, -ENOTEMPTY);
+        crowd(&s, 20);
+        let (e, listed) = answer(&s, &req(op::READDIR, d, 0, &readdir(fd, 0, 4096)));
+        assert_eq!(e, 0);
+        assert!(page(&listed, false).iter().any(|(n, _)| n == "inside"));
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    /// A guest holds open as many files as its own kernel lets it, whatever the budget: a
+    /// handle's descriptor is a cache the server lets go and opens again along its path,
+    /// never a limit the guest meets (audit V09). A thousand handles past a budget of four,
+    /// read round and round, each serves its own file, and the server holds no more than its
+    /// budget's descriptors between requests.
+    #[test]
+    fn handles_past_the_budget_each_serve_their_file() {
+        let (path, _) = dir();
+        for i in 0..1000 {
+            std::fs::write(path.join(format!("f{i}")), format!("file {i}")).unwrap();
+        }
+        let s = small(&path, 4);
+        let handles: Vec<(u64, u64)> = (0..1000)
+            .map(|i| {
+                let node = found(&s, ROOT, &format!("f{i}"));
+                (node, open(&s, node, 0))
+            })
+            .collect();
+        for _ in 0..3 {
+            for (i, &(node, fh)) in handles.iter().enumerate() {
+                assert_eq!(
+                    read(&s, node, fh, 0, 32),
+                    (0, format!("file {i}").into_bytes()),
+                    "f{i}"
+                );
+            }
+            let st = s.state.lock().unwrap();
+            assert!(
+                st.fds.open.len() <= 4 + REQUEST_FDS as usize,
+                "{} held",
+                st.fds.open.len()
+            );
+        }
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    /// A file the guest unlinks by one of its names while it has it open needs no pin while
+    /// another name remains: with no room for one, its handles are reached by that name, and
+    /// so is a new one. Its last name unlinked with no room, they are stale once let go.
+    #[test]
+    fn a_file_unlinked_by_one_name_is_served_by_another() {
+        let (path, _) = dir();
+        std::fs::write(path.join("a"), "linked").unwrap();
+        std::fs::hard_link(path.join("a"), path.join("b")).unwrap();
+        std::fs::write(path.join("p"), "p").unwrap();
+        crowded(&path, 20);
+        let s = small(&path, 1);
+        let p = found(&s, ROOT, "p");
+        let _fp = open(&s, p, 0);
+        assert_eq!(answer(&s, &req(op::UNLINK, ROOT, 0, &name("p"))).0, 0);
+        let a = found(&s, ROOT, "a");
+        let fa = open(&s, a, 0);
+        assert_eq!(answer(&s, &req(op::UNLINK, ROOT, 0, &name("a"))).0, 0);
+        assert_eq!(found(&s, ROOT, "b"), a, "one node, known by its other name now");
+        crowd(&s, 20);
+        assert_eq!(read(&s, a, fa, 0, 16), (0, b"linked".to_vec()));
+        let again = open(&s, a, 0);
+        assert_eq!(read(&s, a, again, 0, 16), (0, b"linked".to_vec()));
+        assert_eq!(answer(&s, &req(op::UNLINK, ROOT, 0, &name("b"))).0, 0);
+        crowd(&s, 20);
+        assert_eq!(read(&s, a, fa, 0, 16).0, -ESTALE);
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    /// A file whose last name the guest unlinks while it has it open, with no room to pin
+    /// it, is stale once its handles' descriptors are let go, even where its path then leads
+    /// to a file of its number: a host's filesystem gives a freed number again (ext4 at
+    /// once), and that file is not the one the handles opened. One opened after reads it.
+    #[test]
+    fn a_file_unlinked_unpinned_is_not_found_again_by_its_number() {
+        use std::os::unix::fs::MetadataExt as _;
+        let (path, _) = dir();
+        std::fs::write(path.join("p"), "p").unwrap();
+        std::fs::write(path.join("a"), "gone").unwrap();
+        crowded(&path, 20);
+        let s = small(&path, 1);
+        let p = found(&s, ROOT, "p");
+        let _fp = open(&s, p, 0);
+        assert_eq!(answer(&s, &req(op::UNLINK, ROOT, 0, &name("p"))).0, 0);
+        let a = found(&s, ROOT, "a");
+        let fa = open(&s, a, 0);
+        assert_eq!(answer(&s, &req(op::UNLINK, ROOT, 0, &name("a"))).0, 0);
+        // Another file at its name, given its number as a host may give it.
+        std::fs::write(path.join("a"), "another").unwrap();
+        let m = std::fs::metadata(path.join("a")).unwrap();
+        s.state.lock().unwrap().nodes.get_mut(&a).unwrap().key = (m.dev(), m.ino());
+        crowd(&s, 20);
+        assert_eq!(read(&s, a, fa, 0, 16).0, -ESTALE);
+        let fresh = open(&s, a, 0);
+        assert_eq!(read(&s, a, fresh, 0, 16), (0, b"another".to_vec()));
+        let _ = std::fs::remove_dir_all(&path);
     }
 
     #[test]

@@ -250,6 +250,7 @@ fn container(
             human: false,
             verbose: false,
             size: false,
+            filtered: false,
         });
     }
     #[cfg(unix)]
@@ -310,6 +311,28 @@ fn container(
             ..listing::Asked::default()
         });
     }
+    // `buildx du`: what runDiskUsage refuses before it asks (diskusage.go), as buildx's
+    // main prints it.
+    if std::ptr::eq(command, &shards_cmdline::commands::BUILDER_DU) {
+        let asked = shards_cmdline::format::du::format(parsed.string("format"), parsed.bool("verbose"))
+            .and_then(|_| shards_cmdline::buildcache::prune_info(parsed.many("filter")));
+        let filtered = match asked {
+            Ok(info) => info.given,
+            Err(e) => {
+                let _ = writeln!(std::io::stderr(), "ERROR: {e}");
+                return ExitCode::FAILURE;
+            }
+        };
+        #[cfg(unix)]
+        listing::ask(listing::Asked {
+            format: parsed.string("format").to_string(),
+            verbose: parsed.bool("verbose"),
+            filtered,
+            ..listing::Asked::default()
+        });
+        #[cfg(not(unix))]
+        let _ = filtered;
+    }
     #[cfg(unix)]
     if std::ptr::eq(command, &shards_cmdline::commands::HISTORY) {
         listing::ask(listing::Asked {
@@ -320,6 +343,7 @@ fn container(
             human: parsed.bool("human"),
             verbose: false,
             size: false,
+            filtered: false,
         });
     }
     // A prune asks first, as the Docker CLI does, unless forced: on a colour terminal in

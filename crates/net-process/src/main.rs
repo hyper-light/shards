@@ -22,6 +22,14 @@ fn main() -> ExitCode {
 #[cfg(unix)]
 fn run() -> Result<(), String> {
     use std::os::fd::{FromRawFd, OwnedFd};
+    // In App Sandbox from its launch, as its signature says (resources/net.entitlements,
+    // D31): one outside it serves no VM, and is told so before it reads anything.
+    #[cfg(target_os = "macos")]
+    if !shards_apple::sandbox::sandboxed()? {
+        return Err("not in App Sandbox: a network process is signed into it \
+                    (resources/net.entitlements, crates/shards/build.rs), and serves no VM outside it"
+            .into());
+    }
     // The daemon's socket, on which published ports come, and the VM's, on which they go.
     let mut controls: Vec<(shards_net::Control, String)> = Vec::new();
     let mut ring = None;
@@ -31,6 +39,7 @@ fn run() -> Result<(), String> {
     // A build's proxy (D110): the gateway's port its one flow is to, and the socket that
     // flow goes to.
     let (mut proxy_port, mut proxy_socket) = (None, None);
+    let mut proxy_dialer: Option<String> = None;
     // Nor a subnet of its own: the guest's is its spawner's to elect.
     let mut bridge: Option<shards_net::bridge::Bridge> = None;
     // The host's resolvers, which a guest granted egress asks its names of (D59).
@@ -85,6 +94,9 @@ fn run() -> Result<(), String> {
                     args.next().ok_or("--proxy-socket needs a value")?,
                 ));
             }
+            // Where App Sandbox keeps it from the proxy's socket (macOS, D31): its spawner's
+            // dialer, which connects for it.
+            Some("--proxy-dialer") => proxy_dialer = Some(value(&mut args, "--proxy-dialer")?),
             _ => return Err(format!("unknown argument {a:?}")),
         }
     }
@@ -123,6 +135,13 @@ fn run() -> Result<(), String> {
         Ok(unsafe { OwnedFd::from_raw_fd(fd) })
     };
     let (region, me, peer) = (adopt(*region)?, adopt(*me)?, adopt(*peer)?);
+    if let Some(fd) = proxy_dialer {
+        let fd = fd
+            .parse()
+            .map_err(|_| format!("--proxy-dialer: {fd:?} is not a descriptor"))?;
+        shards_net::tcp::set_proxy_dialer(std::os::unix::net::UnixStream::from(adopt(fd)?))
+            .map_err(|e| e.to_string())?;
+    }
     let controls = controls
         .iter()
         .map(|(role, fd)| {
@@ -132,6 +151,11 @@ fn run() -> Result<(), String> {
             Ok((*role, std::os::unix::net::UnixStream::from(adopt(fd)?)))
         })
         .collect::<Result<_, String>>()?;
+    // Confined before it reads anything a guest sends (D31): no file, no TCP port of its
+    // own, no TCP at all under a build's proxy.
+    #[cfg(target_os = "linux")]
+    shards_net::confine::at_start(matches!(policy, shards_net::Policy::Proxy { .. }))
+        .map_err(|e| e.to_string())?;
     let mut cfg = shards_net::Config::on_bridge(policy, mac, &bridge);
     cfg.resolvers = resolvers;
     shards_net::serve(region, me, peer, cfg, controls).map_err(|e| e.to_string())

@@ -151,3 +151,49 @@ fn a_local_mcp_server_reaches_only_what_its_caller_reaches() {
         assert!(all.lines().any(|l| l == want), "no {want:?} in\n{all}");
     }
 }
+
+/// The network process runs in App Sandbox (macOS, D31): signed into it with its network's
+/// client and server and no file, it reads its arguments; a copy signed out of it refuses
+/// to serve before it reads anything, as a network process outside the sandbox serves no
+/// VM.
+#[cfg(target_os = "macos")]
+#[test]
+fn the_network_process_runs_in_app_sandbox_alone() {
+    use std::process::Command;
+    let net = common::shards_net();
+    let shown = Command::new("codesign")
+        .args(["-d", "--entitlements", "-", "--xml"])
+        .arg(net)
+        .output()
+        .unwrap();
+    let xml = String::from_utf8_lossy(&shown.stdout);
+    for key in [
+        "com.apple.security.app-sandbox",
+        "com.apple.security.network.client",
+        "com.apple.security.network.server",
+    ] {
+        assert!(xml.contains(key), "{key}: {xml}");
+    }
+    assert!(
+        !xml.contains("files") && !xml.contains("temporary-exception"),
+        "no file reachable: {xml}"
+    );
+    let ran = Command::new(net).output().unwrap();
+    let said = String::from_utf8_lossy(&ran.stderr);
+    assert!(said.contains("--ring is required"), "{said}");
+    let dir = TempDir::new("net-unsandboxed");
+    let copy = dir.join("shards-net");
+    std::fs::copy(net, &copy).unwrap();
+    let signed = Command::new("codesign")
+        .args(["--force", "-s", "-"])
+        .arg(&copy)
+        .status()
+        .unwrap();
+    assert!(signed.success());
+    let refused = Command::new(&copy).output().unwrap();
+    let said = String::from_utf8_lossy(&refused.stderr);
+    assert!(
+        !refused.status.success() && said.contains("not in App Sandbox"),
+        "{said}"
+    );
+}

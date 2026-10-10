@@ -791,61 +791,17 @@ fn detach() -> Result<(), String> {
     }
 }
 
-/// Raises this process's soft limit on open descriptors to its hard limit, as Go's runtime
-/// raises its own (go1.25.0 src/syscall/rlimit.go, after go.dev/issue/46279): the daemon
-/// holds a socket for each warm VM and each run, and each client in hand holds several
-/// more, where macOS starts a process with a soft limit of 256. macOS refuses more than
-/// `kern.maxfilesperproc` (src/syscall/rlimit_darwin.go). The hard limit is for whoever
-/// starts the daemon to set. Returns the limit it has.
-fn raise_descriptor_limit() -> Option<libc::rlim_t> {
-    let mut lim = libc::rlimit {
-        rlim_cur: 0,
-        rlim_max: 0,
-    };
-    // SAFETY: getrlimit(2) into a local.
-    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim) } != 0 {
-        return None;
-    }
-    if lim.rlim_cur >= lim.rlim_max {
-        return Some(lim.rlim_cur);
-    }
-    let raised = lim.rlim_max;
-    #[cfg(target_os = "macos")]
-    let raised = raised.min(max_files_per_process().unwrap_or(raised));
-    if raised > lim.rlim_cur {
-        let before = lim.rlim_cur;
-        lim.rlim_cur = raised;
-        // SAFETY: setrlimit(2) from a local.
-        if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &lim) } != 0 {
-            log(format!(
-                "raising the descriptor limit to {raised}: {}",
-                io::Error::last_os_error()
-            ));
-            return Some(before);
+/// Raises this process's descriptor limit as far as it may go (`platform::
+/// raise_descriptor_limit`): the daemon holds a socket for each warm VM and each run, and
+/// each client in hand holds several more. Returns the limit it has.
+fn raise_descriptor_limit() -> Option<u64> {
+    match shards_vmm::platform::raise_descriptor_limit() {
+        Ok(limit) => Some(limit),
+        Err(e) => {
+            log(format!("raising the descriptor limit: {e}"));
+            shards_vmm::platform::descriptor_limit()
         }
     }
-    Some(lim.rlim_cur)
-}
-
-/// `kern.maxfilesperproc`: how many descriptors macOS lets one process open.
-#[cfg(target_os = "macos")]
-fn max_files_per_process() -> Option<libc::rlim_t> {
-    let mut per_process: libc::c_int = 0;
-    let mut len = std::mem::size_of::<libc::c_int>();
-    // SAFETY: sysctlbyname(3) reading one int into a local of its size.
-    let read = unsafe {
-        libc::sysctlbyname(
-            c"kern.maxfilesperproc".as_ptr(),
-            (&raw mut per_process).cast(),
-            &mut len,
-            std::ptr::null_mut(),
-            0,
-        )
-    };
-    if read != 0 {
-        return None;
-    }
-    libc::rlim_t::try_from(per_process).ok()
 }
 
 /// A count from the setting `name`, or `default`: a malformed one is refused, not taken
@@ -5244,6 +5200,9 @@ mod tests {
             human: !args.contains(&"--human=false") && !args.contains(&"-H=false"),
             verbose: args.iter().any(|a| matches!(*a, "-v" | "--verbose")),
             size: args.iter().any(|a| matches!(*a, "-s" | "--size")),
+            filtered: args
+                .iter()
+                .any(|a| *a == "--filter" || a.starts_with("--filter=")),
         };
         let clock = shards_cmdline::format::Clock {
             now: i128::try_from(containers::now()).unwrap(),

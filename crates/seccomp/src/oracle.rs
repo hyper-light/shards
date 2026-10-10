@@ -562,3 +562,33 @@ fn measure_programs() {
         }
     }
 }
+
+/// A compile looks up whether the guest kernel has a syscall a few times for each its
+/// tables hold, however far past them the numbers a profile names lie: on arm64, 32-bit
+/// Arm's private syscalls (`breakpoint`, `cacheflush`, `set_tls`) are at 0x0f0001 and past,
+/// and looking at every number up to them took 2.2 s a compile (M167).
+#[test]
+fn a_compile_looks_up_as_many_syscalls_as_its_tables_hold() {
+    for (arch, abis) in [
+        (Arch::Amd64, &[Abi::X86_64, Abi::X86, Abi::X32][..]),
+        (Arch::Arm64, &[Abi::Aarch64, Abi::Arm][..]),
+    ] {
+        let held: u64 = abis.iter().map(|&a| tables::kernel_numbers(a).len() as u64).sum();
+        for case in cases() {
+            tables::LOOKUPS.with(|n| n.set(0));
+            let _ = build(&case, arch, Mode::Shards);
+            let looked = tables::LOOKUPS.with(std::cell::Cell::get);
+            // Two for each number held, where the kernel's syscalls begin and end, and at
+            // most one for each point a section's decision may change at: three a section,
+            // two for each syscall listed (at most those held), one past each stub's line,
+            // and those two for each number held again. 2,567 and 1,607 at most for these
+            // cases on amd64 and arm64, of 7,293 and 4,527; the look at every number made
+            // about 2 million on arm64.
+            assert!(
+                looked <= 6 * held + 9,
+                "{arch:?} {}: {looked} lookups for {held} syscalls",
+                case["name"]
+            );
+        }
+    }
+}

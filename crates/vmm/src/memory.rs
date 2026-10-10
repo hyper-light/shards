@@ -10,9 +10,10 @@
 //! - The VMM's threads reach guest memory through an [`Access`], which one of them holds
 //!   at a time. Their accesses are ordered, never racing, whatever addresses a guest gives
 //!   its devices, overlapping or not (audit A01).
-//! - Within an access, reads and writes are volatile, since the guest and the kernel change
-//!   guest memory under them, and the virtqueue indices that order the host against the
-//!   guest are atomic ([`Access::load_u16`], [`Access::store_u16`]).
+//! - Within an access, reads and writes are volatile, or `asm!` the compiler cannot see
+//!   into ([`platform::copy_in`]), since the guest and the kernel change guest memory under
+//!   them, and the virtqueue indices that order the host against the guest are atomic
+//!   ([`Access::load_u16`], [`Access::store_u16`]).
 //! - Nothing forms a Rust reference or slice into guest memory.
 //! - Bulk data goes by system calls given guest addresses ([`GuestMemory::host_ptr`]),
 //!   without an access held, as the guest's own accesses go: the kernel, like the guest,
@@ -72,7 +73,7 @@ unsafe impl Pod for u32 {}
 // SAFETY: as above.
 unsafe impl Pod for u64 {}
 
-/// The width of the volatile accesses that copy whole words.
+/// The width of the volatile reads that look for a zero page.
 const WORD: usize = size_of::<u64>();
 
 #[derive(Debug)]
@@ -112,6 +113,13 @@ unsafe impl Sync for GuestMemory {}
 thread_local! {
     /// Its address tells this thread from every other live thread.
     static TOKEN: u8 = const { 0 };
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many times this thread has taken guest memory: how a test counts a device's
+    /// takes of it.
+    pub static TAKES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 /// A nonzero number no other live thread has.
@@ -196,6 +204,8 @@ impl GuestMemory {
         }
         let held = lock(&self.host);
         self.holder.store(me, Ordering::Relaxed);
+        #[cfg(test)]
+        TAKES.with(|t| t.set(t.get() + 1));
         Ok(Access {
             mem: self,
             _held: held,
@@ -335,19 +345,40 @@ impl<'a> Access<'a> {
 
     /// Copies guest memory at `gpa` into `buf`.
     pub fn read(&self, gpa: u64, buf: &mut [u8]) -> Result<(), OutOfBounds> {
-        let src = self.mem.host_ptr(gpa, buf.len())?;
-        // SAFETY: `src` is valid for `buf.len()` bytes of guest memory, which host memory
-        // like `buf` never overlaps.
-        unsafe { copy_in(src, buf.as_mut_ptr(), buf.len()) };
-        Ok(())
+        // SAFETY: `buf` is valid for writes of its length, and nothing else accesses it.
+        unsafe { self.read_raw(gpa, buf.as_mut_ptr(), buf.len()) }
     }
 
     /// Copies `buf` into guest memory at `gpa`.
     pub fn write(&self, gpa: u64, buf: &[u8]) -> Result<(), OutOfBounds> {
-        let dst = self.mem.host_ptr(gpa, buf.len())?;
-        // SAFETY: `dst` is valid for `buf.len()` bytes of guest memory, which host memory
-        // like `buf` never overlaps.
-        unsafe { copy_out(buf.as_ptr(), dst, buf.len()) };
+        // SAFETY: `buf` is valid for reads of its length.
+        unsafe { self.write_raw(gpa, buf.as_ptr(), buf.len()) }
+    }
+
+    /// Copies `len` bytes of guest memory at `gpa` to `dst`, memory no Rust reference
+    /// covers: a record of a ring another process shares, written before it is published.
+    ///
+    /// # Safety
+    /// `dst` must be valid for writes of `len` bytes, of host memory that nothing else
+    /// accesses meanwhile.
+    pub unsafe fn read_raw(&self, gpa: u64, dst: *mut u8, len: usize) -> Result<(), OutOfBounds> {
+        let src = self.mem.host_ptr(gpa, len)?;
+        // SAFETY: `src` is valid for `len` bytes of guest memory, which host memory like
+        // `dst` never overlaps; `dst` as the caller promises.
+        unsafe { platform::copy_in(src, dst, len) };
+        Ok(())
+    }
+
+    /// Copies `len` bytes at `src`, memory no Rust reference covers, into guest memory at
+    /// `gpa`.
+    ///
+    /// # Safety
+    /// `src` must be valid for reads of `len` bytes of host memory.
+    pub unsafe fn write_raw(&self, gpa: u64, src: *const u8, len: usize) -> Result<(), OutOfBounds> {
+        let dst = self.mem.host_ptr(gpa, len)?;
+        // SAFETY: `dst` is valid for `len` bytes of guest memory, which host memory like
+        // `src` never overlaps; `src` as the caller promises.
+        unsafe { platform::copy_out(src, dst, len) };
         Ok(())
     }
 
@@ -359,7 +390,7 @@ impl<'a> Access<'a> {
         // many bytes of this thread's, and every byte of it is written; `T: Pod` accepts
         // whatever bytes arrive.
         unsafe {
-            copy_in(src, value.as_mut_ptr().cast(), size_of::<T>());
+            platform::copy_in(src, value.as_mut_ptr().cast(), size_of::<T>());
             Ok(value.assume_init())
         }
     }
@@ -369,7 +400,7 @@ impl<'a> Access<'a> {
         let dst = self.mem.host_ptr(gpa, size_of::<T>())?;
         // SAFETY: `dst` is valid for `size_of::<T>()` bytes of guest memory, and `value`'s
         // bytes are all initialized (`T: Pod` has no padding).
-        unsafe { copy_out(std::ptr::from_ref(&value).cast(), dst, size_of::<T>()) };
+        unsafe { platform::copy_out(std::ptr::from_ref(&value).cast(), dst, size_of::<T>()) };
         Ok(())
     }
 
@@ -397,62 +428,6 @@ impl<'a> Access<'a> {
         }
         // Regions are page-aligned, so an even address is aligned in the host too.
         Ok(self.mem.host_ptr(gpa, 2)?.cast())
-    }
-}
-
-/// Copies `len` bytes of guest memory at `src` to host memory at `dst`, by volatile reads,
-/// a word at a time from `src`'s first word boundary.
-///
-/// # Safety
-/// `src` must be valid for reads of `len` bytes of guest memory, and `dst` for writes of
-/// `len` bytes of host memory that nothing else accesses meanwhile.
-unsafe fn copy_in(src: *const u8, dst: *mut u8, len: usize) {
-    let head = src.align_offset(WORD).min(len);
-    let mut i = 0;
-    // SAFETY: every offset stays below `len`, and words are read only from `src` offsets
-    // `head + k * WORD`, which are aligned.
-    unsafe {
-        while i < head {
-            dst.add(i).write(src.add(i).read_volatile());
-            i += 1;
-        }
-        while len - i >= WORD {
-            let word = src.add(i).cast::<u64>().read_volatile();
-            dst.add(i).cast::<u64>().write_unaligned(word);
-            i += WORD;
-        }
-        while i < len {
-            dst.add(i).write(src.add(i).read_volatile());
-            i += 1;
-        }
-    }
-}
-
-/// Copies `len` bytes of host memory at `src` to guest memory at `dst`, by volatile writes,
-/// a word at a time from `dst`'s first word boundary.
-///
-/// # Safety
-/// `src` must be valid for reads of `len` bytes of host memory, and `dst` for writes of
-/// `len` bytes of guest memory.
-unsafe fn copy_out(src: *const u8, dst: *mut u8, len: usize) {
-    let head = dst.align_offset(WORD).min(len);
-    let mut i = 0;
-    // SAFETY: every offset stays below `len`, and words are written only to `dst` offsets
-    // `head + k * WORD`, which are aligned.
-    unsafe {
-        while i < head {
-            dst.add(i).write_volatile(src.add(i).read());
-            i += 1;
-        }
-        while len - i >= WORD {
-            let word = src.add(i).cast::<u64>().read_unaligned();
-            dst.add(i).cast::<u64>().write_volatile(word);
-            i += WORD;
-        }
-        while i < len {
-            dst.add(i).write_volatile(src.add(i).read());
-            i += 1;
-        }
     }
 }
 
@@ -785,23 +760,41 @@ mod tests {
         assert!(a.load_u16(0x8000_0011, Ordering::Acquire).is_err());
     }
 
-    /// Copies land byte for byte at every alignment of guest address and length, whatever
-    /// mix of bytes and words carries them.
+    /// Copies land byte for byte at every alignment of guest address and host address (to 64
+    /// bytes, which long copies align their stores to; under Miri, which runs short copies
+    /// alone, to 16) and length, whatever mix of bytes, words, 16-byte accesses and 32- and
+    /// 64-byte pieces carries them: each way checked against bytes read one at a time.
     #[test]
     fn copies_are_exact_at_every_alignment() {
         let m = mem();
         let a = m.access().unwrap();
-        let pattern: Vec<u8> = (0..64u8).map(|b| b.wrapping_mul(37).wrapping_add(11)).collect();
-        for at in 0..16u64 {
-            for len in 0..40usize {
+        let pattern: Vec<u8> = (0..272u32)
+            .map(|b| (b as u8).wrapping_mul(37).wrapping_add(11))
+            .collect();
+        let lens = (0..=40).chain([
+            63, 64, 65, 79, 80, 88, 127, 128, 129, 143, 152, 191, 192, 193, 200,
+        ]);
+        for at in 0..if cfg!(miri) { 16 } else { 64u64 } {
+            for len in lens.clone() {
                 let gpa = 0x8000_0100 + at;
-                a.write(0x8000_0100 - 8, &[0xee; 64 + 16]).unwrap();
-                a.write(gpa, &pattern[..len]).unwrap();
-                let mut got = vec![0u8; len + 16];
-                a.read(gpa - 8, &mut got).unwrap();
+                let sent = &pattern[(at as usize * 5) % 16..][..len];
+                a.write(0x8000_0100 - 8, &[0xee; 256 + 32]).unwrap();
+                a.write(gpa, sent).unwrap();
+                let got: Vec<u8> = (gpa - 8..gpa + len as u64 + 8)
+                    .map(|k| a.read_obj::<u8>(k).unwrap())
+                    .collect();
                 assert_eq!(&got[..8], &[0xee; 8], "before {at}+{len}");
-                assert_eq!(&got[8..8 + len], &pattern[..len], "{at}+{len}");
+                assert_eq!(&got[8..8 + len], sent, "{at}+{len}");
                 assert_eq!(&got[8 + len..], &[0xee; 8], "after {at}+{len}");
+                let mut back = vec![0x11u8; len + 64];
+                let to = (at as usize * 7) % 64;
+                a.read(gpa, &mut back[to..to + len]).unwrap();
+                assert_eq!(&back[to..to + len], sent, "read {at}+{len}");
+                let (before, rest) = back.split_at(to);
+                assert!(
+                    before.iter().chain(&rest[len..]).all(|&b| b == 0x11),
+                    "read past {at}+{len}"
+                );
             }
         }
         a.write_obj(0x8000_0203u64, 0x0102_0304_0506_0708u64).unwrap();
@@ -809,6 +802,46 @@ mod tests {
         let mut bytes = [0u8; 8];
         a.read(0x8000_0203, &mut bytes).unwrap();
         assert_eq!(bytes, 0x0102_0304_0506_0708u64.to_ne_bytes());
+    }
+
+    /// Copies of 16 KiB and more, which macOS's memcpy, and so these, store past the caches,
+    /// land byte for byte too, each way, either side of that length and at odd ends.
+    #[test]
+    fn long_copies_are_exact() {
+        let m = GuestMemory::anonymous(&[(0x8000_0000, 1 << 20)]).unwrap();
+        let a = m.access().unwrap();
+        let pattern: Vec<u8> = (0..(66u32 << 10)).map(|i| (i % 251) as u8).collect();
+        let k16 = 16usize << 10;
+        for len in [
+            k16 - 1,
+            k16,
+            k16 + 1,
+            k16 + 64 + 16 + 8 + 7,
+            64 << 10,
+            (64 << 10) + 13,
+        ] {
+            for at in [0u64, 1, 8, 15, 16, 31, 32, 63] {
+                let gpa = 0x8000_1000 + at;
+                let sent = &pattern[(at as usize * 3) % 16..][..len];
+                a.write(gpa - 8, &vec![0xee; len + 16]).unwrap();
+                a.write(gpa, sent).unwrap();
+                let got: Vec<u8> = (gpa - 8..gpa + len as u64 + 8)
+                    .map(|k| a.read_obj::<u8>(k).unwrap())
+                    .collect();
+                assert_eq!(&got[..8], &[0xee; 8], "before {at}+{len}");
+                assert!(got[8..8 + len] == *sent, "{at}+{len}");
+                assert_eq!(&got[8 + len..], &[0xee; 8], "after {at}+{len}");
+                let mut back = vec![0x11u8; len + 64];
+                let to = (at as usize * 7) % 64;
+                a.read(gpa, &mut back[to..to + len]).unwrap();
+                assert!(back[to..to + len] == *sent, "read {at}+{len}");
+                let (before, rest) = back.split_at(to);
+                assert!(
+                    before.iter().chain(&rest[len..]).all(|&b| b == 0x11),
+                    "read past {at}+{len}"
+                );
+            }
+        }
     }
 
     /// One host thread at a time holds an access: threads writing and reading back the same

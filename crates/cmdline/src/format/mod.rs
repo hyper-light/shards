@@ -11,7 +11,9 @@
 //! - `image`: `images` (formatter/image.go);
 //! - `stats`: `stats` (container/formatter_stats.go);
 //! - `history`: `history` (image/formatter_history.go);
-//! - `disk`: `system df` and its `-v` (formatter/disk_usage.go, volume.go, buildcache.go).
+//! - `disk`: `system df` and its `-v` (formatter/disk_usage.go, volume.go, buildcache.go);
+//! - `du`: buildx's `du` (buildx commands/diskusage.go), held to buildx by
+//!   tests/buildx_du.rs.
 //!
 //! Times are relative to the [`Clock`] given and printed in its zone, where the CLI reads
 //! the host's clock and `time.Local`. crates/cmdline/tests/format.rs holds all of it to
@@ -30,6 +32,7 @@
 mod clock;
 pub mod container;
 pub mod disk;
+pub mod du;
 pub mod history;
 pub mod image;
 pub mod network;
@@ -313,14 +316,37 @@ impl<M: Methods + 'static> Object for Ctx<M> {
             json_string(name, out);
             out.push(':');
             match self.m.get(name) {
-                Some(Value::String(s)) => json_string(&s, out),
-                Some(Value::Object(o)) => o.json(out)?,
-                _ => out.push_str("null"),
+                Some(v) => json_value(&v, out)?,
+                None => out.push_str("null"),
             }
         }
         out.push('}');
         Ok(())
     }
+}
+
+/// A method's value as json.Marshal writes it: strings, bools, integers, slices (a nil
+/// one `null`) and objects, the only values contexts' methods give.
+fn json_value(v: &Value, out: &mut String) -> Result<(), String> {
+    match v {
+        Value::String(s) => json_string(s, out),
+        Value::Object(o) => o.json(out)?,
+        Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
+        Value::Int(i) => out.push_str(&i.to_string()),
+        Value::Uint(u) => out.push_str(&u.to_string()),
+        Value::List(_, items) => {
+            out.push('[');
+            for (i, item) in items.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                json_value(item, out)?;
+            }
+            out.push(']');
+        }
+        _ => out.push_str("null"),
+    }
+    Ok(())
 }
 
 /// encoding/json's string, as json.Marshal writes it: HTML's characters escaped.

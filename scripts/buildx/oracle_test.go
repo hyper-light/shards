@@ -236,6 +236,22 @@ var cases = [][]string{
 	{"prune", "extra"},
 	{"prune", "--filter", "noequals"},
 	{"prune", "--timeout", "5s", "-f"},
+	{"du", "--help"},
+	{"du", "-h"},
+	{"du"},
+	{"du", "--verbose"},
+	{"du", "--format", "json"},
+	{"du", "--format=pretty", "--filter", "type=regular", "--filter", "until=24h"},
+	{"du", "--verbose", "--format", "json"},
+	{"du", "--verbose=false", "--format", "{{.ID}}"},
+	{"du", "--filter", "noequals"},
+	{"du", "--filter", ""},
+	{"du", "extra"},
+	{"du", "--bogus"},
+	{"du", "-v"},
+	{"du", "--timeout", "5s", "-D", "--builder", "b"},
+	{"du", "--timeout", "lots"},
+	{"du", "--format"},
 	{"policy"},
 	{"policy", "--help"},
 	{"policy", "-h"},
@@ -283,11 +299,11 @@ func ask(t *testing.T, argv []string) answer {
 		t.Fatal(err)
 	}
 	rootCmd := commands.NewRootCmd("buildx", true, dockerCli)
-	// A case is of `build` unless its first word names `prune`, which `docker builder
-	// prune` runs.
+	// A case is of `build` unless its first word names `prune` or `du`, which `docker
+	// builder prune` and `docker builder du` run, or `policy`.
 	sub := "build"
 	words := []string{}
-	if len(argv) > 0 && (argv[0] == "prune" || argv[0] == "policy") {
+	if len(argv) > 0 && (argv[0] == "prune" || argv[0] == "du" || argv[0] == "policy") {
 		sub = argv[0]
 		words = append(words, argv[0])
 		argv = argv[1:]

@@ -1011,8 +1011,50 @@ fn write_now(mut sock: impl Write, parts: Payload<'_>) -> io::Result<usize> {
 
 /// A Unix stream socket connected to `path` without blocking: connected at once, or the
 /// error that refused it (a backlog with no room says EAGAIN).
+/// Where a build's proxy is dialled from in a process App Sandbox keeps from the proxy's
+/// socket (macOS, D31): its spawner's end of a link, over which it asks for a connection and
+/// is given one, as a sandboxed VM asks for its vsock host ports (`kind::DIAL`).
+static PROXY_DIALER: std::sync::OnceLock<std::sync::Mutex<UnixStream>> = std::sync::OnceLock::new();
+
+/// Dials the build's proxy through `link`, once for the process's life.
+pub fn set_proxy_dialer(link: UnixStream) -> io::Result<()> {
+    PROXY_DIALER
+        .set(std::sync::Mutex::new(link))
+        .map_err(|_| io::Error::other("the proxy's dialer is set already"))
+}
+
+/// A connection to the build's proxy, from the spawner's dialer: asked for, given as a
+/// descriptor, and acknowledged (`kind::TAKEN`), as XNU drops a socket in flight that no
+/// process holds (M24).
+fn dial(link: &std::sync::Mutex<UnixStream>) -> io::Result<UnixStream> {
+    use shards_ipc::kind;
+    // A request and its answer at a time.
+    let link = link.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    shards_ipc::send(&link, kind::DIAL, &[], &[])?;
+    let answer = shards_ipc::recv(&link)?
+        .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "the proxy's dialer went"))?;
+    match (answer.kind, answer.fds.into_iter().next()) {
+        (kind::GRANTED, Some(fd)) => {
+            let _ = shards_ipc::send(&link, kind::TAKEN, &[], &[]);
+            let sock = UnixStream::from(fd);
+            sock.set_nonblocking(true)?;
+            Ok(sock)
+        }
+        (kind::ERR, _) => Err(io::Error::new(
+            io::ErrorKind::ConnectionRefused,
+            String::from_utf8_lossy(&answer.payload).into_owned(),
+        )),
+        _ => Err(io::Error::other(
+            "the proxy's dialer answered with something else",
+        )),
+    }
+}
+
 fn connect_unix(path: &Path) -> io::Result<UnixStream> {
     use std::os::unix::ffi::OsStrExt as _;
+    if let Some(link) = PROXY_DIALER.get() {
+        return dial(link);
+    }
     // SAFETY: an all-zero sockaddr_un is valid.
     let mut sa: libc::sockaddr_un = unsafe { std::mem::zeroed() };
     let bytes = path.as_os_str().as_bytes();

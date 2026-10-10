@@ -1636,14 +1636,29 @@ devices. The code is `crates/vmm/src/memory.rs`.
   - A thread that asks for one while it holds one gets an error, not a deadlock.
   - Devices hold one for a step of queue work (a pop, a request's header, a completion)
     and never across a system call, so no device waits on another's I/O.
+  - virtio-net copies a frame in the take its queue work makes: a TX frame in its
+    chain's pop, let go before the frame is published and the network process rung; an
+    RX frame in the return of its chains, let go before its room in the ring is given
+    back. A frame takes guest memory twice each way, as before its copy was guarded
+    (audit V10). Holding the take until the ring had published the frame cost more
+    [PM M137].
 - **Within one, volatile and atomic.** The guest and the kernel change guest memory under
-  the host's reads, as I/O memory changes, so reads and writes are volatile, a word at a
-  time where aligned. The virtqueue indices that order the host against the guest are
-  atomic: acquire loads of `avail.idx`, release stores of `used.idx`.
+  the host's reads, as I/O memory changes, so reads and writes are volatile, or `asm!` the
+  compiler cannot see into. The virtqueue indices that order the host against the guest
+  are atomic: acquire loads of `avail.idx`, release stores of `used.idx`.
+  - Copies go as the host's memcpy goes, within 3 ns of its time a copy and faster from
+    16 KiB [PM M137] (`platform::copy_in`, `copy_out`). From 64 bytes: pairs of 16-byte registers, 64
+    bytes an iteration, stores aligned to the cache line, the first bytes and the last 32
+    unaligned; on macOS non-temporal loads, and stores too from 16 KiB, as
+    `_platform_memmove`; elsewhere as glibc's (sysdeps/aarch64/memcpy.S); x86_64 by SSE2's
+    16-byte moves. Shorter: volatile bytes to the guest side's 16-byte boundary, then
+    16-byte accesses, a word and bytes, each byte once. Under Miri, which runs no `asm!`,
+    every copy goes the short way.
 - **No references into guest memory.** Nothing forms a Rust reference or slice into it.
   Bulk data moves by system calls given guest addresses: block I/O, vsock payloads,
   kernel loading and snapshot writes. The kernel, like the guest, is outside Rust's
-  abstract machine.
+  abstract machine. virtio-net's frames, between guest memory and the frame ring the
+  network process shares, go by an `Access`'s copies.
 - **Saves and restores agree.** Regions are saved and mapped in guest-address order,
   whatever order the caller lists them in (audit A21). A save empties its file first, so
   a zero page keeps nothing the file held (A22). A memory file too short for the guest is
@@ -1651,17 +1666,17 @@ devices. The code is `crates/vmm/src/memory.rs`.
 - **Checked by the tools that know the rules.** ThreadSanitizer and Miri run the tests
   where host threads share guest memory, among them two queues whose rings lie on each
   other's; with a guard that excludes nothing, both report the data races. CI runs them
-  [PM M44].
+  [PM M44]. ThreadSanitizer does not see into the long copies' `asm!`; it sees the guard
+  and the short copies, and Miri runs every copy the short way.
 - **What it costs.** Nothing measurable in runs: the paired medians of interleaved
   pooled runs moved by 10 µs or less, within their intervals. The word-at-a-time zero
-  check made a 256 MiB save three to five times faster [PM M44].
+  check made a 256 MiB save three to five times faster [PM M44]. virtio-net's frames
+  under it: no difference resolved in throughput or a round trip; in the device, a frame
+  of 64 to 1,514 bytes 0.6 to 3.0 ns more, the take's release after the copy, which a
+  memcpy inside the take pays alike, and from 9,000 bytes less [PM M137].
 - **Not yet:** a save still reads every untouched page, and so makes it resident (audit
-  D01); snapshots of a machine whose every CPU and device has stopped (A02). virtio-net's
-  frame copies (`net.rs` `push` and `deliver`) reach guest memory by `copy_nonoverlapping`
-  with no `Access` held: a guest that lays a TX buffer over memory another device's worker
-  writes has two host threads race, which Rust leaves undefined, though no decision rides
-  on the bytes copied (audit V). Copying under an `Access`, word by word, is on the path
-  throughput depends on, and waits for its measurement.
+  D01); snapshots of a machine whose every CPU and device has stopped (A02); a take whose
+  release costs a small frame nothing; the copies on x86_64 hardware, unmeasured.
 - **Huge pages, where a boot touches much (2026-10-10, PM M157).** A cold boot's guest
   memory is advised MADV_HUGEPAGE, which halves the boot (2.1 to 2.4 times) and makes the
   guest's first touch of memory 4.7 to 5.6 times faster on x86_64 KVM. A huge page is
@@ -1671,10 +1686,14 @@ devices. The code is `crates/vmm/src/memory.rs`.
   touch 78 of its 512 pages, stays on small pages. A boot then holds 56.3 MiB of
   anonymous memory at p50 against Firecracker's 60.2, and 58.3 at most. arm64's layout
   is unmeasured and unchanged. A run's restore maps its memory file, on small pages.
-- **Tests:** `memory::tests` (copies at every alignment, threads taking turns, a nested
-  access refused, ranges in any order, a reused file) and
+- **Tests:** `memory::tests` (copies at every alignment of either side to 64 bytes and
+  lengths through 200, each way against bytes read alone; copies of 16 and 64 KiB;
+  threads taking turns, a nested access refused, ranges in any order, a reused file),
   `queue::tests::queues_laid_over_each_other_work_on_two_threads`, under
-  `access-guard/check.sh` too; every E2E test runs its devices through the guard.
+  `access-guard/check.sh` too, and
+  `net::tests::frames_cross_guarded_in_the_takes_they_had` (a frame's bytes by the
+  guarded copies, two takes a frame each way), mutation-checked; every E2E test runs its
+  devices through the guard.
 
 ### Confining the VM process (D30)
 
@@ -1828,6 +1847,26 @@ stack inside the VMM, is superseded by it.
   v4 network rules) — the IP part of a policy is its own code's. macOS: App Sandbox with the
   network client and server entitlements and no file access (docs/research/
   macos-confinement.md).
+  - **As built (2026-10-10).** Linux: Landlock (`crates/net/src/confine.rs`), failing closed
+    below ABI v5 as the VM process does: before it reads anything a guest sends, every
+    filesystem right handled and none allowed, no TCP port bound (the ports it serves come
+    bound, from the daemon), signals and abstract Unix sockets kept to itself (v6), and no
+    TCP at all under a build's proxy (D110); then, as an Agentfile's egress grants come
+    (`NET_POLICY`, once, before the run), TCP connections to their ports alone, and a
+    resolver's where names may be resolved. A second policy is refused, a layer only
+    narrowing. macOS: App Sandbox from launch, signed with `resources/net.entitlements`
+    (App Sandbox, network client and server, no file) and an Info.plist of its own
+    (`resources/net-Info.plist`, without which it is killed at launch); one whose signature
+    is not in App Sandbox refuses to serve (`shards_apple::sandbox::sandboxed`). The
+    sandbox keeps it from the build proxy's socket by its path (measured: the proxy E2E
+    fails without what follows), so its spawner dials the proxy for it over a link of the
+    two's own (`kind::DIAL`, as a sandboxed VM's vsock host ports are dialled). Tested:
+    `at_start_leaves_no_file_and_no_port_of_its_own` and
+    `to_ports_reaches_the_granted_ports_alone` (Linux, each in a process of its own),
+    `the_network_process_runs_in_app_sandbox_alone` (macOS; mutation-checked: the
+    self-check off), and every networked E2E through the confined process. Open: seccomp's
+    allowlist, which needs the syscalls it makes measured on Linux first, as the VM
+    process's were (M52).
 - **The guest's side.** A virtio-net device in the VM process, configured before the
   template is saved, with a static address and no DHCP or duplicate-address detection, so
   restores do no network work (networking.md R3; [RFC 2131 §4.4.1; RFC 4862 §5.4]). A VM
@@ -2449,10 +2488,48 @@ microVM as virtio-fs shares (virtio 1.3 §5.11; Linux fs/fuse/virtio_fs.c):
     nor can one put a regular file and a device in one share without root, which a
     GETATTR naming one's open file for the other's node would need.
 - **The kernel** has `CONFIG_VIRTIO_FS` and `CONFIG_FUSE_DAX` (kernel-6.18.48-98788948976a).
-- Open, measured: the directories a guest can have looked up are as many as its share
-  process's descriptors, 252 under macOS's default limit of 256, past which every
-  directory LOOKUP fails EMFILE (PM M132); raising the limit lets a guest pin as many
-  kernel file objects, and letting directories go loses their identity through renames.
+- **A share holds the descriptors the host can spare, not what the guest names** (audit
+  V09). A directory held its descriptor until the guest forgot it: a walk past the share
+  process's limit failed EMFILE, and at the limit the daemon gives it (245,760 here) one
+  guest pinned half of the host's file table and two all of it (PM M132).
+  - *By path and identity.* A node keeps its parent, its name, kept current through the
+    guest's renames and lookups, and its (dev, ino). A lookup opens nothing; a directory
+    is opened when used, along its path from the nearest directory held, each component
+    never followed (openat2 with RESOLVE_BENEATH and RESOLVE_NO_SYMLINKS on Linux 5.6+,
+    O_NOFOLLOW a component at a time before it and on macOS), then checked to be the
+    directory the node was: one renamed or replaced on the host since, or reached through
+    a symlink even to itself, is stale (ESTALE), which has Linux's VFS look it up again
+    (`retry_estale`).
+  - *A cache, never a limit the guest meets.* Directories' and the guest's open files'
+    descriptors sit in an LRU, let go between requests and never during one, and opened
+    again along their paths as they are next used: a handle keeps its node, its open flags
+    (O_CREAT, O_EXCL and O_TRUNC acting once) and the identity it opened, so a file the host
+    replaced, removed or took its mode away from since is stale (ESTALE). A held descriptor
+    serves first, as a kernel's open file outlives its unlink. The guest's handles are as
+    many as its own kernel lets its processes have.
+  - *Pins, the budget's alone.* Descriptors no path could open again are pinned: taken
+    before the guest unlinks or renames over a node it has open (let go where the removal
+    fails), before its chmod refuses the access its open handles have, and for a file made
+    with a mode refusing its own handle. Past the budget none is taken: a node the removal
+    leaves another name of is reached by that name, and a last name's handles are stale
+    once their own descriptors go, those opened after reaching what the path then leads to.
+  - *Its size, derived* (`fs::server::Limits`): the process's limit raised as Go's runtime
+    raises its own (`platform::raise_descriptor_limit`, the daemon's too), less what it holds
+    and `REQUEST_FDS` (3) a server; and no more than its part of the system's table with as
+    many share processes as runs the user may start. This host: 90 a share process (PM
+    M136). A walk costs 2.1 µs a directory more (6%); a reopen 8 to 10 µs a component
+    walked on macOS. What a guest's workload pays past the cache, a reopen for each file
+    read again (a tree read round and round, a package manager's), is unmeasured end to end.
+  - Tests: `tests/fs_dir_budget.rs` (a walk of 584 directories within 24 descriptors,
+    `REQUEST_FDS` exactly enough), `handles_past_the_budget_each_serve_their_file` (1,000
+    handles past a budget of 4, read round and round), the pins' (an unlink, a rename over,
+    a chmod, a read-only file filled, hard links, a reused inode number, a removal that
+    fails), `a_directory_let_go_is_found_by_its_path_or_is_stale` (renames, a host's rename
+    and replacement, symlinks to itself and out of the share),
+    `a_budget_is_reckoned_from_the_hosts_limits`, and on a real microVM
+    `a_shared_directorys_files_stay_open_past_the_shares_descriptors` (300 files of a `-v`
+    directory open at once, past this host's 90); mutation-checked (handles capped at the
+    budget fails both). Linux's openat2 path runs in CI's Linux jobs only.
 - Open, unmeasured: the forwarding hop's cost per request against an in-process server,
   and throughput against Docker Desktop's virtiofs; DAX windows, which would let file
   data skip the hop; the local driver's other types (NFS and CIFS clients in the guest
@@ -2606,6 +2683,14 @@ Engine 29.3.1's words and to what its containers see (`security_opt_confines_as_
   `builtin` as JSON and fails.
   - The program: ranges of one decision by binary search, identical decisions shared, a
   third of runc's length and 43% fewer instructions per syscall at the median (PM M120).
+  - Compiling it takes 1.3 ms at the median on either architecture (PM M167): where the
+  kernel's syscalls begin and end is read off its tables. Until 2026-10-10 each number up
+  to the stub's line was tested, which on arm64 lies past 32-bit Arm's private syscalls at
+  0x0f0000, each test a scan of the tables: 1.7 s a compile, paid by each daemon's first
+  run (by an Agentfile's three times, its domains' two filters with it) and by each build
+  that ran a step, as its builder started. Every program is unchanged, byte for byte, for
+  the 33 cases on both architectures under five kernels in both modes; a test holds a
+  compile's lookups to its tables' size (mutation-checked).
 - Not served: SCMP_ACT_NOTIFY, which needs a seccomp agent (listenerPath) shards does not
   run; it is refused as the container starts.
 
@@ -3799,6 +3884,17 @@ it never reads ran it again; and nothing bounded what the cache kept.
   (`a_files_digest_takes_the_attributes_buildkits_takes`) and records in use left out,
   which a change had dropped as redundant though BuildKit ranks only what it may delete
   (`what_a_step_holds_is_neither_removed_nor_ranked`).
+- **`buildx du`** (and `builder du`) lists the records `system df` lists and `builder
+  prune` removes, as buildx v0.37.1 prints them: its table, `--verbose`, `--format json`
+  and templates, sorted by size; `--filter` read as `builder prune` reads it, the totals
+  left out under a filter; a cache a running step holds in use and sized 0B, as BuildKit's
+  DiskUsage sizes a mutable record that is changing. Held to buildx's own answers
+  (`scripts/buildx/generate`, `crates/cmdline/tests/buildx-du.json`) and on real
+  microVMs (`buildx_du_lists_the_records_system_df_lists`; mutation-checked: an in-use
+  cache sized). shards keeps no `source.local` records, BuildKit's copy of each local
+  context: a context is staged for its build alone (cloned where the filesystem can) and
+  let go after, so `du` lists none. Whether keeping one would pay (a large context staged
+  and its unchanged files digested again) is unmeasured.
 - **Open.** Moving a large cache in and out of the builder costs a build time: with 10,000
   files of 4 KiB and 256 MiB in it, mounting it made a build's median 11.2 s against 3.9
   s, and filling it 16.1 s against 3.7 s (M140). Where that time goes, and whether

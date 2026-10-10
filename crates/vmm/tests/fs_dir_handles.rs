@@ -84,7 +84,9 @@ fn directory_handles_hold_no_listing() {
     for i in 0..2000 {
         std::fs::write(dir.join(format!("entry-{i:0>14}")), "").unwrap();
     }
-    let server = Server::new(std::fs::File::open(&dir).unwrap().into(), true, None).unwrap();
+    // Room for the 101 handles opened below, whatever this host's budget for a share.
+    let root = std::fs::File::open(&dir).unwrap();
+    let server = Server::with_budget(root.into(), true, None, 1000).unwrap();
     // The server's own tables grow first, outside what is counted.
     let warm = server.handle(&req(OPENDIR, ROOT, &[0u8; 8])).unwrap();
     assert_eq!(i32::from_le_bytes(warm[4..8].try_into().unwrap()), 0);

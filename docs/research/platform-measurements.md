@@ -4446,8 +4446,10 @@ revision before comparing a changed API/implementation.
   descriptors, where it held the directory's size each, without bound. READDIR is four
   times faster on a large directory: each page copied the rest of the listing before; it
   now reads only the page. READDIRPLUS is its lookups', unchanged. The Linux path runs
-  in CI's Linux jobs; `probes/getdents.rs` checks the paging by `d_off` on its own, and
-  was not run here (Docker did not answer).
+  in CI's Linux jobs; `probes/getdents.rs` checks the paging by `d_off` on its own: on
+  Linux 6.12.76 (linuxkit, aarch64), as uid 1000, 1,500 files paged by getdents64 at
+  `d_off` cookies, pages of 3, 17 and 200 entries (buffers of 1,024, 4,096 and 32,768
+  bytes), each came out once (2026-10-10).
 
 ### M131. How fast a guest can fail a device again and again (audit V07)
 
@@ -4480,8 +4482,13 @@ revision before comparing a changed API/implementation.
 
 - **Question.** The share's server keeps a descriptor for every directory the guest has
   looked up and not forgotten, as it does every operation relative to one; a guest
-  kernel forgets only under memory pressure. The share process inherits the daemon's
-  descriptor limit, 256 under macOS's launchd. How many directories can a guest walk?
+  kernel forgets only under memory pressure. How many directories can a guest walk, at a
+  given limit on descriptors?
+- **Corrected (2026-10-09).** This entry first said the share process has macOS's 256:
+  it inherits the daemon's limit, which the daemon raises at its start to min(hard limit,
+  `kern.maxfilesperproc`), 245,760 here. 256 is a share process's only where the hard
+  limit is that low or the daemon did not start it. At 245,760 the walk passes, and a
+  guest pins as many of the host's table instead; see M136, which acts on both.
 - **Method.** `virtio-fs-audit --case fds --dirs D --limit L`: the process's soft
   RLIMIT_NOFILE set to L, then a LOOKUP of each of D directories through
   `Server::handle`, none forgotten. Apple M5 Max, macOS 26.4.1, revision ce225fa,
@@ -4489,12 +4496,9 @@ revision before comparing a changed API/implementation.
 - **Results.** Limit 256: 252 of 600 found, then EMFILE (24). Limit 1024: 1,020 of 3,000,
   then EMFILE.
 - **Consequence.** A guest that walks more directories than its share process may hold
-  descriptors (a `find` over a tree with a few hundred directories, a `node_modules`) is
-  told "Too many open files", and a hostile one can put its own shares there at will.
-  Open: raising the share process's soft limit to its hard one (Go's runtime does so for
-  every program since 1.19; virtiofsd raises it too) lets a guest pin that many kernel
-  file objects instead; letting directories go after a time keeps fewer, but a directory
-  reopened by name loses what holding it gives, its identity through renames.
+  descriptors is told "Too many open files", and a hostile one can put its own shares
+  there at will; at the limit the daemon gives it, one guest pins half of this host's
+  table and two all of it. Done in M136.
 
 ### M133. What looking before opening a node's attributes costs (audit V08)
 
@@ -5374,3 +5378,212 @@ revision before comparing a changed API/implementation.
     command is PID 2 (Docker's 7, which runc's threads take first) with PPID 0 (Docker's
     1, docker-init being its parent; init, its parent here, is outside the namespace), and
     the reaper is `init` (`docker-init`, shown with its arguments).
+
+### M137. virtio-net's frames through guest memory's guard (audit V10)
+
+- **Question.** virtio-net copied each frame between guest memory and the frame ring by
+  memcpy, with no `Access` held: a guest that laid a TX buffer over memory another
+  device's worker writes had two host threads race (D29's "not yet"). What does copying
+  through the guard cost a frame, and what layout of the copy, and of the takes, costs
+  nothing?
+- **Method.**
+  - `docs/research/measurements/net-copies` (`cargo run --release -- 1000`): one
+    process, the two arms alternating a sample at a time, a sample a batch of about
+    20 µs. `copy`: memcpy against an `Access`'s copies (held across the batch), 64 to
+    65,536 bytes each way, at one place (`hot`) or walking 256 MiB (`spread`). `push`
+    and `deliver`: a frame at a time through a real frame ring, each with the one take of
+    guest memory its queue work makes, the device's copy before (memcpy, outside the
+    take) against the change's (inside it). `take`: a take alone. Three fresh processes.
+  - `docs/research/measurements/net-throughput`: `ab.py`, 32 MiB each way through a
+    published port, every byte checked, n = 300 an arm a run; `rtt.py`, 200 turns of 50
+    round trips of 64 or 1,400 bytes on one connection, every byte checked, n = 10,000
+    an arm a run. 13ea35d against the change, each one shards binary carrying its VM and
+    network processes, turn by turn interleaved.
+  - Apple M5 Max, macOS 26.4.1, 2026-10-10, load average 11 to 15 (other forks' builds
+    and tests), the host's usual.
+- **What it took.** Each step measured by `net-copies`, the copy or the ring changed as
+  said:
+  - A take of its own for each copy costs 5.1 to 5.6 ns (`take`). The copy shares the
+    take its queue work makes: a TX frame's with the pop of its chain, an RX frame's with
+    the return of its chains, so a frame takes guest memory twice each way, as before.
+  - Copies of 64 bytes or more go as macOS's memcpy goes (`_platform_memmove`,
+    disassembled: pairs of 16-byte registers; loads non-temporal; stores non-temporal
+    from 16 KiB; the first bytes and the last 32 unaligned, some bytes written twice), but
+    with stores aligned to the cache line, not to 32 bytes: aligned to 32, a 9,000-byte
+    delivery from memory the caches did not hold cost +15.9 to +18.5 ns against memcpy
+    (four processes); aligned to the line, −25.9 to −0.6 (three). Elsewhere on aarch64 the registers
+    are glibc's (sysdeps/aarch64/memcpy.S: LDP and STP of Q registers, nothing
+    non-temporal).
+  - What a frame of 64 to 1,514 bytes still pays is the take's release after the
+    copy's stores: with memcpy also copying inside the take, the arms differ by −0.6 to
+    +0.4 ns at 1,514 bytes and −0.2 to +1.6 at 64 (four processes). Holding the take
+    until the ring had published the frame, its release after the ring's fence, cost more:
+    a delivery +3.0 to +4.2 ns at 64 and 1,514 bytes, +6.4 to +7.0 at 9,000 and +7.8 to
+    +16.7 at 64 KiB (three processes); not kept.
+- **Results.** The change's copies, frames and takes, ns, one process of three; n / p50
+  / p90 / p99 / max, and the paired median [95%], change less before:
+
+  | case | before | the change | difference |
+  |---|---|---|---|
+  | take | | 1000 / 5.5 / 5.7 / 5.8 / 6.5 | +5.5 [+5.5, +5.5] |
+  | copy 1,514 B in, hot | 1000 / 16.9 / 17.7 / 30.2 / 49.8 | 1000 / 14.1 / 15.2 / 27.2 / 46.3 | −2.8 [−2.8, −2.7] |
+  | copy 64 KiB in, spread | 1000 / 1000.0 / 1063.6 / 1219.3 / 1875.0 | 1000 / 997.8 / 1054.8 / 1315.8 / 2350.9 | −2.2 [−4.4, +0.0] |
+  | copy 64 KiB out, spread | 1000 / 991.7 / 1075.0 / 1400.0 / 2300.0 | 1000 / 989.6 / 1077.1 / 1550.0 / 2433.3 | −2.1 [−4.2, −0.1] |
+  | push 64 B, hot | 1000 / 14.9 / 15.7 / 21.8 / 47.5 | 1000 / 17.3 / 18.4 / 29.0 / 54.3 | +2.5 [+2.5, +2.6] |
+  | deliver 64 B, hot | 1000 / 13.6 / 17.1 / 23.8 / 29.9 | 1000 / 15.0 / 19.3 / 28.0 / 44.6 | +1.4 [+1.4, +1.4] |
+  | push 1,514 B, hot | 1000 / 34.5 / 36.9 / 73.2 / 153.4 | 1000 / 35.5 / 38.4 / 66.3 / 149.5 | +1.0 [+1.0, +1.1] |
+  | deliver 1,514 B, hot | 1000 / 33.0 / 35.1 / 40.4 / 94.8 | 1000 / 34.5 / 36.6 / 48.8 / 97.8 | +1.4 [+1.3, +1.4] |
+  | push 9,000 B, spread | 1000 / 252.8 / 265.2 / 309.1 / 415.0 | 1000 / 247.8 / 259.0 / 290.0 / 420.0 | −3.9 [−3.9, −3.4] |
+  | deliver 9,000 B, spread | 1000 / 311.9 / 334.0 / 449.5 / 685.6 | 1000 / 288.5 / 313.8 / 428.7 / 582.1 | −23.4 [−24.0, −22.7] |
+  | push 64 KiB, hot | 1000 / 662.0 / 800.9 / 1013.9 / 1831.8 | 1000 / 600.3 / 788.6 / 1092.6 / 1390.4 | −41.7 [−46.3, −41.6] |
+  | deliver 64 KiB, spread | 1000 / 1105.4 / 1144.6 / 1303.9 / 2607.8 | 1000 / 1098.0 / 1132.4 / 1269.6 / 1931.4 | −7.4 [−9.8, −7.4] |
+
+  - Over the three processes, paired medians: copies −19.7 to +2.9 ns (64 bytes −0.1 to
+    +0.7); pushes +2.4 to +3.0 at 64 bytes, +1.0 to +1.3 at 1,514, −41.7 to +2.2 from
+    9,000 up but for one process's −125.0 at 64 KiB; deliveries +1.1 to +1.5 at 64 bytes, +0.6 to
+    +1.5 at 1,514, −25.9 to −0.6 from 9,000 up.
+  - End to end, 32 MiB each way, ms:
+
+    | run | 13ea35d | the change | change less 13ea35d, paired median [95%] |
+    |---|---|---|---|
+    | 1 | 300 / 13.3 / 15.5 / 23.5 / 28.7 | 300 / 13.3 / 15.4 / 26.9 / 29.5 | −0.0 [−0.2, +0.1] |
+    | 2 | 300 / 17.9 / 21.2 / 27.0 / 51.1 | 300 / 18.0 / 21.2 / 34.4 / 149.4 | −0.1 [−0.4, +0.3] |
+
+    Run 2's slowest connection of each arm fell in the same turn (289): the host's.
+  - Round trips, µs:
+
+    | size, run | 13ea35d | the change | change less 13ea35d, paired median [95%] |
+    |---|---|---|---|
+    | 64 B, 1 | 10000 / 90.8 / 120.6 / 165.3 / 969.9 | 10000 / 91.0 / 121.7 / 165.5 / 1051.9 | +0.3 [−1.1, +1.1] |
+    | 64 B, 2 | 10000 / 90.3 / 115.5 / 155.1 / 416.0 | 10000 / 90.4 / 114.1 / 154.3 / 373.9 | −0.0 [−0.8, +0.7] |
+    | 1,400 B, 1 | 10000 / 92.2 / 121.9 / 172.7 / 660.6 | 10000 / 92.4 / 122.9 / 175.2 / 714.2 | −0.2 [−0.9, +0.9] |
+    | 1,400 B, 2 | 10000 / 102.7 / 137.0 / 216.0 / 1549.4 | 10000 / 102.6 / 139.6 / 250.4 / 13272.4 | +0.4 [−0.6, +1.3] |
+    | 1,400 B, 3 | 10000 / 88.4 / 114.5 / 158.0 / 1266.3 | 10000 / 88.3 / 115.4 / 165.0 / 834.5 | −0.1 [−1.4, +0.7] |
+
+    Run 3's p99, change less 13ea35d, +7.0 µs [−1.6, +15.9], turns resampled; each
+    arm's slowest 1% fell in 55 to 58 turns, 22 the same.
+- **Consequence.** A frame crosses through guest memory's guard (D29), in the takes its
+  queue work made before, by copies within 3 ns of memcpy's time and faster from 16 KiB.
+  A frame of 64 to 1,514 bytes costs the device 0.6 to 3.0 ns more, the take's release
+  after its stores, which a memcpy inside the take pays alike; from 9,000 bytes on it
+  costs less. Neither throughput nor a round trip moved measurably at the median; tails
+  went both ways from run to run, and the one tested (run 3's p99) was not resolved from
+  zero. Open: a take whose release costs a frame nothing; x86_64's copies (SSE2 moves) on
+  x86_64 hardware.
+
+### M136. A share's descriptors, bounded: what it holds, and what a walk costs (audit V09)
+
+- **Question.** A share's server now keeps a directory by its path and identity, its
+  descriptor in an LRU of a derived size, and opens it again along its path when it is let
+  go. What size does the derivation give, does the server keep to it, and what do a walk
+  and a reopen cost?
+- **The derivation** (`fs::server::Limits::budget`): the process's limit, raised as Go's
+  runtime raises its own (min(hard limit, `kern.maxfilesperproc`) on macOS, the hard limit
+  on Linux); less what it holds besides (its standard streams, connections and shared
+  directories, counted from /dev/fd once they are open); less `REQUEST_FDS` a server, the
+  most a request holds past its room; and no more than a share process's part of the
+  system's table (`kern.maxfiles`, `fs.file-max`, less what is open) with as many share
+  processes as runs the user may start, two processes a run (`kern.maxprocperuid`,
+  Linux's thread limits). This host: 245,760, 491,520 with 10,754 open, 10,666 processes:
+  90 a share process, the table binding (`a_budget_is_reckoned_from_the_hosts_limits`). A
+  Linux host whose table systemd leaves unbounded gets its process's limit less what it
+  holds.
+- **Its basis, pinned.** `tests/fs_dir_budget.rs` sets its process's limit to what it holds
+  and 24 more, then has a guest walk 584 directories, work in ones let go long since, and
+  fill its handles: every request is answered (it failed EMFILE at directory 25 before),
+  and the worst
+  request, a RENAME between two directories let go with the server at its room, needs all
+  of `REQUEST_FDS` = 3: at 2 the kernel refuses it (mutation-checked). What a request holds
+  at most: the first directory, while the second's path is walked a component at a time
+  (two at once; one on Linux, where openat2 walks it).
+- **Method.** `virtio-fs-audit`: `--case mktree` made a tree of 100,000 directories (ten
+  under each, five levels); `run.py --cases walk --runs 6` walked it as `find` does, each
+  directory looked up, opened, listed in pages of 4096 bytes and released, depth first,
+  each visit timed, old (ebc464a's server, a descriptor a directory until forgotten,
+  245,760 of room) and new (da05f52, its budget of 90) alternating in fresh processes;
+  `reopen.py --runs 10` timed a GETATTR of a directory held, and of one let go between
+  requests (room for one, so no ancestor held either) and opened again from the root, at
+  depths 1, 4 and 16. Apple M5 Max, macOS 26.4.1, 2026-10-09, load average 58.
+- **Results.** Microseconds; n / p50 / p90 / p99 / max, pooled, and the paired difference
+  of the processes' medians with a bootstrap 95% interval:
+
+  | case | old or held | new or let go | difference |
+  |---|---|---|---|
+  | walk, a directory's visit | 600000 / 34.83 / 64.62 / 433.46 / 314972 | 600000 / 37.25 / 67.96 / 346.46 / 247113 | +2.12 [0.92, 8.38] |
+  | reopen, depth 1 | 20000 / 7.62 / 11.04 / 36.62 / 5575 | 20000 / 16.88 / 21.79 / 110.50 / 11505 | +8.83 [8.50, 10.21] |
+  | reopen, depth 4 | 20000 / 8.08 / 10.71 / 40.46 / 6199 | 20000 / 42.75 / 63.00 / 1059.42 / 17718 | +34.42 [29.42, 37.71] |
+  | reopen, depth 16 | 20000 / 10.38 / 14.83 / 46.54 / 14067 | 20000 / 176.29 / 324.04 / 7362.08 / 81752 | +165.50 [164.00, 170.54] |
+
+  - A walk took 6.5 s new; the old server held 100,000 descriptors at its end, the new 90.
+- **Consequence.** A guest walks any tree within 90 descriptors, at 2.1 µs a directory
+  more (6%): its directory is opened when first used, not at its lookup, checked by an
+  fstat, and one let go closed. A reopen walks its path from the nearest directory held,
+  8 to 10 µs a component on macOS when none above it is held, which the LRU makes rare.
+  The guest's open files and directories are no longer bounded by it (2026-10-10, D38):
+  their descriptors are the cache's too, opened again by path when let go, and only pins,
+  descriptors no path could open again, count against the budget, so a guest holds as many
+  as its own kernel lets it. What a workload pays past the cache, a reopen for each file
+  read again, is unmeasured end to end; Linux's openat2, one call for a whole path, is
+  unmeasured here.
+
+### M167. What compiling a seccomp profile costs, by guest architecture (D42)
+
+- **Question.** Seven Agentfile E2Es failed a gate together, each a `shards top` past its
+  30 s while its run started; rerun, alone and together, they passed. Where does a run's
+  start go before its VM, and what does compiling the filters it starts under cost?
+- **Method.**
+  - The start traced: one run of `agents_reach_only_the_unix_sockets_granted` (0b98e01)
+    with marks in the daemon's log from its request to its VM's start, and the tests'
+    `top` looks timed (both temporary, not kept); the seven tests three times each, n =
+    30 runs, at load average 64 to 75 before the change and 78 to 90 after.
+  - `docs/research/measurements/seccomp-compile` (`cargo run --release -- N`):
+    `shards_seccomp::compile` of Docker's default profile for Docker's default
+    capabilities and Linux 6.18, a sample one whole compile, the architectures
+    alternating a sample at a time; built against 0b98e01's crate (n = 20) and the
+    change's (n = 200), back to back.
+  - `first-run.py`: a daemon's first run, `shards run --rm alpine:3.20 true` through a
+    daemon just started, which compiles its filter as each daemon's first run does; 0b98e01
+    and the change, each one release `shards` and a home whose template was saved, turns
+    interleaved, n = 40 an arm a round, two rounds.
+  - Apple M5 Max, macOS 26.4.1, 2026-10-10, load average 58 to 94 (other sessions' builds
+    and tests, and a VM at 15 cores), the host's usual.
+- **Results.**
+  - The traced start: `run::prepare` took 1 ms; compiling the run's own filter
+    (`setup::security_setup`) 2.36 s and the domains' two (`setup::domain_seccomp`)
+    4.42 s; the VM was ready 59 ms after its spawn. Every command naming the container
+    waited the while, its record written once the setup is done (`resolve` waits for it);
+    the tests' first `top` that answered ended 7.45 s after the run was asked for at the
+    median (n 30, p90 8.76, p99 and max 9.01 s), 0.37 s after the change (p90 0.61, p99
+    and max 0.73 s), the two compiles then 12 ms and 11 ms.
+  - The compile, sampled (macOS `sample`, every millisecond): its time in `section`,
+    testing each number up to the stub's line, which on arm64 includes 32-bit Arm's
+    private syscalls at 0x0f0001 to 0x0f0005 (`breakpoint`, `cacheflush`, `set_tls`);
+    each test scanned the tables, 1,967,136 lookups for Docker's default profile. Read
+    off the tables, 1,607.
+  - Compiles, n / p50 / p90 / p99 / max:
+
+    | arch | 0b98e01 | the change |
+    |---|---|---|
+    | amd64 | 20 / 2.56 / 4.32 / 7.39 / 7.39 ms | 200 / 1.27 / 3.26 / 20.74 / 24.49 ms |
+    | arm64 | 20 / 1,722 / 1,870 / 1,872 / 1,872 ms | 200 / 1.35 / 2.46 / 14.61 / 23.75 ms |
+
+    The same 660 programs, byte for byte, before and after: the 33 cases on both
+    architectures, under Linux 4.14, 5.10, 6.1, 6.18 and 7.0, in both modes.
+  - A daemon's first run, ms, n / p50 / p90 / p99 / max, and the change less 0b98e01,
+    paired median [95%]:
+
+    | round | 0b98e01 | the change | difference |
+    |---|---|---|---|
+    | 1 (load 69 to 74) | 40 / 2,582 / 3,559 / 5,210 / 5,210 | 40 / 136 / 199 / 248 / 248 | −2,345 [−2,723, −2,190] |
+    | 2 (load 73 to 76) | 40 / 1,983 / 4,045 / 4,123 / 4,123 | 40 / 125 / 194 / 269 / 269 | −1,791 [−2,513, −1,428] |
+
+    The command's own time in the guest moved +0.04 ms [−0.29, +0.40] and −0.05 ms
+    [−0.45, +0.15].
+- **Consequence.** A compile takes 1.3 ms at the median on either architecture: where the
+  kernel's syscalls begin and end is read off its tables, which `kernel_has` now
+  bisects. On arm64 each daemon's first run had paid 1.7 s or more for its filter, an
+  Agentfile's three times, and each build its builder's, before its first step. The seven
+  tests' timeouts fit this: a `top` waits for its run's setup, by design, and the
+  compiles were nearly all of it (traced above); the gate's load was not recorded. The
+  setup now takes milliseconds. What else a first run's 125 to 136 ms holds is unmeasured
+  here.

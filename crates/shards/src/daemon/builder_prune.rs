@@ -1,7 +1,9 @@
 //! `shards builder prune` (and `buildx prune`): the build cache's records removed as
 //! BuildKit's cache manager prunes them (`crate::build::gc`), asked as buildx v0.37.1 asks
 //! (commands/prune.go `toBuildkitPruneInfo`), and said as it says them: a table of the
-//! records removed, or each in full with `--verbose`, then their total.
+//! records removed, or each in full with `--verbose`, then their total. And `buildx du`:
+//! the same records listed as BuildKit's DiskUsage lists them, for the client to lay out
+//! as buildx does (cli/listing.rs, shards_cmdline::format::du).
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -11,59 +13,18 @@ use super::commands::{Asker, Reply, human_duration};
 use super::images::human_size4;
 use crate::build::gc::{self, Filter, Record, Rule};
 
-/// buildx's `toBuildkitPruneInfo`: `until` (or the older `unused-for`) as the age a record
-/// must reach, the rest as BuildKit's filters, `id` matched as a pattern.
+/// buildx's `toBuildkitPruneInfo` (shards_cmdline::buildcache): `until`, or the older
+/// `unused-for`, as the age a record must reach; the rest as BuildKit's filters.
 fn prune_info(given: &[String]) -> Result<(Option<Duration>, Vec<Filter>), String> {
-    let mut by_key: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
-    for g in given {
-        let (k, v) = g.split_once('=').unwrap_or((g, ""));
-        by_key.entry(k.to_lowercase()).or_default().push(v.to_string());
-    }
-    if by_key.contains_key("until") && by_key.contains_key("unused-for") {
-        return Err("conflicting filters \"until\" and \"unused-for\"".into());
-    }
-    let until_key = if by_key.contains_key("unused-for") {
-        "unused-for"
-    } else {
-        "until"
-    };
-    let until = match by_key.get(until_key).map(Vec::as_slice) {
-        None | Some([]) => None,
-        Some([v]) => {
-            let ns = shards_cmdline::gotime::parse_duration(v).ok_or_else(|| {
-                format!(
-                    "{} filter expects a duration (e.g., '24h')",
-                    shards_cmdline::go::quote(until_key)
-                )
-            })?;
-            Some(Duration::from_nanos(u64::try_from(ns).unwrap_or(0)))
-        }
-        Some(_) => {
-            return Err(format!(
-                "{} filter expects only one value",
-                shards_cmdline::go::quote(until_key)
-            ));
-        }
-    };
-    let mut filters = Vec::new();
-    for (k, values) in &by_key {
-        if k == until_key {
-            continue;
-        }
-        let f = match values.as_slice() {
-            [] => k.clone(),
-            [v] if k == "id" => format!("{k}~={v}"),
-            [v] if k.ends_with('!') || k.ends_with('~') => format!("{k}={v}"),
-            [v] => format!("{k}=={v}"),
-            _ => {
-                return Err(format!(
-                    "{} filter expects only one value",
-                    shards_cmdline::go::quote(k)
-                ));
-            }
-        };
-        filters.push(Filter::parse(&f)?);
-    }
+    let info = shards_cmdline::buildcache::prune_info(given)?;
+    let until = info
+        .keep_duration
+        .map(|ns| Duration::from_nanos(u64::try_from(ns).unwrap_or(0)));
+    let filters = info
+        .filters
+        .iter()
+        .map(|f| Filter::parse(f))
+        .collect::<Result<_, _>>()?;
     Ok((until, filters))
 }
 
@@ -101,7 +62,7 @@ fn tabs(lines: &[Vec<String>]) -> String {
 fn said(r: &Record, verbose: bool, first: bool) -> String {
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
     let size = human_size4(i64::try_from(r.size).unwrap_or(i64::MAX));
-    let id = r.id.get(..25).unwrap_or(&r.id).to_string();
+    let id = r.shown_id().to_string();
     let ago = {
         let used = Duration::from_secs(u64::try_from(r.last_used).unwrap_or(0));
         format!("{} ago", human_duration(now.saturating_sub(used).as_nanos()))
@@ -206,6 +167,58 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
     }
 }
 
+impl<D: crate::containers::Disk> super::Daemon<D> {
+    /// `buildx du`: the records `parsed` selects, as BuildKit's DiskUsage answers them
+    /// (cache/manager.go): a mutable record a step holds sized 0, as its size is changing,
+    /// and none with a parent, as no record of shards' has one.
+    pub(super) fn builder_du(&self, parsed: &Parsed, _asker: &Asker, reply: &Reply<'_>) -> u8 {
+        let fail = |e: String| {
+            reply.err(&format!("ERROR: {e}"));
+            1
+        };
+        // What the client refuses before it asks, refused here too for another client.
+        if let Err(e) = shards_cmdline::format::du::format(parsed.string("format"), parsed.bool("verbose")) {
+            return fail(e);
+        }
+        // DiskUsage takes no age: `until` is read, and asks nothing.
+        let filters = match prune_info(parsed.many("filter")) {
+            Ok((_, filters)) => filters,
+            Err(e) => return fail(e),
+        };
+        let records = match self.store() {
+            Ok(Some(store)) => match gc::records(&store) {
+                Ok(records) => records,
+                Err(e) => return fail(e),
+            },
+            Ok(None) => Vec::new(),
+            Err(e) => return fail(e),
+        };
+        let ns = |s: i64| (i128::from(s) * 1_000_000_000).to_string();
+        let rows: Vec<serde_json::Value> = records
+            .iter()
+            .filter(|(r, in_use)| filters.iter().all(|f| f.matches(r, *in_use)))
+            .map(|(r, in_use)| {
+                let mutable = r.mount.is_some();
+                let size = if mutable && *in_use {
+                    0
+                } else {
+                    i64::try_from(r.size).unwrap_or(i64::MAX)
+                };
+                serde_json::json!({
+                    "id": r.shown_id(), "type": r.kind(), "parents": [],
+                    "description": r.mount.clone().unwrap_or_default(), "mutable": mutable,
+                    "in_use": in_use, "shared": r.shared, "size": size, "created": ns(r.created),
+                    "last_used": ns(r.last_used), "usage": r.usage,
+                })
+            })
+            .collect();
+        let mut sheet = shards_ipc::Sheet::new("du-rows");
+        sheet.record(&[("rows", serde_json::Value::from(rows).to_string())]);
+        reply.sheet(&sheet);
+        0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -225,19 +238,25 @@ mod tests {
     #[test]
     fn filters_are_asked_as_buildx_asks_them() {
         let v = |a: &[&str]| a.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
-        let (until, filters) = prune_info(&v(&["until=24h", "id=ab", "shared"])).unwrap();
+        // `shared=`: FilterOpt takes no filter without `=`; an empty value asks `shared==`.
+        let (until, filters) = prune_info(&v(&["until=24h", "id=ab", "shared="])).unwrap();
         assert_eq!(until, Some(Duration::from_secs(24 * 3600)));
         let r = record("abcdef", true);
-        assert!(filters.iter().all(|f| f.matches(&r)));
-        assert!(!filters.iter().all(|f| f.matches(&record("zz", true))));
-        assert!(!filters.iter().all(|f| f.matches(&record("abc", false))));
+        assert!(filters.iter().all(|f| f.matches(&r, false)));
+        assert!(!filters.iter().all(|f| f.matches(&record("zz", true), false)));
+        assert!(!filters.iter().all(|f| f.matches(&record("abc", false), false)));
         // A cache mount's record, by its type.
         let mount = Record {
             mount: Some("cached mount /c from exec sh".into()),
             ..record("m1", false)
         };
-        let matched =
-            |given: &[&str], r: &Record| prune_info(&v(given)).unwrap().1.iter().all(|f| f.matches(r));
+        let matched = |given: &[&str], r: &Record| {
+            prune_info(&v(given))
+                .unwrap()
+                .1
+                .iter()
+                .all(|f| f.matches(r, false))
+        };
         assert!(matched(&["type=exec.cachemount"], &mount));
         assert!(!matched(&["type=exec.cachemount"], &r));
         assert_eq!(
@@ -246,7 +265,7 @@ mod tests {
         );
         assert_eq!(
             prune_info(&v(&["until=soon"])).err().unwrap(),
-            "\"until\" filter expects a duration (e.g., '24h')"
+            "\"until\" filter expects a duration (e.g., '24h'): time: invalid duration \"soon\""
         );
         assert_eq!(
             prune_info(&v(&["type=a", "type=b"])).err().unwrap(),

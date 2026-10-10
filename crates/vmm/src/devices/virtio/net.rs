@@ -20,7 +20,7 @@ use shards_netring::{Consumer, Producer, Region};
 
 use super::queue::{Chain, Queue, QueueError, with};
 use super::{Activation, DeviceInterrupt, VirtioDevice, feature};
-use crate::memory::GuestMemory;
+use crate::memory::{Access, GuestMemory};
 use crate::sync::{lock, wait_timeout};
 use crate::{debug, warn};
 
@@ -470,12 +470,17 @@ fn step(
                 more = true;
                 break 'tx;
             }
-            if !s.tx_held && !with(mem, |a| txq.pop_into(a, &mut s.tx))? {
+            // The chain is taken and its frame copied in one take of guest memory, as a
+            // frame took it before its copy was guarded (D29; audit V10, PM M137).
+            let access = mem.access()?;
+            if !s.tx_held && !txq.pop_into(&access, &mut s.tx)? {
                 break;
             }
             s.tx_held = false;
-            if !broken {
-                match push(tx, &s.tx, mem) {
+            if broken {
+                drop(access);
+            } else {
+                match push(tx, &s.tx, access) {
                     Ok(true) => {}
                     Ok(false) => {
                         // No room: the frame waits, and the network process rings once it
@@ -546,13 +551,10 @@ fn step(
             break;
         }
         let chains = s.rx.get(..s.rx_held).unwrap_or_default();
-        if let Err(why) = deliver(rx, chains, &mut s.rx_lens, mem) {
-            return Ok(Step::Broken(why));
+        match deliver(rx, rxq, chains, &mut s.rx_lens, mem) {
+            Ok(returned) => returned?,
+            Err(why) => return Ok(Step::Broken(why)),
         }
-        // The frame's buffers go back together: a driver that saw some used and not the
-        // rest would drop the frame and take what follows for them (review 2.34, PM M104).
-        let heads = chains.iter().map(|c| c.head);
-        with(mem, |a| rxq.add_used_all(a, heads.zip(s.rx_lens.iter().copied())))?;
         s.rx_held = 0;
         used[RX] = true;
         received += 1;
@@ -580,27 +582,28 @@ fn writable(c: &Chain) -> usize {
 }
 
 /// A guest frame, header and all, into the ring if there is room: false if there is
-/// none. A frame past the ring's largest, or one outside guest memory, is dropped, as a
-/// NIC drops what it cannot send.
-fn push(tx: &mut Producer<'_>, chain: &Chain, mem: &GuestMemory) -> Result<bool, String> {
+/// none. It is copied under `access`, which goes before the frame is published and the
+/// peer rung (D29). A frame past the ring's largest, or one outside guest memory, is
+/// dropped, as a NIC drops what it cannot send.
+fn push(tx: &mut Producer<'_>, chain: &Chain, access: Access<'_>) -> Result<bool, String> {
     let mut n = 0usize;
     for d in chain.readable() {
-        if mem.host_ptr(d.addr, d.len as usize).is_err() {
+        if access.memory().host_ptr(d.addr, d.len as usize).is_err() {
             return Ok(true);
         }
         n = n.saturating_add(d.len as usize);
     }
-    match tx.try_push_with(n, |dst| {
+    // Without room, or past the ring's largest, the copy is not made and `access` goes as
+    // this returns.
+    match tx.try_push_with(n, move |dst| {
         let mut off = 0;
         for d in chain.readable() {
-            // Checked above, in a memory map that does not change while a device runs.
-            if let Ok(ptr) = mem.host_ptr(d.addr, d.len as usize) {
-                // SAFETY: guest memory checked by host_ptr, into the record's `n` bytes,
-                // of which these are the next.
-                unsafe { std::ptr::copy_nonoverlapping(ptr as *const u8, dst.add(off), d.len as usize) };
-            }
+            // SAFETY: the record's `n` bytes are this side's until it is published, and these
+            // are the next of them; the descriptor was checked above to lie in guest memory.
+            let _ = unsafe { access.read_raw(d.addr, dst.add(off), d.len as usize) };
             off += d.len as usize;
         }
+        drop(access);
     }) {
         Ok(Some(_)) => Ok(true),
         Ok(None) => Ok(false),
@@ -608,49 +611,59 @@ fn push(tx: &mut Producer<'_>, chain: &Chain, mem: &GuestMemory) -> Result<bool,
     }
 }
 
-/// The next frame into `chains`, its header's `num_buffers` the count of them; each
-/// chain's bytes written into `lens`.
+/// The next frame into `chains`, its header's `num_buffers` the count of them, and the
+/// chains back to the driver, each with the bytes it holds (`lens`), all of them together:
+/// a driver that saw some used and not the rest would drop the frame and take what follows
+/// for them (review 2.34, PM M104). The copy and the return share one take of guest memory,
+/// as a frame's return took it before its copy was guarded, let go before the frame's room
+/// in the ring is given back and the peer rung (D29; audit V10, PM M137). Err if the ring
+/// is broken, Ok(Err) if the queue is.
 fn deliver(
     rx: &mut Consumer<'_>,
+    rxq: &mut Queue,
     chains: &[Chain],
     lens: &mut Vec<u32>,
     mem: &GuestMemory,
-) -> Result<(), String> {
+) -> Result<Result<(), QueueError>, String> {
     lens.clear();
     lens.resize(chains.len(), 0);
     let used = chains.len();
-    rx.pop(|n, copy| {
-        let mut done = 0usize;
-        for (i, chain) in chains.iter().enumerate() {
-            for d in chain.writable() {
-                if done == n {
-                    break;
-                }
-                let take = (d.len as usize).min(n - done);
-                let Ok(ptr) = mem.host_ptr(d.addr, take) else {
-                    continue;
-                };
-                copy(done, ptr, take);
-                done += take;
-                if let Some(l) = lens.get_mut(i) {
-                    *l += take as u32;
+    let heads = || chains.iter().map(|c| c.head);
+    let delivered = rx
+        .pop_frame(|frame, n| {
+            let access = mem.access()?;
+            let mut done = 0usize;
+            for (i, chain) in chains.iter().enumerate() {
+                for d in chain.writable() {
+                    if done == n {
+                        break;
+                    }
+                    let take = (d.len as usize).min(n - done);
+                    // SAFETY: `done .. done + take` lies within the frame's `n` bytes, which hold
+                    // still until this returns.
+                    if unsafe { access.write_raw(d.addr, frame.add(done), take) }.is_err() {
+                        continue;
+                    }
+                    done += take;
+                    if let Some(l) = lens.get_mut(i) {
+                        *l += take as u32;
+                    }
                 }
             }
-        }
-        // num_buffers, the header's last field (§5.1.6): how many chains hold the frame.
-        if let Some(first) = chains.first().and_then(|c| c.writable().next())
-            && first.len as usize >= HEADER
-            && let Some(at) = first.addr.checked_add(10)
-            && let Ok(p) = mem.host_ptr(at, 2)
-        {
-            let count = u16::try_from(used).unwrap_or(u16::MAX).to_le_bytes();
-            // SAFETY: two bytes of guest memory checked by host_ptr.
-            unsafe { std::ptr::copy_nonoverlapping(count.as_ptr(), p, 2) };
-        }
-    })
-    .map_err(|b| b.to_string())?;
-    // Chains that held none of the frame still go back, empty.
-    Ok(())
+            // num_buffers, the header's last field (§5.1.6): how many chains hold the frame.
+            if let Some(first) = chains.first().and_then(|c| c.writable().next())
+                && first.len as usize >= HEADER
+                && let Some(at) = first.addr.checked_add(10)
+            {
+                let count = u16::try_from(used).unwrap_or(u16::MAX).to_le_bytes();
+                let _ = access.write(at, &count);
+            }
+            // Chains that held none of the frame go back too, empty.
+            rxq.add_used_all(&access, heads().zip(lens.iter().copied()))
+        })
+        .map_err(|b| b.to_string())?;
+    // The frame peeked is there to take; were it not, its chains would go back, empty.
+    Ok(delivered.unwrap_or_else(|| with(mem, |a| rxq.add_used_all(a, heads().zip(lens.iter().copied())))))
 }
 
 #[cfg(test)]
@@ -821,6 +834,7 @@ mod tests {
         session: Session,
         region: Region,
         rx_published: u16,
+        tx_published: u16,
         irq: DeviceInterrupt,
     }
 
@@ -847,6 +861,7 @@ mod tests {
                 mem,
                 region: Region::map(shards_netring::memory().unwrap()).unwrap(),
                 rx_published: 0,
+                tx_published: 0,
                 irq: DeviceInterrupt::new(Arc::new(Line)),
             }
         }
@@ -863,6 +878,21 @@ mod tests {
                 .unwrap();
             self.rx_published = self.rx_published.wrapping_add(1);
             a.write_obj(RX_AVAIL + 2, self.rx_published).unwrap();
+        }
+
+        /// Gives the driver's TX descriptor `i`, `frame` at `addr`, as a chain of its own.
+        fn tx_frame(&mut self, i: u16, addr: u64, frame: &[u8]) {
+            let a = self.mem.access().unwrap();
+            a.write(addr, frame).unwrap();
+            let d = TX_DESC + 16 * u64::from(i);
+            a.write_obj(d, addr).unwrap();
+            a.write_obj(d + 8, u32::try_from(frame.len()).unwrap()).unwrap();
+            a.write_obj(d + 12, 0u16).unwrap();
+            a.write_obj(d + 14, 0u16).unwrap();
+            a.write_obj(TX_AVAIL + 4 + 2 * u64::from(self.tx_published % SIZE), i)
+                .unwrap();
+            self.tx_published = self.tx_published.wrapping_add(1);
+            a.write_obj(TX_AVAIL + 2, self.tx_published).unwrap();
         }
 
         /// One round, with `frames` waiting from the network process.
@@ -993,5 +1023,72 @@ mod tests {
         let held = u16::try_from(r.session.rx_held).unwrap();
         assert_eq!(r.session.queues[RX].state_before(held).next_avail, 0);
         assert_eq!(r.session.queues[RX].state().next_avail, 1);
+    }
+
+    /// A frame's bytes cross between guest memory and the ring by guest memory's own copies,
+    /// under its guard (D29; audit V10), in a take of it the queue's work on the frame makes
+    /// anyway: each way a frame costs two takes, as it did before its copy was guarded (PM
+    /// M137). And every byte crosses.
+    #[test]
+    fn frames_cross_guarded_in_the_takes_they_had() {
+        use crate::memory::TAKES;
+        use crate::platform::COPIED;
+        let mut r = Rig::new();
+        let sent: Vec<Vec<u8>> = (0..3u8)
+            .map(|k| {
+                (0..1514u32)
+                    .map(|i| (i as u8).wrapping_mul(7).wrapping_add(k * 13))
+                    .collect()
+            })
+            .collect();
+        // A round's takes of guest memory, and bytes copied to and from it.
+        let round = |r: &mut Rig, frames: &[&[u8]]| {
+            let (takes, copied) = (TAKES.with(|t| t.get()), COPIED.with(|c| c.get()));
+            r.step(frames);
+            (TAKES.with(|t| t.get()) - takes, COPIED.with(|c| c.get()) - copied)
+        };
+        let to_send = |k: u16| DATA + 0x4000 + 0x800 * u64::from(k);
+        r.tx_frame(0, to_send(0), &sent[0]);
+        let one = round(&mut r, &[]);
+        for k in 0..3 {
+            r.tx_frame(k, to_send(k), &sent[usize::from(k)]);
+        }
+        let three = round(&mut r, &[]);
+        assert_eq!(three.0 - one.0, 2 * 2, "takes of two frames sent");
+        assert!(three.1 - one.1 >= 2 * 1514, "frames sent crossed by other copies");
+        // The three, whole, on the ring's other end.
+        let (_waits, rings) = shards_netring::doorbell().unwrap();
+        let (waits, _rings) = shards_netring::doorbell().unwrap();
+        let mut net = r.region.consumer(0, rings, waits);
+        for f in &sent {
+            let mut got = vec![0u8; f.len()];
+            let popped = net.pop(|n, copy| {
+                copy(0, got.as_mut_ptr(), n.min(got.len()));
+                n
+            });
+            assert_eq!(popped, Ok(Some(f.len())));
+            assert!(got == *f, "a frame sent changed");
+        }
+        let to_receive = |k: u16| DATA + 0x800 * u64::from(k);
+        r.rx_buffer(0, to_receive(0), 2048, DESC_WRITE);
+        let one = round(&mut r, &[&sent[0]]);
+        for k in 0..3 {
+            r.rx_buffer(k, to_receive(k), 2048, DESC_WRITE);
+        }
+        let three = round(&mut r, &[&sent[0], &sent[1], &sent[2]]);
+        assert_eq!(three.0 - one.0, 2 * 2, "takes of two frames delivered");
+        assert!(
+            three.1 - one.1 >= 2 * 1514,
+            "frames delivered crossed by other copies"
+        );
+        // Each whole in its buffer, its header saying it took one.
+        let a = r.mem.access().unwrap();
+        for (k, f) in (0..3).zip(&sent) {
+            let mut got = vec![0u8; f.len()];
+            a.read(to_receive(k), &mut got).unwrap();
+            let mut expected = f.clone();
+            expected[10..12].copy_from_slice(&1u16.to_le_bytes());
+            assert!(got == expected, "frame {k} delivered changed");
+        }
     }
 }

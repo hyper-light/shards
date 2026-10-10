@@ -4953,6 +4953,134 @@ fn run_caches_are_taken_as_buildkit_takes_them_among_concurrent_builds() {
     }
 }
 
+/// `buildx du` (and `builder du`) lists the build cache's records as buildx does: a step's
+/// `regular` record and a cache mount's `exec.cachemount` one, the records `system df`
+/// lists and `builder prune` removes; its table, `--verbose`, `json` and templates, sorted
+/// by size; a filter leaves the totals out; a cache a running step holds is in use, sized
+/// 0B, as BuildKit's DiskUsage sizes a mutable record that is changing.
+#[test]
+fn buildx_du_lists_the_records_system_df_lists() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("du-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+        ("SHARDS_BUILD_MEMORY", "1024".as_ref()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let ok = |args: &[&str]| {
+        let r = shards(args);
+        assert_eq!(r.status, Some(0), "{args:?}\n{}", r.stderr);
+        r.stdout
+    };
+    let build = |name: &str, ops: &str| {
+        let ctx = context(
+            &format!("du-{name}"),
+            &format!(
+                "FROM {image}\nUSER root\nRUN --mount=type=cache,target=/c,id=du [\"/bin/testguest\", \"fs\", {ops}]\n"
+            ),
+        );
+        shards(&["build", "--progress=plain", ctx.to_str().unwrap()])
+    };
+    let built = build("fill", "\"write:/c/f=1\", \"write:/out=1\"");
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    // Each record, as `--format json` gives it.
+    let records = |extra: &[&str]| -> Vec<serde_json::Value> {
+        let mut args = vec!["buildx", "du", "--format", "json"];
+        args.extend_from_slice(extra);
+        ok(&args)
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect()
+    };
+    let all = records(&[]);
+    let mounts: Vec<&serde_json::Value> = all.iter().filter(|r| r["Type"] == "exec.cachemount").collect();
+    assert_eq!(mounts.len(), 1, "{all:?}");
+    assert_eq!(mounts[0]["Mutable"], true);
+    assert_eq!(mounts[0]["Reclaimable"], true);
+    assert_eq!(mounts[0]["Parents"], serde_json::Value::Null);
+    assert_eq!(
+        mounts[0]["Description"],
+        "cached mount /c from exec /bin/testguest fs write:/c/f=1 write:/out=1 with id \"/du\""
+    );
+    assert!(
+        all.iter()
+            .any(|r| r["Type"] == "regular" && r["Mutable"] == false),
+        "{all:?}"
+    );
+    // The records `system df -v` lists, by ID.
+    let ids =
+        |text: &str| -> std::collections::BTreeSet<String> { text.lines().map(str::to_string).collect() };
+    let listed = ok(&["buildx", "du", "--format", "{{.ID}}"]);
+    let df = ok(&[
+        "system",
+        "df",
+        "-v",
+        "--format",
+        "{{range .BuildCache}}{{.ID}}\n{{end}}",
+    ]);
+    assert_eq!(ids(&listed), ids(&df));
+    assert_eq!(ids(&listed).len(), all.len());
+    // The table: buildx's header, a mutable record's ID marked, then the totals.
+    let table = ok(&["builder", "du"]);
+    let lines: Vec<&str> = table.lines().collect();
+    assert!(
+        lines[0].starts_with("ID ") && lines[0].ends_with("LAST ACCESSED"),
+        "{table}"
+    );
+    let id = mounts[0]["ID"].as_str().unwrap();
+    assert!(lines.iter().any(|l| l.starts_with(&format!("{id}*"))), "{table}");
+    assert!(
+        table.ends_with("\n") && lines.last().unwrap().starts_with("Total:\t"),
+        "{table}"
+    );
+    let verbose = ok(&["buildx", "du", "--verbose"]);
+    assert!(verbose.contains("\nType:         exec.cachemount\n"), "{verbose}");
+    assert!(verbose.contains("\nType:         regular\n"), "{verbose}");
+    // A filter: its records alone, and no totals.
+    let filtered = ok(&["buildx", "du", "--filter", "type=exec.cachemount"]);
+    assert_eq!(filtered.lines().count(), 2, "{filtered}");
+    assert!(
+        filtered.contains(&format!("{id}*")) && !filtered.contains("Total:"),
+        "{filtered}"
+    );
+    let refused = shards(&["buildx", "du", "--verbose", "--format", "json"]);
+    assert_eq!(refused.status, Some(1));
+    assert_eq!(
+        refused.stderr,
+        "ERROR: --format and --verbose cannot be used together\n"
+    );
+    // A cache a running step holds: in use, its size 0B.
+    std::thread::scope(|s| {
+        let held = s.spawn(|| build("hold", "\"write:/c/g=2\", \"sleep:20000\""));
+        let deadline = std::time::Instant::now() + TIMEOUT;
+        let in_use = loop {
+            if let Some(r) = records(&["--filter", "type=exec.cachemount"])
+                .into_iter()
+                .find(|r| r["Reclaimable"] == false)
+            {
+                break r;
+            }
+            assert!(std::time::Instant::now() < deadline, "no step held the cache");
+            std::thread::sleep(Duration::from_millis(200));
+        };
+        assert_eq!(in_use["Size"], "0B", "{in_use}");
+        assert_eq!(in_use["ID"], mounts[0]["ID"]);
+        let held = held.join().unwrap();
+        assert_eq!(held.status, Some(0), "{}", held.stderr);
+    });
+    // Pruned: none left, and totals of nothing.
+    ok(&["builder", "prune", "-af"]);
+    assert_eq!(
+        ok(&["buildx", "du"]),
+        "ID        RECLAIMABLE   SIZE      LAST ACCESSED\nReclaimable:\t0B\nTotal:\t\t0B\n"
+    );
+}
+
 /// External build caches (D62): a build's records, written by `--cache-to` to a
 /// directory (`mode=max`), a registry (`min`) and the image itself (`inline`), answer
 /// another home's build from `--cache-from`, as BuildKit's remote caches do: from the

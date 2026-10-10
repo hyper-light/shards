@@ -1085,6 +1085,7 @@ fn fs(ops: &[String]) -> i32 {
                     m.mode() & 0o7777
                 );
             }),
+            "roundrobin" => roundrobin(rest),
             _ => Err(io::Error::other("an unknown operation")),
         };
         if let Err(e) = done {
@@ -2640,4 +2641,74 @@ fn sbom_scan() -> i32 {
         }
     }
     0
+}
+
+/// `N:DIR:ROUNDS`: DIR's files `f0` to `fN-1` held open at once, past the page cache
+/// (O_DIRECT), and read 4 KiB at a time round-robin, ROUNDS times after one round untimed;
+/// prints `roundrobin n N p50 P p90 P p99 P max M ns` of the reads (audit V09: a share's
+/// cache of descriptors at its worst, each read opening its file again).
+fn roundrobin(spec: &str) -> io::Result<()> {
+    let mut parts = spec.splitn(3, ':');
+    let bad = || io::Error::other("a malformed roundrobin");
+    let n: usize = parts.next().and_then(|v| v.parse().ok()).ok_or_else(bad)?;
+    let dir = parts.next().ok_or_else(bad)?;
+    let rounds: usize = parts.next().and_then(|v| v.parse().ok()).ok_or_else(bad)?;
+    let room = libc::rlim_t::try_from(n + 64).map_err(|_| bad())?;
+    let lim = libc::rlimit {
+        rlim_cur: room,
+        rlim_max: room,
+    };
+    // SAFETY: setrlimit(2) of this process's own limit, from a local.
+    if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &lim) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let mut fds = Vec::with_capacity(n);
+    for i in 0..n {
+        let path = std::ffi::CString::new(format!("{dir}/f{i}")).map_err(|_| bad())?;
+        // SAFETY: open(2) of a NUL-terminated path.
+        let fd = unsafe { libc::open(path.as_ptr(), libc::O_RDONLY | libc::O_DIRECT | libc::O_CLOEXEC) };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        fds.push(fd);
+    }
+    // A page-aligned buffer, as O_DIRECT may ask.
+    let mut space = vec![0u8; 8192];
+    let skip = space.as_ptr().align_offset(4096);
+    let buf = space.get_mut(skip..skip + 4096).ok_or_else(bad)?;
+    let mut ns = Vec::with_capacity(n * rounds);
+    for round in 0..=rounds {
+        for &fd in &fds {
+            let t0 = monotonic_ns();
+            // SAFETY: pread(2) into a buffer of the length given.
+            let got = unsafe { libc::pread(fd, buf.as_mut_ptr().cast(), buf.len(), 0) };
+            let took = monotonic_ns().saturating_sub(t0);
+            if got < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            if round > 0 {
+                ns.push(took);
+            }
+        }
+    }
+    for fd in fds {
+        // SAFETY: close(2) of a descriptor this opened.
+        unsafe { libc::close(fd) };
+    }
+    ns.sort_unstable();
+    let at = |q: usize| {
+        ns.get((ns.len().saturating_sub(1)) * q / 100)
+            .copied()
+            .unwrap_or(0)
+    };
+    let max = ns.last().copied().unwrap_or(0);
+    let _ = writeln!(
+        io::stdout(),
+        "roundrobin n {} p50 {} p90 {} p99 {} max {max} ns",
+        ns.len(),
+        at(50),
+        at(90),
+        at(99)
+    );
+    Ok(())
 }

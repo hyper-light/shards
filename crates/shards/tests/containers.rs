@@ -5626,6 +5626,32 @@ fn push_uploads_images_as_docker_push_does() {
     assert_eq!(tagged.stderr, "tag can't be used with --all-tags/-a\n");
 }
 
+/// A guest holds open as many files of a shared directory as its own kernel lets it (audit
+/// V09): the share's descriptors are a cache it lets go and opens again by path, never a
+/// limit the guest meets. 300 files of a `-v` directory, past what this host lets a share
+/// hold, are open at once and read round and round.
+#[cfg(unix)]
+#[test]
+fn a_shared_directorys_files_stay_open_past_the_shares_descriptors() {
+    let Some((home, image)) = home("containers-many-open") else {
+        return;
+    };
+    let shared = home.join("many");
+    std::fs::create_dir(&shared).unwrap();
+    for i in 0..300 {
+        std::fs::write(shared.join(format!("f{i}")), vec![b'x'; 4096]).unwrap();
+    }
+    let bind = format!("{}:/data:ro", shared.display());
+    let ran = run_in(
+        &home,
+        &image,
+        &["--rm", "-u", "0", "-v", &bind],
+        &["fs", "roundrobin:300:/data:2"],
+    );
+    assert_eq!(ran.status, Some(0), "{ran}");
+    assert!(ran.stdout.contains("roundrobin n 600 "), "{ran}");
+}
+
 /// `-v` and `--mount`, as `docker run` takes them (D38): a host directory shared both ways
 /// and owned as Docker Desktop records it, read-only where asked, a file bound alone; a
 /// named volume filled from the image where it is empty, and kept; tmpfs; inspect's

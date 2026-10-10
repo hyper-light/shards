@@ -2384,6 +2384,33 @@ pub static POLICY_TEST: Command = Command {
     error_prefix: "ERROR: ",
 };
 
+/// `shards builder du` and `shards buildx du`: buildx v0.37.1's du
+/// (commands/diskusage.go), with its root's `--builder` and `--debug`, as `docker builder`
+/// runs buildx.
+pub static BUILDER_DU: Command = Command {
+    usage: "",
+    about: "Disk usage",
+    aliases: "",
+    args: Args::None,
+    flags: &[
+        Flag::string("builder", None, "", "Override the configured builder instance"),
+        Flag::bool("debug", Some(b'D'), "Enable debug logging"),
+        Flag::many("filter", None, "filter", "Provide filter values"),
+        Flag::string("format", None, "", "Format the output"),
+        Flag::duration(
+            "timeout",
+            None,
+            "Override the default timeout for loading builder status",
+        )
+        .defaulting("20s"),
+        Flag::bool("verbose", None, "Shorthand for \"--format=pretty\""),
+        HELP,
+    ],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "ERROR: ",
+};
+
 /// `shards builder prune` and `shards buildx prune`: buildx v0.37.1's prune
 /// (commands/prune.go), with its root's `--builder` and `--debug`, as `docker builder`
 /// runs buildx.
@@ -2508,6 +2535,7 @@ pub fn find(words: &[&str]) -> Option<(&'static Command, &'static str, usize)> {
         ["container", "prune", ..] => (&CONTAINER_PRUNE, "shards container prune", 2),
         ["image", "prune", ..] => (&IMAGE_PRUNE, "shards image prune", 2),
         ["builder" | "buildx", "prune", ..] => (&BUILDER_PRUNE, "shards buildx prune", 2),
+        ["builder" | "buildx", "du", ..] => (&BUILDER_DU, "shards buildx du", 2),
         ["buildx", "policy", "eval", ..] => (&POLICY_EVAL, "shards buildx policy eval", 3),
         ["buildx", "policy", "test", ..] => (&POLICY_TEST, "shards buildx policy test", 3),
         ["buildx", "policy", ..] => (&POLICY, "shards buildx policy", 2),

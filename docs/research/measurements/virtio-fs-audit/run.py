@@ -25,6 +25,7 @@ ap.add_argument("--runs", type=int, default=20)
 ap.add_argument("--n", type=int, default=2000)
 ap.add_argument("--delay-us", type=int, default=5000)
 ap.add_argument("--cases", default="open,serve,held,list,listplus")
+ap.add_argument("--tree", help="a tree made by `--case mktree`, for the walk case")
 args = ap.parse_args()
 
 work = tempfile.mkdtemp(prefix="virtio-fs-audit-")
@@ -62,6 +63,7 @@ try:
         "held": ["--case", "held", "--n", "20", "--delay-us", str(args.delay_us)],
         "list": ["--case", "list", "--n", "30"],
         "listplus": ["--case", "listplus", "--n", "10"],
+        "walk": ["--case", "walk", "--tree", str(args.tree)],
     }
     results = {}
     for case in args.cases.split(","):

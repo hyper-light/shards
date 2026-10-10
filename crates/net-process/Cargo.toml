@@ -20,3 +20,6 @@ shards-net = { path = "../net" }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+shards-apple = { path = "../apple" }

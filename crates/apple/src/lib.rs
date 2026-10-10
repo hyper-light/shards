@@ -11,6 +11,7 @@
 //!   rustls-platform-verifier 0.7.1 evaluates it (src/verification/apple.rs): the same
 //!   calls, in the same order, with the same arguments.
 //! - [`bookmark`]: a directory's bookmark, for the VM process to resolve (D30).
+//! - [`sandbox`]: whether this process is in App Sandbox (D30, D31).
 //!
 //! Elsewhere this crate is empty.
 
@@ -18,5 +19,7 @@
 pub mod bookmark;
 #[cfg(target_os = "macos")]
 mod frameworks;
+#[cfg(target_os = "macos")]
+pub mod sandbox;
 #[cfg(target_os = "macos")]
 pub mod trust;
