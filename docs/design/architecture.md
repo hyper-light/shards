@@ -3530,6 +3530,23 @@ and BuildKit build an Agentfile, no shards installed. The frontend is `shards` i
     and the policy decides. buildx's policy, given no chain, asks again until "too many
     policy requests"; so did shards build before this.
 - **Tested.**
+  - In `shards-dind` (Docker 29.3.1, BuildKit v0.28.1, buildx v0.37.1;
+    `scripts/frontend/compare`), the 13 Dockerfiles of `scripts/frontend/cases` were each
+    built by docker/dockerfile:1.27.1 (pinned by digest) and by the frontend's image,
+    with SOURCE_DATE_EPOCH and rewrite-timestamp. The cases cover a full config, two
+    platforms, named contexts, cache/tmpfs/bind mounts and heredocs, `.dockerignore`,
+    `--target`, `--check`, `--call=outline`, a parse error and a failing RUN.
+    - The 10 images are equal byte for byte: OCI indexes, manifests, configs and layers.
+    - Exit codes are equal in all 13 cases.
+    - buildx's output is equal step by step, the error excerpts and the warnings' list
+      included, in three runs one after another.
+    - Set aside, as BuildKit's own timing (the same frontend's runs differ in it): each
+      frontend image's own pull, step numbers and the order of steps run at once,
+      durations and log time stamps, a status printed before it is done, a warning shown
+      in its step's lines or not, and the order of buildx's list of warnings.
+    - Each frontend builds twice in turn and the second builds are compared, so each
+      finds BuildKit's cache and synced context as the other left them.
+    - Mutation-checked: a warning's line number left off is caught.
   - The replay test, and the gateway client's.
   - The definitions and source detail held byte for byte to the capture
     (`crates/dockerfile/tests/gateway.rs`).
@@ -3544,8 +3561,6 @@ and BuildKit build an Agentfile, no shards installed. The frontend is `shards` i
     a capability, the own domain's exemption, the contents' comparison, the image check,
     and the guards' collection.
 - **Pending: Docker Desktop's engine stopped answering on 2026-10-09.** Waiting on it:
-  - the corpus comparison in `shards-dind` (`scripts/frontend/compare`: images byte for
-    byte and buildx's output, against docker/dockerfile:1.27.1 by digest);
   - Agentfiles built by BuildKit through the frontend against `shards build`'s, and
     both run on microVMs (`scripts/frontend/agentfiles`; through `shards build` alone,
     each case already makes or refuses what the harness expects);

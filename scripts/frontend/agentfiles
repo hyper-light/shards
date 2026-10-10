@@ -60,8 +60,10 @@ def layout(path):
                 for m in doc.get(k, []) or []:
                     if "json" in m.get("mediaType", ""):
                         todo.append(m["digest"])
-            if "config" in doc:
-                todo.append(doc["config"]["digest"])
+            # A manifest's config descriptor; an image config's own `config` is none.
+            config = doc.get("config")
+            if isinstance(config, dict) and "digest" in config and "mediaType" in config:
+                todo.append(config["digest"])
     return index, blobs
 
 
