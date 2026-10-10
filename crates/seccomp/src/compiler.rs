@@ -798,10 +798,24 @@ fn section(
             } else {
                 0
             };
-            for nr in base..=base + last.get(&abi).copied().unwrap_or(0).saturating_sub(base) {
-                let has = tables::kernel_has(abi, nr as i32);
-                if has != tables::kernel_has(abi, nr.wrapping_sub(1) as i32) {
+            // Where the kernel's syscalls begin and end up to the stub's line: each number
+            // the kernel has where it lacks the one below, and each it lacks where it has
+            // the one below. Found from the table's own numbers, not by testing each number
+            // up to the line, which lies past 0x0f0000 where 32-bit Arm's private syscalls
+            // are listed (2.2 s for Docker's default profile on arm64, PM M167).
+            let upper = base + last.get(&abi).copied().unwrap_or(0).saturating_sub(base);
+            for &n in tables::kernel_numbers(abi) {
+                let Ok(nr) = u32::try_from(n) else {
+                    continue;
+                };
+                if nr < base || nr > upper {
+                    continue;
+                }
+                if !tables::kernel_has(abi, n.wrapping_sub(1)) {
                     points.insert(nr);
+                }
+                if nr < upper && !tables::kernel_has(abi, n.wrapping_add(1)) {
+                    points.insert(nr + 1);
                 }
             }
         }

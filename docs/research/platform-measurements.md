@@ -5525,3 +5525,65 @@ revision before comparing a changed API/implementation.
   as its own kernel lets it. What a workload pays past the cache, a reopen for each file
   read again, is unmeasured end to end; Linux's openat2, one call for a whole path, is
   unmeasured here.
+
+### M167. What compiling a seccomp profile costs, by guest architecture (D42)
+
+- **Question.** Seven Agentfile E2Es failed a gate together, each a `shards top` past its
+  30 s while its run started; rerun, alone and together, they passed. Where does a run's
+  start go before its VM, and what does compiling the filters it starts under cost?
+- **Method.**
+  - The start traced: one run of `agents_reach_only_the_unix_sockets_granted` (0b98e01)
+    with marks in the daemon's log from its request to its VM's start, and the tests'
+    `top` looks timed (both temporary, not kept); the seven tests three times each, n =
+    30 runs, at load average 64 to 75 before the change and 78 to 90 after.
+  - `docs/research/measurements/seccomp-compile` (`cargo run --release -- N`):
+    `shards_seccomp::compile` of Docker's default profile for Docker's default
+    capabilities and Linux 6.18, a sample one whole compile, the architectures
+    alternating a sample at a time; built against 0b98e01's crate (n = 20) and the
+    change's (n = 200), back to back.
+  - `first-run.py`: a daemon's first run, `shards run --rm alpine:3.20 true` through a
+    daemon just started, which compiles its filter as each daemon's first run does; 0b98e01
+    and the change, each one release `shards` and a home whose template was saved, turns
+    interleaved, n = 40 an arm a round, two rounds.
+  - Apple M5 Max, macOS 26.4.1, 2026-10-10, load average 58 to 94 (other sessions' builds
+    and tests, and a VM at 15 cores), the host's usual.
+- **Results.**
+  - The traced start: `run::prepare` took 1 ms; compiling the run's own filter
+    (`setup::security_setup`) 2.36 s and the domains' two (`setup::domain_seccomp`)
+    4.42 s; the VM was ready 59 ms after its spawn. Every command naming the container
+    waited the while, its record written once the setup is done (`resolve` waits for it);
+    the tests' first `top` that answered ended 7.45 s after the run was asked for at the
+    median (n 30, p90 8.76, p99 and max 9.01 s), 0.37 s after the change (p90 0.61, p99
+    and max 0.73 s), the two compiles then 12 ms and 11 ms.
+  - The compile, sampled (macOS `sample`, every millisecond): its time in `section`,
+    testing each number up to the stub's line, which on arm64 includes 32-bit Arm's
+    private syscalls at 0x0f0001 to 0x0f0005 (`breakpoint`, `cacheflush`, `set_tls`);
+    each test scanned the tables, 1,967,136 lookups for Docker's default profile. Read
+    off the tables, 1,607.
+  - Compiles, n / p50 / p90 / p99 / max:
+
+    | arch | 0b98e01 | the change |
+    |---|---|---|
+    | amd64 | 20 / 2.56 / 4.32 / 7.39 / 7.39 ms | 200 / 1.27 / 3.26 / 20.74 / 24.49 ms |
+    | arm64 | 20 / 1,722 / 1,870 / 1,872 / 1,872 ms | 200 / 1.35 / 2.46 / 14.61 / 23.75 ms |
+
+    The same 660 programs, byte for byte, before and after: the 33 cases on both
+    architectures, under Linux 4.14, 5.10, 6.1, 6.18 and 7.0, in both modes.
+  - A daemon's first run, ms, n / p50 / p90 / p99 / max, and the change less 0b98e01,
+    paired median [95%]:
+
+    | round | 0b98e01 | the change | difference |
+    |---|---|---|---|
+    | 1 (load 69 to 74) | 40 / 2,582 / 3,559 / 5,210 / 5,210 | 40 / 136 / 199 / 248 / 248 | −2,345 [−2,723, −2,190] |
+    | 2 (load 73 to 76) | 40 / 1,983 / 4,045 / 4,123 / 4,123 | 40 / 125 / 194 / 269 / 269 | −1,791 [−2,513, −1,428] |
+
+    The command's own time in the guest moved +0.04 ms [−0.29, +0.40] and −0.05 ms
+    [−0.45, +0.15].
+- **Consequence.** A compile takes 1.3 ms at the median on either architecture: where the
+  kernel's syscalls begin and end is read off its tables, which `kernel_has` now
+  bisects. On arm64 each daemon's first run had paid 1.7 s or more for its filter, an
+  Agentfile's three times, and each build its builder's, before its first step. The seven
+  tests' timeouts fit this: a `top` waits for its run's setup, by design, and the
+  compiles were nearly all of it (traced above); the gate's load was not recorded. The
+  setup now takes milliseconds. What else a first run's 125 to 136 ms holds is unmeasured
+  here.

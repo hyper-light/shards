@@ -2683,6 +2683,14 @@ Engine 29.3.1's words and to what its containers see (`security_opt_confines_as_
   `builtin` as JSON and fails.
   - The program: ranges of one decision by binary search, identical decisions shared, a
   third of runc's length and 43% fewer instructions per syscall at the median (PM M120).
+  - Compiling it takes 1.3 ms at the median on either architecture (PM M167): where the
+  kernel's syscalls begin and end is read off its tables. Until 2026-10-10 each number up
+  to the stub's line was tested, which on arm64 lies past 32-bit Arm's private syscalls at
+  0x0f0000, each test a scan of the tables: 1.7 s a compile, paid by each daemon's first
+  run (by an Agentfile's three times, its domains' two filters with it) and by each build
+  that ran a step, as its builder started. Every program is unchanged, byte for byte, for
+  the 33 cases on both architectures under five kernels in both modes; a test holds a
+  compile's lookups to its tables' size (mutation-checked).
 - Not served: SCMP_ACT_NOTIFY, which needs a seccomp agent (listenerPath) shards does not
   run; it is refused as the container starts.
 

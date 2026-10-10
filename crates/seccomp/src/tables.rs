@@ -143,9 +143,41 @@ pub fn kernel_nr(abi: Abi, name: &str) -> Option<i32> {
         .map(|(_, _, nr)| *nr)
 }
 
+/// The guest kernel's syscall numbers on `abi`, in order.
+pub fn kernel_numbers(abi: Abi) -> &'static [i32] {
+    static NUMBERS: OnceLock<Vec<(Abi, Vec<i32>)>> = OnceLock::new();
+    NUMBERS
+        .get_or_init(|| {
+            [Abi::X86, Abi::X86_64, Abi::X32, Abi::Arm, Abi::Aarch64]
+                .into_iter()
+                .map(|abi| {
+                    let mut numbers: Vec<i32> = linux()
+                        .iter()
+                        .filter(|(a, _, _)| *a == abi)
+                        .map(|(_, _, nr)| *nr)
+                        .collect();
+                    numbers.sort_unstable();
+                    numbers.dedup();
+                    (abi, numbers)
+                })
+                .collect()
+        })
+        .iter()
+        .find(|(a, _)| *a == abi)
+        .map_or(&[], |(_, numbers)| numbers.as_slice())
+}
+
 /// Whether `nr` is a syscall of the guest kernel on `abi`.
 pub fn kernel_has(abi: Abi, nr: i32) -> bool {
-    linux().iter().any(|(a, _, n)| *a == abi && *n == nr)
+    #[cfg(test)]
+    LOOKUPS.with(|n| n.set(n.get() + 1));
+    kernel_numbers(abi).binary_search(&nr).is_ok()
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How often this thread has asked [`kernel_has`]: what a compile costs, counted.
+    pub static LOOKUPS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 /// libseccomp 2.5.4's resolvers, by which Docker's runc reads a profile's names.
