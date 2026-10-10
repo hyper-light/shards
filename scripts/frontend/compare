@@ -1,0 +1,176 @@
+#!/usr/bin/env python3
+"""D113: builds each case of scripts/frontend/cases twice in shards-dind, BuildKit (Docker
+29.3.1's, v0.28.1, through buildx v0.37.1) running docker/dockerfile:1 (dockerfile/1.27.1,
+pinned by digest) once and shards' own frontend from this tree once, and holds the two
+together: the images byte for byte (every manifest, config and layer, through an OCI
+layout written with SOURCE_DATE_EPOCH and rewrite-timestamp, so that a build is
+reproducible at all), and what buildx printed, its durations and the frontends' own names
+aside. A case's `flags` file holds extra buildx flags, one a line, `$CASE` its directory.
+
+    scripts/frontend/compare BINARY [CASE...]
+
+BINARY is a static musl `shards` for dind's architecture (a release build of
+aarch64-unknown-linux-musl on an arm64 host). The frontend's image is built from it with
+scripts/frontend/Dockerfile and pushed only to a registry container in dind,
+127.0.0.1:15113. Everything made is named shards-d113-* or lives in /opt/shards-d113, and
+is removed at the end but the frontend's image and the registry, which `--clean` removes.
+Prints one JSON line a case; exits 1 where any differs.
+"""
+import hashlib
+import json
+import os
+import re
+import subprocess
+import sys
+
+DIND = "shards-dind"
+ROOT = "/opt/shards-d113"
+REGISTRY = "127.0.0.1:15113"
+BUILDX = "/opt/shards-bx37/buildx"
+DOCKERFILE_1 = "docker/dockerfile:1.27.1@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e"
+EPOCH = "1700000000"
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def run(argv, check=True, timeout=900):
+    p = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+    if check and p.returncode != 0:
+        raise SystemExit(f"{' '.join(argv)}: {p.returncode}\n{p.stdout}\n{p.stderr}")
+    return p
+
+
+def dind(*argv, check=True, timeout=900):
+    return run(["docker", "exec", DIND, *argv], check=check, timeout=timeout)
+
+
+def setup(binary):
+    dind("mkdir", "-p", f"{ROOT}/frontend", f"{ROOT}/cases", f"{ROOT}/out")
+    if dind("docker", "inspect", "shards-d113-registry", check=False).returncode != 0:
+        dind("docker", "run", "-d", "--name", "shards-d113-registry", "-p", "15113:5000", "registry:2")
+    run(["docker", "cp", binary, f"{DIND}:{ROOT}/frontend/shards"])
+    run(["docker", "cp", os.path.join(HERE, "Dockerfile"), f"{DIND}:{ROOT}/frontend/Dockerfile"])
+    with open(binary, "rb") as f:
+        tag = hashlib.sha256(f.read()).hexdigest()[:12]
+    image = f"{REGISTRY}/shards-d113-frontend:{tag}"
+    dind("docker", "build", "-q", "-t", image, f"{ROOT}/frontend")
+    dind("docker", "push", "-q", image)
+    digest = dind("docker", "inspect", "--format", "{{index .RepoDigests 0}}", image).stdout.strip()
+    return image, digest
+
+
+def flags_of(case):
+    path = os.path.join(HERE, "cases", case, "flags")
+    if not os.path.exists(path):
+        return []
+    with open(path) as f:
+        return [line.rstrip("\n").replace("$CASE", f"{ROOT}/cases/{case}") for line in f if line.strip()]
+
+
+def normalize(text, frontends):
+    for name in frontends:
+        text = text.replace(name, "FRONTEND")
+    text = re.sub(r"\b\d+\.\d+s\b", "Xs", text)
+    # The frontend's own image: its name and digest differ by design.
+    lines = [
+        line
+        for line in text.splitlines()
+        if "FRONTEND" not in line and not re.match(r"^#\d+ resolve image config for docker-image://", line)
+    ]
+    return "\n".join(lines)
+
+
+def oci(path):
+    """An OCI layout's index and every blob it names, by digest."""
+    index = json.loads(dind("tar", "-xOf", path, "index.json").stdout)
+    blobs = {}
+    todo = [m["digest"] for m in index.get("manifests", [])]
+    while todo:
+        d = todo.pop()
+        if d in blobs:
+            continue
+        raw = dind("tar", "-xOf", path, "blobs/" + d.replace(":", "/")).stdout
+        blobs[d] = raw
+        try:
+            doc = json.loads(raw)
+        except ValueError:
+            continue
+        for k in ("manifests", "layers"):
+            for m in doc.get(k, []) or []:
+                if "json" in m.get("mediaType", ""):
+                    todo.append(m["digest"])
+        if "config" in doc:
+            todo.append(doc["config"]["digest"])
+    return index, blobs
+
+
+def build(case, frontend, side, flags):
+    out = f"{ROOT}/out/{case}-{side}.tar"
+    argv = [
+        BUILDX, "build", "--progress=plain", "--no-cache", "--provenance=false",
+        "--build-arg", f"SOURCE_DATE_EPOCH={EPOCH}",
+        "--build-arg", f"BUILDKIT_SYNTAX={frontend}",
+        *flags,
+    ]
+    calls = any(f.startswith("--call") or f == "--check" for f in flags)
+    if not calls:
+        argv += ["--output", f"type=oci,dest={out},rewrite-timestamp=true"]
+    p = dind(*argv, f"{ROOT}/cases/{case}", check=False)
+    return p.returncode, p.stdout + p.stderr, (None if calls or p.returncode != 0 else out)
+
+
+def compare(case, frontends):
+    run(["docker", "cp", os.path.join(HERE, "cases", case), f"{DIND}:{ROOT}/cases/"])
+    flags = flags_of(case)
+    theirs = build(case, frontends[0], "dockerfile", flags)
+    ours = build(case, frontends[1], "shards", flags)
+    result = {"case": case, "exit": [theirs[0], ours[0]]}
+    differs = []
+    if theirs[0] != ours[0]:
+        differs.append("exit")
+    said = [normalize(t[1], frontends) for t in (theirs, ours)]
+    if said[0] != said[1]:
+        differs.append("output")
+        result["output"] = said
+    if theirs[2] and ours[2]:
+        (i1, b1), (i2, b2) = oci(theirs[2]), oci(ours[2])
+        result["index"] = [m["digest"] for m in i1.get("manifests", [])]
+        if i1 != i2:
+            differs.append("index")
+            result["ours"] = [m["digest"] for m in i2.get("manifests", [])]
+        if b1 != b2:
+            differs.append("blobs")
+            result["blob_diff"] = sorted(set(b1) ^ set(b2))
+        configs = [d for d, raw in b1.items() if '"rootfs"' in raw]
+        if configs:
+            result["config"] = json.loads(b1[configs[0]])
+        for t in (theirs, ours):
+            dind("rm", "-f", t[2], check=False)
+    result["equal"] = not differs
+    if differs:
+        result["differs"] = differs
+    return result
+
+
+def main():
+    args = [a for a in sys.argv[1:] if a != "--clean"]
+    if not args:
+        raise SystemExit(__doc__)
+    binary, cases = args[0], args[1:]
+    if not cases:
+        cases = sorted(os.listdir(os.path.join(HERE, "cases")))
+    image, digest = setup(binary)
+    frontends = [DOCKERFILE_1, digest]
+    failed = False
+    for case in cases:
+        r = compare(case, frontends)
+        failed |= not r["equal"]
+        print(json.dumps(r, sort_keys=True), flush=True)
+    dind("rm", "-rf", f"{ROOT}/cases", f"{ROOT}/out", check=False)
+    if "--clean" in sys.argv:
+        dind("docker", "rmi", "-f", image, check=False)
+        dind("docker", "rm", "-f", "shards-d113-registry", check=False)
+    sys.exit(1 if failed else 0)
+
+
+if __name__ == "__main__":
+    main()

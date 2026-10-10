@@ -1,0 +1,165 @@
+#!/usr/bin/env python3
+"""M129: what shards' BuildKit frontend costs against docker/dockerfile:1 (dockerfile/1.27.1)
+in shards-dind (Docker 29.3.1, BuildKit v0.28.1, buildx v0.37.1): each frontend run by
+BuildKit through D113's spy (scripts/gateway/spy), which relays its stdio and stamps each
+chunk, n builds of one case each, interleaved; per frontend, the process's start to its
+first byte on the gateway, its start to its end, and each gateway call from the chunk
+ending its request to the chunk ending its answer, at p50, p90, p99 and max in
+milliseconds, with the host, its load and the revision; and each image's size.
+
+    docs/research/measurements/frontend/run BINARY SPY DECODE N [CASE]
+
+BINARY is a static musl `shards` for dind's architecture, SPY the spy built for it
+(`GOOS=linux GO111MODULE=off go build scripts/gateway/spy/main.go`), DECODE
+scripts/gateway/decode built for this host (see scripts/gateway/capture), N the builds
+of each, CASE one of scripts/frontend/cases (`basic` by default). Everything made is
+named shards-d113-* or lives in /opt/shards-d113, and is removed at the end.
+"""
+import datetime
+import hashlib
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+
+DIND = "shards-dind"
+ROOT = "/opt/shards-d113"
+REGISTRY = "127.0.0.1:15113"
+BUILDX = "/opt/shards-bx37/buildx"
+DOCKERFILE_1 = "docker/dockerfile:1.27.1@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e"
+HERE = os.path.dirname(os.path.abspath(__file__))
+REPO = os.path.abspath(os.path.join(HERE, "..", "..", "..", ".."))
+
+
+def run(argv, check=True, timeout=1800):
+    p = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+    if check and p.returncode != 0:
+        raise SystemExit(f"{' '.join(argv)}: {p.returncode}\n{p.stdout}\n{p.stderr}")
+    return p
+
+
+def dind(*argv, check=True):
+    return run(["docker", "exec", DIND, *argv], check=check)
+
+
+def image(name, dockerfile, files):
+    """An image built in dind from `dockerfile` and `files`, pushed to the local registry;
+    its name by digest."""
+    d = f"{ROOT}/m129/{name}"
+    dind("rm", "-rf", d)
+    dind("mkdir", "-p", d)
+    for src, dest in files:
+        run(["docker", "cp", src, f"{DIND}:{d}/{dest}"])
+    with tempfile.NamedTemporaryFile("w", delete=False) as f:
+        f.write(dockerfile)
+    run(["docker", "cp", f.name, f"{DIND}:{d}/Dockerfile"])
+    os.unlink(f.name)
+    tag = f"{REGISTRY}/shards-d113-{name}:m129"
+    dind("docker", "build", "-q", "-t", tag, d)
+    dind("docker", "push", "-q", tag)
+    return tag, dind("docker", "inspect", "--format", "{{index .RepoDigests 0}}", tag).stdout.strip()
+
+
+def pct(values, p):
+    s = sorted(values)
+    if not s:
+        return float("nan")
+    i = min(len(s) - 1, max(0, int(round(p / 100.0 * (len(s) - 1)))))
+    return s[i]
+
+
+def stats(values):
+    ms = [v / 1e6 for v in values]
+    return {"n": len(ms), "p50": pct(ms, 50), "p90": pct(ms, 90), "p99": pct(ms, 99), "max": max(ms) if ms else float("nan")}
+
+
+def main():
+    if len(sys.argv) < 5:
+        raise SystemExit(__doc__)
+    binary, spy, decode, n = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
+    case = sys.argv[5] if len(sys.argv) > 5 else "basic"
+    print("host:", run(["sysctl", "-n", "machdep.cpu.brand_string"], check=False).stdout.strip() or os.uname().machine,
+          run(["sw_vers", "-productVersion"], check=False).stdout.strip() or os.uname().release)
+    print("revision:", run(["git", "-C", REPO, "rev-parse", "--short", "HEAD"]).stdout.strip())
+    print("load:", os.getloadavg())
+    dind("mkdir", "-p", f"{ROOT}/m129")
+    if dind("docker", "inspect", "shards-d113-registry", check=False).returncode != 0:
+        dind("docker", "run", "-d", "--name", "shards-d113-registry", "-p", "15113:5000", "registry:2")
+    ours_tag, ours = image(
+        "frontend",
+        open(os.path.join(REPO, "scripts", "frontend", "Dockerfile")).read(),
+        [(binary, "shards")],
+    )
+    spy_ours_tag, spy_ours = image(
+        "spy-shards",
+        f"FROM {ours}\nCOPY spy /spy\nENTRYPOINT [\"/spy\", \"/shards\", \"frontend\"]\n",
+        [(spy, "spy")],
+    )
+    spy_theirs_tag, spy_theirs = image(
+        "spy-dockerfile",
+        f"FROM {DOCKERFILE_1}\nCOPY spy /spy\nENTRYPOINT [\"/spy\"]\n",
+        [(spy, "spy")],
+    )
+    for tag in (ours_tag, DOCKERFILE_1):
+        size = dind("docker", "image", "inspect", "--format", "{{.Size}}", tag).stdout.strip()
+        print("image size:", tag.split("@")[0], size, "bytes")
+    run(["docker", "cp", os.path.join(REPO, "scripts", "frontend", "cases", case), f"{DIND}:{ROOT}/m129/"])
+    since = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    sides = [("dockerfile", spy_theirs), ("shards", spy_ours)]
+    for i in range(n):
+        # Interleaved, each first in turn: neither runs only on a quiet or busy host.
+        for side, ref in (sides if i % 2 == 0 else list(reversed(sides))):
+            dind(
+                BUILDX, "build", "--progress=quiet", "--provenance=false",
+                "--build-arg", f"BUILDKIT_SYNTAX={ref}",
+                "--build-arg", f"SHARDS_D113_RUN={side}-{i}",
+                "--output", "type=cacheonly",
+                f"{ROOT}/m129/{case}",
+            )
+    log = run(["docker", "logs", DIND, "--since", since]).stdout + ""
+    log += run(["docker", "logs", DIND, "--since", since]).stderr
+    runs = {}
+    current = None
+    for line in log.splitlines():
+        at = line.find("SHARDS-D113-SPY ")
+        if at < 0:
+            continue
+        line = line[at:]
+        if line.startswith("SHARDS-D113-SPY ARGS"):
+            current = []
+            runs[len(runs)] = current
+        if current is not None:
+            current.append(line)
+    measures = {"dockerfile": {}, "shards": {}}
+    with tempfile.TemporaryDirectory() as tmp:
+        for k, lines in runs.items():
+            label = next((m.group(1) for l in lines for m in [re.search(r"SHARDS_D113_RUN=([a-z]+)-\d+", l)] if m), None)
+            if label is None:
+                continue
+            path = os.path.join(tmp, f"{k}.log")
+            with open(path, "w") as f:
+                f.write("\n".join(lines) + "\n")
+            out = run([decode, path, os.path.join(tmp, str(k))]).stdout
+            m = measures[label]
+            for line in out.splitlines():
+                if line.startswith("PROCESS "):
+                    v = dict(x.split("=") for x in line.split()[1:])
+                    start, first, end = int(v["start"]), int(v["first_out"]), int(v["exit"])
+                    m.setdefault("start to first byte", []).append(first - start)
+                    m.setdefault("start to end", []).append(end - start)
+                elif line.startswith("CALL "):
+                    v = dict(x.split("=") for x in line.split()[1:])
+                    m.setdefault("call " + v["method"], []).append(int(v["ns"]))
+    for side in ("dockerfile", "shards"):
+        for metric, values in sorted(measures[side].items()):
+            s = stats(values)
+            print(f"{side:10} {metric:28} n={s['n']:3} p50={s['p50']:8.3f} p90={s['p90']:8.3f} p99={s['p99']:8.3f} max={s['max']:8.3f} ms")
+    for tag in (spy_ours_tag, spy_theirs_tag, ours_tag):
+        dind("docker", "rmi", "-f", tag, check=False)
+    dind("rm", "-rf", f"{ROOT}/m129", check=False)
+
+
+if __name__ == "__main__":
+    main()

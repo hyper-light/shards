@@ -1,6 +1,8 @@
-// D113's spy: runs docker/dockerfile's own frontend as a child, passes BuildKit's stdio
-// (the gateway's gRPC connection) through untouched, and logs every chunk each way to
-// stderr, which buildkitd logs, with its arguments and environment first.
+// D113's spy: runs a frontend as a child (its arguments, else docker/dockerfile's own
+// /bin/dockerfile-frontend), passes BuildKit's stdio (the gateway's gRPC connection)
+// through untouched, and logs every chunk each way to stderr, which buildkitd logs, with
+// its arguments and environment first and the child's start and end, each with the
+// time, for D113's measurements.
 package main
 
 import (
@@ -24,7 +26,11 @@ func main() {
 	for _, e := range os.Environ() {
 		say("ENV %q", e)
 	}
-	cmd := exec.Command("/bin/dockerfile-frontend")
+	child := []string{"/bin/dockerfile-frontend"}
+	if len(os.Args) > 1 {
+		child = os.Args[1:]
+	}
+	cmd := exec.Command(child[0], child[1:]...)
 	cmd.Env = os.Environ()
 	cmd.Stderr = os.Stderr
 	in, err := cmd.StdinPipe()
@@ -37,6 +43,7 @@ func main() {
 		say("ERR stdout %v", err)
 		os.Exit(1)
 	}
+	say("START %d", time.Now().UnixNano())
 	if err := cmd.Start(); err != nil {
 		say("ERR start %v", err)
 		os.Exit(1)
@@ -62,5 +69,5 @@ func main() {
 	go relay("IN", os.Stdin, in, func() { in.Close() })
 	relay("OUT", out, os.Stdout, func() {})
 	err = cmd.Wait()
-	say("EXIT %v", err)
+	say("EXIT %d %v", time.Now().UnixNano(), err)
 }
