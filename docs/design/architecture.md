@@ -59,6 +59,7 @@ performance and resource usage.
 | D12 | vsock is the host↔guest control plane (exec, stdio, lifecycle, engine API). Built (a7b32ab): guest ports map to host Unix sockets as in Firecracker (`CONNECT <port>`; the guest reaches `<path>_P`). Unlike Firecracker, host EOF is a half-close, so a guest can answer after stdin ends. Each restored copy binds its own socket, where it is given a path; the ports its own process serves (the run's) take no socket file (D30). A snapshot keeps the streams the device held. The restored device resets each of them with an RST on its RX queue, ahead of every other packet, and continues host port allocation past the snapshot's, never reusing a held port. It posts no TRANSPORT_RESET: Linux handles that event in a work item apart from RX, and on one interrupt it visits RX first. So a connection made right after the restore could be established and then reset (13 of 350 restores under CPU load). | Rootless and portable; Firecracker's AF_UNIX mapping [VIO R7]; macOS poll reports POLLHUP on a half-close, so the device waits with kqueue there; restores [PM M20]: Linux 7.2 net/vmw_vsock/virtio_transport.c (`event_work`, `rx_work` handles RX in order), drivers/virtio/virtio_mmio.c `vm_interrupt` over queues in setup order (virtio_ring.c `list_add_tail`); a REQUEST matching a closing socket is dropped (virtio_transport_common.c `virtio_transport_recv_disconnecting`) |
 | D26 | `shards run` is served by a per-user daemon that hands each request to a warm VM process of the image's template: resumed, connected, waiting for its command. The client's stdio and connection pass by `SCM_RIGHTS`, and the daemon keeps its copies until the warm VM has taken them. The CLI is a thin binary. | Handoff 31 µs p50; warm VM 12.3 MiB, no CPU; a thin client costs 1.4 ms against 3.5 ms for a binary linking the VMM's frameworks [PM M23]; XNU flushes a socket in flight that no process holds [PM M24]; a pooled run takes 3.4 ms at p50 and 3.9 ms at p99 with the thin client [PM M26]; pre-created VM shells [Manco17 §5.2; Wanninger22 §5.2] |
 | D27 | Every `shards run` is a container, as `docker run`'s is: an ID and a name, running until its command ends, then exited until `shards rm` or `--rm` removes it. Command lines are read as the Docker CLI reads them, by one crate (`shards-cmdline`) in the client and the daemon: the client answers `--help` and usage mistakes itself, and the daemon keeps the records and answers `ps`, `wait`, `logs`, `stop`, `kill` and `rm`. | The Docker CLI's own answers: a differential test against docker/cli v29.8.1's command tree [scripts/docker-cli]; dockerd's names, IDs, start failures and stop semantics [moby daemon/names.go, daemon/errors.go, daemon/stop.go, daemon/kill.go @ docker-v29.8.1]; docs/research/container-lifecycle-cli.md; a record costs no run anything it waits for (a spare container made ahead) |
+| D115 | A run of an Agentfile's image gives its own command no reach into the image's agents and harnesses, whatever the CLI asks. The command runs in a PID namespace of its own, so it sees none of their processes; and the daemon, its init, and the build refuse — in Docker's words where Docker defines the flag, shards' otherwise — `--privileged`, the capabilities that would cross into a domain, `systempaths=unconfined`, a `net.*` sysctl where the domains' flows cross the command's network namespace, a uid or gid of the domains' or their servers', `--network none` where the Agentfile grants egress, and `--volumes-from` or a named-volume mount that would take a scoped volume. | Docker's default capabilities include CAP_KILL [moby oci/caps/defaults.go]; a shared PID namespace lets the workload signal, `/proc/<pid>/root`- and ptrace-reach the domains [Linux 6.18 kernel/signal.c check_kill_permission, fs/proc, kernel/ptrace.c ptrace_may_access]; the kernel ends a PID namespace's processes with its init [pid_namespace(7)]; every check twice (D109): [[feedback-runtime-and-buildtime-checks]] |
 
 ### Snapshots (D14)
 
@@ -3503,6 +3504,84 @@ from the registry layer up to the build's policies.
   - An SBOM signed as an attestation.
   - Conditional (`If-Match`) updates of the tag schema's list. The spec's MAY;
     distribution takes none; concurrent pushers can lose an entry (spec.md:733-735).
+
+### D115. A run's command reaches none of its image's agents and harnesses
+
+An Agentfile's image runs its agents and harnesses beside the run's own command (D59),
+each a domain confined in namespaces, IDs, a cgroup, Landlock and seccomp of its own. But
+the command itself — the workload the run's `docker run`-style request starts — ran in the
+microVM's own namespaces: its PID namespace was init's, which holds every process of the
+microVM. So the command saw each agent's processes in `/proc`, and Docker's default
+capabilities include `CAP_KILL`, so a root command could signal them; with `--privileged`
+or `--cap-add`, it could trace them, read their memory and environment, enter their network
+namespaces and use their grants, or reach the kernel they share. The agents were confined
+from each other and from the world; the command was not confined from them.
+
+The user's standing rule (2026-10-09): every security property needs a build-time check
+*and* a run-time check, because an image can be crafted and the CLI mutates a run
+([[feedback-runtime-and-buildtime-checks]]). D109 did this for volumes; D115 does it for
+the rest of a run's reach into its domains.
+
+- **A PID namespace of the command's own.** Every domain already has a PID namespace of
+  its own (D59), but each is a child of init's, which the command shared; a parent
+  namespace sees into its children, so the command saw every agent's processes. shards-init
+  now starts the workload, and every exec beside it, in a new PID namespace too, a sibling
+  of the domains': siblings do not see into each other, so the command sees none of the
+  microVM's other processes — no agent, no in-VM server, no init. Its first process, PID 1
+  of the namespace, is a **reaper** that waits on orphaned children there, as tini does
+  under `docker run --init`; the command is PID 2, and stays init's own child across the
+  namespace boundary, signalled and waited for as before. The reaper holds nothing a traced
+  process could take: no descriptor, no capability, `no_new_privs`, an empty read-only root
+  in a mount namespace of its own, and the workload's cgroup. init takes its own PID
+  namespace back after each `setns` into the command's, so its later children — the agents
+  among them — are born in init's own, not where the command would see them. A `cp`,
+  `diff` or `export` visit reads the container's files in a mount
+  namespace where `/proc`, `/sys` and `/dev` are unmounted, so init's `/proc` — which
+  reaches every domain's root — is not under the path it serves.
+- **Refused, at run and at build.** Beside an image's domains, the daemon (reading the
+  verified Agentfile, never labels, D109), shards-init (as it starts the command and each
+  exec), and the build (of the image's `USER`) each refuse: a privileged command;
+  `--security-opt systempaths=unconfined`; each capability that reaches a domain across the
+  command's PID namespace (`SYS_MODULE`, `SYS_RAWIO`, `SYS_PTRACE`, `SYS_PACCT`,
+  `SYS_ADMIN`, `SYS_NICE`, `SYS_TIME`, `AUDIT_CONTROL`, `SYSLOG`, `AUDIT_READ`, `PERFMON`,
+  `BPF`), and, where the domains' flows past the microVM cross the command's network
+  namespace (init's, which routes them to eth0), `NET_ADMIN` and `NET_RAW`; a `net.*`
+  sysctl there; a uid or gid — numeric at run, resolved in the image's own databases at
+  build — that the domains or their in-VM servers run as (`200000+n`, `4194304+200000+n`);
+  and `--network none` where the Agentfile grants its agents egress, DNS or a remote MCP
+  server, which such a run could not honour. Docker's default `CAP_NET_RAW` is dropped from
+  the command where the flows cross its namespace, unless the run adds it back itself (then
+  refused). The words are Docker's where Docker defines the flag, shards' otherwise, shared
+  by one module (`shards_abi::run::beside`) so the daemon and init say the same.
+- **Scoped volumes are no run's but the image's.** A named volume an Agentfile gives some
+  of its agents and harnesses alone (`VOLUME name path FOR …`) is labelled
+  `vnd.osi.agentfile.scoped` as its run first mounts it; another run mounts it by name only
+  where its own image's Agentfile puts it (a stand-in, D109), and `--volumes-from` a
+  container skips the volumes its image scoped. The `vnd.osi.agentfile.*` label namespace,
+  already refused in a build `LABEL` and a run `--label` (D109), is refused in `volume
+  create` and a `--mount volume-label` too.
+- **Firewall.** init's own namespace, which the command shares, drops in nf_tables (of both
+  IP families) whatever it sends down the agents' uplink (`agents0`): the command serves no
+  domain and holds none of their grants, so a packet of its there — a forged answer to an
+  agent's flow — crosses nothing. `kernel.dmesg_restrict` is set before any domain starts,
+  so a command with `CAP_SYSLOG` (which it cannot hold) or `/dev/kmsg` reads nothing the
+  kernel logged of a domain.
+
+Tested: `a_run_reaches_none_of_its_images_agents` (E2E, mutation-checked) builds an image
+with an agent that reaches past the microVM, runs the workload's `beside`, and asserts the
+command sees only its own process tree and reaches no other process's signals, environment
+or network namespace; then that each CLI escape above is refused at run and at exec. The
+isolation and OOM E2E tests that watched agents from the workload's own `/proc` now watch
+them from the host (`shards top`) and release the workload with a signal, since the
+workload no longer sees them. Unit tests pin the shared rules (`shards_abi::run::beside`),
+the daemon's refusals (`agentfile`), the scoped-volume rules (`volumes`) and the build's
+`USER` check (`build::domains`).
+
+- **Unmeasured (Docker Desktop wedged, 2026-10-09):** the start-path cost of the command's
+  PID namespace and reaper fork, which the warm-restore budget must absorb (queued: an A/B
+  of `docs/research/measurements/build-ab/ab.py` over one template, and the markers' p50,
+  p90, p99, max); and the live Docker texts for the CLI refusals here that Docker itself
+  would word, taken for now from moby and docker-cli at the pinned versions.
 
 ### D114. The build cache: cache mounts kept across builds, steps keyed by what they read, and its collection
 
