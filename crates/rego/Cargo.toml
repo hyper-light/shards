@@ -31,3 +31,7 @@ serde_json = "1"
 [[bench]]
 name = "policy"
 harness = false
+
+[[bench]]
+name = "nesting"
+harness = false

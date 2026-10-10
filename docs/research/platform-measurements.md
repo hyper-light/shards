@@ -4870,3 +4870,78 @@ revision before comparing a changed API/implementation.
   `deep.rs` and `depth.rs` on release too, on every target that runs tests. The larger
   LEAF leaves the deepest policies `depth.rs` holds (OPA's parser's deepest) running on
   the policy thread's 123 MiB on aarch64-apple-darwin, release.
+
+### M160. Deeply nested policies: what OPA and shards' Rego take
+
+- **Question.** How long, and how much memory, do OPA and shards' Rego take on policies
+  nested as deep as OPA's parser takes them (closures, else chains, rule chains)? A
+  remote build context's policy (D111) may be anyone's: what does a small file cost?
+- **Method.** `docs/research/measurements/rego-nesting/run.sh` runs each shape of
+  `crates/rego/benches/nesting.json` at its depths through shards' bench
+  (`crates/rego/benches/nesting.rs`: parse, compile with buildx's functions, evaluate
+  `data.docker.decision` on the policy thread's stack, a warm-up then N = 5 runs, one
+  case a process) and through OPA v1.14.1 set up as scripts/rego/bench-opa sets it up,
+  run as buildx runs a policy check (`nesting_test.go`), once a case: its deep cases
+  take it minutes to hours a run. Apple M5 Max (Mac17,6), macOS 26.4.1 (25E253),
+  revision 6e51402, 2026-10-10, on a host shared with other builds (load average 50 to
+  112 over the run): the times are high, and OPA's are single runs.
+- **Results.** shards: whole check p50 / p90 / p99 / max (n = 5), peak resident; OPA:
+  one run, peak resident.
+
+  | shape, depth | shards | shards peak | OPA | OPA peak |
+  |---|---|---|---|---|
+  | every, x unused, 1000 | 2.1 / 2.3 / 2.3 / 2.3 ms | 10 MiB | 4.07 s | 327 MiB |
+  | every, x unused, 5000 | 11 / 20 / 20 / 20 ms | 37 MiB | 662 s | 7790 MiB |
+  | every, x unused, 20000 | 146 / 276 / 276 / 276 ms | 122 MiB | | |
+  | every, x unused, 99990 | 1.23 / 1.36 / 1.36 / 1.36 s | 521 MiB | | |
+  | every, x used, 16 | | | 0.74 s | 38 MiB |
+  | every, x used, 20 | | | 13.4 s | 54 MiB |
+  | every, x used, 24 | 0.8 / 0.9 / 0.9 / 0.9 ms | 6 MiB | 426 s | 227 MiB |
+  | every, x used, 1000 | 119 / 236 / 236 / 236 ms | 35 MiB | | |
+  | every, x used, 4000 | 1.64 / 1.96 / 1.96 / 1.96 s | 125 MiB | | |
+  | every, x used, 99990 | 4.5 / 9.1 / 9.1 / 9.1 s (1) | 1383 MiB | | |
+  | every, printing, 16 | 1.0 / 2.2 / 2.2 / 2.2 ms | 6 MiB | 0.54 s | 29 MiB |
+  | every, printing, 4000 | 1.52 / 1.65 / 1.65 / 1.65 s | 208 MiB | | |
+  | template failing, 5 | 0.2 / 0.3 / 0.3 / 0.3 ms | 4 MiB | < 0.01 s | 18 MiB |
+  | template failing, 16 | | | 0.64 s | 37 MiB |
+  | template failing, 20 | 0.4 / 0.5 / 0.5 / 0.5 ms | 5 MiB | 6.92 s | 239 MiB |
+  | template failing, 30 | 0.9 / 0.9 / 0.9 / 0.9 ms | 5 MiB | | |
+  | else chain, 10000 | 135 / 201 / 201 / 201 ms | 90 MiB | 2.26 s | 75 MiB |
+  | else chain, 100000 | 1.84 / 2.15 / 2.15 / 2.15 s | 803 MiB | 371 s | 629 MiB |
+  | rule chain, 2000 | 105 / 144 / 144 / 144 ms | 43 MiB | 0.46 s | 50 MiB |
+  | rule chain, 10000 | 2.10 / 2.41 / 2.41 / 2.41 s | 195 MiB | 8.80 s | 136 MiB |
+  | rule wrap, 2000 | 1.39 / 1.56 / 1.56 / 1.56 s | 402 MiB | 0.80 s | 258 MiB |
+  | rule wrap, 10000 | 24.4 / 24.5 / 24.5 / 24.5 s (1) | 3820 MiB | 15.8 s | 5428 MiB |
+
+  (1) The evaluation ends with its stack error ("policy evaluation nests deeper than
+  its thread's stack"); OPA answers rule wrap 10000 [20001], and every, x used, true
+  where it finished (16, 20 and 24 deep), each level taking it twice as long or more.
+
+  Every case answers as OPA answers (results, or the first error of the same list) but
+  for the two marked. 99990 deep with x unused, OPA's memory passed 48 GiB in 64 s,
+  when it was stopped (one run outside the harness, watched for its memory).
+- **Open.** Shapes both still take time growing with the square or faster, from a
+  policy of a few kilobytes; shards' whole check, one run each (the same harness), and
+  OPA's (`run`, one run each):
+
+  | shape, size | shards | shards peak | OPA | where |
+  |---|---|---|---|---|
+  | comprehensions nested, 10 | 0.51 s | 5 MiB | 0.75 s | type check, x3.7 a level |
+  | comprehensions nested, 12 | 7.6 s | 5 MiB | 6.8 s | |
+  | every and comprehension alternating, 12 | | | 7 min 4 s | local variables: each every statement's walk again rewrites the comprehensions within it, renumbering their every statements |
+  | every and comprehension alternating, 16 | 1.1 s | 39 MiB | | |
+  | every and comprehension alternating, 20 | 18.0 s | 598 MiB | | |
+  | every declaring after the one within, 1000 | 2.5 s | 43 MiB | | local variables: the walk again of each every statement, a later declaration in its scope keeping it from being skipped (quadratic) |
+  | every declaring after the one within, 2000 | 7.2 s | 84 MiB | | |
+  | print calls, 500 in a body | 9.1 s | 19 MiB | | print rewrite: the outputs of all the expressions before each call, each equality copying the safe set (cubic) |
+  | print calls, 1000 in a body | 69 s | 32 MiB | 1 min 53 s | |
+  | closures, 500 in a body | 28.6 s | 19 MiB | | safety check: the outputs of the expressions placed, again for each candidate (cubic) |
+  | closures, 1000 in a body | 101 s | 33 MiB | 4 min 42 s | |
+
+  OPA's time on the shapes left blank was not measured. These are OPA's algorithms;
+  what shards does better on the shapes above it can do on these.
+- **Consequence.** shards answers the shapes of the results in time and memory linear
+  or near it in the depth, but for rule wrap (its compile quadratic, open) and the
+  stack its evaluation has; OPA's times and memory grow with the square of the depth or,
+  for nested closures, double with each level. The open shapes stay in `nesting.json`
+  for the harness (`--shape NAME --depth N`).
