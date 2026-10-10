@@ -89,6 +89,13 @@ impl<T: Clone> Shared<T> {
     }
 }
 
+impl<T> Shared<T> {
+    /// The value, where nothing else holds it.
+    pub fn get_mut(this: &mut Shared<T>) -> Option<&mut T> {
+        Rc::get_mut(&mut this.0)
+    }
+}
+
 impl<A> FromIterator<A> for Shared<Vec<A>> {
     fn from_iter<I: IntoIterator<Item = A>>(iter: I) -> Self {
         Shared(Rc::new(iter.into_iter().collect()))
@@ -125,6 +132,74 @@ pub enum TermValue {
         multi_line: bool,
         parts: Vec<TemplatePart>,
     },
+}
+
+/// A value made a term (a builtin's result, a document read) nests as deep as the value:
+/// the last owner of a collection drops its members one after another. What only the
+/// parser builds (comprehensions, templates) nests no deeper than its limit and drops
+/// as Rust drops it.
+impl Drop for TermValue {
+    fn drop(&mut self) {
+        let mut rest = Vec::new();
+        take_members(self, &mut rest);
+        while let Some(mut t) = rest.pop() {
+            take_members(&mut t.value, &mut rest);
+        }
+    }
+}
+
+impl TermValue {
+    /// An array's members, taken out of it (copied where shared); none for another value.
+    pub fn take_array(&mut self) -> Option<Vec<Term>> {
+        match self {
+            TermValue::Array(a) => Some(std::mem::take(a).into_inner()),
+            _ => None,
+        }
+    }
+
+    /// A set's members, taken out of it (copied where shared); none for another value.
+    pub fn take_set(&mut self) -> Option<Vec<Term>> {
+        match self {
+            TermValue::Set(s) => Some(std::mem::take(s).into_inner()),
+            _ => None,
+        }
+    }
+
+    /// An object's pairs, taken out of it (copied where shared); none for another value.
+    pub fn take_object(&mut self) -> Option<Vec<(Term, Term)>> {
+        match self {
+            TermValue::Object(o) => Some(std::mem::take(o).into_inner()),
+            _ => None,
+        }
+    }
+
+    /// A call's terms, taken out of it (copied where shared); none for another value.
+    pub fn take_call(&mut self) -> Option<Vec<Term>> {
+        match self {
+            TermValue::Call(c) => Some(std::mem::take(c).into_inner()),
+            _ => None,
+        }
+    }
+}
+
+/// Moves a collection's members to `out` when this is its last owner.
+fn take_members(v: &mut TermValue, out: &mut Vec<Term>) {
+    match v {
+        TermValue::Ref(a) | TermValue::Array(a) | TermValue::Set(a) | TermValue::Call(a) => {
+            if let Some(a) = Shared::get_mut(a) {
+                out.append(a);
+            }
+        }
+        TermValue::Object(o) => {
+            if let Some(o) = Shared::get_mut(o) {
+                for (k, v) in o.drain(..) {
+                    out.push(k);
+                    out.push(v);
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 impl Term {

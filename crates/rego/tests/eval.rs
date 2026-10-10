@@ -167,7 +167,7 @@ fn policies_evaluate_as_opa_evaluates_them() {
             None => {
                 // Read with the crate's reader, which keeps numbers' text, as OPA does.
                 let raw = value::from_json(include_str!("../testdata/oracle.json")).unwrap();
-                let Value::Array(all) = raw else { panic!() };
+                let Value::Array(all) = &raw else { panic!() };
                 let entry = all
                     .iter()
                     .find(|e| e.get(&Value::string("name")).and_then(Value::as_str) == Some(name))

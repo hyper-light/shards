@@ -2,7 +2,7 @@
 //! json.patch edits through (internal/edittree): paths parsed and folded into a filter
 //! object as there, and each patch operation's checks, quirks and error texts kept.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use super::rego_string;
 use crate::funcs::BuiltinError;
@@ -208,6 +208,22 @@ struct EditTree {
     acomposites: BTreeMap<i64, EditTree>,
     eliminated: Vec<bool>,
     insertions: Vec<bool>,
+}
+
+/// A tree unfolded as deep as its value drops one node after another.
+impl Drop for EditTree {
+    fn drop(&mut self) {
+        let mut rest = Vec::new();
+        take_children(self, &mut rest);
+        while let Some(mut t) = rest.pop() {
+            take_children(&mut t, &mut rest);
+        }
+    }
+}
+
+fn take_children(t: &mut EditTree, out: &mut Vec<EditTree>) {
+    out.extend(std::mem::take(&mut t.composites).into_values().flatten());
+    out.extend(std::mem::take(&mut t.acomposites).into_values());
 }
 
 /// Unfold's destination: a node in the tree, or a scalar standing alone.
@@ -491,109 +507,144 @@ impl EditTree {
         }
     }
 
+    /// Unfold: the node at `path`, each node on the way unfolded in turn (OPA recurses a
+    /// step a node; a path as long as the value is deep walks here without a frame a
+    /// step).
     fn unfold(&mut self, path: &[Value]) -> Result<Dest<'_>, String> {
-        let Some((key, rest)) = path.split_first() else {
-            return Ok(Dest::Node(self));
-        };
-        let Some(v) = self.value.clone() else {
-            return Err("nil value encountered where composite value was expected".to_string());
-        };
-        match &v {
-            Value::Object(_) => {
-                if self.keys.contains(key) {
-                    if let Some(term) = self.scalars.get(key) {
+        let mut node = self;
+        let mut path = path;
+        loop {
+            let Some((key, rest)) = path.split_first() else {
+                return Ok(Dest::Node(node));
+            };
+            path = rest;
+            let Some(v) = node.value.clone() else {
+                return Err("nil value encountered where composite value was expected".to_string());
+            };
+            let next = match &v {
+                Value::Object(_) => {
+                    if node.keys.contains(key) {
+                        if let Some(term) = node.scalars.get(key) {
+                            let Some(term) = term.clone() else {
+                                return Err(format!(
+                                    "cannot unfold the already deleted scalar node for key {}",
+                                    rego_string(key)
+                                ));
+                            };
+                            return alone(EditTree::new(term), rest);
+                        }
+                        match node.composites.get_mut(key) {
+                            Some(Some(child)) => Dest::Node(child),
+                            Some(None) => {
+                                return Err(format!(
+                                    "cannot unfold the already deleted composite node for key {}",
+                                    rego_string(key)
+                                ));
+                            }
+                            None => {
+                                return Err(
+                                    "hash value not found in scalar or composite child maps".to_string()
+                                );
+                            }
+                        }
+                    } else if let Some(found) = find1(&v, key) {
+                        node.insert(key.clone(), found)?
+                    } else {
+                        return Err(format!(
+                            "path {} does not exist in object term {}",
+                            rego_string(key),
+                            rego_string(&v)
+                        ));
+                    }
+                }
+                Value::Set(_) => {
+                    if is_composite(key) {
+                        node.value = node.render();
+                        node.clear();
+                    } else if node.keys.contains(key)
+                        && let Some(term) = node.scalars.get(key)
+                    {
                         let Some(term) = term.clone() else {
-                            return Err(format!(
-                                "cannot unfold the already deleted scalar node for key {}",
-                                rego_string(key)
-                            ));
+                            return Err(
+                                "nil value encountered where composite value was expected".to_string()
+                            );
                         };
                         return alone(EditTree::new(term), rest);
                     }
-                    return match self.composites.get_mut(key) {
-                        Some(Some(child)) => child.unfold(rest),
-                        Some(None) => Err(format!(
-                            "cannot unfold the already deleted composite node for key {}",
-                            rego_string(key)
-                        )),
-                        None => Err("hash value not found in scalar or composite child maps".to_string()),
+                    let current = node.value.clone().unwrap_or(Value::Null);
+                    let Some(found) = find1(&current, key) else {
+                        let ref_text = match key {
+                            Value::String(s) => s.to_string(),
+                            other => rego_string(other),
+                        };
+                        return Err(format!(
+                            "path {} does not exist in set term {}",
+                            ref_text,
+                            rego_string(&current)
+                        ));
                     };
+                    node.insert(key.clone(), found)?
                 }
-                if let Some(found) = find1(&v, key) {
-                    return match self.insert(key.clone(), found)? {
-                        Dest::Node(child) => child.unfold(rest),
-                        Dest::Alone(child) => alone(child, rest),
-                    };
+                Value::Array(_) => {
+                    let idx = to_index(node.len(), key)?;
+                    if let Some(term) = node.ascalars.get(&idx) {
+                        return alone(EditTree::new(term.clone()), rest);
+                    }
+                    if node.acomposites.contains_key(&idx) {
+                        match node.acomposites.get_mut(&idx) {
+                            Some(child) => Dest::Node(child),
+                            None => return Err("invalid index".to_string()),
+                        }
+                    } else {
+                        let idxt = Value::Number(Number::from_i64(idx));
+                        let Some(found) = find1(&v, &idxt) else {
+                            return Err(format!(
+                                "path {idx} does not exist in array term {}",
+                                rego_string(&v)
+                            ));
+                        };
+                        node.delete(&idxt)?;
+                        node.insert(idxt, found)?
+                    }
                 }
-                Err(format!(
-                    "path {} does not exist in object term {}",
-                    rego_string(key),
-                    rego_string(&v)
-                ))
+                other => {
+                    return Err(format!(
+                        "expected composite type for path {}, found value: {} (type: {})",
+                        rego_string(key),
+                        rego_string(other),
+                        go_type(other)
+                    ));
+                }
+            };
+            match next {
+                Dest::Node(child) => node = child,
+                Dest::Alone(child) => return alone(child, rest),
             }
-            Value::Set(_) => {
-                if is_composite(key) {
-                    self.value = self.render();
-                    self.clear();
-                } else if self.keys.contains(key)
-                    && let Some(term) = self.scalars.get(key)
-                {
-                    let Some(term) = term.clone() else {
-                        return Err("nil value encountered where composite value was expected".to_string());
-                    };
-                    return alone(EditTree::new(term), rest);
-                }
-                let current = self.value.clone().unwrap_or(Value::Null);
-                if let Some(found) = find1(&current, key) {
-                    return match self.insert(key.clone(), found)? {
-                        Dest::Node(child) => child.unfold(rest),
-                        Dest::Alone(child) => alone(child, rest),
-                    };
-                }
-                let ref_text = match key {
-                    Value::String(s) => s.to_string(),
-                    other => rego_string(other),
-                };
-                Err(format!(
-                    "path {} does not exist in set term {}",
-                    ref_text,
-                    rego_string(&current)
-                ))
-            }
-            Value::Array(_) => {
-                let idx = to_index(self.len(), key)?;
-                if let Some(term) = self.ascalars.get(&idx) {
-                    return alone(EditTree::new(term.clone()), rest);
-                }
-                if self.acomposites.contains_key(&idx) {
-                    return match self.acomposites.get_mut(&idx) {
-                        Some(child) => child.unfold(rest),
-                        None => Err("invalid index".to_string()),
-                    };
-                }
-                let idxt = Value::Number(Number::from_i64(idx));
-                if let Some(found) = find1(&v, &idxt) {
-                    self.delete(&idxt)?;
-                    return match self.insert(idxt, found)? {
-                        Dest::Node(child) => child.unfold(rest),
-                        Dest::Alone(child) => alone(child, rest),
-                    };
-                }
-                Err(format!(
-                    "path {idx} does not exist in array term {}",
-                    rego_string(&v)
-                ))
-            }
-            other => Err(format!(
-                "expected composite type for path {}, found value: {} (type: {})",
-                rego_string(key),
-                rego_string(other),
-                go_type(other)
-            )),
         }
     }
 
+    /// Render: the value the tree stands for now, each node rendered after the nodes
+    /// below it (OPA recurses a node a frame; a tree unfolded as deep as its value is
+    /// renders here without).
     fn render(&self) -> Option<Value> {
+        let addr = |t: &EditTree| std::ptr::from_ref(t) as usize;
+        let mut order: Vec<&EditTree> = Vec::new();
+        let mut stack = vec![self];
+        while let Some(t) = stack.pop() {
+            order.push(t);
+            stack.extend(t.composites.values().flatten());
+            stack.extend(t.acomposites.values());
+        }
+        let mut done: HashMap<usize, Option<Value>> = HashMap::with_capacity(order.len());
+        for t in order.into_iter().rev() {
+            let r = t.render_one(&|c| done.get(&addr(c)).cloned().flatten());
+            done.insert(addr(t), r);
+        }
+        done.remove(&addr(self)).flatten()
+    }
+
+    /// One node rendered, its children's renders from `child`.
+    fn render_one(&self, child: &dyn Fn(&EditTree) -> Option<Value>) -> Option<Value> {
         let v = self.value.as_ref()?;
         Some(match v {
             Value::Object(m) => {
@@ -610,7 +661,7 @@ impl EditTree {
                 }
                 for (k, c) in &self.composites {
                     skip.insert(k.clone());
-                    if let Some(r) = c.as_ref().and_then(EditTree::render) {
+                    if let Some(r) = c.as_ref().and_then(child) {
                         out.insert(k.clone(), r);
                     }
                 }
@@ -635,7 +686,7 @@ impl EditTree {
                 }
                 for (k, c) in &self.composites {
                     skip.insert(k.clone());
-                    if let Some(r) = c.as_ref().and_then(EditTree::render) {
+                    if let Some(r) = c.as_ref().and_then(child) {
                         out.insert(r);
                     }
                 }
@@ -668,7 +719,7 @@ impl EditTree {
                     } else if let Some(t) = self.ascalars.get(&ii) {
                         out.push(t.clone());
                     } else {
-                        out.push(self.acomposites.get(&ii)?.render()?);
+                        out.push(child(self.acomposites.get(&ii)?)?);
                     }
                 }
                 Value::array(out)
@@ -766,7 +817,7 @@ pub fn apply_patches(source: &Value, operations: &[Value]) -> Result<Option<Valu
         let Some(op_term) = attr(object, "op") else {
             return Err("missing required attribute 'op'".to_string().into());
         };
-        let Value::String(op_str) = op_term else {
+        let Value::String(op_str) = &op_term else {
             return Err(format!(
                 "attribute 'op' must be a string but found: {}",
                 op_term.type_name()
@@ -776,7 +827,7 @@ pub fn apply_patches(source: &Value, operations: &[Value]) -> Result<Option<Valu
         let path = parse_path(&path_v)?;
         let value_attr =
             || attr(object, "value").ok_or_else(|| "missing required attribute 'value'".to_string());
-        match &*op_str {
+        match &**op_str {
             "add" => {
                 let value = value_attr()?;
                 et.insert_at_path(&path, Some(value))?;
@@ -793,7 +844,7 @@ pub fn apply_patches(source: &Value, operations: &[Value]) -> Result<Option<Valu
                 };
                 let from = parse_path(&from_v)?;
                 let chunk = et.render_at_path(&from)?;
-                if &*op_str == "move" {
+                if &**op_str == "move" {
                     et.delete_at_path(&from)?;
                 }
                 et.insert_at_path(&path, chunk)?;

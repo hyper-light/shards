@@ -1381,8 +1381,9 @@ impl<'a> Parser<'a> {
             let rhs = self.parse_term_infix_call()?;
             return Some(Expr::new(ExprTerms::Call(vec![op, lhs, rhs]), None));
         }
-        if let TermValue::Call(c) = lhs.value {
-            return Some(Expr::new(ExprTerms::Call(c.into_inner()), None));
+        let mut lhs = lhs;
+        if let Some(c) = lhs.value.take_call() {
+            return Some(Expr::new(ExprTerms::Call(c), None));
         }
         Some(Expr::term(lhs))
     }
@@ -1709,7 +1710,10 @@ impl<'a> Parser<'a> {
             if !inner.contains('\\') {
                 return Some(Term::string(inner, self.loc()));
             }
-            let Ok(crate::value::Value::String(s)) = crate::value::from_json(&lit) else {
+            let Some(s) = crate::value::from_json(&lit)
+                .ok()
+                .and_then(|v| v.as_str().map(Rc::<str>::from))
+            else {
                 self.errorf(self.loc(), format!("illegal string literal: {lit}"));
                 return None;
             };
@@ -1737,8 +1741,11 @@ impl<'a> Parser<'a> {
                     return Ok(s);
                 }
                 match crate::value::from_json(&format!("\"{s}\"")) {
-                    Ok(crate::value::Value::String(v)) => Ok(v.to_string()),
-                    _ => Err(format!("illegal template-string part: {lit}")),
+                    Ok(v) => v
+                        .as_str()
+                        .map(str::to_string)
+                        .ok_or_else(|| format!("illegal template-string part: {lit}")),
+                    Err(_) => Err(format!("illegal template-string part: {lit}")),
                 }
             }
             Token::RawTemplateStringPart | Token::RawTemplateStringEnd => Ok(inner()),
