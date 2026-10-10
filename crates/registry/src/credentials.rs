@@ -13,7 +13,6 @@
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -299,7 +298,92 @@ fn on_path(program: &str, env: Env<'_>) -> bool {
 /// stderr, as Docker's do. A helper that has nothing for `key` gives `None`.
 fn ask_helper(helper: &str, key: &str, env: Env<'_>) -> Result<Option<HelperAnswer>, Error> {
     let program = format!("docker-credential-{helper}");
-    let mut command = Command::new(&program);
+    let (failed, out) = run_helper(&program, key, env)?;
+    let text = String::from_utf8_lossy(&out);
+    if let Some(status) = failed {
+        if text.trim() == NOT_FOUND {
+            return Ok(None);
+        }
+        return Err(Error::new(format!(
+            "error getting credentials - err: {status}, out: `{}`",
+            text.trim()
+        )));
+    }
+    let answer = serde_json::Deserializer::from_slice(&out)
+        .into_iter::<HelperAnswer>()
+        .next()
+        .ok_or_else(|| Error::new(format!("{program} answered nothing")))?
+        .map_err(|e| Error::new(format!("{program}: {e}")))?;
+    Ok(Some(answer))
+}
+
+/// Runs `program get`, found on `env`'s PATH (else ours) and given it, with `key` on its
+/// input and our stderr for its own: how it failed, if it did, and what it wrote,
+/// `MAX_HELPER_OUTPUT` at most. A helper may exit without reading its input: its status
+/// and output then say what it had to say, as Go's os/exec, which Docker's helper client
+/// uses, ignores the broken pipe (exec.go, skipStdinCopyError). However the talk goes, the
+/// helper is waited for, so it leaves no zombie; one still running after a failed talk is
+/// ended first.
+///
+/// Made by shards_ipc, as the daemon's every child is: by its spawner, so that the helper
+/// holds nothing the daemon lets go of while it starts, a run's published port among them
+/// (PM M158). How it failed is said as Go's os.ProcessState says it, as Docker does: an
+/// exit status (128 and its number, for a signal that ended it).
+#[cfg(unix)]
+fn run_helper(program: &str, key: &str, env: Env<'_>) -> Result<(Option<String>, Vec<u8>), Error> {
+    use std::os::fd::AsFd as _;
+    let fail = |e: std::io::Error| Error::new(format!("running {program}: {e}"));
+    let path = env("PATH");
+    let search = path
+        .clone()
+        .or_else(|| std::env::var("PATH").ok())
+        .unwrap_or_default();
+    let found = std::env::split_paths(&search)
+        .map(|dir| dir.join(program))
+        .find(|p| p.is_file())
+        .ok_or_else(|| fail(std::io::ErrorKind::NotFound.into()))?;
+    let (stdin, mut to_stdin) = std::io::pipe().map_err(fail)?;
+    let (mut from_stdout, stdout) = std::io::pipe().map_err(fail)?;
+    let set: Vec<(&str, &std::ffi::OsStr)> = path.iter().map(|p| ("PATH", p.as_ref())).collect();
+    let child = shards_ipc::spawn_with(
+        &found,
+        &["get".as_ref()],
+        &[
+            (stdin.as_fd(), 0),
+            (stdout.as_fd(), 1),
+            (std::io::stderr().as_fd(), 2),
+        ],
+        false,
+        &set,
+    )
+    .map_err(fail)?;
+    drop((stdin, stdout));
+    let talked = (|| {
+        match to_stdin.write_all(key.as_bytes()) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {}
+            Err(e) => return Err(Error::new(format!("{program}: {e}"))),
+        }
+        drop(to_stdin);
+        let mut out = Vec::new();
+        (&mut from_stdout)
+            .take(MAX_HELPER_OUTPUT)
+            .read_to_end(&mut out)
+            .map_err(|e| Error::new(format!("{program}: {e}")))?;
+        Ok(out)
+    })();
+    if talked.is_err() {
+        let _ = child.kill(libc::SIGKILL);
+    }
+    let status = child.wait().map_err(|e| Error::new(format!("{program}: {e}")))?;
+    Ok(((status != 0).then(|| format!("exit status {status}")), talked?))
+}
+
+/// [`run_helper`] where shards has no daemon: by std's Command.
+#[cfg(not(unix))]
+fn run_helper(program: &str, key: &str, env: Env<'_>) -> Result<(Option<String>, Vec<u8>), Error> {
+    use std::process::{Command, Stdio};
+    let mut command = Command::new(program);
     command
         .arg("get")
         .stdin(Stdio::piped())
@@ -312,9 +396,6 @@ fn ask_helper(helper: &str, key: &str, env: Env<'_>) -> Result<Option<HelperAnsw
         .spawn()
         .map_err(|e| Error::new(format!("running {program}: {e}")))?;
     let talked = (|| {
-        // A helper may exit without reading its input: its status and output then say
-        // what it had to say, as Go's os/exec, which Docker's helper client uses, ignores
-        // the broken pipe (exec.go, skipStdinCopyError).
         if let Some(mut stdin) = child.stdin.take() {
             match stdin.write_all(key.as_bytes()) {
                 Ok(()) => {}
@@ -331,29 +412,11 @@ fn ask_helper(helper: &str, key: &str, env: Env<'_>) -> Result<Option<HelperAnsw
         }
         Ok(out)
     })();
-    // However the talk went, the helper is waited for, so it leaves no zombie; one still
-    // running after a failed talk is ended first.
     if talked.is_err() {
         let _ = child.kill();
     }
     let status = child.wait().map_err(|e| Error::new(format!("{program}: {e}")))?;
-    let out = talked?;
-    let text = String::from_utf8_lossy(&out);
-    if !status.success() {
-        if text.trim() == NOT_FOUND {
-            return Ok(None);
-        }
-        return Err(Error::new(format!(
-            "error getting credentials - err: {status}, out: `{}`",
-            text.trim()
-        )));
-    }
-    let answer = serde_json::Deserializer::from_slice(&out)
-        .into_iter::<HelperAnswer>()
-        .next()
-        .ok_or_else(|| Error::new(format!("{program} answered nothing")))?
-        .map_err(|e| Error::new(format!("{program}: {e}")))?;
-    Ok(Some(answer))
+    Ok(((!status.success()).then(|| status.to_string()), talked?))
 }
 
 #[cfg(test)]

@@ -35,6 +35,8 @@ rustls-platform-verifier = "0.7.1"
 rustls-platform-verifier = "0.7.1"
 
 [target.'cfg(unix)'.dependencies]
+# The daemon's children, credential helpers among them, made by its spawner (PM M158).
+shards-ipc = { path = "../ipc" }
 libc = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
