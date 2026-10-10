@@ -110,12 +110,19 @@ struct Env {
     /// Each worker's platforms, the first worker's first the build's.
     workers: Vec<Vec<Platform>>,
     product: String,
+    /// The platform the frontend runs on, containerd's DefaultSpec, which dockerui takes
+    /// where it is given none (the build's without workers, the result's without a target
+    /// platform): this process's ([`default_spec`]).
+    own: Platform,
 }
 
 impl Env {
     /// The environment's, or none where BuildKit gave no session: no gateway is there.
     fn read(vars: impl Iterator<Item = (OsString, OsString)>) -> Option<Env> {
-        let mut env = Env::default();
+        let mut env = Env {
+            own: default_spec(),
+            ..Env::default()
+        };
         let mut session = None;
         for (k, v) in vars {
             let (k, v) = (k.to_string_lossy().into_owned(), v.to_string_lossy().into_owned());
@@ -325,11 +332,11 @@ fn config(opts: &mut BTreeMap<String, String>, env: &Env, caps: &Caps) -> Result
         .first()
         .and_then(|w| w.first())
         .cloned()
-        .unwrap_or_else(|| platform::normalize(&default_spec()));
+        .unwrap_or_else(|| platform::normalize(&env.own));
     let mut target_platforms = Vec::new();
     if let Some(v) = opts.get("platform").filter(|v| !v.is_empty()) {
         for p in v.split(',') {
-            let parsed = platform::parse(p.as_bytes(), &default_spec()).map_err(|e| {
+            let parsed = platform::parse(p.as_bytes(), &env.own).map_err(|e| {
                 Failure::new(format!(
                     "failed to parse target platform {p}: {}",
                     String::from_utf8_lossy(&e)
@@ -1726,7 +1733,7 @@ fn build_platforms<R: Read, W: Write>(
             })?),
             None => None,
         };
-        let p = platform::normalize(&target.clone().unwrap_or_else(default_spec));
+        let p = platform::normalize(&target.clone().unwrap_or_else(|| g.env.own.clone()));
         let id = String::from_utf8_lossy(&platform::format_all(&p)).into_owned();
         let key = |k: &str| {
             if config.multi_platform {
@@ -2374,7 +2381,11 @@ mod tests {
                 ),
                 (OsString::from("BUILDKIT_EXPORTEDPRODUCT"), OsString::new()),
             ]);
-        Env::read(vars).unwrap()
+        let mut env = Env::read(vars).unwrap();
+        // docker/dockerfile:1 ran on arm64 for the capture: its result's platform, asked
+        // for none, is its own (dockerui's platforms.DefaultSpec()), on every host.
+        env.own = Platform::new("linux", "arm64");
+        env
     }
 
     /// Each stream's gRPC messages, by stream, from one side of an HTTP/2 connection.
