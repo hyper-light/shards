@@ -1179,8 +1179,13 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             .map(|(_, size, _)| (*size).max(0))
             .sum();
         let templates = self.home.join("templates");
+        // Each template a directory: the daemon's record of each is a file beside it.
         let t_total = std::fs::read_dir(&templates)
-            .map(|d| d.flatten().count())
+            .map(|d| {
+                d.flatten()
+                    .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+                    .count()
+            })
             .unwrap_or(0);
         let t_size = i64::try_from(on_disk(&templates)).unwrap_or(i64::MAX);
         let (format, verbose) = (parsed.string("format"), parsed.bool("verbose"));
