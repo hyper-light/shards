@@ -5,7 +5,7 @@
 //! certificates; a host's its name (an IP address's as one), for serving TLS, valid from
 //! an hour ago for a day and made again an hour before it ends, at most 1024 kept, the
 //! least recently used going first. The keys are P-256 where BuildKit's are RSA-2048 (PM
-//! M129), and the CA is the build's, its key never leaving this process, where BuildKit's
+//! M150), and the CA is the build's, its key never leaving this process, where BuildKit's
 //! daemon makes one as it starts and keeps it for every build.
 
 use std::collections::HashMap;
@@ -303,7 +303,7 @@ mod tests {
         u128::try_from(t.tv_sec).unwrap_or(0) * 1_000_000 + u128::try_from(t.tv_nsec).unwrap_or(0) / 1000
     }
 
-    /// PM M129: what the proxy's certificates cost to make, P-256 (shards) against
+    /// PM M150: what the proxy's certificates cost to make, P-256 (shards) against
     /// RSA-2048 (BuildKit), each kind made in turn so a busy host weighs on both alike: a
     /// CA (a build's, as its first step under the proxy starts), a host's certificate and
     /// its TLS (a tunnel's first to that host), and one kept (every tunnel after). The

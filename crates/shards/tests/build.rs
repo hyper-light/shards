@@ -853,7 +853,7 @@ fn steps_under_the_proxy_cap_reach_the_network_through_it_alone() {
     );
 }
 
-/// PM M129's last part: a `RUN`'s requests to a server on this host, each on a connection
+/// PM M150's last part: a `RUN`'s requests to a server on this host, each on a connection
 /// of its own, through the build's proxy (the exec.proxy cap; each request checked by the
 /// build's policy, as a build checks it) against the same requests straight through the
 /// builder's network (no cap), as the step's client times them, in microseconds.

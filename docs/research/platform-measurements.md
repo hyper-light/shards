@@ -4946,7 +4946,7 @@ revision before comparing a changed API/implementation.
   for nested closures, double with each level. The open shapes stay in `nesting.json`
   for the harness (`--shape NAME --depth N`).
 
-### M129. What a build's proxy costs (D110): its certificates, and a request through it
+### M150. What a build's proxy costs (D110): its certificates, and a request through it
 
 - **Question.** Under buildx's `exec.proxy` cap every request a step makes goes through
   the build's proxy, each asked of the build's policies, HTTPS through a tunnel the proxy

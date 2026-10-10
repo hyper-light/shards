@@ -1,5 +1,5 @@
 #!/bin/sh
-# M129's BuildKit part: what BuildKit v0.33.0's own proxy certificates cost (newCA and
+# M150's BuildKit part: what BuildKit v0.33.0's own proxy certificates cost (newCA and
 # certForHost, RSA-2048), measured as certificate_costs measures shards' (run.sh): built
 # with the Go release BuildKit's go.mod names, for Linux on this host's architecture, and
 # run in a Linux container (CONTAINER, shards-dind by default) in a directory of its own,

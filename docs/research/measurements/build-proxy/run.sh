@@ -1,5 +1,5 @@
 #!/bin/sh
-# M129: what a build's proxy costs (D110, buildx's exec.proxy cap). First its certificates:
+# M150: what a build's proxy costs (D110, buildx's exec.proxy cap). First its certificates:
 # a build's CA, a host's certificate with its TLS, and one kept, P-256 (shards) against
 # RSA-2048 (BuildKit v0.33.0's newCA and certForHost), wall and thread CPU time, n each,
 # interleaved. Then a request through the proxy against the same request straight to its
