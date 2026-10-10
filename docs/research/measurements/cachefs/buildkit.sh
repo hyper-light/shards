@@ -12,7 +12,9 @@
 #
 #   docs/research/measurements/cachefs/buildkit.sh > buildkit.out
 #
-# No build but P6b's passes --no-cache: BuildKit lets go of the caches of a step not
+# An exec's key leaves out its cache mounts' id and sharing, so each mode's steps name
+# the mode, or a mode's builds would be answered from another's. No build but P6b's
+# passes --no-cache: BuildKit lets go of the caches of a step not
 # answered from the cache before the build runs (llbsolver detectPrunedCacheID), so a
 # --no-cache probe of what a cache keeps would find it empty every time.
 set -eu
@@ -75,14 +77,16 @@ printf 'FROM %s\nRUN --mount=type=cache,target=/c,id=%s-nc sh -c "ls -A /c; echo
 
 for sharing in shared private locked; do
 	echo "== P7 concurrent builds, sharing=$sharing"
-	printf 'FROM %s\nRUN --mount=type=cache,target=/c,id=%s-%s,sharing=%s sh -c "date +%%s.A.start; echo a > /c/a; sleep 8; ls /c; date +%%s.A.end"\n' "$alpine" "$t" "$sharing" "$sharing" | build "c-$sharing-a" > "/tmp/$t-$sharing-a.log" &
+	printf 'FROM %s\nRUN --mount=type=cache,target=/c,id=%s-%s,sharing=%s sh -c "date +%%s.A.start; echo a > /c/a; sleep 8; ls /c; date +%%s.A.end; : %s %s"\n' "$alpine" "$t" "$sharing" "$sharing" "$t" "$sharing" | build "c-$sharing-a" > "/tmp/$t-$sharing-a.log" &
 	sleep 3
-	printf 'FROM %s\nRUN --mount=type=cache,target=/c,id=%s-%s,sharing=%s sh -c "date +%%s.B.start; echo b > /c/b; sleep 1; ls /c; date +%%s.B.end"\n' "$alpine" "$t" "$sharing" "$sharing" | build "c-$sharing-b" > "/tmp/$t-$sharing-b.log" &
+	printf 'FROM %s\nRUN --mount=type=cache,target=/c,id=%s-%s,sharing=%s sh -c "date +%%s.B.start; echo b > /c/b; sleep 1; ls /c; date +%%s.B.end; : %s %s"\n' "$alpine" "$t" "$sharing" "$sharing" "$t" "$sharing" | build "c-$sharing-b" > "/tmp/$t-$sharing-b.log" &
 	wait
 	for side in a b; do
 		grep -E "^#[0-9]+ [0-9.]+ [0-9A-Za-z.]+$|exit" "/tmp/$t-$sharing-$side.log" | sed "s/^/$side: /" || true
 		rm -f "/tmp/$t-$sharing-$side.log"
 	done
+	# Which record a build takes once both are done.
+	printf 'FROM %s\nRUN --mount=type=cache,target=/c,id=%s-%s,sharing=%s sh -c "ls /c; : %s %s after"\n' "$alpine" "$t" "$sharing" "$sharing" "$t" "$sharing" | build "c-$sharing-c" | grep -E "^#[0-9]+ [0-9.]+ [0-9A-Za-z.]+$" | sed 's/^/then: /' || true
 done
 
 echo "== P8 the records: du, system df"

@@ -4827,6 +4827,114 @@ fn run_caches_are_kept_across_builds() {
     assert!(gone.stderr.contains("/c/one missing"), "{}", gone.stderr);
 }
 
+/// Cache mounts among concurrent builds of one home (D114), as BuildKit takes them (M141):
+/// `shared` takes the record another build holds, `private` makes another while it is
+/// held, `locked` waits until it is free; what each build writes is kept, none of it lost.
+/// Each mode's steps name it: an exec's key leaves out its caches' id and sharing.
+#[test]
+fn run_caches_are_taken_as_buildkit_takes_them_among_concurrent_builds() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("cache-sharing-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+        ("SHARDS_BUILD_MEMORY", "1024".as_ref()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    for sharing in ["shared", "private", "locked"] {
+        let build = |name: &str, ops: &str| {
+            let ctx = context(
+                &format!("cache-sharing-{sharing}-{name}"),
+                &format!(
+                    "FROM {image}\nUSER root\nRUN --mount=type=cache,target=/c,id=s-{sharing},sharing={sharing} [\"/bin/testguest\", {ops}]\n"
+                ),
+            );
+            shards(&["build", "--progress=plain", ctx.to_str().unwrap()])
+        };
+        // This mode's records, each as whether a step holds it.
+        let records = || {
+            let df = shards(&[
+                "system",
+                "df",
+                "-v",
+                "--format",
+                "{{range .BuildCache}}{{.InUse}} {{.Description}}\n{{end}}",
+            ]);
+            assert_eq!(df.status, Some(0), "{}", df.stderr);
+            let id = format!("with id \"/s-{sharing}\"");
+            df.stdout
+                .lines()
+                .filter(|l| l.ends_with(&id))
+                .map(|l| l.starts_with("true "))
+                .collect::<Vec<bool>>()
+        };
+        let seeded = build(
+            "seed",
+            &format!("\"fs\", \"write:/c/zero-{sharing}=seeded-zero\""),
+        );
+        assert_eq!(seeded.status, Some(0), "{}", seeded.stderr);
+        // A holds the record for half a minute; B builds once it does.
+        let (a, b) = std::thread::scope(|s| {
+            let a = s.spawn(|| {
+                build(
+                    "a",
+                    &format!("\"fs\", \"write:/c/a-{sharing}=written-by-a\", \"sleep:30000\""),
+                )
+            });
+            let deadline = std::time::Instant::now() + TIMEOUT;
+            while records() != [true] {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "no build took the {sharing} cache"
+                );
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            let b = build(
+                "b",
+                &format!(
+                    "\"fs\", \"write:/c/b-{sharing}=written-by-b\", \"print:/c/zero-{sharing}\", \"print:/c/a-{sharing}\""
+                ),
+            );
+            (a.join().unwrap(), b)
+        });
+        assert_eq!(a.status, Some(0), "{}", a.stderr);
+        // The files B found, by what it printed of them: B's own step names neither.
+        let found = |text: &str| b.stderr.contains(text);
+        match sharing {
+            // The record A holds, as it was when B took it (BuildKit's B sees A's writes
+            // as they are made, M141).
+            "shared" => assert!(found("seeded-zero"), "{}", b.stderr),
+            // Another, made while A held the first: none of the first's files.
+            "private" => {
+                assert!(
+                    !found("seeded-zero") && found(&format!("print:/c/zero-{sharing}: ")),
+                    "{}",
+                    b.stderr
+                );
+                assert_eq!(records(), [false, false]);
+            }
+            // A's, once A was done with it: its files and A's.
+            _ => {
+                assert_eq!(b.status, Some(0), "{}", b.stderr);
+                assert!(found("seeded-zero") && found("written-by-a"), "{}", b.stderr);
+            }
+        }
+        if sharing != "private" {
+            // One record, both builds' writes in it.
+            assert_eq!(records(), [false]);
+            let after = build(
+                "after",
+                &format!("\"stat\", \"/c/zero-{sharing}\", \"/c/a-{sharing}\", \"/c/b-{sharing}\""),
+            );
+            assert_eq!(after.status, Some(0), "{}", after.stderr);
+        }
+    }
+}
+
 /// External build caches (D62): a build's records, written by `--cache-to` to a
 /// directory (`mode=max`), a registry (`min`) and the image itself (`inline`), answer
 /// another home's build from `--cache-from`, as BuildKit's remote caches do: from the

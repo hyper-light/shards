@@ -4662,6 +4662,112 @@ revision before comparing a changed API/implementation.
   - In those runs the frontend's own time was 4.4–7.8 ms for shards and 11.4–13.8 ms for
     docker/dockerfile.
 
+### M140. Where a cache mount keeps its files, and what keeping them costs a build
+
+- **Question.** `RUN --mount=type=cache` kept across builds (D114) needs a home outside
+  the builder microVM, which goes with its build. The candidates were the virtio-fs share
+  (`shards run -v`'s device, D38) and the guest's own filesystems over something the host
+  keeps (a block device, or the layers a build keeps). How fast is each for what package
+  managers do with a cache, and what does moving a cache in and out cost a build?
+- **Method.** `docs/research/measurements/cachefs/cachefs.py` with `fsbench.rs` (built
+  static for the guest): in one builder step, each phase in turn on a cache mount (the
+  record's layers under the builder's memory, D114) and on a tmpfs mount (the builder's
+  memory, where caches lived before D114), interleaved and each first in turn; the same
+  phases on a virtio-fs share and the run's tmpfs (`shards run -v`, `--tmpfs`); a cache an
+  earlier build filled (10,000 files of 4 KiB in 100 directories, 2 of 128 MiB) read back;
+  and the wall time of builds that mount that cache and do nothing, or fill a cache, each
+  against its empty or tmpfs twin. Phases: create, stat, read, rename and delete of the
+  small files, then the large ones written and read, a MiB at a time. Apple M5 Max, macOS
+  26.4.1, revision f6d11c2 (D114), 2026-10-09, load average 66 to 75 (other builds and
+  Docker Desktop's VM). Milliseconds:
+
+  | phase | cache mount, n=20, p50 / p90 / p99 / max | builder tmpfs, n=20 | virtio-fs share, n=3 |
+  |---|---|---|---|
+  | create | 28.3 / 32.3 / 38.3 / 38.3 | 15.8 / 16.8 / 23.4 / 23.4 | 107889 / 114197 / 114197 / 114197 |
+  | stat | 7.4 / 8.4 / 10.8 / 10.8 | 5.1 / 5.9 / 7.2 / 7.2 | 6380 / 15723 / 15723 / 15723 |
+  | read | 16.6 / 17.2 / 23.1 / 23.1 | 13.2 / 15.3 / 16.2 / 16.2 | 22242 / 49611 / 49611 / 49611 |
+  | rename | 18.4 / 19.6 / 23.3 / 23.3 | 9.9 / 12.4 / 12.8 / 12.8 | 50484 / 126640 / 126640 / 126640 |
+  | delete | 16.9 / 18.3 / 25.0 / 25.0 | 9.3 / 11.6 / 13.7 / 13.7 | 31659 / 90593 / 90593 / 90593 |
+  | 256 MiB written | 14.7 / 33.4 / 34.3 / 34.3 | 14.3 / 18.3 / 20.6 / 20.6 | 4490 / 6548 / 6548 / 6548 |
+  | 256 MiB read | 9.9 / 10.4 / 12.3 / 12.3 | 10.0 / 12.5 / 13.3 / 13.3 | 5002 / 6000 / 6000 / 6000 |
+
+  The run's own tmpfs beside the share (n=3): create 15.8, stat 4.7, read 12.6, rename
+  10.0, delete 8.7, large write 16.0, large read 11.5 at the median. A cache an earlier build
+  filled, read back (n=20): stat 9.3 / 14.8 / 15.2 / 15.2, read 20.3 / 22.6 / 23.0 / 23.0,
+  large read 9.0 / 12.2 / 15.8 / 15.8, against the step's tmpfs filled in place: 6.4, 13.3,
+  8.8 at the median. Build wall times, n=5, p50 / p90 / max: a cache of those files mounted
+  and left alone 11177 / 14745 / 14745 against an empty one's 3915 / 7217 / 7217; filling a
+  cache 16095 / 18723 / 18723 against filling a tmpfs 3657 / 5797 / 5797.
+- **Where a build's time goes.** Timings in the build process (a throwaway build, three
+  of each, same host and load): mounting that cache spent 5.4 to 10.6 s sending its layers
+  to the builder over vsock and 0.17 to 0.24 s applying them; filling one spent 9.2 to 11.2 s
+  receiving its changes over vsock and 0.46 to 0.64 s making them a layer. vsock carried
+  28 to 55 MB/s under this load. A step writing and reading a builder's virtio-blk disk
+  (the same throwaway build, a raw disk; `dd` of 296 MiB, `conv=fsync`, five rounds) moved
+  1.4 to 9.7 GB/s written and 5.0 to 5.2 GB/s read, the host file holding the bytes.
+- **Consequence.** virtio-fs answers a small file's request in 0.5 to 13 ms under load,
+  1,800 to 6,800 times the builder's memory: a package manager's cache on it would cost
+  more than downloading again. Caches live in the guest's filesystems instead (D114): a
+  record's layers under the builder's memory, within 1.3 to 1.9 times tmpfs for a small
+  file's metadata and the same for bulk. What remains costly is moving a large cache in and
+  out over vsock, about 25 ms a MiB here; the builder's virtio-blk device is 100 to 300
+  times faster, and carrying layers and changes on it is D114's open item.
+
+### M141. What Docker 29.3.1's BuildKit does with cache mounts
+
+- **Question.** What D114 must hold to: BuildKit v0.28.1 (Docker 29.3.1's) with cache
+  mounts across builds, their records as `buildx du`, `system df` and `buildx prune` show
+  them, and the GC policy dockerd gives its builder.
+- **Method.** `docs/research/measurements/cachefs/buildkit.sh` against `shards-dind`
+  (docker:29.3.1-dind, BuildKit v0.28.1), every name holding the run's token, `--output
+  type=cacheonly`, only the run's own records pruned; 2026-10-10, the results below from
+  one run of the committed script (token `forkt1791629692`). In P7 two builds of one cache
+  start 3 s apart: A writes `a` and sleeps 8 s, B writes `b` and sleeps 1 s, each then
+  listing the cache and printing when it started and ended; a third build lists it after.
+- **Results.**
+  - What a step writes in a cache is there for the next build's step, a failing step's
+    writes too.
+  - `uid=1000,gid=1001,mode=0750` makes the directory `750 1000:1001`; `mode=0700` alone
+    `700 0:0`; none `755 0:0`. A root a step gives another owner and mode keeps them
+    (`700 7:8` the next build). Another `BUILDKIT_CACHE_MOUNT_NS` finds the cache empty.
+  - One id at two targets of one step is one directory (written at one, read at the other).
+  - `from=` a stage and `source=/seed` shows that directory with its owner (`755 5:6`);
+    `source=/seed/sub` the subdirectory, from the same record.
+  - A record: `Mutable: true`, `Type: exec.cachemount`, described as `cached mount /m from
+    exec /bin/sh -c stat -c "%a %u:%g" /m with id "/<id>"` (the id after the Dockerfile's
+    namespace and its `/`). A cache from something has its source's record as `Parents`:
+    `from=`, and `uid`, `gid` or `mode`, which the frontend mounts from a directory of its
+    own (`setCacheUIDGID`: `Mkdir("/cache", mode, uid:gid)`, its selector `/cache`). `system
+    df -v` lists each with its type, size, shared and in-use.
+  - `buildx prune --filter type=exec.cachemount` lists each removed with its ID marked `*`;
+    `--verbose` prints no `Type:` line for any record (BuildKit's prune results carry no
+    type).
+  - A copy of `a.txt` stays `CACHED`, and the step after it, when only `c.txt` changes.
+  - `docker buildx inspect`: rule 0 types `source.local`, `exec.cachemount`,
+    `source.git.checkout`, kept 48h, max used 25.99GiB; rule 1 kept 1440h, reserved
+    188.1GiB, max used 1.466TiB, min free 375.3GiB; rules 2 and 3 the same space without
+    the duration, rule 3 for all records: dockerd's `DefaultGCPolicy` for a disk of 2,014
+    GiB, as `build/gc.rs` derives it (its unit test reproduces these figures).
+  - A step not answered from the cache (`--no-cache`) finds its cache empty, and so does
+    the next build's: BuildKit lets go of such a step's cache mounts as it loads the
+    definition (llbsolver `detectPrunedCacheID`, the worker's `PruneCacheMounts`). The
+    script's first version passed `--no-cache` to every build and found every cache empty.
+  - Two builds at once (P7, seconds from the epoch as each step printed them):
+
+    | sharing | A's step | B's step | B listed | A listed | then listed |
+    |---|---|---|---|---|---|
+    | `shared` | 707 to 715 | 710 to 711 | `a b` | `a b` | `a b` |
+    | `private` | 717 to 725 | 720 to 721 | `b` | `a` | `a` |
+    | `locked` | 727 to 735 | 735 to 736 | `a b` | `a` | `a b` |
+
+    `shared` is one directory both steps write at once; `private` a record of B's own
+    while A holds the first, a later build taking the record whose ID sorts first (A's
+    in both runs: BuildKit looks a key's records up in its metadata index's byte order,
+    `SearchCacheDir` and cache/metadata `Search`); under `locked` B's step began as A's
+    ended (5.4 s into its vertex). A second run of P7 alone (`private` and `locked`) gave
+    the same lists. During an earlier run, while two builds of one cache ran, `shards-dind`
+    exited (status 2, 09:09:39 UTC); it was started again at 09:10:51, not by this probe.
+
 ### M155. What a run's guest keeps of a microVM's memory, on the path a run takes
 
 - **Question.** `shards run -m LIMIT` sizes its microVM so that the guest's MemAvailable
