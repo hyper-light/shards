@@ -1,7 +1,8 @@
-//! URLs as Go 1.26's `net/url` parses and prints them, for the remote sources of `ADD`:
-//! `Parse` with its errors, `URL.String`, queries (`ParseQuery`, `Values.Encode`) and
-//! escaping. Hosts in brackets are checked as `netip.ParseAddr` checks them. Colons in a
-//! host are strict, Go 1.26's default (`urlstrictcolons=1`).
+//! URLs as Go 1.26's `net/url` parses and prints them, for the remote sources of `ADD`
+//! and the requests a build's proxy takes (D110): `Parse` and `ParseRequestURI` with their
+//! errors, `URL.String`, references resolved (`URL.Parse`), queries (`ParseQuery`,
+//! `Values.Encode`) and escaping. Hosts in brackets are checked as `netip.ParseAddr` checks
+//! them. Colons in a host are strict, Go 1.26's default (`urlstrictcolons=1`).
 
 use std::collections::BTreeMap;
 
@@ -228,9 +229,8 @@ fn cut(s: &[u8], sep: u8) -> (&[u8], &[u8], bool) {
 
 /// `Parse`: with a fragment after `#`. Fails with `url.Error`'s text, `parse "<url>": <why>`.
 pub fn parse(raw: &[u8]) -> Result<Url, Vec<u8>> {
-    let wrap = |u: &[u8], e: Vec<u8>| [b"parse ".as_slice(), go::quote(u).as_bytes(), b": ", &e].concat();
     let (u, frag, _) = cut(raw, b'#');
-    let mut url = parse_inner(u).map_err(|e| wrap(u, e))?;
+    let mut url = parse_inner(u, false).map_err(|e| wrap(u, e))?;
     if frag.is_empty() {
         return Ok(url);
     }
@@ -244,9 +244,23 @@ pub fn parse(raw: &[u8]) -> Result<Url, Vec<u8>> {
     Ok(url)
 }
 
-fn parse_inner(raw: &[u8]) -> Result<Url, Vec<u8>> {
+/// `url.Error`'s text: `parse "<url>": <why>`.
+fn wrap(u: &[u8], e: Vec<u8>) -> Vec<u8> {
+    [b"parse ".as_slice(), go::quote(u).as_bytes(), b": ", &e].concat()
+}
+
+/// `ParseRequestURI`: a request's target, as an HTTP server reads one; no fragment, and an
+/// absolute path or URL alone.
+pub fn parse_request_uri(raw: &[u8]) -> Result<Url, Vec<u8>> {
+    parse_inner(raw, true).map_err(|e| wrap(raw, e))
+}
+
+fn parse_inner(raw: &[u8], via_request: bool) -> Result<Url, Vec<u8>> {
     if raw.iter().any(|&b| b < b' ' || b == 0x7f) {
         return Err(b"net/url: invalid control character in URL".to_vec());
+    }
+    if raw.is_empty() && via_request {
+        return Err(b"empty url".to_vec());
     }
     let mut url = Url::default();
     if raw == b"*" {
@@ -270,13 +284,16 @@ fn parse_inner(raw: &[u8]) -> Result<Url, Vec<u8>> {
             url.opaque = rest.to_vec();
             return Ok(url);
         }
+        if via_request {
+            return Err(b"invalid URI for request".to_vec());
+        }
         let (segment, _, _) = cut(rest, b'/');
         if segment.contains(&b':') {
             return Err(b"first path segment in URL cannot contain colon".to_vec());
         }
     }
     let mut path = rest;
-    if (!url.scheme.is_empty() || !rest.starts_with(b"///")) && rest.starts_with(b"//") {
+    if (!url.scheme.is_empty() || !via_request && !rest.starts_with(b"///")) && rest.starts_with(b"//") {
         let after = go::tail(rest, 2);
         let (authority, p) = match after.iter().position(|&b| b == b'/') {
             Some(i) => (go::head(after, i), go::tail(after, i)),
@@ -289,13 +306,7 @@ fn parse_inner(raw: &[u8]) -> Result<Url, Vec<u8>> {
     } else if !url.scheme.is_empty() && rest.starts_with(b"/") {
         url.omit_host = true;
     }
-    let p = unescape(path, Mode::Path)?;
-    url.raw_path = if escape(&p, Mode::Path) == path {
-        Vec::new()
-    } else {
-        path.to_vec()
-    };
-    url.path = p;
+    url.set_path(path)?;
     Ok(url)
 }
 
@@ -589,7 +600,144 @@ fn parse_ipv6(input: &[u8], fail: AddrFail<'_>) -> Result<(), Vec<u8>> {
     Ok(())
 }
 
+/// `resolvePath`: `reference` resolved against `base`, both escaped paths, and its dot
+/// segments removed (RFC 3986 §5.2).
+fn resolve_path(base: &[u8], reference: &[u8]) -> Vec<u8> {
+    let full = match reference.first() {
+        None => base.to_vec(),
+        Some(&b'/') => reference.to_vec(),
+        Some(_) => {
+            let keep = base.iter().rposition(|&b| b == b'/').map_or(0, |i| i + 1);
+            [go::head(base, keep), reference].concat()
+        }
+    };
+    if full.is_empty() {
+        return Vec::new();
+    }
+    let mut dst = vec![b'/'];
+    let mut first = true;
+    let mut remaining: &[u8] = &full;
+    let mut elem: &[u8] = b"";
+    let mut found = true;
+    while found {
+        (elem, remaining, found) = cut(remaining, b'/');
+        if elem == b"." {
+            first = false;
+            continue;
+        }
+        if elem == b".." {
+            let index = go::tail(&dst, 1).iter().rposition(|&b| b == b'/');
+            match index {
+                None => {
+                    dst.truncate(1);
+                    first = true;
+                }
+                // Within what follows the leading slash, so one more in `dst`.
+                Some(i) => dst.truncate(i + 1),
+            }
+        } else {
+            if !first {
+                dst.push(b'/');
+            }
+            dst.extend_from_slice(elem);
+            first = false;
+        }
+    }
+    if elem == b"." || elem == b".." {
+        dst.push(b'/');
+    }
+    if dst.get(1) == Some(&b'/') {
+        dst.remove(0);
+    }
+    dst
+}
+
 impl Url {
+    /// `setPath`: the path `p` unescaped, and `RawPath` where escaping it again would not
+    /// give `p` back.
+    fn set_path(&mut self, p: &[u8]) -> Result<(), Vec<u8>> {
+        let path = unescape(p, Mode::Path)?;
+        self.raw_path = if escape(&path, Mode::Path) == p {
+            Vec::new()
+        } else {
+            p.to_vec()
+        };
+        self.path = path;
+        Ok(())
+    }
+
+    /// `URL.Parse`: `reference` parsed and resolved against this URL (`ResolveReference`).
+    pub fn resolve(&self, reference: &[u8]) -> Result<Url, Vec<u8>> {
+        let r = parse(reference)?;
+        let mut url = r.clone();
+        if r.scheme.is_empty() {
+            url.scheme = self.scheme.clone();
+        }
+        if !r.scheme.is_empty() || !r.host.is_empty() || r.user.is_some() {
+            // A validly escaped path: setPath cannot fail on it.
+            let _ = url.set_path(&resolve_path(&r.escaped_path(), b""));
+            return Ok(url);
+        }
+        if !r.opaque.is_empty() {
+            url.user = None;
+            url.host = Vec::new();
+            url.path = Vec::new();
+            return Ok(url);
+        }
+        if r.path.is_empty() && !r.force_query && r.raw_query.is_empty() {
+            url.raw_query = self.raw_query.clone();
+            if r.fragment.is_empty() {
+                url.fragment = self.fragment.clone();
+                url.raw_fragment = self.raw_fragment.clone();
+            }
+        }
+        if r.path.is_empty() && !self.opaque.is_empty() {
+            url.opaque = self.opaque.clone();
+            url.user = None;
+            url.host = Vec::new();
+            url.path = Vec::new();
+            return Ok(url);
+        }
+        url.host = self.host.clone();
+        url.user = self.user.clone();
+        let _ = url.set_path(&resolve_path(&self.escaped_path(), &r.escaped_path()));
+        Ok(url)
+    }
+
+    /// `Hostname` and `Port`: the host without its port or brackets, and the port, where
+    /// it is digits (`splitHostPort`).
+    pub fn host_port(&self) -> (&[u8], &[u8]) {
+        let mut host: &[u8] = &self.host;
+        let mut port: &[u8] = b"";
+        if let Some(colon) = host.iter().rposition(|&b| b == b':')
+            && valid_optional_port(go::tail(host, colon))
+        {
+            port = go::tail(host, colon + 1);
+            host = go::head(host, colon);
+        }
+        if host.starts_with(b"[") && host.ends_with(b"]") {
+            host = go::span(host, 1, host.len() - 1);
+        }
+        (host, port)
+    }
+
+    /// `RequestURI`: what a request line names of this URL.
+    pub fn request_uri(&self) -> Vec<u8> {
+        let mut out = if self.opaque.is_empty() {
+            let p = self.escaped_path();
+            if p.is_empty() { b"/".to_vec() } else { p }
+        } else if self.opaque.starts_with(b"//") {
+            [self.scheme.as_slice(), b":", &self.opaque].concat()
+        } else {
+            self.opaque.clone()
+        };
+        if self.force_query || !self.raw_query.is_empty() {
+            out.push(b'?');
+            out.extend_from_slice(&self.raw_query);
+        }
+        out
+    }
+
     /// `EscapedPath`.
     fn escaped_path(&self) -> Vec<u8> {
         if !self.raw_path.is_empty()
@@ -754,4 +902,137 @@ pub fn encode(v: &Values) -> Vec<u8> {
         }
     }
     buf
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    /// Request targets as Go 1.26.3's `ParseRequestURI` reads them, each answer what Go
+    /// gave: its `String`, `RequestURI`, `Hostname`, `Port` and `IsAbs`, or its error.
+    #[test]
+    fn request_uris_read_as_gos() {
+        type Answer<'a> = Result<(&'a str, &'a str, &'a str, &'a str, bool), &'a str>;
+        let cases: [(&[u8], Answer<'_>); 31] = [
+            (b"/", Ok(("/", "/", "", "", false))),
+            (b"/hello", Ok(("/hello", "/hello", "", "", false))),
+            (
+                b"http://172.18.0.2/hello",
+                Ok(("http://172.18.0.2/hello", "/hello", "172.18.0.2", "", true)),
+            ),
+            (
+                b"HTTP://Example.COM:80/a/./b/../c?x=1&y=%zz",
+                Ok((
+                    "http://Example.COM:80/a/./b/../c?x=1&y=%zz",
+                    "/a/./b/../c?x=1&y=%zz",
+                    "Example.COM",
+                    "80",
+                    true,
+                )),
+            ),
+            (
+                b"https://example.com:443/",
+                Ok(("https://example.com:443/", "/", "example.com", "443", true)),
+            ),
+            (
+                b"http://[2001:db8::1]:8080/p",
+                Ok(("http://[2001:db8::1]:8080/p", "/p", "2001:db8::1", "8080", true)),
+            ),
+            (b"http://u:p@h/x", Ok(("http://u:p@h/x", "/x", "h", "", true))),
+            (b"http://@h/", Ok(("http://@h/", "/", "h", "", true))),
+            (b"/a|b?q={x}", Ok(("/a%7Cb?q={x}", "/a%7Cb?q={x}", "", "", false))),
+            (b"/a%2fb", Ok(("/a%2fb", "/a%2fb", "", "", false))),
+            (b"/a%2Fb", Ok(("/a%2Fb", "/a%2Fb", "", "", false))),
+            (b"/a b", Ok(("/a%20b", "/a%20b", "", "", false))),
+            (
+                "/café".as_bytes(),
+                Ok(("/caf%C3%A9", "/caf%C3%A9", "", "", false)),
+            ),
+            (b"/p#frag", Ok(("/p%23frag", "/p%23frag", "", "", false))),
+            (b"/p?q#f", Ok(("/p?q#f", "/p?q#f", "", "", false))),
+            (b"*", Ok(("*", "*", "", "", false))),
+            (b"", Err("parse \"\": empty url")),
+            (b"hello", Err("parse \"hello\": invalid URI for request")),
+            (b"//h/p", Ok(("//h/p", "//h/p", "", "", false))),
+            (b"http:///p", Ok(("http:///p", "/p", "", "", true))),
+            (
+                b"http://h:bad/",
+                Err("parse \"http://h:bad/\": invalid port \":bad\" after host"),
+            ),
+            (b"http://[::1", Err("parse \"http://[::1\": missing ']' in host")),
+            (b"/%zz", Err("parse \"/%zz\": invalid URL escape \"%zz\"")),
+            (b"/?", Ok(("/?", "/?", "", "", false))),
+            (b"/a?", Ok(("/a?", "/a?", "", "", false))),
+            (b"http://h/a%20b", Ok(("http://h/a%20b", "/a%20b", "h", "", true))),
+            (b"http://h/a+b", Ok(("http://h/a+b", "/a+b", "h", "", true))),
+            (b"mailto:x@y", Ok(("mailto:x@y", "x@y", "", "", true))),
+            (b"http://h?x", Ok(("http://h?x", "/?x", "h", "", true))),
+            (b"http://h", Ok(("http://h", "/", "h", "", true))),
+            (b"/a;b=c/d", Ok(("/a;b=c/d", "/a;b=c/d", "", "", false))),
+        ];
+        let s = |b: &[u8]| String::from_utf8(b.to_vec()).unwrap();
+        for (input, want) in cases {
+            let got = parse_request_uri(input).map(|u| {
+                let (host, port) = u.host_port();
+                (
+                    s(&u.string()),
+                    s(&u.request_uri()),
+                    s(host),
+                    s(port),
+                    !u.scheme.is_empty(),
+                )
+            });
+            let want = want
+                .map(|(a, b, c, d, e)| (a.to_string(), b.to_string(), c.to_string(), d.to_string(), e))
+                .map_err(|e| e.as_bytes().to_vec());
+            assert_eq!(got, want, "{:?}", String::from_utf8_lossy(input));
+        }
+    }
+
+    /// References resolved as Go 1.26.3's `URL.Parse` resolves them: what Go gave.
+    #[test]
+    fn references_resolve_as_gos() {
+        for (base, reference, want) in [
+            (
+                "http://172.18.0.2/redirect",
+                "/hello",
+                Ok("http://172.18.0.2/hello"),
+            ),
+            ("http://172.18.0.2/a/b/c", "../d?x", Ok("http://172.18.0.2/a/d?x")),
+            (
+                "https://example.com:443/x",
+                "https://other.example/y#f",
+                Ok("https://other.example/y#f"),
+            ),
+            ("http://h/a/b", "//g/p", Ok("http://g/p")),
+            ("http://h/a/b?q", "", Ok("http://h/a/b?q")),
+            ("http://h/a/b?q", "#s", Ok("http://h/a/b?q#s")),
+            ("http://h/a/b?q", "?y", Ok("http://h/a/b?y")),
+            ("http://h/a/b", ".", Ok("http://h/a/")),
+            ("http://h/a/b", "./", Ok("http://h/a/")),
+            ("http://h/a/b", "..", Ok("http://h/")),
+            ("http://h/a/b", "../../../g", Ok("http://h/g")),
+            ("http://h/a/b", "g;x=1/../y", Ok("http://h/a/y")),
+            (
+                "http://h/a/b",
+                "%zz",
+                Err("parse \"%zz\": invalid URL escape \"%zz\""),
+            ),
+            ("http://h/a/b", "http://h2/%7e/a%2Fb", Ok("http://h2/%7e/a%2Fb")),
+            ("http://h/a%2Fb/c", "d", Ok("http://h/a%2Fb/d")),
+            ("http://h/a/b", "mailto:x@y", Ok("mailto:x@y")),
+            ("http://h/a/b", "/x y", Ok("http://h/x%20y")),
+        ] {
+            let got = parse(base.as_bytes())
+                .unwrap()
+                .resolve(reference.as_bytes())
+                .map(|u| String::from_utf8(u.string()).unwrap());
+            assert_eq!(
+                got,
+                want.map(str::to_string).map_err(|e| e.as_bytes().to_vec()),
+                "{base} {reference}"
+            );
+        }
+    }
 }
