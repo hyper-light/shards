@@ -144,7 +144,7 @@ jobs:
         shell: bash
         run: |
           if [ "${{ matrix.target }}" = x86_64-unknown-linux-gnu ]; then export SHARDS_REQUIRE_VMS=1; fi
-          cargo test --locked --workspace --release --no-fail-fast --target ${{ matrix.target }}
+          cargo test --locked --workspace --profile test-release --no-fail-fast --target ${{ matrix.target }}
       # A process the seccomp filter ended with its SIGSYS blocked says nothing; the kernel
       # logs the syscall it refused (the filter's SECCOMP_FILTER_FLAG_LOG).
       - name: What the kernel logged of seccomp refusals

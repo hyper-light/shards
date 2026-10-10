@@ -26,7 +26,7 @@ exec su -m shards -s /bin/sh -c '
 	export HOME=/home/shards CARGO_HOME=/home/shards/.cargo
 	if [ "${MUSL_CI:-}" != build ]; then
 		cargo clippy --locked --workspace --all-targets --target "$TARGET" -- -D warnings
-		cargo test --locked --workspace --release --no-fail-fast --target "$TARGET"
+		cargo test --locked --workspace --profile test-release --no-fail-fast --target "$TARGET"
 	fi
 	cargo build --locked --release -p shards --target "$TARGET"
 '

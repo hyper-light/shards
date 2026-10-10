@@ -126,10 +126,17 @@ fn compile(
         "CARGO_TARGET_{}_LINKER",
         triple.to_ascii_uppercase().replace('-', "_")
     );
+    // A test build's guests as its own code is built, without fat LTO (Cargo.toml,
+    // `test-release`); every other build's, small and stripped.
+    let profile = if profile()? == "test-release" {
+        "guest-test"
+    } else {
+        "guest"
+    };
     let mut command = Command::new(cargo);
     command
         .current_dir(root)
-        .args(["build", "--locked", "--package", package, "--profile", "guest"])
+        .args(["build", "--locked", "--package", package, "--profile", profile])
         .args(["--target", &triple, "--target-dir"])
         .arg(target_dir)
         .env(linker, "rust-lld")
@@ -202,7 +209,7 @@ fn compile(
         }
         return Err(message);
     }
-    let binary = target_dir.join(&triple).join("guest").join(package);
+    let binary = target_dir.join(&triple).join(profile).join(package);
     if !binary.is_file() {
         return Err(format!("building {package} made no {}", binary.display()));
     }
@@ -310,11 +317,7 @@ fn compile_helpers(out: &mut impl io::Write) -> Result<PathBuf, String> {
         let _ = writeln!(out, "cargo::rerun-if-changed={}", root.join(input).display());
     }
     let target = var("TARGET")?;
-    // Cargo names the dev profile `debug` here; any other is its own name.
-    let profile = match var("PROFILE")?.as_str() {
-        "debug" => "dev".to_string(),
-        other => other.to_string(),
-    };
+    let profile = profile()?;
     let dir_name = if profile == "dev" {
         "debug"
     } else {
@@ -357,6 +360,22 @@ fn compile_helpers(out: &mut impl io::Write) -> Result<PathBuf, String> {
         return Err(message);
     }
     Ok(target_dir.join(&target).join(dir_name))
+}
+
+/// The profile this build runs under, by its name: OUT_DIR is
+/// `<target>/[<triple>/]<profile>/build/<package>/out`, its directory `debug` for `dev`.
+/// PROFILE says only `release` or `debug`, for every profile that inherits from either
+/// (Cargo's reference, "Environment variables Cargo sets for build scripts"), and so not
+/// `test-release`.
+fn profile() -> Result<String, String> {
+    let out = PathBuf::from(env::var_os("OUT_DIR").ok_or("OUT_DIR is not set")?);
+    let dir = out
+        .ancestors()
+        .nth(3)
+        .and_then(Path::file_name)
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| format!("no profile in {}", out.display()))?;
+    Ok(if dir == "debug" { "dev" } else { dir }.to_string())
 }
 
 /// On macOS, signs a helper as releases are: the VM process in App Sandbox, with the
