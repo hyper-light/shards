@@ -62,6 +62,11 @@ fn oracle_pkcs8(name: &str) -> Vec<u8> {
 /// refused again.
 #[test]
 fn policies_hold_an_agent_to_its_signature() {
+    // Its build runs in a VM, and the test image it builds from carries a test guest
+    // built for one.
+    if common::cannot_run_vms() {
+        return;
+    }
     let (image, _) = common::served();
     let (pem, password, pkcs8) = cosign_key();
     let keys = TempDir::new("referrers-policy-key");
