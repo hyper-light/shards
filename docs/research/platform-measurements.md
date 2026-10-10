@@ -4352,3 +4352,23 @@ revision before comparing a changed API/implementation.
   skipped (each history entry and its time), which Docker's own answers depend on.
   Where the time goes within the reading (the scanner's tree, the fields, the times) is
   unmeasured, and so is a reader that decodes as it scans, as encoding/json does.
+- **Where the time goes, and a string's run read whole (2026-10-10).** `run.sh` now also
+  runs `parse_config_phases` (ignored; release): a build-sized config read n=20000 times
+  after 1000 warm-ups, the mean in nanoseconds of Go's scanner building the document
+  (`scan`), that and its fields read (`scan+fields`), the whole `parse_config`, and serde's.
+  The scanner took two thirds of a reading, pushing a string's bytes into it one at a
+  time; it now copies each run of bytes that stand for themselves (no quote, backslash,
+  control or non-ASCII byte) at once, every answer unchanged (the oracles of
+  `shards-image` and `shards-dockerfile`; each byte of the run's end mutation-checked,
+  one of them by a new case of invalid UTF-8). Old and new alternated three times, back
+  to back, on one host (Apple M5 Max, macOS 26.4.1, revision 1265bd5 and its string fast
+  path, load average 13 to 26 with other builds running):
+
+  | arm | scan | scan+fields | whole | serde |
+  |---|---|---|---|---|
+  | old, three runs | 9525 / 9926 / 9410 | 13847 / 14333 / 13789 | 14219 / 17968 / 14334 | 2779 / 2703 / 2662 |
+  | new, three runs | 5945 / 5948 / 5470 | 9586 / 10233 / 9738 | 10381 / 10696 / 10095 | 2733 / 2632 / 2702 |
+
+  The scan is 40% shorter and a whole reading 28% (14.3 µs to 10.4 µs at the median of
+  three). The fields' part (about 4 µs) copies each string again into a `String`, as the
+  reading walks the document by reference; one that took the document apart would not.

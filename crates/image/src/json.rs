@@ -484,9 +484,16 @@ impl Scan<'_> {
                     go::push(&mut out, r);
                     self.at += w;
                 }
+                // A run of bytes that stand for themselves, taken whole: what Go's scanner
+                // steps through one at a time, read at once.
                 _ => {
-                    out.push(c);
-                    self.at += 1;
+                    let rest = go::tail(self.b, self.at);
+                    let run = rest
+                        .iter()
+                        .position(|&b| b == b'"' || b == b'\\' || !(0x20..0x80).contains(&b))
+                        .unwrap_or(rest.len());
+                    out.extend_from_slice(rest.get(..run).unwrap_or_default());
+                    self.at += run;
                 }
             }
         }
@@ -707,6 +714,19 @@ mod tests {
             b"invalid character '[' exceeded max depth"
         );
         assert_eq!(parse(b"\"x\""), Ok(Value::String(b"x".to_vec(), None)));
+        // UTF-8 kept as it is; each byte that begins no rune Go's utf8.DecodeRune reads
+        // made U+FFFD, a cut sequence one for each of its bytes, the text kept as written.
+        assert_eq!(
+            parse("\"é\"".as_bytes()),
+            Ok(Value::String("é".as_bytes().to_vec(), None))
+        );
+        assert_eq!(
+            parse(b"\"a\xffb\xf0\x9f\x98\""),
+            Ok(Value::String(
+                "a\u{FFFD}b\u{FFFD}\u{FFFD}\u{FFFD}".as_bytes().to_vec(),
+                Some(b"a\xffb\xf0\x9f\x98".to_vec())
+            ))
+        );
     }
 
     /// Strings are written as `json.Marshal` writes them.

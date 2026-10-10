@@ -35,6 +35,17 @@ pub fn main() -> ! {
     let code = match arg(0) {
         "report" => report(),
         "cat" => cat(),
+        // Each file read whole: its first line, or the errno that refused it.
+        "slurp" => {
+            for p in args.get(1..).unwrap_or_default() {
+                let said = match std::fs::read_to_string(p) {
+                    Ok(t) => t.lines().next().unwrap_or_default().to_string(),
+                    Err(e) => format!("errno {}", e.raw_os_error().unwrap_or(0)),
+                };
+                let _ = writeln!(io::stdout(), "slurp {p}: {said}");
+            }
+            0
+        }
         "stat" => stat(args.get(1..).unwrap_or_default()),
         "mtime" => {
             use std::os::unix::fs::MetadataExt as _;
@@ -1265,7 +1276,7 @@ fn confined(args: &[String]) -> i32 {
             "see" | "write" | "bind" | "connect" | "call" | "listen" | "reach" | "unreach" | "cat"
             | "resolve" | "dnsprobe" | "dnsask" | "unix" | "abstract" | "unix-serve" | "pause"
             | "udpflood" | "tcpflood" | "udpaskfrom" | "reachmany" | "udpask" | "srv-send"
-            | "srv-receive" | "srv-answer" | "owner" => mode = a.as_str(),
+            | "srv-receive" | "srv-answer" | "owner" | "mcp-run" => mode = a.as_str(),
             "srv-mcp" => {
                 let said = match server_call("mcp", "{}") {
                     Ok((t, false)) => t,
@@ -1887,6 +1898,36 @@ fn confined(args: &[String]) -> i32 {
                 };
                 out.push_str(&format!("confined connect {addr}: {said}\n"));
             }
+            // A local MCP server the in-VM server offers, run as its caller runs one: a
+            // child of this agent, in its confinement; each line it says.
+            name if mode == "mcp-run" => {
+                let said = server_call("mcp", "{}")
+                    .map_err(|e| format!("error {e}"))
+                    .and_then(|(t, refused)| {
+                        if refused {
+                            return Err(format!("refused {t}"));
+                        }
+                        offered_command(&t, name).ok_or_else(|| format!("no local server {name} in {t}"))
+                    });
+                let lines = match said {
+                    Ok(command) => match command.split_first() {
+                        Some((program, args)) => {
+                            match std::process::Command::new(program).args(args).output() {
+                                Ok(o) => String::from_utf8_lossy(&o.stdout)
+                                    .lines()
+                                    .map(str::to_string)
+                                    .collect(),
+                                Err(e) => vec![errno(&e)],
+                            }
+                        }
+                        None => vec!["no command".to_string()],
+                    },
+                    Err(e) => vec![e],
+                };
+                for line in lines {
+                    out.push_str(&format!("confined mcp-run {name}: {line}\n"));
+                }
+            }
             path if mode == "owner" => {
                 use std::os::unix::fs::MetadataExt as _;
                 let said = match std::fs::metadata(path) {
@@ -1932,6 +1973,42 @@ fn confined(args: &[String]) -> i32 {
     loop {
         // SAFETY: blocks until a signal arrives.
         unsafe { libc::pause() };
+    }
+}
+
+/// The command of local MCP server `name` in the in-VM server's `mcp` answer (a JSON
+/// array of objects, as shards-init writes it): its strings, unescaped.
+fn offered_command(json: &str, name: &str) -> Option<Vec<String>> {
+    let at = json.find(&format!("\"name\":\"{name}\",\"remote\":false"))?;
+    let rest = json.get(at..)?;
+    let list = rest.get(rest.find("\"command\":[")? + "\"command\":[".len()..)?;
+    let mut out = Vec::new();
+    let mut chars = list.chars();
+    loop {
+        match chars.next()? {
+            ']' => return Some(out),
+            ',' | ' ' => {}
+            '"' => {
+                let mut s = String::new();
+                loop {
+                    match chars.next()? {
+                        '"' => break,
+                        '\\' => match chars.next()? {
+                            'u' => {
+                                let hex: String = chars.by_ref().take(4).collect();
+                                s.push(char::from_u32(u32::from_str_radix(&hex, 16).ok()?)?);
+                            }
+                            'n' => s.push('\n'),
+                            't' => s.push('\t'),
+                            c => s.push(c),
+                        },
+                        c => s.push(c),
+                    }
+                }
+                out.push(s);
+            }
+            _ => return None,
+        }
     }
 }
 

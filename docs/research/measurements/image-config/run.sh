@@ -15,3 +15,5 @@ echo "revision: $(git rev-parse --short HEAD)"
 echo "load: $(uptime | sed 's/.*load averages*: //')"
 cargo test --release -p shards-image --lib -- --ignored oci::tests::parse_config_costs --nocapture 2>&1 |
 	grep -E '^(build-sized|long history|near MAX_CONFIG):'
+cargo test --release -p shards-image --lib -- --ignored oci::tests::parse_config_phases --nocapture 2>&1 |
+	grep -E '^phases:'
