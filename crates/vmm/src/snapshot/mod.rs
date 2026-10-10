@@ -55,7 +55,8 @@ const MAGIC: [u8; 8] = *b"SHRDSNAP";
 /// 9: MachineConfig records the machine's network device, by its MAC, if it has one.
 /// 10: and how many shared directories (virtio-fs) follow it (D38).
 /// 11: and whether a join disk follows the disks (D119).
-const VERSION: u32 = 11;
+/// 12: and whether a join share follows the shared directories (D119).
+const VERSION: u32 = 12;
 /// The snapshot format this build writes and reads: what a snapshot kept for reuse is
 /// keyed by.
 pub const FORMAT: u32 = VERSION;
@@ -91,6 +92,9 @@ pub struct MachineConfig {
     /// Whether a join disk follows the disks (D119): empty in every snapshot, and the
     /// restore's own.
     pub join: bool,
+    /// Whether a join share follows the shared directories (D119): served by none in every
+    /// snapshot, and the restore's own.
+    pub join_share: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -287,6 +291,7 @@ fn encode(s: &Snapshot, generation: &str, identities: &[Identity]) -> Result<Vec
     w.bytes(&s.config.net.unwrap_or_default());
     w.u32(s.config.shares);
     w.bool(s.config.join);
+    w.bool(s.config.join_share);
     w.bytes(&s.arch);
     w.bytes(&s.devices);
     Ok(w.into_bytes())
@@ -359,6 +364,7 @@ fn decode(bytes: &[u8]) -> codec::Result<Decoded> {
         return Err(DecodeError(format!("{shares} shared directories")));
     }
     let join = r.bool()?;
+    let join_share = r.bool()?;
     let arch_state = r.bytes(usize::MAX)?.to_vec();
     let devices = r.bytes(usize::MAX)?.to_vec();
     r.finish()?;
@@ -373,6 +379,7 @@ fn decode(bytes: &[u8]) -> codec::Result<Decoded> {
                 net,
                 shares,
                 join,
+                join_share,
             },
             arch: arch_state,
             devices,
@@ -844,6 +851,7 @@ mod tests {
                 net: Some([2, 0, 0, 0, 0, 1]),
                 shares: 2,
                 join: true,
+                join_share: true,
             },
             arch: vec![marker, 2, 3],
             devices: vec![9; 100],

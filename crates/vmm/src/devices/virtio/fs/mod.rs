@@ -31,10 +31,34 @@ pub struct Slot(std::sync::Mutex<Option<UnixStream>>);
 /// A share's slot, which the VM's owner fills.
 pub type Share = Arc<Slot>;
 
+/// The slot a device asks through: a run's share's, or the join share's, a `static` of the
+/// VM process's (D119): one VM a process, so one join share, its device and the process's
+/// joiners reaching the same.
+#[derive(Clone, Debug)]
+pub enum SlotOf {
+    Run(Share),
+    Join(&'static Slot),
+}
+
+impl std::ops::Deref for SlotOf {
+    type Target = Slot;
+    fn deref(&self) -> &Slot {
+        match self {
+            SlotOf::Run(s) => s,
+            SlotOf::Join(s) => s,
+        }
+    }
+}
+
 /// The most a request or reply frame holds: a write's data and its headers.
 pub const MAX_FRAME: usize = server::MAX_WRITE as usize + 4096;
 
 impl Slot {
+    /// A slot no server is in yet.
+    pub const fn new() -> Slot {
+        Slot(std::sync::Mutex::new(None))
+    }
+
     /// Asks the server at the other end of `conn` from here on.
     pub fn attach(&self, conn: UnixStream) {
         *self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(conn);
@@ -93,7 +117,7 @@ pub fn answer(server: &server::Server, mut conn: UnixStream) -> io::Result<()> {
 /// A shared directory: its tag, and the slot its server is in.
 pub struct Fs {
     tag: [u8; TAG_BYTES],
-    server: Share,
+    server: SlotOf,
     context: Option<(Arc<GuestMemory>, Arc<DeviceInterrupt>)>,
     workers: Vec<Worker>,
     paused: Vec<Queue>,
@@ -108,6 +132,16 @@ impl std::fmt::Debug for Fs {
 impl Fs {
     /// The device of the server in `slot`, mounted by `tag`.
     pub fn new(tag: &str, slot: Share) -> Result<Fs, String> {
+        Fs::of(tag, SlotOf::Run(slot))
+    }
+
+    /// The join share's device (D119): the server in `slot`, which its VM's joiners' volumes
+    /// are given to, mounted by `tag`.
+    pub fn join(tag: &str, slot: &'static Slot) -> Result<Fs, String> {
+        Fs::of(tag, SlotOf::Join(slot))
+    }
+
+    fn of(tag: &str, slot: SlotOf) -> Result<Fs, String> {
         if tag.is_empty() || tag.len() > TAG_BYTES {
             return Err(format!("virtio-fs tag {tag:?}: 1 to {TAG_BYTES} bytes"));
         }
