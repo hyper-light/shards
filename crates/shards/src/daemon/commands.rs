@@ -1307,6 +1307,24 @@ impl<D: crate::containers::Disk> Daemon<D> {
         matches!(lock(&self.runs).get(id), Some(RunState::Tracked(t)) if !t.visit)
     }
 
+    /// Freezes the cgroup of container `id`, a joiner (D119), in its provider's guest, or
+    /// thaws it: init's FREEZE, which waits as runc's freezer does, so its exec is given
+    /// that long and more.
+    fn freeze(&self, id: &str, frozen: bool) -> Result<(), String> {
+        let spec = shards_abi::run::Spec {
+            builtin: shards_abi::run::builtin::FREEZE,
+            argv: vec![if frozen { b"1".to_vec() } else { b"0".to_vec() }],
+            ..Default::default()
+        };
+        let quiet = self
+            .exec_quietly(id, &spec, None, 1 << 12, super::TAKE_TIMEOUT * 2)
+            .map_err(|e| e.to_string())?;
+        match quiet.status {
+            Some(0) => Ok(()),
+            _ => Err(String::from_utf8_lossy(&quiet.output).trim().to_string()),
+        }
+    }
+
     /// Whether container `id` runs joined to another's network (D119): in its provider's
     /// microVM, keeping no layer of its own yet.
     pub(super) fn joined_run(&self, id: &str) -> bool {
@@ -1345,11 +1363,15 @@ impl<D: crate::containers::Disk> Daemon<D> {
 
     /// Lets paused container `id`'s VM go on (SIGCONT); whether it could.
     fn thaw(&self, id: &str) -> bool {
-        let resumed = match lock(&self.runs).get(id) {
-            // A joiner is never paused alone, and never goes on its provider's behalf.
-            Some(RunState::Tracked(t)) if t.joined.is_some() => false,
-            Some(RunState::Tracked(t)) => t.vm.kill(libc::SIGCONT).is_ok(),
-            _ => false,
+        // A joiner's cgroup is thawed in its provider's guest (D119): its VM is its
+        // provider's, which goes on as it did.
+        let resumed = if self.joined_run(id) {
+            self.freeze(id, false).is_ok()
+        } else {
+            match lock(&self.runs).get(id) {
+                Some(RunState::Tracked(t)) => t.vm.kill(libc::SIGCONT).is_ok(),
+                _ => false,
+            }
         };
         lock(&self.paused).remove(id);
         resumed
@@ -1385,18 +1407,17 @@ impl<D: crate::containers::Disk> Daemon<D> {
                             "Error response from daemon: container {id} is already paused"
                         )));
                     }
-                    // A joiner's VM is its provider's (D119): stopping it would pause them
-                    // all, where Docker freezes the one container's cgroup.
-                    if matches!(lock(&self.runs).get(&id), Some(RunState::Tracked(t)) if t.joined.is_some()) {
-                        return Step::Now(Err(format!(
-                            "Error response from daemon: cannot pause container {id}: pausing a container joining another's network is not supported yet"
-                        )));
-                    }
                     // Its last sample, for `stats` to show while it cannot answer.
                     let _ = self.usage_of(&id);
-                    let frozen = match lock(&self.runs).get(&id) {
-                        Some(RunState::Tracked(t)) => t.vm.kill(libc::SIGSTOP),
-                        _ => Err(io::Error::from(io::ErrorKind::NotFound)),
+                    // A joiner's VM is its provider's (D119): its own cgroup is frozen in
+                    // the guest, as Docker freezes a container's, and the VM goes on.
+                    let frozen = if self.joined_run(&id) {
+                        self.freeze(&id, true).map_err(io::Error::other)
+                    } else {
+                        match lock(&self.runs).get(&id) {
+                            Some(RunState::Tracked(t)) => t.vm.kill(libc::SIGSTOP),
+                            _ => Err(io::Error::from(io::ErrorKind::NotFound)),
+                        }
                     };
                     return Step::Now(match frozen {
                         Ok(()) => {

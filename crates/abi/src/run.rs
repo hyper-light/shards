@@ -358,6 +358,10 @@ pub mod builtin {
     /// The workload's use of its microVM, for `stats`: lines of `KEY VALUE`, each in
     /// decimal, as the cgroup's interface files and /proc say them (see shards-init).
     pub const STATS: u8 = 11;
+    /// With `1` its only argument, the container's cgroup frozen, once the kernel says it
+    /// is, as runc's cgroup v2 freezer freezes it; with `0`, thawed: `pause` and `unpause`
+    /// of a container that shares its microVM (D119).
+    pub const FREEZE: u8 = 12;
 }
 
 /// A terminal's size in character cells. Zero in either leaves the pty's size alone, as

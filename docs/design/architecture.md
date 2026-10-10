@@ -3457,7 +3457,11 @@ the boundary is a container's, which is what the mode asks for.
   `kill`, `wait`, `rm`, `inspect` (its NetworkMode as asked, its provider's hostname), and
   in its own namespaces and cgroup `exec`, `attach` (its stdin and output, never its
   provider's), `top`, `cp`, `export`, `stats` and `update`, which init's built-ins do in
-  its context. The daemon gives the provider's VM process the
+  its context. `pause` freezes its cgroup in the guest (init's FREEZE: `cgroup.freeze`,
+  then `cgroup.events` until it says frozen, as runc's v2 freezer waits, but on the
+  kernel's poll(2) event where runc looks every 10 ms), its provider running on; a
+  provider's `pause` stops its whole microVM, its joiners with it, where Docker freezes
+  the provider's cgroup alone. The daemon gives the provider's VM process the
   joiner's own connection and image (`kind::JOIN`); on that connection the joiner's run
   goes as a warm VM's run goes (`RUN`, `TAKEN`, `STARTED`, its log, `DONE`), so the daemon
   follows it as any run, and no command of the joiner's ever ends, pauses or reads its
@@ -3472,11 +3476,16 @@ the boundary is a container's, which is what the mode asks for.
   ended was killed (137) where Docker's finishes. Unlike Docker, its network stays whole
   (Docker's joiner keeps a namespace whose interfaces went with the provider's sandbox,
   the loopback alone); the provider's published ports and network names go with its run.
+- **Its sysctls in its own namespaces**, as runc writes a container's from within them:
+  a child of init's enters the joiner's IPC, UTS and network namespaces and writes them,
+  where init's own writes would be the provider's; a `net.*` one sets the namespace the
+  two share, as Docker's joiner may (runc libcontainer/configs/validate allows it where
+  the network namespace is another container's). Tested, mutation-checked
+  (`a_joiners_sysctls_are_set_in_its_namespaces`: written in init's namespaces, the
+  joiner read the default).
 - **Not yet, each refused by name before anything starts:** volumes (the provider's
   microVM has shares for its own run alone), devices and `--privileged`, `--init`, `--pid`,
-  `--sysctl` (init writes them in its own namespaces, the provider's), an image's
-  `VOLUME`s, an Agentfile's image; `pause` of a joiner alone (its VM is its provider's). A
-  joiner's writable layer is not kept as it stops (D37): it lives in a mount namespace
+  an image's `VOLUME`s, an Agentfile's image. A joiner's writable layer is not kept as it stops (D37): it lives in a mount namespace
   that ends with it, unreachable by path once it has entered its root, so `diff`,
   `commit` and its size are refused while it runs; stopped, its files are its image's.
 - **No count of holders.** A VM process runs one VM, so its join disk is a `static` of

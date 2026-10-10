@@ -287,12 +287,34 @@ fn a_joiners_own_commands_reach_the_joiner() {
         .unwrap();
     // What it writes comes back through the joiner's `cat`: its stdin and output both the
     // joiner's.
+    let (lines, read) = std::sync::mpsc::channel();
+    let out = attached.stdout.take().unwrap();
+    std::thread::spawn(move || {
+        for line in BufReader::new(out).lines() {
+            if lines.send(line.unwrap()).is_err() {
+                return;
+            }
+        }
+    });
     attached.stdin.as_mut().unwrap().write_all(b"hello\n").unwrap();
-    let mut line = String::new();
-    BufReader::new(attached.stdout.as_mut().unwrap())
-        .read_line(&mut line)
-        .unwrap();
-    assert_eq!(line, "hello\n");
+    assert_eq!(read.recv_timeout(TIMEOUT).unwrap(), "hello");
+    // Paused alone, its cgroup frozen in the guest as Docker freezes a container's: what is
+    // written meanwhile comes back once it goes on, and its provider runs on.
+    let paused = shards(&["pause", "joiner"]);
+    assert_eq!(paused.status, Some(0), "{paused}");
+    let state = |name: &str| shards(&["inspect", "-f", "{{.State.Status}}", name]).stdout;
+    assert_eq!(
+        (state("joiner"), state("prov")),
+        ("paused\n".into(), "running\n".into())
+    );
+    attached.stdin.as_mut().unwrap().write_all(b"after\n").unwrap();
+    assert!(
+        read.recv_timeout(Duration::from_millis(500)).is_err(),
+        "a frozen joiner echoed"
+    );
+    let unpaused = shards(&["unpause", "joiner"]);
+    assert_eq!(unpaused.status, Some(0), "{unpaused}");
+    assert_eq!(read.recv_timeout(TIMEOUT).unwrap(), "after");
     let top = shards(&["top", "joiner", "-o", "pid,args"]);
     assert_eq!(top.status, Some(0), "{top}");
     assert!(
@@ -319,6 +341,48 @@ fn a_joiners_own_commands_reach_the_joiner() {
     let stopped = shards(&["stop", "-t", "1", "joiner"]);
     assert_eq!(stopped.status, Some(0), "{stopped}");
     assert_eq!(exit(&mut attached), Some(137));
+    assert_eq!(shards(&["stop", "-t", "1", "prov"]).status, Some(0));
+    let _ = exit(&mut provider);
+}
+
+/// A joiner's `--sysctl` is set in its own namespaces, as runc sets a container's from
+/// within them (D119): an IPC one in its own IPC namespace, its provider's untouched; a
+/// network one in the network namespace it shares, which Docker's joiner may set too.
+#[test]
+fn a_joiners_sysctls_are_set_in_its_namespaces() {
+    let Some((home, image)) = home("containers-joiner-sysctls") else {
+        return;
+    };
+    let mut provider = start(&home, &image, &["--name", "prov"], &["sleep"]);
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let (shm, port) = (
+        "print:/proc/sys/kernel/shmmax",
+        "print:/proc/sys/net/ipv4/ip_unprivileged_port_start",
+    );
+    let joined = run_in(
+        &home,
+        &image,
+        &[
+            "--rm",
+            "--network",
+            "container:prov",
+            "--sysctl",
+            "kernel.shmmax=1048576",
+            "--sysctl",
+            "net.ipv4.ip_unprivileged_port_start=500",
+        ],
+        &["fs", shm, port],
+    );
+    assert_eq!(
+        (joined.status, joined.stdout.as_str()),
+        (Some(0), "1048576\n500\n"),
+        "{joined}"
+    );
+    let theirs = shards(&["exec", "prov", "/bin/testguest", "fs", shm, port]);
+    assert_eq!(theirs.status, Some(0), "{theirs}");
+    let mut lines = theirs.stdout.lines();
+    assert_ne!(lines.next(), Some("1048576"), "{theirs}");
+    assert_eq!(lines.next(), Some("500"), "{theirs}");
     assert_eq!(shards(&["stop", "-t", "1", "prov"]).status, Some(0));
     let _ = exit(&mut provider);
 }
