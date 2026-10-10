@@ -4736,6 +4736,18 @@ fn run_caches_are_kept_across_builds() {
             .unwrap()
     };
     let first_collection = collected();
+    // What a cache holds is in no layer: the next step, without it, finds none of it.
+    let unlayered = build(
+        &format!(
+            "RUN {c} [\"/bin/testguest\", \"fs\", \"write:/c/own=1\"]\nRUN [\"/bin/testguest\", \"stat\", \"/c/own\"]\n"
+        ),
+        &[],
+    );
+    assert!(
+        unlayered.stderr.contains("/c/own missing"),
+        "{}",
+        unlayered.stderr
+    );
     // A failing step's writes are kept.
     let failed = build(
         &format!("RUN {c} [\"/bin/testguest\", \"fs\", \"write:/c/two=2\", \"open:r:/nowhere\"]\n"),
