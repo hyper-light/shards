@@ -233,6 +233,29 @@ pub fn bundle(signer: &Signer, payload: &[u8]) -> Result<Vec<u8>, String> {
     .into_bytes())
 }
 
+/// The key a PEM block of type `PUBLIC KEY` holds, as cosign.pub holds it, loaded as
+/// `cosign verify --key` loads one (cryptoutils.UnmarshalPEMToPublicKey, then the key's
+/// default verifier, Ed25519 keys prehashed: GetDefaultLoadOptions).
+pub fn public_key(pem: &[u8]) -> Result<crate::verify::KeyMaterial, String> {
+    let (block, _) = crate::tlog::pem::decode(pem).ok_or("PEM decoding failed")?;
+    if block.kind != b"PUBLIC KEY" {
+        return Err(format!(
+            "unknown Public key PEM file type: {}",
+            String::from_utf8_lossy(&block.kind)
+        ));
+    }
+    key_of_spki(&block.bytes)
+}
+
+/// [`public_key`] of a key's PKIX encoding.
+pub fn key_of_spki(spki: &[u8]) -> Result<crate::verify::KeyMaterial, String> {
+    let key = crate::tlog::pem::parse_pkix(spki)?;
+    Ok(crate::verify::KeyMaterial {
+        verifier: crate::keys::load_default(&key, true)?,
+        valid_from: 0,
+    })
+}
+
 /// What `cosign verify --key` checks of a signature bundle of the object `digest`
 /// (`alg:hex`) by the key `key` (pkg/cosign/verify.go: WithKey, the artifact's digest):
 /// the bundle signed with a key, its envelope's signature by `key`, its statement of
@@ -343,16 +366,11 @@ mod tests {
     /// The key a PKIX PEM block holds, as cosign verify --key loads it (Ed25519 keys
     /// prehashed, GetDefaultLoadOptions).
     fn key_of_pem(pem: &[u8]) -> KeyMaterial {
-        let (block, _) = crate::tlog::pem::decode(pem).unwrap();
-        key_of_spki(&block.bytes)
+        public_key(pem).unwrap()
     }
 
     fn key_of_spki(spki: &[u8]) -> KeyMaterial {
-        let key = crate::tlog::pem::parse_pkix(spki).unwrap();
-        KeyMaterial {
-            verifier: crate::keys::load_default(&key, true).unwrap(),
-            valid_from: 0,
-        }
+        super::key_of_spki(spki).unwrap()
     }
 
     fn measured() -> serde_json::Value {

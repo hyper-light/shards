@@ -396,6 +396,29 @@ pub fn registry_for_push(
     cancel: Option<&Cancel>,
     env: &dyn Fn(&str) -> Option<String>,
 ) -> Result<Registry, String> {
+    let (http, credentials) = client_for(reference, cancel, env)?;
+    let mounts: Vec<String> = mount.into_iter().map(String::from).collect();
+    Registry::for_push(http, reference, credentials, &mounts).map_err(|e| e.to_string())
+}
+
+/// A registry to delete manifests of `reference`'s repository from, and to update the
+/// referrers it lists (D116), with the credentials and TLS a push to it would use.
+pub fn registry_for_delete(
+    reference: &Reference,
+    env: &dyn Fn(&str) -> Option<String>,
+) -> Result<Registry, String> {
+    let (http, credentials) = client_for(reference, None, env)?;
+    Registry::for_delete(http, reference, credentials).map_err(|e| e.to_string())
+}
+
+/// The HTTP client and credentials a push to `reference`'s registry uses: its
+/// certificates and proxies, cancelled by `cancel` if given; what the credentials lookup
+/// warns of, said.
+fn client_for(
+    reference: &Reference,
+    cancel: Option<&Cancel>,
+    env: &dyn Fn(&str) -> Option<String>,
+) -> Result<(Client, shards_registry::auth::Credentials), String> {
     let (credentials, warnings) = credentials::lookup(&reference.domain, env).map_err(|e| e.to_string())?;
     for warning in warnings {
         let _ = writeln!(std::io::stderr(), "WARNING: {warning}");
@@ -411,8 +434,7 @@ pub fn registry_for_push(
         None => http,
     }
     .with_proxies(Proxies::from_env(env));
-    let mounts: Vec<String> = mount.into_iter().map(String::from).collect();
-    Registry::for_push(http, reference, credentials, &mounts).map_err(|e| e.to_string())
+    Ok((http, credentials))
 }
 
 /// Pulls `reference` into the store, until `cancel`, if given, is cancelled, with the

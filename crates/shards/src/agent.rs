@@ -20,6 +20,9 @@ use shards_image::osi::{self, Config, Kind};
 use shards_image::reference::{Digest, Reference};
 use shards_image::store::Store;
 
+/// The artifact type of an SBOM referrer: SPDX's JSON (D116).
+pub const SPDX_JSON: &str = "application/spdx+json";
+
 /// The file a directory's config is read from, by kind.
 fn config_file(kind: Kind) -> &'static str {
     match kind {
@@ -59,6 +62,7 @@ pub fn command(word: &str, args: impl Iterator<Item = OsString>) -> ExitCode {
             "ls" | "list" => list(kind),
             "inspect" => inspect(kind, rest),
             "rm" | "remove" | "delete" => remove(kind, rest),
+            "sign" => sign(kind, rest),
             "-h" | "--help" | "help" => {
                 let _ = writeln!(io::stdout(), "{}", usage(kind));
                 Ok(())
@@ -93,7 +97,7 @@ fn usage(kind: Kind) -> String {
         Kind::Mcp => "mcp",
     };
     format!(
-        "Usage:\n  shards build {w} DIR -t NAME [--platform LIST]   make one of DIR and its {}\n  shards push {w} NAME\n  shards pull {w} NAME\n  shards ls {w}\n  shards inspect {w} NAME\n  shards rm {w} NAME",
+        "Usage:\n  shards build {w} DIR -t NAME [--platform LIST]   make one of DIR and its {}\n  shards sign {w} NAME --key FILE                  sign it with a cosign key (COSIGN_PASSWORD)\n  shards push {w} NAME                             with its signatures and SBOMs\n  shards pull {w} NAME\n  shards ls {w}\n  shards inspect {w} NAME\n  shards rm {w} NAME\n  shards rm {w} NAME --referrer DIGEST             delete a signature or SBOM from its registry",
         config_file(kind)
     )
 }
@@ -643,6 +647,63 @@ fn pull_cmd(kind: Kind, args: &[String]) -> Result<(), String> {
         config.name,
         desc.digest
     );
+    // Its signatures and SBOMs, as the registry lists them (D116), each a manifest that
+    // refers to it, kept with it.
+    let subject = subject_of(&store, &name, &desc)?;
+    let registry = crate::pull::registry(&name, None, &|k| std::env::var(k).ok())?;
+    let limits = crate::pull::limits()?;
+    for r in shards_registry::referrers::list(&registry, &subject.digest, &[]).map_err(|e| e.to_string())? {
+        let desc = Descriptor {
+            media_type: r.media_type.clone(),
+            digest: r.digest.clone(),
+            size: r.size,
+            platform: None,
+            annotations: BTreeMap::new(),
+        };
+        if desc.media_type != oci::media::OCI_MANIFEST {
+            let _ = writeln!(
+                io::stderr(),
+                "{name}: referrer {} of type {} left",
+                r.digest,
+                r.media_type
+            );
+            continue;
+        }
+        let bytes = registry
+            .fetch_document(&store, &desc)
+            .map_err(|e| e.to_string())?;
+        // A list under the tag schema is anyone's who may push: what refers to another
+        // is left, said.
+        let refers_to = shards_registry::referrers::entry(&desc, &bytes).map(|(_, s)| s);
+        if refers_to.as_deref().ok() != Some(subject.digest.as_str()) {
+            let _ = writeln!(
+                io::stderr(),
+                "{name}: referrer {} left: it does not refer to {}",
+                r.digest,
+                subject.digest
+            );
+            continue;
+        }
+        let Document::Manifest(m) =
+            oci::parse_document(&bytes, &desc.media_type).map_err(|e| e.to_string())?
+        else {
+            continue;
+        };
+        for part in std::iter::once(&m.config).chain(&m.layers) {
+            registry
+                .fetch_blob(&store, part, &limits, &|_| {})
+                .map_err(|e| e.to_string())?;
+        }
+        store
+            .keep_referrer(&name.to_string(), &desc)
+            .map_err(|e| e.to_string())?;
+        let _ = writeln!(
+            io::stdout(),
+            "{name}: {} {}",
+            referrer_kind(&store, &desc),
+            desc.digest
+        );
+    }
     Ok(())
 }
 
@@ -662,26 +723,42 @@ fn push(kind: Kind, args: &[String]) -> Result<(), String> {
     check_content(&store, kind, &m)?;
     let registry = crate::pull::registry_for_push(&name, None, None, &|k| std::env::var(k).ok())?;
     // Of several platforms, the index: every platform's manifest with it.
-    let resolved = store.resolved(&name.to_string()).map_err(|e| e.to_string())?;
-    let desc = match resolved.filter(|r| r.to_string() != desc.digest) {
-        Some(index) => {
-            let size = std::fs::metadata(store.blob_path(&index))
-                .map_err(|e| format!("{index}: {e}"))?
-                .len();
-            Descriptor {
-                media_type: oci::media::OCI_INDEX.into(),
-                digest: index.to_string(),
-                size: i64::try_from(size).map_err(|e| e.to_string())?,
-                platform: None,
-                annotations: BTreeMap::new(),
-            }
-        }
-        None => desc,
-    };
+    let desc = subject_of(&store, &name, &desc)?;
     shards_registry::push::push(&registry, &store, &desc, name.tag.as_deref(), None, &|_, _| {})
         .map_err(|e| e.to_string())?;
     let _ = writeln!(io::stdout(), "{name}: pushed {}", desc.digest);
+    // Its signatures and SBOMs after it, each listed by the registry or, where it has no
+    // referrers API, in the index the referrers tag schema names (D116).
+    for r in store.referrers_of(&name.to_string()).map_err(|e| e.to_string())? {
+        let listed = shards_registry::referrers::push(&registry, &store, &r).map_err(|e| e.to_string())?;
+        let how = match listed {
+            shards_registry::referrers::Listed::ByApi => "the registry lists it",
+            shards_registry::referrers::Listed::ByTagSchema => "listed under the referrers tag schema",
+        };
+        let _ = writeln!(
+            io::stdout(),
+            "{name}: pushed {} {} ({how})",
+            referrer_kind(&store, &r),
+            r.digest
+        );
+    }
     Ok(())
+}
+
+/// What a kept referrer is, by its artifact type: a signature, an SBOM, or its type.
+fn referrer_kind(store: &Store, r: &Descriptor) -> String {
+    let artifact_type = store
+        .content(r, oci::MAX_MANIFEST)
+        .ok()
+        .flatten()
+        .and_then(|bytes| shards_registry::referrers::entry(r, &bytes).ok())
+        .map(|(e, _)| e.artifact_type)
+        .unwrap_or_default();
+    match artifact_type.as_str() {
+        shards_sigstore::image::ARTIFACT_SIGSTORE_BUNDLE => "signature".into(),
+        crate::agent::SPDX_JSON => "SBOM".into(),
+        other => format!("referrer of type {other}"),
+    }
 }
 
 /// The OSI artifacts of `kind` the store holds: each name, its config's name, version and
@@ -732,12 +809,23 @@ fn inspect(kind: Kind, args: &[String]) -> Result<(), String> {
         .map_err(|e| e.to_string())?
         .ok_or("its config is not here")?;
     let config: serde_json::Value = serde_json::from_slice(&config).map_err(|e| e.to_string())?;
+    // Its signatures and SBOMs kept with it (D116), as a referrers list names each.
+    let mut referrers = Vec::new();
+    for r in store.referrers_of(&name.to_string()).map_err(|e| e.to_string())? {
+        let bytes = store
+            .content(&r, oci::MAX_MANIFEST)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("{}: not here", r.digest))?;
+        let (entry, _) = shards_registry::referrers::entry(&r, &bytes).map_err(|e| e.to_string())?;
+        referrers.push(entry);
+    }
     let out = serde_json::json!([{
         "Name": name.to_string(),
         "Digest": desc.digest,
         "ArtifactType": kind.artifact_type(),
         "Config": config,
         "Layers": m.layers,
+        "Referrers": referrers,
     }]);
     let _ = writeln!(
         io::stdout(),
@@ -748,11 +836,29 @@ fn inspect(kind: Kind, args: &[String]) -> Result<(), String> {
 }
 
 fn remove(kind: Kind, args: &[String]) -> Result<(), String> {
-    if args.is_empty() {
+    let (mut names, mut referrer) = (Vec::new(), None);
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--referrer" => referrer = Some(it.next().ok_or("--referrer needs a digest")?.clone()),
+            s if s.starts_with("--referrer=") => {
+                referrer = Some(s.trim_start_matches("--referrer=").to_string())
+            }
+            s if s.starts_with('-') => return Err(format!("unknown flag {s}\n{}", usage(kind))),
+            s => names.push(s.to_string()),
+        }
+    }
+    if names.is_empty() {
         return Err(usage(kind));
     }
+    if let Some(digest) = referrer {
+        let [name] = names.as_slice() else {
+            return Err(format!("--referrer is one name's: {}", names.join(" ")));
+        };
+        return remove_referrer(&reference(name)?, &digest);
+    }
     let store = store()?;
-    for n in args {
+    for n in &names {
         let name = reference(n)?;
         let desc = store
             .tagged(&name.to_string())
@@ -766,6 +872,203 @@ fn remove(kind: Kind, args: &[String]) -> Result<(), String> {
         let _ = writeln!(io::stdout(), "Untagged: {name}");
     }
     Ok(())
+}
+
+/// `shards rm agent NAME --referrer DIGEST`: deletes the referrer DIGEST of what NAME
+/// names in its registry from there, with its entry in the referrers tag schema's list
+/// where the registry has no referrers API (D116); then lets go of it here. A signature
+/// deleted so no longer vouches for the artifact to anyone who takes it.
+fn remove_referrer(name: &Reference, digest: &str) -> Result<(), String> {
+    Digest::parse(digest).map_err(|e| format!("{digest}: {e}"))?;
+    let store = store()?;
+    let registry = crate::pull::registry_for_delete(name, &|k| std::env::var(k).ok())?;
+    // What the name resolves to there is what its referrers refer to.
+    let subject = registry.resolve(&store, name).map_err(|e| e.to_string())?;
+    shards_registry::referrers::delete(&registry, &subject.digest, digest).map_err(|e| e.to_string())?;
+    let here = store
+        .drop_referrer(&name.to_string(), digest)
+        .map_err(|e| e.to_string())?;
+    let _ = writeln!(
+        io::stdout(),
+        "Deleted: {digest}, a referrer of {name}{}",
+        if here { ", here too" } else { "" }
+    );
+    Ok(())
+}
+
+/// What `name`, whose manifest here `desc` describes, resolved to, as its referrers'
+/// `subject` names it: the index of an artifact of several platforms, else its manifest.
+fn subject_of(store: &Store, name: &Reference, desc: &Descriptor) -> Result<Descriptor, String> {
+    let resolved = store.resolved(&name.to_string()).map_err(|e| e.to_string())?;
+    match resolved.filter(|r| r.to_string() != desc.digest) {
+        Some(index) => {
+            let size = fs::metadata(store.blob_path(&index))
+                .map_err(|e| format!("{index}: {e}"))?
+                .len();
+            Ok(Descriptor {
+                media_type: oci::media::OCI_INDEX.into(),
+                digest: index.to_string(),
+                size: i64::try_from(size).map_err(|e| e.to_string())?,
+                platform: None,
+                annotations: BTreeMap::new(),
+            })
+        }
+        None => Ok(Descriptor {
+            platform: None,
+            annotations: BTreeMap::new(),
+            ..desc.clone()
+        }),
+    }
+}
+
+/// `bytes` into the store, by their SHA-256.
+fn ingest(store: &Store, bytes: &[u8]) -> Result<Digest, String> {
+    let d = sha256(bytes)?;
+    store
+        .ingest(&d, bytes.len() as u64, &mut &bytes[..])
+        .map_err(|e| e.to_string())?;
+    Ok(d)
+}
+
+/// `shards sign agent NAME --key FILE` (and `harness`, `mcp`): a signature of what NAME
+/// names, as cosign v3.1.3 signs one with a key (D116, shards_sigstore::sign), kept with
+/// it and pushed with it. The key is cosign's own (generate-key-pair's, import-key-pair's),
+/// its password COSIGN_PASSWORD's, as cosign takes it, else asked on the terminal.
+fn sign(kind: Kind, args: &[String]) -> Result<(), String> {
+    let (mut name, mut key) = (None, None);
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--key" => key = Some(it.next().ok_or("--key needs a file")?.clone()),
+            s if s.starts_with("--key=") => key = Some(s.trim_start_matches("--key=").to_string()),
+            s if s.starts_with('-') => return Err(format!("unknown flag {s}\n{}", usage(kind))),
+            s if name.is_none() => name = Some(s.to_string()),
+            s => return Err(format!("one name only, not {s:?} too")),
+        }
+    }
+    let name = reference(&name.ok_or_else(|| usage(kind))?)?;
+    let key = key.ok_or("--key names the cosign key to sign with")?;
+    let store = store()?;
+    let _lease = store.lease().map_err(|e| e.to_string())?;
+    let desc = store
+        .tagged(&name.to_string())
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("no {} {name} here", kind.word()))?;
+    let (_, found) = manifest_of(&store, &desc)?;
+    if found != kind {
+        return Err(format!("{name} is {}, not {}", a(found), a(kind)));
+    }
+    let subject = subject_of(&store, &name, &desc)?;
+    let pem = fs::read(&key).map_err(|e| format!("{key}: {e}"))?;
+    let mut password = password()?;
+    let signer = shards_sigstore::cosignkey::load(&pem, &password);
+    password.fill(0);
+    let signer = signer.map_err(|e| format!("{key}: {e}"))?;
+    let referrer = signature(&store, &signer, &subject)?;
+    store
+        .keep_referrer(&name.to_string(), &referrer)
+        .map_err(|e| e.to_string())?;
+    let _ = writeln!(
+        io::stdout(),
+        "{name}: {} signed by the key {}: signature {}",
+        subject.digest,
+        signer.hint(),
+        referrer.digest
+    );
+    Ok(())
+}
+
+/// The referrer a signature of `subject` by `signer` is, its blobs stored: cosign's
+/// bundle, the empty config, and the manifest cosign's WriteReferrer writes, made now.
+pub fn signature(
+    store: &Store,
+    signer: &shards_sigstore::sign::Signer,
+    subject: &Descriptor,
+) -> Result<Descriptor, String> {
+    use shards_sigstore::sign::{self as cosign, Described};
+    let payload = cosign::statement(&subject.digest)?;
+    let bundle = cosign::bundle(signer, &payload)?;
+    let bundle_digest = ingest(store, &bundle)?;
+    ingest(store, cosign::EMPTY_CONFIG)?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_secs();
+    let created = shards_cmdline::format::rfc3339_at(i64::try_from(now).map_err(|e| e.to_string())?, 0);
+    let manifest = cosign::referrer(
+        &Described {
+            media_type: shards_sigstore::image::ARTIFACT_SIGSTORE_BUNDLE.into(),
+            size: i64::try_from(bundle.len()).map_err(|e| e.to_string())?,
+            digest: bundle_digest.to_string(),
+        },
+        &Described {
+            media_type: subject.media_type.clone(),
+            size: subject.size,
+            digest: subject.digest.clone(),
+        },
+        cosign::COSIGN_SIGN_PREDICATE,
+        &created,
+    );
+    let digest = ingest(store, &manifest)?;
+    Ok(Descriptor {
+        media_type: oci::media::OCI_MANIFEST.into(),
+        digest: digest.to_string(),
+        size: i64::try_from(manifest.len()).map_err(|e| e.to_string())?,
+        platform: None,
+        annotations: BTreeMap::new(),
+    })
+}
+
+/// The key's password, as cosign takes it: COSIGN_PASSWORD's if it is set, empty for a key
+/// that has none; else asked on the controlling terminal, not echoed.
+fn password() -> Result<Vec<u8>, String> {
+    if let Some(p) = std::env::var_os("COSIGN_PASSWORD") {
+        return Ok(p.into_encoded_bytes());
+    }
+    ask_password("Enter password for private key: ")
+}
+
+#[cfg(unix)]
+fn ask_password(prompt: &str) -> Result<Vec<u8>, String> {
+    use std::io::BufRead as _;
+    use std::os::fd::AsRawFd as _;
+    let no_terminal = || "no terminal to ask the key's password on: set COSIGN_PASSWORD".to_string();
+    let mut tty = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/tty")
+        .map_err(|_| no_terminal())?;
+    let fd = tty.as_raw_fd();
+    // SAFETY: an all-zero termios is a valid out-parameter.
+    let mut t: libc::termios = unsafe { std::mem::zeroed() };
+    // SAFETY: tcgetattr(3) fills `t` for the terminal.
+    if unsafe { libc::tcgetattr(fd, &mut t) } != 0 {
+        return Err(no_terminal());
+    }
+    let saved = t;
+    t.c_lflag &= !libc::ECHO;
+    // SAFETY: tcsetattr(3) reads `t`.
+    if unsafe { libc::tcsetattr(fd, libc::TCSANOW, &t) } != 0 {
+        return Err(no_terminal());
+    }
+    let _ = tty.write_all(prompt.as_bytes()).and_then(|()| tty.flush());
+    let mut line = Vec::new();
+    // A password is a line; a terminal's line discipline holds no more than 4096 bytes
+    // of one (Linux N_TTY_BUF_SIZE, macOS MAX_CANON 1024).
+    let read = io::BufReader::new(&tty).take(4096).read_until(b'\n', &mut line);
+    // SAFETY: tcsetattr(3) reads `saved`, the settings found.
+    unsafe { libc::tcsetattr(fd, libc::TCSANOW, &saved) };
+    let _ = tty.write_all(b"\n");
+    read.map_err(|e| format!("reading the key's password: {e}"))?;
+    while line.last().is_some_and(|b| *b == b'\n' || *b == b'\r') {
+        line.pop();
+    }
+    Ok(line)
+}
+
+#[cfg(not(unix))]
+fn ask_password(_: &str) -> Result<Vec<u8>, String> {
+    Err("set COSIGN_PASSWORD to the key's password".into())
 }
 
 /// The image layer type an OSI content layer is read as: the same tar, compressed the

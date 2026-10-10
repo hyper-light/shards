@@ -1977,6 +1977,48 @@ pub struct Repos {
     pub manifests: std::collections::HashMap<String, std::collections::HashMap<String, (String, Vec<u8>)>>,
     /// Each request's method and path, in order.
     pub log: Vec<String>,
+    /// Whether it serves the referrers API as zot does (D116): a manifest with a subject
+    /// put is answered `OCI-Subject`, and `referrers/<digest>` lists those referring to
+    /// it; else it has none, as distribution has none, and answers 404 there.
+    pub referrers_api: bool,
+}
+
+/// The referrers of `subject` among `manifests`, as the referrers API lists them: each
+/// manifest whose subject it is, its artifact type (else its config's type) and its
+/// annotations.
+fn referrers_of(manifests: &std::collections::HashMap<String, (String, Vec<u8>)>, subject: &str) -> Vec<u8> {
+    let mut seen = std::collections::BTreeMap::new();
+    for (reference, (kind, body)) in manifests {
+        if !reference.starts_with("sha256:") {
+            continue;
+        }
+        let Ok(m) = serde_json::from_slice::<serde_json::Value>(body) else {
+            continue;
+        };
+        if m["subject"]["digest"].as_str() != Some(subject) {
+            continue;
+        }
+        let artifact_type = m["artifactType"]
+            .as_str()
+            .or(m["config"]["mediaType"].as_str())
+            .unwrap_or_default();
+        seen.insert(
+            reference.clone(),
+            serde_json::json!({
+                "mediaType": kind,
+                "size": body.len(),
+                "digest": reference,
+                "artifactType": artifact_type,
+                "annotations": m["annotations"].clone(),
+            }),
+        );
+    }
+    serde_json::to_vec(&serde_json::json!({
+        "schemaVersion": 2,
+        "mediaType": "application/vnd.oci.image.index.v1+json",
+        "manifests": seen.into_values().collect::<Vec<_>>(),
+    }))
+    .unwrap()
 }
 
 /// A registry on loopback that takes pushes as the distribution spec has them: a blob's
@@ -2107,14 +2149,40 @@ pub fn writable_registry_requiring(authorization: Option<String>) -> (u16, Arc<s
                             ),
                             None => ("404 Not Found", vec![], vec![]),
                         }
+                    } else if let Some((repo, subject)) =
+                        rest.split_once("/referrers/").filter(|_| repos.referrers_api)
+                    {
+                        let listed =
+                            referrers_of(repos.manifests.get(repo).unwrap_or(&Default::default()), subject);
+                        (
+                            "200 OK",
+                            vec!["Content-Type: application/vnd.oci.image.index.v1+json".to_string()],
+                            listed,
+                        )
                     } else if let Some((repo, reference)) = rest.split_once("/manifests/") {
                         let repo = repo.to_string();
                         if method == "PUT" {
                             let d = sha256_digest(&body);
+                            let subject = serde_json::from_slice::<serde_json::Value>(&body)
+                                .ok()
+                                .and_then(|m| m["subject"]["digest"].as_str().map(String::from))
+                                .filter(|_| repos.referrers_api);
                             let m = repos.manifests.entry(repo).or_default();
                             m.insert(reference.to_string(), (kind.clone(), body.clone()));
                             m.insert(d.clone(), (kind.clone(), body));
-                            ("201 Created", vec![format!("Docker-Content-Digest: {d}")], vec![])
+                            let mut headers = vec![format!("Docker-Content-Digest: {d}")];
+                            headers.extend(subject.map(|s| format!("OCI-Subject: {s}")));
+                            ("201 Created", headers, vec![])
+                        } else if method == "DELETE" {
+                            // The manifest, by its digest, and every tag naming it.
+                            let m = repos.manifests.entry(repo).or_default();
+                            let before = m.len();
+                            m.retain(|r, (_, b)| r != reference && sha256_digest(b) != reference);
+                            if m.len() == before {
+                                ("404 Not Found", vec![], vec![])
+                            } else {
+                                ("202 Accepted", vec![], vec![])
+                            }
                         } else {
                             match repos.manifests.get(&repo).and_then(|m| m.get(reference)) {
                                 Some((kind, b)) => (
