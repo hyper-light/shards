@@ -1,9 +1,8 @@
 # Every file byte for byte on every host: no line ending converted at checkout. What the
-# binary carries (include_bytes!, include_str!) and what tests hold to oracles must be the
-# bytes their digests and answers were taken of; a Windows checkout's CRLF made the carried
-# TUF target 6,913 bytes where targets.json pins its 6,787 and their sha256.
+# binary carries (include_bytes!, include_str!), what tests hold to oracles and what is
+# vendored (held to its upstream's bytes, scripts/vendor-crate --check) must be the bytes
+# their digests and answers were taken of; a Windows checkout's CRLF made the carried TUF
+# target 6,913 bytes where targets.json pins its 6,787 and their sha256.
 * -text
-# Batch files as cmd.exe reads them, as a Windows checkout gave them before.
-*.bat text eol=crlf
 # Byte-exact test archives.
 *.tar binary
