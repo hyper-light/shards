@@ -239,6 +239,33 @@ mod tests {
         }
     }
 
+    /// Held to BuildKit v0.33.0's own captureURL, redactURL and finalURL, as
+    /// scripts/proxy/generate records them.
+    #[test]
+    fn urls_are_captured_as_buildkits_proxy_captures_them() {
+        let oracle: serde_json::Value =
+            serde_json::from_str(include_str!("../testdata/proxy-oracle.json")).unwrap();
+        for u in oracle["urls"].as_array().unwrap() {
+            let given = u["in"].as_str().unwrap();
+            assert_eq!(
+                capture_url(given),
+                u["capture"].as_str().unwrap(),
+                "capture {given:?}"
+            );
+            assert_eq!(redact(given), u["redact"].as_str().unwrap(), "redact {given:?}");
+        }
+        for f in oracle["finals"].as_array().unwrap() {
+            let request = url::parse(f["request"].as_str().unwrap().as_bytes()).unwrap();
+            let location = f["location"].as_str().unwrap();
+            assert_eq!(
+                final_url(&request, Some(location)),
+                f["final"].as_str().unwrap(),
+                "{location:?} from {}",
+                f["request"]
+            );
+        }
+    }
+
     /// The measured build's step (shards-dind, buildx v0.37.1 on BuildKit v0.33.0): its
     /// lines as its log had them, and a redirect's source a material by its target's digest.
     #[test]

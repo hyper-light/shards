@@ -674,8 +674,7 @@ fn inject_ca(r: &Root, ca: &[u8]) -> io::Result<Option<Injected>> {
     if ca.is_empty() {
         return Ok(None);
     }
-    let der =
-        proxyca::first_certificate(ca).ok_or_else(|| err("proxy CA PEM does not contain a certificate"))?;
+    let der = proxyca::first_certificate(ca).ok_or_else(|| err(proxyca::NO_CERTIFICATE))?;
     let mut found = None;
     for name in proxyca::BUNDLES {
         let path = r.resolve(name, false).map_err(|e| {

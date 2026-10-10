@@ -1,0 +1,74 @@
+#!/bin/sh
+# Regenerates what BuildKit v0.33.0's exec proxy makes of the cases in proxy_oracle_test.go
+# (crates/shards/src/build/testdata/proxy-oracle.json: its URLs as captured and redacted,
+# redirects' targets, and each raw request, plain and in a tunnel, as its handler on Go's
+# server reads it and the policy is asked of it) and what its InjectProxyCA makes of the
+# cases in proxyca_oracle_test.go (crates/init/testdata/proxyca.json), which
+# crates/shards/src/build/proxy and crates/init/src/proxyca.rs expect of shards (D110).
+#
+# The tests are built with the Go release BuildKit's go.mod names, for Linux on this
+# host's architecture, as buildkitd is, and run in a Linux container: CONTAINER,
+# shards-dind by default, in a directory of their own that is removed after.
+#
+#   scripts/proxy/generate [BUILDKIT_CHECKOUT]
+set -eu
+
+here=$(cd "$(dirname "$0")" && pwd)
+root=$(cd "$here/../.." && pwd)
+proxy_out="$root/crates/shards/src/build/testdata/proxy-oracle.json"
+ca_out="$root/crates/init/testdata/proxyca.json"
+commit=dddd5621af04ea57823085c93a063383f71d3173 # v0.33.0
+container=${CONTAINER:-shards-dind}
+buildkit=${1:-}
+work=$(mktemp -d)
+dir=/root/shards-proxy-oracle
+cleanup() {
+	rm -rf "$work"
+	[ -n "${buildkit_tmp:-}" ] && rm -rf "$buildkit_tmp"
+	[ -n "${proxy_test:-}" ] && rm -f "$proxy_test"
+	[ -n "${ca_test:-}" ] && rm -f "$ca_test"
+	docker exec "$container" rm -rf "$dir" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+if [ -z "$buildkit" ]; then
+	buildkit_tmp=$(mktemp -d)
+	buildkit=$buildkit_tmp
+	git -C "$buildkit" init --quiet
+	git -C "$buildkit" fetch --quiet --depth 1 https://github.com/moby/buildkit "$commit"
+	git -C "$buildkit" checkout --quiet FETCH_HEAD
+fi
+if [ "$(git -C "$buildkit" rev-parse HEAD)" != "$commit" ]; then
+	echo "$buildkit is not moby/buildkit $commit" >&2
+	exit 1
+fi
+
+proxy_test="$buildkit/util/network/proxyprovider/zz_shards_proxy_test.go"
+ca_test="$buildkit/executor/zz_shards_proxyca_test.go"
+cp "$here/proxy_oracle_test.go" "$proxy_test"
+cp "$here/proxyca_oracle_test.go" "$ca_test"
+go=$(sed -n 's/^go //p' "$buildkit/go.mod")
+case $(uname -m) in
+arm64 | aarch64) arch=arm64 ;;
+x86_64 | amd64) arch=amd64 ;;
+*)
+	echo "unknown architecture $(uname -m)" >&2
+	exit 1
+	;;
+esac
+(cd "$buildkit" && GOTOOLCHAIN="go$go" GOFLAGS=-mod=vendor GOOS=linux GOARCH="$arch" CGO_ENABLED=0 \
+	go test -c -o "$work/proxy.test" ./util/network/proxyprovider/ &&
+	GOTOOLCHAIN="go$go" GOFLAGS=-mod=vendor GOOS=linux GOARCH="$arch" CGO_ENABLED=0 \
+		go test -c -o "$work/proxyca.test" ./executor/)
+
+# /tmp in a docker:dind container is a tmpfs, which docker cp does not reach.
+docker exec "$container" mkdir -p "$dir"
+docker cp "$work/proxy.test" "$container:$dir/proxy.test"
+docker cp "$work/proxyca.test" "$container:$dir/proxyca.test"
+docker exec -e SHARDS_PROXY_OUT="$dir/proxy.json" "$container" \
+	"$dir/proxy.test" -test.count=1 -test.run '^TestShardsProxy$'
+docker exec -e SHARDS_PROXYCA_OUT="$dir/proxyca.json" "$container" \
+	"$dir/proxyca.test" -test.count=1 -test.run '^TestShardsProxyCA$'
+mkdir -p "$(dirname "$ca_out")"
+docker cp "$container:$dir/proxy.json" "$proxy_out"
+docker cp "$container:$dir/proxyca.json" "$ca_out"
+echo "wrote $proxy_out and $ca_out"

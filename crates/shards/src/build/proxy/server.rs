@@ -18,6 +18,7 @@ use sha2::Digest as _;
 use super::ca;
 use super::capture::{self, Capture};
 use super::head::{self, Framing, Head};
+use super::sniff;
 
 /// A body's digest as BuildKit writes one: `sha256:` and its hex.
 fn digest_of(hasher: sha2::Sha256) -> String {
@@ -30,9 +31,6 @@ pub const PORT: u16 = 3128;
 
 /// A request body kept in memory up to this; past it, in a file of the proxy's own.
 const IN_MEMORY: usize = 64 << 10;
-
-/// What Go's server buffers of a response before it writes its head (`bufferBeforeChunkingSize`).
-const BUFFERED: usize = 2048;
 
 /// Whether a request may go to `ip`: never the host itself (its loopback, unspecified,
 /// link-local, multicast and broadcast addresses, nor IPv4-compatible IPv6), as the
@@ -140,8 +138,10 @@ fn canonical(key: &str) -> String {
 }
 
 /// A response's fields as they are passed on: keys canonical and sorted, as Go writes a
-/// header (`Header.WriteSubset`), without those that frame a message or end a hop (RFC
-/// 9110 §7.6.1), which this proxy writes itself; `keep` says which others stay.
+/// header (`Header.WriteSubset`), without those that frame a message or end a hop, which
+/// this proxy writes itself: `Connection` and each field it names, and the rest RFC 9110
+/// §7.6.1 says a proxy removes (where BuildKit's passes them on, D110); `keep` says which
+/// others stay.
 fn passed_on(fields: &[(String, String)], keep: impl Fn(&str) -> bool) -> Vec<(String, String)> {
     const HOP: [&str; 8] = [
         "Connection",
@@ -153,10 +153,16 @@ fn passed_on(fields: &[(String, String)], keep: impl Fn(&str) -> bool) -> Vec<(S
         "Transfer-Encoding",
         "Upgrade",
     ];
+    let named: Vec<String> = fields
+        .iter()
+        .filter(|(k, _)| k.eq_ignore_ascii_case("Connection"))
+        .flat_map(|(_, v)| v.split(','))
+        .map(|t| canonical(t.trim_matches([' ', '\t'])))
+        .collect();
     let mut out: Vec<(String, String)> = fields
         .iter()
         .map(|(k, v)| (canonical(k), v.clone()))
-        .filter(|(k, _)| !HOP.contains(&k.as_str()) && keep(k))
+        .filter(|(k, _)| !HOP.contains(&k.as_str()) && !named.contains(k) && keep(k))
         .collect();
     out.sort_by(|a, b| a.0.cmp(&b.0));
     out
@@ -279,8 +285,69 @@ fn write_error(out: &mut impl Write, head: &Head, status: u16, text: &str, force
         s.push_str(&format!("Connection: {c}\r\n"));
     }
     s.push_str("\r\n");
-    s.push_str(&body);
+    // A HEAD's response has its length, never its body.
+    if head.method != "HEAD" {
+        s.push_str(&body);
+    }
     out.write_all(s.as_bytes()).and_then(|()| out.flush()).is_ok() && !close
+}
+
+/// The most of an `OPTIONS *` request's body Go's server reads (`globalOptionsHandler`).
+const OPTIONS_BODY: u64 = 4 << 10;
+
+/// `OPTIONS *`, which Go's server answers itself (`globalOptionsHandler`), so BuildKit's
+/// proxy never sees it: `200` of no body, with up to 4 KiB of the request's body read,
+/// past which it closes (MaxBytesReader's `requestTooLarge`, its `Connection` field among
+/// the handler's). Nothing goes anywhere, so nothing is asked of the policies. Whether the
+/// connection goes on.
+fn options<R: BufRead>(
+    out: &mut impl Write,
+    head: &Head,
+    reader: &mut R,
+    framing: Framing,
+    continues: bool,
+) -> bool {
+    let (mut too_large, mut failed) = (false, false);
+    if framing != Framing::Length(0) {
+        // Its first read of the body asks for it, as expectContinueReader does.
+        if continues && head.at_least(1, 1) {
+            let _ = out.write_all(b"HTTP/1.1 100 Continue\r\n\r\n");
+            let _ = out.flush();
+        }
+        let mut body = head::Body::new(reader, framing);
+        let mut sink = [0u8; 4096];
+        let mut read = 0u64;
+        loop {
+            match body.read(&mut sink) {
+                Ok(0) => break,
+                Ok(n) => {
+                    read += n as u64;
+                    if read > OPTIONS_BODY {
+                        too_large = true;
+                        break;
+                    }
+                }
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                // A body of known length cut short is done with, as Go's `body` sees its
+                // end; a chunked one that fails, not (its error stays).
+                Err(_) => {
+                    failed = framing == Framing::Chunked;
+                    break;
+                }
+            }
+        }
+    }
+    let mut s = format!("HTTP/1.{} 200 OK\r\n", u8::from(head.at_least(1, 1)));
+    if too_large {
+        s.push_str("Connection: close\r\n");
+    }
+    s.push_str(&format!("Content-Length: 0\r\nDate: {}\r\n", http_date()));
+    let (close, connection) = keep_alive(head, true, failed);
+    if let Some(c) = connection.filter(|_| !too_large) {
+        s.push_str(&format!("Connection: {c}\r\n"));
+    }
+    s.push_str("\r\n");
+    out.write_all(s.as_bytes()).and_then(|()| out.flush()).is_ok() && !close && !too_large
 }
 
 /// Go's server's choice after a response (`chunkWriter.writeHeader`): whether the
@@ -302,10 +369,12 @@ fn keep_alive(head: &Head, length_known: bool, forced: bool) -> (bool, Option<&'
 }
 
 /// Passes a response on to a plain request's client as Go's server writes BuildKit's
-/// handler's (`copyHeader`, `WriteHeader`, `io.Copy`): the status's own words, the fields
-/// sorted, a `Date` where it has none, its length where known or the whole of a short one,
-/// else chunked (HTTP/1.1) or to the connection's end. Whether the connection goes on,
-/// whether the body was read whole, and its digest.
+/// handler's (`copyHeader`, `WriteHeader`, then `io.Copy`, which is the response's
+/// `ReadFrom`: the body's first 512 bytes, then the head): the status's own words, the
+/// fields sorted, a `Date` where it has none, its length where known or the whole of one
+/// shorter than 512 bytes, else chunked (HTTP/1.1) or to the connection's end, and what it
+/// is where nothing says (`DetectContentType`). Whether the connection goes on, whether the
+/// body was read whole, and its digest.
 fn pass_on<W: Write>(
     out: &mut W,
     head: &Head,
@@ -334,13 +403,13 @@ fn pass_on<W: Write>(
     }
     let mut hasher = sha2::Sha256::new();
     let mut whole = true;
-    // A body of unknown length: what fits Go's buffer first, which may be all of it.
+    // The body's first bytes, before the head: all of a short one.
     let mut first = Vec::new();
     let mut drained = !body;
-    if body && length.is_none() {
-        let mut buf = vec![0u8; BUFFERED + 1];
-        while first.len() <= BUFFERED {
-            match response.read(buf.get_mut(..BUFFERED + 1 - first.len()).unwrap_or_default()) {
+    if body {
+        let mut buf = [0u8; sniff::LEN];
+        while first.len() < sniff::LEN {
+            match response.read(buf.get_mut(..sniff::LEN - first.len()).unwrap_or_default()) {
                 Ok(0) => {
                     drained = true;
                     break;
@@ -361,6 +430,15 @@ fn pass_on<W: Write>(
         None => None,
     };
     let chunked = body && known.is_none() && head.at_least(1, 1);
+    // Sniffed where the fields say neither what it is nor how it is encoded.
+    let sniffed = (body
+        && !first.is_empty()
+        && !fields.iter().any(|(k, _)| k == "Content-Type")
+        && fields
+            .iter()
+            .find(|(k, _)| k == "Content-Encoding")
+            .is_none_or(|(_, v)| v.is_empty()))
+    .then(|| sniff::content_type(&first));
     let (mut close, connection) = keep_alive(head, !body || known.is_some(), false);
     let mut s = format!(
         "HTTP/1.{} {status} {}\r\n",
@@ -381,6 +459,9 @@ fn pass_on<W: Write>(
         && let Some(n) = known
     {
         s.push_str(&format!("Content-Length: {n}\r\n"));
+    }
+    if let Some(t) = sniffed {
+        s.push_str(&format!("Content-Type: {t}\r\n"));
     }
     if let Some(c) = connection {
         s.push_str(&format!("Connection: {c}\r\n"));
@@ -465,11 +546,12 @@ fn write_through_tunnel<W: Write>(
         .headers("connection")
         .flat_map(|v| v.split(','))
         .any(|t| t.trim().eq_ignore_ascii_case("close"));
-    // Unknown length, not chunked: the end of the tunnel ends the body.
+    // Unknown length, not chunked: the end of the tunnel ends the body; a status of no
+    // body has none to end (Go's transport says its length is 0).
     let close = upstream_close
         || head.wants_close()
         || !head.at_least(1, 1)
-        || (length.is_none() && !chunked_upstream);
+        || (length.is_none() && !chunked_upstream && has_body("GET", status));
     let chunked = chunked_upstream && body;
     let reason = response.reason().to_string();
     let words = if reason.is_empty() {
@@ -916,6 +998,9 @@ impl<'p> Session<'p> {
             );
             let _ = out.flush();
             return false;
+        }
+        if head.method == "OPTIONS" && head.target == "*" {
+            return options(&mut out, head, reader, framing, continues);
         }
         let url = match request_url(head, None) {
             Ok(u) => u,

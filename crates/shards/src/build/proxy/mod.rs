@@ -28,6 +28,8 @@ pub mod capture;
 pub mod head;
 #[cfg(unix)]
 mod server;
+#[cfg(unix)]
+mod sniff;
 
 #[cfg(unix)]
 pub use self::server::{PORT, Proxy, Questions, Session};

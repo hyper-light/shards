@@ -24,6 +24,9 @@ pub const END: &[u8] = b"# buildkit proxy CA end\n";
 /// The largest bundle read (`maxCertBundleBytes`).
 pub const MOST: u64 = 10 << 20;
 
+/// firstCertificate's refusal of a CA with no certificate.
+pub const NO_CERTIFICATE: &str = "proxy CA PEM does not contain a certificate";
+
 const PEM_START: &[u8] = b"\n-----BEGIN ";
 const PEM_END: &[u8] = b"\n-----END ";
 const PEM_END_OF_LINE: &[u8] = b"-----";
@@ -361,5 +364,52 @@ mod tests {
         let other = [BEGIN, b"x\n", END].concat();
         assert_eq!(removed(&other, &der), other);
         assert_eq!(appended(b"", CERT), [BEGIN, CERT, END].concat());
+    }
+
+    /// Each case's bundle and CA, and what the step made of the bundle, as BuildKit
+    /// v0.33.0's InjectProxyCA and its cleanup made them (scripts/proxy/generate): the CA
+    /// refused, held already, or appended, then taken out.
+    #[test]
+    fn bundles_are_what_buildkits_inject_proxy_ca_makes_them() {
+        let oracle = crate::json::parse(include_bytes!("../testdata/proxyca.json")).unwrap();
+        let bytes = |v: Option<&crate::json::Value>| -> Vec<u8> {
+            let v = v.unwrap();
+            match v.str() {
+                Some(s) => s.as_bytes().to_vec(),
+                None => base64(v.get("base64").and_then(|b| b.str()).unwrap().as_bytes()).unwrap(),
+            }
+        };
+        let cases = oracle.get("cases").unwrap().array();
+        assert!(cases.len() > 20);
+        for case in cases {
+            let name = case.get("name").and_then(|n| n.str()).unwrap();
+            let bundle = bytes(case.get("bundle"));
+            let ca = bytes(case.get("ca"));
+            let Some(der) = first_certificate(&ca) else {
+                assert_eq!(
+                    case.get("error").and_then(|e| e.str()),
+                    Some(NO_CERTIFICATE),
+                    "{name}"
+                );
+                continue;
+            };
+            assert!(case.get("error").is_none(), "{name}");
+            let changed = !contains(&bundle, &der);
+            assert_eq!(
+                Some(changed),
+                case.get("changed")
+                    .map(|c| matches!(c, crate::json::Value::Bool(true))),
+                "{name}"
+            );
+            let after = if changed {
+                appended(&bundle, &ca)
+            } else {
+                bundle.clone()
+            };
+            assert_eq!(after, bytes(case.get("after")), "{name}");
+            let step = bytes(case.get("step"));
+            let cleaned = if changed { removed(&step, &der) } else { step };
+            assert_eq!(cleaned, bytes(case.get("cleaned")), "{name}");
+        }
     }
 }

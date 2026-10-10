@@ -69,12 +69,17 @@ fn upstream(
                     let close = head.to_ascii_lowercase().contains("\r\nconnection: close\r\n");
                     let _ = said.send(format!("{head}{}", String::from_utf8_lossy(&body)));
                     let reply = answer(&method, &target);
-                    if r.get_mut().write_all(&reply).is_err() || reply.ends_with(b"#close") {
+                    if r.get_mut().write_all(&reply).is_err() {
                         return;
                     }
                     let _ = r.get_mut().flush();
-                    // A client that asked to close is answered and let go.
-                    if close {
+                    // `#cut`: the connection ends bare, no TLS close_notify sent.
+                    if reply.ends_with(b"#cut") {
+                        return;
+                    }
+                    // `#close`, or a client that asked to close: answered and let go.
+                    if reply.ends_with(b"#close") || close {
+                        r.get_mut().end();
                         return;
                     }
                 }
@@ -84,8 +89,18 @@ fn upstream(
     (port, asked)
 }
 
-trait ReadWrite: Read + Write + Send {}
-impl<T: Read + Write + Send> ReadWrite for T {}
+/// A server's connection, plain or TLS, and how it ends: TLS's with its close_notify, as
+/// Go's `tls.Conn.Close` ends one.
+trait ReadWrite: Read + Write + Send {
+    fn end(&mut self) {}
+}
+impl ReadWrite for TcpStream {}
+impl ReadWrite for rustls::StreamOwned<rustls::ServerConnection, TcpStream> {
+    fn end(&mut self) {
+        self.conn.send_close_notify();
+        let _ = self.flush();
+    }
+}
 
 /// The tests' upstream: `/hello` a short body, `/redirect` to it, `/chunked` a chunked
 /// one, `/big` one of 5000 bytes with no length (to the connection's end), `/missing`
@@ -99,28 +114,41 @@ fn answer(method: &str, target: &str) -> Vec<u8> {
         "/big" => [&b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n"[..], &[b'x'; 5000], b"#close"].concat(),
         "/missing" => b"HTTP/1.1 404 Not Found\r\nContent-Length: 4\r\n\r\ngone".to_vec(),
         "/part" => b"HTTP/1.1 206 Partial Content\r\nContent-Length: 2\r\n\r\nhe".to_vec(),
+        "/bare" => b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\nabc#cut".to_vec(),
         _ => b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n".to_vec(),
     }
 }
 
-/// What the build's thread does: answers each question, `/denied` refused, until `done`.
-fn answering(q: &Questions, done: &AtomicBool, checked: &Mutex<Vec<String>>) {
+/// What the build's thread does: answers each question as `allow` says of its URL, until
+/// `done`.
+fn answering(q: &Questions, done: &AtomicBool, checked: &Mutex<Vec<String>>, allow: fn(&str) -> bool) {
     while !done.load(Ordering::SeqCst) {
         q.answer(&mut |method, url| {
             checked.lock().unwrap().push(format!("{method} {url}"));
-            !url.contains("/denied")
+            allow(url)
         });
         std::thread::sleep(Duration::from_millis(1));
     }
 }
 
-/// Runs `client` against a proxy, answering its questions; returns what it returned, the
-/// checks put to the policies, and the capture. Its requests may reach the loopback, where
-/// the tests' servers are, unless `host_kept` (as a build's proxy is made).
+/// Runs `client` against a proxy, answering its questions, `/denied` refused; returns what
+/// it returned, the checks put to the policies, and the capture. Its requests may reach the
+/// loopback, where the tests' servers are, unless `host_kept` (as a build's proxy is made).
 fn with_proxy<T: Send>(
     name: &str,
     roots: Option<rustls::pki_types::CertificateDer<'static>>,
     host_kept: bool,
+    client: impl FnOnce(&Path, &[u8]) -> T + Send,
+) -> (T, Vec<String>, Capture) {
+    with_proxy_deciding(name, roots, host_kept, |url| !url.contains("/denied"), client)
+}
+
+/// [`with_proxy`], each question answered as `allow` says of its URL.
+fn with_proxy_deciding<T: Send>(
+    name: &str,
+    roots: Option<rustls::pki_types::CertificateDer<'static>>,
+    host_kept: bool,
+    allow: fn(&str) -> bool,
     client: impl FnOnce(&Path, &[u8]) -> T + Send,
 ) -> (T, Vec<String>, Capture) {
     let mut proxy = Proxy::new(scratch(name), 1 << 20).unwrap();
@@ -141,7 +169,7 @@ fn with_proxy<T: Send>(
             .unwrap();
         let (done, checked) = (&done, &checked);
         std::thread::Builder::new()
-            .spawn_scoped(scope, move || answering(&questions, done, checked))
+            .spawn_scoped(scope, move || answering(&questions, done, checked, allow))
             .unwrap();
         let out = client(proxy.socket(), proxy.ca());
         done.store(true, Ordering::SeqCst);
@@ -234,10 +262,11 @@ fn plain_requests_are_checked_and_passed_on_as_buildkit_passes_them() {
         dated(&refused),
         "HTTP/1.1 403 Forbidden\nContent-Type: text/plain; charset=utf-8\nX-Content-Type-Options: nosniff\nDate: DATE\nContent-Length: 10\n\nForbidden"
     );
-    // A short chunked body has its length, as Go's server gives one it holds whole.
+    // A short chunked body has its length, as Go's server gives one it holds whole, and
+    // what it is, sniffed, where the upstream said nothing.
     assert_eq!(
         dated(&chunked),
-        "HTTP/1.1 200 OK\nDate: Mon, 02 Jan 2006 15:04:05 GMT\nContent-Length: 3\nConnection: close\n\nabc"
+        "HTTP/1.1 200 OK\nDate: Mon, 02 Jan 2006 15:04:05 GMT\nContent-Length: 3\nContent-Type: text/plain; charset=utf-8\nConnection: close\n\nabc"
     );
     // A long one of no length goes chunked.
     let big = String::from_utf8_lossy(&big);
@@ -473,6 +502,23 @@ fn response(tls: &mut impl Read) -> String {
             break;
         }
     }
+    // A chunked body is read whole, to its last chunk, so none of it is left for the next
+    // response, however its records came.
+    if head.contains("\r\nTransfer-Encoding: chunked\r\n") {
+        let mut body = String::new();
+        loop {
+            let mut size = String::new();
+            r.read_line(&mut size).unwrap();
+            body.push_str(&size);
+            let n = usize::from_str_radix(size.trim_end(), 16).unwrap();
+            let mut chunk = vec![0u8; n + 2];
+            r.read_exact(&mut chunk).unwrap();
+            body.push_str(&String::from_utf8_lossy(&chunk));
+            if n == 0 {
+                return head + &body;
+            }
+        }
+    }
     let length = head
         .lines()
         .find_map(|l| {
@@ -549,6 +595,34 @@ fn tunnels_are_checked_request_by_request() {
     );
 }
 
+/// A body of no length that an upstream's TLS ends without its close_notify may be cut
+/// short, and nothing tells: passed on as it came, it is no material (`body_read_failed`),
+/// as RFC 9112 §9.8 has a client treat it, where BuildKit's Go client takes the bare end
+/// for the body's (D110's recorded difference).
+#[test]
+fn a_tls_body_ended_bare_is_no_material() {
+    let (tls, root) = https_server();
+    let (port, _) = upstream(Some(tls), answer);
+    let authority = format!("127.0.0.1:{port}");
+    let (got, _, capture) = with_proxy("bare", Some(root), false, |socket, ca| {
+        let mut tls = tunnel_client(socket, ca, &authority);
+        tls.write_all(format!("GET /bare HTTP/1.1\r\nHost: {authority}\r\n\r\n").as_bytes())
+            .unwrap();
+        let mut got = Vec::new();
+        let _ = tls.read_to_end(&mut got);
+        got
+    });
+    assert_eq!(
+        String::from_utf8_lossy(&got),
+        "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\nabc#cut"
+    );
+    assert!(capture.materials.is_empty(), "{capture:?}");
+    assert_eq!(
+        capture.incomplete.first().map(|i| i.reason),
+        Some("body_read_failed")
+    );
+}
+
 /// An upstream whose certificate the host does not trust is a 502 in the tunnel, never
 /// passed on as trusted.
 #[test]
@@ -577,6 +651,376 @@ fn upstream_tls_is_never_weakened() {
     assert_eq!(
         capture.incomplete.first().map(|i| i.reason),
         Some("upstream_error")
+    );
+}
+
+/// What BuildKit v0.33.0's proxy made of the oracle's cases (scripts/proxy/generate).
+fn oracle() -> serde_json::Value {
+    serde_json::from_str(include_str!("../testdata/proxy-oracle.json")).unwrap()
+}
+
+/// A case's bytes as the oracle says them: text, base64, or a prefix, one byte many
+/// times, and a suffix.
+fn oracle_bytes(v: &serde_json::Value) -> Vec<u8> {
+    use base64::Engine as _;
+    if let Some(s) = v.as_str() {
+        return s.as_bytes().to_vec();
+    }
+    if let Some(b) = v.get("base64") {
+        return base64::engine::general_purpose::STANDARD
+            .decode(b.as_str().unwrap())
+            .unwrap();
+    }
+    let mut out = v["prefix"].as_str().unwrap().as_bytes().to_vec();
+    let fill = v["fill"].as_str().unwrap().as_bytes()[0];
+    out.extend(std::iter::repeat_n(
+        fill,
+        usize::try_from(v["times"].as_u64().unwrap()).unwrap(),
+    ));
+    out.extend_from_slice(v["suffix"].as_str().unwrap().as_bytes());
+    out
+}
+
+/// Each `Date` field of an HTTP date said as `DATE`, as the oracle says it.
+fn go_dated(b: &[u8]) -> String {
+    let mut out = Vec::with_capacity(b.len());
+    let mut rest = b;
+    loop {
+        let (line, next) = match rest.windows(2).position(|w| w == b"\r\n") {
+            Some(at) => (&rest[..at], Some(&rest[at + 2..])),
+            None => (rest, None),
+        };
+        // "Date: " and http.TimeFormat's 29 bytes, `Mon, 02 Jan 2006 15:04:05 GMT`.
+        if line.starts_with(b"Date: ") && line.len() == 35 && line.ends_with(b" GMT") {
+            out.extend_from_slice(b"Date: DATE");
+        } else {
+            out.extend_from_slice(line);
+        }
+        match next {
+            Some(n) => {
+                out.extend_from_slice(b"\r\n");
+                rest = n;
+            }
+            None => break,
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Writes `raw` on a new connection and ends its writing, reading until the proxy closes.
+fn exchange_closing(socket: &Path, raw: &[u8]) -> Vec<u8> {
+    let c = UnixStream::connect(socket).unwrap();
+    c.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+    let w = c.try_clone().unwrap();
+    std::thread::scope(|s| {
+        s.spawn(move || {
+            let _ = (&w).write_all(raw);
+            let _ = w.shutdown(std::net::Shutdown::Write);
+        });
+        let mut got = Vec::new();
+        let _ = (&c).read_to_end(&mut got);
+        got
+    })
+}
+
+/// The URLs the policies were asked, each check's method left out.
+fn urls_of(checked: &[String]) -> Vec<String> {
+    checked
+        .iter()
+        .map(|c| c.split_once(' ').map_or(c.as_str(), |(_, u)| u).to_string())
+        .collect()
+}
+
+/// Each raw request, sent to the proxy and every one refused, is read, asked of the
+/// policies and answered as BuildKit's handler on Go's server reads, asks and answers it,
+/// byte for byte, but where D110 records shards' difference: a field value that is not
+/// UTF-8 (obs-text) is refused, as shards' client writes fields as text.
+#[test]
+fn requests_are_read_as_buildkits_proxy_reads_them() {
+    let oracle = oracle();
+    let mut failed = Vec::new();
+    for (i, case) in oracle["plain"].as_array().unwrap().iter().enumerate() {
+        let name = case["name"].as_str().unwrap();
+        let (got, checked, _) = with_proxy_deciding(
+            &format!("oracle-plain-{i}"),
+            None,
+            true,
+            |_| false,
+            |socket, _| exchange_closing(socket, &oracle_bytes(&case["request"])),
+        );
+        let asked = urls_of(&checked);
+        if name == "a value not UTF-8" {
+            assert_eq!(
+                (go_dated(&got).as_str(), asked.len()),
+                (
+                    "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\n400 Bad Request",
+                    0
+                )
+            );
+            continue;
+        }
+        let want: Vec<String> = case["checked"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|u| u.as_str().unwrap().to_string())
+            .collect();
+        let response = go_dated(&oracle_bytes(&case["response"]));
+        if asked != want || go_dated(&got) != response {
+            failed.push(format!(
+                "{name}:\n  asked {asked:?}\n  want  {want:?}\n  got  {:?}\n  want {response:?}",
+                go_dated(&got)
+            ));
+        }
+    }
+    assert!(failed.is_empty(), "{}", failed.join("\n"));
+}
+
+/// Each CONNECT is answered, and each request in its tunnel asked of the policies (every
+/// one refused) and answered, as BuildKit's proxy does, byte for byte.
+/// Sends `connect`, reads the proxy's answer to it, and where it established the tunnel,
+/// writes `raw` in TLS to `server_name` (trusting `ca`), ends its writing (close_notify),
+/// and reads until the proxy closes: the answer, whether the handshake was made, and what
+/// came in the tunnel.
+fn tunnel_exchange(
+    socket: &Path,
+    ca: &[u8],
+    connect: &[u8],
+    server_name: &str,
+    raw: &[u8],
+) -> (Vec<u8>, bool, Vec<u8>) {
+    let mut roots = rustls::RootCertStore::empty();
+    for cert in rustls::pki_types::pem::PemObject::pem_slice_iter(ca) {
+        roots.add(cert.unwrap()).unwrap();
+    }
+    let config = Arc::new(
+        rustls::ClientConfig::builder_with_provider(Arc::new(rustls::crypto::aws_lc_rs::default_provider()))
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_root_certificates(roots)
+            .with_no_client_auth(),
+    );
+    let mut c = UnixStream::connect(socket).unwrap();
+    c.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+    c.write_all(connect).unwrap();
+    let mut established = Vec::new();
+    let mut b = [0u8; 1];
+    while !established.ends_with(b"\r\n\r\n") && c.read(&mut b).unwrap_or(0) == 1 {
+        established.push(b[0]);
+    }
+    if !established.starts_with(b"HTTP/1.1 200 ") {
+        let _ = c.read_to_end(&mut established);
+        return (established, false, Vec::new());
+    }
+    let name = rustls::pki_types::ServerName::try_from(server_name.to_string()).unwrap();
+    let mut tls = rustls::StreamOwned::new(rustls::ClientConnection::new(config, name).unwrap(), c);
+    let mut response = Vec::new();
+    let handshake = tls.conn.complete_io(&mut tls.sock).is_ok();
+    if handshake {
+        let _ = tls.write_all(raw);
+        tls.conn.send_close_notify();
+        let _ = tls.flush();
+        let _ = tls.read_to_end(&mut response);
+    }
+    (established, handshake, response)
+}
+
+#[test]
+fn tunnels_are_read_as_buildkits_proxy_reads_them() {
+    let oracle = oracle();
+    let mut failed = Vec::new();
+    for (i, case) in oracle["tunnels"].as_array().unwrap().iter().enumerate() {
+        let name = case["name"].as_str().unwrap();
+        let ((established, handshake, response), checked, _) = with_proxy_deciding(
+            &format!("oracle-tunnel-{i}"),
+            None,
+            true,
+            |_| false,
+            |socket, ca| {
+                tunnel_exchange(
+                    socket,
+                    ca,
+                    case["connect"].as_str().unwrap().as_bytes(),
+                    case["server_name"].as_str().unwrap(),
+                    &oracle_bytes(&case["request"]),
+                )
+            },
+        );
+        let asked = urls_of(&checked);
+        let want: Vec<String> = case["checked"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|u| u.as_str().unwrap().to_string())
+            .collect();
+        let want_response = go_dated(&oracle_bytes(&case["response"]));
+        if go_dated(&established) != case["established"].as_str().unwrap()
+            || handshake != case["handshake"].as_bool().unwrap()
+            || asked != want
+            || go_dated(&response) != want_response
+        {
+            failed.push(format!(
+                "{name}:\n  established {:?} handshake {handshake}\n  asked {asked:?}\n  want  {want:?}\n  got  {:?}\n  want {want_response:?}",
+                go_dated(&established),
+                go_dated(&response)
+            ));
+        }
+    }
+    assert!(failed.is_empty(), "{}", failed.join("\n"));
+}
+
+/// The oracle's upstream: what it answers, raw, by the path asked.
+static ORACLE_UPSTREAM: std::sync::OnceLock<HashMap<String, Vec<u8>>> = std::sync::OnceLock::new();
+
+fn oracle_answer(_method: &str, target: &str) -> Vec<u8> {
+    let table = ORACLE_UPSTREAM.get_or_init(|| {
+        oracle()["upstream"]
+            .as_object()
+            .unwrap()
+            .iter()
+            .map(|(path, raw)| (path.clone(), oracle_bytes(raw)))
+            .collect()
+    });
+    let path = target.split('?').next().unwrap_or_default();
+    table
+        .get(path)
+        .cloned()
+        .unwrap_or_else(|| b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n".to_vec())
+}
+
+/// What a case's capture came to, as the oracle says it: requests, materials by URL, and
+/// incomplete requests, each address said as `{upstream}` or `{upstream_tls}`.
+fn capture_as_oracle(c: &Capture, n: &dyn Fn(&str) -> String) -> serde_json::Value {
+    let mut materials = c.materials();
+    materials.sort_by(|a, b| a.url.cmp(&b.url));
+    serde_json::json!({
+        "requests": c.requests.iter().map(|r| serde_json::json!({
+            "method": r.method, "url": n(&r.url), "redirect": n(&r.redirect), "status": r.status,
+        })).collect::<Vec<_>>(),
+        "materials": materials.iter().map(|m| serde_json::json!({"url": n(&m.url), "digest": m.digest})).collect::<Vec<_>>(),
+        "incomplete": c.incomplete.iter().map(|i| serde_json::json!({
+            "method": i.method, "url": n(&i.url), "reason": i.reason,
+        })).collect::<Vec<_>>(),
+    })
+}
+
+fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack.windows(needle.len()).position(|w| w == needle)
+}
+
+/// Each chunked body said as one chunk: where a body is cut into chunks follows each
+/// proxy's reads of its upstream (Go's too: after its first 512 bytes, each read), which
+/// carries nothing a client may rely on (RFC 9112 §7.1); D110 records it.
+fn one_chunk(b: &str) -> String {
+    const TE: &[u8] = b"Transfer-Encoding: chunked\r\n";
+    let b = b.as_bytes();
+    let mut out = Vec::new();
+    let mut rest = b;
+    while let Some(te) = find(rest, TE) {
+        let Some(end) = find(&rest[te..], b"\r\n\r\n").map(|e| te + e + 4) else {
+            break;
+        };
+        out.extend_from_slice(&rest[..end]);
+        rest = &rest[end..];
+        let mut data = Vec::new();
+        while let Some(eol) = find(rest, b"\r\n") {
+            let Ok(n) = usize::from_str_radix(std::str::from_utf8(&rest[..eol]).unwrap_or("x"), 16) else {
+                break;
+            };
+            if n == 0 {
+                rest = &rest[(eol + 4).min(rest.len())..];
+                break;
+            }
+            data.extend_from_slice(&rest[eol + 2..eol + 2 + n]);
+            rest = &rest[(eol + 4 + n).min(rest.len())..];
+        }
+        out.extend_from_slice(format!("{:x}\r\n", data.len()).as_bytes());
+        out.extend_from_slice(&data);
+        out.extend_from_slice(b"\r\n0\r\n\r\n");
+    }
+    out.extend_from_slice(rest);
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// What shards' proxy answers where D110 records a difference from BuildKit's, by case.
+fn passed_differently(kind: &str, name: &str) -> Option<&'static str> {
+    match (kind, name) {
+        // The hop's own fields go, as RFC 9110 §7.6.1 has a proxy remove them: Connection
+        // and what it names (X-Hop), Keep-Alive, Proxy-Authenticate, Upgrade.
+        ("passed", "hop-by-hop fields") => {
+            Some("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nContent-Type: text/plain\r\nDate: DATE\r\n\r\nok")
+        }
+        ("passed_tunnels", "hop-by-hop fields") => {
+            Some("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nContent-Type: text/plain\r\n\r\nok")
+        }
+        _ => None,
+    }
+}
+
+/// Requests the policies let go (all but `/denied`), plain and in a tunnel, to upstreams
+/// answering as the oracle's did: what the client read, what the policies were asked, and
+/// what the proxy recorded of each, as BuildKit's proxy on Go's server passes them on and
+/// records them, byte for byte, but for chunk boundaries and what D110 records.
+#[test]
+fn requests_are_passed_on_as_buildkits_proxy_passes_them() {
+    let oracle = oracle();
+    let (port, _) = upstream(None, oracle_answer);
+    let (tls, root) = https_server();
+    let (sport, _) = upstream(Some(tls), oracle_answer);
+    let (plain, secure) = (format!("127.0.0.1:{port}"), format!("127.0.0.1:{sport}"));
+    let n = |s: &str| s.replace(&secure, "{upstream_tls}").replace(&plain, "{upstream}");
+    let fill = |s: &str| s.replace("{upstream_tls}", &secure).replace("{upstream}", &plain);
+    let mut failed = Vec::new();
+    for (kind, cases) in [
+        ("passed", &oracle["passed"]),
+        ("passed_tunnels", &oracle["passed_tunnels"]),
+    ] {
+        for (i, case) in cases.as_array().unwrap().iter().enumerate() {
+            let name = case["name"].as_str().unwrap();
+            let raw = fill(case["request"].as_str().unwrap());
+            let (got, checked, capture) = with_proxy_deciding(
+                &format!("oracle-{kind}-{i}"),
+                Some(root.clone()),
+                false,
+                |url| !url.contains("/denied"),
+                |socket, ca| {
+                    if kind == "passed" {
+                        exchange_closing(socket, raw.as_bytes())
+                    } else {
+                        let connect = format!("CONNECT {secure} HTTP/1.1\r\nHost: {secure}\r\n\r\n");
+                        let (_, handshake, response) =
+                            tunnel_exchange(socket, ca, connect.as_bytes(), "127.0.0.1", raw.as_bytes());
+                        assert!(handshake, "{name}");
+                        response
+                    }
+                },
+            );
+            let asked: Vec<String> = urls_of(&checked).iter().map(|u| n(u)).collect();
+            let want: Vec<String> = case["checked"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|u| u.as_str().unwrap().to_string())
+                .collect();
+            let response = one_chunk(&n(&go_dated(&got)));
+            let want_response = match passed_differently(kind, name) {
+                Some(r) => r.to_string(),
+                None => one_chunk(&go_dated(&oracle_bytes(&case["response"]))),
+            };
+            let recorded = capture_as_oracle(&capture, &n);
+            if asked != want || response != want_response || recorded != case["capture"] {
+                failed.push(format!(
+                    "{kind} {name}:\n  asked {asked:?}\n  want  {want:?}\n  got  {response:?}\n  want {want_response:?}\n  recorded {recorded}\n  want     {}",
+                    case["capture"]
+                ));
+            }
+        }
+    }
+    assert!(
+        failed.is_empty(),
+        "{} of them:\n{}",
+        failed.len(),
+        failed.join("\n")
     );
 }
 
