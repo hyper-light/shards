@@ -1456,7 +1456,8 @@ fn what_a_moved_tag_named_is_collected() {
             .unwrap_or_default();
         paths.retain(|p| {
             let name = p.file_name().unwrap().to_string_lossy();
-            !name.starts_with('.') && !name.contains(".new-")
+            // A template's origin is a record beside it (D117), not a template.
+            !name.starts_with('.') && !name.contains(".new-") && !name.ends_with(".origin")
         });
         paths.sort();
         paths
