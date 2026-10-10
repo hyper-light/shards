@@ -7,6 +7,7 @@
 
 pub mod asn1;
 pub mod bundle;
+pub mod cosignkey;
 pub mod der;
 pub mod gobase64;
 pub mod godec;
@@ -18,7 +19,9 @@ pub mod platforms;
 pub mod proto;
 pub mod schemas;
 pub mod sct;
+pub mod secretbox;
 pub mod semver;
+pub mod sign;
 pub mod signature;
 pub mod summary;
 pub mod time;

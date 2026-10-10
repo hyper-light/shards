@@ -1,0 +1,28 @@
+#!/bin/sh
+# Regenerates crates/sigstore/testdata/cosign/oracle.json: what cosign v3.1.3 makes of
+# private keys (LoadPrivateKey, go-securesystemslib's encrypted) and of NaCl secretboxes
+# (x/crypto), for shards' cosign key reader and signer (oracle_test.go).
+#
+#   scripts/cosign/generate [COSIGN_V3.1.3_CHECKOUT]
+#
+# Without a checkout, cosign's v3.1.3 source is fetched (its tarball, checked against
+# the digest below) into a directory that is removed after.
+set -eu
+here=$(cd "$(dirname "$0")" && pwd)
+root=$(cd "$here/../.." && pwd)
+out="$root/crates/sigstore/testdata/cosign/oracle.json"
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+if [ $# -ge 1 ]; then
+	src=$1
+else
+	curl -sSL -o "$work/cosign.tar.gz" https://codeload.github.com/sigstore/cosign/tar.gz/refs/tags/v3.1.3
+	echo "ab8fcb8e0b4c0b8d01aefa37790cdd5ad099366b2efb8636b7a0250915b93362  $work/cosign.tar.gz" | shasum -a 256 -c -
+	tar -xzf "$work/cosign.tar.gz" -C "$work"
+	src="$work/cosign-3.1.3"
+fi
+cp "$here/oracle_test.go" "$src/pkg/cosign/zz_shards_oracle_test.go"
+mkdir -p "$(dirname "$out")"
+cd "$src"
+SHARDS_COSIGN_ORACLE="$out" go test -count=1 -run '^TestShardsCosignOracle$' ./pkg/cosign/
+rm -f "$src/pkg/cosign/zz_shards_oracle_test.go"

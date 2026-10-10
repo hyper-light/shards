@@ -46,6 +46,19 @@ fn get_line(data: &[u8]) -> (&[u8], &[u8], usize) {
     (line, data.get(j..).unwrap_or_default(), j)
 }
 
+/// pem.Encode of a block of `kind` without headers: its octets' standard base64 in lines
+/// of 64 characters between the BEGIN and END lines.
+pub fn encode(kind: &str, bytes: &[u8]) -> Vec<u8> {
+    let text = super::gocodec::std_encode(bytes);
+    let mut out = format!("-----BEGIN {kind}-----\n").into_bytes();
+    for line in text.as_bytes().chunks(64) {
+        out.extend_from_slice(line);
+        out.push(b'\n');
+    }
+    out.extend_from_slice(format!("-----END {kind}-----\n").as_bytes());
+    out
+}
+
 /// pem.Decode.
 pub fn decode(data: &[u8]) -> Option<(Block, &[u8])> {
     let mut rest = data;
