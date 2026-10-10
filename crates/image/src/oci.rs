@@ -587,6 +587,62 @@ mod tests {
     /// history, and one near the largest read (`MAX_CONFIG`): n readings each by Go's
     /// reader and by the serde reader it replaced, interleaved, each reading's microseconds
     /// at p50, p90, p99 and max. docs/research/measurements/image-config/run.sh runs it.
+    /// Where a build-sized config's reading goes (M128): Go's scanner building the
+    /// document, then its fields read into each Go type, then `ImageConfig`, against the
+    /// serde reader before it; nanoseconds a reading, the mean of n after a warm-up.
+    #[test]
+    #[ignore]
+    fn parse_config_phases() {
+        let history = (0..12)
+            .map(|i| {
+                format!(
+                    r#"{{"created":"2024-01-02T03:04:05.{i:09}Z","created_by":"RUN /bin/sh -c step {i} && make install","comment":"buildkit.dockerfile.v0"{}}}"#,
+                    if i % 3 == 0 { r#","empty_layer":true"# } else { "" }
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        let env: Vec<String> = (0..8).map(|i| format!(r#""VAR_{i}=value-{i}""#)).collect();
+        let labels: Vec<String> = (0..8)
+            .map(|i| format!(r#""org.example.label.{i}":"{i}""#))
+            .collect();
+        let diff_ids: Vec<String> = (0..4).map(|i| format!(r#""sha256:{i:064x}""#)).collect();
+        let text = format!(
+            r#"{{"architecture":"arm64","os":"linux","created":"2024-01-02T03:04:05Z","config":{{"User":"app","Env":[{}],"Entrypoint":["/bin/app"],"Cmd":["serve"],"WorkingDir":"/srv","Labels":{{{}}},"ExposedPorts":{{"80/tcp":{{}},"443/tcp":{{}}}},"Volumes":{{"/data":{{}}}},"StopSignal":"SIGTERM"}},"rootfs":{{"type":"layers","diff_ids":[{}]}},"history":[{history}]}}"#,
+            env.join(","),
+            labels.join(","),
+            diff_ids.join(",")
+        );
+        let b = text.as_bytes();
+        let n = 20_000u32;
+        let mean = |f: &dyn Fn()| {
+            for _ in 0..1000 {
+                f();
+            }
+            let at = std::time::Instant::now();
+            for _ in 0..n {
+                f();
+            }
+            at.elapsed().as_nanos() / u128::from(n)
+        };
+        let scan = mean(&|| {
+            std::hint::black_box(crate::json::parse(std::hint::black_box(b)).unwrap());
+        });
+        let read = mean(&|| {
+            std::hint::black_box(crate::config::Read::new(std::hint::black_box(b)).unwrap());
+        });
+        let whole = mean(&|| {
+            std::hint::black_box(parse_config(std::hint::black_box(b)).unwrap());
+        });
+        let serde = mean(&|| {
+            std::hint::black_box(serde_reader::parse_config(std::hint::black_box(b)).unwrap());
+        });
+        println!(
+            "phases: {} bytes, n={n}, ns: scan {scan}, scan+fields {read}, whole {whole}, serde {serde}",
+            b.len()
+        );
+    }
+
     #[test]
     #[ignore]
     fn parse_config_costs() {
