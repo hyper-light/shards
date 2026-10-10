@@ -216,8 +216,10 @@ impl Drop for Spool {
     }
 }
 
+/// Why a request's body was not held: the disk keeps no room for more of it, or its
+/// reading or writing failed.
 enum Spooled {
-    TooLarge,
+    NoRoom,
     Failed,
 }
 
@@ -637,8 +639,8 @@ pub struct Proxy {
     pub(super) tls: Arc<rustls::ClientConfig>,
     /// The addresses its requests may go to ([`reachable`]).
     pub(super) reach: fn(std::net::IpAddr) -> bool,
-    /// The largest request body passed on.
-    most: u64,
+    /// The room its files of request bodies have, past which they stop (SHARDS_KEEP_FREE).
+    room: shards_image::store::Room,
 }
 
 impl std::fmt::Debug for Proxy {
@@ -657,14 +659,16 @@ impl Drop for Proxy {
 
 impl Proxy {
     /// A proxy listening in `dir`, a directory of its own (mode 0700), with a CA of its
-    /// own; request bodies past `most` bytes are refused.
-    pub fn new(dir: PathBuf, most: u64) -> Result<Proxy, String> {
+    /// own; its files of request bodies leave the disk what `limits` keeps free.
+    pub fn new(dir: PathBuf, limits: &shards_image::store::Limits) -> Result<Proxy, String> {
         let socket = dir.join("proxy");
         let listener = UnixListener::bind(&socket).map_err(|e| format!("the build's proxy: {e}"))?;
         listener
             .set_nonblocking(true)
             .map_err(|e| format!("the build's proxy: {e}"))?;
         let tls = shards_registry::tls::client_config(Vec::new(), None).map_err(|e| e.to_string())?;
+        let room =
+            shards_image::store::Room::new(&dir, limits).map_err(|e| format!("the build's proxy: {e}"))?;
         Ok(Proxy {
             dir,
             socket,
@@ -672,7 +676,7 @@ impl Proxy {
             authority: ca::Authority::new()?,
             tls,
             reach: reachable,
-            most,
+            room,
         })
     }
 
@@ -1023,12 +1027,12 @@ impl<'p> Session<'p> {
         }
         let body = match self.spool(reader, framing) {
             Ok(b) => b,
-            Err(Spooled::TooLarge) => {
+            Err(Spooled::NoRoom) => {
                 write_error(
                     &mut out,
                     head,
                     413,
-                    "request body larger than a build may send",
+                    "request body larger than the build's host has room for (SHARDS_KEEP_FREE)",
                     true,
                 );
                 return false;
@@ -1105,7 +1109,17 @@ impl<'p> Session<'p> {
             let framing = head.framing().unwrap_or(Framing::Length(0));
             let body = match self.spool(&mut reader, framing) {
                 Ok(b) => b,
-                Err(_) => return,
+                Err(Spooled::NoRoom) => {
+                    let text = "request body larger than the build's host has room for (SHARDS_KEEP_FREE)\n";
+                    let _ = write!(
+                        reader.get_mut(),
+                        "HTTP/1.1 413 Request Entity Too Large\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{text}",
+                        text.len()
+                    );
+                    let _ = reader.get_mut().flush();
+                    return;
+                }
+                Err(Spooled::Failed) => return,
             };
             let ranged = head.get("Range").is_some_and(|r| !r.is_empty());
             let mut response = match self.upstream(&head, &url, &body) {
@@ -1140,13 +1154,12 @@ impl<'p> Session<'p> {
     }
 
     /// Reads a request's body whole, in memory or, past [`IN_MEMORY`], a file of the
-    /// proxy's, within the proxy's bound.
+    /// proxy's, within the room its disk has (`Room`).
     fn spool<R: BufRead>(&self, reader: &mut R, framing: Framing) -> Result<Spool, Spooled> {
         let mut body = head::Body::new(reader, framing);
-        let mut memory = Vec::new();
+        // In memory until it outgrows it; then a file, removed as it drops, however this ends.
+        let mut spool = Spool::Memory(Vec::new());
         let mut buf = vec![0u8; 32 << 10];
-        let mut file: Option<(std::fs::File, PathBuf)> = None;
-        let mut size = 0u64;
         loop {
             let n = match body.read(&mut buf) {
                 Ok(0) => break,
@@ -1154,28 +1167,26 @@ impl<'p> Session<'p> {
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
                 Err(_) => return Err(Spooled::Failed),
             };
-            size += n as u64;
-            if size > self.proxy.most {
-                return Err(Spooled::TooLarge);
-            }
             let chunk = buf.get(..n).unwrap_or_default();
-            match &mut file {
-                Some((f, _)) => f.write_all(chunk).map_err(|_| Spooled::Failed)?,
-                None if memory.len() + n <= IN_MEMORY => memory.extend_from_slice(chunk),
-                None => {
-                    let (mut f, path) = spool_file(&self.proxy.dir).map_err(|_| Spooled::Failed)?;
-                    f.write_all(&memory)
-                        .and_then(|()| f.write_all(chunk))
-                        .map_err(|_| Spooled::Failed)?;
-                    memory.clear();
-                    file = Some((f, path));
+            if let Spool::Memory(memory) = &mut spool {
+                if memory.len() + n <= IN_MEMORY {
+                    memory.extend_from_slice(chunk);
+                    continue;
                 }
+                self.proxy.room.wrote(memory.len()).map_err(|_| Spooled::NoRoom)?;
+                let (mut file, path) = spool_file(&self.proxy.dir).map_err(|_| Spooled::Failed)?;
+                let held = file.write_all(memory);
+                let size = memory.len() as u64;
+                spool = Spool::File { file, path, size };
+                held.map_err(|_| Spooled::Failed)?;
+            }
+            if let Spool::File { file, size, .. } = &mut spool {
+                self.proxy.room.wrote(n).map_err(|_| Spooled::NoRoom)?;
+                file.write_all(chunk).map_err(|_| Spooled::Failed)?;
+                *size += n as u64;
             }
         }
-        Ok(match file {
-            Some((file, path)) => Spool::File { file, path, size },
-            None => Spool::Memory(memory),
-        })
+        Ok(spool)
     }
 
     /// `roundTrip`: the request sent on as the client asked it, its URL's own target.

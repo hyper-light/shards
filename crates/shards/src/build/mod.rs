@@ -3520,7 +3520,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
                         }
                     };
                     if proxy_cap {
-                        build_proxy = Some(builder::proxy(limits.bytes).map_err(|e| fail(&v, &e))?);
+                        build_proxy = Some(builder::proxy(&limits).map_err(|e| fail(&v, &e))?);
                     }
                     let boot = builder::Boot {
                         kernel: &guest.0,

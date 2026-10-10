@@ -151,14 +151,23 @@ fn with_proxy_deciding<T: Send>(
     allow: fn(&str) -> bool,
     client: impl FnOnce(&Path, &[u8]) -> T + Send,
 ) -> (T, Vec<String>, Capture) {
-    let mut proxy = Proxy::new(scratch(name), 1 << 20).unwrap();
+    let mut proxy = Proxy::new(scratch(name), &shards_image::store::Limits::none()).unwrap();
     if let Some(root) = roots {
         proxy.tls = shards_registry::tls::client_config(vec![root], None).unwrap();
     }
     if !host_kept {
         proxy.reach = |_| true;
     }
-    let (session, questions) = Session::begin(&proxy, shards_registry::proxy::Proxies::default()).unwrap();
+    serving(&proxy, allow, client)
+}
+
+/// Runs `client` against `proxy`, each question answered as `allow` says of its URL.
+fn serving<T: Send>(
+    proxy: &Proxy,
+    allow: fn(&str) -> bool,
+    client: impl FnOnce(&Path, &[u8]) -> T + Send,
+) -> (T, Vec<String>, Capture) {
+    let (session, questions) = Session::begin(proxy, shards_registry::proxy::Proxies::default()).unwrap();
     let (stop, stopped) = UnixStream::pair().unwrap();
     let done = AtomicBool::new(false);
     let checked = Mutex::new(Vec::new());
@@ -621,6 +630,55 @@ fn a_tls_body_ended_bare_is_no_material() {
         capture.incomplete.first().map(|i| i.reason),
         Some("body_read_failed")
     );
+}
+
+/// A request's body is held no further than the room the build's host keeps
+/// (SHARDS_KEEP_FREE): past it, the request is refused (413) and its file is gone, so a
+/// step never fills the host's disk through the proxy.
+#[test]
+fn request_bodies_stop_short_of_the_room_kept() {
+    static LOOKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let limits = shards_image::store::Limits {
+        keep_free: 1,
+        // Room as the proxy starts; none when it looks again, 64 MiB on.
+        available: |_| {
+            Ok(if LOOKS.fetch_add(1, Ordering::SeqCst) == 0 {
+                u64::MAX / 2
+            } else {
+                0
+            })
+        },
+        ..shards_image::store::Limits::none()
+    };
+    let dir = scratch("room");
+    let mut proxy = Proxy::new(dir.clone(), &limits).unwrap();
+    proxy.reach = |_| true;
+    let (got, checked, _) = serving(
+        &proxy,
+        |_| true,
+        |socket, _| {
+            let mut raw = format!(
+                "POST http://127.0.0.1:9/upload HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\n\r\n",
+                65u64 << 20
+            )
+            .into_bytes();
+            raw.resize(raw.len() + (65 << 20), b'u');
+            exchange_closing(socket, &raw)
+        },
+    );
+    assert_eq!(checked, ["POST http://127.0.0.1:9/upload"]);
+    let got = String::from_utf8_lossy(&got);
+    assert!(
+        got.starts_with("HTTP/1.1 413 Request Entity Too Large\r\n")
+            && got.ends_with("\r\nConnection: close\r\n\r\nrequest body larger than the build's host has room for (SHARDS_KEEP_FREE)\n"),
+        "{got}"
+    );
+    assert_eq!(LOOKS.load(Ordering::SeqCst), 2);
+    let left: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    assert_eq!(left, ["proxy"]);
 }
 
 /// An upstream whose certificate the host does not trust is a 502 in the tunnel, never
@@ -1151,7 +1209,7 @@ fn request_costs() {
     };
     let mut timings: Vec<(&str, Vec<u128>)> = Vec::new();
     for policy in [false, true] {
-        let mut proxy = Proxy::new(scratch("measure"), 1 << 20).unwrap();
+        let mut proxy = Proxy::new(scratch("measure"), &shards_image::store::Limits::none()).unwrap();
         proxy.tls = shards_registry::tls::client_config(vec![root.clone()], None).unwrap();
         proxy.reach = |_| true;
         let (session, questions) =

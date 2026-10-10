@@ -116,12 +116,12 @@ pub type StepProxy<'a, 'p> = Option<(&'p super::proxy::Proxy, &'a mut dyn FnMut(
 type Asked<'q, 'a> = Option<(&'q super::proxy::Questions, &'a mut dyn FnMut(&str, &str) -> bool)>;
 
 /// The build's proxy (D110), listening in a directory of its own as the builder's sockets
-/// are.
+/// are, its files of request bodies leaving the disk what `limits` keeps free.
 #[cfg(unix)]
-pub fn proxy(most: u64) -> Result<super::proxy::Proxy, String> {
+pub fn proxy(limits: &shards_image::store::Limits) -> Result<super::proxy::Proxy, String> {
     let guard = DirGuard(Some(socket_dir()?));
     let dir = guard.0.clone().unwrap_or_default();
-    let proxy = super::proxy::Proxy::new(dir, most)?;
+    let proxy = super::proxy::Proxy::new(dir, limits)?;
     // The proxy removes it as it goes.
     let mut guard = guard;
     guard.0 = None;
@@ -130,7 +130,7 @@ pub fn proxy(most: u64) -> Result<super::proxy::Proxy, String> {
 
 /// Where shards starts no builder, it starts no proxy either.
 #[cfg(not(unix))]
-pub fn proxy(_: u64) -> Result<super::proxy::Proxy, String> {
+pub fn proxy(_: &shards_image::store::Limits) -> Result<super::proxy::Proxy, String> {
     Err("RUN steps run in a builder microVM, which shards starts on Linux and macOS hosts only so far".into())
 }
 
