@@ -2142,6 +2142,12 @@ impl Standby {
             .transpose()
             .map_err(setup_failed)?;
         limit(&spec.cgroup, devices.as_ref())?;
+        // A joiner's volumes are its own (D119): the microVM's own run mounts none.
+        if spec.setup.iter().any(|e| e.starts_with(b"join-volume=")) {
+            return Err(setup_failed(
+                "a joining container's volume in the microVM's own run",
+            ));
+        }
         // Sysctls, by init; the rest by the standby, in its namespaces.
         let mut inherited = Inherited::default();
         let setup = sort_setup(&spec.setup, &mut inherited)?;

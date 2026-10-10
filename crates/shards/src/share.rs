@@ -6,13 +6,22 @@
 //! share's mode (`ro` or `rw`) and the one name of it shared (empty for all of it) as
 //! arguments. It sends the VM a connection for each share (`kind::SHARE_ENDS`), answers
 //! each on a thread of its own, and exits once they have all closed, as its VM ends.
+//!
+//! `shards share --join` serves a microVM's join share instead (D119): the connection its
+//! VM asks it on as descriptor 3, the daemon's as descriptor 4, and an empty directory, the
+//! share's root, as descriptor 5. Its volumes are the directories of the containers joining
+//! the microVM's network: the daemon gives it a link for each joiner (`kind::JOIN_LINK`),
+//! on which its volumes come (`kind::JOIN_VOLUME`), served until the link closes as the
+//! joiner ends. It exits as its VM's connection closes.
 
+use std::collections::HashMap;
 use std::ffi::{CString, OsString};
 use std::io::Write as _;
 use std::os::fd::{FromRawFd as _, OwnedFd};
 use std::os::unix::ffi::OsStrExt as _;
 use std::os::unix::net::UnixStream;
 use std::process::ExitCode;
+use std::sync::Mutex;
 
 use shards_vmm::devices::virtio::fs::{answer, server::Server};
 
@@ -67,21 +76,19 @@ fn hand_over(vm: &UnixStream, ends: &[UnixStream]) -> Result<(), String> {
     }
 }
 
-/// `shards share MODE NAME…`: not for people to run.
+/// `shards share MODE NAME…`, or `shards share --join`: not for people to run.
 pub fn share(args: impl Iterator<Item = OsString>) -> ExitCode {
     let failed = |e: &str| {
         let _ = writeln!(std::io::stderr(), "shards: {e}");
         ExitCode::FAILURE
     };
-    let given = match parse(&args.collect::<Vec<_>>()) {
+    let args: Vec<OsString> = args.collect();
+    if args.first().is_some_and(|a| a == "--join") {
+        return join();
+    }
+    let given = match parse(&args) {
         Ok(given) => given,
         Err(e) => return failed(&e),
-    };
-    let is = |fd: i32, want: libc::mode_t| {
-        // SAFETY: fstat(2) into a zeroed stat buffer; any descriptor number is safe to ask about.
-        let mut st: libc::stat = unsafe { std::mem::zeroed() };
-        // SAFETY: as above.
-        unsafe { libc::fstat(fd, &mut st) == 0 && st.st_mode & libc::S_IFMT == want }
     };
     if !is(3, libc::S_IFSOCK) {
         return failed("share: descriptor 3 is not the VM's connection");
@@ -151,6 +158,144 @@ pub fn share(args: impl Iterator<Item = OsString>) -> ExitCode {
     status
 }
 
+/// Whether descriptor `fd` is open, and of file type `want`.
+fn is(fd: i32, want: libc::mode_t) -> bool {
+    // SAFETY: fstat(2) into a zeroed stat buffer; any descriptor number is safe to ask about.
+    let mut st: libc::stat = unsafe { std::mem::zeroed() };
+    // SAFETY: as above.
+    unsafe { libc::fstat(fd, &mut st) == 0 && st.st_mode & libc::S_IFMT == want }
+}
+
+/// `shards share --join` (D119): see the module's words.
+fn join() -> ExitCode {
+    let failed = |e: &str| {
+        let _ = writeln!(std::io::stderr(), "shards: share --join: {e}");
+        ExitCode::FAILURE
+    };
+    if !is(3, libc::S_IFSOCK) || !is(4, libc::S_IFSOCK) || !is(5, libc::S_IFDIR) {
+        return failed("descriptors 3, 4 and 5 are not its VM's connection, the daemon's and its root");
+    }
+    // SAFETY: the descriptors the daemon left for this process alone, checked above.
+    let (conn, daemon, root) = unsafe {
+        (
+            UnixStream::from_raw_fd(3),
+            UnixStream::from_raw_fd(4),
+            OwnedFd::from_raw_fd(5),
+        )
+    };
+    if let Err(e) = shards_vmm::platform::raise_descriptor_limit() {
+        let _ = writeln!(
+            std::io::stderr(),
+            "shards: share --join: raising the descriptor limit: {e}"
+        );
+    }
+    let Some(limits) = shards_vmm::devices::virtio::fs::server::Limits::now() else {
+        return failed("this process's limit on descriptors is unknown");
+    };
+    let server = match Server::joined(root, limits.budget(1)) {
+        Ok(server) => server,
+        Err(e) => return failed(&e),
+    };
+    // Each joiner's link while it is served, by number: shut as the VM goes.
+    let links: Mutex<HashMap<u64, UnixStream>> = Mutex::new(HashMap::new());
+    std::thread::scope(|scope| {
+        let (server, links, from) = (&server, &links, &daemon);
+        let linked = std::thread::Builder::new()
+            .name("join links".into())
+            .spawn_scoped(scope, move || {
+                let mut next = 0u64;
+                while let Ok(Some(m)) = shards_ipc::recv(from) {
+                    if m.kind != shards_ipc::kind::JOIN_LINK {
+                        continue;
+                    }
+                    for fd in m.fds {
+                        let link = UnixStream::from(fd);
+                        let n = next;
+                        next += 1;
+                        if let Ok(held) = link.try_clone() {
+                            lock(links).insert(n, held);
+                        }
+                        let served = std::thread::Builder::new().name("joiner".into()).spawn_scoped(
+                            scope,
+                            move || {
+                                joiner(server, &link);
+                                lock(links).remove(&n);
+                            },
+                        );
+                        // Its link closed unanswered: the daemon hears its joiner's volumes
+                        // were not taken.
+                        if let Err(e) = served {
+                            let _ = writeln!(std::io::stderr(), "shards: share --join: a joiner: {e}");
+                            lock(links).remove(&n);
+                        }
+                    }
+                }
+            });
+        let answered = answer(server, conn);
+        // Its VM gone, so are its joiners: the daemon's links let go of, once no more come.
+        let _ = daemon.shutdown(std::net::Shutdown::Both);
+        if let Ok(t) = linked {
+            let _ = t.join();
+        }
+        for link in lock(links).values() {
+            let _ = link.shutdown(std::net::Shutdown::Both);
+        }
+        match answered {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => failed(&format!("its VM's connection: {e}")),
+        }
+    })
+}
+
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Serves a joiner's `link`: each volume it brings added and answered, and all taken out
+/// again as it closes, its joiner gone.
+fn joiner(server: &Server, link: &UnixStream) {
+    use shards_ipc::kind;
+    let mut added: Vec<CString> = Vec::new();
+    while let Ok(Some(m)) = shards_ipc::recv(link) {
+        if m.kind != kind::JOIN_VOLUME {
+            continue;
+        }
+        let mut fds = m.fds.into_iter();
+        let volume = (|| -> Result<CString, String> {
+            let mut parts = m.payload.split(|&b| b == 0);
+            let (Some(name), Some(mode), Some(only), None) =
+                (parts.next(), parts.next(), parts.next(), parts.next())
+            else {
+                return Err("a malformed volume".into());
+            };
+            let dir = fds.next().ok_or("a volume without its directory")?;
+            let read_only = match mode {
+                b"ro" => true,
+                b"rw" => false,
+                _ => return Err("a volume's mode: ro or rw".into()),
+            };
+            let name = CString::new(name).map_err(|_| "a volume's name")?;
+            let only = if only.is_empty() {
+                None
+            } else {
+                Some(CString::new(only).map_err(|_| "a volume's one name")?)
+            };
+            server.add(name.clone(), dir, read_only, only)?;
+            Ok(name)
+        })();
+        let _ = match volume {
+            Ok(name) => {
+                added.push(name);
+                shards_ipc::send(link, kind::TAKEN, &[], &[])
+            }
+            Err(e) => shards_ipc::send(link, kind::ERR, e.as_bytes(), &[]),
+        };
+    }
+    for name in &added {
+        server.remove(name);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -164,5 +309,45 @@ mod tests {
         assert!(parse(&args[..3]).is_err());
         let bad: Vec<OsString> = ["rw", "a/b"].iter().map(OsString::from).collect();
         assert!(parse(&bad).is_err());
+    }
+
+    /// A joiner's volumes are served while its link is open, a malformed one refused and
+    /// said why, and all go as the link closes, its joiner gone (D119).
+    #[test]
+    fn a_joiners_volumes_go_as_its_link_closes() {
+        use shards_ipc::kind;
+        use std::os::fd::AsFd as _;
+        let at = std::env::temp_dir().join(format!("shards-share-joiner-{}", std::process::id()));
+        let (root, vol) = (at.join("root"), at.join("vol"));
+        for dir in [&root, &vol] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let open = |p: &std::path::Path| -> OwnedFd { std::fs::File::open(p).unwrap().into() };
+        let server = Server::joined(open(&root), 64).unwrap();
+        let (daemon, link) = UnixStream::pair().unwrap();
+        let taken = |name: &str| {
+            server
+                .add(CString::new(name).unwrap(), open(&vol), false, None)
+                .is_err()
+        };
+        std::thread::scope(|s| {
+            let served = s.spawn(|| joiner(&server, &link));
+            let dir = open(&vol);
+            shards_ipc::send(&daemon, kind::JOIN_VOLUME, b"v\0rw\0", &[dir.as_fd()]).unwrap();
+            assert_eq!(shards_ipc::recv(&daemon).unwrap().unwrap().kind, kind::TAKEN);
+            shards_ipc::send(&daemon, kind::JOIN_VOLUME, b"w\0rx\0", &[dir.as_fd()]).unwrap();
+            let refused = shards_ipc::recv(&daemon).unwrap().unwrap();
+            assert_eq!(
+                (refused.kind, refused.payload.as_slice()),
+                (kind::ERR, &b"a volume's mode: ro or rw"[..])
+            );
+            assert!(taken("v"), "served while its link is open");
+            assert!(!taken("w"));
+            server.remove(c"w");
+            drop(daemon);
+            served.join().unwrap();
+            assert!(!taken("v"), "gone as its link closed");
+        });
+        let _ = std::fs::remove_dir_all(&at);
     }
 }

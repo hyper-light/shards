@@ -132,6 +132,23 @@ struct Node {
     name: CString,
     lookups: u64,
     key: (u64, u64),
+    /// The node of the volume it is in, in a join share ([`Server::joined`]); none
+    /// ([`NO_VOLUME`]) in a share of one directory, and the join share's root's own.
+    volume: u64,
+}
+
+/// No volume's: a node of a share of one directory, or a join share's root. Node IDs start
+/// at [`ROOT`], so none is 0.
+const NO_VOLUME: u64 = 0;
+
+/// A join share's volume (D119): a directory a container joining the microVM's network is
+/// given, reached from the share's empty root by its name, read-only or not, or of its one
+/// name, held for as long as it is served.
+#[derive(Debug)]
+struct Volume {
+    fd: OwnedFd,
+    read_only: bool,
+    only: Option<CString>,
 }
 
 /// A file or directory the guest opened: its node, and a file's host flags, less those
@@ -171,10 +188,17 @@ enum Held {
 
 #[derive(Debug)]
 struct State {
-    /// The shared directory, held for as long as the server.
+    /// The shared directory, held for as long as the server: a join share's an empty one,
+    /// its volumes reached from it by name.
     root: OwnedFd,
     nodes: HashMap<u64, Node>,
-    by_key: HashMap<(u64, u64), u64>,
+    /// Each node by its volume and what it is (its device and inode): one directory shared
+    /// as two volumes, read-only and not, is two nodes, never one whose volume is either's.
+    by_key: HashMap<(u64, u64, u64), u64>,
+    /// A join share's (D119): its volumes, by their nodes, and their nodes by their names.
+    joined: bool,
+    volumes: HashMap<u64, Volume>,
+    named: HashMap<CString, u64>,
     next_node: u64,
     handles: HashMap<u64, Handle>,
     next_handle: u64,
@@ -713,10 +737,12 @@ impl Server {
                 name: CString::default(),
                 lookups: 1,
                 key: key(&st),
+                volume: NO_VOLUME,
             },
         );
         let mut by_key = HashMap::new();
-        by_key.insert(key(&st), ROOT);
+        let (dev, ino) = key(&st);
+        by_key.insert((NO_VOLUME, dev, ino), ROOT);
         Ok(Server {
             read_only,
             only,
@@ -724,6 +750,9 @@ impl Server {
                 root,
                 nodes,
                 by_key,
+                joined: false,
+                volumes: HashMap::new(),
+                named: HashMap::new(),
                 next_node: ROOT + 1,
                 handles: HashMap::new(),
                 next_handle: 1,
@@ -734,6 +763,74 @@ impl Server {
                 budget,
             }),
         })
+    }
+
+    /// A join share's server (D119): its root the empty directory `root` holds, nothing
+    /// made there, and each volume [`add`](Self::add)ed reached from it by its name.
+    pub fn joined(root: OwnedFd, budget: u64) -> Result<Server, String> {
+        let server = Server::with_budget(root, false, None, budget)?;
+        server.state.lock().unwrap_or_else(PoisonError::into_inner).joined = true;
+        Ok(server)
+    }
+
+    /// Adds volume `name` to a join share: the directory `dir` holds, read-only or not, or
+    /// of its one name `only`, a root of its own under the share's.
+    pub fn add(
+        &self,
+        name: CString,
+        dir: OwnedFd,
+        read_only: bool,
+        only: Option<CString>,
+    ) -> Result<(), String> {
+        let bytes = name.as_bytes();
+        if bytes.is_empty() || bytes.contains(&b'/') || bytes == b"." || bytes == b".." {
+            return Err(format!("a volume named {name:?}"));
+        }
+        let st = stat_fd(dir.as_raw_fd()).map_err(|e| format!("volume {name:?}: errno {e}"))?;
+        if !is_dir(&st) {
+            return Err(format!("volume {name:?} is not a directory"));
+        }
+        let mut s = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if !s.joined {
+            return Err("a share of one directory takes no volumes".into());
+        }
+        if s.named.contains_key(&name) {
+            return Err(format!("volume {name:?} is served already"));
+        }
+        let id = s.next_node;
+        s.next_node += 1;
+        let (dev, ino) = key(&st);
+        s.nodes.insert(
+            id,
+            Node {
+                dir: true,
+                parent: ROOT,
+                name: name.clone(),
+                lookups: 0,
+                key: (dev, ino),
+                volume: id,
+            },
+        );
+        s.by_key.insert((id, dev, ino), id);
+        s.volumes.insert(
+            id,
+            Volume {
+                fd: dir,
+                read_only,
+                only,
+            },
+        );
+        s.named.insert(name, id);
+        Ok(())
+    }
+
+    /// Takes volume `name` out of a join share, its directory let go of: what the guest
+    /// still names of it is stale, and none of the share's paths leads to it.
+    pub fn remove(&self, name: &CStr) {
+        let mut s = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(id) = s.named.remove(name) {
+            s.volumes.remove(&id);
+        }
     }
 
     /// Answers request `req`, the bytes of its readable descriptors: the reply's bytes,
@@ -778,7 +875,7 @@ impl Server {
                 return None;
             }
             op::INTERRUPT => return None,
-            _ => match self.confined(opcode, nodeid, body) {
+            _ => match self.confined(&state, opcode, nodeid, body) {
                 Ok(()) => self.dispatch(&mut state, opcode, nodeid, caller, body),
                 Err(e) => Err(e),
             },
@@ -800,38 +897,33 @@ impl Server {
         Some(out)
     }
 
-    /// Whether a file bound alone lets the request through: at its directory, only the
-    /// file's lookup and what reads the directory itself; no name moves in or out, as none
-    /// does of a file bind mount (EBUSY).
-    fn confined(&self, opcode: u32, nodeid: u64, body: &[u8]) -> Result<(), Errno> {
-        let Some(only) = &self.only else {
-            return Ok(());
-        };
-        match opcode {
-            op::RENAME | op::RENAME2 | op::LINK => Err(EBUSY),
-            _ if nodeid != ROOT => Ok(()),
-            op::LOOKUP if Args(body).name()?.as_c_str() == only.as_c_str() => Ok(()),
-            op::LOOKUP => Err(ENOENT),
-            op::INIT
-            | op::DESTROY
-            | op::GETATTR
-            | op::STATFS
-            | op::OPENDIR
-            | op::READDIR
-            | op::READDIRPLUS
-            | op::RELEASEDIR
-            | op::FSYNCDIR
-            | op::ACCESS
-            | op::GETXATTR
-            | op::LISTXATTR
-            | op::SYNCFS => Ok(()),
-            op::UNLINK if Args(body).name()?.as_c_str() == only.as_c_str() => Err(EBUSY),
-            _ => Err(EACCES),
+    /// Whether the share lets the request through: a file bound alone, at its directory,
+    /// only the file's lookup and what reads the directory itself, no name moving in or out,
+    /// as none does of a file bind mount (EBUSY); a join share, as [`joined_confined`] says.
+    fn confined(&self, s: &State, opcode: u32, nodeid: u64, body: &[u8]) -> Result<(), Errno> {
+        if s.joined {
+            return joined_confined(s, opcode, nodeid, body);
+        }
+        match &self.only {
+            Some(only) => only_confined(only, ROOT, opcode, nodeid, body),
+            None => Ok(()),
         }
     }
 
-    fn writable(&self) -> Result<(), Errno> {
-        if self.read_only { Err(EROFS) } else { Ok(()) }
+    /// Whether the request may change node `nodeid`: in a share written to, and in a join
+    /// share's volume written to, never its root.
+    fn writable(&self, s: &State, nodeid: u64) -> Result<(), Errno> {
+        if self.read_only {
+            return Err(EROFS);
+        }
+        if !s.joined {
+            return Ok(());
+        }
+        let volume = s.nodes.get(&nodeid).map_or(NO_VOLUME, |n| n.volume);
+        match s.volumes.get(&volume) {
+            Some(v) if !v.read_only => Ok(()),
+            _ => Err(EROFS),
+        }
     }
 
     fn dispatch(
@@ -846,6 +938,8 @@ impl Server {
         let mut r = Reply::default();
         match opcode {
             op::INIT => {
+                // A session begins: nothing the guest knew before it holds.
+                reset(s);
                 let major = a.u32()?;
                 let minor = a.u32()?;
                 let readahead = a.u32()?;
@@ -878,7 +972,7 @@ impl Server {
                     .u16(0)
                     .bytes(&[0u8; 22]);
             }
-            op::DESTROY => {}
+            op::DESTROY => reset(s),
             op::LOOKUP => {
                 let name = a.name()?;
                 let (id, st, owner) = lookup(s, nodeid, &name)?;
@@ -899,7 +993,7 @@ impl Server {
                 r.u64(VALID_S).u32(0).u32(0).attr(&st, owner);
             }
             op::SETATTR => {
-                self.writable()?;
+                self.writable(s, nodeid)?;
                 let valid = Args(body).u32()?;
                 let fh = Args(body.get(8..).unwrap_or_default()).u64()?;
                 self.setattr(s, nodeid, &mut a)?;
@@ -924,7 +1018,7 @@ impl Server {
                 r.bytes(&buf);
             }
             op::SYMLINK => {
-                self.writable()?;
+                self.writable(s, nodeid)?;
                 let name = a.name()?;
                 let target = a.cstr()?;
                 let dir = dir_fd(s, nodeid)?;
@@ -935,7 +1029,7 @@ impl Server {
                 self.made(s, nodeid, &name, caller, &mut r)?;
             }
             op::MKNOD => {
-                self.writable()?;
+                self.writable(s, nodeid)?;
                 let mode = a.u32()?;
                 let rdev = a.u32()?;
                 let _umask = a.u32()?;
@@ -962,7 +1056,7 @@ impl Server {
                 self.made(s, nodeid, &name, caller, &mut r)?;
             }
             op::MKDIR => {
-                self.writable()?;
+                self.writable(s, nodeid)?;
                 let mode = a.u32()?;
                 let _umask = a.u32()?;
                 let name = a.name()?;
@@ -974,10 +1068,10 @@ impl Server {
                 self.made(s, nodeid, &name, caller, &mut r)?;
             }
             op::UNLINK | op::RMDIR => {
-                self.writable()?;
+                self.writable(s, nodeid)?;
                 let name = a.name()?;
                 let dir = dir_fd(s, nodeid)?;
-                let removal = pin_before_removal(s, dir, &name);
+                let removal = pin_before_removal(s, volume_of(s, nodeid), dir, &name);
                 let flags = if opcode == op::RMDIR {
                     libc::AT_REMOVEDIR
                 } else {
@@ -991,8 +1085,14 @@ impl Server {
                 }
             }
             op::RENAME | op::RENAME2 => {
-                self.writable()?;
+                self.writable(s, nodeid)?;
                 let newdir = a.u64()?;
+                // Two volumes are two mounts in the guest, as two of Docker's binds are:
+                // nothing moves between them.
+                if volume_of(s, nodeid) != volume_of(s, newdir) {
+                    return Err(EXDEV);
+                }
+                self.writable(s, newdir)?;
                 let flags = if opcode == op::RENAME2 {
                     let f = a.u32()?;
                     let _ = a.u32()?;
@@ -1005,8 +1105,11 @@ impl Server {
                 rename(s, nodeid, &old, newdir, &new, flags)?;
             }
             op::LINK => {
-                self.writable()?;
+                self.writable(s, nodeid)?;
                 let old = a.u64()?;
+                if volume_of(s, old) != volume_of(s, nodeid) {
+                    return Err(EXDEV);
+                }
                 let name = a.name()?;
                 let (odir, oname) = at(s, old)?;
                 let dir = dir_fd(s, nodeid)?;
@@ -1020,7 +1123,7 @@ impl Server {
             op::OPEN => {
                 let flags = a.u32()?;
                 if flags & linux::O_ACCMODE != 0 || flags & linux::O_TRUNC != 0 {
-                    self.writable()?;
+                    self.writable(s, nodeid)?;
                 }
                 if s.nodes.get(&nodeid).is_some_and(|n| n.dir) {
                     return Err(EISDIR);
@@ -1049,7 +1152,7 @@ impl Server {
                 r.u64(fh).u32(0).u32(0);
             }
             op::CREATE => {
-                self.writable()?;
+                self.writable(s, nodeid)?;
                 let flags = a.u32()?;
                 let mode = a.u32()?;
                 let _umask = a.u32()?;
@@ -1087,7 +1190,7 @@ impl Server {
                 r.bytes(&buf);
             }
             op::WRITE => {
-                self.writable()?;
+                self.writable(s, nodeid)?;
                 let fh = a.u64()?;
                 let offset = a.u64()?;
                 let size = a.u32()?;
@@ -1101,7 +1204,14 @@ impl Server {
                 r.u32(u32::try_from(n).unwrap_or(0)).u32(0);
             }
             op::STATFS => {
-                let dir = dir_fd(s, ROOT)?;
+                // A join share's volume's own file system (D119).
+                let volume = volume_of(s, nodeid);
+                let top = if s.volumes.contains_key(&volume) {
+                    volume
+                } else {
+                    ROOT
+                };
+                let dir = dir_fd(s, top)?;
                 // SAFETY: an all-zero statvfs is a valid out-parameter.
                 let mut v: libc::statvfs = unsafe { std::mem::zeroed() };
                 // SAFETY: fstatvfs(2) of a descriptor we hold.
@@ -1151,8 +1261,17 @@ impl Server {
                 let size = (a.u32()? as usize).min(MAX_WRITE as usize);
                 let plus = opcode == op::READDIRPLUS;
                 let base = if plus { 152 } else { 24 };
-                // A file bound alone: its directory shows it alone.
-                let only = self.only.as_ref().filter(|_| nodeid == ROOT);
+                // A file bound alone: its directory shows it alone; and a join share's root
+                // nothing of the directory it is, its volumes found by name alone (D119).
+                let only: Option<CString> = if s.joined {
+                    if nodeid == ROOT {
+                        Some(CString::default())
+                    } else {
+                        s.volumes.get(&nodeid).and_then(|v| v.only.clone())
+                    }
+                } else {
+                    self.only.clone().filter(|_| nodeid == ROOT)
+                };
                 let dir = dir_stream(s, fh)?;
                 // The entries that fit, each with the offset after it, looked up (PLUS)
                 // once the handle is let go.
@@ -1160,7 +1279,10 @@ impl Server {
                 let mut used = 0;
                 dir.read(offset, size, |entry, next| {
                     let bytes = entry.name.to_bytes();
-                    if only.is_some_and(|only| !matches!(bytes, b"." | b"..") && entry.name != *only) {
+                    if only
+                        .as_ref()
+                        .is_some_and(|only| !matches!(bytes, b"." | b"..") && entry.name != *only)
+                    {
                         return true;
                     }
                     let len = (base + bytes.len() + 7) & !7;
@@ -1234,7 +1356,7 @@ impl Server {
                 }
             }
             op::SETXATTR => {
-                self.writable()?;
+                self.writable(s, nodeid)?;
                 let size = a.u32()?;
                 let flags = a.u32()?;
                 let name = a.cstr()?;
@@ -1246,7 +1368,7 @@ impl Server {
                 fset_xattr(fd.raw(), &name, value, flags)?;
             }
             op::REMOVEXATTR => {
-                self.writable()?;
+                self.writable(s, nodeid)?;
                 let name = a.cstr()?;
                 if hidden(&name) {
                     return Err(ENODATA);
@@ -1275,7 +1397,7 @@ impl Server {
                 r.u64(at as u64);
             }
             op::FALLOCATE => {
-                self.writable()?;
+                self.writable(s, nodeid)?;
                 let fh = a.u64()?;
                 let offset = a.u64()?;
                 let length = a.u64()?;
@@ -1575,6 +1697,9 @@ fn dir_fd(s: &mut State, nodeid: u64) -> Result<RawFd, Errno> {
     if nodeid == ROOT {
         return Ok(s.root.as_raw_fd());
     }
+    if let Some(v) = s.volumes.get(&nodeid) {
+        return Ok(v.fd.as_raw_fd());
+    }
     let node = s.nodes.get(&nodeid).ok_or(ENOENT)?;
     if !node.dir {
         return Err(ENOTDIR);
@@ -1593,6 +1718,9 @@ fn dir_fd(s: &mut State, nodeid: u64) -> Result<RawFd, Errno> {
         at = node.parent;
         if at == ROOT {
             break s.root.as_raw_fd();
+        }
+        if let Some(v) = s.volumes.get(&at) {
+            break v.fd.as_raw_fd();
         }
         if let Some(Held::Fd(fd)) = s.fds.get(Slot::Node(at)) {
             break fd.as_raw_fd();
@@ -1710,15 +1838,29 @@ fn node_stat(s: &mut State, nodeid: u64) -> Result<libc::stat, Errno> {
 /// `name` in directory node `parent`: its node, counted once more and known by this name
 /// now, its attributes and its owner. A directory is not opened until it is used.
 fn lookup(s: &mut State, parent: u64, name: &CStr) -> Result<(u64, libc::stat, Owner), Errno> {
+    // A join share's root: its volumes, by name (D119).
+    if s.joined && parent == ROOT {
+        let id = *s.named.get(name).ok_or(ENOENT)?;
+        let st = stat_fd(dir_fd(s, id)?)?;
+        if let Some(n) = s.nodes.get_mut(&id) {
+            n.lookups = n.lookups.saturating_add(1);
+        }
+        let owner = node_owner(s, id, Some(&st))?;
+        return Ok((id, st, owner));
+    }
+    let volume = volume_of(s, parent);
     let dir = dir_fd(s, parent)?;
     let st = stat_at(dir, name)?;
     let k = key(&st);
-    let id = match s.by_key.get(&k).copied().filter(|id| s.nodes.contains_key(id)) {
+    let at = (volume, k.0, k.1);
+    // The root, and a volume's, keep their names.
+    let rooted = |s: &State, id: u64| id == ROOT || s.volumes.contains_key(&id);
+    let id = match s.by_key.get(&at).copied().filter(|id| s.nodes.contains_key(id)) {
         Some(id) => {
+            let fixed = rooted(s, id);
             if let Some(n) = s.nodes.get_mut(&id) {
                 n.lookups = n.lookups.saturating_add(1);
-                // The root keeps no name.
-                if id != ROOT {
+                if !fixed {
                     (n.parent, n.name, n.dir) = (parent, name.to_owned(), is_dir(&st));
                 }
                 // Its inode a directory's no longer, deleted and its number taken again: the
@@ -1740,9 +1882,10 @@ fn lookup(s: &mut State, parent: u64, name: &CStr) -> Result<(u64, libc::stat, O
                     name: name.to_owned(),
                     lookups: 1,
                     key: k,
+                    volume,
                 },
             );
-            s.by_key.insert(k, id);
+            s.by_key.insert(at, id);
             id
         }
     };
@@ -1750,23 +1893,103 @@ fn lookup(s: &mut State, parent: u64, name: &CStr) -> Result<(u64, libc::stat, O
     Ok((id, st, owner))
 }
 
+/// Forgets all the guest's kernel knew of the share as its session ends: it sends DESTROY
+/// as the share's last mount goes, and no FORGET for the nodes it held then, as it forgets a
+/// node only while the share is mounted (fs/fuse/inode.c, fuse_evict_inode, on SB_ACTIVE).
+/// The root's node stays, as the next session's root, and a join share's volumes', none
+/// looked up; every other node, handle and descriptor goes. A join share's lives as long as
+/// its microVM, mounted again by each joiner that brings volumes after the last has ended.
+fn reset(s: &mut State) {
+    let volumes = &s.volumes;
+    s.nodes.retain(|id, n| {
+        n.lookups = u64::from(*id == ROOT);
+        *id == ROOT || volumes.contains_key(id)
+    });
+    let nodes = &s.nodes;
+    s.by_key.retain(|_, id| nodes.contains_key(id));
+    s.handles.clear();
+    s.opened.clear();
+    s.fds = Fds::default();
+    s.pins.clear();
+    s.unreached.clear();
+}
+
 fn forget(s: &mut State, nodeid: u64, n: u64) {
     if nodeid == ROOT {
         return;
     }
+    // A volume's root, while it is served, is its node for as long (D119).
+    let served = s.volumes.contains_key(&nodeid);
     let gone = match s.nodes.get_mut(&nodeid) {
         Some(node) => {
             node.lookups = node.lookups.saturating_sub(n);
-            node.lookups == 0
+            node.lookups == 0 && !served
         }
         None => false,
     };
     if gone && let Some(node) = s.nodes.remove(&nodeid) {
         s.fds.remove(Slot::Node(nodeid));
-        if s.by_key.get(&node.key) == Some(&nodeid) {
-            s.by_key.remove(&node.key);
+        let at = (node.volume, node.key.0, node.key.1);
+        if s.by_key.get(&at) == Some(&nodeid) {
+            s.by_key.remove(&at);
         }
     }
+}
+
+/// What a share of one name, `only`, the one name of directory node `top`, lets the guest
+/// do: reach that name in it and nothing else there, and rename or link nothing.
+fn only_confined(only: &CStr, top: u64, opcode: u32, nodeid: u64, body: &[u8]) -> Result<(), Errno> {
+    match opcode {
+        op::RENAME | op::RENAME2 | op::LINK => Err(EBUSY),
+        _ if nodeid != top => Ok(()),
+        op::LOOKUP if Args(body).name()?.as_c_str() == only => Ok(()),
+        op::LOOKUP => Err(ENOENT),
+        op::UNLINK if Args(body).name()?.as_c_str() == only => Err(EBUSY),
+        _ if reads(opcode) => Ok(()),
+        _ => Err(EACCES),
+    }
+}
+
+/// What a join share lets the guest do (D119): in its root, find its volumes by name and
+/// read, nothing made; in a volume of one name, what a share of one name lets it.
+fn joined_confined(s: &State, opcode: u32, nodeid: u64, body: &[u8]) -> Result<(), Errno> {
+    if nodeid == ROOT {
+        return if opcode == op::LOOKUP || reads(opcode) {
+            Ok(())
+        } else {
+            Err(EACCES)
+        };
+    }
+    let volume = s.nodes.get(&nodeid).map_or(NO_VOLUME, |n| n.volume);
+    match s.volumes.get(&volume).and_then(|v| v.only.as_deref()) {
+        Some(only) => only_confined(only, volume, opcode, nodeid, body),
+        None => Ok(()),
+    }
+}
+
+/// Whether `opcode` only reads, or opens and closes a directory to read it.
+fn reads(opcode: u32) -> bool {
+    matches!(
+        opcode,
+        op::INIT
+            | op::DESTROY
+            | op::GETATTR
+            | op::STATFS
+            | op::OPENDIR
+            | op::READDIR
+            | op::READDIRPLUS
+            | op::RELEASEDIR
+            | op::FSYNCDIR
+            | op::ACCESS
+            | op::GETXATTR
+            | op::LISTXATTR
+            | op::SYNCFS
+    )
+}
+
+/// The volume node `nodeid` is in; [`NO_VOLUME`] for none.
+fn volume_of(s: &State, nodeid: u64) -> u64 {
+    s.nodes.get(&nodeid).map_or(NO_VOLUME, |n| n.volume)
 }
 
 /// The handles a server keeps at most: Linux's own bound on a process's open files,
@@ -1914,11 +2137,12 @@ fn dir_stream(s: &mut State, fh: u64) -> Result<&mut DirStream, Errno> {
 /// files do after an unlink. Pins are the descriptors the server cannot let go, and count
 /// against its budget: past it, none is taken, and the node's handles answer ESTALE once it
 /// is removed (audit V09).
-fn pin_before_removal(s: &mut State, dir: RawFd, name: &CStr) -> Removal {
+fn pin_before_removal(s: &mut State, volume: u64, dir: RawFd, name: &CStr) -> Removal {
     let Ok(st) = stat_at(dir, name) else {
         return Removal::Nothing;
     };
-    let Some(&node) = s.by_key.get(&key(&st)) else {
+    let (dev, ino) = key(&st);
+    let Some(&node) = s.by_key.get(&(volume, dev, ino)) else {
         return Removal::Nothing;
     };
     let Some(opened) = s.opened.get(&node) else {
@@ -2220,7 +2444,7 @@ fn rename(s: &mut State, olddir: u64, old: &CStr, newdir: u64, new: &CStr, flags
     // exchange, which removes nothing.
     let same = matches!((stat_at(od, old), stat_at(nd, new)), (Ok(a), Ok(b)) if key(&a) == key(&b));
     let removal = if flags & linux::RENAME_EXCHANGE == 0 && !same {
-        pin_before_removal(s, nd, new)
+        pin_before_removal(s, volume_of(s, newdir), nd, new)
     } else {
         Removal::Nothing
     };
@@ -2472,6 +2696,152 @@ mod tests {
         std::fs::create_dir_all(&p).unwrap();
         let fd = std::fs::File::open(&p).unwrap();
         (p, Server::new(fd.into(), false, None).unwrap())
+    }
+
+    /// A join share's volumes (D119): each reached from the share's empty root by its name
+    /// alone, nothing made in the root; each with its own files; a read-only one refusing
+    /// writes; one directory shared as two volumes, read-only and not, two nodes, so that the
+    /// read-only one's refuses what the other's takes; nothing moved between volumes; one
+    /// taken out stale.
+    #[test]
+    fn a_join_share_serves_each_volume_alone() {
+        let (root, _) = dir();
+        let (a, _) = dir();
+        let (b, _) = dir();
+        std::fs::write(a.join("x"), "x").unwrap();
+        std::fs::write(b.join("y"), "y").unwrap();
+        let fd = |p: &std::path::Path| -> OwnedFd { std::fs::File::open(p).unwrap().into() };
+        let c = |n: &str| CString::new(n).unwrap();
+        let s = Server::joined(fd(&root), 64).unwrap();
+        s.add(c("a"), fd(&a), false, None).unwrap();
+        s.add(c("b"), fd(&b), false, None).unwrap();
+        s.add(c("aro"), fd(&a), true, None).unwrap();
+        assert!(s.add(c("a"), fd(&b), false, None).is_err());
+        assert!(s.add(c("../up"), fd(&b), false, None).is_err());
+        let node = |r: (i32, Vec<u8>)| {
+            assert_eq!(r.0, 0);
+            u64::from_le_bytes(r.1[0..8].try_into().unwrap())
+        };
+        let va = node(answer(&s, &req(op::LOOKUP, ROOT, 0, &name("a"))));
+        let vb = node(answer(&s, &req(op::LOOKUP, ROOT, 0, &name("b"))));
+        let vro = node(answer(&s, &req(op::LOOKUP, ROOT, 0, &name("aro"))));
+        assert_eq!(answer(&s, &req(op::LOOKUP, ROOT, 0, &name("nope"))).0, -ENOENT);
+        assert_eq!(answer(&s, &req(op::LOOKUP, va, 0, &name("y"))).0, -ENOENT);
+        let mkdir = |n: &str| [0u8; 8].iter().copied().chain(name(n)).collect::<Vec<_>>();
+        assert_eq!(answer(&s, &req(op::MKDIR, ROOT, 0, &mkdir("d"))).0, -EACCES);
+        assert_eq!(answer(&s, &req(op::MKDIR, vro, 0, &mkdir("d"))).0, -EROFS);
+        assert_eq!(answer(&s, &req(op::MKDIR, va, 0, &mkdir("d"))).0, 0);
+        assert!(a.join("d").is_dir());
+        let xa = node(answer(&s, &req(op::LOOKUP, va, 0, &name("x"))));
+        let xro = node(answer(&s, &req(op::LOOKUP, vro, 0, &name("x"))));
+        assert_ne!(xa, xro);
+        // OPEN for writing (O_WRONLY).
+        let open = |n: u64| answer(&s, &req(op::OPEN, n, 0, &[1, 0, 0, 0, 0, 0, 0, 0])).0;
+        assert_eq!(open(xro), -EROFS);
+        assert_eq!(open(xa), 0);
+        let mut moved = vb.to_le_bytes().to_vec();
+        moved.extend(name("x"));
+        moved.extend(name("x2"));
+        assert_eq!(answer(&s, &req(op::RENAME, va, 0, &moved)).0, -EXDEV);
+        assert!(a.join("x").is_file() && !b.join("x2").exists());
+        s.remove(&c("b"));
+        assert_eq!(answer(&s, &req(op::LOOKUP, ROOT, 0, &name("b"))).0, -ENOENT);
+        assert_eq!(answer(&s, &req(op::LOOKUP, vb, 0, &name("y"))).0, -ESTALE);
+    }
+
+    /// The end of a session (DESTROY, or the next INIT) forgets every node and handle the
+    /// guest's kernel had, which it forgets without FORGET as its share's last mount goes;
+    /// a join share's volumes stay, found again by name.
+    #[test]
+    fn a_session_that_ends_leaves_nothing_held() {
+        let (root, _) = dir();
+        let (a, _) = dir();
+        std::fs::create_dir_all(a.join("d/e")).unwrap();
+        std::fs::write(a.join("d/e/f"), "f").unwrap();
+        let fd = |p: &std::path::Path| -> OwnedFd { std::fs::File::open(p).unwrap().into() };
+        let s = Server::joined(fd(&root), 64).unwrap();
+        s.add(CString::new("a").unwrap(), fd(&a), false, None).unwrap();
+        let node = |r: (i32, Vec<u8>)| {
+            assert_eq!(r.0, 0);
+            u64::from_le_bytes(r.1[0..8].try_into().unwrap())
+        };
+        let held = |s: &Server| {
+            let st = s.state.lock().unwrap();
+            (
+                st.nodes.len(),
+                st.by_key.len(),
+                st.handles.len(),
+                st.fds.open.len(),
+            )
+        };
+        let session = |s: &Server| {
+            let v = node(answer(s, &req(op::LOOKUP, ROOT, 0, &name("a"))));
+            let d = node(answer(s, &req(op::LOOKUP, v, 0, &name("d"))));
+            let e = node(answer(s, &req(op::LOOKUP, d, 0, &name("e"))));
+            let f = node(answer(s, &req(op::LOOKUP, e, 0, &name("f"))));
+            assert_eq!(answer(s, &req(op::OPEN, f, 0, &[0; 8])).0, 0);
+            assert_eq!(answer(s, &req(op::OPENDIR, e, 0, &[0; 8])).0, 0);
+            f
+        };
+        let before = held(&s);
+        let f = session(&s);
+        assert!(held(&s).0 > before.0 && held(&s).2 == 2, "{:?}", held(&s));
+        assert_eq!(answer(&s, &req(op::DESTROY, ROOT, 0, &[])).0, 0);
+        assert_eq!(held(&s), (before.0, before.1, 0, 0));
+        assert_eq!(answer(&s, &req(op::GETATTR, f, 0, &[0; 16])).0, -ENOENT);
+        // A second session finds its volume again, then ends with an INIT alone.
+        session(&s);
+        let init = [7u32, 45, 0, 0]
+            .iter()
+            .flat_map(|w| w.to_le_bytes())
+            .collect::<Vec<_>>();
+        assert_eq!(answer(&s, &req(op::INIT, ROOT, 0, &init)).0, 0);
+        assert_eq!(held(&s), (before.0, before.1, 0, 0));
+    }
+
+    /// A join share's volume of one name, a file a joiner binds alone, shows that file alone
+    /// of its directory, as a share of one name does.
+    #[test]
+    fn a_join_shares_volume_of_one_name_shows_it_alone() {
+        let (root, _) = dir();
+        let (p, _) = dir();
+        std::fs::write(p.join("bound"), "b").unwrap();
+        std::fs::write(p.join("secret"), "s").unwrap();
+        let fd = |p: &std::path::Path| -> OwnedFd { std::fs::File::open(p).unwrap().into() };
+        let s = Server::joined(fd(&root), 64).unwrap();
+        s.add(
+            CString::new("f").unwrap(),
+            fd(&p),
+            false,
+            Some(CString::new("bound").unwrap()),
+        )
+        .unwrap();
+        let (e, entry) = answer(&s, &req(op::LOOKUP, ROOT, 0, &name("f")));
+        assert_eq!(e, 0);
+        let v = u64::from_le_bytes(entry[0..8].try_into().unwrap());
+        assert_eq!(answer(&s, &req(op::LOOKUP, v, 0, &name("bound"))).0, 0);
+        assert_eq!(answer(&s, &req(op::LOOKUP, v, 0, &name("secret"))).0, -ENOENT);
+        // Listed, the volume shows its one name, and the share's root none of the files
+        // its directory has.
+        std::fs::write(root.join("stray"), "s").unwrap();
+        for (dir, want) in [(v, vec!["bound"]), (ROOT, vec![])] {
+            for opcode in [op::READDIR, op::READDIRPLUS] {
+                let (e, opened) = answer(&s, &req(op::OPENDIR, dir, 0, &[0; 8]));
+                assert_eq!(e, 0);
+                let fh = u64::from_le_bytes(opened[0..8].try_into().unwrap());
+                let (e, listing) = answer(&s, &req(opcode, dir, 0, &readdir(fh, 0, 4096)));
+                assert_eq!(e, 0);
+                let mut names: Vec<String> = page(&listing, opcode == op::READDIRPLUS)
+                    .into_iter()
+                    .map(|(n, _)| n)
+                    .collect();
+                names.retain(|n| n != "." && n != "..");
+                assert_eq!(names, want, "{opcode}");
+            }
+        }
+        assert_eq!(answer(&s, &req(op::UNLINK, v, 0, &name("bound"))).0, -EBUSY);
+        let mkdir = [0u8; 8].iter().copied().chain(name("d")).collect::<Vec<_>>();
+        assert_eq!(answer(&s, &req(op::MKDIR, v, 0, &mkdir)).0, -EACCES);
     }
 
     #[test]

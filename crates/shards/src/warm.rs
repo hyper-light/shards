@@ -445,6 +445,22 @@ fn relay_signals(conn: &UnixStream, to: &'static ToGuest, from: From<'_>) {
                     let _ = writeln!(io::stderr(), "shards: a joining container: {e}");
                 }
             }
+            // The server of its join share (D119), from the first joiner to bring volumes:
+            // before that joiner's `JOIN`, and so before its guest mounts the share.
+            kind::JOIN_SHARE if !client && joiner.is_none() => {
+                if let Some(number) = message.payload.first_chunk::<8>() {
+                    let _ = shards_ipc::send(conn, kind::EXEC_TAKEN, number, &[]);
+                }
+                match (message.fds.into_iter().next(), crate::vm_run::join_share()) {
+                    (Some(server), Some(slot)) => slot.attach(UnixStream::from(server)),
+                    (None, _) => {
+                        let _ = writeln!(io::stderr(), "shards: a join share without its server");
+                    }
+                    (Some(_), None) => {
+                        let _ = writeln!(io::stderr(), "shards: a join share for a microVM without one");
+                    }
+                }
+            }
             kind::ATTACH_RUN if !client => {
                 if let Some(number) = message.payload.first_chunk::<8>() {
                     let _ = shards_ipc::send(conn, kind::EXEC_TAKEN, number, &[]);

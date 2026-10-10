@@ -431,6 +431,14 @@ fn give_join_share() -> &'static shards_vmm::devices::virtio::fs::Slot {
     &JOIN_SHARE
 }
 
+/// This VM's join share, where it has one (D119).
+#[cfg(unix)]
+pub fn join_share() -> Option<&'static shards_vmm::devices::virtio::fs::Slot> {
+    HAS_JOIN_SHARE
+        .load(std::sync::atomic::Ordering::Acquire)
+        .then_some(&JOIN_SHARE)
+}
+
 /// Console output that never fails the caller (e.g. with stderr closed).
 fn report(message: impl Display) {
     let _ = writeln!(std::io::stderr(), "shards: {message}");

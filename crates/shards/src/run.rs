@@ -406,13 +406,18 @@ pub fn template(home: &Path, guest: &Guest, rootfs: &Path, cfg: &Config) -> Path
         cfg.memory_mib,
         cfg.cmdline,
         shares(cfg),
-    ) + &pmem(cfg);
+    ) + &pmem(cfg)
+        + JOIN_SHARE;
     let hex: String = Sha256::digest(key.as_bytes())
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect();
     home.join("templates").join(hex)
 }
+
+/// Every template's join share (D119), which every microVM the daemon starts has, as it has
+/// a join disk: in its key, so that none saved without one is restored as one with it.
+const JOIN_SHARE: &str = "join share\n";
 
 /// A template's devices after its root filesystem, the in-VM server's among them (D60),
 /// each named by content: the keys of those without stay as they were.

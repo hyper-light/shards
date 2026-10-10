@@ -3589,8 +3589,49 @@ the boundary is a container's, which is what the mode asks for.
   default rules, a device at another path read and not written, a cgroup rule,
   `--privileged` opening the microVM's own; mutation-checked: its filter left the
   default).
-- **Not yet, each refused by name before anything starts:** volumes (the provider's
-  microVM has shares for its own run alone), an image's `VOLUME`s, an Agentfile's image.
+- **Its volumes, through the microVM's join share.** A microVM's shares are its own
+  run's (D38), each a virtio-fs device that run's share process serves; a joiner's come
+  after boot, and a microVM has no hotplug, so every microVM carries one more virtio-fs
+  device, its join share, served by none until a joiner brings volumes (its cost, PM
+  M170: no memory per VM resolved, `phys_footprint` +0 KiB [−32, +32]; no restore time
+  resolved; every template keyed by it, so none saved without one is restored as one
+  with it). The first joiner to bring any starts the microVM's join share process
+  (`shards share --join`), whose server's root is an empty directory of the home's,
+  nothing made in it and nothing of it listed, each volume found there by its name alone;
+  the VM is given the connection to it in a message of its own (`kind::JOIN_SHARE`),
+  before that joiner's `JOIN` and so before any guest mounts the share. Each joiner's
+  volumes go to the process on a link of the joiner's own (`kind::JOIN_LINK`,
+  `kind::JOIN_VOLUME`, each answered), named so that no other container can guess them
+  (256 random bits, as a container's ID), and are served until the link closes: at the
+  joiner's end, or as a start fails. In the guest the joiner's standby, its root built,
+  mounts the share in its own mount namespace, binds each volume from it as a run's are
+  mounted (a file alone where one is bound; the image's files copied into an empty
+  named volume, populateVolume; read-only by a remount of the bind), then lets the
+  share's mount go: the joiner's root holds its own volumes and no way to the others'.
+  Its destinations resolve in its own root, as the workload's do in its. The share is
+  never mounted read-only itself: every joiner's mount of it is of one file system, read-only
+  for all from a first mount that were. The server keys each node by its volume as well
+  as its device and inode (one directory given read-only to one joiner and writable to
+  another is two nodes), refuses a read-only volume's writes itself, moves nothing between
+  volumes (EXDEV, as between two binds), shows a volume of one name as that name alone,
+  and lets go of every node, handle and descriptor at a session's end (DESTROY, or the
+  next INIT): the guest's kernel forgets a share's nodes without FORGET as its last mount
+  goes (Linux fs/fuse/inode.c, fuse_evict_inode, only while SB_ACTIVE), and a join share
+  is mounted again by each joiner after the last has ended. Tested
+  (`a_joiner_takes_volumes_as_a_container_does`: a host directory both ways, read-only, a
+  file alone, a named volume filled from its image, an image's `VOLUME`, `cp` from a
+  volume, none of them its provider's or another joiner's, given again as it starts
+  again; mutation-checked: the bind's read-only remount left out; unit tests of the
+  server's volumes, sessions and listings, and of a link's volumes going as it closes, each
+  mutation-checked).
+- **Its boundary is a container's, within the microVM.** As between two of Docker's
+  containers on one host, which Docker's defaults keep: a joiner given `CAP_SYS_ADMIN` may
+  mount the microVM's shares, its provider's and the join share (whose volumes it reaches
+  only by names it has learned), where Docker's leans on AppArmor or SELinux and the guest
+  kernel has neither; one given `CAP_DAC_READ_SEARCH` may open what the guest's kernel
+  holds of them by handle (open_by_handle_at, Docker's reason to withhold it); a
+  privileged one has the whole microVM, as a privileged Docker container has its host.
+- **Not yet, refused by name before anything starts:** an Agentfile's image.
 - **No count of holders.** A VM process runs one VM, so its join disk is a `static` of
   that process's (`Join::new` is a `const fn`), its device given `&'static Join`; a
   joiner's attached clients are kept by its id in the guest, as the workload's are. The

@@ -934,10 +934,56 @@ pub fn open(points: &[MountPoint], first: bool, store: &Store) -> Result<Opened,
     Ok(opened)
 }
 
+/// A joiner's setup (D119): each shared directory of its, `volume=shards{i}`, the volume
+/// `names[i]` of its microVM's join share instead (`join-volume=`), its destination, flags
+/// and one name as they were.
+pub fn joined(setup: &mut [Vec<u8>], names: &[String]) -> Result<(), String> {
+    for entry in setup.iter_mut() {
+        let Some(rest) = entry.strip_prefix(b"volume=shards") else {
+            continue;
+        };
+        let end = rest
+            .iter()
+            .position(|&b| b == 0)
+            .ok_or("a malformed shared directory")?;
+        let name = std::str::from_utf8(rest.get(..end).unwrap_or_default())
+            .ok()
+            .and_then(|i| i.parse::<usize>().ok())
+            .and_then(|i| names.get(i))
+            .ok_or("a shared directory past those opened")?;
+        let mut renamed = format!("join-volume={name}").into_bytes();
+        renamed.extend_from_slice(rest.get(end..).unwrap_or_default());
+        *entry = renamed;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::agentfile::AgentVolume;
+
+    /// A joiner's shared directories are its microVM's join share's volumes, by the names
+    /// given them, all else of each entry as it was; other entries untouched.
+    #[test]
+    fn a_joiners_shared_directories_are_its_join_shares_volumes() {
+        let mut setup: Vec<Vec<u8>> = vec![
+            b"volume=shards0\0/data\0copy\0".to_vec(),
+            b"tmpfs=/t\0size=1m".to_vec(),
+            b"volume=shards1\0/etc/x.conf\0ro\0x.conf".to_vec(),
+        ];
+        joined(&mut setup, &["a".into(), "b".into()]).unwrap();
+        assert_eq!(
+            setup,
+            [
+                b"join-volume=a\0/data\0copy\0".to_vec(),
+                b"tmpfs=/t\0size=1m".to_vec(),
+                b"join-volume=b\0/etc/x.conf\0ro\0x.conf".to_vec(),
+            ]
+        );
+        let mut past = vec![b"volume=shards2\0/d\0\0".to_vec()];
+        assert!(joined(&mut past, &["a".into()]).is_err());
+    }
 
     /// An Agentfile's image's volumes as a run registers and opens them (D109): named and
     /// scoped as its Agentfile says; a Docker `VOLUME` every domain's, but over a domain's
