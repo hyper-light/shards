@@ -110,6 +110,60 @@ static void renamed(const char *hex, const char *dir, const char *moved) {
     said("renamed mkdir at the old path", mkdir(dir, 0700) == 0);
 }
 
+// What a VM taken over after its template is renamed out of its grant could still try
+// (PM M165): a directory descriptor opened before the rename, used after it to make,
+// rewrite and plant; the same bookmark resolved again, which tracks the directory, not
+// its path; and a symlink planted in the granted directory before the rename.
+static void reresolve(const char *hex, const char *dir, const char *moved) {
+    size_t n = strlen(hex) / 2;
+    UInt8 *b = malloc(n);
+    for (size_t i = 0; i < n; i++) sscanf(hex + 2 * i, "%2hhx", &b[i]);
+    CFDataRef d = CFDataCreate(NULL, b, (CFIndex)n);
+    Boolean stale = false;
+    CFURLRef u = CFURLCreateByResolvingBookmarkData(NULL, d, 0, NULL, NULL, &stale, NULL);
+    if (!u) { errno = EPERM; said("reresolve resolve", 0); return; }
+    Boolean started = CFURLStartAccessingSecurityScopedResource(u);
+    printf("  (scope started %d)\n", started);
+    char path[1200];
+    snprintf(path, sizeof path, "%s/before", dir);
+    int fd = open(path, O_WRONLY | O_CREAT, 0600);
+    said("reresolve write before the rename", fd >= 0);
+    if (fd >= 0) close(fd);
+    int dfd = open(dir, O_RDONLY | O_DIRECTORY);
+    said("reresolve directory descriptor before the rename", dfd >= 0);
+    snprintf(path, sizeof path, "%s/planted", dir);
+    said("reresolve symlink planted before the rename", symlink("/etc/hosts", path) == 0);
+    printf("ready\n");
+    fflush(stdout);
+    char c;
+    if (read(0, &c, 1) != 1) return;
+    if (dfd >= 0) {
+        fd = openat(dfd, "viafd", O_WRONLY | O_CREAT, 0600);
+        said("reresolve make through the descriptor after the rename", fd >= 0);
+        if (fd >= 0) close(fd);
+        fd = openat(dfd, "before", O_WRONLY);
+        said("reresolve rewrite through the descriptor after the rename", fd >= 0);
+        if (fd >= 0) close(fd);
+        said("reresolve symlink through the descriptor after the rename", symlinkat("/etc/hosts", dfd, "planted2") == 0);
+    }
+    Boolean stale2 = false;
+    CFURLRef u2 = CFURLCreateByResolvingBookmarkData(NULL, d, 0, NULL, NULL, &stale2, NULL);
+    if (!u2) { errno = EPERM; said("reresolve resolve again", 0); return; }
+    char again[1200];
+    if (!CFURLGetFileSystemRepresentation(u2, 1, (UInt8 *)again, sizeof again)) again[0] = 0;
+    printf("  (resolved again to %s, stale %d)\n", again, stale2);
+    Boolean started2 = CFURLStartAccessingSecurityScopedResource(u2);
+    printf("  (scope started again %d)\n", started2);
+    snprintf(path, sizeof path, "%s/after", moved);
+    fd = open(path, O_WRONLY | O_CREAT, 0600);
+    said("reresolve write at the new path after resolving again", fd >= 0);
+    if (fd >= 0) close(fd);
+    snprintf(path, sizeof path, "%s/before", moved);
+    fd = open(path, O_WRONLY);
+    said("reresolve rewrite at the new path after resolving again", fd >= 0);
+    if (fd >= 0) close(fd);
+}
+
 int main(int argc, char **argv) {
     struct timespec t0;
     clock_gettime(CLOCK_MONOTONIC, &t0);
@@ -143,6 +197,10 @@ int main(int argc, char **argv) {
             char *hex = strdup(arg), *dir = strchr(hex, '@'); *dir++ = 0;
             char *moved = strchr(dir, '@'); *moved++ = 0;
             renamed(hex, dir, moved);
+        } else if (!strcmp(op, "reresolve")) { // HEX@DIR@MOVED
+            char *hex = strdup(arg), *dir = strchr(hex, '@'); *dir++ = 0;
+            char *moved = strchr(dir, '@'); *moved++ = 0;
+            reresolve(hex, dir, moved);
         } else if (!strcmp(op, "relinquish")) { // HEX@DIR
             char *hex = strdup(arg), *dir = strchr(hex, '@'); *dir++ = 0;
             relinquish(hex, dir);
