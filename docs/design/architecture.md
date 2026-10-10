@@ -2908,11 +2908,10 @@ is cached and the image's layers are the same; a changed context file runs again
 reads it and what follows, not what came before; `--no-cache` runs all; `system df` and
 `system prune` count and remove the records.
 
-Open: a `COPY`'s key from the paths it copies alone, where it is from the whole context,
-so that a change elsewhere in it runs again what BuildKit's checksums would keep;
-`--no-cache-filter`; `--cache-from` and `--cache-to`; `docker builder prune` and its
-filters; a bound on what the cache keeps (BuildKit's default GC policy); `RUN
---mount=type=cache` kept across builds.
+What this left open is done since: `--no-cache-filter`, `--cache-from` and `--cache-to`
+(D62); `docker builder prune` and its filters (D65); a step keyed by what it reads, a bound
+on what the cache keeps (dockerd's default GC policy) and `RUN --mount=type=cache` kept
+across builds (D114).
 
 ### RUN steps reach the client's SSH agent (D51)
 
@@ -3429,6 +3428,122 @@ from the registry layer up to the build's policies.
   - An SBOM signed as an attestation.
   - Conditional (`If-Match`) updates of the tag schema's list. The spec's MAY;
     distribution takes none; concurrent pushers can lose an entry (spec.md:733-735).
+
+### D114. The build cache: cache mounts kept across builds, steps keyed by what they read, and its collection
+
+D50 left three things open: `RUN --mount=type=cache` lived in the builder microVM, gone
+with its build; a step was keyed by the whole of its inputs, so a change to a context file
+it never reads ran it again; and nothing bounded what the cache kept.
+
+- **Cache mounts kept across builds.** Each cache is a record of the store's
+  (`cachemounts/v1`), its content the layers its steps' changes made, in order, and taken
+  for a step as BuildKit's mount manager takes a cache directory (v0.28.1
+  solver/llbsolver/mounts/mount.go `getRefCacheDir`), among every build of the home,
+  whichever process runs it: by its key (the id after the Dockerfile's namespace, and `:`
+  and its source's key where `from=` gives one); `shared` the one others hold now, else
+  the first free, else a new one; `private` the first free, else a new one; `locked` the
+  first free, waited for every 100 ms while each is held. First is by ID, the order
+  BuildKit's metadata index looks them up in (cache/metadata `Search`). A lock file per
+  record (flock(2)) holds it for its step, shared or alone; a key's records are looked
+  through and made under the key's lock. A new record's first content is what it is from,
+  whole (`from=`'s state, `source=` the directory shown), its root's owner its source's,
+  mode 0755, as containerd's snapshotter makes a child's.
+- **Where it lives** (PM M140, measured before choosing): under load virtio-fs took 0.64
+  to 10.8 ms a small file at the median, 1,251 to 6,828 times the builder's tmpfs, for a
+  package manager's cache of thousands of them. So a cache is mounted in the guest as a
+  writable tree is: an overlay of its layers under a fresh upper directory in the
+  builder's memory, once for the step however many of its mounts name it (one id at two
+  targets is one directory, as an exec has one ref per key), bound at each target,
+  read-only where asked: 1.26 to 1.86 times tmpfs for a small file, 0.99 to 1.03 for a
+  large one. After the step, whatever its status (a cache's writes are BuildKit's whether
+  or not its step succeeds), the guest sends what it changed; the host makes it the
+  record's next layer (none where nothing changed) and keeps its root's owner and mode,
+  which no layer holds (the upper directory's, as overlayfs shows a mount's root). The
+  guest keeps the upper as a layer, so the build's next step with that cache sends
+  nothing.
+- **A step not answered from the cache** (`--no-cache`, `--no-cache-filter`'s stages)
+  starts its caches empty: before any step runs, their records are let go of, as
+  BuildKit's solver lets them go as it loads the definition (llbsolver
+  `detectPrunedCacheID`, the worker's `PruneCacheMounts`, measured in M141): one no build
+  holds is removed, one held is taken no more.
+- **The records** are BuildKit's `exec.cachemount` records: `system df -v` lists them
+  (type, size of their own layers, in use while a step holds one), `builder prune` removes
+  them unless held, with or without `--all`, filters `type`, `mutable`, `description` as
+  `adaptUsageInfo` gives them, IDs marked `*` as mutable, each described as BuildKit
+  describes it (`cached mount /c from exec /bin/sh -c … with id "//c"`, M141); `--verbose`
+  prints no `Type:` line for any record, as buildx's never does (M141; D65's printed one).
+  `system prune` removes them as Docker's does. Their layers are roots of the store's
+  collector while they are there.
+- **Steps keyed by what they read.** A step has two keys, as a vertex has in BuildKit's
+  solver: one from its inputs' own keys, which a build that changed nothing it reads finds
+  at once; and, asked only where that one finds nothing, one from what it reads of each
+  input, where BuildKit takes a content checksum (ops/file.go: a copy's sources, and
+  `/etc/passwd` and `/etc/group` for a name, of an input no action writes on; ops/exec.go
+  `getMountDeps`: a mount none of whose writes are kept, or read-only, or of all its
+  input, the root mount aside). Its result is known by the second, recorded under both, so
+  what follows a step kept for what it read is kept too. The definition a key covers
+  leaves out what BuildKit's CacheMap leaves out: an exec's proxy variables, its extra
+  hosts' addresses, its mounts' selectors, a cache mount's id and sharing but a
+  Dockerfile's default one's; a copy's source but its last name. Content is digested as
+  BuildKit's contenthash takes it: a file's tar header fields (permission and set-id bits,
+  owner, size, type, link target, device numbers, extended attributes but `security.*`
+  other than `security.capability` and `system.*`; no times) and its bytes; a directory's
+  header and each entry's name and digest; a wildcard's matches as the copy finds them;
+  under include and exclude patterns, the directory headers and files they take with the
+  headers above them (`includedPaths`). Each node's digest is taken once a build. Keys
+  were never BuildKit's (D62), so a step's key format moved (`shards build cache 2`).
+- **Collection.** Once a build is done, the build cache is pruned by the default policy
+  dockerd gives its builder (moby daemon/internal/builder-next/worker/gc.go
+  `DefaultGCPolicy`), derived from the disk as dockerd derives it: what is easiest to make
+  again unused for two days past e·π·φ % of the reserve (512 MB at least); anything unused
+  for 60 days; the unshared cache under the cap; then all of it under the cap; the
+  reserve, cap and free space 10, 80 and 20 % of the disk, its GiB counted and one more in
+  decimal gigabytes, or 2 GB reserved where the disk cannot be read. At most once a minute
+  in a home (its `buildcache-gc`), as BuildKit's controller throttles its GC to a minute
+  after each build. Each rule prunes as `builder prune` does (one module, `build/gc.rs`,
+  for both).
+- **Recorded differences.** Two builds sharing a cache `shared` at once each mount it as
+  it was when taken and keep their own changes, both, in the order their steps end, where
+  BuildKit's share one directory as they write it (M141: a build saw the file another
+  wrote 3 s before, while that one's step still ran); sharing one live directory between
+  microVMs would take virtio-fs, which M140 rules out. A cache from something (`from=`, or
+  `uid`, `gid` or `mode`, which the frontend mounts from a directory of its own) holds its
+  source's files in its own record, where BuildKit's names its source's record as its
+  parent (`Parents` in `buildx du --verbose`, M141). A cache from something is keyed by
+  its source's key, which stays where BuildKit's ref ID changes as its record is made
+  again. A copy of a single file under include or exclude patterns is keyed by that file's
+  content, where BuildKit's checksum of it is empty whatever the file holds (it walks only
+  what lies under it), which keeps a stale copy.
+- **Tested** on real microVMs: `run_caches_are_kept_across_builds` (a cache's files, a
+  failing step's among them, in the next build; one id at two targets and in another
+  build; a root's owner and mode kept; another namespace another cache; `uid`, `gid`,
+  `mode` and `mode` alone as BuildKit makes them; `--no-cache` an empty cache; the records
+  counted and pruned; a collection once a minute),
+  `run_caches_are_taken_as_buildkit_takes_them_among_concurrent_builds` (two builds at
+  once under each mode: `shared` takes the record the other holds, `private` makes another
+  while it is held, `locked` waits and finds the other's files; both builds' writes in one
+  record after) and `steps_are_kept_by_what_they_read` (a context file no step reads runs
+  nothing; one a copy reads runs it and what follows; a stage built again to the same file
+  keeps the copy of it and what follows); the store's takers, waiters and prunes, the
+  keys, digests, the GC's choice and order and the default policy as unit tests; every
+  build E2E (98) with the new keys. Mutation-checked, 26 mutants, each killed by its own
+  assertion: the store's four guards (a shared taker's search for the held record, a
+  locked taker's wait, pruned records skipped, a held record kept); ten of the keys and
+  digests (an exec's proxy variables, extra hosts' addresses and mount selectors left out,
+  a default cache's options, written inputs not checksummed, which mounts are read,
+  extended attributes, mode bits, owner, excludes); four of the collection (the disk's
+  GiB, the floor of what is easiest to make again, the stop under the target, records in
+  use left out); and eight on real microVMs (`--no-cache` letting caches go, keys from
+  what is read, the key a record is known by, a collection once a minute, a cache's
+  changes kept, and each sharing mode taken as another). Two survived until a test was
+  added: extended attributes (`a_files_digest_takes_the_attributes_buildkits_takes`) and
+  records in use left out, which a change had dropped as redundant though BuildKit ranks
+  only what it may delete (`what_a_step_holds_is_neither_removed_nor_ranked`).
+- **Open.** Moving a large cache in and out of the builder costs a build time: with 10,000
+  files of 4 KiB and 256 MiB in it, mounting it made a build's median 11.2 s against 3.9
+  s, and filling it 16.1 s against 3.7 s (M140). Where that time goes, and whether
+  carrying layers and changes on a virtio-blk device (one per cache, or for every step's
+  layers) would cut it, is unmeasured by a committed harness.
 
 ### D113. A BuildKit frontend: `docker buildx build` builds an Agentfile with Docker alone
 
