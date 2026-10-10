@@ -3,7 +3,7 @@
 //! (spec.md:600-665); one without keeps, under the referrers tag schema, an index that
 //! the clients pushing and deleting them update (spec.md:497-511, 688-699, 717-737).
 //! Measured against distribution v3.1.2, which has no API, and zot v2.1.22, which has
-//! it, with cosign v3.1.3 as the client (PM M130).
+//! it, with cosign v3.1.3 as the client (PM M135).
 
 use std::collections::BTreeMap;
 use std::io::Read;

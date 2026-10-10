@@ -1,5 +1,5 @@
 {
- "about": "cosign v3.1.3's signature of an OSI agent artifact, key-signed with an empty signing config, as zot v2.1.22 served it (PM M130)",
+ "about": "cosign v3.1.3's signature of an OSI agent artifact, key-signed with an empty signing config, as zot v2.1.22 served it (PM M135)",
  "public_key": "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEadp7y+mg4y/hVUaL2WTDqH4CQFYx\nG2W/S5Tzh2tIWBbCMNwzQGDn/cySKxQhINwLz4hnoIAFVrgiMGslN3HnDQ==\n-----END PUBLIC KEY-----\n",
  "subject": {
   "mediaType": "application/vnd.oci.image.manifest.v1+json",

@@ -6,7 +6,7 @@
 //! prehashed, keys.go GetDefaultLoadOptions), in a Sigstore bundle v0.3 that names the key
 //! by its hint alone; that bundle the one layer of a referrer of the object. Without a
 //! transparency log or timestamp authority, as cosign signs with a signing config that
-//! names none (measured, PM M130).
+//! names none (measured, PM M135).
 
 use aws_lc_rs::encoding::AsDer as _;
 use aws_lc_rs::rand::SystemRandom;
@@ -410,7 +410,7 @@ mod tests {
         json(include_str!("../testdata/cosign/measured.json"))
     }
 
-    /// What cosign v3.1.3 wrote (testdata/cosign/measured.json, PM M130): its statement
+    /// What cosign v3.1.3 wrote (testdata/cosign/measured.json, PM M135): its statement
     /// and its referrer manifest are this module's, byte for byte, given the bundle and
     /// the time it wrote; its bundle verifies with its key.
     #[test]
