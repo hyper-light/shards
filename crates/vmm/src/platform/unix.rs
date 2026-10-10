@@ -1268,6 +1268,34 @@ pub struct Usage {
     pub cpu_ns: u64,
 }
 
+/// Whether process `pid` has run anything of its own yet: `Some(false)` for one the host
+/// has made and not yet let run, which has made no system call and spent no user time.
+/// macOS admits each launch of an executable after it has assessed it, and the
+/// executables launched before it (PM M166): a process waiting there runs nothing, and
+/// what its stacks would show is nothing. `None` where it cannot be told, and on hosts
+/// without such a wait.
+pub fn launched(pid: u32) -> Option<bool> {
+    #[cfg(target_os = "macos")]
+    {
+        // SAFETY: a zeroed proc_taskinfo is a valid out-parameter, which proc_pidinfo
+        // fills up to its size.
+        let mut info: libc::proc_taskinfo = unsafe { std::mem::zeroed() };
+        let size = libc::c_int::try_from(std::mem::size_of::<libc::proc_taskinfo>()).ok()?;
+        let pid = libc::c_int::try_from(pid).ok()?;
+        // SAFETY: proc_pidinfo(3) writes at most `size` bytes into `info`.
+        let got = unsafe { libc::proc_pidinfo(pid, libc::PROC_PIDTASKINFO, 0, (&raw mut info).cast(), size) };
+        if got != size {
+            return None;
+        }
+        Some(info.pti_total_user > 0 || info.pti_syscalls_unix > 0 || info.pti_syscalls_mach > 0)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
 /// [`Usage`] of process `pid`, as the kernel keeps it: macOS's proc_pidinfo
 /// (PROC_PIDTASKINFO), its times in Mach absolute-time units converted by the timebase;
 /// Linux's /proc/PID/stat (utime, stime, in clock ticks) and /proc/PID/statm (resident
@@ -1359,6 +1387,49 @@ mod usage_tests {
         std::hint::black_box(x);
         assert!(after.resident > 0);
         assert!(after.cpu_ns > before.cpu_ns, "{before:?} {after:?}");
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+#[allow(clippy::unwrap_used)]
+mod launched_tests {
+    use super::*;
+
+    /// A process made and not yet let run, as one waiting in its launch is (PM M166),
+    /// has run nothing; this one, running, has.
+    #[test]
+    fn a_process_not_yet_run_is_told_from_one_running() {
+        let path = std::ffi::CString::new("/usr/bin/true").unwrap();
+        let argv = [path.as_ptr(), std::ptr::null()];
+        let env: [*const libc::c_char; 1] = [std::ptr::null()];
+        // SAFETY: an attribute object initialized, set and destroyed here; posix_spawn(2)
+        // of a NUL-terminated path with NULL-terminated argv and envp.
+        let pid = unsafe {
+            let mut attr: libc::posix_spawnattr_t = std::ptr::null_mut();
+            assert_eq!(libc::posix_spawnattr_init(&mut attr), 0);
+            let flags = libc::c_short::try_from(libc::POSIX_SPAWN_START_SUSPENDED).unwrap();
+            assert_eq!(libc::posix_spawnattr_setflags(&mut attr, flags), 0);
+            let mut pid: libc::pid_t = 0;
+            let rc = libc::posix_spawn(
+                &mut pid,
+                path.as_ptr(),
+                std::ptr::null(),
+                &attr,
+                argv.as_ptr().cast_mut().cast(),
+                env.as_ptr().cast_mut().cast(),
+            );
+            libc::posix_spawnattr_destroy(&mut attr);
+            assert_eq!(rc, 0);
+            pid
+        };
+        let suspended = launched(u32::try_from(pid).unwrap());
+        // SAFETY: kill(2) and waitpid(2) of the child made above.
+        unsafe {
+            libc::kill(pid, libc::SIGKILL);
+            libc::waitpid(pid, std::ptr::null_mut(), 0);
+        }
+        assert_eq!(suspended, Some(false));
+        assert_eq!(launched(std::process::id()), Some(true));
     }
 }
 

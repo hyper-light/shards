@@ -4288,10 +4288,13 @@ impl<D: Disk> Daemon<D> {
                     For::Run(_) => None,
                 },
             ),
-            _ => Ok(()),
+            _ => Ok::<(), GrantError>(()),
         };
         drop(grants);
-        let ready = granted.and_then(|()| ready(&socket, pid));
+        // A VM the host had not let run yet asked nothing and failed nothing of its own:
+        // no fault of its template's (PM M166).
+        let unstarted = matches!(&granted, Err(e) if !e.started);
+        let ready = granted.map_err(|e| e.why).and_then(|()| ready(&socket, pid));
         match &dest {
             For::Pool(dir) => {
                 let mut state = lock(&self.state);
@@ -4321,7 +4324,9 @@ impl<D: Disk> Daemon<D> {
                     }
                     Err(e) => {
                         log(&e);
-                        pool.failures += 1;
+                        if !unstarted {
+                            pool.failures += 1;
+                        }
                         let _ = child.kill(libc::SIGKILL);
                     }
                 }
@@ -4545,7 +4550,7 @@ const GRANT_STALL: Duration = Duration::from_secs(10);
 /// home, beside daemon.log, as it goes on being waited for; a wait that then fails says
 /// where.
 #[cfg(target_os = "macos")]
-fn grant(link: &UnixStream, pid: u32, template: Option<&Path>) -> Result<(), String> {
+fn grant(link: &UnixStream, pid: u32, template: Option<&Path>) -> Result<(), GrantError> {
     use std::os::fd::AsRawFd as _;
     let mut first = libc::pollfd {
         fd: link.as_raw_fd(),
@@ -4555,7 +4560,16 @@ fn grant(link: &UnixStream, pid: u32, template: Option<&Path>) -> Result<(), Str
     let stall = i32::try_from(GRANT_STALL.as_millis()).unwrap_or(i32::MAX);
     // SAFETY: poll(2) of one pollfd of ours.
     let asked = unsafe { libc::poll(&raw mut first, 1, stall) };
-    let sampled = (asked == 0).then(|| {
+    // A VM the host has not let run yet: its stacks would hold nothing (PM M166).
+    let unstarted = || asked == 0 && shards_vmm::platform::launched(pid) == Some(false);
+    if unstarted() {
+        log(format!(
+            "VM {pid}: not started by the host in {GRANT_STALL:?}: it has run nothing yet, \
+             as macOS admits each launch after it has assessed the executables launched \
+             before it (PM M166)"
+        ));
+    }
+    let sampled = (asked == 0 && !unstarted()).then(|| {
         let file = format!("vm-{pid}.sample");
         log(format!(
             "VM {pid}: no request for access in {GRANT_STALL:?}; sampling its stacks to {file}"
@@ -4578,12 +4592,33 @@ fn grant(link: &UnixStream, pid: u32, template: Option<&Path>) -> Result<(), Str
         }
         file
     });
+    let started = |why: String| GrantError { why, started: true };
     link.set_read_timeout(Some(READY_TIMEOUT))
-        .map_err(|e| format!("VM {pid}: {e}"))?;
-    crate::grant_answer::serve(link, template).map_err(|e| match &sampled {
-        Some(file) => format!("VM {pid}: {e} (its stacks at {GRANT_STALL:?}: {file} in the home)"),
-        None => format!("VM {pid}: {e}"),
+        .map_err(|e| started(format!("VM {pid}: {e}")))?;
+    crate::grant_answer::serve(link, template).map_err(|e| {
+        if unstarted() {
+            return GrantError {
+                why: format!(
+                    "VM {pid}: not started by the host in {:?}: it has run nothing (PM M166): {e}",
+                    GRANT_STALL + READY_TIMEOUT
+                ),
+                started: false,
+            };
+        }
+        started(match &sampled {
+            Some(file) => format!("VM {pid}: {e} (its stacks at {GRANT_STALL:?}: {file} in the home)"),
+            None => format!("VM {pid}: {e}"),
+        })
     })
+}
+
+/// Why a VM was not granted what it asked: `started` false for one the host had not let
+/// run at all, which no template is at fault for (PM M166). Only macOS grants a VM its
+/// files.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+struct GrantError {
+    why: String,
+    started: bool,
 }
 
 /// Waits for a starting VM to say it is ready.

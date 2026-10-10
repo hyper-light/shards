@@ -370,7 +370,17 @@ impl Builder {
                 Ok((conn, _)) => break conn,
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                     if began.elapsed() > BOOT_PATIENCE {
+                        // One the host has not let run yet is not the builder's failure
+                        // to boot, and says so (PM M166).
+                        let unstarted = shards_vmm::platform::launched(vm.id()) == Some(false);
                         let _ = vm.kill(libc::SIGKILL);
+                        if unstarted {
+                            return Err(format!(
+                                "the builder was not started by the host in {BOOT_PATIENCE:?}: its \
+                                 process ran nothing, as macOS admits each launch after it has \
+                                 assessed the executables launched before it"
+                            ));
+                        }
                         return Err("the builder did not start".into());
                     }
                     if vm.try_wait().is_some() {
