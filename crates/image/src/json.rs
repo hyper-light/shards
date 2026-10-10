@@ -490,7 +490,7 @@ impl Scan<'_> {
                     let rest = go::tail(self.b, self.at);
                     let run = rest
                         .iter()
-                        .position(|&b| b == b'"' || b == b'\\' || b < 0x20 || b >= 0x80)
+                        .position(|&b| b == b'"' || b == b'\\' || !(0x20..0x80).contains(&b))
                         .unwrap_or(rest.len());
                     out.extend_from_slice(rest.get(..run).unwrap_or_default());
                     self.at += run;
