@@ -3550,6 +3550,121 @@ fn published_ports_reach_the_guest_as_dockerd_publishes_them() {
     drop(held);
 }
 
+/// A run's published port is free once `run` returns while the daemon makes VMs all the
+/// while, for three others running at once: every child it makes is its spawner's, which
+/// holds none of the listeners the daemon binds, where a child the daemon made itself
+/// would hold every one it had until that child's exec (PM M134, M158).
+#[test]
+fn published_ports_are_free_at_once_while_the_daemon_makes_vms() {
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+    /// The other runs stop however this test's own ends, a panic's unwinding included:
+    /// the scope waits for them.
+    struct Stop<'a>(&'a AtomicBool);
+    impl Drop for Stop<'_> {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Relaxed);
+        }
+    }
+    let Some((home, image)) = home("containers-publish-spawning") else {
+        return;
+    };
+    let p = fixed_port();
+    let (stop, others) = (AtomicBool::new(false), AtomicU32::new(0));
+    let other_failed = Mutex::new(None);
+    let failed = std::thread::scope(|s| {
+        let _stop = Stop(&stop);
+        for _ in 0..3 {
+            s.spawn(|| {
+                while !stop.load(Ordering::Relaxed) {
+                    let other = run_in(&home, &image, &["--rm"], &["exit", "0"]);
+                    if other.status != Some(0) {
+                        *other_failed.lock().unwrap() = Some(other.to_string());
+                        return;
+                    }
+                    others.fetch_add(1, Ordering::Relaxed);
+                }
+            });
+        }
+        (0..30).find_map(|i| {
+            let run = run_in(
+                &home,
+                &image,
+                &["--rm", "-p", &format!("{p}:7000")],
+                &["exit", "0"],
+            );
+            if run.status != Some(0) {
+                return Some(format!("run {i} of 30: {run}"));
+            }
+            // Bound by a program of its own, which makes no children (common::port_free).
+            (!common::port_free(p))
+                .then(|| format!("{p} after run {i} of 30 ended: taken; {}", catch_holder(p)))
+        })
+    });
+    let others = others.into_inner();
+    assert_eq!(failed, None, "with {others} other runs meanwhile");
+    assert_eq!(other_failed.into_inner().unwrap(), None, "another run");
+    assert!(others >= 3, "{others} other runs: too few to tell");
+    // Whatever the timing: a running VM is its spawner's child, not the daemon's, whose
+    // one child is the spawner.
+    let mut asleep = start(&home, &image, &["--name", "asleep"], &["sleep"]);
+    let daemon: u32 = std::fs::read_to_string(home.join("daemon.pid"))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    let children = children_of(daemon);
+    let spawner = match children.as_slice() {
+        [(pid, args)] if args.ends_with(" spawner") => *pid,
+        _ => panic!("the daemon's children: {children:?}"),
+    };
+    let made = children_of(spawner);
+    assert!(
+        made.iter().any(|(_, args)| args.contains("shards-vm")),
+        "the spawner's children: {made:?}"
+    );
+    assert_eq!(shards_in(&home, &["stop", "asleep"]).status, Some(0));
+    exit(&mut asleep);
+}
+
+/// The processes whose parent is `parent`, each with its command line: from /proc on
+/// Linux, whatever ps the host has, elsewhere as ps lists them.
+fn children_of(parent: u32) -> Vec<(u32, String)> {
+    #[cfg(target_os = "linux")]
+    {
+        std::fs::read_dir("/proc")
+            .unwrap()
+            .filter_map(|entry| {
+                let pid: u32 = entry.ok()?.file_name().to_str()?.parse().ok()?;
+                let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+                // After the command's name, in parentheses: its state, then its parent.
+                let ppid: u32 = stat.rsplit_once(')')?.1.split_whitespace().nth(1)?.parse().ok()?;
+                let args = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
+                let args = String::from_utf8_lossy(&args)
+                    .trim_end_matches('\0')
+                    .replace('\0', " ");
+                (ppid == parent).then_some((pid, args))
+            })
+            .collect()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let out = Command::new("ps")
+            .args(["-A", "-o", "pid=,ppid=,command="])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter_map(|line| {
+                let mut fields = line.split_whitespace();
+                let pid: u32 = fields.next()?.parse().ok()?;
+                let ppid: u32 = fields.next()?.parse().ok()?;
+                (ppid == parent).then(|| (pid, fields.collect::<Vec<_>>().join(" ")))
+            })
+            .collect()
+    }
+}
+
 /// `-p PORT/udp`: datagrams reach the guest as dockerd's proxy carries them: each host
 /// peer from a gateway port of its own, its answers back to that peer from the address
 /// it asked; `port` and `ps` list the port as UDP. The guest answers until it is sent
