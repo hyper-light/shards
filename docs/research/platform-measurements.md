@@ -4785,6 +4785,69 @@ revision before comparing a changed API/implementation.
   smaller frames no longer hold it to, are tested on release on their own (M159), and
   the musl job's release build runs in a job of its own.
 
+### M157. What huge pages under guest memory buy a cold boot, and what they cost against Firecracker (CI: the envelope's rss_anon)
+
+- **Question.** shards advises guest memory MADV_HUGEPAGE (platform `reserve_ram`), so a
+  boot's first touch of each 2 MiB makes all of it resident. Firecracker advises nothing,
+  and under THP `always` gets huge pages too; against it, a boot's anonymous memory came
+  out 2 MiB more in some runs (the envelope's `firecracker/rss_anon`). Do huge pages buy
+  the start path enough to keep, and where does the 2 MiB come from?
+- **Method.** GitHub ubuntu-24.04 runners, KVM, THP `always`, defrag `madvise`; the pinned
+  guest kernel (vmlinux, loaded at 16 to 40.2 MiB) and the test guest's 3 MiB initrd; a
+  128 MiB guest booted to its ready line, its VMM's memory read as the Firecracker
+  comparison reads it; arms interleaved, each order turned, n 30 an arm.
+  1. Huge pages or none: `cargo bench -p shards --bench firecracker -- --thp-ab all,never`,
+     the VM process's THP disabled for `never` (PR_SET_THP_DISABLE, held across exec);
+     and a 1 GiB guest writing a byte to each page of 512 MiB, then reading a byte at
+     20,000,000 places in it spread by an LCG (testguest `walk`). AMD EPYC 7763,
+     revision 0b602c7. An earlier run (Intel Xeon 6973P-C, 41839c7) set the advice by a
+     knob instead: MADV_NOHUGEPAGE on all of guest memory, or below 64 MiB alone.
+  2. Where: which 2 MiB stretches of guest memory each VMM held, and the 4 KiB pages in
+     each, from /proc/PID/pagemap, with THP and with it off for both VMMs; then shards'
+     layout changed, against Firecracker: `measurements/guest-layout` (its README).
+- **Results.** Huge pages or none, AMD; to ready in ms, memory in MiB, p50 / p90 / p99 /
+  max:
+
+  | | all | never |
+  |---|---|---|
+  | boot to ready | 125.0 / 196.3 / 199.2 / 199.2 | 259.1 / 342.1 / 345.7 / 345.7 |
+  | boot rss_anon | 60.2 / 60.2 / 62.2 / 62.2 | 49.5 / 49.9 / 50.0 / 50.0 |
+  | 512 MiB written | 335.0 / 336.5 / 337.6 / 337.6 | 1,884.4 / 1,900.3 / 1,914.6 / 1,914.6 |
+  | 20,000,000 reads | 208.3 / 210.4 / 218.2 / 218.2 | 230.8 / 234.6 / 241.9 / 241.9 |
+
+  Intel, at p50: boot 71.8 ms with huge pages, 169.6 without, 154.1 without below 64 MiB
+  (the boot's touches are low); 512 MiB written in 255.0 ms against 1,197.7.
+
+  Where: with THP off, both guests touched the same pages, 12,675 for Firecracker and
+  12,613 for shards at the median (13 boots each), but placed apart: shards put its
+  initrd at the first 2 MiB after the kernel (42 to 45 MiB), Firecracker at the top of
+  RAM, beside what the guest kernel allocates there from the top down early in boot. Its
+  initrd moved to the top, shards' guest touched Firecracker's pages stretch for
+  stretch. Under huge pages, every stretch touched is resident whole: in 33 boots each,
+  Firecracker held 29 (in 30 boots), shards 30 (in 31); the first stretch holds the boot
+  structures, 77 and 78 touched pages.
+
+  Shards' layout against Firecracker v1.17.0, AMD, 6c9db11 (757c980 with the patch), n 30
+  an arm; to ready in ms at p50, memory in MiB at p50 and the most:
+
+  | arm | to ready | rss_anon | its most | peak RSS |
+  |---|---:|---:|---:|---:|
+  | Firecracker | 125.5 | 60.2 | 60.2 | 62.5 |
+  | shards as it was | 122.1 | 60.2 | 62.2 | 63.0 |
+  | initrd at the top of RAM | 121.7 | 58.2 | 60.2 | 61.0 |
+  | first 2 MiB on small pages | 122.1 | 58.3 | 60.3 | 61.1 |
+  | both | 119.9 | 56.3 | 58.3 | 59.1 |
+
+- **Consequence.** Huge pages halve a cold boot (2.1 to 2.4 times) and make its first
+  touch of memory 4.7 to 5.6 times faster: they stay. The 2 MiB was the initrd's place,
+  and the first 2 MiB's few pages held resident whole. The x86_64 VMM now puts the
+  initrd at the top of low RAM (boot::load_initrd), as Firecracker and QEMU do, and
+  keeps the first 2 MiB on small pages (layout::SPARSE): a boot's anonymous memory is
+  56.3 MiB at p50 and 58.3 at most, below Firecracker's least, its peak RSS 3.4 MiB
+  below Firecracker's, and its boot time the same. A run's path, a template restored
+  from its memory file, maps no huge pages and is not changed. arm64's layout is not
+  measured (GitHub's arm64 runners have no /dev/kvm) and stays.
+
 ### M158. What a child holds of what its parent lets go of, made there or by a spawner
 
 - **Question.** A child holds every descriptor its parent had at the spawn until it

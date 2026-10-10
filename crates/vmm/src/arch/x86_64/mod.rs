@@ -27,6 +27,10 @@ pub mod layout {
     pub const RSDP: u64 = 0xe_0000;
     /// Where e820 RAM resumes, and the lowest a kernel segment may load.
     pub const HIMEM: u64 = 0x10_0000;
+    /// The first 2 MiB of guest RAM, which a guest touches sparsely: the boot structures
+    /// above, the legacy area, and what the kernel puts below its own image (78 of its 512
+    /// pages by a booted guest, PM M157). Kept on base pages on the host.
+    pub const SPARSE: usize = 0x20_0000;
     /// The boot page tables map this much; kernel, zero page and command line live below.
     pub const IDENTITY_MAPPED: u64 = 1 << 30;
     /// The 32-bit MMIO gap: RAM stops here and resumes at 4 GiB.

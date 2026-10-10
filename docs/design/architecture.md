@@ -1661,6 +1661,15 @@ devices. The code is `crates/vmm/src/memory.rs`.
   writes has two host threads race, which Rust leaves undefined, though no decision rides
   on the bytes copied (audit V). Copying under an `Access`, word by word, is on the path
   throughput depends on, and waits for its measurement.
+- **Huge pages, where a boot touches much (2026-10-10, PM M157).** A cold boot's guest
+  memory is advised MADV_HUGEPAGE, which halves the boot (2.1 to 2.4 times) and makes the
+  guest's first touch of memory 4.7 to 5.6 times faster on x86_64 KVM. A huge page is
+  resident whole once touched, so the layout decides what a boot holds: on x86_64 the
+  initrd sits at the top of low RAM, beside what the guest kernel takes there from the
+  top down, as Firecracker and QEMU place it, and the first 2 MiB, whose boot structures
+  touch 78 of its 512 pages, stays on small pages. A boot then holds 56.3 MiB of
+  anonymous memory at p50 against Firecracker's 60.2, and 58.3 at most. arm64's layout
+  is unmeasured and unchanged. A run's restore maps its memory file, on small pages.
 - **Tests:** `memory::tests` (copies at every alignment, threads taking turns, a nested
   access refused, ranges in any order, a reused file) and
   `queue::tests::queues_laid_over_each_other_work_on_two_threads`, under
