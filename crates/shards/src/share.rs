@@ -88,25 +88,39 @@ pub fn share(args: impl Iterator<Item = OsString>) -> ExitCode {
     }
     // SAFETY: the connection the daemon left at descriptor 3 for this process alone.
     let vm = unsafe { UnixStream::from_raw_fd(3) };
-    let (mut servers, mut conns, mut theirs) = (Vec::new(), Vec::new(), Vec::new());
+    // As far as its limit may go, as the daemon raises its own; what its servers may hold of
+    // it is reckoned once all it holds besides is open (`fs::server::Limits`).
+    if let Err(e) = shards_vmm::platform::raise_descriptor_limit() {
+        let _ = writeln!(
+            std::io::stderr(),
+            "shards: share: raising the descriptor limit: {e}"
+        );
+    }
+    let (mut dirs, mut conns, mut theirs) = (Vec::new(), Vec::new(), Vec::new());
     for (i, g) in given.into_iter().enumerate() {
         let fd = 4 + i as i32;
         if !is(fd, libc::S_IFDIR) {
             return failed(&format!("share {i}: descriptor {fd} is not a directory"));
         }
         // SAFETY: a directory the daemon left for this process alone, checked above.
-        let dir = unsafe { OwnedFd::from_raw_fd(fd) };
-        let server = match Server::new(dir, g.read_only, g.only) {
-            Ok(server) => server,
-            Err(e) => return failed(&format!("share {i}: {e}")),
-        };
+        dirs.push((unsafe { OwnedFd::from_raw_fd(fd) }, g));
         let (ours, vms) = match UnixStream::pair() {
             Ok(pair) => pair,
             Err(e) => return failed(&format!("share {i}: a connection: {e}")),
         };
-        servers.push(server);
         conns.push(ours);
         theirs.push(vms);
+    }
+    let Some(limits) = shards_vmm::devices::virtio::fs::server::Limits::now() else {
+        return failed("share: this process's limit on descriptors is unknown");
+    };
+    let budget = limits.budget(u64::try_from(dirs.len()).unwrap_or(u64::MAX));
+    let mut servers = Vec::with_capacity(dirs.len());
+    for (i, (dir, g)) in dirs.into_iter().enumerate() {
+        match Server::with_budget(dir, g.read_only, g.only, budget) {
+            Ok(server) => servers.push(server),
+            Err(e) => return failed(&format!("share {i}: {e}")),
+        }
     }
     // The VM's ends, kept until it says it has them all.
     if let Err(e) = hand_over(&vm, &theirs) {

@@ -120,17 +120,16 @@ mod fattr {
     pub const KILL_SUIDGID: u32 = 1 << 11;
 }
 
-/// A node the guest knows: a directory by its own descriptor; anything else by its
-/// parent's and its name. `lookups` is the kernel's count of it (FORGET's).
-#[derive(Debug)]
-enum Kind {
-    Dir(OwnedFd),
-    Entry { parent: u64, name: CString },
-}
-
+/// A node the guest knows: by its parent's node and its name there, kept current through
+/// the guest's renames and lookups, and by what it is (`key`, its device and inode). A
+/// directory's descriptor is in `State::dirs` while there is room for it, and opened again
+/// along its path when it is needed and not there (audit V09). `lookups` is the kernel's
+/// count of it (FORGET's).
 #[derive(Debug)]
 struct Node {
-    kind: Kind,
+    dir: bool,
+    parent: u64,
+    name: CString,
     lookups: u64,
     key: (u64, u64),
 }
@@ -144,11 +143,70 @@ enum Handle {
 
 #[derive(Debug)]
 struct State {
+    /// The shared directory, held for as long as the server.
+    root: OwnedFd,
     nodes: HashMap<u64, Node>,
     by_key: HashMap<(u64, u64), u64>,
     next_node: u64,
     handles: HashMap<u64, Handle>,
     next_handle: u64,
+    dirs: Dirs,
+    /// The descriptors the server may hold between requests, its directories' and the
+    /// guest's handles' together ([`Limits::budget`]).
+    budget: u64,
+}
+
+/// The descriptors of directories the guest named, as many as there is room for, the
+/// least recently used let go first. They are let go between requests, never during one,
+/// so that a descriptor a request took stays open until it answers.
+#[derive(Debug, Default)]
+struct Dirs {
+    open: HashMap<u64, (OwnedFd, u64)>,
+    /// Each node's last use, oldest first.
+    by_use: std::collections::BTreeMap<u64, u64>,
+    clock: u64,
+}
+
+impl Dirs {
+    fn tick(&mut self) -> u64 {
+        self.clock = self.clock.wrapping_add(1);
+        self.clock
+    }
+
+    /// Node `id`'s descriptor, if held, now the most recently used.
+    fn get(&mut self, id: u64) -> Option<RawFd> {
+        let now = self.tick();
+        let (fd, used) = self.open.get_mut(&id)?;
+        self.by_use.remove(used);
+        *used = now;
+        self.by_use.insert(now, id);
+        Some(fd.as_raw_fd())
+    }
+
+    fn insert(&mut self, id: u64, fd: OwnedFd) -> RawFd {
+        self.remove(id);
+        let now = self.tick();
+        let raw = fd.as_raw_fd();
+        self.open.insert(id, (fd, now));
+        self.by_use.insert(now, id);
+        raw
+    }
+
+    fn remove(&mut self, id: u64) {
+        if let Some((_, used)) = self.open.remove(&id) {
+            self.by_use.remove(&used);
+        }
+    }
+
+    /// Lets go of the least recently used until `room` are held.
+    fn trim(&mut self, room: u64) {
+        while u64::try_from(self.open.len()).unwrap_or(u64::MAX) > room {
+            let Some((_, id)) = self.by_use.pop_first() else {
+                return;
+            };
+            self.open.remove(&id);
+        }
+    }
 }
 
 /// The server of one shared directory.
@@ -174,6 +232,12 @@ fn last() -> Errno {
 
 const EPERM: Errno = 1;
 const EIO: Errno = 5;
+const EXDEV: Errno = 18;
+const EMFILE: Errno = 24;
+#[cfg(target_os = "linux")]
+const ENAMETOOLONG: Errno = 36;
+const ELOOP: Errno = 40;
+const ESTALE: Errno = 116;
 const ENOENT: Errno = 2;
 const EACCES: Errno = 13;
 const EBUSY: Errno = 16;
@@ -519,10 +583,77 @@ impl Reply {
     }
 }
 
+/// The host's limits on open descriptors, from which a share process's servers have what
+/// they may hold between requests (audit V09).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Limits {
+    /// How many descriptors this process may have (`platform::descriptor_limit`), its limit
+    /// raised as far as it may go first (`platform::raise_descriptor_limit`).
+    pub process: u64,
+    /// How many it has open, outside any server's: its standard streams, its connections,
+    /// its shared directories.
+    pub held: u64,
+    /// The system's table of open files: how many it holds, and how many are open.
+    pub table: Option<(u64, u64)>,
+    /// How many processes the user may have.
+    pub processes: Option<u64>,
+}
+
+/// The processes of a run that shares: its VM's and its share process.
+const PROCESSES_A_RUN: u64 = 2;
+
+/// Descriptors one request may hold past its server's room, at its most: a RENAME's two
+/// directories, both let go, the first held while the second's path is walked a component at
+/// a time, which holds two at once (one on Linux, where openat2 walks it). Nothing else holds
+/// more: a directory, its handle and a file looked at, or a directory and two of a walk.
+/// `tests/fs_dir_budget.rs` gives a server exactly this much past its room, at its room,
+/// and a request that took more would be refused by the kernel.
+pub const REQUEST_FDS: u64 = 3;
+
+impl Limits {
+    /// This process's, now; none if it cannot say how many descriptors it may have or has.
+    pub fn now() -> Option<Limits> {
+        Some(Limits {
+            process: crate::platform::descriptor_limit()?,
+            held: crate::platform::open_descriptors()?,
+            table: crate::platform::file_table(),
+            processes: crate::platform::user_processes(),
+        })
+    }
+
+    /// What each of `servers` servers in this process may hold between requests: the
+    /// process's room, less what it holds and what each server's requests take past their
+    /// room; and no more than a share process's part of the system's table, as many share
+    /// processes running as the user may start runs, so that they cannot fill it.
+    pub fn budget(&self, servers: u64) -> u64 {
+        let servers = servers.max(1);
+        let mut room = self
+            .process
+            .saturating_sub(self.held)
+            .saturating_sub(REQUEST_FDS.saturating_mul(servers));
+        if let (Some((size, open)), Some(processes)) = (self.table, self.processes) {
+            let runs = (processes / PROCESSES_A_RUN).max(1);
+            room = room.min(size.saturating_sub(open) / runs);
+        }
+        room / servers
+    }
+}
+
 impl Server {
     /// The server of the directory `root` holds, read-only or not, or of its one name
-    /// `only`.
+    /// `only`, alone in its process: it may hold what the process has room for.
     pub fn new(root: OwnedFd, read_only: bool, only: Option<CString>) -> Result<Server, String> {
+        let limits = Limits::now().ok_or("this process's limit on descriptors is unknown")?;
+        Server::with_budget(root, read_only, only, limits.budget(1))
+    }
+
+    /// [`Server::new`], holding at most `budget` descriptors between requests.
+    pub fn with_budget(
+        root: OwnedFd,
+        read_only: bool,
+        only: Option<CString>,
+        budget: u64,
+    ) -> Result<Server, String> {
         let st = stat_fd(root.as_raw_fd()).map_err(|e| format!("the shared directory: errno {e}"))?;
         if !is_dir(&st) {
             return Err("the shared directory is not a directory".into());
@@ -531,7 +662,9 @@ impl Server {
         nodes.insert(
             ROOT,
             Node {
-                kind: Kind::Dir(root),
+                dir: true,
+                parent: ROOT,
+                name: CString::default(),
                 lookups: 1,
                 key: key(&st),
             },
@@ -542,11 +675,14 @@ impl Server {
             read_only,
             only,
             state: Mutex::new(State {
+                root,
                 nodes,
                 by_key,
                 next_node: ROOT + 1,
                 handles: HashMap::new(),
                 next_handle: 1,
+                dirs: Dirs::default(),
+                budget,
             }),
         })
     }
@@ -598,6 +734,10 @@ impl Server {
                 Err(e) => Err(e),
             },
         };
+        // Between requests, the directories held fit the room the guest's handles leave.
+        let handles = u64::try_from(state.handles.len()).unwrap_or(u64::MAX);
+        let room = state.budget.saturating_sub(handles);
+        state.dirs.trim(room);
         let mut out = Vec::new();
         let (error, payload) = match answer {
             Ok(r) => (0i32, r.0),
@@ -822,10 +962,11 @@ impl Server {
                 if flags & linux::O_ACCMODE != 0 || flags & linux::O_TRUNC != 0 {
                     self.writable()?;
                 }
-                let (dir, name) = at(s, nodeid)?;
-                if matches!(s.nodes.get(&nodeid).map(|n| &n.kind), Some(Kind::Dir(_))) {
+                if s.nodes.get(&nodeid).is_some_and(|n| n.dir) {
                     return Err(EISDIR);
                 }
+                room_for_handle(s)?;
+                let (dir, name) = at(s, nodeid)?;
                 let fd = open_regular(dir, &name, host::open_flags(flags & !linux::O_CREAT), 0)?;
                 let fh = add_handle(s, Handle::File(fd));
                 r.u64(fh).u32(0).u32(0);
@@ -837,6 +978,7 @@ impl Server {
                 let _umask = a.u32()?;
                 let _ = a.u32()?;
                 let name = a.name()?;
+                room_for_handle(s)?;
                 let dir = dir_fd(s, nodeid)?;
                 let fd = open_regular(dir, &name, host::open_flags(flags) | libc::O_CREAT, mode & 0o7777)?;
                 self.made(s, nodeid, &name, caller, &mut r)?;
@@ -906,7 +1048,8 @@ impl Server {
             }
             op::SYNCFS => {}
             op::OPENDIR => {
-                let dir = dir_fd(s, nodeid).map_err(|_| ENOTDIR)?;
+                room_for_handle(s)?;
+                let dir = dir_fd(s, nodeid)?;
                 let fh = add_handle(s, Handle::Dir(DirStream::open(dir)?));
                 r.u64(fh).u32(0).u32(0);
             }
@@ -1111,10 +1254,8 @@ impl Server {
         let uid = a.u32()?;
         let gid = a.u32()?;
         let (dir, name) = at(s, nodeid)?;
-        let own = match s.nodes.get(&nodeid).map(|n| &n.kind) {
-            Some(Kind::Dir(fd)) => Some(fd.as_raw_fd()),
-            _ => None,
-        };
+        // A directory's own descriptor, which `at` gave: its attributes are changed through it.
+        let own = s.nodes.get(&nodeid).is_some_and(|n| n.dir).then_some(dir);
         let mut owner = node_owner(s, nodeid, None)?;
         let had = node_has_owner(s, nodeid);
         if valid & fattr::KILL_SUIDGID != 0 && valid & fattr::MODE == 0 {
@@ -1297,25 +1438,29 @@ fn open_meta(dir: RawFd, name: &CStr, known: Option<u32>) -> Result<NodeFd, Errn
     open_at(dir, name, flags, 0).map(NodeFd::Owned)
 }
 
-fn node_fd(s: &State, nodeid: u64) -> Result<NodeFd, Errno> {
+fn node_fd(s: &mut State, nodeid: u64) -> Result<NodeFd, Errno> {
     node_fd_known(s, nodeid, None)
 }
 
 /// [`node_fd`] of a node whose file type the caller has just looked at, `known`.
-fn node_fd_known(s: &State, nodeid: u64, known: Option<u32>) -> Result<NodeFd, Errno> {
-    match &s.nodes.get(&nodeid).ok_or(ENOENT)?.kind {
-        Kind::Dir(fd) => Ok(NodeFd::Borrowed(fd.as_raw_fd())),
-        Kind::Entry { parent, name } => open_meta(dir_fd(s, *parent)?, name, known),
+fn node_fd_known(s: &mut State, nodeid: u64, known: Option<u32>) -> Result<NodeFd, Errno> {
+    let node = s.nodes.get(&nodeid).ok_or(ENOENT)?;
+    if node.dir {
+        return Ok(NodeFd::Borrowed(dir_fd(s, nodeid)?));
     }
+    let parent = node.parent;
+    let dir = dir_fd(s, parent)?;
+    let node = s.nodes.get(&nodeid).ok_or(ENOENT)?;
+    open_meta(dir, &node.name, known)
 }
 
 /// A node's descriptor to change its attributes: a device node, which has none here, is
 /// refused as Linux refuses a special file `user.` ones (EPERM).
-fn node_fd_to_change(s: &State, nodeid: u64) -> Result<NodeFd, Errno> {
+fn node_fd_to_change(s: &mut State, nodeid: u64) -> Result<NodeFd, Errno> {
     node_fd(s, nodeid).map_err(|e| if e == ENODATA { EPERM } else { e })
 }
 
-fn node_has_owner(s: &State, nodeid: u64) -> bool {
+fn node_has_owner(s: &mut State, nodeid: u64) -> bool {
     node_fd(s, nodeid)
         .ok()
         .and_then(|fd| fget_xattr(fd.raw(), &owner_xattr().ok()?).ok().flatten())
@@ -1324,7 +1469,7 @@ fn node_has_owner(s: &State, nodeid: u64) -> bool {
 
 /// The guest's owner of a node: its attribute's, or root. `st`, the node's own stat where
 /// the caller has just taken it.
-fn node_owner(s: &State, nodeid: u64, st: Option<&libc::stat>) -> Result<Owner, Errno> {
+fn node_owner(s: &mut State, nodeid: u64, st: Option<&libc::stat>) -> Result<Owner, Errno> {
     let Ok(fd) = node_fd_known(s, nodeid, st.map(|st| mode_of(st) & S_IFMT)) else {
         return Ok(Owner::default());
     };
@@ -1335,66 +1480,175 @@ fn node_owner(s: &State, nodeid: u64, st: Option<&libc::stat>) -> Result<Owner, 
         .unwrap_or_default())
 }
 
-fn dir_fd(s: &State, nodeid: u64) -> Result<RawFd, Errno> {
-    match &s.nodes.get(&nodeid).ok_or(ENOENT)?.kind {
-        Kind::Dir(fd) => Ok(fd.as_raw_fd()),
-        Kind::Entry { .. } => Err(ENOTDIR),
+/// Directory node `nodeid`'s descriptor: the root's; one held; or one opened again along
+/// the node's path from the nearest of its ancestors held, or the root, and checked to be
+/// the directory the node was. One renamed or replaced on the host since is stale
+/// (ESTALE), which has the guest's kernel look it up again (audit V09).
+fn dir_fd(s: &mut State, nodeid: u64) -> Result<RawFd, Errno> {
+    if nodeid == ROOT {
+        return Ok(s.root.as_raw_fd());
+    }
+    let node = s.nodes.get(&nodeid).ok_or(ENOENT)?;
+    if !node.dir {
+        return Err(ENOTDIR);
+    }
+    let want = node.key;
+    if let Some(fd) = s.dirs.get(nodeid) {
+        return Ok(fd);
+    }
+    // The names down to it; a chain that breaks (a node the guest forgot) or loops (a
+    // directory found again under one of its own, through a bind mount) leads nowhere.
+    let mut names = Vec::new();
+    let mut at = nodeid;
+    let from = loop {
+        let node = s.nodes.get(&at).ok_or(ESTALE)?;
+        names.push(node.name.clone());
+        at = node.parent;
+        if at == ROOT {
+            break s.root.as_raw_fd();
+        }
+        if let Some(fd) = s.dirs.get(at) {
+            break fd;
+        }
+        if names.len() > s.nodes.len() {
+            return Err(ESTALE);
+        }
+    };
+    names.reverse();
+    let fd = open_beneath(from, &names)?;
+    let st = stat_fd(fd.as_raw_fd())?;
+    if !is_dir(&st) || key(&st) != want {
+        return Err(ESTALE);
+    }
+    Ok(s.dirs.insert(nodeid, fd))
+}
+
+/// The directory `names` lead to under `dir`, a component after another, none followed
+/// if a symlink: on Linux in one openat2(2) refusing symlinks and any way out of `dir`
+/// (RESOLVE_NO_SYMLINKS, RESOLVE_BENEATH; Linux 5.6), and a component at a time with
+/// O_NOFOLLOW where the kernel has no openat2, or the path is too long for one call, and on
+/// macOS. A path that no longer leads to a directory is stale.
+fn open_beneath(dir: RawFd, names: &[CString]) -> Result<OwnedFd, Errno> {
+    #[cfg(target_os = "linux")]
+    if let Some(opened) = openat2_beneath(dir, names) {
+        return opened.map_err(stale);
+    }
+    let mut held: Option<OwnedFd> = None;
+    for name in names {
+        let at = held.as_ref().map_or(dir, std::os::fd::AsRawFd::as_raw_fd);
+        let next = open_at(at, name, libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW, 0);
+        held = Some(next.map_err(stale)?);
+    }
+    held.ok_or(EINVAL)
+}
+
+/// [`open_beneath`] in one openat2(2); none where this kernel has no openat2 (ENOSYS, or a
+/// seccomp filter's EPERM) or the path is longer than one call takes.
+#[cfg(target_os = "linux")]
+fn openat2_beneath(dir: RawFd, names: &[CString]) -> Option<Result<OwnedFd, Errno>> {
+    /// struct open_how (include/uapi/linux/openat2.h), which libc's leaves unbuilt.
+    #[repr(C)]
+    struct OpenHow {
+        flags: u64,
+        mode: u64,
+        resolve: u64,
+    }
+    let mut path = Vec::new();
+    for name in names {
+        if !path.is_empty() {
+            path.push(b'/');
+        }
+        path.extend_from_slice(name.to_bytes());
+    }
+    let path = CString::new(path).ok()?;
+    let how = OpenHow {
+        flags: u64::try_from(libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC).ok()?,
+        mode: 0,
+        resolve: libc::RESOLVE_BENEATH | libc::RESOLVE_NO_SYMLINKS,
+    };
+    // SAFETY: openat2(2) of a NUL-terminated path, with an open_how of the size given.
+    let fd = unsafe {
+        libc::syscall(
+            libc::SYS_openat2,
+            dir,
+            path.as_ptr(),
+            &raw const how,
+            std::mem::size_of::<OpenHow>(),
+        )
+    };
+    if let Ok(fd) = RawFd::try_from(fd)
+        && fd >= 0
+    {
+        // SAFETY: a fresh descriptor nothing else owns.
+        return Some(Ok(unsafe { OwnedFd::from_raw_fd(fd) }));
+    }
+    match last() {
+        ENOSYS | EPERM | ENAMETOOLONG => None,
+        e => Some(Err(e)),
     }
 }
 
-/// A node's parent's descriptor and its name; the root's own and `.`.
-fn at(s: &State, nodeid: u64) -> Result<(RawFd, CString), Errno> {
-    match &s.nodes.get(&nodeid).ok_or(ENOENT)?.kind {
-        Kind::Dir(fd) => Ok((fd.as_raw_fd(), cstring(".")?)),
-        Kind::Entry { parent, name } => Ok((dir_fd(s, *parent)?, name.clone())),
+/// An error opening a node's path, as the guest hears it: a path that no longer leads to a
+/// directory within the share (gone, not one, a symlink, a way out) is stale.
+fn stale(e: Errno) -> Errno {
+    match e {
+        ENOENT | ENOTDIR | ELOOP | EXDEV => ESTALE,
+        e => e,
     }
 }
 
-fn node_stat(s: &State, nodeid: u64) -> Result<libc::stat, Errno> {
-    match &s.nodes.get(&nodeid).ok_or(ENOENT)?.kind {
-        Kind::Dir(fd) => stat_fd(fd.as_raw_fd()),
-        Kind::Entry { parent, name } => stat_at(dir_fd(s, *parent)?, name),
+/// A node's parent's descriptor and its name; a directory's own and `.`.
+fn at(s: &mut State, nodeid: u64) -> Result<(RawFd, CString), Errno> {
+    let node = s.nodes.get(&nodeid).ok_or(ENOENT)?;
+    if node.dir {
+        return Ok((dir_fd(s, nodeid)?, cstring(".")?));
     }
+    let (parent, name) = (node.parent, node.name.clone());
+    Ok((dir_fd(s, parent)?, name))
 }
 
-/// `name` in directory node `parent`: its node, counted once more, its attributes and its
-/// owner.
+fn node_stat(s: &mut State, nodeid: u64) -> Result<libc::stat, Errno> {
+    let node = s.nodes.get(&nodeid).ok_or(ENOENT)?;
+    if node.dir {
+        return stat_fd(dir_fd(s, nodeid)?);
+    }
+    let parent = node.parent;
+    let dir = dir_fd(s, parent)?;
+    let node = s.nodes.get(&nodeid).ok_or(ENOENT)?;
+    stat_at(dir, &node.name)
+}
+
+/// `name` in directory node `parent`: its node, counted once more and known by this name
+/// now, its attributes and its owner. A directory is not opened until it is used.
 fn lookup(s: &mut State, parent: u64, name: &CStr) -> Result<(u64, libc::stat, Owner), Errno> {
     let dir = dir_fd(s, parent)?;
     let st = stat_at(dir, name)?;
     let k = key(&st);
-    let id = match s.by_key.get(&k).copied() {
-        Some(id) if s.nodes.contains_key(&id) => {
+    let id = match s.by_key.get(&k).copied().filter(|id| s.nodes.contains_key(id)) {
+        Some(id) => {
             if let Some(n) = s.nodes.get_mut(&id) {
                 n.lookups = n.lookups.saturating_add(1);
-                // A name it is known by now, where it is not a directory.
-                if let Kind::Entry { parent: p, name: n_ } = &mut n.kind {
-                    *p = parent;
-                    *n_ = name.to_owned();
+                // The root keeps no name.
+                if id != ROOT {
+                    (n.parent, n.name, n.dir) = (parent, name.to_owned(), is_dir(&st));
+                }
+                // Its inode a directory's no longer, deleted and its number taken again: the
+                // descriptor held is that directory's.
+                if !n.dir {
+                    s.dirs.remove(id);
                 }
             }
             id
         }
-        _ => {
-            let kind = if is_dir(&st) {
-                Kind::Dir(open_at(
-                    dir,
-                    name,
-                    libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW,
-                    0,
-                )?)
-            } else {
-                Kind::Entry {
-                    parent,
-                    name: name.to_owned(),
-                }
-            };
+        None => {
             let id = s.next_node;
             s.next_node += 1;
             s.nodes.insert(
                 id,
                 Node {
-                    kind,
+                    dir: is_dir(&st),
+                    parent,
+                    name: name.to_owned(),
                     lookups: 1,
                     key: k,
                 },
@@ -1418,12 +1672,21 @@ fn forget(s: &mut State, nodeid: u64, n: u64) {
         }
         None => false,
     };
-    if gone
-        && let Some(node) = s.nodes.remove(&nodeid)
-        && s.by_key.get(&node.key) == Some(&nodeid)
-    {
-        s.by_key.remove(&node.key);
+    if gone && let Some(node) = s.nodes.remove(&nodeid) {
+        s.dirs.remove(nodeid);
+        if s.by_key.get(&node.key) == Some(&nodeid) {
+            s.by_key.remove(&node.key);
+        }
     }
+}
+
+/// Room for another of the guest's handles, which count against the budget its
+/// directories' descriptors share: past it, EMFILE, as a kernel refuses a process.
+fn room_for_handle(s: &State) -> Result<(), Errno> {
+    if u64::try_from(s.handles.len()).unwrap_or(u64::MAX) >= s.budget {
+        return Err(EMFILE);
+    }
+    Ok(())
 }
 
 fn add_handle(s: &mut State, h: Handle) -> u64 {
@@ -1634,15 +1897,14 @@ fn rename(s: &mut State, olddir: u64, old: &CStr, newdir: u64, new: &CStr, flags
     if rc != 0 {
         return Err(last());
     }
-    // The names nodes are known by follow.
+    // The names nodes are known by follow, directories' as files': a directory let go is
+    // found again by its path.
     let exchange = flags & linux::RENAME_EXCHANGE != 0;
     for node in s.nodes.values_mut() {
-        if let Kind::Entry { parent, name } = &mut node.kind {
-            if *parent == olddir && name.as_c_str() == old {
-                (*parent, *name) = (newdir, new.to_owned());
-            } else if exchange && *parent == newdir && name.as_c_str() == new {
-                (*parent, *name) = (olddir, old.to_owned());
-            }
+        if node.parent == olddir && node.name.as_c_str() == old {
+            (node.parent, node.name) = (newdir, new.to_owned());
+        } else if exchange && node.parent == newdir && node.name.as_c_str() == new {
+            (node.parent, node.name) = (olddir, old.to_owned());
         }
     }
     Ok(())
@@ -2167,6 +2429,106 @@ mod tests {
         assert_eq!(answer(&dev, &req(op::LISTXATTR, null, 0, &list)), (0, Vec::new()));
         let opened = OPENED.with(|o| o.borrow().clone());
         assert!(!opened.iter().any(|n| n.as_bytes() == b"null"), "{opened:?}");
+    }
+
+    /// A server over `path` holding at most `budget` descriptors between requests.
+    fn small(path: &std::path::Path, budget: u64) -> Server {
+        let root = std::fs::File::open(path).unwrap();
+        Server::with_budget(root.into(), false, None, budget).unwrap()
+    }
+
+    fn found(s: &Server, parent: u64, n: &str) -> u64 {
+        let (e, entry) = answer(s, &req(op::LOOKUP, parent, 0, &name(n)));
+        assert_eq!(e, 0, "LOOKUP {n}");
+        u64::from_le_bytes(entry[0..8].try_into().unwrap())
+    }
+
+    /// A directory the server let go is found again along its path, which follows the
+    /// guest's renames; one renamed or replaced on the host since, or reached only through a
+    /// symlink, even one to itself, is stale (ESTALE), and nothing outside the share is
+    /// reached through one (audit V09).
+    #[test]
+    fn a_directory_let_go_is_found_by_its_path_or_is_stale() {
+        let (path, _) = dir();
+        std::fs::create_dir_all(path.join("a/b")).unwrap();
+        std::fs::create_dir_all(path.join("other")).unwrap();
+        let outside = path.with_extension("outside");
+        std::fs::create_dir_all(outside.join("b")).unwrap();
+        // A budget of one: each request on one directory lets the other go.
+        let s = small(&path, 1);
+        let a = found(&s, ROOT, "a");
+        let b = found(&s, a, "b");
+        let other = found(&s, ROOT, "other");
+        let getattr = |n: u64| answer(&s, &req(op::GETATTR, n, 0, &[0u8; 16])).0;
+        assert_eq!(getattr(b), 0);
+        assert_eq!(getattr(other), 0);
+        assert_eq!(getattr(b), 0, "along a/b");
+        let mut rename = ROOT.to_le_bytes().to_vec();
+        rename.extend(name("a"));
+        rename.extend(name("z"));
+        assert_eq!(answer(&s, &req(op::RENAME, ROOT, 0, &rename)).0, 0);
+        assert_eq!(getattr(other), 0);
+        assert_eq!(getattr(b), 0, "along z/b, the guest's rename");
+        // Renamed on the host: stale.
+        std::fs::rename(path.join("z"), path.join("y")).unwrap();
+        assert_eq!(getattr(other), 0);
+        assert_eq!(getattr(b), -ESTALE, "renamed on the host");
+        // A symlink in its path, to the very directory it was: not followed.
+        std::os::unix::fs::symlink("y", path.join("z")).unwrap();
+        assert_eq!(getattr(b), -ESTALE, "through a symlink to itself");
+        // A symlink out of the share: not followed, nothing made there.
+        std::fs::remove_file(path.join("z")).unwrap();
+        std::os::unix::fs::symlink(&outside, path.join("z")).unwrap();
+        let mut mkdir = 0o755u32.to_le_bytes().to_vec();
+        mkdir.extend_from_slice(&[0u8; 4]);
+        mkdir.extend(name("made"));
+        assert_eq!(answer(&s, &req(op::MKDIR, b, 0, &mkdir)).0, -ESTALE);
+        assert!(!outside.join("b/made").exists(), "made outside the share");
+        // Back at its path: found again.
+        std::fs::remove_file(path.join("z")).unwrap();
+        std::fs::rename(path.join("y"), path.join("z")).unwrap();
+        assert_eq!(getattr(b), 0, "back along z/b");
+        // Replaced on the host by another directory of its name: stale, and a lookup finds
+        // the new one.
+        assert_eq!(getattr(other), 0);
+        std::fs::rename(path.join("z/b"), path.join("b.old")).unwrap();
+        std::fs::create_dir(path.join("z/b")).unwrap();
+        assert_eq!(getattr(b), -ESTALE, "replaced on the host");
+        let z = found(&s, ROOT, "z");
+        assert_ne!(found(&s, z, "b"), b);
+        let _ = std::fs::remove_dir_all(&path);
+        let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    /// What a share process's servers may hold, from this host's figures (2026-10-09):
+    /// `kern.maxfilesperproc` 245,760; `kern.maxfiles` 491,520 with 10,754 open;
+    /// `kern.maxprocperuid` 10,666, two processes a run that shares. Here the table binds:
+    /// 90 a share process, its servers' part each.
+    #[test]
+    fn a_budget_is_reckoned_from_the_hosts_limits() {
+        let mac = Limits {
+            process: 245_760,
+            held: 6,
+            table: Some((491_520, 10_754)),
+            processes: Some(10_666),
+        };
+        assert_eq!(mac.budget(1), 90);
+        assert_eq!(mac.budget(3), 30);
+        // A table without a bound, as systemd sets Linux's: the process's limit binds.
+        let open_ended = Limits {
+            table: Some((u64::MAX, 2_000)),
+            ..mac
+        };
+        assert_eq!(open_ended.budget(1), 245_760 - 6 - REQUEST_FDS);
+        // Where the system says nothing of its table or its processes.
+        let unsaid = Limits {
+            table: None,
+            processes: None,
+            ..mac
+        };
+        assert_eq!(unsaid.budget(2), (245_760 - 6 - 2 * REQUEST_FDS) / 2);
+        let spent = Limits { process: 8, ..unsaid };
+        assert_eq!(spent.budget(1), 0);
     }
 
     #[test]

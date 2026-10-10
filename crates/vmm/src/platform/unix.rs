@@ -752,22 +752,7 @@ fn clear_errno() {
 pub fn thread_limit() -> Option<u64> {
     #[cfg(target_os = "macos")]
     {
-        let mut per_process: libc::c_int = 0;
-        let mut len = std::mem::size_of::<libc::c_int>();
-        // SAFETY: sysctlbyname(3) reading one int into a local of its size.
-        let read = unsafe {
-            libc::sysctlbyname(
-                c"kern.num_taskthreads".as_ptr(),
-                (&raw mut per_process).cast(),
-                &mut len,
-                std::ptr::null_mut(),
-                0,
-            )
-        };
-        if read != 0 {
-            return None;
-        }
-        u64::try_from(per_process).ok()
+        sysctl_count(c"kern.num_taskthreads")
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -844,6 +829,115 @@ pub(super) fn pids_max(root: &std::path::Path, groups: &str) -> Option<u64> {
         }
     }
     least
+}
+
+/// Raises this process's soft limit on open descriptors to its hard limit, as Go's runtime
+/// raises its own (go1.25.0 src/syscall/rlimit.go, after go.dev/issue/46279): macOS starts
+/// a process with a soft limit of 256, and refuses more than `kern.maxfilesperproc`
+/// (src/syscall/rlimit_darwin.go). The hard limit is for whoever starts the process to
+/// set. Returns the limit it has.
+pub fn raise_descriptor_limit() -> io::Result<u64> {
+    let mut lim = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: getrlimit(2) into a local.
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let raised = lim.rlim_max;
+    #[cfg(target_os = "macos")]
+    let raised = raised.min(sysctl_count(c"kern.maxfilesperproc").unwrap_or(raised));
+    if raised > lim.rlim_cur {
+        lim.rlim_cur = raised;
+        // SAFETY: setrlimit(2) from a local.
+        if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &lim) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(descriptor_limit().unwrap_or(lim.rlim_cur))
+}
+
+/// How many descriptors this process may have open: its soft limit, and on macOS no more
+/// than `kern.maxfilesperproc`, which the kernel holds a process to whatever its limit.
+pub fn descriptor_limit() -> Option<u64> {
+    let mut lim = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: getrlimit(2) into a local.
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim) } != 0 {
+        return None;
+    }
+    #[cfg(target_os = "macos")]
+    let lim = libc::rlimit {
+        rlim_cur: lim
+            .rlim_cur
+            .min(sysctl_count(c"kern.maxfilesperproc").unwrap_or(lim.rlim_cur)),
+        ..lim
+    };
+    Some(lim.rlim_cur)
+}
+
+/// How many descriptors this process has open: the entries of /dev/fd (fdescfs on macOS,
+/// /proc/self/fd on Linux), less the one that lists them.
+pub fn open_descriptors() -> Option<u64> {
+    let count = std::fs::read_dir("/dev/fd").ok()?.count();
+    u64::try_from(count.checked_sub(1)?).ok()
+}
+
+/// The system's table of open files: how many it holds, and how many are open, as macOS's
+/// `kern.maxfiles` and `kern.num_files` say, or Linux's /proc/sys/fs/file-max and file-nr
+/// (proc_sys_fs(5): file-nr is the files allocated, those free, and the most).
+pub fn file_table() -> Option<(u64, u64)> {
+    #[cfg(target_os = "macos")]
+    {
+        Some((sysctl_count(c"kern.maxfiles")?, sysctl_count(c"kern.num_files")?))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let size = count(std::path::Path::new("/proc/sys/fs/file-max"))?;
+        let nr = std::fs::read_to_string("/proc/sys/fs/file-nr").ok()?;
+        let mut fields = nr.split_whitespace().map(str::parse::<u64>);
+        let (Some(Ok(allocated)), Some(Ok(free))) = (fields.next(), fields.next()) else {
+            return None;
+        };
+        Some((size, allocated.saturating_sub(free)))
+    }
+}
+
+/// How many processes this process's user may have: macOS's `kern.maxprocperuid`; on Linux
+/// as many as the threads it may have ([`thread_limit`]), each process being one at least.
+pub fn user_processes() -> Option<u64> {
+    #[cfg(target_os = "macos")]
+    {
+        sysctl_count(c"kern.maxprocperuid")
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        thread_limit()
+    }
+}
+
+/// A count the kernel keeps as an int under `name` (sysctlbyname(3)).
+#[cfg(target_os = "macos")]
+fn sysctl_count(name: &std::ffi::CStr) -> Option<u64> {
+    let mut value: libc::c_int = 0;
+    let mut len = std::mem::size_of::<libc::c_int>();
+    // SAFETY: sysctlbyname(3) reading one int into a local of its size.
+    let read = unsafe {
+        libc::sysctlbyname(
+            name.as_ptr(),
+            (&raw mut value).cast(),
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if read != 0 {
+        return None;
+    }
+    u64::try_from(value).ok()
 }
 
 /// A child process's end, watched ([`Poller::add_exit`]): on Linux its descriptor, whose
