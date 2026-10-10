@@ -7,10 +7,11 @@
 use std::cell::Cell;
 
 /// The stack a builtin call takes at most: every call of the builtin corpus, the deepest
-/// documents Go reads among them, ran on 177 KiB on aarch64-apple-darwin and 181 KiB on
-/// x86_64-apple-darwin (measured with tests/builtins.rs's `SHARDS_REGO_LEAF`), which
-/// holds every target to it.
-pub const LEAF: usize = 181 << 10;
+/// documents Go reads among them, ran on 205 KiB on aarch64-unknown-linux-gnu, the most
+/// of the targets CI tests, release builds all (177 to 205 KiB; test-release's take 65 to
+/// 129, M159), measured with tests/builtins.rs's `SHARDS_REGO_LEAF`, which holds every
+/// target's release build to it.
+pub const LEAF: usize = 205 << 10;
 
 thread_local! {
     /// The lowest address this thread's stack reaches, once the OS has said; `usize::MAX`

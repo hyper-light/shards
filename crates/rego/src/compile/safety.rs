@@ -325,26 +325,43 @@ pub fn walk_terms(t: &Term, f: &mut dyn FnMut(&Term) -> bool) {
     }
 }
 
-/// outputVarsForExprEq.
+/// outputVarsForExprEq, on a set of its own.
 pub fn output_vars_for_expr_eq(e: &Expr, safe: &VarSet) -> VarSet {
+    output_vars_for_expr_eq_in(e, safe, &mut VarSet::new())
+}
+
+/// outputVarsForExprEq on the `output` set a body's expressions share: what is in it
+/// counts as safe, and as the expression's outputs, before the set is emptied.
+fn output_vars_for_expr_eq_in(e: &Expr, safe: &VarSet, output: &mut VarSet) -> VarSet {
     let (Some(a), Some(b)) = (e.operand(0), e.operand(1)) else {
         return safe.clone();
     };
     if e.operand(2).is_some() {
         return safe.clone();
     }
-    let mut output = output_vars_for_terms(e, safe);
+    output.extend(output_vars_for_terms(e, safe));
     output.extend(safe.iter().cloned());
-    let u = unify(&output, a, b);
+    let u = unify(output, a, b);
     output.extend(u);
-    output.difference(safe).cloned().collect()
+    let diff = output.difference(safe).cloned().collect();
+    output.clear();
+    diff
 }
 
-fn output_vars_for_expr_call(e: &Expr, arity: usize, safe: &VarSet, terms: &[Term]) -> VarSet {
-    let mut output = output_vars_for_terms(e, safe);
+/// outputVarsForExprCall on the shared `output` set: emptied, then filled with the
+/// call's outputs, which stay in it when its inputs are not safe.
+fn output_vars_for_expr_call_in(
+    e: &Expr,
+    arity: usize,
+    safe: &VarSet,
+    terms: &[Term],
+    output: &mut VarSet,
+) -> VarSet {
+    output.clear();
+    output.extend(output_vars_for_terms(e, safe));
     let inputs = arity + 1;
     if inputs >= terms.len() {
-        return output;
+        return output.clone();
     }
     let mut v = VarVisitor::new(OUTPUT);
     v.args(terms.get(..inputs).unwrap_or_default());
@@ -359,11 +376,19 @@ fn output_vars_for_expr_call(e: &Expr, arity: usize, safe: &VarSet, terms: &[Ter
     let mut v = VarVisitor::new(OUTPUT);
     v.args(terms.get(inputs..).unwrap_or_default());
     output.extend(v.vars);
-    output
+    output.clone()
 }
 
-/// outputVarsForExpr.
+/// outputVarsForExpr, on a set of its own (OutputVarsFromExpr).
 pub fn output_vars_for_expr(e: &Expr, arity: Arity<'_>, safe: &VarSet) -> VarSet {
+    output_vars_for_expr_in(e, arity, safe, &mut VarSet::new())
+}
+
+/// outputVarsForExpr on the `output` set that OPA reads a body's expressions with in turn
+/// (outputVarsForBody, reorderBodyForSafety): a call fills it, an `every` statement adds
+/// its domain's outputs, an equality reads it as safe and empties it. What a call left
+/// that was not placed counts as safe, and as outputs, in the equality after it.
+fn output_vars_for_expr_in(e: &Expr, arity: Arity<'_>, safe: &VarSet, output: &mut VarSet) -> VarSet {
     if e.negated {
         return VarSet::new();
     }
@@ -383,24 +408,56 @@ pub fn output_vars_for_expr(e: &Expr, arity: Arity<'_>, safe: &VarSet) -> VarSet
         }
         ExprTerms::Call(terms) => {
             if e.is_equality() {
-                return output_vars_for_expr_eq(e, safe);
+                return output_vars_for_expr_eq_in(e, safe, output);
             }
             let Some(op) = terms.first().and_then(Term::as_ref) else {
                 return VarSet::new();
             };
             let Some(a) = arity(op) else { return VarSet::new() };
-            output_vars_for_expr_call(e, a, safe, terms)
+            output_vars_for_expr_call_in(e, a, safe, terms, output)
         }
-        ExprTerms::Every(ev) => output_vars_for_term(&ev.domain, safe),
+        ExprTerms::Every(ev) => {
+            output.extend(output_vars_for_term(&ev.domain, safe));
+            output.clone()
+        }
         ExprTerms::Some(_) => VarSet::new(),
     }
 }
-
 /// outputVarsForBody.
 pub fn output_vars_for_body(body: &[Expr], arity: Arity<'_>, safe: &VarSet) -> VarSet {
-    let mut o = safe.clone();
+    output_vars_for_exprs(body.iter(), arity, safe)
+}
+
+/// outputVarsForBody where `safe` is large (the variables safe in every body around a
+/// closure, as deep as it nests). What the outputs ask of `safe` is only whether the
+/// body's own variables are in it, its closures' aside (an `every` statement's domain,
+/// `with` modifiers included): those of them that are stand for the whole set, rather
+/// than a copy of it for each body.
+pub fn output_vars_for_body_among(body: &[Expr], arity: Arity<'_>, safe: &VarSet) -> VarSet {
+    let mut v = VarVisitor::new(Params {
+        skip_closures: true,
+        ..Params::default()
+    });
     for e in body {
-        let out = output_vars_for_expr(e, arity, &o);
+        v.expr(e);
+        for w in &e.with {
+            v.with(w);
+        }
+    }
+    let here: VarSet = v.vars.into_iter().filter(|x| safe.contains(x)).collect();
+    output_vars_for_body(body, arity, &here)
+}
+
+/// outputVarsForBody over expressions in turn, wherever they are.
+fn output_vars_for_exprs<'a>(
+    body: impl Iterator<Item = &'a Expr>,
+    arity: Arity<'_>,
+    safe: &VarSet,
+) -> VarSet {
+    let mut o = safe.clone();
+    let mut output = VarSet::new();
+    for e in body {
+        let out = output_vars_for_expr_in(e, arity, &o, &mut output);
         o.extend(out);
     }
     o.difference(safe).cloned().collect()
@@ -410,25 +467,128 @@ fn unsafe_add(u: &mut HashMap<usize, VarSet>, i: usize, v: &Var) {
     u.entry(i).or_default().insert(v.clone());
 }
 
-/// unsafeVarsInClosures: the variables the closures of an expression read, an `every`'s
-/// body included.
-fn vars_in_closures(e: &Expr) -> VarSet {
-    if let ExprTerms::Every(ev) = &e.terms {
-        return vars::body_vars(&ev.body, Params::default());
+/// Where each variable of a rule's body occurs, numbered in one walk of it, each closure's
+/// variables (an `every` statement's body, a comprehension) taking one run of numbers:
+/// unsafeVarsInClosures asks which variables of a body an expression's closures read,
+/// which a search of each variable's numbers answers, not a walk of the closures and
+/// every closure within them (as deep as n closures, a body was walked n times).
+#[derive(Debug, Default)]
+pub struct Occurrences {
+    at: HashMap<Var, Vec<u32>>,
+    next: u32,
+}
+
+impl Occurrences {
+    fn note(&mut self, v: &Var) {
+        self.at.entry(v.clone()).or_default().push(self.next);
+        self.next = self.next.saturating_add(1);
     }
-    let mut out = VarSet::new();
-    walk_terms_expr(e, &mut |t: &Term| match &t.value {
-        TermValue::ArrayCompr(..) | TermValue::SetCompr(..) | TermValue::ObjectCompr(..) => {
-            out.extend(vars::term_vars(t));
-            true
-        }
-        _ => false,
-    });
+
+    /// Whether the variable occurs within the run of numbers.
+    fn within(&self, v: &str, run: &std::ops::Range<u32>) -> bool {
+        self.at.get(v).is_some_and(|at| {
+            let i = at.partition_point(|p| *p < run.start);
+            at.get(i).is_some_and(|p| *p < run.end)
+        })
+    }
+}
+
+/// A body's closures, for its safety check: for each of its expressions as written, the
+/// closures the check meets in it (an `every` statement is one; else the comprehensions
+/// in its terms), each with its run of numbers and the closures of its own body.
+#[derive(Debug, Default)]
+pub struct Closures {
+    pub exprs: Vec<Vec<Closure>>,
+}
+
+#[derive(Debug)]
+pub struct Closure {
+    run: std::ops::Range<u32>,
+    pub body: Closures,
+}
+
+/// Numbers a body's variables, and gives its closures with their runs.
+pub fn closures(body: &mut Body, occ: &mut Occurrences) -> Closures {
+    let mut out = Closures::default();
+    for e in body.iter_mut() {
+        let mut found = Vec::new();
+        expr_closures(e, occ, &mut found);
+        out.exprs.push(found);
+    }
     out
 }
 
-/// reorderBodyForSafety, without the closure transform (applied by the caller).
-pub fn reorder(arity: Arity<'_>, globals: &VarSet, body: &Body) -> (Vec<usize>, HashMap<usize, VarSet>) {
+/// Numbers every variable of a term, closures within it too.
+fn note_all(t: &mut Term, occ: &mut Occurrences) {
+    super::localvars::walk_terms_mut(t, &mut |t| {
+        if let TermValue::Var(v) = &t.value {
+            occ.note(v);
+        }
+        false
+    });
+}
+
+fn expr_closures(e: &mut Expr, occ: &mut Occurrences, found: &mut Vec<Closure>) {
+    if let ExprTerms::Every(ev) = &mut e.terms {
+        if let Some(k) = ev.key.as_mut() {
+            note_all(k, occ);
+        }
+        note_all(&mut ev.value, occ);
+        note_all(&mut ev.domain, occ);
+        let start = occ.next;
+        let body = closures(&mut ev.body, occ);
+        found.push(Closure {
+            run: start..occ.next,
+            body,
+        });
+        for w in e.with.iter_mut() {
+            note_all(&mut w.target, occ);
+            note_all(&mut w.value, occ);
+        }
+        return;
+    }
+    super::localvars::walk_expr_terms_mut(e, &mut |t: &mut Term| -> bool {
+        match &mut t.value {
+            TermValue::ArrayCompr(x, b) | TermValue::SetCompr(x, b) => {
+                let start = occ.next;
+                note_all(x, occ);
+                let body = closures(b, occ);
+                found.push(Closure {
+                    run: start..occ.next,
+                    body,
+                });
+                true
+            }
+            TermValue::ObjectCompr(k, v, b) => {
+                let start = occ.next;
+                note_all(k, occ);
+                note_all(v, occ);
+                let body = closures(b, occ);
+                found.push(Closure {
+                    run: start..occ.next,
+                    body,
+                });
+                true
+            }
+            TermValue::Var(v) => {
+                occ.note(v);
+                false
+            }
+            _ => false,
+        }
+    });
+}
+
+/// reorderBodyForSafety, without the closure transform (applied by the caller): the
+/// order, and the unsafe variables of what it could not place. `closures` are the body's,
+/// numbered in `occ`.
+pub fn reorder(
+    arity: Arity<'_>,
+    globals: &VarSet,
+    body: &Body,
+    closures: &Closures,
+    occ: &Occurrences,
+) -> (Vec<usize>, HashMap<usize, VarSet>) {
     let mut vis = VarVisitor::new(SAFETY);
     vis.body(body);
     let body_vars = vis.vars;
@@ -441,7 +601,22 @@ pub fn reorder(arity: Arity<'_>, globals: &VarSet, body: &Body) -> (Vec<usize>, 
             }
         }
     }
+    // unsafeVarsInClosures, the same in every pass: the variables of this body (but its
+    // globals) each expression's closures read.
+    let closed: Vec<VarSet> = (0..body.len())
+        .map(|i| {
+            let runs = closures.exprs.get(i).map(Vec::as_slice).unwrap_or_default();
+            body_vars
+                .iter()
+                .filter(|v| !globals.contains(*v) && runs.iter().any(|c| occ.within(v, &c.run)))
+                .cloned()
+                .collect()
+        })
+        .collect();
+    let none = VarSet::new();
     let mut order: Vec<usize> = Vec::new();
+    // reorderBodyForSafety reads every expression with one output set, through every pass.
+    let mut output = VarSet::new();
     let mut placed: HashSet<usize> = HashSet::new();
     loop {
         let n = order.len();
@@ -449,15 +624,16 @@ pub fn reorder(arity: Arity<'_>, globals: &VarSet, body: &Body) -> (Vec<usize>, 
             if placed.contains(&i) {
                 continue;
             }
-            let ovs = output_vars_for_expr(e, arity, &safe);
-            let cv: VarSet = vars_in_closures(e)
-                .intersection(&body_vars)
-                .filter(|v| !globals.contains(*v))
-                .cloned()
-                .collect();
-            let reordered: Body = order.iter().filter_map(|&j| body.get(j).cloned()).collect();
-            let ob = output_vars_for_body(&reordered, arity, &safe);
-            if diff_count(&cv, &ob) > 0 {
+            let ovs = output_vars_for_expr_in(e, arity, &safe, &mut output);
+            let cv = closed.get(i).unwrap_or(&none);
+            // What the expressions placed so far output: none of it matters to an
+            // expression without closures reading this body's variables.
+            let ob = if cv.is_empty() {
+                VarSet::new()
+            } else {
+                output_vars_for_exprs(order.iter().filter_map(|&j| body.get(j)), arity, &safe)
+            };
+            if diff_count(cv, &ob) > 0 {
                 let uv: VarSet = cv.difference(&ob).cloned().collect();
                 if uv == ovs {
                     continue;

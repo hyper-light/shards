@@ -144,7 +144,16 @@ jobs:
         shell: bash
         run: |
           if [ "${{ matrix.target }}" = x86_64-unknown-linux-gnu ]; then export SHARDS_REQUIRE_VMS=1; fi
-          cargo test --locked --workspace --release --no-fail-fast --target ${{ matrix.target }}
+          cargo test --locked --workspace --profile test-release --no-fail-fast --target ${{ matrix.target }}
+      # The stack guards are release's (crates/rego: stack::LEAF, RULE_STEP, and the policy
+      # thread's STACK): measured on release, whose fat LTO puts more in each frame than
+      # test-release does, so the tests that hold every target to them run on release too
+      # (M159).
+      - name: Stack guards, on release
+        if: ${{ !cancelled() && matrix.test }}
+        timeout-minutes: 15
+        shell: bash
+        run: cargo test --locked --release -p shards-rego --test builtins --test deep --test depth --target ${{ matrix.target }}
       # A process the seccomp filter ended with its SIGSYS blocked says nothing; the kernel
       # logs the syscall it refused (the filter's SECCOMP_FILTER_FLAG_LOG).
       - name: What the kernel logged of seccomp refusals
@@ -209,23 +218,29 @@ jobs:
           path: target/bench-samples/
           if-no-files-found: warn
 
+  # Each musl target in two jobs at once: lints and tests, and the release build whose
+  # executable must be static. One after the other they took 43 of the step's 45 minutes
+  # on x86_64 (M156).
   musl:
-    name: ${{ matrix.target }}
+    name: ${{ matrix.target }}${{ matrix.part == 'build' && ' release' || '' }}
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { target: x86_64-unknown-linux-musl, runner: ubuntu-24.04 }
-          - { target: aarch64-unknown-linux-musl, runner: ubuntu-24.04-arm }
+          - { target: x86_64-unknown-linux-musl, runner: ubuntu-24.04, part: test }
+          - { target: aarch64-unknown-linux-musl, runner: ubuntu-24.04-arm, part: test }
+          - { target: x86_64-unknown-linux-musl, runner: ubuntu-24.04, part: build }
+          - { target: aarch64-unknown-linux-musl, runner: ubuntu-24.04-arm, part: build }
     runs-on: ${{ matrix.runner }}
     env:
       TARGET: ${{ matrix.target }}
+      MUSL_CI: ${{ matrix.part }}
     steps:
       - uses: actions/checkout@v7.0.1
       - name: Host virtualization (what this runner offers each backend)
         run: ls -l /dev/kvm 2>&1 || true
-      - name: Lint, test and build on the native architecture, in Alpine
+      - name: On the native architecture, in Alpine
         timeout-minutes: 45
         run: |
           # VM tests need the host's /dev/kvm inside the container, which runs them as the
@@ -235,7 +250,7 @@ jobs:
           # x86_64 runners offer /dev/kvm: every VM test must run there.
           require=0
           if [ "$TARGET" = x86_64-unknown-linux-musl ]; then require=1; fi
-          docker run --rm $kvm -v "$PWD:/work" -w /work -e TARGET -e SHARDS_REQUIRE_VMS=$require \
+          docker run --rm $kvm -v "$PWD:/work" -w /work -e TARGET -e MUSL_CI -e SHARDS_REQUIRE_VMS=$require \
             -e CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=cc \
             -e CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=cc \
             "$MUSL_IMAGE" scripts/musl-ci
@@ -245,6 +260,7 @@ jobs:
         if: failure()
         run: sudo dmesg | grep -iE 'seccomp|type=1326' | tail -40 || true
       - name: The executable is static
+        if: matrix.part == 'build'
         run: |
           bin="target/$TARGET/release/shards"
           if readelf --program-headers "$bin" | grep -q INTERP; then

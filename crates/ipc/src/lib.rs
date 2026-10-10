@@ -1255,7 +1255,11 @@ pub fn working_set_part(payload: &[u8]) -> Option<(u8, &str, &[u8])> {
 pub const MAX_FDS: usize = 9;
 
 #[cfg(unix)]
+mod spawner;
+#[cfg(unix)]
 mod unix;
+#[cfg(unix)]
+pub use spawner::{serve_spawner, start_spawner};
 #[cfg(unix)]
 pub use unix::*;
 

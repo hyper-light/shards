@@ -1871,6 +1871,25 @@ stack inside the VMM, is superseded by it.
     the guest had given), and the network process takes the ring's frames, a ring's worth
     at most, before a control message and before it ends, so what the guest sent before
     UNPUBLISH goes before it: 150 runs of 150 answered.
+  - *No child holds what the daemon lets go of (2026-10-10, PM M134, M158).* A child holds
+    every descriptor its parent had when it was made, close-on-exec ones too, until it
+    execs: XNU copies the table into it, whatever `POSIX_SPAWN_CLOEXEC_DEFAULT` says, and
+    glibc's posix_spawn clones it. The daemon holds a run's listeners from binding them
+    until its network process has them, and its clients' stdio until a VM has the run,
+    while its other threads make VMs, network and share processes: each made meanwhile
+    held them until its exec, so a run that ended sooner left its port bound, and `run
+    --rm -p N` again failed where Docker's succeeds (13 to 20 in 100 listeners let go of
+    while children were made, up to 299 ms, and pipes' ends up to 127 ms, on an M5 Max).
+    Every child of the daemon is now made by its spawner (`shards spawner`,
+    shards_ipc::start_spawner), which the daemon starts before it binds anything and
+    which holds only what each child is given, while it is made; the daemon watches,
+    signals and reaps its children by pid as before, the spawner reaping none until the
+    daemon asks, so a pid stays its child's. Binding the listeners in the network process
+    instead, which makes no children (M134's note), would have freed ports alone, not
+    clients' pipes; and a spawn through the spawner costs a round trip (7 to 39 µs at
+    p50), where posix_spawn took 22 to 57 µs less at p50 in the spawner than in a process
+    holding up to 100 descriptors more, as a daemon of tens of runs does (2 a run), and
+    190 to 250 µs less than in one holding a thousand, each copied into every child.
   - *Frames, and what the guest loses of them (PM M104).* The VM's device returns a
     received frame's buffers to the guest together (virtio 1.2 §5.1.6.4.1), and a
     segment's bytes go from a connection's queue to the ring in one copy. A guest short of

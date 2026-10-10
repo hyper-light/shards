@@ -134,84 +134,131 @@ fn arity_of(c: &Compiler) -> impl Fn(&[Term]) -> Option<usize> + '_ {
 }
 
 /// rewriteTemplateStrings.
+///
+/// OPA's walk rewrites a closure's body (an `every` statement's, a comprehension's),
+/// then walks on into the body again with the safe variables of the body around it,
+/// at each level: twice the work for each level a body nests. What the second walk does
+/// is try again the template strings the first left as they were, failing again (it
+/// knows fewer variables safe); a body the first walk left none in it skips, and the
+/// walks end once the errors fill what OPA's error limit keeps.
 pub fn rewrite_template_strings(c: &mut Compiler) {
     let mut errs = Vec::new();
+    let room = super::MAX_ERRS.saturating_sub(c.errors.len());
     for_each_rule(c, |c, rule| {
+        if errs.len() >= room {
+            return;
+        }
         let mut safe = VarSet::new();
         for a in &rule.head.args {
             safe.extend(vars::term_vars(a));
         }
         safe.insert("data".into());
         safe.insert("input".into());
-        let body_safe = template_strings_in_body(c, &safe, &mut rule.body, &mut errs);
         let mut ts = TemplateWalk {
             c,
-            safe: body_safe,
+            safe,
+            added: Vec::new(),
             errs: &mut errs,
+            room,
+            left: false,
         };
-        for a in rule.head.args.iter_mut() {
-            ts.term(a);
-        }
-        if let Some(k) = rule.head.key.as_mut() {
-            ts.term(k);
-        }
-        if let Some(v) = rule.head.value.as_mut() {
-            ts.term(v);
-        }
+        let head = &mut rule.head;
+        ts.body(VarSet::new(), &mut rule.body, |ts| {
+            for a in head.args.iter_mut() {
+                ts.term(a);
+            }
+            if let Some(k) = head.key.as_mut() {
+                ts.term(k);
+            }
+            if let Some(v) = head.value.as_mut() {
+                ts.term(v);
+            }
+        });
     });
     c.err(errs);
 }
 
-/// rewriteTemplateStrings over a body: returns the variables safe after it.
-fn template_strings_in_body(
-    c: &mut Compiler,
-    globals: &VarSet,
-    body: &mut Body,
-    errs: &mut Vec<CompileError>,
-) -> VarSet {
-    let mut safe = {
-        let arity = arity_of(c);
-        safety::output_vars_for_body(body, &arity, globals)
-    };
-    safe.extend(globals.iter().cloned());
-    let mut ts = TemplateWalk {
-        c,
-        safe: safe.clone(),
-        errs,
-    };
-    for e in body.iter_mut() {
-        ts.expr(e);
-    }
-    safe
-}
-
 struct TemplateWalk<'a> {
     c: &'a mut Compiler,
+    /// The variables safe where the walk is: one set, each body adding its own and
+    /// taking them back when done. OPA copies the set for each body, and a body as deep
+    /// as n others held n copies, each as large as the depth.
     safe: VarSet,
+    added: Vec<Var>,
     errs: &'a mut Vec<CompileError>,
+    /// How many errors OPA's limit keeps.
+    room: usize,
+    /// Whether a template string the walk came to is left as it was.
+    left: bool,
 }
 
 impl TemplateWalk<'_> {
+    fn full(&self) -> bool {
+        self.errs.len() >= self.room
+    }
+
+    fn add(&mut self, vs: VarSet) {
+        for v in vs {
+            if self.safe.insert(v.clone()) {
+                self.added.push(v);
+            }
+        }
+    }
+
+    fn rewrite(&mut self, t: &mut Term) {
+        self.left |= rewrite_template_term(self.c, &self.safe, t, self.errs);
+    }
+
+    /// rewriteTemplateStrings over a body, `extra` safe in it besides what is safe around
+    /// it, then `then` with the variables safe after it (a comprehension's head terms,
+    /// a rule's head): whether a template string in the body is left as it was (its
+    /// rewrite failed).
+    fn body(&mut self, extra: VarSet, b: &mut Body, then: impl FnOnce(&mut Self)) -> bool {
+        let mark = self.added.len();
+        self.add(extra);
+        let outputs = {
+            let arity = arity_of(self.c);
+            safety::output_vars_for_body_among(b, &arity, &self.safe)
+        };
+        self.add(outputs);
+        let outer = std::mem::replace(&mut self.left, false);
+        for e in b.iter_mut() {
+            self.expr(e);
+        }
+        let left = self.left;
+        self.left |= outer;
+        then(self);
+        for v in self.added.drain(mark..) {
+            self.safe.remove(&v);
+        }
+        left
+    }
+
     fn expr(&mut self, e: &mut Expr) {
+        if self.full() {
+            return;
+        }
         match &mut e.terms {
             ExprTerms::Term(t) => self.term(t),
             ExprTerms::Call(cl) => cl.iter_mut().for_each(|t| self.term(t)),
             ExprTerms::Some(d) => d.symbols.iter_mut().for_each(|t| self.term(t)),
             ExprTerms::Every(ev) => {
-                rewrite_template_term(self.c, &self.safe, &mut ev.domain, self.errs);
-                let mut s = self.safe.clone();
+                self.rewrite(&mut ev.domain);
+                let mut kv = VarSet::new();
                 if let Some(k) = &ev.key {
-                    s.extend(vars::term_vars(k));
+                    kv.extend(vars::term_vars(k));
                 }
-                s.extend(vars::term_vars(&ev.value));
-                template_strings_in_body(self.c, &s, &mut ev.body, self.errs);
+                kv.extend(vars::term_vars(&ev.value));
+                let left = self.body(kv, &mut ev.body, |_| {});
                 if let Some(k) = ev.key.as_mut() {
                     self.term(k);
                 }
                 self.term(&mut ev.value);
                 self.term(&mut ev.domain);
-                for x in ev.body.iter_mut() {
-                    self.expr(x);
+                if left {
+                    for x in ev.body.iter_mut() {
+                        self.expr(x);
+                    }
                 }
             }
         }
@@ -222,21 +269,23 @@ impl TemplateWalk<'_> {
     }
 
     fn term(&mut self, t: &mut Term) {
-        match &mut t.value {
+        if self.full() {
+            return;
+        }
+        let left = match &mut t.value {
             TermValue::TemplateString { .. } => {
-                rewrite_template_term(self.c, &self.safe, t, self.errs);
+                self.rewrite(t);
+                false
             }
             TermValue::SetCompr(x, b) | TermValue::ArrayCompr(x, b) => {
-                let s = template_strings_in_body(self.c, &self.safe, b, self.errs);
-                rewrite_template_term(self.c, &s, x, self.errs);
+                self.body(VarSet::new(), b, |ts| ts.rewrite(x))
             }
-            TermValue::ObjectCompr(k, v, b) => {
-                let s = template_strings_in_body(self.c, &self.safe, b, self.errs);
-                rewrite_template_term(self.c, &s, k, self.errs);
-                rewrite_template_term(self.c, &s, v, self.errs);
-            }
-            _ => {}
-        }
+            TermValue::ObjectCompr(k, v, b) => self.body(VarSet::new(), b, |ts| {
+                ts.rewrite(k);
+                ts.rewrite(v);
+            }),
+            _ => false,
+        };
         match &mut t.value {
             TermValue::Ref(r) | TermValue::Array(r) | TermValue::Call(r) => {
                 r.iter_mut().for_each(|x| self.term(x))
@@ -250,22 +299,32 @@ impl TemplateWalk<'_> {
             TermValue::Set(s) => s.iter_mut().for_each(|x| self.term(x)),
             TermValue::SetCompr(x, b) | TermValue::ArrayCompr(x, b) => {
                 self.term(x);
-                b.iter_mut().for_each(|e| self.expr(e));
+                if left {
+                    b.iter_mut().for_each(|e| self.expr(e));
+                }
             }
             TermValue::ObjectCompr(k, v, b) => {
                 self.term(k);
                 self.term(v);
-                b.iter_mut().for_each(|e| self.expr(e));
+                if left {
+                    b.iter_mut().for_each(|e| self.expr(e));
+                }
             }
             _ => {}
         }
     }
 }
 
-/// rewriteTemplateStringTerm and rewriteTemplateString.
-fn rewrite_template_term(c: &mut Compiler, safe: &VarSet, t: &mut Term, errs: &mut Vec<CompileError>) {
+/// rewriteTemplateStringTerm and rewriteTemplateString: true when the term is a template
+/// string left as it was, its rewrite failing.
+fn rewrite_template_term(
+    c: &mut Compiler,
+    safe: &VarSet,
+    t: &mut Term,
+    errs: &mut Vec<CompileError>,
+) -> bool {
     let TermValue::TemplateString { parts, .. } = &t.value else {
-        return;
+        return false;
     };
     let parts = parts.clone();
     let loc = t.loc.clone();
@@ -333,13 +392,14 @@ fn rewrite_template_term(c: &mut Compiler, safe: &VarSet, t: &mut Term, errs: &m
     }
     if !local_errs.is_empty() {
         errs.extend(local_errs);
-        return;
+        return true;
     }
     let op = Term::reference(
         vec![Term::var("internal", None), Term::string("template_string", None)],
         None,
     );
     t.value = TermValue::Call(vec![op, Term::new(TermValue::Array(terms.into()), loc)].into());
+    false
 }
 
 /// checkVoidCalls: a call to a function without a result used as a value.
@@ -393,7 +453,11 @@ fn is_print_call(e: &Expr) -> bool {
     matches!(&e.terms, ExprTerms::Call(cl) if cl.first().is_some_and(|op| op.to_string() == "print"))
 }
 
+/// ContainsClosures: an `every` statement is one, and comprehensions in its terms.
 fn contains_closures(e: &Expr) -> bool {
+    if e.is_every() {
+        return true;
+    }
     let mut found = false;
     safety::walk_terms_expr(e, &mut |t| {
         if matches!(
@@ -404,95 +468,221 @@ fn contains_closures(e: &Expr) -> bool {
         }
         found
     });
-    found || e.is_every()
+    found
+}
+
+/// The print calls of a rule, in its head and body at any depth.
+fn count_print_calls(rule: &Rule) -> usize {
+    enum Node<'a> {
+        E(&'a Expr),
+        T(&'a Term),
+    }
+    let mut todo: Vec<Node<'_>> = rule.body.iter().map(Node::E).collect();
+    todo.extend(rule.head.args.iter().map(Node::T));
+    todo.extend(rule.head.key.iter().map(Node::T));
+    todo.extend(rule.head.value.iter().map(Node::T));
+    let mut n = 0;
+    while let Some(x) = todo.pop() {
+        match x {
+            Node::E(e) => {
+                if is_print_call(e) {
+                    n += 1;
+                }
+                match &e.terms {
+                    ExprTerms::Term(t) => todo.push(Node::T(t)),
+                    ExprTerms::Call(cl) => todo.extend(cl.iter().map(Node::T)),
+                    ExprTerms::Some(d) => todo.extend(d.symbols.iter().map(Node::T)),
+                    ExprTerms::Every(ev) => {
+                        todo.extend(ev.key.iter().map(Node::T));
+                        todo.push(Node::T(&ev.value));
+                        todo.push(Node::T(&ev.domain));
+                        todo.extend(ev.body.iter().map(Node::E));
+                    }
+                }
+                for w in &e.with {
+                    todo.push(Node::T(&w.target));
+                    todo.push(Node::T(&w.value));
+                }
+            }
+            Node::T(t) => match &t.value {
+                TermValue::Ref(r) | TermValue::Array(r) | TermValue::Call(r) | TermValue::Set(r) => {
+                    todo.extend(r.iter().map(Node::T))
+                }
+                TermValue::Object(o) => todo.extend(o.iter().flat_map(|(k, v)| [Node::T(k), Node::T(v)])),
+                TermValue::ArrayCompr(x, b) | TermValue::SetCompr(x, b) => {
+                    todo.push(Node::T(x));
+                    todo.extend(b.iter().map(Node::E));
+                }
+                TermValue::ObjectCompr(k, v, b) => {
+                    todo.push(Node::T(k));
+                    todo.push(Node::T(v));
+                    todo.extend(b.iter().map(Node::E));
+                }
+                TermValue::TemplateString { parts, .. } => {
+                    for p in parts.iter() {
+                        match p {
+                            TemplatePart::Term(t) => todo.push(Node::T(t)),
+                            TemplatePart::Expr(e) => todo.push(Node::E(e)),
+                        }
+                    }
+                }
+                TermValue::Null
+                | TermValue::Bool(_)
+                | TermValue::Number(_)
+                | TermValue::String(_)
+                | TermValue::Var(_) => {}
+            },
+        }
+    }
+    n
+}
+
+/// Where a rule's print rewrite is: the print calls not yet rewritten, how many errors
+/// OPA's limit keeps, and the variables safe in the body being rewritten.
+struct Prints {
+    left: usize,
+    room: usize,
+    /// The globals of the body being rewritten: one set, each closure's body adding what
+    /// it adds and taking it back when done. OPA copies the set for each closure, and a
+    /// body as deep as n closures held n copies, each as large as the depth.
+    safe: VarSet,
+    added: Vec<Var>,
+}
+
+impl Prints {
+    /// Whether the walk is done: a body without print calls left to rewrite is left as
+    /// it is, and OPA keeps no errors past its limit.
+    fn done(&self, errs: &[CompileError]) -> bool {
+        self.left == 0 || errs.len() >= self.room
+    }
+
+    fn add(&mut self, vs: VarSet) {
+        for v in vs {
+            if self.safe.insert(v.clone()) {
+                self.added.push(v);
+            }
+        }
+    }
+
+    /// Takes back what was added since `mark` (the length of `added` then).
+    fn back_to(&mut self, mark: usize) {
+        for v in self.added.drain(mark..) {
+            self.safe.remove(&v);
+        }
+    }
 }
 
 /// rewritePrintCalls: `print(a, b)` to `internal.print([{x | x = a}, {y | y = b}])`.
+///
+/// OPA rewrites each body WalkBodies meets, and rewritePrintCalls each closure's body
+/// within it, at each level: a body as deep as n closures is rewritten n times, every
+/// time after the first finding nothing left to rewrite. A rule's walk ends once its
+/// print calls are all rewritten, or the errors fill what OPA's limit keeps.
 pub fn rewrite_print_calls(c: &mut Compiler) {
     if !c.print_enabled() {
         return;
     }
     let mut errs = Vec::new();
+    let room = super::MAX_ERRS.saturating_sub(c.errors.len());
     for_each_rule(c, |c, rule| {
-        let mut globals: VarSet = ["data", "input"].iter().map(|s| Var::from(*s)).collect();
+        let mut safe: VarSet = ["data", "input"].iter().map(|s| Var::from(*s)).collect();
         for a in &rule.head.args {
-            globals.extend(vars::term_vars(a));
+            safe.extend(vars::term_vars(a));
+        }
+        let mut p = Prints {
+            left: count_print_calls(rule),
+            room,
+            safe,
+            added: Vec::new(),
+        };
+        if p.done(&errs) {
+            return;
         }
         // WalkBodies over the head, then the body: each body met, outermost first.
         let mut head_terms: Vec<&mut Term> = rule.head.args.iter_mut().collect();
         head_terms.extend(rule.head.key.iter_mut());
         head_terms.extend(rule.head.value.iter_mut());
         for t in head_terms {
-            print_bodies_in_term(c, &globals, t, &mut errs);
+            print_bodies_in_term(c, t, &mut errs, &mut p);
         }
-        print_bodies(c, &globals, &mut rule.body, &mut errs);
+        print_bodies(c, &mut rule.body, &mut errs, &mut p);
     });
     c.err(errs);
 }
 
-/// WalkBodies with rewritePrintCalls at each body.
-fn print_bodies(c: &mut Compiler, globals: &VarSet, body: &mut Body, errs: &mut Vec<CompileError>) {
-    print_calls(c, globals, body, errs);
+/// WalkBodies with rewritePrintCalls at each body, each with the rule's globals.
+fn print_bodies(c: &mut Compiler, body: &mut Body, errs: &mut Vec<CompileError>, p: &mut Prints) {
+    if p.done(errs) {
+        return;
+    }
+    print_calls(c, body, errs, p);
     for e in body.iter_mut() {
-        print_bodies_in_expr(c, globals, e, errs);
+        print_bodies_in_expr(c, e, errs, p);
     }
 }
 
-fn print_bodies_in_expr(c: &mut Compiler, globals: &VarSet, e: &mut Expr, errs: &mut Vec<CompileError>) {
+fn print_bodies_in_expr(c: &mut Compiler, e: &mut Expr, errs: &mut Vec<CompileError>, p: &mut Prints) {
+    if p.done(errs) {
+        return;
+    }
     match &mut e.terms {
-        ExprTerms::Term(t) => print_bodies_in_term(c, globals, t, errs),
-        ExprTerms::Call(cl) => cl
-            .iter_mut()
-            .for_each(|t| print_bodies_in_term(c, globals, t, errs)),
+        ExprTerms::Term(t) => print_bodies_in_term(c, t, errs, p),
+        ExprTerms::Call(cl) => cl.iter_mut().for_each(|t| print_bodies_in_term(c, t, errs, p)),
         ExprTerms::Some(d) => d
             .symbols
             .iter_mut()
-            .for_each(|t| print_bodies_in_term(c, globals, t, errs)),
+            .for_each(|t| print_bodies_in_term(c, t, errs, p)),
         ExprTerms::Every(ev) => {
-            print_bodies_in_term(c, globals, &mut ev.domain, errs);
-            print_bodies(c, globals, &mut ev.body, errs);
+            print_bodies_in_term(c, &mut ev.domain, errs, p);
+            print_bodies(c, &mut ev.body, errs, p);
         }
     }
 }
 
-fn print_bodies_in_term(c: &mut Compiler, globals: &VarSet, t: &mut Term, errs: &mut Vec<CompileError>) {
+fn print_bodies_in_term(c: &mut Compiler, t: &mut Term, errs: &mut Vec<CompileError>, p: &mut Prints) {
+    if p.done(errs) {
+        return;
+    }
     match &mut t.value {
-        TermValue::Ref(r) | TermValue::Array(r) | TermValue::Call(r) | TermValue::Set(r) => r
-            .iter_mut()
-            .for_each(|x| print_bodies_in_term(c, globals, x, errs)),
+        TermValue::Ref(r) | TermValue::Array(r) | TermValue::Call(r) | TermValue::Set(r) => {
+            r.iter_mut().for_each(|x| print_bodies_in_term(c, x, errs, p))
+        }
         TermValue::Object(o) => {
             for (k, v) in o.iter_mut() {
-                print_bodies_in_term(c, globals, k, errs);
-                print_bodies_in_term(c, globals, v, errs);
+                print_bodies_in_term(c, k, errs, p);
+                print_bodies_in_term(c, v, errs, p);
             }
         }
         TermValue::ArrayCompr(x, b) | TermValue::SetCompr(x, b) => {
-            print_bodies_in_term(c, globals, x, errs);
-            print_bodies(c, globals, b, errs);
+            print_bodies_in_term(c, x, errs, p);
+            print_bodies(c, b, errs, p);
         }
         TermValue::ObjectCompr(k, v, b) => {
-            print_bodies_in_term(c, globals, k, errs);
-            print_bodies_in_term(c, globals, v, errs);
-            print_bodies(c, globals, b, errs);
+            print_bodies_in_term(c, k, errs, p);
+            print_bodies_in_term(c, v, errs, p);
+            print_bodies(c, b, errs, p);
         }
         _ => {}
     }
 }
 
-/// rewritePrintCalls on one body.
-fn print_calls(c: &mut Compiler, globals: &VarSet, body: &mut Body, errs: &mut Vec<CompileError>) {
+/// rewritePrintCalls on one body, its globals `p.safe`.
+fn print_calls(c: &mut Compiler, body: &mut Body, errs: &mut Vec<CompileError>, p: &mut Prints) {
     for i in 0..body.len() {
         if !body.get(i).is_some_and(contains_closures) {
             continue;
         }
-        let mut safe = {
+        let mark = p.added.len();
+        let outputs = {
             let arity = arity_of(c);
-            safety::output_vars_for_body(body.get(..i).unwrap_or_default(), &arity, globals)
+            safety::output_vars_for_body_among(body.get(..i).unwrap_or_default(), &arity, &p.safe)
         };
-        safe.extend(globals.iter().cloned());
-        let Some(e) = body.get_mut(i) else { continue };
+        p.add(outputs);
         let mut local = Vec::new();
-        print_closures_in_expr(c, &mut safe, e, &mut local);
+        if let Some(e) = body.get_mut(i) {
+            print_closures_in_expr(c, e, &mut local, p);
+        }
+        p.back_to(mark);
         if !local.is_empty() {
             errs.extend(local);
             return;
@@ -502,18 +692,11 @@ fn print_calls(c: &mut Compiler, globals: &VarSet, body: &mut Body, errs: &mut V
         if !body.get(i).is_some_and(is_print_call) {
             continue;
         }
-        let mut safe = {
+        let before = body.get(..i).unwrap_or_default();
+        let outputs = {
             let arity = arity_of(c);
-            safety::output_vars_for_body(body.get(..i).unwrap_or_default(), &arity, globals)
+            safety::output_vars_for_body_among(before, &arity, &p.safe)
         };
-        safe.extend(globals.iter().cloned());
-        for e in body.get(..i).unwrap_or_default() {
-            safe.extend(
-                vars::expr_vars(e, vars::Params::default())
-                    .into_iter()
-                    .filter(|v| vars::is_generated(v)),
-            );
-        }
         let Some(e) = body.get(i) else { continue };
         let loc = e.loc.clone();
         let args: Vec<Term> = match &e.terms {
@@ -524,11 +707,18 @@ fn print_calls(c: &mut Compiler, globals: &VarSet, body: &mut Body, errs: &mut V
         for a in &args {
             let mut vis = VarVisitor::new(SAFETY);
             vis.term(a);
-            for v in vis.vars.difference(&safe) {
-                local.push(CompileError::compile(
-                    a.loc.clone(),
-                    format!("var {v} is undeclared"),
-                ));
+            for v in &vis.vars {
+                // Safe: the globals, the outputs of the expressions before, and (OPA
+                // issue #7647) the generated variables anywhere in them.
+                let safe = p.safe.contains(v)
+                    || outputs.contains(v)
+                    || (vars::is_generated(v) && occurs_in(before, v));
+                if !safe {
+                    local.push(CompileError::compile(
+                        a.loc.clone(),
+                        format!("var {v} is undeclared"),
+                    ));
+                }
             }
         }
         if !local.is_empty() {
@@ -559,24 +749,34 @@ fn print_calls(c: &mut Compiler, globals: &VarSet, body: &mut Body, errs: &mut V
         new.index = i;
         if let Some(slot) = body.get_mut(i) {
             *slot = new;
+            p.left = p.left.saturating_sub(1);
         }
     }
 }
 
-/// WalkClosures over an expression with rewritePrintCalls at each closure's body.
-fn print_closures_in_expr(c: &mut Compiler, safe: &mut VarSet, e: &mut Expr, errs: &mut Vec<CompileError>) {
+/// Whether a variable occurs anywhere in the expressions (WalkVars), closures within
+/// them too: asked only of a print call's generated variables not otherwise safe.
+fn occurs_in(exprs: &[Expr], v: &str) -> bool {
+    exprs
+        .iter()
+        .any(|e| vars::expr_vars(e, vars::Params::default()).contains(v))
+}
+
+/// WalkClosures over an expression with rewritePrintCalls at each closure's body, its
+/// globals `p.safe` (and an `every` statement's key and value).
+fn print_closures_in_expr(c: &mut Compiler, e: &mut Expr, errs: &mut Vec<CompileError>, p: &mut Prints) {
     if let ExprTerms::Every(ev) = &mut e.terms {
         if let Some(k) = &ev.key {
-            safe.extend(vars::term_vars(k));
+            p.add(vars::term_vars(k));
         }
-        safe.extend(vars::term_vars(&ev.value));
-        print_calls(c, safe, &mut ev.body, errs);
+        p.add(vars::term_vars(&ev.value));
+        print_calls(c, &mut ev.body, errs, p);
         return;
     }
     let mut f = |t: &mut Term| -> bool {
         match &mut t.value {
             TermValue::ArrayCompr(_, b) | TermValue::SetCompr(_, b) | TermValue::ObjectCompr(_, _, b) => {
-                print_calls(c, safe, b, errs);
+                print_calls(c, b, errs, p);
                 true
             }
             _ => false,
@@ -609,18 +809,57 @@ pub fn rewrite_expr_terms(c: &mut Compiler) {
     });
 }
 
+/// expandExpr over a body. An `every` statement's body is expanded on a stack of bodies,
+/// not in a call within the call expanding the body it is in: policies nest them 99990
+/// deep.
 fn expr_terms_in_body(c: &mut Compiler, body: Body) -> Body {
-    let mut cpy = Vec::new();
-    for e in body {
-        for x in expand_expr(c, e) {
-            push(&mut cpy, x);
+    // Each body under way, and the `every` statement it is the body of, with the
+    // expressions that go before the statement.
+    type Level = (std::vec::IntoIter<Expr>, Body, Option<(Expr, Vec<Expr>)>);
+    let mut levels: Vec<Level> = vec![(body.into_iter(), Vec::new(), None)];
+    loop {
+        if let Some(e) = levels.last_mut().and_then(|(rest, _, _)| rest.next()) {
+            match expand_expr(c, e) {
+                Expanded::Exprs(xs) => {
+                    if let Some((_, cpy, _)) = levels.last_mut() {
+                        for x in xs {
+                            push(cpy, x);
+                        }
+                    }
+                }
+                Expanded::Every(e, body, before) => {
+                    levels.push((body.into_iter(), Vec::new(), Some((e, before))))
+                }
+            }
+            continue;
+        }
+        let Some((_, cpy, every)) = levels.pop() else {
+            return Vec::new();
+        };
+        let Some((mut e, before)) = every else {
+            return cpy;
+        };
+        if let ExprTerms::Every(ev) = &mut e.terms {
+            ev.body = cpy.into();
+        }
+        if let Some((_, parent, _)) = levels.last_mut() {
+            for x in before {
+                push(parent, x);
+            }
+            push(parent, e);
         }
     }
-    cpy
+}
+
+/// What expandExpr makes of an expression: the expressions it becomes; or, for an
+/// `every` statement, the statement, its body to expand, and what goes before it.
+enum Expanded {
+    Exprs(Vec<Expr>),
+    Every(Expr, Body, Vec<Expr>),
 }
 
 /// expandExpr.
-fn expand_expr(c: &mut Compiler, mut e: Expr) -> Vec<Expr> {
+fn expand_expr(c: &mut Compiler, mut e: Expr) -> Expanded {
     let mut result = Vec::new();
     for w in e.with.iter_mut() {
         let extras = expand_term(c, &mut w.value);
@@ -656,15 +895,15 @@ fn expand_expr(c: &mut Compiler, mut e: Expr) -> Vec<Expr> {
             );
             eq.generated = true;
             eq.with = with;
-            let extras = expand_expr(c, eq);
-            let body = std::mem::take(&mut ev.body);
-            ev.body = expr_terms_in_body(c, body);
-            result.extend(extras);
-            result.push(e);
+            if let Expanded::Exprs(extras) = expand_expr(c, eq) {
+                result.extend(extras);
+            }
+            let body = std::mem::take(&mut ev.body).into_inner();
+            return Expanded::Every(e, body, result);
         }
         ExprTerms::Some(_) => result.push(e),
     }
-    result
+    Expanded::Exprs(result)
 }
 
 /// expandExprTerm: the expressions a term needs first, the term rewritten in place.
@@ -1032,103 +1271,248 @@ pub fn head_may_have_vars(rule: &Rule) -> bool {
         || h.ref_path().iter().skip(1).any(|t| !is_scalar(t))
 }
 
-/// checkBodySafety: the body reordered for safety, or its errors.
-pub fn check_body_safety(c: &mut Compiler, safe: &VarSet, body: Body) -> Body {
+/// checkBodySafety: the body reordered for safety, or its errors. On errors OPA keeps
+/// the body as written (its closures reordered in place), and the compile ends with
+/// them: the body is no one's to read, and here is what the reorder placed of it.
+pub fn check_body_safety(c: &mut Compiler, safe: &VarSet, mut body: Body) -> Body {
     let mut unsafe_vars: Unsafe = Vec::new();
-    let reordered = reorder_for_safety(c, safe, &body, &mut unsafe_vars);
+    let mut s = Safety {
+        c,
+        globals: safe.clone(),
+        added: Vec::new(),
+        occ: safety::Occurrences::default(),
+    };
+    let closures = safety::closures(&mut body, &mut s.occ);
+    let reordered = s.reorder(body, closures, &mut unsafe_vars);
     let errs = safety::errors(&unsafe_vars, &c.rewritten);
     if !errs.is_empty() {
         c.err(errs);
-        return body;
     }
     reordered
 }
 
-/// reorderBodyForSafety with its closure transform; unsafe variables are added to `out`.
-fn reorder_for_safety(c: &Compiler, globals: &VarSet, body: &Body, out: &mut Unsafe) -> Body {
-    let arity = arity_of(c);
-    let (order, unsafe_map) = safety::reorder(&arity, globals, body);
-    let mut reordered: Body = Vec::new();
-    for i in &order {
-        if let Some(e) = body.get(*i) {
-            push(&mut reordered, e.clone());
+/// A rule body's safety check under way.
+struct Safety<'a> {
+    c: &'a Compiler,
+    /// The variables a closure may read from the bodies around it (bodySafetyTransformer's
+    /// globals): one set that each body adds to and takes its additions back from when
+    /// done. OPA copies the set for each body, and a body as deep as n others held n
+    /// copies, each as large as the depth.
+    globals: VarSet,
+    added: Vec<Var>,
+    /// Where the rule's variables occur, closures by closure.
+    occ: safety::Occurrences,
+}
+
+/// A body under the safety check: its expressions in the order the reorder placed them,
+/// those not yet transformed, and what the check found.
+struct Level {
+    rest: std::vec::IntoIter<(Expr, Vec<safety::Closure>)>,
+    out: Body,
+    unplaced: Unsafe,
+    extra: Unsafe,
+    /// The length of `Safety::added` when the body began.
+    mark: usize,
+    /// The expression whose closures' bodies are under way.
+    current: Option<Current>,
+}
+
+/// An expression whose closures' bodies are checked in turn, each taken out of it and
+/// put back when done.
+struct Current {
+    expr: Expr,
+    loc: Option<Location>,
+    pending: std::vec::IntoIter<Pending>,
+    done: Vec<Body>,
+    /// The variables a closure's head reads that neither its body nor the globals bind.
+    add: VarSet,
+}
+
+/// A closure's body yet to check: the variables of its head, and its own closures.
+struct Pending {
+    tv: VarSet,
+    body: Body,
+    closures: safety::Closures,
+}
+
+impl Current {
+    /// The expression, its closures' bodies back in it, in the order they were taken.
+    fn finish(mut self) -> (Expr, Option<Location>, VarSet) {
+        let mut done = self.done.into_iter();
+        if let ExprTerms::Every(ev) = &mut self.expr.terms {
+            if let Some(b) = done.next() {
+                ev.body = b.into();
+            }
+        } else {
+            super::localvars::walk_expr_terms_mut(&mut self.expr, &mut |t: &mut Term| -> bool {
+                match &mut t.value {
+                    TermValue::ArrayCompr(_, b)
+                    | TermValue::SetCompr(_, b)
+                    | TermValue::ObjectCompr(_, _, b) => {
+                        if let Some(d) = done.next() {
+                            *b = d.into();
+                        }
+                        true
+                    }
+                    _ => false,
+                }
+            });
+        }
+        (self.expr, self.loc, self.add)
+    }
+}
+
+impl Safety<'_> {
+    fn add(&mut self, vs: VarSet) {
+        for v in vs {
+            if self.globals.insert(v.clone()) {
+                self.added.push(v);
+            }
         }
     }
-    // The closures of each expression, with the variables of those before it.
-    let mut g = globals.clone();
-    let mut extra: Vec<(Option<Location>, VarSet)> = Vec::new();
-    for i in 0..reordered.len() {
-        if i > 0
-            && let Some(prev) = reordered.get(i - 1)
-        {
-            g.extend(vars::expr_vars(prev, SAFETY));
+
+    /// reorderBodyForSafety with its closure transform; unsafe variables are added to
+    /// `out`. The expressions move to their places, closures within them, never copied
+    /// (a closure as deep as n others would be copied n times), and a closure's body is
+    /// checked on a stack of bodies, not in a call within the call checking the body it
+    /// is in: policies nest closures 99990 deep.
+    fn reorder(&mut self, body: Body, closures: safety::Closures, out: &mut Unsafe) -> Body {
+        let mut levels = vec![self.open(body, closures)];
+        loop {
+            let Some(top) = levels.last_mut() else {
+                return Vec::new();
+            };
+            if let Some(cur) = top.current.as_mut() {
+                // reorderComprehensionSafety for the expression's next closure.
+                if let Some(p) = cur.pending.next() {
+                    let bv = vars::body_vars(&p.body, SAFETY);
+                    for v in &p.tv {
+                        if !bv.contains(v) && !self.globals.contains(v) {
+                            cur.add.insert(v.clone());
+                        }
+                    }
+                    let level = self.open(p.body, p.closures);
+                    levels.push(level);
+                    continue;
+                }
+                if let Some(cur) = top.current.take() {
+                    let (e, loc, add) = cur.finish();
+                    if !add.is_empty() {
+                        top.extra.push((loc, add));
+                    }
+                    push(&mut top.out, e);
+                }
+                continue;
+            }
+            if let Some((e, closures)) = top.rest.next() {
+                // The closures of each expression, with the variables of those before it.
+                if let Some(prev) = top.out.last() {
+                    let vs = vars::expr_vars(prev, SAFETY);
+                    self.add(vs);
+                }
+                let cur = self.start(e, closures);
+                if let Some(top) = levels.last_mut() {
+                    top.current = Some(cur);
+                }
+                continue;
+            }
+            let Some(done) = levels.pop() else {
+                return Vec::new();
+            };
+            for v in self.added.drain(done.mark..) {
+                self.globals.remove(&v);
+            }
+            let mut u = done.unplaced;
+            u.extend(done.extra);
+            let Some(parent) = levels.last_mut() else {
+                out.extend(u);
+                return done.out;
+            };
+            if !u.iter().all(|(_, v)| v.is_empty()) {
+                parent.extra.extend(u);
+            }
+            if let Some(cur) = parent.current.as_mut() {
+                cur.done.push(done.out);
+            }
         }
-        let Some(e) = reordered.get_mut(i) else { continue };
+    }
+
+    /// reorderBodyForSafety's order for a body, its expressions moved into it.
+    fn open(&mut self, body: Body, closures: safety::Closures) -> Level {
+        let arity = arity_of(self.c);
+        let (order, unsafe_map) = safety::reorder(&arity, &self.globals, &body, &closures, &self.occ);
+        let unplaced: Unsafe = unsafe_map
+            .iter()
+            .map(|(i, vs)| (body.get(*i).and_then(|e| e.loc.clone()), vs.clone()))
+            .collect();
+        let mut slots: Vec<Option<(Expr, Vec<safety::Closure>)>> =
+            body.into_iter().zip(closures.exprs).map(Some).collect();
+        let mut reordered = Vec::with_capacity(order.len());
+        for i in &order {
+            if let Some(e) = slots.get_mut(*i).and_then(Option::take) {
+                reordered.push(e);
+            }
+        }
+        Level {
+            rest: reordered.into_iter(),
+            out: Vec::new(),
+            unplaced,
+            extra: Vec::new(),
+            mark: self.added.len(),
+            current: None,
+        }
+    }
+
+    /// bodySafetyTransformer meeting an expression: its closures' bodies taken out to check
+    /// in turn, an `every` statement's key and value among the globals from here on.
+    fn start(&mut self, mut e: Expr, closures: Vec<safety::Closure>) -> Current {
         let loc = e.loc.clone();
-        let mut add: VarSet = VarSet::new();
-        closure_safety_expr(c, &mut g, e, &mut add, &mut extra);
-        if !add.is_empty() {
-            extra.push((loc, add));
-        }
-    }
-    for (i, vs) in &unsafe_map {
-        out.push((body.get(*i).and_then(|e| e.loc.clone()), vs.clone()));
-    }
-    out.extend(extra);
-    reordered
-}
-
-/// bodySafetyTransformer over one expression.
-fn closure_safety_expr(c: &Compiler, g: &mut VarSet, e: &mut Expr, add: &mut VarSet, nested: &mut Unsafe) {
-    if let ExprTerms::Every(ev) = &mut e.terms {
-        if let Some(k) = &ev.key {
-            g.extend(vars::term_vars(k));
-        }
-        g.extend(vars::term_vars(&ev.value));
-        ev.body = closure_body(c, g, &VarSet::new(), &ev.body, add, nested);
-        return;
-    }
-    let globals = g.clone();
-    super::localvars::walk_expr_terms_mut(e, &mut |t: &mut Term| -> bool {
-        match &mut t.value {
-            TermValue::ArrayCompr(x, b) | TermValue::SetCompr(x, b) => {
-                *b = closure_body(c, &globals, &vars::term_vars(x), b, add, nested).into();
-                true
+        let mut closures = closures.into_iter();
+        let mut pending = Vec::new();
+        if let ExprTerms::Every(ev) = &mut e.terms {
+            if let Some(k) = &ev.key {
+                self.add(vars::term_vars(k));
             }
-            TermValue::ObjectCompr(k, v, b) => {
-                let mut tv = vars::term_vars(k);
-                tv.extend(vars::term_vars(v));
-                *b = closure_body(c, &globals, &tv, b, add, nested).into();
-                true
-            }
-            _ => false,
+            self.add(vars::term_vars(&ev.value));
+            pending.push(Pending {
+                tv: VarSet::new(),
+                body: std::mem::take(&mut ev.body).into_inner(),
+                closures: closures.next().map(|c| c.body).unwrap_or_default(),
+            });
+        } else {
+            super::localvars::walk_expr_terms_mut(&mut e, &mut |t: &mut Term| -> bool {
+                match &mut t.value {
+                    TermValue::ArrayCompr(x, b) | TermValue::SetCompr(x, b) => {
+                        pending.push(Pending {
+                            tv: vars::term_vars(x),
+                            body: std::mem::take(b).into_inner(),
+                            closures: closures.next().map(|c| c.body).unwrap_or_default(),
+                        });
+                        true
+                    }
+                    TermValue::ObjectCompr(k, v, b) => {
+                        let mut tv = vars::term_vars(k);
+                        tv.extend(vars::term_vars(v));
+                        pending.push(Pending {
+                            tv,
+                            body: std::mem::take(b).into_inner(),
+                            closures: closures.next().map(|c| c.body).unwrap_or_default(),
+                        });
+                        true
+                    }
+                    _ => false,
+                }
+            });
         }
-    });
-}
-
-/// reorderComprehensionSafety.
-fn closure_body(
-    c: &Compiler,
-    globals: &VarSet,
-    tv: &VarSet,
-    body: &Body,
-    add: &mut VarSet,
-    nested: &mut Unsafe,
-) -> Body {
-    let mut bv = vars::body_vars(body, SAFETY);
-    bv.extend(globals.iter().cloned());
-    for v in tv.difference(&bv) {
-        add.insert(v.clone());
+        Current {
+            expr: e,
+            loc,
+            pending: pending.into_iter(),
+            done: Vec::new(),
+            add: VarSet::new(),
+        }
     }
-    let mut u: Unsafe = Vec::new();
-    let r = reorder_for_safety(c, globals, body, &mut u);
-    if u.iter().all(|(_, v)| v.is_empty()) {
-        return r;
-    }
-    nested.extend(u);
-    body.clone()
 }
-
 /// rewriteEquals: `a == b` as an expression is unification.
 pub fn rewrite_equals(c: &mut Compiler) {
     struct Equals;
@@ -1182,8 +1566,8 @@ fn dynamics(c: &mut Compiler, body: Body) -> Body {
             }
         } else if let ExprTerms::Every(ev) = &mut e.terms {
             dynamics_one(c, &with, &mut ev.domain, &mut result);
-            let b = std::mem::take(&mut ev.body);
-            ev.body = dynamics(c, b);
+            let b = std::mem::take(&mut ev.body).into_inner();
+            ev.body = dynamics(c, b).into();
         } else if let ExprTerms::Term(t) = &mut e.terms {
             dynamics_in_term(c, &with, t, &mut result);
         }

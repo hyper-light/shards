@@ -52,12 +52,24 @@ struct DeclaredVarSet {
     vs: HashMap<Var, Var>,
     occurrence: HashMap<Var, Occurrence>,
     count: HashMap<Var, usize>,
+    /// How many terms each name's uses were rewritten to here: checkUnusedDeclaredVars
+    /// asks whether a declared variable is among the body's variables, which these say
+    /// without a walk of the body and every body within it.
+    uses: HashMap<Var, usize>,
+    /// How many names this scope has declared (anything but seen).
+    decls: usize,
 }
 
-/// localDeclaredVars.
+/// localDeclaredVars. OPA looks a name up scope by scope, from the innermost out; each
+/// name here keeps the scopes it is in, so a lookup costs the same however deep the
+/// scopes nest (an `every` in an `every`, thousands deep, each a scope).
 #[derive(Debug, Clone)]
 pub struct Stack {
     vars: Vec<DeclaredVarSet>,
+    /// Each name's scopes with it declared (`vs` and `occurrence`), innermost last.
+    declared_at: HashMap<Var, Vec<usize>>,
+    /// Each name's scopes with it counted, innermost last.
+    counted_at: HashMap<Var, Vec<usize>>,
     pub rewritten: HashMap<Var, Var>,
     pub assignment: bool,
 }
@@ -66,6 +78,8 @@ impl Default for Stack {
     fn default() -> Stack {
         Stack {
             vars: vec![DeclaredVarSet::default()],
+            declared_at: HashMap::new(),
+            counted_at: HashMap::new(),
             rewritten: HashMap::new(),
             assignment: false,
         }
@@ -82,13 +96,18 @@ impl Stack {
                 .occurrence
                 .extend(s.occurrence.iter().map(|(k, v)| (k.clone(), *v)));
             merged.count.extend(s.count.iter().map(|(k, v)| (k.clone(), *v)));
+            merged.uses.extend(s.uses.iter().map(|(k, v)| (k.clone(), *v)));
         }
+        let declared_at = merged.vs.keys().map(|k| (k.clone(), vec![0])).collect();
+        let counted_at = merged.count.keys().map(|k| (k.clone(), vec![0])).collect();
         let mut vars = vec![merged];
         for _ in 1..self.vars.len() {
             vars.push(DeclaredVarSet::default());
         }
         Stack {
             vars,
+            declared_at,
+            counted_at,
             rewritten: self.rewritten.clone(),
             assignment: false,
         }
@@ -99,17 +118,35 @@ impl Stack {
     }
 
     fn pop(&mut self) {
-        if self.vars.len() > 1 {
-            self.vars.pop();
+        if self.vars.len() > 1
+            && let Some(top) = self.vars.pop()
+        {
+            let at = self.vars.len();
+            let unscope = |index: &mut HashMap<Var, Vec<usize>>, k: &Var| {
+                if let Some(frames) = index.get_mut(k) {
+                    if frames.last() == Some(&at) {
+                        frames.pop();
+                    }
+                    if frames.is_empty() {
+                        index.remove(k);
+                    }
+                }
+            };
+            for k in top.vs.keys() {
+                unscope(&mut self.declared_at, k);
+            }
+            for k in top.count.keys() {
+                unscope(&mut self.counted_at, k);
+            }
         }
     }
 
-    /// The innermost scope, made when there is none.
-    fn top(&mut self) -> Option<&mut DeclaredVarSet> {
+    /// The innermost scope's place, made when there is none.
+    fn top_at(&mut self) -> usize {
         if self.vars.is_empty() {
             self.vars.push(DeclaredVarSet::default());
         }
-        self.vars.last_mut()
+        self.vars.len() - 1
     }
 
     fn peek(&self) -> Option<&DeclaredVarSet> {
@@ -117,18 +154,56 @@ impl Stack {
     }
 
     fn insert(&mut self, x: &Var, y: &Var, occ: Occurrence) {
-        if let Some(top) = self.top() {
-            top.vs.insert(x.clone(), y.clone());
+        let at = self.top_at();
+        if let Some(top) = self.vars.get_mut(at) {
+            if top.vs.insert(x.clone(), y.clone()).is_none() {
+                self.declared_at.entry(x.clone()).or_default().push(at);
+            }
             top.occurrence.insert(x.clone(), occ);
-            top.count.insert(x.clone(), 1);
+            if top.count.insert(x.clone(), 1).is_none() {
+                self.counted_at.entry(x.clone()).or_default().push(at);
+            }
+            if occ != Occurrence::Seen {
+                top.decls += 1;
+            }
         }
         if x != y {
             self.rewritten.insert(y.clone(), x.clone());
         }
     }
 
+    /// How many names the innermost scope has declared.
+    fn decls(&self) -> usize {
+        self.peek().map_or(0, |s| s.decls)
+    }
+
+    /// The innermost scope a name is declared in.
+    fn declaring(&self, x: &str) -> Option<&DeclaredVarSet> {
+        let at = *self.declared_at.get(x)?.last()?;
+        self.vars.get(at)
+    }
+
     fn declared(&self, x: &str) -> Option<Var> {
-        self.vars.iter().rev().find_map(|s| s.vs.get(x).cloned())
+        self.declaring(x)?.vs.get(x).cloned()
+    }
+
+    /// What a use of a name is rewritten to, counted as a use where it is declared.
+    fn use_var(&mut self, x: &str) -> Option<Var> {
+        let at = *self.declared_at.get(x)?.last()?;
+        let s = self.vars.get_mut(at)?;
+        let (k, gv) = s.vs.get_key_value(x)?;
+        let (k, gv) = (k.clone(), gv.clone());
+        *s.uses.entry(k).or_default() += 1;
+        Some(gv)
+    }
+
+    /// A use of a name taken back: a term rewritten to its declaration and then back.
+    fn unuse(&mut self, x: &str) {
+        if let Some(&at) = self.declared_at.get(x).and_then(|f| f.last())
+            && let Some(n) = self.vars.get_mut(at).and_then(|s| s.uses.get_mut(x))
+        {
+            *n = n.saturating_sub(1);
+        }
     }
 
     fn occurrence(&self, x: &str) -> Occurrence {
@@ -138,26 +213,30 @@ impl Stack {
     }
 
     fn global_occurrence(&self, x: &str) -> Option<Occurrence> {
-        self.vars.iter().rev().find_map(|s| s.occurrence.get(x).copied())
+        self.declaring(x)?.occurrence.get(x).copied()
     }
 
     fn seen(&mut self, x: &Var) {
-        for s in self.vars.iter_mut().rev() {
-            if let Some(c) = s.count.get_mut(x) {
-                *c += 1;
-                return;
-            }
+        if let Some(&at) = self.counted_at.get(&**x).and_then(|f| f.last())
+            && let Some(c) = self.vars.get_mut(at).and_then(|s| s.count.get_mut(x))
+        {
+            *c += 1;
+            return;
         }
-        if let Some(top) = self.top() {
-            top.count.insert(x.clone(), 1);
+        let at = self.top_at();
+        if let Some(top) = self.vars.get_mut(at)
+            && top.count.insert(x.clone(), 1).is_none()
+        {
+            self.counted_at.entry(x.clone()).or_default().push(at);
         }
     }
 
     fn count(&self, x: &str) -> usize {
-        self.vars
-            .iter()
-            .rev()
-            .find_map(|s| s.count.get(x).copied())
+        self.counted_at
+            .get(x)
+            .and_then(|f| f.last())
+            .and_then(|&at| self.vars.get(at))
+            .and_then(|s| s.count.get(x).copied())
             .unwrap_or(0)
     }
 }
@@ -409,30 +488,118 @@ pub fn walk_expr_terms_mut(e: &mut Expr, f: &mut dyn FnMut(&mut Term) -> bool) {
     }
 }
 
-/// rewriteDeclaredVarsInBody.
-pub fn rewrite_body(rw: &mut Rewriter<'_>, stack: &mut Stack, used: &VarSet, body: Body) -> Body {
-    let original = body.clone();
-    let mut cpy: Body = Vec::new();
-    for expr in body {
-        let out = if expr.is_assignment() {
-            stack.assignment = true;
-            Some(assignment(rw, stack, expr))
-        } else if expr.is_some() {
-            some_decl(rw, stack, expr)
-        } else if expr.is_every() {
-            every(rw, stack, expr)
-        } else {
-            Some(rewrite_expr(rw, stack, expr))
-        };
-        if let Some(e) = out {
-            push(&mut cpy, e);
+/// What a later walk of a body may skip of an `every` statement in it, which
+/// rewriteEveryStatement walks again whole after its body, at every level of nesting:
+/// one whose terms hold no comprehension, template string or `with`, walked when the
+/// scope it is in had declared as many names as it has now, would be walked to the same
+/// terms, its scope and the scopes around it declaring nothing it holds.
+#[derive(Debug, Clone, Copy)]
+struct Settled {
+    plain: bool,
+    decls: usize,
+}
+
+impl Settled {
+    fn holds(s: Option<&Option<Settled>>, stack: &Stack) -> bool {
+        s.copied()
+            .flatten()
+            .is_some_and(|s| s.plain && s.decls == stack.decls())
+    }
+}
+
+/// A body being rewritten, and the `every` statement it is the body of.
+struct BodyFrame {
+    rest: std::vec::IntoIter<Expr>,
+    cpy: Body,
+    settled: Vec<Option<Settled>>,
+    /// What checkUnusedDeclaredVars reads of the body as written: each expression's
+    /// declarations and place.
+    original: Vec<(VarSet, Option<Location>)>,
+    used: VarSet,
+    every: Option<Expr>,
+}
+
+impl BodyFrame {
+    fn new(body: Body, used: VarSet, every: Option<Expr>) -> BodyFrame {
+        let original = body
+            .iter()
+            .map(|e| (declared_vars_expr(e), e.loc.clone()))
+            .collect();
+        BodyFrame {
+            rest: body.into_iter(),
+            cpy: Vec::new(),
+            settled: Vec::new(),
+            original,
+            used,
+            every,
         }
     }
-    if cpy.is_empty() {
-        push(&mut cpy, Expr::term(Term::boolean(true, None)));
+
+    fn push(&mut self, e: Expr, s: Option<Settled>) {
+        push(&mut self.cpy, e);
+        self.settled.push(s);
     }
-    check_unused_declared(rw, stack, used, &original, &cpy);
-    cpy
+}
+
+/// rewriteDeclaredVarsInBody.
+pub fn rewrite_body(rw: &mut Rewriter<'_>, stack: &mut Stack, used: &VarSet, body: Body) -> Body {
+    rewrite_body_settled(rw, stack, used, body).0
+}
+
+/// rewriteDeclaredVarsInBody, with what a walk of the body may skip of each expression.
+/// An `every` statement's body is rewritten on a stack of bodies, not in a call within
+/// the call rewriting the body it is in: policies nest them 99990 deep.
+fn rewrite_body_settled(
+    rw: &mut Rewriter<'_>,
+    stack: &mut Stack,
+    used: &VarSet,
+    body: Body,
+) -> (Body, Vec<Option<Settled>>) {
+    let mut frames = vec![BodyFrame::new(body, used.clone(), None)];
+    loop {
+        if let Some(expr) = frames.last_mut().and_then(|f| f.rest.next()) {
+            if expr.is_every() {
+                match every_open(rw, stack, expr) {
+                    Opened::Body(every, body) => {
+                        frames.push(BodyFrame::new(body, VarSet::new(), Some(every)))
+                    }
+                    Opened::Expr(e) => {
+                        if let Some(top) = frames.last_mut() {
+                            top.push(e, None);
+                        }
+                    }
+                    Opened::Failed => {}
+                }
+                continue;
+            }
+            let out = if expr.is_assignment() {
+                stack.assignment = true;
+                Some(assignment(rw, stack, expr))
+            } else if expr.is_some() {
+                some_decl(rw, stack, expr)
+            } else {
+                Some(rewrite_expr(rw, stack, expr))
+            };
+            if let (Some(e), Some(top)) = (out, frames.last_mut()) {
+                top.push(e, None);
+            }
+            continue;
+        }
+        let Some(mut done) = frames.pop() else {
+            return (Vec::new(), Vec::new());
+        };
+        if done.cpy.is_empty() {
+            done.push(Expr::term(Term::boolean(true, None)), None);
+        }
+        check_unused_declared(rw, stack, &done.used, &done.original);
+        let Some(every) = done.every else {
+            return (done.cpy, done.settled);
+        };
+        let (out, settled) = every_close(rw, stack, every, done.cpy, &done.settled);
+        if let Some(top) = frames.last_mut() {
+            top.push(out, Some(settled));
+        }
+    }
 }
 
 /// Body.Append.
@@ -441,8 +608,15 @@ pub fn push(body: &mut Body, mut e: Expr) {
     body.push(e);
 }
 
-/// checkUnusedDeclaredVars.
-fn check_unused_declared(rw: &mut Rewriter<'_>, stack: &Stack, used: &VarSet, body: &Body, cpy: &Body) {
+/// checkUnusedDeclaredVars. Whether a declared variable is among the variables of the
+/// body as rewritten is whether a use of it was rewritten to it: the body holds it no
+/// other way (its declaration is not in the body).
+fn check_unused_declared(
+    rw: &mut Rewriter<'_>,
+    stack: &Stack,
+    used: &VarSet,
+    body: &[(VarSet, Option<Location>)],
+) {
     if !rw.errs.is_empty() {
         return;
     }
@@ -456,7 +630,12 @@ fn check_unused_declared(rw: &mut Rewriter<'_>, stack: &Stack, used: &VarSet, bo
         .filter(|(_, o)| **o == Occurrence::Declared)
         .filter_map(|(v, _)| dvs.vs.get(v).cloned())
         .collect();
-    let mut bodyvars = vars::body_vars(cpy, vars::Params::default());
+    let mut bodyvars: VarSet = dvs
+        .occurrence
+        .iter()
+        .filter(|(v, o)| **o == Occurrence::Declared && dvs.uses.get(*v).is_some_and(|n| *n > 0))
+        .filter_map(|(v, _)| dvs.vs.get(v).cloned())
+        .collect();
     for v in used {
         bodyvars.insert(stack.declared(v).unwrap_or_else(|| v.clone()));
     }
@@ -470,12 +649,9 @@ fn check_unused_declared(rw: &mut Rewriter<'_>, stack: &Stack, used: &VarSet, bo
         if vars::is_generated(rv) {
             continue;
         }
-        let at = body
-            .iter()
-            .find(|e| declared_vars_expr(e).contains(rv))
-            .or(body.first());
+        let at = body.iter().find(|(d, _)| d.contains(rv)).or(body.first());
         rw.errs.push(err(
-            &at.and_then(|e| e.loc.clone()),
+            &at.and_then(|(_, loc)| loc.clone()),
             format!("declared var {rv} unused"),
         ));
     }
@@ -511,11 +687,22 @@ pub fn declared_vars_expr(e: &Expr) -> VarSet {
     out
 }
 
-/// rewriteEveryStatement.
-fn every(rw: &mut Rewriter<'_>, stack: &mut Stack, mut expr: Expr) -> Option<Expr> {
+/// What [`every_open`] leaves.
+enum Opened {
+    /// The statement, and its body to rewrite in the statement's scope.
+    Body(Expr, Body),
+    /// What takes the statement's place: itself, not being one.
+    Expr(Expr),
+    /// Nothing: a declaration failed.
+    Failed,
+}
+
+/// rewriteEveryStatement up to its body: the domain rewritten, then the key and value
+/// declared in a scope of their own.
+fn every_open(rw: &mut Rewriter<'_>, stack: &mut Stack, mut expr: Expr) -> Opened {
     let loc = expr.loc.clone();
     let ExprTerms::Every(ev) = &mut expr.terms else {
-        return Some(expr);
+        return Opened::Expr(expr);
     };
     term_recursive(rw, stack, &mut ev.domain);
     stack.push();
@@ -529,7 +716,7 @@ fn every(rw: &mut Rewriter<'_>, stack: &mut Stack, mut expr: Expr) -> Option<Exp
                 Err(m) => {
                     fail(rw, m);
                     stack.pop();
-                    return None;
+                    return Opened::Failed;
                 }
             }
         }
@@ -544,15 +731,78 @@ fn every(rw: &mut Rewriter<'_>, stack: &mut Stack, mut expr: Expr) -> Option<Exp
             Err(m) => {
                 fail(rw, m);
                 stack.pop();
-                return None;
+                return Opened::Failed;
             }
         }
     }
-    let body = std::mem::take(&mut ev.body);
-    ev.body = rewrite_body(rw, stack, &VarSet::new(), body);
-    let out = rewrite_expr(rw, stack, expr);
+    let body = std::mem::take(&mut ev.body).into_inner();
+    Opened::Body(expr, body)
+}
+
+/// The rest of rewriteEveryStatement, its body rewritten: the whole statement walked
+/// again in its scope (but for what `settled` says the walk would leave as it is), and
+/// the scope ended. Gives back what a walk of the body it is in may skip of it.
+fn every_close(
+    rw: &mut Rewriter<'_>,
+    stack: &mut Stack,
+    mut expr: Expr,
+    body: Body,
+    settled: &[Option<Settled>],
+) -> (Expr, Settled) {
+    if let ExprTerms::Every(ev) = &mut expr.terms {
+        ev.body = body.into();
+    }
+    let out = rewrite_expr_settled(rw, stack, expr, settled);
     stack.pop();
-    Some(out)
+    let plain = out.with.is_empty()
+        && match &out.terms {
+            ExprTerms::Every(ev) => {
+                ev.key.as_ref().is_none_or(plain_term)
+                    && plain_term(&ev.value)
+                    && plain_term(&ev.domain)
+                    && ev.body.iter().enumerate().all(|(i, e)| match settled.get(i) {
+                        Some(Some(s)) => s.plain,
+                        _ => plain_expr(e),
+                    })
+            }
+            _ => false,
+        };
+    let decls = stack.decls();
+    (out, Settled { plain, decls })
+}
+
+/// An expression with no `with`, whose terms hold no comprehension or template string,
+/// and is no `every` statement.
+fn plain_expr(e: &Expr) -> bool {
+    e.with.is_empty()
+        && match &e.terms {
+            ExprTerms::Term(t) => plain_term(t),
+            ExprTerms::Call(c) => c.iter().all(plain_term),
+            ExprTerms::Some(d) => d.symbols.iter().all(plain_term),
+            ExprTerms::Every(_) => false,
+        }
+}
+
+/// A term that holds no comprehension or template string, at any depth.
+fn plain_term(t: &Term) -> bool {
+    let mut todo = vec![t];
+    while let Some(t) = todo.pop() {
+        match &t.value {
+            TermValue::ArrayCompr(..)
+            | TermValue::SetCompr(..)
+            | TermValue::ObjectCompr(..)
+            | TermValue::TemplateString { .. } => return false,
+            TermValue::Ref(r) | TermValue::Array(r) | TermValue::Call(r) => todo.extend(r.iter()),
+            TermValue::Object(o) => todo.extend(o.iter().flat_map(|(k, v)| [k, v])),
+            TermValue::Set(s) => todo.extend(s.iter()),
+            TermValue::Null
+            | TermValue::Bool(_)
+            | TermValue::Number(_)
+            | TermValue::String(_)
+            | TermValue::Var(_) => {}
+        }
+    }
+    true
 }
 
 /// rewriteSomeDeclStatement.
@@ -677,35 +927,96 @@ fn assign_target(rw: &mut Rewriter<'_>, stack: &mut Stack, t: &mut Term) {
 }
 
 /// rewriteDeclaredVarsInExpr.
-fn rewrite_expr(rw: &mut Rewriter<'_>, stack: &mut Stack, mut expr: Expr) -> Expr {
-    match &mut expr.terms {
-        ExprTerms::Term(t) => walk_decl_terms(rw, stack, t),
-        ExprTerms::Call(c) => c.iter_mut().for_each(|t| walk_decl_terms(rw, stack, t)),
-        ExprTerms::Some(d) => d.symbols.iter_mut().for_each(|t| walk_decl_terms(rw, stack, t)),
-        ExprTerms::Every(ev) => {
-            if let Some(k) = ev.key.as_mut() {
-                walk_decl_terms(rw, stack, k);
+fn rewrite_expr(rw: &mut Rewriter<'_>, stack: &mut Stack, expr: Expr) -> Expr {
+    rewrite_expr_settled(rw, stack, expr, &[])
+}
+
+/// rewriteDeclaredVarsInExpr, skipping the expressions of an `every` statement's own
+/// body that `settled` says the walk would leave as they are. A statement within
+/// another's body is walked on a stack of statements, not in a call within a call.
+fn rewrite_expr_settled(
+    rw: &mut Rewriter<'_>,
+    stack: &mut Stack,
+    expr: Expr,
+    settled: &[Option<Settled>],
+) -> Expr {
+    // The statements being walked, outermost first, each with the place of its body's
+    // next expression.
+    let mut open: Vec<(Expr, usize)> = Vec::new();
+    let mut next = Some(expr);
+    loop {
+        if let Some(mut e) = next.take() {
+            match &mut e.terms {
+                ExprTerms::Term(t) => walk_decl_terms(rw, stack, t),
+                ExprTerms::Call(c) => c.iter_mut().for_each(|t| walk_decl_terms(rw, stack, t)),
+                ExprTerms::Some(d) => d.symbols.iter_mut().for_each(|t| walk_decl_terms(rw, stack, t)),
+                ExprTerms::Every(ev) => {
+                    if let Some(k) = ev.key.as_mut() {
+                        walk_decl_terms(rw, stack, k);
+                    }
+                    walk_decl_terms(rw, stack, &mut ev.value);
+                    walk_decl_terms(rw, stack, &mut ev.domain);
+                    open.push((e, 0));
+                    continue;
+                }
             }
-            walk_decl_terms(rw, stack, &mut ev.value);
-            walk_decl_terms(rw, stack, &mut ev.domain);
-            for e in ev.body.iter_mut() {
-                let x = std::mem::replace(e, Expr::term(Term::boolean(true, None)));
-                *e = rewrite_expr(rw, stack, x);
+            rewrite_with(rw, stack, &mut e);
+            match open.last_mut() {
+                Some((parent, i)) => put_back(parent, i.saturating_sub(1), e),
+                None => return e,
             }
+            continue;
+        }
+        let outermost = open.len() == 1;
+        let Some((parent, i)) = open.last_mut() else {
+            return Expr::term(Term::boolean(true, None));
+        };
+        if let ExprTerms::Every(ev) = &mut parent.terms
+            && let Some(x) = ev.body.get_mut(*i)
+        {
+            *i += 1;
+            if !(outermost && Settled::holds(settled.get(*i - 1), stack)) {
+                next = Some(std::mem::replace(x, Expr::term(Term::boolean(true, None))));
+            }
+            continue;
+        }
+        let Some((mut done, _)) = open.pop() else {
+            return Expr::term(Term::boolean(true, None));
+        };
+        rewrite_with(rw, stack, &mut done);
+        match open.last_mut() {
+            Some((parent, i)) => put_back(parent, i.saturating_sub(1), done),
+            None => return done,
         }
     }
+}
+
+/// An expression walked, back in its place in the `every` statement's body it was
+/// taken from.
+fn put_back(parent: &mut Expr, at: usize, e: Expr) {
+    if let ExprTerms::Every(ev) = &mut parent.terms
+        && let Some(slot) = ev.body.get_mut(at)
+    {
+        *slot = e;
+    }
+}
+
+/// rewriteDeclaredVarsInWithRecursive, for each of an expression's `with` modifiers.
+fn rewrite_with(rw: &mut Rewriter<'_>, stack: &mut Stack, expr: &mut Expr) {
     for w in expr.with.iter_mut() {
         term_recursive(rw, stack, &mut w.target);
         if let Some(sdw) = stack.declared("input") {
             match &mut w.target.value {
                 TermValue::Var(v) if *v == sdw => {
                     w.target.value = TermValue::Ref(vec![Term::var("input", None)].into());
+                    stack.unuse("input");
                 }
                 TermValue::Ref(r) => {
                     if let Some(first) = r.first_mut()
                         && first.as_var() == Some(&*sdw)
                     {
                         first.value = TermValue::Var("input".into());
+                        stack.unuse("input");
                     }
                 }
                 _ => {}
@@ -713,7 +1024,6 @@ fn rewrite_expr(rw: &mut Rewriter<'_>, stack: &mut Stack, mut expr: Expr) -> Exp
         }
         term_recursive(rw, stack, &mut w.value);
     }
-    expr
 }
 
 /// A GenericVisitor walk calling rewriteDeclaredVarsInTerm.
@@ -749,7 +1059,7 @@ fn decl_term(rw: &mut Rewriter<'_>, stack: &mut Stack, t: &mut Term) -> bool {
     match &mut t.value {
         TermValue::Var(v) => {
             let v = v.clone();
-            if let Some(gv) = stack.declared(&v) {
+            if let Some(gv) = stack.use_var(&v) {
                 t.value = TermValue::Var(gv);
                 stack.seen(&v);
             } else if stack.occurrence(&v) == Occurrence::New {
@@ -766,7 +1076,7 @@ fn decl_term(rw: &mut Rewriter<'_>, stack: &mut Stack, t: &mut Term) -> bool {
             {
                 if let Some(occ) = stack.global_occurrence(x)
                     && occ != Occurrence::Seen
-                    && let Some(gv) = stack.declared(x)
+                    && let Some(gv) = stack.use_var(x)
                 {
                     t.value = TermValue::Var(gv);
                 }

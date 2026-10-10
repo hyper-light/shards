@@ -7,7 +7,11 @@
 //!
 //! OPA's whole check of the deepest object and set took it 3 and 19 minutes, and more
 //! than 50 GB: depth.json keeps the answers it gave (`answer`, measured once with
-//! oracle_test.go's `run`) rather than the generator running it again. The other
+//! oracle_test.go's `run`) rather than the generator running it again. Nested `every`
+//! OPA answers only shallower: 1000 and 5000 deep it answered as depth.json's `answer`
+//! (in 5.5 s and 337 MiB, and in 10 minutes 52 s and 6.7 GB, copying each statement
+//! whole at each level), 20000 deep it gave no answer in an hour, and at its deepest
+//! its memory passed 48 GiB in 64 s. The other
 //! shapes not checked whole take OPA too long at their deepest: its type checker is
 //! exponential in nested comprehensions (10 levels 0.19 s, 12 levels 2.3 s, 14 levels
 //! 29 s, measured on an M5 Max), builtin and function calls nested 9999 deep took it 28
@@ -172,6 +176,7 @@ fn policies_nest_as_deep_as_opa_takes_them_and_no_deeper() {
                 }
                 // OPA's answer at the deepest: its oracle's, or the one measured once.
                 let answer = match shape.get("answer") {
+                    Some(a @ Json::Object(_)) => a.clone(),
                     Some(a) => json!({"results": a}),
                     None if shape.get("check") == Some(&json!(true)) => want.clone(),
                     None => {

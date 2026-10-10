@@ -3211,5 +3211,488 @@
    ]
   ],
   "query": "data.docker.decision"
+ },
+ {
+  "name": "lv-every-shadowed",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery x in [1] { every x in [1] { true } }\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "lv-every-declared-later",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery a in [1] {\n\t\tevery b in [1] { b == a; z == 1 }\n\t\tz := 1\n\t}\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "lv-every-declared-later-deep",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery a in [1] {\n\t\tevery b in [1] {\n\t\t\tevery c in [1] { c == b; b == a; z == 1 }\n\t\t}\n\t\tz := 1\n\t}\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "lv-every-comprehension-again",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery x in [1] {\n\t\tevery y in [1] {\n\t\t\tcount([w | every z in [1] { z == y; y == x }; w := 1]) == 1\n\t\t}\n\t}\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "lv-every-sibling-declares",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery x in [1] {\n\t\tevery y in [1] { every z in [1] { z == y } }\n\t\tevery v in [1] { v == x }\n\t}\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "lv-with-input-some",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tsome input\n\ttrue with input as 1\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "lv-with-input-used",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tsome input\n\tinput = 1\n\ttrue with input as 2\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "lv-with-input-path",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tsome input\n\ttrue with input.a as 1\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "lv-function-shadowed-later",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nf(x) := x\n\ndecision if {\n\tevery a in [1] {\n\t\tevery b in [1] { f(b) == a }\n\t\tf := 1\n\t\tf == 1\n\t}\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "lv-every-object-set",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery x in [1] {\n\t\tevery y in [2] {\n\t\t\t{\"a\": x, \"b\": y} == {\"a\": 1, \"b\": 2}\n\t\t\t{x, y} == {1, 2}\n\t\t}\n\t}\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "lv-every-template",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery x in [1] {\n\t\tevery y in [2] { $\"{x}-{y}\" == \"1-2\" }\n\t}\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "lv-every-key-unused",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery k, v in [1] { v == 1 }\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "lv-some-unused",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tsome x\n\ttrue\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "lv-some-in-key",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tsome k, v in [\"a\"]\n\tv == \"a\"\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "lv-comprehension-some-unused",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := [1 | some x; true]\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "lv-every-own-domain",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery x in [[1]] {\n\t\tx == [1]\n\t\tevery y in y { y == 1 }\n\t}\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "lv-every-input-declared",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery input in [1] {\n\t\tinput == 1\n\t\ttrue with input as 2\n\t}\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "lv-every-with-nested",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery x in [1] {\n\t\tevery y in [1] { y == x with input as {} }\n\t}\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "lv-every-later-input",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery a in [1] {\n\t\tevery b in [1] { b == a; input == 1 }\n\t\tinput := 1\n\t}\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "lv-every-nested-assigned",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery a in [1] {\n\t\tevery b in [1] {\n\t\t\tevery c in [1] { c == b }\n\t\t\td := b\n\t\t\td == 1\n\t\t}\n\t\te := a\n\t\te == 1\n\t}\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "lv-every-some-in",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery a in [[1]] {\n\t\tsome v in a\n\t\tv == 1\n\t\tevery b in [1] { b == v }\n\t}\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "tpl-every-nested",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery a in [1] {\n\t\tevery b in [2] {\n\t\t\tevery c in [3] { $\"{a}{b}{c}\" == \"123\" }\n\t\t}\n\t}\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "tpl-every-undeclared",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery a in [1] { a == 1; every b in [1] { b == 1; $\"{b}{z.a}\" } }\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "tpl-every-undeclared-deep",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery a in [1] { a == 1; every b in [1] { b == 1; every c in [1] { c == 1; every d in [1] { d == 1; every e in [1] { e == 1; $\"{e}{z.a}\" } } } } }\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "tpl-every-undeclared-pair",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery a in [1] { a == 1; every b in [1] { b == 1; every c in [1] { c == 1; $\"{c}{z.a}\"; $\"{y[0]}\" } } }\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "tpl-comprehension-every",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery a in [1] {\n\t\tcount([s | s := $\"{a}\"]) == 1\n\t\tevery b in [2] { count([t | t := $\"{a}{b}\"]) == 1 }\n\t}\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "print-every-nested",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery a in [1] {\n\t\tprint(\"a\", a)\n\t\tevery b in [2] {\n\t\t\tprint(\"b\", a, b)\n\t\t\tevery c in [3] { print(\"c\", a, b, c) }\n\t\t}\n\t}\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "print-every-undeclared",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery a in [1] { a == 1; every b in [1] { b == 1; print(b, z) } }\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "print-every-undeclared-deep",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery a in [1] { a == 1; every b in [1] { b == 1; every c in [1] { c == 1; every d in [1] { d == 1; every e in [1] { e == 1; every f in [1] { f == 1; print(f, z) } } } } } }\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "print-every-undeclared-limit",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery a in [1] { a == 1; every b in [1] { b == 1; every c in [1] { c == 1; every d in [1] { d == 1; every e in [1] { e == 1; every f in [1] { f == 1; every g in [1] { g == 1; every h in [1] { h == 1; every i in [1] { i == 1; every j in [1] { j == 1; every k in [1] { k == 1; every l in [1] { l == 1; print(l, z) } } } } } } } } } } } }\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "print-comprehension-every",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery a in [1] {\n\t\tcount([s | s := a; print(s)]) == 1\n\t\tevery b in [2] { print(a, b) }\n\t}\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "print-and-template-deep",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery a in [1] { a == 1; every b in [1] { b == 1; every c in [1] { c == 1; every d in [1] { d == 1; every e in [1] { e == 1; every f in [1] { f == 1; print($\"{f}\"); f == 1 } } } } } }\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "safety-template-comprehension",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := [x | x := [y | y := $\"{q}\"]]\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "safety-template-later",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := [y | y := $\"{q}\"; q = 1]\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "safety-call-set-later",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := [y | count({q}, t); y = t; q = 1]\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "safety-call-set-every",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tcount({z}, n)\n\tevery y in [1] { y < n }\n\tz = 1\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "safety-call-set-unsafe",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := [y | count({q}, t); y = t]\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "safety-print-after-call",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tcount(input.a[i] + z, n)\n\tx = i\n\tprint(x)\n\tz = 1\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "a": [
+    1
+   ]
+  }
+ },
+ {
+  "name": "safety-print-after-call-unsafe",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tcount(input.a[i] + z, n)\n\tx = w\n\tprint(x)\n\tz = 1\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "a": [
+    1
+   ]
+  }
+ },
+ {
+  "name": "safety-every-after-call",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tsum([input.a[i], z], n)\n\tevery y in [1] { y == 1 }\n\tabs(i, m)\n\tz = 1\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "a": [
+    1
+   ]
+  }
+ },
+ {
+  "name": "compr-index-in-every",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tsome a in input.a\n\tevery b in input.a {\n\t\tc := [d | some d in input.a; d == b; print(\"d\", d)]\n\t\tcount(c) == 1\n\t}\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "a": [
+    1,
+    2,
+    3
+   ]
+  }
+ },
+ {
+  "name": "compr-index-in-nested-every",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tsome a in input.a\n\tevery b in input.a {\n\t\tevery e in [1] {\n\t\t\tc := [d | some d in input.a; d == b; print(\"d\", d, e)]\n\t\t\tcount(c) == 1\n\t\t}\n\t}\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "a": [
+    1,
+    2,
+    3
+   ]
+  }
+ },
+ {
+  "name": "compr-index-head",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := [[y | some y in input.a; y == x; print(\"y\", y)] | some x in input.a]\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "a": [
+    1,
+    2,
+    3
+   ]
+  }
+ },
+ {
+  "name": "compr-index-after-every",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery b in input.a { b > 0 }\n\tsome x in input.a\n\tc := [d | some d in input.a; d == x; print(\"d\", d)]\n\tcount(c) == 1\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "a": [
+    1,
+    2,
+    3
+   ]
+  }
  }
 ]

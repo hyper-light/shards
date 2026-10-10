@@ -1,0 +1,14 @@
+[
+ {"name": "every-unused", "head": "package docker\n\ndecision if {\n\t", "open": "every x in [1] { ", "inner": "true", "close": " }", "tail": "\n}\n"},
+ {"name": "every-used", "head": "package docker\n\ndecision if {\n\t", "open": "every x in [1] { x == 1; ", "inner": "true", "close": " }", "tail": "\n}\n"},
+ {"name": "every-printing", "head": "package docker\n\ndecision if {\n\t", "open": "every x in [1] { x == 1; print(x); ", "inner": "true", "close": " }", "tail": "\n}\n"},
+ {"name": "template-failing", "head": "package docker\n\ndecision if {\n\t", "open": "every x in [1] { x == 1; ", "inner": "$\"{x}{z.a}\"", "close": " }", "tail": "\n}\n"},
+ {"name": "else-chain", "head": "package docker\n\np := 0 if input.never", "item": " else := {i} if input.never", "tail": " else := {n}\n\ndecision := p\n"},
+ {"name": "rule-chain", "head": "package docker\n\nr0 if input.image\n\n", "item": "r{i} if r{j}\n\n", "tail": "decision := r{n}\n"},
+ {"name": "rule-wrap", "head": "package docker\n\nr0 := 1\n\n", "item": "r{i} := [r{j}]\n\n", "tail": "decision := count(json.marshal(r{n}))\n"},
+ {"name": "comprehension-nested", "head": "package docker\n\nx := ", "open": "[y | y := ", "inner": "1", "close": "]", "tail": "\n\ndecision := count(x)\n"},
+ {"name": "every-comprehension-alternating", "head": "package docker\n\ndecision if {\n\t", "open": "every x in [1] { x == 1; count([z | z := x; ", "inner": "true", "close": "]) == 1 }", "tail": "\n}\n"},
+ {"name": "every-declaring-after", "head": "package docker\n\ndecision if {\n\t", "open": "every x in [1] { x == 1; ", "inner": "true", "close": "; y := 1; y == 1 }", "tail": "\n}\n"},
+ {"name": "prints-wide", "head": "package docker\n\ndecision if {\n", "item": "\tx{i} := {i}\n\tprint(x{i})\n", "tail": "}\n"},
+ {"name": "closures-wide", "head": "package docker\n\ndecision if {\n\tx0 := 0\n", "item": "\tx{i} := count([y | y := x{j}])\n", "tail": "}\n"}
+]

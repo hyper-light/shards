@@ -4551,8 +4551,8 @@ revision before comparing a changed API/implementation.
   (tests/common `port_free`, `hold_port`). The daemon holds a run's listeners from
   binding them until the run is taken, while its other threads spawn VMs: a spawn then
   holds them until it execs, so a run shorter than that spawn may end before its ports
-  are free. Not seen in a failure; the fix (the listeners bound by the network process,
-  which spawns nothing, so the daemon holds none) is recorded as open.
+  are free. Not seen in a failure; fixed since: every child of the daemon is made by its
+  spawner, which holds none of them (M158, architecture.md D31).
 
 ### M135. Signatures as OCI 1.1 referrers: shards against cosign, on registries with and without the API
 
@@ -4661,3 +4661,287 @@ revision before comparing a changed API/implementation.
     takes the most: 152 and 154 ms at p50.
   - In those runs the frontend's own time was 4.4–7.8 ms for shards and 11.4–13.8 ms for
     docker/dockerfile.
+
+### M155. What a run's guest keeps of a microVM's memory, on the path a run takes
+
+- **Question.** `shards run -m LIMIT` sizes its microVM so that the guest's MemAvailable
+  holds the limit, by a table of what the guest kernel keeps at each size (M117 for arm64,
+  M123 for x86_64). Those measured cold boots (`run --kernel … --memory`). A run's VM is a
+  template of its size, restored, its guest the run's: does it keep the same? CI found
+  `-m 2500m` 184 KiB short on x86_64 (5eb6322).
+- **Method.** `docs/research/measurements/guest-memory/measure-run.py`: for each table
+  size and each interval's midpoint, as far as half the host's memory, the limit the
+  daemon sizes to exactly that VM (resources::memory_mib over the table, read from the
+  source), `shards run --rm -m LIMITk alpine cat /proc/meminfo` 30 times (the first makes
+  the template, the rest restore it). The overhead is the VM's KiB less MemAvailable; the
+  margin, MemAvailable less the limit. arm64: Apple M5 Max, macOS 26.4.1, guest kernel
+  6.18.48, 2026-10-10, load average 20 to 57. x86_64: 10 runs a size, on a GitHub
+  ubuntu-24.04 runner (AMD EPYC 7763, 4 vCPUs, 15,989 MiB, Linux 6.17.0-1022-azure, KVM),
+  guest kernel 6.18.48, revision 41839c7, 2026-10-10 (CI run 38044351202, `diagnostic`).
+- **Results.** arm64, KiB, at the table's sizes; each interval's midpoint kept less than
+  its end (320 MiB: 47,136 at most; 896: 90,980; 14,336: 527,860):
+
+  | VM (MiB) | cold boot's (M117) | run's n / p50 / p90 / p99 / max | least margin |
+  |---:|---:|---|---:|
+  | 256 | 43,216 | 30 / 43,632 / 43,752 / 43,784 / 43,784 | −568 |
+  | 384 | 47,004 | 30 / 47,700 / 47,700 / 47,700 / 47,700 | −696 |
+  | 512 | 50,000 | 30 / 50,488 / 50,488 / 50,488 / 50,488 | −488 |
+  | 768 | 86,172 | 30 / 88,668 / 88,668 / 88,668 / 88,668 | −2,496 |
+  | 1,024 | 90,784 | 30 / 93,524 / 93,524 / 93,524 / 93,524 | −2,740 |
+  | 1,536 | 104,440 | 30 / 106,936 / 106,936 / 106,936 / 106,936 | −2,496 |
+  | 2,048 | 113,664 | 30 / 116,160 / 116,160 / 116,160 / 116,160 | −2,496 |
+  | 3,072 | 239,288 | 30 / 241,520 / 241,520 / 241,524 / 241,524 | −2,236 |
+  | 3,584 | 250,488 | 30 / 252,728 / 252,728 / 252,728 / 252,728 | −2,240 |
+  | 4,096 | 261,724 | 30 / 263,956 / 263,956 / 263,956 / 263,956 | −2,232 |
+  | 4,608 | 288,068 | 30 / 290,332 / 290,332 / 290,332 / 290,332 | −2,264 |
+  | 6,144 | 321,752 | 30 / 324,016 / 324,016 / 324,016 / 324,016 | −2,264 |
+  | 8,192 | 367,200 | 30 / 368,980 / 368,980 / 368,980 / 368,980 | −1,780 |
+  | 12,288 | 476,612 | 30 / 478,820 / 478,820 / 478,824 / 478,824 | −2,212 |
+  | 16,384 | 575,192 | 30 / 577,416 / 577,416 / 577,468 / 577,468 | −2,276 |
+
+  x86_64, KiB, every run of a size alike (n 10, p50 = max), as far as 7,168 MiB, half the
+  runner's memory; the least margin is against the table then (M123's), which each size
+  past a table size takes from the next one up:
+
+  | VM (MiB) | cold boot's (M123) | run's | least margin |
+  |---:|---:|---:|---:|
+  | 256 | 50,176 | 48,820 | 1,356 |
+  | 320 | | 52,276 | 1,720 |
+  | 384 | 53,996 | 54,512 | −516 |
+  | 448 | | 57,772 | 9,816 |
+  | 512 | 67,588 | 58,348 | 9,240 |
+  | 640 | | 112,492 | 12,680 |
+  | 768 | 125,172 | 124,564 | 608 |
+  | 896 | | 137,452 | 4,440 |
+  | 1,024 | 141,892 | 141,724 | 168 |
+  | 1,280 | | 151,132 | 4,800 |
+  | 1,536 | 155,932 | 156,212 | −280 |
+  | 1,792 | | 161,552 | 4,812 |
+  | 2,048 | 166,364 | 166,684 | −320 |
+  | 2,560 | | 179,648 | 11,080 |
+  | 3,072 | 190,728 | 191,496 | −768 |
+  | 3,328 | | 296,664 | 12,292 |
+  | 3,584 | 308,956 | 305,576 | 3,380 |
+  | 3,840 | | 308,896 | 5,076 |
+  | 4,096 | 313,972 | 314,056 | −84 |
+  | 4,352 | | 336,048 | 1,740 |
+  | 4,608 | 337,788 | 337,908 | −120 |
+  | 5,376 | | 353,248 | 18,288 |
+  | 6,144 | 371,536 | 369,132 | 2,404 |
+  | 7,168 | | 389,792 | 27,344 |
+
+- **Consequence.** A run's guest keeps 0.5 to 2.7 MiB more than a cold boot's at every
+  size on arm64: `-m` held less than its limit wherever a limit sized its VM at a table
+  size, and at some midpoints. Each interval's overhead rises to its end, so the table,
+  which takes the overhead of the next size up, is now each size's most on the run's path
+  (resources::overhead_kib). Past 16 GiB the slope stays 26 KiB a MiB. On x86_64 a run's
+  guest keeps 84 to 768 KiB more than M123's cold boots at six sizes, and up to 9,240
+  less at the others: its table is now the run's at each size measured, which also gives
+  back what a VM of 256, 512, 768, 1,024, 3,584 or 6,144 MiB took past its need; every
+  midpoint keeps less than the next size's. From 8,192 MiB it keeps M123's, not measured
+  on a run's path here (a runner has 16 GiB). Past 16 GiB the slope stays 22 KiB a MiB.
+
+### M156. Where a release test build's time goes (CI: the build-time timeouts)
+
+- **Question.** CI's x86_64 musl job timed out at 45 minutes in three runs and aarch64
+  macOS's Tests step at 30 in two: the whole musl job had taken 31 minutes on d5726fe
+  (2026-10-08) and 43 on feb42d6 (2026-10-09), and its release test build alone 32m25s
+  on 2710849. Where does a test build's time go, and what would a test profile save that
+  keeps release's optimizations?
+- **Method.** `cargo test --workspace --release --no-run --timings` from an empty target
+  directory, then the same with `CARGO_PROFILE_RELEASE_LTO=false
+  CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16` (what `test-release` sets), Apple M5 Max,
+  macOS 26.4.1, 2026-10-10 at 09:51 and 10:01 UTC; each unit's time summed from cargo's
+  report. Then CI's test steps on release (dev d258710, run 38044119195) and on
+  test-release (41839c7, run 38044351202), started 4 minutes apart.
+- **Results.** The two builds, seconds:
+
+  | | release | without fat LTO, 16 units |
+  |---|---:|---:|
+  | units' time, all 381 | 4,466 | 1,414 |
+  | the 129 test binaries' | 3,147 | 456 |
+  | shards' own test binary | 284 | 53 |
+  | shards' build script (its helpers and guests) | 159 | 83 |
+  | wall time | 543 | 203 |
+
+  CI's test steps (the release run's failed, a test or the step's limit):
+
+  | job | release | test-release |
+  |---|---:|---:|
+  | x86_64-unknown-linux-gnu, Tests | 24m19s, failed | 17m42s |
+  | aarch64-apple-darwin, Tests | 30m13s, timed out | 14m03s |
+  | aarch64-unknown-linux-gnu, Tests | 14m32s, failed | 9m38s |
+  | x86_64-pc-windows-msvc, Tests | 28m26s, failed | 11m31s |
+  | x86_64-unknown-linux-musl, lint, test and build | 45m13s, timed out | 43m22s |
+
+  The musl step's 43m22s on test-release: clippy 4m16s, the stack bisection of M159
+  2m44s, the test build 15m48s, the tests 9m34s, and the release build of `shards` its
+  static check reads 10m28s.
+- **Consequence.** Fat LTO with one codegen unit re-optimizes every dependency in each
+  of 129 test binaries' links: 70 % of a release test build's time, and shards' own test
+  binary alone 284 s on one LLVM thread. Tests build with `test-release` (release's
+  optimizations, without fat LTO, 16 units; its guests' `guest-test`); releases and
+  every measurement keep `release`. Release's stack guards, which test-release's
+  smaller frames no longer hold it to, are tested on release on their own (M159), and
+  the musl job's release build runs in a job of its own.
+
+### M158. What a child holds of what its parent lets go of, made there or by a spawner
+
+- **Question.** A child holds every descriptor its parent had at the spawn until it
+  execs (M134). The daemon holds a run's published listeners from binding them until its
+  network process has them, and its clients' stdio until a VM has the run, while its
+  other threads make VMs: a run shorter than such a spawn ends with its port bound, and
+  `run --rm -p N` again fails where Docker's succeeds. Either the listeners are bound
+  where no child is made (the network process, M134's note), or every child is made by a
+  spawner, a process made before any of them existed. Which holds nothing, and at what
+  cost?
+- **Method.** `docs/research/measurements/spawner`: the main thread lets go of a
+  listener, then binds its port again, and of a pipe's write end, then reads for its end,
+  again and again, and times each that something still holds, while 4 threads have
+  /usr/bin/true made as `shards_ipc::spawn` makes children (posix_spawn, three
+  descriptors given, `POSIX_SPAWN_CLOEXEC_DEFAULT`): here, with 0, 100, 300 or 1,000 more
+  descriptors open (`direct`), or by a spawner forked before anything else was open,
+  sent the three descriptors with each request (`spawner`); and posix_spawn's own time,
+  here or there, and the round trip to the spawner alone. 10 s a run, direct and spawner
+  in turn, 3 rounds at each count. Apple M5 Max, macOS 26.4.1, 2026-10-10, load average
+  17 to 33 for 1,000 more and 40 to 56 for the rest. And what a daemon holds: `lsof` of
+  one (a debug build of 5994c0c) with 0, 5, 10 and 20 detached `alpine sleep 600` runs
+  going.
+- **Results.** Holds, n held of those let go and the longest, and posix_spawn's p50, by
+  round:
+
+  | more | made | listeners held | longest | pipes held | longest | posix_spawn p50 (µs) | round trip p50 (µs) |
+  |---:|---|---|---:|---|---:|---|---|
+  | 0 | here | 1,703/13,556, 2,293/18,141, 2,714/15,971 | 242 ms | 110/68,872, 111/84,128, 122/81,944 | 49 ms | 277, 231, 213 | |
+  | 0 | spawner | 0/15,583, 0/17,491, 0/17,038 | | 0 of as many | | 245, 190, 191 | 7.7, 8.8, 7.4 |
+  | 100 | here | 1,728/12,191, 2,894/16,719, 2,590/16,107 | 154 ms | 88/67,463, 107/71,450, 95/60,444 | 127 ms | 293, 219, 235 | |
+  | 100 | spawner | 0/15,156, 0/18,560, 0/17,155 | | 0 of as many | | 236, 188, 196 | 7.6, 11.0, 8.0 |
+  | 300 | here | 1,760/13,199, 2,773/18,277, 2,256/15,174 | 299 ms | 97/64,589, 136/88,579, 96/62,817 | 125 ms | 325, 298, 288 | |
+  | 300 | spawner | 0/17,135, 0/16,594, 0/18,196 | | 0 of as many | | 220, 201, 187 | 7.8, 12.4, 8.3 |
+  | 1,000 | here | 3,308/16,592, 2,455/15,951, 2,089/16,263 | 42 ms | 145/63,993, 72/43,629, 65/74,519 | 20 ms | 376, 384, 415 | |
+  | 1,000 | spawner | 0/19,430, 0/17,411, 0/18,087 | | 0 of as many | | 187, 165, 167 | 8.7, 38.8, 12.0 |
+
+  posix_spawn's p90/p99/max, and the round trip's, are in the runs' output (n 15,126 to
+  24,662 spawns a run; round trips 8,000 a run, p99 30 to 645 µs). The daemon held 29
+  descriptors with no run going, and 41, 51 and 71 with 5, 10 and 20: 2 more a run, so
+  a thousand more is a daemon of some 485 runs.
+- **Consequence.** A child made here held 13 to 20 in 100 listeners let go of while it
+  was made, up to 299 ms, and some pipes up to 127 ms; one made by the spawner held none
+  of 207,836 listeners and as many pipes. Binding the listeners where no child is made
+  would have freed ports alone, not clients' pipes. Through the spawner a spawn costs a
+  round trip, 7 to 39 µs at p50, and posix_spawn there took less than here at every
+  count: 22 to 57 µs less at p50 with up to 100 more open, as a daemon of tens of runs
+  holds, and 190 to 250 µs with a thousand more, as XNU copies the parent's whole table
+  into each child. Every child of the daemon
+  is now its spawner's (shards_ipc::start_spawner, architecture.md D31), and
+  `published_ports_are_free_at_once_while_the_daemon_makes_vms` holds a run's port free
+  once its end is told while other runs make VMs.
+
+### M159. The stack a Rego builtin call takes, on each target CI tests (CI: aarch64-linux-gnu's overflow)
+
+- **Question.** `stack::LEAF`, the stack the policy evaluation keeps for a builtin call,
+  was 181 KiB: 177 measured on aarch64-apple-darwin and 181 on x86_64-apple-darwin.
+  aarch64-unknown-linux-gnu's test of the builtin corpus, on a thread of that much,
+  overflowed (CI, 2026-10-10). What does each target take, on release, which ships, and
+  on test-release, which CI's tests now build (M156)?
+- **Method.** On each CI target that runs tests, `tests/builtins.rs` built on each
+  profile and run with `SHARDS_REGO_LEAF` bisected between 64 and 16,384 KiB, each probe
+  a process of its own: the least that passed, the most that failed, and the least run
+  three times more (the native jobs). CI run 38044351202, revision 41839c7, 2026-10-10.
+- **Results.** KiB a builtin call took at most, the least that passed:
+
+  | target | release | test-release |
+  |---|---:|---:|
+  | aarch64-apple-darwin | 177 | 81 |
+  | x86_64-unknown-linux-gnu | 194 | 103 |
+  | aarch64-unknown-linux-gnu | 205 | 65 or less |
+  | x86_64-pc-windows-msvc | 193 | 129 |
+  | x86_64-unknown-linux-musl | 187 | 95 |
+  | aarch64-unknown-linux-musl | 195 | 95 |
+
+  In the native jobs each least passed three runs more. aarch64-linux-gnu's test-release
+  passed at the bisection's floor. x86_64-apple-darwin and aarch64-pc-windows-msvc are
+  built in CI, not tested; x86_64-apple-darwin's 181 is a Mac's release, as before.
+- **Consequence.** LEAF is now 205 KiB, the most a release build takes: at 181,
+  aarch64-linux-gnu's evaluation let builtin calls start that its stack could not hold.
+  A test-release build takes 46 to 67 % of release's (aarch64-linux-gnu 32 % or less),
+  so its tests no longer hold release to the guards measured on it (LEAF here;
+  RULE_STEP and the policy thread's STACK likewise): CI runs `tests/builtins.rs`,
+  `deep.rs` and `depth.rs` on release too, on every target that runs tests. The larger
+  LEAF leaves the deepest policies `depth.rs` holds (OPA's parser's deepest) running on
+  the policy thread's 123 MiB on aarch64-apple-darwin, release.
+
+### M160. Deeply nested policies: what OPA and shards' Rego take
+
+- **Question.** How long, and how much memory, do OPA and shards' Rego take on policies
+  nested as deep as OPA's parser takes them (closures, else chains, rule chains)? A
+  remote build context's policy (D111) may be anyone's: what does a small file cost?
+- **Method.** `docs/research/measurements/rego-nesting/run.sh` runs each shape of
+  `crates/rego/benches/nesting.json` at its depths through shards' bench
+  (`crates/rego/benches/nesting.rs`: parse, compile with buildx's functions, evaluate
+  `data.docker.decision` on the policy thread's stack, a warm-up then N = 5 runs, one
+  case a process) and through OPA v1.14.1 set up as scripts/rego/bench-opa sets it up,
+  run as buildx runs a policy check (`nesting_test.go`), once a case: its deep cases
+  take it minutes to hours a run. Apple M5 Max (Mac17,6), macOS 26.4.1 (25E253),
+  revision 6e51402, 2026-10-10, on a host shared with other builds (load average 50 to
+  112 over the run): the times are high, and OPA's are single runs.
+- **Results.** shards: whole check p50 / p90 / p99 / max (n = 5), peak resident; OPA:
+  one run, peak resident.
+
+  | shape, depth | shards | shards peak | OPA | OPA peak |
+  |---|---|---|---|---|
+  | every, x unused, 1000 | 2.1 / 2.3 / 2.3 / 2.3 ms | 10 MiB | 4.07 s | 327 MiB |
+  | every, x unused, 5000 | 11 / 20 / 20 / 20 ms | 37 MiB | 662 s | 7790 MiB |
+  | every, x unused, 20000 | 146 / 276 / 276 / 276 ms | 122 MiB | | |
+  | every, x unused, 99990 | 1.23 / 1.36 / 1.36 / 1.36 s | 521 MiB | | |
+  | every, x used, 16 | | | 0.74 s | 38 MiB |
+  | every, x used, 20 | | | 13.4 s | 54 MiB |
+  | every, x used, 24 | 0.8 / 0.9 / 0.9 / 0.9 ms | 6 MiB | 426 s | 227 MiB |
+  | every, x used, 1000 | 119 / 236 / 236 / 236 ms | 35 MiB | | |
+  | every, x used, 4000 | 1.64 / 1.96 / 1.96 / 1.96 s | 125 MiB | | |
+  | every, x used, 99990 | 4.5 / 9.1 / 9.1 / 9.1 s (1) | 1383 MiB | | |
+  | every, printing, 16 | 1.0 / 2.2 / 2.2 / 2.2 ms | 6 MiB | 0.54 s | 29 MiB |
+  | every, printing, 4000 | 1.52 / 1.65 / 1.65 / 1.65 s | 208 MiB | | |
+  | template failing, 5 | 0.2 / 0.3 / 0.3 / 0.3 ms | 4 MiB | < 0.01 s | 18 MiB |
+  | template failing, 16 | | | 0.64 s | 37 MiB |
+  | template failing, 20 | 0.4 / 0.5 / 0.5 / 0.5 ms | 5 MiB | 6.92 s | 239 MiB |
+  | template failing, 30 | 0.9 / 0.9 / 0.9 / 0.9 ms | 5 MiB | | |
+  | else chain, 10000 | 135 / 201 / 201 / 201 ms | 90 MiB | 2.26 s | 75 MiB |
+  | else chain, 100000 | 1.84 / 2.15 / 2.15 / 2.15 s | 803 MiB | 371 s | 629 MiB |
+  | rule chain, 2000 | 105 / 144 / 144 / 144 ms | 43 MiB | 0.46 s | 50 MiB |
+  | rule chain, 10000 | 2.10 / 2.41 / 2.41 / 2.41 s | 195 MiB | 8.80 s | 136 MiB |
+  | rule wrap, 2000 | 1.39 / 1.56 / 1.56 / 1.56 s | 402 MiB | 0.80 s | 258 MiB |
+  | rule wrap, 10000 | 24.4 / 24.5 / 24.5 / 24.5 s (1) | 3820 MiB | 15.8 s | 5428 MiB |
+
+  (1) The evaluation ends with its stack error ("policy evaluation nests deeper than
+  its thread's stack"); OPA answers rule wrap 10000 [20001], and every, x used, true
+  where it finished (16, 20 and 24 deep), each level taking it twice as long or more.
+
+  Every case answers as OPA answers (results, or the first error of the same list) but
+  for the two marked. 99990 deep with x unused, OPA's memory passed 48 GiB in 64 s,
+  when it was stopped (one run outside the harness, watched for its memory).
+- **Open.** Shapes both still take time growing with the square or faster, from a
+  policy of a few kilobytes; shards' whole check, one run each (the same harness), and
+  OPA's (`run`, one run each):
+
+  | shape, size | shards | shards peak | OPA | where |
+  |---|---|---|---|---|
+  | comprehensions nested, 10 | 0.51 s | 5 MiB | 0.75 s | type check, x3.7 a level |
+  | comprehensions nested, 12 | 7.6 s | 5 MiB | 6.8 s | |
+  | every and comprehension alternating, 12 | | | 7 min 4 s | local variables: each every statement's walk again rewrites the comprehensions within it, renumbering their every statements |
+  | every and comprehension alternating, 16 | 1.1 s | 39 MiB | | |
+  | every and comprehension alternating, 20 | 18.0 s | 598 MiB | | |
+  | every declaring after the one within, 1000 | 2.5 s | 43 MiB | | local variables: the walk again of each every statement, a later declaration in its scope keeping it from being skipped (quadratic) |
+  | every declaring after the one within, 2000 | 7.2 s | 84 MiB | | |
+  | print calls, 500 in a body | 9.1 s | 19 MiB | | print rewrite: the outputs of all the expressions before each call, each equality copying the safe set (cubic) |
+  | print calls, 1000 in a body | 69 s | 32 MiB | 1 min 53 s | |
+  | closures, 500 in a body | 28.6 s | 19 MiB | | safety check: the outputs of the expressions placed, again for each candidate (cubic) |
+  | closures, 1000 in a body | 101 s | 33 MiB | 4 min 42 s | |
+
+  OPA's time on the shapes left blank was not measured. These are OPA's algorithms;
+  what shards does better on the shapes above it can do on these.
+- **Consequence.** shards answers the shapes of the results in time and memory linear
+  or near it in the depth, but for rule wrap (its compile quadratic, open) and the
+  stack its evaluation has; OPA's times and memory grow with the square of the depth or,
+  for nested closures, double with each level. The open shapes stay in `nesting.json`
+  for the harness (`--shape NAME --depth N`).

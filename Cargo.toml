@@ -97,5 +97,22 @@ opt-level = "s"
 debug = false
 strip = true
 
+# Test builds (CI, the gates): release's optimizations without its fat LTO and single
+# codegen unit, which re-optimize every dependency in each of ~130 test binaries' links:
+# 3,147 of a clean test build's 4,466 unit-seconds, against 456 of 1,414 without (M156).
+# Releases, and every measurement of shards, keep `release`; `cargo test --profile
+# test-release` builds the VM and network processes and the guests it carries with
+# these too (crates/shards/build.rs).
+[profile.test-release]
+inherits = "release"
+lto = false
+codegen-units = 16
+
+# The guests of a test build: `guest`, without fat LTO, as `test-release` is.
+[profile.guest-test]
+inherits = "guest"
+lto = false
+codegen-units = 16
+
 [profile.dev]
 panic = "abort"

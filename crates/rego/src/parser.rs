@@ -1313,7 +1313,7 @@ impl<'a> Parser<'a> {
     fn parse_every(&mut self) -> Option<Expr> {
         let mut every = self.parse_every_head()?;
         self.scan();
-        every.body = self.parse_body(Token::RBrace)?;
+        every.body = self.parse_body(Token::RBrace)?.into();
         self.scan();
         let loc = every.loc.clone();
         let mut expr = Expr::new(ExprTerms::Every(every), loc);
@@ -1369,7 +1369,7 @@ impl<'a> Parser<'a> {
             key,
             value,
             domain,
-            body: Vec::new(),
+            body: crate::ast::Shared::default(),
             loc,
         }))
     }

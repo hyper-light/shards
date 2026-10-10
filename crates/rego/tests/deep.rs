@@ -81,6 +81,44 @@ fn rules_nested_as_deep_as_the_stack_holds_answer_as_opa_and_no_deeper() {
     );
 }
 
+/// `every` statements nested `n` deep, each using a variable of its own, then `also`.
+fn nested_every(n: usize, also: &str) -> String {
+    format!(
+        "package docker\n\ndecision if {{\n\t{}true{}\n}}\n",
+        format!("every x in [1] {{ x == 1; {also}").repeat(n),
+        " }".repeat(n)
+    )
+}
+
+/// OPA v1.14.1 compiles `every` statements nested 24 deep in 11 minutes, twice as long
+/// with each level, and they answer true (16, 20 and 24 deep, measured). shards takes
+/// one level's work and memory for each: 4000 deep, each printing, answer true, and
+/// 99990 deep, as deep as OPA's parser takes them, end in the error of an evaluation
+/// deeper than its stack. Before, the print and template rewrites and the safety check
+/// copied, at each level, what was safe at it or what was within it, and the
+/// evaluation each level's body for each of its runs: 4000 deep compiled in 28.6 s,
+/// with a print call at each level in minutes, and evaluated in 31 GB (on an M5 Max).
+#[test]
+fn every_statements_nested_deep_answer_in_time() {
+    if cfg!(debug_assertions) {
+        eprintln!("SKIP: the policy stack holds release builds");
+        return;
+    }
+    let t0 = std::time::Instant::now();
+    assert_eq!(decide(nested_every(4000, "print(x); ")).unwrap(), ["true"]);
+    let e = decide(nested_every(99990, "")).unwrap_err();
+    assert!(
+        e.ends_with("eval_internal_error: policy evaluation nests deeper than its thread's stack"),
+        "{e}"
+    );
+    // Measured: 4000 deep 0.9 s, 99990 deep 4.3 s, on a busy host; the bound leaves room.
+    assert!(
+        t0.elapsed() < std::time::Duration::from_secs(60),
+        "{:?}",
+        t0.elapsed()
+    );
+}
+
 fn decide_on(stack: usize, src: String) -> Result<Vec<String>, String> {
     std::thread::Builder::new()
         .stack_size(stack)

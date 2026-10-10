@@ -333,9 +333,9 @@ fn add_module(
         node.values.push(rec);
     }
 }
-
-/// buildComprehensionIndices over a body and the bodies nested in it (WalkBodies order),
-/// the candidates growing with each expression met.
+/// buildComprehensionIndices over a body and the bodies nested in it, as WalkBodies meets
+/// them: the body, then the bodies within each of its expressions, each before the bodies
+/// within it, the candidates growing with each expression met.
 fn build_compr_indices(
     arity: crate::compile::safety::Arity<'_>,
     candidates: &mut VarSet,
@@ -354,28 +354,71 @@ fn build_compr_indices(
         candidates.extend(cvars::expr_vars(e, p));
     }
     for e in body {
-        for nested in nested_bodies(e) {
-            build_compr_indices(arity, candidates, &nested, out);
-        }
+        expr_bodies(e, &mut |nested| {
+            build_compr_indices(arity, candidates, nested, out)
+        });
     }
 }
 
-/// The bodies directly nested in an expression's terms (comprehensions, every).
-fn nested_bodies(e: &Expr) -> Vec<Body> {
-    let mut out = Vec::new();
-    if let ExprTerms::Every(ev) = &e.terms {
-        out.push(ev.body.clone());
-    }
-    crate::compile::safety::walk_terms_expr(e, &mut |t: &Term| match &t.value {
-        TermValue::ArrayCompr(_, b) | TermValue::SetCompr(_, b) | TermValue::ObjectCompr(_, _, b) => {
-            out.push(b.to_vec());
-            true
+/// The bodies directly within an expression, in GenericVisitor's order: an `every`
+/// statement's after its key, value and domain; a comprehension's after its head, and
+/// after the bodies within its head.
+fn expr_bodies(e: &Expr, f: &mut dyn FnMut(&Body)) {
+    match &e.terms {
+        ExprTerms::Term(t) => term_bodies(t, f),
+        ExprTerms::Call(c) => c.iter().for_each(|t| term_bodies(t, f)),
+        ExprTerms::Some(d) => d.symbols.iter().for_each(|t| term_bodies(t, f)),
+        ExprTerms::Every(ev) => {
+            if let Some(k) = &ev.key {
+                term_bodies(k, f);
+            }
+            term_bodies(&ev.value, f);
+            term_bodies(&ev.domain, f);
+            f(&ev.body);
         }
-        _ => false,
-    });
-    out
+    }
+    for w in &e.with {
+        term_bodies(&w.target, f);
+        term_bodies(&w.value, f);
+    }
 }
 
+fn term_bodies(t: &Term, f: &mut dyn FnMut(&Body)) {
+    match &t.value {
+        TermValue::Ref(r) | TermValue::Array(r) | TermValue::Call(r) => {
+            r.iter().for_each(|x| term_bodies(x, f))
+        }
+        TermValue::Object(o) => {
+            for (k, v) in cvars::sorted_pairs(o) {
+                term_bodies(k, f);
+                term_bodies(v, f);
+            }
+        }
+        TermValue::Set(s) => cvars::sorted_items(s).into_iter().for_each(|x| term_bodies(x, f)),
+        TermValue::ArrayCompr(x, b) | TermValue::SetCompr(x, b) => {
+            term_bodies(x, f);
+            f(b);
+        }
+        TermValue::ObjectCompr(k, v, b) => {
+            term_bodies(k, f);
+            term_bodies(v, f);
+            f(b);
+        }
+        TermValue::TemplateString { parts, .. } => {
+            for p in parts.iter() {
+                match p {
+                    crate::ast::TemplatePart::Term(t) => term_bodies(t, f),
+                    crate::ast::TemplatePart::Expr(e) => expr_bodies(e, f),
+                }
+            }
+        }
+        TermValue::Null
+        | TermValue::Bool(_)
+        | TermValue::Number(_)
+        | TermValue::String(_)
+        | TermValue::Var(_) => {}
+    }
+}
 /// getComprehensionIndex.
 fn compr_index(
     arity: crate::compile::safety::Arity<'_>,
@@ -1739,8 +1782,14 @@ fn eval_step(m: &mut Machine<'_>, f: &Frame, iter: I<'_>) -> R {
 
 /// eval.closure: the same bindings, a new query id.
 fn closure(m: &mut Machine<'_>, f: &Frame, body: Body) -> Frame {
+    closure_of(m, f, Rc::new(body))
+}
+
+/// A closure over a body already shared (an `every` statement's): its frame holds the
+/// body, not a copy of it and of every body within it.
+fn closure_of(m: &mut Machine<'_>, f: &Frame, query: Rc<Body>) -> Frame {
     Frame {
-        query: Rc::new(body),
+        query,
         index: 0,
         b: f.b,
         qid: m.qid(),
@@ -1982,7 +2031,7 @@ fn eval_every(m: &mut Machine<'_>, f: &Frame, ev: &Every, expr: &Expr, iter: I<'
         if !all {
             return Ok(());
         }
-        let mut bf = closure(m, child_f, body.clone());
+        let mut bf = closure_of(m, child_f, body.rc());
         bf.find_one = true;
         let mut done = false;
         let r = eval_expr(m, &bf, &mut |_, _| {
