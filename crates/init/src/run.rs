@@ -2575,13 +2575,32 @@ fn start_joiner(
         workload,
     };
     let standby = Standby::forked(Born::Joined(join, id), (None, None))?;
-    let started = limit_in(&crate::join::cgroup(id), &spec.cgroup, None).and_then(|()| {
-        let mut inherited = Inherited::default();
-        let setup = sort_setup(&spec.setup, &mut inherited)?;
-        joined().push((id, inherited.clone()));
-        standby.launch(spec, false, setup, &inherited)
-    });
-    match started {
+    let pid = standby.pid;
+    // Its sysctls in its own namespaces, as runc writes a container's from within them:
+    // init's own would be its provider's (`sort_setup`).
+    let (sysctls, setup): (Vec<Vec<u8>>, Vec<Vec<u8>>) = spec
+        .setup
+        .iter()
+        .cloned()
+        .partition(|e| e.starts_with(b"sysctl="));
+    let mut inherited = Inherited::default();
+    let ready = sysctls_in(pid, &sysctls)
+        .and_then(|()| limit_in(&crate::join::cgroup(id), &spec.cgroup, None))
+        .and_then(|()| sort_setup(&setup, &mut inherited));
+    let setup = match ready {
+        Ok(setup) => setup,
+        Err(f) => {
+            // Its standby, given no orders, ends as they close: waited for, so that its
+            // cgroup is empty as it goes.
+            drop(standby);
+            // SAFETY: waits for our own child, not yet waited for.
+            unsafe { libc::waitpid(pid, std::ptr::null_mut(), 0) };
+            crate::join::remove_cgroup(id);
+            return Err(f);
+        }
+    };
+    joined().push((id, inherited.clone()));
+    match standby.launch(spec, false, setup, &inherited) {
         Ok(w) => Ok(Started {
             pid: w.pid,
             tty: w.tty,
@@ -2589,11 +2608,75 @@ fn start_joiner(
             stdout: w.stdout,
             stderr: w.stderr,
         }),
+        // Its standby waited for as it reported why (`launch`).
         Err(f) => {
             joined().retain(|(j, _)| *j != id);
             crate::join::remove_cgroup(id);
             Err(f)
         }
+    }
+}
+
+/// Writes `entries`, `sysctl=KEY=VALUE` each, from within the IPC, UTS and network
+/// namespaces of joiner `pid` (D119), in a child of init's: its own IPC and UTS
+/// namespaces' and its provider's network namespace's, which Docker's joiner may set
+/// too (runc libcontainer/configs/validate: a `net.*` sysctl where the network namespace
+/// is another container's). Each in the words a run's says it.
+fn sysctls_in(pid: libc::pid_t, entries: &[Vec<u8>]) -> Result<(), Failure> {
+    if entries.is_empty() {
+        return Ok(());
+    }
+    let (said_r, said_w) = pipe()?;
+    // SAFETY: init is single-threaded, so its child may run anything.
+    let child = unsafe { libc::fork() };
+    if child < 0 {
+        return Err(setup_failed(format!("fork: {}", io::Error::last_os_error())));
+    }
+    if child == 0 {
+        drop(said_r);
+        let written = (|| -> Result<(), String> {
+            for (ns, kind) in [
+                ("ipc", libc::CLONE_NEWIPC),
+                ("uts", libc::CLONE_NEWUTS),
+                ("net", libc::CLONE_NEWNET),
+            ] {
+                let file = File::open(format!("/proc/{pid}/ns/{ns}"))
+                    .map_err(|e| format!("the joiner's {ns} namespace: {e}"))?;
+                // SAFETY: setns(2) on a descriptor this process holds.
+                if unsafe { libc::setns(file.as_raw_fd(), kind) } != 0 {
+                    return Err(format!(
+                        "the joiner's {ns} namespace: {}",
+                        io::Error::last_os_error()
+                    ));
+                }
+            }
+            for entry in entries {
+                let kv =
+                    String::from_utf8_lossy(entry.strip_prefix(b"sysctl=").unwrap_or(entry)).into_owned();
+                let (k, v) = kv.split_once('=').unwrap_or((&kv, ""));
+                crate::setup::write_sysctl(k, v)?;
+            }
+            Ok(())
+        })();
+        let code = match written {
+            Ok(()) => 0,
+            Err(said) => {
+                let _ = File::from(said_w).write_all(said.as_bytes());
+                1
+            }
+        };
+        // SAFETY: _exit(2) ends the child without running init's exit paths.
+        unsafe { libc::_exit(code) }
+    }
+    drop(said_w);
+    let mut said = String::new();
+    let _ = File::from(said_r).read_to_string(&mut said);
+    // SAFETY: waits for our own child.
+    unsafe { libc::waitpid(child, std::ptr::null_mut(), 0) };
+    if said.is_empty() {
+        Ok(())
+    } else {
+        Err(setup_failed(said))
     }
 }
 
@@ -2604,8 +2687,6 @@ fn joiner_takes(setup: &[Vec<u8>]) -> Result<(), Failure> {
     for entry in setup {
         let what = if entry.starts_with(b"volume=") || entry.starts_with(b"domain-volume=") {
             "a volume"
-        } else if entry.starts_with(b"sysctl=") {
-            "--sysctl"
         } else if entry == b"init" {
             "--init"
         } else if entry == b"pid=host" {

@@ -1780,8 +1780,6 @@ impl<D: Disk> Daemon<D> {
                 Some("--init")
             } else if !run.pid.is_empty() {
                 Some("--pid")
-            } else if !run.sysctls.is_empty() {
-                Some("--sysctl")
             } else {
                 None
             };

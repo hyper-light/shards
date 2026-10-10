@@ -345,6 +345,48 @@ fn a_joiners_own_commands_reach_the_joiner() {
     let _ = exit(&mut provider);
 }
 
+/// A joiner's `--sysctl` is set in its own namespaces, as runc sets a container's from
+/// within them (D119): an IPC one in its own IPC namespace, its provider's untouched; a
+/// network one in the network namespace it shares, which Docker's joiner may set too.
+#[test]
+fn a_joiners_sysctls_are_set_in_its_namespaces() {
+    let Some((home, image)) = home("containers-joiner-sysctls") else {
+        return;
+    };
+    let mut provider = start(&home, &image, &["--name", "prov"], &["sleep"]);
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let (shm, port) = (
+        "print:/proc/sys/kernel/shmmax",
+        "print:/proc/sys/net/ipv4/ip_unprivileged_port_start",
+    );
+    let joined = run_in(
+        &home,
+        &image,
+        &[
+            "--rm",
+            "--network",
+            "container:prov",
+            "--sysctl",
+            "kernel.shmmax=1048576",
+            "--sysctl",
+            "net.ipv4.ip_unprivileged_port_start=500",
+        ],
+        &["fs", shm, port],
+    );
+    assert_eq!(
+        (joined.status, joined.stdout.as_str()),
+        (Some(0), "1048576\n500\n"),
+        "{joined}"
+    );
+    let theirs = shards(&["exec", "prov", "/bin/testguest", "fs", shm, port]);
+    assert_eq!(theirs.status, Some(0), "{theirs}");
+    let mut lines = theirs.stdout.lines();
+    assert_ne!(lines.next(), Some("1048576"), "{theirs}");
+    assert_eq!(lines.next(), Some("500"), "{theirs}");
+    assert_eq!(shards(&["stop", "-t", "1", "prov"]).status, Some(0));
+    let _ = exit(&mut provider);
+}
+
 #[test]
 fn a_run_leaves_its_container_until_rm() {
     let Some((home, image)) = home("containers-rm") else {
