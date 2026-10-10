@@ -179,6 +179,65 @@ pub trait Resolver {
     fn context_excludes(&self) -> Result<Option<Vec<Vec<u8>>>, Vec<u8>> {
         Ok(None)
     }
+    /// The `.dockerignore` patterns of local named context `name`, read as the build
+    /// loads it as `key` (`NamedContext.Load`), where they were not known before: `None`
+    /// for [`Options::context_excludes`].
+    fn local_excludes(&self, key: &[u8], name: &[u8]) -> Result<Option<Vec<Vec<u8>>>, Vec<u8>> {
+        let _ = (key, name);
+        Ok(None)
+    }
+    /// A check's warning, once the planning finds it: given before the next thing asked of
+    /// the resolver, as BuildKit's frontend sends each as it is found.
+    fn warn(&self, warning: &lint::Warning) {
+        let _ = warning;
+    }
+}
+
+/// A resolver given each of the checks' warnings before anything else is asked of it.
+struct Warned<'a> {
+    inner: &'a dyn Resolver,
+    linter: &'a Linter,
+    sent: std::cell::Cell<usize>,
+}
+
+impl Warned<'_> {
+    fn flush(&self) {
+        let new = self.linter.warnings_from(self.sent.get());
+        self.sent.set(self.sent.get() + new.len());
+        for w in &new {
+            self.inner.warn(w);
+        }
+    }
+}
+
+impl Resolver for Warned<'_> {
+    fn resolve(&self, name: &[u8], platform: &Platform, log: &[u8]) -> Result<Resolved, Vec<u8>> {
+        self.flush();
+        self.inner.resolve(name, platform, log)
+    }
+    fn epoch(&self, source: &EpochSource) -> Result<Option<(i64, u32)>, Vec<u8>> {
+        self.flush();
+        self.inner.epoch(source)
+    }
+    fn artifact(&self, name: &[u8], kind: &[u8], log: &[u8]) -> Result<Resolved, Vec<u8>> {
+        self.flush();
+        self.inner.artifact(name, kind, log)
+    }
+    fn frontend(&self, name: &[u8]) -> Result<(), Vec<u8>> {
+        self.flush();
+        self.inner.frontend(name)
+    }
+    fn context_excludes(&self) -> Result<Option<Vec<Vec<u8>>>, Vec<u8>> {
+        self.flush();
+        self.inner.context_excludes()
+    }
+    fn local_excludes(&self, key: &[u8], name: &[u8]) -> Result<Option<Vec<Vec<u8>>>, Vec<u8>> {
+        self.flush();
+        self.inner.local_excludes(key, name)
+    }
+    fn warn(&self, warning: &lint::Warning) {
+        self.inner.warn(warning);
+    }
 }
 
 /// Where SOURCE_DATE_EPOCH's time comes from when it is no number of seconds
@@ -471,6 +530,9 @@ struct Planner<'a> {
     /// The build context's .dockerignore patterns: [`Options::excludes`], or what the
     /// resolver read as dispatch began ([`Resolver::context_excludes`]).
     excludes: Vec<Vec<u8>>,
+    /// Each local named context's, by its local name, as the resolver read them when it
+    /// loaded ([`Resolver::local_excludes`]).
+    named_excludes: BTreeMap<Vec<u8>, Vec<Vec<u8>>>,
     /// Local named contexts' sources, their attributes set once the stage that reads
     /// each has said which of its paths it uses: the source, the stage, its key and its
     /// local name.
@@ -613,10 +675,16 @@ pub fn plan(text: &[u8], opts: &Options, resolver: &dyn Resolver) -> Result<Plan
             &linter,
         );
     }
-    let r = plan_with(text, opts, &ui, resolver, &linter, Mode::Plan).and_then(|p| match p {
+    let warned = Warned {
+        inner: resolver,
+        linter: &linter,
+        sent: std::cell::Cell::new(0),
+    };
+    let r = plan_with(text, opts, &ui, &warned, &linter, Mode::Plan).and_then(|p| match p {
         Planned::Plan(p) => Ok(*p),
         Planned::Outline(_) | Planned::Dispatched => Err(Fail::new(b"no plan".to_vec())),
     });
+    warned.flush();
     done(r, &linter)
 }
 
@@ -647,7 +715,14 @@ pub fn outline(text: &[u8], opts: &Options, resolver: &dyn Resolver) -> Result<O
     if text.is_empty() {
         return Err(fail(b"the Dockerfile cannot be empty".to_vec()));
     }
-    match plan_with(text, opts, &ui, resolver, &linter, Mode::Outline) {
+    let warned = Warned {
+        inner: resolver,
+        linter: &linter,
+        sent: std::cell::Cell::new(0),
+    };
+    let planned = plan_with(text, opts, &ui, &warned, &linter, Mode::Outline);
+    warned.flush();
+    match planned {
         Ok(Planned::Outline(o)) => Ok(o),
         Ok(Planned::Plan(_) | Planned::Dispatched) => Err(fail(b"no outline".to_vec())),
         Err(Fail(message, location)) => Err(Error {
@@ -890,6 +965,7 @@ fn plan_with(
         context,
         ignore: None,
         excludes: opts.excludes.clone(),
+        named_excludes: BTreeMap::new(),
         named_locals: Vec::new(),
         made: Vec::new(),
         contents: BTreeMap::new(),
@@ -3775,6 +3851,9 @@ impl Planner<'_> {
                 Ok((st, None))
             }
             b"local" => {
+                if let Some(ex) = self.resolver.local_excludes(&n.key, rest).map_err(Fail::new)? {
+                    self.named_excludes.insert(rest.to_vec(), ex);
+                }
                 let st = self.graph.source(
                     [b"local://".as_slice(), rest].concat(),
                     BTreeMap::new(),
@@ -4463,7 +4542,11 @@ impl Planner<'_> {
                 crate::json::write_strings(&mut json, &paths);
                 a.insert(b"local.followpaths".to_vec(), json.into_bytes());
             }
-            if let Some(ex) = self.opts.context_excludes.get(&name).filter(|e| !e.is_empty()) {
+            let ex = self
+                .named_excludes
+                .get(&name)
+                .or_else(|| self.opts.context_excludes.get(&name));
+            if let Some(ex) = ex.filter(|e| !e.is_empty()) {
                 let mut json = String::new();
                 crate::json::write_strings(&mut json, ex);
                 a.insert(b"local.excludepatterns".to_vec(), json.into_bytes());

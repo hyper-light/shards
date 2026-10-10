@@ -116,13 +116,17 @@ fn canonical(b: &[u8], kind: Kind) -> Vec<(u64, Vec<u8>)> {
 /// dockerui's ReadEntrypoint source: the Dockerfile, its .dockerignore and Docker's other
 /// casing, from the client's `dockerfile` directory.
 fn dockerfile_definition() -> Definition {
+    dockerfile_definition_of(SESSION)
+}
+
+fn dockerfile_definition_of(session: &[u8]) -> Definition {
     let mut attrs = BTreeMap::new();
     attrs.insert(b"local.differ".to_vec(), b"none".to_vec());
     attrs.insert(
         b"local.followpaths".to_vec(),
         br#"["Dockerfile","Dockerfile.dockerignore","dockerfile"]"#.to_vec(),
     );
-    attrs.insert(b"local.session".to_vec(), SESSION.to_vec());
+    attrs.insert(b"local.session".to_vec(), session.to_vec());
     attrs.insert(b"local.sharedkeyhint".to_vec(), b"dockerfile".to_vec());
     let mut meta = Meta::default();
     meta.description.insert(
@@ -204,6 +208,35 @@ fn captured_options() -> Options {
         cmdline: Some(b"127.0.0.1:15113/shards-d113-spy:1".to_vec()),
         ..Options::default()
     }
+}
+
+/// A file that does not parse fails as docker/dockerfile failed it in the capture: its
+/// message, and the errdefs.Source detail BuildKit's client prints the excerpt from,
+/// byte for byte (its Go stacks aside, which shards has none of).
+#[test]
+fn a_dockerfiles_error_carries_the_source_docker_dockerfile_gives() {
+    let text = testdata("parse.Dockerfile");
+    let err = plan::plan(&text, &captured_options(), &Captured).unwrap_err();
+    assert_eq!(
+        String::from_utf8(err.message).unwrap(),
+        "dockerfile parse error on line 3: unknown instruction: RUNN (did you mean RUN?)"
+    );
+    assert_eq!(err.location, vec![vec![(3, 3)]]);
+    let definition = pb::definition_json(
+        &dockerfile_definition_of(b"uxhd6dqtv1jb2lphceh83tpxa"),
+        &Carried::default(),
+    )
+    .unwrap();
+    let info = SourceInfo {
+        filename: b"Dockerfile",
+        language: b"Dockerfile",
+        data: &text,
+        definition: None,
+    };
+    assert_eq!(
+        pb::source_json(&info, &definition, &err.location[0]),
+        String::from_utf8(testdata("parse-error-source.json")).unwrap()
+    );
 }
 
 #[test]

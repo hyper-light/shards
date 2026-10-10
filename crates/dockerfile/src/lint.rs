@@ -267,6 +267,11 @@ impl Linter {
         self.warnings.borrow().clone()
     }
 
+    /// The warnings given after the first `n`.
+    pub fn warnings_from(&self, n: usize) -> Vec<Warning> {
+        self.warnings.borrow().get(n..).unwrap_or_default().to_vec()
+    }
+
     /// Whether `error=true` turns the warnings into a failure.
     pub fn failed(&self) -> bool {
         self.config.error && !self.called.borrow().is_empty()

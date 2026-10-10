@@ -114,11 +114,13 @@ impl Platform {
     }
 }
 
-/// A capability BuildKit says it has (apicaps.PBCap).
+/// A capability BuildKit says it has (apicaps.PBCap): enabled, or disabled with the
+/// message it gives the user.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Cap {
     pub id: String,
     pub enabled: bool,
+    pub disabled_reason_msg: String,
 }
 
 fn caps(b: &[u8]) -> Result<Cap, crate::wire::Error> {
@@ -127,6 +129,7 @@ fn caps(b: &[u8]) -> Result<Cap, crate::wire::Error> {
         match f? {
             (1, v) => c.id = v.string()?,
             (2, v) => c.enabled = v.varint()? != 0,
+            (5, v) => c.disabled_reason_msg = v.string()?,
             _ => {}
         }
     }
@@ -193,8 +196,18 @@ pub struct Solve<'a> {
     pub definition: Option<&'a [u8]>,
     pub frontend: &'a str,
     pub frontend_opt: BTreeMap<String, String>,
+    /// Caches to import (CacheOptionsEntry): each its type and attributes.
+    pub cache_imports: Vec<(String, BTreeMap<String, String>)>,
     pub frontend_inputs: BTreeMap<String, Vec<u8>>,
     pub evaluate: bool,
+}
+
+/// What a solve answered: its result (gateway.proto's Result) as BuildKit wrote it, and
+/// the reference it holds where it holds one.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Solved {
+    pub result: Vec<u8>,
+    pub single: Option<Ref>,
 }
 
 /// An image's metadata, as ResolveSourceMeta and ResolveImageConfig answer.
@@ -204,6 +217,26 @@ pub struct ImageMeta {
     pub config: Vec<u8>,
 }
 
+/// A Git source's metadata (ResolveSourceGitResponse): what it resolved to, and the
+/// commit's and tag's objects where they were asked for.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GitMeta {
+    pub checksum: String,
+    pub reference: String,
+    pub commit_checksum: String,
+    pub commit_object: Vec<u8>,
+    pub tag_object: Vec<u8>,
+}
+
+/// An HTTP source's metadata (ResolveSourceHTTPResponse): its checksum, file name, and
+/// when it was last modified (seconds and nanoseconds since 1970), if it says.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HttpMeta {
+    pub checksum: String,
+    pub filename: String,
+    pub last_modified: Option<(i64, i32)>,
+}
+
 /// What ResolveSourceMeta answers: the source (perhaps converted by a policy) and its
 /// metadata.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -211,6 +244,8 @@ pub struct SourceMeta {
     pub identifier: String,
     pub attrs: BTreeMap<String, String>,
     pub image: Option<ImageMeta>,
+    pub git: Option<GitMeta>,
+    pub http: Option<HttpMeta>,
 }
 
 /// What a frontend returns (Result): its reference, or one for each platform, and the
@@ -220,6 +255,20 @@ pub struct Returned {
     pub single: Option<Ref>,
     pub refs: BTreeMap<String, Ref>,
     pub metadata: BTreeMap<String, Vec<u8>>,
+}
+
+/// A warning (WarnRequest): the step it is on, its level, its line and detail lines, its
+/// documentation's URL, and where it is in a source: `info` (pb.SourceInfo, as protobuf)
+/// and its `ranges` (pb.Range each).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Warning<'a> {
+    pub digest: &'a str,
+    pub level: i64,
+    pub short: &'a [u8],
+    pub detail: &'a [Vec<u8>],
+    pub url: &'a str,
+    pub info: Option<&'a [u8]>,
+    pub ranges: &'a [Vec<u8>],
 }
 
 /// google.rpc.Status: a code, its message, and details (Any: type URL and value).
@@ -329,20 +378,28 @@ impl<R: Read, W: Write> Client<R, W> {
         Ok(out)
     }
 
-    /// A definition solved, its result's reference (a result with refs for each platform
-    /// is not asked of a definition).
-    pub fn solve(&mut self, s: &Solve<'_>) -> Result<Ref, Error> {
+    /// A definition or another frontend's build solved: its result, and the reference it
+    /// holds where it holds one.
+    pub fn solve(&mut self, s: &Solve<'_>) -> Result<Solved, Error> {
         let mut w = Writer::default();
         if let Some(def) = s.definition {
             w.message(1, def);
         }
         w.string(2, s.frontend);
         w.map(3, s.frontend_opt.iter().map(|(k, v)| (k.as_str(), v)), |e, v| {
-            e.string(2, v)
+            e.message(2, v.as_bytes())
         });
         // allowResultReturn and allowResultArrayRef, as grpcclient always sets them.
         w.bool(5, true);
         w.bool(6, true);
+        for (kind, attrs) in &s.cache_imports {
+            let mut c = Writer::default();
+            c.string(1, kind);
+            c.map(2, attrs.iter().map(|(k, v)| (k.as_str(), v)), |e, v| {
+                e.message(2, v.as_bytes())
+            });
+            w.message(12, &c.0);
+        }
         w.map(
             13,
             s.frontend_inputs.iter().map(|(k, v)| (k.as_str(), v)),
@@ -352,17 +409,20 @@ impl<R: Read, W: Write> Client<R, W> {
         );
         w.bool(14, s.evaluate);
         let b = self.call("Solve", &w.0)?;
-        // SolveResponse.result (3) .ref (3).
+        // SolveResponse.result (3), its .ref (3) if it holds one.
+        let mut out = Solved::default();
         for f in Reader::new(&b) {
             if let (3, v) = f.map_err(proto)? {
-                for rf in Reader::new(v.bytes().map_err(proto)?) {
+                let result = v.bytes().map_err(proto)?;
+                out.result = result.to_vec();
+                for rf in Reader::new(result) {
                     if let (3, v) = rf.map_err(proto)? {
-                        return Ref::read(v.bytes().map_err(proto)?).map_err(proto);
+                        out.single = Some(Ref::read(v.bytes().map_err(proto)?).map_err(proto)?);
                     }
                 }
             }
         }
-        Ok(Ref::default())
+        Ok(out)
     }
 
     /// `path` of reference `id`, its `range` (offset, length) where given.
@@ -415,8 +475,9 @@ impl<R: Read, W: Write> Client<R, W> {
         Ok(out)
     }
 
-    /// A source's metadata (an image's config and digest), resolved for `platform` and
-    /// shown as the step `log_name`.
+    /// A source's metadata (an image's config and digest, a Git source's commit, an HTTP
+    /// source's checksum and time), resolved for `platform` and shown as the step
+    /// `log_name`; a Git source's commit and tag objects where `git_objects`.
     pub fn resolve_source_meta(
         &mut self,
         identifier: &str,
@@ -424,11 +485,12 @@ impl<R: Read, W: Write> Client<R, W> {
         platform: Option<&Platform>,
         log_name: &str,
         resolve_mode: &str,
+        git_objects: bool,
     ) -> Result<SourceMeta, Error> {
         let mut source = Writer::default();
         source.string(1, identifier);
         source.map(2, attrs.iter().map(|(k, v)| (k.as_str(), v)), |e, v| {
-            e.string(2, v)
+            e.message(2, v.as_bytes())
         });
         let mut w = Writer::default();
         w.message(1, &source.0);
@@ -437,6 +499,11 @@ impl<R: Read, W: Write> Client<R, W> {
         }
         w.string(3, log_name);
         w.string(4, resolve_mode);
+        if git_objects {
+            let mut g = Writer::default();
+            g.bool(1, true);
+            w.message(5, &g.0);
+        }
         let b = self.call("ResolveSourceMeta", &w.0)?;
         let mut out = SourceMeta::default();
         for f in Reader::new(&b) {
@@ -467,31 +534,74 @@ impl<R: Read, W: Write> Client<R, W> {
                     }
                     out.image = Some(image);
                 }
+                (3, v) => {
+                    let mut git = GitMeta::default();
+                    for gf in Reader::new(v.bytes().map_err(proto)?) {
+                        match gf.map_err(proto)? {
+                            (1, v) => git.checksum = v.string().map_err(proto)?,
+                            (2, v) => git.reference = v.string().map_err(proto)?,
+                            (3, v) => git.commit_checksum = v.string().map_err(proto)?,
+                            (4, v) => git.commit_object = v.bytes().map_err(proto)?.to_vec(),
+                            (5, v) => git.tag_object = v.bytes().map_err(proto)?.to_vec(),
+                            _ => {}
+                        }
+                    }
+                    out.git = Some(git);
+                }
+                (4, v) => {
+                    let mut http = HttpMeta::default();
+                    for hf in Reader::new(v.bytes().map_err(proto)?) {
+                        match hf.map_err(proto)? {
+                            (1, v) => http.checksum = v.string().map_err(proto)?,
+                            (2, v) => http.filename = v.string().map_err(proto)?,
+                            // google.protobuf.Timestamp: seconds (1), nanos (2).
+                            (3, v) => {
+                                let mut t = (0i64, 0i32);
+                                for tf in Reader::new(v.bytes().map_err(proto)?) {
+                                    match tf.map_err(proto)? {
+                                        (1, v) => t.0 = v.varint().map_err(proto)? as i64,
+                                        (2, v) => t.1 = v.varint().map_err(proto)? as i32,
+                                        _ => {}
+                                    }
+                                }
+                                http.last_modified = Some(t);
+                            }
+                            _ => {}
+                        }
+                    }
+                    out.http = Some(http);
+                }
                 _ => {}
             }
         }
         Ok(out)
     }
 
-    /// A warning of the build's, at `level`, shown with `detail` lines and where the
-    /// definition's source map places it.
-    pub fn warn(
-        &mut self,
-        digest: &str,
-        level: i64,
-        short: &[u8],
-        detail: &[Vec<u8>],
-        url: &str,
-    ) -> Result<(), Error> {
+    /// A warning of the build's on the step `digest` names (WarnRequest).
+    pub fn warn(&mut self, warning: &Warning<'_>) -> Result<(), Error> {
         let mut w = Writer::default();
-        w.string(1, digest);
-        w.int64(2, level);
-        w.bytes(3, short);
-        for d in detail {
+        w.string(1, warning.digest);
+        w.int64(2, warning.level);
+        w.bytes(3, warning.short);
+        for d in warning.detail {
             w.message(4, d);
         }
-        w.string(5, url);
+        w.string(5, warning.url);
+        if let Some(i) = warning.info {
+            w.message(6, i);
+        }
+        for r in warning.ranges {
+            w.message(7, r);
+        }
         self.call("Warn", &w.0).map(|_| ())
+    }
+
+    /// Another frontend's result, as its solve answered it (gateway.proto's Result),
+    /// returned as this frontend's.
+    pub fn return_raw(&mut self, result: &[u8]) -> Result<(), Error> {
+        let mut w = Writer::default();
+        w.message(1, result);
+        self.call("Return", &w.0).map(|_| ())
     }
 
     /// The frontend's result, or its error, returned (ReturnRequest).
@@ -510,7 +620,7 @@ impl<R: Read, W: Write> Client<R, W> {
                     res.message(4, &refs.0);
                 }
                 res.map(10, r.metadata.iter().map(|(k, v)| (k.as_str(), v)), |e, v| {
-                    e.bytes(2, v)
+                    e.message(2, v)
                 });
                 w.message(1, &res.0);
             }
@@ -546,7 +656,7 @@ mod tests {
         assert_eq!(pong.workers.len(), 1);
         assert_eq!(pong.workers[0].platforms[0].os, "linux");
         assert!(c.inputs().unwrap().is_empty());
-        let dockerfile = c.solve(&Solve::default()).unwrap();
+        let dockerfile = c.solve(&Solve::default()).unwrap().single.unwrap();
         assert_eq!(dockerfile.id, "z6j6yo9zwftwmksk8pkh27fgr");
         let stat = c.stat_file(&dockerfile.id, "Dockerfile").unwrap();
         assert_eq!(
@@ -587,6 +697,7 @@ mod tests {
                 None,
                 "",
                 "",
+                false,
             )
             .unwrap();
         assert_eq!(meta.identifier, "docker-image://docker.io/library/alpine:3.20");
@@ -597,7 +708,7 @@ mod tests {
         );
         assert!(image.config.starts_with(b"{\"architecture\":\"arm64\""));
         assert_eq!(
-            c.solve(&Solve::default()).unwrap().id,
+            c.solve(&Solve::default()).unwrap().single.unwrap().id,
             "d3aoolwed5lk9e7l5gra2666o"
         );
         assert!(c.stat_file("d3aoolwed5lk9e7l5gra2666o", ".dockerignore").is_err());
@@ -605,7 +716,7 @@ mod tests {
             c.read_file("d3aoolwed5lk9e7l5gra2666o", ".dockerignore", None)
                 .is_err()
         );
-        let built = c.solve(&Solve::default()).unwrap();
+        let built = c.solve(&Solve::default()).unwrap().single.unwrap();
         assert_eq!(built.id, "h71kuwh4g5ikvyaafsq04qhl8");
         assert!(!built.def.is_empty());
         c.return_result(Ok(&Returned {

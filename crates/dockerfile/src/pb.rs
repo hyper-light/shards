@@ -216,13 +216,15 @@ pub struct Carried<'a> {
     pub group_prefix: &'a str,
 }
 
-/// A definition as written: its bytes, and each op's digest, in the definition's order,
-/// and the root's (empty for a definition of nothing).
+/// A definition as written: its bytes, each op's digest, in the definition's order, and
+/// the root's (empty for a definition of nothing), and every capability its metadata
+/// names.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Marshalled {
     pub bytes: Vec<u8>,
     pub digests: Vec<Vec<u8>>,
     pub root: Vec<u8>,
+    pub caps: std::collections::BTreeSet<&'static str>,
 }
 
 /// `def` as `llb.Definition.ToPB` holds it (`pb.Definition`), written as protobuf-go's
@@ -257,12 +259,15 @@ pub fn definition(def: &Definition, carried: &Carried<'_>) -> Option<Marshalled>
     }
     // map<string, OpMetadata>, by digest.
     let mut metadata: Vec<(&[u8], W)> = Vec::with_capacity(ops.len());
+    let mut all_caps = std::collections::BTreeSet::new();
     for (i, (o, md)) in def.ops.iter().zip(&def.metadata).enumerate() {
         let caps = crate::caps::op(o, md, carried.sets_default_path);
         metadata.push((digests.get(i)?, op_metadata(md, &caps, carried.group_prefix)));
+        all_caps.extend(caps);
     }
     let root_caps = crate::caps::root(&def.metadata);
     metadata.push((&root_digest, op_metadata(&Meta::default(), &root_caps, "")));
+    all_caps.extend(root_caps);
     metadata.sort_by(|a, b| a.0.cmp(b.0));
     // A digest named twice would be one op twice, which the marshal never makes.
     metadata.dedup_by(|a, b| a.0 == b.0);
@@ -311,7 +316,207 @@ pub fn definition(def: &Definition, carried: &Carried<'_>) -> Option<Marshalled>
         bytes: w.0,
         digests,
         root: root_digest,
+        caps: all_caps,
     })
+}
+
+/// A definition of a source map's own (no source of its own, as dockerui's loads of the
+/// Dockerfile and .dockerignore are) as encoding/json writes the pb.Definition
+/// `llb.Definition.ToPB` makes, BuildKit's errdefs.Source details carrying it so: fields
+/// in the struct's order and by their JSON tags, empty ones left out, maps by key, bytes
+/// in base64.
+pub fn definition_json(def: &Definition, carried: &Carried<'_>) -> Option<String> {
+    use base64::Engine as _;
+    if carried.source.is_some() {
+        return None;
+    }
+    let marshalled = definition(def, carried)?;
+    let mut out = String::from("{");
+    if def.root.is_none() {
+        out.push('}');
+        return Some(out);
+    }
+    let b64 = |b: &[u8]| base64::engine::general_purpose::STANDARD.encode(b);
+    let str_json = |s: &[u8]| {
+        let mut o = String::new();
+        crate::json::write_string(&mut o, s);
+        o
+    };
+    // Each op's bytes, again, as `definition` wrote them, the root last.
+    let mut ops: Vec<String> = Vec::with_capacity(def.ops.len() + 1);
+    for o in &def.ops {
+        let inputs: Vec<Vec<u8>> = o
+            .inputs
+            .iter()
+            .map(|i| marshalled.digests.get(i.op).cloned())
+            .collect::<Option<_>>()?;
+        ops.push(format!("\"{}\"", b64(&op(o, &inputs)?)));
+    }
+    let root_input = def.root?;
+    ops.push(format!(
+        "\"{}\"",
+        b64(&root(marshalled.digests.get(root_input.op)?, root_input.index))
+    ));
+    out.push_str(&format!("\"def\":[{}]", ops.join(",")));
+    let mut metadata: Vec<(Vec<u8>, String)> = Vec::new();
+    for ((o, md), d) in def.ops.iter().zip(&def.metadata).zip(&marshalled.digests) {
+        let caps = crate::caps::op(o, md, carried.sets_default_path);
+        metadata.push((d.clone(), op_metadata_json(md, &caps, carried.group_prefix)));
+    }
+    metadata.push((
+        marshalled.root.clone(),
+        op_metadata_json(&Meta::default(), &crate::caps::root(&def.metadata), ""),
+    ));
+    metadata.sort_by(|a, b| a.0.cmp(&b.0));
+    let entries: Vec<String> = metadata
+        .iter()
+        .map(|(d, m)| format!("{}:{m}", str_json(d)))
+        .collect();
+    out.push_str(&format!(",\"metadata\":{{{}}}", entries.join(",")));
+    let mut locations: Vec<(Vec<u8>, String)> = Vec::new();
+    for (md, d) in def.metadata.iter().zip(&marshalled.digests) {
+        let locs: Vec<String> = md
+            .locations
+            .iter()
+            .map(|l| {
+                let ranges: Vec<String> = l
+                    .iter()
+                    .map(|&(a, b)| format!("{{\"start\":{},\"end\":{}}}", position_json(a), position_json(b)))
+                    .collect();
+                if ranges.is_empty() {
+                    "{}".to_string()
+                } else {
+                    format!("{{\"ranges\":[{}]}}", ranges.join(","))
+                }
+            })
+            .collect();
+        let entry = if locs.is_empty() {
+            "{}".to_string()
+        } else {
+            format!("{{\"locations\":[{}]}}", locs.join(","))
+        };
+        locations.push((d.clone(), entry));
+    }
+    locations.sort_by(|a, b| a.0.cmp(&b.0));
+    locations.dedup_by(|a, b| a.0 == b.0);
+    let entries: Vec<String> = locations
+        .iter()
+        .map(|(d, l)| format!("{}:{l}", str_json(d)))
+        .collect();
+    out.push_str(&format!(
+        ",\"Source\":{{\"locations\":{{{}}}}}}}",
+        entries.join(",")
+    ));
+    Some(out)
+}
+
+/// BuildKit's errdefs.Source error detail (type URL
+/// `github.com/moby/buildkit/errdefs.Source+json`) as encoding/json writes it: the file,
+/// its language and content, the definition that loads it (as [`definition_json`] writes
+/// it), and the lines `ranges` names, from which the client prints the excerpt.
+pub fn source_json(info: &SourceInfo<'_>, definition: &str, ranges: &[(usize, usize)]) -> String {
+    use base64::Engine as _;
+    let s = |b: &[u8]| {
+        let mut o = String::new();
+        crate::json::write_string(&mut o, b);
+        o
+    };
+    let mut fields: Vec<String> = Vec::new();
+    if !info.filename.is_empty() {
+        fields.push(format!("\"filename\":{}", s(info.filename)));
+    }
+    if !info.data.is_empty() {
+        fields.push(format!(
+            "\"data\":\"{}\"",
+            base64::engine::general_purpose::STANDARD.encode(info.data)
+        ));
+    }
+    fields.push(format!("\"definition\":{definition}"));
+    if !info.language.is_empty() {
+        fields.push(format!("\"language\":{}", s(info.language)));
+    }
+    let ranges: Vec<String> = ranges
+        .iter()
+        .map(|&(a, b)| format!("{{\"start\":{},\"end\":{}}}", position_json(a), position_json(b)))
+        .collect();
+    let mut out = format!("{{\"info\":{{{}}}", fields.join(","));
+    if !ranges.is_empty() {
+        out.push_str(&format!(",\"ranges\":[{}]", ranges.join(",")));
+    }
+    out.push('}');
+    out
+}
+
+/// A pb.Position of a line, as encoding/json writes it: its character 0, left out.
+fn position_json(line: usize) -> String {
+    if line == 0 {
+        "{}".to_string()
+    } else {
+        format!("{{\"line\":{line}}}")
+    }
+}
+
+/// pb.OpMetadata as encoding/json writes it (JSON tags ignore_cache, description,
+/// export_cache, caps, progress_group, linux_resources).
+fn op_metadata_json(md: &Meta, caps: &std::collections::BTreeSet<&'static str>, prefix: &str) -> String {
+    let s = |b: &[u8]| {
+        let mut o = String::new();
+        crate::json::write_string(&mut o, b);
+        o
+    };
+    let mut fields: Vec<String> = Vec::new();
+    if md.ignore_cache {
+        fields.push("\"ignore_cache\":true".to_string());
+    }
+    if !md.description.is_empty() {
+        let d: Vec<String> = md
+            .description
+            .iter()
+            .map(|(k, v)| format!("{}:{}", s(k), s(v)))
+            .collect();
+        fields.push(format!("\"description\":{{{}}}", d.join(",")));
+    }
+    if !caps.is_empty() {
+        let c: Vec<String> = caps.iter().map(|c| format!("{}:true", s(c.as_bytes()))).collect();
+        fields.push(format!("\"caps\":{{{}}}", c.join(",")));
+    }
+    if let Some(g) = &md.progress_group {
+        let mut p: Vec<String> = Vec::new();
+        p.push(format!("\"id\":{}", s(format!("{prefix}{}", g.id).as_bytes())));
+        if !g.name.is_empty() {
+            p.push(format!("\"name\":{}", s(&g.name)));
+        }
+        if g.weak {
+            p.push("\"weak\":true".to_string());
+        }
+        fields.push(format!("\"progress_group\":{{{}}}", p.join(",")));
+    }
+    if let Some(r) = &md.linux_resources {
+        let mut l: Vec<String> = Vec::new();
+        if r.memory != 0 {
+            l.push(format!("\"memory\":{}", r.memory));
+        }
+        if r.memory_swap != 0 {
+            l.push(format!("\"memorySwap\":{}", r.memory_swap));
+        }
+        if r.cpu_shares != 0 {
+            l.push(format!("\"cpuShares\":{}", r.cpu_shares));
+        }
+        if r.cpu_period != 0 {
+            l.push(format!("\"cpuPeriod\":{}", r.cpu_period));
+        }
+        if r.cpu_quota != 0 {
+            l.push(format!("\"cpuQuota\":{}", r.cpu_quota));
+        }
+        if !r.cpuset_cpus.is_empty() {
+            l.push(format!("\"cpusetCpus\":{}", s(&r.cpuset_cpus)));
+        }
+        if !r.cpuset_mems.is_empty() {
+            l.push(format!("\"cpusetMems\":{}", s(&r.cpuset_mems)));
+        }
+        fields.push(format!("\"linux_resources\":{{{}}}", l.join(",")));
+    }
+    format!("{{{}}}", fields.join(","))
 }
 
 /// A line of the source as `pb.Position` has it, its character 0.

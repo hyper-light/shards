@@ -159,15 +159,23 @@ pub fn linux_resources(opts: &BTreeMap<String, String>) -> Result<Option<LinuxRe
 }
 
 /// Whether a download's first bytes are an archive's, as dockerui's `isArchive` reads
-/// them: bzip2, gzip or xz's magic, else a tar header Go's `tar.Reader` takes (a block
-/// whose checksum, unsigned or signed, is its own).
+/// them: bzip2, gzip, xz or zstd's magic, or a zstd skippable frame's (0x184D2A50 to
+/// 0x184D2A5F, little-endian), else a tar header Go's `tar.Reader` takes (a block whose
+/// checksum, unsigned or signed, is its own).
 pub fn is_archive(header: &[u8]) -> bool {
-    const MAGIC: [&[u8]; 3] = [
+    const MAGIC: [&[u8]; 4] = [
         &[0x42, 0x5A, 0x68],
         &[0x1F, 0x8B, 0x08],
         &[0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00],
+        &[0x28, 0xB5, 0x2F, 0xFD],
     ];
     if MAGIC.iter().any(|m| header.starts_with(m)) {
+        return true;
+    }
+    if header.len() >= 8
+        && let Some(first) = header.get(..4).and_then(|b| <[u8; 4]>::try_from(b).ok())
+        && u32::from_le_bytes(first) & 0xFFFF_FFF0 == 0x184D_2A50
+    {
         return true;
     }
     let Some(block) = header.get(..512) else {
@@ -244,5 +252,17 @@ mod tests {
             linux_resources(&opts(&[("cpusetcpus", "3-1")])).unwrap_err(),
             "invalid cpusetcpus value: 3-1: invalid cpuset range \"3-1\""
         );
+    }
+
+    /// dockerfile/1.27.1's isArchive: zstd's frame and skippable frames are archives,
+    /// a skippable frame's magic only with the eight bytes of its header.
+    #[test]
+    fn zstd_downloads_are_archives() {
+        assert!(is_archive(&[0x28, 0xB5, 0x2F, 0xFD, 0x00]));
+        assert!(is_archive(&[0x5F, 0x2A, 0x4D, 0x18, 0, 0, 0, 0]));
+        assert!(is_archive(&[0x50, 0x2A, 0x4D, 0x18, 4, 0, 0, 0, 1]));
+        assert!(!is_archive(&[0x50, 0x2A, 0x4D, 0x18, 0, 0, 0]));
+        assert!(!is_archive(&[0x60, 0x2A, 0x4D, 0x18, 0, 0, 0, 0]));
+        assert!(!is_archive(b"FROM alpine\n"));
     }
 }

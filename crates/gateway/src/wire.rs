@@ -189,7 +189,9 @@ impl Writer {
     }
 
     /// A map<string, V> field's entries, by their keys' order: each its key (field 1)
-    /// and its value (field 2), the value as `value` writes it into the entry.
+    /// and its value (field 2), both written however empty, as protobuf-go writes a map's
+    /// entries; `value` writes the value into the entry, with [`Writer::message`] for a
+    /// string, bytes or message.
     pub fn map<'k, V>(
         &mut self,
         field: u32,
@@ -200,7 +202,7 @@ impl Writer {
         sorted.sort_by(|a, b| a.0.cmp(b.0));
         for (k, v) in sorted {
             let mut e = Writer::default();
-            e.string(1, k);
+            e.message(1, k.as_bytes());
             value(&mut e, v);
             self.message(field, &e.0);
         }
@@ -221,7 +223,7 @@ mod tests {
         w.string(3, "testing");
         w.message(4, &[]);
         w.bool(5, false);
-        w.map(6, [("b", 2u64), ("a", 1u64)], |e, v| e.uint(2, v));
+        w.map(6, [("b", 2u64), ("a", 1u64), ("", 0)], |e, v| e.uint(2, v));
         // protobuf.dev's own examples: 150 as 08 96 01, "testing" as 1a 07 74 65 …
         assert_eq!(&w.0[..3], &[0x08, 0x96, 0x01]);
         let read: Vec<(u32, Value<'_>)> = Reader::new(&w.0).map(Result::unwrap).collect();
@@ -229,9 +231,10 @@ mod tests {
         assert_eq!(read[1], (2, Value::Varint(u64::MAX)));
         assert_eq!(read[2], (3, Value::Bytes(b"testing")));
         assert_eq!(read[3], (4, Value::Bytes(b"")));
-        // The map's entries, "a" first.
-        assert_eq!(read[4], (6, Value::Bytes(&[0x0a, 0x01, b'a', 0x10, 0x01])));
-        assert_eq!(read.len(), 6);
+        // The map's entries by key, an empty key written as protobuf-go writes it.
+        assert_eq!(read[4], (6, Value::Bytes(&[0x0a, 0x00])));
+        assert_eq!(read[5], (6, Value::Bytes(&[0x0a, 0x01, b'a', 0x10, 0x01])));
+        assert_eq!(read.len(), 7);
     }
 
     #[test]
