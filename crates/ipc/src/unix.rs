@@ -804,14 +804,27 @@ const SETSID: libc::c_int = 0x0400;
 
 /// A child started by [`spawn`]. Waiting reaps it; dropping it does not. One thread may
 /// wait while others signal it: its pid stays the child's until `wait` has marked it
-/// reaped, so a signal never reaches another process that reuses the pid.
+/// reaped, so a signal never reaches another process that reuses the pid. One that this
+/// process's spawner made (`by`, which of its spawners: [`start_spawner`]) is that
+/// spawner's child, which reaps it when `wait` asks, and not before; it is watched and
+/// signalled by its pid all the same.
 #[derive(Debug)]
 pub struct Child {
     pid: libc::pid_t,
     reaped: Mutex<bool>,
+    by: Option<u64>,
 }
 
 impl Child {
+    /// Child `pid`, made by this process or by its spawner `by`.
+    pub(crate) fn new(pid: libc::pid_t, by: Option<u64>) -> Child {
+        Child {
+            pid,
+            reaped: Mutex::new(false),
+            by,
+        }
+    }
+
     pub fn id(&self) -> u32 {
         self.pid.unsigned_abs()
     }
@@ -819,87 +832,39 @@ impl Child {
     /// Waits for the child to end, without reaping it (WNOWAIT): its pid stays the child's,
     /// for `kill` to look at, until [`wait`](Self::wait) takes its status.
     pub fn ended(&self) -> io::Result<()> {
-        loop {
-            // SAFETY: an all-zero siginfo_t is valid; waitid(2) fills it for our child.
-            let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
-            // SAFETY: as above.
-            let r = unsafe { libc::waitid(libc::P_PID, self.id(), &mut info, libc::WEXITED | libc::WNOWAIT) };
-            if r == 0 {
-                return Ok(());
-            }
-            let e = io::Error::last_os_error();
-            if e.kind() != io::ErrorKind::Interrupted {
-                return Err(e);
-            }
-        }
+        self.ended_status().map(drop)
     }
 
     /// The status of a child that has ended, as [`wait`](Self::wait) gives it, without
     /// reaping it: until it is reaped, its pid stays its own, and no new process's.
     pub fn ended_status(&self) -> io::Result<i32> {
-        loop {
-            // SAFETY: an all-zero siginfo_t is valid; waitid(2) fills it for our child.
-            let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
-            // SAFETY: as above.
-            let r = unsafe { libc::waitid(libc::P_PID, self.id(), &mut info, libc::WEXITED | libc::WNOWAIT) };
-            if r == 0 {
-                // SAFETY: si_status is set by waitid for a child that has ended.
-                let status = unsafe { info.si_status() };
-                return Ok(if info.si_code == libc::CLD_EXITED {
-                    status
-                } else {
-                    128 + status
-                });
-            }
-            let e = io::Error::last_os_error();
-            if e.kind() != io::ErrorKind::Interrupted {
-                return Err(e);
-            }
-        }
+        let status = match self.by {
+            Some(by) => crate::spawner::status(by, self.pid, true)?,
+            None => status_of(self.pid, true)?,
+        };
+        status.ok_or_else(|| io::Error::other("a child waited for was said to run"))
     }
 
     /// Waits for the child to end: its exit status, or 128 plus the signal that ended it.
     pub fn wait(&self) -> io::Result<i32> {
         self.ended()?;
         let mut reaped = self.reaped.lock().unwrap_or_else(PoisonError::into_inner);
-        let mut status = 0;
-        loop {
-            // SAFETY: waitpid(2) for our own child, which has ended, into a local.
-            let r = unsafe { libc::waitpid(self.pid, &mut status, 0) };
-            if r == self.pid {
-                break;
-            }
-            let e = io::Error::last_os_error();
-            if e.kind() != io::ErrorKind::Interrupted {
-                return Err(e);
-            }
-        }
+        let status = match self.by {
+            Some(by) => crate::spawner::reap(by, self.pid)?,
+            None => reap(self.pid)?,
+        };
         *reaped = true;
-        if libc::WIFEXITED(status) {
-            Ok(libc::WEXITSTATUS(status))
-        } else {
-            Ok(128 + libc::WTERMSIG(status))
-        }
+        Ok(status)
     }
 
     /// Whether the child has ended, without waiting: its status as [`Child::wait`] gives
     /// it once it has, `None` while it runs.
     pub fn try_wait(&self) -> Option<i32> {
-        // SAFETY: an all-zero siginfo_t is valid; waitid(2) fills it for our child.
-        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
-        // SAFETY: as above; WNOHANG returns at once, with si_pid 0 if nothing ended.
-        let r = unsafe {
-            libc::waitid(
-                libc::P_PID,
-                self.id(),
-                &mut info,
-                libc::WEXITED | libc::WNOWAIT | libc::WNOHANG,
-            )
+        let ended = match self.by {
+            Some(by) => crate::spawner::status(by, self.pid, false),
+            None => status_of(self.pid, false),
         };
-        // SAFETY: si_pid is set by waitid when it reports a child.
-        if r != 0 || unsafe { info.si_pid() } == 0 {
-            return None;
-        }
+        ended.ok().flatten()?;
         self.wait().ok()
     }
 
@@ -909,12 +874,69 @@ impl Child {
         if *reaped {
             return Ok(());
         }
-        // SAFETY: kill(2) of our own child, not reaped while we hold the lock.
+        // A spawner that has gone left what it made to init, which reaps it: its pid may
+        // be another process's.
+        if let Some(by) = self.by
+            && !crate::spawner::serving(by)
+        {
+            return Err(io::Error::other("the spawner that made it has gone"));
+        }
+        // SAFETY: kill(2) of our own child, or our spawner's, not reaped while we hold the
+        // lock.
         if unsafe { libc::kill(self.pid, signal) } != 0 {
             return Err(io::Error::last_os_error());
         }
         Ok(())
     }
+}
+
+/// Whether this process's child `pid` has ended, waiting for it to if `wait`: its status
+/// as [`Child::wait`] gives it, without reaping it (WNOWAIT); `None` while it runs.
+pub(crate) fn status_of(pid: libc::pid_t, wait: bool) -> io::Result<Option<i32>> {
+    let flags = libc::WEXITED | libc::WNOWAIT | if wait { 0 } else { libc::WNOHANG };
+    loop {
+        // SAFETY: an all-zero siginfo_t is valid; waitid(2) fills it for our child.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        // SAFETY: as above; WNOHANG returns at once, with si_pid 0 if nothing ended.
+        if unsafe { libc::waitid(libc::P_PID, pid.unsigned_abs(), &mut info, flags) } == 0 {
+            // SAFETY: si_pid and si_status are set by waitid when it reports a child.
+            let (ended, status) = unsafe { (info.si_pid(), info.si_status()) };
+            if ended == 0 {
+                return Ok(None);
+            }
+            return Ok(Some(if info.si_code == libc::CLD_EXITED {
+                status
+            } else {
+                128 + status
+            }));
+        }
+        let e = io::Error::last_os_error();
+        if e.kind() != io::ErrorKind::Interrupted {
+            return Err(e);
+        }
+    }
+}
+
+/// Reaps this process's child `pid`, once it has ended: its exit status, or 128 plus the
+/// signal that ended it.
+pub(crate) fn reap(pid: libc::pid_t) -> io::Result<i32> {
+    let mut status = 0;
+    loop {
+        // SAFETY: waitpid(2) for our own child into a local.
+        let r = unsafe { libc::waitpid(pid, &mut status, 0) };
+        if r == pid {
+            break;
+        }
+        let e = io::Error::last_os_error();
+        if e.kind() != io::ErrorKind::Interrupted {
+            return Err(e);
+        }
+    }
+    Ok(if libc::WIFEXITED(status) {
+        libc::WEXITSTATUS(status)
+    } else {
+        128 + libc::WTERMSIG(status)
+    })
 }
 
 /// Starts `program` with `args` and this process's environment. The child gets exactly the
@@ -969,6 +991,21 @@ pub fn spawn_in(
 }
 
 fn spawn_env(
+    program: &Path,
+    args: &[&OsStr],
+    fds: &[(BorrowedFd<'_>, RawFd)],
+    detach: bool,
+    env: Vec<(std::ffi::OsString, std::ffi::OsString)>,
+) -> io::Result<Child> {
+    // A process with a spawner has its children made there (crate::spawner, PM M158).
+    if let Some(made) = crate::spawner::spawn(program, args, fds, detach, &env) {
+        return made;
+    }
+    spawn_here(program, args, fds, detach, env)
+}
+
+/// [`spawn`]'s child, made by this process.
+pub(crate) fn spawn_here(
     program: &Path,
     args: &[&OsStr],
     fds: &[(BorrowedFd<'_>, RawFd)],
@@ -1083,10 +1120,7 @@ fn spawn_env(
                 argv_ptrs.as_ptr(),
                 env_ptrs.as_ptr(),
             ))?;
-            Ok(Child {
-                pid,
-                reaped: Mutex::new(false),
-            })
+            Ok(Child::new(pid, None))
         })();
         libc::posix_spawnattr_destroy(&mut attr);
         libc::posix_spawn_file_actions_destroy(&mut actions);
@@ -1117,7 +1151,7 @@ pub fn sync_durable(file: &std::fs::File) -> io::Result<()> {
 }
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
-mod tests {
+pub(crate) mod tests {
     use std::fs::File;
     use std::io::Read;
     use std::os::fd::AsFd;
@@ -1494,7 +1528,7 @@ mod tests {
     }
 
     #[test]
-    fn children_get_the_descriptors_they_are_given() {
+    pub(crate) fn children_get_the_descriptors_they_are_given() {
         let (mut r, w) = pipe();
         let child = spawn(
             Path::new("/bin/sh"),
@@ -1515,7 +1549,7 @@ mod tests {
     /// on exec as every descriptor of ours is; and nothing moved out of the way on the way
     /// is left in the child.
     #[test]
-    fn children_get_swapped_descriptors_each_where_it_belongs() {
+    pub(crate) fn children_get_swapped_descriptors_each_where_it_belongs() {
         let (mut ra, wa) = pipe();
         let (mut rb, wb) = pipe();
         let (a, b) = (wa.as_raw_fd(), wb.as_raw_fd());
@@ -1546,7 +1580,7 @@ mod tests {
     }
 
     #[test]
-    fn a_descriptor_given_its_own_number_reaches_the_child() {
+    pub(crate) fn a_descriptor_given_its_own_number_reaches_the_child() {
         let (mut r, w) = pipe();
         let n = w.as_raw_fd();
         // SAFETY: fcntl(2) on a descriptor we own: close-on-exec, as ours all are.
@@ -1569,7 +1603,7 @@ mod tests {
     /// Even a descriptor left inheritable stays behind (macOS: POSIX_SPAWN_CLOEXEC_DEFAULT).
     #[cfg(target_vendor = "apple")]
     #[test]
-    fn children_get_nothing_else() {
+    pub(crate) fn children_get_nothing_else() {
         let (_r, w) = pipe();
         // SAFETY: fcntl(2) on a descriptor we own: clears close-on-exec.
         assert_eq!(unsafe { libc::fcntl(w.as_raw_fd(), libc::F_SETFD, 0) }, 0);
@@ -1592,7 +1626,7 @@ mod tests {
     /// A child spawned in an environment has that alone: what it is given, and nothing of
     /// this process's (its HOME, here).
     #[test]
-    fn a_child_spawned_in_an_environment_has_it_alone() {
+    pub(crate) fn a_child_spawned_in_an_environment_has_it_alone() {
         assert!(
             std::env::var_os("HOME").is_some(),
             "the test needs a HOME to leave behind"
@@ -1614,7 +1648,7 @@ mod tests {
     }
 
     #[test]
-    fn statuses_and_signals() {
+    pub(crate) fn statuses_and_signals() {
         let child = spawn(
             Path::new("/bin/sh"),
             &["-c".as_ref(), "exit 7".as_ref()],
@@ -1631,7 +1665,7 @@ mod tests {
     }
 
     #[test]
-    fn detached_children_lead_their_own_session() {
+    pub(crate) fn detached_children_lead_their_own_session() {
         // The test asks the kernel while the child waits for the pipe to close: `ps`
         // differs between systems, and BusyBox's has no `-p`.
         // SAFETY: getpgrp(2) and getsid(2) of this process.
@@ -1740,7 +1774,7 @@ mod tests {
     }
 
     #[test]
-    fn a_reaped_child_is_never_signalled() {
+    pub(crate) fn a_reaped_child_is_never_signalled() {
         let child =
             std::sync::Arc::new(spawn(Path::new("/bin/sleep"), &["30".as_ref()], &[], false).unwrap());
         let waiter = {

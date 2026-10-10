@@ -4784,3 +4784,50 @@ revision before comparing a changed API/implementation.
   every measurement keep `release`. Release's stack guards, which test-release's
   smaller frames no longer hold it to, are tested on release on their own (M159), and
   the musl job's release build runs in a job of its own.
+
+### M158. What a child holds of what its parent lets go of, made there or by a spawner
+
+- **Question.** A child holds every descriptor its parent had at the spawn until it
+  execs (M134). The daemon holds a run's published listeners from binding them until its
+  network process has them, and its clients' stdio until a VM has the run, while its
+  other threads make VMs: a run shorter than such a spawn ends with its port bound, and
+  `run --rm -p N` again fails where Docker's succeeds. Either the listeners are bound
+  where no child is made (the network process, M134's note), or every child is made by a
+  spawner, a process made before any of them existed. Which holds nothing, and at what
+  cost?
+- **Method.** `docs/research/measurements/spawner`: the main thread lets go of a
+  listener, then binds its port again, and of a pipe's write end, then reads for its end,
+  again and again, and times each that something still holds, while 4 threads have
+  /usr/bin/true made as `shards_ipc::spawn` makes children (posix_spawn, three
+  descriptors given, `POSIX_SPAWN_CLOEXEC_DEFAULT`): here, with 0, 100, 300 or 1,000 more
+  descriptors open (`direct`), or by a spawner forked before anything else was open,
+  sent the three descriptors with each request (`spawner`); and posix_spawn's own time,
+  here or there, and the round trip to the spawner alone. 10 s a run, direct and spawner
+  in turn, 3 rounds at each count. Apple M5 Max, macOS 26.4.1, 2026-10-10, load average
+  17 to 33 for 1,000 more and 40 to 56 for the rest.
+- **Results.** Holds, n held of those let go and the longest, and posix_spawn's p50, by
+  round:
+
+  | more | made | listeners held | longest | pipes held | longest | posix_spawn p50 (µs) | round trip p50 (µs) |
+  |---:|---|---|---:|---|---:|---|---|
+  | 0 | here | 1,703/13,556, 2,293/18,141, 2,714/15,971 | 242 ms | 110/68,872, 111/84,128, 122/81,944 | 49 ms | 277, 231, 213 | |
+  | 0 | spawner | 0/15,583, 0/17,491, 0/17,038 | | 0 of as many | | 245, 190, 191 | 7.7, 8.8, 7.4 |
+  | 100 | here | 1,728/12,191, 2,894/16,719, 2,590/16,107 | 154 ms | 88/67,463, 107/71,450, 95/60,444 | 127 ms | 293, 219, 235 | |
+  | 100 | spawner | 0/15,156, 0/18,560, 0/17,155 | | 0 of as many | | 236, 188, 196 | 7.6, 11.0, 8.0 |
+  | 300 | here | 1,760/13,199, 2,773/18,277, 2,256/15,174 | 299 ms | 97/64,589, 136/88,579, 96/62,817 | 125 ms | 325, 298, 288 | |
+  | 300 | spawner | 0/17,135, 0/16,594, 0/18,196 | | 0 of as many | | 220, 201, 187 | 7.8, 12.4, 8.3 |
+  | 1,000 | here | 3,308/16,592, 2,455/15,951, 2,089/16,263 | 42 ms | 145/63,993, 72/43,629, 65/74,519 | 20 ms | 376, 384, 415 | |
+  | 1,000 | spawner | 0/19,430, 0/17,411, 0/18,087 | | 0 of as many | | 187, 165, 167 | 8.7, 38.8, 12.0 |
+
+  posix_spawn's p90/p99/max, and the round trip's, are in the runs' output (n 15,126 to
+  24,662 spawns a run; round trips 8,000 a run, p99 30 to 645 µs).
+- **Consequence.** A child made here held 13 to 20 in 100 listeners let go of while it
+  was made, up to 299 ms, and some pipes up to 127 ms; one made by the spawner held none
+  of 207,836 listeners and as many pipes. Binding the listeners where no child is made
+  would have freed ports alone, not clients' pipes. Through the spawner a spawn costs a
+  round trip, 7 to 39 µs at p50, and posix_spawn there took less than here at every
+  count, 22 to 42 µs less at p50 with nothing more open, 190 to 250 µs with a thousand
+  more: XNU copies the parent's whole table into each child. Every child of the daemon
+  is now its spawner's (shards_ipc::start_spawner, architecture.md D31), and
+  `published_ports_are_free_at_once_while_the_daemon_makes_vms` holds a run's port free
+  once its end is told while other runs make VMs.
