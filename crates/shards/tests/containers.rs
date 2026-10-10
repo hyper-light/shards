@@ -1552,7 +1552,8 @@ fn run_limits_resources_as_docker_run_does() {
     ]);
     assert_eq!(raw.stdout, "512 <no value>\n", "{raw}");
     // The microVM holds what the limit allows: what the kernel says may be allocated is
-    // at least the limit, across the sizes where its own share steps up (M117).
+    // at least the limit, across the sizes where its own share steps up, as a run's guest
+    // keeps it (M155).
     for limit in ["700m", "2500m"] {
         let meminfo = run_in(&home, &image, &["-m", limit], &["stat", "/proc/meminfo"]);
         assert_eq!(meminfo.status, Some(0), "{meminfo}");
