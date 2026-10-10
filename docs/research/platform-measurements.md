@@ -4945,3 +4945,72 @@ revision before comparing a changed API/implementation.
   stack its evaluation has; OPA's times and memory grow with the square of the depth or,
   for nested closures, double with each level. The open shapes stay in `nesting.json`
   for the harness (`--shape NAME --depth N`).
+
+### M129. What a build's proxy costs (D110): its certificates, and a request through it
+
+- **Question.** Under buildx's `exec.proxy` cap every request a step makes goes through
+  the build's proxy, each asked of the build's policies, HTTPS through a tunnel the proxy
+  serves with a certificate of its own CA. What does that add to a request, plain and
+  HTTPS, in-process and from a microVM, and what do the certificates cost: P-256, which
+  shards makes, against RSA-2048, which BuildKit v0.33.0 makes (`newCA`, `certForHost`)?
+- **Method.** `docs/research/measurements/build-proxy/run.sh` runs three ignored tests,
+  release builds:
+  - `certificate_costs`: a CA, a host's certificate with its TLS config, and one kept,
+    P-256 against RSA-2048 made the same way (rcgen and AWS-LC both), n = 200 each,
+    interleaved, wall and the thread's CPU time (`CLOCK_THREAD_CPUTIME_ID`);
+  - `request_costs`: a request through the proxy against the same request straight to its
+    server, a connection each, n = 1000 each, interleaved: plain HTTP (its question
+    answered at once, and by a real policy, `allow if input.http`, evaluated as a build
+    evaluates one, on a thread woken as the builder's is), and HTTPS (TLS straight against
+    a CONNECT tunnel, the proxy's TLS to the client and its own to the server);
+  - `proxy_request_costs_in_microvms`: a `RUN` making 200 requests (testguest's `fetch
+    --repeat`, a connection each) to a server on this host, straight through the builder's
+    network (no cap) against through the proxy with each request checked by the build's
+    policy, twice in turn, timed by the step's client.
+
+  `docs/research/measurements/build-proxy/buildkit.sh` times BuildKit v0.33.0's own
+  `newCA` and `certForHost` (Go 1.26.3, RSA-2048) as `certificate_costs` times shards',
+  in `shards-dind` (Linux 6.12.76-linuxkit on the same host). Apple M5 Max, macOS 26.4.1,
+  revision 0f4df5e, 2026-10-10, load average 26 to 36 (other builds running); earlier runs
+  at 90ece32 and 0ab09ef, load 53 to 94, below.
+- **Results.** Microseconds, p50 / p90 / p99 / max.
+
+  | certificates (n = 200) | wall | thread CPU |
+  |---|---|---|
+  | CA, P-256 (shards) | 61 / 73 / 282 / 775 | 62 / 72 / 113 / 118 |
+  | CA, RSA-2048 (AWS-LC) | 47372 / 101877 / 250083 / 314010 | 44606 / 85337 / 175681 / 270935 |
+  | CA, RSA-2048 (BuildKit's Go) | 50947 / 115109 / 184034 / 226113 | 49879 / 107601 / 173302 / 217373 |
+  | host certificate and TLS, P-256 (shards) | 82 / 102 / 237 / 601 | 83 / 99 / 129 / 163 |
+  | host certificate and TLS, RSA-2048 (AWS-LC) | 48137 / 95607 / 173877 / 196114 | 44519 / 85993 / 121174 / 121544 |
+  | host certificate and TLS, RSA-2048 (BuildKit's Go) | 49226 / 96872 / 221056 / 250485 | 49279 / 96441 / 206518 / 243280 |
+  | host certificate kept (shards) | 1 / 1 / 2 / 5 | 1 / 2 / 2 / 5 |
+
+  | a request, in-process (n = 1000) | p50 / p90 / p99 / max |
+  |---|---|
+  | plain, straight | 137 / 269 / 3121 / 12623 |
+  | plain, through the proxy | 177 / 344 / 2638 / 25769 |
+  | plain, through the proxy, a policy checking it | 1887 / 2396 / 4851 / 13075 |
+  | HTTPS, straight | 408 / 710 / 2946 / 34662 |
+  | HTTPS, through the proxy's tunnel | 583 / 963 / 4950 / 28651 |
+
+  | a step's request from a microVM (n = 200) | round 0 | round 1 |
+  |---|---|---|
+  | straight through the builder's network | 304 / 413 / 570 / 1195 | 353 / 486 / 2649 / 11953 |
+  | through the proxy, each checked by the policy | 2610 / 3119 / 6760 / 7012 | 2470 / 3054 / 6151 / 7187 |
+
+  - At load 53 to 94 (three runs), p50s: P-256 CA 52 to 58, RSA-2048 CA 48000 to 104280;
+    a request in-process straight 160 to 241, through the proxy 195 to 538, checked 1852
+    to 4138; from a microVM straight 580 to 1629, through the proxy and checked 4406 to
+    12024. Those runs' P-256 tails reached 44 ms of wall clock where the thread's own CPU
+    time never passed 141 µs: the tail is the busy host's scheduling, not the work.
+- **Consequence.** P-256 makes a CA in 61 µs and a host's certificate in 82 µs where
+  RSA-2048 takes 47 to 51 ms for either, BuildKit's own Go code included: 600 to 800
+  times less, and P-256 is the stronger key (128-bit security against RSA-2048's 112, NIST
+  SP 800-57 Part 1 Rev. 5, Table 2). A build pays its CA once, as its first step under the
+  proxy starts, and each host a step tunnels to its certificate once (again after 23
+  hours). The proxy itself adds 40 µs to a plain request and 175 µs to an HTTPS one (the
+  tunnel's TLS); checking each request against the build's policies adds 1.7 ms, most of
+  what a request through the proxy costs from a microVM (2.1 to 2.3 ms over straight).
+  That check compiles the policy afresh, twice (partial, then whole), each on a thread of
+  its own, as M127 found of every check; compiling once a build on a long-lived
+  evaluation thread is that measurement's open question, now paid per request.
