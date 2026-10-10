@@ -229,7 +229,7 @@ def main():
     dind("rm", "-rf", f"{ROOT}/cases", f"{ROOT}/out", check=False)
     if "--clean" in sys.argv:
         dind("docker", "rmi", "-f", image, check=False)
-        dind("docker", "rm", "-f", "shards-d113-registry", check=False)
+        dind("docker", "rm", "-f", "-v", "shards-d113-registry", check=False)
     sys.exit(1 if failed else 0)
 
 
