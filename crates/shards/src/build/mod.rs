@@ -3537,6 +3537,11 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
                 let Some(b) = builder.as_mut() else {
                     return Err(fail(&v, "the builder is gone"));
                 };
+                let input_keys: Vec<Option<String>> = op
+                    .inputs
+                    .iter()
+                    .map(|inp| keys.get(inp.op).cloned().flatten())
+                    .collect();
                 let op = exec::RunOp {
                     process,
                     mounts,
@@ -3554,6 +3559,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
                     resources: meta.linux_resources.as_ref(),
                     cdi: cdi_edits.get(&i),
                     proxy: build_proxy.as_ref(),
+                    input_keys: &input_keys,
                 };
                 let mut log = StepLog::new(log_limits);
                 let r = exec.run(

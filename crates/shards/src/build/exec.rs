@@ -141,9 +141,9 @@ pub struct Exec<'a> {
     /// The build context's snapshots: what BuildKit takes content checksums of before an
     /// operation reads them.
     contexts: Vec<Rc<Fs>>,
-    /// The cache ids the build's steps mount, each named in the builder by its index: an
-    /// id is any string, and as a name of its own it could pass a file name's limit.
-    caches: Vec<Vec<u8>>,
+    /// The cache records the build's steps have mounted (D114), by id: the content each was
+    /// left with, and its snapshot, whose tree the builder holds.
+    mounts: std::collections::HashMap<String, (Vec<store::MountLayer>, Ref)>,
 }
 
 /// One slot of a file operation: an input, an action's mount, or its committed result.
@@ -169,20 +169,90 @@ impl<'a> Exec<'a> {
             budget: shards_build::archive::Budget::new(*limits),
             run_staging: None,
             contexts: Vec::new(),
-            caches: Vec::new(),
+            mounts: std::collections::HashMap::new(),
         }
     }
 
-    /// The builder's name for cache `id`: the same for every mount of it in this build.
-    fn cache_name(&mut self, id: &[u8]) -> Vec<u8> {
-        let index = match self.caches.iter().position(|c| c == id) {
-            Some(i) => i,
-            None => {
-                self.caches.push(id.to_vec());
-                self.caches.len() - 1
+    /// The snapshot of a cache record's content, `layers`, and its tree as the builder
+    /// holds it: the one this build left it with, else made from its layers.
+    fn mount_ref(&mut self, id: &str, layers: &[store::MountLayer]) -> Result<Ref, String> {
+        if let Some((known, r)) = self.mounts.get(id)
+            && known.as_slice() == layers
+        {
+            return Ok(r.clone());
+        }
+        if layers.is_empty() {
+            return Ok(scratch_ref());
+        }
+        let layers = layers
+            .iter()
+            .map(|l| Layer {
+                media_type: l.media_type.clone().into_bytes(),
+                digest: l.blob.clone().into_bytes(),
+                size: l.size,
+                diff_id: l.diff_id.clone().into_bytes(),
+                annotations: BTreeMap::new(),
+                created: None,
+                description: Vec::new(),
+            })
+            .collect();
+        self.image(layers, None)
+    }
+
+    /// Keeps a step's changes to cache `t` (D114), which the builder keeps as `layer`
+    /// where the step could write it, read whatever they hold: its record's next layer,
+    /// where they changed it, and a use of it either way.
+    fn keep_cache(
+        &mut self,
+        builder: &mut super::builder::Builder,
+        t: Taken,
+        layer: Option<u32>,
+        description: &str,
+    ) -> Result<(), String> {
+        let Some(layer) = layer else {
+            self.mounts
+                .insert(t.held.id.clone(), (t.held.layers.clone(), t.base.clone()));
+            return self
+                .store
+                .used_mount(&t.key, &t.held, None, t.held.root)
+                .map_err(err);
+        };
+        let mut fs = (*t.base.fs).clone();
+        fs.begin();
+        fs.now = now();
+        let (mut staging, source, at) = self.staging()?;
+        let mut applier = shards_build::upper::Applier::new(&mut fs, &mut staging, source, at);
+        let root = builder.kept(&mut |bytes| applier.feed(bytes).map_err(|e| e.0))?;
+        let changed = applier.changed();
+        let at = applier.finish().map_err(|e| e.0)?;
+        if let Some((_, _, end)) = &mut self.run_staging {
+            *end = at;
+        }
+        let root = store::MountRoot {
+            mode: root.mode,
+            uid: root.uid,
+            gid: root.gid,
+        };
+        let origin = Origin::Run {
+            parent: t.base.origin.clone(),
+            layer,
+        };
+        let mut layers = t.held.layers.clone();
+        let made = if changed {
+            let made = self.commit(Some(t.base.clone()), fs, description, Some(origin))?;
+            let new = made.layers.last().map(mount_layer);
+            layers.extend(new.clone());
+            self.store.used_mount(&t.key, &t.held, new, root).map_err(err)?;
+            made
+        } else {
+            self.store.used_mount(&t.key, &t.held, None, root).map_err(err)?;
+            Ref {
+                origin: Rc::new(origin),
+                ..t.base.clone()
             }
         };
-        index.to_string().into_bytes()
+        self.mounts.insert(t.held.id.clone(), (layers, made));
+        Ok(())
     }
 
     /// What BuildKit's solver finds before an operation reads `path` of `fs`, if `fs` is
@@ -827,6 +897,68 @@ pub struct RunOp<'o> {
     /// The build's proxy, where its policies ask for one (D110): a step whose network is
     /// the builder's (BuildKit's default and host modes) reaches it alone.
     pub proxy: Option<&'o super::proxy::Proxy>,
+    /// Each input's key (D50), where it has one: what a cache mount's `from=` is keyed by.
+    pub input_keys: &'o [Option<String>],
+}
+
+/// A cache record a step holds (D114), until its changes are kept.
+struct Taken {
+    key: String,
+    held: store::HeldMount,
+    /// Its content as the step mounts it.
+    base: Ref,
+    /// Whether any mount of it writes.
+    writable: bool,
+}
+
+/// A layer as a cache record keeps it.
+fn mount_layer(l: &Layer) -> store::MountLayer {
+    let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
+    store::MountLayer {
+        blob: text(&l.digest),
+        diff_id: text(&l.diff_id),
+        media_type: text(&l.media_type),
+        size: l.size,
+    }
+}
+
+/// A new cache record's id, as BuildKit's identity.NewID makes one: 128 random bits, the
+/// high one set, in base 36, the 25 digits after the first.
+fn record_id() -> Result<String, String> {
+    let mut n = [0u8; 17];
+    entropy(&mut n)?;
+    if let Some(first) = n.first_mut() {
+        *first |= 0x80;
+    }
+    let mut digits = Vec::new();
+    while n.iter().any(|&b| b != 0) {
+        let mut rem = 0u32;
+        for b in &mut n {
+            let cur = (rem << 8) | u32::from(*b);
+            *b = u8::try_from(cur / 36).map_err(|e| e.to_string())?;
+            rem = cur % 36;
+        }
+        let digit = usize::try_from(rem).map_err(|e| e.to_string())?;
+        digits.push(
+            *b"0123456789abcdefghijklmnopqrstuvwxyz"
+                .get(digit)
+                .ok_or("a digit past base 36")?,
+        );
+    }
+    digits.reverse();
+    let id = digits.get(1..26).ok_or("a record id too short")?;
+    Ok(String::from_utf8_lossy(id).into_owned())
+}
+
+#[cfg(unix)]
+fn entropy(buf: &mut [u8]) -> Result<(), String> {
+    shards_net::entropy(buf).map_err(|e| format!("a cache record's id: {e}"))
+}
+
+/// No builder runs on Windows yet (builder.rs), so no step there mounts a cache.
+#[cfg(not(unix))]
+fn entropy(_: &mut [u8]) -> Result<(), String> {
+    Err("RUN steps run in a builder microVM, which shards starts on Linux and macOS hosts only so far".into())
 }
 
 /// Cgroup v2 files and what each holds, in the order written.
@@ -1063,7 +1195,7 @@ impl Exec<'_> {
         check: &mut dyn FnMut(&str, &str) -> bool,
     ) -> Result<(Vec<Ref>, Option<super::proxy::capture::Capture>), String> {
         use shards_abi::build::{Mount, Network, Step};
-        use shards_dockerfile::llb::{NetMode, OpMountKind, Security};
+        use shards_dockerfile::llb::{NetMode, OpMountKind, Security, Sharing};
 
         let p = op.process;
         let input = |i: i64| -> Result<Ref, String> {
@@ -1153,7 +1285,103 @@ impl Exec<'_> {
         // a tmpfs's index is protobuf's default 0, which BuildKit's solver never reads
         // (exec.go, Marshal).
         let mut outputs: Vec<(u32, i64, Ref)> = Vec::new();
+        // The step's caches (D114), each taken once however many of its mounts name it, as
+        // mount.go gives an exec one ref for a key, and held until its changes are kept.
+        let mut taken: Vec<Taken> = Vec::new();
+        let mut cache_of: Vec<Option<u32>> = Vec::new();
         for m in op.mounts.iter().filter(|m| m.dest != b"/") {
+            let OpMountKind::Cache { id, sharing } = &m.kind else {
+                cache_of.push(None);
+                continue;
+            };
+            // Its key, as mount.go keys one: its id, then `:` and what it is from, where it
+            // is from anything (here that one's key, D50, or its content's where it has none).
+            let mut key = String::from_utf8_lossy(id).into_owned();
+            if let Ok(i) = usize::try_from(m.input) {
+                let from = match op.input_keys.get(i).cloned().flatten() {
+                    Some(k) => k,
+                    None => super::cache::content_key(&input(m.input)?.fs, &mut self.sources)?,
+                };
+                key = format!("{key}:{from}");
+            }
+            if let Some(at) = taken.iter().position(|t| t.key == key) {
+                if let Some(t) = taken.get_mut(at) {
+                    t.writable |= !m.readonly;
+                }
+                cache_of.push(Some(u32::try_from(at).map_err(|_| "too many caches")?));
+                continue;
+            }
+            // BuildKit's description of the record (getRefCacheDir).
+            let mut description = format!(
+                "cached mount {} from exec {}",
+                String::from_utf8_lossy(&m.dest),
+                p.args
+                    .iter()
+                    .map(|a| String::from_utf8_lossy(a))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            );
+            if *id != m.dest {
+                description.push_str(&format!(" with id {}", shards_dockerfile::go::quote(id)));
+            }
+            let sharing = match sharing {
+                Sharing::Shared => store::Sharing::Shared,
+                Sharing::Private => store::Sharing::Private,
+                Sharing::Locked => store::Sharing::Locked,
+            };
+            let mut held = self
+                .store
+                .take_mount(&key, sharing, &description, &record_id()?)
+                .map_err(err)?;
+            // A new record's first content: what it is from, whole (a mutable ref on its
+            // source's, mount.go), else nothing.
+            let base = match usize::try_from(m.input) {
+                Ok(_) if held.fresh => {
+                    let from = input(m.input)?;
+                    let seed = if matches!(from.stack, Stack::Known(_)) && from.stack.follows(from.fs.tree())
+                    {
+                        from
+                    } else {
+                        self.commit(None, (*from.fs).clone(), &description, None)?
+                    };
+                    let layers = seed.layers.iter().map(mount_layer).collect();
+                    // Its root as containerd's snapshotter makes a child's: its parent's
+                    // owner, mode 0755.
+                    let root = seed.fs.tree().node(Tree::ROOT).map(|n| &n.meta);
+                    let root = store::MountRoot {
+                        mode: 0o755,
+                        uid: root.map_or(0, |m| m.uid),
+                        gid: root.map_or(0, |m| m.gid),
+                    };
+                    self.store
+                        .seed_mount(&key, &mut held, layers, root)
+                        .map_err(err)?;
+                    seed
+                }
+                _ => self.mount_ref(&held.id, &held.layers)?,
+            };
+            cache_of.push(Some(u32::try_from(taken.len()).map_err(|_| "too many caches")?));
+            taken.push(Taken {
+                key,
+                held,
+                base,
+                writable: !m.readonly,
+            });
+        }
+        let mut caches = Vec::with_capacity(taken.len());
+        for t in &taken {
+            caches.push(shards_abi::build::Cache {
+                tree: builder.tree(&t.base.origin, &mut self.sources)?,
+                writable: t.writable,
+                layer: 0,
+                root: shards_abi::build::Root {
+                    mode: t.held.root.mode,
+                    uid: t.held.root.uid,
+                    gid: t.held.root.gid,
+                },
+            });
+        }
+        for (m, cache) in op.mounts.iter().filter(|m| m.dest != b"/").zip(cache_of) {
             let mount = match &m.kind {
                 OpMountKind::Bind => {
                     let r = input(m.input)?;
@@ -1168,34 +1396,11 @@ impl Exec<'_> {
                         writable: !m.readonly,
                     }
                 }
-                OpMountKind::Cache { id, .. } => {
-                    // A cache's first content and owner: its source's directory, if any.
-                    let (mode, uid, gid) = match usize::try_from(m.input) {
-                        Ok(_) => {
-                            let r = input(m.input)?;
-                            let sel = if m.selector.is_empty() {
-                                b"/".to_vec()
-                            } else {
-                                m.selector.clone()
-                            };
-                            let meta =
-                                r.fs.stat(&sel)
-                                    .ok()
-                                    .and_then(|id| r.fs.node(id))
-                                    .map(|n| n.meta.clone())
-                                    .unwrap_or_default();
-                            (u32::from(meta.mode), meta.uid, meta.gid)
-                        }
-                        Err(_) => (0o755, 0, 0),
-                    };
-                    Mount::Cache {
-                        id: self.cache_name(id),
-                        mode,
-                        uid,
-                        gid,
-                        readonly: m.readonly,
-                    }
-                }
+                OpMountKind::Cache { .. } => Mount::Cache {
+                    cache: cache.ok_or("a cache mount without its cache")?,
+                    subpath: m.selector.clone(),
+                    readonly: m.readonly,
+                },
                 OpMountKind::Tmpfs { size } => Mount::Tmpfs {
                     size: u64::try_from(*size).unwrap_or(0),
                     readonly: m.readonly,
@@ -1324,6 +1529,7 @@ impl Exec<'_> {
                 op.seccomp.to_vec()
             },
             outputs: outputs.iter().map(|(at, _, _)| (*at, 0)).collect(),
+            caches,
             devices,
             // Its trust bundle holds the proxy's CA while it runs (InjectProxyCA).
             proxy_ca: proxy.map(|p| p.ca().to_vec()).unwrap_or_default(),
@@ -1333,7 +1539,7 @@ impl Exec<'_> {
         fs.now = now();
         let (mut staging, source, at) = self.staging()?;
         let mut applier = shards_build::upper::Applier::new(&mut fs, &mut staging, source, at);
-        let (ended, layer, mounted, capture) = builder.run(
+        let (ended, layer, mounted, written, capture) = builder.run(
             step,
             out,
             &mut applier,
@@ -1348,15 +1554,30 @@ impl Exec<'_> {
                 out(shards_abi::run::kind::STDERR, &lines);
             }
         }
+        // The root's changes, where it succeeded, in the staging file before the caches'.
+        if matches!(ended, super::builder::Ended::Status(0)) {
+            let at = applier.finish().map_err(|e| e.0)?;
+            if let Some((_, _, end)) = &mut self.run_staging {
+                *end = at;
+            }
+        }
+        // Each cache's changes, kept whatever the step's end, as BuildKit keeps a cache's
+        // writes; every one read, whichever fails.
+        let mut written = written.into_iter();
+        let mut kept = Ok(());
+        for t in taken {
+            let layer = if t.writable { written.next() } else { None };
+            let r = self.keep_cache(builder, t, layer, description);
+            if kept.is_ok() {
+                kept = r;
+            }
+        }
         match ended {
             super::builder::Ended::Status(0) => {}
             super::builder::Ended::Status(n) => return Err(fail(&format!("exit code: {n}"))),
             super::builder::Ended::NotRun(why) => return Err(fail(&why)),
         }
-        let at = applier.finish().map_err(|e| e.0)?;
-        if let Some((_, _, end)) = &mut self.run_staging {
-            *end = at;
-        }
+        kept?;
         let origin = Origin::Run {
             parent: root.origin.clone(),
             layer,

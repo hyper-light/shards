@@ -26,7 +26,7 @@ use std::time::{Duration, Instant};
 
 #[cfg(unix)]
 use shards_abi::build::{self, kind};
-use shards_abi::build::{Step, Tree};
+use shards_abi::build::{Root, Step, Tree};
 #[cfg(unix)]
 use shards_abi::run;
 #[cfg(unix)]
@@ -161,7 +161,11 @@ impl Builder {
         _: &super::Agents,
         _: u64,
         _: StepProxy<'_, '_>,
-    ) -> Result<(Ended, u32, Outputs, Option<super::proxy::capture::Capture>), String> {
+    ) -> Result<(Ended, u32, Outputs, Vec<u32>, Option<super::proxy::capture::Capture>), String> {
+        Err("no builder".into())
+    }
+
+    pub fn kept(&mut self, _: &mut dyn FnMut(&[u8]) -> Result<(), String>) -> Result<Root, String> {
         Err("no builder".into())
     }
 
@@ -502,15 +506,15 @@ impl Builder {
     }
 
     /// Runs `step` (its `upper` set here), passing its output to `out` as it comes; once
-    /// it succeeds, puts what it changed into `applier`. How it ended, and the layer its
-    /// changes are in the guest.
-    /// Runs `step`, its root's changes to `applier` and each output mount's (`outputs`'
-    /// indexes, at most `max` bytes each) returned with the layer it became.
+    /// it succeeds, puts what it changed into `applier`, and returns each output mount's
+    /// changes (`outputs`' indexes, at most `max` bytes each) with the layer it became.
+    /// How it ended, the layer its changes are in the guest, the layer each cache it
+    /// writes becomes, in order (their changes come next, whatever its end, each for
+    /// [`Builder::kept`]), and what its requests came to under the build's proxy.
     ///
     /// Under the build's proxy (`proxy`, D110), its connections to the proxy are served
     /// while it runs, each request's question answered here, on the build's thread, by
-    /// the proxy's `check`; as it ends they are shut, and what its requests came to is
-    /// returned.
+    /// the proxy's `check`; as it ends they are shut.
     #[allow(clippy::too_many_arguments)]
     pub fn run(
         &mut self,
@@ -520,12 +524,21 @@ impl Builder {
         agents: &super::Agents,
         max: u64,
         proxy: StepProxy<'_, '_>,
-    ) -> Result<(Ended, u32, Outputs, Option<super::proxy::capture::Capture>), String> {
+    ) -> Result<(Ended, u32, Outputs, Vec<u32>, Option<super::proxy::capture::Capture>), String> {
         step.upper = self.layer_id();
         for o in &mut step.outputs {
             o.1 = self.layer_id();
         }
+        for c in step.caches.iter_mut().filter(|c| c.writable) {
+            c.layer = self.layer_id();
+        }
         let layers: Vec<u32> = step.outputs.iter().map(|o| o.1).collect();
+        let kept: Vec<u32> = step
+            .caches
+            .iter()
+            .filter(|c| c.writable)
+            .map(|c| c.layer)
+            .collect();
         // Its session, begun before it starts: its requests go upstream through the
         // proxies the build's environment names, as BuildKit's through its daemon's.
         let (session, questions, mut check) = match proxy {
@@ -583,7 +596,7 @@ impl Builder {
             r
         });
         let (ended, upper, outputs) = ran?;
-        Ok((ended, upper, outputs, session.map(|s| s.capture())))
+        Ok((ended, upper, outputs, kept, session.map(|s| s.capture())))
     }
 
     /// Waits until the builder has a frame to read, answering the step's questions of the
@@ -611,6 +624,30 @@ impl Builder {
             }
             if polled[0].revents != 0 {
                 return Ok(());
+            }
+        }
+    }
+
+    /// The next kept mount's changes, as they come, each passed to `feed`, and the root
+    /// they left it; read to their end whatever `feed` says, so that the frames after them
+    /// are read as theirs, and then the first error `feed` gave.
+    pub fn kept(&mut self, feed: &mut dyn FnMut(&[u8]) -> Result<(), String>) -> Result<Root, String> {
+        let mut buf = Vec::new();
+        let mut failed = None;
+        loop {
+            match self.read_frame(&mut buf)? {
+                kind::MOUNT_CHANGES => {
+                    if failed.is_none()
+                        && let Err(e) = feed(&buf)
+                    {
+                        failed = Some(e);
+                    }
+                }
+                kind::MOUNT_END => {
+                    let root = Root::decode(&buf).ok_or("the builder sent a malformed cache root")?;
+                    return failed.map_or(Ok(root), Err);
+                }
+                other => return Err(format!("the builder sent frame {other} for a cache's changes")),
             }
         }
     }

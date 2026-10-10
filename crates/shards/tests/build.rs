@@ -4603,6 +4603,124 @@ fn builds_reuse_the_steps_they_have_run() {
     }
 }
 
+/// `RUN --mount=type=cache` kept across builds (D114), as BuildKit keeps cache mounts:
+/// what a step writes is there for the next build's, a failing step's writes too; one id
+/// is one cache wherever it is mounted, twice in one step too; its root keeps the owner
+/// and mode a step gives it; `BUILDKIT_CACHE_MOUNT_NS` makes another; `uid`, `gid` and
+/// `mode` make its directory; `system df` counts the records and `builder prune` removes
+/// them.
+#[test]
+fn run_caches_are_kept_across_builds() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("cache-mounts-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+        ("SHARDS_BUILD_MEMORY", "1024".as_ref()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    // Each build its own context, its steps run whatever the build cache holds.
+    let n = std::cell::Cell::new(0);
+    let build = |steps: &str, extra: &[&str]| {
+        n.set(n.get() + 1);
+        let ctx = context(
+            &format!("cache-mounts-{}", n.get()),
+            &format!("FROM {image}\nUSER root\n{steps}"),
+        );
+        let mut args = vec!["build", "--progress=plain", "--no-cache"];
+        args.extend_from_slice(extra);
+        args.push(ctx.to_str().unwrap());
+        shards(&args)
+    };
+    let ok = |steps: &str, extra: &[&str]| {
+        let built = build(steps, extra);
+        assert_eq!(built.status, Some(0), "{steps}\n{}", built.stderr);
+        built.stderr
+    };
+    let c = "--mount=type=cache,target=/c";
+    ok(
+        &format!("RUN {c} [\"/bin/testguest\", \"fs\", \"write:/c/one=1\"]\n"),
+        &[],
+    );
+    // A failing step's writes are kept.
+    let failed = build(
+        &format!("RUN {c} [\"/bin/testguest\", \"fs\", \"write:/c/two=2\", \"open:r:/nowhere\"]\n"),
+        &[],
+    );
+    assert_ne!(failed.status, Some(0), "{}", failed.stderr);
+    let seen = ok(
+        &format!("RUN {c} [\"/bin/testguest\", \"stat\", \"/c/one\", \"/c/two\"]\n"),
+        &[],
+    );
+    assert!(seen.contains("/c/one file 644 0:0 1\n"), "{seen}");
+    assert!(seen.contains("/c/two file 644 0:0 1\n"), "{seen}");
+    // One id, two targets of one step: one directory; another step's by that id.
+    let twice = ok(
+        "RUN --mount=type=cache,target=/x,id=both --mount=type=cache,target=/y,id=both,ro [\"/bin/testguest\", \"fs\", \"write:/x/f=3\", \"print:/y/f\"]\n",
+        &[],
+    );
+    assert!(twice.lines().any(|l| l.ends_with(" 3")), "{twice}");
+    let by_id = ok(
+        "RUN --mount=type=cache,target=/z,id=both [\"/bin/testguest\", \"stat\", \"/z/f\"]\n",
+        &[],
+    );
+    assert!(by_id.contains("/z/f file 644 0:0 1\n"), "{by_id}");
+    // A root given another owner and mode keeps them.
+    ok(
+        "RUN --mount=type=cache,target=/r,id=root [\"/bin/testguest\", \"fs\", \"chmod:700:/r\", \"chown:7:8:/r\"]\n",
+        &[],
+    );
+    let root = ok(
+        "RUN --mount=type=cache,target=/r,id=root [\"/bin/testguest\", \"stat\", \"/r\"]\n",
+        &[],
+    );
+    assert!(root.contains("/r dir 700 7:8 "), "{root}");
+    // Another namespace, another cache: the file is not there, and the step fails.
+    let other = build(
+        &format!("RUN {c} [\"/bin/testguest\", \"stat\", \"/c/one\"]\n"),
+        &["--build-arg", "BUILDKIT_CACHE_MOUNT_NS=other"],
+    );
+    assert!(other.stderr.contains("/c/one missing"), "{}", other.stderr);
+    // Its directory as `uid`, `gid` and `mode` make it.
+    let made = ok(
+        "RUN --mount=type=cache,target=/m,uid=1000,gid=1001,mode=0750 [\"/bin/testguest\", \"stat\", \"/m\"]\n",
+        &[],
+    );
+    assert!(made.contains("/m dir 750 1000:1001 "), "{made}");
+
+    // The records, as `system df` counts them and `builder prune` removes them.
+    let count = || {
+        let df = shards(&[
+            "system",
+            "df",
+            "-v",
+            "--format",
+            "{{range .BuildCache}}{{.CacheType}}\n{{end}}",
+        ]);
+        assert_eq!(df.status, Some(0), "{}", df.stderr);
+        df.stdout.lines().filter(|l| *l == "exec.cachemount").count()
+    };
+    assert_eq!(count(), 5);
+    let pruned = shards(&["builder", "prune", "-f", "--filter", "type=exec.cachemount"]);
+    assert_eq!(pruned.status, Some(0), "{}", pruned.stderr);
+    assert_eq!(
+        pruned.stdout.lines().filter(|l| l.contains("*")).count(),
+        5,
+        "{}",
+        pruned.stdout
+    );
+    assert_eq!(count(), 0);
+    let gone = build(
+        &format!("RUN {c} [\"/bin/testguest\", \"stat\", \"/c/one\"]\n"),
+        &[],
+    );
+    assert!(gone.stderr.contains("/c/one missing"), "{}", gone.stderr);
+}
+
 /// External build caches (D62): a build's records, written by `--cache-to` to a
 /// directory (`mode=max`), a registry (`min`) and the image itself (`inline`), answer
 /// another home's build from `--cache-from`, as BuildKit's remote caches do: from the

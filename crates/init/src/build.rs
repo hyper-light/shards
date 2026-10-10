@@ -35,7 +35,6 @@ use crate::tree::{LayerWriter, send_upper};
 const B: &str = "/b";
 const LAYERS: &str = "/l";
 const ROOT: &str = "/root";
-const CACHES: &str = "/c";
 const EMPTY: &str = "/empty";
 
 fn err(what: impl std::fmt::Display) -> io::Error {
@@ -153,7 +152,7 @@ fn serve() -> io::Result<()> {
     std::fs::create_dir_all(B)?;
     // Layers live in memory, or on swap once memory runs short.
     mount("tmpfs", Path::new(B), "tmpfs", 0, "mode=0755,size=100%")?;
-    for d in [LAYERS, CACHES, EMPTY, ROOT, "/dev", "/proc"] {
+    for d in [LAYERS, EMPTY, ROOT, "/dev", "/proc"] {
         std::fs::create_dir_all(Path::new(B).join(d.trim_start_matches('/')))?;
     }
     mount("devtmpfs", &Path::new(B).join("dev"), "devtmpfs", 0, "")?;
@@ -315,9 +314,10 @@ impl Builder {
         // What fails as the step is set up fails the step, as what fails as its command
         // starts does: the builder says why and goes on to the next.
         let mut sources: Vec<Option<PathBuf>> = Vec::with_capacity(step.mounts.len());
+        let mut caches: Vec<PathBuf> = Vec::with_capacity(step.caches.len());
         let mut stubs = Vec::new();
         let mut injected = None;
-        let status = match self.prepare(step, root, &work, &upper, &mut sources, &mut stubs, &mut injected) {
+        let status = match self.prepare(step, root, &work, &upper, &mut caches, &mut sources, &mut stubs, &mut injected) {
             Ok(files) => self.run(step, root, &files, &sources, &work),
             Err(e) => Err(e),
         };
@@ -333,6 +333,9 @@ impl Builder {
             if let (Some(at), Some((_, Mount::Tree { .. }))) = (s, step.mounts.get(i)) {
                 let _ = umount(at);
             }
+        }
+        for at in &caches {
+            let _ = umount(at);
         }
         let status = match status {
             Ok(s) => s,
@@ -355,16 +358,37 @@ impl Builder {
                 std::fs::rename(&up, Path::new(LAYERS).join(layer_name(layer)))?;
             }
         }
+        // Each cache's changes, whatever the status, as BuildKit keeps a cache's writes
+        // (D114), and the root they left it: none from a step whose caches were never
+        // mounted, its root as it was given.
+        for (k, c) in step.caches.iter().enumerate().filter(|(_, c)| c.writable) {
+            let up = work.join(format!("c{k}.upper"));
+            let left = match std::fs::symlink_metadata(&up) {
+                Ok(m) => build::Root {
+                    mode: m.mode() & 0o7777,
+                    uid: m.uid(),
+                    gid: m.gid(),
+                },
+                Err(_) => {
+                    std::fs::create_dir_all(&up)?;
+                    c.root
+                }
+            };
+            let conn = &self.conn;
+            send_upper(&up, &mut |chunk| send(conn, kind::MOUNT_CHANGES, chunk))?;
+            send(conn, kind::MOUNT_END, &left.encode())?;
+            std::fs::rename(&up, Path::new(LAYERS).join(layer_name(c.layer)))?;
+        }
         let _ = std::fs::remove_dir_all(&work);
         Ok(())
     }
 
     /// Sets step `step` up in `work`: its root at `root` with its upper directory `upper`,
-    /// the trees and caches it mounts (each put in `sources` as it is mounted, so that
-    /// what was mounted is unmounted whatever fails), what BuildKit removes after it if it
-    /// is left empty (`stubs`), the build's proxy's CA in its trust bundle (`injected`,
-    /// D110), its working directory, and its hosts and resolv.conf. Returns the directory
-    /// of those two files.
+    /// its caches (each put in `caches` as it is mounted) and the trees it mounts (each in
+    /// `sources`, so that what was mounted is unmounted whatever fails), what BuildKit
+    /// removes after it if it is left empty (`stubs`), the build's proxy's CA in its trust
+    /// bundle (`injected`, D110), its working directory, and its hosts and resolv.conf.
+    /// Returns the directory of those two files.
     #[allow(clippy::too_many_arguments)]
     fn prepare(
         &mut self,
@@ -372,12 +396,33 @@ impl Builder {
         root: &Path,
         work: &Path,
         upper: &Path,
+        caches: &mut Vec<PathBuf>,
         sources: &mut Vec<Option<PathBuf>>,
         stubs: &mut Vec<Vec<u8>>,
         injected: &mut Option<Injected>,
     ) -> io::Result<PathBuf> {
         std::fs::create_dir_all(work)?;
         self.mount_tree(&step.root, root, Some(upper))?;
+        for (k, c) in step.caches.iter().enumerate() {
+            let at = work.join(format!("c{k}"));
+            let up = c.writable.then(|| work.join(format!("c{k}.upper")));
+            // Its root is its upper directory's, as overlayfs shows it: the one it was left
+            // with, as containerd gives a snapshot its parent's owner.
+            if let Some(up) = &up {
+                std::fs::create_dir_all(up)?;
+                let p = cstr(up)?;
+                // SAFETY: a NUL-terminated path.
+                unsafe {
+                    if libc::chown(p.as_ptr(), c.root.uid, c.root.gid) != 0
+                        || libc::chmod(p.as_ptr(), c.root.mode & 0o7777) != 0
+                    {
+                        return Err(os_err("a cache's root"));
+                    }
+                }
+            }
+            self.mount_tree(&c.tree, &at, up.as_deref())?;
+            caches.push(at);
+        }
         for (i, (_, m)) in step.mounts.iter().enumerate() {
             let source = match m {
                 Mount::Tree { tree, writable, .. } => {
@@ -386,9 +431,13 @@ impl Builder {
                     self.mount_tree(tree, &at, up.as_deref())?;
                     Some(at)
                 }
-                Mount::Cache {
-                    id, mode, uid, gid, ..
-                } => Some(cache(id, *mode, *uid, *gid)?),
+                // The cache as it is mounted for the step.
+                Mount::Cache { cache, .. } => Some(
+                    caches
+                        .get(*cache as usize)
+                        .cloned()
+                        .ok_or_else(|| err("a mount of a cache the step has not"))?,
+                ),
                 // A socket here, which the step's mount places at its target and this
                 // process relays to the host's agent (`relay_ssh`).
                 Mount::Ssh {
@@ -619,25 +668,6 @@ fn pipe() -> io::Result<(OwnedFd, OwnedFd)> {
     }
     // SAFETY: two descriptors just made.
     Ok(unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) })
-}
-
-/// A cache directory, kept for the build's life by `id`: made the first time with `mode`
-/// (`0755` at least, as BuildKit's mkdir makes it) and `uid:gid`.
-fn cache(id: &[u8], mode: u32, uid: u32, gid: u32) -> io::Result<PathBuf> {
-    // The id as a name: its bytes in hex, so any id is one name of its own.
-    let name: String = id.iter().map(|b| format!("{b:02x}")).collect();
-    let at = Path::new(CACHES).join(if name.is_empty() { "-".into() } else { name });
-    if !at.exists() {
-        std::fs::create_dir(&at)?;
-        let c = cstr(&at)?;
-        // SAFETY: a NUL-terminated path.
-        unsafe {
-            if libc::chown(c.as_ptr(), uid, gid) != 0 || libc::chmod(c.as_ptr(), mode | 0o755) != 0 {
-                return Err(os_err("making a cache"));
-            }
-        }
-    }
-    Ok(at)
 }
 
 /// The build's proxy's CA as it went into a step's trust bundle (D110): the bundle, a path
@@ -1036,13 +1066,22 @@ fn setup(step: &Step, root: &Path, files: &Path, sources: &[Option<PathBuf>], wo
                 // Readonly unless writable; a writable tree's writes go to its own upper.
                 bind(&inroot::path(&src), &at, &r, target, 0, false)?;
             }
-            Mount::Cache { readonly, .. } => {
-                let Some(Some(src)) = sources.get(i) else {
+            Mount::Cache {
+                subpath, readonly, ..
+            } => {
+                let Some(Some(tree)) = sources.get(i) else {
                     return Err(err("a cache mount without its cache"));
                 };
+                let src = Root::open(tree)?
+                    .open_at(subpath, libc::O_PATH)
+                    .map_err(|e| Executor::wrap(inroot::path_error("open", subpath, &e).to_string()))?;
                 let target = &r.resolve(target, false)?;
-                let at = r.mkdir_all(target, 0o755, None)?;
-                bind(src, &at, &r, target, 0, *readonly)?;
+                let at = if inroot::is_dir(&src)? {
+                    r.mkdir_all(target, 0o755, None)?
+                } else {
+                    r.file(target, 0o666)?
+                };
+                bind(&inroot::path(&src), &at, &r, target, 0, *readonly)?;
             }
             Mount::Tmpfs { size, readonly } => {
                 let at = r.mkdir_all(&r.resolve(target, false)?, 0o755, None)?;

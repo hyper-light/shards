@@ -31,6 +31,8 @@ pub struct Applier<'a> {
     dirs: Vec<(Vec<u8>, Meta)>,
     /// Bytes of the current file still to come.
     pending: u64,
+    /// Whether any change came.
+    changed: bool,
 }
 
 impl<'a> Applier<'a> {
@@ -45,7 +47,13 @@ impl<'a> Applier<'a> {
             at,
             dirs: Vec::new(),
             pending: 0,
+            changed: false,
         }
+    }
+
+    /// Whether the stream held any change so far.
+    pub fn changed(&self) -> bool {
+        self.changed
     }
 
     /// Takes the next bytes of the stream.
@@ -95,6 +103,7 @@ impl<'a> Applier<'a> {
     }
 
     fn entry(&mut self, e: changes::Entry) -> Result<(), Error> {
+        self.changed = true;
         let fail = |e: crate::vfs::PathError| Error(e.to_string());
         let meta = meta(&e);
         let node = |kind: Kind| Node {
