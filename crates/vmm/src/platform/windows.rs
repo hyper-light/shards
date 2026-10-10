@@ -150,6 +150,24 @@ pub fn open_dir(path: &std::path::Path) -> io::Result<File> {
         .open(path)
 }
 
+/// A snapshot's file beneath `root` (unix.rs `open_beneath`). No snapshots are read on
+/// Windows.
+pub fn open_beneath_input(_root: &std::path::Path, _rel: &[&str]) -> io::Result<File> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "a snapshot's files are not read on Windows",
+    ))
+}
+
+/// A snapshot's directories beneath `root` (unix.rs `open_dir_beneath`). No snapshots are
+/// written on Windows.
+pub fn open_dir_beneath(_root: &std::path::Path, _rel: &[&str]) -> io::Result<File> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "a snapshot's directories are not opened on Windows",
+    ))
+}
+
 /// Opens `name` in the directory `dir` holds open. No snapshots are read on Windows.
 pub fn open_in(_dir: &File, _name: &str) -> io::Result<File> {
     Err(io::Error::new(

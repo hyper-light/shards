@@ -519,6 +519,83 @@ pub fn open_dir(path: &std::path::Path) -> io::Result<File> {
         .open(path)
 }
 
+/// `rel`'s directories opened one by one beneath the directory at `root`, each never
+/// through a symbolic link: a snapshot's directory is written by a VM process, which may
+/// leave anything in what it was granted before it gives it up (PM M165). `root`, its
+/// opener's own, is followed as given. Each name must be a plain one.
+pub fn open_dir_beneath(root: &std::path::Path, rel: &[&str]) -> io::Result<File> {
+    let mut dir = open_dir(root)?;
+    for name in rel {
+        dir = openat_beneath(&dir, name, libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW)?;
+    }
+    Ok(dir)
+}
+
+/// The regular file `rel` names beneath the directory at `root`, opened for reading: no
+/// component below `root` followed if it is a symbolic link, and a file that is not a
+/// regular one refused unopened, so that no FIFO is waited on and no device opened
+/// (PM M165). [`open_dir_beneath`] says why.
+pub fn open_beneath(root: &std::path::Path, rel: &[&str]) -> io::Result<File> {
+    let (name, dirs) = rel
+        .split_last()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no file named"))?;
+    let dir = open_dir_beneath(root, dirs)?;
+    let c = plain_name(name)?;
+    // SAFETY: an all-zero stat is a valid value for fstatat(2) to fill.
+    let mut st: libc::stat = unsafe { std::mem::zeroed() };
+    // SAFETY: fstatat(2) of a NUL-terminated name, relative to a directory we hold open.
+    if unsafe { libc::fstatat(dir.as_raw_fd(), c.as_ptr(), &mut st, libc::AT_SYMLINK_NOFOLLOW) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    regular(&st)?;
+    let file = openat_beneath(&dir, name, libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK)?;
+    // What is there now, a file put in its place since included.
+    // SAFETY: as above, for fstat(2) of a descriptor we hold.
+    if unsafe { libc::fstat(file.as_raw_fd(), &mut st) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    regular(&st)?;
+    // SAFETY: fcntl(2) on a descriptor we hold: blocking reads from here on.
+    if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETFL, 0) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(file)
+}
+
+/// `name` as a C string, if it names an entry of a directory and no more: not empty, `.`
+/// or `..`, and holding no `/`.
+fn plain_name(name: &str) -> io::Result<std::ffi::CString> {
+    if name.is_empty() || name == "." || name == ".." || name.contains('/') {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{name:?}: not a plain name"),
+        ));
+    }
+    std::ffi::CString::new(name)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "a file name with NUL"))
+}
+
+fn regular(st: &libc::stat) -> io::Result<()> {
+    if st.st_mode & libc::S_IFMT == libc::S_IFREG {
+        Ok(())
+    } else {
+        Err(io::Error::new(io::ErrorKind::InvalidData, "not a regular file"))
+    }
+}
+
+/// `name` opened with `flags` in the directory `dir` holds open.
+fn openat_beneath(dir: &File, name: &str, flags: libc::c_int) -> io::Result<File> {
+    use std::os::fd::FromRawFd as _;
+    let c = plain_name(name)?;
+    // SAFETY: openat(2) with a NUL-terminated name, relative to a directory we hold open.
+    let fd = unsafe { libc::openat(dir.as_raw_fd(), c.as_ptr(), flags | libc::O_CLOEXEC) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: a descriptor we just opened, and nothing else owns.
+    Ok(unsafe { File::from_raw_fd(fd) })
+}
+
 /// Opens `name` for reading in the directory `dir` holds open: the file there, even if the
 /// directory was renamed or replaced since.
 pub fn open_in(dir: &File, name: &str) -> io::Result<File> {
@@ -1282,5 +1359,56 @@ mod usage_tests {
         std::hint::black_box(x);
         assert!(after.resident > 0);
         assert!(after.cpu_ns > before.cpu_ns, "{before:?} {after:?}");
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod beneath_tests {
+    use super::*;
+    use std::io::Read as _;
+
+    /// What a VM process can leave in the directory of a snapshot it saves, before it
+    /// gives the directory up (PM M165), opened beneath it as a snapshot's files are: a
+    /// regular file is read; a link to a file outside, a link to a directory on the way
+    /// to one, a FIFO and a name that leaves are each refused, the FIFO unopened (opened,
+    /// it would wait here for a writer); a file not there is not found.
+    #[test]
+    fn a_snapshots_files_are_opened_beneath_it_alone() {
+        let root = std::env::temp_dir().join(format!("shards-beneath-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let outside = root.with_extension("outside");
+        std::fs::create_dir_all(root.join("g-1")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(root.join("g-1/state"), b"state").unwrap();
+        std::fs::write(outside.join("memory"), b"secret").unwrap();
+        std::os::unix::fs::symlink(outside.join("memory"), root.join("g-1/memory")).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("g-2")).unwrap();
+        let fifo = std::ffi::CString::new(root.join("g-1/working-set").into_os_string().into_encoded_bytes())
+            .unwrap();
+        // SAFETY: mkfifo(2) of a NUL-terminated path.
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+
+        let mut read = String::new();
+        open_beneath(&root, &["g-1", "state"])
+            .unwrap()
+            .read_to_string(&mut read)
+            .unwrap();
+        assert_eq!(read, "state");
+        for (rel, kind) in [
+            (&["g-1", "memory"][..], io::ErrorKind::InvalidData),
+            (&["g-1", "working-set"][..], io::ErrorKind::InvalidData),
+            (&["g-1", "absent"][..], io::ErrorKind::NotFound),
+            (&["..", "outside"][..], io::ErrorKind::InvalidInput),
+            (&["g-1/state"][..], io::ErrorKind::InvalidInput),
+        ] {
+            assert_eq!(open_beneath(&root, rel).unwrap_err().kind(), kind, "{rel:?}");
+        }
+        // A link to a directory on the way: refused by the open itself (ELOOP).
+        assert!(open_beneath(&root, &["g-2", "memory"]).is_err());
+        assert!(open_dir_beneath(&root, &["g-2"]).is_err());
+        assert!(open_dir_beneath(&root, &["g-1"]).is_ok());
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&outside);
     }
 }

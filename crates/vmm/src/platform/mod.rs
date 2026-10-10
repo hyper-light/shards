@@ -22,7 +22,8 @@ mod macos_thread;
 mod granted;
 #[cfg(unix)]
 pub use granted::{
-    dial_unix, grant_input, grant_listener, input_metadata, input_path, listen_unix, open_input, set_dialer,
+    dial_unix, grant_input, grant_listener, input_metadata, input_path, listen_unix, open_beneath_input,
+    open_input, set_dialer,
 };
 
 /// `path` for reading, and with `write` for writing too (a VM's inputs; granted
@@ -61,6 +62,13 @@ pub fn prioritize_vcpu_thread() -> Result<(), String> {
 /// file. A file longer than `max` bytes is an error, found before it is read.
 pub fn read_in(dir: &File, name: &str, max: u64) -> io::Result<Option<Vec<u8>>> {
     read_bounded(open_in(dir, name), name, max)
+}
+
+/// The bytes of the regular file `rel` names beneath `root` ([`open_beneath_input`]), or
+/// `None` if there is none. A file longer than `max` bytes is an error, found before it
+/// is read.
+pub fn read_beneath(root: &std::path::Path, rel: &[&str], max: u64) -> io::Result<Option<Vec<u8>>> {
+    read_bounded(open_beneath_input(root, rel), &rel.join("/"), max)
 }
 
 /// [`read_in`] for a VM's input at `path` ([`open_input`]).

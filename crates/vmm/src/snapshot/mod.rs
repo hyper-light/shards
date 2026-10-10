@@ -400,7 +400,7 @@ fn is_generation(name: &str) -> bool {
 /// one is read.
 fn current(dir: &Path) -> io::Result<String> {
     let mut bytes = Vec::new();
-    platform::open_input(&dir.join(CURRENT), false)?
+    platform::open_beneath_input(dir, &[CURRENT])?
         .take(MAX_NAME as u64 + 2)
         .read_to_end(&mut bytes)?;
     let name = std::str::from_utf8(&bytes)
@@ -654,7 +654,7 @@ fn open(dir: &Path, name: &str) -> Result<Pinned, Open> {
             Open::Bad(at(file, &e))
         }
     };
-    let bytes = platform::read_input(&path.join(STATE), MAX_STATE)
+    let bytes = platform::read_beneath(dir, &[name, STATE], MAX_STATE)
         .map_err(|e| Open::Bad(at(STATE, &e)))?
         .ok_or_else(|| Open::Gone(at(STATE, &"gone")))?;
     let decoded = decode(&bytes).map_err(|e| Open::Bad(at(STATE, &e)))?;
@@ -675,7 +675,7 @@ fn open(dir: &Path, name: &str) -> Result<Pinned, Open> {
             )));
         }
     }
-    let memory = platform::open_input(&path.join(MEMORY), false).map_err(|e| lost(MEMORY, e))?;
+    let memory = platform::open_beneath_input(dir, &[name, MEMORY]).map_err(|e| lost(MEMORY, e))?;
     let expected = snapshot.config.memory_mib.saturating_mul(1 << 20);
     let actual = memory.metadata().map_err(|e| Open::Bad(at(MEMORY, &e)))?.len();
     if actual != expected {
@@ -787,8 +787,8 @@ pub fn accept_working_set(
     let Some(pages) = decode_working_set_bytes(bytes, page, max_pages(&pinned.snapshot))? else {
         return Ok(0);
     };
-    let generation =
-        platform::open_dir(&pinned.path).map_err(|e| format!("{}: {e}", pinned.path.display()))?;
+    let generation = platform::open_dir_beneath(dir, &[&pinned.name])
+        .map_err(|e| format!("{}: {e}", pinned.path.display()))?;
     write_working_set(&generation, &pages, page)?;
     Ok(pages.len())
 }
@@ -802,7 +802,16 @@ pub fn read_working_set(generation: &Path, page: u64, max_pages: u64) -> Result<
         .checked_mul(8)
         .and_then(|b| b.checked_add(WORKING_SET_HEADER))
         .ok_or_else(|| at(&"a guest too large to bound"))?;
-    let Some(bytes) = platform::read_input(&generation.join(WORKING_SET), max_bytes).map_err(|e| at(&e))?
+    let (Some(dir), Some(name)) = (
+        generation.parent(),
+        generation.file_name().and_then(|n| n.to_str()),
+    ) else {
+        return Err(at(&format!(
+            "{}: not a generation's directory",
+            generation.display()
+        )));
+    };
+    let Some(bytes) = platform::read_beneath(dir, &[name, WORKING_SET], max_bytes).map_err(|e| at(&e))?
     else {
         return Ok(None);
     };
