@@ -82,6 +82,14 @@ def shards_run(shards, env, argv):
     return p.returncode, p.stdout, p.stderr
 
 
+def vm_said(stderr):
+    """A run's stderr as its microVM said it: shards' own notes on this host (the guest
+    kernel's first download, a template that boots instead of restoring) set aside, which
+    the order of the runs decides."""
+    own = ("Downloading the guest kernel ", "Guest kernel: ", "shards: ")
+    return [line for line in stderr.splitlines() if not line.startswith(own)]
+
+
 def case_context(case, testguest, into):
     """The case's directory, its symlinks kept, and testguest at its root."""
     ctx = os.path.join(into, case)
@@ -154,7 +162,8 @@ def agentfile(case, digest, shards, testguest, work):
                 if loaded[0] != 0:
                     ran.append(["load", *loaded])
                     continue
-                ran.append(list(shards_run(shards, env, ["run", "--rm", name, *argv])))
+                code, out, err = shards_run(shards, env, ["run", "--rm", name, *argv])
+                ran.append([code, out, vm_said(err)])
             result["run"] = ran[0]
             if ran[0] != ran[1]:
                 differs.append("run")

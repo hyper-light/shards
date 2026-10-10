@@ -3547,6 +3547,22 @@ and BuildKit build an Agentfile, no shards installed. The frontend is `shards` i
     - Each frontend builds twice in turn and the second builds are compared, so each
       finds BuildKit's cache and synced context as the other left them.
     - Mutation-checked: a warning's line number left off is caught.
+  - The Agentfiles of `scripts/frontend/agentfile-cases` were each built in `shards-dind`
+    by BuildKit through the frontend and on this host by `shards build`
+    (`scripts/frontend/agentfiles`). They cover every directive that brings files (AGENT,
+    HARNESS, MCP local and remote, SKILL for one and for all, ATTACH), a COPY into an
+    agent's domain, a symlink out of one, a skill the reference refuses, and an
+    internal-only agent reaching the world through another.
+    - The image is equal byte for byte, its manifest's annotations included.
+    - Loaded into shards, both images run on a microVM with the same output.
+    - The four refusals are each in the same words.
+    - The check steps run in BuildKit with their mounts over the frontend's read-only
+      FROM-scratch root.
+    - Mutation-checked: a guard's refusal without its step's name is caught.
+  - The costs, against docker/dockerfile:1.27.1 (PM M138). shards' frontend reaches the
+    gateway in 0.75 ms at p50 and 1.58 ms at p99, where docker/dockerfile takes 3.83 and
+    5.38. Otherwise a build's frontend time is BuildKit's answers, 96–99% of every slow
+    run of either.
   - The replay test, and the gateway client's.
   - The definitions and source detail held byte for byte to the capture
     (`crates/dockerfile/tests/gateway.rs`).
@@ -3560,22 +3576,39 @@ and BuildKit build an Agentfile, no shards installed. The frontend is `shards` i
   - Mutation-checked, each mutant killed: the Inputs call, the `.dockerignore` load's key,
     a capability, the own domain's exemption, the contents' comparison, the image check,
     and the guards' collection.
-- **Pending: Docker Desktop's engine stopped answering on 2026-10-09.** Waiting on it:
-  - Agentfiles built by BuildKit through the frontend against `shards build`'s, and
-    both run on microVMs (`scripts/frontend/agentfiles`; through `shards build` alone,
-    each case already makes or refuses what the harness expects);
-  - the costs: the frontend's start and each gateway call against docker/dockerfile:1's
-    (`docs/research/measurements/frontend/run`);
-  - OSI artifacts. BuildKit's source, at dockerfile/1.27.1's tree, sets what to measure.
-    Its image resolver refuses a config of any type but an image's
-    (`util/imageutil/config.go`, `childrenConfigHandler`), so `ResolveSourceMeta` of an
-    artifact fails as it reads the config. Asked for no config but for the attestation
-    chain, it returns an index's own bytes, where the index's signature chain resolves
-    (`source/containerimage/source.go`).
-    `docker-image+blob` fetches any blob by digest, falling back to the manifests endpoint
-    (containerd's `FetchByDigest`). An artifact's index, manifest, config and layers are
-    then each within reach, and its layers can be laid out as `shards build` lays them by
-    an exec step of the frontend's own image, as its checks are.
+- **OSI artifacts, measured in `shards-dind` on BuildKit v0.28.1.** The artifact was an
+  OSI agent: one OCI manifest with artifactType `application/vnd.osi.agent.v1`, its config
+  `application/vnd.osi.agent.config.v1+json` and one `content.v1.tar` layer. Through the
+  gateway, a frontend gets this much of it:
+  - `ResolveSourceMeta` with the config is refused: "encountered unknown type
+    application/vnd.osi.agent.config.v1+json; children may not be fetched";
+  - with the attestation chain asked for and no config, dockerd ends (the finding above);
+  - `docker-image+blob` of the manifest's digest fails with "unexpected HEAD status code
+    …/blobs/sha256:…: 404 Not Found": it asks the blobs endpoint alone, though containerd's
+    `FetchByDigest` would go on to the manifests endpoint;
+  - `docker-image+blob` of the config's and the layer's digests works (101 and 1,889,280
+    bytes);
+  - a `docker-image://` source of it is refused: "mismatched image rootfs and manifest
+    layers".
+
+  So BuildKit fetches an artifact's blobs once their digests are known, but gives a
+  frontend no manifest that names them, and resolves no tag of one.
+  - From a named `oci-layout://` context, `oci-layout+blob` reads every blob by digest
+    from the client's layout: the manifest (448 bytes), the config and the layer. A digest
+    the layout does not hold is refused: "NotFound: … content sha256:…: not found".
+  - buildx resolves the context's tag to its digest on the client and hands the frontend
+    `oci-layout://STORE:TAG@DIGEST`.
+  - oras v1.3.4 (`oras cp --to-oci-layout REF DIR:TAG`) and skopeo v1.22.3 (`skopeo copy
+    docker://REF oci:DIR:TAG`) each copied the agent from the registry into such a
+    layout, its manifest's digest kept.
+- **Pending: OSI artifacts, to be given as named OCI layout contexts.** Decided over
+  the alternatives, with the user's coordinator:
+  - BuildKit v0.28.1 gives a frontend no artifact manifest (the measurements above).
+  - The frontend could fetch an artifact itself only in an exec step with a network, CA
+    roots and the client's registry credentials, none of which the image or a build step
+    should hold.
+  - A named `oci-layout://` context is Docker's own documented mechanism and works on any
+    Docker that runs the frontend. It puts the fetch, and its trust, on the client.
 
 ### D112. Image configs read as Docker reads them
 

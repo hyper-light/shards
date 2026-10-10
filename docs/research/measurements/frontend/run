@@ -133,6 +133,9 @@ def main():
         if current is not None:
             current.append(line)
     measures = {"dockerfile": {}, "shards": {}}
+    # Each run's own: its start to end, and its calls in order, so that a slow run's time
+    # is found where it went.
+    each = {"dockerfile": [], "shards": []}
     with tempfile.TemporaryDirectory() as tmp:
         for k, lines in runs.items():
             label = next((m.group(1) for l in lines for m in [re.search(r"SHARDS_D113_RUN=([a-z]+)-\d+", l)] if m), None)
@@ -143,19 +146,31 @@ def main():
                 f.write("\n".join(lines) + "\n")
             out = run([decode, path, os.path.join(tmp, str(k))]).stdout
             m = measures[label]
+            mine = {"total": None, "calls": []}
             for line in out.splitlines():
                 if line.startswith("PROCESS "):
                     v = dict(x.split("=") for x in line.split()[1:])
                     start, first, end = int(v["start"]), int(v["first_out"]), int(v["exit"])
                     m.setdefault("start to first byte", []).append(first - start)
                     m.setdefault("start to end", []).append(end - start)
+                    mine["total"] = end - start
                 elif line.startswith("CALL "):
                     v = dict(x.split("=") for x in line.split()[1:])
                     m.setdefault("call " + v["method"], []).append(int(v["ns"]))
+                    mine["calls"].append((v["method"], int(v["ns"])))
+            if mine["total"] is not None:
+                each[label].append(mine)
     for side in ("dockerfile", "shards"):
         for metric, values in sorted(measures[side].items()):
             s = stats(values)
             print(f"{side:10} {metric:28} n={s['n']:3} p50={s['p50']:8.3f} p90={s['p90']:8.3f} p99={s['p99']:8.3f} max={s['max']:8.3f} ms")
+    # The slowest runs of each, and where their time went: the calls, in order, and what
+    # the calls leave of the run, the frontend's own work and its start.
+    for side in ("dockerfile", "shards"):
+        for r in sorted(each[side], key=lambda r: r["total"], reverse=True)[:3]:
+            calls = sum(ns for _, ns in r["calls"])
+            said = " ".join(f"{name}={ns / 1e6:.1f}" for name, ns in r["calls"])
+            print(f"{side:10} slow run {r['total'] / 1e6:8.3f} ms: calls {calls / 1e6:.3f}, the rest {(r['total'] - calls) / 1e6:.3f}; {said}")
     for tag in (spy_ours_tag, spy_theirs_tag, ours_tag):
         dind("docker", "rmi", "-f", tag, check=False)
     dind("rm", "-rf", f"{ROOT}/costs", check=False)

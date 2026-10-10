@@ -4604,3 +4604,60 @@ revision before comparing a changed API/implementation.
   cosign verifies, and reads cosign's; both registries' kinds of listing work both ways.
   Unmeasured: registries with the API that answer no `OCI-Subject` (shards then asks the
   API, as cosign does), and keyless signing, which needs Fulcio and Rekor.
+
+### M138. What shards' BuildKit frontend costs against docker/dockerfile:1 (D113)
+
+- **Question.** BuildKit runs a gateway frontend for every build a `# syntax=` line names.
+  What does shards' (`shards frontend`, the one binary) cost against
+  docker/dockerfile:1.27.1: from its start to its first byte on the gateway, to its end,
+  and on each gateway call?
+- **Method.** `docs/research/measurements/frontend/run BINARY SPY DECODE 100` in
+  `shards-dind` (Docker 29.3.1, BuildKit v0.28.1, buildx v0.37.1):
+  - `scripts/frontend/cases/basic` built 100 times by each frontend, interleaved, each
+    first in turn;
+  - both run through D113's spy (`scripts/gateway/spy`), which relays the frontend's
+    stdio and stamps each chunk;
+  - `--output type=cacheonly`, with BuildKit's cache warm, so the frontends' own work and
+    their calls stand out;
+  - a call timed from the chunk that ends its request to the one that ends its answer:
+    BuildKit's time to answer it. What a run's calls leave of it is the frontend's own:
+    its start, its work, and its exit;
+  - shards at revision ec49548 (static musl, aarch64, with line tables);
+    docker/dockerfile:1.27.1 pinned by digest;
+  - Apple M5 Max, macOS 26.4.1, 2026-10-10, load average 25–36 (other builds and tests
+    running).
+- **Results.** Milliseconds, n / p50 / p90 / p99 / max:
+
+  | | docker/dockerfile:1.27.1 | shards |
+  |---|---|---|
+  | start to first byte | 100 / 3.828 / 4.844 / 5.382 / 5.584 | 100 / 0.749 / 1.260 / 1.581 / 2.252 |
+  | start to end | 100 / 192.052 / 260.038 / 381.732 / 393.213 | 100 / 178.381 / 245.738 / 379.215 / 456.209 |
+  | Ping | 100 / 0.448 / 0.679 / 1.247 / 7.114 | 100 / 0.550 / 0.792 / 1.431 / 1.701 |
+  | Inputs | 100 / 0.306 / 0.473 / 0.966 / 1.097 | 100 / 0.320 / 0.503 / 1.013 / 6.192 |
+  | Solve | 300 / 0.435 / 0.694 / 1.127 / 2.006 | 300 / 0.372 / 0.531 / 0.762 / 1.317 |
+  | StatFile | 300 / 5.825 / 22.221 / 42.082 / 66.125 | 300 / 5.646 / 22.914 / 75.838 / 91.556 |
+  | ReadFile | 300 / 0.432 / 0.666 / 1.218 / 1.949 | 300 / 0.382 / 0.588 / 0.759 / 1.439 |
+  | ResolveSourceMeta | 100 / 153.535 / 200.742 / 353.455 / 361.405 | 100 / 151.871 / 190.664 / 246.920 / 306.700 |
+  | Return | 100 / 0.391 / 0.713 / 1.479 / 1.750 | 100 / 0.336 / 0.534 / 0.749 / 0.849 |
+
+  The three slowest runs of each, and what their calls leave of them:
+
+  | | run | in BuildKit's answers | the frontend's own |
+  |---|---|---|---|
+  | docker/dockerfile | 393.2, 381.7, 351.7 | 379.4, 368.6, 340.3 | 13.8, 13.1, 11.4 |
+  | shards | 456.2, 379.2, 378.4 | 451.8, 373.0, 370.6 | 4.4, 6.2, 7.8 |
+
+  Their largest answers were ResolveSourceMeta (216–361 ms) and StatFile (up to 86 ms).
+  The images, as `docker image inspect` gives their size there: 13,145,255 bytes for
+  docker/dockerfile:1.27.1, and 33,169,104 for shards' (the one binary, with its line
+  tables). An earlier run of 100 each, at a load average of 34–38, gave start to first
+  byte at p50 / p99 of 0.820 / 3.086 ms for shards and 3.611 / 11.558 ms for
+  docker/dockerfile.
+- **Consequence.**
+  - shards' frontend reaches the gateway sooner: 0.75 ms against 3.83 at p50, and 1.58
+    against 5.38 at p99.
+  - A build's frontend time is otherwise BuildKit's: its answers held 96–99% of every
+    slow run of either frontend. Resolving the base image's metadata from its registry
+    takes the most: 152 and 154 ms at p50.
+  - In those runs the frontend's own time was 4.4–7.8 ms for shards and 11.4–13.8 ms for
+    docker/dockerfile.
