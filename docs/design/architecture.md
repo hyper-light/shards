@@ -3567,15 +3567,26 @@ the rest of a run's reach into its domains.
   so a command with `CAP_SYSLOG` (which it cannot hold) or `/dev/kmsg` reads nothing the
   kernel logged of a domain.
 
-Tested: `a_run_reaches_none_of_its_images_agents` (E2E, mutation-checked) builds an image
-with an agent that reaches past the microVM, runs the workload's `beside`, and asserts the
-command sees only its own process tree and reaches no other process's signals, environment
-or network namespace; then that each CLI escape above is refused at run and at exec. The
-isolation and OOM E2E tests that watched agents from the workload's own `/proc` now watch
-them from the host (`shards top`) and release the workload with a signal, since the
-workload no longer sees them. Unit tests pin the shared rules (`shards_abi::run::beside`),
-the daemon's refusals (`agentfile`), the scoped-volume rules (`volumes`) and the build's
-`USER` check (`build::domains`).
+Tested: `a_run_reaches_none_of_its_images_agents` (E2E) builds an image with an agent that
+reaches past the microVM, runs the workload's `beside`, and asserts the command sees only
+its own process tree and reaches no other process's signals, environment or network
+namespace; then that each CLI escape above is refused at run and at exec. Mutation-checked:
+with init's `setns` into the command's namespace made a no-op, the command is forked in
+init's own, sees `init`, the kernel's threads and the agent, and the test fails; restored,
+it passes. The refusals are twins (daemon and init), so either alone still refuses each
+but `--network none`, which init fails on another path (no eth0 for the agents' egress)
+rather than by name. The isolation
+and OOM E2E tests that watched agents from the workload's own `/proc` now watch them from
+the host (`shards top`, a look every 250 ms) and release the workload with a signal, since
+the workload no longer sees them; the 19 tests the change touches pass, in parallel. (A
+look every 20 ms, each a whole client-daemon-microVM round trip, starved 17 of them under
+parallel load.) One assertion is gone: that each in-VM server instance has a network
+namespace of its own, which the workload read in its `/proc/PID/net/dev` and no `shards
+top` column shows, init's dump carrying each process's `stat` and `status` but no
+namespace; the instances' uids, gids, group and memory are still asserted, from the host.
+Unit tests pin the shared rules (`shards_abi::run::beside`), the daemon's refusals
+(`agentfile`), the scoped-volume rules (`volumes`) and the build's `USER` check
+(`build::domains`).
 
 - **Unmeasured (Docker Desktop wedged, 2026-10-09):** the start-path cost of the command's
   PID namespace and reaper fork, which the warm-restore budget must absorb (queued: an A/B
