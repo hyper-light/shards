@@ -1,7 +1,7 @@
 # virtio-fs under hostile requests (audit V)
 
 Evidence for the virtio-fs decisions in docs/design/architecture.md (D38, "Every request
-is the guest's to forge"); results are platform-measurements.md M129 to M134.
+is the guest's to forge"); results are platform-measurements.md M129 to M133, and M136.
 
 ## `run.py`
 
@@ -20,7 +20,7 @@ of the processes' medians with a bootstrap 95% interval:
   guest memory once the share has the request;
 - `getattr`: a LOOKUP then a GETATTR of one file (M133);
 - `walk --tree DIR`: a walk of a tree `--case mktree --tree DIR --dirs N` made, as `find`
-  walks one, each directory's visit timed (M134);
+  walks one, each directory's visit timed (M136);
 - `list`, `listplus`: whole listings of a directory of 10,000 entries, READDIR or
   READDIRPLUS pages of 4096 bytes (M130). `--cases` picks among them.
 
@@ -28,7 +28,7 @@ of the processes' medians with a bootstrap 95% interval:
 
 A GETATTR of a directory held, and of one let go between requests and opened again
 along its path, at depths 1, 4 and 16, in alternating processes (`--case reopen
-[--let-go]`, M134).
+[--let-go]`, M136).
 
 ## `probes/`
 

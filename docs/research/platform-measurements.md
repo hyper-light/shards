@@ -4488,7 +4488,7 @@ revision before comparing a changed API/implementation.
   it inherits the daemon's limit, which the daemon raises at its start to min(hard limit,
   `kern.maxfilesperproc`), 245,760 here. 256 is a share process's only where the hard
   limit is that low or the daemon did not start it. At 245,760 the walk passes, and a
-  guest pins as many of the host's table instead; see M134, which acts on both.
+  guest pins as many of the host's table instead; see M136, which acts on both.
 - **Method.** `virtio-fs-audit --case fds --dirs D --limit L`: the process's soft
   RLIMIT_NOFILE set to L, then a LOOKUP of each of D directories through
   `Server::handle`, none forgotten. Apple M5 Max, macOS 26.4.1, revision ce225fa,
@@ -4498,7 +4498,7 @@ revision before comparing a changed API/implementation.
 - **Consequence.** A guest that walks more directories than its share process may hold
   descriptors is told "Too many open files", and a hostile one can put its own shares
   there at will; at the limit the daemon gives it, one guest pins half of this host's
-  table and two all of it. Done in M134.
+  table and two all of it. Done in M136.
 
 ### M133. What looking before opening a node's attributes costs (audit V08)
 

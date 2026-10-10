@@ -2507,7 +2507,7 @@ microVM as virtio-fs shares (virtio 1.3 §5.11; Linux fs/fuse/virtio_fs.c):
     (`platform::raise_descriptor_limit`, the daemon's too), less what it holds and
     `REQUEST_FDS` (3) a server; and no more than its part of the system's table with as
     many share processes as runs the user may start. This host: 90 a share process (PM
-    M134). A walk costs 2.1 µs a directory more (6%); a reopen 8 to 10 µs a component
+    M136). A walk costs 2.1 µs a directory more (6%); a reopen 8 to 10 µs a component
     walked on macOS.
   - Tests: `tests/fs_dir_budget.rs` (a walk of 584 directories within 24 descriptors,
     EMFILE at the budget, `REQUEST_FDS` exactly enough),
