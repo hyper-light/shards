@@ -112,10 +112,24 @@ pub struct Capture {
     pub ssh: Vec<(String, bool)>,
     /// Whether any step had the network, which makes a build not hermetic.
     pub network: bool,
+    /// Where a step had the network through the build's proxy (D110): what its requests
+    /// came to that is no material, each step's in order.
+    pub proxy: Option<Vec<ProxyIncomplete>>,
     /// `mode=max`'s records, where it was asked for.
     pub max: Option<Max>,
     /// The SBOMs the build's scanner wrote (D81), the core target's first.
     pub sboms: Vec<super::sbom::Scanned>,
+}
+
+/// A request of a step's through the build's proxy that is no material
+/// (`ProxyCaptureIncomplete`): the step's vertex, its command, the request, and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProxyIncomplete {
+    pub op: String,
+    pub name: String,
+    pub method: String,
+    pub uri: String,
+    pub reason: String,
 }
 
 /// The run's own facts: its invocation's ID (the build's reference), when it started and
@@ -480,13 +494,17 @@ pub fn predicate(c: &Capture, run: &Run) -> Json {
     }
     internal.push(("builderPlatform", Json::s(run.builder_platform.clone())));
     definition.push(("internalParameters", Json::obj(internal)));
-    // Locals are materials no digest pins: never complete, so never hermetic.
-    let complete_materials = c.locals.is_empty();
+    // Locals are materials no digest pins, and so is a request through the build's proxy
+    // that is no material (D110): never complete, so never hermetic.
+    let complete_materials = c.locals.is_empty() && c.proxy.as_ref().is_none_or(Vec::is_empty);
     let mut metadata = vec![
         ("invocationId", Json::s(run.invocation_id.clone())),
         ("startedOn", Json::s(rfc3339_nano(run.started))),
         ("finishedOn", Json::s(rfc3339_nano(run.finished))),
-        ("buildkit_metadata", buildkit_metadata(c.max.as_ref())),
+        (
+            "buildkit_metadata",
+            buildkit_metadata(c.max.as_ref(), c.proxy.as_deref()),
+        ),
     ];
     if complete_materials && !c.network {
         metadata.push(("buildkit_hermetic", Json::Bool(true)));
@@ -537,15 +555,62 @@ pub fn image_statements(
 }
 
 /// `BuildKitMetadata`: for `mode=max`, its source map and its steps' layers.
-fn buildkit_metadata(max: Option<&Max>) -> Json {
-    let Some(m) = max else {
-        return Json::Obj(Vec::new());
-    };
-    let mut f = vec![("source", m.source.clone())];
-    if !m.layers.is_empty() {
-        f.push(("layers", Json::Obj(m.layers.clone())));
+fn buildkit_metadata(max: Option<&Max>, proxy: Option<&[ProxyIncomplete]>) -> Json {
+    let mut f = Vec::new();
+    if let Some(m) = max {
+        f.push(("source", m.source.clone()));
+        if !m.layers.is_empty() {
+            f.push(("layers", Json::Obj(m.layers.clone())));
+        }
+    }
+    // The build's proxy (NetworkMetadata): its mode, and what was no material, sorted by
+    // vertex, URI, method and reason as BuildKit's capture sorts them.
+    if let Some(incomplete) = proxy {
+        let mut network = vec![("mode", Json::s("proxy"))];
+        if !incomplete.is_empty() {
+            let mut sorted = incomplete.to_vec();
+            sorted.sort_by(|a, b| {
+                (&a.op, &a.uri, &a.method, &a.reason).cmp(&(&b.op, &b.uri, &b.method, &b.reason))
+            });
+            let entries = sorted
+                .into_iter()
+                .map(|i| {
+                    Json::obj(vec![
+                        ("op", Json::s(i.op)),
+                        ("name", Json::s(i.name)),
+                        ("method", Json::s(i.method)),
+                        ("uri", Json::s(i.uri)),
+                        ("reason", Json::s(i.reason)),
+                    ])
+                })
+                .collect();
+            network.push(("proxy", Json::obj(vec![("incomplete", Json::Arr(entries))])));
+        }
+        f.push(("network", Json::obj(network)));
     }
     Json::obj(f)
+}
+
+/// Each op's digest as BuildKit's solver knows its vertex (llbsolver loadLLB's
+/// `recomputeDigests`): its marshalled bytes, its inputs' own digests in them, and under
+/// the build's proxy (D110) an exec op with the network marked so
+/// (`\0buildkit.proxy-network.v0` after its bytes), which every op after it then shows.
+pub fn vertex_digests(def: &shards_dockerfile::llb::Definition, proxy: bool) -> Vec<String> {
+    use shards_dockerfile::llb::{NetMode, OpKind};
+    let mut digests: Vec<String> = Vec::with_capacity(def.ops.len());
+    for op in &def.ops {
+        let inputs: Vec<Vec<u8>> = op
+            .inputs
+            .iter()
+            .map(|i| digests.get(i.op).cloned().unwrap_or_default().into_bytes())
+            .collect();
+        let mut bytes = shards_dockerfile::pb::op(op, &inputs).unwrap_or_default();
+        if proxy && matches!(&op.kind, OpKind::Exec { network, .. } if *network != NetMode::None) {
+            bytes.extend_from_slice(b"\0buildkit.proxy-network.v0");
+        }
+        digests.push(sha256(&bytes));
+    }
+    digests
 }
 
 /// The in-toto statement the attestation layer holds. Its subjects are the image's
@@ -1638,6 +1703,7 @@ mod tests {
                 secrets,
                 ssh,
                 network,
+                proxy: None,
                 max: None,
                 sboms: Vec::new(),
             };

@@ -52,9 +52,6 @@ mod output;
 mod policy;
 pub(crate) mod policy_command;
 mod provenance;
-#[cfg(unix)]
-// Until builds start it (D110's build wiring, the next commit).
-#[allow(dead_code)]
 mod proxy;
 mod remote;
 mod s3;
@@ -1883,7 +1880,12 @@ fn policies_of(
         return Ok(None);
     };
     *step.name.borrow_mut() = format!("loading policies {}", policies.names.join(", "));
-    policies.check_caps(step)?;
+    let mut policies = policies;
+    policies.proxy = policies.check_caps(step)?;
+    // Said once a build, after every policy's caps, as buildx says it (build/opt.go).
+    if policies.proxy && multi::with(|sub| sub.first).unwrap_or(true) {
+        policy::Log::line(step, "policy enabled network proxy");
+    }
     Ok(Some(policies))
 }
 
@@ -3073,6 +3075,17 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
         }
     }
     let log_limits = LogLimits::from_env();
+    // The build's proxy, where its policies ask for it (D110), made with its builder, which
+    // goes before it; each step's vertex as BuildKit's solver knows it, to name the step a
+    // request that is no material came from.
+    let proxy_cap = policies.as_ref().is_some_and(|p| p.proxy);
+    let mut build_proxy: Option<proxy::Proxy> = None;
+    let vertices = if proxy_cap {
+        provenance::vertex_digests(&def, true)
+    } else {
+        Vec::new()
+    };
+    let mut proxy_incomplete: Vec<provenance::ProxyIncomplete> = Vec::new();
     let mut builder: Option<builder::Builder> = None;
     // Its steps' seccomp filter, compiled once for the kernel the builder boots.
     let mut step_filter: Vec<u8> = Vec::new();
@@ -3431,12 +3444,16 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
                             (g.kernel, g.init)
                         }
                     };
+                    if proxy_cap {
+                        build_proxy = Some(builder::proxy(limits.bytes).map_err(|e| fail(&v, &e))?);
+                    }
                     let boot = builder::Boot {
                         kernel: &guest.0,
                         init: &guest.1,
                         cpus: builder_cpus(),
                         memory_mib: builder_memory_mib(),
                         bases: &run_bases,
+                        proxy: build_proxy.as_ref(),
                     };
                     let kernel = crate::guest::version_of(&guest.0).map_err(|e| fail(&v, &e))?;
                     step_filter = crate::setup::step_seccomp(kernel).map_err(|e| fail(&v, &e))?;
@@ -3461,14 +3478,57 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
                     agents: &agents,
                     resources: meta.linux_resources.as_ref(),
                     cdi: cdi_edits.get(&i),
+                    proxy: build_proxy.as_ref(),
+                };
+                // Each request through the proxy, checked by the build's policies as an
+                // HTTP source, as BuildKit's handler asks them (D110), here on the build's
+                // thread: refused where they refuse it. Only an image's pin converts a
+                // source, so a request is allowed or refused.
+                let mut check = |_method: &str, url: &str| -> bool {
+                    let Some(p) = &policies else { return true };
+                    let verdict = p.evaluate(
+                        &policy::Source::new(url),
+                        None,
+                        &PolicyMeta { bases: &bases },
+                        &policy_step,
+                    );
+                    p.denied.borrow_mut().clear();
+                    matches!(verdict, Ok(None))
                 };
                 let mut log = StepLog::new(log_limits);
-                let r = exec.run(b, &inputs, &op, &name, &mut |which, bytes| {
-                    log.write(&progress.borrow(), &v, which, bytes)
-                });
+                let r = exec.run(
+                    b,
+                    &inputs,
+                    &op,
+                    &name,
+                    &mut |which, bytes| log.write(&progress.borrow(), &v, which, bytes),
+                    &mut check,
+                );
                 log.end(&progress.borrow(), &v);
-                let r = r.map_err(|e| fail(&v, &e))?;
+                let (r, capture) = r.map_err(|e| fail(&v, &e))?;
                 progress.borrow().done(&v);
+                // What its requests came to, in the build's provenance: each material an
+                // HTTP source of its, each that is none named by its step.
+                if let Some(c) = capture {
+                    for m in c.materials() {
+                        let (algorithm, hex) = m.digest.split_once(':').unwrap_or(("sha256", &m.digest));
+                        http_materials.push(provenance::Material {
+                            uri: m.url,
+                            algorithm: algorithm.to_string(),
+                            hex: hex.to_string(),
+                        });
+                    }
+                    let command = show(&process.args.join(&b' '));
+                    for incomplete in c.incomplete {
+                        proxy_incomplete.push(provenance::ProxyIncomplete {
+                            op: vertices.get(i).cloned().unwrap_or_default(),
+                            name: command.clone(),
+                            method: incomplete.method,
+                            uri: incomplete.url,
+                            reason: incomplete.reason.to_string(),
+                        });
+                    }
+                }
                 r
             }
         };
@@ -3613,6 +3673,8 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
             secrets,
             ssh,
             network,
+            // Every step with the network had the proxy's alone (D110).
+            proxy: (proxy_cap && network).then(|| std::mem::take(&mut proxy_incomplete)),
             max: None,
             sboms,
         }

@@ -824,6 +824,9 @@ pub struct RunOp<'o> {
     pub resources: Option<&'o shards_dockerfile::llb::LinuxResources>,
     /// What its CDI devices bring it (D96), granted and merged.
     pub cdi: Option<&'o super::cdi::Edits>,
+    /// The build's proxy, where its policies ask for one (D110): a step whose network is
+    /// the builder's (BuildKit's default and host modes) reaches it alone.
+    pub proxy: Option<&'o super::proxy::Proxy>,
 }
 
 /// Cgroup v2 files and what each holds, in the order written.
@@ -1046,6 +1049,10 @@ impl Exec<'_> {
 
     /// Runs a `RUN` in `builder` as BuildKit runs it (docs/research/buildkit-run.md), its
     /// output to `out` as it comes; its result is its root mount's.
+    ///
+    /// Under the build's proxy (D110) its requests are put to `check`, the build's policies,
+    /// its log ends with them as BuildKit's does, and what they came to is returned with
+    /// its results.
     pub fn run(
         &mut self,
         builder: &mut super::builder::Builder,
@@ -1053,7 +1060,8 @@ impl Exec<'_> {
         op: &RunOp<'_>,
         description: &str,
         out: &mut dyn FnMut(u8, &[u8]),
-    ) -> Result<Vec<Ref>, String> {
+        check: &mut dyn FnMut(&str, &str) -> bool,
+    ) -> Result<(Vec<Ref>, Option<super::proxy::capture::Capture>), String> {
         use shards_abi::build::{Mount, Network, Step};
         use shards_dockerfile::llb::{NetMode, OpMountKind, Security};
 
@@ -1102,7 +1110,17 @@ impl Exec<'_> {
                 None => return Err(format!("secret {}: not found", String::from_utf8_lossy(id))),
             }
         }
-        let env = super::step::env(&p.env, p.proxy.as_ref(), &secrets);
+        let mut env = super::step::env(&p.env, p.proxy.as_ref(), &secrets);
+        // Under the build's proxy (D110), as BuildKit's executor runs it: its proxy
+        // variables in place of any of theirs (ReplaceEnv), the environment's own upstream
+        // proxies valid or the step not run (upstreamProxyEnvironment). A step without the
+        // builder's network (`--network=none`) has none.
+        let proxy = op.proxy.filter(|_| network == Network::Default);
+        if proxy.is_some() {
+            super::proxy::check_upstream(&|k| std::env::var(k).ok()).map_err(|e| fail(&e))?;
+            let url = builder.proxy_url().ok_or("the builder has no proxy")?;
+            env = super::proxy::replace_env(&env, &super::proxy::env(url));
+        }
         let mut env = shards_user::prepare_env(&env, user.uid, passwd.ok().flatten().as_deref())
             .map_err(|e| fail(&e))?;
         let mut groups = user.groups.clone();
@@ -1307,14 +1325,29 @@ impl Exec<'_> {
             },
             outputs: outputs.iter().map(|(at, _, _)| (*at, 0)).collect(),
             devices,
-            proxy_ca: Vec::new(),
+            // Its trust bundle holds the proxy's CA while it runs (InjectProxyCA).
+            proxy_ca: proxy.map(|p| p.ca().to_vec()).unwrap_or_default(),
         };
         let mut fs = (*root.fs).clone();
         fs.begin();
         fs.now = now();
         let (mut staging, source, at) = self.staging()?;
         let mut applier = shards_build::upper::Applier::new(&mut fs, &mut staging, source, at);
-        let (ended, layer, mounted) = builder.run(step, out, &mut applier, op.agents, self.limits.bytes)?;
+        let (ended, layer, mounted, capture) = builder.run(
+            step,
+            out,
+            &mut applier,
+            op.agents,
+            self.limits.bytes,
+            proxy.map(|p| (p, check)),
+        )?;
+        // Its requests through the proxy end its log, however it ended (logProxyRequests).
+        if let Some(c) = &capture {
+            let lines = c.summary();
+            if !lines.is_empty() {
+                out(shards_abi::run::kind::STDERR, &lines);
+            }
+        }
         match ended {
             super::builder::Ended::Status(0) => {}
             super::builder::Ended::Status(n) => return Err(fail(&format!("exit code: {n}"))),
@@ -1366,10 +1399,11 @@ impl Exec<'_> {
                 *slot = Some(made);
             }
         }
-        results
+        let results = results
             .into_iter()
             .map(|r| r.ok_or_else(|| "a command's outputs are not numbered in order".to_string()))
-            .collect()
+            .collect::<Result<Vec<_>, String>>()?;
+        Ok((results, capture))
     }
 }
 

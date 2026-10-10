@@ -1477,6 +1477,8 @@ pub struct Policies {
     pub denied: RefCell<Vec<String>>,
     /// The build's signature verifier (SignatureVerifier).
     trust: signatures::Trust,
+    /// Whether a policy asked for the network proxy (D110), once their caps are asked.
+    pub proxy: bool,
 }
 
 /// configureSourcePolicy's setup of one build's policies: the Dockerfile's own and the
@@ -1570,16 +1572,20 @@ impl Policies {
             list,
             denied: RefCell::new(Vec::new()),
             trust: signatures::Trust::default(),
+            proxy: false,
         }))
     }
 
-    /// Each policy asked for its caps, as the build begins (applyPolicyCaps).
-    pub fn check_caps(&self, log: &dyn Log) -> Result<(), String> {
+    /// Each policy asked for its caps, as the build begins (applyPolicyCaps): whether one
+    /// asked for the network proxy (`exec.proxy`, D110).
+    pub fn check_caps(&self, log: &dyn Log) -> Result<bool, String> {
+        let mut proxy = false;
         for p in self.list.iter().filter(|p| !p.skip_caps) {
-            self.caps(p, log)
+            proxy |= self
+                .caps(p, log)
                 .map_err(|e| format!("failed to evaluate policy caps: {e}"))?;
         }
-        Ok(())
+        Ok(proxy)
     }
 
     fn say(&self, p: &Policy, level: LogLevel, log: &dyn Log, text: &str) {
@@ -1588,9 +1594,9 @@ impl Policies {
         }
     }
 
-    /// CheckCaps: the policy asked as the build starts, with no source; the caps it asks
-    /// for refused, shards' builder having no network proxy for them yet.
-    fn caps(&self, p: &Policy, log: &dyn Log) -> Result<(), String> {
+    /// CheckCaps: the policy asked as the build starts, with no source: whether it asks
+    /// for the network proxy.
+    fn caps(&self, p: &Policy, log: &dyn Log) -> Result<bool, String> {
         let input = Input {
             env: Env {
                 caps_request: true,
@@ -1606,10 +1612,8 @@ impl Policies {
         );
         let run = self.run(p, &input, false, log)?;
         let decision = run.decision?.ok_or("policy returned zero result")?;
-        if decision.caps.iter().any(|(_, on)| *on) {
-            return Err("network proxy requested by policy is not supported by shards yet".into());
-        }
-        Ok(())
+        // `exec.proxy` is the only cap a decision may name (decision_of).
+        Ok(decision.caps.iter().any(|(_, on)| *on))
     }
 
     /// The policies' verdict on `source`, loaded for `platform` (policyEvaluator.evaluate):
