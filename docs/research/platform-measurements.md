@@ -4661,3 +4661,44 @@ revision before comparing a changed API/implementation.
     takes the most: 152 and 154 ms at p50.
   - In those runs the frontend's own time was 4.4–7.8 ms for shards and 11.4–13.8 ms for
     docker/dockerfile.
+
+### M155. What a run's guest keeps of a microVM's memory, on the path a run takes
+
+- **Question.** `shards run -m LIMIT` sizes its microVM so that the guest's MemAvailable
+  holds the limit, by a table of what the guest kernel keeps at each size (M117 for arm64,
+  M123 for x86_64). Those measured cold boots (`run --kernel … --memory`). A run's VM is a
+  template of its size, restored, its guest the run's: does it keep the same? CI found
+  `-m 2500m` 184 KiB short on x86_64 (5eb6322).
+- **Method.** `docs/research/measurements/guest-memory/measure-run.py`: for each table
+  size and each interval's midpoint, as far as half the host's memory, the limit the
+  daemon sizes to exactly that VM (resources::memory_mib over the table, read from the
+  source), `shards run --rm -m LIMITk alpine cat /proc/meminfo` 30 times (the first makes
+  the template, the rest restore it). The overhead is the VM's KiB less MemAvailable; the
+  margin, MemAvailable less the limit. arm64: Apple M5 Max, macOS 26.4.1, guest kernel
+  6.18.48, 2026-10-10, load average 20 to 57.
+- **Results.** arm64, KiB, at the table's sizes; each interval's midpoint kept less than
+  its end (320 MiB: 47,136 at most; 896: 90,980; 14,336: 527,860):
+
+  | VM (MiB) | cold boot's (M117) | run's n / p50 / p90 / p99 / max | least margin |
+  |---:|---:|---|---:|
+  | 256 | 43,216 | 30 / 43,632 / 43,752 / 43,784 / 43,784 | −568 |
+  | 384 | 47,004 | 30 / 47,700 / 47,700 / 47,700 / 47,700 | −696 |
+  | 512 | 50,000 | 30 / 50,488 / 50,488 / 50,488 / 50,488 | −488 |
+  | 768 | 86,172 | 30 / 88,668 / 88,668 / 88,668 / 88,668 | −2,496 |
+  | 1,024 | 90,784 | 30 / 93,524 / 93,524 / 93,524 / 93,524 | −2,740 |
+  | 1,536 | 104,440 | 30 / 106,936 / 106,936 / 106,936 / 106,936 | −2,496 |
+  | 2,048 | 113,664 | 30 / 116,160 / 116,160 / 116,160 / 116,160 | −2,496 |
+  | 3,072 | 239,288 | 30 / 241,520 / 241,520 / 241,524 / 241,524 | −2,236 |
+  | 3,584 | 250,488 | 30 / 252,728 / 252,728 / 252,728 / 252,728 | −2,240 |
+  | 4,096 | 261,724 | 30 / 263,956 / 263,956 / 263,956 / 263,956 | −2,232 |
+  | 4,608 | 288,068 | 30 / 290,332 / 290,332 / 290,332 / 290,332 | −2,264 |
+  | 6,144 | 321,752 | 30 / 324,016 / 324,016 / 324,016 / 324,016 | −2,264 |
+  | 8,192 | 367,200 | 30 / 368,980 / 368,980 / 368,980 / 368,980 | −1,780 |
+  | 12,288 | 476,612 | 30 / 478,820 / 478,820 / 478,824 / 478,824 | −2,212 |
+  | 16,384 | 575,192 | 30 / 577,416 / 577,416 / 577,468 / 577,468 | −2,276 |
+
+- **Consequence.** A run's guest keeps 0.5 to 2.7 MiB more than a cold boot's at every
+  size: `-m` held less than its limit wherever a limit sized its VM at a table size, and
+  at some midpoints. Each interval's overhead rises to its end, so the table,
+  which takes the overhead of the next size up, is now each size's most on the run's path
+  (resources::overhead_kib). Past 16 GiB the slope stays 26 KiB a MiB.
