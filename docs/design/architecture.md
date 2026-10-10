@@ -650,8 +650,14 @@ A pull resolves, fetches and checks as containerd v2.4.1 does
     share of each. containerd asks again at once, and ECR Public, which throttles
     anonymous requests at random even at 1 a second, failed 12 of 20 pulls of shards
     that never retried and none that waits [PM M112]. A quota spent
-    (`ratelimit-remaining` at 0: Docker Hub counts pulls over hours) is never retried,
-    and the error reports its `ratelimit-*` fields and `Retry-After`.
+    (`ratelimit-remaining` at 0: Docker Hub counts pulls over hours) is never retried
+    unless a `Retry-After` that fits says when, and the error reports its `ratelimit-*`
+    fields and `Retry-After`. The wait is at least the random share, however little
+    `Retry-After` names, as it names how long a client ought to wait (RFC 9110 §10.2.3),
+    and one that cannot be read is waited as none: ghcr.io named under a millisecond in a
+    429's body (`retry-after: 900.208µs`), and a pull failed on it, where before a
+    `Retry-After` of 0 was waited not at all and an unreadable one was given up on
+    (`throttles_are_waited_out_and_long_waits_are_not`, mutation-checked).
 - **Resolve** follows containerd's `Resolve`:
   - a HEAD of the tag or digest with its `Accept` list;
   - the digest comes from the reference, else from `Docker-Content-Digest` with a

@@ -1107,25 +1107,32 @@ fn dockerd(status: u16, body: &[u8]) -> Said {
 /// and `ratelimit-remaining` (`<count>;w=<seconds>`), `docker-ratelimit-source`, and
 /// `Retry-After`. None where it gave none of them.
 /// How long to wait before asking again after the `n`th 429 in a row, or `None` to give
-/// up: a quota spent (Docker Hub's `ratelimit-remaining` at 0, its window hours long) is
-/// never waited out, nor a `Retry-After` longer than the waits left; a throttle is.
+/// up: a `Retry-After` longer than the waits left is never waited out, nor a quota spent
+/// (Docker Hub's `ratelimit-remaining` at 0, its window hours long) that names no wait
+/// that fits; a throttle is.
 fn throttle(response: &Response, n: usize) -> Option<Duration> {
     let most = *THROTTLED.get(n)?;
-    let spent = response
-        .header("ratelimit-remaining")
-        .and_then(|v| v.split(';').next())
-        .is_some_and(|left| left.trim() == "0");
-    if spent {
-        return None;
-    }
     let left: Duration = THROTTLED.iter().skip(n).sum();
+    // Full jitter: a share of the most, at random, so a pull's requests do not come back
+    // together; at least that, however little the registry names, as `Retry-After` is how
+    // long a client ought to wait (RFC 9110 §10.2.3): ghcr.io named under a millisecond in
+    // a 429's body (`retry-after: 900.208µs`), and a pull failed on it.
+    let share = most.mul_f64(jitter());
     match response.header("retry-after").map(|v| v.trim().parse::<u64>()) {
-        Some(Ok(secs)) => Some(Duration::from_secs(secs)).filter(|d| *d <= left),
-        // An HTTP date, or nothing readable: what the registry wants is not known here.
-        Some(Err(_)) => None,
-        // Full jitter: a share of the most, at random, so a pull's requests do not come
-        // back together.
-        None => Some(most.mul_f64(jitter())),
+        // The wait it names, where the waits left hold it, a quota spent or not: it says
+        // when.
+        Some(Ok(secs)) => Some(Duration::from_secs(secs))
+            .filter(|d| *d <= left)
+            .map(|d| d.max(share)),
+        // None named, an HTTP date or nothing readable: waited as one naming no wait,
+        // but a quota spent.
+        _ => {
+            let spent = response
+                .header("ratelimit-remaining")
+                .and_then(|v| v.split(';').next())
+                .is_some_and(|left| left.trim() == "0");
+            (!spent).then_some(share)
+        }
     }
 }
 
