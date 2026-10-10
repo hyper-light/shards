@@ -124,7 +124,7 @@ fn said(r: &Record, verbose: bool, first: bool) -> String {
             lines.push(vec!["Description:".into(), d.clone()]);
         }
         // No `Type:`: BuildKit's prune says no record's type (cache/manager.go
-        // `pruneOnce`), so buildx prints none (measured, M130).
+        // `pruneOnce`), so buildx prints none (measured, M141).
         lines.extend([
             vec!["Usage count:".into(), r.usage.to_string()],
             vec!["Last used:".into(), ago],
@@ -281,7 +281,7 @@ mod tests {
         );
     }
 
-    /// A cache mount's record said in full, as buildx said one (M130): mutable, described,
+    /// A cache mount's record said in full, as buildx said one (M141): mutable, described,
     /// no type.
     #[test]
     fn a_cache_mounts_record_is_said_as_buildx_says_it() {

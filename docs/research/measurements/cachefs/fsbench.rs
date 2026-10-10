@@ -1,4 +1,4 @@
-//! What a package manager's cache costs on a filesystem (platform-measurements.md M129):
+//! What a package manager's cache costs on a filesystem (platform-measurements.md M140):
 //! many small files made, read and moved, then large ones written and read, each phase
 //! timed by CLOCK_MONOTONIC. Run in a Linux guest, built statically:
 //!

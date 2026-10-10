@@ -160,8 +160,9 @@ pub fn sort_for_deletion(records: Vec<Record>) -> Vec<Record> {
     ranked.into_iter().map(|(r, ..)| r).collect()
 }
 
-/// Every record of `store`'s, and whether a step holds it now.
-pub fn records(store: &Store) -> Result<Vec<(Record, bool)>, String> {
+/// Every record of `store`'s, those a step holds among them, which DiskUsage counts and
+/// which removing refuses ([`Store::remove_mount`]), as BuildKit removes no record in use.
+pub fn records(store: &Store) -> Result<Vec<Record>, String> {
     let held = store.referenced_blobs().map_err(|e| e.to_string())?;
     let entries = store.cache_entries().map_err(|e| e.to_string())?;
     let mounts = store.mount_entries().map_err(|e| e.to_string())?;
@@ -169,7 +170,7 @@ pub fn records(store: &Store) -> Result<Vec<(Record, bool)>, String> {
         .into_iter()
         .map(|e| {
             let shared = e.own.as_ref().is_some_and(|d| held.contains(&store.blob_path(d)));
-            let r = Record {
+            Record {
                 id: e.key,
                 size: e.size,
                 created: e.created,
@@ -177,20 +178,16 @@ pub fn records(store: &Store) -> Result<Vec<(Record, bool)>, String> {
                 usage: e.usage,
                 shared,
                 mount: None,
-            };
-            (r, false)
+            }
         })
-        .chain(mounts.into_iter().map(|m| {
-            let r = Record {
-                id: m.id,
-                size: m.size,
-                created: m.created,
-                last_used: m.last_used,
-                usage: m.usage,
-                shared: false,
-                mount: Some(m.description),
-            };
-            (r, m.in_use)
+        .chain(mounts.into_iter().map(|m| Record {
+            id: m.id,
+            size: m.size,
+            created: m.created,
+            last_used: m.last_used,
+            usage: m.usage,
+            shared: false,
+            mount: Some(m.description),
         }))
         .collect())
 }
@@ -210,8 +207,8 @@ pub fn prune(
     let mut total: i64 = if targeted {
         records
             .iter()
-            .filter(|(r, _)| !r.shared)
-            .map(|(r, _)| i64::try_from(r.size).unwrap_or(i64::MAX))
+            .filter(|r| !r.shared)
+            .map(|r| i64::try_from(r.size).unwrap_or(i64::MAX))
             .sum()
     } else {
         0
@@ -224,8 +221,6 @@ pub fn prune(
     let keep = keep_bytes(total, free, rule.max_used, rule.reserved, rule.min_free);
     let mut chosen: Vec<Record> = records
         .into_iter()
-        .filter(|(_, in_use)| !in_use)
-        .map(|(r, _)| r)
         .filter(|r| rule.all || !r.shared)
         .filter(|r| {
             rule.keep_duration.is_none_or(|age| {
@@ -479,7 +474,7 @@ mod tests {
     }
 
     /// dockerd's default policy, derived from the disk as `DefaultGCPolicy` derives it: on
-    /// a disk of 2,014 GiB, `docker buildx inspect` in shards-dind (Docker 29.3.1, M130)
+    /// a disk of 2,014 GiB, `docker buildx inspect` in shards-dind (Docker 29.3.1, M141)
     /// shows these rules, 25.99GiB, 188.1GiB, 1.466TiB and 375.3GiB as go-units says them.
     #[test]
     fn the_default_policy_is_dockerds_for_the_disk() {

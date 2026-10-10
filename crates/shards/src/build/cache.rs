@@ -1119,6 +1119,36 @@ mod tests {
         );
     }
 
+    /// A file's digest takes the extended attributes BuildKit's checksum takes: not
+    /// `security.*` but `security.capability`, nor `system.*`.
+    #[test]
+    fn a_files_digest_takes_the_attributes_buildkits_takes() {
+        let mut sources = Sources::default();
+        let mut d = Digests::default();
+        let mut with = |attr: Option<(&[u8], &[u8])>| {
+            let mut fs = Fs::new(
+                Tree::new(Meta {
+                    mode: 0o755,
+                    ..Meta::default()
+                }),
+                (0, 0),
+            );
+            let id = fs.create(b"/f", 0o644).unwrap();
+            let data = sources.bytes(b"x".to_vec()).unwrap();
+            fs.set_data(id, 1, data);
+            if let Some((k, v)) = attr {
+                fs.setxattr(b"/f", k, v, false).unwrap();
+            }
+            d.read(&Rc::new(fs), &Selector::at(b"/f", true), &mut sources)
+                .unwrap()
+        };
+        let plain = with(None);
+        assert_eq!(with(Some((b"security.selinux", b"system_u:object_r:x"))), plain);
+        assert_eq!(with(Some((b"system.posix_acl_access", b"\x02"))), plain);
+        assert_ne!(with(Some((b"security.capability", b"\x01"))), plain);
+        assert_ne!(with(Some((b"user.note", b"hi"))), plain);
+    }
+
     #[test]
     fn records_keep_their_layers_whole() {
         let layer = Layer {

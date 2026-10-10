@@ -1,4 +1,4 @@
-"""M129 (docs/research/platform-measurements.md): where a `RUN --mount=type=cache` keeps its
+"""M140 (docs/research/platform-measurements.md): where a `RUN --mount=type=cache` keeps its
 files, and what keeping them across builds costs (D114).
 
 - Step: fsbench's phases in one builder step, interleaved, on a cache mount (an overlay of

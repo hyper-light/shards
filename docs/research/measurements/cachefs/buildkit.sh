@@ -1,6 +1,6 @@
 #!/bin/sh
 # What Docker 29.3.1's own BuildKit (v0.28.1) does with `RUN --mount=type=cache`
-# (platform-measurements.md M130, D114): what a cache keeps across builds, a failing step's
+# (platform-measurements.md M141, D114): what a cache keeps across builds, a failing step's
 # writes among it; `uid`, `gid` and `mode`; a root a step gives another owner; another
 # namespace; one id twice in a step; `from`/`source`; concurrent builds under each sharing
 # mode; the records as `buildx du`, `system df` and `buildx prune` show and remove them;

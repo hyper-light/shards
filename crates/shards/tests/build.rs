@@ -4688,7 +4688,7 @@ fn steps_are_kept_by_what_they_read() {
 /// what a step writes is there for the next build's, a failing step's writes too; one id
 /// is one cache wherever it is mounted, twice in one step too; its root keeps the owner
 /// and mode a step gives it; `BUILDKIT_CACHE_MOUNT_NS` makes another; `uid`, `gid` and
-/// `mode` make its directory (measured against BuildKit, M130); a step not answered from
+/// `mode` make its directory (measured against BuildKit, M141); a step not answered from
 /// the cache (`--no-cache`) starts its caches empty, as BuildKit lets their records go;
 /// `system df` counts the records and `builder prune` removes them.
 #[test]
