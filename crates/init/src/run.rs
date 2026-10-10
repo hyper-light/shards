@@ -3007,6 +3007,40 @@ impl Exec {
     }
 }
 
+/// Sends the workload's writable layer on `conn` from a child of init's, as the host asks
+/// once it has the workload's end while containers joined to its network go on (D119):
+/// its pid, init's loop serving them meanwhile. Where no child can be had, init sends it
+/// itself, its loop waiting.
+fn send_workload_layer(conn: &File) -> Option<libc::pid_t> {
+    let said = |e: io::Error| {
+        let _ = writeln!(io::stderr(), "shards-init: saving the container's files: {e}");
+    };
+    // SAFETY: init is single-threaded, so its child may run anything.
+    let pid = unsafe { libc::fork() };
+    if pid == 0 {
+        // The connection's file is init's too, which writes nothing to it meanwhile.
+        set_nonblocking(conn.as_raw_fd(), false);
+        let code = match crate::layer::save(conn) {
+            Ok(()) => 0,
+            Err(e) => {
+                said(e);
+                1
+            }
+        };
+        // SAFETY: _exit(2) ends the child without running init's exit paths.
+        unsafe { libc::_exit(code) }
+    }
+    if pid > 0 {
+        return Some(pid);
+    }
+    set_nonblocking(conn.as_raw_fd(), false);
+    if let Err(e) = crate::layer::save(conn) {
+        said(e);
+    }
+    set_nonblocking(conn.as_raw_fd(), true);
+    None
+}
+
 /// Whose a polled descriptor is.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Owner {
@@ -3083,8 +3117,10 @@ impl Workload {
         let mut execs: Vec<Exec> = Vec::new();
         let mut buf = vec![0u8; CHUNK];
         // The workload ended while containers joined to its network ran (D119); its end
-        // said; the host's ask for its writable layer heard, or its end of asking.
+        // said; the host's ask for its writable layer heard, or its end of asking; the
+        // child of init's sending that layer meanwhile.
         let (mut outlived, mut reported, mut asked) = (false, false, false);
+        let mut packing: Option<libc::pid_t> = None;
         // Reused each turn: six for the workload, four for each exec.
         let (mut set, mut owners) = (Vec::<libc::pollfd>::new(), Vec::<Owner>::new());
         loop {
@@ -3121,6 +3157,7 @@ impl Workload {
                 && self.stderr.is_none()
                 && (to_host.is_empty() || host.is_none())
                 && execs.is_empty()
+                && packing.is_none()
                 && self.domains.iter().all(|d| d.out.is_none())
             {
                 break;
@@ -3144,7 +3181,9 @@ impl Workload {
             } else {
                 0
             } | if to_host.is_empty() { 0 } else { libc::POLLOUT };
-            poll(host, host_events, Owner::Host);
+            // The workload's layer is written to it meanwhile, by a child of init's: what
+            // init has for the host waits until it has been, after it.
+            poll(host.filter(|_| packing.is_none()), host_events, Owner::Host);
             let stdin_events = if to_stdin.is_empty() { 0 } else { libc::POLLOUT };
             poll(
                 self.stdin.as_ref().map(AsRawFd::as_raw_fd),
@@ -3272,6 +3311,11 @@ impl Workload {
                                     joined().retain(|(j, _)| *j != e.id);
                                     crate::join::remove_cgroup(e.id);
                                 }
+                            } else if packing == Some(pid) {
+                                // The workload's layer sent, whole or not; the connection's
+                                // file, which the child made blocking, nonblocking again.
+                                packing = None;
+                                set_nonblocking(conn.as_raw_fd(), true);
                             } else if let Some(e) = execs.iter_mut().find(|e| e.save == Save::Sending(pid)) {
                                 // Its layer sent, whole or not: the host keeps only a whole
                                 // one, and closes the connection once it has what came. The
@@ -3317,17 +3361,10 @@ impl Workload {
                                     });
                                     stdin_eof |= closed || !whole;
                                     // Its writable layer, as the host asks once it has the
-                                    // end (layer.rs), its joiners' output waiting meanwhile.
+                                    // end (layer.rs), sent beside its joiners as they go on.
                                     if save && !asked {
                                         asked = true;
-                                        set_nonblocking(fd, false);
-                                        if let Err(e) = crate::layer::save(conn) {
-                                            let _ = writeln!(
-                                                io::stderr(),
-                                                "shards-init: saving the container's files: {e}"
-                                            );
-                                        }
-                                        set_nonblocking(fd, true);
+                                        packing = send_workload_layer(conn);
                                     }
                                 }
                             }
