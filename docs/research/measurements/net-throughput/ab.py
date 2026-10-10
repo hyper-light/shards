@@ -15,9 +15,12 @@ Reported per arm: n, p50, p90, p99 and max of a connection's time, and its throu
 each way at p50; then the median of the turns' paired differences, new less old, with a
 bootstrap 95% interval.
 
+AB_DUMP names a file for every connection's time, in milliseconds, per arm in turn order,
+as JSON.
+
     python3 ab.py OLD_DIR NEW_DIR IMAGE N SIZE_MIB
 """
-import os, random, socket, statistics, subprocess, sys, threading, time
+import json, os, random, socket, statistics, subprocess, sys, threading, time
 
 old, new, image, n, size = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4]), int(sys.argv[5])
 payload = bytes((i * 7) % 251 for i in range(size << 20))
@@ -88,6 +91,9 @@ for i in range(n):
 for d in arms.values():
     shards(d, "rm", "-f", "ab-echo", check=False)
     shards(d, "daemon", "stop", check=False)
+if os.environ.get("AB_DUMP"):
+    with open(os.environ["AB_DUMP"], "w") as f:
+        json.dump({name: [x * 1e3 for x in xs] for name, xs in times.items()}, f)
 
 rev = subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip()
 host = subprocess.run(["uname", "-mrs"], capture_output=True, text=True).stdout.strip()

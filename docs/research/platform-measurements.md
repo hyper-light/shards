@@ -4446,8 +4446,10 @@ revision before comparing a changed API/implementation.
   descriptors, where it held the directory's size each, without bound. READDIR is four
   times faster on a large directory: each page copied the rest of the listing before; it
   now reads only the page. READDIRPLUS is its lookups', unchanged. The Linux path runs
-  in CI's Linux jobs; `probes/getdents.rs` checks the paging by `d_off` on its own, and
-  was not run here (Docker did not answer).
+  in CI's Linux jobs; `probes/getdents.rs` checks the paging by `d_off` on its own: on
+  Linux 6.12.76 (linuxkit, aarch64), as uid 1000, 1,500 files paged by getdents64 at
+  `d_off` cookies, pages of 3, 17 and 200 entries (buffers of 1,024, 4,096 and 32,768
+  bytes), each came out once (2026-10-10).
 
 ### M131. How fast a guest can fail a device again and again (audit V07)
 
@@ -5374,3 +5376,95 @@ revision before comparing a changed API/implementation.
     command is PID 2 (Docker's 7, which runc's threads take first) with PPID 0 (Docker's
     1, docker-init being its parent; init, its parent here, is outside the namespace), and
     the reaper is `init` (`docker-init`, shown with its arguments).
+
+### M137. virtio-net's frames through guest memory's guard (audit V10)
+
+- **Question.** virtio-net copied each frame between guest memory and the frame ring by
+  memcpy, with no `Access` held: a guest that laid a TX buffer over memory another
+  device's worker writes had two host threads race (D29's "not yet"). What does copying
+  through the guard cost a frame, and what layout of the copy, and of the takes, costs
+  nothing?
+- **Method.**
+  - `docs/research/measurements/net-copies` (`cargo run --release -- 1000`): one
+    process, the two arms alternating a sample at a time, a sample a batch of about
+    20 µs. `copy`: memcpy against an `Access`'s copies (held across the batch), 64 to
+    65,536 bytes each way, at one place (`hot`) or walking 256 MiB (`spread`). `push`
+    and `deliver`: a frame at a time through a real frame ring, each with the one take of
+    guest memory its queue work makes, the device's copy before (memcpy, outside the
+    take) against the change's (inside it). `take`: a take alone. Three fresh processes.
+  - `docs/research/measurements/net-throughput`: `ab.py`, 32 MiB each way through a
+    published port, every byte checked, n = 300 an arm a run; `rtt.py`, 200 turns of 50
+    round trips of 64 or 1,400 bytes on one connection, every byte checked, n = 10,000
+    an arm a run. 13ea35d against the change, each one shards binary carrying its VM and
+    network processes, turn by turn interleaved.
+  - Apple M5 Max, macOS 26.4.1, 2026-10-10, load average 11 to 15 (other forks' builds
+    and tests), the host's usual.
+- **What it took.** Each step measured by `net-copies`, the copy or the ring changed as
+  said:
+  - A take of its own for each copy costs 5.1 to 5.6 ns (`take`). The copy shares the
+    take its queue work makes: a TX frame's with the pop of its chain, an RX frame's with
+    the return of its chains, so a frame takes guest memory twice each way, as before.
+  - Copies of 64 bytes or more go as macOS's memcpy goes (`_platform_memmove`,
+    disassembled: pairs of 16-byte registers; loads non-temporal; stores non-temporal
+    from 16 KiB; the first bytes and the last 32 unaligned, some bytes written twice), but
+    with stores aligned to the cache line, not to 32 bytes: aligned to 32, a 9,000-byte
+    delivery from memory the caches did not hold cost +15.9 to +18.5 ns against memcpy
+    (four processes); aligned to the line, −25.9 to −0.6 (three). Elsewhere on aarch64 the registers
+    are glibc's (sysdeps/aarch64/memcpy.S: LDP and STP of Q registers, nothing
+    non-temporal).
+  - What a frame of 64 to 1,514 bytes still pays is the take's release after the
+    copy's stores: with memcpy also copying inside the take, the arms differ by −0.6 to
+    +0.4 ns at 1,514 bytes and −0.2 to +1.6 at 64 (four processes). Holding the take
+    until the ring had published the frame, its release after the ring's fence, cost more:
+    a delivery +3.0 to +4.2 ns at 64 and 1,514 bytes, +6.4 to +7.0 at 9,000 and +7.8 to
+    +16.7 at 64 KiB (three processes); not kept.
+- **Results.** The change's copies, frames and takes, ns, one process of three; n / p50
+  / p90 / p99 / max, and the paired median [95%], change less before:
+
+  | case | before | the change | difference |
+  |---|---|---|---|
+  | take | | 1000 / 5.5 / 5.7 / 5.8 / 6.5 | +5.5 [+5.5, +5.5] |
+  | copy 1,514 B in, hot | 1000 / 16.9 / 17.7 / 30.2 / 49.8 | 1000 / 14.1 / 15.2 / 27.2 / 46.3 | −2.8 [−2.8, −2.7] |
+  | copy 64 KiB in, spread | 1000 / 1000.0 / 1063.6 / 1219.3 / 1875.0 | 1000 / 997.8 / 1054.8 / 1315.8 / 2350.9 | −2.2 [−4.4, +0.0] |
+  | copy 64 KiB out, spread | 1000 / 991.7 / 1075.0 / 1400.0 / 2300.0 | 1000 / 989.6 / 1077.1 / 1550.0 / 2433.3 | −2.1 [−4.2, −0.1] |
+  | push 64 B, hot | 1000 / 14.9 / 15.7 / 21.8 / 47.5 | 1000 / 17.3 / 18.4 / 29.0 / 54.3 | +2.5 [+2.5, +2.6] |
+  | deliver 64 B, hot | 1000 / 13.6 / 17.1 / 23.8 / 29.9 | 1000 / 15.0 / 19.3 / 28.0 / 44.6 | +1.4 [+1.4, +1.4] |
+  | push 1,514 B, hot | 1000 / 34.5 / 36.9 / 73.2 / 153.4 | 1000 / 35.5 / 38.4 / 66.3 / 149.5 | +1.0 [+1.0, +1.1] |
+  | deliver 1,514 B, hot | 1000 / 33.0 / 35.1 / 40.4 / 94.8 | 1000 / 34.5 / 36.6 / 48.8 / 97.8 | +1.4 [+1.3, +1.4] |
+  | push 9,000 B, spread | 1000 / 252.8 / 265.2 / 309.1 / 415.0 | 1000 / 247.8 / 259.0 / 290.0 / 420.0 | −3.9 [−3.9, −3.4] |
+  | deliver 9,000 B, spread | 1000 / 311.9 / 334.0 / 449.5 / 685.6 | 1000 / 288.5 / 313.8 / 428.7 / 582.1 | −23.4 [−24.0, −22.7] |
+  | push 64 KiB, hot | 1000 / 662.0 / 800.9 / 1013.9 / 1831.8 | 1000 / 600.3 / 788.6 / 1092.6 / 1390.4 | −41.7 [−46.3, −41.6] |
+  | deliver 64 KiB, spread | 1000 / 1105.4 / 1144.6 / 1303.9 / 2607.8 | 1000 / 1098.0 / 1132.4 / 1269.6 / 1931.4 | −7.4 [−9.8, −7.4] |
+
+  - Over the three processes, paired medians: copies −19.7 to +2.9 ns (64 bytes −0.1 to
+    +0.7); pushes +2.4 to +3.0 at 64 bytes, +1.0 to +1.3 at 1,514, −41.7 to +2.2 from
+    9,000 up but for one process's −125.0 at 64 KiB; deliveries +1.1 to +1.5 at 64 bytes, +0.6 to
+    +1.5 at 1,514, −25.9 to −0.6 from 9,000 up.
+  - End to end, 32 MiB each way, ms:
+
+    | run | 13ea35d | the change | change less 13ea35d, paired median [95%] |
+    |---|---|---|---|
+    | 1 | 300 / 13.3 / 15.5 / 23.5 / 28.7 | 300 / 13.3 / 15.4 / 26.9 / 29.5 | −0.0 [−0.2, +0.1] |
+    | 2 | 300 / 17.9 / 21.2 / 27.0 / 51.1 | 300 / 18.0 / 21.2 / 34.4 / 149.4 | −0.1 [−0.4, +0.3] |
+
+    Run 2's slowest connection of each arm fell in the same turn (289): the host's.
+  - Round trips, µs:
+
+    | size, run | 13ea35d | the change | change less 13ea35d, paired median [95%] |
+    |---|---|---|---|
+    | 64 B, 1 | 10000 / 90.8 / 120.6 / 165.3 / 969.9 | 10000 / 91.0 / 121.7 / 165.5 / 1051.9 | +0.3 [−1.1, +1.1] |
+    | 64 B, 2 | 10000 / 90.3 / 115.5 / 155.1 / 416.0 | 10000 / 90.4 / 114.1 / 154.3 / 373.9 | −0.0 [−0.8, +0.7] |
+    | 1,400 B, 1 | 10000 / 92.2 / 121.9 / 172.7 / 660.6 | 10000 / 92.4 / 122.9 / 175.2 / 714.2 | −0.2 [−0.9, +0.9] |
+    | 1,400 B, 2 | 10000 / 102.7 / 137.0 / 216.0 / 1549.4 | 10000 / 102.6 / 139.6 / 250.4 / 13272.4 | +0.4 [−0.6, +1.3] |
+    | 1,400 B, 3 | 10000 / 88.4 / 114.5 / 158.0 / 1266.3 | 10000 / 88.3 / 115.4 / 165.0 / 834.5 | −0.1 [−1.4, +0.7] |
+
+    Run 3's p99, change less 13ea35d, +7.0 µs [−1.6, +15.9], turns resampled; each
+    arm's slowest 1% fell in 55 to 58 turns, 22 the same.
+- **Consequence.** A frame crosses through guest memory's guard (D29), in the takes its
+  queue work made before, by copies within 3 ns of memcpy's time and faster from 16 KiB.
+  A frame of 64 to 1,514 bytes costs the device 0.6 to 3.0 ns more, the take's release
+  after its stores, which a memcpy inside the take pays alike; from 9,000 bytes on it
+  costs less. Neither throughput nor a round trip moved measurably at the median; tails
+  went both ways from run to run, and the one tested (run 3's p99) was not resolved from
+  zero. Open: a take whose release costs a frame nothing; x86_64's copies (SSE2 moves) on
+  x86_64 hardware.

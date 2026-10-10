@@ -34,6 +34,9 @@ C programs for the primitives the fixes rest on, run by hand (`cc -O2 -o p p.c`)
 - `dirbuf.c DIR`: the bytes the C library keeps for an open directory stream (M130).
 - `getdents.rs DIR N` (Linux, `rustc --edition 2024 -O`): N files made in DIR, then
   paged through by getdents64 at `d_off` cookies with three page and buffer sizes, each
-  entry once.
+  entry once (M130).
+- `openat2.c DIR` (Linux): the openat2(2) `open_beneath` makes, RESOLVE_BENEATH and
+  RESOLVE_NO_SYMLINKS, in an empty DIR: a path opens; a symlink in it, even to its own
+  directory, is ELOOP, as is one out; `..` out is EXDEV (M136).
 - `src/main.rs --case fds --dirs D --limit L`: how many of D directories a guest can look
   up, none forgotten, under a descriptor limit of L (M132).

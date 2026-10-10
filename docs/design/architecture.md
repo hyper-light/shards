@@ -1636,14 +1636,29 @@ devices. The code is `crates/vmm/src/memory.rs`.
   - A thread that asks for one while it holds one gets an error, not a deadlock.
   - Devices hold one for a step of queue work (a pop, a request's header, a completion)
     and never across a system call, so no device waits on another's I/O.
+  - virtio-net copies a frame in the take its queue work makes: a TX frame in its
+    chain's pop, let go before the frame is published and the network process rung; an
+    RX frame in the return of its chains, let go before its room in the ring is given
+    back. A frame takes guest memory twice each way, as before its copy was guarded
+    (audit V10). Holding the take until the ring had published the frame cost more
+    [PM M137].
 - **Within one, volatile and atomic.** The guest and the kernel change guest memory under
-  the host's reads, as I/O memory changes, so reads and writes are volatile, a word at a
-  time where aligned. The virtqueue indices that order the host against the guest are
-  atomic: acquire loads of `avail.idx`, release stores of `used.idx`.
+  the host's reads, as I/O memory changes, so reads and writes are volatile, or `asm!` the
+  compiler cannot see into. The virtqueue indices that order the host against the guest
+  are atomic: acquire loads of `avail.idx`, release stores of `used.idx`.
+  - Copies go as the host's memcpy goes, within 3 ns of its time a copy and faster from
+    16 KiB [PM M137] (`platform::copy_in`, `copy_out`). From 64 bytes: pairs of 16-byte registers, 64
+    bytes an iteration, stores aligned to the cache line, the first bytes and the last 32
+    unaligned; on macOS non-temporal loads, and stores too from 16 KiB, as
+    `_platform_memmove`; elsewhere as glibc's (sysdeps/aarch64/memcpy.S); x86_64 by SSE2's
+    16-byte moves. Shorter: volatile bytes to the guest side's 16-byte boundary, then
+    16-byte accesses, a word and bytes, each byte once. Under Miri, which runs no `asm!`,
+    every copy goes the short way.
 - **No references into guest memory.** Nothing forms a Rust reference or slice into it.
   Bulk data moves by system calls given guest addresses: block I/O, vsock payloads,
   kernel loading and snapshot writes. The kernel, like the guest, is outside Rust's
-  abstract machine.
+  abstract machine. virtio-net's frames, between guest memory and the frame ring the
+  network process shares, go by an `Access`'s copies.
 - **Saves and restores agree.** Regions are saved and mapped in guest-address order,
   whatever order the caller lists them in (audit A21). A save empties its file first, so
   a zero page keeps nothing the file held (A22). A memory file too short for the guest is
@@ -1651,17 +1666,17 @@ devices. The code is `crates/vmm/src/memory.rs`.
 - **Checked by the tools that know the rules.** ThreadSanitizer and Miri run the tests
   where host threads share guest memory, among them two queues whose rings lie on each
   other's; with a guard that excludes nothing, both report the data races. CI runs them
-  [PM M44].
+  [PM M44]. ThreadSanitizer does not see into the long copies' `asm!`; it sees the guard
+  and the short copies, and Miri runs every copy the short way.
 - **What it costs.** Nothing measurable in runs: the paired medians of interleaved
   pooled runs moved by 10 µs or less, within their intervals. The word-at-a-time zero
-  check made a 256 MiB save three to five times faster [PM M44].
+  check made a 256 MiB save three to five times faster [PM M44]. virtio-net's frames
+  under it: no difference resolved in throughput or a round trip; in the device, a frame
+  of 64 to 1,514 bytes 0.6 to 3.0 ns more, the take's release after the copy, which a
+  memcpy inside the take pays alike, and from 9,000 bytes less [PM M137].
 - **Not yet:** a save still reads every untouched page, and so makes it resident (audit
-  D01); snapshots of a machine whose every CPU and device has stopped (A02). virtio-net's
-  frame copies (`net.rs` `push` and `deliver`) reach guest memory by `copy_nonoverlapping`
-  with no `Access` held: a guest that lays a TX buffer over memory another device's worker
-  writes has two host threads race, which Rust leaves undefined, though no decision rides
-  on the bytes copied (audit V). Copying under an `Access`, word by word, is on the path
-  throughput depends on, and waits for its measurement.
+  D01); snapshots of a machine whose every CPU and device has stopped (A02); a take whose
+  release costs a small frame nothing; the copies on x86_64 hardware, unmeasured.
 - **Huge pages, where a boot touches much (2026-10-10, PM M157).** A cold boot's guest
   memory is advised MADV_HUGEPAGE, which halves the boot (2.1 to 2.4 times) and makes the
   guest's first touch of memory 4.7 to 5.6 times faster on x86_64 KVM. A huge page is
@@ -1671,10 +1686,14 @@ devices. The code is `crates/vmm/src/memory.rs`.
   touch 78 of its 512 pages, stays on small pages. A boot then holds 56.3 MiB of
   anonymous memory at p50 against Firecracker's 60.2, and 58.3 at most. arm64's layout
   is unmeasured and unchanged. A run's restore maps its memory file, on small pages.
-- **Tests:** `memory::tests` (copies at every alignment, threads taking turns, a nested
-  access refused, ranges in any order, a reused file) and
+- **Tests:** `memory::tests` (copies at every alignment of either side to 64 bytes and
+  lengths through 200, each way against bytes read alone; copies of 16 and 64 KiB;
+  threads taking turns, a nested access refused, ranges in any order, a reused file),
   `queue::tests::queues_laid_over_each_other_work_on_two_threads`, under
-  `access-guard/check.sh` too; every E2E test runs its devices through the guard.
+  `access-guard/check.sh` too, and
+  `net::tests::frames_cross_guarded_in_the_takes_they_had` (a frame's bytes by the
+  guarded copies, two takes a frame each way), mutation-checked; every E2E test runs its
+  devices through the guard.
 
 ### Confining the VM process (D30)
 
