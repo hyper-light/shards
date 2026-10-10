@@ -4675,7 +4675,9 @@ revision before comparing a changed API/implementation.
   source), `shards run --rm -m LIMITk alpine cat /proc/meminfo` 30 times (the first makes
   the template, the rest restore it). The overhead is the VM's KiB less MemAvailable; the
   margin, MemAvailable less the limit. arm64: Apple M5 Max, macOS 26.4.1, guest kernel
-  6.18.48, 2026-10-10, load average 20 to 57.
+  6.18.48, 2026-10-10, load average 20 to 57. x86_64: 10 runs a size, on a GitHub
+  ubuntu-24.04 runner (AMD EPYC 7763, 4 vCPUs, 15,989 MiB, Linux 6.17.0-1022-azure, KVM),
+  guest kernel 6.18.48, revision 41839c7, 2026-10-10 (CI run 38044351202, `diagnostic`).
 - **Results.** arm64, KiB, at the table's sizes; each interval's midpoint kept less than
   its end (320 MiB: 47,136 at most; 896: 90,980; 14,336: 527,860):
 
@@ -4697,8 +4699,44 @@ revision before comparing a changed API/implementation.
   | 12,288 | 476,612 | 30 / 478,820 / 478,820 / 478,824 / 478,824 | −2,212 |
   | 16,384 | 575,192 | 30 / 577,416 / 577,416 / 577,468 / 577,468 | −2,276 |
 
+  x86_64, KiB, every run of a size alike (n 10, p50 = max), as far as 7,168 MiB, half the
+  runner's memory; the least margin is against the table then (M123's), which each size
+  past a table size takes from the next one up:
+
+  | VM (MiB) | cold boot's (M123) | run's | least margin |
+  |---:|---:|---:|---:|
+  | 256 | 50,176 | 48,820 | 1,356 |
+  | 320 | | 52,276 | 1,720 |
+  | 384 | 53,996 | 54,512 | −516 |
+  | 448 | | 57,772 | 9,816 |
+  | 512 | 67,588 | 58,348 | 9,240 |
+  | 640 | | 112,492 | 12,680 |
+  | 768 | 125,172 | 124,564 | 608 |
+  | 896 | | 137,452 | 4,440 |
+  | 1,024 | 141,892 | 141,724 | 168 |
+  | 1,280 | | 151,132 | 4,800 |
+  | 1,536 | 155,932 | 156,212 | −280 |
+  | 1,792 | | 161,552 | 4,812 |
+  | 2,048 | 166,364 | 166,684 | −320 |
+  | 2,560 | | 179,648 | 11,080 |
+  | 3,072 | 190,728 | 191,496 | −768 |
+  | 3,328 | | 296,664 | 12,292 |
+  | 3,584 | 308,956 | 305,576 | 3,380 |
+  | 3,840 | | 308,896 | 5,076 |
+  | 4,096 | 313,972 | 314,056 | −84 |
+  | 4,352 | | 336,048 | 1,740 |
+  | 4,608 | 337,788 | 337,908 | −120 |
+  | 5,376 | | 353,248 | 18,288 |
+  | 6,144 | 371,536 | 369,132 | 2,404 |
+  | 7,168 | | 389,792 | 27,344 |
+
 - **Consequence.** A run's guest keeps 0.5 to 2.7 MiB more than a cold boot's at every
-  size: `-m` held less than its limit wherever a limit sized its VM at a table size, and
-  at some midpoints. Each interval's overhead rises to its end, so the table,
+  size on arm64: `-m` held less than its limit wherever a limit sized its VM at a table
+  size, and at some midpoints. Each interval's overhead rises to its end, so the table,
   which takes the overhead of the next size up, is now each size's most on the run's path
-  (resources::overhead_kib). Past 16 GiB the slope stays 26 KiB a MiB.
+  (resources::overhead_kib). Past 16 GiB the slope stays 26 KiB a MiB. On x86_64 a run's
+  guest keeps 84 to 768 KiB more than M123's cold boots at six sizes, and up to 9,240
+  less at the others: its table is now the run's at each size measured, which also gives
+  back what a VM of 256, 512, 768, 1,024, 3,584 or 6,144 MiB took past its need; every
+  midpoint keeps less than the next size's. From 8,192 MiB it keeps M123's, not measured
+  on a run's path here (a runner has 16 GiB). Past 16 GiB the slope stays 22 KiB a MiB.

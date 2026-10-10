@@ -288,25 +288,30 @@ pub fn memory_mib(limit: i64, default_mib: u64, host: Option<u64>) -> u64 {
     }
 }
 
-/// What the guest kernel keeps for itself of a VM of `mib` MiB, in KiB, as measured on
-/// this architecture's guest kernel (platform-measurements.md M117 for arm64, M123 for
-/// x86_64): the overhead of the next measured size up, and past the last, its slope from
-/// 8 to 16 GiB.
+/// What the guest kernel keeps for itself of a VM of `mib` MiB, in KiB, on the path a run
+/// takes, as measured on this architecture's guest kernel (platform-measurements.md M155):
+/// the overhead of the next measured size up, and past the last, its slope from 8 to 16
+/// GiB.
 fn overhead_kib(mib: u64) -> u64 {
+    // On the path a run takes (M155): each size's most of 10 runs on a GitHub x86_64
+    // runner, every run alike, as far as half its 16 GiB; from 8 GiB, cold boots' (M123),
+    // not yet measured on a run's path. A cold boot kept 84 to 768 KiB less at 384, 1536,
+    // 2048, 3072, 4096 and 4608 MiB, so `-m` fell short there, and up to 9.0 MiB more at
+    // the rest, which a VM no longer takes.
     #[cfg(target_arch = "x86_64")]
     const MEASURED: [(u64, u64); 15] = [
-        (256, 50_176),
-        (384, 53_996),
-        (512, 67_588),
-        (768, 125_172),
-        (1024, 141_892),
-        (1536, 155_932),
-        (2048, 166_364),
-        (3072, 190_728),
-        (3584, 308_956),
-        (4096, 313_972),
-        (4608, 337_788),
-        (6144, 371_536),
+        (256, 48_820),
+        (384, 54_512),
+        (512, 58_348),
+        (768, 124_564),
+        (1024, 141_724),
+        (1536, 156_212),
+        (2048, 166_684),
+        (3072, 191_496),
+        (3584, 305_576),
+        (4096, 314_056),
+        (4608, 337_908),
+        (6144, 369_132),
         (8192, 417_136),
         (12_288, 512_184),
         (16_384, 592_948),
