@@ -4740,3 +4740,47 @@ revision before comparing a changed API/implementation.
   back what a VM of 256, 512, 768, 1,024, 3,584 or 6,144 MiB took past its need; every
   midpoint keeps less than the next size's. From 8,192 MiB it keeps M123's, not measured
   on a run's path here (a runner has 16 GiB). Past 16 GiB the slope stays 22 KiB a MiB.
+
+### M156. Where a release test build's time goes (CI: the build-time timeouts)
+
+- **Question.** CI's x86_64 musl job timed out at 45 minutes in three runs and aarch64
+  macOS's Tests step at 30 in two: the whole musl job had taken 31 minutes on d5726fe
+  (2026-10-08) and 43 on feb42d6 (2026-10-09), and its release test build alone 32m25s
+  on 2710849. Where does a test build's time go, and what would a test profile save that
+  keeps release's optimizations?
+- **Method.** `cargo test --workspace --release --no-run --timings` from an empty target
+  directory, then the same with `CARGO_PROFILE_RELEASE_LTO=false
+  CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16` (what `test-release` sets), Apple M5 Max,
+  macOS 26.4.1, 2026-10-10 at 09:51 and 10:01 UTC; each unit's time summed from cargo's
+  report. Then CI's test steps on release (dev d258710, run 38044119195) and on
+  test-release (41839c7, run 38044351202), started 4 minutes apart.
+- **Results.** The two builds, seconds:
+
+  | | release | without fat LTO, 16 units |
+  |---|---:|---:|
+  | units' time, all 381 | 4,466 | 1,414 |
+  | the 129 test binaries' | 3,147 | 456 |
+  | shards' own test binary | 284 | 53 |
+  | shards' build script (its helpers and guests) | 159 | 83 |
+  | wall time | 543 | 203 |
+
+  CI's test steps (the release run's failed, a test or the step's limit):
+
+  | job | release | test-release |
+  |---|---:|---:|
+  | x86_64-unknown-linux-gnu, Tests | 24m19s, failed | 17m42s |
+  | aarch64-apple-darwin, Tests | 30m13s, timed out | 14m03s |
+  | aarch64-unknown-linux-gnu, Tests | 14m32s, failed | 9m38s |
+  | x86_64-pc-windows-msvc, Tests | 28m26s, failed | 11m31s |
+  | x86_64-unknown-linux-musl, lint, test and build | 45m13s, timed out | 43m22s |
+
+  The musl step's 43m22s on test-release: clippy 4m16s, the stack bisection of M159
+  2m44s, the test build 15m48s, the tests 9m34s, and the release build of `shards` its
+  static check reads 10m28s.
+- **Consequence.** Fat LTO with one codegen unit re-optimizes every dependency in each
+  of 129 test binaries' links: 70 % of a release test build's time, and shards' own test
+  binary alone 284 s on one LLVM thread. Tests build with `test-release` (release's
+  optimizations, without fat LTO, 16 units; its guests' `guest-test`); releases and
+  every measurement keep `release`. Release's stack guards, which test-release's
+  smaller frames no longer hold it to, are tested on release on their own (M159), and
+  the musl job's release build runs in a job of its own.
