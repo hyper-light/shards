@@ -14,6 +14,10 @@ mod input;
 mod provenance;
 mod signatures;
 mod snappy;
+// `policy test` (D108), which the command line runs.
+#[allow(dead_code)]
+pub(crate) mod tester;
+mod testinput;
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -157,6 +161,9 @@ struct Fs {
     /// The build's context is a remote one: its names are read by the build's thread.
     remote: bool,
     cwd: PathBuf,
+    /// The directory every name is read in instead, as `os.DirFS` reads (a policy test's,
+    /// which reads the working directory so).
+    dir: Option<PathBuf>,
 }
 
 /// Where [`Fs::place`] finds a name: a root of the host's and the name in it, or the
@@ -231,6 +238,9 @@ impl Fs {
     /// loadPolicyData: the file, found as `os.Root.FS()` finds it, or in the remote
     /// context as the build's thread reads it there (`remote`).
     fn read(&self, name: &str, remote: ReadRemote<'_>) -> Result<Vec<u8>, Missing> {
+        if let Some(dir) = &self.dir {
+            return tester::read_file(dir, name).map_err(Missing::Failed);
+        }
         // loadPolicyData's Stat resolves the name first: its error is the stat's.
         let placed = self
             .place(name)
@@ -452,6 +462,9 @@ struct Policy {
     fs: Fs,
     default_platform: Platform,
     skip_caps: bool,
+    /// Whether the build resolves the sources its functions and its provenance's
+    /// materials ask for (Opt.SourceResolver); a policy test's does not.
+    resolver: bool,
 }
 
 /// The functions buildx gives its policies (policy/funcs.go), with their types.
@@ -551,7 +564,10 @@ struct Funcs<'a> {
     checksum: Option<ChecksumRequest>,
     /// The build's thread, which says the lines and fetches the sources.
     ask: &'a mpsc::Sender<Ask>,
-    trust: &'a signatures::Trust,
+    /// The verifier (VerifierProvider), and whether sources are resolved (SourceResolver):
+    /// a policy test's functions have neither.
+    trust: Option<&'a signatures::Trust>,
+    resolver: bool,
 }
 
 /// Go's %T of an OPA value.
@@ -867,11 +883,17 @@ impl Host for Funcs<'_> {
                     self.add_unknown(name);
                     return Ok(None);
                 }
+                if github && !self.resolver {
+                    return Err(undefined(format!("{name}: source resolver is not configured")));
+                }
+                let unconfigured = || undefined(format!("{name}: policy verifier is not configured"));
+                if github && self.trust.is_none() {
+                    return Err(unconfigured());
+                }
                 shards_image::reference::Digest::parse(&http.checksum)
                     .map_err(|e| undefined(format!("{name}: invalid checksum: {e}")))?;
                 let dgst = http.checksum.as_str();
-                let trust = self.trust;
-                let verify = |bundle: &[u8]| {
+                let verify = |trust: &signatures::Trust, bundle: &[u8]| {
                     shards_sigstore::helpers::verify_artifact(
                         dgst,
                         bundle,
@@ -882,13 +904,15 @@ impl Host for Funcs<'_> {
                 };
                 if !github {
                     let bundle = self.read_file(second, 8 << 20)?;
+                    let trust = self.trust.ok_or_else(unconfigured)?;
                     trust
                         .verifier()
                         .map_err(|e| undefined(format!("{name}: getting policy verifier: {e}")))?;
-                    return Ok(verify(&bundle)
+                    return Ok(verify(trust, &bundle)
                         .ok()
                         .map(|si| signatures::attestation_signature(&si).value()));
                 }
+                let trust = self.trust.ok_or_else(unconfigured)?;
                 trust
                     .verifier()
                     .map_err(|e| undefined(format!("{name}: getting policy verifier: {e}")))?;
@@ -914,7 +938,7 @@ impl Host for Funcs<'_> {
                     return Ok(None);
                 }
                 for bundle in &bundles {
-                    match verify(bundle) {
+                    match verify(trust, bundle) {
                         Ok(si) => return Ok(Some(signatures::attestation_signature(&si).value())),
                         Err(e) => self.say(
                             LogLevel::Info,
@@ -992,7 +1016,8 @@ impl Policy {
             unknowns: Vec::new(),
             checksum: None,
             ask,
-            trust,
+            trust: Some(trust),
+            resolver: self.resolver,
         };
         let unknowns = input.unknown_refs();
         let mut m = Machine::new(&program, &mut host, context());
@@ -1068,6 +1093,9 @@ fn import_modules(
     remote: ReadRemote<'_>,
     resolved: &BTreeMap<String, Module>,
 ) -> Result<BTreeMap<String, Module>, String> {
+    if let Some(dir) = &fs.dir {
+        return tester::import_modules(dir, resolved, false);
+    }
     let mut out = BTreeMap::new();
     for (k, m) in resolved {
         for imp in &m.imports {
@@ -1178,11 +1206,13 @@ fn trim_key(s: &str) -> String {
     s.to_string()
 }
 
-/// ast.WalkRefs over a module's rules, in GenericVisitor's order.
+/// ast.WalkRefs over a module's rules, in GenericVisitor's order, as collectUnknowns
+/// walks them: not into a ref's own terms (its visitor answers true for every ref).
 fn walk_module_refs(m: &Module, f: &mut dyn FnMut(&[Term])) {
     let mut g = |t: &Term| -> bool {
         if let TermValue::Ref(r) = &t.value {
             f(r);
+            return true;
         }
         false
     };
@@ -1405,6 +1435,7 @@ impl Policies {
                 context_dir: opt.context_dir.clone(),
                 remote: opt.remote,
                 cwd: setup.cwd.clone(),
+                dir: None,
             };
             let none = |_: &str| -> Result<Option<Vec<u8>>, String> {
                 Err("policy resolver is not configured".into())
@@ -1435,6 +1466,7 @@ impl Policies {
                 fs,
                 default_platform: setup.default_platform.clone(),
                 skip_caps: opt.skip_caps,
+                resolver: true,
             });
         }
         if list.is_empty() {
@@ -1605,7 +1637,7 @@ impl Policies {
                     unk,
                     Some(platform),
                     Some(platform),
-                    Some(resolver),
+                    p.resolver.then_some(resolver),
                     Some(&self.trust),
                     &mut say,
                 )? {

@@ -413,6 +413,25 @@ pub fn decode_first(b: &[u8]) -> Result<JValue, String> {
     }
 }
 
+/// [`decode_first`], and the bytes of each value in the order the values begin (as
+/// [`unmarshal_raw`]): what an Unmarshaler is given.
+pub fn decode_first_raw(b: &[u8]) -> Result<(JValue, Vec<(usize, usize)>), String> {
+    let mut p = Parser {
+        b,
+        at: 0,
+        spans: Some(Vec::new()),
+    };
+    p.ws();
+    if p.at == b.len() {
+        return Err("EOF".into());
+    }
+    match p.value(0) {
+        Ok(v) => Ok((v, p.spans.unwrap_or_default())),
+        Err(Fail::Syntax(s)) => Err(s),
+        Err(Fail::Eof) => Err("unexpected EOF".into()),
+    }
+}
+
 /// foldName: ASCII letters upper-cased, and the two runes whose case folding reaches
 /// ASCII (U+017F to S, U+212A to K).
 fn fold(name: &str) -> String {
