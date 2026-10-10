@@ -4,22 +4,30 @@
 //! (commands/prune.go `toBuildkitPruneInfo`), and said as it says them: a table of the
 //! records removed, or each in full with `--verbose`, then their total.
 //!
-//! A record is shards' (D50): a step's result, of BuildKit's `regular` type, never
-//! mutable nor in use while no build runs; shared where an image holds its own layer,
-//! which a prune without `--all` keeps, as BuildKit keeps a record an image shares.
+//! A record is a step's result (D50), of BuildKit's `regular` type, never mutable nor in
+//! use while no build runs, and shared where an image holds its own layer, which a prune
+//! without `--all` keeps, as BuildKit keeps a record an image shares; or a cache mount's
+//! (D114), of type `exec.cachemount`, mutable, described as BuildKit describes it, and
+//! never removed while a step holds it, as BuildKit removes no record in use.
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use shards_cmdline::flags::Parsed;
-use shards_image::store::CacheEntry;
 
 use super::commands::{Asker, Reply, human_duration};
 use super::images::human_size4;
 
 /// A record as the prune sees it: BuildKit's `UsageInfo` of it.
 struct Record {
-    entry: CacheEntry,
+    /// A step's key, or a cache mount's id.
+    id: String,
+    size: u64,
+    created: i64,
+    last_used: i64,
+    usage: u64,
     shared: bool,
+    /// A cache mount's description: none for a step's record.
+    mount: Option<String>,
 }
 
 /// One of the filters buildx sends (`key`, `key==value`, `key~=value`, ...), as
@@ -50,13 +58,19 @@ impl Filter {
 
     /// The record's field, as `adaptUsageInfo` gives it: its value, and whether present.
     fn field(r: &Record, key: &str) -> (String, bool) {
+        let description = r.mount.clone().unwrap_or_default();
         match key {
-            "id" => (r.entry.key.clone(), true),
-            "type" => ("regular".into(), true),
-            "immutable" => (String::new(), true),
+            "id" => (r.id.clone(), true),
+            "type" => (r.kind().into(), true),
+            "mutable" => (String::new(), r.mount.is_some()),
+            "immutable" => (String::new(), r.mount.is_none()),
             "shared" => (String::new(), r.shared),
             "private" => (String::new(), !r.shared),
-            // parents, description, inuse, mutable: none a record of shards' has.
+            "description" => {
+                let present = !description.is_empty();
+                (description, present)
+            }
+            // parents, and inuse, which no record a prune sees is.
             _ => (String::new(), false),
         }
     }
@@ -150,24 +164,34 @@ fn keep_bytes(total: i64, free: i64, max_used: i64, reserved: i64, min_free: i64
     keep.max(reserved)
 }
 
+impl Record {
+    fn kind(&self) -> &'static str {
+        if self.mount.is_some() {
+            "exec.cachemount"
+        } else {
+            "regular"
+        }
+    }
+}
+
 /// `sortDeleteRecords`: least recently and least often used first, each ranked among the
 /// others and the two ranks, each over its highest, added.
 fn sort_for_deletion(records: Vec<Record>) -> Vec<Record> {
     let mut ranked: Vec<(Record, f64, f64)> = records.into_iter().map(|r| (r, 0.0, 0.0)).collect();
-    ranked.sort_by_key(|(r, ..)| r.entry.last_used);
+    ranked.sort_by_key(|(r, ..)| r.last_used);
     let (mut max_used, mut newest) = (1.0f64, i64::MIN);
     for (r, used, _) in &mut ranked {
-        if r.entry.last_used > newest {
-            newest = r.entry.last_used;
+        if r.last_used > newest {
+            newest = r.last_used;
             max_used += 1.0;
         }
         *used = max_used;
     }
-    ranked.sort_by_key(|(r, ..)| r.entry.usage);
+    ranked.sort_by_key(|(r, ..)| r.usage);
     let (mut max_count, mut count) = (1.0f64, 0u64);
     for (r, _, counted) in &mut ranked {
-        if r.entry.usage != count {
-            count = r.entry.usage;
+        if r.usage != count {
+            count = r.usage;
             max_count += 1.0;
         }
         *counted = max_count;
@@ -235,34 +259,64 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             Err(e) => return fail(e),
         };
         let held = store.referenced_blobs().unwrap_or_default();
-        let shared = |e: &CacheEntry| e.own.as_ref().is_some_and(|d| held.contains(&store.blob_path(d)));
         let entries = match store.cache_entries() {
             Ok(entries) => entries,
             Err(e) => return fail(e.to_string()),
         };
+        let mounts = match store.mount_entries() {
+            Ok(mounts) => mounts,
+            Err(e) => return fail(e.to_string()),
+        };
+        // Every record, those in use too, which DiskUsage counts and no prune removes.
+        let records: Vec<(Record, bool)> = entries
+            .into_iter()
+            .map(|e| {
+                let shared = e.own.as_ref().is_some_and(|d| held.contains(&store.blob_path(d)));
+                let r = Record {
+                    id: e.key,
+                    size: e.size,
+                    created: e.created,
+                    last_used: e.last_used,
+                    usage: e.usage,
+                    shared,
+                    mount: None,
+                };
+                (r, false)
+            })
+            .chain(mounts.into_iter().map(|m| {
+                let r = Record {
+                    id: m.id,
+                    size: m.size,
+                    created: m.created,
+                    last_used: m.last_used,
+                    usage: m.usage,
+                    shared: false,
+                    mount: Some(m.description),
+                };
+                (r, m.in_use)
+            }))
+            .collect();
         let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
         // DiskUsage's total, shared records left out, where a target needs it.
         let mut total: i64 = if max_used != 0 || reserved != 0 || min_free != 0 {
-            entries
+            records
                 .iter()
-                .filter(|e| !shared(e))
-                .map(|e| i64::try_from(e.size).unwrap_or(i64::MAX))
+                .filter(|(r, _)| !r.shared)
+                .map(|(r, _)| i64::try_from(r.size).unwrap_or(i64::MAX))
                 .sum()
         } else {
             0
         };
         let free = if min_free != 0 { free_space(&self.home) } else { 0 };
         let keep = keep_bytes(total, free, max_used, reserved, min_free);
-        let mut chosen: Vec<Record> = entries
+        let mut chosen: Vec<Record> = records
             .into_iter()
-            .map(|entry| Record {
-                shared: shared(&entry),
-                entry,
-            })
+            .filter(|(_, in_use)| !in_use)
+            .map(|(r, _)| r)
             .filter(|r| all || !r.shared)
             .filter(|r| {
                 until.is_none_or(|age| {
-                    let used = Duration::from_secs(u64::try_from(r.entry.last_used).unwrap_or(0));
+                    let used = Duration::from_secs(u64::try_from(r.last_used).unwrap_or(0));
                     now.saturating_sub(used) >= age
                 })
             })
@@ -278,41 +332,54 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             if keep != 0 && total < keep {
                 break;
             }
-            if store.cache_remove(&r.entry.key).is_err() {
+            // A cache mount's goes unless a step took it meanwhile.
+            let gone = match &r.mount {
+                Some(_) => store.remove_mount(&r.id).unwrap_or(false),
+                None => store.cache_remove(&r.id).is_ok(),
+            };
+            if !gone {
                 continue;
             }
-            let size = i64::try_from(r.entry.size).unwrap_or(i64::MAX);
+            let size = i64::try_from(r.size).unwrap_or(i64::MAX);
             total -= size;
             removed = removed.saturating_add(size);
-            let id = r.entry.key.get(..25).unwrap_or(&r.entry.key).to_string();
+            let id = r.id.get(..25).unwrap_or(&r.id).to_string();
             let ago = {
-                let used = Duration::from_secs(u64::try_from(r.entry.last_used).unwrap_or(0));
+                let used = Duration::from_secs(u64::try_from(r.last_used).unwrap_or(0));
                 format!("{} ago", human_duration(now.saturating_sub(used).as_nanos()))
             };
             let text = if verbose {
                 // time.Time's String, in UTC: what the record keeps is its second.
-                let created = shards_dockerfile::go::Time::from_unix(r.entry.created)
+                let created = shards_dockerfile::go::Time::from_unix(r.created)
                     .rfc3339_nano()
                     .map(|t| format!("{} +0000 UTC", t.trim_end_matches('Z').replacen('T', " ", 1)))
                     .unwrap_or_default();
-                tabs(&[
+                let mut lines = vec![
                     vec!["ID:".into(), id],
                     vec!["Created at:".into(), created],
-                    vec!["Mutable:".into(), "false".into()],
+                    vec!["Mutable:".into(), r.mount.is_some().to_string()],
                     vec!["Reclaimable:".into(), "true".into()],
                     vec!["Shared:".into(), r.shared.to_string()],
                     vec!["Size:".into(), human_size4(size)],
-                    vec!["Usage count:".into(), r.entry.usage.to_string()],
+                ];
+                if let Some(d) = r.mount.as_ref().filter(|d| !d.is_empty()) {
+                    lines.push(vec!["Description:".into(), d.clone()]);
+                }
+                lines.extend([
+                    vec!["Usage count:".into(), r.usage.to_string()],
                     vec!["Last used:".into(), ago],
-                    vec!["Type:".into(), "regular".into()],
+                    vec!["Type:".into(), r.kind().into()],
                     vec![String::new()],
-                ])
+                ]);
+                tabs(&lines)
             } else {
                 let size_shown = if r.shared {
                     format!("{}*", human_size4(size))
                 } else {
                     human_size4(size)
                 };
+                // A mutable record's ID is marked, as buildx's table marks it.
+                let id = if r.mount.is_some() { format!("{id}*") } else { id };
                 let row = vec![
                     format!("{id:<40}"),
                     format!("{:<5}", "true"),
@@ -370,15 +437,13 @@ mod tests {
 
     fn record(key: &str, last_used: i64, usage: u64, shared: bool) -> Record {
         Record {
-            entry: CacheEntry {
-                key: key.into(),
-                size: 1,
-                created: 0,
-                last_used,
-                usage,
-                own: None,
-            },
+            id: key.into(),
+            size: 1,
+            created: 0,
+            last_used,
+            usage,
             shared,
+            mount: None,
         }
     }
 
@@ -391,6 +456,20 @@ mod tests {
         assert!(filters.iter().all(|f| f.matches(&r)));
         assert!(!filters.iter().all(|f| f.matches(&record("zz", 0, 0, true))));
         assert!(!filters.iter().all(|f| f.matches(&record("abc", 0, 0, false))));
+        // A cache mount's record, by adaptUsageInfo's fields.
+        let mount = Record {
+            mount: Some("cached mount /c from exec sh".into()),
+            ..record("m1", 0, 0, false)
+        };
+        let matched =
+            |given: &[&str], r: &Record| prune_info(&v(given)).unwrap().1.iter().all(|f| f.matches(r));
+        assert!(matched(&["type=exec.cachemount"], &mount));
+        assert!(!matched(&["type=exec.cachemount"], &r));
+        assert!(matched(&["mutable"], &mount) && !matched(&["immutable"], &mount));
+        assert!(matched(&["immutable"], &r) && !matched(&["mutable"], &r));
+        assert!(matched(&["description~=cached mount /c"], &mount));
+        assert!(!matched(&["description"], &r));
+        assert!(!matched(&["inuse"], &mount));
         assert_eq!(
             prune_info(&v(&["until=1h", "unused-for=1h"])).err().unwrap(),
             "conflicting filters \"until\" and \"unused-for\""
@@ -425,7 +504,7 @@ mod tests {
             record("mid", 20, 5, false),
         ])
         .into_iter()
-        .map(|r| r.entry.key)
+        .map(|r| r.id)
         .collect();
         assert_eq!(order, ["old-idle", "mid", "new-busy"]);
     }
