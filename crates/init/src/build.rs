@@ -317,7 +317,16 @@ impl Builder {
         let mut caches: Vec<PathBuf> = Vec::with_capacity(step.caches.len());
         let mut stubs = Vec::new();
         let mut injected = None;
-        let status = match self.prepare(step, root, &work, &upper, &mut caches, &mut sources, &mut stubs, &mut injected) {
+        let status = match self.prepare(
+            step,
+            root,
+            &work,
+            &upper,
+            &mut caches,
+            &mut sources,
+            &mut stubs,
+            &mut injected,
+        ) {
             Ok(files) => self.run(step, root, &files, &sources, &work),
             Err(e) => Err(e),
         };

@@ -91,7 +91,8 @@ pub fn encode_proxied(
     capture: &super::proxy::capture::Capture,
 ) -> Result<String, String> {
     // The record any step has (its key and its outputs, D114), its requests beside them.
-    let mut record: serde_json::Value = serde_json::from_str(&encode(key, outputs)?).map_err(|e| e.to_string())?;
+    let mut record: serde_json::Value =
+        serde_json::from_str(&encode(key, outputs)?).map_err(|e| e.to_string())?;
     let pairs = |list: &[(String, String)]| -> serde_json::Value {
         list.iter().map(|(a, b)| serde_json::json!([a, b])).collect()
     };
@@ -842,7 +843,8 @@ mod tests {
             ],
         };
         let outputs = vec![Vec::new()];
-        let (back, held) = decode_proxied(encode_proxied("k", &outputs, &capture).unwrap().as_bytes()).unwrap();
+        let (back, held) =
+            decode_proxied(encode_proxied("k", &outputs, &capture).unwrap().as_bytes()).unwrap();
         assert_eq!(back, outputs);
         assert_eq!(held.allowed, capture.allowed);
         assert_eq!(held.incomplete, capture.incomplete);

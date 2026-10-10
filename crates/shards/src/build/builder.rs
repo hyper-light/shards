@@ -81,7 +81,13 @@ pub type Outputs = Vec<(u32, Vec<u8>)>;
 /// What a step came to: how it ended, the layer its changes are in the guest, each output
 /// mount's changes with its layer, the layer each cache it writes becomes (D114), and what
 /// its requests came to under the build's proxy (D110).
-pub type Ran = (Ended, u32, Outputs, Vec<u32>, Option<super::proxy::capture::Capture>);
+pub type Ran = (
+    Ended,
+    u32,
+    Outputs,
+    Vec<u32>,
+    Option<super::proxy::capture::Capture>,
+);
 
 /// How a step's process ended.
 #[derive(Debug)]
