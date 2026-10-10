@@ -287,12 +287,34 @@ fn a_joiners_own_commands_reach_the_joiner() {
         .unwrap();
     // What it writes comes back through the joiner's `cat`: its stdin and output both the
     // joiner's.
+    let (lines, read) = std::sync::mpsc::channel();
+    let out = attached.stdout.take().unwrap();
+    std::thread::spawn(move || {
+        for line in BufReader::new(out).lines() {
+            if lines.send(line.unwrap()).is_err() {
+                return;
+            }
+        }
+    });
     attached.stdin.as_mut().unwrap().write_all(b"hello\n").unwrap();
-    let mut line = String::new();
-    BufReader::new(attached.stdout.as_mut().unwrap())
-        .read_line(&mut line)
-        .unwrap();
-    assert_eq!(line, "hello\n");
+    assert_eq!(read.recv_timeout(TIMEOUT).unwrap(), "hello");
+    // Paused alone, its cgroup frozen in the guest as Docker freezes a container's: what is
+    // written meanwhile comes back once it goes on, and its provider runs on.
+    let paused = shards(&["pause", "joiner"]);
+    assert_eq!(paused.status, Some(0), "{paused}");
+    let state = |name: &str| shards(&["inspect", "-f", "{{.State.Status}}", name]).stdout;
+    assert_eq!(
+        (state("joiner"), state("prov")),
+        ("paused\n".into(), "running\n".into())
+    );
+    attached.stdin.as_mut().unwrap().write_all(b"after\n").unwrap();
+    assert!(
+        read.recv_timeout(Duration::from_millis(500)).is_err(),
+        "a frozen joiner echoed"
+    );
+    let unpaused = shards(&["unpause", "joiner"]);
+    assert_eq!(unpaused.status, Some(0), "{unpaused}");
+    assert_eq!(read.recv_timeout(TIMEOUT).unwrap(), "after");
     let top = shards(&["top", "joiner", "-o", "pid,args"]);
     assert_eq!(top.status, Some(0), "{top}");
     assert!(
