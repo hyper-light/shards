@@ -10849,6 +10849,73 @@ fn policy_eval_answers_as_buildx_does() {
     );
 }
 
+/// `shards buildx policy test` (D108), each run as buildx v0.37.1's in shards-dind: tests
+/// that pass and fail, an image input resolved from its registry (pinned, for one
+/// platform), `--run`, a test file named alone, and the paths and policies buildx refuses.
+#[test]
+fn policy_test_runs_as_buildx_does() {
+    let home = TempDir::new("policy-test-home");
+    let dir = TempDir::new("policy-test");
+    for sub in ["basic", "notests"] {
+        std::fs::create_dir_all(dir.join(sub)).unwrap();
+    }
+    std::fs::write(
+        dir.join("basic/Dockerfile.rego"),
+        "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if {\n\tinput.image.repo == \"alpine\"\n\t\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\" in input.image.env\n}\n\ndeny_msg contains \"not allowed\" if not allow\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("basic/policy_test.rego"),
+        "package docker\n\ntest_local if allow with input as {\"local\": {\"name\": \"context\"}}\n\ntest_git_denied if not allow with input as {\"git\": {\"remote\": \"https://github.com/x/y.git\", \"tagName\": \"v1\"}}\n\ntest_alpine if allow with input as {\"image\": {\"ref\": \"docker.io/library/alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc\", \"platform\": \"linux/amd64\"}}\n\ntest_nothing if allow\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("notests/Dockerfile.rego"),
+        "package docker\n\ndecision := {\"allow\": true}\n",
+    )
+    .unwrap();
+    let env = [("SHARDS_HOME", home.as_os_str())];
+    let test = |sub: &str, args: &[&str]| {
+        let mut argv = vec!["buildx", "policy", "test"];
+        argv.extend_from_slice(args);
+        let out = common::run_shards_env_in(&dir.join(sub), &[], &argv, &env, TIMEOUT);
+        (out.status, out.stdout, out.stderr)
+    };
+    let refused = |e: &str| (Some(1), String::new(), format!("ERROR: {e}\n"));
+    // The image test's input resolved by the policy's own questions: its config read for
+    // linux/amd64, the input the policy decides on; its own `with` input lacks it.
+    let all = "test_alpine: FAIL (allow=true)\ninput:\n{\n  \"image\": {\n    \"ref\": \"docker.io/library/alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc\",\n    \"host\": \"docker.io\",\n    \"repo\": \"alpine\",\n    \"fullRepo\": \"docker.io/library/alpine\",\n    \"platform\": \"linux/amd64\",\n    \"os\": \"linux\",\n    \"arch\": \"amd64\",\n    \"isCanonical\": true,\n    \"checksum\": \"sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc\",\n    \"createdTime\": \"2026-04-16T23:53:26Z\",\n    \"env\": [\n      \"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"\n    ],\n    \"workingDir\": \"/\"\n  }\n}\ndecision:\n{\n  \"allow\": true\n}\nmissing_input: input.local\ntest_git_denied: PASS (allow=false, deny_msg=not allowed)\ntest_local: PASS (allow=true)\ntest_nothing: FAIL (allow=false, deny_msg=not allowed)\ninput: <nil>\ndecision:\n{\n  \"allow\": false,\n  \"deny_msg\": [\n    \"not allowed\"\n  ]\n}\nmissing_input: input.image.env, input.image.repo, input.local\n";
+    // A failed test ends the run with status 1 and nothing more (cobrautil.ExitCodeError).
+    assert_eq!(test("basic", &["."]), (Some(1), all.into(), String::new()));
+    assert_eq!(test("basic", &["./"]), (Some(1), all.into(), String::new()));
+    assert_eq!(
+        test("basic", &["--run", "local", "."]),
+        (Some(0), "test_local: PASS (allow=true)\n".into(), String::new())
+    );
+    assert_eq!(
+        test("basic", &["--run", "git", "policy_test.rego"]),
+        (
+            Some(0),
+            "test_git_denied: PASS (allow=false, deny_msg=not allowed)\n".into(),
+            String::new()
+        )
+    );
+    assert_eq!(test("basic", &["--run", "zzz", "."]), refused("no tests found"));
+    assert_eq!(
+        test("basic", &["nope"]),
+        refused("stat nope: stat nope: no such file or directory")
+    );
+    assert_eq!(
+        test("basic", &["Dockerfile.rego"]),
+        refused("test file must have _test.rego suffix: Dockerfile.rego")
+    );
+    assert_eq!(
+        test("basic", &["--filename", "other", "."]),
+        refused("read policy module other.rego: open other.rego: no such file or directory")
+    );
+    assert_eq!(test("notests", &["."]), refused("no policy tests found"));
+}
+
 /// A step that fails cites where in the Dockerfile it comes from, as buildx v0.37.1 prints
 /// a solve error (measured in shards-dind): the failed step's recap, the build's
 /// warnings, the excerpt of the step's lines (a continued RUN's every line marked), then

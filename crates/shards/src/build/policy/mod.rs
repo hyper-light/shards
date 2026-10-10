@@ -14,8 +14,6 @@ mod input;
 mod provenance;
 mod signatures;
 mod snappy;
-// `policy test` (D108), which the command line runs.
-#[allow(dead_code)]
 pub(crate) mod tester;
 mod testinput;
 

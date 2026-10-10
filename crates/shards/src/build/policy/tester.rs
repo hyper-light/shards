@@ -48,7 +48,6 @@ pub trait TestProvider {
 /// TestResult.
 pub struct TestResult {
     pub name: String,
-    pub package: String,
     pub passed: bool,
     pub allow: Option<bool>,
     pub deny_messages: Vec<String>,
@@ -679,7 +678,7 @@ impl Resolution<'_> {
 /// metadata.
 enum Need {
     Platform(mpsc::Sender<Result<Platform, String>>),
-    Resolve(Source, MetaRequest, mpsc::Sender<Result<Meta, String>>),
+    Resolve(Box<(Source, MetaRequest)>, mpsc::Sender<Result<Meta, String>>),
 }
 
 /// The provider, asked from the tests' own thread.
@@ -700,7 +699,7 @@ impl TestProvider for Asker {
     }
 
     fn resolve(&self, source: &Source, req: &MetaRequest) -> Result<Meta, String> {
-        self.ask(|reply| Need::Resolve(source.clone(), req.clone(), reply))
+        self.ask(|reply| Need::Resolve(Box::new((source.clone(), req.clone())), reply))
     }
 }
 
@@ -731,8 +730,8 @@ pub fn run_policy_tests(
                     Need::Platform(reply) => {
                         let _ = reply.send(p.platform());
                     }
-                    Need::Resolve(source, req, reply) => {
-                        let _ = reply.send(p.resolve(&source, &req));
+                    Need::Resolve(asked, reply) => {
+                        let _ = reply.send(p.resolve(&asked.0, &asked.1));
                     }
                 }
             }
@@ -834,7 +833,6 @@ fn run(path: &str, opts: &TestOptions, provider: Option<&dyn TestProvider>) -> R
         summary.failed += usize::from(!passed);
         summary.results.push(TestResult {
             name: t.name.clone(),
-            package: t.package.clone(),
             passed,
             allow,
             deny_messages: deny,

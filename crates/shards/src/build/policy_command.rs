@@ -11,7 +11,6 @@ use std::io::{Read, Write};
 use std::path::Path;
 use std::process::ExitCode;
 
-use shards_cmdline::buildflags::LogLevel;
 use shards_cmdline::commands::{POLICY, POLICY_COMMANDS, POLICY_EVAL, POLICY_TEST};
 use shards_cmdline::flags::{self, Command, Outcome, Parsed};
 use shards_dockerfile::platform::{self, Platform};
@@ -323,8 +322,44 @@ fn with_resolver(f: &dyn Fn(&dyn policy::Resolve) -> Result<(), String>) -> Resu
     f(&super::PolicyMeta { bases: &bases })
 }
 
-/// `policy test`: its run lands with the tester (D108 H).
+/// runTest: the tests under the path, every name read in the working directory; an image
+/// input's metadata resolved as a build resolves a source's, unseen. A failed test ends
+/// the run with status 1 and nothing more (cobrautil.ExitCodeError).
 fn test(parsed: &Parsed) -> ExitCode {
-    let _ = (parsed, LogLevel::Info);
-    error("policy test is not served yet")
+    let path = parsed.args.first().map(String::as_str).unwrap_or_default();
+    let root = match std::env::current_dir() {
+        Ok(d) => d,
+        Err(e) => return error(&e.to_string()),
+    };
+    let opts = policy::tester::TestOptions {
+        run: parsed.string("run").to_string(),
+        filename: parsed.string("filename").to_string(),
+        root,
+    };
+    let status = std::cell::Cell::new(0);
+    let ran = with_resolver(&|resolver| {
+        let summary = policy::tester::run_policy_tests(path, &opts, Some(&Builder { resolver }))?;
+        status.set(policy::tester::report(&summary, &mut std::io::stdout()));
+        Ok(())
+    });
+    match ran {
+        Ok(()) => ExitCode::from(status.get()),
+        Err(e) => error(&e),
+    }
+}
+
+/// `policy test`'s TestOptionsProvider: the builder's platform, this host's, and a
+/// source's metadata as a build resolves it.
+struct Builder<'r> {
+    resolver: &'r dyn policy::Resolve,
+}
+
+impl policy::tester::TestProvider for Builder<'_> {
+    fn platform(&self) -> Result<Platform, String> {
+        Ok(host_platform())
+    }
+
+    fn resolve(&self, source: &policy::Source, req: &policy::MetaRequest) -> Result<policy::Meta, String> {
+        self.resolver.resolve(source, req)
+    }
 }
