@@ -1077,10 +1077,10 @@ fn udp_echo(port: &str, stop: &str) -> i32 {
 }
 
 /// File operations, in order: `mkdir:P`, `write:P=DATA`, `link:OLD:NEW`, `symlink:T:P`,
-/// `rm:P`, `rmdir:P` (and what it holds), `chmod:OCTAL:P`, `mknod:b|c:MAJOR:MINOR:P`,
-/// `open:r|w:P`, `dev:P`, which prints a device node's type, numbers and mode, `print:P`,
-/// which prints a file, and `readn:N:P`, which reads N bytes of P. Stops
-/// at the first that fails, saying which.
+/// `rm:P`, `rmdir:P` (and what it holds), `chmod:OCTAL:P`, `chown:UID:GID:P` (not
+/// followed), `mknod:b|c:MAJOR:MINOR:P`, `open:r|w:P`, `dev:P`, which prints a device
+/// node's type, numbers and mode, `print:P`, which prints a file, `readn:N:P`, which reads
+/// N bytes of P, and `sleep:MS`. Stops at the first that fails, saying which.
 fn fs(ops: &[String]) -> i32 {
     use std::os::unix::fs::PermissionsExt as _;
     for op in ops {
@@ -1108,6 +1108,18 @@ fn fs(ops: &[String]) -> i32 {
                     .and_then(|m| std::fs::set_permissions(p, std::fs::Permissions::from_mode(m)))
             }
             "mknod" => mknod(rest),
+            "chown" => {
+                let mut parts = rest.splitn(3, ':');
+                let id = |p: Option<&str>| p.and_then(|n| n.parse::<u32>().ok());
+                match (id(parts.next()), id(parts.next()), parts.next()) {
+                    (Some(u), Some(g), Some(p)) => std::os::unix::fs::lchown(p, Some(u), Some(g)),
+                    _ => Err(io::Error::other("a malformed chown")),
+                }
+            }
+            "sleep" => rest
+                .parse::<u64>()
+                .map_err(io::Error::other)
+                .map(|ms| std::thread::sleep(std::time::Duration::from_millis(ms))),
             "open" => {
                 let (m, p) = rest.split_once(':').unwrap_or((rest, ""));
                 std::fs::OpenOptions::new()
