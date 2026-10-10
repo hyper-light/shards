@@ -536,6 +536,7 @@ fn sort_setup(entries: &[Vec<u8>], into: &mut Inherited) -> Result<Vec<Vec<u8>>,
             || entry == b"init"
             || entry == b"pid=host"
             || entry == b"pid=workload"
+            || entry.starts_with(b"pid=joiner=")
         {
             // Init's, as the run starts (`Standby::start`).
         } else if entry.starts_with(b"devices=") {
@@ -897,7 +898,7 @@ static OWN_PID_NS: std::sync::OnceLock<OwnedFd> = std::sync::OnceLock::new();
 fn pid_ns_of(pid: libc::pid_t) -> Result<OwnedFd, Failure> {
     File::open(format!("/proc/{pid}/ns/pid"))
         .map(OwnedFd::from)
-        .map_err(|e| setup_failed(format!("the workload's PID namespace: {e}")))
+        .map_err(|e| setup_failed(format!("the PID namespace it joins: {e}")))
 }
 
 /// fork(2), the child born in the PID namespace `ns`, or, with none, in a new one whose
@@ -1945,6 +1946,7 @@ impl Standby {
                     }
                     crate::join::Pid::Own => fork_in(None)?,
                     crate::join::Pid::Workload => fork_in(Some(&pid_ns_of(join.workload)?))?,
+                    crate::join::Pid::Joiner(other) => fork_in(Some(&pid_ns_of(other)?))?,
                     crate::join::Pid::Host => {
                         // SAFETY: init is single-threaded, so its child may run anything
                         // until it execs.
@@ -2786,11 +2788,14 @@ struct Started {
 }
 
 /// Starts joiner `id` (D119): its image `range` of the join disk, joining `workload`'s
-/// network, its limits on its own cgroup, its command as its spec says, as a run's is.
+/// network, its limits on its own cgroup, its command as its spec says, as a run's is; in
+/// the PID namespace of one of `joiners` (each an id and its command's process) where its
+/// spec names one.
 fn start_joiner(
     range: Result<(u64, u64), String>,
     id: u32,
     workload: libc::pid_t,
+    joiners: &[(u32, libc::pid_t)],
     spec: &Spec,
 ) -> Result<Started, Failure> {
     let (offset, len) = range.map_err(setup_failed)?;
@@ -2803,7 +2808,7 @@ fn start_joiner(
         len,
         workload,
         layer,
-        pid: crate::join::pid(&spec.setup),
+        pid: crate::join::pid(&spec.setup, joiners).map_err(setup_failed)?,
         init: spec.setup.iter().any(|e| e == b"init"),
     };
     // Its devices, as the workload's are found and confined (D44): the VM's, their nodes
@@ -3071,7 +3076,7 @@ impl Exec {
         let started = if let Some(range) = crate::join::range(&spec.setup) {
             exec.joined = true;
             if running {
-                start_joiner(range, id, workload, &spec)
+                start_joiner(range, id, workload, joiners, &spec)
             } else {
                 Err(setup_failed("the container whose network it joins has ended"))
             }

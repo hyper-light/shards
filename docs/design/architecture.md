@@ -3560,13 +3560,21 @@ the boundary is a container's, which is what the mode asks for.
   removes the cgroup once all of it is said. `top` lists a container's processes by its
   cgroup, as containerd lists a task's: the workload's leave out the joiners' in its
   namespace. `--init` there is kept and not given, as dockerd gives its init only to a PID
-  namespace of the container's own (daemon/oci_linux.go). Refused: `--pid container:` of
-  a joiner, whose PID namespace is its own in its provider's microVM, known to init by its
-  exec's id; and `--pid container:NAME` without its network, NAME's PID namespace being in
-  NAME's microVM, where a network of its own is not built (D115). Tested
+  namespace of the container's own (daemon/oci_linux.go). `--pid container:` of another
+  joiner takes the namespace that joiner's run took, as dockerd takes
+  `/proc/PID/ns/pid` of its process: its own, which init knows by the joiner's exec's id,
+  told the daemon with its start (`STARTED`'s payload, `pid=joiner=ID`); its provider's,
+  or the microVM's, followed through any joiner that took another's; one not yet started
+  is "container ID is not running", dockerd's errNotRunning. As that joiner ends, its
+  namespace ends with everything in it, the kernel's doing, as with Docker. Refused:
+  `--pid container:NAME` without its network, NAME's PID namespace being in NAME's
+  microVM, where a network of its own is not built (D115). Tested
   (`a_joiner_may_share_its_providers_pid_namespace`: its PID 1 its provider's command,
   `top` of each, `--init` kept, an exec of its killed as it ends, `--pid host`, the
-  refusals; `a_joiner_is_a_container_of_its_own`: its provider by ID).
+  refusals; `a_joiner_may_share_another_joiners_pid_namespace`: another joiner's command
+  its PID 1, a third container through it, a joiner in its provider's passing that one
+  on, the namespace's end its own; mutation-checked; `a_joiner_is_a_container_of_its_own`:
+  its provider by ID).
 - **`--init` in a PID namespace of its own**: a reaper is its first process, as the
   workload's is (D115), in its cgroup. Its user is the command's, which the joiner's own
   image names, and that image's users are read by its standby, born in the reaper's
