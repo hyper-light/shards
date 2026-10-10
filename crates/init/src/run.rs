@@ -1189,14 +1189,16 @@ fn oom_killed() -> bool {
 /// limits and filter, in the order runc's fs2 Set writes them all: pids, memory and the
 /// weight (the list's head), the devices' I/O, CPU, the filter, then cpusets.
 fn limit(cgroup: &[Vec<u8>], devices: Option<&crate::devices::Prepared>) -> Result<(), Failure> {
-    limit_in(WORKLOAD_CGROUP, cgroup, devices)
+    limit_in(WORKLOAD_CGROUP, cgroup, devices, None)
 }
 
-/// [`limit`] on the cgroup at `dir`: the workload's, or a joiner's (D119).
+/// [`limit`] on the cgroup at `dir`: the workload's, or joiner `joiner`'s (D119), whose
+/// devices take the place of its own default filter.
 fn limit_in(
     dir: &str,
     cgroup: &[Vec<u8>],
     devices: Option<&crate::devices::Prepared>,
+    joiner: Option<u32>,
 ) -> Result<(), Failure> {
     let hooks = |e: String| setup_failed(format!("error setting cgroup config for procHooks process: {e}"));
     let at = |p: &dyn Fn(&[u8]) -> bool| cgroup.iter().position(|e| p(e)).unwrap_or(cgroup.len());
@@ -1214,18 +1216,21 @@ fn limit_in(
     }
     write_cgroup_in(dir, cpus).map_err(hooks)?;
     if let Some(d) = devices {
-        d.attach(dir).map_err(hooks)?;
+        match joiner {
+            Some(id) => crate::join::attach_devices(id, d),
+            None => d.attach(dir),
+        }
+        .map_err(hooks)?;
     }
     write_cgroup_in(dir, cpusets).map_err(hooks)
 }
 
-/// Writes each `FILE=VALUE` of `cgroup` to the workload's cgroup, as runc's fs2 writes
-/// them; what failed, in runc's words.
-pub fn write_cgroup(cgroup: &[Vec<u8>]) -> Result<(), String> {
-    write_cgroup_in(WORKLOAD_CGROUP, cgroup)
+/// Writes each `FILE=VALUE` of `cgroup` to the cgroup at `dir`, the workload's or a
+/// joiner's (D119), as runc's fs2 writes them; what failed, in runc's words.
+pub(crate) fn write_cgroup_at(dir: &str, cgroup: &[Vec<u8>]) -> Result<(), String> {
+    write_cgroup_in(dir, cgroup)
 }
 
-/// [`write_cgroup`] to the cgroup at `dir`: the workload's, or a joiner's (D119).
 fn write_cgroup_in(dir: &str, cgroup: &[Vec<u8>]) -> Result<(), String> {
     for entry in cgroup {
         let text = String::from_utf8_lossy(entry);
@@ -2795,6 +2800,15 @@ fn start_joiner(
         pid: crate::join::pid(&spec.setup),
         init: spec.setup.iter().any(|e| e == b"init"),
     };
+    // Its devices, as the workload's are found and confined (D44): the VM's, their nodes
+    // made in its own /dev once its root is built, its cgroup's filter theirs.
+    let devices = spec
+        .setup
+        .iter()
+        .find_map(|e| e.strip_prefix(b"devices="))
+        .map(crate::devices::prepare_joiner)
+        .transpose()
+        .map_err(setup_failed)?;
     let mut standby = Standby::forked(Born::Joined(join, id), (None, None))?;
     let (pid, reaper) = (standby.pid, standby.reaper);
     // Under `--init`, its reaper, which a start that fails ends with it.
@@ -2816,7 +2830,8 @@ fn start_joiner(
         .partition(|e| e.starts_with(b"sysctl="));
     let mut inherited = Inherited::default();
     let ready = sysctls_in(pid, &sysctls)
-        .and_then(|()| limit_in(&crate::join::cgroup(id), &spec.cgroup, None))
+        .and_then(|()| devices.as_ref().map_or(Ok(()), |d| nodes_in(pid, d.nodes())))
+        .and_then(|()| limit_in(&crate::join::cgroup(id), &spec.cgroup, devices.as_ref(), Some(id)))
         .and_then(|()| sort_setup(&setup, &mut inherited))
         .and_then(|setup| reaper_ready(&mut standby, spec).map(|()| setup));
     let setup = match ready {
@@ -2930,6 +2945,55 @@ fn sysctls_in(pid: libc::pid_t, entries: &[Vec<u8>]) -> Result<(), Failure> {
     }
 }
 
+/// Makes `nodes` in joiner `pid`'s own `/dev`, from within its mount namespace, in a
+/// child of init's (D44, D119): the workload's are made in the `/dev` init shares with it,
+/// a joiner's root is its own. What failed, as runc says it.
+fn nodes_in(pid: libc::pid_t, nodes: &[crate::devices::Node]) -> Result<(), Failure> {
+    if nodes.is_empty() {
+        return Ok(());
+    }
+    let (said_r, said_w) = pipe()?;
+    // SAFETY: init is single-threaded, so its child may run anything.
+    let child = unsafe { libc::fork() };
+    if child < 0 {
+        return Err(setup_failed(format!("fork: {}", io::Error::last_os_error())));
+    }
+    if child == 0 {
+        drop(said_r);
+        let made = File::open(format!("/proc/{pid}/ns/mnt"))
+            .map_err(|e| format!("the joiner's mount namespace: {e}"))
+            .and_then(|ns| {
+                // SAFETY: setns(2) on a descriptor this process holds.
+                if unsafe { libc::setns(ns.as_raw_fd(), libc::CLONE_NEWNS) } != 0 {
+                    return Err(format!(
+                        "the joiner's mount namespace: {}",
+                        io::Error::last_os_error()
+                    ));
+                }
+                crate::devices::make_nodes(nodes)
+            });
+        let code = match made {
+            Ok(()) => 0,
+            Err(said) => {
+                let _ = File::from(said_w).write_all(said.as_bytes());
+                1
+            }
+        };
+        // SAFETY: _exit(2) ends the child without running init's exit paths.
+        unsafe { libc::_exit(code) }
+    }
+    drop(said_w);
+    let mut said = String::new();
+    let _ = File::from(said_r).read_to_string(&mut said);
+    // SAFETY: waits for our own child.
+    unsafe { libc::waitpid(child, std::ptr::null_mut(), 0) };
+    if said.is_empty() {
+        Ok(())
+    } else {
+        Err(setup_failed(said))
+    }
+}
+
 /// What a joiner (D119) does not take yet, refused by name before it starts: what init
 /// would do in the workload's namespaces rather than the joiner's own, and the workload's
 /// own shared directories, which its run alone was given.
@@ -2937,8 +3001,6 @@ fn joiner_takes(setup: &[Vec<u8>]) -> Result<(), Failure> {
     for entry in setup {
         let what = if entry.starts_with(b"volume=") || entry.starts_with(b"domain-volume=") {
             "a volume"
-        } else if entry.starts_with(b"devices=") || entry == b"privileged" {
-            "a device"
         } else if entry.starts_with(b"dns=")
             || entry.starts_with(b"address=")
             || entry.starts_with(b"address6=")

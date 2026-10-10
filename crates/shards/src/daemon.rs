@@ -1831,8 +1831,6 @@ impl<D: Disk> Daemon<D> {
                 || !run.volumes_from.is_empty()
             {
                 Some("a volume")
-            } else if !run.devices.is_empty() || !run.device_cgroup_rules.is_empty() || run.privileged {
-                Some("a device")
             } else if run
                 .pid
                 .strip_prefix("container:")

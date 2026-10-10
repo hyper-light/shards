@@ -212,11 +212,13 @@ fn asked(entry: &[u8]) -> Option<Asked<'_>> {
 }
 
 /// What a microVM's devices come to before its cgroup is set: its I/O limits by
-/// device number, and the rules of its device filter (none where it is privileged).
+/// device number, and the rules of its device filter (none where it is privileged); and
+/// the nodes still to make, a joiner's (D119), in its own `/dev`.
 pub struct Prepared {
     weights: Vec<String>,
     throttles: Vec<Vec<u8>>,
     rules: Option<Vec<Rule>>,
+    nodes: Vec<Node>,
 }
 
 /// What setup entry `entry` asks, as dockerd makes a spec of it (WithResources, then
@@ -224,6 +226,16 @@ pub struct Prepared {
 /// numbers found, the CDI devices refused, and the nodes made in the `/dev` init shares
 /// with the workload. What failed, as dockerd or runc says it.
 pub fn prepare(entry: &[u8]) -> Result<Prepared, String> {
+    prepare_with(entry, true)
+}
+
+/// [`prepare`] for a joiner (D119), whose nodes are made in its own `/dev`, in its mount
+/// namespace ([`Prepared::nodes`]), not in the one init shares with the workload.
+pub fn prepare_joiner(entry: &[u8]) -> Result<Prepared, String> {
+    prepare_with(entry, false)
+}
+
+fn prepare_with(entry: &[u8], here: bool) -> Result<Prepared, String> {
     let a = asked(entry).ok_or("a malformed devices entry")?;
     // Read only where a path is named.
     let vm = if a.devices.is_empty() && a.io.is_empty() {
@@ -294,14 +306,24 @@ pub fn prepare(entry: &[u8]) -> Result<Prepared, String> {
             a.cdi.join(", ")
         ));
     }
-    for node in &nodes {
-        make(node).map_err(|e| format!("error creating device nodes: {e}"))?;
+    if here {
+        make_nodes(&nodes)?;
+        nodes.clear();
     }
     Ok(Prepared {
         weights,
         throttles,
         rules,
+        nodes,
     })
+}
+
+/// Makes `nodes` in the root this process is in, as runc makes a container's.
+pub fn make_nodes(nodes: &[Node]) -> Result<(), String> {
+    for node in nodes {
+        make(node).map_err(|e| format!("error creating device nodes: {e}"))?;
+    }
+    Ok(())
 }
 
 impl Prepared {
@@ -332,7 +354,27 @@ impl Prepared {
                 }
             }
         }
-        crate::run::write_cgroup(&self.throttles)
+        crate::run::write_cgroup_at(cgroup, &self.throttles)
+    }
+
+    /// The nodes still to make: a joiner's (D119), in its own `/dev`.
+    pub fn nodes(&self) -> &[Node] {
+        &self.nodes
+    }
+
+    /// [`attach`](Self::attach) for a joiner's cgroup (D119), whose own filter, `default`,
+    /// the joiner's rules take the place of, or which a privileged joiner has taken away;
+    /// left where they are the same.
+    pub fn attach_joiner(&self, cgroup: &str, default: &Filter) -> Result<(), String> {
+        let (bytes, fd) = default;
+        let Some(rules) = &self.rules else {
+            return detach(fd, cgroup);
+        };
+        let program = dc::compile(rules)?;
+        if program == *bytes {
+            return Ok(());
+        }
+        attach(&program, cgroup, Some(fd)).map(drop)
     }
 
     /// runc's setDevices: the filter of its rules compiled, loaded and attached to
@@ -426,9 +468,13 @@ fn make(node: &Node) -> Result<(), String> {
     Ok(())
 }
 
+/// A device filter as attached: its program, and its descriptor, by which another takes
+/// its place.
+pub type Filter = (Vec<u8>, OwnedFd);
+
 /// Docker's default filter, as boot attached it: its program, and its descriptor, by which
 /// a run's own replaces it.
-static DEFAULT: std::sync::OnceLock<(Vec<u8>, OwnedFd)> = std::sync::OnceLock::new();
+static DEFAULT: std::sync::OnceLock<Filter> = std::sync::OnceLock::new();
 
 /// Confines `cgroup` to Docker's default devices (moby's rules and runc's own), as boot
 /// does before any snapshot: every run with those rules, the most, then has them already.
@@ -440,12 +486,13 @@ pub fn confine_by_default(cgroup: &str) -> Result<(), String> {
         .map_err(|_| "the default device filter, twice".to_string())
 }
 
-/// Confines a joiner's cgroup (D119) to Docker's default devices, as the workload's is.
-/// The filter stays attached as its descriptor goes: a cgroup holds what is attached to
-/// it, and nothing replaces a joiner's, which takes no devices of its own.
-pub fn confine_joiner(cgroup: &str) -> Result<(), String> {
+/// Confines a joiner's cgroup (D119) to Docker's default devices, as the workload's is:
+/// the program and its descriptor, by which the joiner's own devices take its place
+/// ([`Prepared::attach_joiner`]).
+pub fn confine_joiner(cgroup: &str) -> Result<Filter, String> {
     let program = dc::compile(&dc::container(&[], &[], false))?;
-    attach(&program, cgroup, None).map(drop)
+    let fd = attach(&program, cgroup, None)?;
+    Ok((program, fd))
 }
 
 /// `union bpf_attr` for BPF_PROG_LOAD, as far as runc's load sets it.

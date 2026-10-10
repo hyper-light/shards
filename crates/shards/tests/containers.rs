@@ -536,6 +536,42 @@ fn a_joiner_under_init_has_a_reaper_of_its_own() {
     let _ = exit(&mut provider);
 }
 
+/// A joiner takes devices as the workload does (D44, D119): the VM's, at another path,
+/// with the access given; its cgroup's rules; and with `--privileged` every device the
+/// microVM has, as a privileged Docker container has its host's. Without them, Docker's
+/// default rules confine it, as they confine the workload.
+#[test]
+fn a_joiner_takes_devices_as_a_container_does() {
+    let Some((home, image)) = home("containers-joiner-devices") else {
+        return;
+    };
+    let mut provider = start(&home, &image, &["--name", "prov"], &["sleep"]);
+    let fs = |opts: &[&str], ops: &[&str]| {
+        let mut o = vec!["--rm", "--network", "container:prov"];
+        o.extend_from_slice(opts);
+        let mut a = vec!["fs"];
+        a.extend_from_slice(ops);
+        run_in(&home, &image, &o, &a)
+    };
+    let r = fs(&["-u", "0"], &["mknod:b:259:0:/disk", "open:r:/disk"]);
+    assert!(r.stderr.contains("open:r:/disk: Operation not permitted"), "{r}");
+    let r = fs(
+        &["--device", "/dev/fuse:/dev/x:r"],
+        &["dev:/dev/x", "open:r:/dev/x", "open:w:/dev/x"],
+    );
+    assert!(r.stdout.contains("/dev/x c 10:229 666"), "{r}");
+    assert!(r.stderr.contains("open:w:/dev/x: Operation not permitted"), "{r}");
+    let r = fs(
+        &["-u", "0", "--device-cgroup-rule", "b 259:0 r"],
+        &["mknod:b:259:0:/disk", "open:r:/disk"],
+    );
+    assert_eq!(r.status, Some(0), "{r}");
+    let r = fs(&["-u", "0", "--privileged"], &["open:r:/dev/pmem0"]);
+    assert_eq!(r.status, Some(0), "{r}");
+    assert_eq!(shards_in(&home, &["stop", "-t", "1", "prov"]).status, Some(0));
+    let _ = exit(&mut provider);
+}
+
 /// A joiner keeps its writable layer as it stops, as any container does (D37, D119): its
 /// changes are read while it is stopped, a file is copied into it then, and all of them
 /// are put back over its image as it starts again in its provider's microVM, its names

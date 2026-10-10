@@ -3569,9 +3569,20 @@ the boundary is a container's, which is what the mode asks for.
   descriptors. Tested (`a_joiner_under_init_has_a_reaper_of_its_own`: the command the
   namespace's second process, the reaper the image's user, `stop`'s SIGTERM ending at once
   a command that does not handle it; mutation-checked: no reaper, a reaper as root).
+- **Devices and `--privileged`**, as the workload takes them (D44): the microVM's
+  devices, found and given as dockerd and runc give a host's, their nodes made in the
+  joiner's own `/dev` by a child of init's that enters its mount namespace (the
+  workload's are made in the `/dev` init shares with it); its cgroup's filter, Docker's
+  default as it is made, replaced by its own rules (`BPF_F_REPLACE`, its descriptor kept
+  by the joiner's id until its cgroup goes) or, privileged, taken away, every device the
+  microVM has then its, the provider's among them, as a privileged Docker container has
+  its host's. Its I/O limits on its own cgroup, where the workload's were written whatever
+  cgroup was named. Tested (`a_joiner_takes_devices_as_a_container_does`: Docker's
+  default rules, a device at another path read and not written, a cgroup rule,
+  `--privileged` opening the microVM's own; mutation-checked: its filter left the
+  default).
 - **Not yet, each refused by name before anything starts:** volumes (the provider's
-  microVM has shares for its own run alone), devices and `--privileged`, an image's
-  `VOLUME`s, an Agentfile's image.
+  microVM has shares for its own run alone), an image's `VOLUME`s, an Agentfile's image.
 - **No count of holders.** A VM process runs one VM, so its join disk is a `static` of
   that process's (`Join::new` is a `const fn`), its device given `&'static Join`; a
   joiner's attached clients are kept by its id in the guest, as the workload's are. The

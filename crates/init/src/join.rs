@@ -98,6 +98,15 @@ pub fn cgroup(id: u32) -> String {
     format!("/sys/fs/cgroup/join-{id}")
 }
 
+/// Each joiner's device filter, by its id: Docker's default program and its descriptor,
+/// which the joiner's own devices take the place of (`devices::Prepared::attach_joiner`).
+/// Init's alone, kept while its cgroup is.
+static FILTERS: std::sync::Mutex<Vec<(u32, crate::devices::Filter)>> = std::sync::Mutex::new(Vec::new());
+
+fn filters() -> std::sync::MutexGuard<'static, Vec<(u32, crate::devices::Filter)>> {
+    FILTERS.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// Makes joiner `id`'s cgroup, under Docker's device rules, as the workload's is.
 pub fn make_cgroup(id: u32) -> Result<String, String> {
     let dir = cgroup(id);
@@ -105,14 +114,29 @@ pub fn make_cgroup(id: u32) -> Result<String, String> {
         Err(e) if e.kind() != io::ErrorKind::AlreadyExists => return Err(format!("{dir}: {e}")),
         _ => {}
     }
-    crate::devices::confine_joiner(&dir)?;
+    let filter = crate::devices::confine_joiner(&dir)?;
+    filters().push((id, filter));
     Ok(dir)
 }
 
+/// Puts joiner `id`'s own devices, `devices`, on its cgroup in place of Docker's default
+/// ones: their filter, or none where it is privileged.
+pub fn attach_devices(id: u32, devices: &crate::devices::Prepared) -> Result<(), String> {
+    let dir = cgroup(id);
+    let filters = filters();
+    let (_, default) = filters
+        .iter()
+        .find(|(j, _)| *j == id)
+        .ok_or("a joiner's cgroup without its device filter")?;
+    devices.attach_joiner(&dir, default)
+}
+
 /// Removes joiner `id`'s cgroup once its processes have gone: the kernel refuses while
-/// any is left, and that cgroup is let be.
+/// any is left, and that cgroup is let be; its filter's descriptor goes with it.
 pub fn remove_cgroup(id: u32) {
-    let _ = std::fs::remove_dir(cgroup(id));
+    if std::fs::remove_dir(cgroup(id)).is_ok() {
+        filters().retain(|(j, _)| *j != id);
+    }
 }
 
 /// Kills what is left in joiner `id`'s cgroup as its command ends: in a PID namespace of
