@@ -52,6 +52,10 @@ shards-sigstore = { path = "../sigstore" }
 shards-tuf = { path = "../tuf" }
 # The keys `build --ssh ID=FILE` serves its steps, signed with (build/sshkey.rs).
 aws-lc-rs = { version = "1.18.1", default-features = false, features = ["aws-lc-sys"] }
+# A build's proxy (D110): its CA and each host's certificate, and the TLS it speaks to a
+# step's clients, with AWS-LC as everything else's.
+rcgen = { version = "0.14.10", default-features = false, features = ["aws_lc_rs", "pem"] }
+rustls = { version = "0.23.45", default-features = false, features = ["std", "tls12", "aws_lc_rs", "prefer-post-quantum"] }
 base64 = "0.23.1"
 zeroize = "1"
 yaml-rust2 = "0.13.0"

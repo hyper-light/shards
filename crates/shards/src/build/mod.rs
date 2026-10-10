@@ -52,6 +52,10 @@ mod output;
 mod policy;
 pub(crate) mod policy_command;
 mod provenance;
+#[cfg(unix)]
+// Until builds start it (D110's build wiring, the next commit).
+#[allow(dead_code)]
+mod proxy;
 mod remote;
 mod s3;
 pub(crate) mod sbom;
