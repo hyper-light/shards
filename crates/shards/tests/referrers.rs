@@ -181,6 +181,90 @@ fn policies_hold_an_agent_to_its_signature() {
     );
 }
 
+/// An agent's SBOM (D116): made by `shards build agent --sbom` with the scanner it names,
+/// run over the agent's content as a build's result is scanned (D81), its config left out;
+/// kept with it as a referrer of type `application/spdx+json` whose one layer is the
+/// scanner's SPDX document, listed by `inspect`, and pushed with it.
+#[test]
+fn an_agents_sbom_is_a_referrer_scanned_as_buildkit_scans() {
+    if common::cannot_run_vms() {
+        return;
+    }
+    let (port, repos) = common::writable_registry();
+    let home = TempDir::new("referrers-sbom-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", common::kernel().as_os_str()),
+        ("SHARDS_INIT", common::guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    // The scanner: the test guest's, as sboms_are_scanned_as_buildkit_scans_them makes it.
+    let scanner_ctx = TempDir::new("referrers-sbom-scanner");
+    std::fs::write(
+        scanner_ctx.join("Dockerfile"),
+        "FROM scratch\nCOPY testguest /bin/testguest\nENTRYPOINT [\"/bin/testguest\", \"sbomscan\"]\n",
+    )
+    .unwrap();
+    std::fs::copy(common::test_guest(), scanner_ctx.join("testguest")).unwrap();
+    let scanner = format!("127.0.0.1:{port}/test/scanner:1");
+    let made = shards(&["build", "-t", &scanner, scanner_ctx.to_str().unwrap()]);
+    assert_eq!(made.status, Some(0), "{}", made.stderr);
+    let pushed = shards(&["push", &scanner]);
+    assert_eq!(pushed.status, Some(0), "{}", pushed.stderr);
+
+    let dir = TempDir::new("referrers-sbom-agent");
+    std::fs::create_dir_all(dir.join("lib")).unwrap();
+    std::fs::write(dir.join("run.sh"), "#!/bin/sh\necho agent\n").unwrap();
+    std::fs::write(dir.join("lib/data.txt"), "data\n").unwrap();
+    std::fs::write(dir.join("agent.json"), r#"{"name":"main","version":"1.0.0"}"#).unwrap();
+    let name = format!("127.0.0.1:{port}/team/scanned:1");
+    let made = shards(&[
+        "build",
+        "agent",
+        dir.to_str().unwrap(),
+        "-t",
+        &name,
+        &format!("--sbom=generator={scanner}"),
+    ]);
+    assert_eq!(made.status, Some(0), "{}", made.stderr);
+    let digest = made.stdout.trim().to_string();
+    assert!(made.stderr.contains(&format!("of {digest}")), "{}", made.stderr);
+    let inspected = shards(&["inspect", "agent", &name]);
+    let doc: serde_json::Value = serde_json::from_str(&inspected.stdout).unwrap();
+    let referrer = doc[0]["Referrers"][0].clone();
+    assert_eq!(
+        referrer["artifactType"], "application/spdx+json",
+        "{}",
+        inspected.stdout
+    );
+    let blob = |d: &str| {
+        std::fs::read(
+            home.join("images/blobs/sha256")
+                .join(d.trim_start_matches("sha256:")),
+        )
+        .unwrap()
+    };
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&blob(referrer["digest"].as_str().unwrap())).unwrap();
+    assert_eq!(manifest["subject"]["digest"], digest.as_str());
+    let sbom: serde_json::Value =
+        serde_json::from_slice(&blob(manifest["layers"][0]["digest"].as_str().unwrap())).unwrap();
+    // The agent's files, its config left out.
+    assert_eq!(
+        sbom["files"],
+        serde_json::json!(["lib/data.txt", "run.sh"]),
+        "{sbom}"
+    );
+
+    let pushed = shards(&["push", "agent", &name]);
+    assert_eq!(pushed.status, Some(0), "{}", pushed.stderr);
+    assert!(pushed.stdout.contains("pushed SBOM sha256:"), "{}", pushed.stdout);
+    let repos = repos.lock().unwrap();
+    let (_, list) = &repos.manifests["team/scanned"][&digest.replacen(':', "-", 1)];
+    let list: serde_json::Value = serde_json::from_slice(list).unwrap();
+    assert_eq!(list["manifests"][0]["artifactType"], "application/spdx+json");
+}
+
 /// An agent of several platforms is signed as its index: the index is what its name
 /// resolves to, in the store and in the registry, as cosign signs the digest a name
 /// resolves to.

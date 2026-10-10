@@ -54,7 +54,7 @@ pub(crate) mod policy_command;
 mod provenance;
 mod remote;
 mod s3;
-mod sbom;
+pub(crate) mod sbom;
 pub(crate) mod skills;
 mod ssh;
 mod sshkey;

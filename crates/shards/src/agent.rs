@@ -118,7 +118,7 @@ fn reference(name: &str) -> Result<Reference, String> {
 
 /// `shards build agent DIR -t NAME`.
 fn build(kind: Kind, args: &[String]) -> Result<(), String> {
-    let (mut dir, mut name) = (None, None);
+    let (mut dir, mut name, mut sbom) = (None, None, None);
     let mut platforms: Vec<String> = Vec::new();
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -129,6 +129,8 @@ fn build(kind: Kind, args: &[String]) -> Result<(), String> {
             s if s.starts_with("--platform=") => {
                 platforms.push(s.trim_start_matches("--platform=").to_string())
             }
+            "--sbom" => sbom = Some("true".to_string()),
+            s if s.starts_with("--sbom=") => sbom = Some(s.trim_start_matches("--sbom=").to_string()),
             s if s.starts_with('-') => return Err(format!("unknown flag {s}\n{}", usage(kind))),
             s if dir.is_none() => dir = Some(PathBuf::from(s)),
             s => return Err(format!("one directory only, not {s:?} too")),
@@ -136,18 +138,172 @@ fn build(kind: Kind, args: &[String]) -> Result<(), String> {
     }
     let dir = dir.ok_or_else(|| usage(kind))?;
     let name = reference(&name.ok_or("-t names what it is called")?)?;
+    let sbom = sbom.filter(|s| s != "false");
     let store = store()?;
     let _lease = store.lease().map_err(|e| e.to_string())?;
     if !platforms.is_empty() {
-        return build_index(kind, &dir, &name, &platforms, &store);
+        return build_index(kind, &dir, &name, &platforms, &store, sbom.as_deref());
     }
     let (desc, _) = make(kind, &dir, &store)?;
     let digest = desc.digest().map_err(|e| e.to_string())?;
     store
         .tag(&name.to_string(), &desc, &digest, &contents(&store, &desc)?)
         .map_err(|e| e.to_string())?;
+    if let Some(sbom) = &sbom {
+        attach_sbom(&store, &name, &desc, &dir, &[config_file(kind)], sbom)?;
+    }
     let _ = writeln!(io::stdout(), "{digest}");
     Ok(())
+}
+
+/// An SBOM of the content `content` (`skip` at its root left out), kept with `name` as a
+/// referrer of `subject`, its manifest (D116): the SPDX document of the scanner `--sbom`
+/// names, run over the content as `shards build --sbom` runs one over a build's result
+/// (D81), in a build of the content alone. The scan's progress is said where it fails.
+fn attach_sbom(
+    store: &Store,
+    name: &Reference,
+    subject: &Descriptor,
+    content: &Path,
+    skip: &[&str],
+    sbom: &str,
+) -> Result<(), String> {
+    let stage = store.stage().map_err(|e| e.to_string())?;
+    let file = stage.path().join("Dockerfile");
+    let excludes: String = skip.iter().map(|s| format!(" --exclude={s}")).collect();
+    fs::write(&file, format!("FROM scratch\nCOPY{excludes} . /\n")).map_err(|e| e.to_string())?;
+    let out = stage.path().join("out");
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let ran = std::process::Command::new(exe)
+        .arg("build")
+        .arg("--progress=plain")
+        .arg(format!("--sbom={sbom}"))
+        .arg("--provenance=false")
+        .arg("--output")
+        .arg(format!("type=oci,dest={},tar=false", out.display()))
+        .arg("-f")
+        .arg(&file)
+        .arg(content)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|e| format!("scanning {}: {e}", content.display()))?;
+    if !ran.status.success() {
+        return Err(format!(
+            "scanning {} for an SBOM failed:\n{}",
+            content.display(),
+            String::from_utf8_lossy(&ran.stderr)
+        ));
+    }
+    let doc = scanned_document(&out)?;
+    let referrer = sbom_referrer(store, &doc, subject)?;
+    store
+        .keep_referrer(&name.to_string(), &referrer)
+        .map_err(|e| e.to_string())?;
+    let _ = writeln!(
+        io::stderr(),
+        "{name}: SBOM {} of {}",
+        referrer.digest,
+        subject.digest
+    );
+    Ok(())
+}
+
+/// The SPDX document of the result's SBOM statement in the OCI layout at `layout`: the
+/// first attestation layer of its predicate type, as D81 writes the result's first.
+fn scanned_document(layout: &Path) -> Result<Vec<u8>, String> {
+    let read = |digest: &str| -> Result<Vec<u8>, String> {
+        let hex = digest
+            .strip_prefix("sha256:")
+            .ok_or_else(|| format!("{digest}: not SHA-256"))?;
+        let path = layout.join("blobs/sha256").join(hex);
+        let len = fs::metadata(&path).map_err(|e| format!("{digest}: {e}"))?.len();
+        if len > oci::MAX_MANIFEST {
+            return Err(format!("{digest}: larger than {} bytes", oci::MAX_MANIFEST));
+        }
+        fs::read(&path).map_err(|e| format!("{digest}: {e}"))
+    };
+    let json = |b: &[u8]| -> Result<serde_json::Value, String> {
+        serde_json::from_slice(b).map_err(|e| e.to_string())
+    };
+    // A field of a field: `get` of each in turn.
+    let at = |v: &serde_json::Value, path: &[&str]| -> Option<serde_json::Value> {
+        path.iter().try_fold(v.clone(), |v, k| v.get(k).cloned())
+    };
+    let list = |v: &serde_json::Value, key: &str| -> Vec<serde_json::Value> {
+        v.get(key)
+            .and_then(serde_json::Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+    };
+    let text_of = |v: &serde_json::Value, path: &[&str]| -> String {
+        at(v, path)
+            .and_then(|s| s.as_str().map(String::from))
+            .unwrap_or_default()
+    };
+    let top = json(&fs::read(layout.join("index.json")).map_err(|e| format!("the scan's index: {e}"))?)?;
+    let mut manifests = list(&top, "manifests");
+    // The layout's index names the image's, which holds the attestation manifest.
+    for _ in 0..2 {
+        if let Some(att) = manifests
+            .iter()
+            .find(|m| text_of(m, &["annotations", "vnd.docker.reference.type"]) == "attestation-manifest")
+        {
+            let m = json(&read(&text_of(att, &["digest"]))?)?;
+            for layer in list(&m, "layers") {
+                if text_of(&layer, &["annotations", "in-toto.io/predicate-type"])
+                    == crate::build::sbom::PREDICATE
+                {
+                    let text = read(&text_of(&layer, &["digest"]))?;
+                    return Ok(crate::build::sbom::statement("sbom", &text)?.predicate);
+                }
+            }
+            break;
+        }
+        let Some(index) = manifests
+            .iter()
+            .find(|m| text_of(m, &["mediaType"]) == oci::media::OCI_INDEX)
+            .map(|m| text_of(m, &["digest"]))
+        else {
+            break;
+        };
+        manifests = list(&json(&read(&index)?)?, "manifests");
+    }
+    Err("the scan wrote no SBOM".into())
+}
+
+/// The referrer an SBOM `doc` of `subject` is, its blobs stored: an artifact of type
+/// `application/spdx+json`, the empty config, the document its one layer (image-spec
+/// manifest.md, "Guidelines for Artifact Usage"), made now.
+fn sbom_referrer(store: &Store, doc: &[u8], subject: &Descriptor) -> Result<Descriptor, String> {
+    let layer = ingest(store, doc)?;
+    let config = ingest(store, shards_sigstore::sign::EMPTY_CONFIG)?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_secs();
+    let created = shards_cmdline::format::rfc3339_at(i64::try_from(now).map_err(|e| e.to_string())?, 0);
+    let manifest = serde_json::to_vec(&serde_json::json!({
+        "schemaVersion": 2,
+        "mediaType": oci::media::OCI_MANIFEST,
+        "artifactType": SPDX_JSON,
+        "config": {
+            "mediaType": shards_sigstore::sign::EMPTY_MEDIA_TYPE,
+            "digest": config.to_string(),
+            "size": shards_sigstore::sign::EMPTY_CONFIG.len(),
+        },
+        "layers": [{"mediaType": SPDX_JSON, "digest": layer.to_string(), "size": doc.len()}],
+        "subject": {"mediaType": subject.media_type, "digest": subject.digest, "size": subject.size},
+        "annotations": {"org.opencontainers.image.created": created},
+    }))
+    .map_err(|e| e.to_string())?;
+    let digest = ingest(store, &manifest)?;
+    Ok(Descriptor {
+        media_type: oci::media::OCI_MANIFEST.into(),
+        digest: digest.to_string(),
+        size: i64::try_from(manifest.len()).map_err(|e| e.to_string())?,
+        platform: None,
+        annotations: BTreeMap::new(),
+    })
 }
 
 /// An artifact of several platforms (§8 Q1): an index of a manifest for each, its config
@@ -160,6 +316,7 @@ fn build_index(
     name: &Reference,
     given: &[String],
     store: &Store,
+    sbom: Option<&str>,
 ) -> Result<(), String> {
     let host = crate::build::host_platform();
     let wanted = crate::build::target_platforms(given, &host)?;
@@ -168,6 +325,8 @@ fn build_index(
     let skip: Vec<&str> = subdirs.iter().map(String::as_str).collect();
     let mut manifests = Vec::new();
     let mut all = Vec::new();
+    // Each platform's content, what of it is left out, and its manifest: an SBOM's.
+    let mut scanned: Vec<(PathBuf, Vec<&str>, Descriptor)> = Vec::new();
     for (p, sub) in wanted.iter().zip(&subdirs) {
         let content = dir.join(sub);
         let platform = osi::Platform {
@@ -176,9 +335,15 @@ fn build_index(
             variant: (!p.variant.is_empty()).then(|| text(&p.variant)),
         };
         let (mut desc, _) = if content.is_dir() {
-            make_in(kind, dir, &content, &[], store, Some(&platform))?
+            let made = make_in(kind, dir, &content, &[], store, Some(&platform))?;
+            scanned.push((content.clone(), Vec::new(), made.0.clone()));
+            made
         } else {
-            make_in(kind, dir, dir, &skip, store, Some(&platform))?
+            let made = make_in(kind, dir, dir, &skip, store, Some(&platform))?;
+            let mut left = skip.clone();
+            left.push(config_file(kind));
+            scanned.push((dir.to_path_buf(), left, made.0.clone()));
+            made
         };
         all.extend(contents(store, &desc)?);
         desc.platform = Some(oci::Platform {
@@ -228,6 +393,13 @@ fn build_index(
     store
         .tag(&name.to_string(), &ours, &index_digest, &all)
         .map_err(|e| e.to_string())?;
+    // An SBOM of each platform's content, referring to its manifest, as an image's SBOM
+    // attestation refers to its platform's (D81).
+    if let Some(sbom) = sbom {
+        for (content, left, desc) in &scanned {
+            attach_sbom(store, name, desc, content, left, sbom)?;
+        }
+    }
     let _ = writeln!(io::stdout(), "{index_digest}");
     Ok(())
 }
