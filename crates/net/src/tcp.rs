@@ -11,7 +11,9 @@
 use std::collections::VecDeque;
 use std::io::{self, IoSlice, Read, Write};
 use std::net::{IpAddr, Shutdown, SocketAddr, TcpStream};
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsRawFd, FromRawFd as _, RawFd};
+use std::os::unix::net::UnixStream;
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use crate::wire::{self, ACK, FIN, PSH, RST, SYN};
@@ -57,10 +59,80 @@ pub struct Key {
     pub remote: (IpAddr, u16),
 }
 
+/// A connection's host socket: a TCP connection of the host's, or, to a build's proxy
+/// (D110), a Unix connection to it, which no TCP port of the host's carries.
+#[derive(Debug)]
+pub enum HostSock {
+    Tcp(TcpStream),
+    Unix(UnixStream),
+}
+
+impl HostSock {
+    fn shutdown(&self, how: Shutdown) -> io::Result<()> {
+        match self {
+            HostSock::Tcp(s) => s.shutdown(how),
+            HostSock::Unix(s) => s.shutdown(how),
+        }
+    }
+
+    fn take_error(&self) -> io::Result<Option<io::Error>> {
+        match self {
+            HostSock::Tcp(s) => s.take_error(),
+            HostSock::Unix(s) => s.take_error(),
+        }
+    }
+
+    /// Whether its connect is done: its peer known.
+    fn connected(&self) -> bool {
+        match self {
+            HostSock::Tcp(s) => s.peer_addr().is_ok(),
+            HostSock::Unix(s) => s.peer_addr().is_ok(),
+        }
+    }
+}
+
+impl Read for &HostSock {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        match self {
+            HostSock::Tcp(s) => (&*s).read(buf),
+            HostSock::Unix(s) => (&*s).read(buf),
+        }
+    }
+}
+
+impl Write for &HostSock {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        match self {
+            HostSock::Tcp(s) => (&*s).write(buf),
+            HostSock::Unix(s) => (&*s).write(buf),
+        }
+    }
+
+    fn write_vectored(&mut self, bufs: &[IoSlice<'_>]) -> io::Result<usize> {
+        match self {
+            HostSock::Tcp(s) => (&*s).write_vectored(bufs),
+            HostSock::Unix(s) => (&*s).write_vectored(bufs),
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl AsRawFd for HostSock {
+    fn as_raw_fd(&self) -> RawFd {
+        match self {
+            HostSock::Tcp(s) => s.as_raw_fd(),
+            HostSock::Unix(s) => s.as_raw_fd(),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct Conn {
     pub key: Key,
-    pub sock: TcpStream,
+    pub sock: HostSock,
     state: State,
     /// The next guest byte expected; the guest's window, scaled, and its scale.
     rcv_nxt: u32,
@@ -170,8 +242,18 @@ impl Conn {
     /// A connection for the guest's SYN to `key`'s remote end, its host socket connecting
     /// to `to` instead.
     pub fn open_to(key: Key, to: (IpAddr, u16), seg: &wire::Tcp<'_>, isn: u32) -> io::Result<Conn> {
-        let sock = connect(to)?;
-        Ok(Conn {
+        Ok(Conn::opened(key, HostSock::Tcp(connect(to)?), seg, isn))
+    }
+
+    /// A connection for the guest's SYN to the build's proxy (D110), its host socket a Unix
+    /// connection to `socket`, made at once or refused: one the proxy's backlog cannot take
+    /// now is reset, as a full backlog's SYN goes unanswered, never waited on.
+    pub fn open_unix(key: Key, socket: &Path, seg: &wire::Tcp<'_>, isn: u32) -> io::Result<Conn> {
+        Ok(Conn::opened(key, HostSock::Unix(connect_unix(socket)?), seg, isn))
+    }
+
+    fn opened(key: Key, sock: HostSock, seg: &wire::Tcp<'_>, isn: u32) -> Conn {
+        Conn {
             key,
             sock,
             state: State::Connecting,
@@ -200,7 +282,7 @@ impl Conn {
             recover: isn,
             repair: None,
             dns: None,
-        })
+        }
     }
 
     /// A connection a host client made to a published port, `sock` accepted: this side
@@ -209,7 +291,7 @@ impl Conn {
     pub fn accept(key: Key, sock: TcpStream, isn: u32, out: &mut dyn ToGuest) -> Conn {
         let c = Conn {
             key,
-            sock,
+            sock: HostSock::Tcp(sock),
             state: State::SynSent,
             rcv_nxt: 0,
             guest_wnd: 0,
@@ -396,7 +478,7 @@ impl Conn {
                 }
             }
             // Connected only once the peer is known.
-            if self.sock.peer_addr().is_err() {
+            if !self.sock.connected() {
                 return;
             }
             self.state = State::Open;
@@ -457,7 +539,7 @@ impl Conn {
             if want == 0 {
                 break;
             }
-            match self.sock.read(buf.get_mut(..want).unwrap_or_default()) {
+            match (&self.sock).read(buf.get_mut(..want).unwrap_or_default()) {
                 Ok(0) => {
                     self.host_eof = true;
                     break;
@@ -925,6 +1007,51 @@ fn write_now(mut sock: impl Write, parts: Payload<'_>) -> io::Result<usize> {
         }
     }
     Ok(done)
+}
+
+/// A Unix stream socket connected to `path` without blocking: connected at once, or the
+/// error that refused it (a backlog with no room says EAGAIN).
+fn connect_unix(path: &Path) -> io::Result<UnixStream> {
+    use std::os::unix::ffi::OsStrExt as _;
+    // SAFETY: an all-zero sockaddr_un is valid.
+    let mut sa: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    let bytes = path.as_os_str().as_bytes();
+    if bytes.len() >= sa.sun_path.len() || bytes.contains(&0) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "a proxy socket's path longer than sun_path holds",
+        ));
+    }
+    for (d, s) in sa.sun_path.iter_mut().zip(bytes) {
+        *d = *s as libc::c_char;
+    }
+    sa.sun_family = libc::AF_UNIX as libc::sa_family_t;
+    #[cfg(target_os = "macos")]
+    {
+        sa.sun_len = std::mem::size_of::<libc::sockaddr_un>() as u8;
+    }
+    // SAFETY: socket(2) with constant arguments; the descriptor is owned below.
+    let fd = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: a descriptor just made.
+    let sock = unsafe { UnixStream::from_raw_fd(fd) };
+    sock.set_nonblocking(true)?;
+    // SAFETY: fcntl(2) on our own descriptor.
+    unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
+    // SAFETY: a sockaddr_un of its own length.
+    let r = unsafe {
+        libc::connect(
+            fd,
+            (&raw const sa).cast(),
+            std::mem::size_of::<libc::sockaddr_un>() as libc::socklen_t,
+        )
+    };
+    if r != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(sock)
 }
 
 /// A TCP socket connecting to `to`, of its address's family, without blocking.

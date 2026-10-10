@@ -2,8 +2,9 @@
 //! spawner hands it the VM's frame ring and doorbells; it serves the guest's flows until
 //! the VM goes, which its doorbell's hang-up says.
 //!
-//!     shards-net --ring REGION,WAKE_ME,WAKE_PEER --policy allow|deny --mac MAC
+//!     shards-net --ring REGION,WAKE_ME,WAKE_PEER --policy allow|deny|proxy --mac MAC
 //!         --bridge SUBNET/BITS [--control FD] [--release FD]
+//!         [--proxy-port PORT --proxy-socket PATH]
 
 use std::io::Write;
 use std::process::ExitCode;
@@ -27,6 +28,9 @@ fn run() -> Result<(), String> {
     let mut mac = None;
     // No default: a spawner that forgot to say gets an error, not open access.
     let mut policy = None;
+    // A build's proxy (D110): the gateway's port its one flow is to, and the socket that
+    // flow goes to.
+    let (mut proxy_port, mut proxy_socket) = (None, None);
     // Nor a subnet of its own: the guest's is its spawner's to elect.
     let mut bridge: Option<shards_net::bridge::Bridge> = None;
     // The host's resolvers, which a guest granted egress asks its names of (D59).
@@ -65,16 +69,34 @@ fn run() -> Result<(), String> {
             }
             Some("--policy") => {
                 policy = Some(match value(&mut args, "--policy")?.as_str() {
-                    "allow" => shards_net::Policy::AllowAll,
-                    "deny" => shards_net::Policy::DenyAll,
-                    other => return Err(format!("--policy {other:?}: allow or deny")),
+                    "allow" => Some(shards_net::Policy::AllowAll),
+                    "deny" => Some(shards_net::Policy::DenyAll),
+                    // Its port and socket, given apart.
+                    "proxy" => None,
+                    other => return Err(format!("--policy {other:?}: allow, deny or proxy")),
                 })
+            }
+            Some("--proxy-port") => {
+                let v = value(&mut args, "--proxy-port")?;
+                proxy_port = Some(v.parse::<u16>().map_err(|e| format!("--proxy-port {v:?}: {e}"))?);
+            }
+            Some("--proxy-socket") => {
+                proxy_socket = Some(std::path::PathBuf::from(
+                    args.next().ok_or("--proxy-socket needs a value")?,
+                ));
             }
             _ => return Err(format!("unknown argument {a:?}")),
         }
     }
     let ring = ring.ok_or("--ring is required")?;
-    let policy = policy.ok_or("--policy is required")?;
+    let policy = match (policy.ok_or("--policy is required")?, proxy_port, proxy_socket) {
+        (Some(_), Some(_), _) | (Some(_), _, Some(_)) => {
+            return Err("--proxy-port and --proxy-socket go with --policy proxy alone".into());
+        }
+        (Some(policy), None, None) => policy,
+        (None, Some(port), Some(socket)) => shards_net::Policy::Proxy { port, socket },
+        (None, _, _) => return Err("--policy proxy needs --proxy-port and --proxy-socket".into()),
+    };
     let bridge = bridge.ok_or("--bridge is required")?;
     // The guest's MAC, which the VM's device has: frames from any other are not its.
     let mac = mac.ok_or("--mac is required")?;

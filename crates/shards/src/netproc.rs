@@ -95,9 +95,11 @@ pub fn start(
     let (vm_sleeps, net_rings) = shards_netring::doorbell().map_err(at)?;
     let (net_sleeps, vm_rings) = shards_netring::doorbell().map_err(at)?;
     let binary = crate::helpers::net()?;
-    let policy = match policy {
-        shards_net::Policy::AllowAll => "allow",
-        shards_net::Policy::DenyAll => "deny",
+    let (policy, proxy) = match policy {
+        shards_net::Policy::AllowAll => ("allow", None),
+        shards_net::Policy::DenyAll => ("deny", None),
+        // A build's proxy alone (D110): the gateway's port, and the proxy's socket.
+        shards_net::Policy::Proxy { port, socket } => ("proxy", Some((port.to_string(), socket))),
         // A run's, given as it starts (NET_POLICY): a VM starts before its run is known.
         shards_net::Policy::Ports(_) => return Err("a VM's network starts allowing all or nothing".into()),
     };
@@ -126,6 +128,14 @@ pub fn start(
     for r in &resolvers {
         args.push("--resolver".as_ref());
         args.push(r.as_ref());
+    }
+    if let Some((port, socket)) = &proxy {
+        args.extend::<[&std::ffi::OsStr; 4]>([
+            "--proxy-port".as_ref(),
+            port.as_ref(),
+            "--proxy-socket".as_ref(),
+            socket.as_os_str(),
+        ]);
     }
     let child = shards_ipc::spawn_in(
         &binary,
