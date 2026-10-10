@@ -3412,6 +3412,79 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode
 waits on the user.
 
+### D119. `--network container:NAME`: a container joins another's microVM
+
+Docker's container network mode gives a container another's network namespace and
+nothing else of it (moby docker-v29.3.1 daemon/oci_linux.go: the joiner's netns is
+`/proc/<pid>/ns/net` of the other's process; its mount, PID, IPC, UTS and cgroup
+namespaces are its own). It takes the other's hostname and domain name, and its
+`/etc/hostname`, `/etc/hosts` and `/etc/resolv.conf`, the same files
+(daemon/container_operations.go initializeNetworking, initializeNetworkingPaths). A
+microVM's network namespace cannot be shared with another microVM, so the joiner runs in
+the provider's: its guest init starts the joiner as a container of its own (its image its
+root, its own mount, PID, IPC and UTS namespaces and cgroup) in the network namespace the
+provider's command runs in. The microVM's boundary still holds the host; between the two,
+the boundary is a container's, which is what the mode asks for.
+
+- **What dockerd checks, held to its words.** As the container is made
+  (daemon/internal/runconfig/hostconfig.go validateNetContainerMode, in order): `container`
+  with no name ("invalid network mode: invalid container format container:<name|id>"),
+  then `--hostname`, `--link`, `--dns`, `--add-host`, `-p`/`-P`, `--expose`, each
+  "conflicting options: ..." in dockerd's words. As it starts (getNetworkedContainer): no
+  such container ("joining network namespace of container: No such container: X"), itself
+  ("cannot join own network namespace"), one not running ("cannot join network namespace
+  of a non running container: container X is STATE"), one restarting. `network connect`
+  of a joiner: "container sharing network namespace with another container or host cannot
+  be connected to any other network". dockerd lets the provider be stopped or removed
+  while joiners run (daemon/delete.go checks no dependents).
+- **The joiner's image, on a join disk.** A microVM has no PCI and no hotplug (virtio-mmio
+  alone, its devices in the device tree or ACPI), so every microVM carries a read-only
+  virtio-blk join disk, empty until a container joins, as Firecracker attaches a drive's
+  file after boot (its `PATCH /drives` rescan). The VM process appends the joiner's EROFS
+  file as a range of the disk and raises its capacity; the guest's virtio_blk reads the
+  new capacity on the config-change interrupt (Linux drivers/block/virtio_blk.c,
+  virtblk_config_changed_work). Init maps the range with a loop device at its offset
+  (`CONFIG_BLK_DEV_LOOP`, in the guest kernel's base config) and mounts it as EROFS,
+  under a tmpfs overlay as a run's root is. One disk serves every joiner a microVM has,
+  each its own range: no count of slots to run out of.
+- **Its cost to every microVM, measured first** (PM M168): a restore with empty
+  file-backed disks paid about 40 to 70 µs for each, 16 at once resolved from zero
+  (+642 µs [+226, +994], +1,122 [+790, +1,440]), one not (+95 µs [−304, +383], +15
+  [−160, +299]); each reopens its file through the grants broker, which a join disk with
+  no file does not. The join disk as built cost no restore anything resolved against none
+  (−513 µs [−1,682, +120]; none less join +330 [−370, +883]).
+- **Its life.** The joiner is a container of its own: its record, log, exit code, `stop`,
+  `kill`, `wait`, `rm`, `inspect` (its NetworkMode as asked, its provider's hostname), and
+  in its own namespaces and cgroup `exec`, `attach` (its stdin and output, never its
+  provider's), `top`, `cp`, `export`, `stats` and `update`, which init's built-ins do in
+  its context. The daemon gives the provider's VM process the
+  joiner's own connection and image (`kind::JOIN`); on that connection the joiner's run
+  goes as a warm VM's run goes (`RUN`, `TAKEN`, `STARTED`, its log, `DONE`), so the daemon
+  follows it as any run, and no command of the joiner's ever ends, pauses or reads its
+  provider's VM as its own. In the guest the joiner is an exec of init's, PID 1 of a PID
+  namespace of its own, its root its image's range on a loop device under a tmpfs
+  overlay, Docker's mounts, a cgroup of its own under Docker's device rules.
+- **It outlives its provider's command, as Docker's joiner does.** As the workload ends,
+  init kills every process but its joiners' (their `join-N` cgroups), says the workload's
+  end at once, saves its writable layer if asked, and goes on serving the joiners; the
+  microVM ends with its last container. Pod semantics, the joiners killed with the
+  provider, was built first and dropped: a joiner finishing as its provider's command
+  ended was killed (137) where Docker's finishes. Unlike Docker, its network stays whole
+  (Docker's joiner keeps a namespace whose interfaces went with the provider's sandbox,
+  the loopback alone); the provider's published ports and network names go with its run.
+- **Not yet, each refused by name before anything starts:** volumes (the provider's
+  microVM has shares for its own run alone), devices and `--privileged`, `--init`, `--pid`,
+  `--sysctl` (init writes them in its own namespaces, the provider's), an image's
+  `VOLUME`s, an Agentfile's image; `pause` of a joiner alone (its VM is its provider's). A
+  joiner's writable layer is not kept as it stops (D37): it lives in a mount namespace
+  that ends with it, unreachable by path once it has entered its root, so `diff`,
+  `commit` and its size are refused while it runs; stopped, its files are its image's.
+- **No count of holders.** A VM process runs one VM, so its join disk is a `static` of
+  that process's (`Join::new` is a `const fn`), its device given `&'static Join`; a
+  joiner's attached clients are kept by its id in the guest, as the workload's are. The
+  disk keeps the transport's interrupt only while the driver has the device, taken once
+  at activation.
+
 ### D117. Templates no VM process can forge, and VM starts the host has not admitted
 
 A template is saved by a VM process into the directory it is granted, and every later run

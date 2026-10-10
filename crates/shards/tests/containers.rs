@@ -142,6 +142,187 @@ fn many_published_ports_all_reach_the_guest() {
     assert_eq!(exit(&mut run), Some(0));
 }
 
+/// `--network container:NAME` (D119): the joiner runs in the provider's microVM, in its
+/// network namespace, as Docker's joiner runs in the provider's: it reaches the provider's
+/// listener on the loopback, and has its hostname.
+#[test]
+fn a_container_joins_another_containers_network() {
+    let Some((home, image)) = home("containers-join") else {
+        return;
+    };
+    let mut provider = start(&home, &image, &["--name", "prov"], &["serve", "7000", "1"]);
+    let joined = run_in(
+        &home,
+        &image,
+        &["--rm", "--network", "container:prov"],
+        &["ask", "127.0.0.1:7000"],
+    );
+    assert_eq!(
+        (joined.status, joined.stdout.as_str()),
+        (Some(0), "ask from 127.0.0.1\n"),
+        "{joined}"
+    );
+    assert_eq!(exit(&mut provider), Some(0));
+}
+
+/// A joiner is a container of its own (D119): detached, its log kept; an exec in it runs
+/// in its namespaces, with its provider's hostname; `inspect` says its network mode as
+/// given and its provider's hostname; it stops alone, its provider running on. What
+/// dockerd refuses as a joiner is made or started is refused in its words, and what
+/// shards does not do for a joiner yet, by name.
+#[test]
+fn a_joiner_is_a_container_of_its_own() {
+    let Some((home, image)) = home("containers-joiner") else {
+        return;
+    };
+    let mut provider = start(&home, &image, &["--name", "prov"], &["serve", "7000", "1"]);
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let detached = run_in(
+        &home,
+        &image,
+        &["-d", "--name", "joiner", "--network", "container:prov"],
+        &["trap", "TERM"],
+    );
+    assert_eq!(detached.status, Some(0), "{detached}");
+    let deadline = Instant::now() + TIMEOUT;
+    while !shards(&["logs", "joiner"]).stdout.contains("ready") {
+        assert!(Instant::now() < deadline, "the joiner never said it was ready");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let hostname = shards(&["inspect", "-f", "{{.Config.Hostname}}", "prov"]);
+    let hostname = hostname.stdout.trim().to_string();
+    assert_eq!(hostname.len(), 12, "the provider's hostname: {hostname:?}");
+    let inspected = shards(&[
+        "inspect",
+        "-f",
+        "{{.HostConfig.NetworkMode}} {{.Config.Hostname}}",
+        "joiner",
+    ]);
+    assert_eq!(
+        inspected.stdout,
+        format!("container:prov {hostname}\n"),
+        "{inspected}"
+    );
+    let reported = shards(&["exec", "joiner", "/bin/testguest", "report"]);
+    assert_eq!(reported.status, Some(0), "{reported}");
+    assert!(
+        reported
+            .stdout
+            .lines()
+            .any(|l| l == format!("hostname {hostname}")),
+        "{reported}"
+    );
+    let asked = shards(&["exec", "joiner", "/bin/testguest", "ask", "127.0.0.1:7000"]);
+    assert_eq!(asked.stdout, "ask from 127.0.0.1\n", "{asked}");
+    // The provider served its one connection and ended; its joiner goes on.
+    assert_eq!(exit(&mut provider), Some(0));
+    let running = shards(&["inspect", "-f", "{{.State.Status}}", "joiner"]);
+    assert_eq!(running.stdout, "running\n", "{running}");
+    // Its stop signal reaches its own command, on its own connection.
+    let stopped = shards(&["stop", "joiner"]);
+    assert_eq!(stopped.status, Some(0), "{stopped}");
+    let exited = shards(&["inspect", "-f", "{{.State.Status}} {{.State.ExitCode}}", "joiner"]);
+    assert_eq!(exited.stdout, "exited 0\n", "{exited}");
+    let logged = shards(&["logs", "joiner"]);
+    assert_eq!(logged.stdout, "ready\ngot 15\n", "{logged}");
+    // dockerd's refusals, as the container is made and as it starts.
+    let refused = |options: &[&str], said: &str| {
+        let r = run_in(&home, &image, options, &["exit", "0"]);
+        assert_eq!(r.status, Some(125), "{options:?}: {r}");
+        assert!(r.stderr.contains(said), "{options:?}: {r}");
+    };
+    refused(
+        &["--network", "container:joiner", "-p", "80"],
+        "conflicting options: port publishing and the container type network mode",
+    );
+    refused(
+        &["--network", "container:joiner", "--hostname", "h"],
+        "conflicting options: hostname and the network mode",
+    );
+    refused(
+        &["--network", "container:joiner"],
+        "cannot join network namespace of a non running container: container joiner is exited",
+    );
+    refused(
+        &["--network", "container:nope"],
+        "joining network namespace of container: No such container: nope",
+    );
+    // What shards does not do for a joiner yet, by name.
+    let mut again = start(&home, &image, &["--name", "prov2"], &["sleep"]);
+    refused(
+        &["--network", "container:prov2", "-v", "/tmp:/x"],
+        "a volume is not supported in a container joining another's network yet",
+    );
+    assert_eq!(shards(&["stop", "prov2"]).status, Some(0));
+    let _ = exit(&mut again);
+}
+
+/// A joiner's own commands reach the joiner (D119), never its provider: a client attached
+/// to it writes its stdin and reads its output, and hears its status; `top` lists its
+/// processes alone, `cp` copies from its root (its provider's hostname file bound there),
+/// `stats` samples its cgroup; `diff`, which reads layers a joiner does not keep yet, is
+/// refused by name.
+#[test]
+fn a_joiners_own_commands_reach_the_joiner() {
+    use std::io::Write as _;
+    let Some((home, image)) = home("containers-joiner-own") else {
+        return;
+    };
+    let mut provider = start(&home, &image, &["--name", "prov"], &["sleep"]);
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let joiner = run_in(
+        &home,
+        &image,
+        &["-d", "-i", "--name", "joiner", "--network", "container:prov"],
+        &["cat"],
+    );
+    assert_eq!(joiner.status, Some(0), "{joiner}");
+    let mut attached = common::command()
+        .args(["attach", "joiner"])
+        .env("SHARDS_HOME", home.as_os_str())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    // What it writes comes back through the joiner's `cat`: its stdin and output both the
+    // joiner's.
+    attached.stdin.as_mut().unwrap().write_all(b"hello\n").unwrap();
+    let mut line = String::new();
+    BufReader::new(attached.stdout.as_mut().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    assert_eq!(line, "hello\n");
+    let top = shards(&["top", "joiner", "-o", "pid,args"]);
+    assert_eq!(top.status, Some(0), "{top}");
+    assert!(
+        top.stdout.contains("testguest cat") && !top.stdout.contains("testguest sleep"),
+        "{top}"
+    );
+    let hostname = shards(&["inspect", "-f", "{{.Config.Hostname}}", "prov"]);
+    let copied = shards(&["cp", "joiner:/etc/hostname", "-"]);
+    assert_eq!(copied.status, Some(0), "{copied}");
+    assert!(copied.stdout.contains(hostname.stdout.trim()), "{copied}");
+    let stats = shards(&[
+        "stats",
+        "--no-stream",
+        "--format",
+        "{{.Name}} {{.PIDs}}",
+        "joiner",
+    ]);
+    assert_eq!(stats.stdout, "joiner 1\n", "{stats}");
+    let diff = shards(&["diff", "joiner"]);
+    assert_ne!(diff.status, Some(0), "{diff}");
+    assert!(diff.stderr.contains("keeps no layer to read yet"), "{diff}");
+    // Its command, PID 1 of its namespace, has no handler for SIGTERM: killed past the
+    // timeout, as Docker's would be; the client attached hears its status.
+    let stopped = shards(&["stop", "-t", "1", "joiner"]);
+    assert_eq!(stopped.status, Some(0), "{stopped}");
+    assert_eq!(exit(&mut attached), Some(137));
+    assert_eq!(shards(&["stop", "-t", "1", "prov"]).status, Some(0));
+    let _ = exit(&mut provider);
+}
+
 #[test]
 fn a_run_leaves_its_container_until_rm() {
     let Some((home, image)) = home("containers-rm") else {

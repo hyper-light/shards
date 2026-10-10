@@ -810,6 +810,11 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 "container {id} is paused: its changes can be read once it is unpaused"
             ));
         }
+        if self.joined_run(&id) {
+            return refuse(format!(
+                "container {id}: a container joining another's network keeps no layer to read yet"
+            ));
+        }
         let spec = shards_abi::run::Spec {
             builtin: shards_abi::run::builtin::CHANGES,
             ..Default::default()
@@ -975,6 +980,8 @@ impl<D: crate::containers::Disk> Daemon<D> {
             list.sort_by_key(|c| std::cmp::Reverse(c.created));
             list.iter()
                 .map(|c| {
+                    // Whether it runs, so is sampled: a joiner's (D119) from its own cgroup,
+                    // as init's STATS reads it in the joiner's context.
                     let pid = match runs.get(&c.id) {
                         Some(RunState::Tracked(t)) => Some(t.vm.id()),
                         _ => None,
@@ -1300,6 +1307,12 @@ impl<D: crate::containers::Disk> Daemon<D> {
         matches!(lock(&self.runs).get(id), Some(RunState::Tracked(t)) if !t.visit)
     }
 
+    /// Whether container `id` runs joined to another's network (D119): in its provider's
+    /// microVM, keeping no layer of its own yet.
+    pub(super) fn joined_run(&self, id: &str) -> bool {
+        matches!(lock(&self.runs).get(id), Some(RunState::Tracked(t)) if t.joined.is_some())
+    }
+
     /// Whether container `id` has a VM to read its files in: its run's, or a visit's.
     pub(super) fn reachable(&self, id: &str) -> bool {
         matches!(lock(&self.runs).get(id), Some(RunState::Tracked(_)))
@@ -1333,6 +1346,8 @@ impl<D: crate::containers::Disk> Daemon<D> {
     /// Lets paused container `id`'s VM go on (SIGCONT); whether it could.
     fn thaw(&self, id: &str) -> bool {
         let resumed = match lock(&self.runs).get(id) {
+            // A joiner is never paused alone, and never goes on its provider's behalf.
+            Some(RunState::Tracked(t)) if t.joined.is_some() => false,
             Some(RunState::Tracked(t)) => t.vm.kill(libc::SIGCONT).is_ok(),
             _ => false,
         };
@@ -1368,6 +1383,13 @@ impl<D: crate::containers::Disk> Daemon<D> {
                     if paused {
                         return Step::Now(Err(format!(
                             "Error response from daemon: container {id} is already paused"
+                        )));
+                    }
+                    // A joiner's VM is its provider's (D119): stopping it would pause them
+                    // all, where Docker freezes the one container's cgroup.
+                    if matches!(lock(&self.runs).get(&id), Some(RunState::Tracked(t)) if t.joined.is_some()) {
+                        return Step::Now(Err(format!(
+                            "Error response from daemon: cannot pause container {id}: pausing a container joining another's network is not supported yet"
                         )));
                     }
                     // Its last sample, for `stats` to show while it cannot answer.
@@ -1621,8 +1643,18 @@ impl<D: crate::containers::Disk> Daemon<D> {
                             e.deadline = after(KILL_WAIT);
                         }
                         Phase::Killed | Phase::Escalated => {
-                            if let Some(RunState::Tracked(t)) = lock(&self.runs).get(&e.id) {
-                                let _ = t.vm.kill(libc::SIGKILL);
+                            // A joiner's VM is its provider's (D119), which its end must
+                            // not take: its own SIGKILL again, on its own connection.
+                            let socket = match lock(&self.runs).get(&e.id) {
+                                Some(RunState::Tracked(t)) if t.joined.is_none() => {
+                                    let _ = t.vm.kill(libc::SIGKILL);
+                                    None
+                                }
+                                Some(RunState::Tracked(t)) => Some(t.socket.clone()),
+                                _ => None,
+                            };
+                            if let Some(socket) = socket {
+                                let _ = socket.send(kind::SIGNAL, &9u32.to_be_bytes(), &[]);
                             }
                             e.phase = Phase::VmKilled;
                             e.deadline = after(LAST_WAIT);

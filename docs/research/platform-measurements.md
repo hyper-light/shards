@@ -5587,3 +5587,46 @@ revision before comparing a changed API/implementation.
   compiles were nearly all of it (traced above); the gate's load was not recorded. The
   setup now takes milliseconds. What else a first run's 125 to 136 ms holds is unmeasured
   here.
+
+### M168. What an empty disk costs a microVM's restore (D119)
+
+- **Question.** `--network container:NAME` puts a joiner's image on a join disk that every
+  microVM carries, empty until a container joins (D119). What does a restore pay for a
+  disk it carries?
+- **Method.** `docs/research/measurements/join-disk/restore.py`: a template saved from
+  alpine:3.20's EROFS image for each count of empty (0-byte) read-only virtio-blk disks,
+  then `shards restore TEMPLATE -- /bin/true` 200 times each, the counts interleaved, their
+  order rotating each round; wall clock spawn to reap, and the timing line's
+  `released_us` (the VM process's start to its vCPUs' release). Release build of da38223.
+  Apple M5 Max, macOS 26.4.1, 2026-10-10, load average 73 to 80.
+- **Results.** µs, n / p50 / p90 / p99 / max, and the change against no disk, paired by
+  round, median [95%]:
+
+  | round | disks | released | less no disk |
+  |---|---|---|---|
+  | 1 | 0 | 200 / 4,925 / 22,033 / 41,737 / 42,573 | |
+  | 1 | 1 | 200 / 5,058 / 23,241 / 41,798 / 42,625 | +95 [−304, +383] |
+  | 1 | 4 | 200 / 4,881 / 28,657 / 56,198 / 71,374 | +117 [−320, +369] |
+  | 1 | 16 | 200 / 5,444 / 22,538 / 52,826 / 59,929 | +642 [+226, +994] |
+  | 2 | 0 | 200 / 5,051 / 19,659 / 50,869 / 108,105 | |
+  | 2 | 1 | 200 / 5,241 / 24,865 / 191,472 / 249,620 | +15 [−160, +299] |
+  | 2 | 16 | 200 / 6,539 / 29,605 / 102,775 / 259,328 | +1,122 [+790, +1,440] |
+
+  Wall clock, p50 37 to 39 ms throughout, no difference resolved but 16 disks' in round
+  2 (+2,507 µs [+210, +4,445]).
+- **The join disk as built**, against none, the same harness (`join` against `0`), n =
+  300 each a round, load 63 to 74, µs:
+
+  | round | variant | released | difference |
+  |---|---|---|---|
+  | 1 | none | 300 / 8,863 / 24,061 / 43,186 / 59,260 | |
+  | 1 | join disk | 300 / 7,762 / 21,906 / 42,614 / 64,222 | −513 [−1,682, +120] |
+  | 2 | join disk | 300 / 8,157 / 23,586 / 45,141 / 49,051 | |
+  | 2 | none | 300 / 8,327 / 20,779 / 42,636 / 59,214 | +330 [−370, +883] (none less join) |
+
+  Wall clock: −365 µs [−3,886, +2,639] and −312 [−1,932, +2,321] (none less join).
+- **Consequence.** A file-backed disk costs a restore about 40 to 70 µs, resolved only
+  where there are 16; one is within the noise at this load. Each is a file the restore
+  reopens through the grants broker on macOS. The join disk, with no file until a
+  container joins, cost no restore anything resolved in either round, its medians the
+  lower: every microVM carries one (D119).

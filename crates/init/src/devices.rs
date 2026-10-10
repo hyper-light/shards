@@ -440,6 +440,14 @@ pub fn confine_by_default(cgroup: &str) -> Result<(), String> {
         .map_err(|_| "the default device filter, twice".to_string())
 }
 
+/// Confines a joiner's cgroup (D119) to Docker's default devices, as the workload's is.
+/// The filter stays attached as its descriptor goes: a cgroup holds what is attached to
+/// it, and nothing replaces a joiner's, which takes no devices of its own.
+pub fn confine_joiner(cgroup: &str) -> Result<(), String> {
+    let program = dc::compile(&dc::container(&[], &[], false))?;
+    attach(&program, cgroup, None).map(drop)
+}
+
 /// `union bpf_attr` for BPF_PROG_LOAD, as far as runc's load sets it.
 #[repr(C)]
 #[derive(Default)]

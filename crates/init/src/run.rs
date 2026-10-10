@@ -31,9 +31,9 @@ const SELFTESTS_WAIT: Duration = Duration::from_secs(2);
 use crate::netplan::HOSTS;
 
 /// Why the workload did not run, and the status to report.
-struct Failure {
+pub(crate) struct Failure {
     status: u32,
-    message: String,
+    pub(crate) message: String,
     /// The daemon's refusal, not the runtime's failure: an exec's unknown user, which
     /// `docker exec` reports as "Error response from daemon".
     daemon: bool,
@@ -119,7 +119,7 @@ pub fn main(device: &str, template: bool) -> ! {
         }
         Ok(workload)
     });
-    let status = match started {
+    let (status, reported) = match started {
         Ok(workload) => {
             let _ = crate::linux::control_write(control::MARKER, marker::WORKLOAD_STARTED);
             let _ = send(&conn, kind::STARTED, &[]);
@@ -127,24 +127,82 @@ pub fn main(device: &str, template: bool) -> ! {
         }
         Err(f) => {
             let _ = send(&conn, kind::SYSTEM_ERR, f.message.as_bytes());
-            f.status
+            (f.status, false)
         }
     };
-    if oom_killed() {
-        let _ = send(&conn, kind::OOM, &[]);
-    }
-    let _ = send(&conn, kind::EXIT, &status.to_be_bytes());
-    // The host may ask for the container's writable layer, to keep (layer.rs).
-    if asked_to_save(&conn)
-        && let Err(e) = crate::layer::save(&conn)
-    {
-        let _ = writeln!(io::stderr(), "shards-init: saving the container's files: {e}");
+    // Said by the relay already where containers joined to its network outlived it (D119).
+    if !reported {
+        if oom_killed() {
+            let _ = send(&conn, kind::OOM, &[]);
+        }
+        let _ = send(&conn, kind::EXIT, &status.to_be_bytes());
+        // The host may ask for the container's writable layer, to keep (layer.rs).
+        if asked_to_save(&conn)
+            && let Err(e) = crate::layer::save(&conn)
+        {
+            let _ = writeln!(io::stderr(), "shards-init: saving the container's files: {e}");
+        }
     }
     // The host closes the connection once it has the status. Powering off before then
     // could lose the frame on its way out.
     let _ = shutdown_and_wait(&conn);
     let _ = crate::linux::control_write(control::MARKER, marker::POWERING_OFF);
     power_off()
+}
+
+/// Kills every process but init, the kernel's threads, and those of the containers joined
+/// to the workload's network (D119), each in a cgroup of its own (`join-N`): the workload's
+/// end ends the rest of its microVM, and its joiners go on. Looked at again until none is
+/// left to kill, as one may have forked meanwhile.
+fn kill_all_but_joiners() {
+    // A process forks at most once between looks; each look kills what it finds.
+    for _ in 0..64 {
+        let Ok(dir) = std::fs::read_dir("/proc") else {
+            return;
+        };
+        let mut found = 0;
+        for entry in dir.flatten() {
+            let Some(pid) = entry
+                .file_name()
+                .to_str()
+                .and_then(|n| n.parse::<libc::pid_t>().ok())
+            else {
+                continue;
+            };
+            if pid <= 2 {
+                continue;
+            }
+            // The kernel's threads are kthreadd's (pid 2) children: the fourth field of
+            // /proc/PID/stat, after the command in parentheses.
+            // And a zombie, already ended, is init's to reap, not to kill: its state, the
+            // third field.
+            let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
+            let mut fields = stat.rsplit_once(')').map(|(_, rest)| rest.split_whitespace());
+            let state = fields.as_mut().and_then(Iterator::next);
+            let ppid = fields
+                .as_mut()
+                .and_then(Iterator::next)
+                .and_then(|p| p.parse::<libc::pid_t>().ok());
+            if ppid == Some(2) || state == Some("Z") {
+                continue;
+            }
+            // Relative to init's cgroup namespace, the root (cgroup_namespaces(7)).
+            let cgroup = std::fs::read_to_string(format!("/proc/{pid}/cgroup")).unwrap_or_default();
+            if cgroup
+                .lines()
+                .any(|l| l.split_once("::").is_some_and(|(_, p)| p.starts_with("/join-")))
+            {
+                continue;
+            }
+            // SAFETY: kill(2) of a process of the microVM's, neither init nor a joiner's.
+            if unsafe { libc::kill(pid, libc::SIGKILL) } == 0 {
+                found += 1;
+            }
+        }
+        if found == 0 {
+            return;
+        }
+    }
 }
 
 /// Waits for the crypto self-tests the kernel starts at boot (crypto/algapi.c,
@@ -259,9 +317,39 @@ fn mount_root(device: &str) -> Result<(), Failure> {
     mount(".", "/", "", libc::MS_MOVE, "")?;
     chdir_chroot(".", true)?;
     chdir_chroot("/", false)?;
-    // Docker's mounts for a container (moby daemon/pkg/oci/defaults.go, a 64 MiB /dev/shm
-    // from daemon/config/config.go): /dev holds a container's devices alone, not the VM's
-    // disks, memory and console.
+    container_mounts()?;
+    container_files()?;
+    loopback_up().map_err(|e| setup_failed(e.to_string()))?;
+    // A VM with a network: eth0 as the host named it, before any snapshot.
+    if let Some((addr, prefix, gateway)) = crate::net::from_cmdline() {
+        crate::net::configure(addr, prefix, gateway).map_err(|e| setup_failed(format!("eth0: {e}")))?;
+    }
+    cgroups()?;
+    // Docker's device rules, before any snapshot: a run with them does nothing more.
+    crate::devices::confine_by_default(WORKLOAD_CGROUP).map_err(setup_failed)?;
+    crate::setup::keep_proc_sys().map_err(|e| setup_failed(format!("/proc/sys: {e}")))?;
+    // Docker's own sysctls for a container with a network namespace of its own, where the
+    // kernel has them, before any snapshot; a run's `--sysctl` is written after, as
+    // dockerd merges the run's over them (moby daemon/oci_linux.go): ICMP echo sockets for
+    // every group, without CAP_NET_RAW, and every port bindable without
+    // CAP_NET_BIND_SERVICE.
+    for (key, value) in [
+        ("net.ipv4.ping_group_range", "0 2147483647"),
+        ("net.ipv4.ip_unprivileged_port_start", "0"),
+    ] {
+        if std::path::Path::new(&format!("/proc/sys/{}", key.replace('.', "/"))).exists() {
+            crate::setup::write_sysctl(key, value).map_err(setup_failed)?;
+        }
+    }
+    // Last: init writes /proc/sys above, and no more after but through what it kept.
+    masked()
+}
+
+/// Docker's mounts for a container, in the root this process is in (moby
+/// daemon/pkg/oci/defaults.go, a 64 MiB /dev/shm from daemon/config/config.go), and its
+/// devices: /dev holds a container's devices alone, not the VM's disks, memory and
+/// console. The run's root has them as it boots; a joiner's (D119) as it builds its own.
+pub(crate) fn container_mounts() -> Result<(), Failure> {
     let (nosuid, noexec, nodev) = (libc::MS_NOSUID, libc::MS_NOEXEC, libc::MS_NODEV);
     for (source, target, fstype, flags, data) in [
         ("proc", "/proc", "proc", nosuid | noexec | nodev, ""),
@@ -298,32 +386,7 @@ fn mount_root(device: &str) -> Result<(), Failure> {
         mkdir(target)?;
         mount(source, target, fstype, flags, data)?;
     }
-    devices()?;
-    container_files()?;
-    loopback_up().map_err(|e| setup_failed(e.to_string()))?;
-    // A VM with a network: eth0 as the host named it, before any snapshot.
-    if let Some((addr, prefix, gateway)) = crate::net::from_cmdline() {
-        crate::net::configure(addr, prefix, gateway).map_err(|e| setup_failed(format!("eth0: {e}")))?;
-    }
-    cgroups()?;
-    // Docker's device rules, before any snapshot: a run with them does nothing more.
-    crate::devices::confine_by_default(WORKLOAD_CGROUP).map_err(setup_failed)?;
-    crate::setup::keep_proc_sys().map_err(|e| setup_failed(format!("/proc/sys: {e}")))?;
-    // Docker's own sysctls for a container with a network namespace of its own, where the
-    // kernel has them, before any snapshot; a run's `--sysctl` is written after, as
-    // dockerd merges the run's over them (moby daemon/oci_linux.go): ICMP echo sockets for
-    // every group, without CAP_NET_RAW, and every port bindable without
-    // CAP_NET_BIND_SERVICE.
-    for (key, value) in [
-        ("net.ipv4.ping_group_range", "0 2147483647"),
-        ("net.ipv4.ip_unprivileged_port_start", "0"),
-    ] {
-        if std::path::Path::new(&format!("/proc/sys/{}", key.replace('.', "/"))).exists() {
-            crate::setup::write_sysctl(key, value).map_err(setup_failed)?;
-        }
-    }
-    // Last: init writes /proc/sys above, and no more after but through what it kept.
-    masked()
+    devices()
 }
 
 /// What of the workload's process its execs take too, as runc's exec takes the
@@ -341,6 +404,14 @@ struct Inherited {
 
 /// The workload's [`Inherited`], once it starts.
 static WORKLOAD: std::sync::OnceLock<Inherited> = std::sync::OnceLock::new();
+
+/// Each joiner's [`Inherited`] (D119), by its exec's id, which its own execs take as the
+/// workload's take the workload's; let go as it ends.
+static JOINED: std::sync::Mutex<Vec<(u32, Inherited)>> = std::sync::Mutex::new(Vec::new());
+
+fn joined() -> std::sync::MutexGuard<'static, Vec<(u32, Inherited)>> {
+    JOINED.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 
 /// What the image's Agentfile declares that the run keeps from its command and its execs
 /// (D115), as the daemon does (`shards_abi::run::beside`): how many agents and harnesses,
@@ -479,9 +550,9 @@ fn sort_setup(entries: &[Vec<u8>], into: &mut Inherited) -> Result<Vec<Vec<u8>>,
 /// VM's CPU time in ns from /proc/stat, as dockerd's system usage, and its online CPUs;
 /// and the bytes its interfaces received and sent but loopback's (/proc/net/dev), as
 /// libnetwork counts a container's endpoints.
-fn stats() -> String {
+fn stats(cgroup: &str) -> String {
     let read = |p: &str| std::fs::read_to_string(p).unwrap_or_default();
-    let cg = |f: &str| read(&format!("{WORKLOAD_CGROUP}/{f}"));
+    let cg = |f: &str| read(&format!("{cgroup}/{f}"));
     let field = |text: &str, key: &str| -> u64 {
         text.lines()
             .find_map(|l| l.strip_prefix(key)?.strip_prefix(' ')?.trim().parse().ok())
@@ -603,30 +674,44 @@ fn cgroups() -> Result<(), Failure> {
 /// containers see theirs (moby daemon/pkg/oci/defaults.go). An exec's joins the
 /// workload's (`join`, its process), as runc's exec enters a container's. Returns the
 /// errno of the step that failed.
-fn isolate(join: Option<libc::pid_t>) -> Result<(), i32> {
+fn isolate(join: Option<libc::pid_t>, joiner: bool) -> Result<(), i32> {
     let errno = |e: io::Error| e.raw_os_error().unwrap_or(libc::EIO);
+    // A joiner's exec joins the joiner's own cgroup (D119), which /proc names.
+    let cgroup = match join.filter(|_| joiner) {
+        Some(pid) => joiner_cgroup(pid)?,
+        None => WORKLOAD_CGROUP.to_string(),
+    };
     std::fs::OpenOptions::new()
         .write(true)
-        .open(format!("{WORKLOAD_CGROUP}/cgroup.procs"))
+        .open(format!("{cgroup}/cgroup.procs"))
         .and_then(|mut f| f.write_all(b"0"))
         .map_err(errno)?;
     let last = || io::Error::last_os_error().raw_os_error().unwrap_or(libc::EIO);
     if let Some(pid) = join {
-        for (ns, kind) in [("cgroup", libc::CLONE_NEWCGROUP), ("mnt", libc::CLONE_NEWNS)] {
-            let path = CString::new(format!("/proc/{pid}/ns/{ns}")).map_err(|_| libc::EINVAL)?;
-            // SAFETY: open(2) of a NUL-terminated path, and setns(2) on the descriptor,
-            // closed after; this process is a single-threaded fork of init.
-            unsafe {
-                let fd = libc::open(path.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC);
-                if fd < 0 {
-                    return Err(last());
-                }
-                let joined = libc::setns(fd, kind);
-                let e = last();
-                libc::close(fd);
-                if joined != 0 {
-                    return Err(e);
-                }
+        // A joiner's UTS, IPC and network namespaces too, which it has of its own (D119).
+        let all: &[(&str, libc::c_int)] = if joiner {
+            &[
+                ("cgroup", libc::CLONE_NEWCGROUP),
+                ("uts", libc::CLONE_NEWUTS),
+                ("ipc", libc::CLONE_NEWIPC),
+                ("net", libc::CLONE_NEWNET),
+                ("mnt", libc::CLONE_NEWNS),
+            ]
+        } else {
+            &[("cgroup", libc::CLONE_NEWCGROUP), ("mnt", libc::CLONE_NEWNS)]
+        };
+        // Every one opened before any is entered: once the mount namespace is, `/proc` may
+        // be one whose PIDs are not init's.
+        let mut fds = Vec::with_capacity(all.len());
+        for (ns, kind) in all {
+            let file = File::open(format!("/proc/{pid}/ns/{ns}")).map_err(errno)?;
+            fds.push((file, *kind));
+        }
+        for (file, kind) in &fds {
+            // SAFETY: setns(2) on a descriptor this process holds; a single-threaded fork
+            // of init.
+            if unsafe { libc::setns(file.as_raw_fd(), *kind) } != 0 {
+                return Err(last());
             }
         }
         return Ok(());
@@ -658,6 +743,29 @@ fn isolate(join: Option<libc::pid_t>) -> Result<(), i32> {
         }
     }
     own_proc()
+}
+
+/// The cgroup joiner `pid`'s process is in (D119), as `/proc/PID/cgroup` names it from
+/// init's cgroup namespace, the root: `0::/join-N`. Returns the errno of what failed.
+fn joiner_cgroup(pid: libc::pid_t) -> Result<String, i32> {
+    let text = std::fs::read_to_string(format!("/proc/{pid}/cgroup"))
+        .map_err(|e| e.raw_os_error().unwrap_or(libc::EIO))?;
+    text.lines()
+        .find_map(|l| l.strip_prefix("0::"))
+        .filter(|p| p.starts_with("/join-") && !p.contains(".."))
+        .map(|p| format!("/sys/fs/cgroup{p}"))
+        .ok_or(libc::ENOENT)
+}
+
+/// A joiner's working directory `cwd`, made where it is missing, as [`workdir`] makes a
+/// run's. Returns the errno of what failed: ENOTDIR where something else is there.
+fn make_workdir(cwd: &CString) -> Result<(), i32> {
+    let path = std::path::Path::new(std::ffi::OsStr::from_bytes(cwd.as_bytes()));
+    match std::fs::create_dir_all(path) {
+        Ok(()) => Ok(()),
+        Err(_) if path.exists() && !path.is_dir() => Err(libc::ENOTDIR),
+        Err(e) => Err(e.raw_os_error().unwrap_or(libc::EIO)),
+    }
 }
 
 /// A `/proc` of the PID namespace this process was born in, the workload's own (D115), in
@@ -953,6 +1061,15 @@ fn oom_killed() -> bool {
 /// limits and filter, in the order runc's fs2 Set writes them all: pids, memory and the
 /// weight (the list's head), the devices' I/O, CPU, the filter, then cpusets.
 fn limit(cgroup: &[Vec<u8>], devices: Option<&crate::devices::Prepared>) -> Result<(), Failure> {
+    limit_in(WORKLOAD_CGROUP, cgroup, devices)
+}
+
+/// [`limit`] on the cgroup at `dir`: the workload's, or a joiner's (D119).
+fn limit_in(
+    dir: &str,
+    cgroup: &[Vec<u8>],
+    devices: Option<&crate::devices::Prepared>,
+) -> Result<(), Failure> {
     let hooks = |e: String| setup_failed(format!("error setting cgroup config for procHooks process: {e}"));
     let at = |p: &dyn Fn(&[u8]) -> bool| cgroup.iter().position(|e| p(e)).unwrap_or(cgroup.len());
     let cpu = at(&|e| e.starts_with(b"cpu.") || e.starts_with(b"cpuset."));
@@ -963,20 +1080,25 @@ fn limit(cgroup: &[Vec<u8>], devices: Option<&crate::devices::Prepared>) -> Resu
     let (cpus, cpusets) = rest
         .split_at_checked(cpuset - cpu)
         .ok_or_else(|| hooks("a misplaced limit".into()))?;
-    write_cgroup(head).map_err(hooks)?;
+    write_cgroup_in(dir, head).map_err(hooks)?;
     if let Some(d) = devices {
-        d.write_io(WORKLOAD_CGROUP).map_err(hooks)?;
+        d.write_io(dir).map_err(hooks)?;
     }
-    write_cgroup(cpus).map_err(hooks)?;
+    write_cgroup_in(dir, cpus).map_err(hooks)?;
     if let Some(d) = devices {
-        d.attach(WORKLOAD_CGROUP).map_err(hooks)?;
+        d.attach(dir).map_err(hooks)?;
     }
-    write_cgroup(cpusets).map_err(hooks)
+    write_cgroup_in(dir, cpusets).map_err(hooks)
 }
 
 /// Writes each `FILE=VALUE` of `cgroup` to the workload's cgroup, as runc's fs2 writes
 /// them; what failed, in runc's words.
 pub fn write_cgroup(cgroup: &[Vec<u8>]) -> Result<(), String> {
+    write_cgroup_in(WORKLOAD_CGROUP, cgroup)
+}
+
+/// [`write_cgroup`] to the cgroup at `dir`: the workload's, or a joiner's (D119).
+fn write_cgroup_in(dir: &str, cgroup: &[Vec<u8>]) -> Result<(), String> {
     for entry in cgroup {
         let text = String::from_utf8_lossy(entry);
         let (file, value) = text
@@ -990,16 +1112,15 @@ pub fn write_cgroup(cgroup: &[Vec<u8>]) -> Result<(), String> {
         // runc's setIo: BFQ's weight where the kernel has it, else io.weight's scale
         // (ConvertBlkIOToIOWeightValue).
         let converted;
-        let (file, value) = if file == "io.bfq.weight"
-            && std::fs::metadata(format!("{WORKLOAD_CGROUP}/io.bfq.weight")).is_err()
-        {
-            let weight: u64 = value.parse().unwrap_or(0);
-            converted = (1 + weight.saturating_sub(10) * 9999 / 990).to_string();
-            ("io.weight", converted.as_str())
-        } else {
-            (file, value)
-        };
-        let path = format!("{WORKLOAD_CGROUP}/{file}");
+        let (file, value) =
+            if file == "io.bfq.weight" && std::fs::metadata(format!("{dir}/io.bfq.weight")).is_err() {
+                let weight: u64 = value.parse().unwrap_or(0);
+                converted = (1 + weight.saturating_sub(10) * 9999 / 990).to_string();
+                ("io.weight", converted.as_str())
+            } else {
+                (file, value)
+            };
+        let path = format!("{dir}/{file}");
         let shown = format!("/sys/fs/cgroup/{file}");
         let mut f = std::fs::OpenOptions::new()
             .write(true)
@@ -1054,7 +1175,7 @@ fn devices() -> Result<(), Failure> {
 /// The paths a container has masked and read-only (crate::defaults), as runc makes
 /// them: a file under /dev/null, a directory under an empty read-only tmpfs, a
 /// read-only path bound onto itself and remounted so.
-fn masked() -> Result<(), Failure> {
+pub(crate) fn masked() -> Result<(), Failure> {
     let (nosuid, noexec, nodev) = (libc::MS_NOSUID, libc::MS_NOEXEC, libc::MS_NODEV);
     for p in MASKED {
         match std::fs::symlink_metadata(p) {
@@ -1403,6 +1524,8 @@ mod step {
     pub const SECCOMP: u8 = 9;
     /// Setting no_new_privs.
     pub const NNP: u8 = 10;
+    /// Making a joiner's working directory (D119), as [`super::workdir`] makes a run's.
+    pub const MKDIR: u8 = 11;
 }
 
 /// A running workload and init's ends of its stdio. With a terminal, `stdout` is its
@@ -1514,6 +1637,28 @@ enum Born {
     Host,
     /// In the namespaces of this process, the workload an exec runs beside.
     Beside(libc::pid_t),
+    /// In the namespaces of this joiner's process (D119), an exec of its: its UTS, IPC and
+    /// network namespaces too, which a joiner has of its own.
+    InJoiner(libc::pid_t),
+    /// A joiner's (D119): the first process of a PID namespace of its own, which builds
+    /// its root and namespaces before its orders; init's exec `u32`, its cgroup's name.
+    Joined(crate::join::Join, u32),
+}
+
+/// Where a standby is isolated before its orders.
+enum Isolation {
+    /// The workload's: its cgroup, and cgroup and mount namespaces of its own ([`isolate`]).
+    Workload,
+    /// An exec's: the namespaces of this process ([`isolate`]); of a joiner's (`whole`),
+    /// its UTS, IPC and network namespaces too.
+    Beside(libc::pid_t, bool),
+    /// A joiner's (D119): its root and namespaces built (crate::join::build), and its
+    /// image's users told to init on `report`.
+    Joined {
+        join: crate::join::Join,
+        cgroup: String,
+        report: OwnedFd,
+    },
 }
 
 /// The standby's ends of its pipes, and init's, which it closes.
@@ -1595,12 +1740,21 @@ impl Standby {
         }
         // SAFETY: a fresh descriptor nothing else owns.
         let sigchld = unsafe { OwnedFd::from_raw_fd(sigchld) };
+        // A joiner's cgroup and its report, made before it is born (D119).
+        let joined = match born {
+            Born::Joined(join, id) => Some((
+                join,
+                crate::join::make_cgroup(id).map_err(setup_failed)?,
+                crate::join::report_pipe().map_err(setup_failed)?,
+            )),
+            _ => None,
+        };
         // The PID namespace it is born in (D115).
-        let (pid, join) = match born {
-            Born::Own => (fork_in(None)?, None),
+        let (pid, isolation) = match born {
+            Born::Own => (fork_in(None)?, Isolation::Workload),
             Born::Reaped(..) => {
                 let reaper = reaper.ok_or_else(|| setup_failed("the workload's PID namespace: no reaper"))?;
-                (fork_in(Some(&pid_ns_of(reaper)?))?, None)
+                (fork_in(Some(&pid_ns_of(reaper)?))?, Isolation::Workload)
             }
             Born::Host => {
                 // SAFETY: init is single-threaded, so its child may run anything until it
@@ -1609,9 +1763,28 @@ impl Standby {
                 if pid < 0 {
                     return Err(setup_failed(format!("fork: {}", io::Error::last_os_error())));
                 }
-                (pid, None)
+                (pid, Isolation::Workload)
             }
-            Born::Beside(workload) => (fork_in(Some(&pid_ns_of(workload)?))?, Some(workload)),
+            Born::Beside(workload) => (
+                fork_in(Some(&pid_ns_of(workload)?))?,
+                Isolation::Beside(workload, false),
+            ),
+            Born::InJoiner(joiner) => (
+                fork_in(Some(&pid_ns_of(joiner)?))?,
+                Isolation::Beside(joiner, true),
+            ),
+            Born::Joined(..) => {
+                let (join, cgroup, report) = match &joined {
+                    Some((join, cgroup, (_, w))) => (
+                        *join,
+                        cgroup.clone(),
+                        w.try_clone()
+                            .map_err(|e| setup_failed(format!("a pipe for joining: {e}")))?,
+                    ),
+                    None => return Err(setup_failed("a joiner without its cgroup")),
+                };
+                (fork_in(None)?, Isolation::Joined { join, cgroup, report })
+            }
         };
         if pid == 0 {
             standby(
@@ -1621,10 +1794,28 @@ impl Standby {
                     err: err_w,
                     inits: [stdin_w, stdout_r, stderr_r, err_r, orders_w, sigchld],
                 },
-                join,
+                isolation,
             )
         }
-        drop((stdin_r, stdout_w, stderr_w, err_w, orders_r));
+        drop((stdin_r, stdout_w, stderr_w, err_w, orders_r, isolation));
+        // A joiner's root, built or not: its image's users, or why it has none.
+        let (passwd, group) = match joined {
+            Some((_, _, (r, w))) => {
+                drop(w);
+                match crate::join::reported(r) {
+                    Ok(users) => users,
+                    Err(message) => {
+                        // SAFETY: waits for our own child, which exits after reporting.
+                        unsafe { libc::waitpid(pid, std::ptr::null_mut(), 0) };
+                        if let Born::Joined(_, id) = born {
+                            crate::join::remove_cgroup(id);
+                        }
+                        return Err(setup_failed(message));
+                    }
+                }
+            }
+            None => (passwd, group),
+        };
         Ok(Standby {
             pid,
             born,
@@ -1808,6 +1999,9 @@ impl Standby {
         let env = user::prepare_env(&spec.env, uid, passwd).map_err(setup_failed)?;
         let cwd = if exec {
             exec_cwd(&spec.cwd)?
+        } else if matches!(standby.born, Born::Joined(..)) {
+            // Made by the joiner's standby in its own root (`make_workdir`).
+            joined_workdir(&spec.cwd)?
         } else {
             workdir(&spec.cwd)?
         };
@@ -1953,7 +2147,7 @@ impl Standby {
 /// The standby's side of the fork: it closes init's ends, waits for its orders, and runs
 /// them as `child` does. The standby is single-threaded, as init was when it forked, so
 /// it may allocate.
-fn standby(ends: Ends, join: Option<libc::pid_t>) -> ! {
+fn standby(ends: Ends, isolation: Isolation) -> ! {
     let Ends {
         orders,
         stdio,
@@ -1962,7 +2156,22 @@ fn standby(ends: Ends, join: Option<libc::pid_t>) -> ! {
     } = ends;
     drop(inits);
     // Before the orders: the standby the template keeps is isolated before its snapshot.
-    let isolated = isolate(join);
+    let joined = matches!(isolation, Isolation::Joined { .. });
+    let isolated = match isolation {
+        Isolation::Workload => isolate(None, false),
+        Isolation::Beside(pid, joiner) => isolate(Some(pid), joiner),
+        Isolation::Joined { join, cgroup, report } => {
+            let built = crate::join::build(join, &cgroup);
+            let failed = built.is_err();
+            crate::join::report(report, &built);
+            if failed {
+                // SAFETY: ends this process, which init waits for, without running atexit
+                // handlers inherited from init.
+                unsafe { libc::_exit(NOT_RUN as libc::c_int) }
+            }
+            Ok(())
+        }
+    };
     let mut bytes = Vec::new();
     let got = File::from(orders).read_to_end(&mut bytes);
     let decoded = got.ok().and_then(|_| Orders::decode(&bytes));
@@ -1999,6 +2208,10 @@ fn standby(ends: Ends, join: Option<libc::pid_t>) -> ! {
     };
     if let Err(errno) = isolated {
         fail(step::CGROUP, errno, 0);
+    }
+    // A joiner's working directory, made in its root as a run's is (`workdir`).
+    if joined && let Err(errno) = make_workdir(&cwd) {
+        fail(step::MKDIR, errno, 0);
     }
     for (i, entry) in o.setup.iter().enumerate() {
         if let Err(errno) = crate::setup::apply(entry) {
@@ -2065,12 +2278,37 @@ struct Exec {
     status: Option<u32>,
     /// Its EXIT is queued.
     ended: bool,
+    /// A container joining the workload's network (D119), rather than a command beside it.
+    joined: bool,
 }
 
 /// One of init's own for an exec ([`Spec::builtin`]), done in a child of init's, so that
 /// the relay goes on, its output on a pipe as a command's: what is asked for on stdout,
 /// status 0; why it could not be had on stderr, status 1.
-fn builtin(kind: u8, args: &[Vec<u8>]) -> Result<Started, Failure> {
+/// Init's built-in `kind`, for the workload, or for joiner `joiner` (D119): in its mount
+/// namespace, whose root and `/proc` are its own, and with its cgroup.
+fn builtin(kind: u8, args: &[Vec<u8>], joiner: Option<libc::pid_t>) -> Result<Started, Failure> {
+    // What a joiner's root does not keep reachable yet: its layers, which the workload's
+    // diff, size and commit read (D119).
+    if joiner.is_some()
+        && matches!(
+            kind,
+            run::builtin::CHANGES | run::builtin::SIZE | run::builtin::LAYER
+        )
+    {
+        return Err(setup_failed(
+            "a container joining another's network keeps no layer to read yet",
+        ));
+    }
+    let cgroup = match joiner {
+        Some(pid) => joiner_cgroup(pid).map_err(|e| {
+            setup_failed(format!(
+                "the joiner's cgroup: {}",
+                io::Error::from_raw_os_error(e)
+            ))
+        })?,
+        None => WORKLOAD_CGROUP.to_string(),
+    };
     let (stdout_r, stdout_w) = pipe()?;
     let (stderr_r, stderr_w) = pipe()?;
     // What reads the host's stdin: unpacking an archive.
@@ -2086,6 +2324,33 @@ fn builtin(kind: u8, args: &[Vec<u8>]) -> Result<Started, Failure> {
     }
     if pid == 0 {
         drop((stdout_r, stderr_r));
+        // A joiner's files and processes: its mount namespace, its root and its `/proc`
+        // with it. Its cgroup's are read where init sees them.
+        if let Some(joined) = joiner.filter(|_| {
+            matches!(
+                kind,
+                run::builtin::STAT
+                    | run::builtin::ARCHIVE
+                    | run::builtin::EXTRACT
+                    | run::builtin::EXPORT
+                    | run::builtin::PROCESSES
+            )
+        }) {
+            let entered = File::open(format!("/proc/{joined}/ns/mnt")).and_then(|ns| {
+                // SAFETY: setns(2) on a descriptor this process holds, a single-threaded
+                // fork of init.
+                if unsafe { libc::setns(ns.as_raw_fd(), libc::CLONE_NEWNS) } == 0 {
+                    Ok(())
+                } else {
+                    Err(io::Error::last_os_error())
+                }
+            });
+            if let Err(e) = entered {
+                let _ = writeln!(File::from(stderr_w), "the joiner's files: {e}");
+                // SAFETY: _exit(2) ends the child without running init's exit paths.
+                unsafe { libc::_exit(1) }
+            }
+        }
         let mut out = io::BufWriter::new(File::from(stdout_w));
         // `cp`'s work, which says how it failed by its status (copy.rs).
         if matches!(
@@ -2127,11 +2392,15 @@ fn builtin(kind: u8, args: &[Vec<u8>]) -> Result<Started, Failure> {
             unsafe { libc::_exit(code) }
         }
         let done = match kind {
-            run::builtin::PROCESSES => out.write_all(&crate::procs::dump(REAPER.get().copied())),
+            run::builtin::PROCESSES => out.write_all(&crate::procs::dump(if joiner.is_some() {
+                None
+            } else {
+                REAPER.get().copied()
+            })),
             run::builtin::CHANGES => crate::changes::write(&mut out),
             run::builtin::EXPORT => export(&mut out),
-            run::builtin::CGROUP => write_cgroup(args).map_err(io::Error::other),
-            run::builtin::STATS => out.write_all(stats().as_bytes()),
+            run::builtin::CGROUP => write_cgroup_in(&cgroup, args).map_err(io::Error::other),
+            run::builtin::STATS => out.write_all(stats(&cgroup).as_bytes()),
             run::builtin::SIZE => crate::changes::upper()
                 .ok_or_else(|| io::Error::other("the writable layer was not kept"))
                 .and_then(|u| crate::layer::usage(std::path::Path::new(&u)))
@@ -2238,12 +2507,87 @@ struct Started {
     stderr: Option<OwnedFd>,
 }
 
+/// Starts joiner `id` (D119): its image `range` of the join disk, joining `workload`'s
+/// network, its limits on its own cgroup, its command as its spec says, as a run's is.
+fn start_joiner(
+    range: Result<(u64, u64), String>,
+    id: u32,
+    workload: libc::pid_t,
+    spec: &Spec,
+) -> Result<Started, Failure> {
+    let (offset, len) = range.map_err(setup_failed)?;
+    joiner_takes(&spec.setup)?;
+    let join = crate::join::Join {
+        offset,
+        len,
+        workload,
+    };
+    let standby = Standby::forked(Born::Joined(join, id), (None, None))?;
+    let started = limit_in(&crate::join::cgroup(id), &spec.cgroup, None).and_then(|()| {
+        let mut inherited = Inherited::default();
+        let setup = sort_setup(&spec.setup, &mut inherited)?;
+        joined().push((id, inherited.clone()));
+        standby.launch(spec, false, setup, &inherited)
+    });
+    match started {
+        Ok(w) => Ok(Started {
+            pid: w.pid,
+            tty: w.tty,
+            stdin: w.stdin,
+            stdout: w.stdout,
+            stderr: w.stderr,
+        }),
+        Err(f) => {
+            joined().retain(|(j, _)| *j != id);
+            crate::join::remove_cgroup(id);
+            Err(f)
+        }
+    }
+}
+
+/// What a joiner (D119) does not take yet, refused by name before it starts: what init
+/// would do in the workload's namespaces rather than the joiner's own, and the workload's
+/// own shared directories, which its run alone was given.
+fn joiner_takes(setup: &[Vec<u8>]) -> Result<(), Failure> {
+    for entry in setup {
+        let what = if entry.starts_with(b"volume=") || entry.starts_with(b"domain-volume=") {
+            "a volume"
+        } else if entry.starts_with(b"sysctl=") {
+            "--sysctl"
+        } else if entry == b"init" {
+            "--init"
+        } else if entry == b"pid=host" {
+            "--pid host"
+        } else if entry.starts_with(b"devices=") || entry == b"privileged" {
+            "a device"
+        } else if entry.starts_with(b"dns=")
+            || entry.starts_with(b"address=")
+            || entry.starts_with(b"address6=")
+            || entry == b"confine-eth0"
+            || entry.starts_with(b"domains-seccomp")
+        {
+            "a network of its own"
+        } else {
+            continue;
+        };
+        return Err(setup_failed(format!(
+            "{what} is not supported in a container joining another's network yet"
+        )));
+    }
+    Ok(())
+}
+
 impl Exec {
     /// Starts the command a host's [`kind::EXEC`] frame asks for, unless the workload
     /// has ended (`running`), and dials its connection. Without a connection, the exec's
     /// id and why, for the host to hear on the workload's ([`kind::EXEC_FAILED`]); none if
     /// the frame does not say which exec it is.
-    fn start(payload: &[u8], running: bool, workload: libc::pid_t) -> Result<Exec, Option<(u32, String)>> {
+    fn start(
+        payload: &[u8],
+        running: bool,
+        workload: libc::pid_t,
+        joiners: &[(u32, libc::pid_t)],
+    ) -> Result<Exec, Option<(u32, String)>> {
         let (token, rest) = payload.split_at_checked(run::TOKEN).ok_or(None)?;
         let (id, spec) = rest.split_at_checked(4).ok_or(None)?;
         let id = u32::from_be_bytes(id.try_into().map_err(|_| None)?);
@@ -2265,11 +2609,54 @@ impl Exec {
             to_conn: Outbox::default(),
             status: None,
             ended: false,
+            joined: false,
         };
         exec.to_conn
             .extend(&[&run::header(kind::HELLO, run::TOKEN as u32), token]);
-        let started = if spec.builtin != 0 && running {
-            builtin(spec.builtin, &spec.argv)
+        // An exec in a joiner's namespaces, which init knows by its exec's id (D119).
+        let into = spec
+            .setup
+            .iter()
+            .find_map(|e| e.strip_prefix(b"in-join="))
+            .map(|n| std::str::from_utf8(n).ok().and_then(|n| n.parse::<u32>().ok()));
+        let started = if let Some(range) = crate::join::range(&spec.setup) {
+            exec.joined = true;
+            if running {
+                start_joiner(range, id, workload, &spec)
+            } else {
+                Err(setup_failed("the container whose network it joins has ended"))
+            }
+        } else if let Some(joiner) = into {
+            match joiner.and_then(|j| joiners.iter().find(|(id, _)| *id == j)) {
+                // Init's own work, in the joiner's namespaces and cgroup.
+                Some(&(_, pid)) if spec.builtin != 0 => builtin(spec.builtin, &spec.argv, Some(pid)),
+                Some(&(joiner, pid)) => {
+                    // The joiner's process, but for what the exec says (`--privileged`).
+                    let mut process = joined()
+                        .iter()
+                        .find(|(j, _)| *j == joiner)
+                        .map(|(_, p)| p.clone())
+                        .unwrap_or_default();
+                    if let Some(caps) = spec.setup.iter().find_map(|e| e.strip_prefix(b"caps=")) {
+                        process.caps = std::str::from_utf8(caps).ok().and_then(|c| c.parse().ok());
+                    }
+                    Standby::fork(Born::InJoiner(pid))
+                        .and_then(|standby| standby.launch(&spec, true, process.setup.clone(), &process))
+                }
+                .map(|w| Started {
+                    pid: w.pid,
+                    tty: w.tty,
+                    stdin: w.stdin,
+                    stdout: w.stdout,
+                    stderr: w.stderr,
+                }),
+                None => Err(Failure {
+                    daemon: true,
+                    ..setup_failed("the container is not running")
+                }),
+            }
+        } else if spec.builtin != 0 && running {
+            builtin(spec.builtin, &spec.argv, None)
         } else if running {
             // The workload's process, but for what the exec says (`--privileged`), which
             // the run refuses beside its domains as it refused the workload's (D115).
@@ -2384,7 +2771,11 @@ impl Workload {
     /// Relays stdio until the workload has exited and its output is drained, and every
     /// exec has said all it has, and returns the workload's status. Execs start, are
     /// signalled and resized through the signal connection, each relayed on its own.
-    fn relay(mut self, conn: &File, mut signals: Option<File>) -> u32 {
+    /// Relays the workload, and its execs, until they end: its status, and whether its end
+    /// was said already, as it is where containers joined to its network outlive it (D119):
+    /// its OOM and EXIT as soon as its own output is drained, and its writable layer saved
+    /// as the host asks, while the joiners go on.
+    fn relay(mut self, conn: &File, mut signals: Option<File>) -> (u32, bool) {
         let mut host = Some(conn.as_raw_fd());
         for fd in [host, self.stdin.as_ref().map(AsRawFd::as_raw_fd)]
             .into_iter()
@@ -2401,11 +2792,30 @@ impl Workload {
         let mut status: Option<u32> = None;
         let mut execs: Vec<Exec> = Vec::new();
         let mut buf = vec![0u8; CHUNK];
+        // The workload ended while containers joined to its network ran (D119); its end
+        // said; the host's ask for its writable layer heard, or its end of asking.
+        let (mut outlived, mut reported, mut asked) = (false, false, false);
         // Reused each turn: six for the workload, four for each exec.
         let (mut set, mut owners) = (Vec::<libc::pollfd>::new(), Vec::<Owner>::new());
         loop {
             let exited = status.is_some();
             execs.retain(|e| !e.finished());
+            // Its end said as soon as its own output is, while its joiners go on (D119).
+            if outlived
+                && !reported
+                && self.stdout.is_none()
+                && self.stderr.is_none()
+                && self.domains.iter().all(|d| d.out.is_none())
+            {
+                if oom_killed() {
+                    to_host.extend(&[&run::header(kind::OOM, 0)]);
+                }
+                to_host.extend(&[
+                    &run::header(kind::EXIT, 4),
+                    &status.unwrap_or(NOT_RUN).to_be_bytes(),
+                ]);
+                reported = true;
+            }
             if exited
                 && self.stdout.is_none()
                 && self.stderr.is_none()
@@ -2428,7 +2838,8 @@ impl Workload {
                 }
             };
             poll(Some(self.sigchld.as_raw_fd()), libc::POLLIN, Owner::Sigchld);
-            let host_events = if !exited && !stdin_eof && to_stdin.len() < BUFFERED {
+            let host_events = if (!exited && !stdin_eof && to_stdin.len() < BUFFERED) || (reported && !asked)
+            {
                 libc::POLLIN
             } else {
                 0
@@ -2527,14 +2938,27 @@ impl Workload {
                             if pid == main {
                                 let _ = crate::linux::control_write(control::MARKER, marker::WORKLOAD_EXITED);
                                 status = Some(code);
-                                // SAFETY: kill(2) of every process but init: a container
-                                // ends with its main process.
-                                unsafe { libc::kill(-1, libc::SIGKILL) };
+                                // A container ends with its main process; containers joined
+                                // to its network outlive it, as Docker's do (D119).
+                                if execs.iter().any(|e| e.joined && e.pid > 0 && e.status.is_none()) {
+                                    outlived = true;
+                                    kill_all_but_joiners();
+                                } else {
+                                    // SAFETY: kill(2) of every process but init.
+                                    unsafe { libc::kill(-1, libc::SIGKILL) };
+                                }
                             } else if let Some(e) = execs.iter_mut().find(|e| e.pid == pid) {
                                 e.status = Some(code);
                                 // Its stdin goes with it.
                                 e.stdin = None;
                                 e.to_stdin.clear();
+                                // A joiner's cgroup, empty now: the kernel ends a PID
+                                // namespace's other processes before its first's end is
+                                // reaped (D119).
+                                if e.joined {
+                                    joined().retain(|(j, _)| *j != e.id);
+                                    crate::join::remove_cgroup(e.id);
+                                }
                             }
                         });
                         if status.is_some() {
@@ -2553,18 +2977,36 @@ impl Workload {
                         if p.revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0 && host.is_some() {
                             match read(fd, &mut buf) {
                                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
-                                // The host is gone: nothing more for stdin.
-                                Ok(0) | Err(_) => stdin_eof = true,
+                                // The host is gone: nothing more for stdin, nor any ask.
+                                Ok(0) | Err(_) => {
+                                    stdin_eof = true;
+                                    asked |= reported;
+                                }
                                 Ok(n) => {
                                     from_host.extend_from_slice(buf.get(..n).unwrap_or_default());
                                     let mut closed = false;
+                                    let mut save = false;
                                     let whole = each_frame(&mut from_host, |which, payload| {
-                                        if which == kind::STDIN {
+                                        if which == kind::STDIN && !reported {
                                             closed |= payload.is_empty();
                                             to_stdin.extend(&[payload]);
                                         }
+                                        save |= which == kind::SAVE && reported;
                                     });
                                     stdin_eof |= closed || !whole;
+                                    // Its writable layer, as the host asks once it has the
+                                    // end (layer.rs), its joiners' output waiting meanwhile.
+                                    if save && !asked {
+                                        asked = true;
+                                        set_nonblocking(fd, false);
+                                        if let Err(e) = crate::layer::save(conn) {
+                                            let _ = writeln!(
+                                                io::stderr(),
+                                                "shards-init: saving the container's files: {e}"
+                                            );
+                                        }
+                                        set_nonblocking(fd, true);
+                                    }
                                 }
                             }
                         }
@@ -2606,7 +3048,16 @@ impl Workload {
                                                 unsafe { libc::kill(pid, sig as libc::c_int) };
                                             }
                                         }
-                                        kind::EXEC => match Exec::start(payload, running, pid) {
+                                        kind::EXEC => match Exec::start(
+                                            payload,
+                                            running,
+                                            pid,
+                                            &execs
+                                                .iter()
+                                                .filter(|e| e.joined && e.pid > 0 && e.status.is_none())
+                                                .map(|e| (e.id, e.pid))
+                                                .collect::<Vec<_>>(),
+                                        ) {
                                             Ok(e) => execs.push(e),
                                             // Said where the host hears it, which otherwise
                                             // waits for the exec's connection (review 8.8).
@@ -2746,7 +3197,7 @@ impl Workload {
         if let Some(fd) = host {
             set_nonblocking(fd, false);
         }
-        status.unwrap_or(NOT_RUN)
+        (status.unwrap_or(NOT_RUN), reported)
     }
 }
 
@@ -2814,6 +3265,19 @@ fn workdir(cwd: &[u8]) -> Result<Vec<u8>, Failure> {
     }
 }
 
+/// A joiner's working directory (D119), as [`workdir`] checks a run's: `/` if none,
+/// refused unless absolute; made in the joiner's root by its standby, which alone sees it.
+fn joined_workdir(cwd: &[u8]) -> Result<Vec<u8>, Failure> {
+    match cwd.first() {
+        None => Ok(b"/".to_vec()),
+        Some(b'/') => Ok(cwd.to_vec()),
+        Some(_) => Err(setup_failed(format!(
+            "the working directory {:?} is not absolute",
+            String::from_utf8_lossy(cwd)
+        ))),
+    }
+}
+
 /// An exec's working directory as runc's exec takes it: `/` if none, refused unless
 /// absolute, never made.
 fn exec_cwd(cwd: &[u8]) -> Result<Vec<u8>, Failure> {
@@ -2851,6 +3315,15 @@ fn exec_failure(which: u8, errno: i32, argv0: &[u8], tried: &[u8], cwd: &[u8], u
                 message: format!("joining the container's cgroup: {err}"),
                 daemon: false,
             };
+        }
+        // As `workdir` says it for a run's.
+        step::MKDIR => {
+            let path = String::from_utf8_lossy(cwd);
+            return setup_failed(if errno == libc::ENOTDIR {
+                format!("Cannot mkdir: {path} is not a directory")
+            } else {
+                format!("mkdir {path}: {}", io::Error::from_raw_os_error(errno))
+            });
         }
         // runc's words (libcontainer/seccomp, init_linux.go).
         step::SECCOMP | step::NNP => {

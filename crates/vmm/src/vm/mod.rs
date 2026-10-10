@@ -56,6 +56,9 @@ pub(crate) struct Hosts<'a> {
     /// Each virtio-fs device's slot, in order (D38).
     #[cfg(unix)]
     pub shares: &'a [crate::devices::virtio::fs::Share],
+    /// The join disk's ranges, which its VM process gives joining containers' images
+    /// (D119).
+    pub join: Option<&'static crate::devices::virtio::block::Join>,
 }
 
 /// A snapshot's vsock and network devices, and the restore's host sides for them, come
@@ -90,6 +93,11 @@ fn check_hosts(snap: &crate::snapshot::Snapshot, hosts: Hosts<'_>) -> Result<(),
             hosts.shares.len()
         ));
     }
+    match (snap.config.join, hosts.join) {
+        (true, None) => return Err("the snapshot has a join disk: give the restored VM its own".into()),
+        (false, Some(_)) => return Err("the snapshot has no join disk for the restore's".into()),
+        _ => {}
+    }
     Ok(())
 }
 
@@ -116,8 +124,9 @@ fn pmem_regions(config: &crate::snapshot::MachineConfig, first: u64) -> Result<(
 }
 
 /// `config`'s virtio devices in the guest's probe order, which each machine gives the
-/// next of its MMIO windows and interrupt lines: its disks, its pmem `regions`, its vsock
-/// device, and its network device; at most `max` of them. The devices share the regions:
+/// next of its MMIO windows and interrupt lines: its disks, its join disk, its pmem
+/// `regions`, its vsock device, its network device, and its shared directories; at most
+/// `max` of them. The devices share the regions:
 /// `regions`, made before the VM, holds them until after it on every early return, the
 /// hypervisor mapping them until its destroy.
 #[cfg(hv)]
@@ -128,6 +137,7 @@ fn virtio_devices(
     max: u64,
 ) -> Result<Vec<Box<dyn crate::devices::virtio::VirtioDevice>>, String> {
     let slots = config.disks.len()
+        + usize::from(config.join)
         + regions.len()
         + usize::from(config.vsock)
         + usize::from(config.net.is_some())
@@ -142,6 +152,17 @@ fn virtio_devices(
             *read_only,
             &format!("shards-disk{i}"),
         )?));
+    }
+    // Its join disk, the virtio-blk device after its disks, which init finds by its
+    // serial (D119).
+    if config.join {
+        let disk = hosts
+            .join
+            .ok_or("the machine has a join disk but no host side for it")?;
+        devices.push(Box::new(crate::devices::virtio::block::Block::join(
+            disk,
+            shards_abi::JOIN_DISK_SERIAL,
+        )));
     }
     for (region, gpa) in regions {
         devices.push(Box::new(pmem::Pmem::new(region.clone(), *gpa)));
@@ -216,6 +237,7 @@ fn machine_config(cfg: &Config) -> Result<crate::snapshot::MachineConfig, String
         shares: u32::try_from(cfg.shares.len()).map_err(|_| "too many shared directories")?,
         #[cfg(not(unix))]
         shares: 0,
+        join: cfg.join.is_some(),
     })
 }
 
@@ -274,6 +296,9 @@ pub struct Config {
     /// virtio-fs devices, each a slot its directory's server is put in (D38).
     #[cfg(unix)]
     pub shares: Vec<crate::devices::virtio::fs::Share>,
+    /// A join disk, after the disks: empty until the VM process gives a joining
+    /// container's image a range of it (D119).
+    pub join: Option<&'static crate::devices::virtio::block::Join>,
 }
 
 /// The host side of a VM's virtio-vsock device.
@@ -332,6 +357,7 @@ impl Config {
             net: None,
             #[cfg(unix)]
             shares: Vec::new(),
+            join: None,
         }
     }
 }
@@ -357,6 +383,9 @@ pub struct RestoreConfig {
     /// The slots of the snapshot's shared directories, one each (D38).
     #[cfg(unix)]
     pub shares: Vec<crate::devices::virtio::fs::Share>,
+    /// The restored VM's own join disk, where the snapshot has one (D119): empty, as the
+    /// snapshot's was.
+    pub join: Option<&'static crate::devices::virtio::block::Join>,
     /// Prefetch the snapshot's working set, if it has one, before the guest runs: for a
     /// restore ahead of its request, which it moves off the request's path (PM M30).
     pub prefetch: bool,
@@ -480,6 +509,7 @@ mod tests {
             vsock,
             net,
             shares: 0,
+            join: false,
         }
     }
 
@@ -511,6 +541,7 @@ mod tests {
             vsock: v.then_some(&vsock),
             net: n.then_some(&net),
             shares: &[],
+            join: None,
         };
         let mac = Some([2, 0, 0, 0, 0, 1]);
         for (has_vsock, has_net) in [(false, false), (true, false), (false, true), (true, true)] {
@@ -581,6 +612,7 @@ mod tests {
             vsock: Some(&vsock),
             net: Some(&net),
             shares: &[],
+            join: None,
         };
         let e = virtio_devices(&config, &regions, hosts, 4).err().unwrap();
         assert_eq!(e, "at most 4 virtio devices are supported");
@@ -599,6 +631,7 @@ mod tests {
             vsock: None,
             net: Some(&net),
             shares: &[],
+            join: None,
         };
         let e = virtio_devices(&config, &regions, missing, 5).err().unwrap();
         assert!(e.contains("no host side"), "{e}");
@@ -606,6 +639,7 @@ mod tests {
             vsock: Some(&vsock),
             net: None,
             shares: &[],
+            join: None,
         };
         let e = virtio_devices(&config, &regions, missing, 5).err().unwrap();
         assert!(e.contains("no network process"), "{e}");

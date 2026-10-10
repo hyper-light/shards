@@ -363,6 +363,7 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
         net: cfg.net.as_ref(),
         #[cfg(unix)]
         shares: &cfg.shares,
+        join: cfg.join,
     };
     let a = assemble(&memory, &config, cfg.console, hosts)?;
     let tables = acpi::build(cfg.vcpus, &a.virtio)?.blobs;

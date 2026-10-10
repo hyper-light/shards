@@ -335,6 +335,7 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
         net: cfg.net.as_ref(),
         #[cfg(unix)]
         shares: &cfg.shares,
+        join: cfg.join,
     };
     let a = assemble(&memory, &config, cfg.console, hosts)?;
     a.vmgenid.write_new_id()?;

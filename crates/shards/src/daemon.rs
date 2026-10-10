@@ -229,6 +229,20 @@ struct Ready {
     /// The template the working set it records goes with: its pool's, or the one it saves.
     /// The daemon writes it there; no VM may write a template (D30).
     records: Option<Records>,
+    /// For a container joining another's network (D119), that container's ID: `vm` is its
+    /// VM, which the joiner's run may never end, and `socket` the joiner's own connection
+    /// to it.
+    joined: Option<String>,
+}
+
+impl Ready {
+    /// Ends the VM a run was not taken by: a joiner's (D119) is its provider's, which goes on
+    /// serving its own run, and only the joiner's connection goes, with `self`.
+    fn end(&self) {
+        if self.joined.is_none() {
+            let _ = self.vm.kill(libc::SIGKILL);
+        }
+    }
 }
 
 /// The template a VM's working set goes with, and the most bytes the set may take there
@@ -404,6 +418,9 @@ struct Tracked {
     mac: Option<[u8; 6]>,
     /// Its network process's control socket, where peers on its network come (D46).
     net: Option<UnixStream>,
+    /// For a container joining another's network (D119), that container's ID: `vm` is its
+    /// VM, which this run never ends, pauses or reads as its own.
+    joined: Option<String>,
 }
 
 /// What a run has told the daemon, and the socket it tells it on: read under this lock
@@ -537,7 +554,9 @@ fn resolved(rootfs: &Path) -> PathBuf {
 /// `kill`, if ever, then its VM's end SHUTDOWN_KILL later.
 struct Stop {
     socket: Arc<RunSocket>,
-    vm: Arc<shards_ipc::Child>,
+    /// Its VM, which its stop ends past its grace; none for a joiner, whose VM is its
+    /// provider's, ended by the provider's own stop (D119).
+    vm: Option<Arc<shards_ipc::Child>>,
     kill: Option<Instant>,
     killed: bool,
 }
@@ -1744,6 +1763,35 @@ impl<D: Disk> Daemon<D> {
                 return None;
             }
         };
+        // What a container joining another's network does not take yet (D119), refused by
+        // name before its container is made, as the guest refuses it: what only the joined
+        // microVM's own run was given (its shared directories, its devices), or what the
+        // guest's init does in that run's namespaces.
+        if let network::Start::Join(_) = &start {
+            let what = if !run.binds.is_empty()
+                || !run.volumes.is_empty()
+                || !run.mounts.is_empty()
+                || !run.volumes_from.is_empty()
+            {
+                Some("a volume")
+            } else if !run.devices.is_empty() || !run.device_cgroup_rules.is_empty() || run.privileged {
+                Some("a device")
+            } else if run.docker_init == Some(true) {
+                Some("--init")
+            } else if !run.pid.is_empty() {
+                Some("--pid")
+            } else if !run.sysctls.is_empty() {
+                Some("--sysctl")
+            } else {
+                None
+            };
+            if let Some(what) = what {
+                refuse(&format!(
+                    "{what} is not supported in a container joining another's network yet"
+                ));
+                return None;
+            }
+        }
         // The container's ID first: it names the command's host unless the run does
         // (moby daemon/container.go).
         let (again, id, container_log) = match again {
@@ -1766,6 +1814,14 @@ impl<D: Disk> Daemon<D> {
                 self.make_spare();
             }
         };
+        // A joiner's names are its provider's, as dockerd gives a joiner the other's
+        // (initializeNetworking): its hostname and domain name.
+        if let network::Start::Join(name) = &start
+            && let Some((hostname, domainname)) = self.names_of(name)
+        {
+            run.hostname = Some(hostname);
+            run.domainname = domainname;
+        }
         if run.hostname.is_none() {
             run.hostname = Some(id.get(..12).unwrap_or(&id).to_string());
         }
@@ -1801,7 +1857,28 @@ impl<D: Disk> Daemon<D> {
         // none (the legacy transform, neither with IPv6), read as the run starts; with
         // them the command still within a frame (review 1.y), as spec.rs measured it
         // without.
-        if let Err(e) = self.name_guest(&run, &mut prepared.spec) {
+        // A joiner's: an image's volumes, and an Agentfile's agents, are not yet taken by a
+        // container joining another's network (D119), as the guest refuses them.
+        if let network::Start::Join(_) = &start {
+            let what = if !prepared.image_volumes.is_empty() {
+                Some("an image's VOLUME")
+            } else if prepared.agentfile.is_some() {
+                Some("an Agentfile's image")
+            } else {
+                None
+            };
+            if let Some(what) = what {
+                refuse(&format!(
+                    "{what} is not supported in a container joining another's network yet"
+                ));
+                abandon(&id);
+                return None;
+            }
+        }
+        // A joiner's files that name it are its provider's (D119): none of its own.
+        if !matches!(start, network::Start::Join(_))
+            && let Err(e) = self.name_guest(&run, &mut prepared.spec)
+        {
             refuse(&e);
             abandon(&id);
             return None;
@@ -2038,7 +2115,9 @@ impl<D: Disk> Daemon<D> {
         fds.extend([container_log.log.as_fd(), container_log.index.as_fd()]);
         // A container that stays keeps its writable layer once it stops (D37): written
         // beside its log, and kept once whole (`run_ended`).
-        let layer_out = if run.remove {
+        // A joiner's (D119) is not kept yet: its root is in a mount namespace of its own
+        // in its provider's guest, which ends with it.
+        let layer_out = if run.remove || matches!(start, network::Start::Join(_)) {
             None
         } else {
             let at = lock(&self.containers).dir(&id).join(LAYER_NEW);
@@ -2134,7 +2213,10 @@ impl<D: Disk> Daemon<D> {
                 egress,
                 agentfile: prepared.agentfile.clone(),
             },
-            || self.warm_for(threads, &prepared, &start, &say),
+            || match &start {
+                network::Start::Join(name) => self.join_vm(&id, name, &prepared),
+                _ => self.warm_for(threads, &prepared, &start, &say),
+            },
         );
         // Its VM has its root filesystem, or never will.
         drop(prepared.lease.take());
@@ -2179,7 +2261,10 @@ impl<D: Disk> Daemon<D> {
             let ready = acquire().map_err(|e| failed(&e))?;
             // Every way on leaves `Handing` while `ready` holds the socket it names.
             if let Err(said) = self.commit(id, ready.socket.as_raw_fd()) {
-                self.give_back(threads, ready);
+                // A joiner's VM is its provider's, in no pool: only its connection goes.
+                if ready.joined.is_none() {
+                    self.give_back(threads, ready);
+                }
                 return Err(said);
             }
             // Its published ports go to its VM's network process before the VM has the
@@ -2194,7 +2279,7 @@ impl<D: Disk> Daemon<D> {
                 };
                 if let Err(e) = given {
                     log(format!("warm VM {}'s published ports: {e}", ready.vm.id()));
-                    let _ = ready.vm.kill(libc::SIGKILL);
+                    ready.end();
                     self.uncommit(id);
                     continue;
                 }
@@ -2204,7 +2289,7 @@ impl<D: Disk> Daemon<D> {
                 && let Err(e) = self.give_network(id, net, ready.mac)
             {
                 log(format!("warm VM {}'s network: {e}", ready.vm.id()));
-                let _ = ready.vm.kill(libc::SIGKILL);
+                ready.end();
                 self.uncommit(id);
                 continue;
             }
@@ -2217,7 +2302,7 @@ impl<D: Disk> Daemon<D> {
                 };
                 if let Err(e) = given {
                     log(format!("warm VM {}'s egress grants: {e}", ready.vm.id()));
-                    let _ = ready.vm.kill(libc::SIGKILL);
+                    ready.end();
                     self.uncommit(id);
                     continue;
                 }
@@ -2236,7 +2321,7 @@ impl<D: Disk> Daemon<D> {
                 }
                 Err(Untaken::Surely(e)) => {
                     log(format!("warm VM {} did not take a run: {e}", ready.vm.id()));
-                    let _ = ready.vm.kill(libc::SIGKILL);
+                    ready.end();
                     self.uncommit(id);
                 }
                 // What it sent before it ended tells what it did, as for any run.
@@ -2245,7 +2330,7 @@ impl<D: Disk> Daemon<D> {
                         "warm VM {} may have taken a run: {e}; ending it",
                         ready.vm.id()
                     ));
-                    let _ = ready.vm.kill(libc::SIGKILL);
+                    ready.end();
                     return Ok(self.register(ready, id, keep));
                 }
             }
@@ -3077,6 +3162,7 @@ impl<D: Disk> Daemon<D> {
             visit,
             mac: ready.mac,
             net: ready.net,
+            joined: ready.joined,
         };
         // As the daemon stops, the stop thread, which this wakes, stops it.
         lock(&self.runs).insert(id.to_string(), RunState::Tracked(tracked));
@@ -3629,9 +3715,11 @@ impl<D: Disk> Daemon<D> {
                     let new: Vec<_> = runs
                         .iter()
                         .filter_map(|(id, run)| match run {
-                            RunState::Tracked(t) if !stops.contains_key(id) => {
-                                Some((id.clone(), t.socket.clone(), t.vm.clone()))
-                            }
+                            RunState::Tracked(t) if !stops.contains_key(id) => Some((
+                                id.clone(),
+                                t.socket.clone(),
+                                t.joined.is_none().then(|| t.vm.clone()),
+                            )),
                             _ => None,
                         })
                         .collect();
@@ -3684,7 +3772,9 @@ impl<D: Disk> Daemon<D> {
                     continue;
                 };
                 if stop.killed {
-                    let _ = stop.vm.kill(libc::SIGKILL);
+                    if let Some(vm) = &stop.vm {
+                        let _ = vm.kill(libc::SIGKILL);
+                    }
                     stop.kill = None;
                 } else {
                     let _ = stop.socket.send(kind::SIGNAL, &9u32.to_be_bytes(), &[]);
@@ -3692,6 +3782,93 @@ impl<D: Disk> Daemon<D> {
                 }
             }
         }
+    }
+
+    /// The hostname and domain name of the container `name` names, as its run gave them
+    /// (its request), for a container joining its network (D119).
+    fn names_of(&self, name: &str) -> Option<(String, String)> {
+        let id = self.resolve(name).ok()?;
+        let dir = lock(&self.containers).dir(&id);
+        let run = Run::decode(&std::fs::read(dir.join(REQUEST)).ok()?)?;
+        let hostname = run
+            .hostname
+            .unwrap_or_else(|| id.get(..12).unwrap_or(&id).to_string());
+        Some((hostname, run.domainname))
+    }
+
+    /// The microVM container `id` joins (D119): that of the container `name` names, found
+    /// as dockerd finds it as a joiner starts (moby daemon/container_operations.go
+    /// getNetworkedContainer), in its words where it cannot be joined; a joiner's, its
+    /// provider's. The VM is given the joiner's own connection, whose other end is the
+    /// joiner's run's socket, and its image `prepared.rootfs`, which the VM gives a range
+    /// of its join disk (`kind::JOIN`).
+    fn join_vm(&self, id: &str, name: &str, prepared: &Prepared) -> Result<Ready, String> {
+        let not_found = || format!("joining network namespace of container: No such container: {name}");
+        let found = self.resolve(name).map_err(|_| not_found())?;
+        if found == id {
+            return Err("cannot join own network namespace".into());
+        }
+        let (shown, restarting) = lock(&self.containers)
+            .get(&found)
+            .map(|c| (c.name.trim_start_matches('/').to_string(), c.restart.restarting))
+            .ok_or_else(not_found)?;
+        // A joiner's network is its provider's, in its provider's microVM.
+        let provider = match lock(&self.runs).get(&found) {
+            Some(RunState::Tracked(t)) if !t.visit => t.joined.clone().unwrap_or_else(|| found.clone()),
+            _ => found.clone(),
+        };
+        let held = match lock(&self.runs).get(&provider) {
+            Some(RunState::Tracked(t)) if !t.visit && t.joined.is_none() => {
+                Some((t.socket.clone(), t.vm.clone(), t.inbox.clone()))
+            }
+            _ => None,
+        };
+        let Some((socket, vm, inbox)) = held.filter(|(_, _, inbox)| !lock(inbox).ended) else {
+            let state = if restarting {
+                "restarting"
+            } else if lock(&self.containers)
+                .get(&found)
+                .is_some_and(|c| c.state == Life::Created)
+            {
+                "created"
+            } else {
+                "exited"
+            };
+            return Err(format!(
+                "cannot join network namespace of a non running container: container {shown} is {state}"
+            ));
+        };
+        if lock(&self.paused).contains(&provider) || lock(&self.paused).contains(&found) {
+            return Err(format!(
+                "cannot join the network of container {shown}, which is paused: its microVM is stopped until it is unpaused"
+            ));
+        }
+        let image =
+            File::open(&prepared.rootfs).map_err(|e| format!("{}: {e}", prepared.rootfs.display()))?;
+        let (ours, theirs) = UnixStream::pair().map_err(|e| format!("a joiner's connection: {e}"))?;
+        // Held until the VM says it has it (`EXEC_TAKEN`), as an exec's client is (M24).
+        let number = self.next_exec.fetch_add(1, Ordering::Relaxed);
+        let held = theirs
+            .try_clone()
+            .map_err(|e| format!("a joiner's connection: {e}"))?;
+        lock(&inbox).execs_in_flight.push((number, held));
+        if let Err(e) = socket.send(
+            kind::JOIN,
+            &number.to_be_bytes(),
+            &[theirs.as_fd(), image.as_fd()],
+        ) {
+            lock(&inbox).execs_in_flight.retain(|(n, _)| *n != number);
+            return Err(format!("the microVM of container {shown}: {e}"));
+        }
+        Ok(Ready {
+            vm,
+            socket: ours,
+            net: None,
+            mac: None,
+            pool: None,
+            records: None,
+            joined: Some(provider),
+        })
     }
 
     /// A warm VM for `prepared`: from its template's pool, or booted for it, saving the
@@ -3709,6 +3886,10 @@ impl<D: Disk> Daemon<D> {
         let net = match start {
             network::Start::Attach(net) => *net,
             network::Start::Fails(why) => return Err(why.clone()),
+            // A joiner's VM is its provider's (`join_vm`).
+            network::Start::Join(_) => {
+                return Err("a container joining another's network has no microVM of its own".into());
+            }
         };
         let bridge = match net {
             // A user network's guest boots on the bridge's template, and takes its own
@@ -4122,6 +4303,9 @@ impl<D: Disk> Daemon<D> {
         if !cfg.shares.is_empty() {
             args.extend(["--shares".into(), cfg.shares.len().to_string().into()]);
         }
+        // A join disk in every microVM, empty until a container joins its network (D119):
+        // its templates have it, and so every restore of them.
+        args.push("--join".into());
         args.extend(["--warm".into(), "3".into()]);
         // A guest on a network: a fresh MAC, which a template it saves keeps.
         let net = if cfg.cmdline.contains("shards_net=") {
@@ -4321,6 +4505,7 @@ impl<D: Disk> Daemon<D> {
                             mac,
                             pool: Some(dir.clone()),
                             records,
+                            joined: None,
                         });
                         self.rebalance(threads, &state, dir);
                     }
@@ -4349,6 +4534,7 @@ impl<D: Disk> Daemon<D> {
                         mac,
                         pool: None,
                         records: None,
+                        joined: None,
                     }));
                 }
                 Err(e) => {
@@ -4918,6 +5104,7 @@ mod tests {
                 mac: None,
                 pool: pool.map(PathBuf::from),
                 records: None,
+                joined: None,
             };
             (ready, theirs)
         }
