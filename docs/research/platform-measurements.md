@@ -5234,6 +5234,15 @@ revision before comparing a changed API/implementation.
   it made before its second Landlock layer stays alike. So nothing that reads a template
   may follow a link or wait on a FIFO in it, and the daemon's own record of a template
   lives outside it (D117).
+- **Cost of reading a template so.** vmm `what_opening_beneath_costs`: a snapshot's four
+  files (pointer, state, memory, working set) opened by path as before, and beneath its
+  directory (each directory below it and each file checked by `lstat`, the file opened
+  `O_NOFOLLOW` and checked again), alternately, n = 20,000 each, load average 45–56.
+  Microseconds a restore's four files, p50 / p90 / p99: by path 42.6 / 77.1 / 149.8;
+  beneath 55.1 / 97.6 / 201.1 (a second run: 41.1 / 71.2 / 206.0 against 53.4 / 90.6 /
+  284.6). About 12 µs more at the median. A first form, which opened the directory again
+  for each file and walked it with `openat`, cost 107.5 µs at the median and 1.0 ms at p99,
+  and was not kept.
 
 ### M166. How long a VM process takes to start, and what it waits for
 

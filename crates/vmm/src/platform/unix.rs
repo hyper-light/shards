@@ -519,81 +519,67 @@ pub fn open_dir(path: &std::path::Path) -> io::Result<File> {
         .open(path)
 }
 
-/// `rel`'s directories opened one by one beneath the directory at `root`, each never
-/// through a symbolic link: a snapshot's directory is written by a VM process, which may
-/// leave anything in what it was granted before it gives it up (PM M165). `root`, its
-/// opener's own, is followed as given. Each name must be a plain one.
-pub fn open_dir_beneath(root: &std::path::Path, rel: &[&str]) -> io::Result<File> {
-    let mut dir = open_dir(root)?;
+/// `root` joined with `rel`'s directories, each checked to be one (`lstat`), not a link to
+/// one elsewhere, and its names plain. A snapshot's directory is written by a VM process,
+/// which may leave links and FIFOs there before it gives the directory up (PM M165); it is
+/// read only once given up, so what is there no longer changes, and a check of each name
+/// holds for the open that follows. `root`, its reader's own, is followed as given.
+fn dirs_beneath(root: &std::path::Path, rel: &[&str]) -> io::Result<std::path::PathBuf> {
+    let mut path = root.to_path_buf();
     for name in rel {
-        dir = openat_beneath(&dir, name, libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW)?;
+        plain_name(name)?;
+        path.push(name);
+        if !std::fs::symlink_metadata(&path)?.is_dir() {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "not a directory"));
+        }
     }
-    Ok(dir)
+    Ok(path)
+}
+
+/// The directory `rel` names beneath the directory at `root`, opened: no component below
+/// `root` a link ([`dirs_beneath`]).
+pub fn open_dir_beneath(root: &std::path::Path, rel: &[&str]) -> io::Result<File> {
+    open_dir(&dirs_beneath(root, rel)?)
 }
 
 /// The regular file `rel` names beneath the directory at `root`, opened for reading: no
-/// component below `root` followed if it is a symbolic link, and a file that is not a
-/// regular one refused unopened, so that no FIFO is waited on and no device opened
-/// (PM M165). [`open_dir_beneath`] says why.
+/// component below `root` a link, and a file that is not a regular one refused unopened
+/// (`lstat`), so that no FIFO is waited on, then checked again once open (PM M165).
+/// [`dirs_beneath`] says why a check of each name is enough.
 pub fn open_beneath(root: &std::path::Path, rel: &[&str]) -> io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt as _;
     let (name, dirs) = rel
         .split_last()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no file named"))?;
-    let dir = open_dir_beneath(root, dirs)?;
-    let c = plain_name(name)?;
-    // SAFETY: an all-zero stat is a valid value for fstatat(2) to fill.
-    let mut st: libc::stat = unsafe { std::mem::zeroed() };
-    // SAFETY: fstatat(2) of a NUL-terminated name, relative to a directory we hold open.
-    if unsafe { libc::fstatat(dir.as_raw_fd(), c.as_ptr(), &mut st, libc::AT_SYMLINK_NOFOLLOW) } != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    regular(&st)?;
-    let file = openat_beneath(&dir, name, libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK)?;
-    // What is there now, a file put in its place since included.
-    // SAFETY: as above, for fstat(2) of a descriptor we hold.
-    if unsafe { libc::fstat(file.as_raw_fd(), &mut st) } != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    regular(&st)?;
-    // SAFETY: fcntl(2) on a descriptor we hold: blocking reads from here on.
-    if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETFL, 0) } != 0 {
-        return Err(io::Error::last_os_error());
-    }
+    plain_name(name)?;
+    let path = dirs_beneath(root, dirs)?.join(name);
+    let regular = |m: std::fs::Metadata| {
+        if m.file_type().is_file() {
+            Ok(())
+        } else {
+            Err(io::Error::new(io::ErrorKind::InvalidData, "not a regular file"))
+        }
+    };
+    regular(std::fs::symlink_metadata(&path)?)?;
+    // O_NONBLOCK leaves a regular file's reads as they are.
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(&path)?;
+    regular(file.metadata()?)?;
     Ok(file)
 }
 
-/// `name` as a C string, if it names an entry of a directory and no more: not empty, `.`
-/// or `..`, and holding no `/`.
-fn plain_name(name: &str) -> io::Result<std::ffi::CString> {
-    if name.is_empty() || name == "." || name == ".." || name.contains('/') {
+/// `name`, if it names an entry of a directory and no more: not empty, `.` or `..`, and
+/// holding no `/` or NUL.
+fn plain_name(name: &str) -> io::Result<()> {
+    if name.is_empty() || name == "." || name == ".." || name.contains('/') || name.contains('\0') {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!("{name:?}: not a plain name"),
         ));
     }
-    std::ffi::CString::new(name)
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "a file name with NUL"))
-}
-
-fn regular(st: &libc::stat) -> io::Result<()> {
-    if st.st_mode & libc::S_IFMT == libc::S_IFREG {
-        Ok(())
-    } else {
-        Err(io::Error::new(io::ErrorKind::InvalidData, "not a regular file"))
-    }
-}
-
-/// `name` opened with `flags` in the directory `dir` holds open.
-fn openat_beneath(dir: &File, name: &str, flags: libc::c_int) -> io::Result<File> {
-    use std::os::fd::FromRawFd as _;
-    let c = plain_name(name)?;
-    // SAFETY: openat(2) with a NUL-terminated name, relative to a directory we hold open.
-    let fd = unsafe { libc::openat(dir.as_raw_fd(), c.as_ptr(), flags | libc::O_CLOEXEC) };
-    if fd < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: a descriptor we just opened, and nothing else owns.
-    Ok(unsafe { File::from_raw_fd(fd) })
+    Ok(())
 }
 
 /// Opens `name` for reading in the directory `dir` holds open: the file there, even if the
@@ -1466,6 +1452,32 @@ mod beneath_tests {
             .read_to_string(&mut read)
             .unwrap();
         assert_eq!(read, "state");
+        // A writer waits on the FIFO until a reader opens it: the FIFO refused, it waits on.
+        let (tx, rx) = std::sync::mpsc::channel();
+        let writer_path = root.join("g-1/working-set");
+        let writer = std::thread::spawn(move || {
+            let opened = std::fs::OpenOptions::new().write(true).open(&writer_path);
+            let _ = tx.send(opened.is_ok());
+        });
+        assert_eq!(
+            open_beneath(&root, &["g-1", "working-set"]).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        assert!(
+            rx.recv_timeout(std::time::Duration::from_millis(200)).is_err(),
+            "the FIFO was opened for reading"
+        );
+        // Let the writer go.
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            let _reader = std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NONBLOCK)
+                .open(root.join("g-1/working-set"))
+                .unwrap();
+            assert!(rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap());
+        }
+        writer.join().unwrap();
         for (rel, kind) in [
             (&["g-1", "memory"][..], io::ErrorKind::InvalidData),
             (&["g-1", "working-set"][..], io::ErrorKind::InvalidData),
@@ -1481,5 +1493,65 @@ mod beneath_tests {
         assert!(open_dir_beneath(&root, &["g-1"]).is_ok());
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    /// What opening a snapshot's four files beneath its directory costs a restore, against
+    /// opening them by path as it did (PM M165): the pointer, state, memory and working
+    /// set, alternately one way and the other, ROUNDS times (`BENEATH_ROUNDS`, default
+    /// 20,000); nanoseconds a round.
+    #[test]
+    #[ignore = "a measurement: cargo test -p shards-vmm --release --lib -- --ignored --nocapture what_opening"]
+    fn what_opening_beneath_costs() {
+        let root = std::env::temp_dir().join(format!("shards-beneath-cost-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("g-1")).unwrap();
+        std::fs::write(root.join("current"), b"g-1\n").unwrap();
+        for name in ["state", "memory", "working-set"] {
+            std::fs::write(root.join("g-1").join(name), b"x").unwrap();
+        }
+        let rounds: usize = std::env::var("BENEATH_ROUNDS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(20_000);
+        let files: [&[&str]; 4] = [
+            &["current"],
+            &["g-1", "state"],
+            &["g-1", "memory"],
+            &["g-1", "working-set"],
+        ];
+        let (mut by_path, mut beneath) = (Vec::with_capacity(rounds), Vec::with_capacity(rounds));
+        for i in 0..rounds {
+            let path_round = || {
+                let t = std::time::Instant::now();
+                for rel in files {
+                    let p = rel.iter().fold(root.clone(), |p, n| p.join(n));
+                    drop(std::fs::File::open(p).unwrap());
+                }
+                t.elapsed().as_nanos()
+            };
+            let beneath_round = || {
+                let t = std::time::Instant::now();
+                for rel in files {
+                    drop(open_beneath(&root, rel).unwrap());
+                }
+                t.elapsed().as_nanos()
+            };
+            if i % 2 == 0 {
+                by_path.push(path_round());
+                beneath.push(beneath_round());
+            } else {
+                beneath.push(beneath_round());
+                by_path.push(path_round());
+            }
+        }
+        let stats = |v: &mut Vec<u128>| {
+            v.sort_unstable();
+            let q = |p: f64| v[((v.len() - 1) as f64 * p) as usize];
+            (q(0.5), q(0.9), q(0.99), v[v.len() - 1])
+        };
+        println!("n {rounds}, ns a round of four files: p50, p90, p99, max");
+        println!("by path:  {:?}", stats(&mut by_path));
+        println!("beneath:  {:?}", stats(&mut beneath));
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

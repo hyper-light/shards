@@ -3361,6 +3361,11 @@ leave there, and what reads it.
   - The broker knows a restore's template (the pool's directory; `--template` for
     `shards grants`): what is asked beneath it is opened so, and nothing of it is granted
     for writing.
+- **Why a check of each name is enough.** A template is read only once it is given up
+  (renamed out of the VM's grant, or behind Linux's second layer): what was left in it no
+  longer changes, so each directory below it is checked with `lstat`, the file too, which
+  must be regular (a FIFO is never opened), and the file is then opened `O_NOFOLLOW` and
+  checked again. A restore's four files cost 12 µs more at p50 so (M165).
 - **Tested.** The two E2E escape tests above, each written as a taken-over VM would act and
   each failing on the code before (c1c2525's record; the broker's rule off); unit tests
   of the walk, the broker and the record; mutation-checked.
