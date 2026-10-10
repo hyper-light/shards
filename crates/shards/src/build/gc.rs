@@ -160,9 +160,8 @@ pub fn sort_for_deletion(records: Vec<Record>) -> Vec<Record> {
     ranked.into_iter().map(|(r, ..)| r).collect()
 }
 
-/// Every record of `store`'s, those a step holds among them, which DiskUsage counts and
-/// which removing refuses ([`Store::remove_mount`]), as BuildKit removes no record in use.
-pub fn records(store: &Store) -> Result<Vec<Record>, String> {
+/// Every record of `store`'s, and whether a step holds it now.
+pub fn records(store: &Store) -> Result<Vec<(Record, bool)>, String> {
     let held = store.referenced_blobs().map_err(|e| e.to_string())?;
     let entries = store.cache_entries().map_err(|e| e.to_string())?;
     let mounts = store.mount_entries().map_err(|e| e.to_string())?;
@@ -170,7 +169,7 @@ pub fn records(store: &Store) -> Result<Vec<Record>, String> {
         .into_iter()
         .map(|e| {
             let shared = e.own.as_ref().is_some_and(|d| held.contains(&store.blob_path(d)));
-            Record {
+            let r = Record {
                 id: e.key,
                 size: e.size,
                 created: e.created,
@@ -178,18 +177,47 @@ pub fn records(store: &Store) -> Result<Vec<Record>, String> {
                 usage: e.usage,
                 shared,
                 mount: None,
-            }
+            };
+            (r, false)
         })
-        .chain(mounts.into_iter().map(|m| Record {
-            id: m.id,
-            size: m.size,
-            created: m.created,
-            last_used: m.last_used,
-            usage: m.usage,
-            shared: false,
-            mount: Some(m.description),
+        .chain(mounts.into_iter().map(|m| {
+            let r = Record {
+                id: m.id,
+                size: m.size,
+                created: m.created,
+                last_used: m.last_used,
+                usage: m.usage,
+                shared: false,
+                mount: Some(m.description),
+            };
+            (r, m.in_use)
         }))
         .collect())
+}
+
+/// What `rule` may remove of `records` (each with whether a step holds it), in the order
+/// it removes them: none a step holds, as BuildKit's `pruneOnce` takes only records nothing
+/// references; under a target (`keep`), the least used first, ranked among those alone.
+fn removable(records: Vec<(Record, bool)>, rule: &Rule, keep: i64, now: Duration) -> Vec<Record> {
+    let chosen: Vec<Record> = records
+        .into_iter()
+        .filter(|(_, in_use)| !in_use)
+        .map(|(r, _)| r)
+        .filter(|r| rule.all || !r.shared)
+        .filter(|r| {
+            rule.keep_duration.is_none_or(|age| {
+                let used = Duration::from_secs(u64::try_from(r.last_used).unwrap_or(0));
+                now.saturating_sub(used) >= age
+            })
+        })
+        .filter(|r| rule.filters.iter().all(|f| f.matches(r)))
+        .collect();
+    // With a target, one at a time, as gcMode deletes them, until under it.
+    if keep != 0 {
+        sort_for_deletion(chosen)
+    } else {
+        chosen
+    }
 }
 
 /// Prunes `store`, on the disk of `disk`, as `rule` says: each record removed said to
@@ -207,8 +235,8 @@ pub fn prune(
     let mut total: i64 = if targeted {
         records
             .iter()
-            .filter(|r| !r.shared)
-            .map(|r| i64::try_from(r.size).unwrap_or(i64::MAX))
+            .filter(|(r, _)| !r.shared)
+            .map(|(r, _)| i64::try_from(r.size).unwrap_or(i64::MAX))
             .sum()
     } else {
         0
@@ -219,23 +247,8 @@ pub fn prune(
         0
     };
     let keep = keep_bytes(total, free, rule.max_used, rule.reserved, rule.min_free);
-    let mut chosen: Vec<Record> = records
-        .into_iter()
-        .filter(|r| rule.all || !r.shared)
-        .filter(|r| {
-            rule.keep_duration.is_none_or(|age| {
-                let used = Duration::from_secs(u64::try_from(r.last_used).unwrap_or(0));
-                now.saturating_sub(used) >= age
-            })
-        })
-        .filter(|r| rule.filters.iter().all(|f| f.matches(r)))
-        .collect();
-    // With a target, one at a time, as gcMode deletes them, until under it.
-    if keep != 0 {
-        chosen = sort_for_deletion(chosen);
-    }
     let mut freed = 0i64;
-    for r in chosen {
+    for r in removable(records, rule, keep, now) {
         if keep != 0 && total < keep {
             break;
         }
@@ -458,6 +471,28 @@ mod tests {
             ..Rule::default()
         };
         assert_eq!(prune(&store, &tmp.0, &all, &mut |_| Ok(())).unwrap(), 1000);
+    }
+
+    /// What a step holds is neither removed nor ranked, as BuildKit ranks only what it may
+    /// delete: ranked with the two held, `c` would go before `a`.
+    #[test]
+    fn what_a_step_holds_is_neither_removed_nor_ranked() {
+        let order: Vec<String> = removable(
+            vec![
+                (record("a", 1, 2, false), false),
+                (record("b", 1, 3, false), false),
+                (record("c", 2, 1, false), false),
+                (record("held-1", 3, 1, false), true),
+                (record("held-2", 4, 1, false), true),
+            ],
+            &Rule::default(),
+            1,
+            Duration::ZERO,
+        )
+        .into_iter()
+        .map(|r| r.id)
+        .collect();
+        assert_eq!(order, ["a", "c", "b"]);
     }
 
     #[test]
