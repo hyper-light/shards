@@ -3830,8 +3830,11 @@ completeness; `--network=none` and `host` steps.
     file of the proxy's, within the room SHARDS_KEEP_FREE keeps, a 413 past it), and goes
     with its length; BuildKit's streams it, chunked where it came chunked.
   - Chunk boundaries follow each proxy's reads of its upstream after the first 512 bytes
-    (Go's too); a 502's text is shards' client's error, not Go's transport's; requests
-    upstream are HTTP/1.1, where Go's transport may agree on HTTP/2 with an HTTPS server.
+    (Go's too); a 502's text is shards' client's error, not Go's transport's.
+  - What a server sees of a request is shards' client's writing of it: HTTP/1.1, where Go's
+    transport may agree on HTTP/2 with an HTTPS server; its fields in shards' order; and no
+    `User-Agent` where the step sent none, where Go's transport sends `Go-http-client/1.1`.
+    None of it reaches the step.
   - An invalid proxy in the build's environment fails the step as `invalid HTTP_PROXY in
     the build's environment`, where BuildKit names buildkitd's.
 - Cost (PM M150): the proxy adds 40 µs to a plain request and 175 µs to an HTTPS one;
