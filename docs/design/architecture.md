@@ -3456,8 +3456,8 @@ the boundary is a container's, which is what the mode asks for.
 - **Its life.** The joiner is a container of its own: its record, log, exit code, `stop`,
   `kill`, `wait`, `rm`, `inspect` (its NetworkMode as asked, its provider's hostname), and
   in its own namespaces and cgroup `exec`, `attach` (its stdin and output, never its
-  provider's), `top`, `cp`, `export`, `stats` and `update`, which init's built-ins do in
-  its context. `pause` freezes its cgroup in the guest (init's FREEZE: `cgroup.freeze`,
+  provider's), `top`, `cp`, `export`, `diff`, `commit`, its size, `stats` and `update`,
+  which init's built-ins do in its context. `pause` freezes its cgroup in the guest (init's FREEZE: `cgroup.freeze`,
   then `cgroup.events` until it says frozen, as runc's v2 freezer waits, but on the
   kernel's poll(2) event where runc looks every 10 ms), its provider running on; a
   provider's `pause` stops its whole microVM, its joiners with it, where Docker freezes
@@ -3483,11 +3483,28 @@ the boundary is a container's, which is what the mode asks for.
   the network namespace is another container's). Tested, mutation-checked
   (`a_joiners_sysctls_are_set_in_its_namespaces`: written in init's namespaces, the
   joiner read the default).
+- **Its changes, from its layers' descriptors.** Its root's layers are unreachable by
+  path once it has entered its root, in a mount namespace that ends with it, so its child
+  keeps them as init keeps the workload's: `O_PATH` descriptors of its image's layer and
+  its writable one, opened before its root moves over them and handed to init with its
+  users over a socket pair (`SCM_RIGHTS`). `diff` walks its root from within its mount
+  namespace, where its `/proc` is its PID namespace's and has no `/proc/self` for init's
+  child (Linux fs/proc/self.c: ENOENT where the reader has no PID), so the walk reaches
+  the layers by descriptor alone (the image's from where it stands, the writable one
+  opened a directory at a time, `O_NOFOLLOW`, never through a link the container put
+  there), and reads the root's mount table through init's `/proc`, opened before
+  entering. The workload's `diff` walks the same way. Its size and `commit` read its
+  writable layer as init sees it; `commit` freezes its cgroup alone while it packs, where
+  the workload's stops every process as dockerd pauses a container (moby
+  daemon/commit.go). Tested (`a_joiners_own_commands_reach_the_joiner`: none before it
+  writes, then `C /etc`, `D /etc/group`, `A /etc/variant`, `A /made`, committed and run).
+  `top` of a joiner reads its `/proc`, whose PIDs are its namespace's: init's child no
+  longer leaves out the one numbered as its own PID in init's (getpid(2) answers in the
+  caller's namespace).
 - **Not yet, each refused by name before anything starts:** volumes (the provider's
   microVM has shares for its own run alone), devices and `--privileged`, `--init`, `--pid`,
-  an image's `VOLUME`s, an Agentfile's image. A joiner's writable layer is not kept as it stops (D37): it lives in a mount namespace
-  that ends with it, unreachable by path once it has entered its root, so `diff`,
-  `commit` and its size are refused while it runs; stopped, its files are its image's.
+  an image's `VOLUME`s, an Agentfile's image. A joiner's writable layer is not yet kept as
+  it stops (D37): stopped, its files are its image's.
 - **No count of holders.** A VM process runs one VM, so its join disk is a `static` of
   that process's (`Join::new` is a `const fn`), its device given `&'static Join`; a
   joiner's attached clients are kept by its id in the guest, as the workload's are. The

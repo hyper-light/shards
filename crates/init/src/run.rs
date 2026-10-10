@@ -405,6 +405,16 @@ struct Inherited {
 /// The workload's [`Inherited`], once it starts.
 static WORKLOAD: std::sync::OnceLock<Inherited> = std::sync::OnceLock::new();
 
+/// Each joiner's layers (D119), by its exec's id, kept from before its root moved over
+/// them, for its diff, size and commit; let go as it ends.
+static JOIN_LAYERS: std::sync::Mutex<Vec<(u32, crate::join::Kept)>> = std::sync::Mutex::new(Vec::new());
+
+fn join_layers() -> std::sync::MutexGuard<'static, Vec<(u32, crate::join::Kept)>> {
+    JOIN_LAYERS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// Each joiner's [`Inherited`] (D119), by its exec's id, which its own execs take as the
 /// workload's take the workload's; let go as it ends.
 static JOINED: std::sync::Mutex<Vec<(u32, Inherited)>> = std::sync::Mutex::new(Vec::new());
@@ -1796,7 +1806,7 @@ impl Standby {
             Born::Joined(join, id) => Some((
                 join,
                 crate::join::make_cgroup(id).map_err(setup_failed)?,
-                crate::join::report_pipe().map_err(setup_failed)?,
+                crate::join::report_channel().map_err(setup_failed)?,
             )),
             _ => None,
         };
@@ -1854,7 +1864,12 @@ impl Standby {
             Some((_, _, (r, w))) => {
                 drop(w);
                 match crate::join::reported(r) {
-                    Ok(users) => users,
+                    Ok((users, kept)) => {
+                        if let Born::Joined(_, id) = born {
+                            join_layers().push((id, kept));
+                        }
+                        users
+                    }
                     Err(message) => {
                         // SAFETY: waits for our own child, which exits after reporting.
                         unsafe { libc::waitpid(pid, std::ptr::null_mut(), 0) };
@@ -2338,19 +2353,30 @@ struct Exec {
 /// status 0; why it could not be had on stderr, status 1.
 /// Init's built-in `kind`, for the workload, or for joiner `joiner` (D119): in its mount
 /// namespace, whose root and `/proc` are its own, and with its cgroup.
-fn builtin(kind: u8, args: &[Vec<u8>], joiner: Option<libc::pid_t>) -> Result<Started, Failure> {
-    // What a joiner's root does not keep reachable yet: its layers, which the workload's
-    // diff, size and commit read (D119).
-    if joiner.is_some()
-        && matches!(
-            kind,
-            run::builtin::CHANGES | run::builtin::SIZE | run::builtin::LAYER
-        )
-    {
-        return Err(setup_failed(
-            "a container joining another's network keeps no layer to read yet",
-        ));
-    }
+fn builtin(kind: u8, args: &[Vec<u8>], joiner: Option<(libc::pid_t, u32)>) -> Result<Started, Failure> {
+    // A joiner's layers, kept as its root was built (D119): their descriptors, which its
+    // diff, size and commit read here as the workload's are read.
+    let layers = match joiner {
+        Some((_, id)) => {
+            let kept = join_layers();
+            let found = kept.iter().find(|(j, _)| *j == id).map(|(_, k)| {
+                (
+                    k.lower
+                        .try_clone()
+                        .map_err(|e| setup_failed(format!("the joiner's layers: {e}"))),
+                    k.upper
+                        .try_clone()
+                        .map_err(|e| setup_failed(format!("the joiner's layers: {e}"))),
+                )
+            });
+            match found {
+                Some((lower, upper)) => Some((lower?, upper?)),
+                None => return Err(setup_failed("the joiner's layers were not kept")),
+            }
+        }
+        None => None,
+    };
+    let joiner = joiner.map(|(pid, _)| pid);
     let cgroup = match joiner {
         Some(pid) => joiner_cgroup(pid).map_err(|e| {
             setup_failed(format!(
@@ -2375,8 +2401,18 @@ fn builtin(kind: u8, args: &[Vec<u8>], joiner: Option<libc::pid_t>) -> Result<St
     }
     if pid == 0 {
         drop((stdout_r, stderr_r));
+        // Init's `/proc`, through which a joiner's mounts are read from within its mount
+        // namespace, whose own `/proc` is its PID namespace's, with no `/proc/self` for
+        // this process (proc_self_get_link).
+        let procfs = joiner.filter(|_| kind == run::builtin::CHANGES).map(|_| {
+            use std::os::unix::fs::OpenOptionsExt;
+            std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_PATH | libc::O_DIRECTORY)
+                .open("/proc")
+        });
         // A joiner's files and processes: its mount namespace, its root and its `/proc`
-        // with it. Its cgroup's are read where init sees them.
+        // with it. Its cgroup's, and its layers', are read where init sees them.
         if let Some(joined) = joiner.filter(|_| {
             matches!(
                 kind,
@@ -2385,6 +2421,7 @@ fn builtin(kind: u8, args: &[Vec<u8>], joiner: Option<libc::pid_t>) -> Result<St
                     | run::builtin::EXTRACT
                     | run::builtin::EXPORT
                     | run::builtin::PROCESSES
+                    | run::builtin::CHANGES
             )
         }) {
             let entered = File::open(format!("/proc/{joined}/ns/mnt")).and_then(|ns| {
@@ -2448,29 +2485,56 @@ fn builtin(kind: u8, args: &[Vec<u8>], joiner: Option<libc::pid_t>) -> Result<St
             } else {
                 REAPER.get().copied()
             })),
-            run::builtin::CHANGES => crate::changes::write(&mut out),
+            run::builtin::CHANGES => match (&layers, procfs) {
+                (Some((lower, upper)), Some(procfs)) => procfs
+                    .and_then(|procfs| read_at(&procfs, c"self/mountinfo"))
+                    .and_then(|mounts| crate::changes::write_with(lower, upper, &mounts, &mut out)),
+                (Some(_), None) => Err(io::Error::other("the joiner's mounts were not read")),
+                (None, _) => crate::changes::write(&mut out),
+            },
             run::builtin::EXPORT => export(&mut out),
             run::builtin::CGROUP => write_cgroup_in(&cgroup, args).map_err(io::Error::other),
             run::builtin::STATS => out.write_all(stats(&cgroup).as_bytes()),
             run::builtin::FREEZE => freeze(&cgroup, args.first().is_some_and(|a| a == b"1")),
-            run::builtin::SIZE => crate::changes::upper()
-                .ok_or_else(|| io::Error::other("the writable layer was not kept"))
-                .and_then(|u| crate::layer::usage(std::path::Path::new(&u)))
-                .and_then(|n| write!(out, "{n}")),
+            run::builtin::SIZE => match &layers {
+                Some((_, upper)) => Some(format!("/proc/self/fd/{}", upper.as_raw_fd())),
+                None => crate::changes::upper(),
+            }
+            .ok_or_else(|| io::Error::other("the writable layer was not kept"))
+            .and_then(|u| crate::layer::usage(std::path::Path::new(&u)))
+            .and_then(|n| write!(out, "{n}")),
             run::builtin::LAYER => {
                 // Paused as dockerd pauses a container it commits (moby daemon/commit.go):
-                // every process but init and this one stopped, then let go on.
+                // every process but init and this one stopped, then let go on; a joiner's
+                // (D119) frozen in its cgroup alone, its provider running on.
                 let pause = args.first().is_some_and(|a| a == b"pause");
-                if pause {
-                    // SAFETY: kill(2) of every process this one may signal.
-                    unsafe { libc::kill(-1, libc::SIGSTOP) };
+                match &layers {
+                    Some((_, upper)) => {
+                        let path = format!("/proc/self/fd/{}", upper.as_raw_fd());
+                        if pause {
+                            // Thawed whatever the packing did; a thaw that fails is the
+                            // error to say, its container left frozen.
+                            freeze(&cgroup, true).and_then(|()| {
+                                let packed = crate::layer::pack_from(&path, &mut out);
+                                freeze(&cgroup, false).and(packed)
+                            })
+                        } else {
+                            crate::layer::pack_from(&path, &mut out)
+                        }
+                    }
+                    None => {
+                        if pause {
+                            // SAFETY: kill(2) of every process this one may signal.
+                            unsafe { libc::kill(-1, libc::SIGSTOP) };
+                        }
+                        let packed = crate::layer::pack(&mut out);
+                        if pause {
+                            // SAFETY: as above.
+                            unsafe { libc::kill(-1, libc::SIGCONT) };
+                        }
+                        packed
+                    }
                 }
-                let packed = crate::layer::pack(&mut out);
-                if pause {
-                    // SAFETY: as above.
-                    unsafe { libc::kill(-1, libc::SIGCONT) };
-                }
-                packed
             }
             other => Err(io::Error::other(format!("no built-in {other}"))),
         }
@@ -2524,6 +2588,20 @@ fn files_alone() -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+/// File `name` of directory `dir`, read whole.
+fn read_at(dir: &File, name: &std::ffi::CStr) -> io::Result<Vec<u8>> {
+    // SAFETY: openat(2) of a NUL-terminated name in a directory this process holds.
+    let fd = unsafe { libc::openat(dir.as_raw_fd(), name.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: the descriptor openat(2) just returned, which nothing else owns.
+    let mut file = unsafe { File::from_raw_fd(fd) };
+    let mut read = Vec::new();
+    file.read_to_end(&mut read)?;
+    Ok(read)
 }
 
 /// The container's files as a tar archive, as dockerd exports its root (moby
@@ -2762,7 +2840,7 @@ impl Exec {
         } else if let Some(joiner) = into {
             match joiner.and_then(|j| joiners.iter().find(|(id, _)| *id == j)) {
                 // Init's own work, in the joiner's namespaces and cgroup.
-                Some(&(_, pid)) if spec.builtin != 0 => builtin(spec.builtin, &spec.argv, Some(pid)),
+                Some(&(id, pid)) if spec.builtin != 0 => builtin(spec.builtin, &spec.argv, Some((pid, id))),
                 Some(&(joiner, pid)) => {
                     // The joiner's process, but for what the exec says (`--privileged`).
                     let mut process = joined()
@@ -3090,6 +3168,7 @@ impl Workload {
                                 // reaped (D119).
                                 if e.joined {
                                     joined().retain(|(j, _)| *j != e.id);
+                                    join_layers().retain(|(j, _)| *j != e.id);
                                     crate::join::remove_cgroup(e.id);
                                 }
                             }

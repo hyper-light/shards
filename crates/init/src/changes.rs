@@ -21,7 +21,7 @@ use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
 use std::fs::Metadata;
 use std::io::{self, Write};
-use std::os::fd::{AsRawFd, OwnedFd};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::sync::OnceLock;
@@ -79,15 +79,32 @@ pub fn write(out: &mut impl Write) -> io::Result<()> {
     let (lower, upper) = LAYERS
         .get()
         .ok_or_else(|| io::Error::other("the container's layers were not kept"))?;
-    // A kept descriptor names its directory wherever the root is (proc(5), /proc/pid/fd).
-    let at = |fd: &OwnedFd| format!("/proc/self/fd/{}", fd.as_raw_fd());
+    write_with(lower, upper, &std::fs::read("/proc/self/mountinfo")?, out)
+}
+
+/// Writes the changes of the root this process stands in, whose layers are `lower` and
+/// `upper` and whose mounts `mountinfo` lists (proc(5)), to `out`: the workload's, or a
+/// joiner's (D119) from within its mount namespace. This process's working directory
+/// becomes the image's layer.
+pub fn write_with(
+    lower: &OwnedFd,
+    upper: &OwnedFd,
+    mountinfo: &[u8],
+    out: &mut impl Write,
+) -> io::Result<()> {
+    // The layers by their descriptors alone: no path reaches them once the root has
+    // moved over them, and a joiner's `/proc`, its own PID namespace's, has no
+    // `/proc/self` for this process. The image's is read from where this process stands,
+    // a read-only layer whose directories stay as the walk found them.
+    // SAFETY: fchdir(2) to a directory this process holds a descriptor of.
+    if unsafe { libc::fchdir(lower.as_raw_fd()) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
     let walk = Walk {
-        lower: at(lower),
-        upper: at(upper),
-        mounts: mounts()?,
+        mounts: mounts(mountinfo),
     };
     let mut changes = Vec::new();
-    walk.dir(b"", true, &mut changes)?;
+    walk.dir(b"", true, Some(upper), &mut changes)?;
     for (kind, path) in changes {
         out.write_all(&[kind, b' '])?;
         out.write_all(&path)?;
@@ -97,8 +114,6 @@ pub fn write(out: &mut impl Write) -> io::Result<()> {
 }
 
 struct Walk {
-    lower: String,
-    upper: String,
     /// Where something is mounted over the root: what is there is not the container's
     /// files.
     mounts: Vec<Vec<u8>>,
@@ -106,11 +121,18 @@ struct Walk {
 
 impl Walk {
     /// The changes under directory `rel` (empty for the root), which is in the image
-    /// (`old`) or not, appended in path order.
-    fn dir(&self, rel: &[u8], old: bool, changes: &mut Vec<Change>) -> io::Result<()> {
+    /// (`old`) or not, and in the writable layer as `upper` or not, appended in path
+    /// order.
+    fn dir(
+        &self,
+        rel: &[u8],
+        old: bool,
+        upper: Option<&OwnedFd>,
+        changes: &mut Vec<Change>,
+    ) -> io::Result<()> {
         let merged = entries(&join(b"/", rel))?;
         let image = if old {
-            entries(&join(self.lower.as_bytes(), rel)).unwrap_or_default()
+            entries(&join(b".", rel)).unwrap_or_default()
         } else {
             BTreeMap::new()
         };
@@ -128,7 +150,7 @@ impl Walk {
             if path == b"/etc" && image.get(name).is_none_or(|m| !m.is_dir()) {
                 if merged.get(name).is_some_and(|m| m.is_dir()) {
                     let start = changes.len();
-                    self.dir(&path, false, changes)?;
+                    self.dir(&path, false, None, changes)?;
                     if changes.len() > start {
                         changes.insert(start, (b'C', path));
                     }
@@ -142,13 +164,18 @@ impl Walk {
                     }
                     let start = changes.len();
                     let changed = different(was, new)
-                        || capability(&join(self.lower.as_bytes(), &path)) != capability(&join(b"/", &path));
+                        || capability(&join(b".", &path)) != capability(&join(b"/", &path));
                     if changed {
                         changes.push((b'C', path.clone()));
                     }
                     // Only a directory in the writable layer can hold changes.
-                    if new.is_dir() && self.written(&path) {
-                        self.dir(&path, was.is_dir(), changes)?;
+                    let written = if new.is_dir() {
+                        written(upper, name).transpose()?
+                    } else {
+                        None
+                    };
+                    if let Some(written) = written {
+                        self.dir(&path, was.is_dir(), Some(&written), changes)?;
                         if !changed && changes.len() > start {
                             changes.insert(start, (b'C', path));
                         }
@@ -160,7 +187,7 @@ impl Walk {
                     }
                     changes.push((b'A', path.clone()));
                     if new.is_dir() {
-                        self.dir(&path, false, changes)?;
+                        self.dir(&path, false, None, changes)?;
                     }
                 }
                 (None, Some(_)) => changes.push((b'D', path)),
@@ -169,24 +196,36 @@ impl Walk {
         }
         Ok(())
     }
-
-    /// Whether `rel` is a directory in the writable layer.
-    fn written(&self, rel: &[u8]) -> bool {
-        std::fs::symlink_metadata(OsStr::from_bytes(&join(self.upper.as_bytes(), rel)))
-            .is_ok_and(|m| m.is_dir())
-    }
 }
 
-/// The mount points under the root, from `/proc/self/mountinfo` (proc(5)): each line's
-/// fifth field, with its octal escapes undone.
-fn mounts() -> io::Result<Vec<Vec<u8>>> {
-    let info = std::fs::read("/proc/self/mountinfo")?;
-    Ok(info
-        .split(|&b| b == b'\n')
+/// Directory `name` of the writable layer's directory `upper`, if it is a directory
+/// there: opened by its name alone, not following a link the container may have put in
+/// its place (openat(2): O_NOFOLLOW, and O_DIRECTORY refusing what is not one).
+fn written(upper: Option<&OwnedFd>, name: &OsStr) -> Option<io::Result<OwnedFd>> {
+    let upper = upper?;
+    let name = std::ffi::CString::new(name.as_bytes()).ok()?;
+    let flags = libc::O_PATH | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC;
+    // SAFETY: openat(2) of a NUL-terminated name in a directory this walk holds.
+    let fd = unsafe { libc::openat(upper.as_raw_fd(), name.as_ptr(), flags) };
+    if fd < 0 {
+        let e = io::Error::last_os_error();
+        return match e.raw_os_error() {
+            Some(libc::ENOENT | libc::ENOTDIR | libc::ELOOP) => None,
+            _ => Some(Err(e)),
+        };
+    }
+    // SAFETY: the descriptor openat(2) just returned, which nothing else owns.
+    Some(Ok(unsafe { OwnedFd::from_raw_fd(fd) }))
+}
+
+/// The mount points under the root, from its `mountinfo` (proc(5)): each line's fifth
+/// field, with its octal escapes undone.
+fn mounts(info: &[u8]) -> Vec<Vec<u8>> {
+    info.split(|&b| b == b'\n')
         .filter_map(|line| line.split(|&b| b == b' ').nth(4))
         .map(unescape)
         .filter(|p| p.as_slice() != b"/")
-        .collect())
+        .collect()
 }
 
 /// A mountinfo path: `\NNN` is the byte of octal NNN (the kernel's show_path).

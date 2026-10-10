@@ -260,8 +260,7 @@ fn a_joiner_is_a_container_of_its_own() {
 /// A joiner's own commands reach the joiner (D119), never its provider: a client attached
 /// to it writes its stdin and reads its output, and hears its status; `top` lists its
 /// processes alone, `cp` copies from its root (its provider's hostname file bound there),
-/// `stats` samples its cgroup; `diff`, which reads layers a joiner does not keep yet, is
-/// refused by name.
+/// `stats` samples its cgroup, `diff` and `commit` read its own layers.
 #[test]
 fn a_joiners_own_commands_reach_the_joiner() {
     use std::io::Write as _;
@@ -333,9 +332,33 @@ fn a_joiners_own_commands_reach_the_joiner() {
         "joiner",
     ]);
     assert_eq!(stats.stdout, "joiner 1\n", "{stats}");
+    // Its own changes, from the layers its root was built of: diff lists them, as
+    // Docker's, none from what made its root; commit keeps them in an image, freezing its
+    // cgroup alone meanwhile.
+    let fresh = shards(&["diff", "joiner"]);
+    assert_eq!((fresh.status, fresh.stdout.as_str()), (Some(0), ""), "{fresh}");
+    let wrote = shards(&[
+        "exec",
+        "-u",
+        "0",
+        "joiner",
+        "/bin/testguest",
+        "fs",
+        "write:/made=by-joiner",
+        "write:/etc/variant=x",
+        "rm:/etc/group",
+    ]);
+    assert_eq!(wrote.status, Some(0), "{wrote}");
     let diff = shards(&["diff", "joiner"]);
-    assert_ne!(diff.status, Some(0), "{diff}");
-    assert!(diff.stderr.contains("keeps no layer to read yet"), "{diff}");
+    assert_eq!(
+        (diff.status, diff.stdout.as_str()),
+        (Some(0), "C /etc\nD /etc/group\nA /etc/variant\nA /made\n"),
+        "{diff}"
+    );
+    let committed = shards(&["commit", "joiner", "joined:1"]);
+    assert_eq!(committed.status, Some(0), "{committed}");
+    let kept = run_in(&home, "joined:1", &["--rm"], &["fs", "print:/made"]);
+    assert_eq!(kept.stdout, "by-joiner", "{kept}");
     // Its command, PID 1 of its namespace, has no handler for SIGTERM: killed past the
     // timeout, as Docker's would be; the client attached hears its status.
     let stopped = shards(&["stop", "-t", "1", "joiner"]);
