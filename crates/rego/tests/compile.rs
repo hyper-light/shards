@@ -215,6 +215,58 @@ fn a_wide_policy_without_cycles_compiles_in_time() {
     assert_eq!(errors, Vec::<String>::new());
 }
 
+/// `every` statements nested `n` deep, each using a variable of its own, the innermost
+/// holding `inner`.
+fn nested_every(n: usize, inner: &str) -> String {
+    format!(
+        "package docker\n\ndecision if {{\n\t{}{inner}{}\n}}\n",
+        "every x in [1] { x == 1; ".repeat(n),
+        " }".repeat(n)
+    )
+}
+
+/// OPA rewrites the template strings of a closure's body, then walks the body again with
+/// the variables of the body around it, at each level around it: twice the work for each
+/// level. Nested 24 deep, OPA v1.14.1 compiled this in 11 minutes 22 s, and shards in
+/// 24.9 s before skipping the walks that find nothing left to rewrite (both on an M5
+/// Max). A template string that fails is tried by each of those walks, each failure an
+/// error (2 deep 4 errors, 5 deep 32): OPA gave the same first ten, all its error limit
+/// keeps, 5, 16 and 20 deep (20 deep in 8.1 s, twice as long with each level), which
+/// shards gives 30 deep without the 2^30 tries behind them.
+#[test]
+fn closures_nested_deep_compile_in_time() {
+    let compile = |src: String| {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::Builder::new()
+            .stack_size(123 << 20)
+            .spawn(move || {
+                let mut modules = BTreeMap::new();
+                modules.insert(
+                    "builtin/buildx_defaults.rego".to_string(),
+                    parse_module(
+                        "builtin/buildx_defaults.rego",
+                        include_str!("../src/buildx_defaults.rego"),
+                    )
+                    .unwrap(),
+                );
+                modules.insert(
+                    "policy.rego".to_string(),
+                    parse_module("policy.rego", &src).unwrap(),
+                );
+                let mut comp = Compiler::new(modules, host(), true);
+                comp.compile();
+                let _ = tx.send(comp.errors.iter().map(ToString::to_string).collect::<Vec<_>>());
+            })
+            .unwrap();
+        rx.recv_timeout(std::time::Duration::from_secs(10))
+            .expect("did not compile within 10 s")
+    };
+    assert_eq!(compile(nested_every(24, "true")), Vec::<String>::new());
+    let mut limit = vec!["policy.rego:4: rego_compile_error: var z is undeclared".to_string(); 10];
+    limit.push("rego_compile_error: error limit reached".to_string());
+    assert_eq!(compile(nested_every(30, "$\"{x}{z.a}\"")), limit);
+}
+
 fn normalize(text: &str) -> String {
     let mut out: Vec<String> = Vec::new();
     let mut run: Vec<String> = Vec::new();

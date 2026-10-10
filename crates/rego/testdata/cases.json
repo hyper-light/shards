@@ -3421,5 +3421,115 @@
    ]
   ],
   "query": "data.docker.decision"
+ },
+ {
+  "name": "tpl-every-nested",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery a in [1] {\n\t\tevery b in [2] {\n\t\t\tevery c in [3] { $\"{a}{b}{c}\" == \"123\" }\n\t\t}\n\t}\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "tpl-every-undeclared",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery a in [1] { a == 1; every b in [1] { b == 1; $\"{b}{z.a}\" } }\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "tpl-every-undeclared-deep",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery a in [1] { a == 1; every b in [1] { b == 1; every c in [1] { c == 1; every d in [1] { d == 1; every e in [1] { e == 1; $\"{e}{z.a}\" } } } } }\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "tpl-every-undeclared-pair",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery a in [1] { a == 1; every b in [1] { b == 1; every c in [1] { c == 1; $\"{c}{z.a}\"; $\"{y[0]}\" } } }\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "tpl-comprehension-every",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery a in [1] {\n\t\tcount([s | s := $\"{a}\"]) == 1\n\t\tevery b in [2] { count([t | t := $\"{a}{b}\"]) == 1 }\n\t}\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "print-every-nested",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery a in [1] {\n\t\tprint(\"a\", a)\n\t\tevery b in [2] {\n\t\t\tprint(\"b\", a, b)\n\t\t\tevery c in [3] { print(\"c\", a, b, c) }\n\t\t}\n\t}\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "print-every-undeclared",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery a in [1] { a == 1; every b in [1] { b == 1; print(b, z) } }\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "print-every-undeclared-deep",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery a in [1] { a == 1; every b in [1] { b == 1; every c in [1] { c == 1; every d in [1] { d == 1; every e in [1] { e == 1; every f in [1] { f == 1; print(f, z) } } } } } }\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "print-every-undeclared-limit",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery a in [1] { a == 1; every b in [1] { b == 1; every c in [1] { c == 1; every d in [1] { d == 1; every e in [1] { e == 1; every f in [1] { f == 1; every g in [1] { g == 1; every h in [1] { h == 1; every i in [1] { i == 1; every j in [1] { j == 1; every k in [1] { k == 1; every l in [1] { l == 1; print(l, z) } } } } } } } } } } } }\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "print-comprehension-every",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery a in [1] {\n\t\tcount([s | s := a; print(s)]) == 1\n\t\tevery b in [2] { print(a, b) }\n\t}\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "print-and-template-deep",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery a in [1] { a == 1; every b in [1] { b == 1; every c in [1] { c == 1; every d in [1] { d == 1; every e in [1] { e == 1; every f in [1] { f == 1; print($\"{f}\"); f == 1 } } } } } }\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
  }
 ]

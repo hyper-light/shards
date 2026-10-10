@@ -134,20 +134,33 @@ fn arity_of(c: &Compiler) -> impl Fn(&[Term]) -> Option<usize> + '_ {
 }
 
 /// rewriteTemplateStrings.
+///
+/// OPA's walk rewrites a closure's body (an `every` statement's, a comprehension's),
+/// then walks on into the body again with the safe variables of the body around it,
+/// at each level: twice the work for each level a body nests. What the second walk does
+/// is try again the template strings the first left as they were, failing again (it
+/// knows fewer variables safe); a body the first walk left none in it skips, and the
+/// walks end once the errors fill what OPA's error limit keeps.
 pub fn rewrite_template_strings(c: &mut Compiler) {
     let mut errs = Vec::new();
+    let room = super::MAX_ERRS.saturating_sub(c.errors.len());
     for_each_rule(c, |c, rule| {
+        if errs.len() >= room {
+            return;
+        }
         let mut safe = VarSet::new();
         for a in &rule.head.args {
             safe.extend(vars::term_vars(a));
         }
         safe.insert("data".into());
         safe.insert("input".into());
-        let body_safe = template_strings_in_body(c, &safe, &mut rule.body, &mut errs);
+        let (body_safe, _) = template_strings_in_body(c, &safe, &mut rule.body, &mut errs, room);
         let mut ts = TemplateWalk {
             c,
             safe: body_safe,
             errs: &mut errs,
+            room,
+            left: false,
         };
         for a in rule.head.args.iter_mut() {
             ts.term(a);
@@ -162,13 +175,15 @@ pub fn rewrite_template_strings(c: &mut Compiler) {
     c.err(errs);
 }
 
-/// rewriteTemplateStrings over a body: returns the variables safe after it.
+/// rewriteTemplateStrings over a body: the variables safe after it, and whether a
+/// template string in it is left as it was (its rewrite failed).
 fn template_strings_in_body(
     c: &mut Compiler,
     globals: &VarSet,
     body: &mut Body,
     errs: &mut Vec<CompileError>,
-) -> VarSet {
+    room: usize,
+) -> (VarSet, bool) {
     let mut safe = {
         let arity = arity_of(c);
         safety::output_vars_for_body(body, &arity, globals)
@@ -178,40 +193,67 @@ fn template_strings_in_body(
         c,
         safe: safe.clone(),
         errs,
+        room,
+        left: false,
     };
     for e in body.iter_mut() {
         ts.expr(e);
     }
-    safe
+    let left = ts.left;
+    (safe, left)
 }
 
 struct TemplateWalk<'a> {
     c: &'a mut Compiler,
     safe: VarSet,
     errs: &'a mut Vec<CompileError>,
+    /// How many errors OPA's limit keeps.
+    room: usize,
+    /// Whether a template string the walk came to is left as it was.
+    left: bool,
 }
 
 impl TemplateWalk<'_> {
+    fn full(&self) -> bool {
+        self.errs.len() >= self.room
+    }
+
+    fn rewrite(&mut self, safe: Option<&VarSet>, t: &mut Term) {
+        let safe = safe.unwrap_or(&self.safe);
+        self.left |= rewrite_template_term(self.c, safe, t, self.errs);
+    }
+
+    fn body(&mut self, safe: &VarSet, b: &mut Body) -> (VarSet, bool) {
+        let (s, left) = template_strings_in_body(self.c, safe, b, self.errs, self.room);
+        self.left |= left;
+        (s, left)
+    }
+
     fn expr(&mut self, e: &mut Expr) {
+        if self.full() {
+            return;
+        }
         match &mut e.terms {
             ExprTerms::Term(t) => self.term(t),
             ExprTerms::Call(cl) => cl.iter_mut().for_each(|t| self.term(t)),
             ExprTerms::Some(d) => d.symbols.iter_mut().for_each(|t| self.term(t)),
             ExprTerms::Every(ev) => {
-                rewrite_template_term(self.c, &self.safe, &mut ev.domain, self.errs);
+                self.rewrite(None, &mut ev.domain);
                 let mut s = self.safe.clone();
                 if let Some(k) = &ev.key {
                     s.extend(vars::term_vars(k));
                 }
                 s.extend(vars::term_vars(&ev.value));
-                template_strings_in_body(self.c, &s, &mut ev.body, self.errs);
+                let (_, left) = self.body(&s, &mut ev.body);
                 if let Some(k) = ev.key.as_mut() {
                     self.term(k);
                 }
                 self.term(&mut ev.value);
                 self.term(&mut ev.domain);
-                for x in ev.body.iter_mut() {
-                    self.expr(x);
+                if left {
+                    for x in ev.body.iter_mut() {
+                        self.expr(x);
+                    }
                 }
             }
         }
@@ -222,21 +264,27 @@ impl TemplateWalk<'_> {
     }
 
     fn term(&mut self, t: &mut Term) {
-        match &mut t.value {
+        if self.full() {
+            return;
+        }
+        let left = match &mut t.value {
             TermValue::TemplateString { .. } => {
-                rewrite_template_term(self.c, &self.safe, t, self.errs);
+                self.rewrite(None, t);
+                false
             }
             TermValue::SetCompr(x, b) | TermValue::ArrayCompr(x, b) => {
-                let s = template_strings_in_body(self.c, &self.safe, b, self.errs);
-                rewrite_template_term(self.c, &s, x, self.errs);
+                let (s, left) = self.body(&self.safe.clone(), b);
+                self.rewrite(Some(&s), x);
+                left
             }
             TermValue::ObjectCompr(k, v, b) => {
-                let s = template_strings_in_body(self.c, &self.safe, b, self.errs);
-                rewrite_template_term(self.c, &s, k, self.errs);
-                rewrite_template_term(self.c, &s, v, self.errs);
+                let (s, left) = self.body(&self.safe.clone(), b);
+                self.rewrite(Some(&s), k);
+                self.rewrite(Some(&s), v);
+                left
             }
-            _ => {}
-        }
+            _ => false,
+        };
         match &mut t.value {
             TermValue::Ref(r) | TermValue::Array(r) | TermValue::Call(r) => {
                 r.iter_mut().for_each(|x| self.term(x))
@@ -250,22 +298,32 @@ impl TemplateWalk<'_> {
             TermValue::Set(s) => s.iter_mut().for_each(|x| self.term(x)),
             TermValue::SetCompr(x, b) | TermValue::ArrayCompr(x, b) => {
                 self.term(x);
-                b.iter_mut().for_each(|e| self.expr(e));
+                if left {
+                    b.iter_mut().for_each(|e| self.expr(e));
+                }
             }
             TermValue::ObjectCompr(k, v, b) => {
                 self.term(k);
                 self.term(v);
-                b.iter_mut().for_each(|e| self.expr(e));
+                if left {
+                    b.iter_mut().for_each(|e| self.expr(e));
+                }
             }
             _ => {}
         }
     }
 }
 
-/// rewriteTemplateStringTerm and rewriteTemplateString.
-fn rewrite_template_term(c: &mut Compiler, safe: &VarSet, t: &mut Term, errs: &mut Vec<CompileError>) {
+/// rewriteTemplateStringTerm and rewriteTemplateString: true when the term is a template
+/// string left as it was, its rewrite failing.
+fn rewrite_template_term(
+    c: &mut Compiler,
+    safe: &VarSet,
+    t: &mut Term,
+    errs: &mut Vec<CompileError>,
+) -> bool {
     let TermValue::TemplateString { parts, .. } = &t.value else {
-        return;
+        return false;
     };
     let parts = parts.clone();
     let loc = t.loc.clone();
@@ -333,13 +391,14 @@ fn rewrite_template_term(c: &mut Compiler, safe: &VarSet, t: &mut Term, errs: &m
     }
     if !local_errs.is_empty() {
         errs.extend(local_errs);
-        return;
+        return true;
     }
     let op = Term::reference(
         vec![Term::var("internal", None), Term::string("template_string", None)],
         None,
     );
     t.value = TermValue::Call(vec![op, Term::new(TermValue::Array(terms.into()), loc)].into());
+    false
 }
 
 /// checkVoidCalls: a call to a function without a result used as a value.
