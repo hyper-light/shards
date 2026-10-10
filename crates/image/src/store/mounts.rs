@@ -74,6 +74,9 @@ struct MountRecord {
     created: i64,
     last_used: i64,
     usage: u64,
+    /// Let go of while a step held it ([`Store::prune_mounts`]): no step takes it again.
+    #[serde(default)]
+    pruned: bool,
 }
 
 /// A record a step holds, until it is dropped: its id, and its content as it was taken.
@@ -215,7 +218,7 @@ impl Store {
             let mut held_any = false;
             let mut free: Vec<(String, File)> = Vec::new();
             for id in self.mount_ids()? {
-                if self.read_mount(&id)?.is_none_or(|r| r.key != key) {
+                if self.read_mount(&id)?.is_none_or(|r| r.key != key || r.pruned) {
                     continue;
                 }
                 let lock = open_lock(&self.mount_dir(&id)?.join("lock"))?;
@@ -276,6 +279,7 @@ impl Store {
                 created: now,
                 last_used: now,
                 usage: 0,
+                pruned: false,
             },
         )?;
         sync_dir(&self.records_dir())?;
@@ -392,6 +396,36 @@ impl Store {
         fs::remove_dir_all(&gone)?;
         sync_dir(&self.records_dir())?;
         Ok(true)
+    }
+
+    /// Lets go of the records of cache `id` before a build whose step mounting it is not to
+    /// be answered from the cache (`--no-cache`, `--no-cache-filter`), as BuildKit's solver
+    /// does (llbsolver `detectPrunedCacheID`, the worker's `PruneCacheMounts`): those of a
+    /// cache mounted from something (`id:` and its source's key) where `from`, else those
+    /// of `id` alone. One no step holds goes; one a step holds stays its until it is done,
+    /// and no step takes it again.
+    pub fn prune_mounts(&self, id: &str, from: bool) -> Result<(), Error> {
+        let prefix = format!("{id}:");
+        let ids = self.mount_ids()?;
+        for rid in ids {
+            let Some(record) = self.read_mount(&rid)? else {
+                continue;
+            };
+            let named = if from {
+                record.key.starts_with(&prefix)
+            } else {
+                record.key == id
+            };
+            if !named || record.pruned || self.remove_mount(&rid)? {
+                continue;
+            }
+            let _keys = self.key_lock(&record.key)?;
+            if let Some(mut record) = self.read_mount(&rid)? {
+                record.pruned = true;
+                self.write_mount(&rid, &record)?;
+            }
+        }
+        Ok(())
     }
 
     /// The blobs every record's layers are, which a collection keeps.
@@ -521,5 +555,27 @@ mod tests {
         assert!(s.mount_entries().unwrap().is_empty());
         assert!(!s.remove_mount("a").unwrap());
         assert!(s.remove_mount("../x").is_err());
+    }
+
+    /// A step not answered from the cache starts its caches empty: records no step holds
+    /// go, one held is taken no more; another key's, or one from something, stay.
+    #[test]
+    fn a_step_not_answered_from_the_cache_lets_its_records_go() {
+        let (_d, s) = store();
+        let held = s.take_mount("/k", Sharing::Private, "c", "a").unwrap();
+        drop(s.take_mount("/k", Sharing::Private, "c", "b").unwrap());
+        drop(s.take_mount("/k:from", Sharing::Private, "c", "f").unwrap());
+        drop(s.take_mount("/other", Sharing::Private, "c", "o").unwrap());
+        s.prune_mounts("/k", false).unwrap();
+        let ids: Vec<String> = s.mount_entries().unwrap().into_iter().map(|e| e.id).collect();
+        assert_eq!(ids, ["a", "f", "o"]);
+        drop(held);
+        // `a`, let go of while held, is taken no more: a new record.
+        let next = s.take_mount("/k", Sharing::Shared, "c", "n").unwrap();
+        assert_eq!((next.id.as_str(), next.fresh), ("n", true));
+        // From something: the records of `id:` alone.
+        s.prune_mounts("/k", true).unwrap();
+        let ids: Vec<String> = s.mount_entries().unwrap().into_iter().map(|e| e.id).collect();
+        assert_eq!(ids, ["a", "n", "o"]);
     }
 }

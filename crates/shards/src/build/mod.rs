@@ -3176,6 +3176,25 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
     let mut keys: Vec<Option<String>> = Vec::with_capacity(def.ops.len());
     let mut digests = cache::Digests::default();
     let no_cache = parsed.bool("no-cache");
+    // The caches of each step not answered from the cache start empty: their records are
+    // let go of before any step runs, as BuildKit's solver lets them go as it loads the
+    // definition (D114; llbsolver `detectPrunedCacheID`).
+    for (op, meta) in def.ops.iter().zip(&def.metadata) {
+        let OpKind::Exec { mounts, .. } = &op.kind else {
+            continue;
+        };
+        if !no_cache && !meta.ignore_cache {
+            continue;
+        }
+        for m in mounts {
+            if let shards_dockerfile::llb::OpMountKind::Cache { id, .. } = &m.kind {
+                let id = if id.is_empty() { &m.dest } else { id };
+                store
+                    .prune_mounts(&show(id), m.input != -1)
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+    }
     // What other operations read, so a base image is unpacked only when one does.
     let read: std::collections::HashSet<usize> = def
         .ops

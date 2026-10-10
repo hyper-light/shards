@@ -365,10 +365,11 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                 if let Some(d) = r.mount.as_ref().filter(|d| !d.is_empty()) {
                     lines.push(vec!["Description:".into(), d.clone()]);
                 }
+                // No `Type:`: BuildKit's prune says no record's type (cache/manager.go
+                // `pruneOnce`), so buildx prints none (measured, M130).
                 lines.extend([
                     vec!["Usage count:".into(), r.usage.to_string()],
                     vec!["Last used:".into(), ago],
-                    vec!["Type:".into(), r.kind().into()],
                     vec![String::new()],
                 ]);
                 tabs(&lines)

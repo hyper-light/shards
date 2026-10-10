@@ -4688,8 +4688,9 @@ fn steps_are_kept_by_what_they_read() {
 /// what a step writes is there for the next build's, a failing step's writes too; one id
 /// is one cache wherever it is mounted, twice in one step too; its root keeps the owner
 /// and mode a step gives it; `BUILDKIT_CACHE_MOUNT_NS` makes another; `uid`, `gid` and
-/// `mode` make its directory; `system df` counts the records and `builder prune` removes
-/// them.
+/// `mode` make its directory (measured against BuildKit, M130); a step not answered from
+/// the cache (`--no-cache`) starts its caches empty, as BuildKit lets their records go;
+/// `system df` counts the records and `builder prune` removes them.
 #[test]
 fn run_caches_are_kept_across_builds() {
     if cannot_run_vms() {
@@ -4704,7 +4705,8 @@ fn run_caches_are_kept_across_builds() {
         ("SHARDS_BUILD_MEMORY", "1024".as_ref()),
     ];
     let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
-    // Each build its own context, its steps run whatever the build cache holds.
+    // Each build its own context, and steps no other build has, which the build cache
+    // answers none of.
     let n = std::cell::Cell::new(0);
     let build = |steps: &str, extra: &[&str]| {
         n.set(n.get() + 1);
@@ -4712,7 +4714,7 @@ fn run_caches_are_kept_across_builds() {
             &format!("cache-mounts-{}", n.get()),
             &format!("FROM {image}\nUSER root\n{steps}"),
         );
-        let mut args = vec!["build", "--progress=plain", "--no-cache"];
+        let mut args = vec!["build", "--progress=plain"];
         args.extend_from_slice(extra);
         args.push(ctx.to_str().unwrap());
         shards(&args)
@@ -4772,6 +4774,21 @@ fn run_caches_are_kept_across_builds() {
         &[],
     );
     assert!(made.contains("/m dir 750 1000:1001 "), "{made}");
+    let mode_only = ok(
+        "RUN --mount=type=cache,target=/m2,mode=0700 [\"/bin/testguest\", \"stat\", \"/m2\"]\n",
+        &[],
+    );
+    assert!(mode_only.contains("/m2 dir 700 0:0 "), "{mode_only}");
+    // A step not answered from the cache: its caches start empty.
+    ok(
+        "RUN --mount=type=cache,target=/n,id=fresh [\"/bin/testguest\", \"fs\", \"write:/n/f=1\"]\n",
+        &[],
+    );
+    let fresh = build(
+        "RUN --mount=type=cache,target=/n,id=fresh [\"/bin/testguest\", \"stat\", \"/n/f\"]\n",
+        &["--no-cache"],
+    );
+    assert!(fresh.stderr.contains("/n/f missing"), "{}", fresh.stderr);
 
     // The records, as `system df` counts them and `builder prune` removes them.
     let count = || {
@@ -4785,12 +4802,12 @@ fn run_caches_are_kept_across_builds() {
         assert_eq!(df.status, Some(0), "{}", df.stderr);
         df.stdout.lines().filter(|l| *l == "exec.cachemount").count()
     };
-    assert_eq!(count(), 5);
+    assert_eq!(count(), 7);
     let pruned = shards(&["builder", "prune", "-f", "--filter", "type=exec.cachemount"]);
     assert_eq!(pruned.status, Some(0), "{}", pruned.stderr);
     assert_eq!(
         pruned.stdout.lines().filter(|l| l.contains("*")).count(),
-        5,
+        7,
         "{}",
         pruned.stdout
     );
