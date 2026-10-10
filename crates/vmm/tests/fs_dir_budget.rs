@@ -1,6 +1,6 @@
-//! A share serves a guest however many directories it walks, with a process limit on
-//! descriptors only a little above what it holds already (audit V09): a test of its own,
-//! as it sets its process's limit.
+//! A share serves a guest however many directories it walks and files it holds open, with a
+//! process limit on descriptors only a little above what it holds already (audit V09): a
+//! test of its own, as it sets its process's limit.
 #![cfg(unix)]
 #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
 
@@ -11,11 +11,11 @@ const LOOKUP: u32 = 1;
 const MKDIR: u32 = 9;
 const RENAME: u32 = 12;
 const OPEN: u32 = 14;
+const READ: u32 = 15;
 const RELEASE: u32 = 18;
 const OPENDIR: u32 = 27;
 const READDIR: u32 = 28;
 const RELEASEDIR: u32 = 29;
-const EMFILE: i32 = 24;
 
 /// A FUSE request: its 40-byte header, then `body`.
 fn req(opcode: u32, nodeid: u64, body: &[u8]) -> Vec<u8> {
@@ -159,21 +159,24 @@ fn a_guest_walks_any_number_of_directories_within_a_few_descriptors() {
     assert_eq!(answer(&server, &req(RENAME, c, &rename)).0, 0);
     assert!(list(&server, b).contains(&"moved".to_string()));
     assert!(list(&server, a).contains(&"d0".to_string()));
-    // The guest's open files count against the same room: past it, EMFILE, as a kernel
-    // refuses them, an OPENDIR's too.
+    // The guest's open files take no descriptor past the server's room: more of them than
+    // the process may have descriptors are opened and each read, a directory opened besides.
     let file = node(&server, c, "f");
-    let mut handles = Vec::new();
-    loop {
-        let (e, opened) = answer(&server, &req(OPEN, file, &[0u8; 8]));
-        if e != 0 {
-            assert_eq!(e, EMFILE);
-            break;
-        }
-        handles.push(u64::from_le_bytes(opened[0..8].try_into().unwrap()));
-        assert!(handles.len() < 24, "OPEN never refused");
+    let handles: Vec<u64> = (0..64)
+        .map(|_| {
+            let (e, opened) = answer(&server, &req(OPEN, file, &[0u8; 8]));
+            assert_eq!(e, 0, "OPEN");
+            u64::from_le_bytes(opened[0..8].try_into().unwrap())
+        })
+        .collect();
+    for fh in &handles {
+        let mut read = fh.to_le_bytes().to_vec();
+        read.extend_from_slice(&0u64.to_le_bytes());
+        read.extend_from_slice(&8u32.to_le_bytes());
+        read.extend_from_slice(&[0u8; 20]);
+        assert_eq!(answer(&server, &req(READ, file, &read)), (0, b"f".to_vec()));
     }
-    assert!(!handles.is_empty());
-    assert_eq!(answer(&server, &req(OPENDIR, b, &[0u8; 8])).0, EMFILE);
+    assert_eq!(answer(&server, &req(OPENDIR, b, &[0u8; 8])).0, 0);
     // What takes no handle goes on serving, in directories let go long since.
     let leaf = node(&server, ROOT, "d7");
     assert_eq!(node(&server, b, "moved"), node(&server, b, "moved"));
