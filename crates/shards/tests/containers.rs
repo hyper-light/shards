@@ -267,14 +267,157 @@ fn a_joiner_is_a_container_of_its_own() {
         &["--network", "container:nope"],
         "joining network namespace of container: No such container: nope",
     );
-    // What shards does not do for a joiner yet, by name.
+    // What shards does not do for a joiner yet, by name: another joiner's PID namespace.
     let mut again = start(&home, &image, &["--name", "prov2"], &["sleep"]);
-    refused(
-        &["--network", "container:prov2", "-v", "/tmp:/x"],
-        "a volume is not supported in a container joining another's network yet",
+    let other = run_in(
+        &home,
+        &image,
+        &["-d", "--name", "j2", "--network", "container:prov2"],
+        &["sleep"],
     );
+    assert_eq!(other.status, Some(0), "{other}");
+    refused(
+        &["--network", "container:j2", "--pid", "container:j2"],
+        "--pid container:NAME of a container that joins another's network is not supported in a container joining another's network yet",
+    );
+    assert_eq!(shards(&["stop", "-t", "1", "j2"]).status, Some(0));
     assert_eq!(shards(&["stop", "prov2"]).status, Some(0));
     let _ = exit(&mut again);
+}
+
+/// A joiner's volumes, as a container's (D119), through its microVM's join share: a host
+/// directory shared both ways, read-only where asked, a file bound alone, a named volume
+/// filled from its image where it is empty, its image's VOLUME; each its own, neither its
+/// provider's nor another joiner's; given again as it starts again, as it left them.
+#[cfg(unix)]
+#[test]
+fn a_joiner_takes_volumes_as_a_container_does() {
+    let Some((home, image)) = home("containers-joiner-volumes") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let shared = home.join("shared");
+    std::fs::create_dir(&shared).unwrap();
+    std::fs::write(shared.join("a"), "host").unwrap();
+    let file = home.join("one");
+    std::fs::write(&file, "alone").unwrap();
+    let bind = format!("{}:/data", shared.display());
+    let ro = format!("{}:/ro:ro", shared.display());
+    let single = format!("{}:/etc/one:ro", file.display());
+    let mut provider = start(&home, &image, &["--name", "prov"], &["sleep"]);
+    let joining = |options: &[&'static str]| -> Vec<&'static str> {
+        ["--network", "container:prov"]
+            .into_iter()
+            .chain(options.iter().copied())
+            .collect()
+    };
+    let with = |options: &[&str], more: &[&str]| -> Vec<String> {
+        joining(&[])
+            .into_iter()
+            .chain(options.iter().copied())
+            .chain(more.iter().copied())
+            .map(String::from)
+            .collect()
+    };
+    let run = |options: Vec<String>, command: &[&str]| {
+        let options: Vec<&str> = options.iter().map(String::as_str).collect();
+        run_in(&home, &image, &options, command)
+    };
+    let ran = run(
+        with(
+            &["--rm", "-v", &bind, "-v", &ro, "-v", &single],
+            &["-v", "tools:/bin"],
+        ),
+        &["stat", "/data/a", "/etc/one", "/proc/self/mounts"],
+    );
+    assert_eq!(ran.status, Some(0), "{ran}");
+    assert!(ran.stdout.contains("/data/a file 644 0:0 4\n= host\n"), "{ran}");
+    assert!(ran.stdout.contains("/etc/one file 644 0:0 5\n= alone\n"), "{ran}");
+    for mount in [
+        "shards-join-share /data virtiofs rw,",
+        "shards-join-share /ro virtiofs ro,",
+        "shards-join-share /etc/one virtiofs ro,",
+        "shards-join-share /bin virtiofs rw,",
+    ] {
+        assert!(ran.stdout.contains(mount), "{mount}: {ran}");
+    }
+    // The named volume keeps what the image had at /bin, copied as it was first mounted.
+    assert!(
+        home.join("volumes/tools/_data/testguest").exists(),
+        "the image's /bin in the volume"
+    );
+    // Written by the joiner, there on the host; read-only where asked; the file alone,
+    // nothing else of its directory.
+    let wrote = run(
+        with(&["--rm", "-u", "0", "-v", &bind], &[]),
+        &["fs", "mkdir:/data/d", "write:/data/d/b=joiner"],
+    );
+    assert_eq!(wrote.status, Some(0), "{wrote}");
+    assert_eq!(std::fs::read_to_string(shared.join("d/b")).unwrap(), "joiner");
+    let refused = run(
+        with(&["--rm", "-u", "0", "-v", &ro], &[]),
+        &["fs", "write:/ro/x=1"],
+    );
+    assert!(
+        refused.stderr.contains("write:/ro/x=1: Read-only file system"),
+        "{refused}"
+    );
+    let alone = run(with(&["--rm", "-v", &single], &[]), &["stat", "/etc/one/../a"]);
+    assert_eq!(alone.status, Some(1), "{alone}");
+    // Each its own: another joiner of the microVM, and its provider, see none of them.
+    let held = run(with(&["-d", "--name", "j1", "-v", &bind], &[]), &["sleep"]);
+    assert_eq!(held.status, Some(0), "{held}");
+    let other = run(with(&["--rm"], &[]), &["stat", "/data/a"]);
+    assert_eq!(other.status, Some(1), "{other}");
+    let theirs = shards(&["exec", "prov", "/bin/testguest", "stat", "/data/a"]);
+    assert_eq!(theirs.status, Some(1), "{theirs}");
+    let own = shards(&["exec", "j1", "/bin/testguest", "stat", "/data/a"]);
+    assert_eq!(own.status, Some(0), "{own}");
+    // `cp` reads a volume where the joiner has it, as Docker's reads a container's.
+    let copied = shards(&["cp", "j1:/data/a", "-"]);
+    assert_eq!(copied.status, Some(0), "{copied}");
+    assert!(copied.stdout.contains("host"), "{copied}");
+    // Started again, a joiner has its volumes again, as it left them.
+    let made = run(with(&["-d", "--name", "again", "-v", "kept:/v"], &[]), &["sleep"]);
+    assert_eq!(made.status, Some(0), "{made}");
+    let wrote = shards(&["exec", "-u", "0", "again", "/bin/testguest", "fs", "write:/v/x=1"]);
+    assert_eq!(wrote.status, Some(0), "{wrote}");
+    assert_eq!(shards(&["stop", "-t", "1", "again"]).status, Some(0));
+    assert_eq!(shards(&["start", "again"]).status, Some(0));
+    let kept = shards(&["exec", "again", "/bin/testguest", "fs", "print:/v/x"]);
+    assert_eq!((kept.status, kept.stdout.as_str()), (Some(0), "1"), "{kept}");
+    // Its image's VOLUME: an anonymous volume, filled from the image.
+    let ctx = home.join("volumed");
+    std::fs::create_dir(&ctx).unwrap();
+    std::fs::write(
+        ctx.join("Dockerfile"),
+        format!("FROM {image}\nCOPY seed /cache/seed\nVOLUME /cache\n"),
+    )
+    .unwrap();
+    std::fs::write(ctx.join("seed"), "seeded").unwrap();
+    let built = shards(&["build", "-q", "-t", "volumed:1", ctx.to_str().unwrap()]);
+    assert_eq!(built.status, Some(0), "{built}");
+    let options: Vec<&str> = joining(&["--rm"]);
+    let ran = run_in(
+        &home,
+        "volumed:1",
+        &options,
+        &["stat", "/cache/seed", "/proc/self/mounts"],
+    );
+    assert_eq!(ran.status, Some(0), "{ran}");
+    assert!(
+        ran.stdout.contains("/cache/seed file 644 0:0 6\n= seeded\n"),
+        "{ran}"
+    );
+    assert!(
+        ran.stdout.contains("shards-join-share /cache virtiofs rw,"),
+        "{ran}"
+    );
+    for name in ["j1", "again"] {
+        assert_eq!(shards(&["stop", "-t", "1", name]).status, Some(0));
+    }
+    assert_eq!(shards(&["stop", "-t", "1", "prov"]).status, Some(0));
+    let _ = exit(&mut provider);
 }
 
 /// A joiner's own commands reach the joiner (D119), never its provider: a client attached

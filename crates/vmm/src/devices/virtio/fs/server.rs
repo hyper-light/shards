@@ -1261,8 +1261,17 @@ impl Server {
                 let size = (a.u32()? as usize).min(MAX_WRITE as usize);
                 let plus = opcode == op::READDIRPLUS;
                 let base = if plus { 152 } else { 24 };
-                // A file bound alone: its directory shows it alone.
-                let only = self.only.as_ref().filter(|_| nodeid == ROOT);
+                // A file bound alone: its directory shows it alone; and a join share's root
+                // nothing of the directory it is, its volumes found by name alone (D119).
+                let only: Option<CString> = if s.joined {
+                    if nodeid == ROOT {
+                        Some(CString::default())
+                    } else {
+                        s.volumes.get(&nodeid).and_then(|v| v.only.clone())
+                    }
+                } else {
+                    self.only.clone().filter(|_| nodeid == ROOT)
+                };
                 let dir = dir_stream(s, fh)?;
                 // The entries that fit, each with the offset after it, looked up (PLUS)
                 // once the handle is let go.
@@ -1270,7 +1279,10 @@ impl Server {
                 let mut used = 0;
                 dir.read(offset, size, |entry, next| {
                     let bytes = entry.name.to_bytes();
-                    if only.is_some_and(|only| !matches!(bytes, b"." | b"..") && entry.name != *only) {
+                    if only
+                        .as_ref()
+                        .is_some_and(|only| !matches!(bytes, b"." | b"..") && entry.name != *only)
+                    {
                         return true;
                     }
                     let len = (base + bytes.len() + 7) & !7;
@@ -2809,6 +2821,24 @@ mod tests {
         let v = u64::from_le_bytes(entry[0..8].try_into().unwrap());
         assert_eq!(answer(&s, &req(op::LOOKUP, v, 0, &name("bound"))).0, 0);
         assert_eq!(answer(&s, &req(op::LOOKUP, v, 0, &name("secret"))).0, -ENOENT);
+        // Listed, the volume shows its one name, and the share's root none of the files
+        // its directory has.
+        std::fs::write(root.join("stray"), "s").unwrap();
+        for (dir, want) in [(v, vec!["bound"]), (ROOT, vec![])] {
+            for opcode in [op::READDIR, op::READDIRPLUS] {
+                let (e, opened) = answer(&s, &req(op::OPENDIR, dir, 0, &[0; 8]));
+                assert_eq!(e, 0);
+                let fh = u64::from_le_bytes(opened[0..8].try_into().unwrap());
+                let (e, listing) = answer(&s, &req(opcode, dir, 0, &readdir(fh, 0, 4096)));
+                assert_eq!(e, 0);
+                let mut names: Vec<String> = page(&listing, opcode == op::READDIRPLUS)
+                    .into_iter()
+                    .map(|(n, _)| n)
+                    .collect();
+                names.retain(|n| n != "." && n != "..");
+                assert_eq!(names, want, "{opcode}");
+            }
+        }
         assert_eq!(answer(&s, &req(op::UNLINK, v, 0, &name("bound"))).0, -EBUSY);
         let mkdir = [0u8; 8].iter().copied().chain(name("d")).collect::<Vec<_>>();
         assert_eq!(answer(&s, &req(op::MKDIR, v, 0, &mkdir)).0, -EACCES);

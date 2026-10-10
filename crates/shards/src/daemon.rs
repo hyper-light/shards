@@ -122,6 +122,10 @@ fn open_layer(at: &Path) -> std::io::Result<std::fs::File> {
 /// How long a warm VM may take to say it has taken a run: it does so right after it
 /// receives one.
 const TAKE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The home's empty directory, every join share's root (D119): its server makes nothing in
+/// it, and shows nothing of it.
+const JOIN_ROOT: &str = "join-root";
 /// How long a daemon waits for the lock of one that neither listens nor ends its runs
 /// (shards_ipc::exiting): one started at the same moment, which listens as soon as it
 /// has the lock. One ending its runs is waited for as long as it takes.
@@ -682,6 +686,14 @@ struct Daemon<D: Disk = Real> {
     /// The containers `shards pause` froze: their VM processes stopped (SIGSTOP), until
     /// `unpause`, or a stop or kill, lets them go on.
     paused: Mutex<HashSet<String>>,
+    /// Each running microVM's join share process (D119), by the ID of the container whose
+    /// run it is: the daemon's connection to it, on which each joiner's link to it goes.
+    /// Made as the first container joining that microVM's network brings volumes.
+    join_shares: Mutex<HashMap<String, UnixStream>>,
+    /// Each joiner's link to its microVM's join share, by its ID, with the ID of the
+    /// container whose microVM it is: its volumes are served until the link closes, as it
+    /// ends.
+    joiner_links: Mutex<HashMap<String, (String, UnixStream)>>,
     /// Each user network's members, by its ID: the endpoints of its running containers
     /// (D46).
     members: Mutex<std::collections::BTreeMap<String, Vec<networks::Member>>>,
@@ -1159,6 +1171,8 @@ impl<D: Disk> Daemon<D> {
             ports_freed: Condvar::new(),
             removing: Mutex::default(),
             paused: Mutex::default(),
+            join_shares: Mutex::default(),
+            joiner_links: Mutex::default(),
             members: Mutex::default(),
             events: events::Events::default(),
             settling: Mutex::default(),
@@ -1821,27 +1835,14 @@ impl<D: Disk> Daemon<D> {
             }
         };
         // What a container joining another's network does not take yet (D119), refused by
-        // name before its container is made, as the guest refuses it: what only the joined
-        // microVM's own run was given (its shared directories, its devices), or what the
-        // guest's init does in that run's namespaces.
+        // name before its container is made: the PID namespace of another joiner, which
+        // init knows by that joiner's exec's id and the daemon does not.
         if let network::Start::Join(_) = &start {
-            let what = if !run.binds.is_empty()
-                || !run.volumes.is_empty()
-                || !run.mounts.is_empty()
-                || !run.volumes_from.is_empty()
-            {
-                Some("a volume")
-            } else if run
+            let what = run
                 .pid
                 .strip_prefix("container:")
                 .is_some_and(|p| self.joined_run(p))
-            {
-                // Its own PID namespace in its provider's microVM, which init knows by its
-                // exec's id and the daemon does not.
-                Some("--pid container:NAME of a container that joins another's network")
-            } else {
-                None
-            };
+                .then_some("--pid container:NAME of a container that joins another's network");
             if let Some(what) = what {
                 refused(&format!(
                     "{what} is not supported in a container joining another's network yet"
@@ -1914,23 +1915,14 @@ impl<D: Disk> Daemon<D> {
         // none (the legacy transform, neither with IPv6), read as the run starts; with
         // them the command still within a frame (review 1.y), as spec.rs measured it
         // without.
-        // A joiner's: an image's volumes, and an Agentfile's agents, are not yet taken by a
-        // container joining another's network (D119), as the guest refuses them.
-        if let network::Start::Join(_) = &start {
-            let what = if !prepared.image_volumes.is_empty() {
-                Some("an image's VOLUME")
-            } else if prepared.agentfile.is_some() {
-                Some("an Agentfile's image")
-            } else {
-                None
-            };
-            if let Some(what) = what {
-                refuse(&format!(
-                    "{what} is not supported in a container joining another's network yet"
-                ));
-                abandon(&id);
-                return None;
-            }
+        // A joiner's: an Agentfile's agents are not yet taken by a container joining
+        // another's network (D119), as the guest refuses them.
+        if let network::Start::Join(_) = &start
+            && prepared.agentfile.is_some()
+        {
+            refuse("an Agentfile's image is not supported in a container joining another's network yet");
+            abandon(&id);
+            return None;
         }
         // A joiner's files that name it are its provider's (D119): none of its own.
         if !matches!(start, network::Start::Join(_))
@@ -2098,6 +2090,10 @@ impl<D: Disk> Daemon<D> {
             .made(&id)
             .map(|c| (c.mounts.clone(), c.started.is_none()))
             .unwrap_or_default();
+        // A joiner's shared directories (D119), each with the name it goes by in its microVM's
+        // join share, given to the share as it joins (`join_vm`).
+        let mut join_volumes = Vec::new();
+        let joining = matches!(start, network::Start::Join(_));
         let shared = crate::volumes::open(&points, first, &crate::volumes::Store::new(&self.home)).and_then(
             |opened| {
                 prepared.spec.setup = crate::setup::setup(&run, &opened.mounts)?;
@@ -2120,6 +2116,19 @@ impl<D: Disk> Daemon<D> {
                 // starts no domain without one.
                 if prepared.agentfile.is_some() {
                     prepared.spec.setup.extend(crate::setup::domain_seccomp(kernel)?);
+                }
+                // A joiner's are volumes of its microVM's join share, each named so that no
+                // other container can guess it (D119), as no run's own shares are its.
+                if joining {
+                    let names = opened
+                        .dirs
+                        .iter()
+                        .map(|_| containers::new_id().map_err(|e| format!("a volume's name: {e}")))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    crate::volumes::joined(&mut prepared.spec.setup, &names)?;
+                    crate::spec::fits(&prepared.spec)?;
+                    join_volumes = opened.dirs.into_iter().zip(names).collect();
+                    return Ok(None);
                 }
                 crate::spec::fits(&prepared.spec)?;
                 let link = self.start_shares(threads, &opened.dirs)?;
@@ -2269,7 +2278,7 @@ impl<D: Disk> Daemon<D> {
                 agentfile: prepared.agentfile.clone(),
             },
             || match &start {
-                network::Start::Join(name) => self.join_vm(&id, name, &prepared),
+                network::Start::Join(name) => self.join_vm(threads, &id, name, &prepared, &join_volumes),
                 _ => self.warm_for(threads, &prepared, &start, &say),
             },
         );
@@ -2279,6 +2288,8 @@ impl<D: Disk> Daemon<D> {
             Ok(inbox) => Some((id, inbox)),
             Err(said) => {
                 self.free_ports(Some(&id), None);
+                // A joiner's volumes go from its microVM's join share (D119).
+                lock(&self.joiner_links).remove(&id);
                 refuse(&said);
                 None
             }
@@ -3490,6 +3501,10 @@ impl<D: Disk> Daemon<D> {
     /// Run `id` ended: `done` is its DONE, or `None` for a VM that ended without one.
     fn run_ended(&self, id: &str, inbox: &mut Inbox, done: Option<&[u8]>) {
         self.leave_network(id);
+        // A joiner's volumes go from its microVM's join share as its link closes; and a
+        // microVM's join share ends with its VM, the daemon's connection to it let go (D119).
+        lock(&self.joiner_links).remove(id);
+        lock(&self.join_shares).remove(id);
         inbox.ended = true;
         // A visit's end is its own: the container stays as it was.
         if inbox.visit {
@@ -3865,7 +3880,16 @@ impl<D: Disk> Daemon<D> {
     /// provider's. The VM is given the joiner's own connection, whose other end is the
     /// joiner's run's socket, and its image `prepared.rootfs`, which the VM gives a range
     /// of its join disk (`kind::JOIN`).
-    fn join_vm(&self, id: &str, name: &str, prepared: &Prepared) -> Result<Ready, String> {
+    /// Its shared directories, `volumes`, are given to that microVM's join share first,
+    /// once however many times the joiner is handed over (`give_join_volumes`).
+    fn join_vm<'s, 'e>(
+        &'s self,
+        threads: &'s Threads<'s, 'e>,
+        id: &str,
+        name: &str,
+        prepared: &Prepared,
+        volumes: &[((OwnedFd, bool, OsString), String)],
+    ) -> Result<Ready, String> {
         let not_found = || format!("joining network namespace of container: No such container: {name}");
         let found = self.resolve(name).map_err(|_| not_found())?;
         if found == id {
@@ -3906,6 +3930,12 @@ impl<D: Disk> Daemon<D> {
                 "cannot join the network of container {shown}, which is paused: its microVM is stopped until it is unpaused"
             ));
         }
+        let given = lock(&self.joiner_links)
+            .get(id)
+            .is_some_and(|(to, _)| *to == provider);
+        if !volumes.is_empty() && !given {
+            self.give_join_volumes(threads, id, &provider, &socket, &inbox, volumes)?;
+        }
         let image =
             File::open(&prepared.rootfs).map_err(|e| format!("{}: {e}", prepared.rootfs.display()))?;
         let (ours, theirs) = UnixStream::pair().map_err(|e| format!("a joiner's connection: {e}"))?;
@@ -3932,6 +3962,110 @@ impl<D: Disk> Daemon<D> {
             records: None,
             joined: Some(provider),
         })
+    }
+
+    /// Gives joiner `id`'s `volumes`, each a directory and the name it goes by, to the join
+    /// share of `provider`'s microVM (D119), whose VM `socket` reaches: served until the
+    /// joiner's link to the share closes, as it ends. The share's process is started with
+    /// the first joiner to bring any, and its VM given the connection to it then, before
+    /// that joiner's `JOIN`, so before its guest mounts the share.
+    fn give_join_volumes<'s, 'e>(
+        &'s self,
+        threads: &'s Threads<'s, 'e>,
+        id: &str,
+        provider: &str,
+        socket: &RunSocket,
+        inbox: &Mutex<Inbox>,
+        volumes: &[((OwnedFd, bool, OsString), String)],
+    ) -> Result<(), String> {
+        use std::os::unix::ffi::OsStrExt as _;
+        let failed = |e: io::Error| format!("its microVM's join share: {e}");
+        let (link, theirs) = UnixStream::pair().map_err(failed)?;
+        {
+            let mut shares = lock(&self.join_shares);
+            if !shares.contains_key(provider) {
+                let door = self.start_join_share(threads, socket, inbox)?;
+                shares.insert(provider.to_string(), door);
+            }
+            let sent = match shares.get(provider) {
+                Some(door) => shards_ipc::send(door, kind::JOIN_LINK, &[], &[theirs.as_fd()]),
+                None => Err(io::Error::other("it has none")),
+            };
+            if let Err(e) = sent {
+                // Its process gone: the next joiner's starts another.
+                shares.remove(provider);
+                return Err(failed(e));
+            }
+        }
+        link.set_read_timeout(Some(TAKE_TIMEOUT)).map_err(failed)?;
+        link.set_write_timeout(Some(TAKE_TIMEOUT)).map_err(failed)?;
+        for ((dir, read_only, only), name) in volumes {
+            let mut payload = name.as_bytes().to_vec();
+            payload.push(0);
+            payload.extend_from_slice(if *read_only { b"ro" } else { b"rw" });
+            payload.push(0);
+            payload.extend_from_slice(only.as_bytes());
+            shards_ipc::send(&link, kind::JOIN_VOLUME, &payload, &[dir.as_fd()]).map_err(failed)?;
+            let answer = shards_ipc::recv(&link)
+                .map_err(failed)?
+                .ok_or("its microVM's join share ended")?;
+            match answer.kind {
+                kind::TAKEN => {}
+                kind::ERR => {
+                    return Err(format!(
+                        "its microVM's join share: {}",
+                        String::from_utf8_lossy(&answer.payload)
+                    ));
+                }
+                other => return Err(format!("its microVM's join share said message kind {other}")),
+            }
+        }
+        // Answered on it, the share has its end: ours may go (M24).
+        drop(theirs);
+        lock(&self.joiner_links).insert(id.to_string(), (provider.to_string(), link));
+        Ok(())
+    }
+
+    /// Starts a microVM's join share process (D119), its root an empty directory of the
+    /// home's, and gives the VM `socket` reaches its connection to it, held until the VM
+    /// says it has it (M24). Returns the daemon's connection to the process, on which each
+    /// joiner's link to it goes.
+    fn start_join_share<'s, 'e>(
+        &'s self,
+        threads: &'s Threads<'s, 'e>,
+        socket: &RunSocket,
+        inbox: &Mutex<Inbox>,
+    ) -> Result<UnixStream, String> {
+        use std::os::unix::fs::DirBuilderExt as _;
+        let failed = |e: io::Error| format!("its microVM's join share: {e}");
+        let exe = std::env::current_exe().map_err(|e| format!("this binary: {e}"))?;
+        let (vms, served) = UnixStream::pair().map_err(failed)?;
+        let (door, theirs) = UnixStream::pair().map_err(failed)?;
+        let at = self.home.join(JOIN_ROOT);
+        match std::fs::DirBuilder::new().mode(0o700).create(&at) {
+            Err(e) if e.kind() != io::ErrorKind::AlreadyExists => return Err(failed(e)),
+            _ => {}
+        }
+        let root = File::open(&at).map_err(failed)?;
+        let child = shards_ipc::spawn_in(
+            &exe,
+            &[OsStr::new("share"), OsStr::new("--join")],
+            &[(served.as_fd(), 3), (theirs.as_fd(), 4), (root.as_fd(), 5)],
+            false,
+            &[],
+        )
+        .map_err(|e| format!("starting its microVM's join share: {e}"))?;
+        self.follow_share(threads, child);
+        let number = self.next_exec.fetch_add(1, Ordering::Relaxed);
+        let held = vms.try_clone().map_err(failed)?;
+        lock(inbox).execs_in_flight.push((number, held));
+        if let Err(e) = socket.send(kind::JOIN_SHARE, &number.to_be_bytes(), &[vms.as_fd()]) {
+            lock(inbox).execs_in_flight.retain(|(n, _)| *n != number);
+            // The process ends as the other end of its connection goes, with ours.
+            return Err(failed(e));
+        }
+        door.set_write_timeout(Some(TAKE_TIMEOUT)).map_err(failed)?;
+        Ok(door)
     }
 
     /// A warm VM for `prepared`: from its template's pool, or booted for it, saving the
@@ -4366,9 +4500,10 @@ impl<D: Disk> Daemon<D> {
         if !cfg.shares.is_empty() {
             args.extend(["--shares".into(), cfg.shares.len().to_string().into()]);
         }
-        // A join disk in every microVM, empty until a container joins its network (D119):
-        // its templates have it, and so every restore of them.
-        args.push("--join".into());
+        // A join disk and a join share in every microVM, empty and unserved until a
+        // container joins its network (D119): its templates have them, and so every restore
+        // of them.
+        args.extend(["--join".into(), "--join-share".into()]);
         args.extend(["--warm".into(), "3".into()]);
         // A guest on a network: a fresh MAC, which a template it saves keeps.
         let net = if cfg.cmdline.contains("shards_net=") {

@@ -206,6 +206,17 @@ pub mod kind {
     /// (`RUN`, `TAKEN`, `STARTED`, `DONE`, its log's segments), and its image's EROFS file,
     /// which the VM gives a range of its join disk.
     pub const JOIN: u8 = 41;
+    /// Daemon → a running container's VM: its number, then its join share's connection to
+    /// the share process that serves it (D119), as the first container joining its network
+    /// brings volumes; answered `EXEC_TAKEN`, as a joiner's `JOIN` is.
+    pub const JOIN_SHARE: u8 = 42;
+    /// Daemon → a join share process: a joiner's link to it, on which its volumes come
+    /// (`JOIN_VOLUME`), served until it closes as the joiner ends.
+    pub const JOIN_LINK: u8 = 43;
+    /// Daemon → a join share process, on a joiner's link: a volume to serve,
+    /// `NAME\0MODE\0ONLY` (`ro` or `rw`, and the one name of it a file is bound by, or
+    /// none), with its directory; answered `TAKEN`, or `ERR` and why.
+    pub const JOIN_VOLUME: u8 = 44;
 }
 
 /// An `ATTACH_RUN` flag: the client's stdin goes to the command's.

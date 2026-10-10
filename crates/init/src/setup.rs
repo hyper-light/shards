@@ -292,6 +292,8 @@ pub fn apply(entry: &[u8]) -> Result<(), i32> {
         }
     } else if let Some(rest) = text.strip_prefix("volume=") {
         volume(rest).map_err(|e| e.raw_os_error().unwrap_or(libc::EIO))?;
+    } else if let Some(rest) = text.strip_prefix("join-volume=") {
+        join_volume(rest).map_err(|e| e.raw_os_error().unwrap_or(libc::EIO))?;
     } else if let Some(n) = text.strip_prefix("oom=") {
         // runc sets the container's process's own (setupOOMScoreAdj, before exec).
         std::fs::write("/proc/self/oom_score_adj", n).map_err(|e| e.raw_os_error().unwrap_or(libc::EIO))?;
@@ -317,17 +319,36 @@ pub fn apply(entry: &[u8]) -> Result<(), i32> {
     Ok(())
 }
 
+/// A shared directory's setup, `WHICH\0DEST\0FLAGS\0NAME`: its four parts, NAME one of a
+/// file in it, or empty.
+fn shared_parts(spec: &str) -> io::Result<(&str, &str, &str, &str)> {
+    let mut parts = spec.split('\0');
+    let (Some(which), Some(dest), Some(flags), Some(name), None) = (
+        parts.next(),
+        parts.next(),
+        parts.next(),
+        parts.next(),
+        parts.next(),
+    ) else {
+        return Err(io::Error::from_raw_os_error(libc::EINVAL));
+    };
+    if !name.is_empty() && !one_name(name) {
+        return Err(io::Error::from_raw_os_error(libc::EINVAL));
+    }
+    Ok((which, dest, flags, name))
+}
+
+/// Whether `name` names a file in a directory, and nothing past it.
+fn one_name(name: &str) -> bool {
+    !name.is_empty() && !name.contains('/') && name != "." && name != ".."
+}
+
 /// Mounts a shared directory (D38), `TAG\0DEST\0FLAGS\0NAME`: by its virtio-fs tag at
 /// DEST, read-only with `ro`; with `copy`, the image's files at DEST copied into it first,
 /// where it is empty (moby daemon/create_unix.go populateVolume); with a NAME, only that
 /// file of it, bound at DEST, as a file bind mount is.
 fn volume(spec: &str) -> io::Result<()> {
-    let mut parts = spec.split('\0');
-    let (Some(tag), Some(dest), Some(flags), Some(name)) =
-        (parts.next(), parts.next(), parts.next(), parts.next())
-    else {
-        return Err(io::Error::from_raw_os_error(libc::EINVAL));
-    };
+    let (tag, dest, flags, name) = shared_parts(spec)?;
     let file = (!name.is_empty()).then_some(name);
     let ro = flags.split(',').any(|f| f == "ro");
     let copy = flags.split(',').any(|f| f == "copy");
@@ -383,6 +404,66 @@ fn volume(spec: &str) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Mounts a joiner's volume (D119), `VOLUME\0DEST\0FLAGS\0NAME`: the directory its
+/// microVM's join share serves as VOLUME, as [`volume`] mounts a run's own shared
+/// directory, in the joiner's mount namespace once its root is built, so that DEST resolves
+/// in that root alone. The share is mounted where only this process sees it, and let go
+/// once the volume is bound from it: the joiner's root holds its own volumes, and no way to
+/// the others'. Never read-only itself: every joiner's mount of it is of one file system,
+/// read-only from its first mount if that one were; a volume is made read-only where it is
+/// bound, and its server refuses it writes besides.
+fn join_volume(spec: &str) -> io::Result<()> {
+    let (volume, dest, flags, name) = shared_parts(spec)?;
+    if !one_name(volume) {
+        return Err(io::Error::from_raw_os_error(libc::EINVAL));
+    }
+    let ro = flags.split(',').any(|f| f == "ro");
+    let copy = flags.split(',').any(|f| f == "copy");
+    let tag = shards_abi::JOIN_SHARE_TAG;
+    let staging = format!("/dev/.shards-{tag}");
+    let mount = |src: &str, dst: &str, fstype: Option<&str>, flags: libc::c_ulong| -> io::Result<()> {
+        let (src, dst) = (
+            c(src).ok_or(io::ErrorKind::InvalidInput)?,
+            c(dst).ok_or(io::ErrorKind::InvalidInput)?,
+        );
+        let fstype = fstype.and_then(c);
+        let ty = fstype.as_ref().map_or(std::ptr::null(), |t| t.as_ptr());
+        // SAFETY: mount(2) of NUL-terminated strings that outlive the call.
+        if unsafe { libc::mount(src.as_ptr(), dst.as_ptr(), ty, flags, std::ptr::null()) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    };
+    std::fs::create_dir_all(&staging)?;
+    mount(tag, &staging, Some("virtiofs"), 0)?;
+    let bound = (|| {
+        let dir = format!("{staging}/{volume}");
+        let source = if name.is_empty() {
+            mkdir_all(dest)?;
+            if copy && std::fs::read_dir(&dir)?.next().is_none() {
+                copy_tree(std::path::Path::new(dest), std::path::Path::new(&dir))?;
+            }
+            dir
+        } else {
+            if let Some(parent) = std::path::Path::new(dest).parent() {
+                mkdir_all(&parent.to_string_lossy())?;
+            }
+            if std::fs::symlink_metadata(dest).is_err() {
+                std::fs::File::create(dest)?;
+            }
+            format!("{dir}/{name}")
+        };
+        mount(&source, dest, None, libc::MS_BIND)?;
+        if ro {
+            mount("", dest, None, libc::MS_BIND | libc::MS_REMOUNT | libc::MS_RDONLY)?;
+        }
+        Ok(())
+    })();
+    detach(&staging);
+    let _ = std::fs::remove_dir(&staging);
+    bound
 }
 
 fn detach(path: &str) {
@@ -642,7 +723,10 @@ pub fn failed(entry: &[u8], errno: i32) -> String {
     if text == "cgroups-rw" {
         return format!("error remounting the cgroup hierarchy writable: {err}");
     }
-    if let Some(rest) = text.strip_prefix("volume=") {
+    if let Some(rest) = text
+        .strip_prefix("volume=")
+        .or_else(|| text.strip_prefix("join-volume="))
+    {
         let dest = rest.split('\0').nth(1).unwrap_or_default();
         return format!("error mounting a shared directory to rootfs at \"{dest}\": {err}");
     }
