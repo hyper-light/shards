@@ -212,6 +212,16 @@ fn a_joiner_is_a_container_of_its_own() {
             .any(|l| l == format!("hostname {hostname}")),
         "{reported}"
     );
+    let wrote = shards(&[
+        "exec",
+        "-u",
+        "0",
+        "prov",
+        "/bin/testguest",
+        "fs",
+        "write:/served=1",
+    ]);
+    assert_eq!(wrote.status, Some(0), "{wrote}");
     let asked = shards(&["exec", "joiner", "/bin/testguest", "ask", "127.0.0.1:7000"]);
     assert_eq!(asked.stdout, "ask from 127.0.0.1\n", "{asked}");
     // The provider served its one connection and ended; its joiner goes on.
@@ -225,6 +235,14 @@ fn a_joiner_is_a_container_of_its_own() {
     assert_eq!(exited.stdout, "exited 0\n", "{exited}");
     let logged = shards(&["logs", "joiner"]);
     assert_eq!(logged.stdout, "ready\ngot 15\n", "{logged}");
+    // The provider's files, saved as it ended beside its joiner, read with their microVM
+    // gone (D37).
+    let kept = shards(&["diff", "prov"]);
+    assert_eq!(
+        (kept.status, kept.stdout.as_str()),
+        (Some(0), "A /served\n"),
+        "{kept}"
+    );
     // dockerd's refusals, as the container is made and as it starts.
     let refused = |options: &[&str], said: &str| {
         let r = run_in(&home, &image, options, &["exit", "0"]);

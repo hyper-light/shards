@@ -3521,8 +3521,11 @@ the boundary is a container's, which is what the mode asks for.
   own connection, its VM process asks there for its writable layer (`kind::SAVE`), as for
   a run's; init keeps the joiner's connection and layers until the host has asked or
   closed it, and packs the layer in a child of its own, which writes to the connection:
-  init's loop, serving the provider and the other joiners, never waits on it (the
-  workload's own save, once joiners outlive it, still packs in init's loop: open). Put back
+  init's loop, serving the provider and the other joiners, never waits on it. So too the
+  workload's own, once joiners outlive it, where init's loop packed it before and its
+  joiners waited meanwhile; what init has for the host meanwhile follows the layer
+  (`a_joiner_is_a_container_of_its_own`: the provider's file, saved as it ended beside its
+  joiner, read once their microVM has gone; mutation-checked). Put back
   as it starts again: the VM process appends the layer to the join disk beside its image
   (`join-layer=OFFSET,LEN`), and the joiner's child applies it over its root as ApplyLayer
   does, before it reads its users and before anything is mounted in its root, with its
