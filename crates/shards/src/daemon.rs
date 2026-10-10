@@ -3767,9 +3767,9 @@ impl<D: Disk> Daemon<D> {
         let fresh = dir.with_extension(format!("new-{}-{n}", std::process::id()));
         let mut ready = self.cold(threads, &cfg, &prepared.rootfs, Some(&fresh));
         if ready.is_ok()
-            && let Err(e) = crate::run::Origin::of(guest, &prepared.rootfs, server.is_some()).write(&fresh)
+            && let Err(e) = crate::run::Origin::of(guest, &prepared.rootfs, server.is_some()).write(&dir)
         {
-            log(format!("{}: {e}", fresh.display()));
+            log(format!("{}: its origin: {e}", dir.display()));
         }
         crate::run::settle(&fresh, &dir);
         if let Ok(r) = &mut ready
@@ -3978,6 +3978,13 @@ impl<D: Disk> Daemon<D> {
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default();
+            // A template's record is beside it (run::Origin), and goes once it has gone.
+            if let Some(of) = name.strip_suffix(".origin") {
+                if !templates.join(of).exists() {
+                    let _ = std::fs::remove_file(&dir);
+                }
+                continue;
+            }
             let live = if name.contains(".new-") {
                 // Being saved by this daemon, or left by one before it.
                 name.contains(&ours)
@@ -3993,7 +4000,12 @@ impl<D: Disk> Daemon<D> {
                 }
             }
             match std::fs::remove_dir_all(&dir) {
-                Ok(()) => log(format!("collected template {}", dir.display())),
+                Ok(()) => {
+                    if let Some(origin) = crate::run::Origin::path(&dir) {
+                        let _ = std::fs::remove_file(origin);
+                    }
+                    log(format!("collected template {}", dir.display()));
+                }
                 Err(e) => log(format!("collecting {}: {e}", dir.display())),
             }
         }
@@ -7237,7 +7249,7 @@ mod tests {
         let rootfs = dir.with_extension("erofs");
         std::fs::write(&rootfs, b"").unwrap();
         let origin = serde_json::json!({"rootfs": rootfs, "kernel_digest": "", "init_digest": ""});
-        std::fs::write(dir.join("origin.json"), origin.to_string()).unwrap();
+        std::fs::write(crate::run::Origin::path(dir).unwrap(), origin.to_string()).unwrap();
     }
 
     /// A pool forgotten before its refill comes, made before its first claim and so
@@ -7267,7 +7279,7 @@ mod tests {
 
             let bare = t.home.join("bare");
             template(&bare);
-            std::fs::remove_file(bare.join("origin.json")).unwrap();
+            std::fs::remove_file(crate::run::Origin::path(&bare).unwrap()).unwrap();
             assert!(
                 t.daemon
                     .plan_refill(&mut lock(&t.daemon.state), &bare, true)
