@@ -191,6 +191,19 @@ pub trait Resolver {
     fn warn(&self, warning: &lint::Warning) {
         let _ = warning;
     }
+    /// An image of the OCI layout the client serves as content store `store`, by its
+    /// stand-in reference `name` (ResolveImageConfig's OCILayoutOpt); [`Resolver::resolve`]
+    /// where nothing tells them apart.
+    fn resolve_layout(
+        &self,
+        name: &[u8],
+        store: &[u8],
+        platform: &Platform,
+        log: &[u8],
+    ) -> Result<Resolved, Vec<u8>> {
+        let _ = store;
+        self.resolve(name, platform, log)
+    }
 }
 
 /// A resolver given each of the checks' warnings before anything else is asked of it.
@@ -237,6 +250,16 @@ impl Resolver for Warned<'_> {
     }
     fn warn(&self, warning: &lint::Warning) {
         self.inner.warn(warning);
+    }
+    fn resolve_layout(
+        &self,
+        name: &[u8],
+        store: &[u8],
+        platform: &Platform,
+        log: &[u8],
+    ) -> Result<Resolved, Vec<u8>> {
+        self.flush();
+        self.inner.resolve_layout(name, store, platform, log)
     }
 }
 
@@ -1095,6 +1118,19 @@ pub fn git_identifier(
         attrs.insert(b"git.fetchbycommit".to_vec(), b"true".to_vec());
     }
     ([b"git://".as_slice(), &id].concat(), attrs)
+}
+
+/// What dockerui's DetectGitContext gives a Git context beyond `llb.Git`'s own: its
+/// files' times (`git.mtime`, the URL's `mtime=`, else `default`), and Git's advice where
+/// BUILDKIT_GIT_ADVICE asks for it.
+fn context_git_attrs(attrs: &mut BTreeMap<Vec<u8>, Vec<u8>>, g: &git::GitRef, default: &[u8], advice: bool) {
+    let mtime = if g.mtime.is_empty() { default } else { &g.mtime };
+    if !mtime.is_empty() {
+        attrs.insert(b"git.mtime".to_vec(), mtime.to_vec());
+    }
+    if advice {
+        attrs.insert(b"git.advice".to_vec(), b"true".to_vec());
+    }
 }
 
 /// `resolveSourceDateEpochState`. shards takes no named contexts (`--build-context`), so
@@ -3791,11 +3827,14 @@ impl Planner<'_> {
             match git::parse_git_ref(&input) {
                 git::Parsed::Git(g) => {
                     let name = errb(&[b"[internal] load git source ", &input]);
-                    Ok(Some(planner.git_source(
-                        &g,
-                        g.keep_git_dir == Some(true),
-                        &g.checksum,
-                        &name,
+                    let (identifier, mut attrs) =
+                        git_identifier(&g, g.keep_git_dir == Some(true), &g.checksum);
+                    context_git_attrs(&mut attrs, &g, b"", planner.opts.git_advice);
+                    Ok(Some(planner.graph.source(
+                        identifier,
+                        attrs,
+                        None,
+                        custom_name(name),
                     )))
                 }
                 git::Parsed::BadGit(e) => Err(Fail::new(e)),
@@ -3900,12 +3939,20 @@ impl Planner<'_> {
                 dummy.digest = Some(digest);
                 let dummy = dummy.to_string().into_bytes();
                 let log = errb(&[b"[context ", &n.key, b"] load metadata for ", &dummy]);
-                let resolved = self.resolver.resolve(&dummy, platform, &log).map_err(Fail::new)?;
+                let store = r.name().into_bytes();
+                let resolved = self
+                    .resolver
+                    .resolve_layout(&dummy, &store, platform, &log)
+                    .map_err(Fail::new)?;
                 let mut img = Image::from_json(&resolved.config)
                     .map_err(|e| Fail::new(errb(&[b"could not parse oci-layout image config: ", &e])))?;
                 img.created = None;
                 let mut attrs = BTreeMap::new();
-                attrs.insert(b"oci.store".to_vec(), r.name().into_bytes());
+                // llb.OCIStore: the client's session where the build has one.
+                if !self.opts.session.is_empty() {
+                    attrs.insert(b"oci.session".to_vec(), self.opts.session.clone());
+                }
+                attrs.insert(b"oci.store".to_vec(), store);
                 let mut state = self.graph.source(
                     [b"oci-layout://".as_slice(), &dummy].concat(),
                     attrs,
@@ -5621,7 +5668,15 @@ fn main_context(graph: &mut Graph, opts: &Options) -> Result<State, Fail> {
         MainContext::Git { url, keep_git_dir } => match git::parse_git_ref(url) {
             git::Parsed::Git(g) => {
                 let keep = g.keep_git_dir == Some(true) || *keep_git_dir;
-                let (identifier, attrs) = git_identifier(&g, keep, &g.checksum);
+                let (identifier, mut attrs) = git_identifier(&g, keep, &g.checksum);
+                // SOURCE_DATE_EPOCH's build arg asks the context's files for the commit's
+                // time (initContext's llb.GitMTimeCommit), the URL's mtime= over it.
+                let epoch = opts
+                    .build_args
+                    .get(b"SOURCE_DATE_EPOCH".as_slice())
+                    .filter(|v| !v.is_empty())
+                    .map_or(b"".as_slice(), |_| b"commit".as_slice());
+                context_git_attrs(&mut attrs, &g, epoch, opts.git_advice);
                 graph.source(
                     identifier,
                     attrs,
@@ -6114,6 +6169,52 @@ mod tests {
             String::from_utf8_lossy(&e.message),
             "shards builds Linux guests: the target platform windows/amd64 is not one"
         );
+    }
+
+    /// dockerui's DetectGitContext (dockerfile/1.27.1 context.go): the build context's
+    /// files take the commit's time where SOURCE_DATE_EPOCH is a build arg, the URL's
+    /// `mtime=` over it; a named context only the URL's; Git's advice where asked.
+    #[test]
+    fn git_contexts_take_their_times_and_advice_as_dockerui_gives_them() {
+        let git_attrs = |opts: &Options| -> BTreeMap<Vec<u8>, Vec<u8>> {
+            let def = context_definition(opts).unwrap();
+            def.ops
+                .iter()
+                .find_map(|op| match &op.kind {
+                    llb::OpKind::Source { identifier, attrs } if identifier.starts_with(b"git://") => {
+                        Some(attrs.clone())
+                    }
+                    _ => None,
+                })
+                .unwrap()
+        };
+        let main = |url: &str, epoch: bool, advice: bool| Options {
+            target_platform: Platform::new("linux", "amd64"),
+            main_context: MainContext::Git {
+                url: url.as_bytes().to_vec(),
+                keep_git_dir: false,
+            },
+            build_args: if epoch {
+                BTreeMap::from([(b"SOURCE_DATE_EPOCH".to_vec(), b"0".to_vec())])
+            } else {
+                BTreeMap::new()
+            },
+            git_advice: advice,
+            ..Default::default()
+        };
+        let mtime = |a: &BTreeMap<Vec<u8>, Vec<u8>>| a.get(b"git.mtime".as_slice()).cloned();
+        let a = git_attrs(&main("https://github.com/moby/buildkit.git", false, false));
+        assert_eq!(mtime(&a), None);
+        assert!(!a.contains_key(b"git.advice".as_slice()));
+        let a = git_attrs(&main("https://github.com/moby/buildkit.git", true, true));
+        assert_eq!(mtime(&a), Some(b"commit".to_vec()));
+        assert_eq!(a.get(b"git.advice".as_slice()), Some(&b"true".to_vec()));
+        let a = git_attrs(&main(
+            "https://github.com/moby/buildkit.git?mtime=checkout",
+            true,
+            false,
+        ));
+        assert_eq!(mtime(&a), Some(b"checkout".to_vec()));
     }
 
     /// `strings.Index`: an empty needle is at the start.

@@ -58,6 +58,10 @@ const UNKNOWN: i32 = 2;
 const UNIMPLEMENTED: i32 = 12;
 /// errdefs.Source's detail, which the client prints the excerpt of a file from.
 const SOURCE_DETAIL: &str = "github.com/moby/buildkit/errdefs.Source+json";
+/// errdefs.FrontendCap's, of a frontend capability a frontend lacks.
+const FRONTEND_CAP_DETAIL: &str = "github.com/moby/buildkit/errdefs.FrontendCap+json";
+/// errdefs.Subrequest's, of a subrequest a frontend does not answer.
+const SUBREQUEST_DETAIL: &str = "github.com/moby/buildkit/errdefs.Subrequest+json";
 
 impl Failure {
     fn new(message: impl Into<String>) -> Failure {
@@ -405,6 +409,34 @@ fn config(opts: &mut BTreeMap<String, String>, env: &Env, caps: &Caps) -> Result
         .get("filename")
         .cloned()
         .unwrap_or_else(|| "Dockerfile".into());
+    // initContext: the context a Git or HTTP(S) URL is, in the option `contextkey` names
+    // (`context` by default); BUILDKIT_CONTEXT_KEEP_GIT_DIR where it is a boolean.
+    let context_key = opts
+        .get("contextkey")
+        .cloned()
+        .unwrap_or_else(|| "context".into());
+    let context_url = opt(opts, &context_key).to_string();
+    let main_context = match shards_dockerfile::git::parse_git_ref(context_url.as_bytes()) {
+        shards_dockerfile::git::Parsed::Git(_) => MainContext::Git {
+            url: context_url.as_bytes().to_vec(),
+            keep_git_dir: shards_image::go::parse_bool(
+                opt(opts, "build-arg:BUILDKIT_CONTEXT_KEEP_GIT_DIR").as_bytes(),
+            )
+            .unwrap_or(false),
+        },
+        shards_dockerfile::git::Parsed::BadGit(e) => {
+            return Err(Failure::new(String::from_utf8_lossy(&e)));
+        }
+        shards_dockerfile::git::Parsed::NotGit
+            if context_url.starts_with("http://") || context_url.starts_with("https://") =>
+        {
+            MainContext::Http {
+                url: context_url.as_bytes().to_vec(),
+                archive: false,
+            }
+        }
+        shards_dockerfile::git::Parsed::NotGit => MainContext::Local,
+    };
     let (dockerfile_local, force_local_dockerfile) = match opts.get("dockerfilekey") {
         Some(k) => (k.clone(), true),
         None => ("dockerfile".to_string(), false),
@@ -433,7 +465,7 @@ fn config(opts: &mut BTreeMap<String, String>, env: &Env, caps: &Caps) -> Result
         linux_resources,
         network_mode,
         image_resolve_mode: resolve_mode.to_vec(),
-        main_context: MainContext::Local,
+        main_context,
         context_subdir: opts.get("contextsubdir").map(|s| s.as_bytes().to_vec()),
         git_advice,
         session: env.session.as_bytes().to_vec(),
@@ -546,7 +578,10 @@ fn validate_caps(req: Option<&String>) -> (bool, Option<Failure>) {
             refused = Some(Failure {
                 code: UNIMPLEMENTED,
                 message: format!("unsupported frontend capability {name}"),
-                details: Vec::new(),
+                details: vec![(
+                    FRONTEND_CAP_DETAIL.to_string(),
+                    format!("{{\"name\":{}}}", json_string(name)).into_bytes(),
+                )],
             });
             if c.contains("+forward") {
                 forward = true;
@@ -674,6 +709,9 @@ impl<R: Read, W: Write> Gateway<'_, R, W> {
                 frontend_opt.insert(k.to_string(), v.clone());
             }
         }
+        // Evaluated by BuildKit where it can, else by a stat of the result's root, as
+        // grpcclient falls back.
+        let native = evaluate && self.caps.has_frontend("gateway.solve.evaluate");
         let solved = self
             .client
             .borrow_mut()
@@ -681,10 +719,19 @@ impl<R: Read, W: Write> Gateway<'_, R, W> {
                 definition: Some(&def.bytes),
                 frontend_opt,
                 cache_imports: cache_imports.to_vec(),
-                evaluate,
+                evaluate: native,
                 ..Solve::default()
             })
             .map_err(Failure::call)?;
+        if evaluate
+            && !native
+            && let Some(r) = &solved.single
+        {
+            self.client
+                .borrow_mut()
+                .stat_file(&r.id, ".")
+                .map_err(Failure::call)?;
+        }
         Ok(solved.single)
     }
 
@@ -714,17 +761,7 @@ impl<R: Read, W: Write> Gateway<'_, R, W> {
             return r.clone();
         }
         let name_s = String::from_utf8_lossy(name).into_owned();
-        let p = gw::Platform {
-            architecture: String::from_utf8_lossy(&platform.architecture).into_owned(),
-            os: String::from_utf8_lossy(&platform.os).into_owned(),
-            variant: String::from_utf8_lossy(&platform.variant).into_owned(),
-            os_version: String::from_utf8_lossy(&platform.os_version).into_owned(),
-            os_features: platform
-                .os_features
-                .iter()
-                .map(|f| String::from_utf8_lossy(f).into_owned())
-                .collect(),
-        };
+        let p = gateway_platform(platform);
         let answer = self
             .client
             .borrow_mut()
@@ -756,6 +793,18 @@ impl<R: Read, W: Write> Gateway<'_, R, W> {
             });
         self.resolved.borrow_mut().insert(key, answer.clone());
         answer
+    }
+}
+
+/// A platform as ops.proto's Platform has it.
+fn gateway_platform(platform: &Platform) -> gw::Platform {
+    let s = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
+    gw::Platform {
+        architecture: s(&platform.architecture),
+        os: s(&platform.os),
+        variant: s(&platform.variant),
+        os_version: s(&platform.os_version),
+        os_features: platform.os_features.iter().map(|f| s(f)).collect(),
     }
 }
 
@@ -834,6 +883,91 @@ impl<R: Read, W: Write> Resolver for Gateway<'_, R, W> {
             }
         };
         Ok(Some(shards_dockerfile::ignore::read_all(&text)))
+    }
+
+    fn local_excludes(&self, key: &[u8], name: &[u8]) -> Result<Option<Vec<Vec<u8>>>, Vec<u8>> {
+        // NamedContext.Load of `local:NAME`: its .dockerignore alone, evaluated.
+        let (key, name) = (String::from_utf8_lossy(key), String::from_utf8_lossy(name));
+        let session = self
+            .opts
+            .get(&format!("local-sessionid:{name}"))
+            .cloned()
+            .unwrap_or_else(|| self.env.session.clone());
+        let def = local_definition(
+            &name,
+            &[".dockerignore"],
+            &session,
+            &format!("context:{key}-.dockerignore"),
+            &format!("[context {key}] load .dockerignore"),
+        );
+        let failed = |f: Failure| {
+            let message = f.message.clone().into_bytes();
+            *self.failed.borrow_mut() = Some(f);
+            message
+        };
+        let m = pb::definition(&def, &Carried::default()).ok_or_else(|| b"marshal".to_vec())?;
+        let Some(r) = self.solve(&m, &[], true).map_err(failed)? else {
+            return Ok(Some(Vec::new()));
+        };
+        let text = match self.read_file(&r, ".dockerignore") {
+            Ok(t) => t,
+            Err(ReadError::TooLarge(n)) => return Err(failed(ReadError::TooLarge(n).failure())),
+            Err(ReadError::Call(_)) => Vec::new(),
+        };
+        Ok(Some(shards_dockerfile::ignore::read_all(&text)))
+    }
+
+    fn resolve_layout(
+        &self,
+        name: &[u8],
+        store: &[u8],
+        platform: &Platform,
+        log: &[u8],
+    ) -> Result<Resolved, Vec<u8>> {
+        // ResolveImageConfig with an OCI layout store, asked through ResolveSourceMeta:
+        // the client's session serves the store.
+        let attrs = BTreeMap::from([
+            ("oci.session".to_string(), self.env.session.clone()),
+            (
+                "oci.store".to_string(),
+                String::from_utf8_lossy(store).into_owned(),
+            ),
+        ]);
+        let p = gateway_platform(platform);
+        let answer = self
+            .client
+            .borrow_mut()
+            .resolve_source_meta(
+                &format!("oci-layout://{}", String::from_utf8_lossy(name)),
+                &attrs,
+                Some(&p),
+                &String::from_utf8_lossy(log),
+                "",
+                false,
+            )
+            .map_err(Failure::call)
+            .and_then(|meta| match meta.image {
+                Some(image) => Ok(Resolved {
+                    reference: meta
+                        .identifier
+                        .strip_prefix("oci-layout://")
+                        .unwrap_or(&meta.identifier)
+                        .as_bytes()
+                        .to_vec(),
+                    digest: (!image.digest.is_empty()).then(|| image.digest.into_bytes()),
+                    config: image.config,
+                }),
+                None => Err(Failure::new(format!(
+                    "ref {} was resolved to non-image {}",
+                    String::from_utf8_lossy(name),
+                    meta.identifier
+                ))),
+            });
+        answer.map_err(|f| {
+            let message = f.message.clone().into_bytes();
+            *self.failed.borrow_mut() = Some(f);
+            message
+        })
     }
 
     fn warn(&self, w: &Warning) {
@@ -960,7 +1094,8 @@ fn build<R: Read, W: Write>(client: &mut Client<R, W>, env: &Env) -> Result<Outc
         dockerignore: RefCell::new(None),
         warn_into: RefCell::new(None),
     };
-    let entry = read_entrypoint(&gateway, &config)?;
+    let mut config = config;
+    let entry = read_entrypoint(&gateway, &mut config)?;
     if !opts.contains_key("cmdline") {
         if let Some(cmdline) = opts.get("build-arg:BUILDKIT_SYNTAX") {
             let first = cmdline.split_whitespace().next().unwrap_or_default();
@@ -981,18 +1116,101 @@ fn build<R: Read, W: Write>(client: &mut Client<R, W>, env: &Env) -> Result<Outc
     if let Some(e) = caps_error {
         return Err(e);
     }
-    if opts.contains_key("requestid") {
-        return Err(Failure::new(
-            "shards' frontend answers no subrequests yet (--call, --check, --print)",
-        ));
+    if let Some(req) = opts.get("requestid") {
+        return subrequest(&gateway, &config, &entry, req);
     }
     build_platforms(&gateway, &config, &entry)
+}
+
+/// dockerui's HandleSubrequest, as builder.Build's handlers answer each: its result's
+/// `result.json` (MarshalIndent), `result.txt`, `version` (and the lint's
+/// `result.statuscode`), and no ref.
+fn subrequest<R: Read, W: Write>(
+    g: &Gateway<'_, R, W>,
+    config: &Config,
+    entry: &Entrypoint,
+    req: &str,
+) -> Result<Outcome, Failure> {
+    use shards_dockerfile::subrequests;
+    let failed = |e: plan::Error| {
+        let base = g
+            .failed
+            .borrow_mut()
+            .take()
+            .unwrap_or_else(|| Failure::new(String::from_utf8_lossy(&e.message)));
+        entry.wrap(base, &e.location)
+    };
+    let mut metadata: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+    match req {
+        "frontend.subrequests.describe" => {
+            metadata.insert("result.json".into(), subrequests::DESCRIBE.as_bytes().to_vec());
+            metadata.insert("result.txt".into(), subrequests::describe_text().into_bytes());
+        }
+        "frontend.outline" => {
+            *g.failed.borrow_mut() = None;
+            *g.warn_into.borrow_mut() = Some((entry.head(), entry.info()));
+            let outline = plan::outline(&entry.data, &config.options, g);
+            *g.warn_into.borrow_mut() = None;
+            let o = outline.map_err(failed)?;
+            metadata.insert("result.json".into(), o.json().into_bytes());
+            metadata.insert("result.txt".into(), o.text().into_bytes());
+        }
+        "frontend.targets" => {
+            let t = plan::targets(&entry.data, config.options.dialect).map_err(failed)?;
+            metadata.insert("result.json".into(), t.json().into_bytes());
+            metadata.insert("result.txt".into(), t.text().into_bytes());
+        }
+        "frontend.lint" => {
+            *g.failed.borrow_mut() = None;
+            let lint = plan::lint(&entry.data, &config.options, g).map_err(failed)?;
+            let results = subrequests::LintResults {
+                warnings: &lint.warnings,
+                filename: entry.filename.as_bytes(),
+                data: &entry.data,
+                language: b"Dockerfile",
+                definition: Some(&entry.definition_json),
+                error: lint.error.as_ref().map(|(m, loc)| (m.as_slice(), loc)),
+            };
+            metadata.insert("result.json".into(), results.json().into_bytes());
+            metadata.insert(
+                "result.txt".into(),
+                crate::build::lint_text(&lint.warnings, &entry.filename, &entry.data).into_bytes(),
+            );
+            let status = !lint.warnings.is_empty() || lint.error.is_some();
+            metadata.insert(
+                "result.statuscode".into(),
+                if status { b"1".to_vec() } else { b"0".to_vec() },
+            );
+        }
+        other => {
+            return Err(Failure {
+                code: UNKNOWN,
+                message: format!("unsupported request {other}"),
+                details: vec![(
+                    SUBREQUEST_DETAIL.to_string(),
+                    format!("{{\"name\":{}}}", json_string(other)).into_bytes(),
+                )],
+            });
+        }
+    }
+    metadata.insert("version".into(), b"1.0.0".to_vec());
+    Ok(Outcome::Built(Returned {
+        single: Some(Ref::default()),
+        refs: BTreeMap::new(),
+        metadata,
+    }))
 }
 
 /// ReadEntrypoint: the file the build reads, from the client's `dockerfile` directory
 /// (initContext: the frontend's inputs asked for first, where BuildKit has them, none of
 /// which this frontend reads yet).
-fn read_entrypoint<R: Read, W: Write>(g: &Gateway<'_, R, W>, config: &Config) -> Result<Entrypoint, Failure> {
+fn read_entrypoint<R: Read, W: Write>(
+    g: &Gateway<'_, R, W>,
+    config: &mut Config,
+) -> Result<Entrypoint, Failure> {
+    if let Some((def, filename)) = remote_context(g, config)? {
+        return read_from(g, &def, &filename, None);
+    }
     if g.caps.has_frontend("frontend.inputs") {
         let inputs = g.client.borrow_mut().inputs().map_err(Failure::call)?;
         let dockerfile =
@@ -1032,25 +1250,39 @@ fn read_entrypoint<R: Read, W: Write>(g: &Gateway<'_, R, W>, config: &Config) ->
         local,
         &format!("[internal] load build definition from {filename}"),
     );
-    let marshalled = pb::definition(&def, &Carried::default())
+    let lower = (base == "Dockerfile").then_some(lower);
+    read_from(g, &def, &filename, lower.as_deref())
+}
+
+/// The file `filename` of what `def` loads (Docker's other casing, `lower`, where the
+/// first is not there), and its own `.dockerignore` beside it.
+fn read_from<R: Read, W: Write>(
+    g: &Gateway<'_, R, W>,
+    def: &Definition,
+    filename: &str,
+    lower: Option<&str>,
+) -> Result<Entrypoint, Failure> {
+    let marshalled = pb::definition(def, &Carried::default())
         .ok_or_else(|| Failure::new("failed to marshal local source"))?;
-    let definition_json = pb::definition_json(&def, &Carried::default())
+    let definition_json = pb::definition_json(def, &Carried::default())
         .ok_or_else(|| Failure::new("failed to marshal local source"))?;
     let r = g
         .solve(&marshalled, &[], false)?
         .ok_or_else(|| Failure::new("failed to resolve dockerfile: no result"))?;
     // "failed to read dockerfile: ", which ToGRPC keeps of no status of BuildKit's.
-    let data = match g.read_file(&r, &filename) {
+    let data = match g.read_file(&r, filename) {
         Ok(d) => d,
         Err(ReadError::TooLarge(n)) => {
             let f = ReadError::TooLarge(n).failure();
             return Err(Failure::new(format!("failed to read dockerfile: {}", f.message)));
         }
-        Err(ReadError::Call(f)) if base == "Dockerfile" => match g.read_file(&r, &lower) {
-            Ok(d) => d,
-            Err(_) => return Err(f),
+        Err(ReadError::Call(f)) => match lower {
+            Some(lower) => match g.read_file(&r, lower) {
+                Ok(d) => d,
+                Err(_) => return Err(f),
+            },
+            None => return Err(f),
         },
-        Err(ReadError::Call(f)) => return Err(f),
     };
     let dockerignore = match g.read_file(&r, &format!("{filename}.dockerignore")) {
         Ok(d) => Some(d),
@@ -1059,11 +1291,65 @@ fn read_entrypoint<R: Read, W: Write>(g: &Gateway<'_, R, W>, config: &Config) ->
     };
     *g.dockerignore.borrow_mut() = dockerignore;
     Ok(Entrypoint {
-        filename,
+        filename: filename.to_string(),
         data,
         definition: marshalled,
         definition_json,
     })
+}
+
+/// initContext's remote contexts: a Git repository (DetectGitContext), whose source the
+/// file is read from too; an HTTP(S) download (DetectHTTPContext), solved and its first
+/// 1024 bytes read, unpacked onto scratch where they are an archive's, else itself the
+/// file, named `context`. The definition the file is read from, and the file's name; none
+/// for the client's own directory.
+fn remote_context<R: Read, W: Write>(
+    g: &Gateway<'_, R, W>,
+    config: &mut Config,
+) -> Result<Option<(Definition, String)>, Failure> {
+    // The file comes from the remote context unscoped: contextsubdir scopes the context.
+    let base = config.options.clone();
+    let unscoped = |main: MainContext| Options {
+        main_context: main,
+        context_subdir: None,
+        ..base.clone()
+    };
+    match config.options.main_context.clone() {
+        MainContext::Local => Ok(None),
+        main @ MainContext::Git { .. } => {
+            let def = plan::context_definition(&unscoped(main))
+                .map_err(|e| Failure::new(String::from_utf8_lossy(&e)))?;
+            Ok(Some((def, config.filename.clone())))
+        }
+        MainContext::Http { url, .. } => {
+            let first = MainContext::Http {
+                url: url.clone(),
+                archive: false,
+            };
+            let def = plan::context_definition(&unscoped(first.clone()))
+                .map_err(|e| Failure::new(String::from_utf8_lossy(&e)))?;
+            let m = pb::definition(&def, &Carried::default())
+                .ok_or_else(|| Failure::new("failed to marshal httpcontext"))?;
+            let r = g
+                .solve(&m, &[], false)?
+                .ok_or_else(|| Failure::new("failed to resolve httpcontext: no result"))?;
+            let head = g
+                .client
+                .borrow_mut()
+                .read_file(&r.id, "context", Some((0, 1024)))
+                .map_err(Failure::call)?;
+            let archive = shards_dockerfile::dockerui::is_archive(&head);
+            config.options.main_context = MainContext::Http { url, archive };
+            if archive {
+                let def = plan::context_definition(&unscoped(config.options.main_context.clone()))
+                    .map_err(|e| Failure::new(String::from_utf8_lossy(&e)))?;
+                Ok(Some((def, config.filename.clone())))
+            } else {
+                config.filename = "context".to_string();
+                Ok(Some((def, config.filename.clone())))
+            }
+        }
+    }
 }
 
 /// forwardGateway: the build handed to the frontend the file names, its result returned

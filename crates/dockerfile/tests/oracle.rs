@@ -1366,6 +1366,8 @@ fn subrequests_are_buildkits() {
                     filename: b"Dockerfile",
                     data: &text,
                     language: b"Dockerfile",
+                    // The oracle clears the source's definition (scripts/dockerfile).
+                    definition: None,
                     error: l.error.as_ref().map(|(m, loc)| (m.as_slice(), loc)),
                 };
                 check("lint", quote(results.json().as_bytes()), "lint");
