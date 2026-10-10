@@ -7,6 +7,8 @@
 //!   and spins on the used index; the share, on a thread, answers at once.
 //! - `--case held`: the share takes `--delay-us` to answer; once it has the request, how
 //!   long another thread waits for guest memory (`GuestMemory::access`).
+//! - `--case list` and `listplus`: whole listings of a directory of `--entries` files,
+//!   OPENDIR, READDIR (READDIRPLUS) pages of 4096 bytes, RELEASEDIR.
 #![allow(clippy::unwrap_used, clippy::print_stdout, clippy::indexing_slicing)]
 
 use std::os::unix::net::UnixStream;
@@ -61,6 +63,52 @@ fn open(warm: usize, n: usize) -> Vec<u128> {
         let mut release = fh.to_le_bytes().to_vec();
         release.extend_from_slice(&[0u8; 16]);
         server.handle(&req(18, node, &release)).unwrap();
+        if i >= warm {
+            ns.push(t0.elapsed().as_nanos());
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    ns
+}
+
+/// Whole listings of a directory of `entries` files: OPENDIR, READDIR (or READDIRPLUS) a
+/// page of 4096 bytes at a time from the offset the last page ended at, RELEASEDIR.
+fn list(warm: usize, n: usize, entries: usize, plus: bool) -> Vec<u128> {
+    let dir = std::env::temp_dir().join(format!("virtio-fs-audit-list-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    for i in 0..entries {
+        std::fs::write(dir.join(format!("entry-{i:0>12}")), b"").unwrap();
+    }
+    let server = Server::new(std::fs::File::open(&dir).unwrap().into(), true, None).unwrap();
+    let (opcode, header) = if plus { (44, 128) } else { (28, 0) };
+    let mut ns = Vec::with_capacity(n);
+    for i in 0..warm + n {
+        let t0 = Instant::now();
+        let fh = word(&server.handle(&req(27, 1, &[0u8; 8])).unwrap());
+        let (mut offset, mut listed) = (0u64, 0);
+        loop {
+            let mut body = fh.to_le_bytes().to_vec();
+            body.extend_from_slice(&offset.to_le_bytes());
+            body.extend_from_slice(&4096u32.to_le_bytes());
+            body.extend_from_slice(&[0u8; 12]);
+            let out = server.handle(&req(opcode, 1, &body)).unwrap();
+            let mut rest = &out[16..];
+            if rest.is_empty() {
+                break;
+            }
+            while !rest.is_empty() {
+                let dirent = &rest[header..];
+                offset = u64::from_le_bytes(dirent[8..16].try_into().unwrap());
+                let len = u32::from_le_bytes(dirent[16..20].try_into().unwrap()) as usize;
+                rest = &rest[(header + 24 + len + 7) & !7..];
+                listed += 1;
+            }
+        }
+        assert_eq!(listed, entries + 2);
+        let mut release = fh.to_le_bytes().to_vec();
+        release.extend_from_slice(&[0u8; 16]);
+        server.handle(&req(29, 1, &release)).unwrap();
         if i >= warm {
             ns.push(t0.elapsed().as_nanos());
         }
@@ -210,6 +258,12 @@ fn main() {
         "held" => held(
             n,
             Duration::from_micros(arg("--delay-us").map_or(5000, |v| v.parse().unwrap())),
+        ),
+        "list" | "listplus" => list(
+            5,
+            n,
+            arg("--entries").map_or(10_000, |v| v.parse().unwrap()),
+            case == "listplus",
         ),
         other => panic!("no case {other}"),
     };

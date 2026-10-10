@@ -2370,12 +2370,25 @@ microVM as virtio-fs shares (virtio 1.3 §5.11; Linux fs/fuse/virtio_fs.c):
     every other device's queue work and any snapshot off guest memory as long: with a
     5 ms answer, another thread's wait for guest memory went from 8.9 ms to 0.25 µs at
     the median, and the device's round trip did not move (PM M129).
+  - *An open directory holds none of its listing* (V05). OPENDIR copied the directory's
+    entries into its handle, and nothing bounded the handles: a guest opening a large
+    directory again and again, never releasing it (one `opendir` each, from guest
+    userspace), cost the share process the directory's size each time, 10.8 MB for 100
+    handles of 2000 entries. A handle now reads as the guest asks from a descriptor of its
+    own, so handles are as many as the process's descriptors: on Linux by getdents64(2)
+    at the kernel's `d_off` cookies, as virtiofsd reads, keeping only the descriptor
+    (glibc's stream would keep 32 KiB a handle); on macOS a stream of 2.2 KiB counted in
+    entries, holding the entry a reply had no room for, read again from its start for any
+    other offset. 100 handles hold 8 KB of the heap; a whole listing of 10,000 entries
+    went from 17.7 ms to 4.4 ms at the median, as READDIR no longer copied the rest of the
+    listing for each page (PM M130).
   - *A listing comes a largest read at a time* (V06). READDIR's reply grew to the
     guest's `size`, any u32: a directory listed in one request past a frame was refused
     by the device unread, whose next requests then took its leftover bytes for their
     replies. `size` is held to `MAX_WRITE`, the largest read INIT tells the guest.
   - Tests: `fs::server::tests` (`a_mode_change_follows_no_symlink`,
-    `special_files_are_never_opened`, `a_listing_comes_a_read_at_a_time`) and `fs::tests`
+    `special_files_are_never_opened`, `a_listing_comes_a_read_at_a_time`,
+    `a_directory_is_read_whole_a_page_at_a_time`), `tests/fs_dir_handles.rs` and `fs::tests`
     (`a_request_longer_than_any_is_refused_unread`,
     `guest_memory_is_free_while_the_share_answers`), each mutation-checked; the
     after-open look guards only a name replaced between the two looks, which no test can
