@@ -465,12 +465,8 @@ fn a_restore_reaches_nothing_its_saver_left_in_its_template() {
         let _ = std::fs::remove_file(path);
         let c = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
         // SAFETY: mkfifo(2) of a NUL-terminated path.
-        assert_eq!(
-            unsafe { libc::mkfifo(c.as_ptr(), 0o600) },
-            0,
-            "{}",
-            path.display()
-        );
+        let made = unsafe { libc::mkfifo(c.as_ptr(), 0o600) };
+        assert_eq!(made, 0, "{}", path.display());
     };
     let target = outside.join("memory");
     fifo(&target);
