@@ -4448,3 +4448,30 @@ revision before comparing a changed API/implementation.
   now reads only the page. READDIRPLUS is its lookups', unchanged. The Linux path runs
   in CI's Linux jobs; `probes/getdents.rs` checks the paging by `d_off` on its own, and
   was not run here (Docker did not answer).
+
+### M131. How fast a guest can fail a device again and again (audit V07)
+
+- **Question.** A device that meets a malformed ring says so in the host's log and needs
+  reset; a guest can reset it, break it again, and so on. How many failures, and how
+  many bytes of log, can one guest make?
+- **Method.** `docs/research/measurements/device-reset-log/`: a virtio-blk device behind
+  its MMIO transport, driven through the registers as a driver drives them, its queue's
+  available index 100 ahead of a ring of 8. Each cycle writes STATUS 0, sets the device
+  up, writes DRIVER_OK and waits for DEVICE_NEEDS_RESET; 5 s a run, the process's log
+  sent to a file (`log::to`). Apple M5 Max, macOS 26.4.1, revision 4027d72 (old) and its
+  fix (new), 2026-10-09, load average 51 to 89. No vCPU: a guest's register writes each
+  add an exit's 0.8 µs (PM M4).
+- **Results.** Runs in the order made:
+
+  | arm | cycles in 5 s | log lines | log bytes |
+  |---|---|---|---|
+  | old | 2184 | 2184 | 220,584 |
+  | new | 7267 | 1 | 101 |
+  | old | 545 | 545 | 55,045 |
+  | new | 6444 | 1 | 101 |
+
+- **Consequence.** Each failure was a 101-byte line of the daemon's log, which nothing
+  rotates: at the 1,450 cycles a second the fixed device managed, 147 KB a second, 13 GB
+  a day, from one guest. A device's failure is now said once, across resets; the rest go
+  to debug. The cycle rates themselves vary fourfold with the host's load, which was
+  high and changing throughout.
