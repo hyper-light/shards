@@ -50,6 +50,7 @@ mod live;
 pub(crate) mod multi;
 mod output;
 mod policy;
+pub(crate) mod policy_command;
 mod provenance;
 mod remote;
 mod s3;
@@ -205,6 +206,25 @@ struct Progress {
     recapped: std::cell::Cell<bool>,
     /// The step printed last and not ended, 0 for none (the printer's `current`).
     current: std::cell::Cell<usize>,
+    /// What follows the recap: the warnings, then the excerpt of the Dockerfile where the
+    /// failing step comes from, as buildx prints them before its error.
+    epilogue: RefCell<String>,
+}
+
+impl Progress {
+    /// A display that shows nothing.
+    fn quiet() -> Progress {
+        Progress {
+            quiet: true,
+            next: 0,
+            #[cfg(unix)]
+            live: None,
+            steps: RefCell::new(BTreeMap::new()),
+            recapped: std::cell::Cell::new(false),
+            current: std::cell::Cell::new(0),
+            epilogue: RefCell::new(String::new()),
+        }
+    }
 }
 
 /// A step's name, last lines and whether it failed.
@@ -354,6 +374,10 @@ impl Progress {
             }
             out.push_str("------\n");
             self.say(&out);
+        }
+        let epilogue = self.epilogue.take();
+        if !epilogue.is_empty() {
+            let _ = write!(std::io::stderr(), "{epilogue}");
         }
     }
 
@@ -1528,8 +1552,12 @@ impl policy::Log for PolicyStep<'_> {
     /// source's, and the read's the cache key's that failed to load.
     fn fetch(&self, name: &str, url: &str, accept: Option<&str>) -> Result<Vec<u8>, String> {
         let v = self.progress.borrow_mut().start(name);
+        let limits = store::Limits {
+            bytes: http::GATEWAY_MOST.min(self.limits.bytes),
+            ..self.limits
+        };
         let got = self.store.stage().map_err(|e| e.to_string()).and_then(|stage| {
-            let d = http::fetch_accepting(url, None, accept, stage.path().join("source"), &self.limits)?;
+            let d = http::fetch_accepting(url, None, accept, stage.path().join("source"), &limits)?;
             std::fs::read(&d.path).map_err(|e| format!("{}: {e}", d.path.display()))
         });
         match got {
@@ -1638,6 +1666,7 @@ fn policies_of(
         cwd,
         default_platform: host_platform(),
         debug: parsed.bool("debug"),
+        default_policy: true,
     })?
     else {
         return Ok(None);
@@ -1905,6 +1934,9 @@ fn excerpt(file: &str, text: &[u8], ranges: &[(usize, usize)]) -> String {
     out
 }
 
+/// The stage BuildKit names a content checksum's failure with (solver jobs' cache key).
+const CACHE_KEY: &str = "failed to compute cache key: ";
+
 fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
     crate::phase("start");
     // When the build began, as its provenance says it (D71).
@@ -2154,6 +2186,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
         steps: RefCell::new(BTreeMap::new()),
         recapped: std::cell::Cell::new(false),
         current: std::cell::Cell::new(0),
+        epilogue: RefCell::new(String::new()),
     });
     // Said once of a build of several platforms, not again by each platform's.
     if !multi::active() {
@@ -2814,6 +2847,8 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
         .filter(|op| !matches!(op.kind, OpKind::Source { .. }))
         .flat_map(|op| op.inputs.iter().map(|i| i.op))
         .collect();
+    // The Dockerfile's name, which each step's own shadows below.
+    let dockerfile_name = name.clone();
     for (i, (op, meta)) in def.ops.iter().zip(&def.metadata).enumerate() {
         let name = meta
             .description
@@ -2833,12 +2868,24 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
             .collect::<Result<Vec<_>, String>>()?;
         // `why` on the step, and in the build's error after `stage`, what BuildKit was
         // doing when it failed.
+        // After the recap: the warnings, then where in the Dockerfile the step comes from
+        // (BuildKit's source map, solver/errdefs Source.Print).
         let fail_in = |v: &Vertex, stage: &str, why: &str| {
-            progress.borrow().error(v, why);
-            print_warnings(&plan.warnings, quiet, debug, &name, &text);
+            let p = progress.borrow();
+            p.error(v, why);
+            let mut epilogue = warnings_text(&plan.warnings, quiet, debug, &dockerfile_name, &text);
+            for loc in &meta.locations {
+                epilogue.push_str(&excerpt(&dockerfile_name, &text, loc));
+            }
+            *p.epilogue.borrow_mut() = epilogue;
             format!("failed to build: failed to solve: {stage}{why}")
         };
-        let fail = |v: &Vertex, why: &str| fail_in(v, "", why);
+        // A content checksum's failure is the cache key's that failed to load, which the
+        // build's error says and the step's does not (the solver wraps it).
+        let fail = |v: &Vertex, why: &str| match why.strip_prefix(CACHE_KEY) {
+            Some(rest) => fail_in(v, CACHE_KEY, rest),
+            None => fail_in(v, "", why),
+        };
         // A fetch that failed fails the build on the step of its source.
         let fetch_failed = |op: usize, failure: http::Failure| {
             let named = def
@@ -4349,15 +4396,7 @@ fn write_image_outputs(
 ) -> Result<(), String> {
     // A platform's build of several writes its layout unseen: the build of them shows
     // its one export.
-    let hushed = RefCell::new(Progress {
-        quiet: true,
-        next: 0,
-        #[cfg(unix)]
-        live: None,
-        steps: RefCell::new(BTreeMap::new()),
-        recapped: std::cell::Cell::new(false),
-        current: std::cell::Cell::new(0),
-    });
+    let hushed = RefCell::new(Progress::quiet());
     let progress = if multi::active() { &hushed } else { progress };
     for (i, o) in outputs.iter().enumerate() {
         if !matches!(o.kind.as_str(), "oci" | "docker") || matches!(o.dest, buildflags::Dest::Store) {
@@ -5316,8 +5355,23 @@ fn print_warnings(
     file: &str,
     text: &[u8],
 ) {
+    let _ = write!(
+        std::io::stderr(),
+        "{}",
+        warnings_text(warnings, quiet, debug, file, text)
+    );
+}
+
+/// What [`print_warnings`] prints.
+fn warnings_text(
+    warnings: &[shards_dockerfile::lint::Warning],
+    quiet: bool,
+    debug: bool,
+    file: &str,
+    text: &[u8],
+) -> String {
     if warnings.is_empty() || quiet {
-        return;
+        return String::new();
     }
     let count = if warnings.len() == 1 {
         "1 warning found".to_string()
@@ -5351,7 +5405,7 @@ fn print_warnings(
         }
         out.push('\n');
     }
-    let _ = write!(std::io::stderr(), "{out}");
+    out
 }
 
 /// An environment variable's value, its bytes as they are.

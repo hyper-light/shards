@@ -7,7 +7,7 @@
 #![allow(clippy::unwrap_used, clippy::panic)]
 
 use shards_cmdline::buildflags;
-use shards_cmdline::commands::{BUILD, BUILDER_PRUNE};
+use shards_cmdline::commands::{BUILD, BUILDER_PRUNE, POLICY, POLICY_COMMANDS, POLICY_EVAL, POLICY_TEST};
 use shards_cmdline::flags::{self, Outcome};
 
 /// What a build step carries at most, the run protocol's frame (shards-abi `MAX_PAYLOAD`).
@@ -191,12 +191,39 @@ fn build_answers_as_buildx() {
             (stdout, stderr, status) = (out, err, code);
         }
         // `prune` first: buildx's prune, which `shards builder prune` runs.
-        let (command, path, words) = match argv.split_first() {
-            Some((first, rest)) if first == "prune" => (&BUILDER_PRUNE, "shards buildx prune", rest),
+        let (command, path, words) = match argv.as_slice() {
+            [first, rest @ ..] if first == "prune" => (&BUILDER_PRUNE, "shards buildx prune", rest),
+            [p, e, rest @ ..] if p == "policy" && e == "eval" => {
+                (&POLICY_EVAL, "shards buildx policy eval", rest)
+            }
+            [p, t, rest @ ..] if p == "policy" && t == "test" => {
+                (&POLICY_TEST, "shards buildx policy test", rest)
+            }
+            [p, rest @ ..] if p == "policy" => (&POLICY, "shards buildx policy", rest),
             _ => (&BUILD, "shards buildx build", argv.as_slice()),
         };
+        let group = std::ptr::eq(command, &POLICY);
         let (got_out, got_err, got_status, refused) =
             match flags::parse(command, path, words, &buildflags::validate) {
+                Outcome::Run(parsed) if group => (
+                    format!(
+                        "{}{}",
+                        parsed.notices,
+                        flags::group_help(command, path, POLICY_COMMANDS, 80)
+                    ),
+                    String::new(),
+                    0,
+                    false,
+                ),
+                Outcome::Help { notices } if group => (
+                    format!(
+                        "{notices}{}",
+                        flags::group_help(command, path, POLICY_COMMANDS, 80)
+                    ),
+                    String::new(),
+                    0,
+                    false,
+                ),
                 Outcome::Run(parsed) => {
                     let mut line = String::from("RUN");
                     for (name, value) in parsed.given() {

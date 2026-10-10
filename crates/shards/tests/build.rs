@@ -10427,3 +10427,689 @@ fn policies_check_the_frontend_and_the_default_policy() {
         out.stderr
     );
 }
+
+/// `shards buildx policy eval` (D108), each answer as buildx v0.37.1's in shards-dind:
+/// a source's input printed, its fields resolved and the rest summarized; a policy's
+/// decision, its refusals in buildx's words; and the sources and flags buildx refuses.
+#[test]
+fn policy_eval_answers_as_buildx_does() {
+    let home = TempDir::new("policy-eval-home");
+    let dir = TempDir::new("policy-eval");
+    let write = |sub: &str, rego: &str| {
+        std::fs::create_dir_all(dir.join(sub)).unwrap();
+        std::fs::write(dir.join(sub).join("Dockerfile.rego"), rego).unwrap();
+    };
+    write(
+        "allow",
+        "package docker\n\ndefault allow := false\n\nallow if input.image.checksum != \"\"\n\ndecision := {\"allow\": allow}\n",
+    );
+    write(
+        "denymsg",
+        "package docker\n\ndefault allow := false\n\ndecision := {\"allow\": allow, \"deny_msg\": [\"first\", \"\", \"second\"]}\n",
+    );
+    write(
+        "denynomsg",
+        "package docker\n\ndefault allow := false\n\ndecision := {\"allow\": allow}\n",
+    );
+    let env = [("SHARDS_HOME", home.as_os_str())];
+    let eval = |sub: &str, args: &[&str]| {
+        let mut argv = vec!["buildx", "policy", "eval"];
+        argv.extend_from_slice(args);
+        let out = common::run_shards_env_in(&dir.join(sub), &[], &argv, &env, TIMEOUT);
+        (out.status, out.stdout, out.stderr)
+    };
+    let alpine = |extra: &str| {
+        format!(
+            "{{\n  \"image\": {{\n    \"ref\": \"docker.io/library/alpine:3.20\",\n    \"host\": \"docker.io\",\n    \"repo\": \"alpine\",\n    \"fullRepo\": \"docker.io/library/alpine\",\n    \"tag\": \"3.20\",\n    \"platform\": \"linux/arm64\",\n    \"os\": \"linux\",\n    \"arch\": \"arm64\"{extra}\n  }}\n}}\n"
+        )
+    };
+    assert_eq!(
+        eval("", &["--print", "--platform", "linux/arm64", "docker-image://alpine:3.20"]),
+        (
+            Some(0),
+            alpine(""),
+            "INFO: unresolved fields: image.checksum, image.env, image.hasProvenance, image.labels, image.provenance, image.signatures, image.user, image.volumes, image.workingDir\n".into()
+        )
+    );
+    // The fields resolved: what the registry holds now, its digest among them.
+    let (status, out, err) = eval(
+        "",
+        &[
+            "--print",
+            "--platform",
+            "linux/arm64",
+            "--fields",
+            "image.checksum,image.bogus",
+            "docker-image://alpine:3.20",
+        ],
+    );
+    assert_eq!(
+        (status, err.as_str()),
+        (Some(0), "WARNING: invalid fields: image.bogus\n"),
+        "{out}"
+    );
+    assert!(out.contains("    \"checksum\": \"sha256:"), "{out}");
+    assert_eq!(
+        eval("", &["--print", "--platform", "bogus/x/y/z", "docker-image://alpine:3.20"]),
+        (
+            Some(1),
+            String::new(),
+            "ERROR: invalid platform \"bogus/x/y/z\": \"bogus/x/y/z\": cannot parse platform specifier: invalid argument\n".into()
+        )
+    );
+    assert_eq!(
+        eval("", &["--print", "."]),
+        (
+            Some(0),
+            "{\n  \"local\": {\n    \"name\": \"context\"\n  }\n}\n".into(),
+            String::new()
+        )
+    );
+    assert_eq!(
+        eval("", &["--print", "./nope"]),
+        (
+            Some(1),
+            String::new(),
+            "ERROR: invalid local path ./nope: stat ./nope: no such file or directory\n".into()
+        )
+    );
+    assert_eq!(
+        eval("", &["--print", "https://example.com/file.txt"]),
+        (
+            Some(0),
+            "{\n  \"http\": {\n    \"url\": \"https://example.com/file.txt\",\n    \"schema\": \"https\",\n    \"host\": \"example.com\",\n    \"path\": \"/file.txt\"\n  }\n}\n".into(),
+            "INFO: unresolved fields: http.checksum\n".into()
+        )
+    );
+    assert_eq!(
+        eval("", &["--print", "https://github.com/moby/buildkit.git#v0.28.1"]),
+        (
+            Some(0),
+            "{\n  \"git\": {\n    \"schema\": \"https\",\n    \"host\": \"github.com\",\n    \"remote\": \"https://github.com/moby/buildkit.git\",\n    \"fullURL\": \"https://github.com/moby/buildkit.git#v0.28.1\"\n  }\n}\n".into(),
+            "INFO: unresolved fields: git.branch, git.checksum, git.commit, git.commitChecksum, git.isAnnotatedTag, git.isSHA256, git.ref, git.tag, git.tagName\n".into()
+        )
+    );
+    assert_eq!(
+        eval("allow", &["docker-image://alpine:3.20"]),
+        (Some(0), String::new(), String::new())
+    );
+    assert_eq!(
+        eval("denymsg", &["docker-image://alpine:3.20"]),
+        (
+            Some(1),
+            String::new(),
+            "ERROR: policy denied: first; second\n".into()
+        )
+    );
+    assert_eq!(
+        eval("denynomsg", &["docker-image://alpine:3.20"]),
+        (Some(1), String::new(), "ERROR: policy denied\n".into())
+    );
+    assert_eq!(
+        eval("", &["docker-image://alpine:3.20"]),
+        (
+            Some(1),
+            String::new(),
+            "ERROR: failed to read policy file Dockerfile.rego: open Dockerfile.rego: no such file or directory\n".into()
+        )
+    );
+    // The policy's lines with --debug, the decision's last.
+    let (status, _, err) = eval("allow", &["--debug", "docker-image://alpine:3.20"]);
+    assert_eq!(status, Some(0), "{err}");
+    assert!(
+        err.ends_with("DEBUG: policy decision for source docker-image://docker.io/library/alpine:3.20 (linux/arm64): ALLOW\n")
+            || err.ends_with("DEBUG: policy decision for source docker-image://docker.io/library/alpine:3.20 (linux/amd64): ALLOW\n"),
+        "{err}"
+    );
+}
+
+/// A step that fails cites where in the Dockerfile it comes from, as buildx v0.37.1 prints
+/// a solve error (measured in shards-dind): the failed step's recap, the build's
+/// warnings, the excerpt of the step's lines (a continued RUN's every line marked), then
+/// the error.
+#[test]
+fn a_failing_step_cites_its_dockerfile_lines() {
+    if cannot_run_vms() {
+        return;
+    }
+    let ctx = context(
+        "excerpt-ctx",
+        "FROM alpine:3.22 as base\nRUN echo one\nRUN echo hi && \\\n  exit 3\n",
+    );
+    let out = common::run_shards_in(
+        &ctx,
+        &[],
+        &["build", "--progress=plain", "--no-cache", "."],
+        TIMEOUT,
+    );
+    assert_eq!(out.status, Some(1), "{}", out.stderr);
+    let tail = out
+        .stderr
+        .find("------\n > [3/3] RUN echo hi &&   exit 3:\n")
+        .and_then(|i| out.stderr.get(i..))
+        .unwrap_or_else(|| panic!("{}", out.stderr));
+    // The step's line, its stamp the seconds it ran.
+    let lines: Vec<String> = tail
+        .lines()
+        .map(|l| match l.split_once(' ') {
+            Some((stamp, "hi")) if stamp.parse::<f64>().is_ok() => "S hi".to_string(),
+            _ => l.to_string(),
+        })
+        .collect();
+    assert_eq!(
+        lines,
+        [
+            "------",
+            " > [3/3] RUN echo hi &&   exit 3:",
+            "S hi",
+            "------",
+            "",
+            " \u{1b}[33m1 warning found (use shards --debug to expand):",
+            "\u{1b}[0m - FromAsCasing: 'as' and 'FROM' keywords' casing do not match (line 1)",
+            "Dockerfile:3",
+            "--------------------",
+            "   2 |     RUN echo one",
+            "   3 | >>> RUN echo hi && \\",
+            "   4 | >>>   exit 3",
+            "   5 |     ",
+            "--------------------",
+            "ERROR: failed to build: failed to solve: process \"/bin/sh -c echo hi &&   exit 3\" did not complete successfully: exit code: 3",
+        ],
+        "{}",
+        out.stderr
+    );
+    // A source the context lacks: the step's error is the checksum's, the build's the
+    // cache key's that failed to load (BuildKit names its internal reference where shards
+    // names the context).
+    let ctx = context("excerpt-copy-ctx", "FROM alpine:3.22\nCOPY missing.txt /m\n");
+    let out = common::run_shards_in(
+        &ctx,
+        &[],
+        &["build", "--progress=plain", "--no-cache", "."],
+        TIMEOUT,
+    );
+    assert_eq!(out.status, Some(1), "{}", out.stderr);
+    assert!(
+        out.stderr
+            .contains(" ERROR: failed to calculate checksum of ref context: \"/missing.txt\": not found\n"),
+        "{}",
+        out.stderr
+    );
+    assert!(
+        out.stderr.ends_with(
+            "------\n > [2/2] COPY missing.txt /m:\n------\nDockerfile:2\n--------------------\n   1 |     FROM alpine:3.22\n   2 | >>> COPY missing.txt /m\n   3 |     \n--------------------\nERROR: failed to build: failed to solve: failed to compute cache key: failed to calculate checksum of ref context: \"/missing.txt\": not found\n"
+        ),
+        "{}",
+        out.stderr
+    );
+}
+
+/// A commit signed with an OpenSSH certificate, as `gpg.format=ssh` signs with one (the
+/// signature carries the certificate): allowed by `verify_git_signature` where the key
+/// file holds that certificate, refused where it holds the certified key alone, whose
+/// fingerprint is not the certificate's (sshsig.Verify, as buildx v0.37.1 runs it).
+#[test]
+fn policies_verify_git_signatures_by_ssh_certificates() {
+    if cannot_run_vms() {
+        return;
+    }
+    let has = |tool: &str, arg: &str| std::process::Command::new(tool).arg(arg).output().is_ok();
+    if !has("git", "--version") || !has("ssh-keygen", "-?") {
+        eprintln!("NOTE: no git or ssh-keygen on this host: SSH certificates in policies are not exercised");
+        return;
+    }
+    let keys = TempDir::new("policy-cert-keys");
+    let keygen = |args: &[&str]| {
+        let out = std::process::Command::new("ssh-keygen")
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    };
+    let ca = keys.join("ca");
+    let signer = keys.join("signer");
+    keygen(&[
+        "-q",
+        "-t",
+        "ed25519",
+        "-N",
+        "",
+        "-C",
+        "ca",
+        "-f",
+        ca.to_str().unwrap(),
+    ]);
+    keygen(&[
+        "-q",
+        "-t",
+        "ed25519",
+        "-N",
+        "",
+        "-C",
+        "t@t",
+        "-f",
+        signer.to_str().unwrap(),
+    ]);
+    keygen(&[
+        "-q",
+        "-s",
+        ca.to_str().unwrap(),
+        "-I",
+        "shards-signer",
+        "-n",
+        "t",
+        signer.with_extension("pub").to_str().unwrap(),
+    ]);
+    let cert_path = keys.join("signer-cert.pub");
+    let cert = std::fs::read_to_string(&cert_path).unwrap();
+    let plain = std::fs::read_to_string(signer.with_extension("pub")).unwrap();
+    let repos = TempDir::new("policy-cert-repos");
+    let origin = repos.join("repo.git");
+    std::fs::create_dir_all(&origin).unwrap();
+    git_in(&origin, &["init", "-q", "-b", "main"]);
+    std::fs::write(origin.join("f"), "f\n").unwrap();
+    git_in(&origin, &["add", "-A"]);
+    let signing_key = format!("user.signingkey={}", cert_path.display());
+    git_in(
+        &origin,
+        &[
+            "-c",
+            "gpg.format=ssh",
+            "-c",
+            &signing_key,
+            "commit",
+            "-q",
+            "-S",
+            "-m",
+            "signed",
+        ],
+    );
+    let port = git_http_server(repos.to_path_buf(), Vec::new());
+    let home = TempDir::new("policy-cert-home");
+    let env = [("SHARDS_HOME", home.as_os_str())];
+    let ctx = context(
+        "policy-cert-ctx",
+        &format!("FROM scratch\nADD http://127.0.0.1:{port}/repo.git#main /g\n"),
+    );
+    std::fs::write(
+        ctx.join("Dockerfile.rego"),
+        "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if verify_git_signature(input.git.commit, \"signer.pub\")\n\ndecision := {\"allow\": allow}\n",
+    )
+    .unwrap();
+    let src = format!("git://127.0.0.1:{port}/repo.git#main");
+    let build = |key: &str| {
+        std::fs::write(ctx.join("signer.pub"), key).unwrap();
+        common::run_shards_env_in(
+            &ctx,
+            &[],
+            &["build", "--progress=plain", "--no-cache", "."],
+            &env,
+            TIMEOUT,
+        )
+    };
+    let last = |stderr: &str| {
+        policy_log(stderr)
+            .into_iter()
+            .rfind(|l| l.starts_with(&format!("policy decision for source {src}:")))
+    };
+    let built = build(&cert);
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    assert_eq!(
+        last(&built.stderr),
+        Some(format!("policy decision for source {src}: ALLOW")),
+        "{}",
+        built.stderr
+    );
+    let refused = build(&plain);
+    assert_ne!(refused.status, Some(0), "{}", refused.stderr);
+    assert_eq!(
+        last(&refused.stderr),
+        Some(format!("policy decision for source {src}: DENY")),
+        "{}",
+        refused.stderr
+    );
+}
+
+/// A harness messages the agents `ATTACH` gives it, through its server instance, and
+/// no others (§4, §12 answer 18, D60; default deny): `ATTACH a FOR h` lets h send a
+/// requests and a answer them, not a send h its own; c, given to no harness, sends no one.
+#[test]
+fn harnesses_message_their_attached_agents() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let (port, _repos) = common::writable_registry();
+    let home = TempDir::new("attach-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let mut domains = String::new();
+    for (kind, name, verbs) in [
+        (
+            "agent",
+            "a",
+            r#""srv-peers","srv-receive","30","srv-answer","hello h","srv-send","harness h|unasked""#,
+        ),
+        ("agent", "c", r#""srv-peers","srv-send","harness h|x""#),
+        (
+            "harness",
+            "h",
+            r#""srv-peers","srv-send","agent a|hi","srv-receive","30""#,
+        ),
+    ] {
+        let dir = TempDir::new(&format!("attach-{kind}-{name}"));
+        std::fs::create_dir_all(dir.join("bin")).unwrap();
+        std::fs::copy(common::test_guest(), dir.join("bin/testguest")).unwrap();
+        std::fs::write(
+            dir.join(format!("{kind}.json")),
+            format!(r#"{{"name":"{name}","run":{{"command":["bin/testguest","confined",{verbs}]}}}}"#),
+        )
+        .unwrap();
+        let tag = format!("127.0.0.1:{port}/team/attach-{name}:1");
+        let made = shards(&["build", kind, dir.to_str().unwrap(), "-t", &tag]);
+        assert_eq!(made.status, Some(0), "{}", made.stderr);
+        let pushed = shards(&["push", kind, &tag]);
+        assert_eq!(pushed.status, Some(0), "{}", pushed.stderr);
+        domains.push_str(&format!("{} {name} FROM {tag}\n", kind.to_uppercase()));
+    }
+    let ctx = context("attach-ctx", &format!("FROM {image}\n"));
+    std::fs::write(
+        ctx.join("Agentfile"),
+        format!("FROM {image}\n{domains}ATTACH a FOR h\n"),
+    )
+    .unwrap();
+    let built = shards(&["build", "-t", "attach:1", ctx.to_str().unwrap()]);
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    let ran = shards(&["run", "--rm", "attach:1", "await", "confined-ready", "3"]);
+    let all = format!("{}{}", ran.stdout, ran.stderr);
+    assert_eq!(ran.status, Some(0), "{all}");
+    for want in [
+        r#"[harness h] confined srv-peers: [{"name":"agent a","send":true,"answer":false}]"#,
+        r#"[agent a] confined srv-peers: [{"name":"harness h","send":false,"answer":true}]"#,
+        "[agent c] confined srv-peers: []",
+        r#"[harness h] confined srv-send agent a: ok {"id":1}"#,
+        r#"[agent a] confined srv-receive: [{"from":"harness h","kind":"request","id":1,"text":"hi"}]"#,
+        "[agent a] confined srv-answer: ok {}",
+        r#"[harness h] confined srv-receive: [{"from":"agent a","kind":"answer","id":1,"text":"hello h"}]"#,
+        "[agent a] confined srv-send harness h: refused agent a may not send harness h requests",
+        "[agent c] confined srv-send harness h: refused agent c may not send harness h requests",
+    ] {
+        assert!(all.lines().any(|l| l == want), "no {want:?} in\n{all}");
+    }
+}
+
+/// An Agentfile's volumes at run (AGENTFILE_ARCH.md §4.5, §12 answers 8 and 9; D111):
+/// `VOLUME data /data FOR a` is the named volume `data`, a's alone, filled from the image
+/// as Docker fills a volume, owned as `--chown` says, kept from run to run; b sees the
+/// image's `/data` there, never the volume, and the run's own root none of it.
+/// `VOLUME shared /shared`, with no `FOR`, is every agent's and the run's own.
+/// `VOLUME --chown=b --chmod=700 /scratch FOR b` is an anonymous volume, b's, as owned and
+/// moded; a has nothing there.
+#[test]
+fn agentfile_volumes_reach_whom_they_are_for() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let (port, _repos) = common::writable_registry();
+    let home = TempDir::new("agvol-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let mut agents = String::new();
+    for (name, verbs) in [
+        (
+            "a",
+            r#""cat","/data/seed","/data/x","write","/data/x","/shared/from-a","owner","/data","see","/scratch","cat","/var/run/marker","write","/var/run/agentvol/w","owner","/run/agentvol","cat","/fill/hostname","owner","/var/shm""#,
+        ),
+        (
+            "b",
+            r#""see","/data","write","/data/b","/scratch/s","owner","/scratch","see","/shared""#,
+        ),
+    ] {
+        let dir = TempDir::new(&format!("agvol-agent-{name}"));
+        std::fs::create_dir_all(dir.join("bin")).unwrap();
+        std::fs::copy(common::test_guest(), dir.join("bin/testguest")).unwrap();
+        std::fs::write(
+            dir.join("agent.json"),
+            format!(r#"{{"name":"{name}","run":{{"command":["bin/testguest","confined",{verbs}]}}}}"#),
+        )
+        .unwrap();
+        let tag = format!("127.0.0.1:{port}/team/agvol-{name}:1");
+        let made = shards(&["build", "agent", dir.to_str().unwrap(), "-t", &tag]);
+        assert_eq!(made.status, Some(0), "{}", made.stderr);
+        let pushed = shards(&["push", "agent", &tag]);
+        assert_eq!(pushed.status, Some(0), "{}", pushed.stderr);
+        agents.push_str(&format!("AGENT {name} FROM {tag}\n"));
+    }
+    let ctx = context("agvol-ctx", &format!("FROM {image}\n"));
+    std::fs::write(ctx.join("seed"), "seeded\n").unwrap();
+    // The image's own symlinks: `/var/run` to `/run`, as Debian's, and `/fill` to `/etc`,
+    // which the run's root writes (its hostname) and the image lacks.
+    std::fs::create_dir_all(ctx.join("tree/run")).unwrap();
+    std::fs::create_dir_all(ctx.join("tree/var")).unwrap();
+    std::fs::write(ctx.join("tree/run/marker"), "image-run\n").unwrap();
+    std::os::unix::fs::symlink("/run", ctx.join("tree/var/run")).unwrap();
+    std::os::unix::fs::symlink("/etc", ctx.join("tree/fill")).unwrap();
+    std::os::unix::fs::symlink("/dev/shm", ctx.join("tree/var/shm")).unwrap();
+    std::fs::write(
+        ctx.join("Agentfile"),
+        format!(
+            "FROM {image}\nCOPY seed /data/seed\nCOPY tree/ /\n{agents}\
+             VOLUME --chown=a data /data FOR a\n\
+             VOLUME --chown=a shared /shared\n\
+             VOLUME --chown=b --chmod=700 /scratch FOR b\n\
+             VOLUME --chown=a /var/run/agentvol FOR a\n\
+             VOLUME --chown=a /fill FOR a\n\
+             VOLUME /var/shm\n"
+        ),
+    )
+    .unwrap();
+    let built = shards(&["build", "-t", "agvol:1", ctx.to_str().unwrap()]);
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    let (a, b) = (200_000, 200_001);
+    let run_with = |extra: &[&str]| {
+        let mut args = vec!["run", "--rm"];
+        args.extend_from_slice(extra);
+        args.extend_from_slice(&["agvol:1", "await", "confined-ready", "2"]);
+        let ran = shards(&args);
+        let all = format!("{}{}", ran.stdout, ran.stderr);
+        assert_eq!(ran.status, Some(0), "{all}");
+        all
+    };
+    let run = || run_with(&[]);
+    let has = |all: &str, want: &str| assert!(all.lines().any(|l| l == want), "no {want:?} in\n{all}");
+    let first = run();
+    for want in [
+        // Filled from the image, as Docker fills a volume where it is empty.
+        "[agent a] confined cat /data/seed: seeded".to_string(),
+        "[agent a] confined cat /data/x: errno 2".into(),
+        "[agent a] confined write /data/x: ok".into(),
+        "[agent a] confined write /shared/from-a: ok".into(),
+        format!("[agent a] confined owner /data: {a}:{a} 755"),
+        "[agent a] confined see /scratch: errno 2".into(),
+        // b sees the image's /data, read-only, and never the volume.
+        "[agent b] confined see /data: seed".into(),
+        "[agent b] confined write /data/b: errno 30".into(),
+        "[agent b] confined write /scratch/s: ok".into(),
+        format!("[agent b] confined owner /scratch: {b}:{b} 700"),
+        // Mounted where the image's symlink leads, as runc mounts it, the symlink kept.
+        "[agent a] confined cat /var/run/marker: image-run".into(),
+        "[agent a] confined write /var/run/agentvol/w: ok".into(),
+        format!("[agent a] confined owner /run/agentvol: {a}:{a} 755"),
+        // Filled from the image's /etc, never from the run's root, whose hostname it is.
+        "[agent a] confined cat /fill/hostname: errno 2".into(),
+        // A Docker VOLUME the image's symlink leads into /dev stays the run's root's: a's
+        // /dev/shm is its own scratch.
+        format!("[agent a] confined owner /var/shm: {a}:{a} 700"),
+    ] {
+        has(&first, &want);
+    }
+    // Named volumes stay from run to run: a finds what it wrote, b what a shared.
+    let second = run();
+    has(&second, "[agent a] confined cat /data/x: x");
+    has(&second, "[agent b] confined see /data: seed");
+    assert!(
+        second
+            .lines()
+            .any(|l| l.starts_with("[agent b] confined see /shared: ") && l.contains("from-a")),
+        "{second}"
+    );
+    // The run's own root: the shared volume, and the image's /data, not a's volume.
+    let own = shards(&[
+        "run",
+        "--rm",
+        "agvol:1",
+        "stat",
+        "/shared/from-a",
+        "/data/seed",
+        "/data/x",
+    ]);
+    let own_all = format!("{}{}", own.stdout, own.stderr);
+    assert!(own.stdout.contains("/shared/from-a file "), "{own_all}");
+    assert!(own.stdout.contains("/data/seed file "), "{own_all}");
+    assert!(own.stdout.contains("/data/x missing "), "{own_all}");
+    let listed = shards(&["volume", "ls", "--format", "{{.Name}}"]);
+    for name in ["data", "shared"] {
+        assert!(listed.stdout.lines().any(|l| l == name), "{}", listed.stdout);
+    }
+
+    // A run's own volume stands in for a's, given as the Agentfile gives a's: filled
+    // from the image where it is empty, owned by a, b's never, the run's root's too.
+    let stood = run_with(&["-v", "agvol-other:/data"]);
+    for want in [
+        "[agent a] confined cat /data/seed: seeded".to_string(),
+        "[agent a] confined cat /data/x: errno 2".into(),
+        "[agent a] confined write /data/x: ok".into(),
+        format!("[agent a] confined owner /data: {a}:{a} 755"),
+        "[agent b] confined see /data: seed".into(),
+    ] {
+        has(&stood, &want);
+    }
+    let own = shards(&[
+        "run",
+        "--rm",
+        "-v",
+        "agvol-other:/data",
+        "agvol:1",
+        "stat",
+        "/data/x",
+    ]);
+    assert!(
+        own.stdout.contains("/data/x file "),
+        "{}{}",
+        own.stdout,
+        own.stderr
+    );
+
+    // A host directory stands in for b's: given to b, and never owned or moded by the
+    // Agentfile's --chown and --chmod, which are for its volumes.
+    let host = TempDir::new("agvol-host");
+    std::fs::set_permissions(&*host, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let shown = |m: &std::fs::Metadata| {
+        use std::os::unix::fs::MetadataExt as _;
+        (m.mode() & 0o7777, m.uid(), m.gid())
+    };
+    let before = shown(&std::fs::metadata(&*host).unwrap());
+    let bound = run_with(&["-v", &format!("{}:/scratch", host.display())]);
+    assert_eq!(shown(&std::fs::metadata(&*host).unwrap()), before, "{bound}");
+    assert!(
+        bound
+            .lines()
+            .any(|l| l.starts_with("[agent b] confined owner /scratch: ")),
+        "{bound}"
+    );
+    assert!(
+        !bound.contains(&format!("confined owner /scratch: {b}:{b} 700")),
+        "{bound}"
+    );
+
+    // What cannot be given to the agents cannot stand in for their volume.
+    let file = host.join("file");
+    std::fs::write(&file, "x").unwrap();
+    for (args, said) in [
+        (vec!["--tmpfs", "/data"], "a tmpfs cannot stand in for /data"),
+        (
+            vec!["--mount", "type=tmpfs,dst=/shared"],
+            "a tmpfs cannot stand in for /shared",
+        ),
+        (
+            vec!["-v", &format!("{}:/shared", file.display())],
+            "a file cannot stand in for /shared",
+        ),
+    ] {
+        let mut all = vec!["run", "--rm"];
+        all.extend(args.iter().copied());
+        all.extend(["agvol:1", "report"]);
+        let refused = shards(&all);
+        assert_ne!(refused.status, Some(0), "{args:?}");
+        assert!(refused.stderr.contains(said), "{args:?}: {}", refused.stderr);
+    }
+
+    // A container's own root, written before it starts (`cp`): its agents are still
+    // given what the image's Agentfile says, which init reads in the image as built.
+    let created = shards(&[
+        "create",
+        "--name",
+        "agvol-cp",
+        "agvol:1",
+        "await",
+        "confined-ready",
+        "2",
+    ]);
+    assert_eq!(created.status, Some(0), "{}", created.stderr);
+    let spec_at = host.join("spec.json");
+    let out = shards(&["cp", "agvol-cp:/.agentfile.json", spec_at.to_str().unwrap()]);
+    assert_eq!(out.status, Some(0), "{}", out.stderr);
+    // Read-only, as the image holds it (0444): the changed one is another file.
+    let mut spec: serde_json::Value = serde_json::from_slice(&std::fs::read(&spec_at).unwrap()).unwrap();
+    for v in spec["volumes"].as_array_mut().unwrap() {
+        v["for"]["names"] = serde_json::json!([]);
+    }
+    let wide_at = host.join("wide.json");
+    std::fs::write(&wide_at, serde_json::to_vec(&spec).unwrap()).unwrap();
+    let put = shards(&["cp", wide_at.to_str().unwrap(), "agvol-cp:/.agentfile.json"]);
+    assert_eq!(put.status, Some(0), "{}", put.stderr);
+    // And a's own OSI config, its command another: a runs the image's.
+    let dir = spec["agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["name"] == "a")
+        .unwrap()["to"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let osi_at = host.join("osi.json");
+    let out = shards(&[
+        "cp",
+        &format!("agvol-cp:{dir}.d/osi.json"),
+        osi_at.to_str().unwrap(),
+    ]);
+    assert_eq!(out.status, Some(0), "{}", out.stderr);
+    let mut osi: serde_json::Value = serde_json::from_slice(&std::fs::read(&osi_at).unwrap()).unwrap();
+    osi["run"]["command"] = serde_json::json!(["bin/testguest", "confined", "see", "/"]);
+    let other_at = host.join("other-osi.json");
+    std::fs::write(&other_at, serde_json::to_vec(&osi).unwrap()).unwrap();
+    let put = shards(&[
+        "cp",
+        other_at.to_str().unwrap(),
+        &format!("agvol-cp:{dir}.d/osi.json"),
+    ]);
+    assert_eq!(put.status, Some(0), "{}", put.stderr);
+    let started = shards(&["start", "-a", "agvol-cp"]);
+    let all = format!("{}{}", started.stdout, started.stderr);
+    assert_eq!(started.status, Some(0), "{all}");
+    has(&all, "[agent b] confined see /data: seed");
+    has(&all, "[agent a] confined see /scratch: errno 2");
+    has(&all, "[agent a] confined cat /data/seed: seeded");
+    assert!(!all.contains("[agent a] confined see /: "), "{all}");
+    let _ = shards(&["rm", "-f", "agvol-cp"]);
+}

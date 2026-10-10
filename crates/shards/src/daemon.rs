@@ -206,6 +206,11 @@ fn log(message: impl std::fmt::Display) {
     let _ = writeln!(io::stderr(), "shards daemon {}: {message}", std::process::id());
 }
 
+/// A list of an Agentfile's grants as its labels write it, comma-separated (D59).
+fn joined(list: &[Vec<u8>]) -> String {
+    String::from_utf8_lossy(&list.join(&b","[..])).into_owned()
+}
+
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
@@ -1851,10 +1856,12 @@ impl<D: Disk> Daemon<D> {
         let (bindings, alone) = publish::wanted(&run, &prepared.exposed);
         // A port its image's Agentfile declares `AS egress`: a destination, not a listener,
         // so none is published (AGENTFILE_ARCH.md §12 answer 6).
-        let label =
-            std::str::from_utf8(shards_dockerfile::agentfile::EGRESS_DECLARED_LABEL).unwrap_or_default();
-        if let Some(declared) = prepared.labels.get(label) {
-            let declared = shards_net::Ports::parse(declared).unwrap_or_default();
+        if let Some(a) = prepared
+            .agentfile
+            .as_ref()
+            .filter(|a| !a.grants.egress_declared.is_empty())
+        {
+            let declared = shards_net::Ports::parse(&joined(&a.grants.egress_declared)).unwrap_or_default();
             let proto = |p: &str| match p {
                 "udp" => shards_net::Proto::Udp,
                 _ => shards_net::Proto::Tcp,
@@ -1977,7 +1984,7 @@ impl<D: Disk> Daemon<D> {
                     .extend(crate::setup::security_setup(&run, kernel)?);
                 // An Agentfile's image: the filter its domains run under (D59). Its init
                 // starts no domain without one.
-                if prepared.labels.contains_key("vnd.osi.agentfile.digest") {
+                if prepared.agentfile.is_some() {
                     prepared.spec.setup.extend(crate::setup::domain_seccomp(kernel)?);
                 }
                 crate::spec::fits(&prepared.spec)?;
@@ -2064,18 +2071,12 @@ impl<D: Disk> Daemon<D> {
         // the run's own processes from those grants (eth0's own subnet alone, of both
         // versions) before its command starts, as its VM's network process holds the
         // grants for the whole microVM from before the run (D59, D99).
-        let granted = [
-            shards_dockerfile::agentfile::EGRESS_LABEL,
-            shards_dockerfile::agentfile::MCP_LABEL,
-            shards_dockerfile::agentfile::DNS_LABEL,
-        ]
-        .iter()
-        .any(|l| {
-            prepared
-                .labels
-                .contains_key(std::str::from_utf8(l).unwrap_or_default())
-        });
-        if granted {
+        let grants = prepared
+            .agentfile
+            .as_ref()
+            .map(|a| &a.grants)
+            .filter(|g| !g.egress.is_empty() || !g.mcp.is_empty() || g.dns);
+        if grants.is_some() {
             prepared.spec.setup.push(b"confine-eth0".to_vec());
         }
         // The flags, the retention's two u64s, the log's segment, then the spec, in one
@@ -2087,40 +2088,35 @@ impl<D: Disk> Daemon<D> {
         payload.extend(container_log.seq.to_be_bytes());
         prepared.spec.encode_into(&mut payload);
         let detached = run.detach.then_some(conn);
-        // An Agentfile's egress grants and remote MCP servers, as its build labelled the
-        // image (D59): its VM's network process's policy.
-        let label = |l: &'static [u8]| std::str::from_utf8(l).unwrap_or_default();
-        let ports = prepared
-            .labels
-            .get(label(shards_dockerfile::agentfile::EGRESS_LABEL));
-        let servers = prepared
-            .labels
-            .get(label(shards_dockerfile::agentfile::MCP_LABEL));
-        let dns_all = prepared
-            .labels
-            .contains_key(label(shards_dockerfile::agentfile::DNS_LABEL));
-        let egress = if ports.is_none() && servers.is_none() && !dns_all {
-            None
-        } else {
-            let ports = match ports.map(|p| shards_net::Ports::parse(p)).transpose() {
-                Ok(p) => p.unwrap_or_default(),
-                Err(e) => {
-                    refuse(&format!("the image's egress grants: {e}"));
-                    abandon(&id);
-                    return None;
-                }
-            };
-            let named: Vec<(String, u16)> = servers
-                .map(|s| {
-                    s.split(',')
-                        .filter_map(|e| {
-                            let (host, port) = e.trim().rsplit_once(':')?;
-                            Some((host.to_string(), port.parse().ok()?))
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-            Some(shards_net::encode_policy(&ports, &named, dns_all))
+        // An Agentfile's egress grants and remote MCP servers (D59), as the daemon read
+        // them from the image's own normalized Agentfile, checked against its digest
+        // (D109), never from its labels: its VM's network process's policy.
+        let egress = match grants {
+            None => None,
+            Some(g) => {
+                let ports = if g.egress.is_empty() {
+                    Ok(shards_net::Ports::default())
+                } else {
+                    shards_net::Ports::parse(&joined(&g.egress))
+                };
+                let ports = match ports {
+                    Ok(p) => p,
+                    Err(e) => {
+                        refuse(&format!("the image's egress grants: {e}"));
+                        abandon(&id);
+                        return None;
+                    }
+                };
+                let named: Vec<(String, u16)> = g
+                    .mcp
+                    .iter()
+                    .filter_map(|e| {
+                        let (host, port) = std::str::from_utf8(e).ok()?.rsplit_once(':')?;
+                        Some((host.to_string(), port.parse().ok()?))
+                    })
+                    .collect();
+                Some(shards_net::encode_policy(&ports, &named, g.dns))
+            }
         };
         let started = self.start_run(
             threads,
@@ -2485,7 +2481,13 @@ impl<D: Disk> Daemon<D> {
             .chain(run.volumes.iter())
             .cloned()
             .collect();
-        let points = crate::volumes::register(&store, run, &image_volumes, &from)?;
+        let points = crate::volumes::register(
+            &store,
+            run,
+            &image_volumes,
+            prepared.agentfile.as_ref().map(|a| a.volumes.as_slice()),
+            &from,
+        )?;
         Ok(points)
     }
 
@@ -3707,7 +3709,7 @@ impl<D: Disk> Daemon<D> {
         };
         // An Agentfile's image: the in-VM server's device after its root filesystem
         // (D60), so that init starts each agent's instance from it.
-        let server = if prepared.labels.contains_key("vnd.osi.agentfile.digest") {
+        let server = if prepared.agentfile.is_some() {
             Some(crate::guest::server_device(&self.home)?)
         } else {
             None
@@ -4946,6 +4948,7 @@ mod tests {
                 image_id: String::new(),
                 size: (1, shards_vmm::vm::MEMORY_MIB),
                 image_volumes: Vec::new(),
+                agentfile: None,
                 shares: 0,
             };
             self.t.daemon.create(&run, &prepared, &id, Vec::new()).unwrap();

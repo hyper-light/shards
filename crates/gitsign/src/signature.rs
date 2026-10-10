@@ -93,13 +93,57 @@ pub struct Mpi {
     pub bytes: Vec<u8>,
 }
 
+/// Where a signature's fields are read from, in order: its packet's contents (the
+/// outermost signature), or the bytes of the subpacket that embeds it, read in place.
+pub(crate) trait Source {
+    type Bytes: AsRef<[u8]>;
+    /// `n` bytes, or UnexpectedEof where fewer are left.
+    fn bytes(&mut self, n: usize) -> Result<Self::Bytes, Error>;
+}
+
+impl Source for Contents<'_, '_> {
+    type Bytes = Vec<u8>;
+    fn bytes(&mut self, n: usize) -> Result<Vec<u8>, Error> {
+        self.read_full(n)
+    }
+}
+
+/// An embedded signature's bytes, as the bytes.Buffer go-crypto reads them from: a read
+/// past their end is UnexpectedEof, as the packet's own reader gives it.
+struct Slice<'d> {
+    data: &'d [u8],
+    at: usize,
+}
+
+impl<'d> Source for Slice<'d> {
+    type Bytes = &'d [u8];
+    fn bytes(&mut self, n: usize) -> Result<&'d [u8], Error> {
+        let rest = self.data.get(self.at..).unwrap_or_default();
+        match rest.get(..n) {
+            Some(b) => {
+                self.at += n;
+                Ok(b)
+            }
+            None => {
+                self.at = self.data.len();
+                Err(Error::UnexpectedEof)
+            }
+        }
+    }
+}
+
 pub fn read_mpi(r: &mut Contents<'_, '_>) -> Result<Mpi, Error> {
-    let len = r.read_full(2)?;
+    mpi_of(r)
+}
+
+fn mpi_of(r: &mut impl Source) -> Result<Mpi, Error> {
+    let len = r.bytes(2)?;
+    let len = len.as_ref();
     let bits = u16::from_be_bytes([
         len.first().copied().unwrap_or(0),
         len.get(1).copied().unwrap_or(0),
     ]);
-    let bytes = r.read_full(usize::from(bits).div_ceil(8))?;
+    let bytes = r.bytes(usize::from(bits).div_ceil(8))?.as_ref().to_vec();
     Ok(Mpi { bits, bytes })
 }
 
@@ -132,12 +176,118 @@ pub struct Signature {
 /// SigTypePrimaryKeyBinding.
 const PRIMARY_KEY_BINDING: u8 = 0x19;
 
+/// What a subpacket area holds next: the rest after one subpacket, or an embedded
+/// signature's bytes and the rest after them.
+enum Next<'d> {
+    Rest(&'d [u8]),
+    Embedded(&'d [u8], &'d [u8]),
+}
+
+fn multiple_embedded() -> Error {
+    Error::Structural("Cannot have multiple embedded signatures".into())
+}
+
+/// An embedded signature, a cross-signature, is a primary key's binding.
+fn cross_signature(sig: &Signature) -> Result<(), Error> {
+    if sig.sig_type != PRIMARY_KEY_BINDING {
+        return Err(Error::Structural(format!(
+            "cross-signature has unexpected type {}",
+            sig.sig_type
+        )));
+    }
+    Ok(())
+}
+
+/// An embedded signature, read from `root` (go-crypto's bytes.Buffer over the
+/// subpacket), with the signatures it embeds in turn, however deep they go: read with a
+/// stack of frames of its own, where go-crypto recurses on a stack that grows to 1 GiB,
+/// and each in place, where go-crypto copies each level's areas, so the read is linear
+/// in the input. Only the first is kept: a cross-signature's own embedded signature is
+/// checked as it is read, and nothing verifies it, so no chain is kept to clone or drop.
+fn parse_embedded(root: &[u8]) -> Result<Signature, Error> {
+    /// A signature being read: its fields so far, its bytes, what is left of the area
+    /// it is in and which, and whether it embedded one already.
+    struct Frame<'d> {
+        sig: Signature,
+        src: Slice<'d>,
+        area: &'d [u8],
+        hashed: bool,
+        embeds: bool,
+    }
+    fn start(data: &[u8], kept: bool) -> Result<Frame<'_>, Error> {
+        let mut src = Slice { data, at: 0 };
+        let (mut sig, hashed) = Signature::begin(&mut src)?;
+        if kept {
+            sig.build_hash_suffix(hashed);
+        }
+        Ok(Frame {
+            sig,
+            src,
+            area: hashed,
+            hashed: true,
+            embeds: false,
+        })
+    }
+    let mut stack = vec![start(root, true)?];
+    loop {
+        let Some(f) = stack.last_mut() else {
+            return Err(Error::Structural("embedded signature read past its end".into()));
+        };
+        // The frame on top read until it embeds one, or ends.
+        let child = loop {
+            if f.area.is_empty() {
+                f.sig.require_creation_time()?;
+                if f.hashed {
+                    f.area = f.sig.unhashed(&mut f.src)?;
+                    f.hashed = false;
+                    continue;
+                }
+                f.sig.finish(&mut f.src)?;
+                break None;
+            }
+            match f.sig.subpacket(f.area, f.hashed)? {
+                Next::Rest(rest) => f.area = rest,
+                Next::Embedded(sub, rest) => {
+                    if f.embeds {
+                        return Err(multiple_embedded());
+                    }
+                    f.area = rest;
+                    break Some(sub);
+                }
+            }
+        };
+        if let Some(sub) = child {
+            stack.push(start(sub, false)?);
+            continue;
+        }
+        let Some(done) = stack.pop() else {
+            return Err(Error::Structural("embedded signature read past its end".into()));
+        };
+        let Some(parent) = stack.last_mut() else {
+            return Ok(done.sig);
+        };
+        cross_signature(&done.sig)?;
+        parent.embeds = true;
+    }
+}
+
 impl Signature {
     /// Signature.parse.
     pub fn parse(r: &mut Contents<'_, '_>) -> Result<Signature, Error> {
+        let (mut sig, hashed) = Signature::begin(r)?;
+        sig.build_hash_suffix(&hashed);
+        sig.area(&hashed, true)?;
+        let unhashed = sig.unhashed(r)?;
+        sig.area(&unhashed, false)?;
+        sig.finish(r)?;
+        Ok(sig)
+    }
+
+    /// The version, the head and the hashed area.
+    fn begin<S: Source>(r: &mut S) -> Result<(Signature, S::Bytes), Error> {
         let mut sig = Signature::default();
-        let first = r.read_full(1)?;
-        sig.version = first.first().copied().unwrap_or(0);
+        let first = r.bytes(1)?;
+        sig.version = first.as_ref().first().copied().unwrap_or(0);
         match sig.version {
             4 | 6 => {}
             5 => {
@@ -147,7 +297,8 @@ impl Signature {
             }
             v => return Err(Error::Unsupported(format!("signature packet version {v}"))),
         }
-        let head = r.read_full(if sig.version == 6 { 7 } else { 5 })?;
+        let head = r.bytes(if sig.version == 6 { 7 } else { 5 })?;
+        let head = head.as_ref();
         let at = |i: usize| head.get(i).copied().unwrap_or(0);
         sig.sig_type = at(0);
         sig.pubkey_algo = at(1);
@@ -165,11 +316,15 @@ impl Signature {
         } else {
             usize::from(u16::from_be_bytes([at(3), at(4)]))
         };
-        let hashed = r.read_full(hashed_len)?;
-        sig.build_hash_suffix(&hashed);
-        sig.subpackets(&hashed, true)?;
-        let unhashed_len = if sig.version == 6 {
-            let b = r.read_full(4)?;
+        let hashed = r.bytes(hashed_len)?;
+        Ok((sig, hashed))
+    }
+
+    /// The unhashed area.
+    fn unhashed<S: Source>(&self, r: &mut S) -> Result<S::Bytes, Error> {
+        let len = if self.version == 6 {
+            let b = r.bytes(4)?;
+            let b = b.as_ref();
             u32::from_be_bytes([
                 b.first().copied().unwrap_or(0),
                 b.get(1).copied().unwrap_or(0),
@@ -177,38 +332,70 @@ impl Signature {
                 b.get(3).copied().unwrap_or(0),
             ]) as usize
         } else {
-            let b = r.read_full(2)?;
+            let b = r.bytes(2)?;
+            let b = b.as_ref();
             usize::from(u16::from_be_bytes([
                 b.first().copied().unwrap_or(0),
                 b.get(1).copied().unwrap_or(0),
             ]))
         };
-        let unhashed = r.read_full(unhashed_len)?;
-        sig.subpackets(&unhashed, false)?;
-        let tag = r.read_full(2)?;
-        sig.hash_tag = [
+        r.bytes(len)
+    }
+
+    /// The hash tag, a v6 signature's salt, and the signature's values.
+    fn finish<S: Source>(&mut self, r: &mut S) -> Result<(), Error> {
+        let tag = r.bytes(2)?;
+        let tag = tag.as_ref();
+        self.hash_tag = [
             tag.first().copied().unwrap_or(0),
             tag.get(1).copied().unwrap_or(0),
         ];
-        if sig.version == 6 {
-            let n = r.read_full(1)?;
-            let expected = hash.salt_len()?;
-            if usize::from(n.first().copied().unwrap_or(0)) != expected {
+        if self.version == 6 {
+            let n = r.bytes(1)?;
+            let expected = self.hash.map_or(Ok(0), Hash::salt_len)?;
+            if usize::from(n.as_ref().first().copied().unwrap_or(0)) != expected {
                 return Err(Error::Structural(
                     "unexpected salt size for the given hash algorithm".into(),
                 ));
             }
-            sig.salt = r.read_full(expected)?;
+            self.salt = r.bytes(expected)?.as_ref().to_vec();
         }
-        sig.values = Some(match sig.pubkey_algo {
-            RSA | RSA_SIGN_ONLY => Values::Rsa(read_mpi(r)?),
-            DSA => Values::Dsa(read_mpi(r)?, read_mpi(r)?),
-            ECDSA => Values::Ecdsa(read_mpi(r)?, read_mpi(r)?),
-            EDDSA => Values::EdDsa(read_mpi(r)?, read_mpi(r)?),
-            ED25519 => Values::Native(r.read_full(64)?),
-            _ => Values::Native(r.read_full(114)?),
+        self.values = Some(match self.pubkey_algo {
+            RSA | RSA_SIGN_ONLY => Values::Rsa(mpi_of(r)?),
+            DSA => Values::Dsa(mpi_of(r)?, mpi_of(r)?),
+            ECDSA => Values::Ecdsa(mpi_of(r)?, mpi_of(r)?),
+            EDDSA => Values::EdDsa(mpi_of(r)?, mpi_of(r)?),
+            ED25519 => Values::Native(r.bytes(64)?.as_ref().to_vec()),
+            _ => Values::Native(r.bytes(114)?.as_ref().to_vec()),
         });
-        Ok(sig)
+        Ok(())
+    }
+
+    /// The outermost signature's area (parseSignatureSubpackets): each subpacket, an
+    /// embedded signature read whole (parse_embedded), then a creation time required.
+    fn area(&mut self, mut data: &[u8], hashed: bool) -> Result<(), Error> {
+        while !data.is_empty() {
+            data = match self.subpacket(data, hashed)? {
+                Next::Rest(rest) => rest,
+                Next::Embedded(sub, rest) => {
+                    if self.embedded.is_some() {
+                        return Err(multiple_embedded());
+                    }
+                    let embedded = parse_embedded(sub)?;
+                    cross_signature(&embedded)?;
+                    self.embedded = Some(Box::new(embedded));
+                    rest
+                }
+            };
+        }
+        self.require_creation_time()
+    }
+
+    fn require_creation_time(&self) -> Result<(), Error> {
+        if self.creation_time.is_none() {
+            return Err(Error::Structural("no creation time in signature".into()));
+        }
+        Ok(())
     }
 
     /// buildHashSuffix.
@@ -230,19 +417,9 @@ impl Signature {
         self.hash_suffix = out;
     }
 
-    /// parseSignatureSubpackets: each subpacket, then a creation time required.
-    fn subpackets(&mut self, mut data: &[u8], hashed: bool) -> Result<(), Error> {
-        while !data.is_empty() {
-            data = self.subpacket(data, hashed)?;
-        }
-        if self.creation_time.is_none() {
-            return Err(Error::Structural("no creation time in signature".into()));
-        }
-        Ok(())
-    }
-
-    /// parseSignatureSubpacket: one subpacket, and what follows it.
-    fn subpacket<'d>(&mut self, data: &'d [u8], hashed: bool) -> Result<&'d [u8], Error> {
+    /// parseSignatureSubpacket: one subpacket, and what follows it; an embedded
+    /// signature's bytes, for the caller to read.
+    fn subpacket<'d>(&mut self, data: &'d [u8], hashed: bool) -> Result<Next<'d>, Error> {
         let truncated = || Error::Structural("signature subpacket truncated".into());
         let structural = |s: &str| Error::Structural(s.into());
         let b = |i: usize| data.get(i).copied().unwrap_or(0);
@@ -277,7 +454,7 @@ impl Signature {
         let kind = kind_byte & 0x7f;
         let critical = kind_byte & 0x80 != 0;
         if !hashed && kind != 16 && kind != 33 && kind != 32 {
-            return Ok(after);
+            return Ok(Next::Rest(after));
         }
         let u32_of = |s: &[u8]| {
             u32::from_be_bytes([
@@ -384,24 +561,8 @@ impl Signature {
                 };
                 self.revocation_reason = Some((code, String::from_utf8_lossy(text).into_owned()));
             }
-            32 => {
-                if self.embedded.is_some() {
-                    return Err(structural("Cannot have multiple embedded signatures"));
-                }
-                let mut stream = crate::Stream::new(sub);
-                let mut contents = Contents {
-                    stream: &mut stream,
-                    body: crate::Body::Rest,
-                };
-                let embedded = Signature::parse(&mut contents)?;
-                if embedded.sig_type != PRIMARY_KEY_BINDING {
-                    return Err(Error::Structural(format!(
-                        "cross-signature has unexpected type {}",
-                        embedded.sig_type
-                    )));
-                }
-                self.embedded = Some(Box::new(embedded));
-            }
+            // Read by the caller, with the signatures it embeds (parse_embedded).
+            32 => return Ok(Next::Embedded(sub, after)),
             33 => {
                 let Some((&v, fp)) = sub.split_first() else {
                     return Err(structural("empty issuer fingerprint subpacket"));
@@ -438,6 +599,6 @@ impl Signature {
                 }
             }
         }
-        Ok(after)
+        Ok(Next::Rest(after))
     }
 }

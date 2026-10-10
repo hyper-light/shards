@@ -23,6 +23,13 @@ struct Parser<'a> {
     at: usize,
 }
 
+/// The deepest an Entry's values go (`dsseV002.signatures[].verifier.publicKey.rawBytes`):
+/// its schema has no field of any shape (no Struct, Value or Any), so a body nested deeper
+/// is no Entry, which protojson finds at the first field its schema lacks. Refused at
+/// this depth, a body is never read deeper, and the parse's recursion stays this shallow
+/// on any thread.
+const MAX_DEPTH: usize = 7;
+
 fn not_delim(c: u8) -> bool {
     matches!(c, b'-' | b'+' | b'.' | b'_') || c.is_ascii_alphanumeric()
 }
@@ -166,7 +173,7 @@ impl Parser<'_> {
     }
 
     fn value(&mut self, depth: usize) -> Option<PValue> {
-        if depth > 10_000 {
+        if depth > MAX_DEPTH {
             return None;
         }
         self.ws();
@@ -721,5 +728,39 @@ mod tests {
         assert_eq!(int32("1.5"), None);
         assert_eq!(int32("1e"), Some(1));
         assert_eq!(int32("10e-1"), Some(1));
+    }
+
+    /// How deep the values of a message of `schema` at `depth` go.
+    fn deepest(schema: &[Field], depth: usize) -> usize {
+        let mut max = depth;
+        for f in schema {
+            let at = depth + 1 + usize::from(f.repeated);
+            max = max.max(match f.kind {
+                FieldKind::Msg(s) => deepest(s, at),
+                _ => at,
+            });
+        }
+        max
+    }
+
+    /// An Entry nests no deeper than its schema, which `MAX_DEPTH` is; a body nested
+    /// deeper (any mirror's, before anything is verified) is refused before its depth is
+    /// read, on a stack too small for recursion a level at a time.
+    #[test]
+    fn bodies_nest_no_deeper_than_an_entry() {
+        assert_eq!(deepest(&ENTRY, 0), MAX_DEPTH);
+        let deepest = br#"{"apiVersion":"0.0.2","spec":{"dsseV002":{"signatures":[{"verifier":{"publicKey":{"rawBytes":"AQ=="}}}]}}}"#;
+        assert!(parse(deepest).and_then(|v| message(&v, &ENTRY)).is_some());
+        let verdicts = std::thread::Builder::new()
+            .stack_size(64 << 10)
+            .spawn(|| {
+                let deep = [b"[".repeat(10_000), b"]".repeat(10_000)].concat();
+                let deeper = br#"{"apiVersion":"0.0.2","spec":{"dsseV002":{"signatures":[{"verifier":{"publicKey":{"rawBytes":["AQ=="]}}}]}}}"#;
+                (unmarshal(&deep), parse(deeper))
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(verdicts, (None, None));
     }
 }

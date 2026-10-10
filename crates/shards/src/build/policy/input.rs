@@ -3,8 +3,9 @@
 //! order, the empty ones left out), and the parts of it not known yet, which the
 //! source's metadata answers.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
+use shards_dockerfile::json::Value as JsonValue;
 use shards_dockerfile::platform::{self, Platform};
 use shards_image::reference::Reference;
 
@@ -544,7 +545,13 @@ pub fn of_source(
                     }
                     match &m.attestation_chain {
                         Some(chain) => {
-                            match provenance::parse(chain, log) {
+                            // Read once a build, where a build's trust keeps readings.
+                            let key = trust.map(|_| signatures::chain_key(chain));
+                            let read = match (trust, &key) {
+                                (Some(t), Some(k)) => t.provenance(k, chain, log),
+                                _ => provenance::parse(chain, log),
+                            };
+                            match read {
                                 Ok(p) => img.provenance = p.map(Box::new),
                                 Err(e) => {
                                     log(LogLevel::Debug, &format!("failed to parse image provenance: {e}"))
@@ -555,7 +562,7 @@ pub fn of_source(
                             // parseSignatures, where there is a verifier: a failure is the
                             // debug log's, the field left out. Every input is built for a
                             // platform (CheckPolicy's, or a material's own or its parent's).
-                            if let (Some(trust), Some(w)) = (trust, wanted) {
+                            if let (Some(trust), Some(w), Some(key)) = (trust, wanted, &key) {
                                 let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
                                 let platform = shards_sigstore::platforms::Platform {
                                     os: text(&w.os),
@@ -564,7 +571,7 @@ pub fn of_source(
                                     os_version: text(&w.os_version),
                                     os_features: w.os_features.iter().map(|f| text(f)).collect(),
                                 };
-                                match signatures::parse_signatures(chain, &platform, trust) {
+                                match trust.signatures(key, chain, &platform) {
                                     Ok(sigs) => img.signatures = sigs,
                                     Err(e) => log(
                                         LogLevel::Debug,
@@ -619,49 +626,360 @@ pub fn of_source(
     Ok(inp)
 }
 
-/// The fields of an image's config (ocispecs.Image): when it was made, as RFC 3339
-/// writes it, and what it runs with. Its volumes in name order, where Go's map gives
-/// them in no order at all.
+/// The fields buildx reads of an image's config, as `json.Unmarshal` reads it into an
+/// ocispecs.Image (image-spec v1.1.1): when it was made, as RFC 3339 writes it, and what
+/// it runs with. Its volumes in name order, where Go's map gives them in no order at all.
 fn config_fields(img: &mut Image, raw: &[u8]) -> Result<(), String> {
-    let doc: serde_json::Value =
-        serde_json::from_slice(raw).map_err(|e| format!("failed to unmarshal image config: {e}"))?;
-    if let Some(created) = doc.get("created").and_then(serde_json::Value::as_str) {
-        let t = shards_dockerfile::go::parse_rfc3339(created.as_bytes()).map_err(|e| {
-            format!(
-                "failed to unmarshal image config: {}",
-                String::from_utf8_lossy(&e)
-            )
-        })?;
-        img.created = rfc3339(&t);
+    let c = OciImage::from_json(raw).map_err(|e| {
+        format!(
+            "failed to unmarshal image config: {}",
+            String::from_utf8_lossy(&e)
+        )
+    })?;
+    let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
+    if let Some(t) = &c.created {
+        img.created = rfc3339(t);
     }
-    let Some(c) = doc.get("config") else {
-        return Ok(());
-    };
-    img.env = c
-        .get("Env")
-        .and_then(serde_json::Value::as_array)
-        .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
-        .unwrap_or_default();
-    if let Some(l) = c.get("Labels").and_then(serde_json::Value::as_object) {
-        img.labels = l
-            .iter()
-            .filter_map(|(k, v)| v.as_str().map(|v| (k.clone(), v.to_string())))
-            .collect();
-    }
-    img.user = c
-        .get("User")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or_default()
-        .to_string();
-    if let Some(v) = c.get("Volumes").and_then(serde_json::Value::as_object) {
-        img.volumes = v.keys().cloned().collect();
-    }
-    img.working_dir = c
-        .get("WorkingDir")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or_default()
-        .to_string();
+    img.env = c.env.live().iter().map(|e| text(e)).collect();
+    img.labels = c.labels.iter().map(|(k, v)| (text(k), text(v))).collect();
+    img.user = text(&c.user);
+    img.volumes = c.volumes.iter().map(|v| text(v)).collect();
+    img.working_dir = text(&c.working_dir);
     Ok(())
+}
+
+/// What buildx reads of an ocispecs.Image, read as encoding/json reads one: a key matched
+/// to its field exactly, else as foldName folds both; a repeated key decoding into what an
+/// earlier one left, maps and structs merged and a slice's elements reused; `null` making
+/// a slice or map nil and leaving a string as it was; every field's type checked, the
+/// first mismatch kept while the rest is read; a time parsed from its text as written,
+/// its failure ending the reading at once. The document is scanned without recursion
+/// (shards_dockerfile::json), so no nesting exhausts a thread's stack.
+#[derive(Debug, Default)]
+struct OciImage {
+    created: Option<shards_dockerfile::go::Time>,
+    user: Vec<u8>,
+    env: GoStrings,
+    volumes: BTreeSet<Vec<u8>>,
+    working_dir: Vec<u8>,
+    labels: BTreeMap<Vec<u8>, Vec<u8>>,
+}
+
+/// A `[]string` as Go's decoder fills one: an array's elements decoded in place over what
+/// earlier arrays left in its backing array, a `null` element keeping what was there; a
+/// `null` array making it nil and `[]` a new, empty one.
+#[derive(Debug, Default)]
+struct GoStrings {
+    held: Vec<Vec<u8>>,
+    len: usize,
+}
+
+impl GoStrings {
+    fn live(&self) -> &[Vec<u8>] {
+        self.held.get(..self.len).unwrap_or_default()
+    }
+}
+
+/// An `Unmarshaler`'s error (Time.UnmarshalJSON's), which ends the reading at once.
+#[derive(Debug)]
+struct Abort(Vec<u8>);
+
+/// Where a value goes, for Go's messages: the struct whose field it fills and the path of
+/// JSON names (and embedded structs' names) to that field; both empty for the document.
+#[derive(Debug, Clone, Copy)]
+struct At {
+    strukt: &'static str,
+    field: &'static str,
+}
+
+const DOCUMENT: At = At {
+    strukt: "",
+    field: "",
+};
+
+/// The fields of the structs read, each with its path from the document.
+const IMAGE_FIELDS: &[(&str, &str)] = &[
+    ("created", "created"),
+    ("author", "author"),
+    ("architecture", "Platform.architecture"),
+    ("os", "Platform.os"),
+    ("os.version", "Platform.os.version"),
+    ("os.features", "Platform.os.features"),
+    ("variant", "Platform.variant"),
+    ("config", "config"),
+    ("rootfs", "rootfs"),
+    ("history", "history"),
+];
+const CONFIG_FIELDS_OCI: &[(&str, &str)] = &[
+    ("User", "config.User"),
+    ("ExposedPorts", "config.ExposedPorts"),
+    ("Env", "config.Env"),
+    ("Entrypoint", "config.Entrypoint"),
+    ("Cmd", "config.Cmd"),
+    ("Volumes", "config.Volumes"),
+    ("WorkingDir", "config.WorkingDir"),
+    ("Labels", "config.Labels"),
+    ("StopSignal", "config.StopSignal"),
+    ("ArgsEscaped", "config.ArgsEscaped"),
+];
+const ROOTFS_FIELDS: &[(&str, &str)] = &[("type", "rootfs.type"), ("diff_ids", "rootfs.diff_ids")];
+const HISTORY_FIELDS: &[(&str, &str)] = &[
+    ("created", "history.created"),
+    ("created_by", "history.created_by"),
+    ("author", "history.author"),
+    ("comment", "history.comment"),
+    ("empty_layer", "history.empty_layer"),
+];
+
+/// foldName of a key: ASCII letters upper-cased, `ſ` and the Kelvin sign folded to `S`
+/// and `K`; a key with any other rune that is not ASCII matches no field (they are all
+/// ASCII).
+fn fold_key(key: &[u8]) -> Option<String> {
+    String::from_utf8_lossy(key)
+        .chars()
+        .map(|c| match c {
+            c if c.is_ascii() => Some(c.to_ascii_uppercase()),
+            '\u{17F}' => Some('S'),
+            '\u{212A}' => Some('K'),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The JSON kind Go names in an UnmarshalTypeError.
+fn kind(v: &JsonValue) -> &'static str {
+    match v {
+        JsonValue::Null => "null",
+        JsonValue::Bool(_) => "bool",
+        JsonValue::Number(_) => "number",
+        JsonValue::String(..) => "string",
+        JsonValue::Array(_) => "array",
+        JsonValue::Object(_) => "object",
+    }
+}
+
+/// A reading: the first type mismatch.
+#[derive(Debug, Default)]
+struct Reader {
+    saved: Option<String>,
+}
+
+impl Reader {
+    fn mismatch(&mut self, v: &JsonValue, at: At, go_type: &str) {
+        if self.saved.is_none() {
+            self.saved = Some(shards_sigstore::tlog::gojson::type_error(
+                kind(v),
+                at.strukt,
+                at.field,
+                go_type,
+            ));
+        }
+    }
+
+    /// The members of an object that fill the struct `fields` lists, each with where it
+    /// goes; none for `null`, and a mismatch for anything else.
+    fn members<'v>(
+        &mut self,
+        v: &'v JsonValue,
+        at: At,
+        strukt: &'static str,
+        go_type: &str,
+        fields: &'static [(&'static str, &'static str)],
+    ) -> Vec<(&'static str, At, &'v JsonValue)> {
+        let JsonValue::Object(members) = v else {
+            if !matches!(v, JsonValue::Null) {
+                self.mismatch(v, at, go_type);
+            }
+            return Vec::new();
+        };
+        members
+            .iter()
+            .filter_map(|(k, m)| {
+                let exact = fields.iter().find(|(name, _)| name.as_bytes() == k.as_slice());
+                let found = exact.or_else(|| {
+                    let folded = fold_key(k)?;
+                    fields
+                        .iter()
+                        .find(|(name, _)| name.to_ascii_uppercase() == folded)
+                })?;
+                Some((
+                    found.0,
+                    At {
+                        strukt,
+                        field: found.1,
+                    },
+                    m,
+                ))
+            })
+            .collect()
+    }
+
+    fn string(&mut self, v: &JsonValue, at: At, into: &mut Vec<u8>, go_type: &str) {
+        match v {
+            JsonValue::Null => {}
+            JsonValue::String(s, _) => s.clone_into(into),
+            _ => self.mismatch(v, at, go_type),
+        }
+    }
+
+    /// A string field not read: its type checked.
+    fn check_string(&mut self, v: &JsonValue, at: At, go_type: &str) {
+        if !matches!(v, JsonValue::Null | JsonValue::String(..)) {
+            self.mismatch(v, at, go_type);
+        }
+    }
+
+    fn check_bool(&mut self, v: &JsonValue, at: At) {
+        if !matches!(v, JsonValue::Null | JsonValue::Bool(_)) {
+            self.mismatch(v, at, "bool");
+        }
+    }
+
+    /// A slice of a string type not read: its elements' types checked.
+    fn check_strings(&mut self, v: &JsonValue, at: At, elem: &str) {
+        match v {
+            JsonValue::Null => {}
+            JsonValue::Array(items) => items.iter().for_each(|x| self.check_string(x, at, elem)),
+            _ => self.mismatch(v, at, &format!("[]{elem}")),
+        }
+    }
+
+    fn strings(&mut self, v: &JsonValue, at: At, into: &mut GoStrings) {
+        match v {
+            JsonValue::Array(items) if !items.is_empty() => {
+                for (i, x) in items.iter().enumerate() {
+                    if i >= into.held.len() {
+                        into.held.push(Vec::new());
+                    }
+                    if let Some(slot) = into.held.get_mut(i) {
+                        self.string(x, at, slot, "string");
+                    }
+                }
+                into.len = items.len();
+            }
+            JsonValue::Null | JsonValue::Array(_) => *into = GoStrings::default(),
+            _ => self.mismatch(v, at, "[]string"),
+        }
+    }
+
+    /// A `map[string]struct{}`: keys merged into what is there, each value checked.
+    fn set(&mut self, v: &JsonValue, at: At, mut into: Option<&mut BTreeSet<Vec<u8>>>) {
+        match v {
+            JsonValue::Null => {
+                if let Some(s) = into {
+                    s.clear();
+                }
+            }
+            JsonValue::Object(members) => {
+                for (k, m) in members {
+                    if !matches!(m, JsonValue::Null | JsonValue::Object(_)) {
+                        self.mismatch(m, at, "struct {}");
+                    }
+                    if let Some(s) = into.as_deref_mut() {
+                        s.insert(k.clone());
+                    }
+                }
+            }
+            _ => self.mismatch(v, at, "map[string]struct {}"),
+        }
+    }
+
+    /// A `map[string]string`: members merged into what is there, `null` as "".
+    fn map(&mut self, v: &JsonValue, at: At, into: &mut BTreeMap<Vec<u8>, Vec<u8>>) {
+        match v {
+            JsonValue::Null => into.clear(),
+            JsonValue::Object(members) => {
+                for (k, m) in members {
+                    let mut s = Vec::new();
+                    self.string(m, at, &mut s, "string");
+                    into.insert(k.clone(), s);
+                }
+            }
+            _ => self.mismatch(v, at, "map[string]string"),
+        }
+    }
+
+    /// A `*time.Time`: Time.UnmarshalJSON reads the value's text as written.
+    fn time(v: &JsonValue, into: &mut Option<shards_dockerfile::go::Time>) -> Result<(), Abort> {
+        match v {
+            JsonValue::Null => *into = None,
+            JsonValue::String(s, raw) => {
+                *into =
+                    Some(shards_dockerfile::go::parse_rfc3339(raw.as_deref().unwrap_or(s)).map_err(Abort)?);
+            }
+            _ => return Err(Abort(b"Time.UnmarshalJSON: input is not a JSON string".to_vec())),
+        }
+        Ok(())
+    }
+
+    fn config(&mut self, v: &JsonValue, at: At, into: &mut OciImage) {
+        for (name, at, m) in self.members(v, at, "ImageConfig", "v1.ImageConfig", CONFIG_FIELDS_OCI) {
+            match name {
+                "User" => self.string(m, at, &mut into.user, "string"),
+                "Env" => self.strings(m, at, &mut into.env),
+                "Volumes" => self.set(m, at, Some(&mut into.volumes)),
+                "ExposedPorts" => self.set(m, at, None),
+                "WorkingDir" => self.string(m, at, &mut into.working_dir, "string"),
+                "Labels" => self.map(m, at, &mut into.labels),
+                "Entrypoint" | "Cmd" => self.check_strings(m, at, "string"),
+                "ArgsEscaped" => self.check_bool(m, at),
+                _ => self.check_string(m, at, "string"),
+            }
+        }
+    }
+
+    fn image(&mut self, v: &JsonValue, into: &mut OciImage) -> Result<(), Abort> {
+        for (name, at, m) in self.members(v, DOCUMENT, "Image", "v1.Image", IMAGE_FIELDS) {
+            match name {
+                "created" => Self::time(m, &mut into.created)?,
+                "os.features" => self.check_strings(m, at, "string"),
+                "config" => self.config(m, at, into),
+                "rootfs" => {
+                    for (name, at, m) in self.members(m, at, "RootFS", "v1.RootFS", ROOTFS_FIELDS) {
+                        if name == "type" {
+                            self.check_string(m, at, "string");
+                        } else {
+                            self.check_strings(m, at, "digest.Digest");
+                        }
+                    }
+                }
+                "history" => match m {
+                    JsonValue::Null => {}
+                    JsonValue::Array(items) => {
+                        for item in items {
+                            for (name, at, m) in
+                                self.members(item, at, "History", "v1.History", HISTORY_FIELDS)
+                            {
+                                match name {
+                                    "created" => Self::time(m, &mut None)?,
+                                    "empty_layer" => self.check_bool(m, at),
+                                    _ => self.check_string(m, at, "string"),
+                                }
+                            }
+                        }
+                    }
+                    _ => self.mismatch(m, at, "[]v1.History"),
+                },
+                // author and the platform's strings.
+                _ => self.check_string(m, at, "string"),
+            }
+        }
+        Ok(())
+    }
+}
+
+impl OciImage {
+    /// `json.Unmarshal(raw, &ocispecs.Image{})`'s reading, or its error.
+    fn from_json(raw: &[u8]) -> Result<OciImage, Vec<u8>> {
+        let v = shards_dockerfile::json::parse(raw)?;
+        let mut image = OciImage::default();
+        let mut r = Reader::default();
+        r.image(&v, &mut image).map_err(|Abort(e)| e)?;
+        match r.saved {
+            Some(e) => Err(e.into_bytes()),
+            None => Ok(image),
+        }
+    }
 }
 
 /// `Time.Format(time.RFC3339)`: to the second, `Z` for UTC, else the offset.

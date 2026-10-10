@@ -8,6 +8,7 @@ use std::io::Write;
 use std::process::ExitCode;
 
 mod agent;
+mod agentfile;
 #[cfg(all(feature = "alloc-count", unix))]
 mod alloc_count;
 mod build;
@@ -83,6 +84,7 @@ pub(crate) fn shardsd(args: Vec<std::ffi::OsString>) -> ExitCode {
         #[cfg(unix)]
         Some("share") => share::share(args),
         Some("build") => build::build(args),
+        Some("policy") => build::policy_command::command(args),
         Some("agentfile") => from_image::command(args),
         Some("run") => usage_error("run: the `shards` command runs commands, through the daemon"),
         Some("version") => cli::version::run(&args.collect::<Vec<_>>()),

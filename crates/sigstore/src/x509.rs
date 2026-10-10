@@ -1470,6 +1470,20 @@ pub fn domain_name_valid(s: &[u8], constraint: bool) -> bool {
     true
 }
 
+/// What crypto/rsa refuses of a public key before it verifies with it (checkPublicKeySize,
+/// then fips140/rsa's checkPublicKey), in its order: `shards_gitsign`'s checks, then the
+/// exponent's bound, which they lack. x509 parses an exponent up to an int64's; crypto/rsa
+/// takes none past 2^31-1.
+pub fn rsa_key_error(n: &[u8], e: &[u8]) -> Option<String> {
+    shards_gitsign::arith::rsa_key_error(n, e).or_else(|| {
+        let e = e
+            .get(e.iter().position(|b| *b != 0).unwrap_or(e.len())..)
+            .unwrap_or_default();
+        (e.len() > 4 || (e.len() == 4 && e.first().is_some_and(|b| b & 0x80 != 0)))
+            .then(|| "crypto/rsa: public exponent too large".to_string())
+    })
+}
+
 /// checkSignature: `signed` by the algorithm's hash, against `sig` by `key`.
 pub fn check_signature(
     alg: SigAlg,
@@ -1513,7 +1527,7 @@ pub fn check_signature(
             }
             let (h, hashed) = digest.ok_or_else(unsupported)?;
             let g = h.gitsign().ok_or_else(unsupported)?;
-            if let Some(e) = shards_gitsign::arith::rsa_key_error(n, e) {
+            if let Some(e) = rsa_key_error(n, e) {
                 return Err(X509Error(e));
             }
             let ok = if alg.is_pss() {

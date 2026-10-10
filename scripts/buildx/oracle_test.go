@@ -236,6 +236,32 @@ var cases = [][]string{
 	{"prune", "extra"},
 	{"prune", "--filter", "noequals"},
 	{"prune", "--timeout", "5s", "-f"},
+	{"policy"},
+	{"policy", "--help"},
+	{"policy", "-h"},
+	{"policy", "foo"},
+	{"policy", "--bogus"},
+	{"policy", "eval", "--help"},
+	{"policy", "eval", "-h"},
+	{"policy", "eval"},
+	{"policy", "eval", "a", "b"},
+	{"policy", "eval", "docker-image://alpine"},
+	{"policy", "eval", "--print", "--fields", "image.checksum,image.labels", "--fields", "git.commit", "--platform", "linux/arm64", "docker-image://alpine"},
+	{"policy", "eval", "-f", "Agentfile", "."},
+	{"policy", "eval", "--filename", "X", "--file", "Y", "."},
+	{"policy", "eval", "--print=false", "."},
+	{"policy", "eval", "--print=maybe", "."},
+	{"policy", "eval", "--platform", "."},
+	{"policy", "eval", "--bogus", "."},
+	{"policy", "eval", ".", "--print"},
+	{"policy", "eval", "--builder", "b", "--debug", "."},
+	{"policy", "test", "--help"},
+	{"policy", "test"},
+	{"policy", "test", "a", "b"},
+	{"policy", "test", "--run", "deny", "--filename", "Agentfile", "policies/"},
+	{"policy", "test", "--run", "policies"},
+	{"policy", "test", "-f", "x", "p"},
+	{"policy", "test", "--bogus", "p"},
 }
 
 type answer struct {
@@ -260,8 +286,10 @@ func ask(t *testing.T, argv []string) answer {
 	// A case is of `build` unless its first word names `prune`, which `docker builder
 	// prune` runs.
 	sub := "build"
-	if len(argv) > 0 && argv[0] == "prune" {
-		sub = "prune"
+	words := []string{}
+	if len(argv) > 0 && (argv[0] == "prune" || argv[0] == "policy") {
+		sub = argv[0]
+		words = append(words, argv[0])
 		argv = argv[1:]
 	}
 	var build *cobra.Command
@@ -269,6 +297,16 @@ func ask(t *testing.T, argv []string) answer {
 		if c.Name() == sub {
 			build = c
 		}
+	}
+	// `policy eval` and `policy test`: the policy command's own.
+	if sub == "policy" && build != nil && len(argv) > 0 && (argv[0] == "eval" || argv[0] == "test") {
+		for _, c := range build.Commands() {
+			if c.Name() == argv[0] {
+				build = c
+			}
+		}
+		words = append(words, argv[0])
+		argv = argv[1:]
 	}
 	if build == nil {
 		t.Fatal("no " + sub + " command")
@@ -283,6 +321,7 @@ func ask(t *testing.T, argv []string) answer {
 		rootCmd.PersistentFlags().VisitAll(hide)
 	}
 	build.PreRunE, build.PreRun = nil, nil
+	if build.Runnable() || sub != "policy" {
 	build.RunE = func(c *cobra.Command, args []string) error {
 		var line strings.Builder
 		line.WriteString("RUN")
@@ -300,8 +339,12 @@ func ask(t *testing.T, argv []string) answer {
 		}
 		return built(c)
 	}
+	}
 	// As the CLI execs a plugin: its path, then its name, then the words.
-	os.Args = append([]string{"docker-buildx", "buildx", sub}, argv...)
+	if len(words) == 0 {
+		words = []string{sub}
+	}
+	os.Args = append(append([]string{"docker-buildx", "buildx"}, words...), argv...)
 	err = plugin.RunPlugin(dockerCli, rootCmd, metadata.Metadata{SchemaVersion: "0.1.0", Vendor: "Docker Inc."})
 	status := 0
 	// As main does (cmd/buildx/main.go), without its debug, policy and gRPC cases.
@@ -325,7 +368,7 @@ func ask(t *testing.T, argv []string) answer {
 		}
 	}
 	if sub != "build" {
-		argv = append([]string{sub}, argv...)
+		argv = append(words, argv...)
 	}
 	return answer{argv, shards(stdout.String()), shards(stderr.String()), status}
 }

@@ -241,8 +241,11 @@ pub fn apply(entry: &[u8]) -> Result<(), i32> {
     if entry.starts_with(b"seccomp=") || entry == b"nnp" {
         return Ok(());
     }
-    // Init's, for the domains it starts (D59).
-    if entry.starts_with(b"domains-seccomp=") || entry.starts_with(b"domains-seccomp-none=") {
+    // Init's, for the domains it starts (D59), and the volumes it gives them alone (D111).
+    if entry.starts_with(b"domains-seccomp=")
+        || entry.starts_with(b"domains-seccomp-none=")
+        || entry.starts_with(b"domain-volume=")
+    {
         return Ok(());
     }
     let text = std::str::from_utf8(entry).map_err(|_| libc::EINVAL)?;

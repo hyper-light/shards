@@ -189,19 +189,33 @@ fn time_canon(t: &Option<Time>) -> Result<Canon, Error> {
 }
 
 /// An object written as go-tuf writes it: the unrecognized fields first, then its own,
-/// which replace any of the same name.
-fn object(extra: &[(String, Value)], own: Vec<(&str, Canon)>) -> Result<Canon, Error> {
-    let mut m = match Canon::from_any(&Value::Object(extra.to_vec())).map_err(Error::Json)? {
-        Canon::Object(m) => m,
-        _ => Vec::new(),
-    };
-    for (k, v) in own {
-        match m.iter_mut().find(|(n, _)| n == k) {
-            Some(slot) => slot.1 = v,
-            None => m.push((k.to_string(), v)),
+/// which replace any of the same name (of a name, the last is the one written).
+fn object(extra: &[(String, Value)], own: Vec<(&str, Canon)>) -> Canon {
+    let mut m = Vec::with_capacity(extra.len() + own.len());
+    m.extend(extra.iter().map(|(k, v)| (k.clone(), Canon::from_any(v))));
+    m.extend(own.into_iter().map(|(k, v)| (k.to_string(), v)));
+    Canon::Object(m)
+}
+
+/// A Go map decoded from an object's members: the last of a name winning, at the first's
+/// place, as [`Named`] keeps them.
+fn map_of<T>(
+    m: &[(String, Value)],
+    mut f: impl FnMut(&str, &Value) -> Result<T, Error>,
+) -> Result<Vec<(String, T)>, Error> {
+    let mut out: Vec<(String, T)> = Vec::with_capacity(m.len());
+    let mut at: std::collections::HashMap<&str, usize> = std::collections::HashMap::with_capacity(m.len());
+    for (k, v) in m {
+        let item = f(k, v)?;
+        match at.get(k.as_str()).and_then(|&i| out.get_mut(i)) {
+            Some(slot) => slot.1 = item,
+            None => {
+                at.insert(k.as_str(), out.len());
+                out.push((k.clone(), item));
+            }
         }
     }
-    Ok(Canon::Object(m))
+    Ok(out)
 }
 
 fn strings_canon(v: &Option<Vec<String>>) -> Canon {
@@ -255,7 +269,7 @@ impl Key {
         }
     }
 
-    fn canon(&self) -> Result<Canon, Error> {
+    fn canon(&self) -> Canon {
         object(
             &self.extra,
             vec![
@@ -266,7 +280,7 @@ impl Key {
                     object(
                         &self.val_extra,
                         vec![("public", Canon::String(self.public.clone()))],
-                    )?,
+                    ),
                 ),
             ],
         )
@@ -277,29 +291,19 @@ impl Key {
 fn keys(o: &Obj<'_>, field: &str) -> Result<Option<Named<Key>>, Error> {
     match o.field(field) {
         None | Some(Value::Null) => Ok(None),
-        Some(Value::Object(m)) => {
-            let mut out: Vec<(String, Option<Key>)> = Vec::new();
-            for (k, v) in m {
-                let key = Key::decode(v)?;
-                match out.iter_mut().find(|(n, _)| n == k) {
-                    Some(slot) => slot.1 = key,
-                    None => out.push((k.clone(), key)),
-                }
-            }
-            Ok(Some(out))
-        }
+        Some(Value::Object(m)) => map_of(m, |_, v| Key::decode(v)).map(Some),
         Some(v) => Err(type_error(v, o.name, field, "map[string]*metadata.Key")),
     }
 }
 
-fn keys_canon(keys: &Option<Named<Key>>) -> Result<Canon, Error> {
+fn keys_canon(keys: &Option<Named<Key>>) -> Canon {
     match keys {
-        None => Ok(Canon::Null),
-        Some(m) => Ok(Canon::Object(
+        None => Canon::Null,
+        Some(m) => Canon::Object(
             m.iter()
-                .map(|(k, v)| Ok((k.clone(), v.as_ref().map_or(Ok(Canon::Null), Key::canon)?)))
-                .collect::<Result<_, Error>>()?,
-        )),
+                .map(|(k, v)| (k.clone(), v.as_ref().map_or(Canon::Null, Key::canon)))
+                .collect(),
+        ),
     }
 }
 
@@ -326,7 +330,7 @@ impl Role {
         }))
     }
 
-    fn canon(&self) -> Result<Canon, Error> {
+    fn canon(&self) -> Canon {
         object(
             &self.extra,
             vec![
@@ -349,17 +353,7 @@ pub struct MetaFile {
 fn hashes(o: &Obj<'_>, field: &str) -> Result<Option<Hashes>, Error> {
     match o.field(field) {
         None | Some(Value::Null) => Ok(None),
-        Some(Value::Object(m)) => {
-            let mut out: Vec<(String, Vec<u8>)> = Vec::new();
-            for (k, v) in m {
-                let h = hex_bytes(v)?;
-                match out.iter_mut().find(|(n, _)| n == k) {
-                    Some(slot) => slot.1 = h,
-                    None => out.push((k.clone(), h)),
-                }
-            }
-            Ok(Some(out))
-        }
+        Some(Value::Object(m)) => map_of(m, |_, v| hex_bytes(v)).map(Some),
         Some(v) => Err(type_error(v, o.name, field, "metadata.Hashes")),
     }
 }
@@ -388,7 +382,7 @@ impl MetaFile {
         }))
     }
 
-    fn canon(&self) -> Result<Canon, Error> {
+    fn canon(&self) -> Canon {
         let mut own = Vec::new();
         if self.length != 0 {
             own.push(("length", int(self.length)));
@@ -442,7 +436,7 @@ impl TargetFile {
         }))
     }
 
-    fn canon(&self) -> Result<Canon, Error> {
+    fn canon(&self) -> Canon {
         let mut own = vec![
             ("length", int(self.length)),
             (
@@ -451,7 +445,7 @@ impl TargetFile {
             ),
         ];
         if let Some(c) = &self.custom {
-            own.push(("custom", Canon::from_raw(c).map_err(Error::Json)?));
+            own.push(("custom", Canon::from_raw(c)));
         }
         object(&self.extra, own)
     }
@@ -601,7 +595,7 @@ impl Delegations {
     }
 
     fn canon(&self) -> Result<Canon, Error> {
-        let mut own = vec![("keys", keys_canon(&self.keys)?)];
+        let mut own = vec![("keys", keys_canon(&self.keys))];
         if let Some(roles) = &self.roles {
             let mut list = Vec::new();
             for r in roles {
@@ -621,7 +615,7 @@ impl Delegations {
                 } else if r.path_hash_prefixes.is_some() {
                     fields.push(("path_hash_prefixes", strings_canon(&r.path_hash_prefixes)));
                 }
-                list.push(object(&r.extra, fields)?);
+                list.push(object(&r.extra, fields));
             }
             own.push(("roles", Canon::Array(list)));
         } else if let Some(s) = &self.succinct {
@@ -635,10 +629,10 @@ impl Delegations {
                         ("bit_length", int(s.bit_length)),
                         ("name_prefix", Canon::String(s.name_prefix.clone())),
                     ],
-                )?,
+                ),
             ));
         }
-        object(&self.extra, own)
+        Ok(object(&self.extra, own))
     }
 }
 
@@ -696,17 +690,15 @@ impl Signed {
                 roles,
             } => {
                 own.push(("consistent_snapshot", Canon::Bool(*consistent_snapshot)));
-                own.push(("keys", keys_canon(keys)?));
+                own.push(("keys", keys_canon(keys)));
                 own.push((
                     "roles",
                     match roles {
                         None => Canon::Null,
                         Some(m) => Canon::Object(
                             m.iter()
-                                .map(|(k, v)| {
-                                    Ok((k.clone(), v.as_ref().map_or(Ok(Canon::Null), Role::canon)?))
-                                })
-                                .collect::<Result<_, Error>>()?,
+                                .map(|(k, v)| (k.clone(), v.as_ref().map_or(Canon::Null, Role::canon)))
+                                .collect(),
                         ),
                     },
                 ));
@@ -717,10 +709,8 @@ impl Signed {
                     None => Canon::Null,
                     Some(m) => Canon::Object(
                         m.iter()
-                            .map(|(k, v)| {
-                                Ok((k.clone(), v.as_ref().map_or(Ok(Canon::Null), MetaFile::canon)?))
-                            })
-                            .collect::<Result<_, Error>>()?,
+                            .map(|(k, v)| (k.clone(), v.as_ref().map_or(Canon::Null, MetaFile::canon)))
+                            .collect(),
                     ),
                 },
             )),
@@ -731,10 +721,8 @@ impl Signed {
                         None => Canon::Null,
                         Some(m) => Canon::Object(
                             m.iter()
-                                .map(|(k, v)| {
-                                    Ok((k.clone(), v.as_ref().map_or(Ok(Canon::Null), TargetFile::canon)?))
-                                })
-                                .collect::<Result<_, Error>>()?,
+                                .map(|(k, v)| (k.clone(), v.as_ref().map_or(Canon::Null, TargetFile::canon)))
+                                .collect(),
                         ),
                     },
                 ));
@@ -744,7 +732,7 @@ impl Signed {
             }
         }
         let mut out = Vec::new();
-        object(&self.extra, own)?.encode(&mut out);
+        object(&self.extra, own).encode(&mut out).map_err(Error::Json)?;
         Ok(out)
     }
 
@@ -778,17 +766,7 @@ fn named_map<T>(
 ) -> Result<Option<Named<T>>, Error> {
     match o.field(field) {
         None | Some(Value::Null) => Ok(None),
-        Some(Value::Object(m)) => {
-            let mut out: Vec<(String, Option<T>)> = Vec::new();
-            for (k, v) in m {
-                let item = f(k, v)?;
-                match out.iter_mut().find(|(n, _)| n == k) {
-                    Some(slot) => slot.1 = item,
-                    None => out.push((k.clone(), item)),
-                }
-            }
-            Ok(Some(out))
-        }
+        Some(Value::Object(m)) => map_of(m, f).map(Some),
         Some(v) => Err(type_error(v, o.name, field, ty)),
     }
 }
@@ -797,13 +775,19 @@ impl Metadata {
     /// FromBytes for role `kind`: checkType, the typed decoding, checkUniqueSignatures.
     pub fn from_bytes(kind: &str, data: &[u8]) -> Result<Metadata, Error> {
         let v = crate::gojson::parse(data).map_err(Error::Json)?;
-        // checkType, over map[string]any: exact names.
-        let Value::Object(_) = &v else {
+        // checkType, over map[string]any: exact names; null a nil map; every number read
+        // as a float64.
+        if !matches!(v, Value::Object(_) | Value::Null) {
             return Err(Error::Json(format!(
                 "json: cannot unmarshal {} into Go value of type map[string]interface {{}}",
                 v.kind()
             )));
-        };
+        }
+        if let Some(n) = v.first_overflow() {
+            return Err(Error::Json(format!(
+                "json: cannot unmarshal number {n} into Go value of type float64"
+            )));
+        }
         let Some(signed) = v.get("signed").filter(|s| matches!(s, Value::Object(_))) else {
             return Err(Error::Value(
                 "metadata 'signed' field is missing or not an object".into(),
@@ -821,7 +805,8 @@ impl Metadata {
                 "metadata 'signed' field is missing or not an object".into(),
             ));
         };
-        let signed_v = top.field("signed").unwrap_or(&Value::Null);
+        let null = Value::Null;
+        let signed_v = top.field("signed").unwrap_or(&null);
         let so = Obj::of(signed_v, "Alias", "metadata.Alias")?;
         let signed = match so {
             None => {
@@ -900,15 +885,14 @@ impl Metadata {
             Some(v) => return Err(type_error(v, "", "signatures", "[]metadata.Signature")),
         };
         // checkUniqueSignatures.
-        let mut seen: Vec<&str> = Vec::new();
+        let mut seen = std::collections::HashSet::with_capacity(signatures.len());
         for s in &signatures {
-            if seen.contains(&s.keyid.as_str()) {
+            if !seen.insert(s.keyid.as_str()) {
                 return Err(Error::Value(format!(
                     "multiple signatures found for key ID {}",
                     s.keyid
                 )));
             }
-            seen.push(&s.keyid);
         }
         Ok(Metadata { signed, signatures })
     }

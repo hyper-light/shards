@@ -239,15 +239,19 @@ impl Dec {
         }
     }
 
-    /// The numbers inside an interface{}'s array or object.
+    /// The numbers inside an interface{}'s array or object, in document order, on a heap
+    /// stack: as deep as Go reads JSON, recursion would overflow a thread's.
     fn numbers(&mut self, v: &JValue) {
-        match v {
-            JValue::Number(n) => {
-                self.float(n);
+        let mut stack = vec![v];
+        while let Some(v) = stack.pop() {
+            match v {
+                JValue::Number(n) => {
+                    self.float(n);
+                }
+                JValue::Array(a) => stack.extend(a.iter().rev()),
+                JValue::Object(m) => stack.extend(m.iter().rev().map(|(_, x)| x)),
+                _ => {}
             }
-            JValue::Array(a) => a.iter().for_each(|x| self.numbers(x)),
-            JValue::Object(m) => m.iter().for_each(|(_, x)| self.numbers(x)),
-            _ => {}
         }
     }
 }
@@ -384,6 +388,38 @@ pub fn anonymous(fields: &[(&str, &str, &str)]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The numbers in an interface{}, as deep as Go reads JSON, read on a small stack: the
+    /// first past a float64's range, in document order, refused.
+    #[test]
+    fn numbers_deep_in_an_interface_are_read_on_any_stack() {
+        let mut v = JValue::Number("-1e400".into());
+        for i in 0..5_000 {
+            v = JValue::Object(vec![(
+                "a".into(),
+                JValue::Array(vec![JValue::Number(i.to_string()), v]),
+            )]);
+        }
+        let v = JValue::Array(vec![v, JValue::Number("1e400".into())]);
+        let got = std::thread::scope(|s| {
+            std::thread::Builder::new()
+                .stack_size(64 << 10)
+                .spawn_scoped(s, || {
+                    let mut d = Dec::new();
+                    d.any(&v, &mut Any::Nil);
+                    d.done(())
+                })
+                .unwrap()
+                .join()
+                .unwrap()
+        });
+        assert_eq!(
+            got,
+            Err("json: cannot unmarshal number -1e400 into Go value of type float64".to_string())
+        );
+        // Its drop is tlog::gojson's.
+        std::mem::forget(v);
+    }
 
     fn caps(elem: Elem, n: usize) -> Vec<usize> {
         let mut s: GoSlice<u8> = GoSlice::default();

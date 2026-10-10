@@ -360,7 +360,10 @@ impl Registry {
     /// The repository's tags, as distribution's client lists them for `pull -a`
     /// (registry/client/repository.go, `tags.All`): `tags/list`, then each page its
     /// `Link` names, resolved against the page before, until one names none. A page that
-    /// names one already read is refused: it would never end.
+    /// names one already read is refused: it would never end. A name that is no tag
+    /// (`reference.WithTag` refuses it) is passed over, as dockerd passes it over for
+    /// `pull -a` (Docker 29.3.1, measured): it would steer the manifest's URL off the
+    /// repository (`../`, `//host`), and name an image as no reference can.
     pub fn tags(&self) -> Result<Vec<String>, Error> {
         #[derive(serde::Deserialize)]
         struct Page {
@@ -397,7 +400,7 @@ impl Registry {
                 )));
             }
             let page: Page = serde_json::from_slice(&body).map_err(|e| Error::new(format!("{url}: {e}")))?;
-            tags.extend(page.tags.unwrap_or_default());
+            tags.extend(page.tags.unwrap_or_default().into_iter().filter(|t| is_tag(t)));
             match next.filter(|n| !n.is_empty()) {
                 Some(next) => url = url.join(&next)?,
                 None => return Ok(tags),
@@ -735,6 +738,16 @@ impl Registry {
     }
 }
 
+/// Whether `name` is a tag: distribution's `anchoredTagRegexp` (reference/regexp.go),
+/// `[\w][\w.-]{0,127}`, Go's `\w` being ASCII letters, digits and `_`.
+fn is_tag(name: &str) -> bool {
+    let word = |c: &u8| c.is_ascii_alphanumeric() || *c == b'_';
+    let bytes = name.as_bytes();
+    bytes.len() <= 128
+        && bytes.first().is_some_and(word)
+        && bytes.iter().all(|c| word(c) || matches!(c, b'.' | b'-'))
+}
+
 /// `<media type>, */*`, as containerd asks for content by descriptor.
 fn accept(media_type: &str) -> String {
     if media_type.is_empty() {
@@ -775,24 +788,39 @@ const ENCODINGS: &str = "zstd;q=1.0, gzip;q=0.8, deflate;q=0.5";
 /// A response body as its `Content-Encoding` says to decode it, as containerd's fetcher
 /// decodes one: each coding undone, last first; zstd, gzip (every member, as Go's reader
 /// reads them), deflate (raw, RFC 1951, as Go's flate reads it), or none.
+///
+/// Each coding is undone once: one listed again is refused, where containerd nests
+/// another decoder for it. A coding applied twice compresses nothing, and every decoder
+/// nested is its buffers and a level of recursion in each read: a header listing gzip
+/// 50,000 times (300 KB, well within a head's 10 MiB) overflowed a fetch thread's stack,
+/// which ends the daemon. So at most three decoders, whatever the header lists.
 fn decoded<'a>(body: &'a mut dyn Read, encoding: &str) -> Result<Box<dyn Read + 'a>, Error> {
-    let codings: Vec<String> = encoding
-        .split([' ', '\t', ','])
-        .filter(|c| !c.is_empty())
-        .map(str::to_ascii_lowercase)
-        .collect();
+    const CODINGS: [&str; 3] = ["zstd", "gzip", "deflate"];
+    let mut undone = [false; CODINGS.len()];
     let mut body: Box<dyn Read + 'a> = Box::new(body);
-    for coding in codings.iter().rev() {
-        body = match coding.as_str() {
-            "zstd" => Box::new(shards_image::store::Zstd::new(io::BufReader::new(body))),
-            "gzip" => Box::new(flate2::read::MultiGzDecoder::new(body)),
-            "deflate" => Box::new(flate2::read::DeflateDecoder::new(body)),
-            "identity" => body,
-            other => {
-                return Err(Error::new(format!(
-                    "unsupported Content-Encoding algorithm: {other}"
-                )));
-            }
+    for coding in encoding.rsplit([' ', '\t', ',']).filter(|c| !c.is_empty()) {
+        if coding.eq_ignore_ascii_case("identity") {
+            continue;
+        }
+        let Some(k) = CODINGS.iter().position(|c| coding.eq_ignore_ascii_case(c)) else {
+            return Err(Error::new(format!(
+                "unsupported Content-Encoding algorithm: {}",
+                coding.to_ascii_lowercase()
+            )));
+        };
+        let seen = undone
+            .get_mut(k)
+            .ok_or_else(|| Error::new("a Content-Encoding out of range"))?;
+        if std::mem::replace(seen, true) {
+            return Err(Error::new(format!(
+                "Content-Encoding lists {} twice: shards undoes each coding once",
+                CODINGS.get(k).copied().unwrap_or_default()
+            )));
+        }
+        body = match k {
+            0 => Box::new(shards_image::store::Zstd::new(io::BufReader::new(body))),
+            1 => Box::new(flate2::read::MultiGzDecoder::new(body)),
+            _ => Box::new(flate2::read::DeflateDecoder::new(body)),
         };
     }
     Ok(body)
@@ -1255,6 +1283,83 @@ mod tests {
     /// A scripted registry's answer to the `n`th request.
     type Answer = Box<dyn Fn(&Seen, usize) -> (Vec<u8>, After) + Send + Sync>;
 
+    /// A tag list's names that are no tags are passed over, as dockerd passes them over for
+    /// `pull -a` (Docker 29.3.1, measured): one would steer the manifest's URL off the
+    /// repository (`../`, `//host`), or name an image as no reference can, its control
+    /// characters bound for the terminal.
+    #[test]
+    fn a_tag_list_keeps_only_tags() {
+        let listed = serde_json::json!({
+            "name": "test/image",
+            "tags": [
+                "good", "../evil", "//elsewhere/x", "x/../y", "bad tag", "x\u{1b}[2J", "",
+                "a".repeat(129), "_ok.v1-2", ".dot", "-dash", "a".repeat(128), "ünï",
+            ],
+        })
+        .to_string();
+        let server = route(None, move |_| {
+            let page = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{listed}",
+                listed.len()
+            );
+            Some((page.into_bytes(), After::Keep))
+        });
+        let reference = Reference::parse(&format!("127.0.0.1:{}/test/image", server.port)).unwrap();
+        let http = Client::new(
+            Box::new(|_| crate::tls::client_config(Vec::new(), None)),
+            "shards-test",
+        );
+        let registry = Registry::new(http, &reference, Credentials::Anonymous).unwrap();
+        assert_eq!(
+            registry.tags().unwrap(),
+            vec!["good".to_string(), "_ok.v1-2".into(), "a".repeat(128)]
+        );
+    }
+
+    /// A `Content-Encoding` a server lists is undone once a coding: a coding listed again
+    /// would nest another decoder, with its own buffers, read through one more level of
+    /// recursion. A header listing gzip 20,000 times, sent to a fetch's thread, was 20,000
+    /// nested decoders (640 MiB of buffers) read through 20,000 frames: the thread's stack
+    /// overflowed, which ends the daemon.
+    #[test]
+    fn a_content_coding_is_undone_once() {
+        let many = vec!["gzip"; 20_000].join(", ");
+        let decoding = std::thread::Builder::new()
+            .stack_size(2 << 20)
+            .spawn(move || {
+                let mut body: &[u8] = b"not gzip at all";
+                let mut out = Vec::new();
+                decoded(&mut body, &many)
+                    .and_then(|mut r| r.read_to_end(&mut out).map_err(Error::from))
+                    .map_err(|e| e.to_string())
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(
+            decoding.unwrap_err(),
+            "Content-Encoding lists gzip twice: shards undoes each coding once"
+        );
+        let mut body: &[u8] = b"";
+        for (listed, said) in [
+            ("gzip, zstd, GZIP", "Content-Encoding lists gzip twice"),
+            ("deflate,deflate", "Content-Encoding lists deflate twice"),
+            ("zstd, br, zstd", "unsupported Content-Encoding algorithm: br"),
+        ] {
+            let e = decoded(&mut body, listed).err().unwrap().to_string();
+            assert!(e.starts_with(said), "{listed}: {e}");
+        }
+        // Identity changes nothing, however often it is listed.
+        let identities = vec!["identity"; 100_000].join(",");
+        let mut body: &[u8] = b"as it is";
+        let mut out = Vec::new();
+        decoded(&mut body, &identities)
+            .unwrap()
+            .read_to_end(&mut out)
+            .unwrap();
+        assert_eq!(out, b"as it is");
+    }
+
     /// Blobs are asked for compressed for their transfer and decoded as containerd's
     /// fetcher decodes them; a resumed download asks for the blob as it is.
     #[test]
@@ -1323,7 +1428,6 @@ mod tests {
             (deflate.clone(), "deflate"),
             (zstd.clone(), "zstd"),
             (gzip(&blob), "identity, gzip"),
-            (gzip(&gzip(&blob)), "gzip, gzip"),
             // Deflated, then gzipped: undone gzip first.
             (gzip(&deflate), "deflate, gzip"),
         ] {
@@ -1341,6 +1445,14 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("unsupported Content-Encoding algorithm: br")
+        );
+        // A coding twice, which containerd nests again: refused, however the body is.
+        let (refused, _) = fetch(encoded(gzip(&gzip(&blob)), "gzip, gzip"));
+        assert!(
+            refused
+                .unwrap_err()
+                .to_string()
+                .contains("Content-Encoding lists gzip twice"),
         );
         // Cut short gzipped, then resumed as it is from where it stopped.
         let whole = gzip(&blob);

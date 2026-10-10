@@ -45,6 +45,23 @@ pub struct MountPoint {
     /// A `--mount type=tmpfs`'s options, as ConvertTmpfsOptions writes them.
     #[serde(rename = "TmpfsOptions", default)]
     pub tmpfs: String,
+    /// One of the image's: its agents and harnesses are given it too, as its Agentfile
+    /// grants (AGENTFILE_ARCH.md §4.5, D109). Not Docker's: inspect leaves it out.
+    #[serde(rename = "ShardsDomains", default)]
+    pub domains: bool,
+    /// Scoped by its Agentfile (`VOLUME … FOR`): for the agents and harnesses it names
+    /// alone, so the run's own root does not mount it.
+    #[serde(rename = "ShardsDomainsOnly", default)]
+    pub domains_only: bool,
+}
+
+/// Why a run's mount cannot stand in for a volume its image's Agentfile gives its agents
+/// and harnesses (D109): what stands in is given to them, and a tmpfs or a file is
+/// mounted in the run's own root alone.
+fn cannot_stand_in(what: &str, dest: &str) -> String {
+    format!(
+        "{what} cannot stand in for {dest}: the image's Agentfile gives the volume there to its agents and harnesses, and {what} is not given to them; mount a volume or a directory there (-v or --mount)"
+    )
 }
 
 fn invalid_spec(spec: &str) -> String {
@@ -573,10 +590,11 @@ pub fn register(
     store: &Store,
     run: &shards_ipc::Run,
     image_volumes: &[String],
+    agent_volumes: Option<&[crate::agentfile::AgentVolume]>,
     from: &dyn Fn(&str) -> Result<Vec<MountPoint>, String>,
 ) -> Result<Vec<(MountPoint, bool)>, String> {
     let mut points: Vec<(MountPoint, bool)> = Vec::new();
-    match register_into(&mut points, store, run, image_volumes, from) {
+    match register_into(&mut points, store, run, image_volumes, agent_volumes, from) {
         Ok(()) => Ok(points),
         // The anonymous volumes it made go with the container it could not make.
         Err(e) => {
@@ -595,6 +613,7 @@ fn register_into(
     store: &Store,
     run: &shards_ipc::Run,
     image_volumes: &[String],
+    agent_volumes: Option<&[crate::agentfile::AgentVolume]>,
     from: &dyn Fn(&str) -> Result<Vec<MountPoint>, String>,
 ) -> Result<(), String> {
     let (binds, specs, volumes_from, driver, tmpfs) = (
@@ -614,6 +633,10 @@ fn register_into(
             let cp = MountPoint {
                 rw: m.rw && !mode.split(',').any(|o| o == "ro"),
                 copy_data: false,
+                // Whom it was for was that container's image's to say: this run's image
+                // says it here (below), and the volume is mounted, as Docker mounts it.
+                domains: false,
+                domains_only: false,
                 ..m
             };
             set(points, cp, false);
@@ -673,13 +696,39 @@ fn register_into(
         }
         set(points, mp, made);
     }
-    // createContainerVolumesOS: each image or `-v DEST` volume not already mounted.
-    for dest in image_volumes {
+    // createContainerVolumesOS: each image or `-v DEST` volume not already mounted. An
+    // Agentfile's image's own (`run.volumes` are a run's `-v DEST`) are its agents' and
+    // harnesses' too (AGENTFILE_ARCH.md §4.5): a volume its Agentfile names is that named
+    // volume, and one it scopes with `FOR` is not mounted in the run's own root. A run's
+    // own mount at one of them stands in for it, given as the Agentfile grants it.
+    let image_owned = image_volumes.len().saturating_sub(run.volumes.len());
+    for (k, dest) in image_volumes.iter().enumerate() {
         let dest = clean(dest);
-        if points.iter().any(|(p, _)| p.destination == dest) || tmpfs_dests.iter().any(|t| clean(t) == dest) {
+        // A Docker `VOLUME` over a domain's root, `/proc`, `/sys` or `/dev` stays the
+        // run's own root's: the domain's are its init's.
+        let ours = k < image_owned
+            && agent_volumes.is_some()
+            && !shards_dockerfile::agentfile::covers_domain_mounts(dest.as_bytes());
+        let agent = agent_volumes
+            .unwrap_or_default()
+            .iter()
+            .find(|v| v.paths.iter().any(|p| clean(p) == dest))
+            .filter(|_| ours);
+        if let Some((p, _)) = points.iter_mut().find(|(p, _)| p.destination == dest) {
+            if ours && p.kind == "tmpfs" {
+                return Err(cannot_stand_in("a tmpfs", &dest));
+            }
+            p.domains |= ours;
             continue;
         }
-        let (v, now) = store.create("", &BTreeMap::new(), &BTreeMap::new())?;
+        if tmpfs_dests.iter().any(|t| clean(t) == dest) {
+            if ours {
+                return Err(cannot_stand_in("a tmpfs", &dest));
+            }
+            continue;
+        }
+        let name = agent.and_then(|a| a.name.as_deref()).unwrap_or("");
+        let (v, now) = store.create(name, &BTreeMap::new(), &BTreeMap::new())?;
         let mp = MountPoint {
             kind: "volume".into(),
             name: v.name.clone(),
@@ -688,6 +737,8 @@ fn register_into(
             driver: "local".into(),
             rw: true,
             copy_data: true,
+            domains: ours,
+            domains_only: agent.is_some_and(|a| a.scoped),
             ..MountPoint::default()
         };
         set(points, mp, now);
@@ -780,6 +831,9 @@ pub fn open(points: &[MountPoint], first: bool, store: &Store) -> Result<Opened,
                 .ok_or_else(|| format!("{}: no name", p.source))?;
             (parent, name.to_os_string())
         };
+        if p.domains && !only.is_empty() {
+            return Err(cannot_stand_in("a file", dest));
+        }
         let fd: OwnedFd = std::fs::File::open(dir)
             .map_err(|e| format!("error mounting \"{}\" to rootfs at \"{dest}\": {e}", p.source))?
             .into();
@@ -790,8 +844,19 @@ pub fn open(points: &[MountPoint], first: bool, store: &Store) -> Result<Opened,
         if p.kind == "volume" && p.copy_data && first {
             flags.push("copy");
         }
+        // The image's, given to its agents and harnesses too (D109); one its Agentfile
+        // scopes, to them alone, which the run's own root does not mount.
+        if p.domains {
+            flags.push("domains");
+            // The store's own volume, which an Agentfile's `--chown` and `--chmod` set;
+            // never a host directory, which only its owner changes, as Docker leaves it.
+            if p.kind == "volume" && source == Path::new(&p.source) {
+                flags.push("own");
+            }
+        }
+        let kind = if p.domains_only { "domain-volume" } else { "volume" };
         let i = opened.dirs.len();
-        let mut entry = format!("volume=shards{i}\0{dest}\0{}\0", flags.join(",")).into_bytes();
+        let mut entry = format!("{kind}=shards{i}\0{dest}\0{}\0", flags.join(",")).into_bytes();
         entry.extend_from_slice(only.as_bytes());
         opened.mounts.push((dest.clone(), entry));
         opened.dirs.push((fd, !p.rw, only));
@@ -802,6 +867,197 @@ pub fn open(points: &[MountPoint], first: bool, store: &Store) -> Result<Opened,
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agentfile::AgentVolume;
+
+    /// An Agentfile's image's volumes as a run registers and opens them (D109): named and
+    /// scoped as its Agentfile says; a Docker `VOLUME` every domain's, but over a domain's
+    /// own mounts; a run's own `-v` standing in, given as the Agentfile gives the volume;
+    /// `--volumes-from` keeping no other image's grant; a tmpfs or a file refused where
+    /// it would stand in, as neither is given across domains.
+    #[test]
+    fn an_agentfiles_volumes_are_registered_as_it_and_the_run_say() {
+        let home = std::env::temp_dir().join(format!("shards-agent-volumes-{}", std::process::id()));
+        std::fs::create_dir_all(home.join("hostdir")).unwrap();
+        std::fs::write(home.join("hostfile"), b"x").unwrap();
+        let store = Store::new(&home);
+        let agent = [
+            AgentVolume {
+                name: Some("data".into()),
+                paths: vec!["/data".into()],
+                scoped: true,
+            },
+            AgentVolume {
+                name: Some("shared".into()),
+                paths: vec!["/shared".into()],
+                scoped: false,
+            },
+            AgentVolume {
+                name: None,
+                paths: vec!["/scratch".into()],
+                scoped: true,
+            },
+        ];
+        let none = |_: &str| Ok(Vec::new());
+        let run_with = |args: &[&str]| {
+            let mut args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+            args.push("img".into());
+            crate::cli::request::for_test(&args).unwrap()
+        };
+        let registered = |args: &[&str], from: &dyn Fn(&str) -> Result<Vec<MountPoint>, String>| {
+            let run = run_with(args);
+            // The image's own, then the run's `-v DEST`, as the daemon lists them.
+            let mut image: Vec<String> = ["/data", "/shared", "/scratch", "/cache", "/dev/shm"]
+                .map(String::from)
+                .to_vec();
+            image.extend(run.volumes.iter().cloned());
+            register(&store, &run, &image, Some(&agent), from)
+                .map(|p| p.into_iter().map(|(p, _)| p).collect::<Vec<_>>())
+        };
+        let at = |points: &[MountPoint], dest: &str| {
+            points.iter().find(|p| p.destination == dest).cloned().unwrap()
+        };
+        let said = |p: &MountPoint| (p.domains, p.domains_only);
+
+        let points = registered(&["-v", "/anon"], &none).unwrap();
+        assert_eq!(
+            (at(&points, "/data").name.as_str(), said(&at(&points, "/data"))),
+            ("data", (true, true))
+        );
+        assert_eq!(
+            (
+                at(&points, "/shared").name.as_str(),
+                said(&at(&points, "/shared"))
+            ),
+            ("shared", (true, false))
+        );
+        assert_eq!(said(&at(&points, "/scratch")), (true, true));
+        assert_eq!(at(&points, "/scratch").name.len(), 64, "anonymous");
+        assert_eq!(
+            said(&at(&points, "/cache")),
+            (true, false),
+            "a Docker VOLUME is every domain's"
+        );
+        assert_eq!(
+            said(&at(&points, "/dev/shm")),
+            (false, false),
+            "a domain's /dev is its init's"
+        );
+        assert_eq!(
+            said(&at(&points, "/anon")),
+            (false, false),
+            "the run's own -v DEST"
+        );
+        // What the guest is told: scoped ones in the domains' alone.
+        let opened = open(&points, true, &store).unwrap();
+        let entry = |dest: &str| {
+            let (_, e) = opened.mounts.iter().find(|(d, _)| d == dest).unwrap();
+            String::from_utf8_lossy(e).into_owned()
+        };
+        let flags = |e: &str| {
+            e.split('\0')
+                .nth(2)
+                .unwrap()
+                .split(',')
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        };
+        assert!(entry("/data").starts_with("domain-volume="), "{}", entry("/data"));
+        assert!(entry("/scratch").starts_with("domain-volume="));
+        for dest in ["/shared", "/cache"] {
+            assert!(entry(dest).starts_with("volume="), "{}", entry(dest));
+        }
+        // Each the store's own, which the Agentfile's --chown and --chmod set.
+        for dest in ["/data", "/scratch", "/shared", "/cache"] {
+            let f = flags(&entry(dest));
+            assert!(
+                f.iter().any(|f| f == "domains") && f.iter().any(|f| f == "own"),
+                "{dest}: {f:?}"
+            );
+        }
+        for dest in ["/dev/shm", "/anon"] {
+            assert!(!entry(dest).contains("domains"), "{}", entry(dest));
+        }
+
+        // A run's own volume or directory stands in, given as the Agentfile gives it.
+        let host = home.join("hostdir");
+        let points = registered(
+            &[
+                "-v",
+                "other:/data",
+                "-v",
+                &format!("{}:/scratch:ro", host.display()),
+            ],
+            &none,
+        )
+        .unwrap();
+        assert_eq!(
+            (at(&points, "/data").name.as_str(), said(&at(&points, "/data"))),
+            ("other", (true, false))
+        );
+        assert_eq!(
+            (
+                at(&points, "/scratch").kind.as_str(),
+                said(&at(&points, "/scratch"))
+            ),
+            ("bind", (true, false))
+        );
+        let opened = open(&points, true, &store).unwrap();
+        let (_, scratch) = opened.mounts.iter().find(|(d, _)| d == "/scratch").unwrap();
+        let f = flags(&String::from_utf8_lossy(scratch));
+        // A host directory: given, read-only as bound, and never the image's to own.
+        assert!(
+            f.iter().any(|f| f == "domains") && f.iter().any(|f| f == "ro"),
+            "{f:?}"
+        );
+        assert!(!f.iter().any(|f| f == "own"), "{f:?}");
+        // A Docker VOLUME's stand-in is every domain's, as the VOLUME is.
+        let points = registered(&["-v", "cachevol:/cache"], &none).unwrap();
+        assert_eq!(
+            (at(&points, "/cache").name.as_str(), said(&at(&points, "/cache"))),
+            ("cachevol", (true, false))
+        );
+
+        // A tmpfs or a file cannot stand in; where no domain is given the volume, they may.
+        for args in [
+            &["--tmpfs", "/data"][..],
+            &["--mount", "type=tmpfs,dst=/shared"],
+            &["--tmpfs", "/cache:size=1m"],
+        ] {
+            let e = registered(args, &none).unwrap_err();
+            assert!(e.starts_with("a tmpfs cannot stand in for /"), "{args:?}: {e}");
+        }
+        assert!(registered(&["--tmpfs", "/dev/shm"], &none).is_ok());
+        assert!(registered(&["--tmpfs", "/elsewhere"], &none).is_ok());
+        let file = home.join("hostfile");
+        let points = registered(&["-v", &format!("{}:/cache", file.display())], &none).unwrap();
+        let e = open(&points, true, &store).err().unwrap();
+        assert!(e.starts_with("a file cannot stand in for /cache"), "{e}");
+        let points = registered(&["-v", &format!("{}:/elsewhere", file.display())], &none).unwrap();
+        assert!(
+            open(&points, true, &store).is_ok(),
+            "a file anywhere else is the run's own"
+        );
+
+        // `--volumes-from`: mounted as Docker mounts it, for whom this image says.
+        let theirs = |_: &str| {
+            Ok(["/theirs", "/data"]
+                .map(|dest| MountPoint {
+                    kind: "volume".into(),
+                    name: format!("v{}", dest.len()),
+                    destination: dest.into(),
+                    driver: "local".into(),
+                    rw: true,
+                    domains: true,
+                    domains_only: true,
+                    ..MountPoint::default()
+                })
+                .to_vec())
+        };
+        let points = registered(&["--volumes-from", "c"], &theirs).unwrap();
+        assert_eq!(said(&at(&points, "/theirs")), (false, false));
+        assert_eq!(said(&at(&points, "/data")), (true, false));
+        let _ = std::fs::remove_dir_all(&home);
+    }
 
     /// moby's linux_parser_test.go cases, and what dockerd says of them.
     #[test]

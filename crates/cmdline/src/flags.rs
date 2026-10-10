@@ -209,6 +209,8 @@ pub enum Args {
     Range(usize, usize),
     /// At most (docker/cli RequiresMaxArgs).
     AtMost(usize),
+    /// Exactly, as cobra's ExactArgs says it: buildx's subcommands.
+    Accepts(usize),
 }
 
 /// A command: what `--help` and the mistakes it answers say of it, and what it takes.
@@ -593,6 +595,15 @@ pub fn parse(
         )),
         _ => None,
     };
+    if let Args::Accepts(k) = command.args
+        && n != k
+    {
+        return Outcome::Fail {
+            notices,
+            text: format!("{}accepts {k} arg(s), received {n}", command.error_prefix),
+            status: 1,
+        };
+    }
     if let Some((what, verb)) = wrong {
         let bin = path.split(' ').next().unwrap_or_default();
         return Outcome::Fail {
@@ -1171,6 +1182,29 @@ pub fn help(command: &Command, path: &str, columns: u16) -> String {
         }
     }
     text.push('\n');
+    text
+}
+
+/// What `--help` prints for a group of commands, which `path` names, on a terminal
+/// `columns` wide, and what it prints asked anything else (a cobra command that runs
+/// nothing): the CLI's usage template for a command with subcommands, its own flags and
+/// its commands (`rpad` to cobra's least padding, 11).
+pub fn group_help(command: &Command, path: &str, commands: &[(&str, &str)], columns: u16) -> String {
+    let mut text = format!("Usage:  {path} [OPTIONS] COMMAND\n\n{}", command.about.trim());
+    let options = options(command.flags, false, i64::from(columns) - 1);
+    let options = options.trim_end();
+    if !options.is_empty() {
+        let _ = write!(text, "\n\nOptions:\n{options}");
+    }
+    text.push_str("\n\nCommands:");
+    for (name, about) in commands {
+        let width = name.len().max(11);
+        let _ = write!(text, "\n  {name:<width$} {about}");
+    }
+    let _ = write!(
+        text,
+        "\n\nRun '{path} COMMAND --help' for more information on a command.\n"
+    );
     text
 }
 

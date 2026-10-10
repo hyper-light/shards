@@ -552,6 +552,15 @@ Registries are reached with a small blocking HTTP/1.1 client on rustls and httpa
 - **Content-Encoding**, as containerd v2.4.1's fetcher asks for and decodes it: zstd,
   gzip and deflate accepted, each coding undone, last first; a resumed download asks for
   the blob as it is, so its range counts the bytes already stored.
+  - Unlike containerd: a coding listed twice is refused (`Content-Encoding lists gzip
+    twice: shards undoes each coding once`), where containerd nests a decoder for each:
+    one header of 50,000 `gzip`s (300 KB, under the head's 10 MiB) overflowed a fetch
+    thread's 2 MiB stack and aborted the daemon (audit O, 2026-10-09). No registry sends a
+    coding twice, and applying one twice compresses nothing.
+- **Tags** of a repository's list (`pull -a`) kept only where they match distribution's
+  tag pattern (`[\w][\w.-]{0,127}`), the rest passed over, as dockerd passes them over
+  (measured, Docker 29.3.1 against a scripted registry): before, `../evil` or
+  `//elsewhere/x` sent a request off the repository or to another host (audit O).
 - **Refusals** in Docker's words: measured on Docker 29.3.1 against registry:2 with
   basic authentication, and otherwise taken from containerd v2.4.1 and moby.
   - Each request's: `unexpected status from <METHOD> request to <URL>: <status>`. A
@@ -3192,7 +3201,8 @@ a TO b`, a's peers are b (send), b's are a (answer), c's none; a's request reach
 b's answer reaches a, b may not send a a request of its own, and c may send no one.
 Mutation-checked: requests from a peer not answered, answers to no request, sending to a
 peer not sent to, and `TO` taken both ways each fail a test. `ATTACH`'s channels are the
-same edges, harness to agent, and are not yet tested on a microVM.
+same edges, harness to agent: `harnesses_message_their_attached_agents` (D108) holds them on
+a microVM, mutation-checked (without `ATTACH`'s edge it fails).
 
 **MCP servers, offered** (§4.4, §12 answer 5: offered, not imposed). init gives each
 instance the servers its caller is in scope for: those with no `FOR` to every agent, and
@@ -3209,6 +3219,200 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 2026-10-07): every path between domains is a grant, and the build refuses any that joins
 an internal-only domain to the world (D58), so there is no data to label. Code mode
 waits on the user.
+
+### D109. An Agentfile's volumes at run, and every grant checked at build and at run
+
+AGENTFILE_ARCH.md §4.5 and §12 answers 8 and 9: `VOLUME <name> <dest>` names a volume, as
+Compose's `volumes:` does; `VOLUME <path>…` with options is an anonymous volume at each;
+without `FOR` a volume is every workspace's and agent's, with `FOR` the named agents' and
+harnesses' alone; `--chown=<agent>` is that agent's uid and gid, else Docker's
+`<user>[:<group>]`, read in the image's databases; `--chmod` an octal mode. The build
+recorded all of it (D35: the destinations in the image config's `Volumes`, so Docker and
+Kubernetes see mount points; the name, options and `FOR` in the normalized Agentfile), but
+nothing ran it: an agent saw the image as built (D59 part eight), no volume at all, and the
+run's own root had an anonymous volume at every destination, scoped or not.
+
+**Every check twice, at build and at run.** An image can be crafted past any build, and a
+run changes what it mounts and labels (`-v`, `--mount`, `--tmpfs`, `--volumes-from`,
+`--label`, `cp` before `start`). So what a build refuses, the daemon refuses again of what
+it reads in the image, and the guest's init of what it reads there; and each way a run
+can change a grant either gives it as the Agentfile does or is refused with its reason,
+never dropped unsaid.
+
+**One record of an Agentfile, read where the guest reads it.** The daemon reads the
+normalized Agentfile, `/.agentfile.json`, in the image's root as its microVM mounts it: the
+EROFS image, one file found and read as the kernel finds and reads it
+(`erofs::read_file`: a directory's blocks searched by halves as namei.c searches them, no
+symlink followed, at most 1 MiB). So it reads the very file the guest reads, whiteouts,
+opaque directories and hard links resolved by the one code that built the root, in a few
+block reads, where a search of the layers would decompress every layer above it. It
+checks the file against the image's `vnd.osi.agentfile.digest`, reads it back into its
+directives (`agentfile::from_spec`, of which `spec` gives the text it read), and runs
+them through the build's own checks (`connections`, `ingress`, `reach`, and the volume
+rules below): a crafted image is refused as a build refuses it. Everything the daemon
+holds a run to comes from those directives (`agentfile::grants`): its volumes, its domains'
+filter and in-VM server, its egress, DNS and remote MCP servers in its network process's
+policy, `confine-eth0`, and the ports `-p` may not publish. Before, the daemon took the
+egress, DNS and MCP grants from the image's labels, which a crafted config sets as it
+likes (audit N), and an image's `cp`-changed `/.agentfile.json` or `osi.json` decided a
+domain's grants at its next start: init now reads them in the image as built (its kept
+lower layer, every path resolved in it, `RESOLVE_IN_ROOT`), never in the run's root.
+The `vnd.osi.agentfile.*` labels stay the build's record for Docker and Kubernetes to
+see; a build's `LABEL` or `--label`, or a run's `--label`, may not set one (audit N; Docker
+reserves no label: recorded as ours).
+
+**The build** (`shards_dockerfile::agentfile`), and the daemon again:
+- No volume over a domain's root, `/proc`, `/sys` or `/dev` (`covers_domain_mounts`), its
+  path rooted at `/` as Docker roots a relative `VOLUME` (measured: `VOLUME rel` mounts at
+  `/rel`): a domain's are its init's.
+- One volume at each mount point in a stage's lineage: a domain is given what is mounted
+  where its rules say, so two agents' volumes at one path (`VOLUME data /data FOR a`,
+  `VOLUME other /data FOR b`) gave b the volume of a.
+- A volume's name as the engine takes one (`volume name is too short, …`, moby
+  volume/local), at build rather than at its first run.
+
+**The daemon** (`volumes.rs`, `run.rs`):
+- A volume the Agentfile names is that named volume, made where it is missing, kept from
+  run to run as `docker run -v name:/dest` keeps one; one it does not name is anonymous, as
+  Docker's `VOLUME` makes it.
+- Each of the image's mount points is marked for its agents and harnesses (the guest's
+  entry carries `domains`); one `FOR` scopes is not mounted in the run's own root
+  (`domain-volume=`, which the workload's setup passes over). A Docker `VOLUME` over a
+  domain's root, `/proc`, `/sys` or `/dev` (a base image's `VOLUME /dev/shm`) stays the run's
+  own root's: Docker mounts it there (measured), and no domain is given it.
+- A run's own `-v` or `--mount` of a volume or a directory at one of them stands in for it,
+  as Docker's does for an image's `VOLUME`, and is given as the Agentfile gives the volume
+  (a Docker `VOLUME`'s stand-in too, which before went to no domain). A tmpfs (`--tmpfs`,
+  `--mount type=tmpfs`) or a file is not given across domains, so neither may stand in:
+  `a tmpfs cannot stand in for /data: …; mount a volume or a directory there (-v or
+  --mount)`. `--volumes-from` brings no other image's grant: its volumes are mounted as
+  Docker mounts them (before, one another image scoped was mounted nowhere), for whom
+  this image's Agentfile says.
+- `--chown` and `--chmod` set the store's own volumes alone (the entry's `own`): a host
+  directory standing in is never owned or moded by an image, as Docker never changes a
+  bind's source.
+
+**shards-init** (`domains.rs`):
+- Each volume marked for the domains is mounted once beside the run's writable layer, where
+  no path from the run's root reaches (as the in-VM server's device is, D60); one the run's
+  root does not mount is filled where it is empty, as the run's setup fills its own (moby
+  `populateVolume`), from the image's directory found in the image (before, a symlink of the
+  image at the mount point was followed from init's root: a crafted image could fill an
+  agent's volume from init's `/proc` or another agent's staged volume).
+- Each domain granted it gets a copy of that mount (`open_tree`), `nosuid` and `nodev`, at
+  its mount point as runc finds one in a container's root (securejoin: the image's symlinks
+  followed in it, `..` never above it), made in its root's skeleton where the image lacks
+  it, after the other domains are hidden. Before, a symlink on the way (Debian's `/var/run`,
+  to `/run`) was replaced in the domain by an empty directory, the volume mounted in it. An
+  Agentfile's volume an image's symlink leads over a domain's own mounts is refused; a Docker
+  `VOLUME` so led stays the run's root's. Landlock gives each volume every right there, or
+  reads and execution alone where it is read-only. A domain not granted a scoped volume
+  sees the image as built at its mount point. Two volumes at one mount point are refused
+  here too.
+- A visit to a stopped container's files (D37, `HOLD`: `cp`, `diff`, `export`) starts no
+  agent or harness, as it runs no command of the image's. Before, an Agentfile's container
+  could not be visited at all: its domains, given no filter, failed the visit's VM.
+
+**Tested:** `agentfile_volumes_reach_whom_they_are_for` on microVMs:
+- `VOLUME --chown=a data /data FOR a` filled from the image, owned by a, written by a and
+  found again in the next run, while b sees the image's read-only `/data` and the run's root
+  has no `/data/x`; `VOLUME --chown=a shared /shared` written by a, seen by b and by the run's
+  own root; `VOLUME --chown=b --chmod=700 /scratch FOR b` an anonymous volume b owns, mode
+  700, which a lacks.
+- `/var/run/agentvol` mounted at `/run/agentvol`, the image's `/var/run` symlink kept; a
+  volume at the image's symlink `/fill` (to `/etc`) filled from the image's `/etc`, not the
+  run's; a Docker `VOLUME /var/shm`, the image's symlink to `/dev/shm`, not over a's scratch.
+- At run: `-v agvol-other:/data` stands in, given to a alone, owned by a, filled, seen by the
+  run's root; a host directory at `/scratch` given to b, its owner and mode unchanged;
+  `--tmpfs`, `--mount type=tmpfs` and a file refused; a `.agentfile.json` and an agent's
+  `osi.json` that `cp` put in a created container before `start` change no grant, and `cp`
+  out of it works.
+- Unit: the build's refusals (`tests/agentfile.rs`); `from_spec` against `spec` and the
+  grants of both; the daemon's reading of a root (`volumes.rs`: a crafted file's volumes over
+  `/dev`, two at one path, an internal-only agent reaching the world, an internal network's
+  resolver, a port its network does not open; a digest, a missing file, a symlink); the
+  daemon's registration of each run case; `erofs::read_file` against the kernel's rules
+  (every size, 600 names across blocks, misses before, between and after, symlinks,
+  devices, a corrupt block, a file past its bound, a cut image); init's entries, grants
+  and duplicates (Linux).
+- Mutation-checked, 31 guards, each mutant killed: the build's three refusals and its
+  path rules; the daemon's stand-in, `--volumes-from`, `own`, `/dev` and crafted-file
+  checks and its digest; the reader's every check; init's reading in the image, its
+  `own` filter, its fill, its mount point, its visit and its `/dev` rule; the daemon's
+  run-time `connections`, `ingress` and `reach`, each by a crafted case only it refuses;
+  and the gates now on the verified file, the domains' filter, the in-VM server, the
+  network process's grants and `-p`'s refusal, each failing its E2E. Init's duplicate
+  refusal is reached only past the daemon's: unit-tested.
+
+### D108. `buildx policy eval`, SSH certificates, and a failing step's lines
+
+buildx v0.37.1 checks policies outside a build: `docker buildx policy eval` asks a policy
+about one source, or prints the input a policy would see of it; `docker buildx policy
+test` runs a policy's tests. shards serves `eval` as `shards buildx policy eval`, in the
+one binary, the builder being shards itself (its platform this host's, as buildx takes its
+builder's first worker's); `test`'s command line is buildx's, its run **missing**.
+
+**The command lines** (`shards_cmdline::commands::{POLICY, POLICY_EVAL, POLICY_TEST}`):
+buildx's flags, help and errors as the Docker CLI runs buildx as its plugin, held byte
+for byte by `scripts/buildx/oracle_test.go`'s 27 policy cases: the group's help, asked
+anything (cobra runs no group), in the CLI's template for a command with subcommands
+(`flags::group_help`); cobra's `accepts N arg(s), received M` (`Args::Accepts`); eval's
+hidden `--filename` bound to `--file`. `-h` stays help, where the plugin's root
+deprecates it (as for every buildx command shards serves).
+
+**`eval`** (`build/policy_command.rs`, `policy/eval.rs`): runEval.
+- The source as parseSource reads it: an image pinned to `latest` where it names no tag;
+  a Git repository, or an HTTP(S) URL that is one (`git.fullurl`); an HTTP(S) download;
+  else a path, which is the build's context (`local://context`).
+- `--print`: the input of the source, the fields `--fields` asks for resolved (a
+  material's field after each provenance above it, materialFieldPrerequisites), at most
+  four rounds, stopping when the unknowns stop changing; `WARNING: invalid fields` for
+  fields that name nothing unknown, `INFO: unresolved fields` for what is left
+  (summarizeEvalUnknowns); the input as json.MarshalIndent prints it, no depth.
+- Otherwise the policy file (`--file` + `.rego`, or stdin for `-`), alone (no default
+  policy), its FS the working directory; CheckPolicy asked at most four times, each
+  question of the source's metadata answered as a build answers it, unseen; a refusal
+  `policy denied` or `policy denied: m1; m2` (empty messages dropped); `--debug` shows the
+  policy's lines as logrus does (`DEBUG: …`).
+
+**Held to buildx:** the oracle above; eval.go's own unit cases (select, prerequisites,
+sanitize) ported verbatim; `policy_eval_answers_as_buildx_does`, every answer measured
+from buildx in shards-dind (printed inputs of an image, a context, an HTTP URL and a Git
+URL; resolved and invalid fields; refusals with and without messages; a missing policy
+file; an invalid platform; a missing path).
+
+**Differences, recorded:**
+- `-h` is help, not a deprecated shorthand (as everywhere in shards).
+- `--debug`'s `policy response` line prints the decision's `Allow` as its value; Go prints
+  the address of the `*bool` (`Allow:0xc000…`), a different number each run. The build's
+  policy step prints it the same way (D101).
+
+**SSH certificates as keys** (`shards_gitsign::ssh`): `verify_git_signature` takes an
+OpenSSH certificate in its key file, and signatures that embed one (`gpg.format=ssh`
+signing with a certificate), as buildx's own golang.org/x/crypto v0.55.0 reads them
+(`verify_git_signature` runs in buildx, not BuildKit, whose v0.48.0 lacks v0.55.0's
+refusal of a certificate signed by a certificate): parseCert's every check and error
+text; fingerprints of the certificate as Certificate.Marshal writes it again (an empty
+option value re-marshals unlike its input, as in Go); verification by the certified key,
+the CA's signature unchecked, as sshsig and x/crypto leave it. Plain keys gained Go's
+own errors for an empty body and an unreadable field, and DSA's Q-size and generator
+checks. Held to Go by `scripts/gitsign/generate-certs`: 840 parse cases (31 of them
+certificates: ssh-keygen's of ed25519, ECDSA 256/384/521 and RSA from three CAs, every
+truncation of one, DSA and security-key certificates built in Go, crafted wire errors) and
+36 verifications; every guard mutation-checked. E2E:
+`policies_verify_git_signatures_by_ssh_certificates`, a commit git signed with a
+certificate allowed by that certificate and refused by the plain key.
+
+**A failing step cites its lines**, as buildx prints a solve error (measured): after the
+recap of the failed steps, the build's warnings, then the excerpt of the Dockerfile at
+each location of the failing operation (BuildKit's source map), then the error; a
+content checksum's failure (a COPY of a missing file) on its step without the cache
+key's stage, which the build's error carries. Before, a solve error ended with its error
+alone, and the warnings came before the recap. E2E: `a_failing_step_cites_its_dockerfile_lines`.
+
+**`ATTACH` on a microVM**: `harnesses_message_their_attached_agents` holds D60's channels
+from a harness to the agents `ATTACH` gives it: the harness sends, the agent answers and may
+not send first, an agent given to no harness sends no one; mutation-checked.
 
 ### D107. The frontend a Dockerfile names, and buildx's default policy, in build policies
 
@@ -3365,6 +3569,19 @@ status 404`, measured).
   and buildx panics; shards skips the material with a warning.
 - Materials and blobs in index and digest order, where buildx iterates Go maps (random).
 
+**Audited** (2026-10-09, audit L): an image's attestation chain may come to 4 MiB,
+counted before each blob is fetched (`CHAIN_MAX`), as buildx's policy session takes the
+chain in one gRPC message under grpc-go's default 4 MiB; before, a provenance of any
+size was held whole, at about 34 times its size (64 MiB: +2209 MiB peak, PM M127). A blob
+its descriptor carries (`data`) is read from it, as containerd reads one; a digest named
+twice is fetched once. The chain is read, and its signatures verified, on a 4 MiB thread:
+the JSON readers it uses need 3616 KiB at buildx's depth of 10,000 (aarch64), more than a
+spawned thread's 2 MiB. An image's config is read as `json.Unmarshal` reads it into
+`ocispecs.Image` (keys folded, repeated keys, nulls, Go's errors): 54 of 72 buildx oracle
+cases differed before, none of 278 now. Each build keeps each chain's readings, by the
+SHA-256 of all it holds: an image's input with its chain 1784 µs p50 before, 38 µs after
+(PM M127).
+
 ### D105. Sigstore bundles verified as sigstore-go verifies them
 
 buildx v0.37.1 checks Sigstore signatures through BuildKit's policy helpers
@@ -3446,6 +3663,15 @@ vendored libraries (`scripts/sigstore/generate*`):
   constraints equal but for case, an "excluded by" error may name another of them.
 - **A non-canonical Ed25519 key** Go's edwards25519 accepts is refused by AWS-LC; no
   certificate Fulcio issues has one.
+
+**Audited** (2026-10-09, audit J): protojson Structs are read without recursion, to
+protojson's own limit (9,998 levels on a 256 KiB thread; the next refused, `proto:
+exceeded max recursion depth`, as Go), and their keys checked once each (40,000 keys: 853
+ms before, 7.0 ms after); a Rekor v2 entry body is read no deeper than a valid Entry
+nests (7), and an interface{}'s numbers walked without recursion; an RSA key's exponent
+past 2^31-1 is refused as crypto/rsa refuses it (`crypto/rsa: public exponent too
+large`), in x509's signatures, the keys' verifiers and SCTs alike (a valid signature by
+such a key was accepted before; vectors from `scripts/sigstore/rsa_exponent.go`).
 
 ### D104. Sigstore's trusted root, by The Update Framework
 
@@ -3529,6 +3755,15 @@ fields dropped from what is signed; root versions out of turn.
 - **P-224 ECDSA keys** are refused: go-tuf takes them, and no Sigstore key is one.
 - **Several hashes of one file** are checked in the metadata's order, where go-tuf's map
   order is random. The verdict is the same, though which mismatch is named may differ.
+
+**Audited** (2026-10-09, audit J): TUF metadata is read, made canonical, cloned and
+dropped without recursion (9,998 levels on a 256 KiB thread; the 10,001st container
+refused in go-tuf's words), and its signatures', names' and members' duplicates found in
+linear time (40,000 entries: 816, 979 and 882 ms before; 8.1, 3.7 and 3.2 ms after). As
+go-tuf reads it: `1e400` refused as encoding/json refuses it, a `null` document's error,
+invalid UTF-8 replaced byte by byte, canonical JSON's first non-integer refused in key
+order, an RSA key with an exponent past 2^31-1 not counted (PKIX) or refused (PKCS#1), and
+a missing key reported before an unreadable document.
 
 ### D103. Signatures verified in build policies: OpenPGP and SSH
 
@@ -3639,6 +3874,19 @@ Tested:
   after the round trips buildx makes. With other keys, refused. Mutation-checked: a
   verification failure ignored.
 - **The verification oracle; RFC 8032's Ed448 vectors; the constants' tests.**
+
+**Audited** (2026-10-09, audit K): signatures embedded in signatures are read without
+recursion (20,000 deep overflowed the stack before; `testdata/nested.json` as go-crypto
+answers it); PEM is read as Go 1.26 reads it, in linear time (50,000 BEGIN lines: 8.56 s
+before, 0.78 ms after; `\r`, Unicode trimming and repeated headers as Go); ASCII armor as
+go-crypto reads it, every oracle answer equal (42 cases, 600 fuzzed inputs, every padding
+position; 60,000 headers: 2.71 s before, 9.2 ms after); an RSA exponent past 2^31-1
+refused as crypto/rsa refuses it (`scripts/gitsign/generate-rsa`); a key ring's
+identities kept without a copy for each signature (400 revocations: 17.5 ms before, 9.8
+ms after). Recorded difference: a key ring's armored body is decoded whole, where
+go-crypto decodes it as its packet reader asks; both refuse corrupt base64, but the text
+or offset of the error can differ, and padding inside a line that go-crypto accepts only
+where its reads happen to end is refused here.
 
 ### D102. Build policies over Git and HTTP sources, and Git's signatures read
 
@@ -3779,6 +4027,11 @@ Tested:
 - **Unit tests:** the flags' combination (withPolicyConfig), unknowns (trimKey,
   collectUnknowns), and `the_deepest_policy_runs_on_the_policy_thread`.
 - **The buildx oracle:** `--policy`'s grammar.
+
+**Audited** (2026-10-09, audit L): what a policy's functions fetch (the attestation
+builtins' GitHub API answers and bundles) is bounded at 16 MiB, as buildx reads it through
+BuildKit's gateway, whose gRPC server takes messages of at most containerd's
+`DefaultMaxRecvMsgSize` (buildkit v0.28.1 frontend/gateway/gateway.go; before, unbounded).
 
 ### D100. Attestations in a docker archive, which `docker load` reads in either store
 

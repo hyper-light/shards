@@ -87,7 +87,10 @@ fn digest_info(hash: Hash) -> &'static [u8] {
     }
 }
 
-/// Why Go's crypto/rsa refuses a public key before it verifies with it, in its words.
+/// Why Go's crypto/rsa refuses a public key before it verifies with it, in its words and
+/// order (checkPublicKeySize, then fips140/rsa's checkPublicKey): a modulus under 1024
+/// bits or even; an exponent below 2, even, or above 2^31-1, which Go refuses so that
+/// int's width never changes what a key does (Go 1.26's crypto/rsa).
 pub fn rsa_key_error(n: &[u8], e: &[u8]) -> Option<String> {
     let n = BigUint::from_bytes_be(n);
     if n.bits() < 1024 {
@@ -105,6 +108,9 @@ pub fn rsa_key_error(n: &[u8], e: &[u8]) -> Option<String> {
     }
     if !e.bit(0) {
         return Some("crypto/rsa: public exponent is even".into());
+    }
+    if e > BigUint::from(i32::MAX.unsigned_abs()) {
+        return Some("crypto/rsa: public exponent too large".into());
     }
     None
 }

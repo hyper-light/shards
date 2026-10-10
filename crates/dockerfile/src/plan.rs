@@ -2520,6 +2520,18 @@ impl Planner<'_> {
                     if kv.no_delim {
                         lint.run(&lint::LEGACY_KEY_VALUE_FORMAT, &loc, Some(&legacy_kv(&name)));
                     }
+                    // The build's own record of the Agentfile: a `LABEL` may not set one,
+                    // so a Dockerfile `FROM` an agent image cannot forge the daemon's and
+                    // the guest's view of it (crate::agentfile::LABEL_PREFIX).
+                    if crate::agentfile::reserved_label(&kv.key) {
+                        return Err(Fail::new(errb(&[
+                            b"LABEL ",
+                            &kv.key,
+                            b": the ",
+                            crate::agentfile::LABEL_PREFIX,
+                            b"* labels are shards' own record of the Agentfile and may not be set",
+                        ])));
+                    }
                     ds.image.config.labels.insert(kv.key.clone(), kv.value.clone());
                     msg.extend_from_slice(&errb(&[b" ", &kv.key, b"=", &kv.value]));
                 }
@@ -4307,7 +4319,17 @@ impl Planner<'_> {
             .iter()
             .flat_map(|s| s.ctx_paths.iter().cloned())
             .collect();
+        // `--label vnd.osi.agentfile.*` is refused: that namespace is the build's own
+        // record of the Agentfile, which the daemon and guest trust, not the user's to set
+        // (crate::agentfile::LABEL_PREFIX).
         let labels = self.opts.labels.clone();
+        if let Some((k, _)) = labels.iter().find(|(k, _)| crate::agentfile::reserved_label(k)) {
+            return Err(Fail::new(format!(
+                "label {:?} is reserved: shards' build sets the {} labels from the Agentfile, and --label may not set one",
+                String::from_utf8_lossy(k),
+                String::from_utf8_lossy(crate::agentfile::LABEL_PREFIX),
+            )));
+        }
         let t = self.ds(target)?;
         t.image.config.labels.extend(labels);
         if self.lint.failed() {
@@ -4428,32 +4450,23 @@ impl Planner<'_> {
             crate::agentfile::reach(&t.agentfile).map_err(Fail::new)?;
             crate::agentfile::ingress(&t.agentfile).map_err(Fail::new)?;
             crate::agentfile::connections(&t.agentfile).map_err(Fail::new)?;
-            if crate::agentfile::dns(&t.agentfile) {
+            // Its grants, for Docker and Kubernetes to see: the daemon holds a run to its
+            // own reading of the normalized Agentfile, never to these (D109).
+            let grants = crate::agentfile::grants(&t.agentfile);
+            if grants.dns {
                 image
                     .config
                     .labels
                     .insert(crate::agentfile::DNS_LABEL.to_vec(), b"1".to_vec());
             }
-            let servers = crate::agentfile::remote_mcp(&t.agentfile);
-            if !servers.is_empty() {
-                image
-                    .config
-                    .labels
-                    .insert(crate::agentfile::MCP_LABEL.to_vec(), servers.join(&b","[..]));
-            }
-            let declared = crate::agentfile::egress_declared(&t.agentfile);
-            if !declared.is_empty() {
-                image.config.labels.insert(
-                    crate::agentfile::EGRESS_DECLARED_LABEL.to_vec(),
-                    declared.join(&b","[..]),
-                );
-            }
-            let egress = crate::agentfile::egress(&t.agentfile);
-            if !egress.is_empty() {
-                image
-                    .config
-                    .labels
-                    .insert(crate::agentfile::EGRESS_LABEL.to_vec(), egress.join(&b","[..]));
+            for (label, list) in [
+                (crate::agentfile::MCP_LABEL, &grants.mcp),
+                (crate::agentfile::EGRESS_DECLARED_LABEL, &grants.egress_declared),
+                (crate::agentfile::EGRESS_LABEL, &grants.egress),
+            ] {
+                if !list.is_empty() {
+                    image.config.labels.insert(label.to_vec(), list.join(&b","[..]));
+                }
             }
             let spec = crate::agentfile::spec(&t.agentfile);
             image.config.labels.insert(
@@ -5603,6 +5616,67 @@ mod tests {
             Err(b"no answer".to_vec()),
         );
         assert_eq!(failed.err().map(|e| e.message), Some(b"no answer".to_vec()));
+    }
+
+    /// shards owns the `vnd.osi.agentfile.*` labels: a build may not set one, by `--label`
+    /// (`Options.labels`) or a `LABEL` instruction, so a Dockerfile `FROM` an agent image
+    /// cannot forge the daemon's and the guest's view of the Agentfile. Other labels,
+    /// `vnd.osi.*` among them, are Docker's own.
+    #[test]
+    fn the_agentfile_label_namespace_is_the_builds_own() {
+        let times = Times {
+            asked: Default::default(),
+            answer: Ok(None),
+            logged: Default::default(),
+        };
+        let base = Options {
+            target_platform: Platform::new("linux", "amd64"),
+            ..Default::default()
+        };
+        let msg = |e: Error| String::from_utf8_lossy(&e.message).into_owned();
+        // A `LABEL` in the namespace is refused, on its line, whichever key.
+        let err = plan(
+            b"FROM scratch\nLABEL vnd.osi.agentfile.egress=1-65535\n",
+            &base,
+            &times,
+        )
+        .unwrap_err();
+        assert!(
+            msg(err.clone()).contains("shards' own record of the Agentfile"),
+            "{}",
+            msg(err.clone())
+        );
+        assert_eq!(err.location, vec![vec![(2, 2)]]);
+        for key in [
+            "vnd.osi.agentfile.digest",
+            "vnd.osi.agentfile.mcp",
+            "vnd.osi.agentfile.dns",
+        ] {
+            let text = format!("FROM scratch\nLABEL {key}=x\n");
+            assert!(plan(text.as_bytes(), &base, &times).is_err(), "{key}");
+        }
+        // `--label` in the namespace is refused too.
+        let opts = Options {
+            labels: BTreeMap::from([(b"vnd.osi.agentfile.egress".to_vec(), b"1-65535".to_vec())]),
+            ..base.clone()
+        };
+        assert!(msg(plan(b"FROM scratch\n", &opts, &times).unwrap_err()).contains("--label may not set one"));
+        // A label outside the namespace builds, by instruction or by `--label`; the
+        // reserve is `vnd.osi.agentfile.`, not every `vnd.osi.`.
+        let opts = Options {
+            labels: BTreeMap::from([(b"org.opencontainers.image.title".to_vec(), b"x".to_vec())]),
+            ..base.clone()
+        };
+        let p = plan(
+            b"FROM scratch\nLABEL vnd.osi.other=ok\nLABEL com.example=1\n",
+            &opts,
+            &times,
+        )
+        .unwrap();
+        let got = |k: &[u8]| p.image.config.labels.get(k).map(Vec::as_slice);
+        assert_eq!(got(b"com.example"), Some(&b"1"[..]));
+        assert_eq!(got(b"vnd.osi.other"), Some(&b"ok"[..]));
+        assert_eq!(got(b"org.opencontainers.image.title"), Some(&b"x"[..]));
     }
 
     /// The CopyIgnoredFile warnings planning `text` with `ignore` as the .dockerignore.

@@ -70,6 +70,9 @@ pub struct Prepared {
     pub size: (u32, u64),
     /// The image's `VOLUME`s.
     pub image_volumes: Vec<String>,
+    /// Its Agentfile, where it is an Agentfile's image (D109): what the daemon holds the
+    /// run to, read in its root and checked against its digest, never from its labels.
+    pub agentfile: Option<crate::agentfile::Agentfile>,
     /// How many directories it shares with its guest (D38): set once its mount points are.
     pub shares: u32,
 }
@@ -238,6 +241,28 @@ fn by_id(
     Ok(None)
 }
 
+/// The image's labels, with the run's `--label`/`--label-file` over them (opts.
+/// ConvertKVStringsToMap: `KEY` alone is an empty value). The `vnd.osi.agentfile.*`
+/// namespace is the build's record of the Agentfile, which the daemon and the guest
+/// trust: a run may not set, remove or forge one, so it is refused here (the user mutates
+/// a run through the CLI), as the build refuses it in a `LABEL` or a `--label`.
+fn merge_labels(
+    mut labels: std::collections::BTreeMap<String, String>,
+    request: &[String],
+) -> Result<std::collections::BTreeMap<String, String>, String> {
+    for l in request {
+        let (k, v) = l.split_once('=').unwrap_or((l.as_str(), ""));
+        if shards_dockerfile::agentfile::reserved_label(k.as_bytes()) {
+            return Err(format!(
+                "label {k:?} is reserved: shards' build sets the {} labels from the Agentfile, and a run may not set one",
+                String::from_utf8_lossy(shards_dockerfile::agentfile::LABEL_PREFIX)
+            ));
+        }
+        labels.insert(k.to_string(), v.to_string());
+    }
+    Ok(labels)
+}
+
 /// The daemon's half: finds the request's image in `home`, pulling it as `docker run`
 /// does with its messages through `say`, and merges its settings under the request's.
 /// Whatever it downloads, `cancel` stops.
@@ -294,7 +319,27 @@ pub fn prepare(
             Reference::parse(&request.image).map_or_else(|_| request.image.clone(), |r| r.familiar())
         )
     })?;
+    // An Agentfile's image: its Agentfile, as its root holds it and its digest names it
+    // (D109). One whose Agentfile does not hold is not run.
+    let agentfile = match image
+        .config
+        .config
+        .as_ref()
+        .and_then(|c| c.labels.as_ref())
+        .and_then(|l| l.get("vnd.osi.agentfile.digest"))
+    {
+        Some(digest) => Some(crate::agentfile::agentfile(&rootfs, digest)?),
+        None => None,
+    };
+    let image_labels = image
+        .config
+        .config
+        .as_ref()
+        .and_then(|c| c.labels.clone())
+        .unwrap_or_default();
+    let labels = merge_labels(image_labels, &request.labels)?;
     Ok(Prepared {
+        agentfile,
         boot,
         rootfs,
         spec,
@@ -313,20 +358,7 @@ pub fn prepare(
             .and_then(|c| c.shell.clone())
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| vec!["/bin/sh".into(), "-c".into()]),
-        labels: {
-            let mut labels = image
-                .config
-                .config
-                .as_ref()
-                .and_then(|c| c.labels.clone())
-                .unwrap_or_default();
-            // opts.ConvertKVStringsToMap: `KEY` alone is an empty value.
-            for l in &request.labels {
-                let (k, v) = l.split_once('=').unwrap_or((l.as_str(), ""));
-                labels.insert(k.to_string(), v.to_string());
-            }
-            labels
-        },
+        labels,
         size: (
             crate::resources::vcpus(&request.resources, crate::resources::host_cpus()),
             crate::resources::memory_mib(
@@ -631,5 +663,42 @@ mod tests {
         assert_eq!((env.user.as_str(), env.workdir.as_str()), ("root", "/tmp"));
         // Nothing to run at all.
         assert!(compose(None, &Run::default()).is_err());
+    }
+
+    /// A run's `--label` merges over the image's, but may not set a `vnd.osi.agentfile.*`
+    /// label: that namespace is the build's record of the Agentfile, which the daemon and
+    /// the guest trust (the user mutates a run through the CLI). The reserve is
+    /// `vnd.osi.agentfile.`, not every label or every `vnd.osi.`.
+    #[test]
+    fn a_run_may_not_set_an_agentfile_label() {
+        use std::collections::BTreeMap;
+        let image = BTreeMap::from([
+            ("vnd.osi.agentfile.digest".to_string(), "sha256:real".to_string()),
+            ("org.opencontainers.image.title".to_string(), "img".to_string()),
+        ]);
+        // The run's own labels merge, including a bare `KEY` (empty value) and `vnd.osi.`
+        // outside the reserved prefix.
+        let merged = merge_labels(
+            image.clone(),
+            &strings(&["com.example=1", "bare", "vnd.osi.other=ok"]),
+        )
+        .unwrap();
+        assert_eq!(merged.get("com.example").map(String::as_str), Some("1"));
+        assert_eq!(merged.get("bare").map(String::as_str), Some(""));
+        assert_eq!(merged.get("vnd.osi.other").map(String::as_str), Some("ok"));
+        assert_eq!(
+            merged.get("vnd.osi.agentfile.digest").map(String::as_str),
+            Some("sha256:real")
+        );
+        // Setting one in the namespace is refused, whether it overwrites the image's or
+        // adds a grant, and whatever its value (even empty, which would not remove it).
+        for bad in [
+            "vnd.osi.agentfile.digest=forged",
+            "vnd.osi.agentfile.egress=1-65535",
+            "vnd.osi.agentfile.digest=",
+        ] {
+            let e = merge_labels(image.clone(), &strings(&[bad])).unwrap_err();
+            assert!(e.contains("is reserved"), "{bad}: {e}");
+        }
     }
 }

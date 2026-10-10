@@ -955,39 +955,13 @@ fn string_map(d: &mut Decoder<'_>) -> Result<Vec<(String, String)>, ProtoError> 
         return Err(d.unexpected(&tok));
     }
     let mut out: Vec<(String, String)> = Vec::new();
+    // The keys had, in a set as Go's map holds them: many keys cost no more than reading
+    // them (a list searched for each was quadratic in them).
+    let mut keys = std::collections::HashSet::new();
     loop {
         let tok = d.read()?;
         match tok.kind {
             OBJECT_CLOSE => return Ok(out),
-            NAME => {}
-            _ => return Err(d.unexpected(&tok)),
-        }
-        if out.iter().any(|(k, _)| *k == tok.text) {
-            return Err(d.new_error(
-                tok.pos,
-                &format!("duplicate map key {}", String::from_utf8_lossy(&tok.raw)),
-            ));
-        }
-        if let Some(Val::Str(v)) = scalar(d, &VALUE)? {
-            out.push((tok.text.clone(), v));
-        }
-    }
-}
-
-/// unmarshalStruct: an object of google.protobuf.Value members.
-fn structure(d: &mut Decoder<'_>, depth: usize) -> Result<(), ProtoError> {
-    if depth > RECURSION_LIMIT {
-        return Err(err("exceeded max recursion depth"));
-    }
-    let tok = d.read()?;
-    if tok.kind != OBJECT_OPEN {
-        return Err(d.unexpected(&tok));
-    }
-    let mut keys: Vec<String> = Vec::new();
-    loop {
-        let tok = d.read()?;
-        match tok.kind {
-            OBJECT_CLOSE => return Ok(()),
             NAME => {}
             _ => return Err(d.unexpected(&tok)),
         }
@@ -997,13 +971,75 @@ fn structure(d: &mut Decoder<'_>, depth: usize) -> Result<(), ProtoError> {
                 &format!("duplicate map key {}", String::from_utf8_lossy(&tok.raw)),
             ));
         }
-        keys.push(tok.text.clone());
-        known_value(d, depth + 1)?;
+        keys.insert(tok.text.clone());
+        if let Some(Val::Str(v)) = scalar(d, &VALUE)? {
+            out.push((tok.text, v));
+        }
     }
 }
 
-/// unmarshalKnownValue.
-fn known_value(d: &mut Decoder<'_>, depth: usize) -> Result<(), ProtoError> {
+/// A container a google.protobuf.Struct holds open: an object and the keys it has had, or
+/// an array; each with the depth of the message it belongs to, its members one deeper
+/// (each a google.protobuf.Value, which unmarshalMessage counts; the Struct and ListValue
+/// inside a Value are decoded directly, and count no level of their own).
+enum Open {
+    Object(std::collections::HashSet<String>, usize),
+    Array(usize),
+}
+
+/// unmarshalStruct: an object of google.protobuf.Value members, read without recursion so
+/// that no stack, however small, limits the depth Go allows (RecursionLimit; an attacker's
+/// predicate nested a few thousand deep overflowed a 2 MiB thread's), each object's keys in
+/// a set, as Go's map holds them. The decoder is asked what unmarshalStruct and
+/// unmarshalKnownValue ask it, in their order, so each error is theirs at its place.
+fn structure(d: &mut Decoder<'_>, depth: usize) -> Result<(), ProtoError> {
+    if depth > RECURSION_LIMIT {
+        return Err(err("exceeded max recursion depth"));
+    }
+    let tok = d.read()?;
+    if tok.kind != OBJECT_OPEN {
+        return Err(d.unexpected(&tok));
+    }
+    let mut open = vec![Open::Object(std::collections::HashSet::new(), depth)];
+    while let Some(top) = open.last_mut() {
+        let value_depth = match top {
+            Open::Object(keys, at) => {
+                let tok = d.read()?;
+                match tok.kind {
+                    OBJECT_CLOSE => {
+                        open.pop();
+                        continue;
+                    }
+                    NAME => {}
+                    _ => return Err(d.unexpected(&tok)),
+                }
+                if keys.contains(&tok.text) {
+                    return Err(d.new_error(
+                        tok.pos,
+                        &format!("duplicate map key {}", String::from_utf8_lossy(&tok.raw)),
+                    ));
+                }
+                keys.insert(tok.text);
+                *at + 1
+            }
+            Open::Array(at) => {
+                if d.peek()?.kind == ARRAY_CLOSE {
+                    d.read()?;
+                    open.pop();
+                    continue;
+                }
+                *at + 1
+            }
+        };
+        if let Some(o) = known_value(d, value_depth)? {
+            open.push(o);
+        }
+    }
+    Ok(())
+}
+
+/// unmarshalKnownValue: a scalar read, or the container it opens.
+fn known_value(d: &mut Decoder<'_>, depth: usize) -> Result<Option<Open>, ProtoError> {
     if depth > RECURSION_LIMIT {
         return Err(err("exceeded max recursion depth"));
     }
@@ -1011,7 +1047,7 @@ fn known_value(d: &mut Decoder<'_>, depth: usize) -> Result<(), ProtoError> {
     match tok.kind {
         NULL | BOOL | STRING => {
             d.read()?;
-            Ok(())
+            Ok(None)
         }
         NUMBER => {
             let tok = d.read()?;
@@ -1028,19 +1064,17 @@ fn known_value(d: &mut Decoder<'_>, depth: usize) -> Result<(), ProtoError> {
                     ),
                 ));
             }
-            Ok(())
+            Ok(None)
         }
-        OBJECT_OPEN => structure(d, depth + 1),
+        // unmarshalStruct, called directly as the Value's own (not through
+        // unmarshalMessage, so no level of its own): its members one deeper than the Value.
+        OBJECT_OPEN => {
+            d.read()?;
+            Ok(Some(Open::Object(std::collections::HashSet::new(), depth)))
+        }
         ARRAY_OPEN => {
             d.read()?;
-            loop {
-                let tok = d.peek()?;
-                if tok.kind == ARRAY_CLOSE {
-                    d.read()?;
-                    return Ok(());
-                }
-                known_value(d, depth + 1)?;
-            }
+            Ok(Some(Open::Array(depth)))
         }
         _ => Err(d.new_error(
             tok.pos,

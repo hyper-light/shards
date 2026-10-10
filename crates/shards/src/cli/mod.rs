@@ -169,6 +169,12 @@ fn dispatch(args: Vec<OsString>) -> ExitCode {
         ["restore", ..] => vm(&args),
         // This shards' own version: nothing asked of a daemon (version.rs).
         ["version", ..] => version::run(args.get(1..).unwrap_or_default()),
+        // `buildx policy ...`: buildx's policy commands, run here as a build is (D108).
+        ["buildx", "policy"] => {
+            let mut rest = vec![OsString::from("policy")];
+            rest.extend(args.get(2..).unwrap_or_default().iter().cloned());
+            crate::shardsd(rest)
+        }
         // `build` (or `builder build`, `image build`, `buildx build`, `buildx b`): shardsd's.
         _ if let Some(named) = shards_cmdline::commands::build(&words) => {
             let mut rest = vec![OsString::from("build")];

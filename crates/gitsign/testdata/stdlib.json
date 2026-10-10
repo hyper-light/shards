@@ -1,0 +1,6528 @@
+{
+  "decode": [
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "UVVKRA==",
+      "out": "QUJD"
+    },
+    {
+      "input": "UVVJPQ==",
+      "out": "QUI="
+    },
+    {
+      "input": "UVE9PQ==",
+      "out": "QQ=="
+    },
+    {
+      "input": "UVENCj0KPQ==",
+      "out": "QQ=="
+    },
+    {
+      "input": "UVE9QQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "UVE9",
+      "out": "",
+      "error": "illegal base64 data at input byte 3"
+    },
+    {
+      "input": "UVE9PVFVSkQ=",
+      "out": "QQ==",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "UVVKRFE=",
+      "out": "QUJD",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "UVVKRFFVSQ==",
+      "out": "QUJD",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "UVUK",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "UT09PQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "UVUhRA==",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "UVVKPQ==",
+      "out": "QUI="
+    },
+    {
+      "input": "Cg0=",
+      "out": ""
+    },
+    {
+      "input": "UVVK",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "UQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "UVE9PQo=",
+      "out": "QQ=="
+    },
+    {
+      "input": "UVE9PQpR",
+      "out": "QQ==",
+      "error": "illegal base64 data at input byte 5"
+    },
+    {
+      "input": "UVVKPQ0K",
+      "out": "QUI="
+    },
+    {
+      "input": "UVVKRApRVUpE",
+      "out": "QUJDQUJD"
+    },
+    {
+      "input": "UVVKRFFVSkRRVUpE",
+      "out": "QUJDQUJDQUJD"
+    },
+    {
+      "input": "UVVKRFFVSkRRVUpEUVVKRFFVSkRRVUpEIQ==",
+      "out": "QUJDQUJDQUJDQUJDQUJDQUJD",
+      "error": "illegal base64 data at input byte 24"
+    },
+    {
+      "input": "UVVKRFFVSkQ9",
+      "out": "QUJDQUJD",
+      "error": "illegal base64 data at input byte 8"
+    },
+    {
+      "input": "UVVKRFFVSkRRUT14",
+      "out": "QUJDQUJD",
+      "error": "illegal base64 data at input byte 10"
+    },
+    {
+      "input": "UVUgSkQ=",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "UQpRClEKUQ==",
+      "out": "QQQQ"
+    },
+    {
+      "input": "UVI9PQ==",
+      "out": "QQ=="
+    },
+    {
+      "input": "UVVKRQ==",
+      "out": "QUJE"
+    },
+    {
+      "input": "Ly8vLw==",
+      "out": "////"
+    },
+    {
+      "input": "Ky8rLw==",
+      "out": "+/+/"
+    },
+    {
+      "input": "UVE9PT0=",
+      "out": "QQ==",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "UVE9PQ0NCgo=",
+      "out": "QQ=="
+    },
+    {
+      "input": "IVFRUQoNPVFRUQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "UVUvVVEhVVEgUVE=",
+      "out": "QU/U",
+      "error": "illegal base64 data at input byte 5"
+    },
+    {
+      "input": "DVEvPT1VIVFRUXp6REpVIQogUQ==",
+      "out": "Qw==",
+      "error": "illegal base64 data at input byte 5"
+    },
+    {
+      "input": "UVF6IFErIVFRUUo9UVFK",
+      "out": "",
+      "error": "illegal base64 data at input byte 3"
+    },
+    {
+      "input": "KwogVVFVUVFRClEhUSAvUVE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "UXpRUVFKLytKUSs=",
+      "out": "QzQQQJ/+",
+      "error": "illegal base64 data at input byte 8"
+    },
+    {
+      "input": "UVFEUQ==",
+      "out": "QQDQ"
+    },
+    {
+      "input": "DVFRUUpRDVE=",
+      "out": "QQQJ",
+      "error": "illegal base64 data at input byte 6"
+    },
+    {
+      "input": "PUpRUS8vSiAgUSFKUVFRUVFRUVFRIA==",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "UQ1RSlE9UQ==",
+      "out": "QQJQ",
+      "error": "illegal base64 data at input byte 5"
+    },
+    {
+      "input": "Sg==",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "elFRK1FRUT1ESlV6UVFRCj1VRFEK",
+      "out": "zQQ+QQQ=",
+      "error": "illegal base64 data at input byte 8"
+    },
+    {
+      "input": "CkRRUVFRUQ==",
+      "out": "DQQQ",
+      "error": "illegal base64 data at input byte 5"
+    },
+    {
+      "input": "IFENUS9EDT1VelFRUQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "PUoKL0RK",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "UStVK1F6CitRIEQ=",
+      "out": "Q+U+Qz+Q",
+      "error": "illegal base64 data at input byte 9"
+    },
+    {
+      "input": "UVE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "UUohUXoNUQ1RIFFRL3oNUUQreg==",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "RD1RVVEvUVFESlE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "UVFRCkpRUQpRUVFRLwohUVFR",
+      "out": "QQQJQQQQ",
+      "error": "illegal base64 data at input byte 14"
+    },
+    {
+      "input": "IUp6UQpRRA==",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "UVUrUQpRUS8KL1E=",
+      "out": "QU+QQQ//",
+      "error": "illegal base64 data at input byte 10"
+    },
+    {
+      "input": "UUpRClFRK1UrUVFRKz1VUSBRUQ==",
+      "out": "QJQQQ+U+QQQ+",
+      "error": "illegal base64 data at input byte 13"
+    },
+    {
+      "input": "DVFRUVErUVFRUVFRDVFRSkpRClE=",
+      "out": "QQQQ+QQQQQQQQJJQ",
+      "error": "illegal base64 data at input byte 19"
+    },
+    {
+      "input": "RA==",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "IA0KPS8NIEorUVEKUVF6UVFR",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "K0o9USAgUUoKUXo=",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "DVUNUVFRRCsNUUo=",
+      "out": "UQQQD+QJ"
+    },
+    {
+      "input": "UURRSlE=",
+      "out": "QDQJ",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "USBRRFUNUVFRPQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "K0oKUSBVDVEvegpRPUQ=",
+      "out": "",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "DS9R",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "VS9RIQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 3"
+    },
+    {
+      "input": "UT1R",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "USAgK1FRUVEKekRKUQ1RUSBRUUo=",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "IFFVUQpEUVFVUVE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "K1ENUSBR",
+      "out": "",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "UVFRSkoKVVFEPUQ=",
+      "out": "QQQJJUQD",
+      "error": "illegal base64 data at input byte 9"
+    },
+    {
+      "input": "RFFRUVE=",
+      "out": "DQQQ",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "Cg1RUS9RDT1RClE9IA==",
+      "out": "QQ/Q",
+      "error": "illegal base64 data at input byte 7"
+    },
+    {
+      "input": "UVENelFKUSFRRD0hUQor",
+      "out": "QQzQ",
+      "error": "illegal base64 data at input byte 7"
+    },
+    {
+      "input": "LwogSlFRUSEKUSE9UQpRUXoNUT1RUVE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "DQ==",
+      "out": ""
+    },
+    {
+      "input": "L1EhUVFRUVFRPVFRIT09UQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "UT1RPS9RIT1RIEpRUVFRDUoKRD1RelE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "VT0gPVF6UVEvLz0hUVF6",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "IQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "SlFR",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "ClFRRD09RCA=",
+      "out": "QQA=",
+      "error": "illegal base64 data at input byte 5"
+    },
+    {
+      "input": "USFRPUpRIC8hSiBVUQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "K1FRUVFR",
+      "out": "+QQQ",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "UUQNUQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "UT1RUSFRUVEhSiFKSlE9Cg1RUURVSlU=",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "UVFK",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "K1F6elE=",
+      "out": "+Qzz",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "UVE9UQ0NRFVRUVF6SlFRLytRUQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "IQpRUVEKUQorVVE9ej1RUVFR",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "K1FRPVEKK0pRCnov",
+      "out": "+QQ=",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "DSsKUQ1RUUpRUVVRUT0K",
+      "out": "+QQQJQQU",
+      "error": "illegal base64 data at input byte 15"
+    },
+    {
+      "input": "UStRUSEgK1FR",
+      "out": "Q+QQ",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "UT1RRFFEIA1R",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "IS9RClF6IFFRDS96SnohUVUgUVFR",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "Lz0gK1E9IFEKUSF6UUQgVQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "egpRUVFEPSs=",
+      "out": "zQQQ",
+      "error": "illegal base64 data at input byte 6"
+    },
+    {
+      "input": "RA1RUUQ=",
+      "out": "DQQD"
+    },
+    {
+      "input": "SnpRSko=",
+      "out": "JzQJ",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "PVVRVSFEIVFEUQorIQ1KRD1RUQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "RHpVUQ0K",
+      "out": "DzUQ"
+    },
+    {
+      "input": "USBRPVEheg==",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "USFRRFFRUXpRSlFKKwpRUVFRUVFRUSBR",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "UQ0KIXo=",
+      "out": "",
+      "error": "illegal base64 data at input byte 3"
+    },
+    {
+      "input": "UQpRUVFR",
+      "out": "QQQQ",
+      "error": "illegal base64 data at input byte 5"
+    },
+    {
+      "input": "UT09UVENIApR",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "UQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "UQpEUUo9RFFRUQo9L0RR",
+      "out": "QDQJ",
+      "error": "illegal base64 data at input byte 5"
+    },
+    {
+      "input": "UVFRUXpRSlVECiAKCiE9UVVVUUQrekQ=",
+      "out": "QQQQzQJU",
+      "error": "illegal base64 data at input byte 10"
+    },
+    {
+      "input": "UVFVIT09elFKUXpVDVEhUQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 3"
+    },
+    {
+      "input": "VVFESlEhUVENVUpEDVFRUVENUSBRVVFR",
+      "out": "UQDJ",
+      "error": "illegal base64 data at input byte 5"
+    },
+    {
+      "input": "DSA9",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "DVFRL0pRLz0gUUpKUQ==",
+      "out": "QQ/J",
+      "error": "illegal base64 data at input byte 7"
+    },
+    {
+      "input": "UT0vUVFRSg==",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "USBRSlEvUVFRL1EvUSFRUQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "K1EhDVFRUVFRDVFKUQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "Lw==",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "UUpKSlVVUStRUT1RIS9RelFRKyshSi8=",
+      "out": "QJJJUUQ+",
+      "error": "illegal base64 data at input byte 10"
+    },
+    {
+      "input": "PVFRDVFRUVF6DVFRUQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "USFRUVErK1FVUURKUQ0vIFFKUXpRL1Eg",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "UXoNSlUKLy8gUVEgRA==",
+      "out": "QzJU",
+      "error": "illegal base64 data at input byte 8"
+    },
+    {
+      "input": "USFEUUQ=",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "UVEvelFRKw1RUVFEIFFRUSE=",
+      "out": "QQ/zQQ+Q",
+      "error": "illegal base64 data at input byte 12"
+    },
+    {
+      "input": "K3ovUVE9UVFRVSsKUURRClV6UVFRLwo=",
+      "out": "+z/Q",
+      "error": "illegal base64 data at input byte 5"
+    },
+    {
+      "input": "UVU9USA9UUpRUSE9PVFRIS9R",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "UVE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "UQ0hUXogIVEKDXpKCkR6UVEhK1FVK1E=",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "UVFReiBR",
+      "out": "QQQz",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "USFRUT1KUUQNRC8hUQpRekRRK1ENUUQ=",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "enohUSBKUVFEUVFEUVVRUVEvL0pRUQ1K",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "SlFRUUpRUStRSkRRUVErClFR",
+      "out": "JQQQJQQ+QJDQQQ+Q",
+      "error": "illegal base64 data at input byte 17"
+    },
+    {
+      "input": "UVFRUURRPVE=",
+      "out": "QQQQ",
+      "error": "illegal base64 data at input byte 6"
+    },
+    {
+      "input": "UVFRUVE9USs=",
+      "out": "QQQQ",
+      "error": "illegal base64 data at input byte 5"
+    },
+    {
+      "input": "UStKIFEvUVFRUVFRDVFEVS8gVUQ=",
+      "out": "",
+      "error": "illegal base64 data at input byte 3"
+    },
+    {
+      "input": "US8NUVU9egohUVFVIFEKUVE=",
+      "out": "Q/QU",
+      "error": "illegal base64 data at input byte 5"
+    },
+    {
+      "input": "UQpVRCA9UVFRIFEvUQ1VCg==",
+      "out": "",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "US9RPVFRelE9PSAvUVFRIS9RDUpRUS8=",
+      "out": "Q/Q=",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "ClEgClEhUT0rIQ0gUVFRCgpR",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "RFFRUStRSg0KUVVRelE9",
+      "out": "DQQQ+QJQUQzQ",
+      "error": "illegal base64 data at input byte 14"
+    },
+    {
+      "input": "UStRUVE=",
+      "out": "Q+QQ",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "VVE9DS8NelFRVXpRIFFRIQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 3"
+    },
+    {
+      "input": "IFFRUVFKUVFRIVEvUSFRDVE9",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "VVF6IFFR",
+      "out": "",
+      "error": "illegal base64 data at input byte 3"
+    },
+    {
+      "input": "UVFRSisKUT0vUVFRUVFRL1FRUSAhCg==",
+      "out": "QQQJ",
+      "error": "illegal base64 data at input byte 7"
+    },
+    {
+      "input": "UVFRRFE=",
+      "out": "QQQD",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "US9RSlFRUSBV",
+      "out": "Q/QJ",
+      "error": "illegal base64 data at input byte 7"
+    },
+    {
+      "input": "CiE9UVEKIVEgISsveiBRCitR",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "US8rUVFVUQ==",
+      "out": "Q/+Q",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "UVFRIS9RPS9RSgoKUUo9K1FKelE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 3"
+    },
+    {
+      "input": "PXpVK1ENSiFRUSBRClFRUVE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "VUQrSlFRUXpRUSEvUVFRIFFEIVFR",
+      "out": "UD+JQQQz",
+      "error": "illegal base64 data at input byte 10"
+    },
+    {
+      "input": "USFRUVFRIVF6K1E=",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "IA==",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "ID1RDVEvK1FKUSArIFEK",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "elEKK3o=",
+      "out": "zQ+z"
+    },
+    {
+      "input": "UVE9L1FRUQ1RUQp6L1EKUQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "VQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "UVFRUUp6PQ1RUStEUQ==",
+      "out": "QQQQ",
+      "error": "illegal base64 data at input byte 7"
+    },
+    {
+      "input": "UVFRClErUQ==",
+      "out": "QQQQ",
+      "error": "illegal base64 data at input byte 5"
+    },
+    {
+      "input": "UVEhUVE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "egpKPVFVDStKVVFRUVFRIVFVUVEv",
+      "out": "",
+      "error": "illegal base64 data at input byte 3"
+    },
+    {
+      "input": "VVE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "IQ1R",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "IFFRUUp6IQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "UUpRIVFRUVE9Sko9L1FR",
+      "out": "",
+      "error": "illegal base64 data at input byte 3"
+    },
+    {
+      "input": "L1UhPUQ=",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "UURRUQovUVEN",
+      "out": "QDQQ",
+      "error": "illegal base64 data at input byte 6"
+    },
+    {
+      "input": "UXpVSg==",
+      "out": "QzUJ"
+    },
+    {
+      "input": "SgogUVEvUVEhDVEgUQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "UVFRIVE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 3"
+    },
+    {
+      "input": "DVFRUXpKeg==",
+      "out": "QQQz",
+      "error": "illegal base64 data at input byte 5"
+    },
+    {
+      "input": "UUR6LysKPURRUStRUQ==",
+      "out": "QDz/",
+      "error": "illegal base64 data at input byte 6"
+    },
+    {
+      "input": "IVFRIFFRUQ1RelFVUVF6L1FRDS9RRFFR",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "UQohUVFRLwp6UQpRUVVRVS9RDVEgUUQ=",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "DVFRPSE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 3"
+    },
+    {
+      "input": "K1FRIAoNPVVRei8KUS9KL1FEUVFR",
+      "out": "",
+      "error": "illegal base64 data at input byte 3"
+    },
+    {
+      "input": "UVFRK1FRVVFRUUpRVSs=",
+      "out": "QQQ+QQUQQQJQ",
+      "error": "illegal base64 data at input byte 12"
+    },
+    {
+      "input": "PVENUQpRUVErRHoKUXpVISsvSiBR",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "ekoNLy9RUVFRCg0KDQoNUUo=",
+      "out": "zJ//QQQQ",
+      "error": "illegal base64 data at input byte 15"
+    },
+    {
+      "input": "IFFRUS9K",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "UQpRUSsKPQpERCtRUUpRegpEUVFRSg==",
+      "out": "QQQ+",
+      "error": "illegal base64 data at input byte 6"
+    },
+    {
+      "input": "ICFEUVF6CkQ=",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "VSFRK1FKUXoKUQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "L1E=",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "UVFVIT1RUVFRVUQ=",
+      "out": "",
+      "error": "illegal base64 data at input byte 3"
+    },
+    {
+      "input": "UStRVVFRIA==",
+      "out": "Q+QU",
+      "error": "illegal base64 data at input byte 6"
+    },
+    {
+      "input": "PSBRUVErDVENK1ENUSFVRA==",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "UVFVUSBRIVFRUVFRUQ1R",
+      "out": "QQUQ",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "VVEhUSsKIFE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "RFErClFRUQ==",
+      "out": "DQ+Q",
+      "error": "illegal base64 data at input byte 5"
+    },
+    {
+      "input": "elEvUVFRPVENUVVRDVFRDXpRK1FRPQ==",
+      "out": "zQ/Q",
+      "error": "illegal base64 data at input byte 6"
+    },
+    {
+      "input": "UT1RUVE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "UVFRUS8gVVFRUQpKUXpRSlErLy9RUQ==",
+      "out": "QQQQ",
+      "error": "illegal base64 data at input byte 5"
+    },
+    {
+      "input": "UVFEUVF6RFFKUVFRUVE9UVUhelE=",
+      "out": "QQDQQzDQJQQQ",
+      "error": "illegal base64 data at input byte 14"
+    },
+    {
+      "input": "USAvSlVRDSFRUUo=",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "DVFRIFFRenpRUVFRPVFRDVFRUQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 3"
+    },
+    {
+      "input": "ISF6UStRUVFRIFFRIC89Ky8=",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "eis=",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "Ci96",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "UVVRL1E9RA0KUXpEeg0KUSFRIVVR",
+      "out": "QUQ/",
+      "error": "illegal base64 data at input byte 5"
+    },
+    {
+      "input": "L1ErUVErUVFRelFRCkR6",
+      "out": "/Q+QQ+QQQzQQ",
+      "error": "illegal base64 data at input byte 13"
+    },
+    {
+      "input": "SlFRUVFRUVFRUVFRelFRUS9RUT0=",
+      "out": "JQQQQQQQQQQQzQQQ/QQ="
+    },
+    {
+      "input": "RA==",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "IC8KUSsKK0RRUVFRSlFRVSBEREorKw==",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "UVFVUUogUVFEIFFRClE9K1F6IXovUVF6",
+      "out": "QQUQ",
+      "error": "illegal base64 data at input byte 5"
+    },
+    {
+      "input": "DS89CnpVUSsNIVFRL1FRUXpRUQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "US9RUVFEICE=",
+      "out": "Q/QQ",
+      "error": "illegal base64 data at input byte 6"
+    },
+    {
+      "input": "UT1RUVFRIVEgPSEvUQpRDQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "UUpRSlFRUQ==",
+      "out": "QJQJ",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "UVFRVVE=",
+      "out": "QQQU",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "PSEKUQo9IFEKIVEKIFFKIFE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "PQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "VVVVUVFRUT1RUVFRUVE9UT0=",
+      "out": "UUUQQQQ=",
+      "error": "illegal base64 data at input byte 8"
+    },
+    {
+      "input": "CkpRUQpRUVFRClFRL0ogUQ16DVFR",
+      "out": "JQQQQQQQ",
+      "error": "illegal base64 data at input byte 14"
+    },
+    {
+      "input": "UVFRKz1RUS9RekpVCg==",
+      "out": "QQQ+",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "VURV",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "UVEg",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "UVFRUVFRelFRRHo9PVEhPVVRekQ=",
+      "out": "QQQQQQzQQDw=",
+      "error": "illegal base64 data at input byte 12"
+    },
+    {
+      "input": "USFRUVE9",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "Lw1KVT1RISENPVFR",
+      "out": "/JU=",
+      "error": "illegal base64 data at input byte 5"
+    },
+    {
+      "input": "UVEhVVFRSlENDSFR",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "ClFRVSsK",
+      "out": "QQU+"
+    },
+    {
+      "input": "DS8gUSArUSFRelFRUURRClE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "USBRUVEvIVFRVVENIHpRUQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "elFRIA==",
+      "out": "",
+      "error": "illegal base64 data at input byte 3"
+    },
+    {
+      "input": "KytRPVFRUSEK",
+      "out": "++Q=",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "UVEgVT1RUVEgUXorSj0v",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "K1E9eg1RRFEvUVFRIFFRIVFRK1E=",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "VVFRVT09ekpR",
+      "out": "UQQU",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "ej0gSnpRClErL1VVClE9VQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "PVErUVVRUVFRUVVKUXpRIA==",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "UXpRK1FEL1F6VXo=",
+      "out": "QzQ+QD/Q",
+      "error": "illegal base64 data at input byte 8"
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "IFFEIFEvIEQ=",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "SlEvPVE9UVE=",
+      "out": "JQ8=",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "DVFRRFUKUVFVPQpRUVE=",
+      "out": "QQDUQQU=",
+      "error": "illegal base64 data at input byte 11"
+    },
+    {
+      "input": "USFRUSEKUVFR",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "DUpVIQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 3"
+    },
+    {
+      "input": "RA==",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "VVFRUVFRDT0NUQ==",
+      "out": "UQQQ",
+      "error": "illegal base64 data at input byte 8"
+    },
+    {
+      "input": "UVEvIS8rUStRSgo=",
+      "out": "",
+      "error": "illegal base64 data at input byte 3"
+    },
+    {
+      "input": "Cj0vUT0gK1FKSgpRK0pEUQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "ClVEPVENUVFRUSFRVSFRISt6UVFV",
+      "out": "",
+      "error": "illegal base64 data at input byte 3"
+    },
+    {
+      "input": "egpRRCFR",
+      "out": "",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "USFRUVUvelFRUURRUVE9ClEKUVFRUQ1R",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "UVEKKw0NUVFRUVFRDVFRLys=",
+      "out": "QQ+QQQQQQQQ/",
+      "error": "illegal base64 data at input byte 16"
+    },
+    {
+      "input": "UQ1RUQ0=",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "UVEhUT1EIVE9UVFRekRRDXpEK0RRUXog",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "K1FRCgpRClFRVVErUVErUVE=",
+      "out": "+QQQQQUQ+QQ+",
+      "error": "illegal base64 data at input byte 15"
+    },
+    {
+      "input": "IT0KUVUgCnpRSgpRSiE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "RERRUXp6KyBRDVFRVQ0KK1EvLy9RKw==",
+      "out": "DDQQ",
+      "error": "illegal base64 data at input byte 7"
+    },
+    {
+      "input": "US9RRFFKDSEgClUNPVFRUVENIA==",
+      "out": "Q/QD",
+      "error": "illegal base64 data at input byte 7"
+    },
+    {
+      "input": "UVFRUSENKy8KUQo=",
+      "out": "QQQQ",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "UVFRUVFVUQ==",
+      "out": "QQQQ",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "UUohUURRKw1RUVEKPVE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "IT1RVVFVRCBKK0ohRA==",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "ClFRUVFVUQ==",
+      "out": "QQQQ",
+      "error": "illegal base64 data at input byte 5"
+    },
+    {
+      "input": "US9RVVFRUVU=",
+      "out": "Q/QUQQQU"
+    },
+    {
+      "input": "KwpKUVUN",
+      "out": "+JQU"
+    },
+    {
+      "input": "UQpRUVVKIQ==",
+      "out": "QQQU",
+      "error": "illegal base64 data at input byte 6"
+    },
+    {
+      "input": "RFFRRFE9RFE=",
+      "out": "DQQD",
+      "error": "illegal base64 data at input byte 5"
+    },
+    {
+      "input": "UVFRPUQhRFEKVVFRUT0KVXpRKw==",
+      "out": "QQQ=",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "VSEv",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "Lw==",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "IT0=",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "UVFRIHpRSiFRVQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 3"
+    },
+    {
+      "input": "UVEgUQpEUSt6IFE9SisvRFFVIS9RRA==",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "UQ1RSiE9UVEKUUo=",
+      "out": "",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "CkQNelFRVVFKREoNUQpVUSBRVVFRelE=",
+      "out": "DzQQUQJDJQUQ",
+      "error": "illegal base64 data at input byte 16"
+    },
+    {
+      "input": "UXohSlFEUVFEUVEg",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "UVEg",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "K3o9USFVUSsgPQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "PSFVIQ1RUVFRIFFRIVENIA==",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "L0RRDQpEIHohIFENL0QrUVFRIFE=",
+      "out": "/DQD",
+      "error": "illegal base64 data at input byte 6"
+    },
+    {
+      "input": "CkRE",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "L1FESj1EIStRKyBRIFFRUQo=",
+      "out": "/QDJ",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "UVEgUSFVPSBRUVFK",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "UVEgClFRUVFVUQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "UVFKUT0rUVFRIQ1KUS8gUQpRelE=",
+      "out": "QQJQ",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "K0RRL1FRUQ==",
+      "out": "+DQ/",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "elEhUT0hIVFEUSBEVVE9eiBRUUoKUVFR",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "UUo9UVUNUVFRSitRelFRCg==",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "IFFEUQp6UQ1EL1FRUQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "PUovIFEKCgpRUUQvUVFRUVFRUVFEKyFE",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "IStRUURRUSFKUVEgICBRLwpRUXo=",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "UVE9PVFRUT1RUQ==",
+      "out": "QQ==",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "UVE9UVEKSlE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "ID1RSg1VPVENPQ0hDVE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "IVFRUSA=",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "UQogDVFVVVFRDVFVUStRRA==",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "SkpRIFUNUVFRUQpRUSEhUVE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 3"
+    },
+    {
+      "input": "SlFRIFFRIFF6PVE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 3"
+    },
+    {
+      "input": "IFUKUVFVUVE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "UVE9IVFRKyEgIFUgUQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "IVFRVXpRUVEKIVFRUVVR",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "UVVRUVFR",
+      "out": "QUQQ",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "CisgVQp6USBRIVFRUSBRUQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "K1F6UURRSnpR",
+      "out": "+QzQDQJz",
+      "error": "illegal base64 data at input byte 8"
+    },
+    {
+      "input": "PVFVDS9RUVFRUQohUS9RUUpVIQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "eiEr",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "K1FR",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "UVEhUVEKUURRUT0vUT0hUVVRIFEvPS8N",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "VVUhUSsvUVFVRFFRUSF6UQ09L0o=",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "UVFRUS8vUVF6US8KUXovCitRUVFK",
+      "out": "QQQQ//QQzQ/Qz/+Q",
+      "error": "illegal base64 data at input byte 18"
+    },
+    {
+      "input": "DXp6UVFEUSFRUS9RClEgUQ==",
+      "out": "zzQQ",
+      "error": "illegal base64 data at input byte 7"
+    },
+    {
+      "input": "PVFRUQp6UVFRUQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "L0pRUStRCg==",
+      "out": "/JQQ",
+      "error": "illegal base64 data at input byte 5"
+    },
+    {
+      "input": "UVFRelFR",
+      "out": "QQQz",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "RFErUVFEL0pRUUogUURR",
+      "out": "DQ+QQD/J",
+      "error": "illegal base64 data at input byte 11"
+    },
+    {
+      "input": "ej1RUVUrUVEK",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "ClE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "UQ1RIFVRVStRClFRVVEN",
+      "out": "",
+      "error": "illegal base64 data at input byte 3"
+    },
+    {
+      "input": "UVFRUSFEPVFEVSA=",
+      "out": "QQQQ",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "SlFEPURRUVEgPSBRRFEvCiA9UQ==",
+      "out": "JQA=",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "UXoKUXohUVUrDSENUVFRUVFR",
+      "out": "QzQz",
+      "error": "illegal base64 data at input byte 5"
+    },
+    {
+      "input": "IFFERFErVVUvUVErVQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "DVE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "IVF6eiArLytVUUoK",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "IQ1RUVVRIFFRK1FRUQpRKyFVUQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "UVFR",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "PUQ=",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "PVENUQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "PQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "UVFRPT1RUVF6UVFRVVEhSg16UVEKUQ==",
+      "out": "QQQ=",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "VVENUSAhVUpRPS8KUUpRRFFRPVE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "UVFVUVEgeg1RCitRelF6USE=",
+      "out": "QQUQ",
+      "error": "illegal base64 data at input byte 5"
+    },
+    {
+      "input": "PVErRFFKUXpRClE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "KwpRUUQ=",
+      "out": "+QQD"
+    },
+    {
+      "input": "UVFRUUoK",
+      "out": "QQQQ",
+      "error": "illegal base64 data at input byte 5"
+    },
+    {
+      "input": "UVFKUSFRUUpRUS9KUVVRSlVRUQ==",
+      "out": "QQJQ",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "RFFRVQpRUVFVUVFKUVFRUXohUQ==",
+      "out": "DQQUQQQUQQJQQQQz",
+      "error": "illegal base64 data at input byte 17"
+    },
+    {
+      "input": "VXogUUpRUStRUT1RUXpVUQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "Cg1RK3pRUVFKIURRUQ1RUVF6",
+      "out": "Q+zQ",
+      "error": "illegal base64 data at input byte 9"
+    },
+    {
+      "input": "UURRIFVReg0rKw==",
+      "out": "",
+      "error": "illegal base64 data at input byte 3"
+    },
+    {
+      "input": "egp6UQ1RUT1EPStRRFFRUQpVUUohUQ==",
+      "out": "zzQQ",
+      "error": "illegal base64 data at input byte 7"
+    },
+    {
+      "input": "UVEvIVFRUVFR",
+      "out": "",
+      "error": "illegal base64 data at input byte 3"
+    },
+    {
+      "input": "L1F6IVFRDUpRUUpRPS8=",
+      "out": "",
+      "error": "illegal base64 data at input byte 3"
+    },
+    {
+      "input": "RFEgPUpRUStRUVEvUVE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "SlF6UVE=",
+      "out": "JQzQ",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "UQoNUVVRUVVRVVEKUVF6Sg==",
+      "out": "QQUQQUQUQQQz",
+      "error": "illegal base64 data at input byte 15"
+    },
+    {
+      "input": "USBRUVEKUVFEUS9KRERRUQpR",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "PVFRUQovVSBRSiFRIC9RLw==",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "RCAhelFRLw0=",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "UVENL3or",
+      "out": "QQ/z",
+      "error": "illegal base64 data at input byte 5"
+    },
+    {
+      "input": "UVFVIEpRUURRUS9RUVE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 3"
+    },
+    {
+      "input": "UUQhL1FRL1FRUS8r",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "USs=",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "SlEvRFFRUVFRDT1EUSFRCi9RRCBRUSFK",
+      "out": "JQ/DQQQQ",
+      "error": "illegal base64 data at input byte 10"
+    },
+    {
+      "input": "UVFRRFFRIVE=",
+      "out": "QQQD",
+      "error": "illegal base64 data at input byte 6"
+    },
+    {
+      "input": "SiBRUSFEClFRUSFRUT16VSFRUUQ=",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "IUpRRFFRPVFRUSBRUVE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "UStRIFEKUVFRDXo9USEgUQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 3"
+    },
+    {
+      "input": "UVFRCkQ9UVFRL1FEK1Er",
+      "out": "QQQD",
+      "error": "illegal base64 data at input byte 5"
+    },
+    {
+      "input": "UVFVUVFRUXovUVEhDVErUVFRUSFRUVEN",
+      "out": "QQUQQQQz",
+      "error": "illegal base64 data at input byte 11"
+    },
+    {
+      "input": "IFFE",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "LyBRL1UgUS89USBRIHpVUVE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "KytRPUpRIVFECj1EUQ==",
+      "out": "++Q=",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "ICBRUSFRekRRUVErK1FRUSs=",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "UStECj09Sg==",
+      "out": "Q+A=",
+      "error": "illegal base64 data at input byte 5"
+    },
+    {
+      "input": "UVFKVXo=",
+      "out": "QQJU",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "PVENL1EhUVF6",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "US9ReiEgPVEv",
+      "out": "Q/Qz",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "L1UKIVE9UVE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 3"
+    },
+    {
+      "input": "KyBRUVEvUT1RIVFRUUQgDQ0=",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "IUQgRFENSi9RK1UNRD1RUQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "DUpRL1ErUT1RKy9RSgpRL1E=",
+      "out": "JQ/Q",
+      "error": "illegal base64 data at input byte 7"
+    },
+    {
+      "input": "IVVRSiA9UVEgRCtR",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "UVFRUVFRK1F6elEvRFEvSlE=",
+      "out": "QQQQQQ+QzzQ/DQ/J",
+      "error": "illegal base64 data at input byte 16"
+    },
+    {
+      "input": "UQo9UQpKUS9RVXpRDVFVUQpRUVVRDQ0=",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "eg16L1F6ClFR",
+      "out": "zz/Q",
+      "error": "illegal base64 data at input byte 6"
+    },
+    {
+      "input": "IUQvUVFRUVENUVFR",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "USBVUStEIHpKUVFVUUpRVVE9UUQ=",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "UUovUT1RUQ0rUStRRFFRLyBVISErUStV",
+      "out": "QJ/Q",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "ClENIS8=",
+      "out": "",
+      "error": "illegal base64 data at input byte 3"
+    },
+    {
+      "input": "UXpRUSBVLysrK0RRSlEhUSErUStR",
+      "out": "QzQQ",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "USsvDVF6RFFRUS9RClE9ISFRUQ==",
+      "out": "Q+/QzDQQQ/QQ",
+      "error": "illegal base64 data at input byte 14"
+    },
+    {
+      "input": "Lw0=",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "UVFEIFVRekRRRERRUUQ=",
+      "out": "",
+      "error": "illegal base64 data at input byte 3"
+    },
+    {
+      "input": "IVE9VVFVPVFRUSFRUQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "UVFRUVErPVFRUVEKUUpKIVFRPSBRID0=",
+      "out": "QQQQ",
+      "error": "illegal base64 data at input byte 6"
+    },
+    {
+      "input": "UVFRIVFRKyFRREQrClE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 3"
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "UVFRIVE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 3"
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "UVF6UVE9VVFVUQ1R",
+      "out": "QQzQ",
+      "error": "illegal base64 data at input byte 5"
+    },
+    {
+      "input": "PXpRUS8rISBRICsgVS8vIVFRUVE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "UT1KDQpKICFRUVFRUQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "Ly9VUSA9",
+      "out": "//UQ",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "RFE9ClE9PVFRUSEh",
+      "out": "",
+      "error": "illegal base64 data at input byte 3"
+    },
+    {
+      "input": "US9RPUQ9K1EgUSFRIA==",
+      "out": "Q/Q=",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "UUpRelEhUVErL1E=",
+      "out": "QJQz",
+      "error": "illegal base64 data at input byte 5"
+    },
+    {
+      "input": "Lw09UVFEUSFRIQohLw==",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "RCtRUUpR",
+      "out": "D+QQ",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "USFVSlFRK1FRK0RRIERRUVEK",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "UXpRSitRUXo=",
+      "out": "QzQJ+QQz"
+    },
+    {
+      "input": "UVFRSlFVUVFR",
+      "out": "QQQJQUQQ",
+      "error": "illegal base64 data at input byte 8"
+    },
+    {
+      "input": "UURRUQoKIA==",
+      "out": "QDQQ",
+      "error": "illegal base64 data at input byte 6"
+    },
+    {
+      "input": "CitEeiBRUVEKUQ1VDVFRUVU=",
+      "out": "",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "UVEvUVFRUStRRFV6US9V",
+      "out": "QQ/QQQQ+QDUz",
+      "error": "illegal base64 data at input byte 12"
+    },
+    {
+      "input": "UVVReiFRej1RUXpRUQ==",
+      "out": "QUQz",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "ClFRICBRUSE9VVVKSiFRK1ENUVFRUT1R",
+      "out": "",
+      "error": "illegal base64 data at input byte 3"
+    },
+    {
+      "input": "USAKSiFVUVEvDXo=",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "IVEvVVFRIS9RUURRDVFR",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "UStRUS8rUVF6USB6UUor",
+      "out": "Q+QQ/+QQ",
+      "error": "illegal base64 data at input byte 10"
+    },
+    {
+      "input": "UStKVQ1RUVFRVUpRICtR",
+      "out": "Q+JUQQQQ",
+      "error": "illegal base64 data at input byte 12"
+    },
+    {
+      "input": "US9RUVEvUVFRUVVKUVEKUVE9PXo=",
+      "out": "Q/QQQ/QQQQUJQQQQ",
+      "error": "illegal base64 data at input byte 17"
+    },
+    {
+      "input": "KyB6DSF6UStRUVFRUVFRL1E=",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "UVE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "Kw==",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "USEvUQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "USFRDVFRUVFRUS9Vei8h",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "UStRClF6UVUhUVE=",
+      "out": "Q+QQ",
+      "error": "illegal base64 data at input byte 8"
+    },
+    {
+      "input": "UQ1RUQ16UQ==",
+      "out": "QQQz",
+      "error": "illegal base64 data at input byte 6"
+    },
+    {
+      "input": "UQ1ERAohUVENIVVRVVFRDQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 5"
+    },
+    {
+      "input": "PUQ9Sno=",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "UQpKPVENUSErUXpRSg1VUSE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 3"
+    },
+    {
+      "input": "IXorUVU=",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "US9RUSFRUVFKeg1RUUo9USA=",
+      "out": "Q/QQ",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "UUpRUSsgUUpEUVFRUSs=",
+      "out": "QJQQ",
+      "error": "illegal base64 data at input byte 5"
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "PVFRVVFRUSFRUVVRRHpR",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "DSEgL1FRUVFR",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "UQ1RL1E9ISt6US9EISBRUT0=",
+      "out": "QQ/Q",
+      "error": "illegal base64 data at input byte 5"
+    },
+    {
+      "input": "K0pRUSBRSi8NUVErUVEhLwo=",
+      "out": "+JQQ",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "UVENUQ1RDQ==",
+      "out": "QQQQ"
+    },
+    {
+      "input": "UQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "L1FRUUpEK1FESitRVQ==",
+      "out": "/QQQJD+QDJ+Q",
+      "error": "illegal base64 data at input byte 12"
+    },
+    {
+      "input": "IFF6SlFRKyBRK1E=",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "UURKUSFRUVFR",
+      "out": "QDJQ",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "PVFRUVFVCkpRSiBRDSFRIT0=",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "UQoNCj1RUVFRIFEvUXo9UVFRUVFR",
+      "out": "",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "UVFVUS9RUS9EUVVRIVFRekpRVS8=",
+      "out": "QQUQ/QQ/DQUQ",
+      "error": "illegal base64 data at input byte 12"
+    },
+    {
+      "input": "UVFVUVFEVVFR",
+      "out": "QQUQQDUQ",
+      "error": "illegal base64 data at input byte 8"
+    },
+    {
+      "input": "VQ0rSlEgICArPS8hClEKVVFKDQ==",
+      "out": "U+JQ",
+      "error": "illegal base64 data at input byte 5"
+    },
+    {
+      "input": "DSt6RA==",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "UVFRUVEvL3p6elFKUQ==",
+      "out": "QQQQQ//zzzQJ",
+      "error": "illegal base64 data at input byte 12"
+    },
+    {
+      "input": "SlFRUVVRUQ1RKyFRSj1RPVErIXp6UQ==",
+      "out": "JQQQUQQQ",
+      "error": "illegal base64 data at input byte 10"
+    },
+    {
+      "input": "UVFRUQ1RDVEKVSEvUVE=",
+      "out": "QQQQ",
+      "error": "illegal base64 data at input byte 10"
+    },
+    {
+      "input": "eiBVUVFRPVFRUURRUUovUVFKK1FK",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "Ky8KIUpRRCsNUXpRUQ1R",
+      "out": "",
+      "error": "illegal base64 data at input byte 3"
+    },
+    {
+      "input": "IVErUSBRUVEhUSFRUSFRUVFRRC8gIA==",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "ICA=",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "UVEvIXoKUXoNIQ1VVVEKUStRRCFRSlU=",
+      "out": "",
+      "error": "illegal base64 data at input byte 3"
+    },
+    {
+      "input": "DSBRIFEvUVVKVQ1RIC8=",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "elFRRA16UT1EUVFRIT0=",
+      "out": "zQQD",
+      "error": "illegal base64 data at input byte 7"
+    },
+    {
+      "input": "DT1KeiFVIFEhUUp6UQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "UVFRUXo9US9VUVFRUT1RUQ==",
+      "out": "QQQQ",
+      "error": "illegal base64 data at input byte 5"
+    },
+    {
+      "input": "IA1RRFFRK0pRUSBRSlFR",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "ISFR",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "IFFEPVFRUVFRSlE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "UURRSlENLyEhVQ1RUQ==",
+      "out": "QDQJ",
+      "error": "illegal base64 data at input byte 7"
+    },
+    {
+      "input": "UVFRLz0NSiEvUT1RUVF6DVFRUVFRUQ==",
+      "out": "QQQ/",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "UVUrUVErUQ==",
+      "out": "QU+Q",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "UQpRIVVRUVEgUXpRUSsgUVFRIVE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 3"
+    },
+    {
+      "input": "RFFRUQ==",
+      "out": "DQQQ"
+    },
+    {
+      "input": "RD0rUVFKRApRLz0KelEKClEvUStRLyA=",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "IERRClFEDVFE",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "UURRClVRPURRUVFRUStRUVUhRA==",
+      "out": "QDQU",
+      "error": "illegal base64 data at input byte 6"
+    },
+    {
+      "input": "IFENL1U9UVEhUQoKIFFRRFFEKytEDQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "UQ1RRFU=",
+      "out": "QQDU"
+    },
+    {
+      "input": "SlFRUSFRK1ENRAogUVFRClEvUVFRUVFR",
+      "out": "JQQQ",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "UQ1RCiFKelFR",
+      "out": "",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "IAoKIVFRDQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "Lw1RIApRKwo9DXpVUVE9UVVR",
+      "out": "",
+      "error": "illegal base64 data at input byte 3"
+    },
+    {
+      "input": "UT1RUVErCj1R",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "UVFRUSAKK1EhUSBRL1VVUQ==",
+      "out": "QQQQ",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "egoNRFFRPURVUStRRA0hPS8hIQ==",
+      "out": "zDQQ",
+      "error": "illegal base64 data at input byte 6"
+    },
+    {
+      "input": "USBRUVFRPVVRUQpKIHpRUQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "UStRelEgPXpRPVUvUVENUVFRUVFRISs=",
+      "out": "Q+Qz",
+      "error": "illegal base64 data at input byte 5"
+    },
+    {
+      "input": "PQpRUQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "elFRUUpRUVEvUQpRISFEKw0rUVVRUVFV",
+      "out": "zQQQJQQQ",
+      "error": "illegal base64 data at input byte 12"
+    },
+    {
+      "input": "UVE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "UXor",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "RD1RDQpERCFKDUpVUT1RCiBKIUpRUSsK",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "DSsK",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "IC9RIHpRUQ1RelFVCi9V",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "VUREUVFRUQ0KUVFKUVFRSlFRL1FV",
+      "out": "UDDQQQQQQJQQQJQQ",
+      "error": "illegal base64 data at input byte 18"
+    },
+    {
+      "input": "UVFRRFEhUXpKK1Eh",
+      "out": "QQQD",
+      "error": "illegal base64 data at input byte 5"
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "USANUQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "DURRUUpR",
+      "out": "DQQJ",
+      "error": "illegal base64 data at input byte 5"
+    },
+    {
+      "input": "elFRekRRICsvUVENLz0=",
+      "out": "zQQz",
+      "error": "illegal base64 data at input byte 6"
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "VUQr",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "VUQgVQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "Kw0KUS9RVS8vVUREUVFRUVFVDVE9eg==",
+      "out": "+Q/QU//UDDQQQQQU",
+      "error": "illegal base64 data at input byte 20"
+    },
+    {
+      "input": "USAgUVFRUSsNUVENSgpRClFRPUohIVFR",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "VUpRekohIVFEUVErLw==",
+      "out": "UJQz",
+      "error": "illegal base64 data at input byte 5"
+    },
+    {
+      "input": "UT1RUVFRVXo9ISBRUQ1RLyFRVT1RSg0=",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "USFRUVE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "UVFRIVE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 3"
+    },
+    {
+      "input": "UVFRUVFEL1EgKyBEelV6DVFRSkRRUQpV",
+      "out": "QQQQQD/Q",
+      "error": "illegal base64 data at input byte 8"
+    },
+    {
+      "input": "IERRDSA9K1FRICBEUVEv",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "IVFRRAogIFFR",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "PVFRUS89DQoNIVFKUVEhUXo=",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "UXoNUXpKUQ==",
+      "out": "QzQz",
+      "error": "illegal base64 data at input byte 5"
+    },
+    {
+      "input": "UVFRUQpEUVFRUVEgUURE",
+      "out": "QQQQDQQQ",
+      "error": "illegal base64 data at input byte 11"
+    },
+    {
+      "input": "UVE9SgpVUStVPQovIA0rL0p6Ly8rPXo=",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "DSFRUSErVVFKUVFRSlFRDVErUVE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "UQo=",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "RFVRUQ==",
+      "out": "DUQQ"
+    },
+    {
+      "input": "RCsNUVV6SlFRUVE9UVFE",
+      "out": "D+QUzJQQ",
+      "error": "illegal base64 data at input byte 11"
+    },
+    {
+      "input": "UVFRUQpEej1RelErCg==",
+      "out": "QQQQ",
+      "error": "illegal base64 data at input byte 7"
+    },
+    {
+      "input": "IXpRCj1VUVE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "IFFVL1E9UVFRUVFKUURE",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "UVEhUS9Eej1RUQ1R",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "elE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "UVENUVFRSiB6USFRVQ==",
+      "out": "QQQQ",
+      "error": "illegal base64 data at input byte 7"
+    },
+    {
+      "input": "IERRUUQrUVFRUUQvUVVRDQo=",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "SiFKei9RK1EKPVF6UVE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "DVV6L1FRUSEvUVFRUT1KUUQ=",
+      "out": "Uz/Q",
+      "error": "illegal base64 data at input byte 7"
+    },
+    {
+      "input": "PVE9UVFR",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "IXpR",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "K1E=",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "UVFRLz0vUVErUVFRSko9UUpKUVFRUSs=",
+      "out": "QQQ/",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "RFFRREoNUVVVVURRUVFRSj0r",
+      "out": "DQQDJQUUUDQQQQI=",
+      "error": "illegal base64 data at input byte 17"
+    },
+    {
+      "input": "ClFRUQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "SiE9K0RV",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "IA==",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "egpRVVE=",
+      "out": "zQUQ"
+    },
+    {
+      "input": "L1FKCis=",
+      "out": "/QJ+"
+    },
+    {
+      "input": "Si9RUURRSlE9UVFRUUpRIEpRUVErK1FR",
+      "out": "J/QQDQJQ",
+      "error": "illegal base64 data at input byte 8"
+    },
+    {
+      "input": "Si8KUSsvUXogUVFEUQ0hUSBRClFR",
+      "out": "J/Q+",
+      "error": "illegal base64 data at input byte 8"
+    },
+    {
+      "input": "UUpRUSBRUUpRUVFRUQ==",
+      "out": "QJQQ",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "IVErUVVKUVFRUURRUSBRISA=",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "UVEhUXo9K1EgUQorUVE9CiFRUVF6UT1R",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "K1EhCiEvUVFK",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "LyFRVUpRUVErUUpRDVVRVVVRCg==",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "IVE9UQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "K1FRUXo9L1FRUSAhUQ==",
+      "out": "+QQQ",
+      "error": "illegal base64 data at input byte 5"
+    },
+    {
+      "input": "USFRIVFKUSE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "Ky8gUVENUS9R",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "US9RDVEKCi9RUURRK1VRUVFRUVEh",
+      "out": "Q/QQ/QQDQ+UQQQQQ",
+      "error": "illegal base64 data at input byte 20"
+    },
+    {
+      "input": "RFVRRCsKDSFRDSFRSlVEUQ==",
+      "out": "DUQD",
+      "error": "illegal base64 data at input byte 7"
+    },
+    {
+      "input": "UVFRUSFRRFE=",
+      "out": "QQQQ",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "UQp6UVFRUXpKeg0rUVFRKw0=",
+      "out": "QzQQQQzJz+QQ",
+      "error": "illegal base64 data at input byte 15"
+    },
+    {
+      "input": "VSFRUVF6USBKej0g",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "UVE9UVFKUVUgIT1VIA==",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "K3pRKytR",
+      "out": "+zQ+",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "IS89UQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "VXpRLy9RUQ16PVFVIFFRUQo9UQ==",
+      "out": "UzQ//QQz",
+      "error": "illegal base64 data at input byte 9"
+    },
+    {
+      "input": "USFRIQ1RUVFKCiA9DVErUVE9",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "ekRRUVE9UQ==",
+      "out": "zDQQ",
+      "error": "illegal base64 data at input byte 5"
+    },
+    {
+      "input": "VURRUVFRenpRUSsgUVFRPVFRUVEKUVEg",
+      "out": "UDQQQQzz",
+      "error": "illegal base64 data at input byte 11"
+    },
+    {
+      "input": "UQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "UT1RSg==",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "elENSlFEIFFRDVUr",
+      "out": "zQJQ",
+      "error": "illegal base64 data at input byte 6"
+    },
+    {
+      "input": "RA==",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "elFRIFErelFRSiE9UVFRUT0rKys=",
+      "out": "",
+      "error": "illegal base64 data at input byte 3"
+    },
+    {
+      "input": "ej1RL1FRekRRKz1VISFKUVFRIS8vUQ0=",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "ekpRUVFRClFRPVEvPSAgIS8=",
+      "out": "zJQQQQQQ",
+      "error": "illegal base64 data at input byte 9"
+    },
+    {
+      "input": "UT16UVEvK0pRelFRVVE9UVFVVVE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "UXpRRFFRUUpRUT0NPT1R",
+      "out": "QzQDQQQJQQ==",
+      "error": "illegal base64 data at input byte 13"
+    },
+    {
+      "input": "PVENUXpRUVErUUpRUQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "UVF6KytRISBRDSBRPVE=",
+      "out": "QQz+",
+      "error": "illegal base64 data at input byte 6"
+    },
+    {
+      "input": "L1ENelF6ClFRUSE9VVFESlEhCj1RVQ==",
+      "out": "/QzQzQQQ",
+      "error": "illegal base64 data at input byte 10"
+    },
+    {
+      "input": "K0QNDVFRUSF6UVE=",
+      "out": "+DQQ",
+      "error": "illegal base64 data at input byte 7"
+    },
+    {
+      "input": "ICFRUQpRUVEhL3pRUUQ9",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "VVFRUQ==",
+      "out": "UQQQ"
+    },
+    {
+      "input": "UVE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "USBRClEKUVFRCg==",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "UStRIC8NDQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 3"
+    },
+    {
+      "input": "UXpRUUpRUVEhSiENIVFRUUQ=",
+      "out": "QzQQJQQQ",
+      "error": "illegal base64 data at input byte 8"
+    },
+    {
+      "input": "PQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "PVFRUVFVSgo9ClF6UVENDXohVVFRLw==",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "UT1RUQ1ERFFRIUp6UUQh",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "K1EKUVFVUUorL1FRRFEvUVEvUQ==",
+      "out": "+QQQUQJ+/QQDQ/QQ",
+      "error": "illegal base64 data at input byte 17"
+    },
+    {
+      "input": "PVFRUUovUUpRL0RRUVFRUStEUVFR",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "DVFEUXpEICtRej16UUQ=",
+      "out": "QDQz",
+      "error": "illegal base64 data at input byte 6"
+    },
+    {
+      "input": "UUohClErIVFRVQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "PVEvUVFRVVE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "UQ16VUREUVFRUSsrK1ENL1FEUStRKw==",
+      "out": "QzUDDQQQQ+++Q/QDQ+Q+"
+    },
+    {
+      "input": "UQ1RUQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "K1E=",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "UVErUQpRPSFRUS8hUVFRKyFRUVErIA==",
+      "out": "QQ+Q",
+      "error": "illegal base64 data at input byte 6"
+    },
+    {
+      "input": "RCBRICE9ClFRUSsNL1FRIXp6UVE9UVE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "UQovSg0NUSBVCko=",
+      "out": "Q/JQ",
+      "error": "illegal base64 data at input byte 7"
+    },
+    {
+      "input": "DXoKUQpRUQ0relFRIT0=",
+      "out": "zQQQ+zQQ",
+      "error": "illegal base64 data at input byte 12"
+    },
+    {
+      "input": "UVFRICtRICEgK1FEUSt6UQpKelE9",
+      "out": "",
+      "error": "illegal base64 data at input byte 3"
+    },
+    {
+      "input": "LwpR",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "UT0=",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "egpRPQ1VUVF6UVEvIFFRDT1EUQoNeg0h",
+      "out": "",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "UUpRUS9VelFRUVEgClFRUVFV",
+      "out": "QJQQ/UzQ",
+      "error": "illegal base64 data at input byte 11"
+    },
+    {
+      "input": "SitEUVFKUXoKUVFKSlFRUT1RUSsr",
+      "out": "J+DQQJQzQQJJQQQ=",
+      "error": "illegal base64 data at input byte 17"
+    },
+    {
+      "input": "UXovClEhK1UNUSB6UVFR",
+      "out": "Qz/Q",
+      "error": "illegal base64 data at input byte 5"
+    },
+    {
+      "input": "DVFKIVFRLworUT1RUQ09UT0NUXovPVFK",
+      "out": "",
+      "error": "illegal base64 data at input byte 3"
+    },
+    {
+      "input": "UVFVUVENClEvUXo=",
+      "out": "QQUQQQ/Q",
+      "error": "illegal base64 data at input byte 10"
+    },
+    {
+      "input": "UXpRIHogUVENIA==",
+      "out": "",
+      "error": "illegal base64 data at input byte 3"
+    },
+    {
+      "input": "KytRIA1RClErUVFRCj0gUXpRLw1R",
+      "out": "",
+      "error": "illegal base64 data at input byte 3"
+    },
+    {
+      "input": "UVFECi9RUQ0=",
+      "out": "QQD/",
+      "error": "illegal base64 data at input byte 6"
+    },
+    {
+      "input": "USAKUVEKUVFRUVFRSlFRK1E9UUQ9Sg0=",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "Ly9RUVFEUStVUVUKIFFRSg==",
+      "out": "//QQQDQ+",
+      "error": "illegal base64 data at input byte 12"
+    },
+    {
+      "input": "SlEvIQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 3"
+    },
+    {
+      "input": "elENRFFKUVEhUUQ=",
+      "out": "zQDQ",
+      "error": "illegal base64 data at input byte 8"
+    },
+    {
+      "input": "UXpRUUoKPURRUQohK0ogDVFK",
+      "out": "QzQQ",
+      "error": "illegal base64 data at input byte 6"
+    },
+    {
+      "input": "SkQ9USsKUVFRUVFRUVE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "UVFR",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "Lw1RUVFEUQohUQpRUVFRDVErKw==",
+      "out": "/QQQ",
+      "error": "illegal base64 data at input byte 8"
+    },
+    {
+      "input": "L3o=",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "USFRLwpRUSshUVVRUVFRRA==",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "IFFRUVFRUVFRIVU=",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "K1EhRFF6RC8NDQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "UVFRLyFRUVFEUUQ=",
+      "out": "QQQ/",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "ICAvUQpRIVFRUT1RUT0KLytRUVEhL0Q=",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "USs=",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "Lw0=",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "UVE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "UVFRLy8hUVE9eiE9UQ==",
+      "out": "QQQ/",
+      "error": "illegal base64 data at input byte 5"
+    },
+    {
+      "input": "UQ0gUSsrDQoh",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "UXpVRD16UVFRUVFESlErID0rRCAgIA==",
+      "out": "QzUD",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "IC9RUQ0KK1FR",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "enovCkR6IVUvPVFRIVFRPURKUStR",
+      "out": "zz/D",
+      "error": "illegal base64 data at input byte 6"
+    },
+    {
+      "input": "L1VKL1FVUS89",
+      "out": "/UJ/QUQ/",
+      "error": "illegal base64 data at input byte 8"
+    },
+    {
+      "input": "PVFR",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "K0RRKy89USBRRCtR",
+      "out": "+DQ+",
+      "error": "illegal base64 data at input byte 5"
+    },
+    {
+      "input": "elErSlFRelFRUUQ9USFRUVFRUQo=",
+      "out": "zQ+JQQzQQQA=",
+      "error": "illegal base64 data at input byte 12"
+    },
+    {
+      "input": "UUo9LwpKUVFKUVFRIFVRIFFR",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "ClEKDQpRIS9RRFVVUVFKVVEhUXpRL1E=",
+      "out": "",
+      "error": "illegal base64 data at input byte 6"
+    },
+    {
+      "input": "SlEKUVEgIFFRUUoveiFRUVFR",
+      "out": "JQQQ",
+      "error": "illegal base64 data at input byte 5"
+    },
+    {
+      "input": "SiEhSi9VUVFRUUohK1EKUVFRUQpRCg==",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "eg1RPSAKUS8hUQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 3"
+    },
+    {
+      "input": "L1F6DVEvREogUVFEKyFEUVE=",
+      "out": "/QzQ",
+      "error": "illegal base64 data at input byte 8"
+    },
+    {
+      "input": "UUoKISBRUVFVUVVKUUQgUQo=",
+      "out": "",
+      "error": "illegal base64 data at input byte 3"
+    },
+    {
+      "input": "UVEvIUogPSErUVFVUVFRUVENUSE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 3"
+    },
+    {
+      "input": "Lz0gUVFRUUQ9UVFRICtRIVEgIVU=",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "UUpRUQ0gUSFVUVFRUUpRID1R",
+      "out": "QJQQ",
+      "error": "illegal base64 data at input byte 5"
+    },
+    {
+      "input": "ekoNUQogPVE9IQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 5"
+    },
+    {
+      "input": "K1FRUVEKUVUgRFFRSkRRRFFR",
+      "out": "+QQQ",
+      "error": "illegal base64 data at input byte 8"
+    },
+    {
+      "input": "UQog",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "ISFRelFRUUQ=",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "Cg==",
+      "out": ""
+    },
+    {
+      "input": "UT1RelEKLyBEelEvSitRUQ1EUSFRREQ=",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "CkRRCkRRIFFKRAo9UUQKUVErUQ09PStR",
+      "out": "DQDQ",
+      "error": "illegal base64 data at input byte 6"
+    },
+    {
+      "input": "K1E9Kw==",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "ClFKSi9RUSANUS9R",
+      "out": "QJJ/",
+      "error": "illegal base64 data at input byte 7"
+    },
+    {
+      "input": "UQp6PVFRUUohUT1RUQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 3"
+    },
+    {
+      "input": "UVF6USEN",
+      "out": "QQzQ",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "RFFRUVEvPQo=",
+      "out": "DQQQ",
+      "error": "illegal base64 data at input byte 8"
+    },
+    {
+      "input": "DVEgVSFRUVE9IVF6UXoheg1RPSArPVE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "UQ1RUVFRIFFVUVFR",
+      "out": "QQQQ",
+      "error": "illegal base64 data at input byte 6"
+    },
+    {
+      "input": "PVFRUVFVUSBRPXorUQ0gDT0vRA==",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "UVEvIVENUVFRKy8rVVUhUUorIQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 3"
+    },
+    {
+      "input": "K1FRekp6IA==",
+      "out": "+QQz",
+      "error": "illegal base64 data at input byte 6"
+    },
+    {
+      "input": "UVFRIEQKRFE9Si9RUXpRUSBEIVE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 3"
+    },
+    {
+      "input": "IFE9DUpRUVFRSnpRL1EhUStRIFVRUSEN",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "ID1RUVErSi89VQ0r",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "VVEKPVFRKyAvUUQrUXo=",
+      "out": "",
+      "error": "illegal base64 data at input byte 3"
+    },
+    {
+      "input": "Ly8KUSAvUQpECgoNUSBRRFE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "UVVEPVFRKwogCkQ9UURRISt6UQ==",
+      "out": "QUA=",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "IFEKCiBRDT0rDSA=",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "USBRUT1RUVFRISFERCBKUS8=",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "L1EKUVFKUVENUQpRLw==",
+      "out": "/QQQJQQQ",
+      "error": "illegal base64 data at input byte 11"
+    },
+    {
+      "input": "UXpRIStRIFFKL0QgKyA9UQ0=",
+      "out": "",
+      "error": "illegal base64 data at input byte 3"
+    },
+    {
+      "input": "IApRPVFRUVFRIFFRVVFEUQ0v",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "USs9PVEhUVFRIVE9ID0NK1E=",
+      "out": "Qw==",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "PSEgUQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "UQ16UT0NISE9K1FRSkQN",
+      "out": "QzQ=",
+      "error": "illegal base64 data at input byte 6"
+    },
+    {
+      "input": "Cg0KSlUrUUQrUVFRLyAhKw==",
+      "out": "JU+QD+QQ",
+      "error": "illegal base64 data at input byte 13"
+    },
+    {
+      "input": "Sno9IVUrIFUveiBESlEhK1EKUT0=",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "PQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "eiENUStRKyF6UVEvVVFRK1FRSg0hSlUN",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "UQ1RVVFRID0gUSFRLz1KUQ==",
+      "out": "QQUQ",
+      "error": "illegal base64 data at input byte 6"
+    },
+    {
+      "input": "UT0KPVENUVFRClEhUXpRUSsg",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "IQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "PXpRUVENSlFR",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "L0QNUSA=",
+      "out": "",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "SlFRPXp6REp6DVEhUUQgUT1RLz1RUQ==",
+      "out": "JQQ=",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "eiEhUVEhUS9RKwpRL3pR",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "USF6UQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "IA0NUVEhUVF6DQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "VStRUSFRUUQNUVEKK0pRPQ==",
+      "out": "U+QQ",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "enp6UVFRUVFRUVENUVFRSlFRUVEKIA==",
+      "out": "zzzQQQQQQQQQQQJQ",
+      "error": "illegal base64 data at input byte 21"
+    },
+    {
+      "input": "Ci9RIQ1RCgohUStRUQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 3"
+    },
+    {
+      "input": "UVFKIT1RL1ErIA1RIA==",
+      "out": "",
+      "error": "illegal base64 data at input byte 3"
+    },
+    {
+      "input": "UXpRUStVCj1RPQ0gUVF6ClENUUQ9VQ==",
+      "out": "QzQQ",
+      "error": "illegal base64 data at input byte 7"
+    },
+    {
+      "input": "Lw==",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "UVEvCkQgPURRVT1RK1EgUVFRRCEveg==",
+      "out": "QQ/D",
+      "error": "illegal base64 data at input byte 5"
+    },
+    {
+      "input": "UVFRPQpRRFEgIFEKICBRK1VRUS8h",
+      "out": "QQQ=",
+      "error": "illegal base64 data at input byte 5"
+    },
+    {
+      "input": "USE9UStKLy9RUSFRDVFRUVEvUURRUQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "IVFRK1F6DVU=",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "IA09UQ1EKw==",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "L3pRRHpK",
+      "out": "/zQD",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "K0Q=",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "VSBRVSsKUVE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "L1FRDVEKIFErekRRVSFR",
+      "out": "/QQQ",
+      "error": "illegal base64 data at input byte 6"
+    },
+    {
+      "input": "VVEgUQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "VStRVVE=",
+      "out": "U+QU",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "PVEhUVFRUVEKUSArUSEhUSE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "SiErK1FRUQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "IFENUSBRUVE9Lz1RL1FKIURRUQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "UQpRVT1RUSBRUSE9DQoNL1VEIA==",
+      "out": "QQU=",
+      "error": "illegal base64 data at input byte 5"
+    },
+    {
+      "input": "ClFRUQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "UVEvPVEKUVFEL3ohDStRSkRESiF6IEQg",
+      "out": "QQ8=",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "PVEvUUQNegpRIUQ=",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "PSEKPQ09UVFEUUohCiFR",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "VUogClFRUUpVIQohUVFVUVFRIA==",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "UVFRVVFEUQ==",
+      "out": "QQQU",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "REpEUVENUVFRUSErUVU=",
+      "out": "DJDQQQQQ",
+      "error": "illegal base64 data at input byte 10"
+    },
+    {
+      "input": "UVFRPVFRUVEKID1VUVFReg0hPT0=",
+      "out": "QQQ=",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "IVFRUS8hUVFVRCs=",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "USAvIQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "UUQgUStR",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "K1FVUQ==",
+      "out": "+QUQ"
+    },
+    {
+      "input": "Sg1RUQ0renpRCisK",
+      "out": "JQQ+zzQ+"
+    },
+    {
+      "input": "RFFRSlFR",
+      "out": "DQQJ",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "ClFRUVVEUVFVUVEgUVEgUVEhPVFEKw==",
+      "out": "QQQUDQQU",
+      "error": "illegal base64 data at input byte 11"
+    },
+    {
+      "input": "UVF6UURRelE9UVFRCgoKVVFRIS9RUUQ=",
+      "out": "QQzQDQzQ",
+      "error": "illegal base64 data at input byte 8"
+    },
+    {
+      "input": "LysrUURRelVRUVFRUT1RLw==",
+      "out": "/++QDQzUQQQQ",
+      "error": "illegal base64 data at input byte 13"
+    },
+    {
+      "input": "UQ1RSlEgClF6elFKL1EvUS9E",
+      "out": "QQJQ",
+      "error": "illegal base64 data at input byte 5"
+    },
+    {
+      "input": "CiFRUSFRPStRelFRICFR",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "ClFRUVErDVEg",
+      "out": "QQQQ",
+      "error": "illegal base64 data at input byte 8"
+    },
+    {
+      "input": "SlFRIEpRej0NPUovKwpR",
+      "out": "",
+      "error": "illegal base64 data at input byte 3"
+    },
+    {
+      "input": "UT0NUVFRISsgClE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "USE9UQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "US9EVVFRUVEgUT1VL0pKRFEgUQpRDT0=",
+      "out": "Q/DUQQQQ",
+      "error": "illegal base64 data at input byte 8"
+    },
+    {
+      "input": "IFFRUXpRUT1RDVFRUVEgUVEvUQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "UUpRPVFRUS9KDVFKDVEKUVFK",
+      "out": "QJQ=",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "USE9UXpKUUoKUQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "IFF6UQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "DUo9VVF6DSshUVEvIVFEIQ1KVVE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "SlFRUQpRUQ0rUStR",
+      "out": "JQQQQQ+Q",
+      "error": "illegal base64 data at input byte 10"
+    },
+    {
+      "input": "IFFRUVFRDQ0KUSsKLw==",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "RC9RK0oNUVFRUVEvPQoveg==",
+      "out": "D/Q+JQQQQQ8=",
+      "error": "illegal base64 data at input byte 14"
+    },
+    {
+      "input": "IA==",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "USsgL1F6LwpRIFFRSiBEPVFRClFRL1EK",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "DVE9ICtRUSENPURRUUQNSlE9SiBRUVE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "DVE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "UVFEL1FRPUpRUVFRUURRUQ==",
+      "out": "QQD/",
+      "error": "illegal base64 data at input byte 6"
+    },
+    {
+      "input": "VVFVISBRDUpRRCtRUVFKUT1VRHp6UQ1R",
+      "out": "",
+      "error": "illegal base64 data at input byte 3"
+    },
+    {
+      "input": "IA==",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "UVEhelFR",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "RFFRIT16UUo9VQ1KPT1RSnpRSlFRLw==",
+      "out": "",
+      "error": "illegal base64 data at input byte 3"
+    },
+    {
+      "input": "UQpRL0QNUURRelF6",
+      "out": "QQ/DQDQz",
+      "error": "illegal base64 data at input byte 10"
+    },
+    {
+      "input": "UVE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "US9RUVE=",
+      "out": "Q/QQ",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "RFUgUT1RDQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "IFUNUSFEUVFKIVENPVFRPQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "UVFRCg1RSnohSlVR",
+      "out": "QQQQ",
+      "error": "illegal base64 data at input byte 8"
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "UVFRUUpReiErUVFRL1E=",
+      "out": "QQQQ",
+      "error": "illegal base64 data at input byte 7"
+    },
+    {
+      "input": "K1VRekRRUStRDT1RUVE=",
+      "out": "+UQzDQQ+",
+      "error": "illegal base64 data at input byte 10"
+    },
+    {
+      "input": "IT1RUVVRUS96K1FRUVFRUQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "UQpRPVE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 3"
+    },
+    {
+      "input": "UVFRIFFEUUQvVVEKSlF6K1FRSlFRVSs=",
+      "out": "",
+      "error": "illegal base64 data at input byte 3"
+    },
+    {
+      "input": "UVE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "UVFRK1EvIVFRUVFKPSEgUSsvUXpVUQ==",
+      "out": "QQQ+",
+      "error": "illegal base64 data at input byte 6"
+    },
+    {
+      "input": "VVEhL3pRClFRRFEr",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "RFVRUVFEUXp6UQ==",
+      "out": "DUQQQDQz",
+      "error": "illegal base64 data at input byte 8"
+    },
+    {
+      "input": "VVFRCg1RKwpRL1FELw==",
+      "out": "UQQQ+Q/Q",
+      "error": "illegal base64 data at input byte 11"
+    },
+    {
+      "input": "DSsgUVEvUUogIQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "DS9R",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "VSENUUo=",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "UVFEUSENCj1RPVFRIA==",
+      "out": "QQDQ",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "USFRUVFRUSBVUVE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "UXpRUSsvClFESlEg",
+      "out": "QzQQ+/QD",
+      "error": "illegal base64 data at input byte 11"
+    },
+    {
+      "input": "REREUVFRPVVRUVVRClFVPS8vRFEgUQ==",
+      "out": "DDDQ",
+      "error": "illegal base64 data at input byte 6"
+    },
+    {
+      "input": "IFEhCkQNKw0gUT1RIFFRPVFRRERR",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "USBRUVF6UURRUQ0hUVFRPXo=",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "K1E9eg0rClFRUVErL3o=",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "Sg16UVFRLwpRKw==",
+      "out": "JzQQQ/Q+"
+    },
+    {
+      "input": "UQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "UVENUSA=",
+      "out": "",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "LyFEIFENUVFRUSsrUXohUVFR",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "L1FR",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "US89RFF6L1EKDVFVUSFVL1F6VT1RUVE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "USFVUVEgKwp6elFRUVE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "IQovUVE9IQpVRFFRCnpRRA==",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "KwpKenpRUSFRUQ==",
+      "out": "+Jzz",
+      "error": "illegal base64 data at input byte 7"
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "ClFRekpRDVFRPQ==",
+      "out": "QQzJQQQ="
+    },
+    {
+      "input": "elVRSlFRUVErelE=",
+      "out": "zUQJQQQQ",
+      "error": "illegal base64 data at input byte 8"
+    },
+    {
+      "input": "UVU=",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "UVFVei9KCi9EUUpRKytRRFFR",
+      "out": "QQUz/J/DQJQ++QDQ",
+      "error": "illegal base64 data at input byte 17"
+    },
+    {
+      "input": "UURVUVEr",
+      "out": "QDUQ",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "USFRIVVRLwpRUSBRUQp6CgpRIVFR",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "DVFRIEpRVSBEDVFRVQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 3"
+    },
+    {
+      "input": "UVFRUUpVPXpRLw0vUQ==",
+      "out": "QQQQ",
+      "error": "illegal base64 data at input byte 6"
+    },
+    {
+      "input": "DVFRUVE=",
+      "out": "QQQQ"
+    },
+    {
+      "input": "PVFKDSBVUQo=",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "L1ErUSE9K0REUQp6UUQKL3o9UVE=",
+      "out": "/Q+Q",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "UVFRSiE=",
+      "out": "QQQJ",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "UVFR",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "UVEKClFRUURVUS96UVFRIFFKUVE=",
+      "out": "QQQQQDUQ/zQQ",
+      "error": "illegal base64 data at input byte 15"
+    },
+    {
+      "input": "USsgUVFVUUohPVFRUUQK",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "UVFRIS9RUUohUVFRClFRUVFKUVEhUQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 3"
+    },
+    {
+      "input": "US8NUVE=",
+      "out": "Q/QQ"
+    },
+    {
+      "input": "UVEN",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "PVVRUVF6SlEKUQ1RUVENUURR",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "CiA=",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "UVErRCAKUQ==",
+      "out": "QQ+D",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "UVFRL1ENPVFRUVEKKw==",
+      "out": "QQQ/",
+      "error": "illegal base64 data at input byte 6"
+    },
+    {
+      "input": "RFFRUVEvLyBRSlFRUXpRCi8NUVErenpR",
+      "out": "DQQQ",
+      "error": "illegal base64 data at input byte 7"
+    },
+    {
+      "input": "CiBRelFRClFRUVENL1FRUQovDQ0KIFE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "UURESlFRRFFRUS9KUSBKKwpRIVFVRC8=",
+      "out": "QDDJQQDQQQ/J",
+      "error": "illegal base64 data at input byte 13"
+    },
+    {
+      "input": "UVE9VXovUSFRUQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "Lw==",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "IVEgVSAvIVFRUQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "RFFRVVFRVQo9US9RIA==",
+      "out": "DQQUQQU=",
+      "error": "illegal base64 data at input byte 9"
+    },
+    {
+      "input": "UVEKL0QvDUohSnpRLyEvUVEg",
+      "out": "QQ/D",
+      "error": "illegal base64 data at input byte 8"
+    },
+    {
+      "input": "UVFRSlEvK1UNUXoNL1FRSgov",
+      "out": "QQQJQ/+UQz/Q",
+      "error": "illegal base64 data at input byte 15"
+    },
+    {
+      "input": "elE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "UT0gUVE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "SitVUVV6elE9DSBV",
+      "out": "J+UQUzzQ",
+      "error": "illegal base64 data at input byte 8"
+    },
+    {
+      "input": "UVFRUUpRSlEgUT1RUVFRUVEvUVFRUT0=",
+      "out": "QQQQJQJQ",
+      "error": "illegal base64 data at input byte 8"
+    },
+    {
+      "input": "PVFRVVFRVURKUVFRIA==",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "UVFRUXo=",
+      "out": "QQQQ",
+      "error": "illegal base64 data at input byte 4"
+    },
+    {
+      "input": "UT1RUVV6UUQgL0QvVVEh",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "UXp6UQ==",
+      "out": "QzzQ"
+    },
+    {
+      "input": "UVEgRFEKL1FRUQo=",
+      "out": "",
+      "error": "illegal base64 data at input byte 2"
+    },
+    {
+      "input": "IVEgUVFEKw1VUS9R",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "UUpRUVErUSEKL1FRUVVRK1FRSiA=",
+      "out": "QJQQ",
+      "error": "illegal base64 data at input byte 7"
+    },
+    {
+      "input": "UQ0vUQ0hKy96K1UrClFRUVFRUSEr",
+      "out": "",
+      "error": "illegal base64 data at input byte 5"
+    },
+    {
+      "input": "UVE=",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    },
+    {
+      "input": "Lz1VUVFRCgpRUQ==",
+      "out": "",
+      "error": "illegal base64 data at input byte 1"
+    },
+    {
+      "input": "UVFRL1FRUVErUS9RIUQ9",
+      "out": "QQQ/QQQQ+Q/Q",
+      "error": "illegal base64 data at input byte 12"
+    },
+    {
+      "input": "ekRReg==",
+      "out": "zDQz"
+    },
+    {
+      "input": "ICBRK0pRPUpRUS96UVFRUXoNUVU=",
+      "out": "",
+      "error": "illegal base64 data at input byte 0"
+    }
+  ],
+  "trim": [
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "IHgg",
+      "out": "eA=="
+    },
+    {
+      "input": "wqB444CA",
+      "out": "eA=="
+    },
+    {
+      "input": "/yB4IP8=",
+      "out": "/yB4IP8="
+    },
+    {
+      "input": "woUg4oCo",
+      "out": ""
+    },
+    {
+      "input": "eMI=",
+      "out": "eMI="
+    },
+    {
+      "input": "wqDC",
+      "out": "wg=="
+    },
+    {
+      "input": "C3g=",
+      "out": "eA=="
+    },
+    {
+      "input": "eOKAqHggeOOAoOKBnw==",
+      "out": "eOKAqHggeOOAoA=="
+    },
+    {
+      "input": "4oCLeCDvu78=",
+      "out": "4oCLeCDvu78="
+    },
+    {
+      "input": "DXh44oCAAA==",
+      "out": "eHjigIAA"
+    },
+    {
+      "input": "4oCoCqB44oCK4oCoheOA",
+      "out": "oHjigIrigKiF44A="
+    },
+    {
+      "input": "4oGfwoU=",
+      "out": ""
+    },
+    {
+      "input": "De+7v+KBn3jigKh4C6A=",
+      "out": "77u/4oGfeOKAqHgLoA=="
+    },
+    {
+      "input": "eAnigZ8goHg=",
+      "out": "eAnigZ8goHg="
+    },
+    {
+      "input": "C3jigKg=",
+      "out": "eA=="
+    },
+    {
+      "input": "DHgK4oCK",
+      "out": "eA=="
+    },
+    {
+      "input": "AMLigZ94eOKAqA==",
+      "out": "AMLigZ94eA=="
+    },
+    {
+      "input": "eHjigIA=",
+      "out": "eHg="
+    },
+    {
+      "input": "eOKAi+KAiw3igKnigIsL",
+      "out": "eOKAi+KAiw3igKnigIs="
+    },
+    {
+      "input": "4ZqA4ZqAwqAN4oCoeOKArw==",
+      "out": "eA=="
+    },
+    {
+      "input": "C8IN",
+      "out": "wg=="
+    },
+    {
+      "input": "woXigZ/igKl4",
+      "out": "eA=="
+    },
+    {
+      "input": "DMKF4oGf4oCL44CAw6nChQ==",
+      "out": "4oCL44CAw6k="
+    },
+    {
+      "input": "eA==",
+      "out": "eA=="
+    },
+    {
+      "input": "eMOp",
+      "out": "eMOp"
+    },
+    {
+      "input": "DOKAiuKArwkMCeKAi+KAgA==",
+      "out": "4oCL"
+    },
+    {
+      "input": "Cw==",
+      "out": ""
+    },
+    {
+      "input": "DAs=",
+      "out": ""
+    },
+    {
+      "input": "wgrigK/igK94",
+      "out": "wgrigK/igK94"
+    },
+    {
+      "input": "4oCv77u/eA==",
+      "out": "77u/eA=="
+    },
+    {
+      "input": "44DDqQ==",
+      "out": "44DDqQ=="
+    },
+    {
+      "input": "eHgN4oCvwqB4",
+      "out": "eHgN4oCvwqB4"
+    },
+    {
+      "input": "CcOpCuKAr+KAgA==",
+      "out": "w6k="
+    },
+    {
+      "input": "4oCoAA==",
+      "out": "AA=="
+    },
+    {
+      "input": "eOKAig==",
+      "out": "eA=="
+    },
+    {
+      "input": "4oCADOKArwrigIs=",
+      "out": "4oCL"
+    },
+    {
+      "input": "4ZqAoCAg4oCoeA==",
+      "out": "oCAg4oCoeA=="
+    },
+    {
+      "input": "DXh44oCKCnh4",
+      "out": "eHjigIoKeHg="
+    },
+    {
+      "input": "Ce+7vw==",
+      "out": "77u/"
+    },
+    {
+      "input": "4oCK44DigK8MCww=",
+      "out": "44A="
+    },
+    {
+      "input": "4oGfeOKAingKeMI=",
+      "out": "eOKAingKeMI="
+    },
+    {
+      "input": "eKDDqcOpCuKArw==",
+      "out": "eKDDqcOp"
+    },
+    {
+      "input": "4ZqACXjigKk=",
+      "out": "eA=="
+    },
+    {
+      "input": "77u/",
+      "out": "77u/"
+    },
+    {
+      "input": "eHh4w6l44oCvDeKArw==",
+      "out": "eHh4w6l4"
+    },
+    {
+      "input": "w6k=",
+      "out": "w6k="
+    },
+    {
+      "input": "77u/4oGfeA==",
+      "out": "77u/4oGfeA=="
+    },
+    {
+      "input": "77u/CeKAiqDC4oGfw6mg",
+      "out": "77u/CeKAiqDC4oGfw6mg"
+    },
+    {
+      "input": "IOKAqOKBn+KAr8Kg4oCvDQ==",
+      "out": ""
+    },
+    {
+      "input": "4oGfeArigIrjgIAACg==",
+      "out": "eArigIrjgIAA"
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "eOKAr++7v3jCoHg=",
+      "out": "eOKAr++7v3jCoHg="
+    },
+    {
+      "input": "eKB4C+KAgA==",
+      "out": "eKB4"
+    },
+    {
+      "input": "eO+7vw0=",
+      "out": "eO+7vw=="
+    },
+    {
+      "input": "wqDCoAzvu794eMI=",
+      "out": "77u/eHjC"
+    },
+    {
+      "input": "wg==",
+      "out": "wg=="
+    },
+    {
+      "input": "4oCvDXg=",
+      "out": "eA=="
+    },
+    {
+      "input": "Cg2F",
+      "out": "hQ=="
+    },
+    {
+      "input": "eOKAr3jigKnigK8=",
+      "out": "eOKAr3g="
+    },
+    {
+      "input": "eOKAinh4eA14eA==",
+      "out": "eOKAinh4eA14eA=="
+    },
+    {
+      "input": "eOKAgOKAi8KF",
+      "out": "eOKAgOKAiw=="
+    },
+    {
+      "input": "4oCv44A=",
+      "out": "44A="
+    },
+    {
+      "input": "eMKgCsKF44B4",
+      "out": "eMKgCsKF44B4"
+    },
+    {
+      "input": "DA==",
+      "out": ""
+    },
+    {
+      "input": "hcKgw6nigK8K44DigK8=",
+      "out": "hcKgw6nigK8K44A="
+    },
+    {
+      "input": "eHh4wqCFeA0g",
+      "out": "eHh4wqCFeA=="
+    },
+    {
+      "input": "woXhmoB4",
+      "out": "eA=="
+    },
+    {
+      "input": "Cw==",
+      "out": ""
+    },
+    {
+      "input": "IAwJeOKAqQ==",
+      "out": "eA=="
+    },
+    {
+      "input": "woWFICA=",
+      "out": "hQ=="
+    },
+    {
+      "input": "C+OAgHgMDeKAingM",
+      "out": "eAwN4oCKeA=="
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "eA==",
+      "out": "eA=="
+    },
+    {
+      "input": "eAoKwqA=",
+      "out": "eA=="
+    },
+    {
+      "input": "4oCveOGagAnCoOGagKA=",
+      "out": "eOGagAnCoOGagKA="
+    },
+    {
+      "input": "Cgl44oCA4oGf",
+      "out": "eA=="
+    },
+    {
+      "input": "eHjjgA==",
+      "out": "eHjjgA=="
+    },
+    {
+      "input": "woXCheKArwB4",
+      "out": "AHg="
+    },
+    {
+      "input": "CuKAiw==",
+      "out": "4oCL"
+    },
+    {
+      "input": "DaDhmoDhmoDigZ8A4oGf",
+      "out": "oOGagOGagOKBnwA="
+    },
+    {
+      "input": "Cwk=",
+      "out": ""
+    },
+    {
+      "input": "DO+7v4U=",
+      "out": "77u/hQ=="
+    },
+    {
+      "input": "4oCo4oCv",
+      "out": ""
+    },
+    {
+      "input": "eHgJC+KAgA==",
+      "out": "eHg="
+    },
+    {
+      "input": "eHjDqYU=",
+      "out": "eHjDqYU="
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "wqB4eOOAgA==",
+      "out": "eHg="
+    },
+    {
+      "input": "4oCoeKA=",
+      "out": "eKA="
+    },
+    {
+      "input": "heKBn+OAgO+7v3jigIA=",
+      "out": "heKBn+OAgO+7v3g="
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "DHgA4oCK44CFeA==",
+      "out": "eADigIrjgIV4"
+    },
+    {
+      "input": "w6k=",
+      "out": "w6k="
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "eOKAgAt444B44oGf4oCA",
+      "out": "eOKAgAt444B4"
+    },
+    {
+      "input": "C+OAgA14w6k=",
+      "out": "eMOp"
+    },
+    {
+      "input": "eHjDqe+7v3h4wgw=",
+      "out": "eHjDqe+7v3h4wg=="
+    },
+    {
+      "input": "DHjhmoB4",
+      "out": "eOGagHg="
+    },
+    {
+      "input": "4oCpeHjigZ/CoHjCoHg=",
+      "out": "eHjigZ/CoHjCoHg="
+    },
+    {
+      "input": "4ZqAw6nhmoDjgOGagKAJAA==",
+      "out": "w6nhmoDjgOGagKAJAA=="
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "CXgMwuKAqQ==",
+      "out": "eAzC"
+    },
+    {
+      "input": "Cg==",
+      "out": ""
+    },
+    {
+      "input": "CsKg4ZqAoAt4",
+      "out": "oAt4"
+    },
+    {
+      "input": "DcKF4oCKwoXjgIUM",
+      "out": "44CF"
+    },
+    {
+      "input": "eOKAqHh4Cg==",
+      "out": "eOKAqHh4"
+    },
+    {
+      "input": "AA2g44DigIoM",
+      "out": "AA2g44A="
+    },
+    {
+      "input": "DYV44oCKDQ==",
+      "out": "hXg="
+    },
+    {
+      "input": "4oCp4oCAeA==",
+      "out": "eA=="
+    },
+    {
+      "input": "hXjjgIA=",
+      "out": "hXg="
+    },
+    {
+      "input": "eHigeO+7v+KAiyAM",
+      "out": "eHigeO+7v+KAiw=="
+    },
+    {
+      "input": "44CgwqDCoHjigIB4wg==",
+      "out": "44CgwqDCoHjigIB4wg=="
+    },
+    {
+      "input": "eOKAqeKAqHjhmoA=",
+      "out": "eOKAqeKAqHg="
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "eOKBnyAK",
+      "out": "eA=="
+    },
+    {
+      "input": "eHjigIAJwqDigIo=",
+      "out": "eHg="
+    },
+    {
+      "input": "eHjigIB4wqDigIA=",
+      "out": "eHjigIB4"
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "44CA4oCA4oCveAw=",
+      "out": "eA=="
+    },
+    {
+      "input": "4oCK4oCL",
+      "out": "4oCL"
+    },
+    {
+      "input": "eOKAig==",
+      "out": "eA=="
+    },
+    {
+      "input": "77u/4oCv",
+      "out": "77u/"
+    },
+    {
+      "input": "eO+7v3jDqeKAr3g=",
+      "out": "eO+7v3jDqeKAr3g="
+    },
+    {
+      "input": "44CAC+KAgHgA4oCAeA==",
+      "out": "eADigIB4"
+    },
+    {
+      "input": "4oCoeMKgwoUADQ==",
+      "out": "eMKgwoUA"
+    },
+    {
+      "input": "eOOA4oCoeAA=",
+      "out": "eOOA4oCoeAA="
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "eOOAgAnigK8=",
+      "out": "eA=="
+    },
+    {
+      "input": "wqDC77u/CSB44oGf",
+      "out": "wu+7vwkgeA=="
+    },
+    {
+      "input": "eA3igIB4eA==",
+      "out": "eA3igIB4eA=="
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "4oCp",
+      "out": ""
+    },
+    {
+      "input": "wqB4eA==",
+      "out": "eHg="
+    },
+    {
+      "input": "4oCpeAw=",
+      "out": "eA=="
+    },
+    {
+      "input": "4oCLeHg=",
+      "out": "4oCLeHg="
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "4oCA4oCowoXjgAk=",
+      "out": "44A="
+    },
+    {
+      "input": "CQo=",
+      "out": ""
+    },
+    {
+      "input": "DIU=",
+      "out": "hQ=="
+    },
+    {
+      "input": "4oCA",
+      "out": ""
+    },
+    {
+      "input": "eA==",
+      "out": "eA=="
+    },
+    {
+      "input": "DA0=",
+      "out": ""
+    },
+    {
+      "input": "eArvu7/CeOKAqQ==",
+      "out": "eArvu7/CeA=="
+    },
+    {
+      "input": "Cw3igZ8geOOACg==",
+      "out": "eOOA"
+    },
+    {
+      "input": "eOKAinjCoOOAgAvC44A=",
+      "out": "eOKAinjCoOOAgAvC44A="
+    },
+    {
+      "input": "eCAAheKAgA==",
+      "out": "eCAAhQ=="
+    },
+    {
+      "input": "wqB4",
+      "out": "eA=="
+    },
+    {
+      "input": "wqALeAwM4oGf",
+      "out": "eA=="
+    },
+    {
+      "input": "DeGagHjigIrigIsJ77u/",
+      "out": "eOKAiuKAiwnvu78="
+    },
+    {
+      "input": "4oGfDMOp",
+      "out": "w6k="
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "wqAKwqDigK/CoOOAeOKAig==",
+      "out": "44B4"
+    },
+    {
+      "input": "wqDjgICF4oGf",
+      "out": "hQ=="
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "CeKAi+KAig==",
+      "out": "4oCL"
+    },
+    {
+      "input": "4ZqA4oCvw6nhmoAA4oCK",
+      "out": "w6nhmoAA"
+    },
+    {
+      "input": "4oCK44DigKjvu78M4oCKeA==",
+      "out": "44DigKjvu78M4oCKeA=="
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "IHgNeMKgwoU=",
+      "out": "eA14"
+    },
+    {
+      "input": "wgzigIp44oCK",
+      "out": "wgzigIp4"
+    },
+    {
+      "input": "woUgeOKAi3jigK/igKnigK8=",
+      "out": "eOKAi3g="
+    },
+    {
+      "input": "4oCK4oCp4oCLw6nigKnigK/ChaA=",
+      "out": "4oCLw6nigKnigK/ChaA="
+    },
+    {
+      "input": "DADhmoDigIvvu7/DqeKAing=",
+      "out": "AOGagOKAi++7v8Op4oCKeA=="
+    },
+    {
+      "input": "eOKAr+KAqO+7vwA=",
+      "out": "eOKAr+KAqO+7vwA="
+    },
+    {
+      "input": "4oCL",
+      "out": "4oCL"
+    },
+    {
+      "input": "eAw=",
+      "out": "eA=="
+    },
+    {
+      "input": "eOOAgA==",
+      "out": "eA=="
+    },
+    {
+      "input": "eO+7v3g=",
+      "out": "eO+7v3g="
+    },
+    {
+      "input": "eOKAgHjjgIANheKAiyA=",
+      "out": "eOKAgHjjgIANheKAiw=="
+    },
+    {
+      "input": "wg==",
+      "out": "wg=="
+    },
+    {
+      "input": "eKDjgMI=",
+      "out": "eKDjgMI="
+    },
+    {
+      "input": "eOKArwB4IOOAeA==",
+      "out": "eOKArwB4IOOAeA=="
+    },
+    {
+      "input": "4oCvw6l4",
+      "out": "w6l4"
+    },
+    {
+      "input": "4oCo4ZqA",
+      "out": ""
+    },
+    {
+      "input": "w6kACwvigIB4",
+      "out": "w6kACwvigIB4"
+    },
+    {
+      "input": "heKAgHjCoOKAioUK",
+      "out": "heKAgHjCoOKAioU="
+    },
+    {
+      "input": "DcOpeA==",
+      "out": "w6l4"
+    },
+    {
+      "input": "4oCp4oCK4oCoeCA=",
+      "out": "eA=="
+    },
+    {
+      "input": "eHh4DXg=",
+      "out": "eHh4DXg="
+    },
+    {
+      "input": "eHh4",
+      "out": "eHh4"
+    },
+    {
+      "input": "wqCFwqB4eMKg",
+      "out": "hcKgeHg="
+    },
+    {
+      "input": "eOKAr3jvu78=",
+      "out": "eOKAr3jvu78="
+    },
+    {
+      "input": "eHh4AOOAgMKgCuKAiw==",
+      "out": "eHh4AOOAgMKgCuKAiw=="
+    },
+    {
+      "input": "woUNhQ==",
+      "out": "hQ=="
+    },
+    {
+      "input": "eMOp",
+      "out": "eMOp"
+    },
+    {
+      "input": "woU=",
+      "out": ""
+    },
+    {
+      "input": "4oCKhQ==",
+      "out": "hQ=="
+    },
+    {
+      "input": "CnigICDjgIA=",
+      "out": "eKA="
+    },
+    {
+      "input": "4ZqAC+KAi+KBn6AKCwA=",
+      "out": "4oCL4oGfoAoLAA=="
+    },
+    {
+      "input": "eOKBn3gK4oGf",
+      "out": "eOKBn3g="
+    },
+    {
+      "input": "4oCo4oCpoOKAqHjjgIA=",
+      "out": "oOKAqHg="
+    },
+    {
+      "input": "44DhmoDigZ/igKg=",
+      "out": "44A="
+    },
+    {
+      "input": "IA==",
+      "out": ""
+    },
+    {
+      "input": "44CA",
+      "out": ""
+    },
+    {
+      "input": "CuKAigkKwg==",
+      "out": "wg=="
+    },
+    {
+      "input": "C8J4wqA=",
+      "out": "wng="
+    },
+    {
+      "input": "oAvigKh4eA==",
+      "out": "oAvigKh4eA=="
+    },
+    {
+      "input": "DHiFeA==",
+      "out": "eIV4"
+    },
+    {
+      "input": "eMKgwoV44oCL4oCpeHg=",
+      "out": "eMKgwoV44oCL4oCpeHg="
+    },
+    {
+      "input": "woXhmoB4hcOp4oCK",
+      "out": "eIXDqQ=="
+    },
+    {
+      "input": "CgDigIp4eOOAgA==",
+      "out": "AOKAinh4"
+    },
+    {
+      "input": "eAsMIOKBnw==",
+      "out": "eA=="
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "oOKAgHjCoA==",
+      "out": "oOKAgHg="
+    },
+    {
+      "input": "77u/eAl44oCA",
+      "out": "77u/eAl4"
+    },
+    {
+      "input": "44CA",
+      "out": ""
+    },
+    {
+      "input": "eOOA",
+      "out": "eOOA"
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "eOKAqOKAqHjigZ/igIoM",
+      "out": "eOKAqOKAqHg="
+    },
+    {
+      "input": "77u/4oCKIOKArw==",
+      "out": "77u/"
+    },
+    {
+      "input": "DeGagHiFwqB44oCK",
+      "out": "eIXCoHg="
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "4oCA4oCK4oCoCQB4eA==",
+      "out": "AHh4"
+    },
+    {
+      "input": "eA==",
+      "out": "eA=="
+    },
+    {
+      "input": "C+OAeA==",
+      "out": "44B4"
+    },
+    {
+      "input": "4oCA4oCvoA==",
+      "out": "oA=="
+    },
+    {
+      "input": "IOKAr+OAgHjChXjvu78=",
+      "out": "eMKFeO+7vw=="
+    },
+    {
+      "input": "DOKAqMKFDXgA4oGf",
+      "out": "eAA="
+    },
+    {
+      "input": "4oCA",
+      "out": ""
+    },
+    {
+      "input": "wnh44oCpeAt4Cw==",
+      "out": "wnh44oCpeAt4"
+    },
+    {
+      "input": "eOKAiuGagHh4eOKAiw==",
+      "out": "eOKAiuGagHh4eOKAiw=="
+    },
+    {
+      "input": "AKB4eA==",
+      "out": "AKB4eA=="
+    },
+    {
+      "input": "w6nvu78A4oCoeOKAqA==",
+      "out": "w6nvu78A4oCoeA=="
+    },
+    {
+      "input": "IA==",
+      "out": ""
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "eAAgheKAgAuF4oGf",
+      "out": "eAAgheKAgAuF"
+    },
+    {
+      "input": "IO+7v3jigKk=",
+      "out": "77u/eA=="
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "4oCKeHjhmoDigK8NeA==",
+      "out": "eHjhmoDigK8NeA=="
+    },
+    {
+      "input": "wqAJ",
+      "out": ""
+    },
+    {
+      "input": "44Dvu78g4oGf44CACQkN",
+      "out": "44Dvu78="
+    },
+    {
+      "input": "eA==",
+      "out": "eA=="
+    },
+    {
+      "input": "CngJwqDigKk=",
+      "out": "eA=="
+    },
+    {
+      "input": "4oCp",
+      "out": ""
+    },
+    {
+      "input": "eHh4",
+      "out": "eHh4"
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "eAt4",
+      "out": "eAt4"
+    },
+    {
+      "input": "4oCpCniF4oCv44B4Cg==",
+      "out": "eIXigK/jgHg="
+    },
+    {
+      "input": "eA0=",
+      "out": "eA=="
+    },
+    {
+      "input": "4oCK4oCpCgo=",
+      "out": ""
+    },
+    {
+      "input": "44B4woUAoMOpDA==",
+      "out": "44B4woUAoMOp"
+    },
+    {
+      "input": "IHjigKnjgA==",
+      "out": "eOKAqeOA"
+    },
+    {
+      "input": "4oCvhXh44oCAeCA=",
+      "out": "hXh44oCAeA=="
+    },
+    {
+      "input": "44B4DeKAiwt444CA",
+      "out": "44B4DeKAiwt4"
+    },
+    {
+      "input": "CuKAgA==",
+      "out": ""
+    },
+    {
+      "input": "4oCLwoUK44A=",
+      "out": "4oCLwoUK44A="
+    },
+    {
+      "input": "4oCo4oCv4oCKCeKArw0=",
+      "out": ""
+    },
+    {
+      "input": "wuKArw==",
+      "out": "wg=="
+    },
+    {
+      "input": "w6l4eHg=",
+      "out": "w6l4eHg="
+    },
+    {
+      "input": "AOKAqCB4",
+      "out": "AOKAqCB4"
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "4oCpeA==",
+      "out": "eA=="
+    },
+    {
+      "input": "4oCpw6l4eMI=",
+      "out": "w6l4eMI="
+    },
+    {
+      "input": "4oCL",
+      "out": "4oCL"
+    },
+    {
+      "input": "4oCA",
+      "out": ""
+    },
+    {
+      "input": "4ZqA",
+      "out": ""
+    },
+    {
+      "input": "eKDjgOKAi3h4IA==",
+      "out": "eKDjgOKAi3h4"
+    },
+    {
+      "input": "wqAL44CgeA==",
+      "out": "44CgeA=="
+    },
+    {
+      "input": "4oCvAOOAgHh4eA==",
+      "out": "AOOAgHh4eA=="
+    },
+    {
+      "input": "4oCoeHjvu78=",
+      "out": "eHjvu78="
+    },
+    {
+      "input": "4oCveHjigKjCCSDigKk=",
+      "out": "eHjigKjC"
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "eHh4woXigIDCw6k=",
+      "out": "eHh4woXigIDCw6k="
+    },
+    {
+      "input": "44CA4oCK",
+      "out": ""
+    },
+    {
+      "input": "4oCv4oCLeMLigIp4eA==",
+      "out": "4oCLeMLigIp4eA=="
+    },
+    {
+      "input": "4oCp",
+      "out": ""
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "CQ==",
+      "out": ""
+    },
+    {
+      "input": "CgwLwoU=",
+      "out": ""
+    },
+    {
+      "input": "wqALCng=",
+      "out": "eA=="
+    },
+    {
+      "input": "eAw=",
+      "out": "eA=="
+    },
+    {
+      "input": "DXjigK8gDMKg4ZqAeA==",
+      "out": "eOKAryAMwqDhmoB4"
+    },
+    {
+      "input": "C3jhmoDigIDigK8N",
+      "out": "eA=="
+    },
+    {
+      "input": "eHgJeOKArwnigK8=",
+      "out": "eHgJeA=="
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "DQ==",
+      "out": ""
+    },
+    {
+      "input": "4oCLwqA=",
+      "out": "4oCL"
+    },
+    {
+      "input": "4oCpeHgLeAsM4oCo",
+      "out": "eHgLeA=="
+    },
+    {
+      "input": "eAt4DcOphQ==",
+      "out": "eAt4DcOphQ=="
+    },
+    {
+      "input": "eAA=",
+      "out": "eAA="
+    },
+    {
+      "input": "4oCoeOGagOGagO+7v8IJ",
+      "out": "eOGagOGagO+7v8I="
+    },
+    {
+      "input": "4oCLAOKAqO+7v+GagCA=",
+      "out": "4oCLAOKAqO+7vw=="
+    },
+    {
+      "input": "eA==",
+      "out": "eA=="
+    },
+    {
+      "input": "eHh4",
+      "out": "eHh4"
+    },
+    {
+      "input": "eA0=",
+      "out": "eA=="
+    },
+    {
+      "input": "eMOp4oCow6kK44CAeA==",
+      "out": "eMOp4oCow6kK44CAeA=="
+    },
+    {
+      "input": "4oCKCsLigKh4",
+      "out": "wuKAqHg="
+    },
+    {
+      "input": "44CA4oGf4oCA77u/4oGfIA==",
+      "out": "77u/"
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "wsKF4oCAeOGagA==",
+      "out": "wsKF4oCAeA=="
+    },
+    {
+      "input": "wqDigK/hmoAA",
+      "out": "AA=="
+    },
+    {
+      "input": "IMLChe+7v+OAgOKAqQ==",
+      "out": "wsKF77u/"
+    },
+    {
+      "input": "AAzigZ94eA==",
+      "out": "AAzigZ94eA=="
+    },
+    {
+      "input": "eOKAqOGagOKAi3g=",
+      "out": "eOKAqOGagOKAi3g="
+    },
+    {
+      "input": "4oCK4oCo4oCo44A=",
+      "out": "44A="
+    },
+    {
+      "input": "4oCvCXh4eHg=",
+      "out": "eHh4eA=="
+    },
+    {
+      "input": "77u/eIXigK/CeAk=",
+      "out": "77u/eIXigK/CeA=="
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "wuOA",
+      "out": "wuOA"
+    },
+    {
+      "input": "4oCADeGagOKAinh4CsOp",
+      "out": "eHgKw6k="
+    },
+    {
+      "input": "4oCpeA144oCpCg0=",
+      "out": "eA14"
+    },
+    {
+      "input": "4oCpeA==",
+      "out": "eA=="
+    },
+    {
+      "input": "hYUJeCA=",
+      "out": "hYUJeA=="
+    },
+    {
+      "input": "4oCKwoV44oCpeA==",
+      "out": "eOKAqXg="
+    },
+    {
+      "input": "4oCKheGagA==",
+      "out": "hQ=="
+    },
+    {
+      "input": "77u/eOKAr+KAqcOp44CACXg=",
+      "out": "77u/eOKAr+KAqcOp44CACXg="
+    },
+    {
+      "input": "4oCveOKAqA3igIo=",
+      "out": "eA=="
+    },
+    {
+      "input": "wqB4eIXjgIDigIA=",
+      "out": "eHiF"
+    },
+    {
+      "input": "w6kLwnh44oGf",
+      "out": "w6kLwnh4"
+    },
+    {
+      "input": "eMKg",
+      "out": "eA=="
+    },
+    {
+      "input": "eMJ4CXh4eA==",
+      "out": "eMJ4CXh4eA=="
+    },
+    {
+      "input": "4oCA4oCv4oCp4oCv",
+      "out": ""
+    },
+    {
+      "input": "eKB4eOOA",
+      "out": "eKB4eOOA"
+    },
+    {
+      "input": "DHh4",
+      "out": "eHg="
+    },
+    {
+      "input": "eHjigKnjgHig",
+      "out": "eHjigKnjgHig"
+    },
+    {
+      "input": "4oCowqDigK/igK/CheKAqA==",
+      "out": ""
+    },
+    {
+      "input": "eHjhmoDigKkJeOOAgA==",
+      "out": "eHjhmoDigKkJeA=="
+    },
+    {
+      "input": "44CAoADC",
+      "out": "oADC"
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "4oCoCw==",
+      "out": ""
+    },
+    {
+      "input": "44CAeHjigKjDqeGagOKBn3g=",
+      "out": "eHjigKjDqeGagOKBn3g="
+    },
+    {
+      "input": "4oCACQ==",
+      "out": ""
+    },
+    {
+      "input": "eA==",
+      "out": "eA=="
+    },
+    {
+      "input": "4ZqA4oGfeAzigIAgeHg=",
+      "out": "eAzigIAgeHg="
+    },
+    {
+      "input": "4oCv4oGf",
+      "out": ""
+    },
+    {
+      "input": "CuKBn3igeA==",
+      "out": "eKB4"
+    },
+    {
+      "input": "CnjChXgADQ==",
+      "out": "eMKFeAA="
+    },
+    {
+      "input": "IA==",
+      "out": ""
+    },
+    {
+      "input": "4oGfDe+7vwl4AOKAgO+7vw==",
+      "out": "77u/CXgA4oCA77u/"
+    },
+    {
+      "input": "4oCvIAx4",
+      "out": "eA=="
+    },
+    {
+      "input": "eCA=",
+      "out": "eA=="
+    },
+    {
+      "input": "77u/eA==",
+      "out": "77u/eA=="
+    },
+    {
+      "input": "eHgMeA==",
+      "out": "eHgMeA=="
+    },
+    {
+      "input": "44CAoOKBnw==",
+      "out": "oA=="
+    },
+    {
+      "input": "hQrjgOOAeA==",
+      "out": "hQrjgOOAeA=="
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "4oCLeMKF4oCp4oCA",
+      "out": "4oCLeA=="
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "CQ==",
+      "out": ""
+    },
+    {
+      "input": "eMJ4wqA=",
+      "out": "eMJ4"
+    },
+    {
+      "input": "4oGf",
+      "out": ""
+    },
+    {
+      "input": "44CgAOKAiuOACg==",
+      "out": "44CgAOKAiuOA"
+    },
+    {
+      "input": "eMKF4oCKeHjigK/hmoA=",
+      "out": "eMKF4oCKeHg="
+    },
+    {
+      "input": "IArDqXjigKjChXg=",
+      "out": "w6l44oCowoV4"
+    },
+    {
+      "input": "w6k=",
+      "out": "w6k="
+    },
+    {
+      "input": "44AgeOKAr+KAiwl4woU=",
+      "out": "44AgeOKAr+KAiwl4"
+    },
+    {
+      "input": "eAzvu7/jgIDigZ/igZ/igKg=",
+      "out": "eAzvu78="
+    },
+    {
+      "input": "eOKAi3g=",
+      "out": "eOKAi3g="
+    },
+    {
+      "input": "eOKArw==",
+      "out": "eA=="
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "eHgJ4oCK4oCv",
+      "out": "eHg="
+    },
+    {
+      "input": "4oCK4ZqA77u/oOOAAOKBn+KBnw==",
+      "out": "77u/oOOAAA=="
+    },
+    {
+      "input": "hQ==",
+      "out": "hQ=="
+    },
+    {
+      "input": "w6kK",
+      "out": "w6k="
+    },
+    {
+      "input": "CeOAIOKAr3h4C3g=",
+      "out": "44Ag4oCveHgLeA=="
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "77u/",
+      "out": "77u/"
+    },
+    {
+      "input": "wqDCoOOAgCDigK8=",
+      "out": ""
+    },
+    {
+      "input": "4oCpeCB4",
+      "out": "eCB4"
+    },
+    {
+      "input": "4oCveA==",
+      "out": "eA=="
+    },
+    {
+      "input": "DA==",
+      "out": ""
+    },
+    {
+      "input": "wqA=",
+      "out": ""
+    },
+    {
+      "input": "eHjigK8MeHjigZ8J",
+      "out": "eHjigK8MeHg="
+    },
+    {
+      "input": "DQ14AA==",
+      "out": "eAA="
+    },
+    {
+      "input": "eOKAqOKAgA==",
+      "out": "eA=="
+    },
+    {
+      "input": "eOOAgMOpIHjjgAw=",
+      "out": "eOOAgMOpIHjjgA=="
+    },
+    {
+      "input": "eHjjgIA=",
+      "out": "eHg="
+    },
+    {
+      "input": "CXjCoOKAig==",
+      "out": "eA=="
+    },
+    {
+      "input": "4oCvoHjDqYV4eA==",
+      "out": "oHjDqYV4eA=="
+    },
+    {
+      "input": "w6kg44CAIHg=",
+      "out": "w6kg44CAIHg="
+    },
+    {
+      "input": "4oGf4oCoeOKAqXg=",
+      "out": "eOKAqXg="
+    },
+    {
+      "input": "4ZqA",
+      "out": ""
+    },
+    {
+      "input": "4oGfAKDigKnDqeOA",
+      "out": "AKDigKnDqeOA"
+    },
+    {
+      "input": "heKAqA0NwoUN4oCK",
+      "out": "hQ=="
+    },
+    {
+      "input": "44DDqQ==",
+      "out": "44DDqQ=="
+    },
+    {
+      "input": "wqANCu+7vwwNeHg=",
+      "out": "77u/DA14eA=="
+    },
+    {
+      "input": "eOKAr+KAgKA=",
+      "out": "eOKAr+KAgKA="
+    },
+    {
+      "input": "wqDigIt4C8KF4oGfhQ==",
+      "out": "4oCLeAvCheKBn4U="
+    },
+    {
+      "input": "DOKAig==",
+      "out": ""
+    },
+    {
+      "input": "44CA4oCLDMLjgIAM4oCo4oCo",
+      "out": "4oCLDMI="
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "eAygeOKAqeOA",
+      "out": "eAygeOKAqeOA"
+    },
+    {
+      "input": "eAuF4oCphXjjgIA=",
+      "out": "eAuF4oCphXg="
+    },
+    {
+      "input": "oHjChe+7vwAJ",
+      "out": "oHjChe+7vwA="
+    },
+    {
+      "input": "Cw14woU=",
+      "out": "eA=="
+    },
+    {
+      "input": "hcKg4oCL77u/eHh4eA==",
+      "out": "hcKg4oCL77u/eHh4eA=="
+    },
+    {
+      "input": "4oCveMLC",
+      "out": "eMLC"
+    },
+    {
+      "input": "Cwl4wqA=",
+      "out": "eA=="
+    },
+    {
+      "input": "eHh44oCK",
+      "out": "eHh4"
+    },
+    {
+      "input": "44CAwoXDqeOAgHg=",
+      "out": "w6njgIB4"
+    },
+    {
+      "input": "Cw==",
+      "out": ""
+    },
+    {
+      "input": "eO+7vw0N",
+      "out": "eO+7vw=="
+    },
+    {
+      "input": "AOOAgHjigKk=",
+      "out": "AOOAgHg="
+    },
+    {
+      "input": "wnjvu78MAOKAig==",
+      "out": "wnjvu78MAA=="
+    },
+    {
+      "input": "eHggwqDjgA==",
+      "out": "eHggwqDjgA=="
+    },
+    {
+      "input": "eMOpw6l4wsOp",
+      "out": "eMOpw6l4wsOp"
+    },
+    {
+      "input": "eA==",
+      "out": "eA=="
+    },
+    {
+      "input": "44CAeA==",
+      "out": "eA=="
+    },
+    {
+      "input": "eOKAqA==",
+      "out": "eA=="
+    },
+    {
+      "input": "eMKFeAnigKh4wqB4",
+      "out": "eMKFeAnigKh4wqB4"
+    },
+    {
+      "input": "wqDigIvChQA=",
+      "out": "4oCLwoUA"
+    },
+    {
+      "input": "eA==",
+      "out": "eA=="
+    },
+    {
+      "input": "w6nigIp4DeKAqeKAr+KAqQ==",
+      "out": "w6nigIp4"
+    },
+    {
+      "input": "eAo=",
+      "out": "eA=="
+    },
+    {
+      "input": "4oCpeOKAgHh44oGfhQ==",
+      "out": "eOKAgHh44oGfhQ=="
+    },
+    {
+      "input": "4oCAeO+7v+KAr+GagMKg4oCoeA==",
+      "out": "eO+7v+KAr+GagMKg4oCoeA=="
+    },
+    {
+      "input": "44DhmoDDqQt4eMJ4",
+      "out": "44DhmoDDqQt4eMJ4"
+    },
+    {
+      "input": "woU=",
+      "out": ""
+    },
+    {
+      "input": "eHg=",
+      "out": "eHg="
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "4oCLwoV4eHg=",
+      "out": "4oCLwoV4eHg="
+    },
+    {
+      "input": "IOKAiuKAing=",
+      "out": "eA=="
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "77u/AAoLwqA=",
+      "out": "77u/AA=="
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "eOKAqKA=",
+      "out": "eOKAqKA="
+    },
+    {
+      "input": "eACFeKA=",
+      "out": "eACFeKA="
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "DQ0MoAp44oGfCw==",
+      "out": "oAp4"
+    },
+    {
+      "input": "eHg=",
+      "out": "eHg="
+    },
+    {
+      "input": "4oCoeOKAigrDqQ==",
+      "out": "eOKAigrDqQ=="
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "4oCK4oCKeOKAqeOAgHg=",
+      "out": "eOKAqeOAgHg="
+    },
+    {
+      "input": "eHh44ZqAwqA=",
+      "out": "eHh4"
+    },
+    {
+      "input": "DMOpwqDC44CA4oCL",
+      "out": "w6nCoMLjgIDigIs="
+    },
+    {
+      "input": "IAo=",
+      "out": ""
+    },
+    {
+      "input": "eHjC4oGf",
+      "out": "eHjC"
+    },
+    {
+      "input": "woUACXh4wg==",
+      "out": "AAl4eMI="
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "DQzhmoDigIB4",
+      "out": "eA=="
+    },
+    {
+      "input": "woUK",
+      "out": ""
+    },
+    {
+      "input": "AOKAqeKBnw==",
+      "out": "AA=="
+    },
+    {
+      "input": "4oCv",
+      "out": ""
+    },
+    {
+      "input": "w6l4Cw==",
+      "out": "w6l4"
+    },
+    {
+      "input": "4oCK4oCL4oCLDeOAgA==",
+      "out": "4oCL4oCL"
+    },
+    {
+      "input": "4oCKw6k=",
+      "out": "w6k="
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "4oCL4oCo4oCAwsKF77u/",
+      "out": "4oCL4oCo4oCAwsKF77u/"
+    },
+    {
+      "input": "4ZqA77u/IA==",
+      "out": "77u/"
+    },
+    {
+      "input": "woU=",
+      "out": ""
+    },
+    {
+      "input": "DXjhmoANCw0=",
+      "out": "eA=="
+    },
+    {
+      "input": "eKB4eOKAi3gKeA==",
+      "out": "eKB4eOKAi3gKeA=="
+    },
+    {
+      "input": "4oCpDeOAwoUNCg==",
+      "out": "44A="
+    },
+    {
+      "input": "eA==",
+      "out": "eA=="
+    },
+    {
+      "input": "w6nigKk=",
+      "out": "w6k="
+    },
+    {
+      "input": "IOKAqMOpCsOpwnh4",
+      "out": "w6kKw6nCeHg="
+    },
+    {
+      "input": "4oCK",
+      "out": ""
+    },
+    {
+      "input": "eOKArw==",
+      "out": "eA=="
+    },
+    {
+      "input": "wqB444CAeA3vu78=",
+      "out": "eOOAgHgN77u/"
+    },
+    {
+      "input": "eAvigKl4C8KF4oCpIA==",
+      "out": "eAvigKl4"
+    },
+    {
+      "input": "eHgMeHg=",
+      "out": "eHgMeHg="
+    },
+    {
+      "input": "4oCL4oCK",
+      "out": "4oCL"
+    },
+    {
+      "input": "DA==",
+      "out": ""
+    },
+    {
+      "input": "4oCv4oCveOGagMKF4ZqA4ZqA",
+      "out": "eA=="
+    },
+    {
+      "input": "eA==",
+      "out": "eA=="
+    },
+    {
+      "input": "oHgK4oCp77u/4oCL77u/eA==",
+      "out": "oHgK4oCp77u/4oCL77u/eA=="
+    },
+    {
+      "input": "oMKghcKgw6l4woUK",
+      "out": "oMKghcKgw6l4"
+    },
+    {
+      "input": "CQ3DqQ==",
+      "out": "w6k="
+    },
+    {
+      "input": "eOGagA==",
+      "out": "eA=="
+    },
+    {
+      "input": "4oCLeHh4",
+      "out": "4oCLeHh4"
+    },
+    {
+      "input": "C+KAr+KBnw==",
+      "out": ""
+    },
+    {
+      "input": "eHjigZ8=",
+      "out": "eHg="
+    },
+    {
+      "input": "DHjigK94DXjCoHg=",
+      "out": "eOKAr3gNeMKgeA=="
+    },
+    {
+      "input": "4oCLw6kNACDigIAJ4oCo",
+      "out": "4oCLw6kNAA=="
+    },
+    {
+      "input": "eHjjgAA=",
+      "out": "eHjjgAA="
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "woWgeHgNeOKAisOp",
+      "out": "oHh4DXjigIrDqQ=="
+    },
+    {
+      "input": "CeKBn3jCoA==",
+      "out": "eA=="
+    },
+    {
+      "input": "hQAAoAB4hQ==",
+      "out": "hQAAoAB4hQ=="
+    },
+    {
+      "input": "44B4",
+      "out": "44B4"
+    },
+    {
+      "input": "AHjChQoACg==",
+      "out": "AHjChQoA"
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "77u/",
+      "out": "77u/"
+    },
+    {
+      "input": "CXjvu78JAHjigKnigKk=",
+      "out": "eO+7vwkAeA=="
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "eCB4wnjjgIB4woU=",
+      "out": "eCB4wnjjgIB4"
+    },
+    {
+      "input": "44A=",
+      "out": "44A="
+    },
+    {
+      "input": "4oCAoHgKDAB4",
+      "out": "oHgKDAB4"
+    },
+    {
+      "input": "4oGfeHjigKjjgA==",
+      "out": "eHjigKjjgA=="
+    },
+    {
+      "input": "4oCAeA==",
+      "out": "eA=="
+    },
+    {
+      "input": "eHg=",
+      "out": "eHg="
+    },
+    {
+      "input": "DA==",
+      "out": ""
+    },
+    {
+      "input": "wqAM",
+      "out": ""
+    },
+    {
+      "input": "4oCv4oCLw6nCoHg=",
+      "out": "4oCLw6nCoHg="
+    },
+    {
+      "input": "hcOphQ==",
+      "out": "hcOphQ=="
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "eA==",
+      "out": "eA=="
+    },
+    {
+      "input": "eMOpeAt4",
+      "out": "eMOpeAt4"
+    },
+    {
+      "input": "w6kM4oCo77u/eMI=",
+      "out": "w6kM4oCo77u/eMI="
+    },
+    {
+      "input": "w6kMwoUJDHgM4oCv",
+      "out": "w6kMwoUJDHg="
+    },
+    {
+      "input": "hYUJwqDCoIU=",
+      "out": "hYUJwqDCoIU="
+    },
+    {
+      "input": "AHjigK94eOKAqQo=",
+      "out": "AHjigK94eA=="
+    },
+    {
+      "input": "w6l44oCoeOKArw==",
+      "out": "w6l44oCoeA=="
+    },
+    {
+      "input": "4oCpeHgg",
+      "out": "eHg="
+    },
+    {
+      "input": "4oCK77u/woWFwoV4",
+      "out": "77u/woWFwoV4"
+    },
+    {
+      "input": "CYWgwqB4",
+      "out": "haDCoHg="
+    },
+    {
+      "input": "w6kLeA==",
+      "out": "w6kLeA=="
+    },
+    {
+      "input": "CuKAr8KF4ZqA4oCK44CF4oCK",
+      "out": "44CF"
+    },
+    {
+      "input": "4oCK4ZqA44DDqXjDqQo=",
+      "out": "44DDqXjDqQ=="
+    },
+    {
+      "input": "4oGf",
+      "out": ""
+    },
+    {
+      "input": "4ZqA4oCoeOOAgMKFeA==",
+      "out": "eOOAgMKFeA=="
+    },
+    {
+      "input": "DeKAr8KFeA==",
+      "out": "eA=="
+    },
+    {
+      "input": "eO+7v++7v6A=",
+      "out": "eO+7v++7v6A="
+    },
+    {
+      "input": "wqAKeMKg",
+      "out": "eA=="
+    },
+    {
+      "input": "IHh4eOKAgMKFeA==",
+      "out": "eHh44oCAwoV4"
+    },
+    {
+      "input": "4oCpDXjigKl4wqDjgHg=",
+      "out": "eOKAqXjCoOOAeA=="
+    },
+    {
+      "input": "eA==",
+      "out": "eA=="
+    },
+    {
+      "input": "eIXigIB4eA==",
+      "out": "eIXigIB4eA=="
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "eKANwoU=",
+      "out": "eKA="
+    },
+    {
+      "input": "eOOAwoU=",
+      "out": "eOOA"
+    },
+    {
+      "input": "eHgN",
+      "out": "eHg="
+    },
+    {
+      "input": "eA0gAOKBn+KAr+KAr3g=",
+      "out": "eA0gAOKBn+KAr+KAr3g="
+    },
+    {
+      "input": "AA==",
+      "out": "AA=="
+    },
+    {
+      "input": "woUNIA==",
+      "out": ""
+    },
+    {
+      "input": "eMKF4oCp",
+      "out": "eA=="
+    },
+    {
+      "input": "eHgM4ZqA44CA",
+      "out": "eHg="
+    },
+    {
+      "input": "DAB4eHg=",
+      "out": "AHh4eA=="
+    },
+    {
+      "input": "wqAg4oCpCng=",
+      "out": "eA=="
+    },
+    {
+      "input": "eA==",
+      "out": "eA=="
+    },
+    {
+      "input": "CXjDqeKAr3h44ZqAeA==",
+      "out": "eMOp4oCveHjhmoB4"
+    },
+    {
+      "input": "Cw==",
+      "out": ""
+    },
+    {
+      "input": "eA==",
+      "out": "eA=="
+    },
+    {
+      "input": "4oCLwoXigKiFwuKAiw==",
+      "out": "4oCLwoXigKiFwuKAiw=="
+    },
+    {
+      "input": "wqA=",
+      "out": ""
+    },
+    {
+      "input": "44B4CYXDqQ==",
+      "out": "44B4CYXDqQ=="
+    },
+    {
+      "input": "w6njgIB44oCoeHjigZ8=",
+      "out": "w6njgIB44oCoeHg="
+    },
+    {
+      "input": "eHg=",
+      "out": "eHg="
+    },
+    {
+      "input": "DeOACsKg4oGfIAk=",
+      "out": "44A="
+    },
+    {
+      "input": "eOOAgOKArw==",
+      "out": "eA=="
+    },
+    {
+      "input": "CeKAqQl444CA",
+      "out": "eA=="
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "eAzigZ8=",
+      "out": "eA=="
+    },
+    {
+      "input": "hXg=",
+      "out": "hXg="
+    },
+    {
+      "input": "eO+7vw==",
+      "out": "eO+7vw=="
+    },
+    {
+      "input": "4oCL4ZqAeOKBn3jjgIAM",
+      "out": "4oCL4ZqAeOKBn3g="
+    },
+    {
+      "input": "4oGfIOKAqA==",
+      "out": ""
+    },
+    {
+      "input": "eOOAgOKBn3h4woU=",
+      "out": "eOOAgOKBn3h4"
+    },
+    {
+      "input": "eOKAqYU=",
+      "out": "eOKAqYU="
+    },
+    {
+      "input": "eArCoMOp77u/hXg=",
+      "out": "eArCoMOp77u/hXg="
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "DQ==",
+      "out": ""
+    },
+    {
+      "input": "DQ==",
+      "out": ""
+    },
+    {
+      "input": "w6l44oGfhQ==",
+      "out": "w6l44oGfhQ=="
+    },
+    {
+      "input": "eOOA4oCKwoWg",
+      "out": "eOOA4oCKwoWg"
+    },
+    {
+      "input": "CQp4C+OAgA==",
+      "out": "eA=="
+    },
+    {
+      "input": "DAsKCXg=",
+      "out": "eA=="
+    },
+    {
+      "input": "4oGf4oCAeHg=",
+      "out": "eHg="
+    },
+    {
+      "input": "4oCo44CAoA==",
+      "out": "oA=="
+    },
+    {
+      "input": "AKB4",
+      "out": "AKB4"
+    },
+    {
+      "input": "4ZqAwuKAqA==",
+      "out": "wg=="
+    },
+    {
+      "input": "eHggwgA=",
+      "out": "eHggwgA="
+    },
+    {
+      "input": "4oCoeHgA",
+      "out": "eHgA"
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "4oCo44A=",
+      "out": "44A="
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "44CAwoWFCSA=",
+      "out": "hQ=="
+    },
+    {
+      "input": "4oCpw6nigIrigIB4",
+      "out": "w6nigIrigIB4"
+    },
+    {
+      "input": "4oCo44CA4oCveHggeA==",
+      "out": "eHggeA=="
+    },
+    {
+      "input": "4oCAw6nhmoB4eHh44oCo",
+      "out": "w6nhmoB4eHh4"
+    },
+    {
+      "input": "eAw=",
+      "out": "eA=="
+    },
+    {
+      "input": "4oGf4oCA",
+      "out": ""
+    },
+    {
+      "input": "4oCv4oCoCuKAgArDqQ==",
+      "out": "w6k="
+    },
+    {
+      "input": "DIULeA==",
+      "out": "hQt4"
+    },
+    {
+      "input": "4oGfhQzigIrigIsJ4oCp4oCp",
+      "out": "hQzigIrigIs="
+    },
+    {
+      "input": "wqB44oCoeHgNeMI=",
+      "out": "eOKAqHh4DXjC"
+    },
+    {
+      "input": "4oCveOKAinjigIp4eA==",
+      "out": "eOKAinjigIp4eA=="
+    },
+    {
+      "input": "44DCoMKF",
+      "out": "44A="
+    },
+    {
+      "input": "4oGfCuKAiuKBn8KFCgzCoA==",
+      "out": ""
+    },
+    {
+      "input": "4oCKwnh4w6kgCQ==",
+      "out": "wnh4w6k="
+    },
+    {
+      "input": "CcKgCg==",
+      "out": ""
+    },
+    {
+      "input": "4ZqA4oCo4oCp77u/C3h4eA==",
+      "out": "77u/C3h4eA=="
+    },
+    {
+      "input": "77u/C+KAisKg4oCK",
+      "out": "77u/"
+    },
+    {
+      "input": "eHjigKnjgA==",
+      "out": "eHjigKnjgA=="
+    },
+    {
+      "input": "IOKAqO+7v4XigK8M",
+      "out": "77u/hQ=="
+    },
+    {
+      "input": "DQ==",
+      "out": ""
+    },
+    {
+      "input": "eA==",
+      "out": "eA=="
+    },
+    {
+      "input": "eMKFAAo=",
+      "out": "eMKFAA=="
+    },
+    {
+      "input": "eOOAgAoAeA==",
+      "out": "eOOAgAoAeA=="
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "C3jDqXjChQ==",
+      "out": "eMOpeA=="
+    },
+    {
+      "input": "DeKAiwzhmoA=",
+      "out": "4oCL"
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "eKB4eKA=",
+      "out": "eKB4eKA="
+    },
+    {
+      "input": "oIUJwoXhmoA=",
+      "out": "oIU="
+    },
+    {
+      "input": "eMIJw6k=",
+      "out": "eMIJw6k="
+    },
+    {
+      "input": "IOKAr+OAgAnDqeGagA==",
+      "out": "w6k="
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "eAw=",
+      "out": "eA=="
+    },
+    {
+      "input": "eAkgeHh4eA==",
+      "out": "eAkgeHh4eA=="
+    },
+    {
+      "input": "heGagA==",
+      "out": "hQ=="
+    },
+    {
+      "input": "woXigKg=",
+      "out": ""
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "4ZqAIAnigKl4eA==",
+      "out": "eHg="
+    },
+    {
+      "input": "",
+      "out": ""
+    },
+    {
+      "input": "CQ2F44A=",
+      "out": "heOA"
+    },
+    {
+      "input": "4oCo",
+      "out": ""
+    },
+    {
+      "input": "4oCA",
+      "out": ""
+    },
+    {
+      "input": "eOKBnyDDqcKF",
+      "out": "eOKBnyDDqQ=="
+    },
+    {
+      "input": "4oCp",
+      "out": ""
+    },
+    {
+      "input": "AMKF44B4",
+      "out": "AMKF44B4"
+    },
+    {
+      "input": "eMI=",
+      "out": "eMI="
+    },
+    {
+      "input": "wngAheOAgOKAi4U=",
+      "out": "wngAheOAgOKAi4U="
+    }
+  ]
+}

@@ -155,7 +155,7 @@ fn follow_in_scope(path: &Path) -> Result<PathBuf, Failed> {
 }
 
 /// `path` cleaned as Go's filepath.Clean cleans an absolute one.
-fn clean(path: &Path) -> PathBuf {
+pub(crate) fn clean(path: &Path) -> PathBuf {
     let mut out = PathBuf::from("/");
     for c in path.components() {
         match c {

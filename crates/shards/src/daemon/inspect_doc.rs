@@ -1388,7 +1388,7 @@ mod tests {
             // A home the store writes in, as the daemon's is made before it writes there.
             std::fs::create_dir_all(&home).unwrap();
             let store = crate::volumes::Store::new(&home);
-            let mounts = crate::volumes::register(&store, &run, &run.volumes, &|_| Ok(Vec::new()))
+            let mounts = crate::volumes::register(&store, &run, &run.volumes, None, &|_| Ok(Vec::new()))
                 .unwrap()
                 .into_iter()
                 .map(|(p, _)| p)

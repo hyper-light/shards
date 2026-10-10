@@ -53,7 +53,8 @@ pub fn verify_delegate(delegator: &Metadata, name: &str, delegated: &Metadata) -
             "insufficient threshold ({threshold}) configured for {name}"
         )));
     }
-    let payload = delegated.signed.canonical()?;
+    // What the keys sign, made once, where go-tuf makes it: after each key is read.
+    let mut payload: Option<Vec<u8>> = None;
     let mut signing: Vec<Vec<u8>> = Vec::new();
     for id in &keyids {
         let key = keys
@@ -71,6 +72,10 @@ pub fn verify_delegate(delegator: &Metadata, name: &str, delegated: &Metadata) -
             "ecdsa-sha2-nistp384" if key.keytype != "ed25519" => Hash::Sha384,
             _ => Hash::Sha256,
         };
+        let payload = match &mut payload {
+            Some(p) => p,
+            None => payload.insert(delegated.signed.canonical()?),
+        };
         // The signature by this key ID: the last, as go-tuf's loop leaves it.
         let sig = delegated
             .signatures
@@ -79,7 +84,7 @@ pub fn verify_delegate(delegator: &Metadata, name: &str, delegated: &Metadata) -
             .find(|s| s.keyid == *id)
             .map(|s| s.sig.as_slice())
             .unwrap_or_default();
-        if public.verify(hash, &payload, sig) {
+        if public.verify(hash, payload, sig) {
             let fp = public.fingerprint();
             if !signing.contains(&fp) {
                 signing.push(fp);

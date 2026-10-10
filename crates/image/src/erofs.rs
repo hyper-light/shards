@@ -14,9 +14,13 @@
 //! inode number is 0. Every inode record (inode, inline xattrs, inline tail) stays within
 //! one block, as the kernel requires of inline data (data.c). Data blocks follow the
 //! metadata, in inode order.
+//!
+//! One file is read back from an image as the kernel finds and reads it ([`read_file`]):
+//! the daemon reads an image's normalized Agentfile so from the root its microVM mounts
+//! (D109).
 
 use std::collections::BTreeMap;
-use std::io::{self, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::sync::Arc;
 
 use crate::{Error, bad as err};
@@ -58,6 +62,8 @@ mod ifmt {
     pub const DIR: u16 = 0o040_000;
     pub const CHR: u16 = 0o020_000;
     pub const FIFO: u16 = 0o010_000;
+    /// The type bits themselves (S_IFMT).
+    pub const FMT: u16 = 0o170_000;
 }
 
 pub type NodeId = usize;
@@ -1436,6 +1442,238 @@ fn encode_dev(major: u32, minor: u32) -> Result<u32, Error> {
     Ok((minor & 0xff) | (major << 8) | ((minor & !0xff) << 12))
 }
 
+/// What an image holds at a path ([`read_file`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Found {
+    File(Vec<u8>),
+    /// A directory, a symlink (never followed), a device, a FIFO or a socket.
+    Other,
+    Missing,
+}
+
+/// The regular file at `path` (`/`-separated, from the root) in an image [`write`]
+/// wrote, found as the kernel finds it (namei.c: a directory's blocks searched by halves,
+/// each block's names in order) and read as it reads it (data.c): its bytes, refused
+/// where it is longer than `max`. A symlink is never followed, at `path` or on the way.
+pub fn read_file(image: &mut (impl Read + Seek), path: &[u8], max: u64) -> Result<Found, Error> {
+    let show = || String::from_utf8_lossy(path).into_owned();
+    let sb = bytes_at(image, SUPER_OFFSET, SUPER_SIZE)?;
+    if le32(&sb, 0) != Some(MAGIC) || sb.get(12) != Some(&BLOCK_BITS) || le32(&sb, 80) != Some(0) {
+        return err("not an EROFS image as shards writes them");
+    }
+    let mut img = Image {
+        image,
+        meta: u64::from(le32(&sb, 40).unwrap_or_default()) * BLOCK,
+    };
+    let mut nid = u64::from(le16(&sb, 14).unwrap_or_default());
+    for name in path.split(|&c| c == b'/').filter(|n| !n.is_empty()) {
+        if matches!(name, b"." | b"..") {
+            return err(format!("{:?}: names only, no . or ..", show()));
+        }
+        let dir = img.inode(nid)?;
+        if dir.mode & ifmt::FMT != ifmt::DIR {
+            return Ok(Found::Missing);
+        }
+        match img.lookup(&dir, name)? {
+            Some(child) => nid = child,
+            None => return Ok(Found::Missing),
+        }
+    }
+    let file = img.inode(nid)?;
+    if file.mode & ifmt::FMT != ifmt::REG {
+        return Ok(Found::Other);
+    }
+    if file.size > max {
+        return err(format!("{:?} is {} bytes, more than {max}", show(), file.size));
+    }
+    // Its whole blocks in one read; FLAT_INLINE's last block from its record.
+    let blocks = file.size.div_ceil(BLOCK);
+    let whole = if file.tail_at.is_some() {
+        blocks.saturating_sub(1)
+    } else {
+        blocks
+    };
+    let mut data = match whole.saturating_mul(BLOCK).min(file.size) {
+        0 => Vec::new(),
+        n => {
+            let from = img.data_at(&file, 0)?;
+            bytes_at(img.image, from, n)?
+        }
+    };
+    if whole < blocks {
+        data.extend_from_slice(&img.block(&file, whole)?);
+    }
+    Ok(Found::File(data))
+}
+
+/// `len` bytes of `image` from `offset`.
+fn bytes_at(image: &mut (impl Read + Seek), offset: u64, len: u64) -> Result<Vec<u8>, Error> {
+    let mut b = vec![0; usize::try_from(len).map_err(|_| Error(format!("{len} bytes")))?];
+    image.seek(SeekFrom::Start(offset))?;
+    image.read_exact(&mut b)?;
+    Ok(b)
+}
+
+fn le16(b: &[u8], at: usize) -> Option<u16> {
+    Some(u16::from_le_bytes(
+        b.get(at..at.checked_add(2)?)?.try_into().ok()?,
+    ))
+}
+
+fn le32(b: &[u8], at: usize) -> Option<u32> {
+    Some(u32::from_le_bytes(
+        b.get(at..at.checked_add(4)?)?.try_into().ok()?,
+    ))
+}
+
+fn le64(b: &[u8], at: usize) -> Option<u64> {
+    Some(u64::from_le_bytes(
+        b.get(at..at.checked_add(8)?)?.try_into().ok()?,
+    ))
+}
+
+/// An image being read, and where its metadata area starts.
+struct Image<'i, I> {
+    image: &'i mut I,
+    meta: u64,
+}
+
+/// What [`read_file`] reads of an inode.
+struct Record {
+    mode: u16,
+    size: u64,
+    /// Its first data block.
+    start: u64,
+    /// Where its last block's bytes sit in its record, for FLAT_INLINE.
+    tail_at: Option<u64>,
+}
+
+impl<I: Read + Seek> Image<'_, I> {
+    fn inode(&mut self, nid: u64) -> Result<Record, Error> {
+        let corrupt = || Error(format!("inode {nid}: out of the image or corrupt"));
+        let offset = nid
+            .checked_mul(SLOT)
+            .and_then(|o| o.checked_add(self.meta))
+            .ok_or_else(corrupt)?;
+        let mut b = bytes_at(self.image, offset, COMPACT)?;
+        let format = le16(&b, 0).ok_or_else(corrupt)?;
+        let extended = format & 1 == 1;
+        let layout = (format >> 1) & 7;
+        if format >> 4 != 0 || !matches!(layout, FLAT_PLAIN | FLAT_INLINE) {
+            return err(format!(
+                "inode {nid}: format {format:#x}, which shards does not write"
+            ));
+        }
+        if extended {
+            b = bytes_at(self.image, offset, EXTENDED)?;
+        }
+        let icount = u64::from(le16(&b, 2).ok_or_else(corrupt)?);
+        let size = if extended {
+            le64(&b, 8)
+        } else {
+            le32(&b, 8).map(u64::from)
+        };
+        let xattrs = icount.checked_sub(1).map_or(0, |n| XATTR_HEADER + 4 * n);
+        let head = if extended { EXTENDED } else { COMPACT };
+        Ok(Record {
+            mode: le16(&b, 4).ok_or_else(corrupt)?,
+            size: size.ok_or_else(corrupt)?,
+            start: u64::from(le32(&b, 16).ok_or_else(corrupt)?),
+            tail_at: if layout == FLAT_INLINE {
+                Some(offset.checked_add(head + xattrs).ok_or_else(corrupt)?)
+            } else {
+                None
+            },
+        })
+    }
+
+    /// Where block `k` of an inode's data lies, of its whole blocks.
+    fn data_at(&self, inode: &Record, k: u64) -> Result<u64, Error> {
+        if inode.start == u64::from(NULL_ADDR) {
+            return err("data at no block");
+        }
+        inode
+            .start
+            .checked_add(k)
+            .and_then(|b| b.checked_mul(BLOCK))
+            .ok_or_else(|| Error("data past the image".into()))
+    }
+
+    /// Block `k` of an inode's data, as many bytes of it as the inode holds: FLAT_INLINE
+    /// keeps its last in its record, which it may not cross (data.c).
+    fn block(&mut self, inode: &Record, k: u64) -> Result<Vec<u8>, Error> {
+        let from = k.checked_mul(BLOCK).filter(|&f| f < inode.size);
+        let len = from.map_or(0, |f| (inode.size - f).min(BLOCK));
+        if len == 0 {
+            return err(format!("block {k} past the data"));
+        }
+        match inode.tail_at {
+            Some(tail_at) if k + 1 == inode.size.div_ceil(BLOCK) => {
+                if tail_at % BLOCK + len > BLOCK {
+                    return err("inline data that crosses a block");
+                }
+                bytes_at(self.image, tail_at, len)
+            }
+            _ => bytes_at(self.image, self.data_at(inode, k)?, len),
+        }
+    }
+
+    /// The inode `name` names in directory `dir`: its blocks searched by halves, as each
+    /// block's names are in order and all before the next block's (namei.c).
+    fn lookup(&mut self, dir: &Record, name: &[u8]) -> Result<Option<u64>, Error> {
+        let (mut lo, mut hi) = (0, dir.size.div_ceil(BLOCK));
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            let block = self.block(dir, mid)?;
+            let entries = dirents(&block)?;
+            let (Some(first), Some(last)) = (entries.first(), entries.last()) else {
+                return err("a directory block without entries");
+            };
+            if name < first.0 {
+                hi = mid;
+            } else if name > last.0 {
+                lo = mid + 1;
+            } else {
+                return Ok(entries
+                    .binary_search_by(|e| e.0.cmp(name))
+                    .ok()
+                    .and_then(|i| entries.get(i))
+                    .map(|e| e.1));
+            }
+        }
+        Ok(None)
+    }
+}
+
+/// A directory block's names and inodes: its dirents, as many as the first's name offset
+/// leaves room for, then their names, the last ending at the block's first NUL (dir.c).
+fn dirents(block: &[u8]) -> Result<Vec<(&[u8], u64)>, Error> {
+    let corrupt = || Error("a corrupt directory block".into());
+    let first = u64::from(le16(block, 8).ok_or_else(corrupt)?);
+    if !(DIRENT..BLOCK).contains(&first) {
+        return Err(corrupt());
+    }
+    let n = usize::try_from(first / DIRENT).map_err(|_| corrupt())?;
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let d = i * DIRENT as usize;
+        let nid = le64(block, d).ok_or_else(corrupt)?;
+        let from = usize::from(le16(block, d + 8).ok_or_else(corrupt)?);
+        let to = if i + 1 < n {
+            usize::from(le16(block, d + DIRENT as usize + 8).ok_or_else(corrupt)?)
+        } else {
+            let rest = block.get(from..).ok_or_else(corrupt)?;
+            from + rest.iter().position(|&c| c == 0).unwrap_or(rest.len())
+        };
+        let name = block
+            .get(from..to)
+            .filter(|n| !n.is_empty() && n.len() <= NAME_MAX)
+            .ok_or_else(corrupt)?;
+        out.push((name, nid));
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::indexing_slicing, clippy::panic)]
 mod tests {
@@ -1930,6 +2168,85 @@ mod tests {
                 (b"..".to_vec(), r.root, ft::DIR)
             ]
         );
+    }
+
+    /// One file read back as the kernel finds it: every size of file, names found by
+    /// halves in a directory of many blocks and missed before, between and after them,
+    /// nothing but regular files read, no symlink followed, no file past `max`.
+    #[test]
+    fn one_file_is_read_back_as_the_kernel_finds_it() {
+        let (tree, mut mem) = sample();
+        let img = image(&tree, &mut mem);
+        let read = |path: &str, max: u64| read_file(&mut io::Cursor::new(&img), path.as_bytes(), max);
+        for (i, len) in [0usize, 1, 4095, 4096, 4097, 3 * 4096 + 17, (1 << 20) + 5]
+            .into_iter()
+            .enumerate()
+        {
+            for path in [format!("etc/f{len}"), format!("/etc//f{len}")] {
+                assert_eq!(
+                    read(&path, u64::MAX).unwrap(),
+                    Found::File(mem.0[i].clone()),
+                    "{path}"
+                );
+            }
+        }
+        assert_eq!(read("hardlink", u64::MAX).unwrap(), Found::File(mem.0[4].clone()));
+        assert_eq!(read("etc/f4097", 4097).unwrap(), Found::File(mem.0[4].clone()));
+        assert!(read("etc/f4097", 4096).is_err(), "a file past max");
+        let many = r_names(&img, "many");
+        assert!(many.len() > 600, "{}", many.len());
+        for name in &many {
+            let found = read(&format!("many/{}", String::from_utf8_lossy(name)), 0).unwrap();
+            assert_eq!(found, Found::Other, "{}", String::from_utf8_lossy(name));
+        }
+        for name in ["!", "entry-", "entry-0300a", "entry-9999", "zzzz", "{"] {
+            assert_eq!(
+                read(&format!("many/{name}"), 0).unwrap(),
+                Found::Missing,
+                "{name}"
+            );
+        }
+        assert_eq!(read("etc", 0).unwrap(), Found::Other, "a directory");
+        assert_eq!(read("short", 0).unwrap(), Found::Other, "a symlink, not followed");
+        assert_eq!(read("tty", 0).unwrap(), Found::Other, "a device");
+        assert_eq!(read("short/x", 0).unwrap(), Found::Missing, "through a symlink");
+        assert_eq!(read("etc/f1/x", 0).unwrap(), Found::Missing, "through a file");
+        assert_eq!(read("nope", 0).unwrap(), Found::Missing);
+        assert!(read("etc/../etc/f1", 1).is_err());
+        assert!(read("./etc/f1", 1).is_err());
+        let mut not = img.clone();
+        not[1024] ^= 1;
+        assert!(
+            read_file(&mut io::Cursor::new(&not), b"etc/f1", 1).is_err(),
+            "no magic"
+        );
+        assert!(
+            read_file(&mut io::Cursor::new(&img[..2048]), b"etc/f1", 1).is_err(),
+            "cut short"
+        );
+        // A directory block whose first name lies before its entries, or past the block.
+        let r = Reader::open(&img);
+        let root = r.inode(r.root);
+        assert!(root.inline, "the root's entries are in its record");
+        for nameoff in [0u16, 11, BLOCK as u16] {
+            let mut bad = img.clone();
+            bad[root.tail_at + 8..root.tail_at + 10].copy_from_slice(&nameoff.to_le_bytes());
+            let e = read_file(&mut io::Cursor::new(&bad), b"etc/f1", 1).unwrap_err();
+            assert!(
+                e.to_string().contains("a corrupt directory block"),
+                "{nameoff}: {e}"
+            );
+        }
+    }
+
+    /// A directory's names, as the reader written from the kernel's rules lists them.
+    fn r_names(img: &[u8], dir: &str) -> Vec<Vec<u8>> {
+        let r = Reader::open(img);
+        r.dir(&r.lookup(dir))
+            .into_iter()
+            .map(|(n, _, _)| n)
+            .filter(|n| n != b"." && n != b"..")
+            .collect()
     }
 
     #[test]

@@ -1,0 +1,16 @@
+#!/bin/sh
+# Regenerates crates/gitsign/testdata/rsa.json: what Go's crypto/rsa, x/crypto/ssh
+# v0.55.0, hiddeco/sshsig and go-crypto v1.4.1, as buildx v0.37.1 vendors and builds
+# them, make of RSA keys of every size of public exponent (rsa_oracle_test.go), for
+# crates/gitsign/tests/rsa.rs.
+#
+#   scripts/gitsign/generate-rsa BUILDX_V0.37.1_CHECKOUT
+set -eu
+here=$(cd "$(dirname "$0")" && pwd)
+root=$(cd "$here/../.." && pwd)
+bx=$1
+trap 'rm -f "$bx/cmd/buildx/zz_shards_rsa_test.go"' EXIT
+cp "$here/rsa_oracle_test.go" "$bx/cmd/buildx/zz_shards_rsa_test.go"
+cd "$bx"
+SHARDS_RSA_OUT="$root/crates/gitsign/testdata/rsa.json" \
+	go test -mod=vendor -count=1 -run '^TestShardsRSA$' ./cmd/buildx/

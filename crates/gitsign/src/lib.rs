@@ -10,6 +10,7 @@
 
 pub mod arith;
 pub mod armor;
+mod go;
 pub mod key;
 pub mod keyring;
 pub mod pem;
@@ -430,19 +431,21 @@ impl<'a> Reader<'a> {
 /// BuildKit's pgpsign.ParseArmoredDetachedSignature: the first signature packet of an
 /// armored block, and the block's body, each error in its words.
 pub fn parse_armored_detached_signature(data: &[u8]) -> Result<(signature::Signature, Vec<u8>), String> {
-    let block = armor::decode(data).map_err(|e| match e {
-        Error::Structural(_) | Error::Other(_) => format!("failed to read armored signature body: {e}"),
-        e => format!("failed to decode armored signature: {e}"),
-    })?;
-    let mut reader = Reader::new(&block.body);
-    loop {
+    let block = armor::decode(data).map_err(|e| format!("failed to decode armored signature: {e}"))?;
+    let body = block
+        .read_body()
+        .0
+        .map_err(|e| format!("failed to read armored signature body: {e}"))?;
+    let mut reader = Reader::new(&body);
+    let sig = loop {
         match reader.next_packet() {
-            Ok(Some(Packet::Signature(sig))) => return Ok((*sig, block.body.clone())),
+            Ok(Some(Packet::Signature(sig))) => break *sig,
             Ok(Some(_)) => continue,
             Ok(None) => return Err("no signature packet found".into()),
             Err(e) => return Err(format!("failed to read next packet: {e}")),
         }
-    }
+    };
+    Ok((sig, body.into_vec()))
 }
 
 /// What buildx tells a policy of a Git object's signature (policy/git.go

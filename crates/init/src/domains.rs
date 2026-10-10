@@ -87,6 +87,140 @@ pub struct Domain {
     /// Its `/etc/resolv.conf`, where it reaches past the microVM: the microVM's gateway,
     /// whose network process asks the host's resolvers (D59).
     pub resolv: Option<Vec<u8>>,
+    /// What the Agentfile's `VOLUME`s say of their mount points for it (D109).
+    pub volumes: Vec<VolumeRule>,
+}
+
+/// What an Agentfile `VOLUME` says of one of its mount points for a domain (AGENTFILE_ARCH.md
+/// §4.5, §12 answers 8 and 9): whether the domain is given the volume there (every domain
+/// where no `FOR` scopes it), and its owner and mode (`--chown`, `--chmod`), as written.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VolumeRule {
+    pub path: String,
+    pub granted: bool,
+    pub chown: String,
+    pub chmod: String,
+}
+
+/// A volume the run gives its domains (D109), as the host's setup entry says it
+/// (`volume=`, or `domain-volume=` for one the run's own root does not mount, each with
+/// the `domains` flag): its virtio-fs tag, its mount point, whether it is read-only,
+/// whether the image's files there are copied into it where it is empty, and whether the
+/// run's own root mounts it, which copies them then.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Share {
+    tag: String,
+    dest: String,
+    ro: bool,
+    copy: bool,
+    main: bool,
+    /// The store's own volume, which `--chown` and `--chmod` set: never a host directory.
+    own: bool,
+}
+
+/// The shares the run gives its domains, from its setup entries.
+fn shares_of(setup: &[Vec<u8>]) -> Vec<Share> {
+    let mut out = Vec::new();
+    for e in setup {
+        let (rest, main) = if let Some(r) = e.strip_prefix(b"volume=") {
+            (r, true)
+        } else if let Some(r) = e.strip_prefix(b"domain-volume=") {
+            (r, false)
+        } else {
+            continue;
+        };
+        let parts: Vec<&[u8]> = rest.split(|&b| b == 0).collect();
+        let [tag, dest, flags, only] = parts.as_slice() else {
+            continue;
+        };
+        let flags: Vec<&[u8]> = flags.split(|&b| b == b',').collect();
+        if !only.is_empty() || !flags.contains(&&b"domains"[..]) {
+            continue;
+        }
+        let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
+        out.push(Share {
+            tag: text(tag),
+            dest: crate::copy::clean(std::path::Path::new(&text(dest)))
+                .to_string_lossy()
+                .into_owned(),
+            ro: flags.contains(&&b"ro"[..]),
+            copy: flags.contains(&&b"copy"[..]),
+            main,
+            own: flags.contains(&&b"own"[..]),
+        });
+    }
+    out
+}
+
+/// The image as built, its layers read-only (`changes::lower`), every path resolved in
+/// it: `None` where they were not kept.
+fn as_built() -> Result<Option<crate::inroot::Root>, String> {
+    let Some(lower) = crate::changes::lower() else {
+        return Ok(None);
+    };
+    crate::inroot::Root::open(std::path::Path::new(&format!(
+        "/proc/self/fd/{}",
+        lower.as_raw_fd()
+    )))
+    .map(Some)
+    .map_err(|e| format!("the image's layers: {e}"))
+}
+
+/// The file at `path` in the image as built, its symlinks resolved there, read to at
+/// most one byte past what [`json::parse`] takes; `None` where there is none.
+fn built_file(root: &crate::inroot::Root, path: &str) -> Result<Option<Vec<u8>>, String> {
+    use std::io::Read as _;
+    let file = match root.open_at(path.as_bytes(), libc::O_RDONLY) {
+        Ok(fd) => std::fs::File::from(fd),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("{path}: {e}")),
+    };
+    let mut data = Vec::new();
+    file.take(json::MAX_LEN as u64 + 1)
+        .read_to_end(&mut data)
+        .map_err(|e| format!("{path}: {e}"))?;
+    Ok(Some(data))
+}
+
+/// One volume at each mount point, as the build makes them: a domain is given what is
+/// mounted where its rules say, so a second volume there would go to the first's domains.
+fn once_each(paths: impl Iterator<Item = String>) -> Result<(), String> {
+    let mut seen = std::collections::BTreeSet::new();
+    for p in paths {
+        if !seen.insert(crate::copy::clean(std::path::Path::new(&p))) {
+            return Err(format!("/.agentfile.json: two volumes mount {p}"));
+        }
+    }
+    Ok(())
+}
+
+/// Whether `path` is `dir` or beneath it.
+fn within(path: &str, dir: &str) -> bool {
+    path.strip_prefix(dir)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+}
+
+/// Whether `d` is given the volume at `dest`: where a `VOLUME` names it, as that says;
+/// a volume no `VOLUME` scopes (Docker's own, or one with no `FOR`), every domain.
+fn given_volume(d: &Domain, dest: &str) -> bool {
+    let rules: Vec<&VolumeRule> = d.volumes.iter().filter(|r| r.path == dest).collect();
+    rules.is_empty() || rules.iter().any(|r| r.granted)
+}
+
+/// The owner `--chown` names (§12 answer 9): an agent or harness by its name, its own
+/// uid and gid; else a user and perhaps a group, by name or ID, as the image's own
+/// databases say them.
+fn owner(
+    chown: &str,
+    domains: &[Domain],
+    passwd: Option<&[u8]>,
+    group: Option<&[u8]>,
+) -> Result<(u32, u32), String> {
+    if let Some(d) = domains.iter().find(|d| d.name.1 == chown) {
+        return Ok((d.id, d.id));
+    }
+    let u = shards_user::resolve(chown.as_bytes(), passwd, group)?;
+    Ok((u.uid, u.gid))
 }
 
 /// What the image's normalized Agentfile says to start: every domain's directory, the
@@ -100,10 +234,17 @@ pub type Read = (
 /// The directories of every domain the image's normalized Agentfile declares, and those
 /// domains that say how they run; nothing where the image has no Agentfile.
 pub fn read() -> Result<Read, String> {
-    let text = match std::fs::read("/.agentfile.json") {
-        Ok(t) => t,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok((Vec::new(), Vec::new(), Vec::new())),
-        Err(e) => return Err(format!("/.agentfile.json: {e}")),
+    let none = || Ok((Vec::new(), Vec::new(), Vec::new()));
+    // The image as built, never the run's root, which the run and `cp` write (D109): what
+    // it declares is what the daemon read and checked against the image.
+    let Some(root) = as_built()? else {
+        return match std::fs::symlink_metadata("/.agentfile.json") {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => none(),
+            _ => Err("the image's layers were not kept, where its Agentfile is read".into()),
+        };
+    };
+    let Some(text) = built_file(&root, "/.agentfile.json")? else {
+        return none();
     };
     let spec = json::parse(&text).map_err(|e| format!("/.agentfile.json: {e}"))?;
     if spec.get("schemaVersion").and_then(Value::u64) != Some(1) {
@@ -129,10 +270,9 @@ pub fn read() -> Result<Read, String> {
             let id = FIRST_ID.checked_add(n).ok_or("more domains than uids")?;
             n += 1;
             let path = format!("{dir}.d/osi.json");
-            let config = match std::fs::read(&path) {
-                Ok(c) => json::parse(&c).map_err(|e| format!("{path}: {e}"))?,
-                Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
-                Err(e) => return Err(format!("{path}: {e}")),
+            let config = match built_file(&root, &path)? {
+                Some(c) => json::parse(&c).map_err(|e| format!("{path}: {e}"))?,
+                None => continue,
             };
             let Some(run) = config.get("run") else { continue };
             out.push(domain(kind, name, dir, id, d, &config, run)?);
@@ -150,7 +290,7 @@ pub fn read() -> Result<Read, String> {
     });
     let plan = crate::netplan::plan(&spec, &names, own, own6)?;
     for d in &mut out {
-        d.mcp = offered(&spec, d);
+        d.mcp = offered(&spec, d, &root);
     }
     for (x, y) in crate::netplan::channels(&spec, &names) {
         for (me, peer, send) in [(x, y, true), (y, x, false)] {
@@ -160,6 +300,42 @@ pub fn read() -> Result<Read, String> {
                     Some(c) => c.2 = true,
                     None => d.channels.push((peer, send, !send)),
                 }
+            }
+        }
+    }
+    let volumes = spec.get("volumes").map(Value::array).unwrap_or_default();
+    once_each(
+        volumes
+            .iter()
+            .flat_map(|v| v.get("paths").and_then(Value::strings).unwrap_or_default()),
+    )?;
+    for v in volumes {
+        let paths = v.get("paths").and_then(Value::strings).unwrap_or_default();
+        let scope = v.get("for");
+        let kind = scope.and_then(|f| f.get("kind")).and_then(Value::str);
+        let names = scope
+            .and_then(|f| f.get("names"))
+            .and_then(Value::strings)
+            .unwrap_or_default();
+        let text = |k: &str| v.get(k).and_then(Value::str).unwrap_or_default().to_string();
+        for d in &mut out {
+            let (harness, me) = (d.name.0, &d.name.1);
+            let granted = names.is_empty()
+                || (names.iter().any(|n| n == me)
+                    && match kind {
+                        Some("agent") => !harness,
+                        Some("harness") => harness,
+                        _ => true,
+                    });
+            for p in &paths {
+                d.volumes.push(VolumeRule {
+                    path: crate::copy::clean(std::path::Path::new(p))
+                        .to_string_lossy()
+                        .into_owned(),
+                    granted,
+                    chown: text("chown"),
+                    chmod: text("chmod"),
+                });
             }
         }
     }
@@ -184,7 +360,7 @@ pub fn read() -> Result<Read, String> {
 /// over stdio by where it lies in `d`'s view, `/mcp/<name>`, or `<its dir>.d/mcp/<name>`
 /// where `FOR` names it, and the command its OSI config gives (`<that>.d/osi.json`),
 /// its program made absolute there. A JSON array.
-fn offered(spec: &Value, d: &Domain) -> String {
+fn offered(spec: &Value, d: &Domain, root: &crate::inroot::Root) -> String {
     let (harness, me) = (&d.name.0, &d.name.1);
     let mut items = Vec::new();
     for m in spec.get("mcp").map(Value::array).unwrap_or_default() {
@@ -226,8 +402,9 @@ fn offered(spec: &Value, d: &Domain) -> String {
         } else {
             format!("{}.d/mcp/{name}", String::from_utf8_lossy(&d.dir))
         };
-        let command: Vec<String> = std::fs::read(format!("{dir}.d/osi.json"))
+        let command: Vec<String> = built_file(root, &format!("{dir}.d/osi.json"))
             .ok()
+            .flatten()
             .and_then(|c| json::parse(&c).ok())
             .and_then(|c| {
                 c.get("run")
@@ -354,6 +531,7 @@ fn domain(
         channels: Vec::new(),
         mcp: "[]".into(),
         resolv: None,
+        volumes: Vec::new(),
     })
 }
 
@@ -449,6 +627,9 @@ struct Prepared {
     sockets: Vec<(RawFd, CString)>,
     /// Those of them it receives on, which Landlock lets it make sockets in.
     receives: Vec<CString>,
+    /// Its volumes (D109), each a mount not yet attached, its mount point, and whether it
+    /// is read-only.
+    volumes: Vec<(RawFd, CString, bool)>,
 }
 
 /// `open_tree`'s and `mount_setattr`'s (include/uapi/linux/mount.h).
@@ -967,6 +1148,7 @@ pub fn start(
     domains: &[Domain],
     pairs: &[(usize, usize, Vec<crate::netplan::Egress>)],
     filters: &[Option<Filter>; 2],
+    setup: &[Vec<u8>],
 ) -> Result<Vec<Started>, String> {
     if domains.is_empty() {
         return Ok(Vec::new());
@@ -1022,6 +1204,109 @@ pub fn start(
         .map(|u| format!("{u}/.."))
         .ok_or("the run's writable layer was not kept, where the in-VM server lies")?;
     let server = Server::mount(&rw)?;
+    // The volumes the run gives its domains (D109): each mounted once, where no path from
+    // the run's root reaches, as the server is; one the run's own root does not mount
+    // filled from the image here, where it is empty, as the run fills its own; owned and
+    // moded as `--chown` and `--chmod` say, each time the run starts.
+    let lower_at = format!("/proc/self/fd/{}", lower.as_raw_fd());
+    let built = crate::inroot::Root::open(std::path::Path::new(&lower_at))
+        .map_err(|e| format!("the image's layers: {e}"))?;
+    let passwd = built_file(&built, "/etc/passwd")?;
+    let group = built_file(&built, "/etc/group")?;
+    // Each share staged, and where it lies in the image.
+    let mut staged: Vec<(Share, String, String)> = Vec::new();
+    for (k, sh) in shares_of(setup).into_iter().enumerate() {
+        if !domains.iter().any(|d| given_volume(d, &sh.dest)) {
+            continue;
+        }
+        let fail = |why: String| format!("the volume at {}: {why}", sh.dest);
+        // Where it lies in the image, as runc finds a mount point in a container's root
+        // (securejoin): the image's symlinks on the way followed in it, `..` never above
+        // it, so that a domain mounts it where the run's root would, and keeps the
+        // image's own symlinks (`/var/run`).
+        let real = built
+            .resolve(sh.dest.as_bytes(), false)
+            .map_err(|e| fail(e.to_string()))
+            .and_then(|r| String::from_utf8(r).map_err(|_| fail("a name that is not UTF-8".into())))?;
+        // A domain's root and its system's mounts are its own: a volume there would cover
+        // them (Docker refuses `/` as a destination too). One the Agentfile declares is
+        // refused, as its build refuses it; a Docker `VOLUME` an image's symlink leads
+        // there stays the run's own root's.
+        let covers = |p: &str| p == "/" || ["/proc", "/sys", "/dev"].iter().any(|s| within(p, s));
+        if covers(&sh.dest) || covers(&real) {
+            if covers(&sh.dest)
+                || domains
+                    .iter()
+                    .any(|d| d.volumes.iter().any(|r| r.path == sh.dest))
+            {
+                return Err(fail(
+                    "a volume may not cover a domain's root, /proc, /sys or /dev".into(),
+                ));
+            }
+            continue;
+        }
+        let at = format!("{rw}/volumes/{k}");
+        std::fs::create_dir_all(&at).map_err(|e| fail(e.to_string()))?;
+        let (tag, target) = (cstr_of(&sh.tag)?, cstr_of(&at)?);
+        let flags = libc::MS_NOSUID | libc::MS_NODEV | if sh.ro { libc::MS_RDONLY } else { 0 };
+        // SAFETY: mount(2) of NUL-terminated strings.
+        if unsafe {
+            libc::mount(
+                tag.as_ptr(),
+                target.as_ptr(),
+                c"virtiofs".as_ptr(),
+                flags,
+                std::ptr::null(),
+            )
+        } != 0
+        {
+            return Err(fail(io::Error::last_os_error().to_string()));
+        }
+        let empty = || -> Result<bool, String> {
+            Ok(std::fs::read_dir(&at)
+                .map_err(|e| fail(e.to_string()))?
+                .next()
+                .is_none())
+        };
+        if !sh.main && sh.copy && !sh.ro && empty()? {
+            // The image's directory there, found in the image as Docker finds a volume's
+            // mount point in the container's root (FollowSymlinkInScope): no symlink of
+            // the image leads the fill out of it, to init's root or another's volume.
+            match built.open_at(real.as_bytes(), libc::O_PATH | libc::O_DIRECTORY) {
+                Ok(dir) => {
+                    // `/.` past the descriptor: the directory's own owner and mode.
+                    let from = crate::inroot::path(&dir).join(".");
+                    crate::setup::copy_tree(&from, std::path::Path::new(&at))
+                        .map_err(|e| fail(format!("filling it from the image: {e}")))?;
+                }
+                Err(e) if matches!(e.raw_os_error(), Some(libc::ENOENT | libc::ENOTDIR)) => {}
+                Err(e) => return Err(fail(format!("its directory in the image: {e}"))),
+            }
+        }
+        if let Some(rule) = domains
+            .iter()
+            .flat_map(|d| d.volumes.iter())
+            .find(|r| r.path == sh.dest)
+            .filter(|_| sh.own)
+        {
+            if !rule.chown.is_empty() {
+                let (uid, gid) = owner(&rule.chown, domains, passwd.as_deref(), group.as_deref())
+                    .map_err(|e| fail(format!("--chown={}: {e}", rule.chown)))?;
+                std::os::unix::fs::chown(&at, Some(uid), Some(gid))
+                    .map_err(|e| fail(format!("--chown={}: {e}", rule.chown)))?;
+            }
+            if !rule.chmod.is_empty() {
+                use std::os::unix::fs::PermissionsExt as _;
+                let mode = u32::from_str_radix(&rule.chmod, 8)
+                    .ok()
+                    .filter(|m| *m <= 0o7777)
+                    .ok_or_else(|| fail(format!("--chmod={}: no octal mode", rule.chmod)))?;
+                std::fs::set_permissions(&at, std::fs::Permissions::from_mode(mode))
+                    .map_err(|e| fail(format!("--chmod={}: {e}", rule.chmod)))?;
+            }
+        }
+        staged.push((sh, at, real));
+    }
     let no_processes = filters
         .get(1)
         .and_then(Option::as_ref)
@@ -1127,6 +1412,17 @@ pub fn start(
             .map_err(|e| format!("{}: the in-VM server: {e}", d.label))?;
         sockets.push((copy.as_raw_fd(), cstr_of(SERVER_AT)?));
         copies.push((copy, cstr_of(SERVER_AT.trim_start_matches('/'))?));
+        // Its volumes, each a copy of the run's mount of it, at its mount point.
+        let mut volumes = Vec::new();
+        for (sh, at, real) in staged.iter().filter(|(sh, _, _)| given_volume(d, &sh.dest)) {
+            let attr = libc::MOUNT_ATTR_NOSUID
+                | libc::MOUNT_ATTR_NODEV
+                | if sh.ro { libc::MOUNT_ATTR_RDONLY } else { 0 };
+            let copy =
+                copy_of(at, attr).map_err(|e| format!("{}: the volume at {}: {e}", d.label, sh.dest))?;
+            volumes.push((copy.as_raw_fd(), cstr_of(real)?, sh.ro));
+            copies.push((copy, cstr_of(real.trim_start_matches('/'))?));
+        }
         let own_skel;
         let skel_of = if copies.is_empty() {
             &skel
@@ -1139,6 +1435,7 @@ pub fn start(
         let prepared = Prepared {
             root: root.as_raw_fd(),
             sockets,
+            volumes,
             receives,
             hide: all
                 .iter()
@@ -1758,6 +2055,20 @@ fn child(d: &Domain, p: &Prepared, out: RawFd, flags: u32, program: &libc::sock_
                 fail(out, c"mounting its Unix sockets");
             }
         }
+        // Its volumes, at their mount points.
+        for (copy, at, _) in &p.volumes {
+            if libc::syscall(
+                libc::SYS_move_mount,
+                *copy,
+                c"".as_ptr(),
+                libc::AT_FDCWD,
+                at.as_ptr(),
+                mount_api::MOVE_MOUNT_F_EMPTY_PATH,
+            ) != 0
+            {
+                fail(out, c"mounting its volumes");
+            }
+        }
         // One that receives makes its sockets for others' uids to connect to (unix(7):
         // connecting needs write permission on the socket), and `bind` applies its umask
         // (net/unix/af_unix.c, `unix_bind_bsd`): none, whom the directory shows to only those
@@ -1854,6 +2165,28 @@ fn child(d: &Domain, p: &Prepared, out: RawFd, flags: u32, program: &libc::sock_
                 fail(out, c"adding a Landlock rule");
             }
         }
+        // Its volumes, written as it pleases where they are not read-only (D109).
+        for (_, at, ro) in &p.volumes {
+            let fd = libc::open(at.as_ptr(), libc::O_PATH | libc::O_CLOEXEC);
+            if fd < 0 {
+                fail(out, c"opening its volume for Landlock");
+            }
+            let rule = landlock::PathBeneathAttr {
+                allowed_access: if *ro { read } else { landlock::FS_ALL },
+                parent_fd: fd,
+            };
+            let added = libc::syscall(
+                libc::SYS_landlock_add_rule,
+                ruleset,
+                landlock::RULE_PATH_BENEATH,
+                &raw const rule,
+                0u32,
+            );
+            libc::close(fd);
+            if added != 0 {
+                fail(out, c"adding its volume's Landlock rule");
+            }
+        }
         for at in &p.receives {
             let fd = libc::open(at.as_ptr(), libc::O_PATH | libc::O_CLOEXEC);
             let rule = landlock::PathBeneathAttr {
@@ -1893,5 +2226,102 @@ fn child(d: &Domain, p: &Prepared, out: RawFd, flags: u32, program: &libc::sock_
             p.envp.as_ptr(),
         );
         fail(out, c"running its command")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
+
+    use super::*;
+
+    /// The host's entries (volumes.rs, `open`): those for the domains, with their tag,
+    /// cleaned mount point and flags; a file bound alone, and the run's own, left out.
+    #[test]
+    fn the_runs_shares_for_its_domains_are_read_from_its_entries() {
+        let setup: Vec<Vec<u8>> = vec![
+            b"volume=shards0\0/data//\0copy,domains,own\0".to_vec(),
+            b"domain-volume=shards1\0/secret\0ro,domains\0".to_vec(),
+            b"volume=shards2\0/run-own\0copy\0".to_vec(),
+            b"volume=shards3\0/etc/one.conf\0domains\0one.conf".to_vec(),
+            b"tmpfs=/t\0rw".to_vec(),
+        ];
+        assert_eq!(
+            shares_of(&setup),
+            vec![
+                Share {
+                    tag: "shards0".into(),
+                    dest: "/data".into(),
+                    ro: false,
+                    copy: true,
+                    main: true,
+                    own: true,
+                },
+                Share {
+                    tag: "shards1".into(),
+                    dest: "/secret".into(),
+                    ro: true,
+                    copy: false,
+                    main: false,
+                    own: false,
+                },
+            ]
+        );
+    }
+
+    /// A volume no `VOLUME` scopes is every domain's; one `FOR` scopes, those it names.
+    #[test]
+    fn a_volume_is_given_as_its_volume_says() {
+        let d = |volumes: Vec<VolumeRule>| Domain {
+            label: "agent a".into(),
+            cgroup: "agent-a".into(),
+            dir: b"/agents/a".to_vec(),
+            id: FIRST_ID,
+            pids: None,
+            no_processes: false,
+            memory: None,
+            argv: Vec::new(),
+            env: Vec::new(),
+            workdir: CString::default(),
+            name: (false, "a".into()),
+            link: None,
+            channels: Vec::new(),
+            mcp: "[]".into(),
+            resolv: None,
+            volumes,
+        };
+        let rule = |path: &str, granted: bool| VolumeRule {
+            path: path.into(),
+            granted,
+            chown: String::new(),
+            chmod: String::new(),
+        };
+        assert!(given_volume(&d(vec![]), "/docker-own"));
+        assert!(given_volume(&d(vec![rule("/mine", true)]), "/mine"));
+        assert!(!given_volume(&d(vec![rule("/theirs", false)]), "/theirs"));
+        assert!(given_volume(&d(vec![rule("/theirs", false)]), "/other"));
+    }
+
+    /// One volume at a mount point, however its path is written.
+    #[test]
+    fn two_volumes_never_share_a_mount_point() {
+        let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>().into_iter();
+        assert!(once_each(s(&["/a", "/b", "/a/b"])).is_ok());
+        for paths in [
+            &["/a", "/a"][..],
+            &["/a", "/a/"],
+            &["/a", "a"],
+            &["/a/../b", "/b"],
+        ] {
+            assert!(once_each(s(paths)).is_err(), "{paths:?}");
+        }
+    }
+
+    #[test]
+    fn within_is_a_directory_and_what_lies_beneath() {
+        assert!(within("/proc", "/proc"));
+        assert!(within("/proc/self", "/proc"));
+        assert!(!within("/process", "/proc"));
+        assert!(!within("/", "/proc"));
     }
 }

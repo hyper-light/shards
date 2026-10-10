@@ -291,6 +291,12 @@ pub fn fetch_now(
     fetch_accepting(url, checksum, None, path, limits)
 }
 
+/// The most a policy's fetch takes (the attestation builtins' and `http.send`'s): buildx
+/// reads what it fetches through BuildKit's gateway, whose gRPC server takes messages of
+/// at most containerd's `DefaultMaxRecvMsgSize`, 16 MiB (buildkit v0.28.1
+/// frontend/gateway/gateway.go:459; containerd v2 defaults/defaults.go:22).
+pub const GATEWAY_MOST: u64 = 16 << 20;
+
 /// [`fetch_now`] of a source that asks with an `Accept` header (llb.Header).
 pub fn fetch_accepting(
     url: &str,

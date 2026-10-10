@@ -293,7 +293,7 @@ impl Verifier {
                 let supported: Vec<Option<Hash>> = RSA_VERIFY_HASHES.iter().copied().map(Some).collect();
                 let digest = digest_for_verifying(message, Some(*hash), &supported, with)?;
                 let used = with.hash.unwrap_or(Some(*hash)).unwrap_or(*hash);
-                if let Some(e) = shards_gitsign::arith::rsa_key_error(n, e) {
+                if let Some(e) = crate::x509::rsa_key_error(n, e) {
                     return Err(e);
                 }
                 let g = used.gitsign().ok_or("crypto/rsa: verification error")?;

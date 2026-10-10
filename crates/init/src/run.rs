@@ -82,6 +82,11 @@ pub fn main(device: &str, template: bool) -> ! {
     let started = standby.and_then(|standby| {
         let spec = receive(&conn)?;
         let mut workload = standby.start(&spec)?;
+        // A visit to a stopped container's files (`HOLD`, D37) runs nothing of the image's:
+        // no command, and no agent or harness.
+        if spec.builtin == run::builtin::HOLD {
+            return Ok(workload);
+        }
         // The image's agents and harnesses, each in its domain (D59), once the run's own
         // files are written: the run replaces /etc/hosts, and replacing a file another
         // mount namespace mounts over detaches that mount (fs/namespace.c,
@@ -90,9 +95,9 @@ pub fn main(device: &str, template: bool) -> ! {
             crate::setup::filter_named(&spec.setup, b"domains-seccomp="),
             crate::setup::filter_named(&spec.setup, b"domains-seccomp-none="),
         ];
-        match crate::domains::read()
-            .and_then(|(all, domains, pairs)| crate::domains::start(&all, &domains, &pairs, &filters))
-        {
+        match crate::domains::read().and_then(|(all, domains, pairs)| {
+            crate::domains::start(&all, &domains, &pairs, &filters, &spec.setup)
+        }) {
             Ok(domains) if domains.is_empty() => {}
             Ok(domains) => match crate::domains::Memory::watch() {
                 Ok(memory) => {

@@ -281,6 +281,28 @@ fn volumes_take_a_name_options_and_whom_they_are_for() {
         kinds("VOLUME [\"/a\"]").unwrap(),
         vec![Kind::Volume(vec![b("/a")])]
     );
+    // A volume over a domain's root or its kernel's file systems would hide what every
+    // domain is given there.
+    for line in [
+        "VOLUME data / FOR main",
+        "VOLUME --chown=main /proc/x",
+        "VOLUME /sys FOR main",
+        "VOLUME data /a/../dev/shm FOR main",
+    ] {
+        assert!(
+            refused(line).contains("VOLUME may not cover a domain's root, /proc, /sys or /dev"),
+            "{line}"
+        );
+    }
+    // Paths that only begin with those names are paths like any other.
+    assert!(matches!(
+        one("VOLUME data /process FOR main"),
+        Directive::Volume(_)
+    ));
+    assert!(matches!(
+        one("VOLUME data /devices FOR main"),
+        Directive::Volume(_)
+    ));
 }
 
 /// A Dockerfile reads none of it, as BuildKit reads none: its words are unknown
@@ -318,6 +340,48 @@ fn checked(text: &str) -> Result<(), String> {
     let ins = instructions::parse(&parsed, &Linter::default())
         .map_err(|e| String::from_utf8_lossy(&e.message).into_owned())?;
     shards_dockerfile::agentfile::check(&ins).map_err(|e| String::from_utf8_lossy(&e.message).into_owned())
+}
+
+/// One volume at a mount point in a stage's lineage, however its path is written: a
+/// domain is given what is mounted there, so a second would go to the first's domains.
+#[test]
+fn two_volumes_never_share_a_mount_point() {
+    let agents = "FROM scratch AS base\nAGENT a FROM r/a:1\nAGENT b FROM r/b:1\n";
+    for (lines, line) in [
+        ("VOLUME data /data FOR a\nVOLUME other /data FOR b\n", 5),
+        ("VOLUME --chown=a /x /x/ FOR a\n", 4),
+        (
+            "VOLUME data /data FOR a\nVOLUME --chown=b /srv/../data FOR b\n",
+            5,
+        ),
+        ("VOLUME data /data FOR a\nFROM base\nVOLUME other data FOR b\n", 6),
+    ] {
+        let e = checked(&format!("{agents}{lines}")).unwrap_err();
+        assert!(
+            e.contains(&format!("line {line}: VOLUME"))
+                && e.contains("a VOLUME mounts a volume there already, at line"),
+            "{lines}: {e}"
+        );
+    }
+    // Other stages' lineages, Docker's own VOLUME, and different paths are not one.
+    checked(&format!(
+        "{agents}VOLUME data /data FOR a\nFROM scratch\nAGENT c FROM r/c:1\nVOLUME other /data FOR c\n"
+    ))
+    .unwrap();
+    checked(&format!(
+        "{agents}VOLUME /data\nVOLUME data /data FOR a\nVOLUME data /data2 FOR b\n"
+    ))
+    .unwrap();
+}
+
+/// A volume's name is one the engine makes, at build, not at its first run.
+#[test]
+fn a_volumes_name_is_one_the_engine_takes() {
+    assert!(refused("VOLUME d /data FOR main").contains("volume name is too short"));
+    assert!(matches!(
+        one("VOLUME dd /data FOR main"),
+        Directive::Volume(Volume { source: Some(_), .. })
+    ));
 }
 
 /// A whole Agentfile of every directive, its names all declared and of their kinds.
@@ -551,10 +615,94 @@ fn reach_through_any_declared_edge_is_reach() {
     // Every agent reaching the world: nothing reaches it through another.
     assert_eq!(
         reached(&format!(
-            "{base}MCP web FROM https://mcp.example.com\nVOLUME s /s FOR a b\n"
+            "{base}MCP web FROM https://mcp.example.com\nVOLUME ss /s FOR a b\n"
         )),
         Ok(())
     );
+}
+
+/// The normalized Agentfile read back (D109), as the daemon reads an image's: `spec` of
+/// what it reads is the text it read, and its grants are those of the directives it was
+/// written from, which the daemon holds a run to, never the labels.
+#[test]
+fn a_normalized_agentfile_reads_back_as_its_grants() {
+    use shards_dockerfile::agentfile::{Grants, from_spec, grants, spec};
+    use shards_dockerfile::instructions::Kind;
+    let directives = |text: &str| -> Vec<Directive> {
+        let parsed = parser::parse_as(text.as_bytes(), Dialect::Agentfile).unwrap();
+        let ins = instructions::parse(&parsed, &Linter::default()).unwrap();
+        ins.stages
+            .iter()
+            .flat_map(|s| &s.commands)
+            .filter_map(|c| match &c.kind {
+                Kind::Agentfile(d) => Some(d.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+    let sets = |g: Grants| {
+        let set = |v: Vec<Vec<u8>>| v.into_iter().collect::<std::collections::BTreeSet<_>>();
+        (set(g.egress), set(g.mcp), g.dns, set(g.egress_declared))
+    };
+    for text in [
+        "FROM alpine:3.22 AS base\n\
+         AGENT main FROM reg/agents/main:1\n\
+         AGENT --processes=none other FROM reg/agents/other:1 TO /srv/other\n\
+         HARNESS --processes=4 ci FROM ./harness\n\
+         NETWORK --internal back FOR main other\n\
+         NETWORK --dns --egress=443 --ingress=8080 --expose=53/udp --egress=9000-9010 --protocol=tcp,udp,unix --ingress=unix:sock world\n\
+         MCP files FROM ./servers/files FOR main\n\
+         MCP web FROM https://mcp.example.com:8443/x FOR main\n\
+         SKILL ./review.md FOR main other\n\
+         VOLUME data /data FOR main\n\
+         VOLUME --chown=main --chmod=700 --target-kind=harness /work /logs FOR ci\n\
+         CONNECT --port=8080 main WITH other ON back\n\
+         CONNECT --target-kind=agent --port=8080 main TO other ON world\n\
+         ATTACH main other FOR ci\n\
+         EXPOSE 443 AS egress FOR world\n\
+         EXPOSE 9005-9020 53/udp FOR world\n\
+         EXPOSE 8080 AS ingress FOR world\n\
+         FROM base\n\
+         SKILL ./more.md FOR main\n",
+        "FROM scratch\nAGENT a FROM ./a\n",
+        "FROM scratch\n",
+    ] {
+        let d = directives(text);
+        let written = spec(&d);
+        let read = from_spec(&written).unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&spec(&read)),
+            String::from_utf8_lossy(&written),
+            "{text}"
+        );
+        assert_eq!(sets(grants(&read)), sets(grants(&d)), "{text}");
+    }
+    let g = grants(&directives(
+        "FROM scratch\nAGENT a FROM ./a\nNETWORK --dns --egress=443 out\nEXPOSE 443 FOR out\n\
+         CONNECT a WITH a ON out\nMCP web FROM https://mcp.example.com FOR a\nEXPOSE 25 AS egress FOR out\n",
+    ));
+    assert_eq!(
+        (g.egress, g.mcp, g.dns, g.egress_declared),
+        (
+            vec![b"443".to_vec()],
+            vec![b"mcp.example.com:443".to_vec()],
+            true,
+            vec![b"25".to_vec()]
+        )
+    );
+    // Not one the build wrote: refused, never guessed at.
+    for (bad, said) in [
+        (&b"{"[..], "EOF"),
+        (b"{\"schemaVersion\":2}", "schema version"),
+        (b"{\"schemaVersion\":1}", "no \"agents\""),
+        (
+            b"{\"schemaVersion\":1,\"agents\":[{\"name\":\"a\",\"source\":\"./a\",\"to\":\"/a\",\"processes\":-1}]}",
+            "agents: processes neither none nor a number",
+        ),
+    ] {
+        let e = from_spec(bad).unwrap_err();
+        assert!(e.contains(said), "{}: {e}", String::from_utf8_lossy(bad));
+    }
 }
 
 /// The ports an Agentfile's image may reach past its microVM (D59), its network process's

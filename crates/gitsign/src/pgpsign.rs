@@ -32,26 +32,28 @@ const PUBLIC_KEY_BLOCK: &str = "PGP PUBLIC KEY BLOCK";
 const PRIVATE_KEY_BLOCK: &str = "PGP PRIVATE KEY BLOCK";
 
 /// ReadAllArmoredKeyRings: each armored block in turn, each a public or private key
-/// block, each read as a key ring; the next block where armor.Decode's reader left off.
+/// block (its type checked before its body is read), each read as a key ring; the next
+/// block where armor.Decode's reader left off.
 pub fn read_all_armored_key_rings(data: &[u8]) -> Result<Vec<Entity>, String> {
     let mut entities = Vec::new();
     let mut at = 0;
     loop {
         let rest = data.get(at..).unwrap_or_default();
-        let (block, taken) = match armor::decode_from(rest) {
+        let block = match armor::decode(rest) {
             Ok(b) => b,
             Err(Error::Eof) => break,
-            // The body's errors come as the key ring reads it.
-            Err(e) => return Err(format!("failed to read armored public key: {e}")),
+            Err(e) => return Err(format!("failed to decode armored public key: {e}")),
         };
-        at += taken;
-        let body = Zeroizing::new(block.body);
         if block.kind != PUBLIC_KEY_BLOCK && block.kind != PRIVATE_KEY_BLOCK {
             return Err(format!(
                 "expected public or private key block, got: {}",
                 block.kind
             ));
         }
+        // The body's errors come as the key ring reads it.
+        let (body, taken) = block.read_body();
+        let body = body.map_err(|e| format!("failed to read armored public key: {e}"))?;
+        at += taken;
         let ring =
             keyring::read_key_ring(&body).map_err(|e| format!("failed to read armored public key: {e}"))?;
         entities.extend(ring);

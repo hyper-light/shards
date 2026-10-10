@@ -1,0 +1,315 @@
+{
+  "verify": [
+    {
+      "name": "exponent one",
+      "n": "0zX9Vd43j4jWO+7QC0UzNL8nAlSdVhdokvxsBO+iNJtjiELxU8il7lClBpBYLs7cxVfLz49Cl0R1tvFrPub/RkGSRJ0Mu98v6vGWHCeiZ1PZ8/AaPArje32ptn+94jd/UB0A7Reg89QnHXj9QKobCNnr4BrjU6sZPd+sXF370HU=",
+      "e": "AQ==",
+      "digest": "SE+j0viZ2boFDtWHNI7Y3fHjcbCO4Zk7AT31eKsTMfA=",
+      "pkcs1": "AAH//////////////////////////////////////////////////////////////////////////////////////////////////wAwMTANBglghkgBZQMEAgEFAAQgSE+j0viZ2boFDtWHNI7Y3fHjcbCO4Zk7AT31eKsTMfA=",
+      "pss": "JTs/1dXNGxGzybIFCqdi8e5jEdIo8aiaLL990t+HKpcBUal22jYa3ZNr8eMkUzl8CELW/LES2TPuWnXCphINP+K8Et39e1SlRvW/v04s2XHC2LdtSYKOzkL0Jbo5at1iYy1o81X5N9LsQdzPUDK7Hi2zcV7SnzixBAzz8oJtKbw=",
+      "keyError": "crypto/rsa: public exponent too small or negative",
+      "pkcs1Answer": "crypto/rsa: public exponent too small or negative",
+      "pssAutoAnswer": "crypto/rsa: public exponent too small or negative",
+      "pssHashAnswer": "crypto/rsa: public exponent too small or negative"
+    },
+    {
+      "name": "exponent two",
+      "n": "5Q1/QJL2J8IKtM4MysYxy+/ccoqd73LM2RujkzelDbbCB80H4CzIUD5XJjhvhZdmgLSRtT58dguii172qiUrt+1B6UWOK3kHJAEvL2nHO4vZ31l1P7qCXbQuMeawhngC2QMrwrj6qFSl0xpx/4Y3OMHq5aVu0UwMG1f0ZoBRxAE=",
+      "e": "Ag==",
+      "digest": "SE+j0viZ2boFDtWHNI7Y3fHjcbCO4Zk7AT31eKsTMfA=",
+      "pkcs1": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+      "pss": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+      "keyError": "crypto/rsa: public exponent is even",
+      "pkcs1Answer": "crypto/rsa: public exponent is even",
+      "pssAutoAnswer": "crypto/rsa: public exponent is even",
+      "pssHashAnswer": "crypto/rsa: public exponent is even"
+    },
+    {
+      "name": "exponent three",
+      "n": "w4jsxnAUk7uzxc3X5HrLO67N+WYJg61ehljATJUR1dIW5Vc7cgX1mOKiJZvJLomGH20t15eK+W6et6E6gci8InaaLPCQzjZdmG5PRsFMTvKGDcgj3Nec6T//q0w7xKq+hVR8DuwkbxwgLcmzKwYv1Oxc33w/a0CtIuT9LxMyuB0=",
+      "e": "Aw==",
+      "digest": "SE+j0viZ2boFDtWHNI7Y3fHjcbCO4Zk7AT31eKsTMfA=",
+      "pkcs1": "Fp+pBdOr11iumwut2laBDkjEJI6t9ObKyc8TJTUNnQUHnbP6RhMNZDxqEYmuINttn2fHGa+t25qYP60gn2Csn1tGzhcF5xaa+x9H0VLgL4dGx6uYUTgmUYtDgBXqdXkD55pVfNF9ZTAO8/X5UcrZVRhwRzMG2V+wjVEH/oeCurs=",
+      "pss": "M3w6Qp0bHnescE+8sVlQcu7nlGaUEkh7Fh9fN0SwTyleU3BZhoSouQkFG4QSafizmihMc8vYDEmZaGmtZSo/TXrS65Br2X/yiKwVV0AJsRTKH/z3DN1caqvcSvr+fQXrthIDYhgL27hM3puUvOIeyZwh/eqNT/z13j94vGdZNrg=",
+      "pkcs1Answer": "ok",
+      "pssAutoAnswer": "ok",
+      "pssHashAnswer": "ok"
+    },
+    {
+      "name": "exponent seventeen",
+      "n": "t2VQ0d9EKp8L9W96LfyYfOVylpTBowjB95pHEHP0nMDX9E878LZnMquTIiDzSDWoQzHucFLkdJVF+E9vRBvpo5QW12/oi2mxdlL8y2xt5DcWepxBRCZQL/hl0AvCcqQaG7fKcfWCftETH481h1dPenqpGUaCL2oKYMpeYvCkz/k=",
+      "e": "EQ==",
+      "digest": "SE+j0viZ2boFDtWHNI7Y3fHjcbCO4Zk7AT31eKsTMfA=",
+      "pkcs1": "RoYoA609ArNtW3xaR6AzgxlvAZkZSSJw+2WDtHRhWUGZlw14kmu7704BCCCrgmKMJ7w3gAEDLMa+Wo4u/54aOk8sPoRWTP1Qj36tyzqI15Yty9s70aDA0m8rCwDsM4i5WVyJEbntXxqnRiQk1QAJga+WK1ilRatDdonyAFoZms4=",
+      "pss": "gcTz6+mU6d92c38Wzg4+XLG446LpNkQZhmWFsqhRMT6hia52zaH6CP1aETPGtErk/MmzmKyAoH29JGdSEaUTVTckM1CLzKr6Fn9xN/rtThJXTZGlbRMQe+SJblRVEgV06yShRzYBpmGiGYCNznjw5W+wMg7dC6trO9XS/InoEEQ=",
+      "pkcs1Answer": "ok",
+      "pssAutoAnswer": "ok",
+      "pssHashAnswer": "ok"
+    },
+    {
+      "name": "exponent 65537",
+      "n": "v+8YrxVK0CO0uEHIN51NeV5Ocw0c8u1OhsA1gCcyEg07srf5pODid9e+yNJafxwJ+HKOCkitzJLjpufWRia6GG/Ad751pYSgLnUDnSsnNe43xHn8LTzu6jGBvy+IVU0EgDF0qVm/ETx0YhlusINg4UmaVpzqTsVynaeQ/bJsuo0=",
+      "e": "AQAB",
+      "digest": "SE+j0viZ2boFDtWHNI7Y3fHjcbCO4Zk7AT31eKsTMfA=",
+      "pkcs1": "dqoKxhKEgom4cPD56r6oHKKiyIvo4y/9dK8bp8ijYODmhaoFd8hhcviwE9P7HaacMjvJpdErTUZ8jvyG/CMXzH999rH4xauWooTgYdzqUUOxR1Y59848xxNwdOmodz4QLI2nplAkqojsb4Yr1wbhfdFQQNTT1aZmtgmz8MTrxxQ=",
+      "pss": "m9C+HcIny6Fkkyqy+0P97jIiaGtABMfJuTUc76ajiYISkiHUu4P3Kjk44n2VOmWBXdEs27zGNaiJzfpyT6zFS3urn+FTty7rguVA2G6DuqAYJrNgnfwPFS0v3AuloTBzA+ZJ20g1/zFpf9W680ILt8lkkbY1o9ShMQFhX4UOkMI=",
+      "pkcs1Answer": "ok",
+      "pssAutoAnswer": "ok",
+      "pssHashAnswer": "ok"
+    },
+    {
+      "name": "exponent 65536",
+      "n": "5Q1/QJL2J8IKtM4MysYxy+/ccoqd73LM2RujkzelDbbCB80H4CzIUD5XJjhvhZdmgLSRtT58dguii172qiUrt+1B6UWOK3kHJAEvL2nHO4vZ31l1P7qCXbQuMeawhngC2QMrwrj6qFSl0xpx/4Y3OMHq5aVu0UwMG1f0ZoBRxAE=",
+      "e": "AQAA",
+      "digest": "SE+j0viZ2boFDtWHNI7Y3fHjcbCO4Zk7AT31eKsTMfA=",
+      "pkcs1": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+      "pss": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+      "keyError": "crypto/rsa: public exponent is even",
+      "pkcs1Answer": "crypto/rsa: public exponent is even",
+      "pssAutoAnswer": "crypto/rsa: public exponent is even",
+      "pssHashAnswer": "crypto/rsa: public exponent is even"
+    },
+    {
+      "name": "exponent 2^24-1",
+      "n": "v1LSwbS4ERpWgehKMIoOFKrQ5IInlEL0J1lAW1ak6bSbY6AZp55EcSrDX04fJnKmedwQoZgJNC6zEqB97OYCt7WtGVWq67Kiy7ZCL9sf3+vVzoqnpoGi5UIS7SWvmEVWUy+KUkcS25xfouufLUCJYG4bHp2VHFkQRb9TF2Z1ieU=",
+      "e": "////",
+      "digest": "SE+j0viZ2boFDtWHNI7Y3fHjcbCO4Zk7AT31eKsTMfA=",
+      "pkcs1": "nYBliNSnGwo55S3ggidjq3h9tkAe3b2GTjTKLEuHYMfxt5JA4akns4k9ydaa1e0VBhDtm1Y0Cq3wyU5rOt3f5nb84Q7p4/WvEhMrRaXFyCmiheSZuv/oL7UyhM/uk4gmRMzQXI/r5o5AhOJbthRZcAuNOUiZXdmHYzB6IHOdub0=",
+      "pss": "Zyhpjh9dXgRNLoIRbzqH+JiArLWwnI7QIYz4FpvJf7MJNIj8Tj4u/eFZ3mHH++BtqD2Bovpo74S5lBo91eo4RcbMSMDozFSt269xrhJPCJ2yXthdfTGP01EsoC8xQ7uzZpzE+b4qP8iTr8G3KnHmNEQ4iT6yNeUZmoaf6StrWO0=",
+      "pkcs1Answer": "ok",
+      "pssAutoAnswer": "ok",
+      "pssHashAnswer": "ok"
+    },
+    {
+      "name": "exponent 2^24+1",
+      "n": "uA/W2WAfgTkvH2+03pPTAh5m3PHs3uCOsG3DHlrUTULLns4NPfV0cWrukO/BKesFtUNWUOgVWki4XOupazCVv+bCpnkBPOBZrOdpqGBWeiJgPpRYo+8eXen/oz6rDmnhjNwPr9m7S+3AOH0RI1BhoU5m3raCNGOUu8PqgUkbgy8=",
+      "e": "AQAAAQ==",
+      "digest": "SE+j0viZ2boFDtWHNI7Y3fHjcbCO4Zk7AT31eKsTMfA=",
+      "pkcs1": "cRLikKlT6E6eUEAkkX7DawCfbviiCstPPwry7h53V3aWIU8bPMpscVVK2gj+l1/lTWU1ka2q9ujpFR+9nl14JHfXlIgRzXFzHXUrhBg3zJespzjLTtJ7K/0fcl6G1afOXGmiHdOOwGTV1vRAojCJHtFK7t0ptMhizHIaDVZ/rn8=",
+      "pss": "ozUNOZDYNtccKFhp0sR0l6mj2qwBBa69FLrTfJNjhfWDTnnjh3cJIr5i06EBkiloq8It9SVg568tS7DOg4Ce91WA1a4hHckjxreSnK3EQ0YVUiwvwtXJplvOide/cAd33i8FCx/cwtBvPm+VPMXpy0Dzr8/u3SDs+XKUo6S7c/4=",
+      "pkcs1Answer": "ok",
+      "pssAutoAnswer": "ok",
+      "pssHashAnswer": "ok"
+    },
+    {
+      "name": "exponent 2^31-1",
+      "n": "uyRU5ZXowk4DlrmDzoIag9xNft5qXM8MKgRNACvh+1A/tmn/4JeQyY6iACVm9T7uiLeNLri3E7q+eGST/bKl3JUQLdBs8DuRVN5Oeu3BhQzWgt3Il5764/DkfoSQiSF6SCJUZA+IB8mocycLLKUIyOn332ENqp5GfsX3W4FK0OM=",
+      "e": "f////w==",
+      "digest": "SE+j0viZ2boFDtWHNI7Y3fHjcbCO4Zk7AT31eKsTMfA=",
+      "pkcs1": "rS9GPJ559g9CrgcJ9oPZEZ6WUN2LWj5zg0fD1XcQroDRIgN30RVllrlk5/9WkoPkBENkjCkl9NiazC65njNbF64rH0/o4ve8qBQjO6Mtwug1fIt8KS2PKOWoC/TBnMR2gWmoMAnO8opD1MJKbDYPu6p4wtKltBdUCPUTXXu8E/o=",
+      "pss": "m6I+3AX8P79Lh583Q16hv1j52TrmEgTjJB5IV98hswEq7Z0wVfG231r86dtby5OhOznN6bYej+4Hmo6L1gD6mgJ5J36jfhhRWwp3VzFSmSLw/pOOxP6Lt4cv+z9y4ZChmoK+yuSASzTowjNTHw9IonsF2EEySLUKGLEKqXI/ZyQ=",
+      "pkcs1Answer": "ok",
+      "pssAutoAnswer": "ok",
+      "pssHashAnswer": "ok"
+    },
+    {
+      "name": "exponent 2^31",
+      "n": "5Q1/QJL2J8IKtM4MysYxy+/ccoqd73LM2RujkzelDbbCB80H4CzIUD5XJjhvhZdmgLSRtT58dguii172qiUrt+1B6UWOK3kHJAEvL2nHO4vZ31l1P7qCXbQuMeawhngC2QMrwrj6qFSl0xpx/4Y3OMHq5aVu0UwMG1f0ZoBRxAE=",
+      "e": "gAAAAA==",
+      "digest": "SE+j0viZ2boFDtWHNI7Y3fHjcbCO4Zk7AT31eKsTMfA=",
+      "pkcs1": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+      "pss": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+      "keyError": "crypto/rsa: public exponent is even",
+      "pkcs1Answer": "crypto/rsa: public exponent is even",
+      "pssAutoAnswer": "crypto/rsa: public exponent is even",
+      "pssHashAnswer": "crypto/rsa: public exponent is even"
+    },
+    {
+      "name": "exponent 2^31+1",
+      "n": "xOeTMZDT8xi455hgP3Ciov4lOHo2YEE6EaVtxUBFP9mZ88xrOszXYA7YXSeRxz1puFEWOFvSZRNmNfECwsTgY1Y6/oRCCjLcwv6LesAhLzKQWhsH4qUUiwUZ6AXUhyJyV8gNQAxwD+SJMcX5fnsvVagUFukQuQYzFMtneOMa/xc=",
+      "e": "gAAAAQ==",
+      "digest": "SE+j0viZ2boFDtWHNI7Y3fHjcbCO4Zk7AT31eKsTMfA=",
+      "pkcs1": "qXyddhRFpgwYNHr2Gnr0XTe/TTb2FwAQ3HNEiptCkl5xavgEKZd68yxKgG1YIrPkmPS8vYwLzXjaJ93HgTRluLgGoFl1tKA8o/KU75XJAKGsXm1xsXoNWx0fQ1IbnkoA+gO89j/nIXqZlYAo80gEw5xZwAkA585g2UJglfXmUxQ=",
+      "pss": "SOgmaz+U99d4iuNB0ExkJ489vdNCJhR5lJNKb2fns+pz9QLPcMe4+z/FBCA3Fkk3a5bNQdsF0g20GKEk+2P4wBNpMA8z4+T5bkulgNRsSSYt/daombiOIx1cabNlaJPT1fmCekWeVS6mR9NoAOMDJ5Y+eyihFH/XuoiHUCON0L0=",
+      "keyError": "crypto/rsa: public exponent too large",
+      "pkcs1Answer": "crypto/rsa: public exponent too large",
+      "pssAutoAnswer": "crypto/rsa: public exponent too large",
+      "pssHashAnswer": "crypto/rsa: public exponent too large"
+    },
+    {
+      "name": "exponent 2^32+1",
+      "n": "77SPhlFsxx/k+6t1J9UEnS6I1l6zlPULuSAVSBQUgYJu0O9y+utXRa1ie+/fUr3h+P8v0qpIT8O3qd2oVWRd35fDV9KbI0r4Dr7bbALPXI0pTxE3ztNIG8l4TSSKnTlhLmVztqy2zLtmPlZnzDPB/6xKou1qUsXf7yg2y3BoOkc=",
+      "e": "AQAAAAE=",
+      "digest": "SE+j0viZ2boFDtWHNI7Y3fHjcbCO4Zk7AT31eKsTMfA=",
+      "pkcs1": "pOTlPbwLnOd3+3Rf3tI+XyBdK5K6pI+4PAfjquH9scryTlPQxQBPcTPbfkEvetF9EaJgN4K/27JgZ4BcaDDVfkwCPbuNOU2BTy4g2E3TEBi9Lqv/avbB735srNMuCZJCRdE8eus+zcvPuj0y3za8OFY6kO+cJZ0iBGvUa7Ff1wU=",
+      "pss": "GNnPyT48QjeLC9FVfUx/LAMC+FI2U3Awf64ds/vRlZT1CHk6ffm83/BXRwjjjPrkcAW0wDebtGUFNozMU4v5W/R39oE3GiD9clIBxhi/WQhAHZj9Zpyd5lGE56ppO9h6p+YmJQEKs9AObrtc7OawcOoUgWyKV0iRmPsUawNqieQ=",
+      "keyError": "crypto/rsa: public exponent too large",
+      "pkcs1Answer": "crypto/rsa: public exponent too large",
+      "pssAutoAnswer": "crypto/rsa: public exponent too large",
+      "pssHashAnswer": "crypto/rsa: public exponent too large"
+    },
+    {
+      "name": "exponent 2^62+1",
+      "n": "1hBxS0D6svdhVWKjmGxeJPnMiFpaZ/5FNUQJ7FNen7+AfUey2YR76kpxaXbO0IOMua/ovev1Osi0eO376xdvW+qmDzx8QcTKJ1MizzPRFNvztWRcHIagH2Kr2SZAmi52EEVoyeoUeEssKXl7kcnzVEbu5seLCSu2PqM0U43FugU=",
+      "e": "QAAAAAAAAAE=",
+      "digest": "SE+j0viZ2boFDtWHNI7Y3fHjcbCO4Zk7AT31eKsTMfA=",
+      "pkcs1": "X8EUhL5S+deqrzLo9ajU6wox5GKdR2zyVOkJGG5vLl9SM+h8Mk+jyGdg9334x1DYY3yaaxJ2U1AQNDHZAbtUL/j5NKEjRpumnk/e88CfmbELDaUzgYCmkD0KoRnVXK2USdYGpxynBW9PJApuRVUqAaS4P2VW+d1Z0Bi5PdXz9tc=",
+      "pss": "VS72qP8bRot7HJAYEduPm3evB9ZgBi6ferh8GvNPApswiknhmpv+hU9Bxnj23SgtjsMKGUStoeSqIWDADjGs3J5P9rFY3DFKA3RLBAvf7GlHCDpDtsAt3JqtIazuwGpJL3gELV31cV6ip+Kl20duB+7fdfJHqSOn7Tx3uMKFKwI=",
+      "keyError": "crypto/rsa: public exponent too large",
+      "pkcs1Answer": "crypto/rsa: public exponent too large",
+      "pssAutoAnswer": "crypto/rsa: public exponent too large",
+      "pssHashAnswer": "crypto/rsa: public exponent too large"
+    },
+    {
+      "name": "a modulus of 1023 bits",
+      "n": "bN7nlRdifn4I4tG6BpN4P6NUvV4WehaPg3Vae3Rqot8UvV9DySH8adWUuTxs7lBjCvgrCKLxUEQJypp1idykIfMc8xdrVy6w3D/l+n4dqzeWUaRLxLN9YOF5QTPGO3MuIyNr0OJJj+YbzqCacFNjKSEVNI3Mh6AoJ0gcMtWPakU=",
+      "e": "AQAB",
+      "digest": "SE+j0viZ2boFDtWHNI7Y3fHjcbCO4Zk7AT31eKsTMfA=",
+      "pkcs1": "RhN4ZWmUCe+o3ZoSuE/QxbWduJ8fKjTNdeDb8eSF4qtR01ezyggToEnDyELW1xYgA4oP4IgNtV7iVH0rJTdAXgY6QFiGuxC6XY1JmMjzMxqKmoCcFOSkoHuTiEYwVYXrEN/cQ47vXkdRzWgzfayZ9V8eqz4bPmJ4dn4M2MNYFJc=",
+      "pss": "LVCQOOc6trLXcdh8ygcpd9LQreqmF9gPwL/pfwsAk/ufA25/dfSZnKVt7JEO1jldjMMHOmwt/jMq7MqVQ5Wt5O+fl3CzibbL/0no3BOQ0J0PrCV8VQOZa0Ird692XhA5gtlQ/A+s9kTewEvTgw9BTNbD0qlzl02u2BOzlm6rRGo=",
+      "keyError": "crypto/rsa: 1023-bit keys are insecure (see https://go.dev/pkg/crypto/rsa#hdr-Minimum_key_size)",
+      "pkcs1Answer": "crypto/rsa: 1023-bit keys are insecure (see https://go.dev/pkg/crypto/rsa#hdr-Minimum_key_size)",
+      "pssAutoAnswer": "crypto/rsa: 1023-bit keys are insecure (see https://go.dev/pkg/crypto/rsa#hdr-Minimum_key_size)",
+      "pssHashAnswer": "crypto/rsa: 1023-bit keys are insecure (see https://go.dev/pkg/crypto/rsa#hdr-Minimum_key_size)"
+    },
+    {
+      "name": "an even modulus",
+      "n": "5Q1/QJL2J8IKtM4MysYxy+/ccoqd73LM2RujkzelDbbCB80H4CzIUD5XJjhvhZdmgLSRtT58dguii172qiUrt+1B6UWOK3kHJAEvL2nHO4vZ31l1P7qCXbQuMeawhngC2QMrwrj6qFSl0xpx/4Y3OMHq5aVu0UwMG1f0ZoBRxAI=",
+      "e": "AQAB",
+      "digest": "SE+j0viZ2boFDtWHNI7Y3fHjcbCO4Zk7AT31eKsTMfA=",
+      "pkcs1": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+      "pss": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+      "keyError": "crypto/rsa: public modulus is even",
+      "pkcs1Answer": "crypto/rsa: public modulus is even",
+      "pssAutoAnswer": "crypto/rsa: public modulus is even",
+      "pssHashAnswer": "crypto/rsa: public modulus is even"
+    },
+    {
+      "name": "a signature of another digest",
+      "n": "5Q1/QJL2J8IKtM4MysYxy+/ccoqd73LM2RujkzelDbbCB80H4CzIUD5XJjhvhZdmgLSRtT58dguii172qiUrt+1B6UWOK3kHJAEvL2nHO4vZ31l1P7qCXbQuMeawhngC2QMrwrj6qFSl0xpx/4Y3OMHq5aVu0UwMG1f0ZoBRxAE=",
+      "e": "AQAB",
+      "digest": "rkSKyGxOjk3sZFcpcI70GHOuecbf+E7/czYJiUh/COU=",
+      "pkcs1": "Nvsn09hlCYZKAwwwprvg6daFQl+QAGVlSjM7eaG/9R+FbkIUvh8fgi2JrTfaj6Kk8Z/pn4hS3M2oL8TDf6VhDGIIw7O2G5SKldgXajUS3pkI7APOIdSLLiXU7j4PhtCT7/hIOjrKQIIaKCcxVfpd81JhNBCTIMEmkUnQtVWgDPg=",
+      "pss": "1NMr2J26owJtWE0HV9mMO41keZzuBgJOSnDF1UXl4o7brOsAddJgelkKPWaYpWiJ0wpx/4G7TsWR8wG9wpHN/1gkFL628nIBLR0At0eGega7jKdEO6geXY6Z43GqXm0kFWJkl41hpH6zoM6LPZ7MwyjXtvkjj55dk5IathqvGlg=",
+      "pkcs1Answer": "crypto/rsa: verification error",
+      "pssAutoAnswer": "crypto/rsa: verification error",
+      "pssHashAnswer": "crypto/rsa: verification error"
+    }
+  ],
+  "ssh": [
+    {
+      "name": "exponent one",
+      "wire": "AAAAB3NzaC1yc2EAAAABAQAAAIEA0zX9Vd43j4jWO+7QC0UzNL8nAlSdVhdokvxsBO+iNJtjiELxU8il7lClBpBYLs7cxVfLz49Cl0R1tvFrPub/RkGSRJ0Mu98v6vGWHCeiZ1PZ8/AaPArje32ptn+94jd/UB0A7Reg89QnHXj9QKobCNnr4BrjU6sZPd+sXF370HU=",
+      "parse": "ssh: incorrect exponent"
+    },
+    {
+      "name": "exponent two",
+      "wire": "AAAAB3NzaC1yc2EAAAABAgAAAIEA5Q1/QJL2J8IKtM4MysYxy+/ccoqd73LM2RujkzelDbbCB80H4CzIUD5XJjhvhZdmgLSRtT58dguii172qiUrt+1B6UWOK3kHJAEvL2nHO4vZ31l1P7qCXbQuMeawhngC2QMrwrj6qFSl0xpx/4Y3OMHq5aVu0UwMG1f0ZoBRxAE=",
+      "parse": "ssh: incorrect exponent"
+    },
+    {
+      "name": "exponent three",
+      "wire": "AAAAB3NzaC1yc2EAAAABAwAAAIEAw4jsxnAUk7uzxc3X5HrLO67N+WYJg61ehljATJUR1dIW5Vc7cgX1mOKiJZvJLomGH20t15eK+W6et6E6gci8InaaLPCQzjZdmG5PRsFMTvKGDcgj3Nec6T//q0w7xKq+hVR8DuwkbxwgLcmzKwYv1Oxc33w/a0CtIuT9LxMyuB0=",
+      "parse": "ok ssh-rsa",
+      "message": "YSBHaXQgY29tbWl0LCBzaWduZWQ=",
+      "signature": "LS0tLS1CRUdJTiBTU0ggU0lHTkFUVVJFLS0tLS0KVTFOSVUwbEhBQUFBQVFBQUFKVUFBQUFIYzNOb0xYSnpZUUFBQUFFREFBQUFnUUREaU96R2NCU1R1N1BGemRmawplc3M3cnMzNVpnbURyVjZHV01CTWxSSFYwaGJsVnp0eUJmV1k0cUlsbThrdWlZWWZiUzNYbDRyNWJwNjNvVHFCCnlMd2lkcG9zOEpET05sMlliazlHd1V4TzhvWU55Q1BjMTV6cFAvK3JURHZFcXI2RlZId083Q1J2SENBdHliTXIKQmkvVTdGemZmRDlyUUswaTVQMHZFeks0SFFBQUFBTm5hWFFBQUFBQUFBQUFCbk5vWVRVeE1nQUFBSlFBQUFBTQpjbk5oTFhOb1lUSXROVEV5QUFBQWdCa0R3K1dxUUlReDRJYVBxU1V2SWplNEZ5dVFvZHpBTUUvaW91VzB2dFBmCkQxWHFrNW9WclNXZWh5c1VjQng5L3h1K2RzWWpOTDZkQS91VGZZMjl6Y1craHljRytzSlNxMEJIT2ppK2VnKysKZCtsY2Q5SVhxLzFUSXJTMEtIVXBzbUxuWlVQQlp1Nlp3a25FdDE5aGRCZmZZK0JLR1YrSDlTVzZnM1FONE9HbgotLS0tLUVORCBTU0ggU0lHTkFUVVJFLS0tLS0K",
+      "verify": "ok"
+    },
+    {
+      "name": "exponent seventeen",
+      "wire": "AAAAB3NzaC1yc2EAAAABEQAAAIEAt2VQ0d9EKp8L9W96LfyYfOVylpTBowjB95pHEHP0nMDX9E878LZnMquTIiDzSDWoQzHucFLkdJVF+E9vRBvpo5QW12/oi2mxdlL8y2xt5DcWepxBRCZQL/hl0AvCcqQaG7fKcfWCftETH481h1dPenqpGUaCL2oKYMpeYvCkz/k=",
+      "parse": "ok ssh-rsa",
+      "message": "YSBHaXQgY29tbWl0LCBzaWduZWQ=",
+      "signature": "LS0tLS1CRUdJTiBTU0ggU0lHTkFUVVJFLS0tLS0KVTFOSVUwbEhBQUFBQVFBQUFKVUFBQUFIYzNOb0xYSnpZUUFBQUFFUkFBQUFnUUMzWlZEUjMwUXFud3YxYjNvdAovSmg4NVhLV2xNR2pDTUgzbWtjUWMvU2N3TmYwVHp2d3RtY3lxNU1pSVBOSU5haERNZTV3VXVSMGxVWDRUMjlFCkcrbWpsQmJYYitpTGFiRjJVdnpMYkcza054WjZuRUZFSmxBditHWFFDOEp5cEJvYnQ4cHg5WUorMFJNZmp6V0gKVjA5NmVxa1pSb0l2YWdwZ3lsNWk4S1RQK1FBQUFBTm5hWFFBQUFBQUFBQUFCbk5vWVRVeE1nQUFBSlFBQUFBTQpjbk5oTFhOb1lUSXROVEV5QUFBQWdKUHpScElTTWJPbGtHV3JvMTdiNWVwOTh0b3R3Q3FDNXhRUVoyOEdVREVuCjhJdUFKdGUzZmttN3owWGtwTnVjQ2htYlVhdjM1QVpjNXoxWVpUekU5SVplcWNMVHY3NHRIR2xyQjU1QXBrQWwKbTkrM1VaYlVsNFpGdkpUNGhBRXVYbkJHci9CcWJCc0h1UnlmQTYxWXFuQ2U2aXNNVllyd1lmZ3lJeEJ5STB6MwotLS0tLUVORCBTU0ggU0lHTkFUVVJFLS0tLS0K",
+      "verify": "ok"
+    },
+    {
+      "name": "exponent 65537",
+      "wire": "AAAAB3NzaC1yc2EAAAADAQABAAAAgQC/7xivFUrQI7S4Qcg3nU15Xk5zDRzy7U6GwDWAJzISDTuyt/mk4OJ3177I0lp/HAn4co4KSK3MkuOm59ZGJroYb8B3vnWlhKAudQOdKyc17jfEefwtPO7qMYG/L4hVTQSAMXSpWb8RPHRiGW6wg2DhSZpWnOpOxXKdp5D9smy6jQ==",
+      "parse": "ok ssh-rsa",
+      "message": "YSBHaXQgY29tbWl0LCBzaWduZWQ=",
+      "signature": "LS0tLS1CRUdJTiBTU0ggU0lHTkFUVVJFLS0tLS0KVTFOSVUwbEhBQUFBQVFBQUFKY0FBQUFIYzNOb0xYSnpZUUFBQUFNQkFBRUFBQUNCQUwvdkdLOFZTdEFqdExoQgp5RGVkVFhsZVRuTU5IUEx0VG9iQU5ZQW5NaElOTzdLMythVGc0bmZYdnNqU1duOGNDZmh5amdwSXJjeVM0NmJuCjFrWW11aGh2d0hlK2RhV0VvQzUxQTUwckp6WHVOOFI1L0MwODd1b3hnYjh2aUZWTkJJQXhkS2xadnhFOGRHSVoKYnJDRFlPRkptbGFjNms3RmNwMm5rUDJ5YkxxTkFBQUFBMmRwZEFBQUFBQUFBQUFHYzJoaE5URXlBQUFBbEFBQQpBQXh5YzJFdGMyaGhNaTAxTVRJQUFBQ0FhZDFuaU4rc3VWT2hzcEUvUWZYQ0RxN2YybDJPYWorb1RSaitlcTQzCmdZby8rSHNMSFJObDBISXkxUllZMjJZRnRtcDVzbzExM1I1eUY5ODZ4WldINVNBSzRmaHJ4SXJ3aC9DTGdiQ3UKRmVDdGhZRloyQnlRVzFSSll6OHhjdHNCdms5MXpkYWQ5L29VVmFIdS9xZm5jaXZzOGpES2tvRDdBUWpTQ2VELwpsM0k9Ci0tLS0tRU5EIFNTSCBTSUdOQVRVUkUtLS0tLQo=",
+      "verify": "ok"
+    },
+    {
+      "name": "exponent 65536",
+      "wire": "AAAAB3NzaC1yc2EAAAADAQAAAAAAgQDlDX9AkvYnwgq0zgzKxjHL79xyip3vcszZG6OTN6UNtsIHzQfgLMhQPlcmOG+Fl2aAtJG1Pnx2C6KLXvaqJSu37UHpRY4reQckAS8vacc7i9nfWXU/uoJdtC4x5rCGeALZAyvCuPqoVKXTGnH/hjc4werlpW7RTAwbV/RmgFHEAQ==",
+      "parse": "ssh: incorrect exponent"
+    },
+    {
+      "name": "exponent 2^24-1",
+      "wire": "AAAAB3NzaC1yc2EAAAAEAP///wAAAIEAv1LSwbS4ERpWgehKMIoOFKrQ5IInlEL0J1lAW1ak6bSbY6AZp55EcSrDX04fJnKmedwQoZgJNC6zEqB97OYCt7WtGVWq67Kiy7ZCL9sf3+vVzoqnpoGi5UIS7SWvmEVWUy+KUkcS25xfouufLUCJYG4bHp2VHFkQRb9TF2Z1ieU=",
+      "parse": "ok ssh-rsa",
+      "message": "YSBHaXQgY29tbWl0LCBzaWduZWQ=",
+      "signature": "LS0tLS1CRUdJTiBTU0ggU0lHTkFUVVJFLS0tLS0KVTFOSVUwbEhBQUFBQVFBQUFKZ0FBQUFIYzNOb0xYSnpZUUFBQUFRQS8vLy9BQUFBZ1FDL1V0TEJ0TGdSR2xhQgo2RW93aWc0VXF0RGtnaWVVUXZRbldVQmJWcVRwdEp0am9CbW5ua1J4S3NOZlRoOG1jcVo1M0JDaG1BazBMck1TCm9IM3M1Z0szdGEwWlZhcnJzcUxMdGtJdjJ4L2Y2OVhPaXFlbWdhTGxRaEx0SmErWVJWWlRMNHBTUnhMYm5GK2kKNjU4dFFJbGdiaHNlblpVY1dSQkZ2MU1YWm5XSjVRQUFBQU5uYVhRQUFBQUFBQUFBQm5Ob1lUVXhNZ0FBQUpRQQpBQUFNY25OaExYTm9ZVEl0TlRFeUFBQUFnTHVFMEVFT25YQ1E2ZmkvVlRyY3VoWVh3KzkyY3JrOEdKQjMzUU5lCmhWL2l4cHBIbTRmemliKzg3aGR0ZTQyb01nZGh4SjJXT2dzTiswZi92ZnlJUjhvU251Sys1NjBkaEpVOGxLR20KVkw1TXlYNFF3UWROQUIrYjU0a0V6am5KRmNPbnRJUDN6ejN5R1NTV0V3bE43RGZjUDBuZC9yNW1QRkU5MHF3aApiajdKCi0tLS0tRU5EIFNTSCBTSUdOQVRVUkUtLS0tLQo=",
+      "verify": "ok"
+    },
+    {
+      "name": "exponent 2^24+1",
+      "wire": "AAAAB3NzaC1yc2EAAAAEAQAAAQAAAIEAuA/W2WAfgTkvH2+03pPTAh5m3PHs3uCOsG3DHlrUTULLns4NPfV0cWrukO/BKesFtUNWUOgVWki4XOupazCVv+bCpnkBPOBZrOdpqGBWeiJgPpRYo+8eXen/oz6rDmnhjNwPr9m7S+3AOH0RI1BhoU5m3raCNGOUu8PqgUkbgy8=",
+      "parse": "ssh: exponent too large"
+    },
+    {
+      "name": "exponent 2^31-1",
+      "wire": "AAAAB3NzaC1yc2EAAAAEf////wAAAIEAuyRU5ZXowk4DlrmDzoIag9xNft5qXM8MKgRNACvh+1A/tmn/4JeQyY6iACVm9T7uiLeNLri3E7q+eGST/bKl3JUQLdBs8DuRVN5Oeu3BhQzWgt3Il5764/DkfoSQiSF6SCJUZA+IB8mocycLLKUIyOn332ENqp5GfsX3W4FK0OM=",
+      "parse": "ssh: exponent too large"
+    },
+    {
+      "name": "exponent 2^31",
+      "wire": "AAAAB3NzaC1yc2EAAAAFAIAAAAAAAACBAOUNf0CS9ifCCrTODMrGMcvv3HKKne9yzNkbo5M3pQ22wgfNB+AsyFA+VyY4b4WXZoC0kbU+fHYLoote9qolK7ftQelFjit5ByQBLy9pxzuL2d9ZdT+6gl20LjHmsIZ4AtkDK8K4+qhUpdMacf+GNzjB6uWlbtFMDBtX9GaAUcQB",
+      "parse": "ssh: exponent too large"
+    },
+    {
+      "name": "exponent 2^31+1",
+      "wire": "AAAAB3NzaC1yc2EAAAAFAIAAAAEAAACBAMTnkzGQ0/MYuOeYYD9woqL+JTh6NmBBOhGlbcVART/ZmfPMazrM12AO2F0nkcc9abhRFjhb0mUTZjXxAsLE4GNWOv6EQgoy3ML+i3rAIS8ykFobB+KlFIsFGegF1IciclfIDUAMcA/kiTHF+X57L1WoFBbpELkGMxTLZ3jjGv8X",
+      "parse": "ssh: exponent too large"
+    },
+    {
+      "name": "exponent 2^32+1",
+      "wire": "AAAAB3NzaC1yc2EAAAAFAQAAAAEAAACBAO+0j4ZRbMcf5PurdSfVBJ0uiNZes5T1C7kgFUgUFIGCbtDvcvrrV0WtYnvv31K94fj/L9KqSE/Dt6ndqFVkXd+Xw1fSmyNK+A6+22wCz1yNKU8RN87TSBvJeE0kip05YS5lc7astsy7Zj5WZ8wzwf+sSqLtalLF3+8oNstwaDpH",
+      "parse": "ssh: exponent too large"
+    },
+    {
+      "name": "exponent 2^62+1",
+      "wire": "AAAAB3NzaC1yc2EAAAAIQAAAAAAAAAEAAACBANYQcUtA+rL3YVVio5hsXiT5zIhaWmf+RTVECexTXp+/gH1HstmEe+pKcWl2ztCDjLmv6L3r9TrItHjt++sXb1vqpg88fEHEyidTIs8z0RTb87VkXByGoB9iq9kmQJoudhBFaMnqFHhLLCl5e5HJ81RG7ubHiwkrtj6jNFONxboF",
+      "parse": "ssh: exponent too large"
+    },
+    {
+      "name": "exponent -65537",
+      "wire": "AAAAB3NzaC1yc2EAAAAD/v//AAAAgQDlDX9AkvYnwgq0zgzKxjHL79xyip3vcszZG6OTN6UNtsIHzQfgLMhQPlcmOG+Fl2aAtJG1Pnx2C6KLXvaqJSu37UHpRY4reQckAS8vacc7i9nfWXU/uoJdtC4x5rCGeALZAyvCuPqoVKXTGnH/hjc4werlpW7RTAwbV/RmgFHEAQ==",
+      "parse": "ssh: incorrect exponent"
+    },
+    {
+      "name": "a modulus of 16385 bits",
+      "wire": "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",
+      "parse": "ssh: rsa modulus too large"
+    }
+  ],
+  "pgp": [
+    {
+      "name": "65537 in three octets",
+      "packet": "xv8AAACNBGAAAAABBADlDX9AkvYnwgq0zgzKxjHL79xyip3vcszZG6OTN6UNtsIHzQfgLMhQPlcmOG+Fl2aAtJG1Pnx2C6KLXvaqJSu37UHpRY4reQckAS8vacc7i9nfWXU/uoJdtC4x5rCGeALZAyvCuPqoVKXTGnH/hjc4werlpW7RTAwbV/RmgFHEAQARAQAB",
+      "next": "ok"
+    },
+    {
+      "name": "2^24-1 in three octets",
+      "packet": "xv8AAACNBGAAAAABBADlDX9AkvYnwgq0zgzKxjHL79xyip3vcszZG6OTN6UNtsIHzQfgLMhQPlcmOG+Fl2aAtJG1Pnx2C6KLXvaqJSu37UHpRY4reQckAS8vacc7i9nfWXU/uoJdtC4x5rCGeALZAyvCuPqoVKXTGnH/hjc4werlpW7RTAwbV/RmgFHEAQAY////",
+      "next": "ok"
+    },
+    {
+      "name": "65537 in four octets, a zero first",
+      "packet": "xv8AAACOBGAAAAABBADlDX9AkvYnwgq0zgzKxjHL79xyip3vcszZG6OTN6UNtsIHzQfgLMhQPlcmOG+Fl2aAtJG1Pnx2C6KLXvaqJSu37UHpRY4reQckAS8vacc7i9nfWXU/uoJdtC4x5rCGeALZAyvCuPqoVKXTGnH/hjc4werlpW7RTAwbV/RmgFHEAQAgAAEAAQ==",
+      "next": "EOF"
+    },
+    {
+      "name": "2^24+1 in four octets",
+      "packet": "xv8AAACOBGAAAAABBADlDX9AkvYnwgq0zgzKxjHL79xyip3vcszZG6OTN6UNtsIHzQfgLMhQPlcmOG+Fl2aAtJG1Pnx2C6KLXvaqJSu37UHpRY4reQckAS8vacc7i9nfWXU/uoJdtC4x5rCGeALZAyvCuPqoVKXTGnH/hjc4werlpW7RTAwbV/RmgFHEAQAZAQAAAQ==",
+      "next": "EOF"
+    },
+    {
+      "name": "2^31+1 in four octets",
+      "packet": "xv8AAACOBGAAAAABBADlDX9AkvYnwgq0zgzKxjHL79xyip3vcszZG6OTN6UNtsIHzQfgLMhQPlcmOG+Fl2aAtJG1Pnx2C6KLXvaqJSu37UHpRY4reQckAS8vacc7i9nfWXU/uoJdtC4x5rCGeALZAyvCuPqoVKXTGnH/hjc4werlpW7RTAwbV/RmgFHEAQAggAAAAQ==",
+      "next": "EOF"
+    },
+    {
+      "name": "2^32+1 in five octets",
+      "packet": "xv8AAACPBGAAAAABBADlDX9AkvYnwgq0zgzKxjHL79xyip3vcszZG6OTN6UNtsIHzQfgLMhQPlcmOG+Fl2aAtJG1Pnx2C6KLXvaqJSu37UHpRY4reQckAS8vacc7i9nfWXU/uoJdtC4x5rCGeALZAyvCuPqoVKXTGnH/hjc4werlpW7RTAwbV/RmgFHEAQAhAQAAAAE=",
+      "next": "EOF"
+    },
+    {
+      "name": "none",
+      "packet": "xv8AAACKBGAAAAABBADlDX9AkvYnwgq0zgzKxjHL79xyip3vcszZG6OTN6UNtsIHzQfgLMhQPlcmOG+Fl2aAtJG1Pnx2C6KLXvaqJSu37UHpRY4reQckAS8vacc7i9nfWXU/uoJdtC4x5rCGeALZAyvCuPqoVKXTGnH/hjc4werlpW7RTAwbV/RmgFHEAQAA",
+      "next": "ok"
+    }
+  ]
+}

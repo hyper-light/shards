@@ -1857,5 +1857,288 @@
     "stdout": "RUN --force=true --timeout=5s\n",
     "stderr": "",
     "status": 0
+  },
+  {
+    "argv": [
+      "policy"
+    ],
+    "stdout": "Usage:  shards buildx policy [OPTIONS] COMMAND\n\nCommands for working with build policies\n\nOptions:\n      --builder string   Override the configured builder instance\n  -D, --debug            Enable debug logging\n\nCommands:\n  eval        Evaluate policy for a source\n  test        Run policy tests\n\nRun 'shards buildx policy COMMAND --help' for more information on a command.\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "policy",
+      "--help"
+    ],
+    "stdout": "Usage:  shards buildx policy [OPTIONS] COMMAND\n\nCommands for working with build policies\n\nOptions:\n      --builder string   Override the configured builder instance\n  -D, --debug            Enable debug logging\n\nCommands:\n  eval        Evaluate policy for a source\n  test        Run policy tests\n\nRun 'shards buildx policy COMMAND --help' for more information on a command.\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "policy",
+      "-h"
+    ],
+    "stdout": "Flag shorthand -h has been deprecated, use --help\nUsage:  shards buildx policy [OPTIONS] COMMAND\n\nCommands for working with build policies\n\nOptions:\n      --builder string   Override the configured builder instance\n  -D, --debug            Enable debug logging\n\nCommands:\n  eval        Evaluate policy for a source\n  test        Run policy tests\n\nRun 'shards buildx policy COMMAND --help' for more information on a command.\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "policy",
+      "foo"
+    ],
+    "stdout": "Usage:  shards buildx policy [OPTIONS] COMMAND\n\nCommands for working with build policies\n\nOptions:\n      --builder string   Override the configured builder instance\n  -D, --debug            Enable debug logging\n\nCommands:\n  eval        Evaluate policy for a source\n  test        Run policy tests\n\nRun 'shards buildx policy COMMAND --help' for more information on a command.\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "policy",
+      "--bogus"
+    ],
+    "stdout": "",
+    "stderr": "unknown flag: --bogus\n\nUsage:  shards buildx policy\n\nRun 'shards buildx policy --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "policy",
+      "eval",
+      "--help"
+    ],
+    "stdout": "Usage:  shards buildx policy eval [OPTIONS] source\n\nEvaluate policy for a source\n\nOptions:\n      --builder string    Override the configured builder instance\n  -D, --debug             Enable debug logging\n      --fields strings    Fields to evaluate\n  -f, --file string       Policy filename to evaluate (default \"Dockerfile\")\n      --platform string   Target platform for policy evaluation\n      --print             Print policy output\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "policy",
+      "eval",
+      "-h"
+    ],
+    "stdout": "Flag shorthand -h has been deprecated, use --help\nUsage:  shards buildx policy eval [OPTIONS] source\n\nEvaluate policy for a source\n\nOptions:\n      --builder string    Override the configured builder instance\n  -D, --debug             Enable debug logging\n      --fields strings    Fields to evaluate\n  -f, --file string       Policy filename to evaluate (default \"Dockerfile\")\n      --platform string   Target platform for policy evaluation\n      --print             Print policy output\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "policy",
+      "eval"
+    ],
+    "stdout": "",
+    "stderr": "ERROR: accepts 1 arg(s), received 0\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "policy",
+      "eval",
+      "a",
+      "b"
+    ],
+    "stdout": "",
+    "stderr": "ERROR: accepts 1 arg(s), received 2\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "policy",
+      "eval",
+      "docker-image://alpine"
+    ],
+    "stdout": "RUN \"docker-image://alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "policy",
+      "eval",
+      "--print",
+      "--fields",
+      "image.checksum,image.labels",
+      "--fields",
+      "git.commit",
+      "--platform",
+      "linux/arm64",
+      "docker-image://alpine"
+    ],
+    "stdout": "RUN --fields=[image.checksum,image.labels,git.commit] --platform=linux/arm64 --print=true \"docker-image://alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "policy",
+      "eval",
+      "-f",
+      "Agentfile",
+      "."
+    ],
+    "stdout": "RUN --file=Agentfile \".\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "policy",
+      "eval",
+      "--filename",
+      "X",
+      "--file",
+      "Y",
+      "."
+    ],
+    "stdout": "RUN --file=Y --filename=Y \".\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "policy",
+      "eval",
+      "--print=false",
+      "."
+    ],
+    "stdout": "RUN --print=false \".\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "policy",
+      "eval",
+      "--print=maybe",
+      "."
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"maybe\" for \"--print\" flag: strconv.ParseBool: parsing \"maybe\": invalid syntax\n\nUsage:  shards buildx policy eval [OPTIONS] source\n\nRun 'shards buildx policy eval --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "policy",
+      "eval",
+      "--platform",
+      "."
+    ],
+    "stdout": "",
+    "stderr": "ERROR: accepts 1 arg(s), received 0\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "policy",
+      "eval",
+      "--bogus",
+      "."
+    ],
+    "stdout": "",
+    "stderr": "unknown flag: --bogus\n\nUsage:  shards buildx policy eval [OPTIONS] source\n\nRun 'shards buildx policy eval --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "policy",
+      "eval",
+      ".",
+      "--print"
+    ],
+    "stdout": "RUN --print=true \".\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "policy",
+      "eval",
+      "--builder",
+      "b",
+      "--debug",
+      "."
+    ],
+    "stdout": "RUN --builder=b --debug=true \".\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "policy",
+      "test",
+      "--help"
+    ],
+    "stdout": "Usage:  shards buildx policy test \u003cpath\u003e\n\nRun policy tests\n\nOptions:\n      --builder string    Override the configured builder instance\n  -D, --debug             Enable debug logging\n      --filename string   Name of the Dockerfile to validate (default\n                          \"Dockerfile\")\n      --run string        Run only tests with name containing this substring\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "policy",
+      "test"
+    ],
+    "stdout": "",
+    "stderr": "ERROR: accepts 1 arg(s), received 0\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "policy",
+      "test",
+      "a",
+      "b"
+    ],
+    "stdout": "",
+    "stderr": "ERROR: accepts 1 arg(s), received 2\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "policy",
+      "test",
+      "--run",
+      "deny",
+      "--filename",
+      "Agentfile",
+      "policies/"
+    ],
+    "stdout": "RUN --filename=Agentfile --run=deny \"policies/\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "policy",
+      "test",
+      "--run",
+      "policies"
+    ],
+    "stdout": "",
+    "stderr": "ERROR: accepts 1 arg(s), received 0\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "policy",
+      "test",
+      "-f",
+      "x",
+      "p"
+    ],
+    "stdout": "",
+    "stderr": "unknown shorthand flag: 'f' in -f\n\nUsage:  shards buildx policy test \u003cpath\u003e\n\nRun 'shards buildx policy test --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "policy",
+      "test",
+      "--bogus",
+      "p"
+    ],
+    "stdout": "",
+    "stderr": "unknown flag: --bogus\n\nUsage:  shards buildx policy test \u003cpath\u003e\n\nRun 'shards buildx policy test --help' for more information\n",
+    "status": 125
   }
 ]

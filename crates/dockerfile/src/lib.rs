@@ -26,7 +26,7 @@ pub mod go;
 pub mod ignore;
 pub mod image;
 pub mod instructions;
-pub(crate) mod json;
+pub mod json;
 pub use json::compact as json_compact;
 pub use json::indent as json_indent;
 pub use json::indent_with as json_indent_with;

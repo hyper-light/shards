@@ -305,13 +305,17 @@ fn read_entity(packets: &mut Packets<'_>) -> Result<Entity, Error> {
     Ok(e)
 }
 
-/// addUserID: the identity's signatures, its own verified as they come.
+/// addUserID: the identity's signatures, its own verified as they come. go-crypto puts
+/// the identity in the entity's map at each of its own signatures, by pointer; it is put
+/// there here once, after the last, where one of them was its own (an error discards
+/// the entity, so no state between is seen).
 fn add_user_id(e: &mut Entity, packets: &mut Packets<'_>, id: Vec<u8>) -> Result<(), Error> {
     let mut identity = Identity {
-        name: id.clone(),
+        name: id,
         self_signature: None,
         revocations: Vec::new(),
     };
+    let mut own = false;
     loop {
         let item = match packets.next()? {
             None => break,
@@ -333,7 +337,7 @@ fn add_user_id(e: &mut Entity, packets: &mut Packets<'_>, id: Vec<u8>) -> Result
             return Err(Error::Structural("user ID signature with wrong type".into()));
         }
         if verify::check_key_id_or_fingerprint(&sig, &e.primary) {
-            if let Err(err) = verify::user_id_signature(&e.primary, &id, &sig) {
+            if let Err(err) = verify::user_id_signature(&e.primary, &identity.name, &sig) {
                 return Err(Error::Structural(format!(
                     "user ID self-signature invalid: {err}"
                 )));
@@ -347,8 +351,11 @@ fn add_user_id(e: &mut Entity, packets: &mut Packets<'_>, id: Vec<u8>) -> Result
             {
                 identity.self_signature = Some(*sig);
             }
-            e.identities.insert(id.clone(), identity.clone());
+            own = true;
         }
+    }
+    if own {
+        e.identities.insert(identity.name.clone(), identity);
     }
     Ok(())
 }

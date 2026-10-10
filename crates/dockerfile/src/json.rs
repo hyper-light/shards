@@ -15,7 +15,7 @@ use crate::go;
 
 /// A JSON value. Strings are Go strings, bytes; numbers keep their text.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Value {
+pub enum Value {
     Null,
     Bool(bool),
     Number(Vec<u8>),
@@ -208,7 +208,7 @@ pub fn compact(text: &[u8]) -> Result<Vec<u8>, String> {
 
 /// `text` as one JSON value with only whitespace around it, or Go's `SyntaxError` message
 /// for the first thing its scanner refuses.
-pub(crate) fn parse(text: &[u8]) -> Result<Value, Vec<u8>> {
+pub fn parse(text: &[u8]) -> Result<Value, Vec<u8>> {
     let mut s = Scan { b: text, at: 0 };
     let mut stack: Vec<Open> = Vec::new();
     let value = 'outer: loop {

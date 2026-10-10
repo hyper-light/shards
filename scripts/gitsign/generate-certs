@@ -1,0 +1,59 @@
+#!/bin/sh
+# Regenerates crates/gitsign/testdata/certs.json: OpenSSH certificates as keys and as the
+# keys of signatures, made by ssh-keygen (`-s` certifies, `-Y sign -n git` signs as git's
+# gpg.format=ssh signs, the certificate embedded where it signs with one) and by
+# certs_oracle_test.go (what ssh-keygen cannot make: DSA and security keys, crafted wire
+# forms), with what buildx v0.37.1 makes of each: x/crypto/ssh v0.55.0's ParsePublicKey
+# and ParseAuthorizedKey, and gitsign.VerifySignature (verify_git_signature).
+#
+#   scripts/gitsign/generate-certs BUILDX_V0.37.1_CHECKOUT
+set -eu
+here=$(cd "$(dirname "$0")" && pwd)
+root=$(cd "$here/../.." && pwd)
+bx=$1
+work=$(mktemp -d)
+trap 'rm -rf "$work"; rm -f "$bx/cmd/buildx/zz_shards_certs_test.go"' EXIT
+ns=git
+printf 'signed data\n' > "$work/data"
+for ca in ed25519 ecdsa rsa; do
+	ssh-keygen -q -t "$ca" -N '' -f "$work/ca_$ca"
+done
+n=0
+for key in ed25519 ecdsa:256 ecdsa:384 ecdsa:521 rsa:2048; do
+	type=${key%%:*}
+	bits=${key#*:}
+	name=$type$( [ "$type" = "$bits" ] || printf '%s' "$bits")
+	if [ "$type" = "$bits" ]; then
+		ssh-keygen -q -t "$type" -N '' -f "$work/$name"
+	else
+		ssh-keygen -q -t "$type" -b "$bits" -N '' -f "$work/$name"
+	fi
+	# Each key certified by the CAs in turn, with options, extensions and principals.
+	case $n in 0) ca=ed25519 ;; 1) ca=ecdsa ;; 2) ca=rsa ;; 3) ca=ed25519 ;; *) ca=ecdsa ;; esac
+	n=$((n + 1))
+	ssh-keygen -q -s "$work/ca_$ca" -I "shards-$name" -n alice,bob -z 42 \
+		-O no-pty -O force-command=/bin/true -O source-address=10.0.0.0/8 \
+		-O critical:verify-required -O extension:login@shards.invalid=ops \
+		-V 20200101:20400101 "$work/$name.pub"
+	# The same key certified again, by another serial: another certificate.
+	cp "$work/$name.pub" "$work/${name}_again.pub"
+	ssh-keygen -q -s "$work/ca_$ca" -I "shards-$name" -n alice -z 43 "$work/${name}_again.pub"
+	ssh-keygen -q -Y sign -n "$ns" -f "$work/$name-cert.pub" "$work/data"
+	mv "$work/data.sig" "$work/${name}_cert.sig"
+	ssh-keygen -q -Y sign -n "$ns" -f "$work/$name" "$work/data"
+	mv "$work/data.sig" "$work/${name}_plain.sig"
+done
+rm -f "$work"/ca_ed25519 "$work"/ca_ecdsa "$work"/ca_rsa
+python3 -c '
+import json, os, sys
+d = sys.argv[1]
+out = {}
+for f in sorted(os.listdir(d)):
+    if f.endswith((".pub", ".sig")) or f == "data":
+        out[f] = open(os.path.join(d, f)).read()
+json.dump(out, open(sys.argv[2], "w"))
+' "$work" "$work/files.json"
+cp "$here/certs_oracle_test.go" "$bx/cmd/buildx/zz_shards_certs_test.go"
+cd "$bx"
+SHARDS_CERT_FILES="$work/files.json" SHARDS_CERT_OUT="$root/crates/gitsign/testdata/certs.json" \
+	go test -mod=vendor -count=1 -run '^TestShardsSSHCertOracle$' ./cmd/buildx/

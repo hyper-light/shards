@@ -662,6 +662,21 @@ fn volume_name(w: &[u8]) -> bool {
             .all(|&b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'))
 }
 
+/// Why an Agentfile's volume may not be where [`covers_domain_mounts`] says.
+pub const COVERS: &str = "VOLUME may not cover a domain's root, /proc, /sys or /dev";
+
+/// Whether a mount point, rooted at `/`, covers a domain's root or the file systems its
+/// init mounts there, `/proc`, `/sys` and `/dev` (D109): an Agentfile's volumes may not,
+/// and Docker's `VOLUME`s there stay the run's own root's.
+pub fn covers_domain_mounts(path: &[u8]) -> bool {
+    let at = crate::go::clean(&[b"/".as_slice(), path].concat());
+    let covers = |dir: &[u8]| {
+        at.strip_prefix(dir)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with(b"/"))
+    };
+    at == b"/" || [&b"/proc"[..], b"/sys", b"/dev"].iter().any(|d| covers(d))
+}
+
 /// `VOLUME [--chown=…] [--chmod=…] [--target-kind=…] <path>… [FOR <name>…]`, or a named
 /// volume, `<name> <path>`, where the line takes an option, a name or `FOR`: `None` for a
 /// Dockerfile's `VOLUME`. Flags are already declared on `req`.
@@ -677,9 +692,20 @@ pub(crate) fn volume(req: &mut Req<'_>) -> Result<Option<Volume>, Vec<u8>> {
         return Err(b"VOLUME requires at least one path before FOR".to_vec());
     }
     let (source, paths) = match paths {
+        // As the engine refuses it when the run makes the volume (moby volume/local).
+        [n, _] if volume_name(n) && n.len() < 2 => {
+            return Err(
+                b"volume name is too short, names should be at least two alphanumeric characters".to_vec(),
+            );
+        }
         [n, dest] if volume_name(n) => (Some(n.clone()), vec![dest.clone()]),
         _ => (None, paths.to_vec()),
     };
+    // Each mount point is given to agents and harnesses (§4.5, D109): their root and their
+    // system's mounts are their own.
+    if let Some(p) = paths.iter().find(|p| covers_domain_mounts(p)) {
+        return Err([COVERS.as_bytes(), b": ", p].concat());
+    }
     let f = &req.flags;
     Ok(Some(Volume {
         source,
@@ -731,6 +757,8 @@ impl Declared {
 struct Seen {
     domains: std::collections::BTreeMap<Vec<u8>, (Declared, usize)>,
     networks: std::collections::BTreeMap<Vec<u8>, (Vec<Vec<u8>>, usize)>,
+    /// Where its `VOLUME`s mount, rooted as Docker roots them, and on which line.
+    mounts: std::collections::BTreeMap<Vec<u8>, usize>,
 }
 
 fn at(line: usize, message: String) -> crate::instructions::Error {
@@ -820,7 +848,23 @@ pub fn check(ins: &crate::instructions::Instructions) -> Result<(), crate::instr
                         .insert(n.name.clone(), (n.scope.names.clone(), line));
                 }
                 Directive::Skill(s) => scope(&seen, &s.scope, line, "SKILL")?,
-                Directive::Volume(v) => scope(&seen, &v.scope, line, "VOLUME")?,
+                Directive::Volume(v) => {
+                    scope(&seen, &v.scope, line, "VOLUME")?;
+                    // One volume at a mount point: a domain is given what is mounted
+                    // there, so a second would be given to the first's domains.
+                    for p in &v.paths {
+                        let rooted = go::clean(&[b"/".as_slice(), p].concat());
+                        if let Some(first) = seen.mounts.insert(rooted, line) {
+                            return Err(at(
+                                line,
+                                format!(
+                                    "VOLUME {}: a VOLUME mounts a volume there already, at line {first}",
+                                    shown(p)
+                                ),
+                            ));
+                        }
+                    }
+                }
                 Directive::Expose(e) => {
                     for n in &e.networks {
                         declared_network(&seen, n, line, "EXPOSE")?;
@@ -947,6 +991,19 @@ fn declared_network<'s>(
 
 /// Where a built image keeps its normalized Agentfile, outside every domain (§8, D35).
 pub const SPEC_PATH: &[u8] = b"/.agentfile.json";
+
+/// The label namespace shards' build owns (§8, D59): every label the build writes of an
+/// Agentfile begins with it (the digest, the egress, DNS and MCP grants). A `--label` on a
+/// `build` or a `run` may not set one: they are the build's record of the Agentfile, which
+/// the daemon and the guest trust, not the user's to forge (both build- and run-time, as
+/// the user mutates a run through the CLI). Docker reserves no label, so this is shards'
+/// own (recorded as a deviation).
+pub const LABEL_PREFIX: &[u8] = b"vnd.osi.agentfile.";
+
+/// Whether `key` is in the namespace shards' build owns ([`LABEL_PREFIX`]).
+pub fn reserved_label(key: &[u8]) -> bool {
+    key.starts_with(LABEL_PREFIX)
+}
 
 /// The config label that carries the normalized Agentfile's digest (§8): `vnd.osi`, as the
 /// OSI's media types (`application/vnd.osi.agent.v1`).
@@ -1754,4 +1811,233 @@ pub fn digest(bytes: &[u8]) -> Vec<u8> {
         out.extend_from_slice(format!("{b:02x}").as_bytes());
     }
     out
+}
+
+/// What an Agentfile grants past its microVM (D59): the build's labels of it, and what the
+/// daemon holds a run to, each derived from the directives alone; the daemon's from the
+/// normalized Agentfile it read in the image's root and checked against the image's digest
+/// ([`from_spec`], D109), never from labels, which a crafted image sets as it likes.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Grants {
+    /// [`egress`]: the ports its microVM's network process lets out.
+    pub egress: Vec<Vec<u8>>,
+    /// [`remote_mcp`]: each remote MCP server's `host:port`.
+    pub mcp: Vec<Vec<u8>>,
+    /// [`dns`]: any name past the microVM.
+    pub dns: bool,
+    /// [`egress_declared`]: the ports a run may not publish.
+    pub egress_declared: Vec<Vec<u8>>,
+}
+
+/// An Agentfile's [`Grants`].
+pub fn grants(directives: &[Directive]) -> Grants {
+    Grants {
+        egress: egress(directives),
+        mcp: remote_mcp(directives),
+        dns: dns(directives),
+        egress_declared: egress_declared(directives),
+    }
+}
+
+/// The directives a normalized Agentfile ([`spec`]) records, read back: each grant as it
+/// is written there, and what only the build uses (a skill's copy options), which it does
+/// not record, at its default. Of any text `spec` wrote, `spec` of what this reads is that
+/// text again.
+pub fn from_spec(text: &[u8]) -> Result<Vec<Directive>, String> {
+    use serde_json::Value;
+    let doc: Value = serde_json::from_slice(text).map_err(|e| e.to_string())?;
+    if doc.get("schemaVersion").and_then(Value::as_u64) != Some(1) {
+        return Err("a schema version this shards does not know".into());
+    }
+    fn get<'v>(v: &'v Value, key: &str) -> Result<&'v Value, String> {
+        v.get(key).ok_or_else(|| format!("no {key:?}"))
+    }
+    fn bytes(v: &Value, key: &str) -> Result<Vec<u8>, String> {
+        get(v, key)?
+            .as_str()
+            .map(|s| s.as_bytes().to_vec())
+            .ok_or_else(|| format!("{key:?} is no string"))
+    }
+    fn maybe(v: &Value, key: &str) -> Result<Option<Vec<u8>>, String> {
+        match get(v, key)? {
+            Value::Null => Ok(None),
+            _ => bytes(v, key).map(Some),
+        }
+    }
+    fn strings(v: &Value, key: &str) -> Result<Vec<Vec<u8>>, String> {
+        get(v, key)?
+            .as_array()
+            .ok_or_else(|| format!("{key:?} is no list"))?
+            .iter()
+            .map(|s| s.as_str().map(|s| s.as_bytes().to_vec()))
+            .collect::<Option<_>>()
+            .ok_or_else(|| format!("{key:?} holds more than strings"))
+    }
+    fn boolean(v: &Value, key: &str) -> Result<bool, String> {
+        get(v, key)?
+            .as_bool()
+            .ok_or_else(|| format!("{key:?} is no boolean"))
+    }
+    fn maybe_bool(v: &Value, key: &str) -> Result<Option<bool>, String> {
+        match get(v, key)? {
+            Value::Null => Ok(None),
+            b => b
+                .as_bool()
+                .map(Some)
+                .ok_or_else(|| format!("{key:?} is no boolean")),
+        }
+    }
+    fn kind(v: &Value) -> Result<Option<TargetKind>, String> {
+        match v {
+            Value::Null => Ok(None),
+            k if k == "agent" => Ok(Some(TargetKind::Agent)),
+            k if k == "harness" => Ok(Some(TargetKind::Harness)),
+            _ => Err(format!("{v} is no kind of domain")),
+        }
+    }
+    fn scope(v: &Value) -> Result<Scope, String> {
+        let s = get(v, "for")?;
+        Ok(Scope {
+            kind: kind(get(s, "kind")?)?,
+            names: strings(s, "names")?,
+        })
+    }
+    fn direction(v: &Value) -> Result<Direction, String> {
+        match get(v, "direction")?.as_str() {
+            Some("both") => Ok(Direction::Both),
+            Some("ingress") => Ok(Direction::Ingress),
+            Some("egress") => Ok(Direction::Egress),
+            _ => Err("a direction neither both, ingress nor egress".into()),
+        }
+    }
+    let mut out = Vec::new();
+    for (list, at) in [
+        ("agents", 0),
+        ("harnesses", 1),
+        ("skills", 2),
+        ("mcp", 3),
+        ("networks", 4),
+        ("connections", 5),
+        ("attachments", 6),
+        ("exposures", 7),
+        ("volumes", 8),
+    ] {
+        let items = get(&doc, list)?
+            .as_array()
+            .ok_or_else(|| format!("{list:?} is no list"))?;
+        for v in items {
+            let read = || -> Result<Directive, String> {
+                Ok(match at {
+                    0 | 1 => {
+                        let domain = Domain {
+                            name: bytes(v, "name")?,
+                            source: bytes(v, "source")?,
+                            to: Some(bytes(v, "to")?),
+                            processes: match get(v, "processes")? {
+                                Value::Null => Processes::Unbounded,
+                                n if n == "none" => Processes::None,
+                                n => Processes::AtMost(
+                                    n.as_u64()
+                                        .and_then(|n| u32::try_from(n).ok())
+                                        .ok_or("processes neither none nor a number")?,
+                                ),
+                            },
+                        };
+                        if at == 0 {
+                            Directive::Agent(domain)
+                        } else {
+                            Directive::Harness(domain)
+                        }
+                    }
+                    2 => Directive::Skill(Skill {
+                        source: match v.get("text") {
+                            Some(_) => SkillSource::Text(SourceContent {
+                                path: Vec::new(),
+                                data: bytes(v, "text")?,
+                                expand: false,
+                            }),
+                            None => SkillSource::Path(bytes(v, "source")?),
+                        },
+                        dest: maybe(v, "dest")?,
+                        from: bytes(v, "from")?,
+                        chown: Vec::new(),
+                        chmod: Vec::new(),
+                        link: false,
+                        exclude: Vec::new(),
+                        keep_git_dir: None,
+                        checksum: Vec::new(),
+                        scope: scope(v)?,
+                    }),
+                    3 => Directive::Mcp(Mcp {
+                        name: bytes(v, "name")?,
+                        source: bytes(v, "source")?,
+                        scope: scope(v)?,
+                    }),
+                    4 => {
+                        let mut protocols = 0u8;
+                        for p in strings(v, "protocols")? {
+                            let i = PROTOCOLS
+                                .iter()
+                                .position(|q| *q == p)
+                                .ok_or("a protocol neither tcp, udp nor unix")?;
+                            protocols |= 1 << i;
+                        }
+                        let ports = get(v, "ports")?
+                            .as_array()
+                            .ok_or("\"ports\" is no list")?
+                            .iter()
+                            .map(|p| Ok((bytes(p, "port")?, direction(p)?)))
+                            .collect::<Result<_, String>>()?;
+                        Directive::Network(Network {
+                            name: bytes(v, "name")?,
+                            driver: bytes(v, "driver")?,
+                            driver_opts: strings(v, "driverOpts")?,
+                            attachable: boolean(v, "attachable")?,
+                            internal: boolean(v, "internal")?,
+                            external: boolean(v, "external")?,
+                            ipv4: maybe_bool(v, "ipv4")?,
+                            ipv6: maybe_bool(v, "ipv6")?,
+                            labels: strings(v, "labels")?,
+                            ipam_driver: bytes(v, "ipamDriver")?,
+                            ipam_opts: strings(v, "ipamOpts")?,
+                            subnets: strings(v, "subnets")?,
+                            ip_ranges: strings(v, "ipRanges")?,
+                            gateways: strings(v, "gateways")?,
+                            aux_addresses: strings(v, "auxAddresses")?,
+                            dns: boolean(v, "dns")?,
+                            ports,
+                            protocols,
+                            scope: scope(v)?,
+                        })
+                    }
+                    5 => Directive::Connect(Connect {
+                        kind: kind(get(v, "kind")?)?,
+                        from: strings(v, "from")?,
+                        both_ways: boolean(v, "bothWays")?,
+                        to: strings(v, "to")?,
+                        on: strings(v, "on")?,
+                        ports: strings(v, "ports")?,
+                    }),
+                    6 => Directive::Attach(Attach {
+                        agents: strings(v, "agents")?,
+                        harnesses: strings(v, "harnesses")?,
+                    }),
+                    7 => Directive::Expose(Exposure {
+                        ports: strings(v, "ports")?,
+                        direction: direction(v)?,
+                        networks: strings(v, "networks")?,
+                    }),
+                    _ => Directive::Volume(Volume {
+                        source: maybe(v, "source")?,
+                        paths: strings(v, "paths")?,
+                        chown: bytes(v, "chown")?,
+                        chmod: bytes(v, "chmod")?,
+                        scope: scope(v)?,
+                    }),
+                })
+            };
+            out.push(read().map_err(|e| format!("{list}: {e}"))?);
+        }
+    }
+    Ok(out)
 }

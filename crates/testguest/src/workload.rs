@@ -1265,7 +1265,7 @@ fn confined(args: &[String]) -> i32 {
             "see" | "write" | "bind" | "connect" | "call" | "listen" | "reach" | "unreach" | "cat"
             | "resolve" | "dnsprobe" | "dnsask" | "unix" | "abstract" | "unix-serve" | "pause"
             | "udpflood" | "tcpflood" | "udpaskfrom" | "reachmany" | "udpask" | "srv-send"
-            | "srv-receive" | "srv-answer" => mode = a.as_str(),
+            | "srv-receive" | "srv-answer" | "owner" => mode = a.as_str(),
             "srv-mcp" => {
                 let said = match server_call("mcp", "{}") {
                     Ok((t, false)) => t,
@@ -1886,6 +1886,14 @@ fn confined(args: &[String]) -> i32 {
                     Err(e) => errno(&e),
                 };
                 out.push_str(&format!("confined connect {addr}: {said}\n"));
+            }
+            path if mode == "owner" => {
+                use std::os::unix::fs::MetadataExt as _;
+                let said = match std::fs::metadata(path) {
+                    Ok(m) => format!("{}:{} {:o}", m.uid(), m.gid(), m.mode() & 0o7777),
+                    Err(e) => errno(&e),
+                };
+                out.push_str(&format!("confined owner {path}: {said}\n"));
             }
             path if mode == "see" => {
                 let said = match std::fs::read_dir(path) {

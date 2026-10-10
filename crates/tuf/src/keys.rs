@@ -70,17 +70,50 @@ fn x509(msg: &str) -> Error {
     Error::Key(format!("x509: {msg}"))
 }
 
-/// An INTEGER's magnitude, positive and minimal as Go's asn1 requires.
-fn integer(b: &[u8]) -> Result<(Vec<u8>, &[u8]), Error> {
-    let (tag, v, rest) = tlv(b).ok_or_else(|| x509("invalid RSA public key"))?;
-    if tag != 0x02 || v.is_empty() || v.first().is_some_and(|x| x & 0x80 != 0) {
-        return Err(x509("invalid RSA public key"));
+/// An INTEGER's content octets, two's complement, encoded minimally as Go's asn1 and
+/// cryptobyte require; and what follows it.
+fn integer(b: &[u8]) -> Option<(&[u8], &[u8])> {
+    let (tag, v, rest) = tlv(b)?;
+    let minimal = match v {
+        [] => false,
+        [first, second, ..] => !matches!((first, second & 0x80), (0, 0) | (0xff, 0x80)),
+        [_] => true,
+    };
+    (tag == 0x02 && minimal).then_some((v, rest))
+}
+
+/// Whether two's complement octets are above zero.
+fn positive(v: &[u8]) -> bool {
+    v.first().is_some_and(|x| x & 0x80 == 0) && v.iter().any(|x| *x != 0)
+}
+
+/// An INTEGER's value as Go reads one into an int (64 bits): none past it.
+fn int64(v: &[u8]) -> Option<i64> {
+    if v.len() > 8 {
+        return None;
     }
-    if v.len() > 1 && v.first() == Some(&0) && v.get(1).is_some_and(|x| x & 0x80 == 0) {
-        return Err(x509("invalid RSA public key"));
-    }
-    let i = v.iter().position(|x| *x != 0).unwrap_or(v.len());
-    Ok((v.get(i..).unwrap_or_default().to_vec(), rest))
+    let fill = if v.first().is_some_and(|x| x & 0x80 != 0) {
+        0xff
+    } else {
+        0
+    };
+    let mut b = [fill; 8];
+    b.get_mut(8 - v.len()..)?.copy_from_slice(v);
+    Some(i64::from_be_bytes(b))
+}
+
+/// A positive value's magnitude: its octets with no leading zero.
+fn magnitude(v: &[u8]) -> Vec<u8> {
+    v.get(v.iter().position(|x| *x != 0).unwrap_or(v.len())..)
+        .unwrap_or_default()
+        .to_vec()
+}
+
+/// crypto/rsa's bound on a public exponent (checkPublicKey): none past 2^31-1, which
+/// x509 parses from PKIX (up to an int64's) but no verification takes.
+fn exponent_too_large(e: &[u8]) -> bool {
+    let e = magnitude(e);
+    e.len() > 4 || (e.len() == 4 && e.first().is_some_and(|x| x & 0x80 != 0))
 }
 
 /// x509.ParsePKIXPublicKey's reading of the keys go-tuf takes.
@@ -113,22 +146,26 @@ fn parse_pkix(der: &[u8]) -> Result<PublicKey, Error> {
             if params != [0x05, 0x00] {
                 return Err(x509("RSA key missing NULL parameters"));
             }
-            let (tag, seq, rest) = tlv(key).ok_or_else(|| x509("invalid RSA public key"))?;
-            if tag != 0x30 || !rest.is_empty() {
-                return Err(x509("trailing data after RSA public key"));
-            }
-            let (n, rest) = integer(seq)?;
-            let (e, rest) = integer(rest)?;
-            if !rest.is_empty() {
-                return Err(x509("invalid RSA public key"));
-            }
-            if n.is_empty() {
+            // cryptobyte's reads (Go 1.26 crypto/x509 parsePublicKey): the SEQUENCE, then its
+            // two INTEGERs, what follows each unread; the exponent into an int.
+            let seq = match tlv(key) {
+                Some((0x30, seq, _)) => seq,
+                _ => return Err(x509("invalid RSA public key")),
+            };
+            let (n, rest) = integer(seq).ok_or_else(|| x509("invalid RSA modulus"))?;
+            let e = integer(rest)
+                .and_then(|(e, _)| int64(e))
+                .ok_or_else(|| x509("invalid RSA public exponent"))?;
+            if !positive(n) {
                 return Err(x509("RSA modulus is not a positive number"));
             }
-            if e.is_empty() || e.len() > 4 || (e.len() == 4 && e.first().is_some_and(|x| x & 0x80 != 0)) {
+            if e <= 0 {
                 return Err(x509("RSA public exponent is not a positive number"));
             }
-            Ok(PublicKey::Rsa { n, e })
+            Ok(PublicKey::Rsa {
+                n: magnitude(n),
+                e: magnitude(&e.to_be_bytes()),
+            })
         }
         OID_EC => {
             let (tag, named, _) =
@@ -190,13 +227,31 @@ fn from_pem(text: &str) -> Result<PublicKey, Error> {
     match block.kind.as_str() {
         "PUBLIC KEY" => parse_pkix(&block.bytes),
         "RSA PUBLIC KEY" => {
-            let (tag, seq, rest) = tlv(&block.bytes).ok_or_else(|| x509("invalid RSA public key"))?;
-            if tag != 0x30 || !rest.is_empty() {
-                return Err(x509("trailing data after RSA public key"));
+            // x509.ParsePKCS1PublicKey: encoding/asn1's reading of a SEQUENCE of two
+            // INTEGERs (what follows them in it unread, the exponent into an int), nothing
+            // after it, both above zero, and the exponent within crypto/rsa's bound. A
+            // structure asn1 refuses is refused here in words of this crate's own.
+            let malformed = || x509("invalid RSA public key");
+            let (seq, rest) = match tlv(&block.bytes) {
+                Some((0x30, seq, rest)) => (seq, rest),
+                _ => return Err(malformed()),
+            };
+            let (n, after) = integer(seq).ok_or_else(malformed)?;
+            let (e, _) = integer(after).ok_or_else(malformed)?;
+            let e = int64(e).ok_or_else(|| Error::Key("asn1: structure error: integer too large".into()))?;
+            if !rest.is_empty() {
+                return Err(Error::Key("asn1: syntax error: trailing data".into()));
             }
-            let (n, rest) = integer(seq)?;
-            let (e, _) = integer(rest)?;
-            Ok(PublicKey::Rsa { n, e })
+            if !positive(n) || e <= 0 {
+                return Err(x509("public key contains zero or negative value"));
+            }
+            if e > i64::from(i32::MAX) {
+                return Err(x509("public key contains large public exponent"));
+            }
+            Ok(PublicKey::Rsa {
+                n: magnitude(n),
+                e: magnitude(&e.to_be_bytes()),
+            })
         }
         other => Err(Error::Key(format!(
             "unknown Public key PEM file type: {other}. Are you passing the correct public key?"
@@ -286,6 +341,9 @@ impl PublicKey {
                 ecdsa_asn1(*curve, point, d.as_ref(), sig)
             }
             PublicKey::Rsa { n, e } => {
+                if exponent_too_large(e) {
+                    return false;
+                }
                 let d = digest::digest(h, payload);
                 shards_gitsign::arith::rsa_pss_verify(
                     n,

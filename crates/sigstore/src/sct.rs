@@ -1853,7 +1853,7 @@ fn digest(alg: u64, data: &[u8]) -> Option<(crate::x509::Hash, Vec<u8>)> {
 fn verify_signature(key: &PublicKey, data: &[u8], sct: &Sct) -> bool {
     let rsa_ok = |n: &[u8]| num_bigint::BigUint::from_bytes_be(n).bits() >= 2048;
     match key {
-        PublicKey::Rsa { n, .. } if rsa_ok(n) => {}
+        PublicKey::Rsa { n, e } if rsa_ok(n) && crate::x509::rsa_key_error(n, e).is_none() => {}
         PublicKey::Ecdsa {
             curve: Curve::P256, ..
         } => {}
@@ -1967,4 +1967,46 @@ pub fn verify_scts(
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
+
+    use super::*;
+
+    /// A log's RSA key past crypto/rsa's bound on the public exponent verifies no SCT,
+    /// however good the signature; one at the bound does (the keys, and what Go makes of
+    /// them: testdata/rsa_exponent.json).
+    #[test]
+    fn log_keys_past_the_exponent_bound_verify_nothing() {
+        let data: serde_json::Value =
+            serde_json::from_str(include_str!("../testdata/rsa_exponent.json")).unwrap();
+        let unhex = |v: &serde_json::Value| -> Vec<u8> {
+            let s = v.as_str().unwrap();
+            (0..s.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(s.get(i..i + 2).unwrap(), 16).unwrap())
+                .collect()
+        };
+        let message = data["message"].as_str().unwrap().as_bytes();
+        for k in data["keys"].as_array().unwrap() {
+            let key = crate::x509::parse_pkix_public_key(&unhex(&k["pkix"])).unwrap();
+            let sct = Sct {
+                version: 0,
+                log_id: [0; 32],
+                timestamp: 0,
+                extensions: Vec::new(),
+                hash: 4,
+                signature_alg: 1,
+                signature: unhex(&k["signature"]),
+            };
+            assert_eq!(
+                verify_signature(&key, message, &sct),
+                k["verify"] == "",
+                "{}",
+                k["e"]
+            );
+        }
+    }
 }

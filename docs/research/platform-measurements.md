@@ -4269,3 +4269,55 @@ revision before comparing a changed API/implementation.
   reserves it as address space: an `mmap`ed stack on Unix, and on Windows
   `CreateThread` with `STACK_SIZE_PARAM_IS_A_RESERVATION`. Memory is committed only as
   deep as a policy goes; this is unmeasured. The test holds every CI target to that stack.
+
+### M127. What a build's policy check costs, and what an attestation chain can make it hold
+
+- **Question.** What does each part of checking a source against a build policy cost:
+  verifying an image's signatures, reading its provenance, building the input, compiling
+  the policy, the evaluation's thread, a whole check? How much memory does a hostile
+  provenance take to read, and how much stack the deepest chain documents?
+- **Method.** `docs/research/measurements/policy-path/run.sh` runs `policy_path_costs`
+  (ignored; release) on moby/buildkit v0.28.1's real linux/arm64 chain as Docker Hub
+  served it (index, attestation manifest, signature manifest, Sigstore bundle, its
+  80 KiB SLSA v1 provenance), offline, with the trusted root shards carries; a whole
+  check is `Policies::evaluate` with a policy requiring Docker's GitHub builder's
+  signature. Then valid provenances whose bulk is a field Go skips (1 to 64 MiB), each
+  timed with the process's peak RSS (getrusage). Then it bisects the smallest stack on
+  which the deepest chain is read and verified where a build does both
+  (`the_deepest_chain_is_*`, `SHARDS_JSON_STACK_PROBE`). shards_sigstore's and
+  shards_tuf's JSON parsers alone were bisected the same way, on aarch64 and on x86_64
+  under Rosetta 2. Apple M5 Max, macOS 26.4 (Darwin 25.4.0), release builds, 2026-10-09,
+  other builds running on the host.
+- **Results.** Before is 502adc0; after is ac85ad7, where a build keeps each chain's
+  readings (`signatures::Trust`), run on its code just before it was committed (the
+  harness printed 502adc0). Microseconds; the quieter of two runs each.
+
+  | step | n | before p50 / p90 / p99 / max | after p50 / p90 / p99 / max |
+  |---|---|---|---|
+  | verify image (`parse_signatures`) | 200 | 1337 / 1447 / 1614 / 2748 | 1162 / 1377 / 1502 / 2641 |
+  | read provenance (80 KiB) | 200 | 402 / 458 / 536 / 1581 | 366 / 434 / 528 / 1507 |
+  | input of an image with its chain | 200 | 1784 / 1915 / 1983 / 2058 | 38 / 66 / 92 / 2243 |
+  | compile the policy | 200 | 535 / 641 / 746 / 1601 | 469 / 615 / 756 / 1879 |
+  | an evaluation's thread (123 MiB) | 500 | 40 / 63 / 87 / 211 | 31 / 53 / 84 / 140 |
+  | run, partial (compile and eval) | 200 | 631 / 736 / 823 / 1011 | 553 / 681 / 844 / 979 |
+  | run, whole (compile and eval) | 200 | 482 / 605 / 672 / 717 | 514 / 624 / 764 / 817 |
+  | a source checked (signed image) | 100 | 4566 / 4881 / 5439 / 5668 | 2455 / 2837 / 3143 / 3392 |
+
+  - Run again at ac85ad7 with other builds running on the host: an input with its
+    chain 46 / 65 / 272 / 3710, a source checked 3716 / 4091 / 4735 / 4891.
+  - A hostile provenance: 1 MiB read in 4.0 ms, +49 MiB peak RSS; 4 MiB, 19.6 ms,
+    +144 MiB; 16 MiB, 70.6 ms, +374 MiB; 64 MiB, 332 ms, +2209 MiB (peak 2777 MiB).
+  - The deepest chain (an index and a signature manifest 10000 levels deep) is read and
+    verified in 3616 KiB on aarch64-apple-darwin. Parsing and dropping such a document
+    alone takes 3616 KiB on aarch64 and 3136 KiB on x86_64-apple-darwin; shards_tuf's
+    parser, 2976 KiB and 2528 KiB.
+  - The first input of a chain costs what it did (its max, 2243); each after it, the
+    chain's SHA-256 and a copy. Compiling (469) is most of each run (553 partial, 514
+    whole), and a check runs twice, partial then whole.
+- **Consequence.** A chain's blobs come to at most 4 MiB, what buildx's policy session
+  receives (`attest::CHAIN_MAX`), checked before each blob is fetched: the largest
+  provenance a chain may hold took +144 MiB to read (the 4 MiB row). Chains are read
+  and verified on a 4 MiB thread (`attest::JSON_STACK`), the most measured in whole
+  MiB, held to every target by those two tests. A build reads each chain once.
+  Compiling a policy once a build is the largest cost left; a compiled program is not
+  `Send`, so that needs a long-lived evaluation thread (unmeasured).

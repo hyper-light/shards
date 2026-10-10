@@ -7,6 +7,7 @@
 //! resolved for it, and the policy asked again. One policy's denial stops the build in
 //! BuildKit's words; every policy must allow a source for the build to load it.
 
+mod eval;
 mod github;
 mod gitobject;
 mod input;
@@ -363,7 +364,7 @@ pub trait Resolve {
 /// The policies' answer for one source (DecisionResponse), or what they ask to know
 /// first.
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum Answer {
+pub enum Answer {
     Allow,
     Deny(Vec<String>),
     Convert(Source),
@@ -1239,6 +1240,24 @@ pub trait Log {
     fn fetch(&self, name: &str, url: &str, accept: Option<&str>) -> Result<Vec<u8>, String>;
 }
 
+/// `policy eval --print`'s input of `source` for `platform`, `fields` resolved through
+/// `resolver`: the JSON buildx prints, the fields that named nothing unknown, and what is
+/// left unknown (eval.rs).
+pub fn print_input(
+    source: &Source,
+    platform: &Platform,
+    fields: &[String],
+    resolver: &dyn Resolve,
+) -> Result<(String, Vec<String>, Vec<String>), String> {
+    let trust = signatures::Trust::default();
+    let printed = eval::print_input(source, platform, fields, resolver, &trust)?;
+    Ok((
+        printed.input.json().indented(),
+        printed.invalid,
+        printed.unresolved,
+    ))
+}
+
 /// What a policy's evaluation asks of the build's thread as it runs: a line for its
 /// step, said as it is said, or an HTTP source fetched as a step of its own.
 enum Ask {
@@ -1271,6 +1290,8 @@ pub struct Setup<'a> {
     pub cwd: PathBuf,
     pub default_platform: Platform,
     pub debug: bool,
+    /// Whether buildx's default policy may come first (a build's; not `policy eval`'s).
+    pub default_policy: bool,
 }
 
 impl Policies {
@@ -1279,7 +1300,7 @@ impl Policies {
         let mut opts = with_config(setup.default, setup.configs)?;
         // The default policy first, where it is enabled and no policy is disabled, its
         // caps never asked.
-        if default_policy_enabled() && !setup.configs.iter().any(|c| c.disabled) {
+        if setup.default_policy && default_policy_enabled() && !setup.configs.iter().any(|c| c.disabled) {
             opts.insert(
                 0,
                 Opt {
@@ -1424,6 +1445,20 @@ impl Policies {
             }
         }
         Err("too many policy requests".to_string().into())
+    }
+
+    /// One answer of the policies for `source` with what is known of it (`meta`), as
+    /// `policy eval` asks for one at a time (CheckPolicy): the request for more, or the
+    /// decision.
+    pub fn check_once(
+        &self,
+        source: &Source,
+        platform: Option<&Platform>,
+        meta: &Meta,
+        resolver: &dyn Resolve,
+        log: &dyn Log,
+    ) -> Result<Answer, String> {
+        self.answer(source, platform, meta, resolver, log)
     }
 
     /// MultiPolicyCallback: each policy in turn, the first to deny, convert, or ask for
@@ -1979,6 +2014,7 @@ mod tests {
             cwd: dir.to_path_buf(),
             default_platform: Platform::new("linux", "arm64"),
             debug: false,
+            default_policy: true,
         })
         .unwrap()
         .unwrap()

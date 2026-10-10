@@ -2310,6 +2310,82 @@ pub static BUILD: Command = Command {
     error_prefix: "ERROR: ",
 };
 
+/// `shards buildx policy`: buildx v0.37.1's policy command (commands/policy/root.go), a
+/// group that runs nothing: asked anything but a flag it does not know, it prints its help
+/// ([`POLICY_COMMANDS`], `flags::group_help`).
+pub static POLICY: Command = Command {
+    usage: "",
+    about: "Commands for working with build policies",
+    aliases: "",
+    args: Args::Any,
+    flags: &[
+        Flag::string("builder", None, "", "Override the configured builder instance"),
+        Flag::bool("debug", Some(b'D'), "Enable debug logging"),
+        HELP,
+    ],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "ERROR: ",
+};
+
+/// The commands `shards buildx policy` lists (its `json-schema` is a TODO in buildx).
+pub const POLICY_COMMANDS: &[(&str, &str)] = &[
+    ("eval", "Evaluate policy for a source"),
+    ("test", "Run policy tests"),
+];
+
+/// `shards buildx policy eval`: buildx v0.37.1's (commands/policy/eval.go), its hidden
+/// `--filename` bound to `--file`'s value.
+pub static POLICY_EVAL: Command = Command {
+    usage: "[OPTIONS] source",
+    about: "Evaluate policy for a source",
+    aliases: "",
+    args: Args::Accepts(1),
+    flags: &[
+        Flag::string("builder", None, "", "Override the configured builder instance"),
+        Flag::bool("debug", Some(b'D'), "Enable debug logging"),
+        Flag::many("fields", None, "strings", "Fields to evaluate"),
+        Flag::string("file", Some(b'f'), "Dockerfile", "Policy filename to evaluate"),
+        Flag::string("filename", None, "Dockerfile", "Policy filename to evaluate")
+            .hidden()
+            .sharing("file"),
+        Flag::string("platform", None, "", "Target platform for policy evaluation"),
+        Flag::bool("print", None, "Print policy output"),
+        HELP,
+    ],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "ERROR: ",
+};
+
+/// `shards buildx policy test`: buildx v0.37.1's (commands/policy/test.go).
+pub static POLICY_TEST: Command = Command {
+    usage: "<path>",
+    about: "Run policy tests",
+    aliases: "",
+    args: Args::Accepts(1),
+    flags: &[
+        Flag::string("builder", None, "", "Override the configured builder instance"),
+        Flag::bool("debug", Some(b'D'), "Enable debug logging"),
+        Flag::string(
+            "filename",
+            None,
+            "Dockerfile",
+            "Name of the Dockerfile to validate",
+        ),
+        Flag::string(
+            "run",
+            None,
+            "",
+            "Run only tests with name containing this substring",
+        ),
+        HELP,
+    ],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "ERROR: ",
+};
+
 /// `shards builder prune` and `shards buildx prune`: buildx v0.37.1's prune
 /// (commands/prune.go), with its root's `--builder` and `--debug`, as `docker builder`
 /// runs buildx.
@@ -2434,6 +2510,9 @@ pub fn find(words: &[&str]) -> Option<(&'static Command, &'static str, usize)> {
         ["container", "prune", ..] => (&CONTAINER_PRUNE, "shards container prune", 2),
         ["image", "prune", ..] => (&IMAGE_PRUNE, "shards image prune", 2),
         ["builder" | "buildx", "prune", ..] => (&BUILDER_PRUNE, "shards buildx prune", 2),
+        ["buildx", "policy", "eval", ..] => (&POLICY_EVAL, "shards buildx policy eval", 3),
+        ["buildx", "policy", "test", ..] => (&POLICY_TEST, "shards buildx policy test", 3),
+        ["buildx", "policy", ..] => (&POLICY, "shards buildx policy", 2),
         ["rename", ..] => (&RENAME, "shards rename", 1),
         ["container", "rename", ..] => (&RENAME, "shards container rename", 2),
         ["image", "history", ..] => (&HISTORY, "shards image history", 2),

@@ -1,11 +1,15 @@
-//! SSH public keys as golang.org/x/crypto v0.55.0's `ssh.ParsePublicKey` and
+//! SSH public keys and certificates as golang.org/x/crypto v0.55.0's `ssh.ParsePublicKey` and
 //! `ssh.ParseAuthorizedKey` read them, and SSH signatures (PROTOCOL.sshsig) as
 //! hiddeco/sshsig's `ParseSignature` reads them and its `Verify` verifies them: each key
 //! type's checks, its fingerprint (`ssh.FingerprintSHA256`) of the key as it marshals it
 //! again, and each key type's `Verify`.
 
+use std::collections::BTreeMap;
+
 use base64::Engine as _;
 use sha2::Digest as _;
+
+use crate::go::trim_space;
 
 /// An SSH wire reader: `uint32` and `string` (RFC 4251 §5).
 struct Wire<'a>(&'a [u8]);
@@ -15,6 +19,12 @@ impl<'a> Wire<'a> {
         let (n, rest) = self.0.split_first_chunk::<4>()?;
         self.0 = rest;
         Some(u32::from_be_bytes(*n))
+    }
+
+    fn u64(&mut self) -> Option<u64> {
+        let (n, rest) = self.0.split_first_chunk::<8>()?;
+        self.0 = rest;
+        Some(u64::from_be_bytes(*n))
     }
 
     fn string(&mut self) -> Option<&'a [u8]> {
@@ -137,6 +147,7 @@ pub enum PublicKey {
     SkEcdsa { point: Vec<u8>, application: Vec<u8> },
     Ed25519(Vec<u8>),
     SkEd25519 { key: Vec<u8>, application: Vec<u8> },
+    Certificate(Box<Certificate>),
 }
 
 fn put(out: &mut Vec<u8>, s: &[u8]) {
@@ -160,11 +171,24 @@ impl PublicKey {
             PublicKey::SkEcdsa { .. } => "sk-ecdsa-sha2-nistp256@openssh.com",
             PublicKey::Ed25519(_) => "ssh-ed25519",
             PublicKey::SkEd25519 { .. } => "sk-ssh-ed25519@openssh.com",
+            PublicKey::Certificate(c) => c.key.cert_kind(),
         }
+    }
+
+    /// certificateAlgo: the type of a certificate of this key.
+    fn cert_kind(&self) -> &'static str {
+        let kind = self.kind();
+        CERT_ALGOS
+            .iter()
+            .find(|(_, k)| *k == kind)
+            .map_or(kind, |(c, _)| c)
     }
 
     /// `Marshal()`: the key in wire format, as each type writes itself.
     pub fn marshal(&self) -> Vec<u8> {
+        if let PublicKey::Certificate(c) = self {
+            return c.marshal();
+        }
         let mut out = Vec::new();
         put(&mut out, self.kind().as_bytes());
         match self {
@@ -191,6 +215,7 @@ impl PublicKey {
                 put(&mut out, key);
                 put(&mut out, application);
             }
+            PublicKey::Certificate(_) => {}
         }
         out
     }
@@ -218,16 +243,45 @@ fn curve_point(curve: &str, b: &[u8]) -> bool {
     b.len() == 1 + 2 * size && b.first() == Some(&4) && ParsedPublicKey::new(alg, b).is_ok()
 }
 
-/// ssh.ParsePublicKey.
+/// ssh.ParsePublicKey: a key or a certificate, nothing after it.
 pub fn parse_public_key(input: &[u8]) -> Result<PublicKey, String> {
     let mut w = Wire(input);
     let algo = w.string().ok_or(SHORT)?;
     let algo = String::from_utf8_lossy(algo).into_owned();
-    let mut fields = Wire(w.0);
-    let key = match algo.as_str() {
+    let (key, rest) = parse_pub_key(w.0, &algo)?;
+    if !rest.is_empty() {
+        return Err("ssh: trailing junk in public key".into());
+    }
+    Ok(key)
+}
+
+/// ssh.Unmarshal's error where the message is empty, or runs on past its fields
+/// (`parseError` of no message type).
+const PARSE0: &str = "ssh: parse error in message type 0";
+
+/// ssh.Unmarshal's error for a string field it cannot read: the field's name and its
+/// struct's (none for the anonymous structs the key parsers read into).
+fn field_error(field: &str, strukt: &str) -> String {
+    format!("ssh: unmarshal error for field {field} of type {strukt}")
+}
+
+/// parsePubKey: the key of type `algo` at the start of `input`, and what follows it (none
+/// after a certificate, whose fields end it).
+fn parse_pub_key<'a>(input: &'a [u8], algo: &str) -> Result<(PublicKey, &'a [u8]), String> {
+    // Each key type is read as ssh.Unmarshal reads a struct ending in a `rest` field: an
+    // empty message refused before any field.
+    let fields = || {
+        if input.is_empty() {
+            Err(PARSE0.to_string())
+        } else {
+            Ok(Wire(input))
+        }
+    };
+    let key = match algo {
         "ssh-rsa" => {
-            let e = fields.int().ok_or(SHORT)?;
-            let n = fields.int().ok_or(SHORT)?;
+            let mut f = fields()?;
+            let e = f.int().ok_or(SHORT)?;
+            let n = f.int().ok_or(SHORT)?;
             if n.bit_len() > 16384 {
                 return Err("ssh: rsa modulus too large".into());
             }
@@ -238,24 +292,36 @@ pub fn parse_public_key(input: &[u8]) -> Result<PublicKey, String> {
             if v < 3 || v & 1 == 0 {
                 return Err("ssh: incorrect exponent".into());
             }
-            PublicKey::Rsa { e, n }
+            (PublicKey::Rsa { e, n }, f.0)
         }
         "ssh-dss" => {
-            let p = fields.int().ok_or(SHORT)?;
-            let q = fields.int().ok_or(SHORT)?;
-            let g = fields.int().ok_or(SHORT)?;
-            let y = fields.int().ok_or(SHORT)?;
+            let mut f = fields()?;
+            let p = f.int().ok_or(SHORT)?;
+            let q = f.int().ok_or(SHORT)?;
+            let g = f.int().ok_or(SHORT)?;
+            let y = f.int().ok_or(SHORT)?;
+            // checkDSAParams.
             if p.bit_len() != 1024 {
                 return Err(format!("ssh: unsupported DSA key size {}", p.bit_len()));
+            }
+            if q.bit_len() != 160 {
+                return Err(format!("ssh: unsupported DSA sub-prime size {}", q.bit_len()));
+            }
+            if !g.negative && !g.lt(&p) {
+                return Err("ssh: DSA generator larger than modulus".into());
+            }
+            if g.negative || g.is_zero() {
+                return Err("ssh: DSA generator must be positive".into());
             }
             if y.negative || y.is_zero() || !y.lt(&p) {
                 return Err("ssh: DSA public value Y out of range".into());
             }
-            PublicKey::Dsa { p, q, g, y }
+            (PublicKey::Dsa { p, q, g, y }, f.0)
         }
         "ecdsa-sha2-nistp256" | "ecdsa-sha2-nistp384" | "ecdsa-sha2-nistp521" => {
-            let curve = fields.string().ok_or(SHORT)?;
-            let point = fields.string().ok_or(SHORT)?;
+            let mut f = fields()?;
+            let curve = f.string().ok_or_else(|| field_error("Curve", ""))?;
+            let point = f.string().ok_or(SHORT)?;
             let curve = String::from_utf8_lossy(curve).into_owned();
             let actual = format!("ecdsa-sha2-{curve}");
             if actual != algo {
@@ -272,48 +338,61 @@ pub fn parse_public_key(input: &[u8]) -> Result<PublicKey, String> {
             if !curve_point(curve, point) {
                 return Err("ssh: invalid curve point".into());
             }
-            PublicKey::Ecdsa {
-                curve,
-                point: point.to_vec(),
-            }
+            (
+                PublicKey::Ecdsa {
+                    curve,
+                    point: point.to_vec(),
+                },
+                f.0,
+            )
         }
         "sk-ecdsa-sha2-nistp256@openssh.com" => {
-            let curve = fields.string().ok_or(SHORT)?;
-            let point = fields.string().ok_or(SHORT)?;
-            let application = fields.string().ok_or(SHORT)?;
+            let mut f = fields()?;
+            let curve = f.string().ok_or_else(|| field_error("Curve", ""))?;
+            let point = f.string().ok_or(SHORT)?;
+            let application = f.string().ok_or_else(|| field_error("Application", ""))?;
             if curve != b"nistp256" {
                 return Err("ssh: unsupported curve".into());
             }
             if !curve_point("nistp256", point) {
                 return Err("ssh: invalid curve point".into());
             }
-            PublicKey::SkEcdsa {
-                point: point.to_vec(),
-                application: application.to_vec(),
-            }
+            (
+                PublicKey::SkEcdsa {
+                    point: point.to_vec(),
+                    application: application.to_vec(),
+                },
+                f.0,
+            )
         }
         "ssh-ed25519" => {
-            let key = fields.string().ok_or(SHORT)?;
+            let mut f = fields()?;
+            let key = f.string().ok_or(SHORT)?;
             if key.len() != 32 {
                 return Err(format!("invalid size {} for Ed25519 public key", key.len()));
             }
-            PublicKey::Ed25519(key.to_vec())
+            (PublicKey::Ed25519(key.to_vec()), f.0)
         }
         "sk-ssh-ed25519@openssh.com" => {
-            let key = fields.string().ok_or(SHORT)?;
-            let application = fields.string().ok_or(SHORT)?;
+            let mut f = fields()?;
+            let key = f.string().ok_or(SHORT)?;
+            let application = f.string().ok_or_else(|| field_error("Application", ""))?;
             if key.len() != 32 {
                 return Err(format!("invalid size {} for Ed25519 public key", key.len()));
             }
-            PublicKey::SkEd25519 {
-                key: key.to_vec(),
-                application: application.to_vec(),
-            }
-        }
-        a if a.ends_with("-cert-v01@openssh.com") => {
-            return Err(format!("ssh: {a} certificates are not read by shards yet"));
+            (
+                PublicKey::SkEd25519 {
+                    key: key.to_vec(),
+                    application: application.to_vec(),
+                },
+                f.0,
+            )
         }
         a => {
+            if let Some(&(_, underlying)) = CERT_ALGOS.iter().find(|(cert, _)| *cert == a) {
+                let cert = parse_cert(input, underlying)?;
+                return Ok((PublicKey::Certificate(Box::new(cert)), &[]));
+            }
             let format = match a {
                 "rsa-sha2-256" | "rsa-sha2-512" => Some("ssh-rsa"),
                 "rsa-sha2-256-cert-v01@openssh.com" | "rsa-sha2-512-cert-v01@openssh.com" => {
@@ -329,10 +408,209 @@ pub fn parse_public_key(input: &[u8]) -> Result<PublicKey, String> {
             });
         }
     };
-    if !fields.0.is_empty() {
-        return Err("ssh: trailing junk in public key".into());
-    }
     Ok(key)
+}
+
+/// The certificate types parsePubKey reads, and the key type each certifies
+/// (certKeyAlgoNames but its RSA SHA-2 names, which name no key).
+const CERT_ALGOS: [(&str, &str); 8] = [
+    ("ssh-rsa-cert-v01@openssh.com", "ssh-rsa"),
+    ("ssh-dss-cert-v01@openssh.com", "ssh-dss"),
+    ("ecdsa-sha2-nistp256-cert-v01@openssh.com", "ecdsa-sha2-nistp256"),
+    ("ecdsa-sha2-nistp384-cert-v01@openssh.com", "ecdsa-sha2-nistp384"),
+    ("ecdsa-sha2-nistp521-cert-v01@openssh.com", "ecdsa-sha2-nistp521"),
+    (
+        "sk-ecdsa-sha2-nistp256-cert-v01@openssh.com",
+        "sk-ecdsa-sha2-nistp256@openssh.com",
+    ),
+    ("ssh-ed25519-cert-v01@openssh.com", "ssh-ed25519"),
+    (
+        "sk-ssh-ed25519-cert-v01@openssh.com",
+        "sk-ssh-ed25519@openssh.com",
+    ),
+];
+
+/// Whether `algo` names a certificate type (certKeyAlgoNames): those parsePubKey reads,
+/// and the RSA SHA-2 names.
+fn is_cert_algo(algo: &[u8]) -> bool {
+    CERT_ALGOS.iter().any(|(c, _)| c.as_bytes() == algo)
+        || algo == b"rsa-sha2-256-cert-v01@openssh.com"
+        || algo == b"rsa-sha2-512-cert-v01@openssh.com"
+}
+
+/// An OpenSSH certificate (PROTOCOL.certkeys) as x/crypto's Certificate holds one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Certificate {
+    pub nonce: Vec<u8>,
+    /// The key it certifies, never itself a certificate.
+    pub key: PublicKey,
+    pub serial: u64,
+    pub cert_type: u32,
+    pub key_id: Vec<u8>,
+    pub principals: Vec<Vec<u8>>,
+    pub valid_after: u64,
+    pub valid_before: u64,
+    pub critical_options: BTreeMap<Vec<u8>, Vec<u8>>,
+    pub extensions: BTreeMap<Vec<u8>, Vec<u8>>,
+    pub reserved: Vec<u8>,
+    pub signature_key: PublicKey,
+    /// The CA's signature: its format, its blob, and what follows a security key's blob.
+    pub signature: (Vec<u8>, Vec<u8>, Vec<u8>),
+}
+
+/// parseTuples: critical options or extensions, names in strictly increasing order, each
+/// value empty or one string.
+fn parse_tuples(mut input: &[u8]) -> Result<BTreeMap<Vec<u8>, Vec<u8>>, String> {
+    let mut out = BTreeMap::new();
+    let mut last: Option<&[u8]> = None;
+    while !input.is_empty() {
+        let mut w = Wire(input);
+        let key = w.string().ok_or(SHORT)?;
+        if last.is_some_and(|l| key <= l) {
+            return Err("ssh: certificate options are not in lexical order".into());
+        }
+        last = Some(key);
+        let val = w.string().ok_or(SHORT)?;
+        input = w.0;
+        let value = if val.is_empty() {
+            Vec::new()
+        } else {
+            let mut v = Wire(val);
+            let inner = v.string().ok_or(SHORT)?;
+            if !v.0.is_empty() {
+                return Err("ssh: unexpected trailing data after certificate option value".into());
+            }
+            inner.to_vec()
+        };
+        out.insert(key.to_vec(), value);
+    }
+    Ok(out)
+}
+
+/// marshalTuples: by name, a value that is not empty as one string inside its field.
+fn marshal_tuples(tuples: &BTreeMap<Vec<u8>, Vec<u8>>) -> Vec<u8> {
+    let mut out = Vec::new();
+    for (k, v) in tuples {
+        put(&mut out, k);
+        if v.is_empty() {
+            put(&mut out, b"");
+        } else {
+            let mut inner = Vec::new();
+            put(&mut inner, v);
+            put(&mut out, &inner);
+        }
+    }
+    out
+}
+
+/// parseCert: a certificate of a key of type `underlying`.
+fn parse_cert(input: &[u8], underlying: &str) -> Result<Certificate, String> {
+    let mut w = Wire(input);
+    let nonce = w.string().ok_or(SHORT)?;
+    let (key, rest) = parse_pub_key(w.0, underlying)?;
+    // ssh.Unmarshal of genericCertData: no `rest` field, so nothing may follow.
+    if rest.is_empty() {
+        return Err(PARSE0.into());
+    }
+    let mut g = Wire(rest);
+    let serial = g.u64().ok_or(SHORT)?;
+    let cert_type = g.u32().ok_or(SHORT)?;
+    let key_id = g
+        .string()
+        .ok_or_else(|| field_error("KeyId", "genericCertData"))?;
+    let principals = g.string().ok_or(SHORT)?;
+    let valid_after = g.u64().ok_or(SHORT)?;
+    let valid_before = g.u64().ok_or(SHORT)?;
+    let critical = g.string().ok_or(SHORT)?;
+    let extensions = g.string().ok_or(SHORT)?;
+    let reserved = g.string().ok_or(SHORT)?;
+    let signature_key = g.string().ok_or(SHORT)?;
+    let signature = g.string().ok_or(SHORT)?;
+    if !g.0.is_empty() {
+        return Err(PARSE0.into());
+    }
+    let mut list = Vec::new();
+    let mut p = Wire(principals);
+    while !p.0.is_empty() {
+        list.push(p.string().ok_or(SHORT)?.to_vec());
+    }
+    let critical_options = parse_tuples(critical)?;
+    let extensions = parse_tuples(extensions)?;
+    // A certificate signed by a certificate is refused before its signer is read.
+    let signer_algo = Wire(signature_key).string().ok_or(SHORT)?;
+    if is_cert_algo(signer_algo) {
+        return Err(format!(
+            "ssh: the signature key type \"{}\" is invalid for certificates",
+            String::from_utf8_lossy(signer_algo)
+        ));
+    }
+    let signature_key = parse_public_key(signature_key)?;
+    // parseSignatureBody: a security key's signature keeps what follows its blob.
+    let mut s = Wire(signature);
+    let (Some(format), Some(blob)) = (s.string(), s.string()) else {
+        return Err("ssh: signature parse error".into());
+    };
+    let sk = matches!(
+        format,
+        b"sk-ecdsa-sha2-nistp256@openssh.com"
+            | b"sk-ecdsa-sha2-nistp256-cert-v01@openssh.com"
+            | b"sk-ssh-ed25519@openssh.com"
+            | b"sk-ssh-ed25519-cert-v01@openssh.com"
+    );
+    if !sk && !s.0.is_empty() {
+        return Err("ssh: signature parse error".into());
+    }
+    let after = if sk { s.0.to_vec() } else { Vec::new() };
+    Ok(Certificate {
+        nonce: nonce.to_vec(),
+        key,
+        serial,
+        cert_type,
+        key_id: key_id.to_vec(),
+        principals: list,
+        valid_after,
+        valid_before,
+        critical_options,
+        extensions,
+        reserved: reserved.to_vec(),
+        signature_key,
+        signature: (format.to_vec(), blob.to_vec(), after),
+    })
+}
+
+impl Certificate {
+    /// Certificate.Marshal: its type, nonce and the key's fields, then the rest as x/crypto
+    /// writes it again (options sorted, values re-wrapped, the signature re-marshalled).
+    fn marshal(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        put(&mut out, self.key.cert_kind().as_bytes());
+        put(&mut out, &self.nonce);
+        let key = self.key.marshal();
+        let mut w = Wire(&key);
+        let _ = w.string();
+        out.extend_from_slice(w.0);
+        out.extend_from_slice(&self.serial.to_be_bytes());
+        out.extend_from_slice(&self.cert_type.to_be_bytes());
+        put(&mut out, &self.key_id);
+        let mut principals = Vec::new();
+        for p in &self.principals {
+            put(&mut principals, p);
+        }
+        put(&mut out, &principals);
+        out.extend_from_slice(&self.valid_after.to_be_bytes());
+        out.extend_from_slice(&self.valid_before.to_be_bytes());
+        put(&mut out, &marshal_tuples(&self.critical_options));
+        put(&mut out, &marshal_tuples(&self.extensions));
+        put(&mut out, &self.reserved);
+        put(&mut out, &self.signature_key.marshal());
+        let (format, blob, after) = &self.signature;
+        let mut sig = Vec::new();
+        put(&mut sig, format);
+        put(&mut sig, blob);
+        sig.extend_from_slice(after);
+        put(&mut out, &sig);
+        out
+    }
 }
 
 /// An SSH signature (PROTOCOL.sshsig): its version, its signer's key, namespace and hash,
@@ -399,69 +677,6 @@ pub fn parse_signature(b: &[u8]) -> Result<Signature, String> {
     })
 }
 
-/// unicode.IsSpace of a rune.
-fn is_space(c: char) -> bool {
-    matches!(
-        c,
-        '\t' | '\n' | '\u{0b}' | '\u{0c}' | '\r' | ' ' | '\u{85}' | '\u{a0}' | '\u{1680}' | '\u{2000}'
-            ..='\u{200a}' | '\u{2028}' | '\u{2029}' | '\u{202f}' | '\u{205f}' | '\u{3000}'
-    )
-}
-
-/// bytes.TrimSpace: leading and trailing white space, runes decoded where they are
-/// valid UTF-8.
-fn trim_space(mut b: &[u8]) -> &[u8] {
-    loop {
-        let Some(&c) = b.first() else { return b };
-        let (r, w) = first_rune(b);
-        if c < 0x80 && !(c as char).is_ascii_whitespace() && c != 0x0b {
-            break;
-        }
-        if !r.is_some_and(is_space) {
-            break;
-        }
-        b = b.get(w..).unwrap_or_default();
-    }
-    loop {
-        let Some(&c) = b.last() else { return b };
-        let (r, w) = last_rune(b);
-        if c < 0x80 && !(c as char).is_ascii_whitespace() && c != 0x0b {
-            break;
-        }
-        if !r.is_some_and(is_space) {
-            break;
-        }
-        b = b.get(..b.len() - w).unwrap_or_default();
-    }
-    b
-}
-
-fn first_rune(b: &[u8]) -> (Option<char>, usize) {
-    for w in 1..=4.min(b.len()) {
-        if let Some(c) = b
-            .get(..w)
-            .and_then(|x| std::str::from_utf8(x).ok())
-            .and_then(|x| x.chars().next())
-        {
-            return (Some(c), w);
-        }
-    }
-    (None, 1)
-}
-
-fn last_rune(b: &[u8]) -> (Option<char>, usize) {
-    for w in 1..=4.min(b.len()) {
-        if let Some(c) = b
-            .get(b.len() - w..)
-            .and_then(|x| std::str::from_utf8(x).ok())
-            .and_then(|x| x.chars().next())
-        {
-            return (Some(c), w);
-        }
-    }
-    (None, 1)
-}
-
 /// parseAuthorizedKey: base64 up to the first space or tab, a public key.
 fn authorized_key(input: &[u8]) -> Result<PublicKey, String> {
     let input = trim_space(input);
@@ -469,7 +684,9 @@ fn authorized_key(input: &[u8]) -> Result<PublicKey, String> {
         .iter()
         .position(|&c| c == b' ' || c == b'\t')
         .unwrap_or(input.len());
-    let key = crate::armor::base64(input.get(..i).unwrap_or_default()).map_err(|e| e.to_string())?;
+    let mut key = Vec::new();
+    crate::go::base64_decode(input.get(..i).unwrap_or_default(), &mut key)
+        .map_err(|at| format!("illegal base64 data at input byte {at}"))?;
     parse_public_key(&key)
 }
 
@@ -611,6 +828,11 @@ pub fn verify(message: &[u8], sig: &Signature, key: &PublicKey) -> Result<(), St
     if key.fingerprint() != sig.public_key.fingerprint() {
         return Err("public key does not match".into());
     }
+    // Certificate.Verify: its key's; the CA's signature is never checked.
+    let key = match key {
+        PublicKey::Certificate(c) => &c.key,
+        k => k,
+    };
     let hash = if sig.hash_algorithm == b"sha512" {
         Hash::Sha512
     } else {
@@ -745,5 +967,7 @@ pub fn verify(message: &[u8], sig: &Signature, key: &PublicKey) -> Result<(), St
                 .then_some(())
                 .ok_or_else(did_not_verify)
         }
+        // No certificate certifies a certificate (parse_cert).
+        PublicKey::Certificate(_) => Err(did_not_verify()),
     }
 }
