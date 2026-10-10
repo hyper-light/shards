@@ -853,6 +853,66 @@ fn steps_under_the_proxy_cap_reach_the_network_through_it_alone() {
     );
 }
 
+/// PM M129's last part: a `RUN`'s requests to a server on this host, each on a connection
+/// of its own, through the build's proxy (the exec.proxy cap; each request checked by the
+/// build's policy, as a build checks it) against the same requests straight through the
+/// builder's network (no cap), as the step's client times them, in microseconds.
+#[test]
+#[ignore = "a measurement: docs/research/measurements/build-proxy/run.sh"]
+fn proxy_request_costs_in_microvms() {
+    if cannot_run_vms() {
+        return;
+    }
+    let host = std::net::UdpSocket::bind("0.0.0.0:0")
+        .and_then(|s| s.connect("192.0.2.1:9").map(|()| s))
+        .and_then(|s| s.local_addr())
+        .unwrap();
+    let (port, _asked) = proxied_server(None, proxied_answer);
+    let (image, _) = served();
+    let home = TempDir::new("build-proxy-cost-home");
+    let n = 200;
+    let ctx = context(
+        "build-proxy-cost-ctx",
+        &format!(
+            "FROM {image}\nRUN [\"/bin/testguest\", \"fetch\", \"--repeat\", \"{n}\", \"http://{}:{port}/hello\"]\n",
+            host.ip()
+        ),
+    );
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+        ("SHARDS_BUILD_MEMORY", "1024".as_ref()),
+    ];
+    let times = |label: &str| {
+        let built = run_shards_env(
+            &["build"],
+            &["--progress=plain", "--no-cache", ctx.to_str().unwrap()],
+            &env,
+            TIMEOUT,
+        );
+        assert_eq!(built.status, Some(0), "{}", built.stderr);
+        let line = built
+            .stderr
+            .lines()
+            .find_map(|l| l.split_once(" fetch-times ").map(|(_, t)| t.to_string()))
+            .unwrap_or_else(|| panic!("no times in\n{}", built.stderr));
+        println!("{label}: {line}");
+    };
+    for round in 0..2 {
+        let _ = std::fs::remove_file(ctx.join("Dockerfile.rego"));
+        times(&format!("round {round}, straight through the builder's network"));
+        std::fs::write(
+            ctx.join("Dockerfile.rego"),
+            "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if input.image\n\nallow if {\n\tinput.http\n\tinput.http.path != \"/denied\"\n}\n\ndefault caps := {}\n\ncaps := {\"exec.proxy\": true} if input.env.capsRequest\n\ndecision := {\"allow\": allow, \"caps\": caps}\n",
+        )
+        .unwrap();
+        times(&format!(
+            "round {round}, through the build's proxy, each request checked"
+        ));
+    }
+}
+
 /// A build given no name is kept all the same, dangling, as dockerd keeps it (measured,
 /// Docker 29.3.1): `images -a` lists it as `<untagged>`, and a collection leaves it.
 #[test]

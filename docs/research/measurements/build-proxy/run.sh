@@ -19,4 +19,9 @@ echo "load: $(uptime | sed 's/.*load averages*: //')"
 cargo test --release -p shards --bin shards -- --ignored --nocapture \
 	build::proxy::ca::tests::certificate_costs build::proxy::server::tests::request_costs 2>&1 |
 	grep -E '^(CA|host certificate|plain|HTTPS)'
+# Then in microVMs: a RUN's requests to a server on this host, each on a connection of its
+# own, straight through the builder's network against through the proxy, each request
+# checked by the build's policy, twice in turn; the step's client times them.
+cargo test --release -p shards --test build -- --ignored --nocapture proxy_request_costs_in_microvms 2>&1 |
+	grep -E '^round'
 echo "load after: $(uptime | sed 's/.*load averages*: //')"

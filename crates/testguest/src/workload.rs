@@ -583,12 +583,15 @@ fn tcp(addr: &str) -> i32 {
 /// `HTTPS_PROXY`, then TLS trusting the system's bundle alone
 /// (`/etc/ssl/certs/ca-certificates.crt`); with no proxy named, or `--direct`, straight
 /// to its host. Before a URL, `-X METHOD`, `-d BODY` and `-H 'Name: value'` shape its
-/// request. Says `fetch STATUS BODY` of each, or `fetch error E`, and goes on.
+/// request. Says `fetch STATUS BODY` of each, or `fetch error E`, and goes on. With
+/// `--repeat N`, makes it N times, each on a connection of its own, and says how long each
+/// took instead: `fetch-times n=N p50 P p90 P p99 P max M`, in microseconds.
 fn fetch(args: &[String]) -> i32 {
     let mut method = "GET".to_string();
     let mut body = String::new();
     let mut headers: Vec<String> = Vec::new();
     let mut direct = false;
+    let mut repeat = 0usize;
     let mut i = 0;
     while let Some(a) = args.get(i) {
         let next = args.get(i + 1).cloned().unwrap_or_default();
@@ -596,8 +599,41 @@ fn fetch(args: &[String]) -> i32 {
             "-X" => method = next,
             "-d" => body = next,
             "-H" => headers.push(next),
+            "--repeat" => repeat = next.parse().unwrap_or(0),
             "--direct" => {
                 direct = true;
+                i += 1;
+                continue;
+            }
+            url if repeat > 0 => {
+                let mut took = Vec::with_capacity(repeat);
+                let mut failed = None;
+                for _ in 0..repeat {
+                    let t = std::time::Instant::now();
+                    if let Err(e) = fetch_one(&method, url, &headers, &body, direct) {
+                        failed = Some(e);
+                        break;
+                    }
+                    took.push(t.elapsed().as_micros());
+                }
+                took.sort_unstable();
+                let q = |p: usize| {
+                    took.get((took.len() * p / 100).min(took.len().saturating_sub(1)))
+                        .copied()
+                };
+                match (failed, q(50), q(90), q(99), took.last()) {
+                    (None, Some(a), Some(b), Some(c), Some(d)) => {
+                        let _ = writeln!(
+                            io::stdout(),
+                            "fetch-times n={repeat} p50 {a} p90 {b} p99 {c} max {d}"
+                        );
+                    }
+                    (e, ..) => {
+                        let _ = writeln!(io::stdout(), "fetch error {}", e.unwrap_or_default());
+                    }
+                }
+                (method, body, headers, direct, repeat) =
+                    ("GET".to_string(), String::new(), Vec::new(), false, 0);
                 i += 1;
                 continue;
             }
