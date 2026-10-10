@@ -33,6 +33,11 @@ pub struct Record {
 }
 
 impl Record {
+    /// Its ID as BuildKit's are, 25 characters: as listings show it and filters match it.
+    pub fn shown_id(&self) -> &str {
+        self.id.get(..25).unwrap_or(&self.id)
+    }
+
     pub fn kind(&self) -> &'static str {
         if self.mount.is_some() {
             "exec.cachemount"
@@ -70,10 +75,11 @@ impl Filter {
     }
 
     /// The record's field, as `adaptUsageInfo` gives it: its value, and whether present.
-    fn field(r: &Record, key: &str) -> (String, bool) {
+    fn field(r: &Record, in_use: bool, key: &str) -> (String, bool) {
         let description = r.mount.clone().unwrap_or_default();
         match key {
-            "id" => (r.id.clone(), true),
+            "id" => (r.shown_id().into(), true),
+            "inuse" => (String::new(), in_use),
             "type" => (r.kind().into(), true),
             "mutable" => (String::new(), r.mount.is_some()),
             "immutable" => (String::new(), r.mount.is_none()),
@@ -83,18 +89,19 @@ impl Filter {
                 let present = !description.is_empty();
                 (description, present)
             }
-            // parents, and inuse, which no record a prune sees is.
+            // parents, which no record of shards' has.
             _ => (String::new(), false),
         }
     }
 
-    pub fn matches(&self, r: &Record) -> bool {
+    /// Whether `r`, which a step holds or not as `in_use` says, has what the filter asks.
+    pub fn matches(&self, r: &Record, in_use: bool) -> bool {
         match self {
-            Filter::Present(k) => Filter::field(r, k).1,
-            Filter::Equal(k, v) => Filter::field(r, k) == (v.clone(), true),
-            Filter::NotEqual(k, v) => Filter::field(r, k) != (v.clone(), true),
+            Filter::Present(k) => Filter::field(r, in_use, k).1,
+            Filter::Equal(k, v) => Filter::field(r, in_use, k) == (v.clone(), true),
+            Filter::NotEqual(k, v) => Filter::field(r, in_use, k) != (v.clone(), true),
             Filter::Matches(k, re) => {
-                let (value, present) = Filter::field(r, k);
+                let (value, present) = Filter::field(r, in_use, k);
                 present && re.is_match(&value)
             }
         }
@@ -212,7 +219,7 @@ fn removable(records: Vec<(Record, bool)>, rule: &Rule, keep: i64, now: Duration
                 now.saturating_sub(used) >= age
             })
         })
-        .filter(|r| rule.filters.iter().all(|f| f.matches(r)))
+        .filter(|r| rule.filters.iter().all(|f| f.matches(r, false)))
         .collect();
     // With a target, one at a time, as gcMode deletes them, until under it.
     if keep != 0 {
@@ -379,7 +386,7 @@ mod tests {
             given
                 .iter()
                 .map(|f| Filter::parse(f).unwrap())
-                .all(|f| f.matches(r))
+                .all(|f| f.matches(r, false))
         };
         let step = record("abcdef", 0, 0, true);
         let mount = Record {
@@ -395,6 +402,11 @@ mod tests {
         assert!(all(&["description~=cached mount /c"], &mount));
         assert!(!all(&["description"], &step));
         assert!(!all(&["inuse"], &mount));
+        assert!(Filter::parse("inuse").unwrap().matches(&mount, true));
+        // A step's key matched by the 25 characters shown of it.
+        let long = record(&"a".repeat(64), 0, 0, false);
+        let shown = format!("id=={}", "a".repeat(25));
+        assert!(all(&[shown.as_str()], &long));
     }
 
     /// calculateKeepBytes, case by case.

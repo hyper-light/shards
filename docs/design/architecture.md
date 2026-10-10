@@ -3799,6 +3799,17 @@ it never reads ran it again; and nothing bounded what the cache kept.
   (`a_files_digest_takes_the_attributes_buildkits_takes`) and records in use left out,
   which a change had dropped as redundant though BuildKit ranks only what it may delete
   (`what_a_step_holds_is_neither_removed_nor_ranked`).
+- **`buildx du`** (and `builder du`) lists the records `system df` lists and `builder
+  prune` removes, as buildx v0.37.1 prints them: its table, `--verbose`, `--format json`
+  and templates, sorted by size; `--filter` read as `builder prune` reads it, the totals
+  left out under a filter; a cache a running step holds in use and sized 0B, as BuildKit's
+  DiskUsage sizes a mutable record that is changing. Held to buildx's own answers
+  (`scripts/buildx/generate`, `crates/cmdline/tests/buildx-du.json`) and on real
+  microVMs (`buildx_du_lists_the_records_system_df_lists`; mutation-checked: an in-use
+  cache sized). shards keeps no `source.local` records, BuildKit's copy of each local
+  context: a context is staged for its build alone (cloned where the filesystem can) and
+  let go after, so `du` lists none. Whether keeping one would pay (a large context staged
+  and its unchanged files digested again) is unmeasured.
 - **Open.** Moving a large cache in and out of the builder costs a build time: with 10,000
   files of 4 KiB and 256 MiB in it, mounting it made a build's median 11.2 s against 3.9
   s, and filling it 16.1 s against 3.7 s (M140). Where that time goes, and whether

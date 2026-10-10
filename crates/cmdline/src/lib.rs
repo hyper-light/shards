@@ -22,6 +22,7 @@
 //! Go 1.26.1, which builds it; moby/term v0.5.2, which it vendors too. `tables` is
 //! generated from them by scripts/docker-cli.
 
+pub mod buildcache;
 pub mod buildflags;
 pub mod catalog;
 pub mod commands;

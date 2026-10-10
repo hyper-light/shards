@@ -20,6 +20,8 @@ pub struct Asked {
     pub verbose: bool,
     /// `ps --size`.
     pub size: bool,
+    /// `buildx du`: a filter was given, which leaves its totals out.
+    pub filtered: bool,
 }
 
 static ASKED: OnceLock<Asked> = OnceLock::new();
@@ -299,6 +301,51 @@ pub fn render(sheet: &shards_ipc::Sheet, asked: &Asked, clock: &Clock<'_>) -> Re
                 clock,
             };
             format::disk::write(&ctx, asked.verbose, &du, &mut out)?;
+        }
+        "du-rows" => {
+            let records: Vec<format::du::Usage> = rows
+                .as_array()
+                .map(Vec::as_slice)
+                .unwrap_or_default()
+                .iter()
+                .map(|r| {
+                    let text = |k: &str| r.get(k).and_then(serde_json::Value::as_str).unwrap_or_default();
+                    let ns = |k: &str| text(k).parse::<i128>().ok();
+                    let flag = |k: &str| r.get(k).and_then(serde_json::Value::as_bool).unwrap_or(false);
+                    format::du::Usage {
+                        id: text("id").to_string(),
+                        parents: r
+                            .get("parents")
+                            .and_then(serde_json::Value::as_array)
+                            .map(|p| p.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+                            .unwrap_or_default(),
+                        created_at: ns("created").unwrap_or(0),
+                        mutable: flag("mutable"),
+                        in_use: flag("in_use"),
+                        shared: flag("shared"),
+                        size: r.get("size").and_then(serde_json::Value::as_i64).unwrap_or(0),
+                        description: text("description").to_string(),
+                        usage_count: r.get("usage").and_then(serde_json::Value::as_i64).unwrap_or(0),
+                        last_used_at: ns("last_used"),
+                        kind: text("type").to_string(),
+                    }
+                })
+                .collect();
+            // buildx's errors, as its main prints them.
+            let format =
+                format::du::format(&asked.format, asked.verbose).map_err(|e| format!("ERROR: {e}"))?;
+            let ctx = Context {
+                format: &format,
+                trunc: false,
+                east_asian: shards_cmdline::width::east_asian(|name| std::env::var(name).ok()),
+                clock,
+            };
+            if let Err(e) = format::du::write(&ctx, &records, asked.filtered, &mut out) {
+                // What was written before the error, the totals, then the error.
+                use std::io::Write as _;
+                let _ = std::io::stdout().write_all(out.as_bytes());
+                return Err(format!("ERROR: {e}"));
+            }
         }
         _ => return Ok(None),
     }

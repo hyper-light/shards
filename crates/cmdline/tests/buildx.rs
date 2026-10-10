@@ -7,7 +7,9 @@
 #![allow(clippy::unwrap_used, clippy::panic)]
 
 use shards_cmdline::buildflags;
-use shards_cmdline::commands::{BUILD, BUILDER_PRUNE, POLICY, POLICY_COMMANDS, POLICY_EVAL, POLICY_TEST};
+use shards_cmdline::commands::{
+    BUILD, BUILDER_DU, BUILDER_PRUNE, POLICY, POLICY_COMMANDS, POLICY_EVAL, POLICY_TEST,
+};
 use shards_cmdline::flags::{self, Outcome};
 
 /// What a build step carries at most, the run protocol's frame (shards-abi `MAX_PAYLOAD`).
@@ -190,9 +192,10 @@ fn build_answers_as_buildx() {
         if let Some(&(_, out, err, code)) = BETTER.iter().find(|(line, ..)| *line == argv.as_slice()) {
             (stdout, stderr, status) = (out, err, code);
         }
-        // `prune` first: buildx's prune, which `shards builder prune` runs.
+        // `prune` and `du` first: buildx's, which `shards builder prune` and `du` run.
         let (command, path, words) = match argv.as_slice() {
             [first, rest @ ..] if first == "prune" => (&BUILDER_PRUNE, "shards buildx prune", rest),
+            [first, rest @ ..] if first == "du" => (&BUILDER_DU, "shards buildx du", rest),
             [p, e, rest @ ..] if p == "policy" && e == "eval" => {
                 (&POLICY_EVAL, "shards buildx policy eval", rest)
             }

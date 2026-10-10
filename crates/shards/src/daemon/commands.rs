@@ -511,6 +511,8 @@ impl<D: crate::containers::Disk> Daemon<D> {
             self.prune(true, true, &parsed, asker, reply)
         } else if std::ptr::eq(command, &shards_cmdline::commands::BUILDER_PRUNE) {
             self.builder_prune(&parsed, asker, reply)
+        } else if std::ptr::eq(command, &shards_cmdline::commands::BUILDER_DU) {
+            self.builder_du(&parsed, asker, reply)
         } else if std::ptr::eq(command, &SYSTEM_DF) {
             self.system_df(&parsed, asker, reply)
         } else if std::ptr::eq(command, &COMMIT) {

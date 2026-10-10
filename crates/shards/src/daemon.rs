@@ -5244,6 +5244,9 @@ mod tests {
             human: !args.contains(&"--human=false") && !args.contains(&"-H=false"),
             verbose: args.iter().any(|a| matches!(*a, "-v" | "--verbose")),
             size: args.iter().any(|a| matches!(*a, "-s" | "--size")),
+            filtered: args
+                .iter()
+                .any(|a| *a == "--filter" || a.starts_with("--filter=")),
         };
         let clock = shards_cmdline::format::Clock {
             now: i128::try_from(containers::now()).unwrap(),
