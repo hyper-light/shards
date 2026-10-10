@@ -3519,11 +3519,12 @@ it never reads ran it again; and nothing bounded what the cache kept.
   also collects a second after its controller starts (control.go `NewController`), so a
   home whose last builds came within a minute of a collection keeps their records until a
   later build's.
-- **Tested** on real microVMs: `run_caches_are_kept_across_builds` (a cache's files, a
-  failing step's among them, in the next build; one id at two targets and in another
-  build; a root's owner and mode kept; another namespace another cache; `uid`, `gid`,
-  `mode` and `mode` alone as BuildKit makes them; `--no-cache` an empty cache; the records
-  counted and pruned; a collection once a minute),
+- **Tested** on real microVMs: `run_caches_are_kept_across_builds` (a cache's files in no
+  layer, the next step without it finding none of them; its files, a failing step's among
+  them, in the next build; one id at two targets and in another build; a root's owner and
+  mode kept; another namespace another cache; `uid`, `gid`, `mode` and `mode` alone as
+  BuildKit makes them; `--no-cache` an empty cache; the records counted and pruned; a
+  collection once a minute),
   `run_caches_are_taken_as_buildkit_takes_them_among_concurrent_builds` (two builds at
   once under each mode: `shared` takes the record the other holds, `private` makes another
   while it is held, `locked` waits and finds the other's files; both builds' writes in one
@@ -3531,19 +3532,20 @@ it never reads ran it again; and nothing bounded what the cache kept.
   nothing; one a copy reads runs it and what follows; a stage built again to the same file
   keeps the copy of it and what follows); the store's takers, waiters and prunes, the
   keys, digests, the GC's choice and order and the default policy as unit tests; every
-  build E2E (98) with the new keys. Mutation-checked, 26 mutants, each killed by its own
+  build E2E (98) with the new keys. Mutation-checked, 27 mutants, each killed by its own
   assertion: the store's four guards (a shared taker's search for the held record, a
   locked taker's wait, pruned records skipped, a held record kept); ten of the keys and
   digests (an exec's proxy variables, extra hosts' addresses and mount selectors left out,
   a default cache's options, written inputs not checksummed, which mounts are read,
   extended attributes, mode bits, owner, excludes); four of the collection (the disk's
   GiB, the floor of what is easiest to make again, the stop under the target, records in
-  use left out); and eight on real microVMs (`--no-cache` letting caches go, keys from
-  what is read, the key a record is known by, a collection once a minute, a cache's
-  changes kept, and each sharing mode taken as another). Two survived until a test was
-  added: extended attributes (`a_files_digest_takes_the_attributes_buildkits_takes`) and
-  records in use left out, which a change had dropped as redundant though BuildKit ranks
-  only what it may delete (`what_a_step_holds_is_neither_removed_nor_ranked`).
+  use left out); and nine on real microVMs (a cache left unbound, its writes landing in
+  the root; `--no-cache` letting caches go, keys from what is read, the key a record is
+  known by, a collection once a minute, a cache's changes kept, and each sharing mode
+  taken as another). Two survived until a test was added: extended attributes
+  (`a_files_digest_takes_the_attributes_buildkits_takes`) and records in use left out,
+  which a change had dropped as redundant though BuildKit ranks only what it may delete
+  (`what_a_step_holds_is_neither_removed_nor_ranked`).
 - **Open.** Moving a large cache in and out of the builder costs a build time: with 10,000
   files of 4 KiB and 256 MiB in it, mounting it made a build's median 11.2 s against 3.9
   s, and filling it 16.1 s against 3.7 s (M140). Where that time goes, and whether
