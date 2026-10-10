@@ -1861,6 +1861,16 @@ stack inside the VMM, is superseded by it.
     the VM has the network process close them, and waits for it to say so, before it tells
     the daemon and the client (`kind::UNPUBLISH`), so that `run --rm -p N …` followed by
     any bind of N succeeds, as Docker's does. Only runs that publish pay that round trip.
+  - *What a command sends before it exits goes out (2026-10-10).* A datagram a command
+    sends just before it exits is in the device's TX queue when its exit reaches the VM,
+    and the network process took a doorbell and a control message of one wake in order,
+    the frames only at its loop's top: the port closed before the answer went, and its peer
+    never had it (the published UDP flake: 1 run in 28 under load; the guest said it
+    answered, and nothing reached the host). As a run ends, the VM now flushes its
+    device's TX into the ring (`TxFlush`: the worker answers once a round finds every frame
+    the guest had given), and the network process takes the ring's frames, a ring's worth
+    at most, before a control message and before it ends, so what the guest sent before
+    UNPUBLISH goes before it: 150 runs of 150 answered.
   - *Frames, and what the guest loses of them (PM M104).* The VM's device returns a
     received frame's buffers to the guest together (virtio 1.2 §5.1.6.4.1), and a
     segment's bytes go from a connection's queue to the ring in one copy. A guest short of

@@ -11,15 +11,17 @@
 
 use std::io;
 use std::os::fd::{AsRawFd, OwnedFd};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
+use std::time::Instant;
 
 use shards_netring::{Consumer, Producer, Region};
 
 use super::queue::{Chain, Queue, QueueError, with};
 use super::{Activation, DeviceInterrupt, VirtioDevice, feature};
 use crate::memory::GuestMemory;
+use crate::sync::{lock, wait_timeout};
 use crate::{debug, warn};
 
 pub const DEVICE_ID: u32 = 1;
@@ -42,13 +44,67 @@ const F_STATUS: u64 = 1 << 16;
 const S_LINK_UP: u16 = 1;
 
 /// A VM's network host side: the frame ring its network process shares, and the two
-/// doorbells, this side's to sleep on and the network process's to ring.
+/// doorbells, this side's to sleep on and the network process's to ring; and the flush
+/// its owner asks of the device as the guest's command ends.
 #[derive(Debug, Clone)]
 pub struct NetHost {
     pub region: Arc<OwnedFd>,
     pub wake_me: Arc<OwnedFd>,
     pub wake_peer: Arc<OwnedFd>,
     pub mac: [u8; 6],
+    pub flush: TxFlush,
+}
+
+/// Waits until every frame the guest has given the device to send is in the frame ring:
+/// what a VM's owner asks as its guest's command ends, before the run's ports close and
+/// the VM goes, so that a datagram a command sends just before it exits reaches its
+/// network process, as a container's reaches its host, rather than going with the VM.
+#[derive(Debug, Clone, Default)]
+pub struct TxFlush(Arc<Flushes>);
+
+#[derive(Debug, Default)]
+struct Flushes {
+    /// How many flushes have been asked for.
+    asked: AtomicU64,
+    /// The most asked for when the worker last found the guest's frames all in the ring.
+    answered: Mutex<u64>,
+    changed: Condvar,
+    /// The worker's waker, while a worker runs.
+    waker: Mutex<Option<Arc<Waker>>>,
+}
+
+impl TxFlush {
+    /// True once every frame the guest had given the device when this was asked is in the
+    /// ring, or at once where no worker runs (no session, or paused); false if `deadline`
+    /// came first.
+    pub fn flush(&self, deadline: Instant) -> bool {
+        let Some(waker) = lock(&self.0.waker).clone() else {
+            return true;
+        };
+        let n = self.0.asked.fetch_add(1, Ordering::AcqRel).saturating_add(1);
+        waker.wake();
+        let mut answered = lock(&self.0.answered);
+        while *answered < n {
+            let Some(left) = deadline
+                .checked_duration_since(Instant::now())
+                .filter(|d| !d.is_zero())
+            else {
+                return false;
+            };
+            answered = wait_timeout(&self.0.changed, answered, left);
+        }
+        true
+    }
+
+    /// The worker found every frame given before it read `asked` in the ring.
+    fn answer(&self, asked: u64) {
+        let mut answered = lock(&self.0.answered);
+        if asked > *answered {
+            *answered = asked;
+            drop(answered);
+            self.0.changed.notify_all();
+        }
+    }
 }
 
 fn dup(fd: &OwnedFd) -> io::Result<OwnedFd> {
@@ -87,6 +143,8 @@ struct Session {
     /// sent first next time.
     tx: Chain,
     tx_held: bool,
+    /// Whether the last round took every frame the guest had given to send.
+    tx_drained: bool,
     /// RX buffers: the first `rx_held` taken for a frame that needs more of them than the
     /// guest gave yet. Chains and `rx_lens`, what each held of the last frame, keep their
     /// memory from one frame to the next (review 2.22).
@@ -101,6 +159,7 @@ impl Session {
             queues,
             tx: Chain::default(),
             tx_held: false,
+            tx_drained: false,
             rx: Vec::new(),
             rx_held: 0,
             rx_lens: Vec::new(),
@@ -153,6 +212,10 @@ impl Net {
         };
         let stop = Arc::new(AtomicBool::new(false));
         let (flag, waker, region) = (stop.clone(), self.waker.clone(), self.region.clone());
+        let flush = self.host.flush.clone();
+        // A worker before this one may have ended answering everything: this one answers
+        // what is asked from now on.
+        *lock(&flush.0.answered) = flush.0.asked.load(Ordering::Acquire);
         let ends = match (
             dup(&self.host.wake_peer),
             dup(&self.host.wake_peer),
@@ -168,13 +231,17 @@ impl Net {
             // The device's frames go one way, the network process's come the other.
             let producer = region.producer(0, ends.0);
             let consumer = region.consumer(1, ends.1, ends.2);
-            Some(run(
-                session, producer, consumer, &memory, &interrupt, &waker, &flag,
-            ))
+            let session = run(
+                session, producer, consumer, &memory, &interrupt, &waker, &flag, &flush,
+            );
+            // Nothing takes the guest's frames now: no flush waits for it.
+            flush.answer(u64::MAX);
+            Some(session)
         });
         match spawned {
             Ok(thread) => {
                 self.worker = Some(Worker { thread, stop });
+                *lock(&self.host.flush.0.waker) = Some(self.waker.clone());
                 Ok(())
             }
             Err((e, session)) => {
@@ -186,6 +253,8 @@ impl Net {
 
     fn stop(&mut self) -> Option<Session> {
         let w = self.worker.take()?;
+        // A flush asked from here on finds no worker, and does not wait for one.
+        *lock(&self.host.flush.0.waker) = None;
         w.stop.store(true, Ordering::Release);
         self.waker.wake();
         match w.thread.join() {
@@ -294,8 +363,10 @@ impl Drop for Net {
     }
 }
 
-/// Moves frames until stopped. A malformed ring marks the device as needing reset; a
+/// Moves frames until stopped, answering each flush once a round has taken every frame
+/// the guest had given before it. A malformed ring marks the device as needing reset; a
 /// broken frame ring, the network process's fault, cuts the guest's network off alone.
+#[allow(clippy::too_many_arguments)]
 fn run(
     mut s: Session,
     mut tx: Producer<'_>,
@@ -304,10 +375,17 @@ fn run(
     irq: &DeviceInterrupt,
     waker: &Waker,
     stop: &AtomicBool,
+    flush: &TxFlush,
 ) -> Session {
     let mut broken = false;
     while !stop.load(Ordering::Acquire) {
-        let more = match step(&mut s, &mut tx, &mut rx, mem, irq, broken) {
+        // Read before the round: every frame given before a flush asked is the round's.
+        let asked = flush.0.asked.load(Ordering::Acquire);
+        let stepped = step(&mut s, &mut tx, &mut rx, mem, irq, broken);
+        if s.tx_drained {
+            flush.answer(asked);
+        }
+        let more = match stepped {
             Ok(Step::More) => true,
             // Asked to be rung for the next frame: one that came before the ask rang
             // nothing, so it is taken now, not slept past.
@@ -375,7 +453,9 @@ fn step(
     irq: &DeviceInterrupt,
     broken: bool,
 ) -> Result<Step, QueueError> {
+    s.tx_drained = false;
     let [rxq, txq] = s.queues.as_mut_slice() else {
+        s.tx_drained = true;
         return Ok(Step::Idle);
     };
     let mut used = [false; 2];
@@ -411,6 +491,8 @@ fn step(
             sent += 1;
         }
         if !with(mem, |a| txq.enable_notification(a))? {
+            // Nothing came while it was taking: every frame given is in the ring.
+            s.tx_drained = true;
             break;
         }
     }
@@ -608,6 +690,7 @@ mod tests {
             wake_me: Arc::new(device_waits),
             wake_peer: Arc::new(device_rings),
             mac: [2, 0, 0, 0, 0, 1],
+            flush: TxFlush::default(),
         };
         let mut net = Net::new(host).unwrap();
         let page = crate::platform::page_size().unwrap();
@@ -650,6 +733,85 @@ mod tests {
         assert_eq!(net.pause().len(), 2, "paused still");
         net.resume().unwrap();
         assert!(net.worker.is_some() && net.paused.is_none());
+    }
+
+    /// A flush returns once the frame the guest gave is in the ring, though the guest never
+    /// rang for it: what a run's end relies on before its ports close (the published UDP
+    /// flake, 2026-10-10). A device with no worker has nothing to flush.
+    #[test]
+    fn a_flush_returns_once_the_guests_frames_are_in_the_ring() {
+        let (net_waits, device_rings) = shards_netring::doorbell().unwrap();
+        let (device_waits, _net_rings) = shards_netring::doorbell().unwrap();
+        let region = Arc::new(shards_netring::memory().unwrap());
+        let host = NetHost {
+            region: region.clone(),
+            wake_me: Arc::new(device_waits),
+            wake_peer: Arc::new(device_rings),
+            mac: [2, 0, 0, 0, 0, 1],
+            flush: TxFlush::default(),
+        };
+        let flush = host.flush.clone();
+        let soon = || Instant::now() + std::time::Duration::from_secs(10);
+        let mut net = Net::new(host).unwrap();
+        let began = Instant::now();
+        assert!(flush.flush(soon()), "no worker, nothing to wait for");
+        assert!(began.elapsed() < std::time::Duration::from_secs(1));
+        let page = crate::platform::page_size().unwrap();
+        let mem = Arc::new(GuestMemory::anonymous(&[(BASE, 16 * page)]).unwrap());
+        let queue = |desc, avail, used| {
+            let cfg = QueueConfig {
+                size: SIZE,
+                desc,
+                avail,
+                used,
+                ready: true,
+            };
+            Queue::new(cfg, SIZE, &mem, feature::VERSION_1).unwrap()
+        };
+        net.activate(Activation {
+            memory: mem.clone(),
+            queues: vec![
+                queue(RX_DESC, RX_AVAIL, RX_USED),
+                queue(TX_DESC, TX_AVAIL, TX_USED),
+            ],
+            interrupt: Arc::new(DeviceInterrupt::new(Arc::new(Line))),
+            features: feature::VERSION_1,
+            restored: false,
+        })
+        .unwrap();
+        // The worker's first round finds nothing and sleeps.
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        // A frame given, the device never notified.
+        let f = frame(60);
+        let a = mem.access().unwrap();
+        a.write(DATA, &f).unwrap();
+        a.write_obj(TX_DESC, DATA).unwrap();
+        a.write_obj(TX_DESC + 8, u32::try_from(f.len()).unwrap()).unwrap();
+        a.write_obj(TX_DESC + 12, 0u16).unwrap();
+        a.write_obj(TX_DESC + 14, 0u16).unwrap();
+        a.write_obj(TX_AVAIL + 4, 0u16).unwrap();
+        a.write_obj(TX_AVAIL + 2, 1u16).unwrap();
+        // While guest memory is this thread's, the worker cannot take the frame: the flush
+        // is not answered, however promptly the worker wakes.
+        let shortly = Instant::now() + std::time::Duration::from_millis(300);
+        assert!(!flush.flush(shortly), "answered before the frame was taken");
+        drop(a);
+        assert!(flush.flush(soon()));
+        let ring = Region::map(region.try_clone().unwrap()).unwrap();
+        let (_nobody, rings) = shards_netring::doorbell().unwrap();
+        let mut from_guest = ring.consumer(0, rings, net_waits);
+        let mut got = vec![0u8; f.len()];
+        let n = from_guest
+            .pop(|n, copy| {
+                copy(0, got.as_mut_ptr(), n.min(f.len()));
+                n
+            })
+            .unwrap();
+        assert_eq!(n, Some(f.len()), "the frame is in the ring as the flush returns");
+        assert_eq!(got, f);
+        // Stopped, the device's flush waits for nothing.
+        net.reset();
+        assert!(flush.flush(soon()));
     }
 
     /// A device's session on guest memory, and the network process's ends of its frame

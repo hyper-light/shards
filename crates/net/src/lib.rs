@@ -24,7 +24,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, UdpSocket};
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::time::{Duration, Instant};
 
-use shards_netring::{Consumer, Producer, Region};
+use shards_netring::{Consumer, Producer, RING, Region};
 use tcp::{Conn, Key, Payload, ToGuest};
 use wire::Frames;
 
@@ -787,16 +787,7 @@ pub fn serve(
     let mut events: Vec<poll::Event> = Vec::new();
     loop {
         // The guest's frames, a batch at a time.
-        for _ in 0..256 {
-            let got = from_guest
-                .pop(|n, copy| {
-                    copy(0, frame.as_mut_ptr(), n);
-                    n
-                })
-                .map_err(|e| io::Error::other(e.to_string()))?;
-            let Some(n) = got else { break };
-            stack.on_guest_frame(frame.get(..n).unwrap_or_default());
-        }
+        take_frames(&mut from_guest, &mut stack, &mut frame, 256, usize::MAX)?;
         stack.flush_backlog();
         // What a full ring kept from the guest goes once it has drained: nothing else
         // would send it while the connection waits on no timer and reads no socket.
@@ -821,8 +812,10 @@ pub fn serve(
             let index = token::index(e.token);
             match token::kind(e.token) {
                 token::DOORBELL => {
-                    // The guest's device closed the ring's doorbell: the VM is gone.
+                    // The guest's device closed the ring's doorbell: the VM is gone, and
+                    // what it sent last goes out before this does.
                     if e.ended {
+                        let _ = take_frames(&mut from_guest, &mut stack, &mut frame, usize::MAX, RING);
                         return Ok(());
                     }
                     drain(doorbell);
@@ -831,6 +824,11 @@ pub fn serve(
                     let Some(entry) = controls.get_mut(index as usize) else {
                         continue;
                     };
+                    // The frames the guest sent before this message was, taken before it:
+                    // a run's last answer to a published port's peer goes out before the
+                    // port closes (UNPUBLISH), its VM having put it in the ring first
+                    // (warm.rs `release_ports`).
+                    take_frames(&mut from_guest, &mut stack, &mut frame, usize::MAX, RING)?;
                     let keep = entry
                         .as_mut()
                         .is_some_and(|(role, sock, incoming)| control(&mut stack, *role, sock, incoming));
@@ -908,6 +906,32 @@ fn control(
             return false;
         }
     }
+}
+
+/// Takes the guest's frames from the ring, `frames` of them at most, until it is empty or
+/// `bytes` of them are taken: a ring's worth ([`RING`]) is every frame the ring held when
+/// asked, however fast the guest refills it.
+fn take_frames(
+    from_guest: &mut Consumer<'_>,
+    stack: &mut Stack<'_>,
+    frame: &mut [u8],
+    frames: usize,
+    bytes: usize,
+) -> io::Result<()> {
+    let (mut n_frames, mut n_bytes) = (0usize, 0usize);
+    while n_frames < frames && n_bytes < bytes {
+        let got = from_guest
+            .pop(|n, copy| {
+                copy(0, frame.as_mut_ptr(), n);
+                n
+            })
+            .map_err(|e| io::Error::other(e.to_string()))?;
+        let Some(n) = got else { break };
+        stack.on_guest_frame(frame.get(..n).unwrap_or_default());
+        n_frames += 1;
+        n_bytes = n_bytes.saturating_add(n.max(1));
+    }
+    Ok(())
 }
 
 fn drain(fd: i32) {
@@ -2203,5 +2227,95 @@ mod tests {
         distinct.sort_unstable();
         distinct.dedup();
         assert_eq!(distinct.len(), macs.len());
+    }
+
+    /// A guest's answer to a published port's peer that is in the ring when the port's
+    /// UNPUBLISH comes goes out before the port closes, though no doorbell rang for it: a
+    /// run's last datagram, which its VM puts in the ring before it asks for its ports
+    /// to close (warm.rs `release_ports`), reaches its peer (the published UDP flake,
+    /// 2026-10-10).
+    #[test]
+    fn frames_in_the_ring_go_before_a_control_message() {
+        use std::os::fd::AsFd as _;
+        use std::os::unix::net::UnixStream;
+        let region = shards_netring::memory().unwrap();
+        let ring = Region::map(region.try_clone().unwrap()).unwrap();
+        let (net_waits, device_rings) = shards_netring::doorbell().unwrap();
+        let (device_waits, net_rings) = shards_netring::doorbell().unwrap();
+        // A doorbell nobody waits on: the guest's answer is put in the ring unannounced.
+        let (_nobody, unheard) = shards_netring::doorbell().unwrap();
+        let (_also_nobody, room) = shards_netring::doorbell().unwrap();
+        let bridge = bridge::Bridge::elect(&[]).unwrap();
+        let cfg = Config::on_bridge(Policy::DenyAll, [2, 0, 0, 0, 0, 1], &bridge);
+        let (daemon, daemons) = UnixStream::pair().unwrap();
+        let (vm, vms) = UnixStream::pair().unwrap();
+        let listener = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let published = listener.local_addr().unwrap();
+        std::thread::scope(|scope| {
+            let served = scope.spawn(move || {
+                serve(
+                    region,
+                    net_waits,
+                    net_rings,
+                    cfg,
+                    vec![(Control::Daemon, daemons), (Control::Release, vms)],
+                )
+            });
+            let mut ports = 5353u16.to_be_bytes().to_vec();
+            ports.push(wire::PROTO_UDP);
+            shards_ipc::send(&daemon, shards_ipc::kind::PUBLISH, &ports, &[listener.as_fd()]).unwrap();
+            let soon = || Instant::now() + Duration::from_secs(10);
+            assert!(shards_ipc::recv_by(&daemon, soon()).unwrap().is_some());
+            drop(listener);
+            let client = UdpSocket::bind("127.0.0.1:0").unwrap();
+            client.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            client.send_to(b"ping", published).unwrap();
+            // The datagram as the guest is given it, then answered from the guest's port.
+            let mut to_guest = ring.consumer(1, room, device_waits);
+            let deadline = soon();
+            let mut f = loop {
+                let got = to_guest
+                    .pop(|n, copy| {
+                        let mut f = vec![0u8; n];
+                        copy(0, f.as_mut_ptr(), n);
+                        f
+                    })
+                    .unwrap();
+                match got {
+                    Some(f) if f.ends_with(b"ping") => break f,
+                    _ => {
+                        assert!(Instant::now() < deadline, "no datagram reached the guest");
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                }
+            };
+            // virtio-net's header, then Ethernet's (MACs at 0 and 6), IPv4's (addresses
+            // at 12 and 16 of its 20 bytes) and UDP's (ports at 0 and 2): each pair
+            // swapped, which leaves both checksums as they were.
+            let (eth, ip) = (12, 12 + 14);
+            let udp = ip + 20;
+            for (a, b, len) in [(eth, eth + 6, 6), (ip + 12, ip + 16, 4), (udp, udp + 2, 2)] {
+                for i in 0..len {
+                    f.swap(a + i, b + i);
+                }
+            }
+            // The network process asleep again, waiting to be rung, which it is not.
+            std::thread::sleep(Duration::from_millis(100));
+            let mut from_guest = ring.producer(0, unheard);
+            let pushed = from_guest.try_push_with(f.len(), |dst| {
+                // SAFETY: `dst` has room for the frame's bytes.
+                unsafe { std::ptr::copy_nonoverlapping(f.as_ptr(), dst, f.len()) }
+            });
+            assert!(matches!(pushed, Ok(Some(_))));
+            shards_ipc::send(&vm, shards_ipc::kind::UNPUBLISH, &[], &[]).unwrap();
+            assert!(shards_ipc::recv_by(&vm, soon()).unwrap().is_some());
+            let mut buf = [0u8; 64];
+            let answered = client.recv_from(&mut buf);
+            // The VM goes: its device's doorbell closes, and the network process ends.
+            drop(device_rings);
+            assert!(served.join().unwrap().is_ok());
+            let (n, from) = answered.expect("the guest's answer before the port closed");
+            assert_eq!((&buf[..n], from), (&b"ping"[..], published));
+        });
     }
 }

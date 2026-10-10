@@ -491,6 +491,7 @@ mod tests {
             wake_me: Arc::new(device_waits),
             wake_peer: Arc::new(device_rings),
             mac: [2, 0, 0, 0, 0, 9],
+            flush: crate::devices::virtio::net::TxFlush::default(),
         };
         (host, [net_waits, net_rings])
     }
