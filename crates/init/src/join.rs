@@ -22,6 +22,8 @@ pub struct Join {
     pub workload: libc::pid_t,
     pub layer: Option<(u64, u64)>,
     pub pid: Pid,
+    /// A reaper first in a PID namespace of its own, docker-init's part (`--init`).
+    pub init: bool,
 }
 
 /// Whose PID namespace a joiner's processes are in: one of its own, its command that

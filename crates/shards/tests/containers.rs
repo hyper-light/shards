@@ -488,6 +488,54 @@ fn a_joiner_may_share_its_providers_pid_namespace() {
     let _ = exit(&mut provider);
 }
 
+/// A joiner under `--init`, in a PID namespace of its own, has a reaper first in it, as the
+/// workload has (D115, D119), docker-init's part: its command the namespace's second
+/// process, so that `stop`'s SIGTERM ends at once a command that does not handle it; the
+/// reaper as the command's user, which the joiner's own image names; `top` lists both.
+#[test]
+fn a_joiner_under_init_has_a_reaper_of_its_own() {
+    let Some((home, image)) = home("containers-joiner-init") else {
+        return;
+    };
+    let mut provider = start(&home, &image, &["--name", "prov"], &["sleep"]);
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let joined = run_in(
+        &home,
+        &image,
+        &["-d", "--name", "joiner", "--network", "container:prov", "--init"],
+        &["sleep"],
+    );
+    assert_eq!(joined.status, Some(0), "{joined}");
+    let read = |path: &str| {
+        let r = shards(&["exec", "joiner", "/bin/testguest", "fs", &format!("print:{path}")]);
+        assert_eq!(r.status, Some(0), "{path}: {r}");
+        r.stdout
+    };
+    assert_eq!(read("/proc/2/cmdline"), "/bin/testguest\0sleep\0");
+    assert!(!read("/proc/1/cmdline").starts_with("/bin/testguest"));
+    // The image's user, app.
+    let status = read("/proc/1/status");
+    assert!(
+        status
+            .lines()
+            .any(|l| l.split_whitespace().eq(["Uid:", "1000", "1000", "1000", "1000"])),
+        "{status}"
+    );
+    let top = shards(&["top", "joiner", "-o", "pid,args"]);
+    assert_eq!(top.stdout.lines().count(), 3, "{top}");
+    let stopping = Instant::now();
+    assert_eq!(shards(&["stop", "joiner"]).status, Some(0));
+    assert!(
+        stopping.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        stopping.elapsed()
+    );
+    let code = shards(&["inspect", "-f", "{{.State.ExitCode}}", "joiner"]);
+    assert_eq!(code.stdout, "143\n", "{code}");
+    assert_eq!(shards(&["stop", "-t", "1", "prov"]).status, Some(0));
+    let _ = exit(&mut provider);
+}
+
 /// A joiner keeps its writable layer as it stops, as any container does (D37, D119): its
 /// changes are read while it is stopped, a file is copied into it then, and all of them
 /// are put back over its image as it starts again in its provider's microVM, its names
@@ -1023,13 +1071,14 @@ fn a_command_is_pid_1_as_a_containers_is() {
         let format = "{{json .HostConfig.Init}} {{json .HostConfig.PidMode}} {{if .HostConfig.Init}}set{{else}}unset{{end}}";
         assert_eq!(shards(&["inspect", "-f", format, name]).stdout, want, "{name}");
     }
-    // Another container's, a microVM of its own: none of its processes' namespaces is ours.
+    // Another container's, a microVM of its own: none of its processes' namespaces is ours,
+    // but a container's joining its network, in its microVM (D119).
     let r = shards(&["create", "--pid", "container:i0", ALPINE, "true"]);
     assert_eq!(
         (r.status, r.stderr.as_str()),
         (
             Some(1),
-            "Error response from daemon: \"--pid container:NAME\" is not supported by shards yet\n"
+            "Error response from daemon: \"--pid container:NAME\" is not supported by shards yet without \"--network container:NAME\" of the same container\n"
         ),
         "{r}"
     );

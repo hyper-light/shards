@@ -3559,9 +3559,19 @@ the boundary is a container's, which is what the mode asks for.
   (`a_joiner_may_share_its_providers_pid_namespace`: its PID 1 its provider's command,
   `top` of each, `--init` kept, an exec of its killed as it ends, `--pid host`, the
   refusals; `a_joiner_is_a_container_of_its_own`: its provider by ID).
+- **`--init` in a PID namespace of its own**: a reaper is its first process, as the
+  workload's is (D115), in its cgroup. Its user is the command's, which the joiner's own
+  image names, and that image's users are read by its standby, born in the reaper's
+  namespace as it builds its root: so the reaper, born first, lets go of init's
+  descriptors at once and waits for its IDs, which init sends once the standby has
+  reported its users, and init waits for it to be ready before the command may start, as
+  for the workload: no process of the joiner's finds it root or holding init's
+  descriptors. Tested (`a_joiner_under_init_has_a_reaper_of_its_own`: the command the
+  namespace's second process, the reaper the image's user, `stop`'s SIGTERM ending at once
+  a command that does not handle it; mutation-checked: no reaper, a reaper as root).
 - **Not yet, each refused by name before anything starts:** volumes (the provider's
-  microVM has shares for its own run alone), devices and `--privileged`, `--init` in a PID
-  namespace of its own, an image's `VOLUME`s, an Agentfile's image.
+  microVM has shares for its own run alone), devices and `--privileged`, an image's
+  `VOLUME`s, an Agentfile's image.
 - **No count of holders.** A VM process runs one VM, so its join disk is a `static` of
   that process's (`Join::new` is a `const fn`), its device given `&'static Join`; a
   joiner's attached clients are kept by its id in the guest, as the workload's are. The

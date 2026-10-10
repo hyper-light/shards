@@ -1833,10 +1833,6 @@ impl<D: Disk> Daemon<D> {
                 Some("a volume")
             } else if !run.devices.is_empty() || !run.device_cgroup_rules.is_empty() || run.privileged {
                 Some("a device")
-            } else if run.docker_init == Some(true) && run.pid.is_empty() {
-                // dockerd gives its init only to a PID namespace of the container's own (moby
-                // daemon/oci_linux.go); in another's, it is taken and not given.
-                Some("--init")
             } else if run
                 .pid
                 .strip_prefix("container:")
