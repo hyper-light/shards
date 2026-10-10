@@ -359,7 +359,10 @@ pub fn serve(
             Err(e) => shards_vmm::debug!("saving the container's files: {e}"),
         }
     }
-    {
+    // Containers joined to its network go on past it (D119): the guest's signal
+    // connection, and what waits for the guest, stay theirs.
+    let joined = crate::warm::joining();
+    if !joined {
         let mut state = lock(to);
         *state = Signals::default();
     }
@@ -367,7 +370,9 @@ pub fn serve(
     STDIN_OPEN.store(false, Ordering::Relaxed);
     lock_attached().clear();
     // Execs still waiting for the guest will never start.
-    pending().clear();
+    if !joined {
+        pending().clear();
+    }
     // The guest powers off once the host closes the run connection: shutting it down
     // closes every copy.
     let _ = conn.shutdown(std::net::Shutdown::Both);
@@ -909,6 +914,157 @@ fn exec_session(to: &'static ToGuest, req: &mut ExecRequest) -> Result<(Option<u
                     }),
                     answered,
                 ));
+            }
+            _ => return Err(format!("the guest sent an unknown frame kind {which}")),
+        }
+    }
+}
+
+/// A container joining the workload's network (D119): its command, as a run's spec says
+/// it, the join entry naming its image's range of the join disk among its setup; its
+/// client's connection and stdio, as a run's, none for a detached one; its log.
+#[cfg(unix)]
+pub struct JoinRequest {
+    pub spec: Spec,
+    pub interactive: bool,
+    pub detached: bool,
+    pub client: Option<UnixStream>,
+    pub stdin: fs::File,
+    pub stdout: Option<fs::File>,
+    pub stderr: Option<fs::File>,
+    pub log: Option<Logger>,
+}
+
+/// Sends Linux signal `linux` to the guest's exec, or joiner, `id` (D119), as the daemon
+/// signals a container: false where the guest has no connection to take it.
+#[cfg(unix)]
+pub fn signal_exec(to: &ToGuest, id: u32, linux: u32) -> bool {
+    to_guest(
+        to,
+        kind::EXEC_SIGNAL,
+        &[&id.to_be_bytes()[..], &linux.to_be_bytes()].concat(),
+    )
+}
+
+/// Runs joiner `req` in the guest to its end, as a run's command is served: what kept it
+/// from starting, or its output to its client and its log, its client's stdin, terminal
+/// sizes and signals, and its status. Its id in the guest goes to `on_id` as soon as it
+/// has one, and `started` hears when its command runs.
+#[cfg(unix)]
+pub fn join(
+    to: &'static ToGuest,
+    req: JoinRequest,
+    on_id: &dyn Fn(u32),
+    started: &dyn Fn(),
+) -> Result<Ended, String> {
+    let JoinRequest {
+        spec,
+        interactive,
+        detached,
+        client,
+        stdin,
+        mut stdout,
+        mut stderr,
+        mut log,
+    } = req;
+    let mut token = [0u8; run::TOKEN];
+    shards_vmm::platform::fill_random(&mut token).map_err(|e| format!("a joiner's token: {e}"))?;
+    let id = NEXT_EXEC.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    on_id(id);
+    let payload = exec_frame(&token, id, &spec)?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    pending().push(Waiting { token, id, to: tx });
+    if !to_guest(to, kind::EXEC, &payload) {
+        pending().retain(|w| w.token != token);
+        return Err("the container whose network it joins is not running".into());
+    }
+    let conn = rx
+        .recv()
+        .map_err(|_| "the container whose network it joins ended first".to_string())??;
+    let mut input = conn.try_clone().map_err(|e| e.to_string())?;
+    if interactive {
+        let mut stdin = stdin;
+        std::thread::Builder::new()
+            .name("join-stdin".into())
+            .spawn(move || {
+                let mut buf = vec![0u8; 64 * 1024];
+                while let Ok(n @ 1..) = stdin.read(&mut buf) {
+                    if send(&mut input, kind::STDIN, buf.get(..n).unwrap_or_default()).is_err() {
+                        return;
+                    }
+                }
+                let _ = send(&mut input, kind::STDIN, &[]);
+            })
+            .map_err(|e| format!("a joiner's stdin: {e}"))?;
+    } else {
+        let _ = send(&mut input, kind::STDIN, &[]);
+    }
+    if let Some(client) = &client {
+        // The client's terminal sizes and signals, for the joiner's own.
+        let client = client.try_clone().map_err(|e| e.to_string())?;
+        std::thread::Builder::new()
+            .name("join-client".into())
+            .spawn(move || {
+                while let Ok(Some(m)) = shards_ipc::recv(&client) {
+                    match m.kind {
+                        shards_ipc::kind::RESIZE if Size::decode(&m.payload).is_some() => {
+                            let resize = [&id.to_be_bytes()[..], &m.payload].concat();
+                            to_guest(to, kind::EXEC_RESIZE, &resize);
+                        }
+                        shards_ipc::kind::SIGNAL if m.payload.len() == 4 => {
+                            let signal = [&id.to_be_bytes()[..], &m.payload].concat();
+                            to_guest(to, kind::EXEC_SIGNAL, &signal);
+                        }
+                        _ => {}
+                    }
+                }
+            })
+            .map_err(|e| format!("a joiner's client: {e}"))?;
+    }
+    let mut frame = Vec::new();
+    let mut not_run: Option<String> = None;
+    let mut conn = io::BufReader::with_capacity(run::BUFFERED, &conn);
+    loop {
+        let mut h = [0u8; run::HEADER];
+        conn.read_exact(&mut h)
+            .map_err(|e| format!("the guest stopped before the command ended: {e}"))?;
+        let (which, len) = run::parse_header(h).ok_or("the guest sent a malformed frame")?;
+        let len = len as usize;
+        if frame.len() < len {
+            frame.resize(len, 0);
+        }
+        let payload = frame.get_mut(..len).ok_or("a frame past its buffer")?;
+        conn.read_exact(payload)
+            .map_err(|e| format!("the guest stopped mid-frame: {e}"))?;
+        let payload = &*payload;
+        match which {
+            kind::STARTED => started(),
+            kind::STDOUT | kind::STDERR => {
+                let (out, stream) = if which == kind::STDOUT {
+                    (&mut stdout, crate::spec::LOG_STDOUT)
+                } else {
+                    (&mut stderr, crate::spec::LOG_STDERR)
+                };
+                if let Some(log) = &mut log {
+                    log.keep(stream, payload);
+                }
+                // A detached joiner's output goes to its log alone, as a detached run's.
+                if !detached && let Some(o) = out {
+                    let _ = o.write_all(payload);
+                }
+            }
+            kind::SYSTEM_ERR => {
+                let (_, why) = payload.split_first().ok_or("an empty failure")?;
+                not_run = Some(String::from_utf8_lossy(why).into_owned());
+            }
+            kind::EXIT => {
+                let status: [u8; 4] = payload.try_into().map_err(|_| "malformed exit status")?;
+                return Ok(Ended {
+                    status: u8::try_from(u32::from_be_bytes(status)).unwrap_or(u8::MAX),
+                    not_run,
+                    lost: log.as_ref().map_or(0, Logger::lost),
+                    oom: false,
+                });
             }
             _ => return Err(format!("the guest sent an unknown frame kind {which}")),
         }

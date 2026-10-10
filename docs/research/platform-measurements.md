@@ -5614,8 +5614,19 @@ revision before comparing a changed API/implementation.
 
   Wall clock, p50 37 to 39 ms throughout, no difference resolved but 16 disks' in round
   2 (+2,507 µs [+210, +4,445]).
+- **The join disk as built**, against none, the same harness (`join` against `0`), n =
+  300 each a round, load 63 to 74, µs:
+
+  | round | variant | released | difference |
+  |---|---|---|---|
+  | 1 | none | 300 / 8,863 / 24,061 / 43,186 / 59,260 | |
+  | 1 | join disk | 300 / 7,762 / 21,906 / 42,614 / 64,222 | −513 [−1,682, +120] |
+  | 2 | join disk | 300 / 8,157 / 23,586 / 45,141 / 49,051 | |
+  | 2 | none | 300 / 8,327 / 20,779 / 42,636 / 59,214 | +330 [−370, +883] (none less join) |
+
+  Wall clock: −365 µs [−3,886, +2,639] and −312 [−1,932, +2,321] (none less join).
 - **Consequence.** A file-backed disk costs a restore about 40 to 70 µs, resolved only
   where there are 16; one is within the noise at this load. Each is a file the restore
-  reopens through the grants broker on macOS; a join disk has no file until a container
-  joins, so this bounds its cost from above. The join disk as built is to be measured
-  against none.
+  reopens through the grants broker on macOS. The join disk, with no file until a
+  container joins, cost no restore anything resolved in either round, its medians the
+  lower: every microVM carries one (D119).

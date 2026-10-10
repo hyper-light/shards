@@ -200,6 +200,12 @@ pub mod kind {
     /// Agentfile's egress grants (D59, shards_net::Ports::encode); answered with the same
     /// kind once taken.
     pub const NET_POLICY: u8 = 40;
+    /// Daemon → a running container's VM: a container joins its network (D119). Its number
+    /// (a big-endian u64, which `EXEC_TAKEN` answers), with the VM's end of the joiner's
+    /// own connection to the daemon, on which the joiner's run goes as a warm VM's does
+    /// (`RUN`, `TAKEN`, `STARTED`, `DONE`, its log's segments), and its image's EROFS file,
+    /// which the VM gives a range of its join disk.
+    pub const JOIN: u8 = 41;
 }
 
 /// An `ATTACH_RUN` flag: the client's stdin goes to the command's.

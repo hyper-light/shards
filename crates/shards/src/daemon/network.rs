@@ -29,11 +29,16 @@ pub enum Net {
 /// A user network's IPv4 subnets, by its name or ID; none for one there is not.
 pub type UserSubnets<'a> = &'a dyn Fn(&str) -> Option<Vec<(IpAddr, u8)>>;
 
-/// What starting the run will find of its networks: one to attach it to, or what dockerd
-/// says as the start fails, the container left created.
+/// What starting the run will find of its networks: one to attach it to, another
+/// container's to join (D119), or what dockerd says as the start fails, the container left
+/// created.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Start {
     Attach(Net),
+    /// `--network container:NAME`: the network of the container NAME names, as given; which
+    /// container that is, and whether it runs, is seen as the run starts, as dockerd sees it
+    /// (getNetworkedContainer).
+    Join(String),
     Fails(String),
 }
 
@@ -79,8 +84,28 @@ pub fn check(
         .split_once(':')
         .filter(|(k, _)| *k == "container")
         .map(|(_, v)| v);
-    if container.is_some() && run.hostname.is_some() {
-        return Err("conflicting options: hostname and the network mode".into());
+    // dockerd's checks of a container network mode, in its order and words (moby
+    // daemon/internal/runconfig/hostconfig.go validateNetContainerMode); shards takes no
+    // `--link`.
+    if mode == "container" || container == Some("") {
+        return Err("invalid network mode: invalid container format container:<name|id>".into());
+    }
+    if container.is_some() {
+        if run.hostname.is_some() {
+            return Err("conflicting options: hostname and the network mode".into());
+        }
+        if !run.dns.is_empty() {
+            return Err("conflicting options: dns and the network mode".into());
+        }
+        if !run.add_hosts.is_empty() {
+            return Err("conflicting options: custom host-to-IP mapping and the network mode".into());
+        }
+        if !run.publish.is_empty() || run.publish_all {
+            return Err("conflicting options: port publishing and the container type network mode".into());
+        }
+        if !run.expose.is_empty() {
+            return Err("conflicting options: port exposing and the container type network mode".into());
+        }
     }
     let mut endpoints: Vec<Endpoint> = Vec::with_capacity(run.endpoints.len());
     for e in &run.endpoints {
@@ -111,7 +136,7 @@ pub fn check(
     if let Some(name) = container
         && exists(name)
     {
-        return unsupported("container:NAME");
+        return Ok(Start::Join(name.to_string()));
     }
     for e in &endpoints {
         if !e.mac.is_empty() {
@@ -440,6 +465,52 @@ mod tests {
         );
     }
 
+    /// A container network mode, checked as dockerd checks it as the container is made
+    /// (validateNetContainerMode), in its order and words: each conflict alone, then two,
+    /// of which the first in dockerd's order is said.
+    #[test]
+    fn a_container_network_mode_is_checked_as_dockerd_checks_it() {
+        let joined = || run(&["container:web"]);
+        let docker: Option<Bridge> = "172.17.0.0/16".parse().ok();
+        let check = |r: &Run| check(r, docker, |n| n == "web");
+        let said = |what: &str| Err(format!("conflicting options: {what}"));
+        assert_eq!(
+            check(&run(&["container:"])),
+            Err("invalid network mode: invalid container format container:<name|id>".into())
+        );
+        let mut r = joined();
+        r.dns = vec!["1.1.1.1".into()];
+        assert_eq!(check(&r), said("dns and the network mode"));
+        let mut r = joined();
+        r.add_hosts = vec!["a:1.2.3.4".into()];
+        assert_eq!(check(&r), said("custom host-to-IP mapping and the network mode"));
+        let mut r = joined();
+        r.publish_all = true;
+        assert_eq!(
+            check(&r),
+            said("port publishing and the container type network mode")
+        );
+        let mut r = joined();
+        r.expose = vec!["80".into()];
+        assert_eq!(
+            check(&r),
+            said("port exposing and the container type network mode")
+        );
+        // dns before exposing, as dockerd checks them.
+        let mut r = joined();
+        r.expose = vec!["80".into()];
+        r.dns = vec!["1.1.1.1".into()];
+        assert_eq!(check(&r), said("dns and the network mode"));
+        assert_eq!(check(&joined()), Ok(Start::Join("web".into())));
+        // One that is not there fails as it starts, the container made, in dockerd's words.
+        assert_eq!(
+            check(&run(&["container:nope"])),
+            Ok(Start::Fails(
+                "joining network namespace of container: No such container: nope".into()
+            ))
+        );
+    }
+
     fn check_with(run: &Run) -> Result<Start, String> {
         check(run, "172.17.0.0/16".parse().ok(), |_| false)
     }
@@ -453,7 +524,7 @@ mod tests {
         assert_eq!(check(&run(&["host"]), docker, |_| false), unsupported("host"));
         assert_eq!(
             check(&run(&["container:web"]), docker, |n| n == "web"),
-            unsupported("container:NAME")
+            Ok(Start::Join("web".into()))
         );
         assert_eq!(
             check(

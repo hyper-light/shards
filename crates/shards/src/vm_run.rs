@@ -238,6 +238,11 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
                 cfg.shares = (0..n).map(|_| std::sync::Arc::default()).collect();
                 let _ = SHARES.set(cfg.shares.clone());
             }
+            // A join disk, empty until a container joins the VM's network (D119).
+            "--join" => {
+                let disk = JOIN.get_or_init(Default::default).clone();
+                cfg.join = Some(disk);
+            }
             "--pmem" => cfg.pmem.push(PathBuf::from(value("--pmem")?)),
             "--rootfs" => rootfs = Some(PathBuf::from(value("--rootfs")?)),
             "--warm" => {
@@ -370,6 +375,8 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String
         // Its slots are made once its snapshot is read (`restore_vm`).
         #[cfg(unix)]
         shares: Vec::new(),
+        // As its join disk is, where the snapshot has one.
+        join: None,
         // Restored ahead of its request: the prefetch costs the request nothing.
         prefetch: hold || warm.is_some(),
         // A warm VM's request ends the recording as it ends a template's (RECORD_FOR).
@@ -385,6 +392,10 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String
 /// This VM's shared directories' slots, which its run fills (D38).
 #[cfg(unix)]
 pub static SHARES: std::sync::OnceLock<Vec<shards_vmm::devices::virtio::fs::Share>> =
+    std::sync::OnceLock::new();
+
+/// This VM's join disk, which containers joining its network are given ranges of (D119).
+pub static JOIN: std::sync::OnceLock<shards_vmm::devices::virtio::block::JoinDisk> =
     std::sync::OnceLock::new();
 
 /// Console output that never fails the caller (e.g. with stderr closed).
@@ -803,6 +814,10 @@ fn serve_workload(
             return failed(format!("workload thread: {e}"));
         }
         let reason = running.wait();
+        // Its joiners (D119), which the guest ended with its workload, tell the daemon how
+        // each ended before this process goes, as the relay has had 5 s to (below).
+        #[cfg(unix)]
+        crate::warm::await_joiners(std::time::Duration::from_secs(5));
         // A warm VM's client printed its timing line from the exit status.
         if !warm {
             report_timing(&handle, Some(timing));
@@ -1054,14 +1069,20 @@ fn restore_vm(cfg: &RestoreConfig) -> Result<(Handle, Running), String> {
             pinned
         }
     };
-    // A slot for each of its shared directories, which its run fills (D38).
-    #[cfg(unix)]
+    // A slot for each of its shared directories, which its run fills (D38), and its own
+    // join disk where the snapshot has one (D119).
     let cfg = &{
         let mut cfg = cfg.clone();
-        cfg.shares = (0..pinned.snapshot.config.shares)
-            .map(|_| std::sync::Arc::default())
-            .collect();
-        let _ = SHARES.set(cfg.shares.clone());
+        #[cfg(unix)]
+        {
+            cfg.shares = (0..pinned.snapshot.config.shares)
+                .map(|_| std::sync::Arc::default())
+                .collect();
+            let _ = SHARES.set(cfg.shares.clone());
+        }
+        if pinned.snapshot.config.join {
+            cfg.join = Some(JOIN.get_or_init(Default::default).clone());
+        }
         cfg
     };
     vm::restore_from(cfg, pinned)

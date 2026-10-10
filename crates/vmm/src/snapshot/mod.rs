@@ -54,7 +54,8 @@ const MAGIC: [u8; 8] = *b"SHRDSNAP";
 /// 8: x86's TSC offsets, so every vCPU's TSC comes back in step with the others'.
 /// 9: MachineConfig records the machine's network device, by its MAC, if it has one.
 /// 10: and how many shared directories (virtio-fs) follow it (D38).
-const VERSION: u32 = 10;
+/// 11: and whether a join disk follows the disks (D119).
+const VERSION: u32 = 11;
 /// The snapshot format this build writes and reads: what a snapshot kept for reuse is
 /// keyed by.
 pub const FORMAT: u32 = VERSION;
@@ -87,6 +88,9 @@ pub struct MachineConfig {
     /// How many shared directories (virtio-fs devices) follow: their directories are the
     /// restore's own (D38).
     pub shares: u32,
+    /// Whether a join disk follows the disks (D119): empty in every snapshot, and the
+    /// restore's own.
+    pub join: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -282,6 +286,7 @@ fn encode(s: &Snapshot, generation: &str, identities: &[Identity]) -> Result<Vec
     w.bool(s.config.net.is_some());
     w.bytes(&s.config.net.unwrap_or_default());
     w.u32(s.config.shares);
+    w.bool(s.config.join);
     w.bytes(&s.arch);
     w.bytes(&s.devices);
     Ok(w.into_bytes())
@@ -353,6 +358,7 @@ fn decode(bytes: &[u8]) -> codec::Result<Decoded> {
     if shares as usize > MAX_DISKS {
         return Err(DecodeError(format!("{shares} shared directories")));
     }
+    let join = r.bool()?;
     let arch_state = r.bytes(usize::MAX)?.to_vec();
     let devices = r.bytes(usize::MAX)?.to_vec();
     r.finish()?;
@@ -366,6 +372,7 @@ fn decode(bytes: &[u8]) -> codec::Result<Decoded> {
                 vsock,
                 net,
                 shares,
+                join,
             },
             arch: arch_state,
             devices,
@@ -836,6 +843,7 @@ mod tests {
                 vsock: true,
                 net: Some([2, 0, 0, 0, 0, 1]),
                 shares: 2,
+                join: true,
             },
             arch: vec![marker, 2, 3],
             devices: vec![9; 100],

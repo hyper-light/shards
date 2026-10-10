@@ -3412,7 +3412,7 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode
 waits on the user.
 
-### D119. `--network container:NAME`: a container joins another's microVM (in progress)
+### D119. `--network container:NAME`: a container joins another's microVM
 
 Docker's container network mode gives a container another's network namespace and
 nothing else of it (moby docker-v29.3.1 daemon/oci_linux.go: the joiner's netns is
@@ -3451,13 +3451,31 @@ the boundary is a container's, which is what the mode asks for.
   file-backed disks paid about 40 to 70 µs for each, 16 at once resolved from zero
   (+642 µs [+226, +994], +1,122 [+790, +1,440]), one not (+95 µs [−304, +383], +15
   [−160, +299]); each reopens its file through the grants broker, which a join disk with
-  no file does not. The join disk itself is to be measured as built.
+  no file does not. The join disk as built cost no restore anything resolved against none
+  (−513 µs [−1,682, +120]; none less join +330 [−370, +883]).
 - **Its life.** The joiner is a container of its own: its record, log, exit code, `stop`,
-  `kill`, `wait`, `rm`, `exec`, `top`, `inspect` (its NetworkMode as asked, no networks of
-  its own). Unlike Docker, a provider's command ending leaves its microVM running while
-  joiners run, their network with it; in Docker the joiner keeps a namespace whose
-  interfaces went with the provider's sandbox, loopback alone. The microVM ends with its
-  last container.
+  `kill`, `wait`, `rm`, `exec` (in its own namespaces), `inspect` (its NetworkMode as
+  asked, its provider's hostname). The daemon gives the provider's VM process the
+  joiner's own connection and image (`kind::JOIN`); on that connection the joiner's run
+  goes as a warm VM's run goes (`RUN`, `TAKEN`, `STARTED`, its log, `DONE`), so the daemon
+  follows it as any run, and no command of the joiner's ever ends, pauses or reads its
+  provider's VM as its own. In the guest the joiner is an exec of init's, PID 1 of a PID
+  namespace of its own, its root its image's range on a loop device under a tmpfs
+  overlay, Docker's mounts, a cgroup of its own under Docker's device rules.
+- **It outlives its provider's command, as Docker's joiner does.** As the workload ends,
+  init kills every process but its joiners' (their `join-N` cgroups), says the workload's
+  end at once, saves its writable layer if asked, and goes on serving the joiners; the
+  microVM ends with its last container. Pod semantics, the joiners killed with the
+  provider, was built first and dropped: a joiner finishing as its provider's command
+  ended was killed (137) where Docker's finishes. Unlike Docker, its network stays whole
+  (Docker's joiner keeps a namespace whose interfaces went with the provider's sandbox,
+  the loopback alone); the provider's published ports and network names go with its run.
+- **Not yet, each refused by name before anything starts:** volumes (the provider's
+  microVM has shares for its own run alone), devices and `--privileged`, `--init`, `--pid`,
+  `--sysctl` (init writes them in its own namespaces, the provider's), an image's
+  `VOLUME`s, an Agentfile's image; `pause` of a joiner alone (its VM is its provider's). A
+  joiner's writable layer is not kept as it stops (D37): it lives in a mount namespace
+  that ends with it. `stats` shows none of its own.
 
 ### D117. Templates no VM process can forge, and VM starts the host has not admitted
 
