@@ -3513,7 +3513,12 @@ it never reads ran it again; and nothing bounded what the cache kept.
   its source's key, which stays where BuildKit's ref ID changes as its record is made
   again. A copy of a single file under include or exclude patterns is keyed by that file's
   content, where BuildKit's checksum of it is empty whatever the file holds (it walks only
-  what lies under it), which keeps a stale copy.
+  what lies under it), which keeps a stale copy. The collection runs once a build is done,
+  unless one ran in the home within the minute; BuildKit's throttle runs a collection
+  asked for within the minute at the minute's end (util/throttle `After`), and BuildKit
+  also collects a second after its controller starts (control.go `NewController`), so a
+  home whose last builds came within a minute of a collection keeps their records until a
+  later build's.
 - **Tested** on real microVMs: `run_caches_are_kept_across_builds` (a cache's files, a
   failing step's among them, in the next build; one id at two targets and in another
   build; a root's owner and mode kept; another namespace another cache; `uid`, `gid`,
