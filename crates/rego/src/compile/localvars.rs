@@ -735,7 +735,7 @@ fn every_open(rw: &mut Rewriter<'_>, stack: &mut Stack, mut expr: Expr) -> Opene
             }
         }
     }
-    let body = std::mem::take(&mut ev.body);
+    let body = std::mem::take(&mut ev.body).into_inner();
     Opened::Body(expr, body)
 }
 
@@ -750,7 +750,7 @@ fn every_close(
     settled: &[Option<Settled>],
 ) -> (Expr, Settled) {
     if let ExprTerms::Every(ev) = &mut expr.terms {
-        ev.body = body;
+        ev.body = body.into();
     }
     let out = rewrite_expr_settled(rw, stack, expr, settled);
     stack.pop();

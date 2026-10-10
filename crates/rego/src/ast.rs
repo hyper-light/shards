@@ -95,6 +95,11 @@ impl<T> Shared<T> {
         Rc::get_mut(&mut this.0)
     }
 
+    /// The value's own pointer, shared once more.
+    pub fn rc(&self) -> Rc<T> {
+        Rc::clone(&self.0)
+    }
+
     /// Whether both share one value.
     pub fn ptr_eq(a: &Shared<T>, b: &Shared<T>) -> bool {
         Rc::ptr_eq(&a.0, &b.0)
@@ -361,7 +366,7 @@ pub struct Every {
     pub key: Option<Term>,
     pub value: Term,
     pub domain: Term,
-    pub body: Body,
+    pub body: Shared<Body>,
     pub loc: Option<Location>,
 }
 

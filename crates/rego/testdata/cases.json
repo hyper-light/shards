@@ -3626,5 +3626,73 @@
     1
    ]
   }
+ },
+ {
+  "name": "compr-index-in-every",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tsome a in input.a\n\tevery b in input.a {\n\t\tc := [d | some d in input.a; d == b; print(\"d\", d)]\n\t\tcount(c) == 1\n\t}\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "a": [
+    1,
+    2,
+    3
+   ]
+  }
+ },
+ {
+  "name": "compr-index-in-nested-every",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tsome a in input.a\n\tevery b in input.a {\n\t\tevery e in [1] {\n\t\t\tc := [d | some d in input.a; d == b; print(\"d\", d, e)]\n\t\t\tcount(c) == 1\n\t\t}\n\t}\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "a": [
+    1,
+    2,
+    3
+   ]
+  }
+ },
+ {
+  "name": "compr-index-head",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := [[y | some y in input.a; y == x; print(\"y\", y)] | some x in input.a]\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "a": [
+    1,
+    2,
+    3
+   ]
+  }
+ },
+ {
+  "name": "compr-index-after-every",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery b in input.a { b > 0 }\n\tsome x in input.a\n\tc := [d | some d in input.a; d == x; print(\"d\", d)]\n\tcount(c) == 1\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "a": [
+    1,
+    2,
+    3
+   ]
+  }
  }
 ]
