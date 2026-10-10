@@ -906,7 +906,9 @@ impl Server {
             op::READDIR | op::READDIRPLUS => {
                 let fh = a.u64()?;
                 let offset = a.u64()?;
-                let size = a.u32()? as usize;
+                // At most a largest read, as INIT told the guest: a larger reply would not
+                // fit the frame the device takes (audit V06).
+                let size = (a.u32()? as usize).min(MAX_WRITE as usize);
                 let Some(Handle::Dir(entries)) = s.handles.get(&fh) else {
                     return Err(EBADF);
                 };
@@ -1873,6 +1875,41 @@ mod tests {
                 guest & linux::O_APPEND != 0,
                 "{guest:#o}"
             );
+        }
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    /// A READDIR body: `fh`, `offset` and `size`.
+    fn readdir(fh: u64, offset: u64, size: u32) -> Vec<u8> {
+        let mut b = fh.to_le_bytes().to_vec();
+        b.extend_from_slice(&offset.to_le_bytes());
+        b.extend_from_slice(&size.to_le_bytes());
+        b.extend_from_slice(&[0u8; 12]);
+        b
+    }
+
+    /// A directory's listing, however much the guest asks for, comes at most a largest
+    /// read at a time: a reply larger than a frame was refused by the device, which then
+    /// read the rest of it as the next replies.
+    #[test]
+    fn a_listing_comes_a_read_at_a_time() {
+        let (path, s) = dir();
+        // 5000 entries of 224 bytes: 1.1 MB, past a largest read and a frame.
+        for i in 0..5000 {
+            std::fs::write(path.join(format!("{i:0>200}")), "").unwrap();
+        }
+        let (_, open) = answer(&s, &req(op::OPENDIR, ROOT, 0, &[0u8; 8]));
+        let fh = u64::from_le_bytes(open[0..8].try_into().unwrap());
+        for opcode in [op::READDIR, op::READDIRPLUS] {
+            let out = s
+                .handle(&req(opcode, ROOT, 0, &readdir(fh, 0, u32::MAX)))
+                .unwrap();
+            assert!(
+                out.len() - 16 <= MAX_WRITE as usize,
+                "opcode {opcode}: {}",
+                out.len()
+            );
+            assert!(out.len() <= super::super::MAX_FRAME, "opcode {opcode}");
         }
         let _ = std::fs::remove_dir_all(&path);
     }

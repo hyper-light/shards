@@ -2370,8 +2370,12 @@ microVM as virtio-fs shares (virtio 1.3 §5.11; Linux fs/fuse/virtio_fs.c):
     every other device's queue work and any snapshot off guest memory as long: with a
     5 ms answer, another thread's wait for guest memory went from 8.9 ms to 0.25 µs at
     the median, and the device's round trip did not move (PM M129).
+  - *A listing comes a largest read at a time* (V06). READDIR's reply grew to the
+    guest's `size`, any u32: a directory listed in one request past a frame was refused
+    by the device unread, whose next requests then took its leftover bytes for their
+    replies. `size` is held to `MAX_WRITE`, the largest read INIT tells the guest.
   - Tests: `fs::server::tests` (`a_mode_change_follows_no_symlink`,
-    `special_files_are_never_opened`) and `fs::tests`
+    `special_files_are_never_opened`, `a_listing_comes_a_read_at_a_time`) and `fs::tests`
     (`a_request_longer_than_any_is_refused_unread`,
     `guest_memory_is_free_while_the_share_answers`), each mutation-checked; the
     after-open look guards only a name replaced between the two looks, which no test can
