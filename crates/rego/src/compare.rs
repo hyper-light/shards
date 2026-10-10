@@ -3,7 +3,7 @@
 
 use std::cmp::Ordering;
 
-use crate::ast::{Body, Expr, ExprTerms, Head, Rule, Term, TermValue, With};
+use crate::ast::{Body, Expr, ExprTerms, Head, Rule, Shared, Term, TermValue, With};
 use crate::value::number_compare;
 
 /// ast.sortOrder.
@@ -42,49 +42,90 @@ fn sorted(items: &[Term]) -> Vec<Term> {
     v
 }
 
+/// Compare: a pair of members at a time (a term made of a value nests deeper than a
+/// thread has stack for a frame a level), collections that are one and the same at once.
 pub fn term_compare(a: &Term, b: &Term) -> Ordering {
-    let (oa, ob) = (sort_order(&a.value), sort_order(&b.value));
-    if oa != ob {
-        return oa.cmp(&ob);
+    enum Step {
+        Pair(Term, Term),
+        Len(usize, usize),
     }
+    // Scalars, the most compared, without the walk's stack.
     match (&a.value, &b.value) {
-        (TermValue::Null, TermValue::Null) => Ordering::Equal,
-        (TermValue::Bool(x), TermValue::Bool(y)) => x.cmp(y),
-        (TermValue::Number(x), TermValue::Number(y)) => number_compare(x.text(), y.text()),
+        (TermValue::Bool(x), TermValue::Bool(y)) => return x.cmp(y),
+        (TermValue::Number(x), TermValue::Number(y)) => return number_compare(x.text(), y.text()),
         (TermValue::String(x), TermValue::String(y)) | (TermValue::Var(x), TermValue::Var(y)) => {
-            x.as_bytes().cmp(y.as_bytes())
+            return x.as_bytes().cmp(y.as_bytes());
         }
-        (TermValue::Ref(x), TermValue::Ref(y))
-        | (TermValue::Array(x), TermValue::Array(y))
-        | (TermValue::Call(x), TermValue::Call(y)) => slice_compare(x, y),
-        (TermValue::Set(x), TermValue::Set(y)) => slice_compare(&sorted(x), &sorted(y)),
-        (TermValue::Object(x), TermValue::Object(y)) => {
-            let mut xs: Vec<&(Term, Term)> = x.iter().collect();
-            let mut ys: Vec<&(Term, Term)> = y.iter().collect();
-            xs.sort_by(|p, q| term_compare(&p.0, &q.0));
-            ys.sort_by(|p, q| term_compare(&p.0, &q.0));
-            for (p, q) in xs.iter().zip(&ys) {
-                let c = term_compare(&p.0, &q.0);
-                if c != Ordering::Equal {
-                    return c;
-                }
-                let c = term_compare(&p.1, &q.1);
-                if c != Ordering::Equal {
-                    return c;
-                }
-            }
-            xs.len().cmp(&ys.len())
-        }
-        (TermValue::ArrayCompr(x, xb), TermValue::ArrayCompr(y, yb))
-        | (TermValue::SetCompr(x, xb), TermValue::SetCompr(y, yb)) => {
-            term_compare(x, y).then_with(|| body_compare(xb, yb))
-        }
-        (TermValue::ObjectCompr(xk, xv, xb), TermValue::ObjectCompr(yk, yv, yb)) => term_compare(xk, yk)
-            .then_with(|| term_compare(xv, yv))
-            .then_with(|| body_compare(xb, yb)),
-        // Template strings: OPA compares their parts; their text orders them the same way.
-        _ => a.to_string().cmp(&b.to_string()),
+        _ => {}
     }
+    let mut todo = vec![Step::Pair(a.clone(), b.clone())];
+    while let Some(step) = todo.pop() {
+        let (a, b) = match step {
+            Step::Pair(a, b) => (a, b),
+            Step::Len(x, y) => match x.cmp(&y) {
+                Ordering::Equal => continue,
+                o => return o,
+            },
+        };
+        let (oa, ob) = (sort_order(&a.value), sort_order(&b.value));
+        if oa != ob {
+            return oa.cmp(&ob);
+        }
+        let mut pairs = |xs: Vec<Term>, ys: Vec<Term>| {
+            todo.push(Step::Len(xs.len(), ys.len()));
+            todo.extend(xs.into_iter().zip(ys).rev().map(|(p, q)| Step::Pair(p, q)));
+        };
+        let o = match (&a.value, &b.value) {
+            (TermValue::Null, TermValue::Null) => Ordering::Equal,
+            (TermValue::Bool(x), TermValue::Bool(y)) => x.cmp(y),
+            (TermValue::Number(x), TermValue::Number(y)) => number_compare(x.text(), y.text()),
+            (TermValue::String(x), TermValue::String(y)) | (TermValue::Var(x), TermValue::Var(y)) => {
+                x.as_bytes().cmp(y.as_bytes())
+            }
+            (TermValue::Ref(x), TermValue::Ref(y))
+            | (TermValue::Array(x), TermValue::Array(y))
+            | (TermValue::Call(x), TermValue::Call(y)) => {
+                if !Shared::ptr_eq(x, y) {
+                    pairs(x.to_vec(), y.to_vec());
+                }
+                continue;
+            }
+            (TermValue::Set(x), TermValue::Set(y)) => {
+                if !Shared::ptr_eq(x, y) {
+                    pairs(sorted(x), sorted(y));
+                }
+                continue;
+            }
+            (TermValue::Object(x), TermValue::Object(y)) => {
+                if !Shared::ptr_eq(x, y) {
+                    let by_key = |o: &[(Term, Term)]| {
+                        let mut kv = o.to_vec();
+                        kv.sort_by(|p, q| term_compare(&p.0, &q.0));
+                        kv.into_iter().flat_map(|(k, v)| [k, v]).collect::<Vec<Term>>()
+                    };
+                    let (xs, ys) = (by_key(x), by_key(y));
+                    // Members of the shorter object decide before the lengths do.
+                    let lens = (x.len(), y.len());
+                    todo.push(Step::Len(lens.0, lens.1));
+                    todo.extend(xs.into_iter().zip(ys).rev().map(|(p, q)| Step::Pair(p, q)));
+                }
+                continue;
+            }
+            (TermValue::ArrayCompr(x, xb), TermValue::ArrayCompr(y, yb))
+            | (TermValue::SetCompr(x, xb), TermValue::SetCompr(y, yb)) => {
+                term_compare(x, y).then_with(|| body_compare(xb, yb))
+            }
+            (TermValue::ObjectCompr(xk, xv, xb), TermValue::ObjectCompr(yk, yv, yb)) => term_compare(xk, yk)
+                .then_with(|| term_compare(xv, yv))
+                .then_with(|| body_compare(xb, yb)),
+            // Template strings: OPA compares their parts; their text orders them the same way.
+            _ => a.to_string().cmp(&b.to_string()),
+        };
+        if o != Ordering::Equal {
+            return o;
+        }
+    }
+    Ordering::Equal
 }
 
 /// Compare over optional terms: nil first.

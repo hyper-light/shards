@@ -145,8 +145,9 @@ impl Ord for Number {
     }
 }
 
-/// A ground value.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+/// A ground value. Values order by kind (null, booleans, numbers, strings, arrays,
+/// objects, sets), then collections member by member, then by length.
+#[derive(Debug, Clone)]
 pub enum Value {
     Null,
     Bool(bool),
@@ -156,6 +157,97 @@ pub enum Value {
     Object(Rc<BTreeMap<Value, Value>>),
     Set(Rc<BTreeSet<Value>>),
 }
+
+impl Value {
+    fn kind(&self) -> u8 {
+        match self {
+            Value::Null => 0,
+            Value::Bool(_) => 1,
+            Value::Number(_) => 2,
+            Value::String(_) => 3,
+            Value::Array(_) => 4,
+            Value::Object(_) => 5,
+            Value::Set(_) => 6,
+        }
+    }
+}
+
+/// Values compare a pair of members at a time, collections that are one and the same
+/// at once: a value nests deeper than a thread has stack for a frame a level.
+impl Ord for Value {
+    fn cmp(&self, other: &Value) -> Ordering {
+        enum Step<'a> {
+            Pair(&'a Value, &'a Value),
+            Len(usize, usize),
+        }
+        // Scalars, the most compared, without the walk's stack.
+        match (self, other) {
+            (Value::Bool(x), Value::Bool(y)) => return x.cmp(y),
+            (Value::Number(x), Value::Number(y)) => return x.cmp(y),
+            (Value::String(x), Value::String(y)) => return x.cmp(y),
+            _ => {}
+        }
+        let mut todo = vec![Step::Pair(self, other)];
+        while let Some(step) = todo.pop() {
+            let (a, b) = match step {
+                Step::Pair(a, b) => (a, b),
+                Step::Len(x, y) => match x.cmp(&y) {
+                    Ordering::Equal => continue,
+                    o => return o,
+                },
+            };
+            let o = match (a, b) {
+                (Value::Null, Value::Null) => Ordering::Equal,
+                (Value::Bool(x), Value::Bool(y)) => x.cmp(y),
+                (Value::Number(x), Value::Number(y)) => x.cmp(y),
+                (Value::String(x), Value::String(y)) => x.cmp(y),
+                (Value::Array(x), Value::Array(y)) => {
+                    if !Rc::ptr_eq(x, y) {
+                        todo.push(Step::Len(x.len(), y.len()));
+                        todo.extend(x.iter().zip(y.iter()).rev().map(|(p, q)| Step::Pair(p, q)));
+                    }
+                    continue;
+                }
+                (Value::Object(x), Value::Object(y)) => {
+                    if !Rc::ptr_eq(x, y) {
+                        todo.push(Step::Len(x.len(), y.len()));
+                        for ((k1, v1), (k2, v2)) in x.iter().zip(y.iter()).rev() {
+                            todo.push(Step::Pair(v1, v2));
+                            todo.push(Step::Pair(k1, k2));
+                        }
+                    }
+                    continue;
+                }
+                (Value::Set(x), Value::Set(y)) => {
+                    if !Rc::ptr_eq(x, y) {
+                        todo.push(Step::Len(x.len(), y.len()));
+                        todo.extend(x.iter().zip(y.iter()).rev().map(|(p, q)| Step::Pair(p, q)));
+                    }
+                    continue;
+                }
+                (a, b) => a.kind().cmp(&b.kind()),
+            };
+            if o != Ordering::Equal {
+                return o;
+            }
+        }
+        Ordering::Equal
+    }
+}
+
+impl PartialOrd for Value {
+    fn partial_cmp(&self, other: &Value) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl PartialEq for Value {
+    fn eq(&self, other: &Value) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+
+impl Eq for Value {}
 
 /// A value nests as deep as json.patch puts one in another, past any frame a level a
 /// thread's stack holds: its last owner drops its members one after another.
@@ -267,7 +359,7 @@ pub fn from_json(text: &str) -> Result<Value, JsonError> {
         at: 0,
     };
     p.ws();
-    let v = p.value(0)?;
+    let v = p.value()?;
     p.ws();
     if p.at != p.b.len() {
         return Err(JsonError("invalid character after top-level value".into()));
@@ -306,73 +398,118 @@ impl JsonParser<'_> {
         Err(JsonError(what.to_string()))
     }
 
-    fn value(&mut self, depth: usize) -> Result<Value, JsonError> {
-        if depth > MAX_DEPTH {
-            return self.err("exceeded max depth");
+    /// A value, its containers kept open on a stack of its own (as Go's decoder keeps its
+    /// own): the deepest document reads without a frame a level.
+    fn value(&mut self) -> Result<Value, JsonError> {
+        enum Open {
+            Array(Vec<Value>),
+            /// The members so far, and the key the next value is for.
+            Object(BTreeMap<Value, Value>, String),
         }
-        match self.peek() {
-            Some(b'n') if self.eat(b"null") => Ok(Value::Null),
-            Some(b't') if self.eat(b"true") => Ok(Value::Bool(true)),
-            Some(b'f') if self.eat(b"false") => Ok(Value::Bool(false)),
-            Some(b'"') => Ok(Value::String(self.string()?.into())),
-            Some(b'[') => {
-                self.at += 1;
-                let mut out = Vec::new();
-                self.ws();
-                if self.peek() == Some(b']') {
+        let mut open: Vec<Open> = Vec::new();
+        loop {
+            if open.len() > MAX_DEPTH {
+                return self.err("exceeded max depth");
+            }
+            let mut v = match self.peek() {
+                Some(b'n') if self.eat(b"null") => Value::Null,
+                Some(b't') if self.eat(b"true") => Value::Bool(true),
+                Some(b'f') if self.eat(b"false") => Value::Bool(false),
+                Some(b'"') => Value::String(self.string()?.into()),
+                Some(b'[') => {
                     self.at += 1;
-                    return Ok(Value::array(out));
+                    self.ws();
+                    if self.peek() == Some(b']') {
+                        self.at += 1;
+                        Value::array(Vec::new())
+                    } else {
+                        open.push(Open::Array(Vec::new()));
+                        self.ws();
+                        continue;
+                    }
                 }
-                loop {
+                Some(b'{') => {
+                    self.at += 1;
                     self.ws();
-                    out.push(self.value(depth + 1)?);
-                    self.ws();
-                    match self.peek() {
-                        Some(b',') => self.at += 1,
-                        Some(b']') => {
-                            self.at += 1;
-                            return Ok(Value::array(out));
+                    if self.peek() == Some(b'}') {
+                        self.at += 1;
+                        Value::object(BTreeMap::new())
+                    } else {
+                        let k = self.key()?;
+                        open.push(Open::Object(BTreeMap::new(), k));
+                        continue;
+                    }
+                }
+                Some(b'-' | b'0'..=b'9') => self.number()?,
+                _ => return self.err("invalid character looking for beginning of value"),
+            };
+            // The value read goes into the container open last, which may end with it,
+            // and so on out: then the next value is read.
+            loop {
+                match open.last_mut() {
+                    None => return Ok(v),
+                    Some(Open::Array(items)) => {
+                        items.push(v);
+                        self.ws();
+                        match self.peek() {
+                            Some(b',') => {
+                                self.at += 1;
+                                self.ws();
+                                break;
+                            }
+                            Some(b']') => {
+                                self.at += 1;
+                                let items = match open.pop() {
+                                    Some(Open::Array(items)) => items,
+                                    _ => Vec::new(),
+                                };
+                                v = Value::array(items);
+                            }
+                            _ => return self.err("invalid character in array"),
                         }
-                        _ => return self.err("invalid character in array"),
+                    }
+                    Some(Open::Object(members, key)) => {
+                        members.insert(Value::String(std::mem::take(key).into()), v);
+                        self.ws();
+                        match self.peek() {
+                            Some(b',') => {
+                                self.at += 1;
+                                let k = self.key()?;
+                                if let Some(Open::Object(_, key)) = open.last_mut() {
+                                    *key = k;
+                                }
+                                break;
+                            }
+                            Some(b'}') => {
+                                self.at += 1;
+                                let members = match open.pop() {
+                                    Some(Open::Object(members, _)) => members,
+                                    _ => BTreeMap::new(),
+                                };
+                                v = Value::object(members);
+                            }
+                            _ => return self.err("invalid character after object key:value pair"),
+                        }
                     }
                 }
             }
-            Some(b'{') => {
-                self.at += 1;
-                let mut out = BTreeMap::new();
-                self.ws();
-                if self.peek() == Some(b'}') {
-                    self.at += 1;
-                    return Ok(Value::object(out));
-                }
-                loop {
-                    self.ws();
-                    if self.peek() != Some(b'"') {
-                        return self.err("invalid character looking for beginning of object key string");
-                    }
-                    let k = self.string()?;
-                    self.ws();
-                    if self.peek() != Some(b':') {
-                        return self.err("invalid character after object key");
-                    }
-                    self.at += 1;
-                    self.ws();
-                    let v = self.value(depth + 1)?;
-                    out.insert(Value::String(k.into()), v);
-                    self.ws();
-                    match self.peek() {
-                        Some(b',') => self.at += 1,
-                        Some(b'}') => {
-                            self.at += 1;
-                            return Ok(Value::object(out));
-                        }
-                        _ => return self.err("invalid character after object key:value pair"),
-                    }
-                }
-            }
-            Some(b'-' | b'0'..=b'9') => self.number(),
-            _ => self.err("invalid character looking for beginning of value"),
         }
+    }
+
+    /// An object's member's key and its colon, the value next.
+    fn key(&mut self) -> Result<String, JsonError> {
+        self.ws();
+        if self.peek() != Some(b'"') {
+            return self.err("invalid character looking for beginning of object key string");
+        }
+        let k = self.string()?;
+        self.ws();
+        if self.peek() != Some(b':') {
+            return self.err("invalid character after object key");
+        }
+        self.at += 1;
+        self.ws();
+        Ok(k)
     }
 
     fn number(&mut self) -> Result<Value, JsonError> {
@@ -540,59 +677,81 @@ pub fn to_json(v: &Value) -> Result<String, ToJsonError> {
     Ok(out)
 }
 
+/// The JSON of a value, written a member at a time: a value nests deeper than a thread
+/// has stack for a frame a level.
 fn write_json(out: &mut String, v: &Value) -> Result<(), ToJsonError> {
-    match v {
-        Value::Null => out.push_str("null"),
-        Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
-        Value::Number(n) => {
-            if !is_json_number(n.text()) {
-                return Err(ToJsonError(format!(
-                    "json: invalid number literal {:?}",
-                    n.text()
-                )));
+    enum P<'a> {
+        Text(&'static str),
+        Key(&'a str),
+        Val(&'a Value),
+    }
+    let mut todo = vec![P::Val(v)];
+    while let Some(p) = todo.pop() {
+        let v = match p {
+            P::Text(t) => {
+                out.push_str(t);
+                continue;
             }
-            out.push_str(n.text());
-        }
-        Value::String(s) => write_json_string(out, s),
-        Value::Array(a) => write_seq(out, a.iter())?,
-        Value::Set(s) => write_seq(out, s.iter())?,
-        Value::Object(m) => {
-            // Go sorts a map[string]any's keys by their bytes.
-            let mut entries: Vec<(&str, &Value)> = Vec::with_capacity(m.len());
-            for (k, v) in m.iter() {
-                let Value::String(k) = k else {
-                    return Err(ToJsonError(format!(
-                        "invalid ast.Object key type: {}",
-                        k.type_name()
-                    )));
-                };
-                entries.push((k, v));
-            }
-            entries.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
-            out.push('{');
-            for (i, (k, v)) in entries.into_iter().enumerate() {
-                if i > 0 {
-                    out.push(',');
-                }
+            P::Key(k) => {
                 write_json_string(out, k);
                 out.push(':');
-                write_json(out, v)?;
+                continue;
             }
-            out.push('}');
+            P::Val(v) => v,
+        };
+        match v {
+            Value::Null => out.push_str("null"),
+            Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
+            Value::Number(n) => {
+                if !is_json_number(n.text()) {
+                    return Err(ToJsonError(format!(
+                        "json: invalid number literal {:?}",
+                        n.text()
+                    )));
+                }
+                out.push_str(n.text());
+            }
+            Value::String(s) => write_json_string(out, s),
+            Value::Array(_) | Value::Set(_) => {
+                let items: Vec<&Value> = match v {
+                    Value::Array(a) => a.iter().collect(),
+                    Value::Set(s) => s.iter().collect(),
+                    _ => Vec::new(),
+                };
+                out.push('[');
+                todo.push(P::Text("]"));
+                for (i, x) in items.into_iter().enumerate().rev() {
+                    todo.push(P::Val(x));
+                    if i > 0 {
+                        todo.push(P::Text(","));
+                    }
+                }
+            }
+            Value::Object(m) => {
+                // Go sorts a map[string]any's keys by their bytes.
+                let mut entries: Vec<(&str, &Value)> = Vec::with_capacity(m.len());
+                for (k, v) in m.iter() {
+                    let Value::String(k) = k else {
+                        return Err(ToJsonError(format!(
+                            "invalid ast.Object key type: {}",
+                            k.type_name()
+                        )));
+                    };
+                    entries.push((k, v));
+                }
+                entries.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
+                out.push('{');
+                todo.push(P::Text("}"));
+                for (i, (k, x)) in entries.into_iter().enumerate().rev() {
+                    todo.push(P::Val(x));
+                    todo.push(P::Key(k));
+                    if i > 0 {
+                        todo.push(P::Text(","));
+                    }
+                }
+            }
         }
     }
-    Ok(())
-}
-
-fn write_seq<'a>(out: &mut String, items: impl Iterator<Item = &'a Value>) -> Result<(), ToJsonError> {
-    out.push('[');
-    for (i, v) in items.enumerate() {
-        if i > 0 {
-            out.push(',');
-        }
-        write_json(out, v)?;
-    }
-    out.push(']');
     Ok(())
 }
 
