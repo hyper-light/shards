@@ -180,12 +180,17 @@ fn serving<T: Send>(
         std::thread::Builder::new()
             .spawn_scoped(scope, move || answering(&questions, done, checked, allow))
             .unwrap();
-        let out = client(proxy.socket(), proxy.ca());
+        // A client that fails still ends the session, so its test fails rather than waits
+        // on the session's threads for ever.
+        let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            client(proxy.socket(), proxy.ca())
+        }));
         done.store(true, Ordering::SeqCst);
         drop(stop);
         session.end();
         out
     });
+    let out = out.unwrap_or_else(|p| std::panic::resume_unwind(p));
     (out, checked.into_inner().unwrap(), session.capture())
 }
 
@@ -672,7 +677,11 @@ fn heads_are_waited_for_so_long_alone() {
             k.write_all(request).unwrap();
             let first = read_until(&mut k, b"Forbidden\n");
             std::thread::sleep(Duration::from_millis(700));
-            k.write_all(request).unwrap();
+            // The next head in two writes: its time is its own, from its first byte.
+            let (start, rest) = request.split_at(10);
+            k.write_all(start).unwrap();
+            std::thread::sleep(Duration::from_millis(100));
+            k.write_all(rest).unwrap();
             let second = read_until(&mut k, b"Forbidden\n");
             (cut, waited, first, second)
         },
@@ -727,6 +736,134 @@ fn a_step_holds_so_many_connections_at_once() {
     );
 }
 
+/// A request whose question no one answers is refused: none asked where the build's thread
+/// has stopped answering, nor one it lets go unanswered (the proxy's own 403, never a
+/// request upstream).
+#[test]
+fn requests_no_one_answers_are_refused() {
+    let proxy = Proxy::new(scratch("unanswered"), &shards_image::store::Limits::none()).unwrap();
+    let raw = b"GET http://127.0.0.1:9/ HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n";
+    for dropped_before in [true, false] {
+        let (session, questions) =
+            Session::begin(&proxy, shards_registry::proxy::Proxies::default()).unwrap();
+        let (stop, stopped) = UnixStream::pair().unwrap();
+        let got = std::thread::scope(|scope| {
+            let (session, stopped) = (&session, &stopped);
+            std::thread::Builder::new()
+                .spawn_scoped(scope, move || session.serve(scope, stopped))
+                .unwrap();
+            let questions = if dropped_before {
+                drop(questions);
+                None
+            } else {
+                Some(questions)
+            };
+            // The question comes, and is let go unanswered.
+            let dropper = std::thread::Builder::new()
+                .spawn_scoped(scope, move || {
+                    if let Some(q) = questions {
+                        use std::os::fd::AsRawFd as _;
+                        let mut p = libc::pollfd {
+                            fd: q.woken.as_raw_fd(),
+                            events: libc::POLLIN,
+                            revents: 0,
+                        };
+                        // SAFETY: poll(2) on one descriptor of ours.
+                        unsafe { libc::poll(&mut p, 1, 10_000) };
+                        drop(q);
+                    }
+                })
+                .unwrap();
+            let got = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                exchange(proxy.socket(), raw, None)
+            }));
+            let _ = dropper.join();
+            drop(stop);
+            session.end();
+            got.unwrap_or_else(|p| std::panic::resume_unwind(p))
+        });
+        assert!(
+            String::from_utf8_lossy(&got).starts_with("HTTP/1.1 403 Forbidden\r\n"),
+            "{dropped_before}: {}",
+            String::from_utf8_lossy(&got)
+        );
+    }
+}
+
+/// An HTTP/1.0 client kept alive is let go after a body of no length, which only the
+/// connection's end can end, as Go's server lets it go: its client sees the end at once.
+#[test]
+fn an_http10_body_of_no_length_ends_its_connection() {
+    let (port, _) = upstream(None, answer);
+    let (ended, _, _) = with_proxy("http10-unframed", None, false, |socket, _| {
+        let mut c = UnixStream::connect(socket).unwrap();
+        c.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+        c.write_all(
+            format!("GET http://127.0.0.1:{port}/big HTTP/1.0\r\nConnection: keep-alive\r\n\r\n").as_bytes(),
+        )
+        .unwrap();
+        let mut got = Vec::new();
+        let ended = c.read_to_end(&mut got).is_ok();
+        (ended, got)
+    });
+    let (ended, got) = ended;
+    let got = String::from_utf8_lossy(&got);
+    assert!(ended, "the connection was kept: {got}");
+    assert!(
+        got.starts_with("HTTP/1.0 200 OK\r\n") && got.ends_with("#close"),
+        "{got}"
+    );
+}
+
+/// A response's hop-by-hop fields go, each of RFC 9110 §7.6.1's and each its `Connection`
+/// names, whatever their case; the rest stay, sorted (D110's recorded difference).
+#[test]
+fn a_responses_hop_fields_go() {
+    let fields: Vec<(String, String)> = [
+        ("x-kept", "2"),
+        ("keep-alive", "timeout=5"),
+        ("Proxy-Authenticate", "Basic"),
+        ("Upgrade", "h2c"),
+        ("TE", "trailers"),
+        ("Trailer", "X-T"),
+        ("Proxy-Connection", "keep-alive"),
+        ("Transfer-Encoding", "chunked"),
+        ("connection", "close, x-Named"),
+        ("X-Named", "1"),
+        ("A-Kept", "1"),
+    ]
+    .iter()
+    .map(|(k, v)| (k.to_string(), v.to_string()))
+    .collect();
+    assert_eq!(
+        passed_on(&fields, |_| true),
+        [
+            ("A-Kept".to_string(), "1".to_string()),
+            ("X-Kept".to_string(), "2".to_string())
+        ]
+    );
+}
+
+/// A request whose body cannot be read is a 502, recorded as an upstream error, as Go's
+/// transport fails to send such a body on and BuildKit's handler answers it (the text is
+/// the client's own, D110).
+#[test]
+fn a_body_that_cannot_be_read_is_a_502() {
+    let (got, _, capture) = with_proxy("bad-body", None, false, |socket, _| {
+        exchange_closing(
+            socket,
+            b"POST http://127.0.0.1:9/f HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\nzz\r\nhello\r\n0\r\n\r\n",
+        )
+    });
+    let got = String::from_utf8_lossy(&got);
+    assert!(got.starts_with("HTTP/1.1 502 Bad Gateway\r\n"), "{got}");
+    assert_eq!(capture.requests.first().map(|r| r.status), Some(502));
+    assert_eq!(
+        capture.incomplete.first().map(|i| i.reason),
+        Some("upstream_error")
+    );
+}
+
 /// A request's body is held no further than the room the build's host keeps
 /// (SHARDS_KEEP_FREE): past it, the request is refused (413) and its file is gone, so a
 /// step never fills the host's disk through the proxy.
@@ -758,7 +895,9 @@ fn request_bodies_stop_short_of_the_room_kept() {
             )
             .into_bytes();
             raw.resize(raw.len() + (65 << 20), b'u');
-            exchange_closing(socket, &raw)
+            // The proxy says nothing until it has held 64 MiB, which a busy host takes its
+            // time over.
+            exchange_closing_within(socket, &raw, Duration::from_secs(600))
         },
     );
     assert_eq!(checked, ["POST http://127.0.0.1:9/upload"]);
@@ -862,8 +1001,13 @@ fn go_dated(b: &[u8]) -> String {
 
 /// Writes `raw` on a new connection and ends its writing, reading until the proxy closes.
 fn exchange_closing(socket: &Path, raw: &[u8]) -> Vec<u8> {
+    exchange_closing_within(socket, raw, Duration::from_secs(20))
+}
+
+/// [`exchange_closing`], each read waiting `wait` at most.
+fn exchange_closing_within(socket: &Path, raw: &[u8], wait: Duration) -> Vec<u8> {
     let c = UnixStream::connect(socket).unwrap();
-    c.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+    c.set_read_timeout(Some(wait)).unwrap();
     let w = c.try_clone().unwrap();
     std::thread::scope(|s| {
         s.spawn(move || {
@@ -933,15 +1077,15 @@ fn requests_are_read_as_buildkits_proxy_reads_them() {
 /// one refused) and answered, as BuildKit's proxy does, byte for byte.
 /// Sends `connect`, reads the proxy's answer to it, and where it established the tunnel,
 /// writes `raw` in TLS to `server_name` (trusting `ca`), ends its writing (close_notify),
-/// and reads until the proxy closes: the answer, whether the handshake was made, and what
-/// came in the tunnel.
+/// and reads until the proxy closes: the answer, whether the handshake was made, what came
+/// in the tunnel, and whether the tunnel ended with its close_notify.
 fn tunnel_exchange(
     socket: &Path,
     ca: &[u8],
     connect: &[u8],
     server_name: &str,
     raw: &[u8],
-) -> (Vec<u8>, bool, Vec<u8>) {
+) -> (Vec<u8>, bool, Vec<u8>, bool) {
     let mut roots = rustls::RootCertStore::empty();
     for cert in rustls::pki_types::pem::PemObject::pem_slice_iter(ca) {
         roots.add(cert.unwrap()).unwrap();
@@ -963,19 +1107,20 @@ fn tunnel_exchange(
     }
     if !established.starts_with(b"HTTP/1.1 200 ") {
         let _ = c.read_to_end(&mut established);
-        return (established, false, Vec::new());
+        return (established, false, Vec::new(), false);
     }
     let name = rustls::pki_types::ServerName::try_from(server_name.to_string()).unwrap();
     let mut tls = rustls::StreamOwned::new(rustls::ClientConnection::new(config, name).unwrap(), c);
     let mut response = Vec::new();
     let handshake = tls.conn.complete_io(&mut tls.sock).is_ok();
+    let mut ended = false;
     if handshake {
         let _ = tls.write_all(raw);
         tls.conn.send_close_notify();
         let _ = tls.flush();
-        let _ = tls.read_to_end(&mut response);
+        ended = tls.read_to_end(&mut response).is_ok();
     }
-    (established, handshake, response)
+    (established, handshake, response, ended)
 }
 
 #[test]
@@ -984,7 +1129,7 @@ fn tunnels_are_read_as_buildkits_proxy_reads_them() {
     let mut failed = Vec::new();
     for (i, case) in oracle["tunnels"].as_array().unwrap().iter().enumerate() {
         let name = case["name"].as_str().unwrap();
-        let ((established, handshake, response), checked, _) = with_proxy_deciding(
+        let ((established, handshake, response, ended), checked, _) = with_proxy_deciding(
             &format!("oracle-tunnel-{i}"),
             None,
             true,
@@ -1007,13 +1152,16 @@ fn tunnels_are_read_as_buildkits_proxy_reads_them() {
             .map(|u| u.as_str().unwrap().to_string())
             .collect();
         let want_response = go_dated(&oracle_bytes(&case["response"]));
+        // Every tunnel made ends with its TLS's close_notify, as Go's tls.Conn.Close ends
+        // BuildKit's.
         if go_dated(&established) != case["established"].as_str().unwrap()
             || handshake != case["handshake"].as_bool().unwrap()
+            || ended != handshake
             || asked != want
             || go_dated(&response) != want_response
         {
             failed.push(format!(
-                "{name}:\n  established {:?} handshake {handshake}\n  asked {asked:?}\n  want  {want:?}\n  got  {:?}\n  want {want_response:?}",
+                "{name}:\n  established {:?} handshake {handshake} ended {ended}\n  asked {asked:?}\n  want  {want:?}\n  got  {:?}\n  want {want_response:?}",
                 go_dated(&established),
                 go_dated(&response)
             ));
@@ -1141,9 +1289,9 @@ fn requests_are_passed_on_as_buildkits_proxy_passes_them() {
                         exchange_closing(socket, raw.as_bytes())
                     } else {
                         let connect = format!("CONNECT {secure} HTTP/1.1\r\nHost: {secure}\r\n\r\n");
-                        let (_, handshake, response) =
+                        let (_, handshake, response, ended) =
                             tunnel_exchange(socket, ca, connect.as_bytes(), "127.0.0.1", raw.as_bytes());
-                        assert!(handshake, "{name}");
+                        assert!(handshake && ended, "{name}: handshake {handshake}, ended {ended}");
                         response
                     }
                 },
@@ -1155,11 +1303,16 @@ fn requests_are_passed_on_as_buildkits_proxy_passes_them() {
                 .iter()
                 .map(|u| u.as_str().unwrap().to_string())
                 .collect();
-            let response = one_chunk(&n(&go_dated(&got)));
-            let want_response = match passed_differently(kind, name) {
+            let mut response = one_chunk(&n(&go_dated(&got)));
+            let mut want_response = match passed_differently(kind, name) {
                 Some(r) => r.to_string(),
                 None => one_chunk(&go_dated(&oracle_bytes(&case["response"]))),
             };
+            // A 502's text is each client's own error (D110): its status line alone is held.
+            if want_response.starts_with("HTTP/1.1 502 ") {
+                let line = |r: &str| r.split("\r\n").next().unwrap_or_default().to_string();
+                (response, want_response) = (line(&response), line(&want_response));
+            }
             let recorded = capture_as_oracle(&capture, &n);
             if asked != want || response != want_response || recorded != case["capture"] {
                 failed.push(format!(

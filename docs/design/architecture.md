@@ -3775,9 +3775,13 @@ completeness; `--network=none` and `host` steps.
   head, its length or chunked, a body of no type sniffed as DetectContentType says).
   CONNECT is answered `200 Connection Established`, then TLS for the tunnel's host
   (HTTP/1.1 by ALPN) with a certificate the build's CA signs, 1024 kept, each made again
-  an hour before its day ends. Upstream, requests trust what the host trusts (never
-  weakened: an untrusted server is a 502) and go through the build's own `HTTP_PROXY` and
-  `HTTPS_PROXY`, each checked as BuildKit's parseProxyEnvironmentValue checks it.
+  an hour before its day ends; however a tunnel ends, its TLS ends with a close_notify, as
+  Go's `tls.Conn.Close` ends BuildKit's. Upstream, requests trust what the host trusts
+  (never weakened: an untrusted server is a 502) and go through the build's own
+  `HTTP_PROXY` and `HTTPS_PROXY`, each checked as BuildKit's parseProxyEnvironmentValue
+  checks it; a request whose body cannot be read is a 502 recorded as an upstream error, as
+  Go's transport fails to send it on. A question the build's thread can no longer answer
+  is a refusal.
 - **What the requests came to** is recorded as BuildKit's ProxyCapture records it: the
   step's log lines; each GET answered whole with a 2xx a material by its body's digest (a
   redirect's source by its target's); each request that is not one, and why
@@ -3798,7 +3802,7 @@ completeness; `--network=none` and `host` steps.
   refused (the URLs asked, every byte answered), 19 refused tunnels, 45 plain and 20
   tunnelled requests passed on to upstreams answering a table of raw responses (the
   client's bytes, the URLs asked, the capture), 30 URLs and 15 redirects, 80 sniffed
-  bodies, 31 upstream proxy values, and 27 trust bundles through InjectProxyCA and its
+  bodies, 31 upstream proxy values, and 28 trust bundles through InjectProxyCA and its
   cleanup. It found, and shards now does as BuildKit: `OPTIONS *`; a HEAD's 403 of no
   body; the 512 bytes before a head (shards waited for 2048, Go's buffer, which the
   handler's ReadFrom never fills); sniffing; a tunnelled 204 or 304 keeping its tunnel.
@@ -3843,13 +3847,24 @@ completeness; `--network=none` and `host` steps.
   twice, as every check does (PM M127); compiling once a build is open.
 - Tested: in-process against plain and HTTPS servers (refusals, the reach, upstream TLS,
   each reason a request is no material, a bare TLS end, the disk's room, a head's time and
-  the connection bound), the oracle's records, shards-init's on Linux (in `shards-dind`),
-  and on microVMs by `steps_under_the_proxy_cap_reach_the_network_through_it_alone`:
-  `policy enabled network proxy`, the variables, the CA in and out, 200s, both 403s, a
-  redirect, a POST and a part, an untrusted HTTPS host's 502, nothing past the proxy, the
-  step's log lines byte for byte, the provenance, the step from the cache with its
-  requests asked again, run again under a policy refusing one, and run with the network
-  open once no cap is asked for.
+  the connection bound, an HTTP/1.0 body of no length, a body that cannot be read,
+  questions no one answers, a response's hop fields), the oracle's records, shards-init's
+  on Linux (in `shards-dind`), and on microVMs by
+  `steps_under_the_proxy_cap_reach_the_network_through_it_alone`: `policy enabled network
+  proxy`, the variables, the CA in and out, 200s, both 403s, a redirect, a POST and a part,
+  an untrusted HTTPS host's 502, nothing past the proxy, the step's log lines byte for
+  byte, the provenance, the step from the cache with its requests asked again, run again
+  under a policy refusing one, and run with the network open once no cap is asked for.
+  Mutation-checked, 68 guards, each mutant killed: the network process's one flow (4); the
+  CA's PEM reading, markers, bound, regular file, mode and cleanup (11); the proxy's
+  questions, URLs, Go's head checks and bounds, keep-alive and discards, the reach,
+  OPTIONS, HEAD, sniffing, hop fields, capture, the disk's room, a head's time, the
+  connection bound, close_notify, the variables and upstream proxies (43); the vertex,
+  completeness and cache key (3); and on microVMs the network policy, the CA and variables
+  given, the CA taken out, cached requests asked again, open builds keyed apart, and the
+  cap said (7). The first round left three alive (a PEM type line, an HTTP/1.0 body of no
+  length closing its connection, each head's time its own), killed by the tests added
+  for them.
 
 ### D109. An Agentfile's volumes at run, and every grant checked at build and at run
 

@@ -217,10 +217,10 @@ impl Drop for Spool {
 }
 
 /// Why a request's body was not held: the disk keeps no room for more of it, or its
-/// reading or writing failed.
+/// reading or writing failed, and how.
 enum Spooled {
     NoRoom,
-    Failed,
+    Failed(String),
 }
 
 /// A new file of the proxy's own for a request's body (mode 0600, a name no other has).
@@ -1044,7 +1044,14 @@ impl<'p> Session<'p> {
                 );
                 return false;
             }
-            Err(Spooled::Failed) => return false,
+            // As Go's transport fails to send a body it cannot read: a 502, and the request
+            // recorded as an upstream error.
+            Err(Spooled::Failed(e)) => {
+                self.record_request(&head.method, &shown, 502, "");
+                self.record_incomplete(&head.method, &shown, "upstream_error");
+                write_error(&mut out, head, 502, &e, true);
+                return false;
+            }
         };
         let ranged = head.get("Range").is_some_and(|r| !r.is_empty());
         let mut response = match self.upstream(head, &url, &body) {
@@ -1097,13 +1104,10 @@ impl<'p> Session<'p> {
             }
         }
         let mut reader = BufReader::with_capacity(4096, tls);
-        loop {
-            let Ok(head) = head::read(&mut reader, false, false) else {
-                return;
-            };
+        while let Ok(head) = head::read(&mut reader, false, false) {
             let url = match request_url(&head, Some(&authority)) {
                 Ok(u) => u,
-                Err(_) => return,
+                Err(_) => break,
             };
             let shown = String::from_utf8_lossy(&url.string()).into_owned();
             if !self.ask(&head.method, &shown) {
@@ -1111,7 +1115,7 @@ impl<'p> Session<'p> {
                     b"HTTP/1.1 403 Forbidden\r\nContent-Length: 10\r\nConnection: close\r\n\r\nForbidden\n",
                 );
                 let _ = reader.get_mut().flush();
-                return;
+                break;
             }
             let framing = head.framing().unwrap_or(Framing::Length(0));
             let body = match self.spool(&mut reader, framing) {
@@ -1124,9 +1128,19 @@ impl<'p> Session<'p> {
                         text.len()
                     );
                     let _ = reader.get_mut().flush();
-                    return;
+                    break;
                 }
-                Err(Spooled::Failed) => return,
+                Err(Spooled::Failed(e)) => {
+                    self.record_request(&head.method, &shown, 502, "");
+                    self.record_incomplete(&head.method, &shown, "upstream_error");
+                    let _ = write!(
+                        reader.get_mut(),
+                        "HTTP/1.1 502 Bad Gateway\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{e}\n",
+                        e.len() + 1
+                    );
+                    let _ = reader.get_mut().flush();
+                    break;
+                }
             };
             let ranged = head.get("Range").is_some_and(|r| !r.is_empty());
             let mut response = match self.upstream(&head, &url, &body) {
@@ -1140,7 +1154,7 @@ impl<'p> Session<'p> {
                         e.len() + 1
                     );
                     let _ = reader.get_mut().flush();
-                    return;
+                    break;
                 }
             };
             let location = response.header("Location").map(str::to_string);
@@ -1153,11 +1167,13 @@ impl<'p> Session<'p> {
             let (keep, whole, digest) = write_through_tunnel(reader.get_mut(), &head, &mut response);
             self.record_response(&head.method, &shown, ranged, response.status, whole, digest);
             if !keep {
-                reader.get_mut().conn.send_close_notify();
-                let _ = reader.get_mut().flush();
-                return;
+                break;
             }
         }
+        // However the tunnel ends, its TLS ends with a close_notify, as Go's tls.Conn.Close
+        // ends BuildKit's.
+        reader.get_mut().conn.send_close_notify();
+        let _ = reader.get_mut().flush();
     }
 
     /// Reads a request's body whole, in memory or, past [`IN_MEMORY`], a file of the
@@ -1172,7 +1188,7 @@ impl<'p> Session<'p> {
                 Ok(0) => break,
                 Ok(n) => n,
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-                Err(_) => return Err(Spooled::Failed),
+                Err(e) => return Err(Spooled::Failed(format!("reading the request's body: {e}"))),
             };
             let chunk = buf.get(..n).unwrap_or_default();
             if let Spool::Memory(memory) = &mut spool {
@@ -1181,15 +1197,17 @@ impl<'p> Session<'p> {
                     continue;
                 }
                 self.proxy.room.wrote(memory.len()).map_err(|_| Spooled::NoRoom)?;
-                let (mut file, path) = spool_file(&self.proxy.dir).map_err(|_| Spooled::Failed)?;
+                let (mut file, path) =
+                    spool_file(&self.proxy.dir).map_err(|e| Spooled::Failed(e.to_string()))?;
                 let held = file.write_all(memory);
                 let size = memory.len() as u64;
                 spool = Spool::File { file, path, size };
-                held.map_err(|_| Spooled::Failed)?;
+                held.map_err(|e| Spooled::Failed(e.to_string()))?;
             }
             if let Spool::File { file, size, .. } = &mut spool {
                 self.proxy.room.wrote(n).map_err(|_| Spooled::NoRoom)?;
-                file.write_all(chunk).map_err(|_| Spooled::Failed)?;
+                file.write_all(chunk)
+                    .map_err(|e| Spooled::Failed(e.to_string()))?;
                 *size += n as u64;
             }
         }

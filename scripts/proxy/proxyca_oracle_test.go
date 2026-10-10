@@ -85,6 +85,7 @@ func TestShardsProxyCA(t *testing.T) {
 		{"a key block first", "-----BEGIN PRIVATE KEY-----\nAAEC\n-----END PRIVATE KEY-----\n" + other, ca, nil},
 		{"an unterminated block", other + "-----BEGIN CERTIFICATE-----\nAAEC\n", ca, nil},
 		{"block headers", "-----BEGIN CERTIFICATE-----\nProc-Type: 4,ENCRYPTED\nDEK-Info: x\n\n" + ca[28:], ca, nil},
+		{"the CA under a type line cut short", "-----BEGIN CERTIFICATE\n" + ca[28:], ca, nil},
 		{"text not UTF-8", "\xff\xfe junk\n" + other, ca, nil},
 		{"CA with leading text", other, "leading\n" + ca, nil},
 		{"CA without its final newline", other, ca[:len(ca)-1], nil},

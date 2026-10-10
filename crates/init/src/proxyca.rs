@@ -338,6 +338,13 @@ mod tests {
         // A block cut short in its headers ends the search.
         assert!(decode(b"-----BEGIN A-----\nK: v\n").is_none());
         assert!(decode(b"no block").is_none());
+        // A type line its dashes do not end begins no block; the search goes on past it.
+        assert!(decode(b"-----BEGIN A\nAAEC\n-----END A-----\n").is_none());
+        assert_eq!(
+            decode(b"-----BEGIN A\nAAEC\n-----END A-----\n-----BEGIN B-----\nAAEC\n-----END B-----\n")
+                .map(|(b, _)| b.kind),
+            Some(&b"B"[..])
+        );
     }
 
     #[test]
