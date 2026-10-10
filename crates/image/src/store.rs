@@ -250,6 +250,10 @@ struct Tag {
     /// `ps --filter ancestor` follows to an image's children.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     parent: Option<String>,
+    /// OCI 1.1 referrers of what it names, kept with it (its signatures and SBOMs, D116):
+    /// each a manifest whose subject is what the reference resolved to.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    referrers: Vec<Descriptor>,
 }
 
 /// An image as the store's records name it, before anything of it is read: what they
@@ -1254,7 +1258,48 @@ impl Store {
             source: origin.source.map(String::from),
             target: target.cloned(),
             parent: origin.parent.map(Digest::to_string),
+            referrers: Vec::new(),
         })
+    }
+
+    /// Keeps `referrer`, a manifest whose subject is what `reference` resolved to (an OCI
+    /// 1.1 referrer: a signature, an SBOM), with it, as long as its record names the same:
+    /// its blobs are held by it, made durable first, and pushed with it.
+    pub fn keep_referrer(&self, reference: &str, referrer: &Descriptor) -> Result<(), Error> {
+        let _lease = self.lease()?;
+        let Some(mut tag) = self.tag_record(reference)? else {
+            return bad(format!("{reference}: no such reference"));
+        };
+        if tag.referrers.iter().any(|r| r.digest == referrer.digest) {
+            return Ok(());
+        }
+        let digest = referrer.digest()?;
+        sync_dir(&self.root.join("blobs").join(digest.algorithm().name()))?;
+        tag.referrers.push(referrer.clone());
+        self.write_record(&tag)
+    }
+
+    /// The referrers kept with `reference`.
+    pub fn referrers_of(&self, reference: &str) -> Result<Vec<Descriptor>, Error> {
+        Ok(self
+            .tag_record(reference)?
+            .map(|t| t.referrers)
+            .unwrap_or_default())
+    }
+
+    /// Lets go of the referrer `digest` kept with `reference`; whether it was kept.
+    pub fn drop_referrer(&self, reference: &str, digest: &str) -> Result<bool, Error> {
+        let _lease = self.lease()?;
+        let Some(mut tag) = self.tag_record(reference)? else {
+            return Ok(false);
+        };
+        let before = tag.referrers.len();
+        tag.referrers.retain(|r| r.digest != digest);
+        if tag.referrers.len() == before {
+            return Ok(false);
+        }
+        self.write_record(&tag)?;
+        Ok(true)
     }
 
     /// Writes `tag`, in place of what its reference named, as dockerd's
@@ -1884,6 +1929,20 @@ impl Store {
                                     blobs.insert(self.blob_path(&d));
                                 }
                             }
+                        }
+                    }
+                }
+            }
+            // Its referrers, each a manifest, its config and its layers.
+            for r in &tag.referrers {
+                let Ok(d) = r.digest() else { continue };
+                blobs.insert(self.blob_path(&d));
+                if let Ok(Held::Whole(bytes)) = self.held(r, oci::MAX_MANIFEST)
+                    && let Ok(oci::Document::Manifest(m)) = oci::parse_document(&bytes, &r.media_type)
+                {
+                    for part in std::iter::once(&m.config).chain(&m.layers) {
+                        if let Ok(d) = part.digest() {
+                            blobs.insert(self.blob_path(&d));
                         }
                     }
                 }
@@ -3713,6 +3772,57 @@ mod tests {
                 ..Member::default()
             })
             .finish()
+    }
+
+    /// A referrer kept with a reference (a signature, an SBOM: D116) is kept with it by a
+    /// collection, its manifest, config and layers; let go of, or once the name is given
+    /// another manifest, which it does not refer to, it is collected.
+    #[test]
+    fn referrers_are_kept_with_what_they_refer_to() {
+        let root = temp("referrers");
+        let store = Store::open(&root).unwrap();
+        let (a, b) = (tar_of(b"a", b"a"), tar_of(b"b", b"b"));
+        tagged(&store, "one:v1", &[&a]);
+        let put = |bytes: &[u8]| {
+            let d = sha256(bytes);
+            store.ingest(&d, bytes.len() as u64, &mut &bytes[..]).unwrap();
+            d
+        };
+        let config = put(b"{\"referrer\":true}");
+        let layer = put(b"a bundle");
+        let manifest = format!(
+            r#"{{"schemaVersion":2,"mediaType":"{}","config":{{"mediaType":"application/x.config","digest":"{config}","size":17}},"layers":[{{"mediaType":"application/x.bundle","digest":"{layer}","size":8}}]}}"#,
+            oci::media::OCI_MANIFEST
+        );
+        let m = put(manifest.as_bytes());
+        let desc = Descriptor {
+            media_type: oci::media::OCI_MANIFEST.into(),
+            digest: m.to_string(),
+            size: i64::try_from(manifest.len()).unwrap(),
+            platform: None,
+            annotations: Default::default(),
+        };
+        store.keep_referrer("one:v1", &desc).unwrap();
+        store.keep_referrer("one:v1", &desc).unwrap();
+        assert_eq!(store.referrers_of("one:v1").unwrap(), vec![desc.clone()]);
+        assert!(store.keep_referrer("none:v1", &desc).is_err());
+        store.collect().unwrap();
+        for d in [&config, &layer, &m] {
+            assert!(store.has(d), "{d}");
+        }
+        assert!(store.drop_referrer("one:v1", &desc.digest).unwrap());
+        assert!(!store.drop_referrer("one:v1", &desc.digest).unwrap());
+        store.collect().unwrap();
+        for d in [&config, &layer, &m] {
+            assert!(!store.has(d), "{d}");
+        }
+        // Kept again, then the name moved to another image: its record names that one.
+        for bytes in [&b"{\"referrer\":true}"[..], b"a bundle", manifest.as_bytes()] {
+            put(bytes);
+        }
+        store.keep_referrer("one:v1", &desc).unwrap();
+        tagged(&store, "one:v1", &[&b]);
+        assert!(store.referrers_of("one:v1").unwrap().is_empty());
     }
 
     /// A collection keeps what the references need, their manifests, configs, layers and
