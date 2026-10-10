@@ -4268,7 +4268,14 @@ impl<D: Disk> Daemon<D> {
         // What it asks to reach comes first: it opens nothing until it has it.
         let granted = match &grants {
             #[cfg(target_os = "macos")]
-            Some(link) => grant(link, pid),
+            Some(link) => grant(
+                link,
+                pid,
+                match &dest {
+                    For::Pool(dir) => Some(dir.as_path()),
+                    For::Run(_) => None,
+                },
+            ),
             _ => Ok(()),
         };
         drop(grants);
@@ -4526,7 +4533,7 @@ const GRANT_STALL: Duration = Duration::from_secs(10);
 /// home, beside daemon.log, as it goes on being waited for; a wait that then fails says
 /// where.
 #[cfg(target_os = "macos")]
-fn grant(link: &UnixStream, pid: u32) -> Result<(), String> {
+fn grant(link: &UnixStream, pid: u32, template: Option<&Path>) -> Result<(), String> {
     use std::os::fd::AsRawFd as _;
     let mut first = libc::pollfd {
         fd: link.as_raw_fd(),
@@ -4561,7 +4568,7 @@ fn grant(link: &UnixStream, pid: u32) -> Result<(), String> {
     });
     link.set_read_timeout(Some(READY_TIMEOUT))
         .map_err(|e| format!("VM {pid}: {e}"))?;
-    crate::grant_answer::serve(link).map_err(|e| match &sampled {
+    crate::grant_answer::serve(link, template).map_err(|e| match &sampled {
         Some(file) => format!("VM {pid}: {e} (its stacks at {GRANT_STALL:?}: {file} in the home)"),
         None => format!("VM {pid}: {e}"),
     })

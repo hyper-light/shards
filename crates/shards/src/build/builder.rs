@@ -358,7 +358,7 @@ impl Builder {
             std::thread::Builder::new()
                 .name("builder grants".into())
                 .spawn(move || {
-                    let _ = crate::grant_answer::serve(&ours);
+                    let _ = crate::grant_answer::serve(&ours, None);
                 })
                 .map_err(|e| format!("answering the builder: {e}"))?;
             #[cfg(not(target_os = "macos"))]
