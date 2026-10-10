@@ -4372,3 +4372,44 @@ revision before comparing a changed API/implementation.
   The scan is 40% shorter and a whole reading 28% (14.3 µs to 10.4 µs at the median of
   three). The fields' part (about 4 µs) copies each string again into a `String`, as the
   reading walks the document by reference; one that took the document apart would not.
+
+### M129. What virtio-fs's hostile-request fixes cost (audit V01-V04)
+
+- **Question.** The share process now looks at a file before and after opening it, and
+  restores the guest's status flags (V02); the VM's device bounds a request before
+  allocating it (V03) and lets go of guest memory while the share answers (V04). What do
+  an OPEN and a request's round trip cost now, and how long does another thread wait for
+  guest memory while the share is slow? And do the primitives V01 rests on hold on Linux?
+- **Method.** `docs/research/measurements/virtio-fs-audit/run.py`, which builds its
+  harness against two revisions' `crates/vmm` (here: revision 8c71704's virtio-fs
+  sources, and the fixed ones) and alternates fresh processes, OLD NEW then NEW OLD,
+  20 per arm per case, after a warm-up process each:
+  `open`, a share's OPEN then RELEASE of one file (`Server::handle`, 2000 samples a
+  process after 200); `serve`, a GETATTR through the device from the driver's notify to
+  its used entry, the share answering at once on a thread (2000 after 200); `held`, the
+  share answering after 5 ms, the time another thread waits for `GuestMemory::access`
+  once the share has the request (20 a process). Apple M5 Max, macOS 26.4.1, revision
+  8c71704 and the fixes, 2026-10-09, load average 53 and 76 (other builds running).
+- **Results.** Microseconds, pooled samples; the paired difference is of the processes'
+  medians, with a bootstrap 95% interval. The second run, after one `fcntl` replaced two
+  in restoring the guest's flags:
+
+  | case | old n / p50 / p90 / p99 / max | new n / p50 / p90 / p99 / max | new − old |
+  |---|---|---|---|
+  | open | 40000 / 8.83 / 9.08 / 11.04 / 12229 | 40000 / 10.29 / 10.62 / 16.29 / 4772 | +1.54 [1.33, 3.12] |
+  | serve | 40000 / 8.71 / 891 / 14917 / 72798 | 40000 / 8.54 / 733 / 14262 / 105084 | +0.04 [−0.96, 1.46] |
+  | held | 400 / 8878 / 18654 / 27814 / 36159 | 400 / 0.25 / 0.50 / 0.83 / 2.38 | −8575 [−9263, −8084] |
+
+  - The first run, with two `fcntl`s: open +1.58 [1.29, 1.83] (p50 8.79 against 10.29);
+    serve +0.33 [−0.29, 1.75]; held 9506 against 0.21 at p50.
+  - `serve`'s tails are the busy host's: the driver spins while the worker and the share's
+    thread wait to be scheduled, in both arms alike.
+  - Linux (`probes/chmodat.c`, uid 1000 in a `rust:1.98.0` container in shards-dind):
+    V01's steps refuse a symlink to a file outside the share (EOPNOTSUPP, the file's
+    0600 kept), change a regular file, and change one of mode 000, which its owner cannot
+    open, through its `O_PATH` descriptor.
+- **Consequence.** A guest's open of a shared file costs 1.5 µs more in the share process,
+  the price of never opening a FIFO or device; the device's round trip is unchanged; and
+  a slow share no longer holds guest memory from the VM's other devices and snapshots,
+  which waited on it for as long as it took (8.9 ms of a 5 ms answer at the median
+  here), or for good. Unmeasured: the open's whole round trip from the guest.

@@ -2344,6 +2344,38 @@ microVM as virtio-fs shares (virtio 1.3 §5.11; Linux fs/fuse/virtio_fs.c):
   them. Other types are made, as dockerd makes them, and refused at start: the guest
   kernel has no NFS or CIFS client, and a tmpfs volume mounted in each microVM would not
   be the one tmpfs that Docker's containers share.
+- **Every request is the guest's to forge** (audit V): a guest kernel the agent controls
+  writes any FUSE request into the queues, so neither process trusts one.
+  - *A mode change follows no symlink* (V01). fchmodat(2) without AT_SYMLINK_NOFOLLOW
+    follows a final symlink: a SETATTR of a link the guest made to a host file outside the
+    share changed that file's mode (measured on macOS 26). A file's mode is changed at a
+    name never followed (Linux: opened `O_PATH`, changed through its `/proc/self/fd` link,
+    as musl's fchmodat and virtiofsd do, on any kernel; macOS: AT_SYMLINK_NOFOLLOW), and a
+    symlink's own is refused (EOPNOTSUPP), as Linux 6.6's `notify_change` refuses it.
+  - *Regular files alone are opened* (V02). A guest kernel opens FIFOs, sockets and
+    device nodes itself and asks the server nothing; an OPEN or CREATE of one waited for
+    good on a FIFO's other end, or opened a host device a share reaches, as `-v
+    /dev:/hostdev` does (CVE-2020-35517; QEMU virtiofsd's `lo_inode_open` refuses them
+    alike, EBADF). The name is looked at before the open, so no special file is opened,
+    then opened without waiting or taking a terminal and looked at again, for one put
+    there meanwhile; the guest's status flags are then restored. An OPEN with its
+    RELEASE costs 1.5 µs more in the share process (PM M129).
+  - *A request is bounded before it is read* (V03). A chain may claim 256 descriptors of
+    4 GiB; the device allocated what it claimed, a TiB, before reading any of it. One
+    longer than any FUSE request (`MAX_FRAME`, a largest write and its headers) is
+    answered EINVAL from its first 16 bytes, and the share, which closed the connection
+    over such a frame, never sees it.
+  - *Guest memory is not held across the share's answer* (V04): read for the request,
+    taken again for the reply (D29). A share slow to answer, or never answering, held
+    every other device's queue work and any snapshot off guest memory as long: with a
+    5 ms answer, another thread's wait for guest memory went from 8.9 ms to 0.25 µs at
+    the median, and the device's round trip did not move (PM M129).
+  - Tests: `fs::server::tests` (`a_mode_change_follows_no_symlink`,
+    `special_files_are_never_opened`) and `fs::tests`
+    (`a_request_longer_than_any_is_refused_unread`,
+    `guest_memory_is_free_while_the_share_answers`), each mutation-checked; the
+    after-open look guards only a name replaced between the two looks, which no test can
+    time.
 - **The kernel** has `CONFIG_VIRTIO_FS` and `CONFIG_FUSE_DAX` (kernel-6.18.48-98788948976a).
 - Open, unmeasured: the forwarding hop's cost per request against an in-process server,
   and throughput against Docker Desktop's virtiofs; DAX windows, which would let file
