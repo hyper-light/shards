@@ -117,6 +117,7 @@ pub const ARTIFACT_CONFIG: Config = Config {
     signed: 0,
     integrated: 0,
     no_observer: false,
+    current: None,
 };
 
 /// The trusted root, loaded where policy-helpers loads its trust provider: after what

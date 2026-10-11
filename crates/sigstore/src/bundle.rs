@@ -135,7 +135,7 @@ fn msgs(list: &[Val]) -> Vec<&Msg> {
         .collect()
 }
 
-fn tlog_entry(m: &Msg) -> TlogEntry {
+pub(crate) fn tlog_entry(m: &Msg) -> TlogEntry {
     TlogEntry {
         log_index: m.int(1),
         log_id: m.msg(2).map(|l| l.bytes(1)),

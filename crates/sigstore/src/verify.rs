@@ -20,6 +20,8 @@ pub struct Config {
     pub signed: usize,
     pub integrated: usize,
     pub no_observer: bool,
+    /// WithCurrentTime: the time now, an observer of the signature.
+    pub current: Option<Time>,
 }
 
 /// Whom the signature must be from.
@@ -81,7 +83,8 @@ pub struct Outcome {
 
 /// VerifierConfig.Validate.
 fn validate(config: &Config) -> Result<(), Error> {
-    let required = config.observer > 0 || config.signed > 0 || config.integrated > 0;
+    let required =
+        config.observer > 0 || config.signed > 0 || config.integrated > 0 || config.current.is_some();
     if config.no_observer && required {
         return Err(Error(
             "specify WithNoObserverTimestamps() without any other verifier options".into(),
@@ -528,6 +531,13 @@ fn observer_timestamps(
         }
         out.extend(logged.iter().cloned());
         out.extend(v);
+    }
+    if let Some(now) = config.current {
+        out.push(VerifiedTimestamp {
+            kind: "CurrentTime",
+            uri: String::new(),
+            time: now,
+        });
     }
     if out.is_empty() && !config.no_observer {
         return Err("no valid observer timestamps found".into());

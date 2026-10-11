@@ -113,6 +113,60 @@ pub static TIME_RANGE: Schema = Schema {
     oneofs: &[],
 };
 
+/// trustroot/v1's Service (protobuf-specs v0.5.1).
+pub static SERVICE: Schema = Schema {
+    name: "dev.sigstore.trustroot.v1.Service",
+    fields: &[
+        field("url", "url", 1, Kind::Str),
+        field("majorApiVersion", "major_api_version", 2, Kind::Uint32),
+        field("validFor", "valid_for", 3, Kind::Message(&TIME_RANGE)),
+        field("operator", "operator", 4, Kind::Str),
+    ],
+    oneofs: &[],
+};
+
+/// ServiceSelector.
+pub const SERVICE_SELECTOR: &[(&str, i32)] = &[
+    ("SERVICE_SELECTOR_UNDEFINED", 0),
+    ("ALL", 1),
+    ("ANY", 2),
+    ("EXACT", 3),
+];
+
+pub static SERVICE_CONFIGURATION: Schema = Schema {
+    name: "dev.sigstore.trustroot.v1.ServiceConfiguration",
+    fields: &[
+        field("selector", "selector", 1, Kind::Enum(SERVICE_SELECTOR)),
+        field("count", "count", 2, Kind::Uint32),
+    ],
+    oneofs: &[],
+};
+
+/// SigningConfig, its fields 1 to 4 reserved.
+pub static SIGNING_CONFIG: Schema = Schema {
+    name: "dev.sigstore.trustroot.v1.SigningConfig",
+    fields: &[
+        field("mediaType", "media_type", 5, Kind::Str),
+        field("caUrls", "ca_urls", 6, Kind::Message(&SERVICE)).repeated(),
+        field("oidcUrls", "oidc_urls", 7, Kind::Message(&SERVICE)).repeated(),
+        field("rekorTlogUrls", "rekor_tlog_urls", 8, Kind::Message(&SERVICE)).repeated(),
+        field(
+            "rekorTlogConfig",
+            "rekor_tlog_config",
+            9,
+            Kind::Message(&SERVICE_CONFIGURATION),
+        ),
+        field("tsaUrls", "tsa_urls", 10, Kind::Message(&SERVICE)).repeated(),
+        field(
+            "tsaConfig",
+            "tsa_config",
+            11,
+            Kind::Message(&SERVICE_CONFIGURATION),
+        ),
+    ],
+    oneofs: &[],
+};
+
 pub static PUBLIC_KEY: Schema = Schema {
     name: "dev.sigstore.common.v1.PublicKey",
     fields: &[

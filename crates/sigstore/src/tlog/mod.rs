@@ -4,13 +4,13 @@
 //! checkpoint (VerifyInclusion for v1, rekor-tiles' VerifyLogEntryWithHash for v2), and
 //! verify/tlog.go's hasRekorV1STH; each failure in the words of the code it ports.
 
-pub(crate) mod gocodec;
+pub mod gocodec;
 pub mod gojson;
 mod jcs;
 pub mod note;
-pub(crate) mod pem;
+pub mod pem;
 mod semver;
-mod v1;
+pub(crate) mod v1;
 mod v2;
 
 use std::collections::BTreeMap;

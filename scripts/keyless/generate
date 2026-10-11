@@ -1,0 +1,30 @@
+#!/bin/sh
+# Regenerates crates/sigstore/testdata/keyless-oracle.json: what cosign v3.1.3's signing
+# libraries send to Fulcio, a timestamp authority, Rekor v1 and Rekor v2 and make of their
+# answers, which services they select, and whose subject a token is (oracle_test.go), for
+# shards' keyless signing (crates/sigstore/tests/keyless_oracle.rs).
+#
+#   scripts/keyless/generate [COSIGN_V3.1.3_CHECKOUT]
+#
+# Without a checkout, cosign's v3.1.3 source is fetched (its tarball, checked against the
+# digest below) into a directory that is removed after.
+set -eu
+here=$(cd "$(dirname "$0")" && pwd)
+root=$(cd "$here/../.." && pwd)
+out="$root/crates/sigstore/testdata/keyless-oracle.json"
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+if [ $# -ge 1 ]; then
+	src=$1
+else
+	curl -sSL -o "$work/cosign.tar.gz" https://codeload.github.com/sigstore/cosign/tar.gz/refs/tags/v3.1.3
+	echo "ab8fcb8e0b4c0b8d01aefa37790cdd5ad099366b2efb8636b7a0250915b93362  $work/cosign.tar.gz" | shasum -a 256 -c -
+	tar -xzf "$work/cosign.tar.gz" -C "$work"
+	src="$work/cosign-3.1.3"
+fi
+dir="$src/pkg/zz_shards_keyless"
+mkdir -p "$dir"
+cp "$here/oracle_test.go" "$dir/oracle_test.go"
+cd "$src"
+SHARDS_KEYLESS_ORACLE="$out" go test -count=1 -run '^TestShardsKeylessOracle$' ./pkg/zz_shards_keyless/
+rm -rf "$dir"

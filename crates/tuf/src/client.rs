@@ -26,6 +26,10 @@ pub const EMBEDDED: &[(&str, &[u8])] = &[
         "targets/trusted_root.json",
         include_bytes!("../roots/sigstore/targets/trusted_root.json"),
     ),
+    (
+        "targets/signing_config.v0.2.json",
+        include_bytes!("../roots/sigstore/targets/signing_config.v0.2.json"),
+    ),
 ];
 
 /// URLToPath: the cache directory's name for a repository.
@@ -152,6 +156,18 @@ pub fn trusted_root(
     fetch: &dyn Fetch,
     now: (i64, u32),
 ) -> (Result<Vec<u8>, (Stage, Error)>, Status) {
+    target(cache_path, fetch, now, "trusted_root.json")
+}
+
+/// The target `name` of Sigstore's repository, had as [`trusted_root`] has its own:
+/// `signing_config.v0.2.json`, the services cosign signs with (sigstore-go
+/// root.GetSigningConfig), the same way.
+pub fn target(
+    cache_path: &Path,
+    fetch: &dyn Fetch,
+    now: (i64, u32),
+    name: &str,
+) -> (Result<Vec<u8>, (Stage, Error)>, Status) {
     let cache = cache_path.join(url_to_path(SIGSTORE));
     let mut status = Status::default();
     if let Err(e) = std::fs::create_dir_all(&cache) {
@@ -202,13 +218,13 @@ pub fn trusted_root(
             started
         }
     };
-    let target = match current.target_info("trusted_root.json") {
+    let target = match current.target_info(name) {
         Ok(t) => t,
         Err(e) => {
             return (
                 Err((
                     Stage::Root,
-                    Error::Other(format!("getting info for target \"trusted_root.json\": {e}")),
+                    Error::Other(format!("getting info for target \"{name}\": {e}")),
                 )),
                 status,
             );
@@ -222,7 +238,7 @@ pub fn trusted_root(
         Err(e) => (
             Err((
                 Stage::Root,
-                Error::Other(format!("failed to download target file trusted_root.json - {e}")),
+                Error::Other(format!("failed to download target file {name} - {e}")),
             )),
             status,
         ),
@@ -294,5 +310,31 @@ mod tests {
             )
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The signing config cosign signs with is had as the trusted root is: from the root
+    /// this binary carries, its hash the carried targets' (Sigstore's public instance:
+    /// Fulcio, its OIDC provider, Rekor v1 and a timestamp authority).
+    #[test]
+    fn the_carried_root_serves_the_signing_config_while_current() {
+        let dir_guard = shards_testdir::TempDir::new("tuf-sc").unwrap();
+        let dir = dir_guard.join("tuf");
+        let (got, _) = target(
+            &dir,
+            &Unreachable,
+            when("2026-09-01T00:00:00Z"),
+            "signing_config.v0.2.json",
+        );
+        let want = EMBEDDED
+            .iter()
+            .find(|(n, _)| *n == "targets/signing_config.v0.2.json")
+            .unwrap()
+            .1;
+        assert_eq!(got.unwrap(), want);
+        let (got, _) = target(&dir, &Unreachable, when("2026-09-01T00:00:00Z"), "nothing.json");
+        assert_eq!(
+            got.map_err(|(stage, e)| (stage, e.to_string())).unwrap_err().0,
+            Stage::Root
+        );
     }
 }

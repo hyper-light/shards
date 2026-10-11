@@ -6140,3 +6140,55 @@ revision before comparing a changed API/implementation.
   the host's too. HVF's working-set recording gives pages back as above. How many vCPUs a
   run has when nothing asks, asked of the user with these costs: every CPU of the host's
   (D125).
+
+### M184. Keyless signatures of shards and cosign, each verified by the other, against a local Sigstore (D126)
+
+- **Question.** Does `shards sign` without a key make what cosign v3.1.3 makes, so that
+  cosign verifies shards' signatures and shards cosign's, against real Fulcio, Rekor v1,
+  Rekor v2 and a timestamp authority? Do shards' sign-in flows hold against the OIDC
+  provider Sigstore runs (Dex)? What does a keyless signature take?
+- **Method.** `docs/research/measurements/keyless/run.sh` in the shards-dind container
+  (docker 29.3.1-dind, arm64): setup.sh starts Sigstore's local stack as Sigstore's own CI
+  does (scaffolding 86f48a09's setup-sigstore-env) from each service's release, Fulcio
+  v1.9.0, Rekor v1.5.4, rekor-tiles v2.3.0 and timestamp-authority v2.1.4, with a fake
+  OIDC issuer, Dex (Fulcio's compose's) added as an issuer Fulcio takes, and a registry
+  (distribution, `registry:2`). cases.py, with shards' build of revision f940a357
+  (aarch64 musl, test-release) and cosign v3.1.3's release (checksum checked): for each
+  signing config (Rekor v2 with the timestamp authority, Rekor v1 with it, Rekor v1
+  alone) an agent made and pushed by shards, signed keylessly by shards with a token of
+  the fake issuer, pushed, verified by `cosign verify` with that identity and with
+  another; signed by cosign; each bundle read back from the registry. Then shards signing
+  in at Dex in a browser (the harness's `xdg-open`, browser.sh, following Dex's mock
+  connector by curl) and by a device code (device-login.sh), each verified by cosign. Then
+  20 signatures each, alternated, one artifact. The bundles and the trusted root are kept
+  in crates/sigstore/testdata/keyless for crates/sigstore/tests/keyless.rs. Apple M5 Max,
+  macOS 26.4.1, Docker Desktop's VM, 2026-10-11.
+- **Results.**
+  - `cosign verify` passed shards' signature in each signing config (exit 0: "The cosign
+    claims were validated", "Existence of the claims in the transparency log was verified
+    offline", "The code-signing certificate was verified using trusted certificate
+    authority certificates"), and refused it for another identity (exit 1: `expected SAN
+    value "someone@else.example", got "foo@bar.com"`). shards verified cosign's (and its
+    own) offline as `cosign verify` verifies: a log entry, the certificate's SCT, an
+    observer timestamp, the identity, the artifact.
+  - The bundles hold the same fields, signer by signer and config by config: the
+    certificate, one entry (`dsse` v0.0.1 in Rekor v1, `hashedrekord` v0.0.2 in Rekor v2,
+    the latter with no promise or integrated time), the timestamp where the config names
+    an authority, the envelope. The one difference seen, `logIndex` absent, was shards'
+    entry at index 0 of a fresh log, which protojson leaves out as Go's leaves it.
+  - Signed in at Dex: in a browser (PKCE, the code brought back to the listener, the token
+    checked: signature, issuer, audience, expiry, nonce, access token hash) and by a device
+    code, each signature of `kilgore@kilgore.trout` verified by cosign.
+  - A keyless signature, n 20 each: shards (signing and keeping) p50 1,300 ms, p90 1,527,
+    p99 and max 1,652; cosign (signing and pushing) p50 1,636, p90 1,950, p99 and max
+    3,422. Both are the services' time: Fulcio's certificate, the timestamp, Rekor's entry.
+  - Found on the way: rekor-tiles v2.3.0's compose builds its witness from
+    transparency-dev/witness's main, which dropped a flag the compose passes
+    (`--poll_interval`, e288f04d, the morning of v2.3.0's release): pinned to the commit
+    before. Dex's login page escapes a connector ID that holds slashes twice (the mock
+    connector's `https://any.valid.url/`), so its link finds no connector ("failed to get
+    connector object from storage: not found"); followed escaped once, it signs in.
+- **Consequence.** Keyless signing as cosign's, held to it both ways on real services
+  (D126). The oracle against cosign's own libraries (`scripts/keyless/generate`) holds
+  what is sent byte for byte; Sigstore's public instance is the CI job
+  `.github/workflows/keyless.yml`.

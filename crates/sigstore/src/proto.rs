@@ -598,6 +598,7 @@ pub enum Kind {
     Bool,
     Int32,
     Int64,
+    Uint32,
     Uint64,
     Str,
     Bytes,
@@ -616,6 +617,7 @@ impl Kind {
             Kind::Bool => "bool",
             Kind::Int32 => "int32",
             Kind::Int64 => "int64",
+            Kind::Uint32 => "uint32",
             Kind::Uint64 => "uint64",
             Kind::Str => "string",
             Kind::Bytes => "bytes",
@@ -729,6 +731,13 @@ impl Msg {
     pub fn int(&self, number: u32) -> i64 {
         match self.get(number) {
             Some(Val::Int(i)) => *i,
+            _ => 0,
+        }
+    }
+
+    pub fn uint(&self, number: u32) -> u64 {
+        match self.get(number) {
+            Some(Val::Uint(u)) => *u,
             _ => 0,
         }
     }
@@ -899,6 +908,9 @@ fn scalar(d: &mut Decoder<'_>, fd: &Field) -> Result<Option<Val>, ProtoError> {
         Kind::Int64 => number_text(&tok)
             .and_then(|s| parse_int(&s, 64, true))
             .map(|v| Val::Int(i64::try_from(v).unwrap_or(0))),
+        Kind::Uint32 => number_text(&tok)
+            .and_then(|s| parse_int(&s, 32, false))
+            .map(|v| Val::Uint(u64::try_from(v).unwrap_or(0))),
         Kind::Uint64 => number_text(&tok)
             .and_then(|s| parse_int(&s, 64, false))
             .map(|v| Val::Uint(u64::try_from(v).unwrap_or(0))),

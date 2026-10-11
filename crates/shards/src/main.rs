@@ -19,6 +19,7 @@ mod containers;
 mod daemon;
 mod from_image;
 mod frontend;
+mod google;
 #[cfg(target_os = "macos")]
 mod grant;
 #[cfg(target_os = "macos")]
@@ -29,6 +30,7 @@ mod grant_ask;
 mod guest;
 mod helpers;
 mod kernel;
+mod keyless;
 #[cfg(unix)]
 mod local_store;
 #[cfg(unix)]
@@ -37,6 +39,7 @@ mod names;
 mod netproc;
 #[cfg(unix)]
 mod networks;
+mod oidc;
 mod pull;
 mod resources;
 mod run;
@@ -46,6 +49,7 @@ mod setup;
 #[cfg(unix)]
 mod share;
 mod spec;
+mod spiffe;
 #[cfg(unix)]
 mod volumes;
 

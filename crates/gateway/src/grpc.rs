@@ -76,6 +76,16 @@ pub fn call<R: Read, W: Write>(
     path: &str,
     request: &[u8],
 ) -> Result<Vec<u8>, Error> {
+    call_with(conn, path, request, &[])
+}
+
+/// [`call`], with `metadata` among the request's headers (outgoing metadata).
+pub fn call_with<R: Read, W: Write>(
+    conn: &mut h2::Conn<R, W>,
+    path: &str,
+    request: &[u8],
+    metadata: &[(&str, &str)],
+) -> Result<Vec<u8>, Error> {
     if request.len() > MOST {
         return Err(Error::Transport(format!(
             "trying to send message larger than max ({} vs. {MOST})",
@@ -86,19 +96,17 @@ pub fn call<R: Read, W: Write>(
     body.push(0);
     body.extend_from_slice(&u32::try_from(request.len()).unwrap_or(u32::MAX).to_be_bytes());
     body.extend_from_slice(request);
-    let response = conn.request(
-        &[
-            (":method", "POST"),
-            (":scheme", "http"),
-            (":path", path),
-            (":authority", "localhost"),
-            ("content-type", "application/grpc"),
-            ("user-agent", "shards"),
-            ("te", "trailers"),
-        ],
-        &body,
-        MOST + 5,
-    )?;
+    let mut headers = vec![
+        (":method", "POST"),
+        (":scheme", "http"),
+        (":path", path),
+        (":authority", "localhost"),
+        ("content-type", "application/grpc"),
+        ("user-agent", "shards"),
+        ("te", "trailers"),
+    ];
+    headers.extend_from_slice(metadata);
+    let response = conn.request(&headers, &body, MOST + 5)?;
     let header = |fields: &[(Vec<u8>, Vec<u8>)], name: &str| {
         fields
             .iter()

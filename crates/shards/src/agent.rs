@@ -55,6 +55,16 @@ pub fn command(word: &str, args: impl Iterator<Item = OsString>) -> ExitCode {
         .collect();
     let result = args.and_then(|args| {
         let (action, rest) = args.split_first().ok_or_else(|| usage(kind))?;
+        // -h is help, after any action.
+        if rest.iter().any(|a| a == "-h" || a == "--help") {
+            let text = if action == "sign" {
+                sign_usage(kind)
+            } else {
+                usage(kind)
+            };
+            let _ = writeln!(io::stdout(), "{text}");
+            return Ok(());
+        }
         match action.as_str() {
             "build" => build(kind, rest),
             "push" => push(kind, rest),
@@ -97,7 +107,7 @@ fn usage(kind: Kind) -> String {
         Kind::Mcp => "mcp",
     };
     format!(
-        "Usage:\n  shards build {w} DIR -t NAME [--platform LIST]   make one of DIR and its {}\n  shards sign {w} NAME --key FILE                  sign it with a cosign key (COSIGN_PASSWORD)\n  shards push {w} NAME                             with its signatures and SBOMs\n  shards pull {w} NAME\n  shards ls {w}\n  shards inspect {w} NAME\n  shards rm {w} NAME\n  shards rm {w} NAME --referrer DIGEST             delete a signature or SBOM from its registry",
+        "Usage:\n  shards build {w} DIR -t NAME [--platform LIST]   make one of DIR and its {}\n  shards sign {w} NAME [--key FILE]               sign it with a cosign key (COSIGN_PASSWORD), or keylessly\n  shards push {w} NAME                             with its signatures and SBOMs\n  shards pull {w} NAME\n  shards ls {w}\n  shards inspect {w} NAME\n  shards rm {w} NAME\n  shards rm {w} NAME --referrer DIGEST             delete a signature or SBOM from its registry",
         config_file(kind)
     )
 }
@@ -1205,24 +1215,67 @@ fn ingest(store: &Store, bytes: &[u8]) -> Result<Digest, String> {
     Ok(d)
 }
 
+/// `shards sign KIND -h`: signing with a key, and keylessly with cosign's flags for it.
+fn sign_usage(kind: Kind) -> String {
+    let w = match kind {
+        Kind::Agent => "agent",
+        Kind::Harness => "harness",
+        Kind::Mcp => "mcp",
+    };
+    format!(
+        "Usage:  shards sign {w} NAME [OPTIONS]
+
+Sign {} with a cosign key, or keylessly.
+
+Keylessly, Fulcio certifies an identity for the signature, which is timestamped and
+logged as the signing config asks (Sigstore's public instance unless --signing-config
+names another). The signature is kept with NAME and pushed with it.
+
+Options:
+      --key FILE                        Sign with this cosign key (its password COSIGN_PASSWORD's)
+      --identity-token TOKEN            Sign as this identity token's subject (a token, or a
+                                        file holding one); else the environment's, else sign in
+      --oidc-provider NAME              Take the token from this provider alone: buildkite-agent,
+                                        envvar, filesystem, github-actions,
+                                        google-workload-identity, google-impersonate, spiffe
+      --oidc-disable-ambient-providers  Take no token from the environment
+      --fulcio-auth-flow FLOW           Sign in by: normal (a browser), device, client_credentials
+      --oidc-client-id ID               The client that signs in (default \"sigstore\")
+      --oidc-client-secret-file FILE    Its secret
+      --oidc-redirect-url URL           Where the browser brings the code back
+      --signing-config FILE             The services to sign with
+      --trusted-root FILE               The root the signature is checked against
+  -y, --yes                             Publish the identity in the log without asking
+  -h, --help                            Show this help",
+        a(kind)
+    )
+}
+
 /// `shards sign agent NAME --key FILE` (and `harness`, `mcp`): a signature of what NAME
 /// names, as cosign v3.1.3 signs one with a key (D116, shards_sigstore::sign), kept with
 /// it and pushed with it. The key is cosign's own (generate-key-pair's, import-key-pair's),
 /// its password COSIGN_PASSWORD's, as cosign takes it, else asked on the terminal.
+/// Without `--key`, keylessly, as cosign signs without one (D126, crate::keyless): an
+/// identity token's certificate from Fulcio, the signature timestamped and logged as the
+/// signing config asks.
 fn sign(kind: Kind, args: &[String]) -> Result<(), String> {
     let (mut name, mut key) = (None, None);
+    let mut keyless = crate::keyless::Options::default();
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
             "--key" => key = Some(it.next().ok_or("--key needs a file")?.clone()),
             s if s.starts_with("--key=") => key = Some(s.trim_start_matches("--key=").to_string()),
+            s if keyless.take(s, &mut it)? => {}
             s if s.starts_with('-') => return Err(format!("unknown flag {s}\n{}", usage(kind))),
             s if name.is_none() => name = Some(s.to_string()),
             s => return Err(format!("one name only, not {s:?} too")),
         }
     }
     let name = reference(&name.ok_or_else(|| usage(kind))?)?;
-    let key = key.ok_or("--key names the cosign key to sign with")?;
+    if key.is_some() && keyless.any() {
+        return Err("--key signs with that key alone; --identity-token, --signing-config and the other flags of keyless signing are for signing without one".into());
+    }
     let store = store()?;
     let _lease = store.lease().map_err(|e| e.to_string())?;
     let desc = store
@@ -1234,6 +1287,32 @@ fn sign(kind: Kind, args: &[String]) -> Result<(), String> {
         return Err(format!("{name} is {}, not {}", a(found), a(kind)));
     }
     let subject = subject_of(&store, &name, &desc)?;
+    let payload = shards_sigstore::sign::statement(&subject.digest)?;
+    let Some(key) = key else {
+        let signed = crate::keyless::sign(&payload, &keyless)?;
+        let referrer = signature_of(&store, &signed.bundle, &subject)?;
+        store
+            .keep_referrer(&name.to_string(), &referrer)
+            .map_err(|e| e.to_string())?;
+        let who = shards_sigstore::x509::Certificate::parse(&signed.certificate)
+            .ok()
+            .and_then(|c| shards_sigstore::summary::summarize(&c).ok())
+            .map(|s| format!("{} (issuer {})", s.subject_alternative_name, s.extensions.issuer))
+            .unwrap_or_default();
+        let logged: Vec<String> = signed
+            .entries
+            .iter()
+            .map(|(url, e)| format!(", logged in {url} at {}", e.log_index))
+            .collect();
+        let _ = writeln!(
+            io::stdout(),
+            "{name}: {} signed by {who}{}: signature {}",
+            subject.digest,
+            logged.concat(),
+            referrer.digest
+        );
+        return Ok(());
+    };
     let pem = fs::read(&key).map_err(|e| format!("{key}: {e}"))?;
     let mut password = password()?;
     let signer = shards_sigstore::cosignkey::load(&pem, &password);
@@ -1260,10 +1339,16 @@ pub fn signature(
     signer: &shards_sigstore::sign::Signer,
     subject: &Descriptor,
 ) -> Result<Descriptor, String> {
+    let payload = shards_sigstore::sign::statement(&subject.digest)?;
+    let bundle = shards_sigstore::sign::bundle(signer, &payload)?;
+    signature_of(store, &bundle, subject)
+}
+
+/// The referrer `bundle`, a signature of `subject`, is: the bundle, the empty config and
+/// the manifest cosign's WriteReferrer writes, stored, made now.
+pub fn signature_of(store: &Store, bundle: &[u8], subject: &Descriptor) -> Result<Descriptor, String> {
     use shards_sigstore::sign::{self as cosign, Described};
-    let payload = cosign::statement(&subject.digest)?;
-    let bundle = cosign::bundle(signer, &payload)?;
-    let bundle_digest = ingest(store, &bundle)?;
+    let bundle_digest = ingest(store, bundle)?;
     ingest(store, cosign::EMPTY_CONFIG)?;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

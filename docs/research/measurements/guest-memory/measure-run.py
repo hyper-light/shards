@@ -88,6 +88,21 @@ print(f"host {platform.system()} {platform.machine()}, {host_mib()} MiB; n {n} a
 print("mib limit_kib boot run memavailable_kib kept_kib margin_kib " + " ".join(FIELDS) + " pcp_kib cpus")
 
 
+def run(args):
+    """What a run printed; where it fails, what it said and the daemon's log's end, which
+    a measurement never hides."""
+    done = subprocess.run(args, capture_output=True, text=True)
+    if done.returncode != 0:
+        print(f"{' '.join(args)}: exit {done.returncode}\n{done.stderr}", file=sys.stderr)
+        try:
+            with open(os.path.join(home, "daemon.log")) as log:
+                print("daemon.log, its end:\n" + "".join(log.readlines()[-60:]), file=sys.stderr)
+        except OSError as e:
+            print(f"daemon.log: {e}", file=sys.stderr)
+        sys.exit(1)
+    return done.stdout
+
+
 def new_boot():
     """The next run boots its template again: the daemon, which keeps warm VMs of the
     templates it has, stopped, and the home's templates gone."""
@@ -107,9 +122,8 @@ for mib in sizes:
             if boots > 1:
                 new_boot()
             for i in range(n):
-                out = subprocess.run([shards, "run", "--rm", "-m", f"{limit}k", "--cpus", str(c), image, "cat",
-                                      "/proc/meminfo", "/proc/zoneinfo"],
-                                     capture_output=True, text=True, check=True).stdout
+                out = run([shards, "run", "--rm", "-m", f"{limit}k", "--cpus", str(c), image, "cat",
+                           "/proc/meminfo", "/proc/zoneinfo"])
                 info = {k: int(v) for k, v in re.findall(r"^(\w+):\s+(\d+) kB", out, re.M)}
                 avail = info["MemAvailable"]
                 # The free pages the CPUs' lists hold (/proc/zoneinfo's pagesets, 4 KiB pages

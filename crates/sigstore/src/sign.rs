@@ -126,6 +126,37 @@ impl Signer {
         Err("not an ECDSA (P-256, P-384, P-521), Ed25519 or RSA key in PKCS #8".into())
     }
 
+    /// A new ECDSA P-256 key, the one sigstore-go's EphemeralKeypair makes unless asked
+    /// for another, for one signature (keyless signing): never written anywhere.
+    pub fn generate_p256() -> Result<Signer, String> {
+        let k = lc::EcdsaKeyPair::generate(&lc::ECDSA_P256_SHA256_ASN1_SIGNING)
+            .map_err(|_| "generating an ECDSA P-256 key")?;
+        let spki = k
+            .public_key()
+            .as_der()
+            .map_err(|_| "encoding the public key")?
+            .as_ref()
+            .to_vec();
+        Ok(Signer {
+            key: Key::Ecdsa(k),
+            spki,
+        })
+    }
+
+    /// The key's algorithm as sigstore-go names it to Fulcio (GetKeyAlgorithm).
+    pub fn algorithm(&self) -> &'static str {
+        match self.key {
+            Key::Ecdsa(_) => "ECDSA",
+            Key::Ed25519ph(_) => "ED25519",
+            Key::Rsa(_) => "RSA",
+        }
+    }
+
+    /// The public key as a PEM block, as cryptoutils.MarshalPublicKeyToPEM writes it.
+    pub fn public_key_pem(&self) -> String {
+        String::from_utf8_lossy(&crate::tlog::pem::encode("PUBLIC KEY", &self.spki)).into_owned()
+    }
+
     /// The public key, as x509.MarshalPKIXPublicKey writes it.
     pub fn public_key_der(&self) -> &[u8] {
         &self.spki

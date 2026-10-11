@@ -3534,6 +3534,82 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode
 waits on the user.
 
+### D126. Keyless signing, as cosign signs without a key
+
+D116 signed OSI artifacts with cosign's keys and left keyless signing out: it needs
+Fulcio and Rekor, and the public instance was not to be used without the user. The user's
+answer (2026-10-10): "Let's test both", the public instance and a local one. `shards sign
+agent|harness|mcp NAME` without `--key` now signs as cosign v3.1.3 signs without one
+(`shards_sigstore::keyless`, over sigstore-go v1.2.2's `sign.Bundle`).
+
+- **The services** are the signing config's: Sigstore's public instance's from its TUF
+  repository (`signing_config.v0.2.json`, carried beside the trusted root and refreshed as
+  it is, D104), or `--signing-config`'s; the trusted root likewise, or `--trusted-root`'s.
+  Each kind is chosen as sigstore-go chooses (`signing_config`): the newest valid service of
+  the highest API version, one per operator, then ANY, EXACT or ALL.
+- **The identity token** is found as cosign finds it.
+  - `--identity-token`: a token, or a file holding one. cosign takes only an RS256 JWS as a
+    token and reads any other as a file's name; shards takes each algorithm Fulcio's
+    issuers sign with.
+  - Else cosign's ambient providers, in its order (Go initializes their packages by import
+    path): Buildkite's agent, `SIGSTORE_ID_TOKEN`, `/var/run/sigstore/cosign/oidc-token`,
+    GitHub Actions, Google's workload identity (the metadata server, or Application Default
+    Credentials: a service account's key, an impersonated account, federation from a file
+    or URL), Google impersonation (IAM's generateIdToken), SPIFFE's Workload API (gRPC on
+    its socket, over the frontend's HTTP/2 client, D113). `--oidc-provider` names one,
+    `--oidc-disable-ambient-providers` none.
+  - Else it signs in (`--fulcio-auth-flow`, cosign's flows): in a browser on a terminal
+    (PKCE; the code brought back to a listener on this host, or typed in), by a device
+    code without one, or by client credentials. Each token is checked as go-oidc checks it:
+    its signature by the provider's keys, issuer, audience, expiry, and the nonce and
+    access token hash oauthflow checks.
+- **The signature.** An ephemeral ECDSA P-256 key, never written, signs the DSSE envelope of
+  cosign's `sign/v1` statement.
+  - Fulcio certifies the key for the token's subject, the key's proof of possession over
+    it.
+  - Each timestamp authority the config selects stamps the signature (RFC 3161; the
+    request byte for byte OpenSSL's and digitorus/timestamp's).
+  - Each log it selects logs it. Rekor v1: a `dsse` v0.0.1 entry as rekor's client
+    proposes it, its answer made the bundle's entry as `tle.GenerateTransparencyLogEntry`
+    makes it. Rekor v2: a `hashedrekord` v0.0.2 over the envelope's PAE digest, which needs
+    a timestamp authority, as cosign refuses it without one.
+  - The bundle (v0.3, the leaf certificate) is verified against the trusted root before it
+    is kept, as `sign.Bundle` verifies what it made; then it is kept and pushed as D116's.
+- **Before an identity goes into a log** shards says what will be published and where:
+  cosign's statement for the public instance, and always the token's subject and the logs,
+  which cosign does not name. On a terminal it asks cosign's question unless `--yes`;
+  elsewhere it says it and goes on, as cosign signs with a token unasked.
+- **Policies** already held an artifact to its keyless signatures (`input.image.signatures`,
+  D116 over D105's verifier), against Sigstore's root.
+- **Where shards does better**, each where cosign's behaviour is a defect, not a contract:
+  - The device flow waits RFC 8628's 5 s where the provider names no interval (oauthflow
+    asks again at once), and grows it by 5 s on `slow_down` (§3.5).
+  - Fulcio's or a timestamp authority's last 5xx answer is reported. sigstore-go reads the
+    answer it closed and says "http: read on closed response body" (seen in the oracle).
+  - GitHub's token endpoint refusing is said; cosign decodes the refusal as a token.
+  - `SPIFFE_ENDPOINT_SOCKET` is read as the SPIFFE spec writes it, `unix://PATH`, too.
+  - Messages go to stderr, which shards keeps for people (oauthflow prints some to stdout).
+  - `-h` is help on `shards sign` and every action of `shards agent|harness|mcp`.
+- **Not taken**: Google federation from AWS or from an executable (its file and URL sources
+  are taken), and SPIFFE's Workload API on Windows (a named pipe). A signer there gives the
+  token itself with `--identity-token`; no demand for either has been seen.
+- **Tested**:
+  - Against a local Sigstore (PM M184): shards' signatures and cosign's, of each signing
+    config (Rekor v2 with a timestamp authority, Rekor v1 with one and without), each
+    verified by the other; identities signed in for at Dex in a browser and by a device
+    code. `shards_and_cosign_keyless_signatures_verify_as_cosign_verifies_them`,
+    `shards_bundles_hold_what_cosign_s_hold` and `a_changed_keyless_signature_is_refused`
+    verify M184's bundles offline.
+  - Against cosign's own libraries (`scripts/keyless/generate`: sigstore-go's Fulcio,
+    timestamp authority, Rekor v1 and v2 clients against test servers): each request byte
+    for byte, each answer's entry, the bundle, the services selected and tokens' subjects
+    (`keyless_oracle.rs`, seven tests); six mutants killed.
+  - Against Sigstore's public instance: `.github/workflows/keyless.yml` signs with the
+    job's GitHub identity, cosign verifies; cosign signs, shards' policies verify both.
+  - Unit tests of each part: the signing config, Fulcio, Rekor, the timestamp request,
+    OIDC (JWS by each algorithm, claims, PKCE, the authorization URL), the flows' listener
+    and token answers, the providers' sources.
+
 ### D125. A run's microVM has every CPU of its host unless it is limited
 
 The user's call (2026-10-11), asked with PM M183's numbers: "Every host CPU". A Docker
@@ -4194,9 +4270,9 @@ from the registry layer up to the build's policies.
       Ed25519ph (as cosign signs Ed25519 keys), and RSA PKCS #1 v1.5.
     - The password is `COSIGN_PASSWORD`'s, else asked on the terminal, not echoed.
   - The signature is kept with the name and pushed by `shards push`.
-  - Keyless signing is not done: it needs Fulcio and Rekor, and the public ones are not
-    used without the user. No signature is uploaded to a transparency log. cosign then
-    verifies with `--insecure-ignore-tlog`, as M135 measured.
+  - A key's signature is uploaded to no transparency log, as cosign signs with a signing
+    config naming none; cosign then verifies with `--insecure-ignore-tlog`, as M135
+    measured. Keyless signing came with D126.
   - Held to cosign by:
     - `scripts/cosign/generate`: LoadPrivateKey's answers for 27 keys, and 14
       secretboxes x/crypto sealed;
@@ -4264,7 +4340,7 @@ from the registry layer up to the build's policies.
   - Unit and oracle tests in shards-registry, shards-sigstore and shards-image.
   - 32 mutants killed.
 - **Open:**
-  - Keyless signing (Fulcio, Rekor) and timestamped signatures (a TSA).
+  - Keyless signing (Fulcio, Rekor) and timestamped signatures (a TSA): done, D126.
   - An SBOM signed as an attestation.
   - Conditional (`If-Match`) updates of the tag schema's list. The spec's MAY;
     distribution takes none; concurrent pushers can lose an entry (spec.md:733-735).

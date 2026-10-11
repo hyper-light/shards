@@ -112,6 +112,7 @@ fn run(roots: &serde_json::Value, c: &serde_json::Value) -> (String, serde_json:
         signed: n("signed"),
         integrated: n("integrated"),
         no_observer: cf["noObserver"].as_bool().unwrap(),
+        current: None,
     };
     let p = &c["policy"];
     let policy = Policy {

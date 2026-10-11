@@ -1,0 +1,102 @@
+name: Keyless signing
+
+# Keyless signing (D126, PM M184) against Sigstore's public instance, as the user asked to
+# test it ("Let's test both"; the local instance is docs/research/measurements/keyless):
+# an agent signed by `shards sign` with this job's GitHub identity and verified by cosign
+# v3.1.3, signed by cosign and verified by shards' build policies, each through the
+# registry on the runner. Each signature is an entry of Rekor's public log, permanently, of
+# this workflow's identity; it runs only when keyless signing or this file changes, or
+# when asked.
+on:
+  push:
+    branches: [dev]
+    paths:
+      - crates/sigstore/src/keyless.rs
+      - crates/sigstore/src/fulcio.rs
+      - crates/sigstore/src/rekor.rs
+      - crates/sigstore/src/oidc.rs
+      - crates/sigstore/src/signing_config.rs
+      - crates/shards/src/keyless.rs
+      - .github/workflows/keyless.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  TOOLCHAIN: 1.98.0 # keep in sync with rust-toolchain.toml
+  COSIGN: https://github.com/sigstore/cosign/releases/download/v3.1.3
+
+jobs:
+  public:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Install pinned Rust
+        run: rustup toolchain install "$TOOLCHAIN" --profile minimal --target x86_64-unknown-linux-musl
+      - name: zig
+        run: scripts/install-zig
+      - name: Build
+        run: cargo build --locked -p shards --profile test-release
+      - name: cosign v3.1.3, its checksum checked
+        run: |
+          curl -sSL -o "$RUNNER_TEMP/cosign" "$COSIGN/cosign-linux-amd64"
+          curl -sSL -o "$RUNNER_TEMP/checksums" "$COSIGN/cosign_checksums.txt"
+          want=$(grep ' cosign-linux-amd64$' "$RUNNER_TEMP/checksums" | cut -d' ' -f1)
+          echo "$want  $RUNNER_TEMP/cosign" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/cosign"
+      - name: Sign and verify both ways
+        run: |
+          set -eu
+          shards=$PWD/target/test-release/shards
+          cosign=$RUNNER_TEMP/cosign
+          export SHARDS_HOME=$(mktemp -d)
+          docker run -d -q --name keyless-registry -p 127.0.0.1:5000:5000 registry:2
+          for _ in $(seq 50); do curl -sf http://127.0.0.1:5000/v2/ >/dev/null && break; sleep 0.2; done
+          agent=$(mktemp -d)
+          printf '#!/bin/sh\necho agent\n' >"$agent/run.sh"
+          printf '{"name":"main","version":"1.0.0"}' >"$agent/agent.json"
+          name=127.0.0.1:5000/keyless/agent:$GITHUB_RUN_ID
+          digest=$("$shards" build agent "$agent" -t "$name")
+          "$shards" push agent "$name"
+          # shards signs with this job's identity, from the runner's token endpoint.
+          "$shards" sign agent "$name" --yes
+          "$shards" push agent "$name"
+          ref=127.0.0.1:5000/keyless/agent@$digest
+          identity="^https://github.com/${GITHUB_REPOSITORY}/\.github/workflows/keyless\.yml@"
+          "$cosign" verify --certificate-identity-regexp "$identity" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com --allow-http-registry "$ref"
+          # Another identity is refused.
+          if "$cosign" verify --certificate-identity someone@example.com \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com --allow-http-registry "$ref"; then
+            echo "cosign verified another identity" >&2
+            exit 1
+          fi
+          "$cosign" sign --yes --allow-http-registry "$ref"
+          # Both signatures, pulled, verified by shards' build policies.
+          "$shards" rm agent "$name"
+          "$shards" pull agent "$name"
+          ctx=$(mktemp -d)
+          cat >"$ctx/Agentfile.rego" <<EOF
+          package docker
+
+          default allow := false
+
+          ours contains i if {
+            some i, sig in input.image.signatures
+            sig.signer.issuer == "https://token.actions.githubusercontent.com"
+            startswith(sig.signer.subjectAlternativeName, "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/keyless.yml@")
+          }
+
+          allow if {
+            input.image.artifactType == "application/vnd.osi.agent.v1"
+            count(ours) == 2
+          }
+
+          decision := {"allow": allow}
+          EOF
+          cd "$ctx"
+          "$shards" buildx policy eval --filename Agentfile --print --fields image.signatures "osi-artifact://$name"
+          "$shards" buildx policy eval --filename Agentfile "osi-artifact://$name"

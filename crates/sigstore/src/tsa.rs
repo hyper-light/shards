@@ -872,6 +872,30 @@ fn parse_response(bytes: &[u8]) -> Result<Token, ParseFailure> {
     parse_token(&token.1)
 }
 
+/// The request sigstore-go sends a timestamp authority for a signature (pkg/sign
+/// timestamping.go GetTimestamp): digitorus/timestamp's Request.Marshal of the
+/// signature's SHA-256, its algorithm's parameters NULL, version 1, no policy, nonce,
+/// certificates or extensions asked for (asn1.Marshal leaves out what is unset or false).
+pub fn request(signature: &[u8]) -> Vec<u8> {
+    let digest = aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA256, signature);
+    // SEQUENCE { INTEGER 1, SEQUENCE { SEQUENCE { OID sha256, NULL }, OCTET STRING } }
+    let mut out = vec![
+        0x30, 0x36, 0x02, 0x01, 0x01, 0x30, 0x31, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03,
+        0x04, 0x02, 0x01, 0x05, 0x00, 0x04, 0x20,
+    ];
+    out.extend_from_slice(digest.as_ref());
+    out
+}
+
+/// What GetTimestamp makes of an authority's answer (200 or 201) before it keeps it:
+/// timestamp.ParseResponse's reading, the token checked, failures in its words.
+pub fn check_response(body: &[u8]) -> Result<(), String> {
+    match parse_response(body) {
+        Ok(_) => Ok(()),
+        Err(ParseFailure::Parse(e) | ParseFailure::Other(e)) => Err(e),
+    }
+}
+
 /// verifyLeafCertCriticalEKU, verifyESSCertID, and the EKU of the leaf and the chain's
 /// intermediates (verifyLeafCert).
 fn verify_leaf(
