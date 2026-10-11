@@ -3712,22 +3712,33 @@ fn run_limits_resources_as_docker_run_does() {
         "limited",
     ]);
     assert_eq!(raw.stdout, "512 <no value>\n", "{raw}");
-    // The microVM holds what the limit allows: what the kernel says may be allocated is
-    // at least the limit, across the sizes where its own share steps up, as a run's guest
-    // keeps it (M155).
+    // The microVM holds what the limit allows: what the kernel says may be allocated, and
+    // the free pages its CPUs' lists hold, which it leaves out of that (M179), is at least
+    // the limit, across the sizes where its own share steps up, as a run's guest keeps it.
     for limit in ["700m", "2500m"] {
-        let meminfo = run_in(&home, &image, &["-m", limit], &["stat", "/proc/meminfo"]);
-        assert_eq!(meminfo.status, Some(0), "{meminfo}");
-        let available_kib: u64 = meminfo
-            .stdout
-            .split("\\n")
+        let read = run_in(
+            &home,
+            &image,
+            &["-m", limit],
+            &["stat", "/proc/meminfo", "/proc/zoneinfo"],
+        );
+        assert_eq!(read.status, Some(0), "{read}");
+        let lines: Vec<&str> = read.stdout.split("\\n").collect();
+        let available_kib: u64 = lines
+            .iter()
             .find_map(|l| l.strip_prefix("MemAvailable:"))
             .and_then(|v| v.trim().trim_end_matches(" kB").trim().parse().ok())
             .unwrap();
+        // zoneinfo's pagesets: each CPU's count of 4 KiB pages.
+        let listed_kib: u64 = lines
+            .iter()
+            .filter_map(|l| l.trim_start().strip_prefix("count:"))
+            .map(|c| c.trim().parse::<u64>().unwrap() * 4)
+            .sum();
         let limit_kib = limit.trim_end_matches('m').parse::<u64>().unwrap() * 1024;
         assert!(
-            available_kib >= limit_kib,
-            "{limit}: {available_kib} KiB available"
+            available_kib + listed_kib >= limit_kib,
+            "{limit}: {available_kib} KiB available, {listed_kib} KiB on its CPUs' lists"
         );
     }
     // Past its limit, the workload is killed, as the kernel kills it in its cgroup.

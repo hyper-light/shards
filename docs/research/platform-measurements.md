@@ -5939,6 +5939,43 @@ revision before comparing a changed API/implementation.
   server binds once; a resolver's query on the host's network costs one more round trip
   than the bridge's.
 
+### M179. What a run's guest keeps of its microVM, boot by boot: free pages its CPUs hold (`-m`)
+
+- **Question.** `-m`'s table (`resources::overhead_kib`) says what the guest keeps at each
+  VM size, so that the VM holds the limit. CI's x86_64 jobs failed
+  `run_limits_resources_as_docker_run_does` at 700m (220 KiB short) and 2500m (1,856 KiB
+  short): the table, M155's, came from one runner's boot of each size.
+- **Method.** `docs/research/measurements/guest-memory/measure-run.py` by its workflow
+  (`guest-memory.yml`): each size's template booted B times (the daemon stopped and the
+  home's templates removed before each), N runs a boot, each reading /proc/meminfo and
+  /proc/zoneinfo; sizes as far as half the host's memory. x86_64: three GitHub
+  ubuntu-24.04 runners a run.
+- **Found.**
+  - A template's runs keep alike, to the KiB (10 runs a template, three runners, run
+    38127711738): its boot is the sample.
+  - x86_64, 8 boots a size on each of three runners (run 38131603252, Intel Xeon
+    Platinum 8573C twice and AMD EPYC 9V74): a size's boots differed in MemAvailable by
+    up to 13.8 MiB (320 MiB: 52,760 to 66,528 KiB kept), all of it MemFree, none in
+    meminfo's other fields (Cached, Shmem, slab, KernelStack, PageTables, Percpu,
+    AnonPages, AnonHugePages, Mapped).
+  - The rest is free pages on the CPUs' lists (run 38133982946: AMD EPYC 9V74 and 9V45,
+    Intel Xeon 8370C, one CPU in each guest): 4 to 22 MiB, which MemFree and
+    MemAvailable leave out. Linux counts a page free once it is back with the buddy
+    allocator (mm/page_alloc.c: `account_freepages` in `__free_one_page`; the per-CPU
+    commit adds to `pcp->count` alone); allocations take from the lists first, and one
+    that reclaim leaves unmet drains every CPU's and tries again (`__alloc_pages_direct_reclaim`,
+    `drain_all_pages`). Counted with MemAvailable, a size's 48 boots differ by 0.3 to
+    0.7 MiB.
+  - arm64 (HVF; Apple M5 Max, macOS 26.4.1, 4 boots a size, 2 runs a boot, sizes to
+    16 GiB, 2026-10-11): a size's boots differed by at most 156 KiB in what the guest
+    keeps (292 KiB in MemAvailable); its CPU's list held 4.2 to 9.1 MiB, which M155's
+    table, MemAvailable's, counted as kept.
+- **Consequence.** What the guest keeps is the VM's KiB less MemAvailable and the listed
+  pages; the table is each size's most over every boot measured, the measured midpoints
+  among its sizes; `run_limits_resources_as_docker_run_does` counts the listed pages as
+  the kernel's allocator does. From 8 GiB, x86_64 keeps M123's cold boots' values, which
+  leave those pages out and so keep more.
+
 ### M180. A run's first datagram to its gateway waited on ARP, and was lost with its port (D124, D31)
 
 - **Question.** `a_run_on_the_hosts_network_is_on_the_hosts_network` failed once in 10

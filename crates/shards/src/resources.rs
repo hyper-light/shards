@@ -289,29 +289,41 @@ pub fn memory_mib(limit: i64, default_mib: u64, host: Option<u64>) -> u64 {
 }
 
 /// What the guest kernel keeps for itself of a VM of `mib` MiB, in KiB, on the path a run
-/// takes, as measured on this architecture's guest kernel (platform-measurements.md M155):
+/// takes, as measured on this architecture's guest kernel (platform-measurements.md M179):
 /// the overhead of the next measured size up, and past the last, its slope from 8 to 16
 /// GiB.
 fn overhead_kib(mib: u64) -> u64 {
-    // On the path a run takes (M155): each size's most of 10 runs on a GitHub x86_64
-    // runner, every run alike, as far as half its 16 GiB; from 8 GiB, cold boots' (M123),
-    // not yet measured on a run's path. A cold boot kept 84 to 768 KiB less at 384, 1536,
-    // 2048, 3072, 4096 and 4608 MiB, so `-m` fell short there, and up to 9.0 MiB more at
-    // the rest, which a VM no longer takes.
+    // On the path a run takes (M179): what the guest keeps, its VM's KiB less what may be
+    // allocated (MemAvailable, and the free pages its CPUs' lists hold, which MemAvailable
+    // leaves out), each size's most of 48 boots of its template on three GitHub x86_64
+    // runners (AMD EPYC 9V74 and 9V45, Intel Xeon 8370C), as far as half their 16 GiB;
+    // from 8 GiB, cold boots' MemAvailable alone (M123), which keeps those pages out too.
     #[cfg(target_arch = "x86_64")]
-    const MEASURED: [(u64, u64); 15] = [
-        (256, 48_820),
-        (384, 54_512),
-        (512, 58_348),
-        (768, 124_564),
-        (1024, 141_724),
-        (1536, 156_212),
-        (2048, 166_684),
-        (3072, 191_496),
-        (3584, 305_576),
-        (4096, 314_056),
-        (4608, 337_908),
-        (6144, 369_132),
+    const MEASURED: [(u64, u64); 27] = [
+        (256, 48_480),
+        (320, 51_616),
+        (384, 52_340),
+        (448, 54_808),
+        (512, 55_416),
+        (640, 100_828),
+        (768, 113_160),
+        (896, 125_176),
+        (1024, 130_256),
+        (1280, 138_396),
+        (1536, 143_428),
+        (1792, 148_752),
+        (2048, 153_848),
+        (2560, 168_196),
+        (3072, 178_324),
+        (3328, 284_092),
+        (3584, 290_224),
+        (3840, 296_340),
+        (4096, 301_776),
+        (4352, 318_280),
+        (4608, 323_460),
+        (5376, 338_764),
+        (6144, 354_220),
+        (7168, 374_704),
         (8192, 417_136),
         (12_288, 512_184),
         (16_384, 592_948),
@@ -319,28 +331,43 @@ fn overhead_kib(mib: u64) -> u64 {
     /// KiB a MiB past the last size: (592,948 − 417,136) / 8,192 is 21.5.
     #[cfg(target_arch = "x86_64")]
     const SLOPE: u64 = 22;
-    // On the path a run takes (M155): its VM a template of its size, restored, its guest
-    // the run's. Each size's most of 30 runs; a cold boot (M117) kept 0.1 to 2.7 MiB less,
-    // so `-m` fell short of its limit at each size here.
+    // On the path a run takes (M179): what the guest keeps, its VM's KiB less what may be
+    // allocated (MemAvailable, and the free pages its CPU's list holds, 4 to 9 MiB here),
+    // each size's most of 4 boots of its template, 2 runs each, on an Apple M5 Max, guest
+    // kernel kernel-6.18.48-4b8900bdffdd; the boots of a size differed by 156 KiB at most.
     #[cfg(not(target_arch = "x86_64"))]
-    const MEASURED: [(u64, u64); 15] = [
-        (256, 43_784),
-        (384, 47_700),
-        (512, 50_488),
-        (768, 88_668),
-        (1024, 93_524),
-        (1536, 106_936),
-        (2048, 116_160),
-        (3072, 241_524),
-        (3584, 252_728),
-        (4096, 263_956),
-        (4608, 290_332),
-        (6144, 324_016),
-        (8192, 368_980),
-        (12_288, 478_824),
-        (16_384, 577_468),
+    const MEASURED: [(u64, u64); 29] = [
+        (256, 40_104),
+        (320, 43_476),
+        (384, 43_964),
+        (448, 46_436),
+        (512, 46_860),
+        (640, 80_540),
+        (768, 82_816),
+        (896, 85_104),
+        (1024, 87_456),
+        (1280, 96_456),
+        (1536, 101_076),
+        (1792, 105_676),
+        (2048, 110_292),
+        (2560, 224_416),
+        (3072, 235_648),
+        (3328, 241_260),
+        (3584, 246_896),
+        (3840, 252_520),
+        (4096, 258_100),
+        (4352, 276_780),
+        (4608, 282_404),
+        (5376, 299_268),
+        (6144, 316_148),
+        (7168, 338_656),
+        (8192, 361_160),
+        (10_240, 423_968),
+        (12_288, 470_888),
+        (14_336, 519_964),
+        (16_384, 569_112),
     ];
-    /// KiB a MiB past the last size: (577,468 − 368,980) / 8,192 is 25.4.
+    /// KiB a MiB past the last size: (569,112 − 361,160) / 8,192 is 25.4.
     #[cfg(not(target_arch = "x86_64"))]
     const SLOPE: u64 = 26;
     let past = |&(size, kib): &(u64, u64)| kib.saturating_add(mib.saturating_sub(size).saturating_mul(SLOPE));
@@ -538,6 +565,18 @@ mod tests {
                 less < 256 || less * 1024 - overhead_kib(less) < limit_mib * 1024,
                 "{limit_mib}: {mib} is not the least"
             );
+        }
+    }
+
+    /// What the guest keeps never falls as its VM grows, which `memory_mib`'s search
+    /// takes for granted: each table's sizes in order, and its slope past them.
+    #[test]
+    fn the_guests_share_never_falls_as_its_vm_grows() {
+        let mut last = 0;
+        for mib in (2..40_000).step_by(2) {
+            let kept = overhead_kib(mib);
+            assert!(kept >= last, "{mib} MiB: {kept} KiB, below {last}");
+            last = kept;
         }
     }
 }
