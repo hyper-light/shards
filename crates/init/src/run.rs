@@ -540,6 +540,7 @@ fn sort_setup(entries: &[Vec<u8>], into: &mut Inherited) -> Result<Vec<Vec<u8>>,
             || entry == b"pid=workload"
             || entry.starts_with(b"pid=joiner=")
             || entry.starts_with(b"endpoint-sysctl=")
+            || entry.starts_with(b"mac=")
         {
             // Init's, as the run starts (`Standby::start`).
         } else if entry.starts_with(b"devices=") {
@@ -2027,6 +2028,19 @@ impl Standby {
     /// standby that has ended is replaced first. With it, the image's Agentfile as read
     /// before the workload starts, for a run that starts its domains (D115).
     fn start(self, spec: &Spec) -> Result<(Workload, Option<crate::domains::Read>), Failure> {
+        // Its own MAC, not its template's (D46): given, or made for it, as dockerd gives
+        // each container's endpoint one; first, as libnetwork sets it before addresses.
+        if let Some(mac) = spec.setup.iter().find_map(|e| e.strip_prefix(b"mac=")) {
+            let text = String::from_utf8_lossy(mac).into_owned();
+            let bytes =
+                parse_mac(&text).ok_or_else(|| setup_failed(format!("a malformed mac entry: {text}")))?;
+            crate::net::set_mac(bytes).map_err(|e| {
+                setup_failed(format!(
+                    "failed to set up container networking: failed to add interface eth0 to sandbox: error setting interface \"eth0\" MAC to \"{text}\": {}",
+                    shards_cmdline::go::linux_error(e.raw_os_error().unwrap_or(libc::EIO))
+                ))
+            })?;
+        }
         // A network's address, where it is not the template's (D46): before /etc/hosts,
         // which names it.
         if let Some(to) = spec.setup.iter().find_map(|e| e.strip_prefix(b"address=")) {
@@ -3030,6 +3044,20 @@ fn nodes_in(pid: libc::pid_t, nodes: &[crate::devices::Node]) -> Result<(), Fail
     }
 }
 
+/// A MAC as the daemon writes it (Go's HardwareAddr.String: 6, 8 or 20 octets in hex,
+/// colon-separated): its first six, as the kernel takes an Ethernet device's address of
+/// a longer one (rtnetlink copies the device's address length; PM M173).
+fn parse_mac(text: &str) -> Option<[u8; 6]> {
+    let octets: Vec<u8> = text
+        .split(':')
+        .map(|o| u8::from_str_radix(o, 16).ok())
+        .collect::<Option<_>>()?;
+    if !matches!(octets.len(), 6 | 8 | 20) {
+        return None;
+    }
+    octets.first_chunk::<6>().copied()
+}
+
 /// What a joiner (D119) does not take yet, refused by name before it starts: what init
 /// would do in the workload's namespaces rather than the joiner's own, and the workload's
 /// own shared directories, which its run alone was given.
@@ -3041,6 +3069,7 @@ fn joiner_takes(setup: &[Vec<u8>]) -> Result<(), Failure> {
             || entry.starts_with(b"address=")
             || entry.starts_with(b"address6=")
             || entry.starts_with(b"endpoint-sysctl=")
+            || entry.starts_with(b"mac=")
             || entry == b"confine-eth0"
             || entry.starts_with(b"domains-seccomp")
         {

@@ -9286,12 +9286,14 @@ fn an_agents_flood_of_flows_takes_no_others() {
 
 /// One agent's flows that conntrack may not evict take no other agent's (D61): a, granted
 /// TCP 7002 to x, opens connections from several threads and holds them, each an assured
-/// entry, until its table is full, before c begins (past full, a few more come as the
-/// table's unanswered entries go: 64 more in 9 s here, none in CI's 2 s); c, meanwhile, connects
-/// to b and to x itself, and makes every connection, each given 3 s, past a SYN's first
+/// entry, until its table is full (past full, a few more come as the table's unanswered
+/// entries go: 64 more in 9 s here, none in CI's 2 s); c, meanwhile, connects to b and to x
+/// itself in rounds, and every round that began once a's table was full, on the clock the
+/// microVM's agents share, makes every connection, each given 3 s, past a SYN's first
 /// retransmission (1 s), so that what a full table refuses fails and what a busy listener
-/// drops once does not. a's entries fill a's gate's table alone; x's gate tracks none of
-/// what is opened to it.
+/// drops once does not. When the table fills is the host's to say: a loaded one fills it
+/// later, and fewer of c's rounds count. a's entries fill a's gate's table alone; x's gate
+/// tracks none of what is opened to it.
 #[test]
 fn an_agents_assured_flows_take_no_others() {
     if cannot_run_vms() {
@@ -9307,16 +9309,12 @@ fn an_agents_assured_flows_take_no_others() {
     ];
     let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
     let flood: u64 = std::env::var("SHARDS_FLOOD_SECS").map_or(10, |s| s.parse().unwrap());
-    let half = flood / 2;
     let mut agents = String::new();
     for (name, verbs) in [
         ("b", "\"listen\",\"7001\"".to_string()),
         ("x", "\"listen\",\"7002\"".to_string()),
         ("a", format!("\"tcpflood\",\"x:7002,{flood}\"")),
-        (
-            "c",
-            format!("\"pause\",\"{half}\",\"reachmany\",\"b:7001,50,3\",\"reachmany\",\"x:7002,50,3\""),
-        ),
+        ("c", format!("\"reachrounds\",\"b:7001|x:7002,50,3,{flood}\"")),
     ] {
         let dir = TempDir::new(&format!("assured-agent-{name}"));
         std::fs::create_dir_all(dir.join("bin")).unwrap();
@@ -9365,10 +9363,7 @@ fn an_agents_assured_flows_take_no_others() {
     );
     let all = format!("{}{}", ran.stdout, ran.stderr);
     assert_eq!(ran.status, Some(0), "{all}");
-    for l in all
-        .lines()
-        .filter(|l| l.contains("tcpflood") || l.contains("reachmany"))
-    {
+    for l in all.lines().filter(|l| l.contains("tcpflood")) {
         eprintln!("{l}");
     }
     // a filled its table, each connection an entry that stays.
@@ -9380,21 +9375,30 @@ fn an_agents_assured_flows_take_no_others() {
     let (table, full) = rest.split_once(", full at ").unwrap();
     let (made, table): (u64, u64) = (made.parse().unwrap(), table.parse().unwrap());
     assert!(made >= table, "a made {made}, the table holds {table}:\n{all}");
-    // The table was full before c began, else c's connections prove nothing.
-    let full: u64 = full
-        .strip_suffix(" ms")
-        .and_then(|ms| ms.parse().ok())
+    let full: u128 = full
+        .split_once(", at ")
+        .and_then(|(_, at)| at.strip_suffix(" ns")?.parse().ok())
         .unwrap_or_else(|| panic!("a never filled the table:\n{all}"));
-    assert!(
-        full < half * 1000,
-        "the table was full at {full} ms, c began at {half} s:\n{all}"
-    );
+    // Each of c's rounds that began with the table full made every connection; those
+    // before prove nothing.
     for target in ["b:7001", "x:7002"] {
+        let rounds: Vec<(&str, u128)> = all
+            .lines()
+            .filter_map(|l| l.strip_prefix(&format!("[agent c] confined reachround {target}: ")))
+            .filter_map(|l| {
+                let (made, from) = l.split_once(" from ")?;
+                Some((made, from.strip_suffix(" ns")?.parse().ok()?))
+            })
+            .filter(|&(_, from)| from >= full)
+            .collect();
+        eprintln!("c's rounds to {target} with a's table full: {rounds:?}");
         assert!(
-            all.lines()
-                .any(|l| l.starts_with(&format!("[agent c] confined reachmany {target}: 50 of 50"))),
-            "c's connections to {target} were taken:\n{all}"
+            !rounds.is_empty(),
+            "none of c's rounds to {target} began with a's table full:\n{all}"
         );
+        for (made, _) in rounds {
+            assert_eq!(made, "50 of 50", "c's connections to {target} were taken:\n{all}");
+        }
     }
 }
 

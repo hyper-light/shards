@@ -25,7 +25,7 @@ import (
 
 // The flags shards serves, by command; the rest are hidden, as shards hides them.
 var served = map[string][]string{
-	"run": {"add-host", "blkio-weight", "blkio-weight-device", "cap-add", "cap-drop", "cidfile", "cpu-period", "cpu-quota", "cpu-shares", "cpus", "cpuset-cpus", "cpuset-mems", "detach", "detach-keys", "device", "device-cgroup-rule", "device-read-bps", "device-read-iops", "device-write-bps", "device-write-iops", "disable-content-trust", "dns", "dns-opt", "dns-option", "dns-search", "domainname", "entrypoint", "env", "env-file", "expose", "group-add", "health-cmd", "health-interval", "health-retries", "health-start-interval", "health-start-period", "health-timeout", "help", "hostname", "init", "interactive", "ip", "ip6", "kernel-memory", "label", "label-file", "memory", "memory-reservation", "memory-swap", "memory-swappiness", "mount", "name", "net", "net-alias", "network", "network-alias", "no-healthcheck", "oom-kill-disable", "oom-score-adj", "pid", "pids-limit", "platform", "privileged", "publish", "publish-all", "pull", "quiet", "read-only", "restart", "rm", "security-opt", "shm-size", "sig-proxy", "stop-signal", "stop-timeout", "sysctl", "tmpfs", "tty", "ulimit", "user", "volume", "volume-driver", "volumes-from", "workdir"},
+	"run": {"add-host", "blkio-weight", "blkio-weight-device", "cap-add", "cap-drop", "cidfile", "cpu-period", "cpu-quota", "cpu-shares", "cpus", "cpuset-cpus", "cpuset-mems", "detach", "detach-keys", "device", "device-cgroup-rule", "device-read-bps", "device-read-iops", "device-write-bps", "device-write-iops", "disable-content-trust", "dns", "dns-opt", "dns-option", "dns-search", "domainname", "entrypoint", "env", "env-file", "expose", "group-add", "health-cmd", "health-interval", "health-retries", "health-start-interval", "health-start-period", "health-timeout", "help", "hostname", "init", "interactive", "ip", "ip6", "kernel-memory", "label", "label-file", "mac-address", "memory", "memory-reservation", "memory-swap", "memory-swappiness", "mount", "name", "net", "net-alias", "network", "network-alias", "no-healthcheck", "oom-kill-disable", "oom-score-adj", "pid", "pids-limit", "platform", "privileged", "publish", "publish-all", "pull", "quiet", "read-only", "restart", "rm", "security-opt", "shm-size", "sig-proxy", "stop-signal", "stop-timeout", "sysctl", "tmpfs", "tty", "ulimit", "user", "volume", "volume-driver", "volumes-from", "workdir"},
 	"ps":   {"all", "filter", "format", "help", "last", "latest", "no-trunc", "quiet", "size"},
 	"ls":   {"all", "filter", "format", "help", "last", "latest", "no-trunc", "quiet", "size"},
 	"wait": {"help"},
@@ -88,7 +88,7 @@ var served = map[string][]string{
 	"volume inspect":    {"format", "help"},
 	"volume rm":         {"force", "help"},
 	"volume prune":      {"all", "filter", "force", "help"},
-	"create": {"add-host", "blkio-weight", "blkio-weight-device", "cap-add", "cap-drop", "cidfile", "cpu-period", "cpu-quota", "cpu-shares", "cpus", "cpuset-cpus", "cpuset-mems", "device", "device-cgroup-rule", "device-read-bps", "device-read-iops", "device-write-bps", "device-write-iops", "disable-content-trust", "dns", "dns-opt", "dns-option", "dns-search", "domainname", "entrypoint", "env", "env-file", "expose", "group-add", "health-cmd", "health-interval", "health-retries", "health-start-interval", "health-start-period", "health-timeout", "help", "hostname", "init", "interactive", "ip", "ip6", "kernel-memory", "label", "label-file", "memory", "memory-reservation", "memory-swap", "memory-swappiness", "mount", "name", "net", "net-alias", "network", "network-alias", "no-healthcheck", "oom-kill-disable", "oom-score-adj", "pid", "pids-limit", "platform", "privileged", "publish", "publish-all", "pull", "quiet", "read-only", "restart", "rm", "security-opt", "shm-size", "stop-signal", "stop-timeout", "sysctl", "tmpfs", "tty", "ulimit", "user", "volume", "volume-driver", "volumes-from", "workdir"},
+	"create": {"add-host", "blkio-weight", "blkio-weight-device", "cap-add", "cap-drop", "cidfile", "cpu-period", "cpu-quota", "cpu-shares", "cpus", "cpuset-cpus", "cpuset-mems", "device", "device-cgroup-rule", "device-read-bps", "device-read-iops", "device-write-bps", "device-write-iops", "disable-content-trust", "dns", "dns-opt", "dns-option", "dns-search", "domainname", "entrypoint", "env", "env-file", "expose", "group-add", "health-cmd", "health-interval", "health-retries", "health-start-interval", "health-start-period", "health-timeout", "help", "hostname", "init", "interactive", "ip", "ip6", "kernel-memory", "label", "label-file", "mac-address", "memory", "memory-reservation", "memory-swap", "memory-swappiness", "mount", "name", "net", "net-alias", "network", "network-alias", "no-healthcheck", "oom-kill-disable", "oom-score-adj", "pid", "pids-limit", "platform", "privileged", "publish", "publish-all", "pull", "quiet", "read-only", "restart", "rm", "security-opt", "shm-size", "stop-signal", "stop-timeout", "sysctl", "tmpfs", "tty", "ulimit", "user", "volume", "volume-driver", "volumes-from", "workdir"},
 	"container create": {
 		"disable-content-trust", "entrypoint", "env", "help",
 		"hostname", "init", "interactive", "kernel-memory", "name", "net", "network", "pull",
@@ -427,6 +427,14 @@ var cases = [][]string{
 	{"run", "--network", "a=b", "alpine"},
 	{"run", "--net", "name=x,ip=y", "alpine"},
 	{"run", "--network", "\"name=a", "alpine"},
+	{"run", "--mac-address", "02:42:zz:11:00:99", "alpine"},
+	{"run", "--mac-address", "bad", "--pull", "nope", "alpine"},
+	{"run", "--network", "name=bridge,mac-address=bad", "alpine"},
+	{"run", "--mac-address", "02:42:ac:11:00:02", "--network", "name=bridge,mac-address=02:42:ac:11:00:03", "alpine"},
+	{"run", "--mac-address", "0242.ac11.0002", "alpine"},
+	{"run", "--mac-address", " 02-42-ac-11-00-02 ", "alpine"},
+	{"create", "--mac-address", "02:42:ac:11:00:99:00:01", "alpine"},
+	{"create", "--mac-address", "nope", "alpine"},
 	{"run", "--network"},
 	{"run", "--network=", "alpine"},
 	{"run", "-e"},

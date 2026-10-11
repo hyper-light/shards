@@ -50,6 +50,13 @@ fn macs_parse_as_net_parses_them() {
             case["ok"].as_bool().unwrap(),
             "{input:?}"
         );
+        assert_eq!(
+            network::mac_octets(input)
+                .map(|o| network::mac_string(&o))
+                .unwrap_or_default(),
+            text(&case["out"]),
+            "{input:?}"
+        );
     }
 }
 

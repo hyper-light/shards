@@ -18,6 +18,7 @@ const NLM_F_REPLACE: u16 = 0x100;
 const NLM_F_EXCL: u16 = 0x200;
 const NLM_F_CREATE: u16 = 0x400;
 const NLMSG_ERROR: u16 = 2;
+const IFLA_ADDRESS: u16 = 1;
 const IFLA_MTU: u16 = 4;
 const IFA_ADDRESS: u16 = 1;
 const IFA_LOCAL: u16 = 2;
@@ -107,6 +108,40 @@ pub fn configure(addr: Ipv4Addr, prefix: u8, gateway: Ipv4Addr) -> io::Result<()
     attr(&mut r, RTA_GATEWAY, &gateway.octets());
     attr(&mut r, RTA_OIF, &index.to_ne_bytes());
     request(&sock, RTM_NEWROUTE, NLM_F_CREATE | NLM_F_EXCL, &r)
+}
+
+/// Gives `eth0` the MAC `mac`, its run's own rather than its template's, as libnetwork sets
+/// an endpoint's (setInterfaceMAC: RTM_NEWLINK with IFLA_ADDRESS). virtio-net changes it
+/// with the link up, the device not told (no control queue).
+pub fn set_mac(mac: [u8; 6]) -> io::Result<()> {
+    // SAFETY: if_nametoindex(3) with a NUL-terminated name.
+    let index = unsafe { libc::if_nametoindex(c"eth0".as_ptr()) };
+    if index == 0 {
+        return Err(io::Error::other("no eth0"));
+    }
+    // SAFETY: socket(2) with constant arguments.
+    let fd = unsafe {
+        libc::socket(
+            libc::AF_NETLINK,
+            libc::SOCK_RAW | libc::SOCK_CLOEXEC,
+            libc::NETLINK_ROUTE,
+        )
+    };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: a descriptor just made.
+    let sock = unsafe { OwnedFd::from_raw_fd(fd) };
+    let index_i32 = i32::try_from(index).map_err(|_| io::Error::other("an interface index past i32"))?;
+    // struct ifinfomsg: family, pad, type, index, flags, change; then its address.
+    let mut link = Vec::new();
+    link.extend_from_slice(&[0u8, 0]);
+    link.extend_from_slice(&0u16.to_ne_bytes());
+    link.extend_from_slice(&index_i32.to_ne_bytes());
+    link.extend_from_slice(&0u32.to_ne_bytes());
+    link.extend_from_slice(&0u32.to_ne_bytes());
+    attr(&mut link, IFLA_ADDRESS, &mac);
+    request(&sock, RTM_NEWLINK, 0, &link)
 }
 
 /// Moves `eth0` from the address its template booted with, `from`, to `to`, and its default

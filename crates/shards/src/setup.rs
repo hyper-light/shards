@@ -43,6 +43,15 @@ pub fn endpoint_sysctls(run: &Run) -> Vec<String> {
     if run.network == "none" {
         return Vec::new();
     }
+    own_endpoint(run)
+        .and_then(|e| e.driver_opts.iter().find(|(k, _)| k == ENDPOINT_SYSCTLS))
+        .map(|(_, v)| v.split(',').filter(|s| !s.is_empty()).map(String::from).collect())
+        .unwrap_or_default()
+}
+
+/// The endpoint of `run`'s own network, its mode's: the default bridge's whichever name
+/// says it.
+pub fn own_endpoint(run: &Run) -> Option<&shards_ipc::Endpoint> {
     let ours = |n: &str| {
         n == run.network
             || matches!(
@@ -50,12 +59,7 @@ pub fn endpoint_sysctls(run: &Run) -> Vec<String> {
                 ("bridge", "default") | ("default", "bridge")
             )
     };
-    run.endpoints
-        .iter()
-        .find(|e| ours(&e.network))
-        .and_then(|e| e.driver_opts.iter().find(|(k, _)| k == ENDPOINT_SYSCTLS))
-        .map(|(_, v)| v.split(',').filter(|s| !s.is_empty()).map(String::from).collect())
-        .unwrap_or_default()
+    run.endpoints.iter().find(|e| ours(&e.network))
 }
 
 /// docker/cli's map of `--tmpfs`: each destination's options, the last given for it
@@ -229,12 +233,15 @@ pub fn seccomp(
     compiled(profile, run, kernel, b"seccomp=")
 }
 
-/// What docker-default, Docker's AppArmor profile, keeps from a container with
-/// CAP_SYS_ADMIN where AppArmor is enforced (`deny mount,`), as a filter of its own, for
-/// guests, which have no AppArmor (`seccomp-mounts=`, shards_seccomp::MOUNTS): none for a
-/// privileged container or `apparmor=unconfined`, as Docker's has none, nor without the
-/// capability, which every mount needs, refused EPERM before AppArmor is asked. So a
-/// container given SYS_ADMIN mounts nothing of its microVM's, its shares among them.
+/// What docker-default, Docker's AppArmor profile, refuses a container with CAP_SYS_ADMIN
+/// where AppArmor is enforced (`deny mount,`, PM M174), as a filter of its own, for guests,
+/// which have no AppArmor (`seccomp-mounts=`, shards_seccomp::MOUNTS): mount(2), and past
+/// docker-default the new mount API and pivot_root (D121). So a container given SYS_ADMIN
+/// mounts nothing of its microVM's, its shares among them. None for a privileged container
+/// or `apparmor=unconfined`, as Docker's has none, nor without the capability: the kernel
+/// refuses every mount then, and a filter would change only mount(2)'s errno (AppArmor's
+/// EACCES for the kernel's EPERM) while putting one on a container `seccomp=unconfined`
+/// asked to have none.
 pub fn mounts(
     run: &Run,
     security: &Security,
@@ -736,8 +743,9 @@ mod tests {
     }
 
     /// Docker's AppArmor's mount rule is a filter of its own for a container given
-    /// CAP_SYS_ADMIN, before Docker's profile; none without the capability, for a
-    /// privileged container, or with `apparmor=unconfined`, as Docker's has none then.
+    /// CAP_SYS_ADMIN, before Docker's profile; none without the capability, `seccomp=`
+    /// unconfined or a profile of its own alike, for a privileged container, or with
+    /// `apparmor=unconfined`, as Docker's has none then (PM M174).
     #[test]
     fn a_container_given_sys_admin_has_apparmors_mount_rule() {
         let kernel = shards_seccomp::Kernel(6, 1);
@@ -780,5 +788,16 @@ mod tests {
             ..admin.clone()
         };
         assert_eq!(entries(&no_seccomp), ["seccomp-mounts"]);
+        // Without the capability, under no filter or one of its own: none.
+        for (opt, want) in [
+            ("seccomp=unconfined", &[][..]),
+            ("seccomp={\"defaultAction\":\"SCMP_ACT_ALLOW\"}", &["seccomp"]),
+        ] {
+            let run = Run {
+                security_opt: vec![opt.into()],
+                ..Run::default()
+            };
+            assert_eq!(entries(&run), want, "{opt}");
+        }
     }
 }

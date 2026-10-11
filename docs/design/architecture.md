@@ -1914,8 +1914,8 @@ stack inside the VMM, is superseded by it.
   which would not start, and runs on `none` go on. The daemon elects it as it starts and
   keeps it for its life, as dockerd keeps its bridge; a build elects it as it starts its
   builder (PM M101 for its cost). The guest is the subnet's second address behind its
-  first, with a random, locally administered MAC as Docker gives a container, which a
-  template keeps and its restores reuse; the subnet is on the guest's command line, by
+  first, with a random, locally administered MAC as Docker gives a container, which each
+  run replaces with its own (D46, PM M173); the subnet is on the guest's command line, by
   which templates are named, so a template is restored only on the subnet it was saved
   on. The daemon starts each VM's network process beside it, on that bridge, and hands
   the VM its side of the ring.
@@ -2900,6 +2900,31 @@ command's namespace, refused as any net.* sysctl is (D115). Tested
 (`an_endpoints_sysctls_are_its_interfaces`, mutation-checked: written before the
 container's own, eth0 kept all's; `interface_sysctls_are_endpoints`).
 
+A run's own MAC, as dockerd gives it (PM M173): the one given (`--mac-address`, or its
+endpoint's `mac-address`), in any form Go's ParseMAC reads (colons, dashes, dots or bare
+hex; 6, 8 or 20 octets), else one made for each start, random, locally administered and
+unicast, as dockerd makes each endpoint's, so that no two runs of a template share the
+template's. init gives eth0 it before its addresses, as libnetwork sets it before
+configuring the interface (rtnetlink RTM_NEWLINK with IFLA_ADDRESS; virtio-net takes a new
+address on a running device, IFF_LIVE_ADDR_CHANGE), the kernel taking the first six
+octets of a longer one as it takes them of dockerd's; one it refuses (multicast, all zeros)
+fails the start in libnetwork's words, eth0 where dockerd names its veth. The daemon tells
+the VM's network process before the VM has the run (`NET_MAC`), and from then on it frames
+to that MAC and hears from it alone. Given on `none` or another's network it is taken, and
+nothing has it, as with dockerd. inspect shows it while the run lasts and, given, before its
+first start, and none once it has run, until it runs again; `network inspect` shows each
+member's. Refused by the CLI in docker/cli's words: a malformed one, and both ways at once.
+
+Unlike dockerd, by design: inspect shows the MAC the interface has or will have, the first
+six octets of an EUI-64 given (dockerd echoes all eight, which no interface has) and none
+on `none` (dockerd echoes the one given). Two runs given one MAC on a network reach each
+other, each network process framing to its own guest alone and every peer reached
+through the gateway's MAC; on dockerd's bridge neither reaches the other (PM M173). Tested
+(`a_runs_mac_is_its_own_as_dockerd_gives_it`, mutation-checked: the network process not
+told, init not setting it, inspect not showing a created run's; the network process's
+`a_runs_mac_is_the_one_frames_go_to`; the CLI's parser held to Go 1.26.1's ParseMAC and
+`HardwareAddr.String`, `macs_parse_as_net_parses_them`).
+
 Unlike Docker, by the microVM: a microVM has one network device, so it is on one network.
 One left on the default bridge and connected to one user network is on that network
 alone, which under default deny gives it all the bridge would. A microVM on two user
@@ -2909,8 +2934,6 @@ yet"), and so is connecting or disconnecting a running one.
 Open:
 - A microVM on several networks, and connecting a running one: a network device per
   network, added to a running VM.
-- A MAC per microVM: every microVM restored from one template shares the template's, which
-  inspect shows.
 - The TTY pages of `network ls` and `inspect`, in shards' own design (they print Docker's
   table on a terminal too).
 - Egress grants for a network (AGENTFILE_ARCH §4.6 `NETWORK --egress`), with the
@@ -3480,23 +3503,39 @@ mount rule itself, on every guest kernel, with seccomp, which all have:
 
 - **The rule as a filter of its own** (`shards_seccomp::MOUNTS`, `seccomp-mounts=`): mount,
   mount_setattr, the new mount API (fsopen, fsconfig, fsmount, fspick, move_mount,
-  open_tree) and pivot_root, each EACCES, as AppArmor denies them; umount left to it, as
-  docker-default allows it. Compiled as Docker's profile is, for the native and compat
-  syscall tables (x86_64 with x86 and x32, arm64 with arm), so no `int 0x80` gets past it.
-- **Only where Docker's AppArmor would refuse**: for a container with CAP_SYS_ADMIN, not
-  privileged, not `apparmor=unconfined`. Without the capability every mount is refused
-  EPERM by the kernel and Docker's seccomp profile before AppArmor is asked, so no filter
-  is given that would answer EACCES instead. Installed before Docker's profile, whose errno
-  then wins where both refuse (seccomp_filter.rst: the most recent filter's).
+  open_tree) and pivot_root, each EACCES, AppArmor's answer to mount(2) (PM M174); umount
+  left to it, as docker-default allows it. Compiled as Docker's profile is, for the native
+  and compat syscall tables (x86_64 with x86 and x32, arm64 with arm), so no `int 0x80`
+  gets past it.
+- **Past docker-default, by design.** docker-default refuses mount(2) and lets fsopen and
+  open_tree's clone through to a container with the capability (PM M174). A detached
+  mount needs no mount point: fsopen, fsconfig and fsmount make one, and its descriptor
+  opens its files, so the rule that refused mount(2) alone would leave a microVM's own
+  virtio-fs shares, a provider's and the join share, to any container given the
+  capability. shards refuses the new mount API too; a program that mounts gets EACCES
+  from its first step instead of from mount(2) or move_mount.
+- **Only where it protects something**: for a container with CAP_SYS_ADMIN, not
+  privileged, not `apparmor=unconfined`. Without the capability the kernel refuses every
+  mount, EPERM, and Docker's seccomp profile refuses first. Installed before Docker's
+  profile, whose errno then wins where both refuse (seccomp_filter.rst: the most recent
+  filter's).
+- **Unlike Docker, by design, and why.** Under `seccomp=unconfined` without the capability,
+  mount(2) is refused EPERM, by the kernel, where AppArmor answers EACCES: the kernel asks
+  AppArmor before it checks the capability (Linux fs/namespace.c path_mount:
+  security_sb_mount, then may_mount; PM M174). A filter would change that errno alone, and
+  would put a seccomp filter on a container that asked to have none (`Seccomp: 2` in
+  /proc/PID/status, where Docker's shows 0). With the capability under
+  `seccomp=unconfined`, the filter stays, and so does `Seccomp: 2`: there it is what keeps
+  the microVM's shares.
 - **For all a container runs**: the workload, its execs (the run's filters are theirs, as
   runc's exec takes the container's) and joiners.
 - **Tested** (`a_container_given_sys_admin_mounts_nothing_as_apparmor_keeps_it`: a mount, a
   remount of a read-only file, fsopen, open_tree and its microVM's own share refused EACCES,
   in an exec and a joiner too; umount of its own tmpfs made; `apparmor=unconfined` and
-  `--privileged` mounting; EPERM without the capability; mutation-checked: without the
-  filter, the mount went through; `a_container_given_sys_admin_has_apparmors_mount_rule`:
+  `--privileged` mounting; EPERM without the capability, under `seccomp=unconfined` too;
+  mutation-checked: without the filter, the mount went through; `a_container_given_sys_admin_has_apparmors_mount_rule`:
   who is given it). Docker's own behaviour where AppArmor is enforced is probed on GitHub's
-  Ubuntu runners (`docs/research/measurements/docker-apparmor-mount`).
+  Ubuntu runners (`docs/research/measurements/docker-apparmor-mount`, PM M174).
 - **Not taken from docker-default**: its /proc and /sys write rules, which Docker's masked
   and read-only paths cover in every container already, and its ptrace and signal rules,
   which PID namespaces keep between containers.
@@ -4020,13 +4059,13 @@ the rest of a run's reach into its domains.
   | `--privileged` (run, exec); `--cap-add` of the twelve that cross the PID namespace, or `NET_ADMIN`/`NET_RAW` where the flows cross, or `ALL`; `systempaths=unconfined`; a `net.*` sysctl where the flows cross; `-u`/`--group-add`/exec `-u` of a domain's or server's ID; `--pid host`; `--network none` with egress granted | refused (daemon and init; the image's `USER` at build) | each reaches a domain (above) |
   | Docker's default `CAP_NET_RAW` where the flows cross | withheld, said (`WARNING:`) | it reads and writes their packets |
   | `--volumes-from`, a named mount of a scoped volume; `vnd.osi.agentfile.*` labels (`--label`, `volume create`, `--mount volume-label`); `-p` of a port declared `AS egress` | refused (D109, D59) | a domain's alone |
-  | `--ipc`, `--uts`, `--userns`, `--cgroupns`, `--network host`, `--network container:`, `--pid container:`, `--link`, `--mac-address`, `--log-*`, `--runtime`, `--isolation`, `--storage-opt` | refused for every run, not supported by shards | |
+  | `--ipc`, `--uts`, `--userns`, `--cgroupns`, `--network host`, `--network container:`, `--pid container:`, `--link`, `--log-*`, `--runtime`, `--isolation`, `--storage-opt` | refused for every run, not supported by shards | |
   | `--cap-add` of any other: `DAC_READ_SEARCH`, `IPC_OWNER`, `IPC_LOCK`, `SYS_BOOT`, `SYS_RESOURCE`, `CHECKPOINT_RESTORE` among them | given | `open_by_handle_at` opens only on filesystems the command holds a mount of, a domain's own being none of them; IPC namespaces differ; `reboot(2)` ends the caller's own PID namespace's init (pid_namespaces(7)); the rest bound the command's own resources or namespaces |
   | `--cap-drop`, `no-new-privileges`, `writable-cgroups=true` (its cgroup namespace's subtree), `apparmor=`, `label=` (no LSM in the microVM: accepted, as on a Docker host without one) | given | narrows the command, or touches only its own |
   | `seccomp=` a profile or `unconfined` | given, recorded | its own filter; the domains keep theirs. Measured: unconfined, any uid makes a user namespace (`max_user_namespaces` 994), owning none of the domains' namespaces but reaching more of the kernel they share |
   | `--device`, `--device-cgroup-rule` | given, recorded | measured: the microVM's nodes (its image's `pmem0`, loop, `mem`, `port`, `kmsg`, `rtc0`, `snapshot`, consoles, `fuse`, `vsock`, `userfaultfd`) reach no domain without a capability refused above; `/dev/userfaultfd` widens the kernel's surface as `seccomp=unconfined` does |
   | `--oom-score-adj` | given, recorded | biases which process the microVM's OOM killer picks; the domains' memory is D59's partition |
-  | other `--sysctl`s; `--ulimit`; resources (`-m`, `--cpus`, `--pids-limit`, block I/O); `--shm-size`, `--tmpfs`, `--read-only`, `-v`/`--mount` (D109's rules); `--init`; `--restart`, `--rm`, `--stop-*`, `--health-*`; `-e`, `--env-file`, `-w`, `--entrypoint`, `-h`, `--domainname`, `--dns*`, `--add-host`; `--name`, `--label`, `--expose`, `-p`; `-i`/`-t`/`-a`, `--sig-proxy`, `--detach-keys`, `--platform`, `--pull`, `--cidfile`; user networks (D46) | given | the command's own namespaces, cgroup, files and identity |
+  | other `--sysctl`s; `--ulimit`; resources (`-m`, `--cpus`, `--pids-limit`, block I/O); `--shm-size`, `--tmpfs`, `--read-only`, `-v`/`--mount` (D109's rules); `--init`; `--restart`, `--rm`, `--stop-*`, `--health-*`; `-e`, `--env-file`, `-w`, `--entrypoint`, `-h`, `--domainname`, `--dns*`, `--add-host`; `--name`, `--label`, `--expose`, `-p`, `--mac-address`; `-i`/`-t`/`-a`, `--sig-proxy`, `--detach-keys`, `--platform`, `--pull`, `--cidfile`; user networks (D46) | given | the command's own namespaces, cgroup, files and identity |
   | exec `-e`, `-w`, `-i`, `-t`, `--detach-keys` | given | in the command's namespaces, under its rules |
   | `cp`, `diff`, `export`; `commit`; `top`, `stats`, `logs`, `attach`, `wait`, `port`, `inspect`, `events`, `rename` | given | the command's files, with `/proc`, `/sys` and `/dev` unmounted (`commit` pauses the microVM whole, agents included, as dockerd pauses a container); the rest are the host's view, the host being trusted |
   | `kill`, `stop`, `restart`, `pause`/`unpause`, `update`, `rm -f` | given | the command's namespace and cgroup (`update`), or the microVM whole, agents with it; a restart is a new microVM |

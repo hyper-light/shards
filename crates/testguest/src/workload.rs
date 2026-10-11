@@ -1552,8 +1552,8 @@ fn confined(args: &[String]) -> i32 {
         match a.as_str() {
             "see" | "write" | "bind" | "connect" | "call" | "listen" | "reach" | "unreach" | "cat"
             | "resolve" | "dnsprobe" | "dnsask" | "unix" | "abstract" | "unix-serve" | "pause"
-            | "udpflood" | "tcpflood" | "udpaskfrom" | "reachmany" | "udpask" | "srv-send"
-            | "srv-receive" | "srv-answer" | "owner" | "mcp-run" => mode = a.as_str(),
+            | "udpflood" | "tcpflood" | "udpaskfrom" | "reachmany" | "reachrounds" | "udpask"
+            | "srv-send" | "srv-receive" | "srv-answer" | "owner" | "mcp-run" => mode = a.as_str(),
             "srv-mcp" => {
                 let said = match server_call("mcp", "{}") {
                     Ok((t, false)) => t,
@@ -1843,7 +1843,7 @@ fn confined(args: &[String]) -> i32 {
                 use std::net::ToSocketAddrs as _;
                 let (addr, secs) = spec.split_once(',').unwrap_or((spec, "0"));
                 let to = addr.to_socket_addrs().ok().and_then(|mut a| a.next());
-                let began = std::time::Instant::now();
+                let (began, start_ns) = (std::time::Instant::now(), monotonic_ns());
                 let until = began + std::time::Duration::from_secs(secs.parse().unwrap_or(0));
                 let max = std::fs::read_to_string("/proc/sys/net/netfilter/nf_conntrack_max")
                     .map(|m| m.trim().to_string())
@@ -1879,13 +1879,43 @@ fn confined(args: &[String]) -> i32 {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .len();
+                // When, from its start and on the clock every agent of the microVM shares.
                 let full = match *full.lock().unwrap_or_else(std::sync::PoisonError::into_inner) {
-                    Some(ms) => format!("{ms} ms"),
+                    Some(ms) => format!("{ms} ms, at {} ns", start_ns + ms * 1_000_000),
                     None => "never".to_string(),
                 };
                 out.push_str(&format!(
                     "confined tcpflood {addr}: {made} made, table {max}, full at {full}\n"
                 ));
+            }
+            // `ADDR|ADDR…,N,SECS,UNTIL`: rounds of N connections to each ADDR, each given SECS
+            // seconds, every half second until UNTIL seconds have passed: how many each
+            // round made, and when it began on the microVM's clock, for a test to judge the
+            // rounds that came after something another agent did.
+            spec if mode == "reachrounds" => {
+                use std::net::ToSocketAddrs as _;
+                let mut parts = spec.split(',');
+                let addrs: Vec<&str> = parts.next().unwrap_or_default().split('|').collect();
+                let n: u32 = parts.next().and_then(|n| n.parse().ok()).unwrap_or(0);
+                let wait =
+                    std::time::Duration::from_secs(parts.next().and_then(|s| s.parse().ok()).unwrap_or(1));
+                let until = std::time::Instant::now()
+                    + std::time::Duration::from_secs(parts.next().and_then(|s| s.parse().ok()).unwrap_or(0));
+                while std::time::Instant::now() < until {
+                    for addr in &addrs {
+                        let to = addr.to_socket_addrs().ok().and_then(|mut a| a.next());
+                        let began = monotonic_ns();
+                        let made = (0..n)
+                            .filter(|_| {
+                                to.is_some_and(|to| std::net::TcpStream::connect_timeout(&to, wait).is_ok())
+                            })
+                            .count();
+                        out.push_str(&format!(
+                            "confined reachround {addr}: {made} of {n} from {began} ns\n"
+                        ));
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                }
             }
             // `ADDR,N[,SECS]`: N connections to ADDR, each given SECS (1) seconds, and how
             // many were made.

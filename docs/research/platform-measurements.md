@@ -5720,9 +5720,9 @@ revision before comparing a changed API/implementation.
     alike: "interface specific sysctl setting \"KEY\" must be supplied using driver option
     'com.docker.network.endpoint.sysctls'" (moby daemon/server/router/container,
     handleSysctlBC, API ≥ 1.48), before any of the daemon's own checks.
-- **Consequence.** Not yet built: init would write each on eth0 after the run's own
-  sysctls, in libnetwork's words, the daemon passing them on and refusing an interface's
-  key given as `--sysctl` first; they stay refused up front meanwhile.
+- **Consequence.** Built (D46): init writes each on eth0 after the run's own sysctls, in
+  libnetwork's words, the daemon passing them on and refusing an interface's key given as
+  `--sysctl` first (`an_endpoints_sysctls_are_its_interfaces`).
 
 ### M172. Whether GitHub's Windows runners can run a WHP partition
 
@@ -5740,3 +5740,61 @@ revision before comparing a changed API/implementation.
     HypervisorPresent 0 and WHvCreatePartition 0xC0351000 before and after.
 - **Consequence.** A WHP backend can be tested on real VMs in CI on x86_64 Windows; on
   arm64 Windows it can be built and linted, and run on a host of its own.
+
+### M173. dockerd's MAC addresses, as a container sees them and inspect shows them (D46)
+
+- **Method.** `docs/research/measurements/mac-address/probe.sh`, Docker 29.3.1 in
+  `shards-dind`, `alpine:3.22`, each container removed after; 2026-10-10.
+- **Found.**
+  - Given, by `--mac-address` or the endpoint's `mac-address`, it is eth0's
+    (`/sys/class/net/eth0/address`), in lower case whatever the case given; the dash
+    (`02-42-ac-11-00-91`) and dot (`0242.ac11.0090`) forms, and spaces around it, alike.
+    Of eight octets (`02:42:ac:11:00:99:00:01`), eth0 has the first six.
+  - Malformed, the CLI refuses it (125): "docker: 02:42:zz:11:00:99 is not a valid mac
+    address", and an endpoint's alike ("bad is not a valid mac address").
+  - Multicast (`01:00:5e:00:00:01`) or all zeros, the start fails (125): "failed to set up
+    container networking: failed to add interface vethNNNNNNN to sandbox: error setting
+    interface \"vethNNNNNNN\" MAC to \"01:00:5e:00:00:01\": cannot assign requested
+    address".
+  - On `none`, `host` and another's network (`container:`), it is taken and the run
+    succeeds; on `none` the container has no interface but lo and the kernel's tunnels.
+  - None given, each container has a random, locally administered unicast one
+    (`02:f9:a0:2a:00:52`, `56:11:20:27:a1:3e`, `da:47:b2:26:d7:52`), a new one each start.
+  - inspect's `NetworkSettings.Networks.*.MacAddress`: a given one as Go's
+    `HardwareAddr.String()` writes it (lower case, colons, every octet, an EUI-64's
+    eight) while the container is created, running and restarted, empty once it has
+    exited; a made one empty while created and exited. On `none` and `host`, the given
+    one, created and running. `Config` has no MacAddress. `network inspect` shows a
+    member's given one, an EUI-64's eight octets.
+  - Two containers given one MAC on one user network both run, and neither reaches the
+    other (`nc` to the other's listener: 0 of 3); two of different MACs do (3 of 3).
+- **Consequence.** Built (D46): a run's own MAC, given or made, eth0's and its network
+  process's, shown by inspect as dockerd shows it but where dockerd shows one no interface
+  has; two given one MAC reach each other, as on dockerd's bridge they do not.
+
+### M174. What Docker's AppArmor profile leaves a container of mounts (D121)
+
+- **Method.** `docs/research/measurements/docker-apparmor-mount/probe.sh` by its workflow
+  (`docker-apparmor-probe.yml`), run 38101649596 at dev 329c5000, 2026-10-11, on GitHub's
+  ubuntu-24.04 (Linux 6.17.0-1022-azure x86_64) and ubuntu-24.04-arm (aarch64): Docker
+  28.0.4, AppArmor enabled, docker-default enforced; each step's return and errno from
+  python's ctypes in `python:3.13-alpine`.
+- **Found**, alike on both:
+  - Default capabilities: mount, umount2, fsopen and open_tree's clone EPERM (Docker's
+    seccomp profile).
+  - `--cap-add SYS_ADMIN`: mount EACCES (docker-default's `deny mount,`); fsopen and
+    open_tree's clone succeed; umount2 of a mount (MNT_DETACH of /etc/hostname) succeeds.
+    BusyBox's mount says "mount: mounting none on /mnt/t failed: Permission denied", 255.
+  - With `seccomp=unconfined` too: the same. Without the capability, `seccomp=unconfined`:
+    mount EACCES, since the kernel asks the LSM before it checks the capability (Linux
+    fs/namespace.c path_mount: security_sb_mount, then may_mount); the rest EPERM.
+  - `apparmor=unconfined` with the capability, and `--privileged`: every step succeeds.
+  - An unknown profile (`apparmor=no-such-profile`): the start fails, 127, runc unable to
+    apply it.
+- **Consequence.** docker-default refuses mount(2) of these, and lets the new mount API
+  through where the capability is given. shards' filter refuses both (D121): a detached
+  mount (fsopen, fsmount, then files through its descriptor) needs no mount point, and
+  would reach a microVM's own virtio-fs shares past the rule. Without the capability under
+  `seccomp=unconfined`, shards' answer to mount(2) is the kernel's EPERM, not AppArmor's
+  EACCES: a filter for that errno alone would be a seccomp filter on a container asked to
+  have none.

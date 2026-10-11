@@ -464,6 +464,11 @@ fn request(parsed: &Parsed) -> Result<Run, String> {
             ));
         }
     };
+    // parse's first check (docker/cli container/opts.go).
+    let mac = parsed.string("mac-address");
+    if !mac.is_empty() && !shards_cmdline::network::parse_mac(mac.trim()) {
+        return Err(format!("{mac} is not a valid mac address"));
+    }
     let (image, cmd) = parsed.args.split_first().ok_or("an image is required")?;
     let health = health(parsed)?;
     let (_, bindings) = shards_cmdline::ports::publish(parsed.many("publish"))?;
@@ -482,6 +487,7 @@ fn request(parsed: &Parsed) -> Result<Run, String> {
         aliases: parsed.many("network-alias").to_vec(),
         ipv4: address("ip")?,
         ipv6: address("ip6")?,
+        mac: mac.to_string(),
     };
     let endpoints = network::endpoints(&attachments, &top)?
         .into_iter()

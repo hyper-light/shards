@@ -2067,12 +2067,218 @@ fn an_endpoints_sysctls_are_its_interfaces() {
     );
 }
 
+/// A run's MAC is its own, as dockerd gives it (D46, PM M173): one given, either way and in
+/// any form Go's ParseMAC reads, is eth0's, an EUI-64's first six octets; else one is made
+/// for each run, local unicast, so that no two runs of one template share theirs. inspect
+/// shows it while it runs and, given, before its first start, and none once it has run;
+/// one no interface can have fails the start in libnetwork's words; on `none` it is taken,
+/// and no interface has it. A published port reaches a run past its change, and two given
+/// one MAC on a network reach one another, as on Docker's bridge they would not.
+#[test]
+fn a_runs_mac_is_its_own_as_dockerd_gives_it() {
+    use std::io::{Read as _, Write as _};
+    let Some((home, image)) = home("containers-mac") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let address = ["fs", "print:/sys/class/net/eth0/address"];
+    let eth0 = |options: &[&str]| {
+        let mut o = vec!["--rm"];
+        o.extend(options);
+        let r = run_in(&home, &image, &o, &address);
+        assert_eq!(r.status, Some(0), "{options:?}: {r}");
+        r.stdout
+    };
+    for (options, want) in [
+        (&["--mac-address", "02:42:AC:11:00:99"][..], "02:42:ac:11:00:99\n"),
+        (
+            &["--network", "name=bridge,mac-address=02-42-ac-11-00-98"],
+            "02:42:ac:11:00:98\n",
+        ),
+        (&["--mac-address", " 0242.ac11.0097 "], "02:42:ac:11:00:97\n"),
+        (
+            &["--mac-address", "02:42:ac:11:00:96:00:01"],
+            "02:42:ac:11:00:96\n",
+        ),
+    ] {
+        assert_eq!(eth0(options), want, "{options:?}");
+    }
+    // Made: each run's own, locally administered and unicast (IEEE 802-2014 8.2).
+    let made = [eth0(&[]), eth0(&[])];
+    assert_ne!(made[0], made[1]);
+    for m in &made {
+        let first = u8::from_str_radix(m.get(..2).unwrap(), 16).unwrap();
+        assert_eq!(first & 0b11, 0b10, "{m}");
+    }
+    // Refused by the CLI, as docker/cli refuses them.
+    for (options, said) in [
+        (
+            &["--mac-address", "02:42:zz:11:00:99"][..],
+            "02:42:zz:11:00:99 is not a valid mac address",
+        ),
+        (
+            &["--network", "name=bridge,mac-address=bad"],
+            "bad is not a valid mac address",
+        ),
+        (
+            &[
+                "--mac-address",
+                "02:42:ac:11:00:02",
+                "--network",
+                "name=bridge,mac-address=02:42:ac:11:00:03",
+            ],
+            "conflicting options: cannot specify both --mac-address and per-network MAC address",
+        ),
+    ] {
+        let r = run_in(&home, &image, options, &["exit", "0"]);
+        assert!(
+            r.status == Some(125) && r.stderr.contains(said),
+            "{options:?}: {r}"
+        );
+    }
+    // One no interface can have fails the start, in libnetwork's words.
+    for bad in ["01:00:5e:00:00:01", "00:00:00:00:00:00"] {
+        let r = run_in(&home, &image, &["--rm", "--mac-address", bad], &["exit", "0"]);
+        let said = format!(
+            "failed to set up container networking: failed to add interface eth0 to sandbox: error setting interface \"eth0\" MAC to \"{bad}\": cannot assign requested address"
+        );
+        assert!(r.status == Some(125) && r.stderr.contains(&said), "{bad}: {r}");
+    }
+    let r = run_in(
+        &home,
+        &image,
+        &["--rm", "--network", "none", "--mac-address", "02:42:ac:11:00:95"],
+        &address,
+    );
+    assert!(
+        r.status == Some(1) && r.stderr.contains("No such file or directory"),
+        "{r}"
+    );
+    // What inspect shows.
+    let nets = "{{range $k, $v := .NetworkSettings.Networks}}{{$k}} [{{$v.MacAddress}}]{{end}}";
+    let shown = |name: &str| shards(&["inspect", "-f", nets, name]).stdout;
+    for (name, options, want) in [
+        (
+            "given",
+            &["--mac-address", "02:42:AC:11:00:94:00:01"][..],
+            "bridge [02:42:ac:11:00:94]\n",
+        ),
+        ("unset", &[], "bridge []\n"),
+        (
+            "offline",
+            &["--network", "none", "--mac-address", "02:42:ac:11:00:94"],
+            "none []\n",
+        ),
+    ] {
+        let mut args = vec!["create", "--pull", "never", "--name", name];
+        args.extend(options);
+        args.extend([image.as_str(), "exit", "0"]);
+        let created = shards(&args);
+        assert_eq!(created.status, Some(0), "{created}");
+        assert_eq!(shown(name), want, "{name}");
+    }
+    let ran = shards(&["start", "-a", "given"]);
+    assert_eq!(ran.status, Some(0), "{ran}");
+    assert_eq!(shown("given"), "bridge []\n", "once it has run");
+    // Running: its own, given or made, as eth0 has it; and a published port reaches it.
+    let mut own = start(&home, &image, &["--name", "own"], &["sleep"]);
+    let has = shards(&[
+        "exec",
+        "own",
+        "/bin/testguest",
+        "fs",
+        "print:/sys/class/net/eth0/address",
+    ]);
+    assert_eq!(shown("own"), format!("bridge [{}]\n", has.stdout.trim()), "{has}");
+    // Given on another's network: taken, and the joiner's interface is its provider's.
+    let joined = run_in(
+        &home,
+        &image,
+        &[
+            "--rm",
+            "--network",
+            "container:own",
+            "--mac-address",
+            "02:42:ac:11:00:91",
+        ],
+        &address,
+    );
+    assert_eq!(
+        (joined.status, joined.stdout.as_str()),
+        (Some(0), has.stdout.as_str()),
+        "{joined}"
+    );
+    assert_eq!(shards(&["rm", "-f", "own"]).status, Some(0));
+    let _ = exit(&mut own);
+    let mut served = start(
+        &home,
+        &image,
+        &[
+            "--name",
+            "served",
+            "--mac-address",
+            "02:42:ac:11:00:93",
+            "-p",
+            "7000",
+        ],
+        &["serve", "7000", "1"],
+    );
+    assert_eq!(shown("served"), "bridge [02:42:ac:11:00:93]\n");
+    let listed = shards(&["port", "served", "7000"]);
+    let port: u16 = listed
+        .stdout
+        .lines()
+        .find_map(|l| l.strip_prefix("0.0.0.0:"))
+        .unwrap()
+        .parse()
+        .unwrap();
+    let mut c = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    c.set_read_timeout(Some(TIMEOUT)).unwrap();
+    c.write_all(b"hello").unwrap();
+    c.shutdown(std::net::Shutdown::Write).unwrap();
+    let mut got = String::new();
+    c.read_to_string(&mut got).unwrap();
+    assert_eq!(got, format!("from {}\nhello", bridge().gateway()));
+    assert_eq!(exit(&mut served), Some(0));
+    // Two of one MAC on a network: each reaches the other through its own network process,
+    // which frames to it alone; network inspect shows each its MAC.
+    let made = shards(&["network", "create", "maclan"]);
+    assert_eq!(made.status, Some(0), "{made}");
+    let same = ["--network", "name=maclan,mac-address=02:42:ac:11:00:92"];
+    let mut srv = start(
+        &home,
+        &image,
+        &[&["--name", "twin"][..], &same[..]].concat(),
+        &["serve", "7000", "1"],
+    );
+    assert_eq!(shown("twin"), "maclan [02:42:ac:11:00:92]\n");
+    let members = shards(&[
+        "network",
+        "inspect",
+        "-f",
+        "{{range .Containers}}{{.Name}} {{.MacAddress}}{{end}}",
+        "maclan",
+    ]);
+    assert_eq!(members.stdout, "twin 02:42:ac:11:00:92\n", "{members}");
+    let asked = run_in(
+        &home,
+        &image,
+        &[&["--rm"][..], &same[..]].concat(),
+        &["ask", "twin:7000"],
+    );
+    assert!(
+        asked.status == Some(0) && asked.stdout.starts_with("ask from "),
+        "{asked}"
+    );
+    assert_eq!(exit(&mut srv), Some(0));
+}
+
 /// A container given CAP_SYS_ADMIN mounts nothing, as Docker's default AppArmor profile
 /// keeps one where AppArmor is enforced (docker-default, `deny mount,`), which the guest
 /// has not: a mount, a remount of a read-only file, the new mount API and its microVM's own
 /// shares refused, EACCES, an exec and a joiner too; umount left to it. `apparmor=unconfined`
 /// and `--privileged` lift it, as Docker's do; without the capability, Docker's seccomp
-/// profile refuses first, EPERM.
+/// profile refuses first, EPERM, and under `seccomp=unconfined` the kernel, EPERM.
 #[test]
 fn a_container_given_sys_admin_mounts_nothing_as_apparmor_keeps_it() {
     let Some((home, image)) = home("containers-mounts") else {
@@ -2121,12 +2327,29 @@ fn a_container_given_sys_admin_mounts_nothing_as_apparmor_keeps_it() {
         let made = run_in(&home, &image, options, &["fs", "mkdir:/m", "mount:tmpfs:none:/m"]);
         assert_eq!(made.status, Some(0), "{options:?}: {made}");
     }
-    // Without the capability, Docker's seccomp profile refuses first.
+    // Without the capability, Docker's seccomp profile refuses first; under
+    // `seccomp=unconfined`, the kernel, EPERM, where AppArmor would answer mount(2) EACCES
+    // (PM M174): no filter for an errno alone on a container asked to have none (D121).
     refused(
         &["--rm", "-u", "0"],
         "mount:tmpfs:none:/mnt",
         "Operation not permitted",
     );
+    let no_seccomp = ["--rm", "-u", "0", "--security-opt", "seccomp=unconfined"];
+    // Its target made first: the kernel looks it up before it checks the capability.
+    let r = run_in(
+        &home,
+        &image,
+        &no_seccomp,
+        &["fs", "mkdir:/m", "mount:tmpfs:none:/m"],
+    );
+    assert!(
+        r.status == Some(1) && r.stderr.contains("mount:tmpfs:none:/m: Operation not permitted"),
+        "{r}"
+    );
+    for op in ["fsopen:tmpfs", "open-tree:/etc"] {
+        refused(&no_seccomp, op, "Operation not permitted");
+    }
     // An exec takes it, and a joiner.
     let up = run_in(
         &home,

@@ -153,6 +153,12 @@ pub static RUN: Command = Command {
         Flag::many("dns-option", None, "list", "Set DNS options"),
         Flag::value("ip", None, "ip", "IPv4 address (e.g., 172.30.100.104)").defaulting("<nil>"),
         Flag::value("ip6", None, "ip", "IPv6 address (e.g., 2001:db8::33)").defaulting("<nil>"),
+        Flag::string(
+            "mac-address",
+            None,
+            "",
+            "Container MAC address (e.g., 92:d0:c6:0a:29:33)",
+        ),
         Flag::many(
             "net-alias",
             None,
@@ -346,7 +352,6 @@ link - m - -\n\
 link-local-ip - m - -\n\
 log-driver - s - -\n\
 log-opt - m - -\n\
-mac-address - s - -\n\
 runtime - s - -\n\
 storage-opt - m - -\n\
 umask - s - -\n\
@@ -491,6 +496,12 @@ pub static CREATE: Command = Command {
         Flag::many("dns-option", None, "list", "Set DNS options"),
         Flag::value("ip", None, "ip", "IPv4 address (e.g., 172.30.100.104)").defaulting("<nil>"),
         Flag::value("ip6", None, "ip", "IPv6 address (e.g., 2001:db8::33)").defaulting("<nil>"),
+        Flag::string(
+            "mac-address",
+            None,
+            "",
+            "Container MAC address (e.g., 92:d0:c6:0a:29:33)",
+        ),
         Flag::many(
             "net-alias",
             None,
@@ -684,7 +695,6 @@ link - m - -\n\
 link-local-ip - m - -\n\
 log-driver - s - -\n\
 log-opt - m - -\n\
-mac-address - s - -\n\
 runtime - s - -\n\
 storage-opt - m - -\n\
 umask - s - -\n\

@@ -27,8 +27,9 @@ type shardsAddr struct {
 }
 
 type shardsMac struct {
-	In string `json:"in"`
-	Ok bool   `json:"ok"`
+	In  string `json:"in"`
+	Ok  bool   `json:"ok"`
+	Out string `json:"out"`
 }
 
 type shardsAttachment struct {
@@ -112,9 +113,10 @@ func TestShardsNetwork(t *testing.T) {
 		"zz", "", "02:11:22:33:44", "02:11:22:33:44:5g", "02:11-22:33:44:55", "0211223344",
 		"02112233445g", "0211.2233.44:5", "02:11:22:33:44:55:", "02:11:22:33:44:555",
 		"02:11:22:33:44:55:66", "0211.2233.445", "0211:2233:4455", "02112233445566",
+		"02:AB:cd:EF:00:9f", "02-AB-CD-EF-00-9F", "02AB.CDEF.009F", " 02:11:22:33:44:55",
 	} {
-		_, err := net.ParseMAC(s)
-		answers.Macs = append(answers.Macs, shardsMac{In: s, Ok: err == nil})
+		hw, err := net.ParseMAC(s)
+		answers.Macs = append(answers.Macs, shardsMac{In: s, Ok: err == nil, Out: hw.String()})
 	}
 	for _, s := range []string{
 		"bridge", "none", "name=", "", "my net", "a=", "=b",
