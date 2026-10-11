@@ -475,6 +475,8 @@ mod tests {
             ports: vec![b("443")],
             direction: Direction::Both,
             networks: vec![b("out")],
+            agents: Vec::new(),
+            harnesses: Vec::new(),
         });
 
         let good = spec(&[
@@ -568,6 +570,8 @@ mod tests {
                         ports: vec![b("8080")],
                         direction: Direction::Both,
                         networks: vec![b("pub")],
+                        agents: Vec::new(),
+                        harnesses: Vec::new(),
                     }),
                     Directive::Connect(Connect {
                         kind: None,

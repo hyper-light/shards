@@ -2825,7 +2825,11 @@ impl Planner<'_> {
             // networks, names and grants go in the normalized Agentfile (§8).
             Kind::Agentfile(crate::agentfile::Directive::Expose(e)) => {
                 if e.direction != crate::agentfile::Direction::Egress {
-                    self.dispatch_expose(d, &e.ports, &loc, &lint)?;
+                    // The microVM's ports, which `-p` and `-P` publish: of a mapping to a
+                    // member's port, the first (D122), where BuildKit's EXPOSE would keep
+                    // the second.
+                    let ports: Vec<Vec<u8>> = e.ports.iter().map(|p| crate::agentfile::outside(p)).collect();
+                    self.dispatch_expose(d, &ports, &loc, &lint)?;
                 }
                 self.ds(d)?.agentfile.push(crate::agentfile::Directive::Expose(e));
             }
