@@ -360,14 +360,15 @@ fn wire(url: &str, cancel: &Cancel, auth: Option<&Auth>, ssh: SshAgents<'_>) -> 
 
 /// When `src`'s commit was made, as BuildKit takes a Git source's SOURCE_DATE_EPOCH
 /// (dockerfile/1.27.1 epoch.go, sourceDateEpochFromMetadata): the ref resolved and
-/// checked as a fetch resolves it, the commit fetched, its committer's time.
+/// checked as a fetch resolves it, the commit fetched, its committer's time and the
+/// offset of its zone.
 pub fn commit_time(
     src: &Source,
     limits: Limits,
     cancel: &Cancel,
     auth: Option<&Auth>,
     agents: &super::Agents,
-) -> Result<(i64, u32), String> {
+) -> Result<Option<(i64, i32)>, String> {
     let ssh = SshAgents {
         agents,
         id: src.ssh_agent.as_deref(),
@@ -385,7 +386,12 @@ pub fn commit_time(
         .ok_or_else(|| format!("repository does not contain ref {}, output: \"\"", src.reference))?;
     check(src.checksum.as_deref(), &resolved)?;
     let (pack, _) = fetch_commits(&remote, &[resolved.commit], limits).map_err(|e| format!("{wrap}: {e}"))?;
-    Ok((commit_of(&pack, &resolved.commit)?.committed, 0))
+    match pack.get(&resolved.commit)? {
+        // As the Dockerfile frontend reads the commit object BuildKit's git source gives
+        // it: the committer's time, none where the line says none well formed.
+        (ObjectKind::Commit, data) => Ok(super::gitobject::parse(&data)?.to_commit()?.committer.when),
+        _ => Err(format!("{} is not a commit", resolved.commit.hex())),
+    }
 }
 
 /// What a build policy asks of `src` (D102), as BuildKit's git source resolves its

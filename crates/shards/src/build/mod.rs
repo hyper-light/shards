@@ -51,6 +51,7 @@ mod live;
 pub(crate) mod multi;
 mod output;
 mod policy;
+pub(crate) use policy::gitobject;
 pub(crate) mod policy_command;
 mod provenance;
 mod proxy;
@@ -339,6 +340,15 @@ impl Progress {
             index,
             started: Instant::now(),
         }
+    }
+
+    /// Vertex `index` begins again, ended, under another name: progressui shows the vertex
+    /// of a digest that runs again by the name it runs under.
+    fn again(&mut self, index: usize, name: &str) -> Vertex {
+        if let Some(step) = self.steps.borrow_mut().get_mut(&index) {
+            step.0 = name.to_string();
+        }
+        self.resume(index, name)
     }
 
     /// A log line of vertex `v`, stamped as progressui stamps one: the seconds since the
@@ -814,6 +824,14 @@ struct Bases<'a> {
     /// of its own, as BuildKit's resolve is one vertex for its identifier and platform
     /// (llbsolver/bridge.go resolveSourceMetadata).
     answered: RefCell<Answered>,
+    /// The step of each source's metadata resolved, by the key BuildKit gives its vertex
+    /// ([`metadata_id`]): SOURCE_DATE_EPOCH's source keyed as a named context's load is
+    /// that step again, under its own name.
+    steps: RefCell<BTreeMap<String, usize>>,
+    /// SOURCE_DATE_EPOCH's time from each source, once a build: each platform's plan asks
+    /// again, as BuildKit's frontend asks at once for every platform, one step in buildx's
+    /// display.
+    epochs: RefCell<Epochs>,
     /// The build's policies, asked of each base before its metadata is resolved (D101),
     /// where they log, and the refusal that stopped the build, if one did.
     policies: Option<&'a policy::Policies>,
@@ -823,16 +841,37 @@ struct Bases<'a> {
     local_dockerfile: bool,
 }
 
-/// Base images as resolved, by name and platform.
-type Answered = BTreeMap<(Vec<u8>, Vec<u8>), Resolved>;
+/// Base images as resolved, by the key BuildKit gives the step ([`metadata_id`]).
+type Answered = BTreeMap<String, Resolved>;
 
-impl Resolver for Bases<'_> {
-    fn resolve(&self, name: &[u8], platform: &Platform, log: &[u8]) -> Result<Resolved, Vec<u8>> {
-        let key = (name.to_vec(), platform::format_all(platform));
-        if let Some(r) = self.answered.borrow().get(&key) {
+/// SOURCE_DATE_EPOCH's times, by source.
+type Epochs = BTreeMap<EpochSource, Option<plan::Epoch>>;
+
+/// The key BuildKit gives the vertex of a source's metadata resolution (bridge.go
+/// resolveSourceMetadata): its identifier, then the platform asked, its own where none
+/// is.
+fn metadata_id(identifier: &str, platform: Option<&Platform>) -> String {
+    let platform = platform.cloned().unwrap_or_else(default_spec);
+    format!("{identifier}{}", show(&platform::format_all(&platform)))
+}
+
+impl Bases<'_> {
+    /// An image's config, `scheme` its source's kind (an image's or an OCI layout's), as
+    /// BuildKit resolves it: once for each name and platform, under a step named `log`; for
+    /// none asked, BuildKit's own, as this host's.
+    fn resolve_source(
+        &self,
+        scheme: &str,
+        name: &[u8],
+        platform: Option<&Platform>,
+        log: &[u8],
+    ) -> Result<Resolved, Vec<u8>> {
+        let mut name = String::from_utf8_lossy(name).into_owned();
+        let id = metadata_id(&format!("{scheme}{name}"), platform);
+        if let Some(r) = self.answered.borrow().get(&id) {
             return Ok(r.clone());
         }
-        let mut name = String::from_utf8_lossy(name).into_owned();
+
         // The policies first, as bridge.resolveSourceMetadata asks them before it resolves:
         // a refusal resolves nothing; a source converted is resolved in its place.
         if let Some(p) = self.policies {
@@ -840,12 +879,7 @@ impl Resolver for Bases<'_> {
                 .map(|r| r.to_string())
                 .map_err(|e| e.to_string().into_bytes())?;
             let source = policy::Source::new(format!("docker-image://{normalized}"));
-            match p.evaluate(
-                &source,
-                Some(platform),
-                &PolicyMeta { bases: self },
-                self.policy_log,
-            ) {
+            match p.evaluate(&source, platform, &PolicyMeta { bases: self }, self.policy_log) {
                 Ok(None) => {}
                 Ok(Some(to)) => {
                     name = to
@@ -865,16 +899,33 @@ impl Resolver for Bases<'_> {
             }
         }
         let v = self.progress.borrow_mut().start(&String::from_utf8_lossy(log));
-        let r = self.fetch(&name, platform);
+        self.steps.borrow_mut().insert(id.clone(), v.index);
+        let r = self.fetch(&name, platform.unwrap_or(&host_platform()));
         let progress = self.progress.borrow();
         match &r {
             Ok(resolved) => {
                 progress.done(&v);
-                self.answered.borrow_mut().insert(key, resolved.clone());
+                self.answered.borrow_mut().insert(id, resolved.clone());
             }
             Err(e) => progress.error(&v, &String::from_utf8_lossy(e)),
         }
         r
+    }
+}
+
+impl Resolver for Bases<'_> {
+    fn resolve(&self, name: &[u8], platform: Option<&Platform>, log: &[u8]) -> Result<Resolved, Vec<u8>> {
+        self.resolve_source("docker-image://", name, platform, log)
+    }
+
+    fn resolve_layout(
+        &self,
+        name: &[u8],
+        _: &[u8],
+        platform: Option<&Platform>,
+        log: &[u8],
+    ) -> Result<Resolved, Vec<u8>> {
+        self.resolve_source("oci-layout://", name, platform, log)
     }
 
     /// The frontend the build names, as BuildKit asks its policies of it before it runs it
@@ -1026,22 +1077,30 @@ impl Resolver for Bases<'_> {
     }
 
     /// Each under the name of the step BuildKit's metadata resolution shows
-    /// (dockerfile/1.27.1 epoch.go).
-    fn epoch(&self, source: &EpochSource) -> Result<Option<(i64, u32)>, Vec<u8>> {
-        let name = match source {
-            EpochSource::Context => "[internal] resolve main build context metadata".to_string(),
-            EpochSource::Http { stage, .. } | EpochSource::Git { stage, .. } => {
-                format!(
-                    "[internal] resolve SOURCE_DATE_EPOCH source stage {}",
-                    show(stage)
-                )
-            }
+    /// (dockerfile/1.27.1 epoch.go): the step of the named context's load where BuildKit
+    /// keys the two alike (an image's or an OCI layout's, both for its own platform).
+    fn epoch(&self, source: &EpochSource) -> Result<Option<plan::Epoch>, Vec<u8>> {
+        if let Some(e) = self.epochs.borrow().get(source) {
+            return Ok(*e);
+        }
+        let name = show(&source.log);
+        let again = source.op.as_ref().and_then(|op| {
+            self.steps
+                .borrow()
+                .get(&metadata_id(&show(&op.identifier), None))
+                .copied()
+        });
+        let v = match again {
+            Some(index) => self.progress.borrow_mut().again(index, &name),
+            None => self.progress.borrow_mut().start(&name),
         };
-        let v = self.progress.borrow_mut().start(&name);
         let r = self.source_time(source);
         let progress = self.progress.borrow();
         match &r {
-            Ok(_) => progress.done(&v),
+            Ok(e) => {
+                progress.done(&v);
+                self.epochs.borrow_mut().insert(source.clone(), *e);
+            }
             Err(e) => progress.error(&v, e),
         }
         r.map_err(String::into_bytes)
@@ -1175,47 +1234,76 @@ impl Bases<'_> {
     /// says nothing, BuildKit's metadata of one being neither Git's nor HTTP's; a URL
     /// fetched without a checksum, its Last-Modified if it has one; else the newest
     /// regular file of what it fetches, if that is an archive.
-    fn source_time(&self, source: &EpochSource) -> Result<Option<(i64, u32)>, String> {
-        match source {
-            EpochSource::Context => Ok(None),
-            EpochSource::Http { url, checksum, .. } => {
-                let limits = crate::pull::limits()?;
-                // Removed, with what it holds, once the time is known.
-                let stage = self.store.stage().map_err(|e| e.to_string())?;
-                let checksum = checksum.as_deref().map(show);
-                let fetched = http::fetch_now(
-                    &show(url),
-                    checksum.as_deref(),
-                    stage.path().join("source"),
-                    &limits,
-                )?;
-                if checksum.is_none()
-                    && let Some(t) = fetched.last_modified
-                {
-                    return Ok(Some(t));
-                }
-                let file = std::fs::File::open(&fetched.path).map_err(|e| e.to_string())?;
-                shards_build::archive::newest_file(file, &limits).map_err(|e| e.0)
-            }
-            EpochSource::Git { git: g, .. } => {
-                let (identifier, attrs) = plan::git_identifier(g, false, &g.checksum);
-                let src = git::source(&identifier, &attrs)?;
-                let bound = usize::try_from(crate::pull::limits()?.bytes).unwrap_or(usize::MAX);
-                let limits = shards_git::remote::Limits {
-                    pack: bound,
-                    object: bound,
-                };
-                let auth = git::auth(&src, self.secrets);
-                git::commit_time(
-                    &src,
-                    limits,
-                    &shards_registry::http::Cancel::new(),
-                    auth.as_ref(),
-                    self.agents,
-                )
-                .map(Some)
-            }
+    fn source_time(&self, source: &EpochSource) -> Result<Option<plan::Epoch>, String> {
+        // A state of no source op, or of more than one, has none to say it.
+        let Some(op) = &source.op else {
+            return Ok(None);
+        };
+        let id = op.identifier.as_slice();
+        if id.starts_with(b"git://") {
+            let when = self.git_time(&op.identifier, &op.attrs)?;
+            Ok(when.map(|(secs, offset)| plan::Epoch {
+                secs,
+                nanos: 0,
+                offset,
+            }))
+        } else if id.starts_with(b"http://") || id.starts_with(b"https://") {
+            let made = self.http_time(id, op.attrs.get(b"http.checksum".as_slice()).map(Vec::as_slice))?;
+            Ok(made.map(|(secs, nanos)| plan::Epoch {
+                secs,
+                nanos,
+                offset: 0,
+            }))
+        } else {
+            // The client's directory, an image or an OCI layout: BuildKit's metadata of
+            // such a source says no time.
+            Ok(None)
         }
+    }
+
+    /// When an HTTP source was made: its Last-Modified where nothing pins its bytes, else
+    /// the newest regular file of the archive it is (none where it is no archive).
+    fn http_time(&self, url: &[u8], checksum: Option<&[u8]>) -> Result<Option<(i64, u32)>, String> {
+        let limits = crate::pull::limits()?;
+        // Removed, with what it holds, once the time is known.
+        let stage = self.store.stage().map_err(|e| e.to_string())?;
+        let checksum = checksum.map(show);
+        let fetched = http::fetch_now(
+            &show(url),
+            checksum.as_deref(),
+            stage.path().join("source"),
+            &limits,
+        )?;
+        if checksum.is_none()
+            && let Some(t) = fetched.last_modified
+        {
+            return Ok(Some(t));
+        }
+        let file = std::fs::File::open(&fetched.path).map_err(|e| e.to_string())?;
+        shards_build::archive::newest_file(file, &limits).map_err(|e| e.0)
+    }
+
+    /// When a Git source's commit was made: its committer's time, and the offset of the
+    /// zone it was written in.
+    fn git_time(
+        &self,
+        identifier: &[u8],
+        attrs: &BTreeMap<Vec<u8>, Vec<u8>>,
+    ) -> Result<Option<(i64, i32)>, String> {
+        let src = git::source(identifier, attrs)?;
+        let bound = usize::try_from(crate::pull::limits()?.bytes).unwrap_or(usize::MAX);
+        let limits = shards_git::remote::Limits {
+            pack: bound,
+            object: bound,
+        };
+        let auth = git::auth(&src, self.secrets);
+        git::commit_time(
+            &src,
+            limits,
+            &shards_registry::http::Cancel::new(),
+            auth.as_ref(),
+            self.agents,
+        )
     }
 }
 
@@ -2064,6 +2152,19 @@ pub(crate) fn host_platform() -> Platform {
     Platform::new("linux", arch)
 }
 
+/// containerd's `platforms.DefaultSpec()` of BuildKit on this host's Linux: its platform,
+/// the variant the CPU's, not normalized (`v8` on arm64).
+fn default_spec() -> Platform {
+    let host = host_platform();
+    if host.architecture == b"arm64" {
+        return Platform {
+            variant: b"v8".to_vec(),
+            ..host
+        };
+    }
+    host
+}
+
 /// `KEY=VALUE` arguments as buildx reads them: a `KEY` alone takes its value from the
 /// environment, and is left out when unset (`listToMap`); a `KEY=VALUE` label alone is
 /// `KEY` with an empty value.
@@ -2660,6 +2761,8 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
         progress: &progress,
         resolved: RefCell::new(multi::with(|sub| std::mem::take(&mut sub.bases)).unwrap_or_default()),
         answered: RefCell::new(multi::with(|sub| std::mem::take(&mut sub.answered)).unwrap_or_default()),
+        steps: RefCell::new(BTreeMap::new()),
+        epochs: RefCell::new(multi::with(|sub| std::mem::take(&mut sub.epochs)).unwrap_or_default()),
         artifacts: RefCell::new(BTreeMap::new()),
         pulled: RefCell::new(std::collections::BTreeSet::new()),
         secrets: &secrets,
@@ -2732,6 +2835,9 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
     let opts = Options {
         target_platform: target_platform.clone(),
         build_platforms: vec![host],
+        // The build's own platform, as the frontend's is BuildKit's worker's.
+        default_platform: None,
+        no_client: false,
         build_args: build_args(parsed.many("build-arg"), true),
         target: parsed.string("target").as_bytes().to_vec(),
         labels: build_args(parsed.many("label"), false),
@@ -2943,7 +3049,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
             let resolved = bases
                 .resolve(
                     asked.generator.as_bytes(),
-                    &host,
+                    None,
                     format!("[internal] load metadata for {}", asked.generator).as_bytes(),
                 )
                 .map_err(|e| format!("failed to build: failed to solve: {}", show(&e)))?;
@@ -3008,7 +3114,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
                         bases
                             .resolve(
                                 name.as_bytes(),
-                                pf,
+                                Some(pf),
                                 format!("[internal] load metadata for {name}").as_bytes(),
                             )
                             .map_err(|e| format!("failed to build: failed to solve: {}", show(&e)))?;
@@ -4238,6 +4344,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
             sub.provenance = Some(provenance::buildinfo(&capture, &everywhere_facts));
             sub.next = progress.borrow().next;
             sub.answered = bases.answered.take();
+            sub.epochs = bases.epochs.take();
             sub.bases = bases.resolved.take();
         });
         write_metadata(

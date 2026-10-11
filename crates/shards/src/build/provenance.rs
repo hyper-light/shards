@@ -1518,7 +1518,7 @@ mod tests {
         fn resolve(
             &self,
             name: &[u8],
-            _: &shards_dockerfile::platform::Platform,
+            _: Option<&shards_dockerfile::platform::Platform>,
             _: &[u8],
         ) -> Result<shards_dockerfile::plan::Resolved, Vec<u8>> {
             let mut reference = name.to_vec();
@@ -1535,7 +1535,10 @@ mod tests {
             })
         }
 
-        fn epoch(&self, _: &shards_dockerfile::plan::EpochSource) -> Result<Option<(i64, u32)>, Vec<u8>> {
+        fn epoch(
+            &self,
+            _: &shards_dockerfile::plan::EpochSource,
+        ) -> Result<Option<shards_dockerfile::plan::Epoch>, Vec<u8>> {
             Ok(None)
         }
     }
@@ -1548,7 +1551,7 @@ mod tests {
         fn resolve(
             &self,
             name: &[u8],
-            _: &shards_dockerfile::platform::Platform,
+            _: Option<&shards_dockerfile::platform::Platform>,
             _: &[u8],
         ) -> Result<shards_dockerfile::plan::Resolved, Vec<u8>> {
             const DIGEST: &[u8] = b"sha256:c1fe1679c34d9784c1b0d1e5f62ac0a79fca01fb6377cdd33e90473c6f9f9a69";
@@ -1559,7 +1562,10 @@ mod tests {
             })
         }
 
-        fn epoch(&self, _: &shards_dockerfile::plan::EpochSource) -> Result<Option<(i64, u32)>, Vec<u8>> {
+        fn epoch(
+            &self,
+            _: &shards_dockerfile::plan::EpochSource,
+        ) -> Result<Option<shards_dockerfile::plan::Epoch>, Vec<u8>> {
             Ok(None)
         }
     }

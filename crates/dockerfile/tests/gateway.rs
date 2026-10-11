@@ -170,10 +170,10 @@ fn the_dockerfiles_own_definition_is_docker_dockerfiles() {
 struct Captured;
 
 impl Resolver for Captured {
-    fn resolve(&self, name: &[u8], platform: &Platform, log: &[u8]) -> Result<Resolved, Vec<u8>> {
+    fn resolve(&self, name: &[u8], platform: Option<&Platform>, log: &[u8]) -> Result<Resolved, Vec<u8>> {
         // What docker/dockerfile asked: anything else is a different request.
         if name != b"docker.io/library/alpine:3.20"
-            || platform != &Platform::new("linux", "arm64")
+            || platform != Some(&Platform::new("linux", "arm64"))
             || log != b"[internal] load metadata for docker.io/library/alpine:3.20"
         {
             return Err(b"not the captured request".to_vec());
@@ -185,7 +185,7 @@ impl Resolver for Captured {
         })
     }
 
-    fn epoch(&self, _: &EpochSource) -> Result<Option<(i64, u32)>, Vec<u8>> {
+    fn epoch(&self, _: &EpochSource) -> Result<Option<plan::Epoch>, Vec<u8>> {
         Ok(None)
     }
 

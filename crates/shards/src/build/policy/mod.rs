@@ -9,7 +9,7 @@
 
 mod eval;
 mod github;
-mod gitobject;
+pub(crate) mod gitobject;
 mod input;
 mod provenance;
 mod signatures;

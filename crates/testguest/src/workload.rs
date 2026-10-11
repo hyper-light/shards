@@ -2990,9 +2990,6 @@ fn fill_scratch() -> i32 {
     }
     // SAFETY: prctl(2) with a NUL-terminated name.
     unsafe { libc::prctl(libc::PR_SET_NAME, c"filling".as_ptr()) };
-    // Seen filling before it fills: it may fill and end between two of the run's looks,
-    // and nothing else of it can reach the run.
-    std::thread::sleep(std::time::Duration::from_secs(2));
     let resident: Vec<u8> = vec![1; 4 << 20];
     let chunk = vec![b'f'; 1 << 20];
     let mut file = match std::fs::File::create("/tmp/fill") {

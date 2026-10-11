@@ -21,8 +21,8 @@ pub struct GitObject {
 pub struct Actor {
     pub name: String,
     pub email: String,
-    /// RFC 3339 as Go's JSON writes a time.Time in its zone.
-    pub when: Option<String>,
+    /// Seconds since 1970, and the offset east of UTC it was written with.
+    pub when: Option<(i64, i32)>,
 }
 
 fn text(b: &[u8]) -> String {
@@ -209,19 +209,18 @@ fn actor(s: &str) -> Actor {
         return a;
     }
     let sign = if b.first() == Some(&b'-') { -1 } else { 1 };
-    // strconv.Atoi's errors ignored, as gitobject ignores them: 0.
-    let num = |r: std::ops::Range<usize>| tz.get(r).and_then(|x| x.parse::<i64>().ok()).unwrap_or(0);
-    let offset = sign * (num(1..3) * 3600 + num(3..5) * 60);
-    a.when = rfc3339(unix, offset);
+    // strconv.Atoi's errors ignored, as gitobject ignores them: 0. Two characters, so
+    // within ±99.
+    let num = |r: std::ops::Range<usize>| tz.get(r).and_then(|x| x.parse::<i32>().ok()).unwrap_or(0);
+    a.when = Some((unix, sign * (num(1..3) * 3600 + num(3..5) * 60)));
     a
 }
 
-/// `time.Unix(unix, 0).In(time.FixedZone("", offset))`, as encoding/json writes it.
-fn rfc3339(unix: i64, offset: i64) -> Option<String> {
-    let local = unix.checked_add(offset)?;
-    let mut t = shards_dockerfile::go::Time::from_unix(local);
-    t.offset = i32::try_from(offset).ok()?;
-    t.rfc3339_nano().ok()
+/// An actor's time as encoding/json writes it, in its zone; none where Go's fails.
+pub fn rfc3339((unix, offset): (i64, i32)) -> Option<String> {
+    shards_dockerfile::go::Time::from_unix_in(unix, offset)
+        .rfc3339_nano()
+        .ok()
 }
 
 #[cfg(test)]
@@ -235,7 +234,11 @@ mod tests {
     fn actors_read_as_gitobject_reads_them() {
         let a = actor("The Octocat <octocat@nowhere.com> 1331075210 -0800");
         assert_eq!(
-            (a.name.as_str(), a.email.as_str(), a.when.as_deref()),
+            (
+                a.name.as_str(),
+                a.email.as_str(),
+                a.when.and_then(rfc3339).as_deref()
+            ),
             (
                 "The Octocat",
                 "octocat@nowhere.com",
@@ -243,7 +246,7 @@ mod tests {
             )
         );
         assert_eq!(
-            actor("x <y> 0 +0000").when.as_deref(),
+            actor("x <y> 0 +0000").when.and_then(rfc3339).as_deref(),
             Some("1970-01-01T00:00:00Z")
         );
         assert_eq!(actor("no email").name, "no email");

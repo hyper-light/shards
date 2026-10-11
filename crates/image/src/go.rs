@@ -1089,6 +1089,16 @@ impl Time {
         }
     }
 
+    /// `time.Unix(secs, 0).In(time.FixedZone("", offset))`: the wall clock `offset`
+    /// seconds east of UTC. Where that is past i64's seconds, a year no time is written
+    /// in, as Go's.
+    pub fn from_unix_in(secs: i64, offset: i32) -> Time {
+        Time {
+            offset,
+            ..Time::from_unix(secs.saturating_add(i64::from(offset)))
+        }
+    }
+
     /// `Time.MarshalJSON`'s text without its quotes: RFC 3339 with the fraction's trailing
     /// zeros dropped, and `Z` for UTC. Fails where Go's does, for an offset of 24 hours or
     /// more.
@@ -1296,5 +1306,21 @@ mod tests {
                 ),
             }
         }
+    }
+
+    /// A time in a commit's zone (gitobject's parseActor), and one past i64's seconds.
+    #[test]
+    fn times_in_a_zone_print_as_gos() {
+        let t = Time::from_unix_in(1_331_075_210, -8 * 3600);
+        assert_eq!(t.rfc3339_nano().unwrap(), "2012-03-06T15:06:50-08:00");
+        assert_eq!(t.unix(), (1_331_075_210, 0));
+        assert_eq!(
+            Time::from_unix_in(0, 0).rfc3339_nano().unwrap(),
+            "1970-01-01T00:00:00Z"
+        );
+        assert_eq!(
+            Time::from_unix_in(i64::MAX, 3600).rfc3339_nano().unwrap_err(),
+            b"Time.MarshalJSON: year outside of range [0,9999]"
+        );
     }
 }

@@ -321,6 +321,8 @@ fn with_resolver(f: &dyn Fn(&dyn policy::Resolve) -> Result<(), String>) -> Resu
         secrets: &secrets,
         agents: &agents,
         answered: RefCell::new(BTreeMap::new()),
+        steps: RefCell::new(BTreeMap::new()),
+        epochs: RefCell::new(BTreeMap::new()),
         policies: None,
         policy_log: &said,
         refused: RefCell::new(None),

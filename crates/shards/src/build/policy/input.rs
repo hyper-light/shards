@@ -338,7 +338,7 @@ fn actor_json(a: &Actor) -> Option<Json> {
     let j = Fields::default()
         .str("name", &a.name)
         .str("email", &a.email)
-        .str("when", a.when.as_deref().unwrap_or_default())
+        .str("when", &a.when.and_then(gitobject::rfc3339).unwrap_or_default())
         .done();
     (!matches!(&j, Json::Obj(o) if o.is_empty())).then_some(j)
 }

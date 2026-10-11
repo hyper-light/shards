@@ -2694,7 +2694,7 @@ fn source_date_epoch_is_taken_from_a_source_stage() {
         (
             2,
             format!("--checksum={sum} {url}/lm.tar"),
-            "SRC",
+            "src",
             "2027-01-15T08:00:00Z",
         ),
         (3, format!("{url}/nsec.tar"), "src", "2023-11-14T22:13:20Z"),
@@ -2759,6 +2759,123 @@ fn source_date_epoch_is_taken_from_a_source_stage() {
         assert_ne!(built.status, Some(0), "{add}");
         assert!(built.stderr.contains(said), "{add}: {}", built.stderr);
     }
+}
+
+/// SOURCE_DATE_EPOCH naming a named context (D127) takes its time as dockerfile/1.27.1
+/// takes it on a BuildKit that leaves the value to the frontend (PM M185): a download's
+/// Last-Modified, a Git repository's commit, the named context asked of before a stage of
+/// that name; `context`, a Git context's commit; a name that is no reference, refused as
+/// dockerui refuses it.
+#[test]
+fn source_date_epoch_is_taken_from_a_named_or_remote_context() {
+    if cannot_run_vms() {
+        return;
+    }
+    let url = format!("http://127.0.0.1:{}", epoch_server());
+    let home = TempDir::new("build-epoch2-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let built = |n: usize, extra: &[&str], epoch: &str, context: &str| {
+        let tag = format!("epoch2:{n}");
+        let arg = format!("SOURCE_DATE_EPOCH={epoch}");
+        let mut args = vec!["build", "--progress=plain", "--build-arg", &arg, "-t", &tag];
+        args.extend_from_slice(extra);
+        args.push(context);
+        let b = shards(&args);
+        (b, shards(&["image", "inspect", &tag]).stdout)
+    };
+    // A stage of the context's name would say 2023-11-14: the named context is asked of
+    // first.
+    let ctx = context(
+        "build-epoch2-ctx",
+        &format!("FROM scratch AS src\nADD {url}/nsec.tar /\n\nFROM scratch\nWORKDIR /w\n"),
+    );
+    let named = format!("src={url}/lm.tar");
+    let (b, inspected) = built(1, &["--build-context", &named], "src", ctx.to_str().unwrap());
+    assert_eq!(b.status, Some(0), "{}", b.stderr);
+    assert!(
+        b.stderr
+            .contains("[internal] resolve SOURCE_DATE_EPOCH named context src\n"),
+        "{}",
+        b.stderr
+    );
+    assert!(
+        inspected.contains("\"Created\": \"1994-11-06T08:49:37Z\""),
+        "{inspected}"
+    );
+    // An image says no time. BuildKit keys its load and the time's resolution alike (both
+    // for its own platform): one step, under each name in turn.
+    let (image, _) = served();
+    let named = format!("src=docker-image://{image}");
+    let (b, _) = built(5, &["--build-context", &named], "src", ctx.to_str().unwrap());
+    assert_eq!(b.status, Some(0), "{}", b.stderr);
+    let step = b
+        .stderr
+        .lines()
+        .find_map(|l| l.strip_suffix(&format!(" [context src] load metadata for {image}")))
+        .unwrap_or_else(|| panic!("{}", b.stderr));
+    assert!(
+        b.stderr.contains(&format!(
+            "\n{step} [internal] resolve SOURCE_DATE_EPOCH named context src\n"
+        )),
+        "{}",
+        b.stderr
+    );
+    // A name that is no reference: refused with dockerui's words, whatever the stages.
+    let (b, _) = built(2, &[], "SRC", ctx.to_str().unwrap());
+    assert_ne!(b.status, Some(0));
+    assert!(
+        b.stderr.contains(
+            "invalid context name SRC: invalid reference format: repository name (library/SRC) must be lowercase"
+        ),
+        "{}",
+        b.stderr
+    );
+    // A Git repository, as a named context and as the build's context, where this host
+    // has git: its commit's committer time (git_in's).
+    if std::process::Command::new("git")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        eprintln!("NOTE: no git on this host: Git sources are not exercised");
+        return;
+    }
+    let repos = TempDir::new("build-epoch2-repos");
+    let origin = repos.join("repo.git");
+    std::fs::create_dir_all(&origin).unwrap();
+    git_in(&origin, &["init", "-q", "-b", "main"]);
+    std::fs::write(origin.join("Dockerfile"), "FROM scratch\nWORKDIR /w\n").unwrap();
+    git_in(&origin, &["add", "-A"]);
+    // The committer's zone is kept, as the frontend keeps it (gitobject's parseActor).
+    git_at(&origin, "1600000000 +0200", &["commit", "-q", "-m", "one"]);
+    let git_url = format!(
+        "http://127.0.0.1:{}/repo.git#main",
+        git_http_server(repos.to_path_buf(), Vec::new())
+    );
+    let named = format!("src={git_url}");
+    let (b, inspected) = built(3, &["--build-context", &named], "src", ctx.to_str().unwrap());
+    assert_eq!(b.status, Some(0), "{}", b.stderr);
+    assert!(
+        inspected.contains("\"Created\": \"2020-09-13T14:26:40+02:00\""),
+        "{inspected}"
+    );
+    let (b, inspected) = built(4, &[], "context", &git_url);
+    assert_eq!(b.status, Some(0), "{}", b.stderr);
+    assert!(
+        b.stderr
+            .contains("[internal] resolve main build context metadata\n"),
+        "{}",
+        b.stderr
+    );
+    assert!(
+        inspected.contains("\"Created\": \"2020-09-13T14:26:40+02:00\""),
+        "{inspected}"
+    );
 }
 
 /// The Dockerfile and ignore files are read whole: BuildKit's frontend refuses either past
@@ -3227,6 +3344,11 @@ fn an_agentfile_is_found_first_and_built_as_docker_sees_it() {
 
 /// Runs `git` in `dir` with nothing of the user's configuration.
 fn git_in(dir: &std::path::Path, args: &[&str]) -> String {
+    git_at(dir, "1600000000 +0000", args)
+}
+
+/// [`git_in`], what it commits committed at `date` (`SECONDS ±HHMM`).
+fn git_at(dir: &std::path::Path, date: &str, args: &[&str]) -> String {
     let out = std::process::Command::new("git")
         .arg("-C")
         .arg(dir)
@@ -3242,7 +3364,7 @@ fn git_in(dir: &std::path::Path, args: &[&str]) -> String {
         .args(args)
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("HOME", dir)
-        .env("GIT_COMMITTER_DATE", "1600000000 +0000")
+        .env("GIT_COMMITTER_DATE", date)
         .env("GIT_AUTHOR_DATE", "1500000000 +0000")
         .output()
         .unwrap();
@@ -9172,8 +9294,16 @@ fn agents_out_of_memory_end_whole_and_spare_the_run() {
         let mut ended: Vec<String> = Vec::new();
         let mut ready = |rows: &[Vec<String>]| {
             let comms: Vec<&str> = rows.iter().filter_map(|r| r.last().map(String::as_str)).collect();
-            seen_filling |= comms.contains(&"filling");
-            let gone = seen_filling && !comms.contains(&"filling") && !comms.contains(&"held");
+            let there = comms.contains(&"filling") || comms.contains(&"held");
+            // A filler may fill and be ended between two looks at /proc, each a whole `shards
+            // top`, which under load come further apart than it lives: the run's log, which
+            // keeps its lines, says it filled where no look caught it.
+            seen_filling |= comms.contains(&"filling")
+                || (!there && {
+                    let logged = shards(&["logs", name]);
+                    format!("{}{}", logged.stdout, logged.stderr).contains(" confined filled ")
+                });
+            let gone = seen_filling && !there;
             if gone {
                 ended = comms.iter().map(|c| (*c).to_string()).collect();
             }
@@ -9775,11 +9905,16 @@ fn an_agents_daemon_ends_with_it() {
     let built = shards(&["build", "-t", "daemon:1", ctx.to_str().unwrap()]);
     assert_eq!(built.status, Some(0), "{}", built.stderr);
     // Seen by the host (`shards top`), as the run's own command sees no agent's process
-    // (D115): the daemon there, then gone with its agent.
+    // (D115): the daemon there, then gone with its agent. The agent's log, written as it
+    // ends, says it made the daemon where no look at /proc caught it: under load two looks
+    // come further apart than the daemon lives.
     let (mut seen, mut vanished) = (false, false);
     let mut watch = |rows: &[Vec<String>]| {
         let there = rows.iter().any(|r| r.first().is_some_and(|c| c == "escaped"));
-        seen |= there;
+        seen |= there || {
+            let logged = shards(&["logs", "aw-daemon"]);
+            format!("{}{}", logged.stdout, logged.stderr).contains("[agent x] confined daemonize: done")
+        };
         vanished = seen && !there;
         vanished
     };

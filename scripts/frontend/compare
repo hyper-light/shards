@@ -5,7 +5,12 @@ pinned by digest) once and shards' own frontend from this tree once, and holds t
 together: the images byte for byte (every manifest, config and layer, through an OCI
 layout written with SOURCE_DATE_EPOCH and rewrite-timestamp, so that a build is
 reproducible at all), and what buildx printed, its durations and the frontends' own names
-aside. A case's `flags` file holds extra buildx flags, one a line, `$CASE` its directory.
+aside. A case's `flags` file holds extra buildx flags, one a line, `$CASE` its directory;
+its `context` file, a context other than its directory (a Git or HTTP URL); its `builder`
+file, a BuildKit image to build on instead of Docker's own, through a buildx builder of
+it (a docker-container one on dind's network, the registry's HTTP allowed); a `no-image`
+file in it, that its images are not compared, as where no SOURCE_DATE_EPOCH resolves and
+each image carries the time it was built.
 
     scripts/frontend/compare BINARY [CASE...]
 
@@ -69,18 +74,49 @@ def flags_of(case):
         return [line.rstrip("\n").replace("$CASE", f"{ROOT}/cases/{case}") for line in f if line.strip()]
 
 
-def normalize(text, frontends):
+def builder_of(case):
+    """The buildx builder of the BuildKit image a case's `builder` file names, made where
+    it is not there; none for Docker's own."""
+    path = os.path.join(HERE, "cases", case, "builder")
+    if not os.path.exists(path):
+        return None
+    with open(path) as f:
+        image = f.read().strip()
+    name = "shards-d113-" + re.sub(r"[^a-z0-9]+", "-", image.split("/")[-1].lower()).strip("-")
+    if dind(BUILDX, "inspect", name, check=False).returncode != 0:
+        config = f"{ROOT}/{name}.toml"
+        toml = f'[registry."{REGISTRY}"]\n  http = true\n  insecure = true\n'
+        subprocess.run(["docker", "exec", "-i", DIND, "sh", "-c", f"cat > {config}"], input=toml, text=True,
+                       check=True)
+        dind(BUILDX, "create", "--name", name, "--driver", "docker-container",
+             "--driver-opt", f"image={image},network=host", "--buildkitd-config", config, "--bootstrap")
+    return name
+
+
+def context_of(case):
+    path = os.path.join(HERE, "cases", case, "context")
+    if not os.path.exists(path):
+        return f"{ROOT}/cases/{case}"
+    with open(path) as f:
+        return f.read().strip()
+
+
+def normalize(text, frontends, images=True):
     """What buildx printed, as far as a frontend decides it: each step's lines, the steps
     in their names' order, then what followed them. BuildKit's own timing is set aside:
     which steps run at once and so their numbers, the order of a step's statuses and
     whether one is printed before it is done, its durations, the times its logs are
     stamped with, a warning shown among its step's lines or not, and the order buildx lists
     the build's warnings in (each varies from run to run with either frontend). So is the
-    frontend's own image, whose name and digest differ by design. A step's logs keep their
-    order."""
+    frontend's own image, whose name and digest differ by design, and where `images` is
+    false, the digests of what is exported, which carry the times it was built. A step's
+    logs keep their order."""
     for name in frontends:
         text = text.replace(name, "FRONTEND")
     text = re.sub(r"\x1b\[[0-9;]*m", "", text)
+    if not images:
+        text = re.sub(r"^(#\d+ exporting (?:manifest list|manifest|config|attestation manifest) )sha256:[0-9a-f]{64}",
+                      r"\1sha256:X", text, flags=re.M)
     steps, rest = {}, []
     for line in text.splitlines():
         m = re.match(r"^#(\d+) ?(.*)$", line)
@@ -164,10 +200,13 @@ def build(case, frontend, side, flags):
         "--build-arg", f"BUILDKIT_SYNTAX={frontend}",
         *flags,
     ]
+    builder = builder_of(case)
+    if builder:
+        argv += ["--builder", builder]
     calls = any(f.startswith("--call") or f == "--check" for f in flags)
     if not calls:
         argv += ["--output", f"type=oci,dest={out},rewrite-timestamp=true"]
-    p = dind(*argv, f"{ROOT}/cases/{case}", check=False)
+    p = dind(*argv, context_of(case), check=False)
     return p.returncode, p.stdout + p.stderr, (None if calls or p.returncode != 0 else out)
 
 
@@ -188,11 +227,15 @@ def compare(case, frontends):
     if theirs[0] != ours[0] or [t[0] for t in again] != [theirs[0], ours[0]]:
         differs.append("exit")
         result["exit"] += [t[0] for t in again]
-    said = [normalize(t[1], frontends) for t in again]
+    images = not os.path.exists(os.path.join(HERE, "cases", case, "no-image"))
+    said = [normalize(t[1], frontends, images) for t in again]
     if said[0] != said[1]:
         differs.append("output")
         result["output"] = said
-    if theirs[2] and ours[2]:
+    if theirs[2] and ours[2] and not images:
+        for t in (theirs, ours):
+            dind("rm", "-f", t[2], check=False)
+    elif theirs[2] and ours[2]:
         (i1, b1), (i2, b2) = oci(theirs[2]), oci(ours[2])
         result["index"] = [m["digest"] for m in i1.get("manifests", [])]
         if i1 != i2:

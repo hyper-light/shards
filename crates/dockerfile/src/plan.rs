@@ -45,6 +45,14 @@ pub struct Options {
     /// The platforms the build itself runs on; the first is `BUILDPLATFORM`.
     pub build_platforms: Vec<Platform>,
     pub build_args: BTreeMap<Vec<u8>, Vec<u8>>,
+    /// The platform the frontend itself runs on (containerd's `platforms.DefaultSpec()`),
+    /// which dockerui keys a named context by where it is given no platform; the first
+    /// build platform where none is given.
+    pub default_platform: Option<Platform>,
+    /// Whether the build is planned with no BuildKit client (Dockerfile2LLB's
+    /// `opt.Client` nil), as the plan oracle's generator plans: then no named context is
+    /// asked of for SOURCE_DATE_EPOCH. Every build has one.
+    pub no_client: bool,
     /// The stage to build; the last when empty.
     pub target: Vec<u8>,
     /// Whether every stage is planned, reached from the target or not, as the lint
@@ -157,10 +165,12 @@ pub struct Resolved {
 /// Finds a base image's config: `ResolveImageConfig`; and when a source SOURCE_DATE_EPOCH
 /// names was made: `resolveSourceDateEpochFromState`.
 pub trait Resolver {
-    /// `log` is what the step that resolves it is named, as BuildKit names it.
-    fn resolve(&self, name: &[u8], platform: &Platform, log: &[u8]) -> Result<Resolved, Vec<u8>>;
-    /// When `source` says it was made, if it says: seconds and nanoseconds since 1970.
-    fn epoch(&self, source: &EpochSource) -> Result<Option<(i64, u32)>, Vec<u8>>;
+    /// `log` is what the step that resolves it is named, as BuildKit names it; `platform`
+    /// none where none is asked (dockerui's `ContextOpt{}`), which BuildKit takes as its
+    /// own (`platforms.DefaultSpec()`).
+    fn resolve(&self, name: &[u8], platform: Option<&Platform>, log: &[u8]) -> Result<Resolved, Vec<u8>>;
+    /// When `source` says it was made, if it says.
+    fn epoch(&self, source: &EpochSource) -> Result<Option<Epoch>, Vec<u8>>;
     /// An OSI artifact of `kind` (`agent`, `harness` or `mcp`, D54): its reference, with
     /// the digest it resolved to, and its config's bytes. `log` names the step.
     fn artifact(&self, name: &[u8], kind: &[u8], log: &[u8]) -> Result<Resolved, Vec<u8>> {
@@ -198,7 +208,7 @@ pub trait Resolver {
         &self,
         name: &[u8],
         store: &[u8],
-        platform: &Platform,
+        platform: Option<&Platform>,
         log: &[u8],
     ) -> Result<Resolved, Vec<u8>> {
         let _ = store;
@@ -239,11 +249,11 @@ impl Warned<'_> {
 }
 
 impl Resolver for Warned<'_> {
-    fn resolve(&self, name: &[u8], platform: &Platform, log: &[u8]) -> Result<Resolved, Vec<u8>> {
+    fn resolve(&self, name: &[u8], platform: Option<&Platform>, log: &[u8]) -> Result<Resolved, Vec<u8>> {
         self.flush();
         self.inner.resolve(name, platform, log)
     }
-    fn epoch(&self, source: &EpochSource) -> Result<Option<(i64, u32)>, Vec<u8>> {
+    fn epoch(&self, source: &EpochSource) -> Result<Option<Epoch>, Vec<u8>> {
         self.flush();
         self.inner.epoch(source)
     }
@@ -270,7 +280,7 @@ impl Resolver for Warned<'_> {
         &self,
         name: &[u8],
         store: &[u8],
-        platform: &Platform,
+        platform: Option<&Platform>,
         log: &[u8],
     ) -> Result<Resolved, Vec<u8>> {
         self.flush();
@@ -290,21 +300,32 @@ impl Resolver for Warned<'_> {
 }
 
 /// Where SOURCE_DATE_EPOCH's time comes from when it is no number of seconds
-/// (dockerfile/1.27.1 epoch.go): the build context, or the one remote ADD of a stage
-/// that does nothing else.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum EpochSource {
-    /// `context`.
-    Context,
-    /// A URL: its checksum, and the name its file takes (`sourceDateEpochHTTPFilename`).
-    Http {
-        stage: Vec<u8>,
-        url: Vec<u8>,
-        checksum: Option<Vec<u8>>,
-        filename: Vec<u8>,
-    },
-    /// A Git repository, its checksum the ADD's `--checksum` when it has one.
-    Git { stage: Vec<u8>, git: git::GitRef },
+/// (dockerfile/1.27.1 epoch.go): the source op the state SOURCE_DATE_EPOCH names holds,
+/// the build context's, a named context's, or a stage's one remote ADD's (`llb.HTTP`,
+/// `llb.Git`); and what BuildKit names the step that resolves its metadata.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct EpochSource {
+    pub log: Vec<u8>,
+    /// None where the state holds no source op (scratch) or more than one
+    /// (`sourceOpFromState`).
+    pub op: Option<SourceOp>,
+}
+
+/// SOURCE_DATE_EPOCH's time: seconds and nanoseconds since 1970, and the offset east of
+/// UTC of the zone it was written in, which history entries keep: a Git commit's
+/// committer's (gitobject's parseActor), UTC for any other.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Epoch {
+    pub secs: i64,
+    pub nanos: u32,
+    pub offset: i32,
+}
+
+/// A source op as `sourceOpFromState` clones one: its identifier and attributes.
+#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SourceOp {
+    pub identifier: Vec<u8>,
+    pub attrs: BTreeMap<Vec<u8>, Vec<u8>>,
 }
 
 /// The metadata of a step that may write in no domain but its own (D55): every file
@@ -463,8 +484,7 @@ struct Ds {
     cmd_is_on_build: bool,
     cmd_total: usize,
     workdir_set: bool,
-    /// SOURCE_DATE_EPOCH: seconds and nanoseconds.
-    epoch: Option<(i64, u32)>,
+    epoch: Option<Epoch>,
     entrypoint: Tracker,
     cmd: Tracker,
     healthcheck: Tracker,
@@ -564,8 +584,7 @@ struct Planner<'a> {
     all_args: BTreeMap<Vec<u8>, ArgInfo>,
     /// The build args, SOURCE_DATE_EPOCH's as resolved (`setBuildArgValue`).
     build_args: BTreeMap<Vec<u8>, Vec<u8>>,
-    /// SOURCE_DATE_EPOCH: seconds and nanoseconds.
-    epoch: Option<(i64, u32)>,
+    epoch: Option<Epoch>,
     states: Vec<Ds>,
     by_name: BTreeMap<Vec<u8>, usize>,
     path_sets: Vec<BTreeSet<Vec<u8>>>,
@@ -986,8 +1005,8 @@ fn plan_with(
     let mut global_args = global_args;
     let mut build_args = opts.build_args.clone();
     if let Some(v) = build_arg_value(&build_args, &global_args, b"SOURCE_DATE_EPOCH") {
-        epoch = resolve_epoch(&v, &ins.stages, &build_args, &global_args, &shlex, resolver)?;
-        let formatted = epoch.map(|(s, _)| s.to_string().into_bytes()).unwrap_or_default();
+        epoch = resolve_epoch(&v, &ins.stages, &build_args, &global_args, &shlex, resolver, opts)?;
+        let formatted = epoch.map(|e| e.secs.to_string().into_bytes()).unwrap_or_default();
         set_build_arg_value(
             &mut build_args,
             &mut global_args,
@@ -1087,14 +1106,25 @@ fn resolve_epoch(
     global_args: &EnvList,
     shlex: &Lex,
     resolver: &dyn Resolver,
-) -> Result<Option<(i64, u32)>, Fail> {
+    opts: &Options,
+) -> Result<Option<Epoch>, Fail> {
     if v.is_empty() {
         return Ok(None);
     }
     if let Some(n) = std::str::from_utf8(v).ok().and_then(|s| s.parse::<i64>().ok()) {
-        return Ok(Some((n, 0)));
+        return Ok(Some(Epoch {
+            secs: n,
+            ..Epoch::default()
+        }));
     }
-    let source = epoch_source(v, stages, build_args, global_args, shlex)?;
+    let source = match epoch_source(v, stages, build_args, global_args, shlex, opts)? {
+        Ask::Source(s) => s,
+        // A named context's op is the one its state holds once it is loaded.
+        Ask::Named(n) => EpochSource {
+            log: errb(&[b"[internal] resolve SOURCE_DATE_EPOCH named context ", v]),
+            op: named_epoch_op(&n, resolver, opts)?,
+        },
+    };
     resolver.epoch(&source).map_err(Fail::new)
 }
 
@@ -1167,24 +1197,217 @@ fn context_git_attrs(attrs: &mut BTreeMap<Vec<u8>, Vec<u8>>, g: &git::GitRef, de
     }
 }
 
-/// `resolveSourceDateEpochState`. shards takes no named contexts (`--build-context`), so
-/// the name is the context's or a stage's.
+/// sourceOpFromState: the one source op of `def`'s ops, its identifier and attributes;
+/// none where there is none or more than one.
+fn single_source(def: &llb::Definition) -> Option<SourceOp> {
+    let mut found = None;
+    for op in &def.ops {
+        if let llb::OpKind::Source { identifier, attrs } = &op.kind {
+            if found.is_some() {
+                return None;
+            }
+            found = Some(SourceOp {
+                identifier: identifier.clone(),
+                attrs: attrs.clone(),
+            });
+        }
+    }
+    found
+}
+
+/// What SOURCE_DATE_EPOCH names: a source, or a named context still to be loaded.
+enum Ask {
+    Source(EpochSource),
+    Named(Named),
+}
+
+/// `resolveSourceDateEpochState`: the context's, a named context's (asked of first, where
+/// there is a client), or a stage's.
 fn epoch_source(
     v: &[u8],
     stages: &[Stage],
     build_args: &BTreeMap<Vec<u8>, Vec<u8>>,
     global_args: &EnvList,
     shlex: &Lex,
-) -> Result<EpochSource, Fail> {
+    opts: &Options,
+) -> Result<Ask, Fail> {
     if v == b"context" {
-        return Ok(EpochSource::Context);
+        let def = context_definition(opts).map_err(Fail::new)?;
+        return Ok(Ask::Source(EpochSource {
+            log: b"[internal] resolve main build context metadata".to_vec(),
+            op: single_source(&def),
+        }));
+    }
+    if !opts.no_client
+        && let Some(n) = epoch_named_context(opts, v)?
+    {
+        return Ok(Ask::Named(n));
     }
     let Some(stage) = stages.iter().find(|s| equal_fold_name(&s.name, v)) else {
         return Err(Fail::new(errb(&[b"invalid SOURCE_DATE_EPOCH: ", v])));
     };
     let mut args = global_args.clone();
     args.delete(b"SOURCE_DATE_EPOCH");
-    epoch_stage_source(stage, build_args, args, shlex).map_err(|f| f.at(&stage.location))
+    epoch_stage_source(stage, build_args, args, shlex, opts.git_advice)
+        .map(Ask::Source)
+        .map_err(|f| f.at(&stage.location))
+}
+
+/// containerd's `platforms.DefaultSpec()` as the frontend has it.
+fn own_platform(opts: &Options) -> Platform {
+    opts.default_platform
+        .clone()
+        .or_else(|| opts.build_platforms.first().cloned())
+        .unwrap_or_else(|| opts.target_platform.clone())
+}
+
+/// dockerui's `NamedContext(value, ContextOpt{})`, as resolveSourceDateEpochState asks it:
+/// the value parsed as a reference first, whatever contexts there are ("invalid context
+/// name"); then the context keyed by its familiar form (`:latest` dropped) with the
+/// frontend's own platform (`platforms.DefaultSpec()`, the build's), or without.
+fn epoch_named_context(opts: &Options, v: &[u8]) -> Result<Option<Named>, Fail> {
+    let r = parse_normalized(v).map_err(|e| Fail::new(errb(&[b"invalid context name ", v, b": ", &e])))?;
+    let familiar = r.familiar();
+    let familiar = familiar
+        .strip_suffix(":latest")
+        .unwrap_or(&familiar)
+        .as_bytes()
+        .to_vec();
+    let own = own_platform(opts);
+    let keyed = errb(&[
+        &familiar,
+        b"::",
+        &platform::format_all(&platform::normalize(&own)),
+    ]);
+    for key in [keyed, familiar.clone()] {
+        if let Some(value) = opts.contexts.get(&key) {
+            return Ok(Some(Named {
+                name: familiar,
+                key,
+                value: value.clone(),
+            }));
+        }
+    }
+    Ok(None)
+}
+
+/// The source op a named context's state holds, for SOURCE_DATE_EPOCH: dockerui's
+/// `NamedContext.Load` (an image's config resolved as it resolves it, a Git URL taken as
+/// Git, an HTTP download named `context`), then `sourceOpFromState`, which keeps only the
+/// op's identifier and attributes; none for scratch.
+fn named_epoch_op(n: &Named, resolver: &dyn Resolver, opts: &Options) -> Result<Option<SourceOp>, Fail> {
+    let (key, input) = (n.key.as_slice(), n.value.as_slice());
+    let Some(colon) = input.iter().position(|&b| b == b':') else {
+        return Err(Fail::new(errb(&[
+            b"invalid context specifier ",
+            input,
+            b" for ",
+            key,
+        ])));
+    };
+    let (kind, rest) = (go::head(input, colon), go::tail(input, colon + 1));
+    let kind: &[u8] = if kind.starts_with(b"git@") { b"git" } else { kind };
+    let op = |identifier: Vec<u8>, attrs: BTreeMap<Vec<u8>, Vec<u8>>| Some(SourceOp { identifier, attrs });
+    let git = || -> Result<Option<SourceOp>, Fail> {
+        match git::parse_git_ref(input) {
+            git::Parsed::Git(g) => {
+                let (identifier, mut attrs) = git_identifier(&g, g.keep_git_dir == Some(true), &g.checksum);
+                context_git_attrs(&mut attrs, &g, b"", opts.git_advice);
+                Ok(op(identifier, attrs))
+            }
+            git::Parsed::BadGit(e) => Err(Fail::new(e)),
+            git::Parsed::NotGit => Ok(None),
+        }
+    };
+    // ContextOpt{} names no platform: BuildKit resolves an image for its own.
+    match kind {
+        b"docker-image" => {
+            let r = rest.strip_prefix(b"//").unwrap_or(rest);
+            if r == EMPTY_IMAGE {
+                return Ok(None);
+            }
+            let mut named = parse_normalized(r).map_err(Fail::new)?;
+            if named.tag.is_none() && named.digest.is_none() {
+                named.tag = Some("latest".into());
+            }
+            let log = errb(&[b"[context ", key, b"] load metadata for ", r]);
+            let resolved = resolver
+                .resolve(named.to_string().as_bytes(), None, &log)
+                .map_err(Fail::new)?;
+            let mut reference = parse_normalized(&resolved.reference).map_err(Fail::new)?;
+            if reference.tag.is_none() && reference.digest.is_none() {
+                reference.tag = Some("latest".into());
+            }
+            Ok(op(
+                [b"docker-image://".as_slice(), reference.to_string().as_bytes()].concat(),
+                BTreeMap::new(),
+            ))
+        }
+        b"git" => match git()? {
+            Some(o) => Ok(Some(o)),
+            None => Err(Fail::new(errb(&[b"invalid git context ", input]))),
+        },
+        b"http" | b"https" => {
+            if let Some(o) = git()? {
+                return Ok(Some(o));
+            }
+            Ok(op(
+                input.to_vec(),
+                BTreeMap::from([(b"http.filename".to_vec(), b"context".to_vec())]),
+            ))
+        }
+        b"local" => Ok(op([b"local://".as_slice(), rest].concat(), BTreeMap::new())),
+        b"oci-layout" => {
+            let spec = rest.strip_prefix(b"//").unwrap_or(rest);
+            let q = |b: &[u8]| go::quote(b);
+            let r = std::str::from_utf8(spec)
+                .map_err(|_| "invalid reference format".to_string())
+                .and_then(|s| Reference::parse_as_written(s).map_err(|e| e.to_string()))
+                .map_err(|e| {
+                    Fail::new(errb(&[
+                        b"could not parse oci-layout reference ",
+                        q(spec).as_bytes(),
+                        b": ",
+                        e.as_bytes(),
+                    ]))
+                })?;
+            let Some(digest) = r.digest.clone() else {
+                return Err(Fail::new(errb(&[
+                    b"oci-layout reference ",
+                    q(r.to_string().as_bytes()).as_bytes(),
+                    b" has no digest",
+                ])));
+            };
+            let mut dummy = parse_normalized(&n.name).map_err(|e| {
+                Fail::new(errb(&[
+                    b"could not parse oci-layout reference ",
+                    q(&n.name).as_bytes(),
+                    b": ",
+                    &e,
+                ]))
+            })?;
+            dummy.digest = Some(digest);
+            let dummy = dummy.to_string().into_bytes();
+            let log = errb(&[b"[context ", key, b"] load metadata for ", &dummy]);
+            let store = r.name().into_bytes();
+            resolver
+                .resolve_layout(&dummy, &store, None, &log)
+                .map_err(Fail::new)?;
+            let mut attrs = BTreeMap::new();
+            if !opts.session.is_empty() {
+                attrs.insert(b"oci.session".to_vec(), opts.session.clone());
+            }
+            attrs.insert(b"oci.store".to_vec(), store);
+            Ok(op([b"oci-layout://".as_slice(), &dummy].concat(), attrs))
+        }
+        b"input" => Err(Fail::new(errb(&[b"invalid input ", rest, b" for ", key]))),
+        other => Err(Fail::new(errb(&[
+            b"unsupported context source ",
+            other,
+            b" for ",
+            key,
+        ]))),
+    }
 }
 
 /// `strings.EqualFold(name, v)` for a stage's name, which is lowercase ASCII: each of
@@ -1215,6 +1438,7 @@ fn epoch_stage_source(
     build_args: &BTreeMap<Vec<u8>, Vec<u8>>,
     global_args: EnvList,
     shlex: &Lex,
+    advice: bool,
 ) -> Result<EpochSource, Fail> {
     let one = || Fail::new(b"SOURCE_DATE_EPOCH stage must contain exactly one remote ADD".to_vec());
     let base = shlex.process(&stage.base_name, &global_args).map_err(|e| {
@@ -1248,7 +1472,7 @@ fn epoch_stage_source(
                 if source.is_some() {
                     return Err(one());
                 }
-                source = Some(epoch_add_source(&stage.name, add, &env, shlex)?);
+                source = Some(epoch_add_source(&stage.name, add, &env, shlex, advice)?);
             }
             _ => {
                 return Err(Fail::new(errb(&[
@@ -1262,41 +1486,55 @@ fn epoch_stage_source(
     source.ok_or_else(one)
 }
 
-/// `sourceDateEpochAddSource`.
+/// `sourceDateEpochAddSource`: the ADD's one source as `llb.HTTP` (its file's name, its
+/// checksum) or `llb.Git` (its ref, its checksum, its subdirectory and submodules, its
+/// `.git` kept where the ADD or the URL asks, Git's advice where the build gives it)
+/// make its op.
 fn epoch_add_source(
     stage: &[u8],
     add: &instructions::Add,
     env: &EnvList,
     shlex: &Lex,
+    advice: bool,
 ) -> Result<EpochSource, Fail> {
     let ([path], []) = (add.sources.paths.as_slice(), add.sources.contents.as_slice()) else {
         return Err(Fail::new(
             b"SOURCE_DATE_EPOCH stage must contain exactly one remote ADD source".to_vec(),
         ));
     };
+    let log = errb(&[b"[internal] resolve SOURCE_DATE_EPOCH source stage ", stage]);
     let src = shlex.process(path, env)?.word;
     if is_http_source(&src) {
-        let checksum = if add.checksum.is_empty() {
-            None
-        } else {
-            Some(parse_checksum(&shlex.process(&add.checksum, env)?.word)?)
-        };
-        return Ok(EpochSource::Http {
-            stage: stage.to_vec(),
-            filename: http_filename(&src),
-            url: src,
-            checksum,
+        let mut attrs = BTreeMap::new();
+        if !add.checksum.is_empty() {
+            let checksum = parse_checksum(&shlex.process(&add.checksum, env)?.word)?;
+            attrs.insert(b"http.checksum".to_vec(), checksum);
+        }
+        attrs.insert(b"http.filename".to_vec(), http_filename(&src));
+        return Ok(EpochSource {
+            log,
+            op: Some(SourceOp {
+                identifier: src,
+                attrs,
+            }),
         });
     }
     match git::parse_git_ref(&src) {
         git::Parsed::BadGit(e) => Err(Fail::new(e)),
-        git::Parsed::Git(mut git) if !git.indistinguishable_from_local => {
-            if !add.checksum.is_empty() {
-                git.checksum = shlex.process(&add.checksum, env)?.word;
+        git::Parsed::Git(git) if !git.indistinguishable_from_local => {
+            let checksum = if add.checksum.is_empty() {
+                git.checksum.clone()
+            } else {
+                shlex.process(&add.checksum, env)?.word
+            };
+            let keep = add.keep_git_dir == Some(true) || git.keep_git_dir == Some(true);
+            let (identifier, mut attrs) = git_identifier(&git, keep, &checksum);
+            if advice {
+                attrs.insert(b"git.advice".to_vec(), b"true".to_vec());
             }
-            Ok(EpochSource::Git {
-                stage: stage.to_vec(),
-                git,
+            Ok(EpochSource {
+                log,
+                op: Some(SourceOp { identifier, attrs }),
             })
         }
         _ => Err(Fail::new(
@@ -2353,26 +2591,29 @@ impl Planner<'_> {
             }
             log.extend_from_slice(b"internal] load metadata for ");
             log.extend_from_slice(&base_name);
-            let resolved = self.resolver.resolve(&base_name, &platform, &log).map_err(|e| {
-                let mut names = self.names();
-                for n in [
-                    "alpine", "busybox", "centos", "debian", "golang", "ubuntu", "fedora",
-                ] {
-                    names.push(n.as_bytes().to_vec());
-                    // commonImageNames joins these without the slash, so that what it
-                    // offers names no image: shards offers the name.
-                    names.push(format!("docker.io/library/{n}").into_bytes());
-                    names.push(format!("{n}:latest").into_bytes());
-                    names.push(format!("docker.io/library/{n}:latest").into_bytes());
-                }
-                let options: Vec<&[u8]> = names.iter().map(Vec::as_slice).collect();
-                Fail::new(instructions::with_suggestion(
-                    errb(&[&orig, b": ", &e]),
-                    &orig,
-                    &options,
-                    true,
-                ))
-            })?;
+            let resolved = self
+                .resolver
+                .resolve(&base_name, Some(&platform), &log)
+                .map_err(|e| {
+                    let mut names = self.names();
+                    for n in [
+                        "alpine", "busybox", "centos", "debian", "golang", "ubuntu", "fedora",
+                    ] {
+                        names.push(n.as_bytes().to_vec());
+                        // commonImageNames joins these without the slash, so that what it
+                        // offers names no image: shards offers the name.
+                        names.push(format!("docker.io/library/{n}").into_bytes());
+                        names.push(format!("{n}:latest").into_bytes());
+                        names.push(format!("docker.io/library/{n}:latest").into_bytes());
+                    }
+                    let options: Vec<&[u8]> = names.iter().map(Vec::as_slice).collect();
+                    Fail::new(instructions::with_suggestion(
+                        errb(&[&orig, b": ", &e]),
+                        &orig,
+                        &options,
+                        true,
+                    ))
+                })?;
             if resolved.reference != base_name {
                 r = parse_normalized(&resolved.reference).map_err(|e| {
                     Fail::new(errb(&[
@@ -3092,7 +3333,11 @@ impl Planner<'_> {
                 make_parents: true,
                 chown,
                 // UnixNano, which wraps where Go's does.
-                created: epoch.map(|(s, ns)| s.wrapping_mul(1_000_000_000).wrapping_add(i64::from(ns))),
+                created: epoch.map(|e| {
+                    e.secs
+                        .wrapping_mul(1_000_000_000)
+                        .wrapping_add(i64::from(e.nanos))
+                }),
             };
             let state = ds.state.clone();
             let mut meta = custom_name(name);
@@ -3892,7 +4137,7 @@ impl Planner<'_> {
                 let log = errb(&[b"[context ", &n.key, b"] load metadata for ", r]);
                 let resolved = self
                     .resolver
-                    .resolve(named.to_string().as_bytes(), platform, &log)
+                    .resolve(named.to_string().as_bytes(), Some(platform), &log)
                     .map_err(Fail::new)?;
                 let mut reference = parse_normalized(&resolved.reference).map_err(Fail::new)?;
                 if reference.tag.is_none() && reference.digest.is_none() {
@@ -3980,7 +4225,7 @@ impl Planner<'_> {
                 let store = r.name().into_bytes();
                 let resolved = self
                     .resolver
-                    .resolve_layout(&dummy, &store, platform, &log)
+                    .resolve_layout(&dummy, &store, Some(platform), &log)
                     .map_err(Fail::new)?;
                 let mut img = Image::from_json(&resolved.config)
                     .map_err(|e| Fail::new(errb(&[b"could not parse oci-layout image config: ", &e])))?;
@@ -4800,7 +5045,7 @@ impl Planner<'_> {
                 crate::agentfile::DIGEST_LABEL.to_vec(),
                 crate::agentfile::digest(&spec),
             );
-            let created = t.epoch.map(|(s, _)| s);
+            let created = t.epoch.map(|e| e.secs);
             let made = self.graph.file(
                 &t.state,
                 vec![Action::Mkfile {
@@ -4829,7 +5074,7 @@ impl Planner<'_> {
             base_image,
             platform,
             warnings: Vec::new(),
-            epoch: self.epoch.map(|(s, _)| s),
+            epoch: self.epoch.map(|e| e.secs),
             domains: self
                 .states
                 .get(target)
@@ -5031,11 +5276,11 @@ fn commit(ds: &mut Ds, mut msg: Vec<u8>, with_layer: bool, with_state: bool) {
     });
 }
 
-/// The time history entries carry: SOURCE_DATE_EPOCH's, in UTC.
+/// The time history entries carry: SOURCE_DATE_EPOCH's, in the zone it was written in.
 fn ds_epoch(ds: &Ds) -> Option<go::Time> {
-    ds.epoch.map(|(s, nanosecond)| go::Time {
-        nanosecond,
-        ..go::Time::from_unix(s)
+    ds.epoch.map(|e| go::Time {
+        nanosecond: e.nanos,
+        ..go::Time::from_unix_in(e.secs, e.offset)
     })
 }
 
@@ -5746,6 +5991,14 @@ pub fn context_definition(opts: &Options) -> Result<llb::Definition, Vec<u8>> {
     Ok(graph.marshal(&st, &opts.target_platform))
 }
 
+/// The definition of `op` alone, as `llb.NewState(llb.NewSource(...)).Marshal` makes it
+/// (resolveSourceDateEpochFromState, where a download's file is read).
+pub fn source_definition(op: &SourceOp, platform: &Platform) -> llb::Definition {
+    let mut graph = Graph::default();
+    let st = graph.source(op.identifier.clone(), op.attrs.clone(), None, Meta::default());
+    graph.marshal(&st, platform)
+}
+
 /// The build context's state, as dockerui's `initContext` makes it: the client's
 /// directory; a Git repository (`DetectGitContext`); an HTTP(S) download, unpacked onto
 /// scratch where it is an archive; a remote context's `contextsubdir`, copied onto scratch
@@ -5834,15 +6087,17 @@ mod tests {
     /// SOURCE_DATE_EPOCH's source as told, and keeps what it was asked.
     struct Times {
         asked: std::cell::RefCell<Vec<EpochSource>>,
-        answer: Result<Option<(i64, u32)>, Vec<u8>>,
+        answer: Result<Option<Epoch>, Vec<u8>>,
         logged: std::cell::RefCell<Vec<String>>,
     }
 
     impl Resolver for Times {
-        fn resolve(&self, name: &[u8], _: &Platform, log: &[u8]) -> Result<Resolved, Vec<u8>> {
+        /// Each step's name, and where no platform is asked, that.
+        fn resolve(&self, name: &[u8], platform: Option<&Platform>, log: &[u8]) -> Result<Resolved, Vec<u8>> {
+            let none = if platform.is_none() { " (no platform)" } else { "" };
             self.logged
                 .borrow_mut()
-                .push(String::from_utf8_lossy(log).into_owned());
+                .push(format!("{}{none}", String::from_utf8_lossy(log)));
             Ok(Resolved {
                 reference: name.to_vec(),
                 digest: None,
@@ -5851,7 +6106,7 @@ mod tests {
             })
         }
 
-        fn epoch(&self, source: &EpochSource) -> Result<Option<(i64, u32)>, Vec<u8>> {
+        fn epoch(&self, source: &EpochSource) -> Result<Option<Epoch>, Vec<u8>> {
             self.asked.borrow_mut().push(source.clone());
             self.answer.clone()
         }
@@ -5860,7 +6115,7 @@ mod tests {
     fn planned(
         text: &str,
         args: &[(&str, &str)],
-        answer: Result<Option<(i64, u32)>, Vec<u8>>,
+        answer: Result<Option<Epoch>, Vec<u8>>,
     ) -> (Result<Plan, Error>, Vec<EpochSource>, Vec<String>) {
         let opts = Options {
             target_platform: Platform::new("linux", "amd64"),
@@ -5883,8 +6138,9 @@ mod tests {
 
     /// SOURCE_DATE_EPOCH naming a stage asks for the time of its one remote ADD, as the
     /// stage's ARGs and the build args make it, without SOURCE_DATE_EPOCH itself; the time
-    /// answered is the build's, to the nanosecond in its history and its WORKDIRs, and to
-    /// the second where the exporter takes it (dockerfile/1.27.1 epoch.go, convert.go).
+    /// answered is the build's, to the nanosecond and in its zone in its history, to the
+    /// nanosecond in its WORKDIRs, and to the second where the exporter takes it
+    /// (dockerfile/1.27.1 epoch.go, convert.go).
     #[test]
     fn a_source_stage_gives_the_build_its_time() {
         let text = format!(
@@ -5892,24 +6148,33 @@ mod tests {
              ADD --checksum={SUM} https://example.com/v${{V}}/app${{W}}.tar.gz?x=1 /\n\n\
              FROM scratch\nWORKDIR /w\n"
         );
-        let args = [("SOURCE_DATE_EPOCH", "SRC"), ("W", "-b")];
-        let (planned, asked, _) = planned(&text, &args, Ok(Some((1_700_000_000, 5))));
+        let args = [("SOURCE_DATE_EPOCH", "src"), ("W", "-b")];
+        let answer = Epoch {
+            secs: 1_700_000_000,
+            nanos: 5,
+            offset: 7200,
+        };
+        let (planned, asked, _) = planned(&text, &args, Ok(Some(answer)));
         let planned = planned.unwrap();
         assert_eq!(
             asked,
-            [EpochSource::Http {
-                stage: b"src".to_vec(),
-                url: b"https://example.com/v1.0/app-b.tar.gz?x=1".to_vec(),
-                checksum: Some(SUM.as_bytes().to_vec()),
-                filename: b"app-b.tar.gz".to_vec(),
+            [EpochSource {
+                log: b"[internal] resolve SOURCE_DATE_EPOCH source stage src".to_vec(),
+                op: Some(SourceOp {
+                    identifier: b"https://example.com/v1.0/app-b.tar.gz?x=1".to_vec(),
+                    attrs: BTreeMap::from([
+                        (b"http.checksum".to_vec(), SUM.as_bytes().to_vec()),
+                        (b"http.filename".to_vec(), b"app-b.tar.gz".to_vec()),
+                    ]),
+                }),
             }]
         );
         assert_eq!(planned.epoch, Some(1_700_000_000));
         let created: Vec<_> = planned.image.history.iter().map(|h| h.created).collect();
         assert_eq!(created.len(), 1);
         assert_eq!(
-            created[0].map(|t| (t.unix(), t.nanosecond)),
-            Some(((1_700_000_000, 5), 5))
+            created[0].map(|t| t.rfc3339_nano().unwrap()).as_deref(),
+            Some("2023-11-15T00:13:20.000000005+02:00")
         );
         let made: Vec<Option<i64>> = planned
             .graph
@@ -5934,17 +6199,22 @@ mod tests {
     #[test]
     fn each_source_of_the_time_is_asked_for_as_it_is_named() {
         let (_, asked, _) = planned("FROM scratch\n", &[("SOURCE_DATE_EPOCH", "context")], Ok(None));
-        assert_eq!(asked, [EpochSource::Context]);
-        let text = "FROM scratch AS src\nADD --checksum=abc123 https://github.com/moby/buildkit.git?ref=v1 /\n\nFROM scratch\n";
-        let (_, asked, _) = planned(text, &[("SOURCE_DATE_EPOCH", "src")], Ok(None));
-        let [EpochSource::Git { stage, git }] = asked.as_slice() else {
+        let [EpochSource { log, op: Some(op) }] = asked.as_slice() else {
             panic!("{asked:?}");
         };
-        assert_eq!(
-            (stage.as_slice(), git.checksum.as_slice()),
-            (&b"src"[..], &b"abc123"[..])
-        );
-        assert_eq!(git.remote, b"https://github.com/moby/buildkit.git");
+        assert_eq!(log, b"[internal] resolve main build context metadata");
+        assert_eq!(op.identifier, b"local://context");
+        let text = "FROM scratch AS src\nADD --checksum=abc123 --keep-git-dir https://github.com/moby/buildkit.git?ref=v1 /\n\nFROM scratch\n";
+        let (_, asked, _) = planned(text, &[("SOURCE_DATE_EPOCH", "src")], Ok(None));
+        let [EpochSource { log, op: Some(op) }] = asked.as_slice() else {
+            panic!("{asked:?}");
+        };
+        assert_eq!(log, b"[internal] resolve SOURCE_DATE_EPOCH source stage src");
+        assert_eq!(op.identifier, b"git://github.com/moby/buildkit.git#v1");
+        let attr = |k: &str| op.attrs.get(k.as_bytes()).cloned().unwrap_or_default();
+        assert_eq!(attr("git.checksum"), b"abc123");
+        assert_eq!(attr("git.keepgitdir"), b"true");
+        assert_eq!(attr("git.fullurl"), b"https://github.com/moby/buildkit.git");
         let (_, asked, _) = planned("FROM scratch\n", &[("SOURCE_DATE_EPOCH", "+42")], Ok(None));
         assert!(asked.is_empty());
         let (failed, _, _) = planned(
@@ -5953,6 +6223,124 @@ mod tests {
             Err(b"no answer".to_vec()),
         );
         assert_eq!(failed.err().map(|e| e.message), Some(b"no answer".to_vec()));
+    }
+
+    fn with_contexts(
+        text: &str,
+        args: &[(&str, &str)],
+        contexts: &[(&str, &str)],
+        no_client: bool,
+    ) -> (Result<Plan, Error>, Vec<EpochSource>, Vec<String>) {
+        let opts = Options {
+            target_platform: Platform::new("linux", "amd64"),
+            build_platforms: vec![Platform::new("linux", "arm64")],
+            build_args: args
+                .iter()
+                .map(|(k, v)| (k.as_bytes().to_vec(), v.as_bytes().to_vec()))
+                .collect(),
+            contexts: contexts
+                .iter()
+                .map(|(k, v)| (k.as_bytes().to_vec(), v.as_bytes().to_vec()))
+                .collect(),
+            no_client,
+            ..Default::default()
+        };
+        let times = Times {
+            asked: Default::default(),
+            answer: Ok(None),
+            logged: Default::default(),
+        };
+        let planned = plan(text.as_bytes(), &opts, &times);
+        (planned, times.asked.into_inner(), times.logged.into_inner())
+    }
+
+    /// With a client, SOURCE_DATE_EPOCH names a named context before a stage (dockerui's
+    /// NamedContext, keyed with the frontend's own platform or without): its state's op is
+    /// asked of, an image's config resolved first as NamedContext.Load resolves it, a URL
+    /// downloaded as `context`. A name that is no reference is refused, whatever the stages,
+    /// as dockerui refuses it; with no client, stages alone are looked at, case folded.
+    #[test]
+    fn a_named_context_gives_the_time_before_a_stage() {
+        let text = "FROM scratch AS src\nADD https://example.com/stage.tar.gz /\n\nFROM scratch\n";
+        let (_, asked, _) = with_contexts(
+            text,
+            &[("SOURCE_DATE_EPOCH", "src")],
+            &[("src", "https://example.com/named.tar.gz")],
+            false,
+        );
+        assert_eq!(
+            asked,
+            [EpochSource {
+                log: b"[internal] resolve SOURCE_DATE_EPOCH named context src".to_vec(),
+                op: Some(SourceOp {
+                    identifier: b"https://example.com/named.tar.gz".to_vec(),
+                    attrs: BTreeMap::from([(b"http.filename".to_vec(), b"context".to_vec())]),
+                }),
+            }]
+        );
+        // Keyed with the frontend's platform first; resolved for none (BuildKit's own), so
+        // that BuildKit keys the load and the time's resolution alike.
+        let (_, asked, logged) = with_contexts(
+            text,
+            &[("SOURCE_DATE_EPOCH", "src")],
+            &[
+                ("src::linux/arm64", "docker-image://alpine"),
+                ("src", "local:other"),
+            ],
+            false,
+        );
+        assert_eq!(
+            logged,
+            ["[context src::linux/arm64] load metadata for alpine (no platform)"]
+        );
+        let [EpochSource { op: Some(op), .. }] = asked.as_slice() else {
+            panic!("{asked:?}");
+        };
+        assert_eq!(op.identifier, b"docker-image://docker.io/library/alpine:latest");
+        let (_, asked, _) = with_contexts(
+            text,
+            &[("SOURCE_DATE_EPOCH", "src")],
+            &[("src", "local:other")],
+            false,
+        );
+        assert_eq!(
+            asked[0].op.as_ref().map(|o| o.identifier.clone()),
+            Some(b"local://other".to_vec())
+        );
+        let (_, asked, _) = with_contexts(
+            text,
+            &[("SOURCE_DATE_EPOCH", "src")],
+            &[("src", "docker-image://scratch")],
+            false,
+        );
+        assert_eq!(asked[0].op, None);
+        // No such context: the stage.
+        let (_, asked, _) = with_contexts(
+            text,
+            &[("SOURCE_DATE_EPOCH", "src")],
+            &[("other", "local:x")],
+            false,
+        );
+        assert_eq!(
+            asked[0].log,
+            b"[internal] resolve SOURCE_DATE_EPOCH source stage src"
+        );
+        // A name no reference is: refused with a client, a stage without one.
+        let (failed, _, _) = with_contexts(text, &[("SOURCE_DATE_EPOCH", "SRC")], &[], false);
+        let message = failed
+            .err()
+            .map(|e| String::from_utf8_lossy(&e.message).into_owned());
+        assert_eq!(
+            message.as_deref(),
+            Some(
+                "invalid context name SRC: invalid reference format: repository name (library/SRC) must be lowercase"
+            )
+        );
+        let (_, asked, _) = with_contexts(text, &[("SOURCE_DATE_EPOCH", "SRC")], &[("src", "local:x")], true);
+        assert_eq!(
+            asked[0].log,
+            b"[internal] resolve SOURCE_DATE_EPOCH source stage src"
+        );
     }
 
     /// shards owns the `vnd.osi.agentfile.*` labels: a build may not set one, by `--label`
@@ -6324,11 +6712,11 @@ mod tests {
     }
 
     impl Resolver for Artifacts {
-        fn resolve(&self, name: &[u8], _: &Platform, _: &[u8]) -> Result<Resolved, Vec<u8>> {
+        fn resolve(&self, name: &[u8], _: Option<&Platform>, _: &[u8]) -> Result<Resolved, Vec<u8>> {
             Err(errb(&[b"no image ", name]))
         }
 
-        fn epoch(&self, _: &EpochSource) -> Result<Option<(i64, u32)>, Vec<u8>> {
+        fn epoch(&self, _: &EpochSource) -> Result<Option<Epoch>, Vec<u8>> {
             Ok(None)
         }
 

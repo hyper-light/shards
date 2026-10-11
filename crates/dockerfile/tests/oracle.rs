@@ -525,7 +525,7 @@ impl shards_dockerfile::plan::Resolver for Images {
     fn resolve(
         &self,
         name: &[u8],
-        _: &shards_dockerfile::platform::Platform,
+        _: Option<&shards_dockerfile::platform::Platform>,
         _: &[u8],
     ) -> Result<shards_dockerfile::plan::Resolved, Vec<u8>> {
         let key = String::from_utf8_lossy(name).to_string();
@@ -540,7 +540,10 @@ impl shards_dockerfile::plan::Resolver for Images {
     }
 
     /// The generator plans with no client, with which BuildKit resolves no source's time.
-    fn epoch(&self, _: &shards_dockerfile::plan::EpochSource) -> Result<Option<(i64, u32)>, Vec<u8>> {
+    fn epoch(
+        &self,
+        _: &shards_dockerfile::plan::EpochSource,
+    ) -> Result<Option<shards_dockerfile::plan::Epoch>, Vec<u8>> {
         Ok(None)
     }
 }
@@ -1079,6 +1082,9 @@ fn options_of(file: &str) -> shards_dockerfile::plan::Options {
     Options {
         target_platform: Platform::new("linux", "amd64"),
         build_platforms: vec![Platform::new("linux", "amd64")],
+        // The generator plans with no client.
+        no_client: true,
+        default_platform: None,
         build_args: map(&opts_v["build_args"]),
         target: opts_v["target"].as_str().unwrap_or_default().as_bytes().to_vec(),
         labels: map(&opts_v["labels"]),

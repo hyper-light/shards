@@ -3069,7 +3069,8 @@ microVMs, from a git daemon and from smart HTTP served by git's own upload-pack.
   (`plan::git_identifier`, which planning shares), its ref resolved and checked as a fetch
   resolves it, the commit fetched with the build's secrets and SSH agent, and its
   committer's time, not its author's (tested: `source_date_epoch_is_taken_from_a_source_stage`,
-  mutation-checked; a ref the repository lacks fails the build).
+  mutation-checked; a ref the repository lacks fails the build). In the committer's zone,
+  and from named and remote contexts too: D127.
 
 - **A commit a server will not send alone** ("not our ref": a commit asked for by its
   name, or a submodule's pinned commit, that is no ref's tip, from a server that keeps
@@ -3534,6 +3535,77 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode
 waits on the user.
 
+### D127. SOURCE_DATE_EPOCH from a build's sources, as docker/dockerfile:1.27.1 takes it
+
+docker/dockerfile:1.27.1 lets SOURCE_DATE_EPOCH name where a build's time comes from,
+not only give it in seconds (epoch.go): `context`, a named context, or a stage whose one
+remote ADD is the source. `shards build` took a stage's Git or HTTP source's time and
+gave `context` none, whatever the context was; shards' frontend (D113) refused every
+name. Both now take each as that frontend takes it, held to it in `shards-dind` (PM M185).
+
+- **What the value names**, in the frontend's order (`resolveSourceDateEpochState`):
+  - a number: its seconds;
+  - `context`: the build context's source;
+  - a named context, as dockerui's `NamedContext(value, ContextOpt{})` finds one: the
+    value parsed as a reference first, so `SRC` is refused whatever the stages ("invalid
+    context name SRC: invalid reference format: repository name (library/SRC) must be
+    lowercase"); then the context keyed with the frontend's platform
+    (`src::linux/arm64`), or without;
+  - else a stage of that name, case folded, its one remote ADD the source, made as
+    `llb.HTTP` and `llb.Git` make it, the stage's ARGs expanded without SOURCE_DATE_EPOCH;
+  - else "invalid SOURCE_DATE_EPOCH: VALUE".
+- **The source's time** (`resolveSourceDateEpochFromState`, `sourceDateEpochFromMetadata`),
+  from the one source op the state holds; none for scratch, an image, an OCI layout or a
+  local directory, which say none:
+  - a Git source's commit: its committer's time, in the committer's zone, which the
+    image's history and `created` keep (`2026-08-05T17:35:52+02:00`; gitobject's
+    `parseActor`, now shared with the build policies' commit input, D102). A committer
+    line with no well-formed time gives none;
+  - an HTTP source: its Last-Modified where no checksum pins its bytes; else its file
+    downloaded and the newest regular file of the archive it is (none where it is no
+    archive; one that decompresses past the image limits fails the build, as a layer
+    does);
+  - each resolved under the step BuildKit names ("[internal] resolve main build context
+    metadata", "... SOURCE_DATE_EPOCH named context src", "... source stage src").
+- **A named image or OCI layout context is loaded for no platform**, as dockerui loads it
+  with `ContextOpt{}`. BuildKit keys a metadata step by the source's identifier and the
+  platform asked, its own (`platforms.DefaultSpec()`, `linux/arm64/v8` here) where none
+  is (bridge.go `resolveSourceMetadata`), so the load and the time's resolution are one
+  step, printed under each name in turn: progressui prints a vertex that runs again by the
+  name it runs under (measured). The planner's resolver now takes "no platform"; `shards
+  build` keys its steps as BuildKit does and shows the one step so.
+- **BuildKit's daemon decides first.** Docker 29.3.1's BuildKit (v0.28.1) refuses any
+  SOURCE_DATE_EPOCH that is no number before a frontend runs ("failed to solve: invalid
+  source-date-epoch: strconv.ParseInt: parsing "src": invalid syntax: ..."); v0.33.0
+  leaves it to the frontend. shards' frontend, run by either, does as dockerfile's does
+  there. `shards build` takes the value as v0.33.0 does: an input Docker 29.3.1 refuses
+  and newer BuildKit builds.
+- **Where shards does better.** The time is resolved once a build, in both. dockerfile's
+  frontend resolves it again for each platform, all at once, so buildx shows the steps
+  once or more as they happen to overlap, and a source that changes between the two
+  answers (an HTTP file's Last-Modified) gives the platforms different times.
+- **Found on the way**: shards' frontend read a remote context's Dockerfile where `-f`
+  named a local one (`dockerfilekey`), a D113 defect `epoch-context-git` found; it reads
+  the local one.
+- **Tested**:
+  - `scripts/frontend/compare`, 11 cases in `shards-dind`. Each is built by
+    docker/dockerfile:1.27.1 and by shards' frontend on BuildKit v0.33.0, one on Docker's
+    own v0.28.1. They are equal step by step and, where an epoch resolves, image for image
+    byte for byte. The cases: the context (a Git URL, and a local directory, which says
+    none); a stage's Git source, HTTP Last-Modified and an archive's newest file; a named
+    Git context, image and OCI layout; a name refused; two platforms; v0.28.1's refusal.
+  - `source_date_epoch_is_taken_from_a_named_or_remote_context` (`shards build`):
+    - a named HTTP context before the stage of its name;
+    - the refusal;
+    - a named image's one step (mutation-checked);
+    - a named Git context, and a Git context, keeping +02:00 (mutation-checked);
+    - `source_date_epoch_is_taken_from_a_source_stage` as before.
+  - Unit tests:
+    - what the planner asks for each value, a named image resolved for no platform
+      (`a_named_context_gives_the_time_before_a_stage`);
+    - history at the answer's time and zone (`a_source_stage_gives_the_build_its_time`);
+    - zoned times written as Go writes them (`times_in_a_zone_print_as_gos`).
+
 ### D126. Keyless signing, as cosign signs without a key
 
 D116 signed OSI artifacts with cosign's keys and left keyless signing out: it needs
@@ -3606,6 +3678,10 @@ agent|harness|mcp NAME` without `--key` now signs as cosign v3.1.3 signs without
     (`keyless_oracle.rs`, seven tests); six mutants killed.
   - Against Sigstore's public instance: `.github/workflows/keyless.yml` signs with the
     job's GitHub identity, cosign verifies; cosign signs, shards' policies verify both.
+    Its first run (38158860635, 2026-10-11, D126's commit): shards' signature of
+    `keyless.yml@refs/heads/dev`, logged at Rekor's index 3211368250 and stamped by
+    timestamp.sigstore.dev, verified by cosign v3.1.3 and refused for another identity;
+    cosign's and shards' both verified by shards' policies (`self-signed-github-repo`).
   - Unit tests of each part: the signing config, Fulcio, Rekor, the timestamp request,
     OIDC (JWS by each algorithm, claims, PKCE, the authorization URL), the flows' listener
     and token answers, the providers' sources.
@@ -4753,8 +4829,9 @@ and BuildKit build an Agentfile, no shards installed. The frontend is `shards` i
     where dockerui's Build runs them in an errgroup.
 - **Refused by name, not left out, until each is built:** SBOM attestations
   (`attest:sbom`), frontend inputs (which BuildKit itself refuses first, by the caps
-  label), SOURCE_DATE_EPOCH taken from a source, and OSI artifacts (AGENT, HARNESS and MCP
-  from a registry), until BuildKit's fetching of one is measured. Subrequests other than
+  label), and OSI artifacts (AGENT, HARNESS and MCP from a registry), until BuildKit's
+  fetching of one is measured. SOURCE_DATE_EPOCH taken from a source was among them until
+  D127. Subrequests other than
   `frontend.subrequests.describe`, `frontend.outline`, `frontend.targets` and
   `frontend.lint` are answered as dockerui answers them, unsupported.
 - **Found in `shards-dind`, 2026-10-10: one gateway call from a frontend ends Docker's
@@ -8268,8 +8345,10 @@ mutation-checked: without x's limit it wrote 82 MiB; without the workload's shar
 from the cap, the kernel killed the run's command; with the cap a `memory.max`, the
 kernel ended z; with init choosing the least, z was ended; without a cap, init ended
 none; without `memory.oom.group`, a domain's PID 1 outlived its filler. Found while testing: an agent
-can fill and end between two looks of the run's command at `/proc`, and nothing else of
-it reaches the run, so the test's agents are seen filling before they fill.
+can fill and end between two looks at `/proc`, each a whole `shards top`, which under load
+come further apart than it lives (a D127 gate's failure, reproduced with looks 3 s apart),
+so the host reads the run's log, which keeps the filler's lines, as well; so does
+`an_agents_daemon_ends_with_it` for its daemon.
 
 ### Protocols a network carries, and Unix sockets granted (D59, part ten)
 

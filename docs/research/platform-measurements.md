@@ -6192,3 +6192,50 @@ revision before comparing a changed API/implementation.
   (D126). The oracle against cosign's own libraries (`scripts/keyless/generate`) holds
   what is sent byte for byte; Sigstore's public instance is the CI job
   `.github/workflows/keyless.yml`.
+
+### M185. SOURCE_DATE_EPOCH taken from a build's sources, by docker/dockerfile:1.27.1 and by shards (D127)
+
+- **Question.** What does docker/dockerfile:1.27.1 take as a build's time when
+  SOURCE_DATE_EPOCH names a source, on Docker's BuildKit and on a newer one? What steps
+  does buildx show for it? Does shards' frontend do the same?
+- **Method.**
+  - `scripts/frontend/compare` in the shards-dind container (Docker 29.3.1, its BuildKit
+    v0.28.1, buildx v0.37.1), with its 11 `epoch-*` cases. Each case runs on a buildx
+    docker-container builder of `moby/buildkit:v0.33.0`, except `epoch-daemon-refuses`,
+    which runs on Docker's own.
+  - Each case is built twice in turn by docker/dockerfile:1.27.1 (pinned by digest) and by
+    shards' frontend (D127's tree, aarch64 musl, test-release). buildx's outputs are
+    compared step by step, and, where an epoch resolves, the OCI images byte for byte.
+  - The sources: moby/go-archive v0.3.3 (by Git, and its codeload tarball), cosign
+    v3.1.3's `cosign_checksums.txt` (its Last-Modified), `alpine:3.20`, and a two-image
+    OCI layout in the case.
+  - Also buildx by hand, for the named image case's raw output on one platform and on
+    two.
+  - Apple M5 Max, macOS 26.4.1, Docker Desktop's VM, 2026-10-11.
+- **Results.**
+  - **v0.28.1 refuses** a SOURCE_DATE_EPOCH of `src` in its daemon, before the frontend
+    runs, with either frontend: `ERROR: failed to build: failed to solve: invalid
+    source-date-epoch: strconv.ParseInt: parsing "src": invalid syntax: strconv.ParseInt:
+    parsing "src": invalid syntax`.
+  - **v0.33.0 leaves it to the frontend.** The times taken:
+    - go-archive v0.3.3 by Git (as the context, a named context, and a stage's ADD): its
+      commit's committer time, `2026-08-05T17:35:52+02:00`, in the image's `created` and
+      history, the committer's zone kept;
+    - its codeload tarball, which has no Last-Modified: the newest file,
+      `2026-08-05T15:35:52Z`;
+    - cosign's checksums file: its Last-Modified, `2026-08-06T01:06:09Z`;
+    - a local context, `alpine:3.20` as a named context, and the OCI layout: no time, so
+      each image carries the time it was built;
+    - `SRC`: refused by both frontends, "invalid context name SRC: invalid reference
+      format: repository name (library/SRC) must be lowercase".
+  - **A named image context** shows one step for its load and the time's resolution:
+    `#4 [context src] load metadata for alpine:3.20`, `#4 DONE 0.3s`, then `#4 [internal]
+    resolve SOURCE_DATE_EPOCH named context src`, `#4 DONE 0.5s`. With `--platform
+    linux/amd64,linux/arm64`, the same lines appear once.
+  - **shards' frontend equals docker/dockerfile:1.27.1** in all 11 cases, outputs and
+    images (compare exit 0).
+  - **Found on the way:** shards' frontend first failed `epoch-context-git` ("open
+    Dockerfile: no such file or directory"). It read the remote context's Dockerfile
+    where `-f` named a local one.
+- **Consequence.** D127: both `shards build` and shards' frontend take the time as
+  v0.33.0 with dockerfile 1.27.1 does, and the frontend reads `-f`'s Dockerfile.

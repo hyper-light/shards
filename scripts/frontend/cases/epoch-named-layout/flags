@@ -1,0 +1,4 @@
+--build-context
+src=oci-layout://$CASE/layout:v1
+--build-arg
+SOURCE_DATE_EPOCH=src

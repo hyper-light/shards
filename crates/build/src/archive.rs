@@ -503,7 +503,7 @@ pub fn unpack(
 /// decompresses an archive, and read as Go's archive/tar reads it, as far as its end. What
 /// cannot be read as one, or stops decompressing before its end, is none; what
 /// decompresses to more than `limits` allow fails.
-pub fn newest_file(file: File, limits: &Limits) -> Result<Option<(i64, u32)>, Error> {
+pub fn newest_file<R: Read + Send>(file: R, limits: &Limits) -> Result<Option<(i64, u32)>, Error> {
     let limit = limits.bytes;
     std::thread::scope(|scope| {
         let (to, from) = mpsc::sync_channel(PIECES);

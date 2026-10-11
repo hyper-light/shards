@@ -38,6 +38,9 @@ pub(super) struct Sub {
     pub answered: super::Answered,
     /// The bases those resolved, by what the planner names them (`Bases::resolved`).
     pub bases: BTreeMap<String, super::Base>,
+    /// SOURCE_DATE_EPOCH's time from each source: one resolve for the builds of them all,
+    /// as BuildKit's frontend's at once (`Bases::epochs`).
+    pub epochs: super::Epochs,
     /// The build cache's records the platform's build used, and its image's layers: what
     /// `--cache-to` exports of the builds of them all (D87).
     pub keys: Vec<String>,
@@ -280,6 +283,7 @@ pub(super) fn run(
         .unwrap_or_default();
     let mut built = Vec::new();
     let mut answered = BTreeMap::new();
+    let mut epochs = BTreeMap::new();
     let mut bases = BTreeMap::new();
     // The policies' step the build began, which each platform's logs under.
     let mut policy_step = policy_step;
@@ -325,6 +329,7 @@ pub(super) fn run(
                 provenance: None,
                 first: n == 0,
                 answered: std::mem::take(&mut answered),
+                epochs: std::mem::take(&mut epochs),
                 bases: std::mem::take(&mut bases),
                 policy_step,
                 ..Sub::default()
@@ -334,6 +339,7 @@ pub(super) fn run(
         let given = SUB.with(|s| s.borrow_mut().take()).unwrap_or_default();
         progress.borrow_mut().next = given.next;
         answered = given.answered;
+        epochs = given.epochs;
         bases = given.bases;
         policy_step = given.policy_step;
         for k in given.keys {

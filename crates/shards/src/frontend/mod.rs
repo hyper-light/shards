@@ -29,7 +29,7 @@ use shards_dockerfile::platform::{self, Platform};
 use shards_gateway::gateway::{self as gw, Client, Pong, Ref, Returned, RpcStatus, Solve};
 use shards_gateway::grpc;
 
-use crate::build::skills;
+use crate::build::{gitobject, skills};
 
 mod check;
 mod osi;
@@ -457,6 +457,8 @@ fn config(opts: &mut BTreeMap<String, String>, env: &Env, caps: &Caps) -> Result
         target_platform: build_platform.clone(),
         implicit_target: true,
         build_platforms: vec![build_platform],
+        default_platform: Some(env.own.clone()),
+        no_client: false,
         build_args: filter(opts, "build-arg:"),
         target: opt(opts, "target").as_bytes().to_vec(),
         all_stages: false,
@@ -698,6 +700,11 @@ struct Gateway<'c, R, W> {
     failed: RefCell<Option<Failure>>,
     /// ResolveImageConfig's answers, by request (builder's withResolveCache).
     resolved: RefCell<BTreeMap<ImageRequest, Result<Resolved, Failure>>>,
+    /// SOURCE_DATE_EPOCH's time from each source, once a build, where dockerfile's
+    /// frontend asks for each platform's at once (its steps one in buildx's display, or
+    /// not, as they happen to overlap) and a source changed between them gives them
+    /// different times.
+    epochs: RefCell<BTreeMap<EpochSource, Option<plan::Epoch>>>,
     /// The Dockerfile's own .dockerignore, else the context's once read.
     dockerignore: RefCell<Option<Vec<u8>>>,
     /// The file being built, for warnings, while a plan for which they are sent is made.
@@ -984,22 +991,99 @@ impl<R: Read, W: Write> Gateway<'_, R, W> {
         Ok(data)
     }
 
-    /// ResolveImageConfig of `name` for `platform`, its step named `log`, as grpcclient
-    /// asks it through ResolveSourceMeta (its resolve mode not asked, as there).
-    fn image_config(&self, name: &[u8], platform: &Platform, log: &[u8]) -> Result<Resolved, Failure> {
-        let key = (name.to_vec(), platform::format_all(platform), log.to_vec());
+    /// When `op`'s source was made, as resolveSourceDateEpochFromState finds it, its
+    /// metadata's step named `log`.
+    fn source_time(&self, op: &plan::SourceOp, log: &str) -> Result<Option<plan::Epoch>, Failure> {
+        let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
+        let identifier = text(&op.identifier);
+        let attrs: BTreeMap<String, String> = op.attrs.iter().map(|(k, v)| (text(k), text(v))).collect();
+        let meta = self
+            .client
+            .borrow_mut()
+            .resolve_source_meta(
+                &identifier,
+                &attrs,
+                None,
+                log,
+                "",
+                identifier.starts_with("git://"),
+            )
+            .map_err(Failure::call)?;
+        if let Some(git) = &meta.git
+            && !git.commit_object.is_empty()
+        {
+            // The committer's time in the committer's zone; none where the line says none
+            // well formed (sourceDateEpochFromMetadata, gitobject).
+            let commit = gitobject::parse(&git.commit_object)
+                .and_then(|o| o.to_commit())
+                .map_err(Failure::new)?;
+            return Ok(commit.committer.when.map(|(secs, offset)| plan::Epoch {
+                secs,
+                nanos: 0,
+                offset,
+            }));
+        }
+        let utc = |(secs, nanos): (i64, u32)| plan::Epoch {
+            secs,
+            nanos,
+            offset: 0,
+        };
+        if let Some((secs, nanos)) = meta.http.as_ref().and_then(|h| h.last_modified) {
+            return Ok(Some(utc((secs, u32::try_from(nanos).unwrap_or(0)))));
+        }
+        let filename = attrs.get("http.filename").filter(|f| !f.is_empty());
+        let http = identifier.starts_with("http://") || identifier.starts_with("https://");
+        let (true, Some(filename)) = (http, filename) else {
+            return Ok(None);
+        };
+        // The download solved alone, its file read whole (dockerui.ReadFile).
+        let def = plan::source_definition(op, &self.env.own);
+        let m = pb::definition(&def, &Carried::default())
+            .ok_or_else(|| Failure::new("failed to marshal the SOURCE_DATE_EPOCH source"))?;
+        let r = self
+            .solve(&m, &[], false)?
+            .ok_or_else(|| Failure::new("invalid empty result"))?;
+        let data = self
+            .client
+            .borrow_mut()
+            .read_file(&r.id, filename, None)
+            .map_err(Failure::call)?;
+        let limits = crate::pull::limits().map_err(Failure::new)?;
+        // archiveMaxTimeFromRef, allowing what is no archive: none where it cannot be read
+        // as one. What decompresses past the image limits fails, as an image's layers do.
+        match shards_build::archive::newest_file(std::io::Cursor::new(data), &limits) {
+            Ok(newest) => Ok(newest.map(utc)),
+            Err(e) if e.0 == shards_build::archive::over_budget(limits.bytes) => Err(Failure::new(e.0)),
+            Err(_) => Ok(None),
+        }
+    }
+
+    /// ResolveImageConfig of `name` for `platform` (none, BuildKit's own), its step named
+    /// `log`, as grpcclient asks it through ResolveSourceMeta (its resolve mode not asked,
+    /// as there).
+    fn image_config(
+        &self,
+        name: &[u8],
+        platform: Option<&Platform>,
+        log: &[u8],
+    ) -> Result<Resolved, Failure> {
+        let key = (
+            name.to_vec(),
+            platform.map(platform::format_all).unwrap_or_default(),
+            log.to_vec(),
+        );
         if let Some(r) = self.resolved.borrow().get(&key) {
             return r.clone();
         }
         let name_s = String::from_utf8_lossy(name).into_owned();
-        let p = gateway_platform(platform);
+        let p = platform.map(gateway_platform);
         let answer = self
             .client
             .borrow_mut()
             .resolve_source_meta(
                 &format!("docker-image://{name_s}"),
                 &BTreeMap::new(),
-                Some(&p),
+                p.as_ref(),
                 &String::from_utf8_lossy(log),
                 "",
                 false,
@@ -1058,7 +1142,7 @@ impl ReadError {
 }
 
 impl<R: Read, W: Write> Resolver for Gateway<'_, R, W> {
-    fn resolve(&self, name: &[u8], platform: &Platform, log: &[u8]) -> Result<Resolved, Vec<u8>> {
+    fn resolve(&self, name: &[u8], platform: Option<&Platform>, log: &[u8]) -> Result<Resolved, Vec<u8>> {
         self.image_config(name, platform, log).map_err(|f| {
             let message = f.message.clone().into_bytes();
             *self.failed.borrow_mut() = Some(f);
@@ -1101,9 +1185,25 @@ impl<R: Read, W: Write> Resolver for Gateway<'_, R, W> {
         })
     }
 
-    fn epoch(&self, source: &EpochSource) -> Result<Option<(i64, u32)>, Vec<u8>> {
-        let _ = source;
-        Err(b"shards' frontend takes SOURCE_DATE_EPOCH as a number of seconds only yet".to_vec())
+    /// resolveSourceDateEpochFromState: the source's metadata (a Git commit's object, an
+    /// HTTP source's Last-Modified); else, for a download, its file read and the newest
+    /// regular file of the archive it is, none where it is no archive.
+    fn epoch(&self, source: &EpochSource) -> Result<Option<plan::Epoch>, Vec<u8>> {
+        let Some(op) = &source.op else {
+            return Ok(None);
+        };
+        if let Some(e) = self.epochs.borrow().get(source) {
+            return Ok(*e);
+        }
+        let e = self
+            .source_time(op, &String::from_utf8_lossy(&source.log))
+            .map_err(|f| {
+                let message = f.message.clone().into_bytes();
+                *self.failed.borrow_mut() = Some(f);
+                message
+            })?;
+        self.epochs.borrow_mut().insert(source.clone(), e);
+        Ok(e)
     }
 
     fn context_excludes(&self) -> Result<Option<Vec<Vec<u8>>>, Vec<u8>> {
@@ -1187,7 +1287,7 @@ impl<R: Read, W: Write> Resolver for Gateway<'_, R, W> {
         &self,
         name: &[u8],
         store: &[u8],
-        platform: &Platform,
+        platform: Option<&Platform>,
         log: &[u8],
     ) -> Result<Resolved, Vec<u8>> {
         // ResolveImageConfig with an OCI layout store, asked through ResolveSourceMeta:
@@ -1199,14 +1299,14 @@ impl<R: Read, W: Write> Resolver for Gateway<'_, R, W> {
                 String::from_utf8_lossy(store).into_owned(),
             ),
         ]);
-        let p = gateway_platform(platform);
+        let p = platform.map(gateway_platform);
         let answer = self
             .client
             .borrow_mut()
             .resolve_source_meta(
                 &format!("oci-layout://{}", String::from_utf8_lossy(name)),
                 &attrs,
-                Some(&p),
+                p.as_ref(),
                 &String::from_utf8_lossy(log),
                 "",
                 false,
@@ -1367,6 +1467,7 @@ fn build<R: Read, W: Write>(client: &mut Client<R, W>, env: &Env) -> Result<Outc
         opts: opts.clone(),
         failed: RefCell::new(None),
         resolved: RefCell::new(BTreeMap::new()),
+        epochs: RefCell::new(BTreeMap::new()),
         dockerignore: RefCell::new(None),
         warn_into: RefCell::new(None),
         artifacts: RefCell::new(BTreeMap::new()),
@@ -1486,7 +1587,12 @@ fn read_entrypoint<R: Read, W: Write>(
     g: &Gateway<'_, R, W>,
     config: &mut Config,
 ) -> Result<Entrypoint, Failure> {
-    if let Some((def, filename)) = remote_context(g, config)? {
+    // A remote context is loaded whatever is read (an HTTP one solved, its head read); the
+    // file is read from it unless `dockerfilekey` names the client's (ReadEntrypoint's
+    // forceLocalDockerfile).
+    if let Some((def, filename)) = remote_context(g, config)?
+        && !config.force_local_dockerfile
+    {
         return read_from(g, &def, &filename, None);
     }
     if g.caps.has_frontend("frontend.inputs") {
@@ -2652,6 +2758,7 @@ mod tests {
             opts: BTreeMap::new(),
             failed: RefCell::new(None),
             resolved: RefCell::new(BTreeMap::new()),
+            epochs: RefCell::new(BTreeMap::new()),
             dockerignore: RefCell::new(None),
             warn_into: RefCell::new(None),
             artifacts: RefCell::new(BTreeMap::new()),
@@ -2756,6 +2863,7 @@ mod tests {
             opts: BTreeMap::new(),
             failed: RefCell::new(None),
             resolved: RefCell::new(BTreeMap::new()),
+            epochs: RefCell::new(BTreeMap::new()),
             dockerignore: RefCell::new(None),
             warn_into: RefCell::new(None),
             artifacts: RefCell::new(BTreeMap::new()),
@@ -2947,11 +3055,11 @@ mod tests {
     struct NoImages;
 
     impl Resolver for NoImages {
-        fn resolve(&self, name: &[u8], _: &Platform, _: &[u8]) -> Result<Resolved, Vec<u8>> {
+        fn resolve(&self, name: &[u8], _: Option<&Platform>, _: &[u8]) -> Result<Resolved, Vec<u8>> {
             Err([b"no image ".as_slice(), name].concat())
         }
 
-        fn epoch(&self, _: &EpochSource) -> Result<Option<(i64, u32)>, Vec<u8>> {
+        fn epoch(&self, _: &EpochSource) -> Result<Option<plan::Epoch>, Vec<u8>> {
             Ok(None)
         }
     }

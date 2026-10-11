@@ -1,0 +1,5 @@
+FROM scratch AS src
+ADD https://github.com/moby/go-archive.git#v0.3.3 /
+
+FROM scratch
+COPY note /note
