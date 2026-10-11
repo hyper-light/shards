@@ -355,15 +355,17 @@ struct Mapping {
     direct: bool,
     target: IpAddr,
     /// Where the socket takes its port on the guest's loopback, which stays its own once it
-    /// serves there: one address of 127/8, or every one (0.0.0.0).
+    /// serves there: one address of 127/8, or every one (0.0.0.0); and whether it takes it
+    /// on IPv6's, `::1`.
     hold: Option<Ipv4Addr>,
+    hold6: bool,
 }
 
 /// The host's address for a bind of the guest's to `guest` (`v6only`, its IPV6_V6ONLY;
-/// `own`, eth0's address): the host's every address for the guest's every address or
-/// eth0's own, its loopback address for the guest's. None for any other, which the guest
-/// keeps (the kernel's to bind as asked).
-fn mapping(guest: IpAddr, v6only: bool, own: Option<Ipv4Addr>) -> Option<Mapping> {
+/// `own` and `own6`, eth0's addresses): the host's every address for the guest's every
+/// address or eth0's own, its loopback address for the guest's. None for any other, which
+/// the guest keeps (the kernel's to bind as asked).
+fn mapping(guest: IpAddr, v6only: bool, own: Option<Ipv4Addr>, own6: Option<Ipv6Addr>) -> Option<Mapping> {
     let v4 = |a: Ipv4Addr| {
         if a.is_unspecified() {
             Some(Mapping {
@@ -371,6 +373,7 @@ fn mapping(guest: IpAddr, v6only: bool, own: Option<Ipv4Addr>) -> Option<Mapping
                 direct: true,
                 target: guest,
                 hold: Some(a),
+                hold6: false,
             })
         } else if a.is_loopback() {
             Some(Mapping {
@@ -378,6 +381,7 @@ fn mapping(guest: IpAddr, v6only: bool, own: Option<Ipv4Addr>) -> Option<Mapping
                 direct: false,
                 target: guest,
                 hold: Some(a),
+                hold6: false,
             })
         } else if Some(a) == own {
             Some(Mapping {
@@ -385,6 +389,7 @@ fn mapping(guest: IpAddr, v6only: bool, own: Option<Ipv4Addr>) -> Option<Mapping
                 direct: true,
                 target: guest,
                 hold: None,
+                hold6: false,
             })
         } else {
             None
@@ -394,8 +399,8 @@ fn mapping(guest: IpAddr, v6only: bool, own: Option<Ipv4Addr>) -> Option<Mapping
         IpAddr::V4(a) => v4(a),
         IpAddr::V6(a) => match a.to_ipv4_mapped() {
             Some(m) => v4(m),
-            // Its every address: IPv4's too, but for IPv6's alone, which eth0 has none of,
-            // so relayed to its loopback.
+            // Its every address: IPv4's too, but for IPv6's alone, which reaches the guest
+            // at eth0's IPv4 address no more, so relayed to its loopback.
             None if a.is_unspecified() => Some(Mapping {
                 host: guest,
                 direct: !v6only,
@@ -405,12 +410,22 @@ fn mapping(guest: IpAddr, v6only: bool, own: Option<Ipv4Addr>) -> Option<Mapping
                     guest
                 },
                 hold: (!v6only).then_some(Ipv4Addr::UNSPECIFIED),
+                hold6: true,
             }),
             None if a.is_loopback() => Some(Mapping {
                 host: guest,
                 direct: false,
                 target: guest,
                 hold: None,
+                hold6: true,
+            }),
+            // eth0's own IPv6 address: the host's every IPv6 address, relayed to it.
+            None if Some(a) == own6 => Some(Mapping {
+                host: IpAddr::V6(Ipv6Addr::UNSPECIFIED),
+                direct: false,
+                target: guest,
+                hold: None,
+                hold6: false,
             }),
             None => None,
         },
@@ -612,13 +627,16 @@ struct Supervise {
     diag: OwnedFd,
     netns: Option<u64>,
     own: Option<Ipv4Addr>,
+    /// eth0's IPv6 address and its gateway's, where it has IPv6.
+    own6: Option<(Ipv6Addr, Ipv6Addr)>,
     listeners: Vec<Option<OwnedFd>>,
     pending: HashMap<u32, Pending>,
     next: u32,
     held: HashMap<u64, Held>,
     /// How many held sockets keep each port of the guest's loopback, by protocol, address
-    /// and port.
+    /// and port; and of IPv6's, by protocol and port.
     holds: HashMap<(u8, Ipv4Addr, u16), u32>,
+    holds6: HashMap<(u8, u16), u32>,
     /// The host's ports let go, by protocol and port: the number the next request had
     /// then.
     freed: HashMap<(u8, u16), u32>,
@@ -635,11 +653,13 @@ fn serve(ctl: OwnedFd, diag: OwnedFd) {
         diag,
         netns: own_netns(),
         own: crate::net::current().map(|(a, _, _)| a),
+        own6: crate::net::current6().map(|(a, _, gateway)| (a, gateway)),
         listeners: Vec::new(),
         pending: HashMap::new(),
         next: 0,
         held: HashMap::new(),
         holds: HashMap::new(),
+        holds6: HashMap::new(),
         freed: HashMap::new(),
         pairs: Vec::new(),
         flows: Vec::new(),
@@ -889,7 +909,7 @@ impl Supervise {
                 if !valid(listener, n.id) {
                     return Answer::Gone;
                 }
-                let Some(m) = mapping(guest, v6only, self.own) else {
+                let Some(m) = mapping(guest, v6only, self.own, self.own6.map(|(a, _)| a)) else {
                     return Answer::Continue;
                 };
                 self.bind(notif, sock, guest, port, proto, m, None)
@@ -907,7 +927,7 @@ impl Supervise {
                         } else {
                             IpAddr::V4(Ipv4Addr::UNSPECIFIED)
                         };
-                        match mapping(any, v6only, self.own) {
+                        match mapping(any, v6only, self.own, self.own6.map(|(a, _)| a)) {
                             Some(m) => self.bind(notif, sock, any, 0, proto, m, Some(backlog)),
                             None => Answer::Continue,
                         }
@@ -1247,14 +1267,31 @@ impl Supervise {
         let Some(h) = self.held.get_mut(&cookie).filter(|h| !h.kept) else {
             return;
         };
-        let Some(addr) = h.m.hold else { return };
         h.kept = true;
-        let key = (h.proto, addr, h.port);
-        let count = self.holds.entry(key).or_insert(0);
-        if *count == 0 {
-            let _ = crate::net::hold_loopback_port(key.0, addr, key.2, true);
+        let (proto, port, hold, hold6) = (h.proto, h.port, h.m.hold, h.m.hold6);
+        if let Some(addr) = hold {
+            let count = self.holds.entry((proto, addr, port)).or_insert(0);
+            if *count == 0 {
+                let _ = crate::net::hold_loopback_port(proto, addr, port, true);
+            }
+            *count += 1;
         }
-        *count += 1;
+        if hold6 {
+            let count = self.holds6.entry((proto, port)).or_insert(0);
+            *count += 1;
+            if *count == 1 {
+                self.held6_changed();
+            }
+        }
+    }
+
+    /// IPv6's loopback's ports the run's servers hold: its translation to the host's made
+    /// again with them (links::host_loopback6).
+    fn held6_changed(&self) {
+        if let Some((guest6, gateway6)) = self.own6 {
+            let held: Vec<(u8, u16)> = self.holds6.keys().copied().collect();
+            let _ = crate::links::host_loopback6(guest6, gateway6, &held);
+        }
     }
 
     /// The sockets sock_diag says have gone: each held one's host port let go. Where the
@@ -1346,6 +1383,16 @@ impl Supervise {
             if *count == 0 {
                 self.holds.remove(&(h.proto, addr, h.port));
                 let _ = crate::net::hold_loopback_port(h.proto, addr, h.port, false);
+            }
+        }
+        if h.m.hold6
+            && h.kept
+            && let Some(count) = self.holds6.get_mut(&(h.proto, h.port))
+        {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                self.holds6.remove(&(h.proto, h.port));
+                self.held6_changed();
             }
         }
     }
@@ -1975,36 +2022,36 @@ mod tests {
         let any6 = v6(Ipv6Addr::UNSPECIFIED);
         let lo4 = v4([127, 0, 0, 1]);
         let lo6 = v6(Ipv6Addr::LOCALHOST);
-        let m = |host, direct, target, hold| Mapping {
+        let own6: Ipv6Addr = "fd00:5ba5::2".parse().unwrap();
+        let mapping = |guest, v6only| mapping(guest, v6only, own, Some(own6));
+        let m = |host, direct, target, hold, hold6| Mapping {
             host,
             direct,
             target,
             hold,
+            hold6,
         };
         let (every, one) = (Some(Ipv4Addr::UNSPECIFIED), Some(Ipv4Addr::LOCALHOST));
-        assert_eq!(mapping(any4, false, own), Some(m(any4, true, any4, every)));
-        assert_eq!(mapping(lo4, false, own), Some(m(lo4, false, lo4, one)));
+        assert_eq!(mapping(any4, false), Some(m(any4, true, any4, every, false)));
+        assert_eq!(mapping(lo4, false), Some(m(lo4, false, lo4, one, false)));
         let eth0 = v4([172, 17, 0, 2]);
-        assert_eq!(mapping(eth0, false, own), Some(m(any4, true, eth0, None)));
+        assert_eq!(mapping(eth0, false), Some(m(any4, true, eth0, None, false)));
+        assert_eq!(mapping(v4([172, 17, 0, 9]), false), None, "another's address");
+        assert_eq!(mapping(any6, false), Some(m(any6, true, any6, every, true)));
         assert_eq!(
-            mapping(v4([172, 17, 0, 9]), false, own),
-            None,
-            "another's address"
-        );
-        assert_eq!(mapping(any6, false, own), Some(m(any6, true, any6, every)));
-        assert_eq!(
-            mapping(any6, true, own),
-            Some(m(any6, false, lo6, None)),
+            mapping(any6, true),
+            Some(m(any6, false, lo6, None, true)),
             "IPv6's alone"
         );
-        assert_eq!(mapping(lo6, false, own), Some(m(lo6, false, lo6, None)));
-        let mapped = v6(Ipv4Addr::LOCALHOST.to_ipv6_mapped());
-        assert_eq!(mapping(mapped, false, own), Some(m(lo4, false, mapped, one)));
+        assert_eq!(mapping(lo6, false), Some(m(lo6, false, lo6, None, true)));
         assert_eq!(
-            mapping(v6("fe80::1".parse().unwrap()), false, own),
-            None,
-            "link-local"
+            mapping(v6(own6), false),
+            Some(m(any6, false, v6(own6), None, false)),
+            "eth0's own IPv6 address"
         );
+        let mapped = v6(Ipv4Addr::LOCALHOST.to_ipv6_mapped());
+        assert_eq!(mapping(mapped, false), Some(m(lo4, false, mapped, one, false)));
+        assert_eq!(mapping(v6("fe80::1".parse().unwrap()), false), None, "link-local");
     }
 
     /// A destroy message's cookie, where sock_diag puts it (inet_diag_msg_common_fill,

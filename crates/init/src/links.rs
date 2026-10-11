@@ -121,6 +121,7 @@ mod nft {
     pub const NFT_MSG_NEWTABLE: u16 = 0;
     pub const NFT_MSG_NEWCHAIN: u16 = 3;
     pub const NFT_MSG_NEWRULE: u16 = 6;
+    pub const NFT_MSG_DELRULE: u16 = 8;
     pub const NFPROTO_IPV4: u8 = 2;
     pub const NFPROTO_IPV6: u8 = 10;
     pub const NFTA_TABLE_NAME: u16 = 1;
@@ -1031,9 +1032,88 @@ impl Batch {
         ));
     }
 
+    /// Every rule of `chain` gone (a DELRULE naming no rule, nft_delrule_by_chain).
+    fn flush(&mut self, chain: &[u8]) {
+        let mut r = Vec::new();
+        attr(&mut r, nft::NFTA_RULE_TABLE, TABLE);
+        attr(&mut r, nft::NFTA_RULE_CHAIN, chain);
+        self.msgs.push(nft_msg(self.family, nft::NFT_MSG_DELRULE, 0, r));
+    }
+
     fn commit(mut self, sock: &OwnedFd) -> io::Result<()> {
         self.msgs.push(Batch::bound(nft::NFNL_MSG_BATCH_END));
         exchange(sock, &self.msgs)
+    }
+}
+
+/// On the host's network (D124): what the run's processes send IPv6's loopback (`::1`)
+/// goes to the host's, its TCP and UDP. IPv6 keeps `::1` off every link but the loopback
+/// (RFC 4291 §2.5.3), so it goes by address translation: to `gateway6`, which the network
+/// process takes for the host's own `::1`, from eth0's address, `guest6`, its answers
+/// translated back by connection tracking. But for the ports `held` (each a protocol and a
+/// port) by the run's own servers there, which stay the guest's. Made again whole, in one
+/// transaction, as those change: chains `host-out`, at the output hook as NAT's
+/// destination translation is, and `host-post`, at postrouting, of table `shards` of
+/// family ip6.
+pub fn host_loopback6(guest6: Ipv6Addr, gateway6: Ipv6Addr, held: &[(u8, u16)]) -> io::Result<()> {
+    let eth0 = interface_index("eth0")?;
+    let mut b = Batch::of(nft::NFPROTO_IPV6);
+    b.chain(
+        b"host-out\0",
+        b"nat\0",
+        nft::NF_INET_LOCAL_OUT,
+        nft::PRIORITY_DNAT,
+        nft::NF_ACCEPT,
+    );
+    b.flush(b"host-out\0");
+    for &(proto, port) in held {
+        let mut e = Vec::new();
+        address6(&mut e, DESTINATION6, Ipv6Addr::LOCALHOST);
+        ports(&mut e, (proto, port, port));
+        accept(&mut e);
+        b.rule(b"host-out\0", e);
+    }
+    for proto in [libc::IPPROTO_TCP as u8, libc::IPPROTO_UDP as u8] {
+        let mut e = Vec::new();
+        address6(&mut e, DESTINATION6, Ipv6Addr::LOCALHOST);
+        meta(&mut e, nft::NFT_META_L4PROTO);
+        compare(&mut e, nft::NFT_CMP_EQ, &[proto]);
+        load(&mut e, &gateway6.octets());
+        expr(&mut e, b"nat\0", |d| {
+            be32(d, nft::NFTA_NAT_TYPE, nft::NFT_NAT_DNAT);
+            be32(d, nft::NFTA_NAT_FAMILY, u32::from(nft::NFPROTO_IPV6));
+            be32(d, nft::NFTA_NAT_REG_ADDR_MIN, nft::NFT_REG_1);
+        });
+        b.rule(b"host-out\0", e);
+    }
+    b.chain(
+        b"host-post\0",
+        b"nat\0",
+        nft::NF_INET_POST_ROUTING,
+        nft::PRIORITY_SNAT,
+        nft::NF_ACCEPT,
+    );
+    b.flush(b"host-post\0");
+    let mut e = Vec::new();
+    on(&mut e, nft::NFT_META_OIF, eth0);
+    address6(&mut e, SOURCE6, Ipv6Addr::LOCALHOST);
+    load(&mut e, &guest6.octets());
+    expr(&mut e, b"nat\0", |d| {
+        be32(d, nft::NFTA_NAT_TYPE, nft::NFT_NAT_SNAT);
+        be32(d, nft::NFTA_NAT_FAMILY, u32::from(nft::NFPROTO_IPV6));
+        be32(d, nft::NFTA_NAT_REG_ADDR_MIN, nft::NFT_REG_1);
+    });
+    b.rule(b"host-post\0", e);
+    b.commit(&netlink_socket(libc::NETLINK_NETFILTER)?)
+}
+
+/// An interface's index, by its name.
+fn interface_index(name: &str) -> io::Result<u32> {
+    let name = std::ffi::CString::new(name).map_err(|_| io::Error::other("a name with a NUL"))?;
+    // SAFETY: if_nametoindex(3) with a NUL-terminated name.
+    match unsafe { libc::if_nametoindex(name.as_ptr()) } {
+        0 => Err(io::Error::last_os_error()),
+        index => Ok(index),
     }
 }
 

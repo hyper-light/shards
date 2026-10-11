@@ -405,14 +405,12 @@ pub fn entropy(buf: &mut [u8]) -> io::Result<()> {
 
 impl Config {
     /// Docker's default bridge, `bridge`, as the guest whose MAC is `guest_mac` sees it:
-    /// the gateway's MAC made of its address, as Docker made its own (02:42 and the
-    /// address's four bytes).
+    /// the gateway's MAC made of its address (shards_abi::gateway_mac).
     pub fn on_bridge(policy: Policy, guest_mac: [u8; 6], bridge: &bridge::Bridge) -> Config {
-        let [a, b, c, d] = bridge.gateway().octets();
         Config {
             guest_mac,
             guest_ip: bridge.guest(),
-            gateway_mac: [0x02, 0x42, a, b, c, d],
+            gateway_mac: shards_abi::gateway_mac(bridge.gateway().octets()),
             gateway_ip: bridge.gateway(),
             guest_ip6: None,
             gateway_ip6: None,
@@ -769,8 +767,7 @@ impl Out<'_, '_> {
     fn datagram(&mut self, src: (IpAddr, u16), port: u16, payload: &[u8]) -> bool {
         let mut head = std::mem::take(self.scratch);
         let guest = self.guest_of(src.0);
-        self.frames
-            .udp_headers(&mut head, src, (guest, port), payload.len());
+        self.frames.udp_headers(&mut head, src, (guest, port), payload);
         let sent = self.send(&[&head, payload]);
         *self.scratch = head;
         sent
@@ -1486,7 +1483,7 @@ impl<'r> Stack<'r> {
         };
         self.cfg.guest_ip = Ipv4Addr::new(a, b, c, d);
         self.cfg.gateway_ip = Ipv4Addr::new(g0, g1, g2, g3);
-        self.cfg.gateway_mac = [0x02, 0x42, g0, g1, g2, g3];
+        self.cfg.gateway_mac = shards_abi::gateway_mac([g0, g1, g2, g3]);
         self.cfg.guest_ip6 = v6.map(|(guest, _)| guest);
         self.cfg.gateway_ip6 = v6.map(|(_, gateway)| gateway);
         self.frames.gateway_mac = self.cfg.gateway_mac;

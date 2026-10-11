@@ -99,6 +99,7 @@ pub fn main() -> ! {
         "loopback" => loopback(),
         "fs" => fs(args.get(1..).unwrap_or_default()),
         "addrs" => addrs(),
+        "neighbors" => neighbors(),
         "spawn" => spawn(args.get(1..).unwrap_or_default()),
         "spawns" => spawns(arg(1).parse().unwrap_or(1), args.get(2..).unwrap_or_default()),
         "tcp" => tcp(arg(1)),
@@ -110,7 +111,7 @@ pub fn main() -> ! {
         "listen" => listen(arg(1), arg(2).parse().unwrap_or(1)),
         "rebind" => rebind(arg(1), arg(2).parse().unwrap_or(1)),
         "binds" => binds(arg(1).parse().unwrap_or(1)),
-        "udp-serve" => udp_serve(arg(1)),
+        "udp-serve" => udp_serve(arg(1), arg(2) == "forget"),
         "agent" => agent(),
         "vsock-agent" => vsock_agent(arg(1).parse().unwrap_or(1028)),
         "hold" => hold(arg(1)),
@@ -1028,15 +1029,17 @@ fn binds(n: usize) -> i32 {
 
 /// Binds UDP at exactly `addr`, says `ready PORT`, then answers one datagram with
 /// `from PEER ` and the datagram: `udp-serve error E` where it cannot.
-fn udp_serve(addr: &str) -> i32 {
-    let served = std::net::UdpSocket::bind(addr).and_then(|sock| {
-        let _ = writeln!(io::stdout(), "ready {}", sock.local_addr()?.port());
-        let mut buf = [0u8; 2048];
-        let (n, peer) = sock.recv_from(&mut buf)?;
-        let mut answer = format!("from {} ", peer.ip().to_canonical()).into_bytes();
-        answer.extend_from_slice(buf.get(..n).unwrap_or_default());
-        sock.send_to(&answer, peer)
-    });
+fn udp_serve(addr: &str, forget: bool) -> i32 {
+    let served = forget_neighbors(forget)
+        .and_then(|()| std::net::UdpSocket::bind(addr))
+        .and_then(|sock| {
+            let _ = writeln!(io::stdout(), "ready {}", sock.local_addr()?.port());
+            let mut buf = [0u8; 2048];
+            let (n, peer) = sock.recv_from(&mut buf)?;
+            let mut answer = format!("from {} ", peer.ip().to_canonical()).into_bytes();
+            answer.extend_from_slice(buf.get(..n).unwrap_or_default());
+            sock.send_to(&answer, peer)
+        });
     match served {
         Ok(_) => 0,
         Err(e) => {
@@ -1199,6 +1202,214 @@ fn spawns(n: u32, args: &[String]) -> i32 {
 
 /// Every address of every interface, one a line, `NAME ADDR/PREFIX`, as getifaddrs(3)
 /// lists them: what `ip addr` would show of each.
+/// eth0's neighbors, IPv4's and IPv6's: one line each, `neighbor ADDR MAC STATE`, the
+/// state as `ip neigh` names it, `permanent` for one that never changes.
+fn neighbors() -> i32 {
+    match Rtnl::open().and_then(|r| r.neighbors()) {
+        Ok(list) => {
+            for (addr, mac, state) in list {
+                let _ = writeln!(io::stdout(), "neighbor {addr} {mac} {state}");
+            }
+            0
+        }
+        Err(e) => {
+            let _ = writeln!(io::stdout(), "neighbors error {e}");
+            1
+        }
+    }
+}
+
+/// Where `forget`, every neighbor of eth0's deleted (CAP_NET_ADMIN): what the guest's next
+/// datagram to one waits on its answer for, as a guest that never knew its gateway's MAC
+/// waited (PM M180).
+fn forget_neighbors(forget: bool) -> io::Result<()> {
+    if !forget {
+        return Ok(());
+    }
+    let rtnl = Rtnl::open()?;
+    for (addr, _, _) in rtnl.neighbors()? {
+        let mut n = Vec::new();
+        let (family, octets) = match addr {
+            std::net::IpAddr::V4(a) => (libc::AF_INET, a.octets().to_vec()),
+            std::net::IpAddr::V6(a) => (libc::AF_INET6, a.octets().to_vec()),
+        };
+        n.extend_from_slice(&[family as u8, 0, 0, 0]);
+        n.extend_from_slice(&rtnl.eth0.to_ne_bytes());
+        n.extend_from_slice(&[0; 4]);
+        n.extend_from_slice(&u16::try_from(4 + octets.len()).unwrap_or(0).to_ne_bytes());
+        n.extend_from_slice(&1u16.to_ne_bytes());
+        n.extend_from_slice(&octets);
+        rtnl.send(libc::RTM_DELNEIGH, libc::NLM_F_ACK as u16, &n)?;
+        rtnl.each(|kind, msg| {
+            if kind == libc::NLMSG_ERROR as u16 {
+                return match msg
+                    .get(..4)
+                    .and_then(|e| <[u8; 4]>::try_from(e).ok())
+                    .map(i32::from_ne_bytes)
+                {
+                    Some(0) => Some(Ok(())),
+                    Some(e) => Some(Err(io::Error::from_raw_os_error(-e))),
+                    None => Some(Err(io::Error::other("a short answer"))),
+                };
+            }
+            None
+        })?;
+    }
+    Ok(())
+}
+
+/// An rtnetlink socket, and eth0's index.
+struct Rtnl {
+    sock: std::os::fd::OwnedFd,
+    eth0: u32,
+}
+
+impl Rtnl {
+    fn open() -> io::Result<Rtnl> {
+        use std::os::fd::FromRawFd as _;
+        // SAFETY: if_nametoindex(3) with a NUL-terminated name.
+        let eth0 = unsafe { libc::if_nametoindex(c"eth0".as_ptr()) };
+        // SAFETY: socket(2) with constant arguments.
+        let fd = unsafe {
+            libc::socket(
+                libc::AF_NETLINK,
+                libc::SOCK_RAW | libc::SOCK_CLOEXEC,
+                libc::NETLINK_ROUTE,
+            )
+        };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: a descriptor just made, owned here alone.
+        let sock = unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) };
+        Ok(Rtnl { sock, eth0 })
+    }
+
+    /// Sends a request of `kind` with `body` (struct nlmsghdr: length, type, flags,
+    /// sequence, port).
+    fn send(&self, kind: u16, flags: u16, body: &[u8]) -> io::Result<()> {
+        use std::os::fd::AsRawFd as _;
+        let mut req = Vec::new();
+        req.extend_from_slice(&u32::try_from(16 + body.len()).unwrap_or(0).to_ne_bytes());
+        req.extend_from_slice(&kind.to_ne_bytes());
+        req.extend_from_slice(&(libc::NLM_F_REQUEST as u16 | flags).to_ne_bytes());
+        req.extend_from_slice(&[0; 8]);
+        req.extend_from_slice(body);
+        // SAFETY: send(2) of a buffer of ours, of its length.
+        if unsafe { libc::send(self.sock.as_raw_fd(), req.as_ptr().cast(), req.len(), 0) } < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    /// Each message answered, its type and body, to `f` until it says what they come to,
+    /// or a dump's end does.
+    fn each(&self, mut f: impl FnMut(u16, &[u8]) -> Option<io::Result<()>>) -> io::Result<()> {
+        use std::os::fd::AsRawFd as _;
+        let mut buf = vec![0u8; 65536];
+        loop {
+            // SAFETY: recv(2) into a buffer of ours, of its length.
+            let n = unsafe { libc::recv(self.sock.as_raw_fd(), buf.as_mut_ptr().cast(), buf.len(), 0) };
+            let Some(got) = usize::try_from(n).ok().and_then(|n| buf.get(..n)) else {
+                return Err(io::Error::last_os_error());
+            };
+            let mut at = 0usize;
+            while let (Some(len), Some(kind)) = (u32_at(got, at), u16_at(got, at.saturating_add(4))) {
+                let len = len as usize;
+                if len < 16 {
+                    return Err(io::Error::other("a malformed message"));
+                }
+                let msg = got
+                    .get(at.saturating_add(16)..at.saturating_add(len))
+                    .unwrap_or_default();
+                at = at.saturating_add(len.saturating_add(3) & !3);
+                if kind == libc::NLMSG_DONE as u16 {
+                    return Ok(());
+                }
+                if let Some(said) = f(kind, msg) {
+                    return said;
+                }
+            }
+        }
+    }
+
+    /// eth0's neighbors from rtnetlink's dump (RTM_GETNEIGH): each address, MAC and state.
+    fn neighbors(&self) -> io::Result<Vec<(std::net::IpAddr, String, &'static str)>> {
+        use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+        // struct ndmsg of no family: every neighbor.
+        self.send(libc::RTM_GETNEIGH, libc::NLM_F_DUMP as u16, &[0; 12])?;
+        let mut list = Vec::new();
+        self.each(|kind, msg| {
+            if kind == libc::NLMSG_ERROR as u16 {
+                return Some(Err(io::Error::other("the dump failed")));
+            }
+            let (Some(index), Some(state)) = (u32_at(msg, 4), u16_at(msg, 8)) else {
+                return None;
+            };
+            if kind != libc::RTM_NEWNEIGH || index != self.eth0 {
+                return None;
+            }
+            // Its attributes: NDA_DST (1), NDA_LLADDR (2).
+            let (mut addr, mut mac) = (None, String::from("-"));
+            let mut a = 12usize;
+            while let (Some(alen), Some(akind)) = (u16_at(msg, a), u16_at(msg, a.saturating_add(2))) {
+                let alen = usize::from(alen);
+                if alen < 4 {
+                    break;
+                }
+                let value = msg
+                    .get(a.saturating_add(4)..a.saturating_add(alen))
+                    .unwrap_or_default();
+                match akind {
+                    1 => {
+                        addr = <[u8; 4]>::try_from(value)
+                            .map(|o| IpAddr::V4(Ipv4Addr::from(o)))
+                            .or_else(|_| <[u8; 16]>::try_from(value).map(|o| IpAddr::V6(Ipv6Addr::from(o))))
+                            .ok();
+                    }
+                    2 => {
+                        mac = value
+                            .iter()
+                            .map(|b| format!("{b:02x}"))
+                            .collect::<Vec<_>>()
+                            .join(":")
+                    }
+                    _ => {}
+                }
+                a = a.saturating_add(alen.saturating_add(3) & !3);
+            }
+            let state = match state {
+                0x01 => "incomplete",
+                0x02 => "reachable",
+                0x04 => "stale",
+                0x08 => "delay",
+                0x10 => "probe",
+                0x20 => "failed",
+                0x40 => "noarp",
+                0x80 => "permanent",
+                _ => "none",
+            };
+            if let Some(addr) = addr {
+                list.push((addr, mac, state));
+            }
+            None
+        })?;
+        Ok(list)
+    }
+}
+
+fn u16_at(b: &[u8], i: usize) -> Option<u16> {
+    b.get(i..i.saturating_add(2))
+        .and_then(|s| <[u8; 2]>::try_from(s).ok())
+        .map(u16::from_ne_bytes)
+}
+
+fn u32_at(b: &[u8], i: usize) -> Option<u32> {
+    b.get(i..i.saturating_add(4))
+        .and_then(|s| <[u8; 4]>::try_from(s).ok())
+        .map(u32::from_ne_bytes)
+}
+
 fn addrs() -> i32 {
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
     let mut list: *mut libc::ifaddrs = std::ptr::null_mut();

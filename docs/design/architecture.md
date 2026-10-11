@@ -1898,8 +1898,10 @@ stack inside the VMM, is superseded by it.
     allowlist, which needs the syscalls it makes measured on Linux first, as the VM
     process's were (M52).
 - **The guest's side.** A virtio-net device in the VM process, configured before the
-  template is saved, with a static address and no DHCP or duplicate-address detection, so
-  restores do no network work (networking.md R3; [RFC 2131 §4.4.1; RFC 4862 §5.4]). A VM
+  template is saved, with a static address, no DHCP or duplicate-address detection, and
+  its gateway's MAC as a permanent neighbor, so that restores do no network work
+  (networking.md R3; [RFC 2131 §4.4.1; RFC 4862 §5.4]) and no datagram waits in the guest
+  on ARP's answer (PM M180); each run's own address, MAC and IPv6 address keep it. A VM
   with no network gets no device (networking.md R7: absent device, no attack surface).
 - **Built so far.** Builds' `RUN` steps and `shards run` are on Docker's default bridge,
   on the subnet dockerd would make it on this host (moby docker-v29.9.0
@@ -1949,7 +1951,10 @@ stack inside the VMM, is superseded by it.
     device's TX into the ring (`TxFlush`: the worker answers once a round finds every frame
     the guest had given), and the network process takes the ring's frames, a ring's worth
     at most, before a control message and before it ends, so what the guest sent before
-    UNPUBLISH goes before it: 150 runs of 150 answered.
+    UNPUBLISH goes before it: 150 runs of 150 answered. A datagram the guest still held
+    was not the device's yet, though: each run's first to its gateway waited on ARP's
+    answer for the gateway's MAC, and one whose port went first was lost (2026-10-11, PM
+    M180). init gives eth0 the gateway's MAC for good, so that the guest asks nothing.
   - *No child holds what the daemon lets go of (2026-10-10, PM M134, M158).* A child holds
     every descriptor its parent had when it was made, close-on-exec ones too, until it
     execs: XNU copies the table into it, whatever `POSIX_SPAWN_CLOEXEC_DEFAULT` says, and
@@ -3559,17 +3564,32 @@ host networking does for its VM's containers (M177).
   TCP socket's listen(2): the guest's socket listens, then the host's, so that none of
   the host's connections finds it not yet listening; a UDP socket's datagrams come as it
   is bound. What comes to the host's port reaches the guest by its network process: at
-  the socket's own port on eth0's address where it takes that address; for a socket on
-  the loopback alone, or on IPv6 alone, which eth0 has none of, at a relay of the
-  process's on eth0's address, at a port the host holds too, which passes each
-  connection or datagram on from the guest's own loopback, so that its server sees a
-  loopback peer, as one on the host's loopback does.
+  the socket's own port on eth0's IPv4 address where it takes that address; for a
+  socket on the loopback alone, on IPv6 alone or at eth0's IPv6 address, at a relay of
+  the process's on eth0's IPv4 address, at a port the host holds too, which passes each
+  connection or datagram on from the guest's own loopback (or to eth0's IPv6 address),
+  so that its server sees a loopback peer, as one on the host's loopback does.
 - **A server's loopback port is its own.** Once a TCP socket listens, or a UDP socket is
   bound to a port it named or to the loopback, its port at its address stays the guest's
   on the loopback: what the guest's own processes send it there, and its answers, by
   routing rules ahead of the host's. A client's socket, bound to a port of the kernel's
   choosing (busybox `nc`'s, musl's resolver's), keeps no rule, so that what it sends the
   host's loopback reaches the host.
+- **IPv6: the host's too.** eth0 has an IPv6 address: `::2` of the last /64 of the pool
+  dockerd derives its networks' from (the home's engine ID's ULA /48, whose other /64s
+  the user's networks are given), its gateway `::1`, and its default route through it.
+  Its network process takes that gateway for the host's `::1`, as it takes IPv4's for
+  127.0.0.1, and lets every unicast address through. `::1` cannot leave the guest as
+  127/8 can: Linux drops a packet that arrives on any link but the loopback with `::1`
+  in its header (net/ipv6/ip6_input.c, ip6_rcv_core; RFC 4291 §2.5.3). So what the
+  guest sends `::1` over TCP and UDP is translated (nftables, table `ip6 shards`): to the
+  gateway's address at the output hook, from eth0's address at postrouting, connection
+  tracking translating the answers back. A port its own servers hold at `::1`, or at
+  every IPv6 address, stays the guest's: an accept rule ahead of the translation, the
+  chain made again whole as they change. The answers, back at `::1`, are routed by the
+  link they came in on, as `::1`'s always are (net/ipv6/route.c, rt6_need_strict), and
+  that is eth0: `::1` is local on eth0 too, at the metric `ip route` gives (1024), past
+  lo's (0), which the guest's own traffic takes.
 - **Let go.** As a socket goes, which the kernel tells sock_diag's listeners
   (SKNLGRP_*_DESTROY), the host lets its port go; where those messages overflowed, the
   guest's sockets, listed whole, stand in. A port closed and bound again at once is the
@@ -3587,31 +3607,45 @@ host networking does for its VM's containers (M177).
   refuses this beside its members.
 - **Cost** (M178): a bind is a round trip to the host. A TCP listener, two: p50 0.24 to
   0.26 ms, where the bridge's is 1 µs; a UDP bind, one: p50 0.15 to 0.17 ms.
-- **Open.** IPv6 past the guest's loopback: eth0 has no IPv6, so the guest's IPv6 flows,
-  and what it sends `::1`, are not the host's (its servers' IPv6 ports are, relayed). A
-  container joining a host-network container's network (`--network container:NAME`). A
-  bind to one of the host's own addresses (its LAN address) is the guest's kernel's to
-  refuse (EADDRNOTAVAIL), as Docker Desktop's container's is. A program on the host's
-  network that installs a seccomp filter with a listener of its own gets EBUSY: the
-  kernel allows one listener in a process's filters (kernel/seccomp.c,
-  has_duplicate_listener).
+- **Open.** A container joining a host-network container's network (`--network
+  container:NAME`). A bind to one of the host's own addresses (its LAN address) is the
+  guest's kernel's to refuse (EADDRNOTAVAIL), as Docker Desktop's container's is. A
+  program on the host's network that installs a seccomp filter with a listener of its
+  own gets EBUSY: the kernel allows one listener in a process's filters
+  (kernel/seccomp.c, has_duplicate_listener).
 - **Tested**: `a_run_on_the_hosts_network_is_on_the_hosts_network` (the warnings; the
   host's name; the host's own TCP and UDP services at its loopback, by clients that bind
-  first; servers at every address, at 127.0.0.1 and at `::1`, each reached from the
-  host's loopback at the port the host chose, with the peer each sees; a UDP server's
+  first, at 127.0.0.1 and at `::1`; servers at every address, at 127.0.0.1 and at `::1`,
+  each reached from the host's loopback at the port the host chose, with the peer each
+  sees; a UDP server's
   answer, sent as the server ends, twelve times, by the relay and from the gateway; a
   port the host holds refused with EADDRINUSE; a port closed and bound again 50 times at
-  once; dockerd's refusals in its words), run 25 times, passing each time, and
-  mutation-checked: without the relays spared and drained at the run's end, without a
-  relay's flows passed on as its socket goes, without the VM's flush before a port is let
-  go, without the bind asked again behind the letting go, it fails; without the daemon's
-  wait for the network process, the daemon's `a_guests_bind_is_the_hosts` fails. Init's
+  once; dockerd's refusals in its words), run 25 times, passing each time, and 20 more
+  with IPv6, and mutation-checked: without the relays spared and drained at the run's
+  end, without a relay's flows passed on as its socket goes, without the VM's flush
+  before a port is let go, without the bind asked again behind the letting go, without
+  `::1` local on eth0, with IPv6's UDP checksum zero, without the accept rules for the
+  guest's own `::1` ports, it fails; without the daemon's wait for the network process,
+  the daemon's `a_guests_bind_is_the_hosts` fails. `a_runs_gateway_is_its_neighbor_from_its_start`
+  (below) fails without the gateway's entry at boot, after a new MAC, on a network of
+  the run's own, or for IPv6's gateway. Init's
   `a_bind_goes_where_its_address_says`, `a_gone_sockets_cookie_is_read_from_its_message`
   and `a_calls_arguments_are_read_as_the_kernel_takes_them`; the network process's
   `the_hosts_network_reaches_what_the_host_does` and
   `a_hosted_port_is_let_go_by_its_number`; seccomp's
   `the_hosts_networks_binds_are_notified_on_every_abi`; the ABI's
   `host_binds_are_read_as_written`; `resolv_conf_on_the_hosts_network_is_the_hosts`.
+- **Found and closed: answers held for ARP's (PM M180).** The test lost a relayed UDP
+  answer once in 10 runs. The guest held it, not its device: each run's first datagram
+  to its gateway waited in the neighbor's queue for ARP's answer, and the port went
+  first (relayed answers lost under load: 5 of 1,000 without the gateway's MAC, none of
+  1,000 with it). init gives eth0 its gateway's MAC as a permanent neighbor
+  (`shards_abi::gateway_mac`, which the network process answers ARP and neighbor
+  solicitations with), IPv4's and IPv6's, so that no run's datagram waits on it; the
+  published UDP flake's first answer had the same cause.
+- **Found and closed: UDP's answers over IPv6** carried a zero checksum, which Linux
+  drops (D99's note): the guest's UDP to the host's `::1` went unanswered until each
+  answer carried its own.
 
 ### D123. A run's record of processes: from the kernel, every one, whole
 
@@ -3735,7 +3769,9 @@ mount rule itself, on every guest kernel, with seccomp, which all have:
 - **Past docker-default, by design.** docker-default refuses mount(2) and lets fsopen and
   open_tree's clone through to a container with the capability (PM M174). A detached
   mount needs no mount point: fsopen, fsconfig and fsmount make one, and its descriptor
-  opens its files, so the rule that refused mount(2) alone would leave a microVM's own
+  opens its files, as Docker's container with the capability made a tmpfs and a file in
+  it while docker-default refused only move_mount (M174, measured on both GitHub
+  runners), so the rule that refused mount(2) alone would leave a microVM's own
   virtio-fs shares, a provider's and the join share, to any container given the
   capability. shards refuses the new mount API too; a program that mounts gets EACCES
   from its first step instead of from mount(2) or move_mount.
@@ -5881,6 +5917,16 @@ Tested on real microVMs: `microvms_on_an_ipv6_network_reach_one_another`.
 Mutation-checked, each failing the test: no neighbor advertisements, no AAAA answers, the
 subnet's first address not kept out. The headers, neighbor discovery, ICMPv6's quote and
 checksums, `ip6.arpa`, and the policy's IPv6 rules have unit tests.
+
+**Found and closed (2026-10-11, D124): UDP's answers over IPv6.** The network process
+wrote each UDP datagram it made for a guest with a checksum of zero, IPv4's way of saying
+there is none (RFC 768). IPv6 has no such way (RFC 8200 §8.1), and Linux counts a zero as
+a checksum error whatever the device says, for every socket but one set to take it
+(net/ipv6/udp.c, __udp6_lib_rcv; UDP_NO_CHECK6_RX): every answer to a guest's UDP over
+IPv6 had been dropped, and the tests above spoke TCP and resolved names over IPv4. Each
+datagram over IPv6 now carries its checksum, over IPv6's pseudo-header
+(`wire::udp_headers`; zero sent as all ones), pinned by the unit test's sum, and by D124's
+end-to-end test, whose UDP to the host's `::1` is answered.
 
 **Found and closed: the run's own command, ahead of its agents' rules.**
 - **What D59 promised.** A run whose image's agents have grants past the microVM has

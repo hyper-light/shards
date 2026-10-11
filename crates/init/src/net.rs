@@ -1,17 +1,18 @@
 //! The guest's network, set up once, before any snapshot, so that a restore does no
-//! network work (networking.md R3): `eth0` up with the device's MTU, a static address and
-//! the default route through the gateway, by rtnetlink, with no DHCP and no duplicate
-//! address detection. The host names the address on the kernel command line,
-//! `shards_net=ADDR/PREFIX,GATEWAY`.
+//! network work (networking.md R3): `eth0` up with the device's MTU, a static address,
+//! the default route through the gateway and the gateway's MAC, by rtnetlink, with no
+//! DHCP, no duplicate address detection and no ARP. The host names the address on the
+//! kernel command line, `shards_net=ADDR/PREFIX,GATEWAY`.
 
 use std::io;
-use std::net::{Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 
 const RTM_NEWLINK: u16 = 16;
 const RTM_NEWADDR: u16 = 20;
 const RTM_DELADDR: u16 = 21;
 const RTM_NEWROUTE: u16 = 24;
+const RTM_NEWNEIGH: u16 = 28;
 const RTM_NEWRULE: u16 = 32;
 const RTM_DELRULE: u16 = 33;
 const NLM_F_REQUEST: u16 = 1;
@@ -31,7 +32,9 @@ const RTA_OIF: u16 = 4;
 const RT_TABLE_MAIN: u8 = 254;
 const RTPROT_BOOT: u8 = 3;
 const RT_SCOPE_UNIVERSE: u8 = 0;
+const RT_SCOPE_HOST: u8 = 254;
 const RTN_UNICAST: u8 = 1;
+const RTN_LOCAL: u8 = 2;
 /// Routing rules' attributes and action (include/uapi/linux/fib_rules.h).
 const FRA_DST: u16 = 1;
 const FRA_PRIORITY: u16 = 6;
@@ -50,8 +53,18 @@ const PREF_HOST: u32 = 20;
 const PREF_LOCAL: u32 = 30;
 /// The loopback's network, 127.0.0.0/8.
 const LOOPBACK: [u8; 4] = [127, 0, 0, 0];
+/// `::1`'s metric on eth0 (D124): past `lo`'s, 0, as `ip route` gives an IPv6 route by
+/// default.
+const LOCAL6_METRIC: u32 = 1024;
+/// A route's metric (linux/rtnetlink.h).
+const RTA_PRIORITY: u16 = 6;
 /// The device's MTU (vmm virtio-net, MTU).
 const MTU: u32 = 65520;
+/// A neighbor's attributes, and the state of one that never changes nor expires
+/// (include/uapi/linux/neighbour.h).
+const NDA_DST: u16 = 1;
+const NDA_LLADDR: u16 = 2;
+const NUD_PERMANENT: u16 = 0x80;
 
 /// The guest's address, prefix and gateway, from `shards_net=ADDR/PREFIX,GATEWAY`.
 pub fn from_cmdline() -> Option<(Ipv4Addr, u8, Ipv4Addr)> {
@@ -128,7 +141,33 @@ pub fn configure(addr: Ipv4Addr, prefix: u8, gateway: Ipv4Addr) -> io::Result<()
     r.extend_from_slice(&0u32.to_ne_bytes());
     attr(&mut r, RTA_GATEWAY, &gateway.octets());
     attr(&mut r, RTA_OIF, &index.to_ne_bytes());
-    request(&sock, RTM_NEWROUTE, NLM_F_CREATE | NLM_F_EXCL, &r)
+    request(&sock, RTM_NEWROUTE, NLM_F_CREATE | NLM_F_EXCL, &r)?;
+    gateway_neighbor(&sock, index, gateway.into(), gateway)
+}
+
+/// `gateway`'s MAC on eth0 (interface `index`) for good: what the network process answers
+/// every ARP request and neighbor solicitation with (shards_abi::gateway_mac, of the IPv4
+/// gateway `v4`), so that the guest sends at once what it would have held for the answer.
+/// A datagram held so is the guest's still when the VM takes what it has sent, as the
+/// command ends (warm::release_ports) or a host port is let go (D124), and is lost with
+/// the port: each run's first datagram to its gateway was held (PM M180).
+fn gateway_neighbor(sock: &OwnedFd, index: u32, gateway: IpAddr, v4: Ipv4Addr) -> io::Result<()> {
+    // struct ndmsg: family, pads, interface, state, flags, type.
+    let family = if gateway.is_ipv4() {
+        libc::AF_INET
+    } else {
+        libc::AF_INET6
+    };
+    let mut n = vec![family as u8, 0, 0, 0];
+    n.extend_from_slice(&index.to_ne_bytes());
+    n.extend_from_slice(&NUD_PERMANENT.to_ne_bytes());
+    n.extend_from_slice(&[0, 0]);
+    match gateway {
+        IpAddr::V4(a) => attr(&mut n, NDA_DST, &a.octets()),
+        IpAddr::V6(a) => attr(&mut n, NDA_DST, &a.octets()),
+    }
+    attr(&mut n, NDA_LLADDR, &shards_abi::gateway_mac(v4.octets()));
+    request(sock, RTM_NEWNEIGH, NLM_F_CREATE | NLM_F_REPLACE, &n)
 }
 
 /// eth0's index, and a route netlink socket to change it by.
@@ -167,7 +206,16 @@ pub fn set_mac(mac: [u8; 6]) -> io::Result<()> {
     link.extend_from_slice(&0u32.to_ne_bytes());
     link.extend_from_slice(&0u32.to_ne_bytes());
     attr(&mut link, IFLA_ADDRESS, &mac);
-    request(&sock, RTM_NEWLINK, 0, &link)
+    request(&sock, RTM_NEWLINK, 0, &link)?;
+    // A new MAC flushes eth0's neighbors, permanent ones too (net/core/neighbour.c,
+    // neigh_changeaddr): its gateways' made again.
+    if let Some((_, _, gateway)) = current() {
+        gateway_neighbor(&sock, index, gateway.into(), gateway)?;
+        if let Some((_, _, gateway6)) = current6() {
+            gateway_neighbor(&sock, index, gateway6.into(), gateway)?;
+        }
+    }
+    Ok(())
 }
 
 /// Gives `eth0` link-local address `ip`/`prefix` (PM M175), as libnetwork adds an
@@ -196,9 +244,11 @@ pub fn add_link_local(ip: std::net::IpAddr, prefix: u8) -> io::Result<()> {
 }
 
 /// Moves `eth0` from the address its template booted with, `from`, to `to`, and its default
-/// route to `to`'s gateway: a run on a network of its own takes the template of the default
-/// bridge's, as every run does, and its own address as it starts. The old address goes
-/// with its subnet's route; the new one comes with its own.
+/// route and its gateway's MAC to `to`'s gateway: a run on a network of its own takes the
+/// template of the default bridge's, as every run does, and its own address as it starts.
+/// The old address goes with its subnet's route and, eth0's only IPv4 address, with its
+/// neighbors, the old gateway's among them (net/ipv4/fib_frontend.c, fib_disable_ip:
+/// arp_ifdown); the new one comes with its own.
 pub fn readdress(from: (Ipv4Addr, u8), to: (Ipv4Addr, u8, Ipv4Addr)) -> io::Result<()> {
     // SAFETY: if_nametoindex(3) with a NUL-terminated name.
     let index = unsafe { libc::if_nametoindex(c"eth0".as_ptr()) };
@@ -248,6 +298,7 @@ pub fn readdress(from: (Ipv4Addr, u8), to: (Ipv4Addr, u8, Ipv4Addr)) -> io::Resu
     attr(&mut r, RTA_GATEWAY, &to.2.octets());
     attr(&mut r, RTA_OIF, &index.to_ne_bytes());
     request(&sock, RTM_NEWROUTE, NLM_F_CREATE | NLM_F_REPLACE, &r)?;
+    gateway_neighbor(&sock, index, to.2.into(), to.2)?;
     *MOVED.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(to);
     Ok(())
 }
@@ -310,6 +361,10 @@ pub fn address6(to: (Ipv6Addr, u8, Ipv6Addr)) -> io::Result<()> {
     attr(&mut r, RTA_GATEWAY, &to.2.octets());
     attr(&mut r, RTA_OIF, &index.to_ne_bytes());
     request(&sock, RTM_NEWROUTE, NLM_F_CREATE | NLM_F_REPLACE, &r)?;
+    // Its gateway's MAC, the IPv4 gateway's, as the network process answers for both.
+    if let Some((_, _, v4)) = current() {
+        gateway_neighbor(&sock, index, to.2.into(), v4)?;
+    }
     *ADDRESS6.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(to);
     Ok(())
 }
@@ -352,8 +407,31 @@ fn attr(buf: &mut Vec<u8>, kind: u16, value: &[u8]) {
 /// process, which takes 127/8 there for the host's own loopback, each address the one it
 /// was sent to; their answers come back from 127/8, which eth0 takes for them
 /// (route_localnet; net/ipv4/route.c refuses a loopback source arriving otherwise). The
-/// rest of 127/8, ICMP's among it, stays the guest's, as the local table has it.
+/// rest of 127/8, ICMP's among it, stays the guest's, as the local table has it. IPv6's
+/// `::1` likewise, by address translation, where eth0 has IPv6 (links::host_loopback6);
+/// `::1` local on eth0 too, at a metric `lo`'s goes before: the answers translated back
+/// to it are looked up by the link they came by, as `::1` always is (net/ipv6/route.c,
+/// rt6_need_strict), and that is eth0.
 pub fn host_loopback() -> io::Result<()> {
+    if let Some((guest6, _, gateway6)) = current6() {
+        let (sock, index) = eth0()?;
+        let mut r = vec![
+            libc::AF_INET6 as u8,
+            128,
+            0,
+            0,
+            RT_TABLE_LOCAL,
+            RTPROT_BOOT,
+            RT_SCOPE_HOST,
+            RTN_LOCAL,
+        ];
+        r.extend_from_slice(&0u32.to_ne_bytes());
+        attr(&mut r, RTA_DST, &Ipv6Addr::LOCALHOST.octets());
+        attr(&mut r, RTA_OIF, &index.to_ne_bytes());
+        attr(&mut r, RTA_PRIORITY, &LOCAL6_METRIC.to_ne_bytes());
+        request(&sock, RTM_NEWROUTE, NLM_F_CREATE | NLM_F_EXCL, &r)?;
+        crate::links::host_loopback6(guest6, gateway6, &[])?;
+    }
     let (_, _, gateway) = current().ok_or_else(|| io::Error::other("eth0 has no address"))?;
     crate::setup::write_sysctl("net.ipv4.conf.eth0.route_localnet", "1").map_err(io::Error::other)?;
     let (sock, index) = eth0()?;

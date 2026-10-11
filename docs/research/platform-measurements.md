@@ -5791,8 +5791,14 @@ revision before comparing a changed API/implementation.
   - `apparmor=unconfined` with the capability, and `--privileged`: every step succeeds.
   - An unknown profile (`apparmor=no-such-profile`): the start fails, 127, runc unable to
     apply it.
+  - Detached mounts (run 38105405797 at b7d7af90, both runners alike): with
+    `--cap-add SYS_ADMIN`, fsopen and fsmount make a detached tmpfs, and a file made in it
+    through its descriptor (openat) is made; move_mount of it, and of open_tree's clone,
+    EACCES. With `apparmor=unconfined` too, both move_mounts succeed. With the default
+    capabilities, fsopen and open_tree's clone EPERM.
 - **Consequence.** docker-default refuses mount(2) of these, and lets the new mount API
-  through where the capability is given. shards' filter refuses both (D121): a detached
+  through where the capability is given: a detached mount is made and used, and only
+  attaching it to the tree is refused. shards' filter refuses both (D121): a detached
   mount (fsopen, fsmount, then files through its descriptor) needs no mount point, and
   would reach a microVM's own virtio-fs shares past the rule. Without the capability under
   `seccomp=unconfined`, shards' answer to mount(2) is the kernel's EPERM, not AppArmor's
@@ -5932,3 +5938,50 @@ revision before comparing a changed API/implementation.
   process, the VM process, the daemon and back): a listener two, a UDP bind one. A
   server binds once; a resolver's query on the host's network costs one more round trip
   than the bridge's.
+
+### M180. A run's first datagram to its gateway waited on ARP, and was lost with its port (D124, D31)
+
+- **Question.** `a_run_on_the_hosts_network_is_on_the_hosts_network` failed once in 10
+  runs: a UDP server's answer, relayed from the guest's loopback as the server ended,
+  never reached this host (iteration 8 of 12). The VM puts what the guest gave its device
+  into the network process's ring before a port is let go (D124) or a run's ports close
+  (2026-10-10), so where was the answer?
+- **Seen.** The test guest's `udp-serve` read `/proc/net/arp` before and after its
+  answer, 80 runs: before, eth0 had no neighbor in each; right after a server at every
+  address sent its answer, the gateway's entry was there with flags 0x0 (incomplete,
+  `00:00:00:00:00:00`). Linux holds a packet whose next hop's MAC it is asking for in the
+  neighbor's queue (net/core/neighbour.c, `__neigh_event_send`), out of the device's TX
+  queue, until ARP's answer comes back through the VM and the network process, which
+  answer every ARP request with the gateway's one MAC. A port let go first lost it.
+- **Method.** `docs/research/measurements/gateway-neighbor/run.sh`, the ignored test
+  `answers_lost_without_the_gateways_mac`: a UDP server on the host's network answers one
+  datagram from this host and exits, at 127.0.0.1 (its answer relayed by init's
+  supervisor) and at every address (its own); each run interleaved with one whose guest
+  first deleted eth0's neighbors (CAP_NET_ADMIN), as a guest's were before init gave the
+  gateway's MAC; an answer lost if none came in 5 s; 500 runs of each, the host as it was
+  (other projects' builds running), then with 16 busy loops. Apple M5 Max (18 cores),
+  macOS 26.4.1, 2026-10-11, the release build of the tree merged with this record (the
+  harness printed its base, 6722ce77).
+- **Results.** Answers lost, of 500 each:
+
+  | load average | relay, MAC known | relay, MAC forgotten | own, MAC known | own, MAC forgotten |
+  |---|---|---|---|---|
+  | 7.0 to 5.6 | 0 | 2 | 0 | 0 |
+  | 5.6 to 48.0, 16 busy loops | 0 | 3 | 0 | 0 |
+
+  Before the harness, an A/B of this tree's init against one built without the entry,
+  interleaved, under 16 busy loops and others' builds (load average to 77): the old init
+  lost 21 of 500 relayed answers and 1 of 500 of its own; the new, none of either.
+- **Why the relay's.** The supervisor sends the relayed answer and lets the port go in
+  one turn of its loop, so the letting go races ARP's round trip from the start; a server
+  that answers itself exits before its socket's end is told, which ARP's answer mostly
+  beats.
+- **Consequence.** init gives eth0 its gateway's MAC as a permanent neighbor, IPv4's and
+  IPv6's, wherever it sets the gateway (`net::configure`, `readdress`, `address6`, and
+  again after `set_mac`, since a new MAC flushes every neighbor, permanent ones too:
+  net/core/neighbour.c, `neigh_changeaddr`); the MAC is `shards_abi::gateway_mac`, which
+  the network process answers with. `a_runs_gateway_is_its_neighbor_from_its_start` pins
+  it. The published UDP flake of 2026-10-06 and 2026-10-10 had this cause too, for a
+  run's first answer to a client. What remains of the same kind: a datagram to a member
+  of the run's network (on its link, so asked for by ARP), and frames in eth0's queueing
+  discipline (pfifo_fast) while the device's ring is full, as a command ends.

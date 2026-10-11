@@ -5156,6 +5156,29 @@ fn a_run_on_the_hosts_network_is_on_the_hosts_network() {
     let ran = run_in(&home, &image, &host, &["udp", &at.to_string()]);
     assert_eq!(ran.stdout, "udp 3\n", "{ran}");
     answered.join().unwrap();
+    // And at IPv6's loopback, `::1`, which the guest reaches by address translation,
+    // where this host has it.
+    if let Ok(service) = std::net::TcpListener::bind("[::1]:0") {
+        let at = service.local_addr().unwrap();
+        let answered = std::thread::spawn(move || {
+            use std::io::Write as _;
+            let (mut c, _) = service.accept().unwrap();
+            c.write_all(b"six").unwrap();
+        });
+        let ran = run_in(&home, &image, &host, &["tcp", &at.to_string()]);
+        assert!(ran.stdout.starts_with("tcp 3 six"), "{ran}");
+        answered.join().unwrap();
+        let service = std::net::UdpSocket::bind("[::1]:0").unwrap();
+        let at = service.local_addr().unwrap();
+        let answered = std::thread::spawn(move || {
+            let mut buf = [0u8; 64];
+            let (_, peer) = service.recv_from(&mut buf).unwrap();
+            service.send_to(b"!!!!!!", peer).unwrap();
+        });
+        let ran = run_in(&home, &image, &host, &["udp", &at.to_string()]);
+        assert_eq!(ran.stdout, "udp 6\n", "{ran}");
+        answered.join().unwrap();
+    }
 
     // Its servers: at every address, reached from the gateway (eth0's own port); at the
     // loopback's, from the loopback, by a relay of the guest's, as the host's loopback
@@ -5245,6 +5268,151 @@ fn a_run_on_the_hosts_network_is_on_the_hosts_network() {
             ran.stderr.starts_with(&format!("shards: {said}")),
             "{options:?}: {ran}"
         );
+    }
+}
+
+/// A run's gateway is its neighbor from its start, its MAC the one its network process
+/// answers ARP and neighbor solicitations with, for good (PM M180): on the default bridge,
+/// past a MAC of its own (which flushes eth0's neighbors), on a network of its own, IPv6's
+/// too, the template's gone, and on the host's network. A datagram the guest held for
+/// the answer was lost as the run's ports went.
+#[test]
+fn a_runs_gateway_is_its_neighbor_from_its_start() {
+    let Some((home, image)) = home("containers-gateway-mac") else {
+        return;
+    };
+    let neighbors = |options: &[&str]| -> Vec<String> {
+        let r = run_in(&home, &image, &[&["--rm"][..], options].concat(), &["neighbors"]);
+        assert_eq!(r.status, Some(0), "{options:?}: {r}");
+        r.stdout
+            .lines()
+            .filter_map(|l| l.strip_prefix("neighbor "))
+            .map(String::from)
+            .collect()
+    };
+    let mac = |gateway: std::net::Ipv4Addr| {
+        let [a, b, c, d] = gateway.octets();
+        format!("02:42:{a:02x}:{b:02x}:{c:02x}:{d:02x}")
+    };
+    let gateway = bridge().gateway();
+    let on_bridge = format!("{gateway} {} permanent", mac(gateway));
+    for options in [&[][..], &["--mac-address", "02:42:ac:11:00:99"][..]] {
+        assert_eq!(
+            neighbors(options),
+            std::slice::from_ref(&on_bridge),
+            "{options:?}"
+        );
+    }
+    let made = shards_in(
+        &home,
+        &[
+            "network",
+            "create",
+            "--subnet",
+            "10.79.0.0/24",
+            "--ipv6",
+            "--subnet",
+            "fd7e::/64",
+            "gwnet",
+        ],
+    );
+    assert_eq!(made.status, Some(0), "{made}");
+    let own = mac(std::net::Ipv4Addr::new(10, 79, 0, 1));
+    let mut got = neighbors(&["--network", "gwnet"]);
+    got.sort();
+    assert_eq!(
+        got,
+        [
+            format!("10.79.0.1 {own} permanent"),
+            format!("fd7e::1 {own} permanent")
+        ]
+    );
+    let got = neighbors(&["-u", "root", "--network", "host"]);
+    assert_eq!(got.len(), 2, "{got:?}");
+    assert!(got.contains(&on_bridge), "{got:?}");
+    assert!(
+        got.iter().any(|n| n
+            .strip_suffix(&format!(" {} permanent", mac(gateway)))
+            .and_then(|a| a.parse::<std::net::Ipv6Addr>().ok())
+            .is_some_and(|a| a.segments()[0] & 0xff00 == 0xfd00 && a.segments()[7] == 1)),
+        "{got:?}"
+    );
+}
+
+/// PM M180: a UDP server on the host's network answers one datagram from this host and
+/// exits, at the loopback's address (its answer relayed by init's supervisor) and at
+/// every address (its own); each run interleaved with one whose guest first deleted its
+/// neighbors, as a guest's gateway was unknown before init gave its MAC, so that its
+/// answer waits on ARP's. How many answers were lost (none in 5 s), of `M180_N` each.
+#[test]
+#[ignore = "a measurement: docs/research/measurements/gateway-neighbor/run.sh"]
+fn answers_lost_without_the_gateways_mac() {
+    let Some((home, image)) = home("containers-m180") else {
+        return;
+    };
+    let n: usize = std::env::var("M180_N")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(100);
+    let cases = [
+        ("relay known", "127.0.0.1:0", false),
+        ("relay forgotten", "127.0.0.1:0", true),
+        ("direct known", "0.0.0.0:0", false),
+        ("direct forgotten", "0.0.0.0:0", true),
+    ];
+    let mut lost = [0usize; 4];
+    for i in 0..n * cases.len() {
+        let (_, addr, forget) = cases[i % cases.len()];
+        let options = [
+            "--rm",
+            "-u",
+            "root",
+            "--cap-add",
+            "NET_ADMIN",
+            "--network",
+            "host",
+        ];
+        let mut command = vec!["udp-serve", addr];
+        if forget {
+            command.push("forget");
+        }
+        let mut child = common::command()
+            .args(run_args(&image, &options, &command))
+            .env("SHARDS_HOME", &*home)
+            .env("SHARDS_KERNEL", kernel())
+            .env("SHARDS_INIT", guest_init())
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let mut line = Vec::new();
+        let out = child.stdout.as_mut().unwrap();
+        let mut byte = [0u8; 1];
+        while line.last() != Some(&b'\n') {
+            assert_eq!(
+                std::io::Read::read(out, &mut byte).unwrap(),
+                1,
+                "{command:?} ended unready"
+            );
+            line.extend_from_slice(&byte);
+        }
+        let line = String::from_utf8(line).unwrap();
+        let port: u16 = line
+            .strip_prefix("ready ")
+            .and_then(|p| p.trim().parse().ok())
+            .unwrap_or_else(|| panic!("{command:?}: {line}"));
+        let client = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        client.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        client.send_to(b"datagram", ("127.0.0.1", port)).unwrap();
+        let mut buf = [0u8; 64];
+        if client.recv(&mut buf).is_err() {
+            lost[i % cases.len()] += 1;
+        }
+        assert_eq!(exit(&mut child), Some(0), "{command:?}");
+    }
+    for ((name, _, _), lost) in cases.iter().zip(lost) {
+        println!("{name}: lost {lost} of {n}");
     }
 }
 

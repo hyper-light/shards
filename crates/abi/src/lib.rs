@@ -24,6 +24,15 @@ pub const JOIN_DISK_SERIAL: &str = "shards-join";
 /// until a container joining its network brings volumes, which init mounts then.
 pub const JOIN_SHARE_TAG: &str = "shards-join-share";
 
+/// The MAC of a guest's gateway, made of its IPv4 address, as Docker made its own (02:42
+/// and the address's four bytes): what the guest's network process answers every ARP
+/// request and neighbor solicitation with, and what the guest's init gives its gateway's
+/// neighbor entry, so that the guest never asks.
+pub const fn gateway_mac(gateway: [u8; 4]) -> [u8; 6] {
+    let [a, b, c, d] = gateway;
+    [0x02, 0x42, a, b, c, d]
+}
+
 pub mod build;
 pub mod changes;
 pub mod run;

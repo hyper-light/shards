@@ -2231,11 +2231,17 @@ impl<D: Disk> Daemon<D> {
                     let bits = if a.is_ipv4() { 16 } else { 64 };
                     format!("link-local={a}/{bits}").into_bytes()
                 }));
-                // On the host's network (D124): the host's hosts file.
+                // On the host's network (D124): the host's hosts file, and eth0's IPv6, by
+                // which what it sends past its loopback is the host's.
                 if start == network::Start::Attach(network::Net::Host) {
                     let mut hosts = b"hosts-file=".to_vec();
                     hosts.extend_from_slice(&host_hosts());
                     prepared.spec.setup.push(hosts);
+                    let (guest6, gateway6) = self.host_ipv6();
+                    prepared
+                        .spec
+                        .setup
+                        .push(format!("address6={guest6}/64,{gateway6}").into_bytes());
                 }
                 // Its endpoint's sysctls, on its interface once it has its addresses (PM M171).
                 prepared.spec.setup.extend(
@@ -2487,6 +2493,25 @@ impl<D: Disk> Daemon<D> {
                     continue;
                 }
                 ready.mac = Some(mac);
+            }
+            // On the host's network (D124): its network process told its IPv6 link, its
+            // IPv4 one the bridge's, as its template booted on.
+            if keep.egress.as_deref() == Some(&shards_net::HOST_POLICY[..])
+                && let (Some(net), Some(bridge)) = (&ready.net, self.bridge)
+            {
+                let (guest6, gateway6) = self.host_ipv6();
+                let mut address = bridge.guest().octets().to_vec();
+                address.push(bridge.subnet().1);
+                address.extend_from_slice(&bridge.gateway().octets());
+                address.extend_from_slice(&guest6.octets());
+                address.push(64);
+                address.extend_from_slice(&gateway6.octets());
+                if let Err(e) = networks::ask_net(net, kind::NET_ADDRESS, &address, &[]) {
+                    log(format!("warm VM {}'s addresses: {e}", ready.vm.id()));
+                    ready.end();
+                    self.uncommit(id);
+                    continue;
+                }
             }
             // Its published ports go to its VM's network process before the VM has the
             // run, so that none of their connections wait on its start; taken, they are

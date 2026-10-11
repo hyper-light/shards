@@ -291,13 +291,20 @@ pub fn udp(b: &[u8]) -> Option<Udp<'_>> {
 
 /// The one's-complement sum of `b`, folded (RFC 1071).
 fn checksum(b: &[u8]) -> u16 {
-    let mut sum = 0u32;
-    let (pairs, rest) = b.as_chunks::<2>();
-    for p in pairs {
-        sum += u32::from(u16::from_be_bytes(*p));
-    }
-    if let [last] = rest {
-        sum += u32::from(*last) << 8;
+    checksum_of(&[b])
+}
+
+/// [`checksum`] of `parts` as one buffer, each part but the last of even length.
+fn checksum_of(parts: &[&[u8]]) -> u16 {
+    let mut sum = 0u64;
+    for b in parts {
+        let (pairs, rest) = b.as_chunks::<2>();
+        for p in pairs {
+            sum += u64::from(u16::from_be_bytes(*p));
+        }
+        if let [last] = rest {
+            sum += u64::from(*last) << 8;
+        }
     }
     while sum >> 16 != 0 {
         sum = (sum & 0xffff) + (sum >> 16);
@@ -468,16 +475,42 @@ impl Frames {
         self.icmpv6(out, ns.target, ns.sender, msg, ND_HOP_LIMIT);
     }
 
-    /// A UDP datagram's headers, for `len` bytes of payload that follow them: its
-    /// checksum is left to the guest's trust in its device, so the headers need nothing of
-    /// the bytes, which go to the guest from where they lie.
-    pub fn udp_headers(&self, out: &mut Vec<u8>, src: (IpAddr, u16), dst: (IpAddr, u16), len: usize) {
-        self.ip(out, src.0, dst.0, PROTO_UDP, 8 + len, true);
-        let len = u16::try_from(8 + len).unwrap_or(u16::MAX);
-        out.extend_from_slice(&src.1.to_be_bytes());
-        out.extend_from_slice(&dst.1.to_be_bytes());
-        out.extend_from_slice(&len.to_be_bytes());
-        out.extend_from_slice(&[0, 0]);
+    /// A UDP datagram's headers, for `payload`, which follows them, sent from where it
+    /// lies. Over IPv4 its checksum is left to the guest's trust in its device, zero saying
+    /// there is none (RFC 768). Over IPv6 it is the datagram's: IPv6 carries no UDP
+    /// datagram without one (RFC 8200 §8.1), and Linux drops a zero whatever its device
+    /// says (net/ipv6/udp.c, __udp6_lib_rcv), which every IPv6 datagram the guest was sent
+    /// had been.
+    pub fn udp_headers(&self, out: &mut Vec<u8>, src: (IpAddr, u16), dst: (IpAddr, u16), payload: &[u8]) {
+        self.ip(out, src.0, dst.0, PROTO_UDP, 8 + payload.len(), true);
+        let len = u16::try_from(8 + payload.len()).unwrap_or(u16::MAX);
+        let [s0, s1] = src.1.to_be_bytes();
+        let [d0, d1] = dst.1.to_be_bytes();
+        let [l0, l1] = len.to_be_bytes();
+        let head = [s0, s1, d0, d1, l0, l1];
+        let sum = match (src.0, dst.0) {
+            (IpAddr::V6(s), IpAddr::V6(d)) => {
+                // The pseudo-header: source, destination, the datagram's length as 32
+                // bits, three zero bytes and the next header; then the datagram, its
+                // checksum zero. A sum of zero is sent as all ones (RFC 768).
+                let length = u32::from(len).to_be_bytes();
+                match checksum_of(&[
+                    &s.octets(),
+                    &d.octets(),
+                    &length,
+                    &[0, 0, 0, PROTO_UDP],
+                    &head,
+                    &[0, 0],
+                    payload,
+                ]) {
+                    0 => 0xffff,
+                    sum => sum,
+                }
+            }
+            _ => 0,
+        };
+        out.extend_from_slice(&head);
+        out.extend_from_slice(&sum.to_be_bytes());
     }
 
     /// A TCP segment's headers, for `len` bytes of payload that follow them, its checksum
@@ -587,7 +620,7 @@ mod tests {
         assert_eq!(checksum(ip.header), 0);
         assert_eq!(tcp(ip.payload).unwrap().payload, bytes);
         out.clear();
-        f.udp_headers(&mut out, (a, 53), (b, 5353), bytes.len());
+        f.udp_headers(&mut out, (a, 53), (b, 5353), &bytes);
         assert_eq!(out.len(), VNET + 14 + IPV4 + 8);
         out.extend_from_slice(&bytes);
         let ip = ipv4(eth(&out[VNET..]).unwrap().payload).unwrap();
@@ -610,7 +643,7 @@ mod tests {
         );
         let question = b"a question longer than eight";
         let mut sent = Vec::new();
-        f.udp_headers(&mut sent, (guest, 5353), (far, 53), question.len());
+        f.udp_headers(&mut sent, (guest, 5353), (far, 53), question);
         sent.extend_from_slice(question);
         let sent_ip = ipv4(eth(&sent[VNET..]).unwrap().payload).unwrap();
         let mut out = Vec::new();
@@ -658,10 +691,21 @@ mod tests {
             (80, 5000, Some(65460), &b"abc"[..])
         );
         out.clear();
-        f.udp_headers(&mut out, (a, 53), (b, 5353), 2);
+        f.udp_headers(&mut out, (a, 53), (b, 5353), b"hi");
         out.extend_from_slice(b"hi");
         let ip = ipv6(eth(&out[VNET..]).unwrap().payload).unwrap();
         assert_eq!(udp(ip.payload).unwrap().payload, b"hi");
+        // Its checksum its own, which sums to zero over IPv6's pseudo-header with it (RFC
+        // 8200 §8.1); Linux drops one of zero.
+        let (IpAddr::V6(s), IpAddr::V6(d)) = (a, b) else {
+            panic!("IPv6")
+        };
+        let mut pseudo = s.octets().to_vec();
+        pseudo.extend_from_slice(&d.octets());
+        pseudo.extend_from_slice(&u32::try_from(ip.payload.len()).unwrap().to_be_bytes());
+        pseudo.extend_from_slice(&[0, 0, 0, PROTO_UDP]);
+        assert_ne!(&ip.payload[6..8], &[0, 0]);
+        assert_eq!(checksum_of(&[&pseudo, ip.payload]), 0);
         // A destination options header (8 bytes) before UDP is skipped; a fragment header
         // drops the packet.
         let packet = |next: u8, ext: &[u8], rest: &[u8]| {
@@ -747,7 +791,7 @@ mod tests {
         );
         let big = vec![7u8; 4000];
         let mut sent = Vec::new();
-        f.udp_headers(&mut sent, (guest, 5353), (far, 53), big.len());
+        f.udp_headers(&mut sent, (guest, 5353), (far, 53), &big);
         sent.extend_from_slice(&big);
         let sent_ip = ipv6(eth(&sent[VNET..]).unwrap().payload).unwrap();
         let mut out = Vec::new();
