@@ -5723,3 +5723,20 @@ revision before comparing a changed API/implementation.
 - **Consequence.** Not yet built: init would write each on eth0 after the run's own
   sysctls, in libnetwork's words, the daemon passing them on and refusing an interface's
   key given as `--sysctl` first; they stay refused up front meanwhile.
+
+### M172. Whether GitHub's Windows runners can run a WHP partition
+
+- **Method.** `docs/research/measurements/whp-probe/probe.ps1` by its workflow
+  (`whp-probe.yml`), run 38097837105 at dev 76ef3913, 2026-10-11: the processor as
+  Windows reports it, the optional features' states, WHvGetCapability's
+  WHvCapabilityCodeHypervisorPresent and WHvCreatePartition, before and after enabling
+  HypervisorPlatform without a restart.
+- **Found.**
+  - windows-2022 (10.0.20348, AMD EPYC 7763) and windows-2025 (10.0.26100, AMD EPYC
+    9V74): HypervisorPlatform, Microsoft-Hyper-V and VirtualMachinePlatform enabled as
+    found; HypervisorPresent 1; WHvCreatePartition S_OK. Nested virtualization is there.
+  - windows-11-arm (10.0.26200, Cobalt 100): HypervisorPlatform disabled, enabling it
+    needs a restart (RestartNeeded True), which a hosted runner cannot take;
+    HypervisorPresent 0 and WHvCreatePartition 0xC0351000 before and after.
+- **Consequence.** A WHP backend can be tested on real VMs in CI on x86_64 Windows; on
+  arm64 Windows it can be built and linted, and run on a host of its own.
