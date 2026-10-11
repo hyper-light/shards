@@ -3514,25 +3514,26 @@ mount rule itself, on every guest kernel, with seccomp, which all have:
   virtio-fs shares, a provider's and the join share, to any container given the
   capability. shards refuses the new mount API too; a program that mounts gets EACCES
   from its first step instead of from mount(2) or move_mount.
-- **Where Docker's AppArmor would answer**: not for a privileged container, nor under
-  `apparmor=unconfined`, which Docker leaves unconfined. mount(2) is refused every other
-  container, since the kernel asks AppArmor before it checks the capability (Linux
-  fs/namespace.c path_mount: security_sb_mount, then may_mount): under `seccomp=unconfined`
-  one without the capability is refused EACCES, as on Docker (PM M174). The new mount API
-  and pivot_root are refused only with CAP_SYS_ADMIN, which the kernel checks for them
-  first, EPERM without it. Installed before Docker's profile, whose errno then wins where
-  both refuse (seccomp_filter.rst: the most recent filter's); where that profile refuses
-  mount(2) itself, Docker's default without the capability, no filter is given, as it would
-  change no answer.
+- **Only where it protects something**: for a container with CAP_SYS_ADMIN, not
+  privileged, not `apparmor=unconfined`. Without the capability the kernel refuses every
+  mount, EPERM, and Docker's seccomp profile refuses first. Installed before Docker's
+  profile, whose errno then wins where both refuse (seccomp_filter.rst: the most recent
+  filter's).
+- **Unlike Docker, by design, and why.** Under `seccomp=unconfined` without the capability,
+  mount(2) is refused EPERM, by the kernel, where AppArmor answers EACCES: the kernel asks
+  AppArmor before it checks the capability (Linux fs/namespace.c path_mount:
+  security_sb_mount, then may_mount; PM M174). A filter would change that errno alone, and
+  would put a seccomp filter on a container that asked to have none (`Seccomp: 2` in
+  /proc/PID/status, where Docker's shows 0). With the capability under
+  `seccomp=unconfined`, the filter stays, and so does `Seccomp: 2`: there it is what keeps
+  the microVM's shares.
 - **For all a container runs**: the workload, its execs (the run's filters are theirs, as
   runc's exec takes the container's) and joiners.
 - **Tested** (`a_container_given_sys_admin_mounts_nothing_as_apparmor_keeps_it`: a mount, a
   remount of a read-only file, fsopen, open_tree and its microVM's own share refused EACCES,
   in an exec and a joiner too; umount of its own tmpfs made; `apparmor=unconfined` and
-  `--privileged` mounting; EPERM without the capability, and under `seccomp=unconfined`
-  mount(2)'s EACCES and the rest's EPERM; mutation-checked: without the filter, the mount
-  went through, and the filter given without the capability only where it changes an
-  answer, its new mount API rule only with the capability; `a_container_given_sys_admin_has_apparmors_mount_rule`:
+  `--privileged` mounting; EPERM without the capability, under `seccomp=unconfined` too;
+  mutation-checked: without the filter, the mount went through; `a_container_given_sys_admin_has_apparmors_mount_rule`:
   who is given it). Docker's own behaviour where AppArmor is enforced is probed on GitHub's
   Ubuntu runners (`docs/research/measurements/docker-apparmor-mount`, PM M174).
 - **Not taken from docker-default**: its /proc and /sys write rules, which Docker's masked

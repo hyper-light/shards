@@ -5794,5 +5794,7 @@ revision before comparing a changed API/implementation.
 - **Consequence.** docker-default refuses mount(2) of these, and lets the new mount API
   through where the capability is given. shards' filter refuses both (D121): a detached
   mount (fsopen, fsmount, then files through its descriptor) needs no mount point, and
-  would reach a microVM's own virtio-fs shares past the rule. It refuses mount(2) EACCES
-  under `seccomp=unconfined` without the capability too, as the kernel asks AppArmor first.
+  would reach a microVM's own virtio-fs shares past the rule. Without the capability under
+  `seccomp=unconfined`, shards' answer to mount(2) is the kernel's EPERM, not AppArmor's
+  EACCES: a filter for that errno alone would be a seccomp filter on a container asked to
+  have none.

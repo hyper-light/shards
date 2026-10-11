@@ -12,24 +12,19 @@
   ],
   "syscalls": [
     {
-      "names": ["mount"],
-      "action": "SCMP_ACT_ERRNO",
-      "errnoRet": 13
-    },
-    {
       "names": [
         "fsconfig",
         "fsmount",
         "fsopen",
         "fspick",
+        "mount",
         "mount_setattr",
         "move_mount",
         "open_tree",
         "pivot_root"
       ],
       "action": "SCMP_ACT_ERRNO",
-      "errnoRet": 13,
-      "includes": { "caps": ["CAP_SYS_ADMIN"] }
+      "errnoRet": 13
     }
   ]
 }

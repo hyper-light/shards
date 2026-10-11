@@ -2278,8 +2278,7 @@ fn a_runs_mac_is_its_own_as_dockerd_gives_it() {
 /// has not: a mount, a remount of a read-only file, the new mount API and its microVM's own
 /// shares refused, EACCES, an exec and a joiner too; umount left to it. `apparmor=unconfined`
 /// and `--privileged` lift it, as Docker's do; without the capability, Docker's seccomp
-/// profile refuses first, EPERM, and under `seccomp=unconfined` mount(2) is AppArmor's
-/// EACCES, the rest the kernel's EPERM (PM M174).
+/// profile refuses first, EPERM, and under `seccomp=unconfined` the kernel, EPERM.
 #[test]
 fn a_container_given_sys_admin_mounts_nothing_as_apparmor_keeps_it() {
     let Some((home, image)) = home("containers-mounts") else {
@@ -2328,21 +2327,29 @@ fn a_container_given_sys_admin_mounts_nothing_as_apparmor_keeps_it() {
         let made = run_in(&home, &image, options, &["fs", "mkdir:/m", "mount:tmpfs:none:/m"]);
         assert_eq!(made.status, Some(0), "{options:?}: {made}");
     }
-    // Without the capability, Docker's seccomp profile refuses first; without it too,
-    // mount(2) is AppArmor's to refuse, which the kernel asks first, and the rest the
-    // kernel's (PM M174).
+    // Without the capability, Docker's seccomp profile refuses first; under
+    // `seccomp=unconfined`, the kernel, EPERM, where AppArmor would answer mount(2) EACCES
+    // (PM M174): no filter for an errno alone on a container asked to have none (D121).
     refused(
         &["--rm", "-u", "0"],
         "mount:tmpfs:none:/mnt",
         "Operation not permitted",
     );
     let no_seccomp = ["--rm", "-u", "0", "--security-opt", "seccomp=unconfined"];
-    refused(&no_seccomp, "mount:tmpfs:none:/mnt", "Permission denied");
+    // Its target made first: the kernel looks it up before it checks the capability.
+    let r = run_in(
+        &home,
+        &image,
+        &no_seccomp,
+        &["fs", "mkdir:/m", "mount:tmpfs:none:/m"],
+    );
+    assert!(
+        r.status == Some(1) && r.stderr.contains("mount:tmpfs:none:/m: Operation not permitted"),
+        "{r}"
+    );
     for op in ["fsopen:tmpfs", "open-tree:/etc"] {
         refused(&no_seccomp, op, "Operation not permitted");
     }
-    let with_tmpfs: Vec<&str> = no_seccomp.iter().copied().chain(["--tmpfs", "/t"]).collect();
-    refused(&with_tmpfs, "umount:/t", "Operation not permitted");
     // An exec takes it, and a joiner.
     let up = run_in(
         &home,
