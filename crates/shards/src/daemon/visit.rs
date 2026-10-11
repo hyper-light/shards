@@ -35,6 +35,11 @@ impl<D: crate::containers::Disk> Daemon<D> {
         argv: &[String],
     ) -> Option<String> {
         let given = target(argv)?;
+        // What any client has seen of its last run first, as every command takes it
+        // (`settle`): a run that has just returned its status may have sent a DONE not yet
+        // taken, and the container would read as running still, its files then read in a
+        // VM whose run is over.
+        self.settle();
         let id = self.resolve(&given).ok()?;
         // One visit at a time to a container.
         {
