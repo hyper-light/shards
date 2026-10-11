@@ -6138,4 +6138,5 @@ revision before comparing a changed API/implementation.
 - **Consequence.** `-m` takes what each vCPU keeps (`resources::VCPUS`: the second's,
   and each past it, the most measured), and the test of limits runs with every CPU of
   the host's too. HVF's working-set recording gives pages back as above. How many vCPUs a
-  run has when nothing asks is the user's call, with these costs.
+  run has when nothing asks, asked of the user with these costs: every CPU of the host's
+  (D125).

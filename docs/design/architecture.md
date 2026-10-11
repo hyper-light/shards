@@ -1534,7 +1534,8 @@ its record after it, until `shards rm` removes it; `--rm` removes it once it end
   init writes the limits as runc v1.5.1 does (fs2 Manager.Set, after moby's and runc's
   translations: `--cpus` as `cpu.max` over 100 ms, shares to a weight, swap less memory).
   The microVM is sized to hold them: as many vCPUs as `--cpus`, the quota or the cpuset
-  needs, and memory of which what may be allocated (MemAvailable, and the free pages the
+  needs, and every CPU of the host's where none is given (D125), and memory of which what
+  may be allocated (MemAvailable, and the free pages the
   CPUs' lists hold, PM M179) holds `-m`, from the guest kernel's own share measured by
   size and by vCPU (PM M117, M179, M183: each vCPU keeps up to 1.9 MiB of its own). Where Docker limits a container below the host, shards does
   both: the limit binds inside a VM no larger than it needs. A process the guest kernel
@@ -3532,6 +3533,29 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 2026-10-07): every path between domains is a grant, and the build refuses any that joins
 an internal-only domain to the world (D58), so there is no data to label. Code mode
 waits on the user.
+
+### D125. A run's microVM has every CPU of its host unless it is limited
+
+The user's call (2026-10-11), asked with PM M183's numbers: "Every host CPU". A Docker
+container sees and uses every CPU of its host unless `--cpus`, a quota or a cpuset limits
+it; a shards microVM had one vCPU unless one of those asked for more, so its programs saw
+`nproc` 1 and had one CPU's work, and a member receiving a fast burst of 1,000 UDP
+datagrams read 27 to 52% of them, where one of four vCPUs read 99.6 to 100% and Docker's
+container all (M182, M183).
+
+- **As many vCPUs as the host has CPUs**, where the run names no `--cpus`, quota or
+  `--cpuset-cpus` (`resources::vcpus`); those decide as before, `--cpus N` giving N. A
+  build's builder already had every CPU (`builder_cpus`).
+- **What it costs, measured (M183):** no start time (`run` p50 5.5 to 6.0 ms at 1, 2, 4,
+  8 and 18 vCPUs quiet, 6.3 to 6.5 ms loaded); each vCPU keeps memory of its own, up to
+  1.9 MiB in the guest (`resources::VCPUS`) and about 0.45 MiB in its VM process.
+- **Memory as one vCPU's.** A run without `-m` gets the least VM in which as much may be
+  allocated as in one vCPU's 256 MiB, its vCPUs past the first keeping theirs; with `-m`,
+  the limit holds at every count as M183 sized it.
+- **Tested**: `run_limits_resources_as_docker_run_does` (a run without a limit sees every
+  CPU of the host's; `-m` at one CPU and at every CPU), mutation-checked: with one vCPU by
+  default it fails; resources' `microvms_are_sized_for_their_limits` (the default grown
+  by its vCPUs holds one vCPU's).
 
 ### D124. `--network host`: asked for, said each time, and the host's network as Docker's container has it
 

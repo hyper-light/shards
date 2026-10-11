@@ -246,14 +246,18 @@ pub fn cgroup(r: &Resources) -> Vec<Vec<u8>> {
     out.into_iter().map(String::into_bytes).collect()
 }
 
-/// The vCPUs a microVM needs for `r`: as many as `--cpus` or the quota uses, and every
-/// CPU `--cpuset-cpus` names; one at least, and no more than the host's.
+/// The vCPUs a microVM has for `r`, of a host of `cpus`: as many as `--cpus` or the quota
+/// uses, and every CPU `--cpuset-cpus` names; with none of them, every CPU of the host's,
+/// as a Docker container sees and uses every one (D125); one at least, and no more than the
+/// host's.
 pub fn vcpus(r: &Resources, cpus: usize) -> u32 {
-    let mut need: i64 = 1;
-    if let Some((quota, period)) = cpu_max(r)
-        && quota > 0
-        && period > 0
-    {
+    let quota = cpu_max(r).filter(|&(quota, period)| quota > 0 && period > 0);
+    let mut need: i64 = if quota.is_none() && r.cpuset_cpus.is_empty() {
+        i64::try_from(cpus).unwrap_or(i64::MAX)
+    } else {
+        1
+    };
+    if let Some((quota, period)) = quota {
         // Both positive: the quotient rounded up.
         need = need.max(quota / period + i64::from(quota % period != 0));
     }
@@ -270,8 +274,17 @@ pub fn vcpus(r: &Resources, cpus: usize) -> u32 {
 /// ([`overhead_kib`]) holds the limit; at least `default_mib`; and at most the host's
 /// memory, past which a limit limits nothing.
 pub fn memory_mib(limit: i64, default_mib: u64, host: Option<u64>, vcpus: u32) -> u64 {
+    // Without a limit, the least that holds what may be allocated in one vCPU's default,
+    // its vCPUs past the first keeping theirs (D125).
     if limit <= 0 {
-        return default_mib;
+        if vcpus <= 1 {
+            return default_mib;
+        }
+        let usable = default_mib
+            .saturating_mul(1024)
+            .saturating_sub(overhead_kib(default_mib, 1));
+        let usable = i64::try_from(usable.saturating_mul(1024)).unwrap_or(i64::MAX);
+        return memory_mib(usable, default_mib, host, vcpus);
     }
     let limit_kib = u64::try_from(limit).unwrap_or(0).div_ceil(1024);
     let even = |mib: u64| mib + mib % 2;
@@ -536,7 +549,18 @@ mod tests {
 
     #[test]
     fn microvms_are_sized_for_their_limits() {
-        assert_eq!(vcpus(&r(), 8), 1);
+        // No limit: every CPU of the host's, as Docker's container has (D125).
+        assert_eq!(vcpus(&r(), 8), 8);
+        assert_eq!(
+            vcpus(
+                &Resources {
+                    nano_cpus: 500_000_000,
+                    ..r()
+                },
+                8
+            ),
+            1
+        );
         assert_eq!(
             vcpus(
                 &Resources {
@@ -570,6 +594,16 @@ mod tests {
         );
         assert_eq!(memory_mib(0, 256, None, 1), 256);
         assert_eq!(memory_mib(1, 256, None, 1), 256);
+        // The default, grown by what its vCPUs keep: as much may be allocated in it as in
+        // one vCPU's.
+        for vcpus in [2, 8, 18, 64] {
+            let mib = memory_mib(0, 256, None, vcpus);
+            assert_eq!(mib % 2, 0);
+            assert!(
+                mib * 1024 - overhead_kib(mib, vcpus) >= 256 * 1024 - overhead_kib(256, 1),
+                "{vcpus}: {mib}"
+            );
+        }
         assert_eq!(memory_mib(1 << 50, 256, Some(16 << 30), 1), 16 << 10);
         // Each measured VM holds the limit it is chosen for, and the least that does, as
         // many vCPUs as it has.

@@ -3716,9 +3716,24 @@ fn run_limits_resources_as_docker_run_does() {
     // the free pages its CPUs' lists hold, which it leaves out of that (M179), is at least
     // the limit, across the sizes where its own share steps up, as a run's guest keeps it;
     // with every CPU of the host's too, each vCPU keeping memory of its own (M183).
-    let every = std::thread::available_parallelism()
-        .map_or(1, usize::from)
-        .to_string();
+    let host_cpus = std::thread::available_parallelism().map_or(1, usize::from);
+    // Without a limit, every CPU of the host's, as Docker's container has (D125).
+    let online = run_in(
+        &home,
+        &image,
+        &["--rm"],
+        &["stat", "/sys/devices/system/cpu/online"],
+    );
+    let want = if host_cpus == 1 {
+        "= 0\\n".to_string()
+    } else {
+        format!("= 0-{}\\n", host_cpus - 1)
+    };
+    assert!(
+        online.stdout.lines().any(|l| l == want),
+        "{host_cpus} CPUs: {online}"
+    );
+    let every = host_cpus.to_string();
     for (limit, cpus) in [
         ("700m", "1"),
         ("2500m", "1"),
