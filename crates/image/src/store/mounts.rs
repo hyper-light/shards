@@ -109,6 +109,9 @@ pub struct MountEntry {
 /// BuildKit's does (mount.go, 100 ms).
 const LOOK_AGAIN: Duration = Duration::from_millis(100);
 
+/// What a record's `record.json` is renamed to as it goes ([`Store::remove_mount`]).
+const GONE: &str = "gone";
+
 /// Whether a lock was got, or another holds the file.
 fn try_lock(file: &File, shared: bool) -> Result<bool, Error> {
     let tried = if shared {
@@ -129,6 +132,16 @@ fn open_lock(path: &Path) -> Result<File, Error> {
         .truncate(false)
         .write(true)
         .open(path)?)
+}
+
+/// A listed record's lock, opened; none where the record has gone since its listing
+/// ([`Store::remove_mount`]).
+fn listed_lock(path: &Path) -> Result<Option<File>, Error> {
+    match File::options().write(true).open(path) {
+        Ok(lock) => Ok(Some(lock)),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e.into()),
+    }
 }
 
 /// A record's id: lowercase letters and digits, as BuildKit's identity.NewID makes them,
@@ -221,7 +234,9 @@ impl Store {
                 if self.read_mount(&id)?.is_none_or(|r| r.key != key || r.pruned) {
                     continue;
                 }
-                let lock = open_lock(&self.mount_dir(&id)?.join("lock"))?;
+                let Some(lock) = listed_lock(&self.mount_dir(&id)?.join("lock"))? else {
+                    continue;
+                };
                 if try_lock(&lock, false)? {
                     // Free. A shared taker first looks for the one others share.
                     if !shared {
@@ -357,7 +372,9 @@ impl Store {
             let Some(record) = self.read_mount(&id)? else {
                 continue;
             };
-            let lock = open_lock(&self.mount_dir(&id)?.join("lock"))?;
+            let Some(lock) = listed_lock(&self.mount_dir(&id)?.join("lock"))? else {
+                continue;
+            };
             let in_use = !try_lock(&lock, false)?;
             drop(lock);
             out.push(MountEntry {
@@ -381,21 +398,66 @@ impl Store {
     /// next collection, unless held otherwise.
     pub fn remove_mount(&self, id: &str) -> Result<bool, Error> {
         let dir = self.mount_dir(id)?;
-        let lock = match File::options().write(true).open(dir.join("lock")) {
-            Ok(lock) => lock,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
-            Err(e) => return Err(e.into()),
+        let Some(lock) = listed_lock(&dir.join("lock"))? else {
+            return Ok(false);
         };
         if !try_lock(&lock, false)? {
             return Ok(false);
         }
-        // Moved aside first: a taker that locks it after this finds no record there.
-        let gone = self.records_dir().join(format!(".{id}-{}", std::process::id()));
-        fs::rename(&dir, &gone)?;
+        // Gone first, while its lock is held: a step that locks it after this finds no
+        // record there ([`Store::held_mount`]), and nothing lists it.
+        match fs::rename(dir.join("record.json"), dir.join(GONE)) {
+            Ok(()) => sync_dir(&dir)?,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
+            Err(e) => return Err(e.into()),
+        }
         drop(lock);
-        fs::remove_dir_all(&gone)?;
-        sync_dir(&self.records_dir())?;
+        // Then its directory, once its lock is let go of: Windows moves no directory with a
+        // file open in it.
+        self.take_away(id)?;
         Ok(true)
+    }
+
+    /// Gone record `id`'s directory, moved aside and removed; left, gone, where a file in it
+    /// is open (Windows refuses the move, ERROR_ACCESS_DENIED), as a step that listed it
+    /// before it went holds its lock open until it finds no record there, for the next
+    /// collection ([`Store::sweep_mounts`]).
+    fn take_away(&self, id: &str) -> Result<(), Error> {
+        let aside = self.records_dir().join(format!(".{id}-{}", std::process::id()));
+        match fs::rename(self.mount_dir(id)?, &aside) {
+            Ok(()) => {}
+            Err(e) if matches!(e.kind(), io::ErrorKind::PermissionDenied | io::ErrorKind::NotFound) => {
+                return Ok(());
+            }
+            Err(e) => return Err(e.into()),
+        }
+        fs::remove_dir_all(&aside)?;
+        sync_dir(&self.records_dir())
+    }
+
+    /// What removals left, taken away as a collection starts: records gone that a step held
+    /// open as they went, and what a removal that stopped had moved aside.
+    pub(super) fn sweep_mounts(&self) -> Result<(), Error> {
+        let records = self.records_dir();
+        let entries = match fs::read_dir(&records) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(e.into()),
+        };
+        for entry in entries {
+            let entry = entry?;
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            if name.starts_with('.') {
+                // Its removal's, which another may be finishing: left to it where it is.
+                let _ = fs::remove_dir_all(entry.path());
+            } else if valid_id(name) && entry.path().join(GONE).exists() {
+                self.take_away(name)?;
+            }
+        }
+        Ok(())
     }
 
     /// Lets go of the records of cache `id` before a build whose step mounting it is not to
@@ -542,6 +604,28 @@ mod tests {
         assert!(s.mount_entries().unwrap().is_empty());
         assert!(!s.remove_mount("a").unwrap());
         assert!(s.remove_mount("../x").is_err());
+    }
+
+    /// What a removal leaves where Windows refused to move a record a step held open as it
+    /// went, gone, and where a removal stopped, aside: neither listed nor taken, and taken
+    /// away as the next collection starts.
+    #[test]
+    fn what_a_removal_leaves_goes_at_the_next_collection() {
+        let (_d, s) = store();
+        drop(s.take_mount("/k", Sharing::Private, "c", "a").unwrap());
+        let dir = s.mount_dir("a").unwrap();
+        fs::rename(dir.join("record.json"), dir.join(GONE)).unwrap();
+        let aside = s.records_dir().join(".b-1");
+        fs::create_dir_all(aside.join("x")).unwrap();
+        assert!(s.mount_entries().unwrap().is_empty());
+        assert!(!s.remove_mount("a").unwrap(), "gone already");
+        let fresh = s.take_mount("/k", Sharing::Private, "c", "c").unwrap();
+        assert!(fresh.fresh, "a record gone is taken no more");
+        drop(fresh);
+        drop(s.collect().unwrap());
+        assert!(!dir.exists() && !aside.exists());
+        let ids: Vec<String> = s.mount_entries().unwrap().into_iter().map(|e| e.id).collect();
+        assert_eq!(ids, ["c"]);
     }
 
     /// A step not answered from the cache starts its caches empty: records no step holds

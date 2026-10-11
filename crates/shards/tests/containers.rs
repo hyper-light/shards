@@ -1129,12 +1129,13 @@ fn a_command_is_pid_1_as_a_containers_is() {
         .unwrap()
         .as_secs()
         .to_string();
-    for (name, flags, command, timeout, quick, exit) in [
-        ("pid1", &[][..], &["sleep", "1000"][..], "2", false, "137\n"),
+    for (name, flags, command, ready, timeout, quick, exit) in [
+        ("pid1", &[][..], &["sleep", "1000"][..], None, "2", false, "137\n"),
         (
             "reaped",
             &["--init"][..],
             &["sleep", "1000"][..],
+            None,
             "10",
             true,
             "143\n",
@@ -1142,7 +1143,12 @@ fn a_command_is_pid_1_as_a_containers_is() {
         (
             "trapped",
             &[][..],
-            &["sh", "-c", "trap 'exit 7' TERM; while :; do sleep 0.1; done"][..],
+            &[
+                "sh",
+                "-c",
+                "trap 'exit 7' TERM; echo trapping; while :; do sleep 0.1; done",
+            ][..],
+            Some("trapping"),
             "10",
             true,
             "7\n",
@@ -1154,6 +1160,16 @@ fn a_command_is_pid_1_as_a_containers_is() {
         args.extend_from_slice(command);
         let started = shards(&args);
         assert_eq!(started.status, Some(0), "{started}");
+        // Its handler set before it is stopped: PID 1 of a namespace discards a signal it
+        // neither handles nor blocks (kernel/signal.c, sig_task_ignored), as a container's
+        // does under Docker, and a shell may not have run `trap` as `run -d` returns.
+        if let Some(ready) = ready {
+            let deadline = Instant::now() + TIMEOUT;
+            while !shards(&["logs", name]).stdout.contains(ready) {
+                assert!(Instant::now() < deadline, "{name} never said {ready:?}");
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
         let at = Instant::now();
         let stopped = shards(&["stop", "-t", timeout, name]);
         let took = at.elapsed();

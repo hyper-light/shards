@@ -256,6 +256,31 @@ pub struct Config {
     pub dns_all: bool,
 }
 
+/// The TCP ports a policy's flows reach past the microVM, which the network process is held
+/// to (D31): its grants' TCP ports and its named servers', and where names may be resolved
+/// past the microVM, the port of the resolver they are asked of (the first, as
+/// `on_guest_udp` and `on_guest_tcp` ask it): the host's 53, or another `SHARDS_DNS`
+/// names.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn policy_tcp_ports(
+    ports: &Ports,
+    named: &[(String, u16)],
+    dns_all: bool,
+    resolvers: &[(Ipv4Addr, u16)],
+) -> Vec<u16> {
+    let mut tcp: Vec<u16> = ports
+        .0
+        .iter()
+        .filter(|(proto, _, _)| *proto == Proto::Tcp)
+        .flat_map(|&(_, first, last)| first..=last)
+        .chain(named.iter().map(|&(_, port)| port))
+        .collect();
+    if dns_all || !named.is_empty() {
+        tcp.extend(resolvers.first().map(|&(_, port)| port));
+    }
+    tcp
+}
+
 /// A MAC address as shards' processes pass it to one another (review 2.32): its six
 /// bytes in hex, two digits each, between colons, as Linux and Docker write one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -976,23 +1001,13 @@ fn control(
             };
             // The process held to the grants' TCP ports (D31), once: a layer narrows what
             // the last left and never widens it, so a second policy is refused, and the
-            // daemon, which sends one, lets the VM go. A resolver's port where names may
-            // be resolved past the microVM.
+            // daemon, which sends one, lets the VM go.
             #[cfg(target_os = "linux")]
             {
                 if stack.ports_confined {
                     return false;
                 }
-                let mut tcp: Vec<u16> = ports
-                    .0
-                    .iter()
-                    .filter(|(proto, _, _)| *proto == Proto::Tcp)
-                    .flat_map(|&(_, first, last)| first..=last)
-                    .chain(named.iter().map(|&(_, port)| port))
-                    .collect();
-                if dns_all || !named.is_empty() {
-                    tcp.push(53);
-                }
+                let tcp = policy_tcp_ports(&ports, &named, dns_all, &stack.cfg.resolvers);
                 if confine::to_ports(&tcp).is_err() {
                     return false;
                 }
@@ -2030,6 +2045,20 @@ impl<'r> Stack<'r> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    /// The ports the network process is held to: the grants' TCP ports and the named
+    /// servers', and where names may be resolved, the port of the resolver it asks, the
+    /// host's 53 or another (`SHARDS_DNS`); none where no name may be.
+    #[test]
+    fn a_policy_reaches_the_resolver_at_its_own_port() {
+        let ports = Ports(vec![(Proto::Tcp, 80, 81), (Proto::Udp, 9000, 9000)]);
+        let named = vec![("mcp.example".to_string(), 8443)];
+        let at = |port| vec![(Ipv4Addr::LOCALHOST, port), (Ipv4Addr::LOCALHOST, 7)];
+        assert_eq!(policy_tcp_ports(&ports, &named, false, &at(35353)), [80, 81, 8443, 35353]);
+        assert_eq!(policy_tcp_ports(&ports, &[], true, &at(53)), [80, 81, 53]);
+        assert_eq!(policy_tcp_ports(&ports, &[], false, &at(53)), [80, 81]);
+        assert_eq!(policy_tcp_ports(&ports, &named, true, &[]), [80, 81, 8443]);
+    }
 
     /// A slot's token names its connection alone: once the slot is emptied, and taken by
     /// another, what was waited on or timed for the first reaches nothing (review 2.14).
