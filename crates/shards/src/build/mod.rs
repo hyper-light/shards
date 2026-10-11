@@ -3087,12 +3087,14 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
                 &mut plan.graph,
                 &resolved.reference,
                 &pin,
+                true,
                 &config,
                 &host,
                 &id,
                 &state,
                 &extras,
                 &asked.params,
+                plan.ignore_cache,
             )?;
             let identifier = if resolved.reference.contains(&b'@') || pin.is_empty() {
                 [b"docker-image://".as_slice(), &resolved.reference].concat()

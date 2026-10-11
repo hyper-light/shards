@@ -32,18 +32,24 @@ pub struct Asked {
 
 /// `CreateSBOMScanner`'s scan: the generator `scanner` (its reference, `pin` the digest it
 /// resolved to, and its config) run on `platform` over `core` and `extras`, as a step of
-/// `graph` named for `id`; the state of its output, `/run/out`.
+/// `graph` named for `id`; the state of its output, `/run/out`. With `named`, the
+/// scanner's source carries its identifier as its name, as shards build shows sources
+/// (BuildKit, and a frontend's `llb.Image`, leave it unnamed and pinned by no digest:
+/// shards' frontend passes neither). With `ignore_cache`, the scan asks no cache, as the
+/// frontend's scan of a target that asks none (`IsIgnoreCache`).
 #[allow(clippy::too_many_arguments)]
 pub fn plan(
     graph: &mut Graph,
     scanner: &[u8],
     pin: &[u8],
+    named: bool,
     config: &Image,
     platform: &Platform,
     id: &str,
     core: &State,
     extras: &[(Vec<u8>, State)],
     params: &BTreeMap<String, String>,
+    ignore_cache: bool,
 ) -> Result<State, String> {
     let mut args = config.config.entrypoint.clone();
     args.extend(config.config.cmd.iter().cloned());
@@ -61,9 +67,11 @@ pub fn plan(
         [b"docker-image://".as_slice(), scanner, b"@", pin].concat()
     };
     let mut shown = Meta::default();
-    shown
-        .description
-        .insert(b"llb.customname".to_vec(), identifier.clone());
+    if named {
+        shown
+            .description
+            .insert(b"llb.customname".to_vec(), identifier.clone());
+    }
     let mut source = graph.source(identifier, BTreeMap::new(), Some(platform.clone()), shown);
     let mut env = EnvList::new();
     for e in &config.config.env {
@@ -122,7 +130,10 @@ pub fn plan(
         kind: MountKind::Bind,
         no_output: false,
     });
-    let mut meta = Meta::default();
+    let mut meta = Meta {
+        ignore_cache,
+        ..Meta::default()
+    };
     meta.description.insert(
         b"llb.customname".to_vec(),
         format!(

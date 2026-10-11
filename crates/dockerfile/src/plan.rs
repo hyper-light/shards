@@ -363,6 +363,9 @@ pub struct Plan {
     /// the build context where the target's `BUILDKIT_SBOM_SCAN_CONTEXT` says so, and each
     /// stage it reaches whose `BUILDKIT_SBOM_SCAN_STAGE` names it (D81).
     pub sbom_extras: Vec<(Vec<u8>, State)>,
+    /// Whether the target's steps ask no cache (`Result.IsIgnoreCache`), which its SBOM's
+    /// scan asks none either.
+    pub ignore_cache: bool,
 }
 
 impl Plan {
@@ -5067,6 +5070,7 @@ impl Planner<'_> {
             });
         }
         let base_image = t.base_image.clone();
+        let ignore_cache = t.ignore_cache;
         Ok(Plan {
             state: std::mem::take(&mut t.state),
             graph: self.graph,
@@ -5081,6 +5085,7 @@ impl Planner<'_> {
                 .map(|t| t.domains.clone())
                 .unwrap_or_default(),
             sbom_extras: sbom_extras.into_iter().collect(),
+            ignore_cache,
         })
     }
 }

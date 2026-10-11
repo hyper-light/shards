@@ -6,6 +6,8 @@ together: the images byte for byte (every manifest, config and layer, through an
 layout written with SOURCE_DATE_EPOCH and rewrite-timestamp, so that a build is
 reproducible at all), and what buildx printed, its durations and the frontends' own names
 aside. A case's `flags` file holds extra buildx flags, one a line, `$CASE` its directory;
+an `sbom` file in it, that its images carry SBOMs, which are compared with their creation
+time and document namespace set aside, as the scanner makes those anew each run;
 its `context` file, a context other than its directory (a Git or HTTP URL); its `builder`
 file, a BuildKit image to build on instead of Docker's own, through a buildx builder of
 it (a docker-container one on dind's network, the registry's HTTP allowed); a `no-image`
@@ -101,7 +103,7 @@ def context_of(case):
         return f.read().strip()
 
 
-def normalize(text, frontends, images=True):
+def normalize(text, frontends, images=True, sbom=False):
     """What buildx printed, as far as a frontend decides it: each step's lines, the steps
     in their names' order, then what followed them. BuildKit's own timing is set aside:
     which steps run at once and so their numbers, the order of a step's statuses and
@@ -117,6 +119,12 @@ def normalize(text, frontends, images=True):
     if not images:
         text = re.sub(r"^(#\d+ exporting (?:manifest list|manifest|config|attestation manifest) )sha256:[0-9a-f]{64}",
                       r"\1sha256:X", text, flags=re.M)
+    if sbom:
+        # What depends on the SBOMs' contents, made anew each run: the attestation
+        # manifests and the index naming them; and the scanner's own clock in its logs.
+        text = re.sub(r"^(#\d+ exporting (?:manifest list|attestation manifest) )sha256:[0-9a-f]{64}",
+                      r"\1sha256:X", text, flags=re.M)
+        text = re.sub(r'time="[0-9T:.-]+Z"', 'time="X"', text)
     steps, rest = {}, []
     for line in text.splitlines():
         m = re.match(r"^#(\d+) ?(.*)$", line)
@@ -192,6 +200,36 @@ def oci(path):
     return index, blobs
 
 
+SPDX = "https://spdx.dev/Document"
+
+
+def sbom_view(index, blobs):
+    """An OCI layout as compared where its images carry SBOMs: what the index names, the
+    image manifests, configs and layers whole, and each attestation manifest's layers by
+    their media type and annotations, an SPDX statement's content with its creation time
+    and document namespace set aside, which the scanner makes anew each run."""
+    def statement(raw):
+        doc = json.loads(raw)
+        if doc.get("predicateType") == SPDX:
+            doc["predicate"].get("creationInfo", {}).pop("created", None)
+            doc["predicate"].pop("documentNamespace", None)
+        return json.dumps(doc, sort_keys=True)
+
+    view = []
+    for m in index.get("manifests", []):
+        top = json.loads(blobs[m["digest"]])
+        for d in top.get("manifests", [top] if "config" in top else []):
+            manifest = json.loads(blobs[d["digest"]]) if "digest" in d else d
+            kind = (d.get("annotations") or {}).get("vnd.docker.reference.type")
+            if kind == "attestation-manifest":
+                layers = [(l["mediaType"], l.get("annotations"), statement(blobs[l["digest"]]))
+                          for l in manifest.get("layers", []) if l["digest"] in blobs]
+                view.append(("attestation", d.get("annotations"), d.get("platform"), layers))
+            else:
+                view.append(("image", d.get("digest"), d.get("platform"), blobs.get(d.get("digest"))))
+    return view
+
+
 def build(case, frontend, side, flags):
     out = f"{ROOT}/out/{case}-{side}.tar"
     argv = [
@@ -228,11 +266,21 @@ def compare(case, frontends):
         differs.append("exit")
         result["exit"] += [t[0] for t in again]
     images = not os.path.exists(os.path.join(HERE, "cases", case, "no-image"))
-    said = [normalize(t[1], frontends, images) for t in again]
+    sbom = os.path.exists(os.path.join(HERE, "cases", case, "sbom"))
+    said = [normalize(t[1], frontends, images, sbom) for t in again]
     if said[0] != said[1]:
         differs.append("output")
         result["output"] = said
     if theirs[2] and ours[2] and not images:
+        for t in (theirs, ours):
+            dind("rm", "-f", t[2], check=False)
+    elif theirs[2] and ours[2] and os.path.exists(os.path.join(HERE, "cases", case, "sbom")):
+        (i1, b1), (i2, b2) = oci(theirs[2]), oci(ours[2])
+        v1, v2 = sbom_view(i1, b1), sbom_view(i2, b2)
+        result["sbom_view"] = [x[0] for x in v1]
+        if v1 != v2:
+            differs.append("sbom")
+            result["sbom_diff"] = [str(a)[:600] + " | " + str(b)[:600] for a, b in zip(v1, v2) if a != b]
         for t in (theirs, ours):
             dind("rm", "-f", t[2], check=False)
     elif theirs[2] and ours[2]:

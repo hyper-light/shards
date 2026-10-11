@@ -1,2 +1,3 @@
 FROM scratch
-COPY note /note
+ARG TARGETARCH
+COPY note /note-${TARGETARCH}

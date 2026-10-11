@@ -248,13 +248,94 @@ pub struct SourceMeta {
     pub http: Option<HttpMeta>,
 }
 
-/// What a frontend returns (Result): its reference, or one for each platform, and the
-/// metadata BuildKit's exporters read.
+/// What a frontend returns (Result): its reference, or one for each platform, the
+/// metadata BuildKit's exporters read, and the attestations of each platform's result, by
+/// its key in `refs` (`attestations`, gateway.proto field 12).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Returned {
     pub single: Option<Ref>,
     pub refs: BTreeMap<String, Ref>,
     pub metadata: BTreeMap<String, Vec<u8>>,
+    pub attestations: BTreeMap<String, Vec<Attestation>>,
+}
+
+/// An attestation of a result (pb.Attestation): its kind (`InToto` 0, `Bundle` 1, a
+/// directory of statements), what BuildKit's exporter reads of it, the reference that
+/// holds it and its path there, and an in-toto statement's predicate type and subjects.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Attestation {
+    pub kind: i32,
+    pub metadata: BTreeMap<String, Vec<u8>>,
+    pub reference: Option<Ref>,
+    pub path: String,
+    pub predicate_type: String,
+    pub subjects: Vec<Subject>,
+}
+
+/// An in-toto statement's subject (pb.InTotoSubject): `Self` (0), the result itself, or
+/// `Raw` (1), named with its digests.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Subject {
+    pub kind: i32,
+    pub digests: Vec<String>,
+    pub name: String,
+}
+
+impl Returned {
+    /// pb.Result: its reference (3) or references by platform (4), its metadata (10), and
+    /// its attestations (12), each list an Attestations message (its entries field 1).
+    pub fn write(&self) -> Vec<u8> {
+        let mut res = Writer::default();
+        if let Some(single) = &self.single {
+            res.message(3, &single.write());
+        } else {
+            let mut refs = Writer::default();
+            refs.map(1, self.refs.iter().map(|(k, v)| (k.as_str(), v)), |e, v| {
+                e.message(2, &v.write())
+            });
+            res.message(4, &refs.0);
+        }
+        res.map(10, self.metadata.iter().map(|(k, v)| (k.as_str(), v)), |e, v| {
+            e.message(2, v)
+        });
+        res.map(
+            12,
+            self.attestations.iter().map(|(k, v)| (k.as_str(), v)),
+            |e, list| {
+                let mut all = Writer::default();
+                for a in list {
+                    all.message(1, &a.write());
+                }
+                e.message(2, &all.0)
+            },
+        );
+        res.0
+    }
+}
+
+impl Attestation {
+    fn write(&self) -> Vec<u8> {
+        let mut w = Writer::default();
+        w.int32(1, self.kind);
+        w.map(2, self.metadata.iter().map(|(k, v)| (k.as_str(), v)), |e, v| {
+            e.message(2, v)
+        });
+        if let Some(r) = &self.reference {
+            w.message(3, &r.write());
+        }
+        w.string(4, &self.path);
+        w.string(5, &self.predicate_type);
+        for s in &self.subjects {
+            let mut subject = Writer::default();
+            subject.int32(1, s.kind);
+            for d in &s.digests {
+                subject.message(2, d.as_bytes());
+            }
+            subject.string(3, &s.name);
+            w.message(6, &subject.0);
+        }
+        w.0
+    }
 }
 
 /// A warning (WarnRequest): the step it is on, its level, its line and detail lines, its
@@ -608,22 +689,7 @@ impl<R: Read, W: Write> Client<R, W> {
     pub fn return_result(&mut self, result: Result<&Returned, &RpcStatus>) -> Result<(), Error> {
         let mut w = Writer::default();
         match result {
-            Ok(r) => {
-                let mut res = Writer::default();
-                if let Some(single) = &r.single {
-                    res.message(3, &single.write());
-                } else {
-                    let mut refs = Writer::default();
-                    refs.map(1, r.refs.iter().map(|(k, v)| (k.as_str(), v)), |e, v| {
-                        e.message(2, &v.write())
-                    });
-                    res.message(4, &refs.0);
-                }
-                res.map(10, r.metadata.iter().map(|(k, v)| (k.as_str(), v)), |e, v| {
-                    e.message(2, v)
-                });
-                w.message(1, &res.0);
-            }
+            Ok(r) => w.message(1, &r.write()),
             Err(status) => w.message(2, &status.write()),
         }
         self.call("Return", &w.0).map(|_| ())
@@ -635,6 +701,93 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
+
+    /// A result's attestations as gateway.proto has them: field 12 of pb.Result, each a
+    /// platform's Attestations (its entries field 1), each pb.Attestation's kind (1),
+    /// metadata (2), reference (3), path (4), predicate type (5) and subjects (6).
+    #[test]
+    fn attestations_are_written_as_gateway_proto_has_them() {
+        let r = Returned {
+            refs: BTreeMap::from([(
+                "linux/arm64".to_string(),
+                Ref {
+                    id: "main".into(),
+                    def: Vec::new(),
+                },
+            )]),
+            attestations: BTreeMap::from([(
+                "linux/arm64".to_string(),
+                vec![Attestation {
+                    kind: 1,
+                    metadata: BTreeMap::from([("reason".to_string(), b"sbom".to_vec())]),
+                    reference: Some(Ref {
+                        id: "scan".into(),
+                        def: Vec::new(),
+                    }),
+                    path: "p".into(),
+                    predicate_type: "https://spdx.dev/Document".into(),
+                    subjects: vec![Subject {
+                        kind: 1,
+                        digests: vec!["sha256:ab".into()],
+                        name: "n".into(),
+                    }],
+                }],
+            )]),
+            ..Returned::default()
+        };
+        let bytes = r.write();
+        let fields: Vec<(u32, Value<'_>)> = Reader::new(&bytes).map(Result::unwrap).collect();
+        let Some((12, Value::Bytes(entry))) = fields.iter().find(|(n, _)| *n == 12).cloned() else {
+            panic!("no attestations in {fields:?}");
+        };
+        let (key, list) = entry_of(entry);
+        assert_eq!(key, b"linux/arm64");
+        let list: Vec<(u32, Value<'_>)> = Reader::new(list).map(Result::unwrap).collect();
+        let [(1, Value::Bytes(a))] = list.as_slice() else {
+            panic!("{list:?}");
+        };
+        let a: Vec<(u32, Value<'_>)> = Reader::new(a).map(Result::unwrap).collect();
+        assert_eq!(a[0], (1, Value::Varint(1)));
+        let (2, Value::Bytes(meta)) = a[1] else {
+            panic!("{a:?}")
+        };
+        assert_eq!(entry_of(meta), (&b"reason"[..], &b"sbom"[..]));
+        let (3, Value::Bytes(reference)) = a[2] else {
+            panic!("{a:?}")
+        };
+        assert_eq!(
+            Reader::new(reference).next().unwrap().unwrap(),
+            (1, Value::Bytes(b"scan"))
+        );
+        assert_eq!(a[3], (4, Value::Bytes(b"p")));
+        assert_eq!(a[4], (5, Value::Bytes(b"https://spdx.dev/Document")));
+        let (6, Value::Bytes(subject)) = a[5] else {
+            panic!("{a:?}")
+        };
+        let subject: Vec<(u32, Value<'_>)> = Reader::new(subject).map(Result::unwrap).collect();
+        assert_eq!(
+            subject,
+            [
+                (1, Value::Varint(1)),
+                (2, Value::Bytes(b"sha256:ab")),
+                (3, Value::Bytes(b"n"))
+            ]
+        );
+    }
+
+    /// A map entry's key (field 1) and value (field 2).
+    fn entry_of(entry: &[u8]) -> (&[u8], &[u8]) {
+        let mut key: &[u8] = &[];
+        let mut value: &[u8] = &[];
+        for f in Reader::new(entry) {
+            match f.unwrap() {
+                (1, Value::Bytes(k)) => key = k,
+                (2, Value::Bytes(v)) => value = v,
+                other => panic!("{other:?}"),
+            }
+        }
+        (key, value)
+    }
 
     /// The server's half of docker/dockerfile:1's own traffic with BuildKit v0.28.1
     /// (Docker 29.3.1; D113's spy in `shards-dind`), answering this client's calls made in

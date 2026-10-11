@@ -6329,3 +6329,35 @@ revision before comparing a changed API/implementation.
   plays the listener's late look and fails without the re-check. Also: a closed daemon
   starts no warm VM. A waiting one that ended as the daemon exited had been replaced by
   one that ended with it (`a_closed_daemon_refills_nothing`).
+
+### M189. SBOM attestations by docker/dockerfile:1.27.1 and by shards' frontend (D129)
+
+- **Question.** Does shards' frontend, given `--sbom=true`, make what docker/dockerfile:1.27.1
+  makes: the same steps, the same images, the same SBOM statements?
+- **Method.**
+  - `scripts/frontend/compare` in shards-dind (Docker 29.3.1, its BuildKit v0.28.1,
+    buildx v0.37.1), each case built twice in turn by both frontends, `--sbom=true` with
+    `--provenance=false`:
+    - `sbom-basic`: `FROM alpine:3.20`, one COPY;
+    - `sbom-extras`: a stage asking `BUILDKIT_SBOM_SCAN_STAGE` and a target asking
+      `BUILDKIT_SBOM_SCAN_CONTEXT`;
+    - `sbom-platforms`: `linux/amd64,linux/arm64`;
+    - `attest-unknown`: `--attest type=foo`.
+  - The scanner was BuildKit's default, `docker.io/docker/buildkit-syft-scanner:stable-1`
+    ("starting syft scanner for buildkit v1.12.0").
+  - Apple M5 Max, macOS 26.4.1, Docker Desktop's VM, 2026-10-11.
+- **Results.**
+  - **The first run differed in noise alone.** Two things differed between the two
+    frontends, and between two runs of one:
+    - the scanner's log lines carry its clock;
+    - the digests of the attestation manifests and of the index naming them follow from
+      the SPDX documents, whose `creationInfo.created` and `documentNamespace` the
+      scanner makes anew each run.
+  - **With those set aside, all four cases were equal**:
+    - each step, the scans named `[linux/arm64] generating sbom using
+      docker.io/docker/buildkit-syft-scanner:stable-1` (and `[linux/amd64] …`);
+    - the image manifests and configs byte for byte;
+    - the attestation manifests' layers, their media types and annotations;
+    - the statements, subjects included;
+    - for `attest-unknown`, the refusal.
+- **Consequence.** D129. The harness's `sbom` cases compare that way.

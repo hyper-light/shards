@@ -29,7 +29,7 @@ use shards_dockerfile::platform::{self, Platform};
 use shards_gateway::gateway::{self as gw, Client, Pong, Ref, Returned, RpcStatus, Solve};
 use shards_gateway::grpc;
 
-use crate::build::{gitobject, skills};
+use crate::build::{gitobject, sbom, skills};
 
 mod check;
 mod osi;
@@ -298,6 +298,10 @@ struct Config {
     filename: String,
     dockerfile_local: String,
     force_local_dockerfile: bool,
+    /// The SBOM asked for (`attest:sbom`), which this frontend makes as dockerfile's does.
+    sbom: Option<sbom::Asked>,
+    /// `image-resolve-mode` as given, which the SBOM's scanner is resolved with.
+    resolve_mode: String,
 }
 
 fn filter(opts: &BTreeMap<String, String>, prefix: &str) -> BTreeMap<Vec<u8>, Vec<u8>> {
@@ -383,13 +387,7 @@ fn config(opts: &mut BTreeMap<String, String>, env: &Env, caps: &Caps) -> Result
         multi_platform = b;
     }
     let cache_imports = cache_imports(opts)?;
-    // attest:sbom runs a scanner over the result and returns its attestation, which this
-    // frontend does not make yet: refused, never left out of an image that asked for it.
-    if opts.contains_key("attest:sbom") {
-        return Err(Failure::new(
-            "shards' frontend makes no SBOM attestations yet (attest:sbom): build without --sbom, or with docker/dockerfile",
-        ));
-    }
+    let sbom = sbom_asked(opts)?;
     if let Some(v) = opts
         .get("build-arg:BUILDKIT_SANDBOX_HOSTNAME")
         .filter(|v| !v.is_empty())
@@ -495,7 +493,67 @@ fn config(opts: &mut BTreeMap<String, String>, env: &Env, caps: &Caps) -> Result
         filename,
         dockerfile_local,
         force_local_dockerfile,
+        sbom,
+        resolve_mode: opt(opts, "image-resolve-mode").to_string(),
     })
+}
+
+/// dockerui's SBOM (attestations.Parse and Validate, then Client.init). Each type is read
+/// from `attest:TYPE` and `build-arg:BUILDKIT_ATTEST_TYPE`, lowercased; where both name
+/// one, Go's map gives either, and here the `attest:` option. Its value's CSV fields are
+/// its attributes, `generator` defaulting to BuildKit's scanner, a field without `=`
+/// naming an empty one. Any type but `sbom` and `provenance` is refused. The generator's
+/// reference is normalized with its tag; the other attributes are the scanner's
+/// parameters.
+fn sbom_asked(opts: &BTreeMap<String, String>) -> Result<Option<sbom::Asked>, Failure> {
+    let mut attests: BTreeMap<String, &str> = BTreeMap::new();
+    for (k, v) in opts {
+        if let Some(kind) = k.strip_prefix("build-arg:BUILDKIT_ATTEST_") {
+            attests.entry(kind.to_lowercase()).or_insert(v);
+        }
+    }
+    for (k, v) in opts {
+        if let Some(kind) = k.strip_prefix("attest:") {
+            attests.insert(kind.to_lowercase(), v);
+        }
+    }
+    let mut asked = None;
+    for (kind, v) in &attests {
+        let mut attrs: BTreeMap<String, String> = BTreeMap::new();
+        if kind == "sbom" {
+            attrs.insert("generator".into(), sbom::DEFAULT_GENERATOR.into());
+        }
+        if !v.is_empty() {
+            let fields = shards_cmdline::go::csv_fields(v.as_bytes()).map_err(|e| {
+                Failure::new(format!("failed to parse {kind}: {}", String::from_utf8_lossy(&e)))
+            })?;
+            for f in fields {
+                let f = String::from_utf8_lossy(&f).into_owned();
+                let (k, v) = f.split_once('=').unwrap_or((f.as_str(), ""));
+                attrs.insert(k.to_string(), v.to_string());
+            }
+        }
+        if kind == "sbom" {
+            asked = Some(attrs);
+        }
+    }
+    if let Some(kind) = attests.keys().find(|k| *k != "sbom" && *k != "provenance") {
+        return Err(Failure::new(format!(
+            "unknown attestation type {}",
+            go_quote(kind)
+        )));
+    }
+    let Some(mut attrs) = asked else {
+        return Ok(None);
+    };
+    let generator = attrs.remove("generator").unwrap_or_default();
+    let named = shards_image::reference::Reference::parse_normalized(&generator)
+        .map_err(|e| Failure::new(format!("failed to parse sbom scanner {generator}: {e}")))?
+        .tag_name_only();
+    Ok(Some(sbom::Asked {
+        generator: named.to_string(),
+        params: attrs,
+    }))
 }
 
 /// Option `k`, empty where absent.
@@ -1058,6 +1116,50 @@ impl<R: Read, W: Write> Gateway<'_, R, W> {
         }
     }
 
+    /// CreateSBOMScanner's resolution of `asked`'s generator (imageMetaResolver): its config
+    /// for the first build platform, asked with `image-resolve-mode` and under no name of
+    /// its own, which BuildKit names "resolve image config for …". Returned are the
+    /// reference to run, as a policy may have changed it, its config, and that platform.
+    fn scanner(
+        &self,
+        asked: &sbom::Asked,
+        config: &Config,
+    ) -> Result<(Vec<u8>, shards_dockerfile::image::Image, Platform), Failure> {
+        let platform = config
+            .options
+            .build_platforms
+            .first()
+            .cloned()
+            .unwrap_or_else(|| platform::normalize(&self.env.own));
+        let p = gateway_platform(&platform);
+        let meta = self
+            .client
+            .borrow_mut()
+            .resolve_source_meta(
+                &format!("docker-image://{}", asked.generator),
+                &BTreeMap::new(),
+                Some(&p),
+                "",
+                &config.resolve_mode,
+                false,
+            )
+            .map_err(Failure::call)?;
+        let Some(image) = meta.image else {
+            return Err(Failure::new(format!(
+                "ref {} was resolved to non-image {}",
+                asked.generator, meta.identifier
+            )));
+        };
+        let reference = meta
+            .identifier
+            .strip_prefix("docker-image://")
+            .unwrap_or(&meta.identifier);
+        let reference = reference.strip_prefix("oci-layout://").unwrap_or(reference);
+        let config = shards_dockerfile::image::Image::from_json(&image.config)
+            .map_err(|e| Failure::new(String::from_utf8_lossy(&e)))?;
+        Ok((reference.as_bytes().to_vec(), config, platform))
+    }
+
     /// ResolveImageConfig of `name` for `platform` (none, BuildKit's own), its step named
     /// `log`, as grpcclient asks it through ResolveSourceMeta (its resolve mode not asked,
     /// as there).
@@ -1575,8 +1677,8 @@ fn subrequest<R: Read, W: Write>(
     metadata.insert("version".into(), b"1.0.0".to_vec());
     Ok(Outcome::Built(Returned {
         single: Some(Ref::default()),
-        refs: BTreeMap::new(),
         metadata,
+        ..Returned::default()
     }))
 }
 
@@ -1777,6 +1879,13 @@ fn build_platforms<R: Read, W: Write>(
     };
     let mut returned = Returned::default();
     let mut platforms_json = Vec::with_capacity(targets.len());
+    // CreateSBOMScanner, before any platform is built: the generator's config, resolved
+    // for the first build platform.
+    let scanner = match &config.sbom {
+        Some(asked) => Some(g.scanner(asked, config)?),
+        None => None,
+    };
+    let mut scans = Vec::new();
     for (i, target) in targets.iter().enumerate() {
         let mut options = config.options.clone();
         if let Some(t) = target {
@@ -1788,7 +1897,7 @@ fn build_platforms<R: Read, W: Write>(
         *g.failed.borrow_mut() = None;
         let planned = plan::plan(&entry.data, &options, g);
         *g.warn_into.borrow_mut() = None;
-        let planned = match planned {
+        let mut planned = match planned {
             Ok(p) => p,
             Err(e) => {
                 let base = g
@@ -1871,6 +1980,28 @@ fn build_platforms<R: Read, W: Write>(
                 .metadata
                 .insert(key("source.date.epoch"), e.to_string().into_bytes());
         }
+        // The scan of what this platform built, with the stages and context its target
+        // asks scanned beside it, solved once every platform is built (EachPlatform).
+        if let (Some((reference, scanner_config, scanner_platform)), Some(asked)) = (&scanner, &config.sbom) {
+            let out = sbom::plan(
+                &mut planned.graph,
+                reference,
+                b"",
+                false,
+                scanner_config,
+                scanner_platform,
+                &id,
+                &planned.state,
+                &planned.sbom_extras,
+                &asked.params,
+                planned.ignore_cache,
+            )
+            .map_err(Failure::new)?;
+            let scan = planned.graph.marshal(&out, &planned.platform);
+            let def = pb::definition(&scan, &carried)
+                .ok_or_else(|| Failure::new("failed to marshal LLB definition"))?;
+            scans.push((id.clone(), def));
+        }
         if config.multi_platform {
             returned.refs.insert(id.clone(), r);
         } else {
@@ -1882,12 +2013,34 @@ fn build_platforms<R: Read, W: Write>(
             platform_json(&p)
         ));
     }
+    // Each platform's SBOM: its scan solved, its output the scanner's statements (a
+    // `Bundle`), the attestation of the platform's result.
+    for (id, def) in scans {
+        let r = g.solve(&def, &[], false)?.unwrap_or_default();
+        returned
+            .attestations
+            .entry(id)
+            .or_default()
+            .push(gw::Attestation {
+                kind: ATTESTATION_BUNDLE,
+                metadata: BTreeMap::from([
+                    ("reason".to_string(), b"sbom".to_vec()),
+                    ("sbom-core".to_string(), b"sbom".to_vec()),
+                ]),
+                reference: Some(r),
+                predicate_type: sbom::PREDICATE.to_string(),
+                ..gw::Attestation::default()
+            });
+    }
     returned.metadata.insert(
         "refs.platforms".into(),
         format!("{{\"Platforms\":[{}]}}", platforms_json.join(",")).into_bytes(),
     );
     Ok(Outcome::Built(returned))
 }
+
+/// pb.AttestationKind_Bundle: a directory of in-toto statements.
+const ATTESTATION_BUNDLE: i32 = 1;
 
 /// An Agentfile's image's manifest annotations (D57): the normalized Agentfile's digest,
 /// its config label's, and its agents' and harnesses' names, each list comma-separated in
@@ -3062,6 +3215,50 @@ mod tests {
         fn epoch(&self, _: &EpochSource) -> Result<Option<plan::Epoch>, Vec<u8>> {
             Ok(None)
         }
+    }
+
+    /// The SBOM asked for, as dockerui reads `attest:` and `build-arg:BUILDKIT_ATTEST_`
+    /// (attestations.Parse, Validate, Client.init).
+    #[test]
+    fn attestations_are_read_as_dockerui_reads_them() {
+        let asked = |pairs: &[(&str, &str)]| {
+            let opts: BTreeMap<String, String> = pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect();
+            sbom_asked(&opts).map_err(|f| f.message)
+        };
+        assert_eq!(asked(&[("attest:provenance", "mode=max")]), Ok(None));
+        let default = asked(&[("attest:sbom", "")]).unwrap().unwrap();
+        assert_eq!(
+            default.generator,
+            "docker.io/docker/buildkit-syft-scanner:stable-1"
+        );
+        assert!(default.params.is_empty());
+        let named = asked(&[("attest:SBOM", "generator=foo/bar,EXTRA=1,bare")])
+            .unwrap()
+            .unwrap();
+        assert_eq!(named.generator, "docker.io/foo/bar:latest");
+        assert_eq!(
+            named.params,
+            BTreeMap::from([
+                ("EXTRA".to_string(), "1".to_string()),
+                ("bare".to_string(), String::new())
+            ])
+        );
+        let by_arg = asked(&[("build-arg:BUILDKIT_ATTEST_SBOM", "generator=x/y:1")])
+            .unwrap()
+            .unwrap();
+        assert_eq!(by_arg.generator, "docker.io/x/y:1");
+        assert_eq!(
+            asked(&[("attest:foo", "")]),
+            Err("unknown attestation type \"foo\"".to_string())
+        );
+        assert!(
+            asked(&[("attest:sbom", "generator=UPPER")])
+                .unwrap_err()
+                .starts_with("failed to parse sbom scanner UPPER: ")
+        );
     }
 
     /// An Agentfile's image is annotated as shards build annotates it (D57): the

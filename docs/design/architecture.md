@@ -3535,6 +3535,47 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode
 waits on the user.
 
+### D129. SBOM attestations from shards' frontend, as docker/dockerfile:1.27.1 makes them
+
+shards' frontend (D113) refused `attest:sbom` ("makes no SBOM attestations yet"), so
+`docker buildx build --sbom=true` failed with it. It now makes them as dockerfile's
+builder does.
+
+- **What is asked** (dockerui `attestations.Parse`, `Validate`, `Client.init`):
+  - `attest:TYPE` and `build-arg:BUILDKIT_ATTEST_TYPE`, the type lowercased. Where both
+    name one, Go's map gives either; shards takes `attest:`.
+  - Each value's CSV fields are the attributes; a field without `=` has an empty value.
+  - Any type but `sbom` and `provenance` fails the build: `unknown attestation type "foo"`.
+  - The generator, BuildKit's scanner unless named, is normalized with its tag
+    ("failed to parse sbom scanner …" otherwise). The other attributes are the
+    scanner's `BUILDKIT_SCAN_<KEY>` parameters.
+- **The scan** (`CreateSBOMScanner`):
+  - The generator's config is resolved for the first build platform, under no name of
+    the frontend's, before any platform is built.
+  - Each platform's result is scanned once every platform is built. The scan runs the
+    scanner's command over the result mounted at `/run/src/core/sbom`, with each extra
+    target (a stage `BUILDKIT_SBOM_SCAN_STAGE` names, the context with
+    `BUILDKIT_SBOM_SCAN_CONTEXT`) beside it, `/tmp` a tmpfs and `/run/out` its output.
+  - It asks no cache where the target asks none. `Plan.ignore_cache` now says so, and
+    `shards build`'s own scan (D81) heeds it too.
+  - The scanner's source is `llb.Image`'s: unnamed and pinned by no digest.
+    `sbom::plan` takes both as arguments; shards build keeps its named, pinned source.
+- **The attestation**: each platform's scan output, a `Bundle` with `reason=sbom`,
+  `sbom-core=sbom` and the SPDX predicate type, keyed by the platform's ID. It is returned
+  in the gateway's `Result.attestations` (field 12), which `shards_gateway` now writes.
+- **Why not leave it to BuildKit.** BuildKit scans a result that comes back without an
+  SBOM itself (`proc.SBOMProcessor`), but its scan has no extras. dockerfile's frontend
+  makes its own, so this one does too.
+- **Tested**:
+  - `scripts/frontend/compare`, on Docker's own BuildKit (v0.28.1): one platform, the
+    extras, two platforms, and an unknown type refused, each equal to docker/dockerfile
+    step by step. The images match whole, except the SPDX documents' creation time and
+    namespace, which the scanner makes anew each run. The harness's `sbom` cases set
+    those aside, with the attestation manifests' and index's digests that follow from
+    them and the scanner's log clock (PM M189).
+  - `attestations_are_written_as_gateway_proto_has_them` (gateway) and
+    `attestations_are_read_as_dockerui_reads_them` (frontend).
+
 ### D128. Build policies over OCI layouts, and a policy's own errors, as buildx ends a build
 
 Found while D127 measured OCI layout contexts: `shards build` asked its policies (D101) of
@@ -4863,11 +4904,10 @@ and BuildKit build an Agentfile, no shards installed. The frontend is `shards` i
   - an error carries no Go stack trace (`stack.Stack+json`), since shards has none;
   - the platforms of a multi-platform build are planned and solved one after another,
     where dockerui's Build runs them in an errgroup.
-- **Refused by name, not left out, until each is built:** SBOM attestations
-  (`attest:sbom`), frontend inputs (which BuildKit itself refuses first, by the caps
-  label), and OSI artifacts (AGENT, HARNESS and MCP from a registry), until BuildKit's
-  fetching of one is measured. SOURCE_DATE_EPOCH taken from a source was among them until
-  D127. Subrequests other than
+- **Refused by name, not left out, until each is built:** frontend inputs (which BuildKit
+  itself refuses first, by the caps label), and OSI artifacts (AGENT, HARNESS and MCP from
+  a registry), until BuildKit's fetching of one is measured. SOURCE_DATE_EPOCH taken from a
+  source was among them until D127, SBOM attestations until D129. Subrequests other than
   `frontend.subrequests.describe`, `frontend.outline`, `frontend.targets` and
   `frontend.lint` are answered as dockerui answers them, unsupported.
 - **Found in `shards-dind`, 2026-10-10: one gateway call from a frontend ends Docker's
