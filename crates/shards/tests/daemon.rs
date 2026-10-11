@@ -1366,7 +1366,7 @@ fn pools_keep_what_their_runs_need_while_they_come() {
     let home = home_with("daemon-demand");
     // The keep-alive outlasts the spacing of runs well apart below, which a loaded host
     // stretches.
-    const KEEP: Duration = Duration::from_secs(10);
+    const KEEP: Duration = Duration::from_secs(15);
     let keep = KEEP.as_secs().to_string();
     let env: [(&str, &OsStr); 3] = [
         ("SHARDS_HOME", home.as_os_str()),
@@ -1375,18 +1375,25 @@ fn pools_keep_what_their_runs_need_while_they_come() {
     ];
     let templates = home.join("templates");
     let warm = || processes_with(&templates.to_string_lossy()).len();
-    let settled = |what: &str, want: &dyn Fn(usize) -> bool| {
+    // Whether the pool comes to keep as `want` says within 5 s.
+    let comes = |want: &dyn Fn(usize) -> bool| {
         let deadline = Instant::now() + Duration::from_secs(5);
         while !want(warm()) {
-            assert!(
-                Instant::now() < deadline,
-                "{what}: {} warm: {:#?}\n{}",
-                warm(),
-                commands_with(&templates.to_string_lossy()),
-                std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default()
-            );
+            if Instant::now() >= deadline {
+                return false;
+            }
             std::thread::sleep(Duration::from_millis(20));
         }
+        true
+    };
+    let settled = |what: &str, want: &dyn Fn(usize) -> bool| {
+        assert!(
+            comes(want),
+            "{what}: {} warm: {:#?}\n{}",
+            warm(),
+            commands_with(&templates.to_string_lossy()),
+            std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default()
+        );
     };
     let args = [image.as_str(), "exit", "0"];
     let run = || {
@@ -1394,23 +1401,30 @@ fn pools_keep_what_their_runs_need_while_they_come() {
         assert_eq!(run.status, Some(0), "{}", run.stderr);
     };
     // Runs well apart: each is served by the one VM refilled for the run before. "Apart"
-    // is past the pool's refill window, SRTT + 4·RTTVAR of its refills (RFC 6298, as
-    // demand.rs keeps it), which refills of at most M keep under 5·M: each run waits at
-    // least that past the slowest refill seen here, which is as long as a refill or
-    // longer, and at least a second.
-    let mut slowest = Duration::ZERO;
-    for _ in 0..4 {
+    // is past the pool's refill window, SRTT + 4·RTTVAR of its refills from start to ready
+    // (RFC 6298, as demand.rs keeps it), which the daemon alone sees: a loaded host's
+    // refills are slow to say they are ready, and two runs it judges one burst keep the
+    // pool at two for the keep-alive. So the spacing starts at a second and doubles while
+    // the pool keeps two, each try beginning again past the keep-alive, when the burst it
+    // saw is gone.
+    let mut apart = Duration::from_secs(1);
+    let mut kept_one = 0;
+    while kept_one < 4 {
         run();
-        let ended = Instant::now();
         settled("a refill", &|n| n >= 1);
-        slowest = slowest.max(ended.elapsed());
-        let apart = (slowest * 5).max(Duration::from_secs(1));
+        if comes(&|n| n == 1) {
+            kept_one += 1;
+            std::thread::sleep(apart);
+            continue;
+        }
+        apart *= 2;
         assert!(
             apart < KEEP,
-            "refills of {slowest:?} leave no room under the keep-alive"
+            "runs {apart:?} apart are still one burst to the pool: its refills leave no room under the keep-alive"
         );
-        settled("one run at a time", &|n| n == 1);
-        std::thread::sleep(apart);
+        kept_one = 0;
+        std::thread::sleep(KEEP);
+        settled("past the keep-alive", &|n| n == 0);
     }
     // Three at once: the pool keeps more for the next burst, never past its most.
     let burst: Vec<_> = (0..3)
