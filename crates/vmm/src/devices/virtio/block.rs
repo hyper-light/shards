@@ -572,7 +572,8 @@ mod tests {
     /// (review 1.14). Block's and pmem's workers are one.
     #[test]
     fn a_refused_worker_leaves_the_queue_paused() {
-        let path = std::env::temp_dir().join(format!("shards-blk-refused-{}", std::process::id()));
+        let path_dir = shards_testdir::TempDir::new("blk-refused").unwrap();
+        let path = path_dir.join("blk-refused");
         std::fs::write(&path, vec![0u8; 8 * 512]).unwrap();
         let mut b = Block::open(&path, true, "disk0").unwrap();
         const BASE: u64 = 0x8000_0000;
@@ -619,7 +620,8 @@ mod tests {
     #[test]
     fn a_join_disk_reads_each_image_at_its_range() {
         let image = |name: &str, len: usize, byte: u8| {
-            let path = std::env::temp_dir().join(format!("shards-join-{name}-{}", std::process::id()));
+            let path_dir = shards_testdir::TempDir::new(&format!("join-{name}")).unwrap();
+            let path = path_dir.join("it");
             std::fs::write(&path, vec![byte; len]).unwrap();
             let file = File::open(&path).unwrap();
             std::fs::remove_file(&path).unwrap();
@@ -691,7 +693,8 @@ mod tests {
 
     #[test]
     fn config_space_reports_capacity_segments_and_block_size() {
-        let dir = std::env::temp_dir().join(format!("shards-blk-{}", std::process::id()));
+        let dir_guard = shards_testdir::TempDir::new("blk").unwrap();
+        let dir = dir_guard.join("blk");
         std::fs::write(&dir, vec![0u8; 8 * 512]).unwrap();
         let b = Block::open(&dir, true, "disk0").unwrap();
         let mut cap = [0u8; 8];

@@ -2697,7 +2697,8 @@ mod tests {
         let null = std::fs::OpenOptions::new().write(true).open("/dev/null").unwrap();
         assert!(null.sync_all().is_err(), "std's sync_all took F_FULLFSYNC here");
         sync_durable(&null).unwrap();
-        let dir = std::fs::File::open(std::env::temp_dir()).unwrap();
+        let held = shards_testdir::TempDir::new("sync").unwrap();
+        let dir = std::fs::File::open(&held).unwrap();
         sync_durable(&dir).unwrap();
     }
 
@@ -2706,32 +2707,8 @@ mod tests {
     }
 
     /// A directory of its own, removed when dropped, whether its test passes or panics.
-    struct Temp(std::path::PathBuf);
-
-    impl std::ops::Deref for Temp {
-        type Target = std::path::Path;
-        fn deref(&self) -> &std::path::Path {
-            &self.0
-        }
-    }
-
-    impl AsRef<std::path::Path> for Temp {
-        fn as_ref(&self) -> &std::path::Path {
-            &self.0
-        }
-    }
-
-    impl Drop for Temp {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-
-    fn temp(name: &str) -> Temp {
-        let dir = std::env::temp_dir().join(format!("shards-store-{name}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        Temp(dir)
+    fn temp(name: &str) -> shards_testdir::TempDir {
+        shards_testdir::TempDir::new(&format!("store-{name}")).unwrap()
     }
 
     fn gzip(bytes: &[u8]) -> Vec<u8> {

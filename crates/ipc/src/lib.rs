@@ -1393,8 +1393,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_daemon_is_exiting_while_its_process_lives() {
-        let home = std::env::temp_dir().join(format!("shards-ipc-exiting-{}", std::process::id()));
-        std::fs::create_dir_all(&home).unwrap();
+        let home = shards_testdir::TempDir::new("ipc-exiting").unwrap();
         assert!(!exiting(&home), "no file");
         let gone = std::process::Command::new("true").spawn().unwrap();
         let gone_pid = gone.id();

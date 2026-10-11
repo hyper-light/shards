@@ -12,3 +12,6 @@ libc.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+shards-testdir = { path = "../testdir" }

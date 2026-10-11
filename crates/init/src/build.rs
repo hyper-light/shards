@@ -1639,19 +1639,8 @@ mod tests {
     const CA: &[u8] = b"-----BEGIN CERTIFICATE-----\nAAEC\n-----END CERTIFICATE-----\n";
 
     /// A step's root of its own, removed as it drops.
-    struct Scratch(PathBuf);
-
-    impl Drop for Scratch {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-
-    fn scratch(name: &str) -> Scratch {
-        let dir = std::env::temp_dir().join(format!("shards-init-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        Scratch(dir)
+    fn scratch(name: &str) -> shards_testdir::TempDir {
+        shards_testdir::TempDir::new(&format!("init-{name}")).unwrap()
     }
 
     /// The CA goes into the first bundle that is a regular file, found in the root: a FIFO
@@ -1660,7 +1649,7 @@ mod tests {
     #[test]
     fn the_proxy_ca_goes_into_the_first_bundle_and_out_again() {
         let s = scratch("ca");
-        let at = |p: &str| s.0.join(p.trim_start_matches('/'));
+        let at = |p: &str| s.join(p.trim_start_matches('/'));
         std::fs::create_dir_all(at("/etc/ssl/certs")).unwrap();
         let fifo = CString::new(at("/etc/ssl/certs/ca-certificates.crt").as_os_str().as_bytes()).unwrap();
         // SAFETY: a NUL-terminated path.
@@ -1671,7 +1660,7 @@ mod tests {
         let bundle = at("/certs/real.pem");
         std::fs::write(&bundle, b"original").unwrap();
         std::fs::set_permissions(&bundle, std::fs::Permissions::from_mode(0o640)).unwrap();
-        let r = Root::open(&s.0).unwrap();
+        let r = Root::open(&s).unwrap();
         let injected = inject_ca(&r, CA).unwrap().unwrap();
         assert_eq!(injected.path, b"/certs/real.pem");
         assert_eq!(
@@ -1685,7 +1674,7 @@ mod tests {
         let mut grown = std::fs::read(&bundle).unwrap();
         grown.extend_from_slice(b"step\n");
         std::fs::write(&bundle, &grown).unwrap();
-        injected.clean(&s.0);
+        injected.clean(&s);
         assert_eq!(std::fs::read(&bundle).unwrap(), b"original\nstep\n");
         // No temporary file is left beside it.
         assert_eq!(std::fs::read_dir(at("/certs")).unwrap().count(), 1);
@@ -1695,11 +1684,11 @@ mod tests {
     #[test]
     fn a_root_without_a_bundle_or_with_a_huge_one() {
         let s = scratch("noca");
-        let r = Root::open(&s.0).unwrap();
+        let r = Root::open(&s).unwrap();
         assert!(inject_ca(&r, b"").unwrap().is_none());
         assert!(inject_ca(&r, CA).unwrap().is_none());
-        std::fs::create_dir_all(s.0.join("etc/ssl")).unwrap();
-        let huge = std::fs::File::create(s.0.join("etc/ssl/cert.pem")).unwrap();
+        std::fs::create_dir_all(s.join("etc/ssl")).unwrap();
+        let huge = std::fs::File::create(s.join("etc/ssl/cert.pem")).unwrap();
         huge.set_len(proxyca::MOST + 1).unwrap();
         let e = inject_ca(&r, CA).unwrap_err().to_string();
         assert_eq!(e, "/etc/ssl/cert.pem exceeds 10485760 bytes");
@@ -1711,17 +1700,17 @@ mod tests {
     #[test]
     fn a_bundle_of_ten_mib_takes_the_ca() {
         let s = scratch("most");
-        std::fs::create_dir_all(s.0.join("etc/ssl")).unwrap();
-        let bundle = s.0.join("etc/ssl/cert.pem");
+        std::fs::create_dir_all(s.join("etc/ssl")).unwrap();
+        let bundle = s.join("etc/ssl/cert.pem");
         std::fs::File::create(&bundle)
             .unwrap()
             .set_len(proxyca::MOST)
             .unwrap();
-        let r = Root::open(&s.0).unwrap();
+        let r = Root::open(&s).unwrap();
         let injected = inject_ca(&r, CA).unwrap().unwrap();
         let grown = std::fs::metadata(&bundle).unwrap().len();
         assert!(grown > proxyca::MOST, "{grown}");
-        injected.clean(&s.0);
+        injected.clean(&s);
         assert_eq!(std::fs::metadata(&bundle).unwrap().len(), grown);
     }
 
@@ -1730,11 +1719,11 @@ mod tests {
     #[test]
     fn a_bundle_that_is_no_file_is_refused() {
         let s = scratch("nofile");
-        std::fs::create_dir_all(s.0.join("etc/ssl")).unwrap();
-        let fifo = CString::new(s.0.join("etc/ssl/cert.pem").as_os_str().as_bytes()).unwrap();
+        std::fs::create_dir_all(s.join("etc/ssl")).unwrap();
+        let fifo = CString::new(s.join("etc/ssl/cert.pem").as_os_str().as_bytes()).unwrap();
         // SAFETY: a NUL-terminated path.
         assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o644) }, 0);
-        let r = Root::open(&s.0).unwrap();
+        let r = Root::open(&s).unwrap();
         let e = read_bundle(&r, b"/etc/ssl/cert.pem").unwrap_err().to_string();
         assert_eq!(e, "/etc/ssl/cert.pem is not a regular file");
     }

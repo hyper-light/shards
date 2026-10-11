@@ -996,7 +996,8 @@ mod tests {
     /// it would stand in, as neither is given across domains.
     #[test]
     fn an_agentfiles_volumes_are_registered_as_it_and_the_run_say() {
-        let home = std::env::temp_dir().join(format!("shards-agent-volumes-{}", std::process::id()));
+        let home_dir = shards_testdir::TempDir::new("agent-volumes").unwrap();
+        let home = home_dir.join("agent-volumes");
         std::fs::create_dir_all(home.join("hostdir")).unwrap();
         std::fs::write(home.join("hostfile"), b"x").unwrap();
         let store = Store::new(&home);

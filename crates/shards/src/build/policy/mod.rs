@@ -2341,10 +2341,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    fn scratch(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("shards-policy-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        d
+    fn scratch(name: &str) -> shards_testdir::TempDir {
+        shards_testdir::TempDir::new(&format!("policy-{name}")).unwrap()
     }
 
     /// The deepest a policy goes, run on its thread: a JSON document of 10000 levels,

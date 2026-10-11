@@ -92,7 +92,8 @@ mod root_tests {
 
     #[test]
     fn a_file_of_a_root_is_read_as_go_reads_it_through_the_roots_fs() {
-        let dir = std::env::temp_dir().join(format!("shards-read-in-root-{}", std::process::id()));
+        let dir_guard = shards_testdir::TempDir::new("read-in-root").unwrap();
+        let dir = dir_guard.join("read-in-root");
         let root = dir.join("root");
         std::fs::create_dir_all(root.join("sub")).unwrap();
         std::fs::write(root.join("sub/p.rego"), b"package docker\n").unwrap();

@@ -562,7 +562,8 @@ mod tests {
             .unwrap()
             .write(0x1_0000_0000 + 2 * p as u64 - 1, &[0xee])
             .unwrap();
-        let path = std::env::temp_dir().join(format!("shards-mem-{}", std::process::id()));
+        let path_dir = shards_testdir::TempDir::new("mem").unwrap();
+        let path = path_dir.join("mem");
         let file = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
@@ -637,7 +638,8 @@ mod tests {
                 .write(gpa(page) + p as u64 - 1, &[last])
                 .unwrap();
         }
-        let path = std::env::temp_dir().join(format!("shards-runs-{}", std::process::id()));
+        let path_dir = shards_testdir::TempDir::new("runs").unwrap();
+        let path = path_dir.join("runs");
         let file = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
@@ -698,7 +700,8 @@ mod tests {
                 .write(at(page), &[page as u8 + 1])
                 .unwrap();
         }
-        let path = std::env::temp_dir().join(format!("shards-touched-{}", std::process::id()));
+        let path_dir = shards_testdir::TempDir::new("touched").unwrap();
+        let path = path_dir.join("touched");
         let file = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
@@ -1038,7 +1041,8 @@ mod tests {
     }
 
     fn tempfile(tag: &str) -> std::fs::File {
-        let path = std::env::temp_dir().join(format!("shards-mem-{tag}-{}", std::process::id()));
+        let path_dir = shards_testdir::TempDir::new(&format!("mem-{tag}")).unwrap();
+        let path = path_dir.join("it");
         let file = std::fs::OpenOptions::new()
             .read(true)
             .write(true)

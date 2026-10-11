@@ -860,7 +860,8 @@ mod tests {
 
     /// When the newest regular member of `data` was modified, as `newest_file` finds it.
     fn newest(data: &[u8], limit: u64) -> Result<Option<(i64, u32)>, Error> {
-        let path = std::env::temp_dir().join(format!("shards-newest-{}-{}", std::process::id(), next_id()));
+        let dir = shards_testdir::TempDir::new("newest").unwrap();
+        let path = dir.join("data");
         std::fs::write(&path, data).unwrap();
         let found = newest_file(File::open(&path).unwrap(), &limits(limit));
         std::fs::remove_file(&path).unwrap();

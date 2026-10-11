@@ -1526,7 +1526,8 @@ mod beneath_tests {
     /// it would wait here for a writer); a file not there is not found.
     #[test]
     fn a_snapshots_files_are_opened_beneath_it_alone() {
-        let root = std::env::temp_dir().join(format!("shards-beneath-{}", std::process::id()));
+        let root_dir = shards_testdir::TempDir::new("beneath").unwrap();
+        let root = root_dir.join("beneath");
         let _ = std::fs::remove_dir_all(&root);
         let outside = root.with_extension("outside");
         std::fs::create_dir_all(root.join("g-1")).unwrap();
@@ -1596,7 +1597,8 @@ mod beneath_tests {
     #[test]
     #[ignore = "a measurement: cargo test -p shards-vmm --release --lib -- --ignored --nocapture what_opening"]
     fn what_opening_beneath_costs() {
-        let root = std::env::temp_dir().join(format!("shards-beneath-cost-{}", std::process::id()));
+        let root_dir = shards_testdir::TempDir::new("beneath-cost").unwrap();
+        let root = root_dir.join("beneath-cost");
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("g-1")).unwrap();
         std::fs::write(root.join("current"), b"g-1\n").unwrap();

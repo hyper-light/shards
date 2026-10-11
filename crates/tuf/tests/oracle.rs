@@ -82,7 +82,8 @@ fn run(c: &serde_json::Value, dir: &std::path::Path) -> (String, String, i64) {
 #[test]
 fn repositories_are_trusted_as_go_tuf_trusts_them() {
     let cases: serde_json::Value = serde_json::from_str(include_str!("../testdata/oracle.json")).unwrap();
-    let dir = std::env::temp_dir().join(format!("shards-tuf-oracle-{}", std::process::id()));
+    let dir_guard = shards_testdir::TempDir::new("tuf-oracle").unwrap();
+    let dir = dir_guard.join("tuf-oracle");
     let mut failed = Vec::new();
     for c in cases.as_array().unwrap() {
         let name = c["name"].as_str().unwrap();

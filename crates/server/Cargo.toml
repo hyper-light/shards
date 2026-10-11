@@ -21,3 +21,6 @@ rcgen = { version = "0.14.10", default-features = false, features = ["aws_lc_rs"
 [[bin]]
 name = "shards-server"
 path = "src/main.rs"
+
+[dev-dependencies]
+shards-testdir = { path = "../testdir" }

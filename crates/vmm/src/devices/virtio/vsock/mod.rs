@@ -656,8 +656,8 @@ mod tests {
 
     /// A session whose TX ring is full of requests for a host port nothing listens on,
     /// which the device answers with resets on RX, and whose RX ring is full of buffers.
-    fn flooded(tag: &str) -> (Arc<GuestMemory>, Session, std::path::PathBuf) {
-        let dir = std::env::temp_dir().join(format!("shards-vsock-{tag}-{}", std::process::id()));
+    fn flooded(tag: &str) -> (Arc<GuestMemory>, Session, shards_testdir::TempDir) {
+        let dir = shards_testdir::TempDir::new(&format!("vsock-{tag}")).unwrap();
         let mem = Arc::new(GuestMemory::anonymous(&[(BASE, 1 << 20)]).unwrap());
         let queue = |q: u64| {
             let cfg = QueueConfig {
@@ -691,7 +691,7 @@ mod tests {
         }
         let session = Session {
             queues: vec![queue(RX), queue(TX), queue(2)],
-            muxer: Muxer::new(crate::vm::VsockHost::at(dir.clone()), 3).unwrap(),
+            muxer: Muxer::new(crate::vm::VsockHost::at(dir.join("v")), 3).unwrap(),
         };
         (mem, session, dir)
     }
@@ -703,7 +703,8 @@ mod tests {
     /// from then on.
     #[test]
     fn a_refused_worker_leaves_the_device_whole() {
-        let dir = std::env::temp_dir().join(format!("shards-vsock-refused-{}", std::process::id()));
+        let dir_guard = shards_testdir::TempDir::new("vsock-refused").unwrap();
+        let dir = dir_guard.join("v");
         let _ = std::fs::remove_file(&dir);
         let mem = Arc::new(GuestMemory::anonymous(&[(BASE, 1 << 20)]).unwrap());
         let irq = Arc::new(DeviceInterrupt::new(Arc::new(Line)));
@@ -793,7 +794,7 @@ mod tests {
     /// guest meanwhile. Before, TX was drained until empty, and was never (audit A09).
     #[test]
     fn a_flooded_tx_queue_leaves_rx_its_turn() {
-        let (mem, mut session, dir) = flooded("flood");
+        let (mem, mut session, _dir) = flooded("flood");
         let irq = DeviceInterrupt::new(Arc::new(Line));
         let flooding = Arc::new(AtomicBool::new(true));
         let rounds = Arc::new(AtomicUsize::new(0));
@@ -851,14 +852,13 @@ mod tests {
             rx_used, SIZE,
             "the guest's RX buffers never got the host's replies"
         );
-        let _ = std::fs::remove_file(&dir);
     }
 
     /// However many replies wait, and however fast the driver puts RX buffers back, one
     /// round delivers a ring's worth at most (audit A09).
     #[test]
     fn a_round_delivers_a_ring_of_rx_at_most() {
-        let (mem, mut session, dir) = flooded("rx");
+        let (mem, mut session, _dir) = flooded("rx");
         let irq = DeviceInterrupt::new(Arc::new(Line));
         // Four rings of requests, each answered with a reset: the first ring's fill the
         // RX buffers, and the rest wait.
@@ -905,7 +905,6 @@ mod tests {
             .unwrap()
             .wrapping_sub(before);
         assert_eq!(delivered, SIZE, "one round delivered {delivered} packets");
-        let _ = std::fs::remove_file(&dir);
     }
 
     /// The worker keeps up with a driver that floods TX, coming back by itself for what a
@@ -914,7 +913,7 @@ mod tests {
     /// out and stay out, so nothing else wakes it.
     #[test]
     fn a_flooded_worker_keeps_up_and_stops() {
-        let (mem, session, dir) = flooded("worker");
+        let (mem, session, _dir) = flooded("worker");
         let irq = Arc::new(DeviceInterrupt::new(Arc::new(Line)));
         let waker = Arc::new(Waker::new().unwrap());
         let stop = Arc::new(AtomicBool::new(false));
@@ -950,6 +949,5 @@ mod tests {
         drop(worker.join().unwrap());
         flooding.store(false, Ordering::Release);
         driver.join().unwrap();
-        let _ = std::fs::remove_file(&dir);
     }
 }

@@ -2148,9 +2148,7 @@ mod tests {
     /// gateway's and UDP included, is refused.
     #[test]
     fn a_proxy_policy_reaches_its_proxy_alone() {
-        let dir = std::env::temp_dir().join(format!("shards-net-proxy-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = shards_testdir::TempDir::new("net-proxy").unwrap();
         let socket = dir.join("p");
         let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
         listener.set_nonblocking(true).unwrap();

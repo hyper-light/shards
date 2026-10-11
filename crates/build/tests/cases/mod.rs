@@ -229,8 +229,7 @@ pub fn run_actions(
                     include_patterns: strings(a, "include"),
                     exclude_patterns: strings(a, "exclude"),
                 };
-                let stage = std::env::temp_dir().join(format!("shards-oracle-unpack-{}", std::process::id()));
-                std::fs::create_dir_all(&stage).unwrap();
+                let stage = shards_testdir::TempDir::new("oracle-unpack").unwrap();
                 let mut budget = shards_build::archive::Budget::new(shards_image::store::Limits::none());
                 let mut io = shards_build::archive::Unpack {
                     sources: mem,
@@ -263,21 +262,14 @@ pub fn run_actions(
 /// BuildKit receives a context.
 #[cfg(unix)]
 pub fn context_source(case: &Value, mem: &mut Sources) -> Fs {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    static N: AtomicUsize = AtomicUsize::new(0);
-    let dir = std::env::temp_dir().join(format!(
-        "shards-oracle-ctx-{}-{}",
-        std::process::id(),
-        N.fetch_add(1, Ordering::Relaxed)
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let base = shards_testdir::TempDir::new("oracle-ctx").unwrap();
+    let (dir, stage) = (base.join("ctx"), base.join("stage"));
+    for d in [&dir, &stage] {
+        std::fs::create_dir_all(d).unwrap();
+    }
     common::make(&dir, &case["src"]);
-    let stage = dir.with_extension("stage");
-    std::fs::create_dir_all(&stage).unwrap();
     let fs = shards_build::context::load(&dir, &Default::default(), mem, SENTINEL, &stage).unwrap();
-    CONTEXT_DIRS.with(|d| d.borrow_mut().push(stage));
-    CONTEXT_DIRS.with(|d| d.borrow_mut().push(dir));
+    CONTEXT_DIRS.with(|d| d.borrow_mut().push(base));
     fs
 }
 
@@ -287,6 +279,7 @@ pub fn context_source(_: &Value, _: &mut Sources) -> Fs {
 }
 
 thread_local! {
-    /// Context directories made, removed once their cases' layers are written.
-    pub static CONTEXT_DIRS: std::cell::RefCell<Vec<std::path::PathBuf>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// Context directories made, removed once their cases' layers are written, or as
+    /// their thread ends, a failing case's too.
+    pub static CONTEXT_DIRS: std::cell::RefCell<Vec<shards_testdir::TempDir>> = const { std::cell::RefCell::new(Vec::new()) };
 }

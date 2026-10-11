@@ -861,8 +861,7 @@ mod tests {
     fn a_report_says_the_users_and_layers_or_why() {
         let dir = |name: &str| {
             use std::os::unix::fs::OpenOptionsExt;
-            let path = std::env::temp_dir().join(format!("shards-join-{name}-{}", std::process::id()));
-            std::fs::create_dir_all(&path).unwrap();
+            let path = shards_testdir::TempDir::new(&format!("join-{name}")).unwrap();
             let fd: OwnedFd = std::fs::OpenOptions::new()
                 .read(true)
                 .custom_flags(libc::O_PATH | libc::O_DIRECTORY)
@@ -884,7 +883,10 @@ mod tests {
             // The descriptors that came name the directories sent.
             let named =
                 |fd: &OwnedFd| std::fs::read_link(format!("/proc/self/fd/{}", fd.as_raw_fd())).unwrap();
-            assert_eq!((named(&kept.lower), named(&kept.upper)), (lower_path, upper_path));
+            assert_eq!(
+                (named(&kept.lower), named(&kept.upper)),
+                (lower_path.to_path_buf(), upper_path.to_path_buf())
+            );
         }
         let (r, w) = report_channel().unwrap();
         let why = "mounting erofs on /dev/join/lower: Invalid argument".to_string();

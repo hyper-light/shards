@@ -170,8 +170,7 @@ fn build_answers_as_buildx() {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/buildx.json");
     let answers: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
     // The oracle's directory of secrets (oracle_test.go, TestShardsOracle).
-    let dir = std::env::temp_dir().join(format!("shards-buildx-oracle-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = shards_testdir::TempDir::new("buildx-oracle").unwrap();
     std::fs::write(dir.join("small.txt"), "a small secret\n").unwrap();
     std::fs::write(dir.join("edge.txt"), vec![b's'; 500 * 1024]).unwrap();
     std::fs::write(dir.join("big.txt"), vec![b's'; 500 * 1024 + 1]).unwrap();

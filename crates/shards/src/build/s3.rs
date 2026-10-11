@@ -921,7 +921,8 @@ mod tests {
         assert_eq!(read(&key), small);
         // A file, from an offset, in parts.
         let big: Vec<u8> = (0..12u32 << 20).map(|i| (i % 251) as u8).collect();
-        let path = std::env::temp_dir().join(format!("shards-s3-probe-{}", std::process::id()));
+        let path_dir = shards_testdir::TempDir::new("s3-probe").unwrap();
+        let path = path_dir.join("s3-probe");
         std::fs::write(&path, [b"skip".as_slice(), &big].concat()).unwrap();
         let file = std::fs::File::open(&path).unwrap();
         let key = b.blob_key("sha256:big");

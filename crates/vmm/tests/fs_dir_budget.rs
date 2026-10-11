@@ -86,7 +86,8 @@ fn open_now() -> usize {
 
 #[test]
 fn a_guest_walks_any_number_of_directories_within_a_few_descriptors() {
-    let dir = std::env::temp_dir().join(format!("shards-dir-budget-{}", std::process::id()));
+    let dir_guard = shards_testdir::TempDir::new("dir-budget").unwrap();
+    let dir = dir_guard.join("dir-budget");
     let _ = std::fs::remove_dir_all(&dir);
     for i in 0..8 {
         for j in 0..8 {

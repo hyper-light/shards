@@ -808,7 +808,8 @@ mod tests {
         assert_eq!(read(&m), b"{\"records\":{}}");
         c.put(&m, Body::Bytes(b"{}")).unwrap();
         assert_eq!(read(&m), b"{}", "the last writer wins");
-        let path = std::env::temp_dir().join(format!("shards-azblob-probe-{}", std::process::id()));
+        let path_dir = shards_testdir::TempDir::new("azblob-probe").unwrap();
+        let path = path_dir.join("azblob-probe");
         let big: Vec<u8> = (0..3u32 << 20).map(|i| (i % 251) as u8).collect();
         std::fs::write(&path, &big).unwrap();
         let file = std::fs::File::open(&path).unwrap();
@@ -835,8 +836,7 @@ mod tests {
     fn identities_ask_as_azidentity_asks() {
         let cases: Vec<serde_json::Value> =
             serde_json::from_str(include_str!("testdata/azidentity.json")).unwrap();
-        let dir = std::env::temp_dir().join(format!("shards-azid-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = shards_testdir::TempDir::new("azid").unwrap();
         let file = dir.join("token");
         std::fs::write(&file, "the-federated-token\n").unwrap();
         let mut env: std::collections::BTreeMap<&str, String> = [

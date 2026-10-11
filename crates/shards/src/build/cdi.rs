@@ -845,14 +845,8 @@ pub fn merge_env(env: &mut Vec<Vec<u8>>, add: &[String]) {
 mod tests {
     use super::*;
 
-    fn dir_with(files: &[(&str, &str)]) -> PathBuf {
-        static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-        let d = std::env::temp_dir().join(format!(
-            "shards-cdi-{}-{}",
-            std::process::id(),
-            N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        ));
-        std::fs::create_dir_all(&d).unwrap();
+    fn dir_with(files: &[(&str, &str)]) -> shards_testdir::TempDir {
+        let d = shards_testdir::TempDir::new("cdi").unwrap();
         for (name, text) in files {
             std::fs::write(d.join(name), text).unwrap();
         }
@@ -866,7 +860,7 @@ mod tests {
     #[test]
     fn devices_resolve_and_are_granted_as_buildkits() {
         let d = dir_with(&[("gpu.yaml", GPU), ("bad.json", "{\"cdiVersion\":\"9.9\"}")]);
-        let r = Registry::load(std::slice::from_ref(&d), &[]);
+        let r = Registry::load(&[d.to_path_buf()], &[]);
         assert_eq!(r.errors.len(), 1, "{:?}", r.errors);
         assert_eq!(r.find("vendor.com/gpu", false).unwrap(), ["vendor.com/gpu=0"]);
         assert_eq!(
@@ -923,10 +917,10 @@ mod tests {
         };
         let a = dir_with(&[("a.json", &spec("A=1"))]);
         let b = dir_with(&[("b.json", &spec("B=1"))]);
-        let r = Registry::load(&[a.clone(), b.clone()], &[]);
+        let r = Registry::load(&[a.to_path_buf(), b.to_path_buf()], &[]);
         assert_eq!(r.edits(&["v.com/c=d".into()]).env, ["B=1"]);
         let c = dir_with(&[("x.json", &spec("X=1")), ("y.json", &spec("Y=1"))]);
-        let r = Registry::load(std::slice::from_ref(&c), &[]);
+        let r = Registry::load(&[c.to_path_buf()], &[]);
         assert!(r.find("v.com/c=d", false).is_err());
         for d in [a, b, c] {
             let _ = std::fs::remove_dir_all(&d);
@@ -963,7 +957,7 @@ mod tests {
             ),
         ] {
             let d = dir_with(&[("s.json", text)]);
-            let r = Registry::load(std::slice::from_ref(&d), &[]);
+            let r = Registry::load(&[d.to_path_buf()], &[]);
             assert!(r.errors.iter().any(|e| e.contains(why)), "{why}: {:?}", r.errors);
             let _ = std::fs::remove_dir_all(&d);
         }

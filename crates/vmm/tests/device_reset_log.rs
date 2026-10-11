@@ -30,8 +30,7 @@ fn status(t: &MmioTransport) -> u32 {
 
 #[test]
 fn a_device_failing_after_every_reset_is_said_once() {
-    let dir = std::env::temp_dir().join(format!("shards-reset-log-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = shards_testdir::TempDir::new("reset-log").unwrap();
     let log = dir.join("log");
     shards_vmm::log::init();
     shards_vmm::log::to(std::fs::File::create(&log).unwrap());

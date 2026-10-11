@@ -422,24 +422,13 @@ mod tests {
     }
 
     /// A store of its own, removed when dropped.
-    struct Temp(std::path::PathBuf);
-
-    impl Drop for Temp {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-
     /// Under a cap, the least used go first, one at a time, until what stays is under it;
     /// a cache mount a step holds stays whatever the rule.
     #[test]
     fn a_prune_takes_the_least_used_until_under_its_cap() {
         use shards_image::store::{MountLayer, Sharing};
-        let dir = std::env::temp_dir().join(format!("shards-gc-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let tmp = Temp(dir.clone());
-        let store = Store::open(&tmp.0).unwrap();
+        let tmp = shards_testdir::TempDir::new("gc").unwrap();
+        let store = Store::open(&tmp).unwrap();
         for (key, size, uses) in [("aa", 100, 0), ("bb", 200, 0), ("cc", 300, 3)] {
             store.cache_put(key, &[], size, "[]").unwrap();
             for _ in 0..uses {
@@ -465,7 +454,7 @@ mod tests {
             max_used: 1350,
             ..Rule::default()
         };
-        let freed = prune(&store, &tmp.0, &rule, &mut |r| {
+        let freed = prune(&store, &tmp, &rule, &mut |r| {
             gone.push(r.id.clone());
             Ok(())
         })
@@ -473,7 +462,7 @@ mod tests {
         assert_eq!((gone, freed), (vec!["aa".to_string(), "bb".to_string()], 300));
         // Every record, with no cap: all but the one held.
         let mut gone = Vec::new();
-        prune(&store, &tmp.0, &Rule::default(), &mut |r| {
+        prune(&store, &tmp, &Rule::default(), &mut |r| {
             gone.push(r.id.clone());
             Ok(())
         })
@@ -484,7 +473,7 @@ mod tests {
             filters: vec![Filter::parse("type==exec.cachemount").unwrap()],
             ..Rule::default()
         };
-        assert_eq!(prune(&store, &tmp.0, &all, &mut |_| Ok(())).unwrap(), 1000);
+        assert_eq!(prune(&store, &tmp, &all, &mut |_| Ok(())).unwrap(), 1000);
     }
 
     /// What a step holds is neither removed nor ranked, as BuildKit ranks only what it may

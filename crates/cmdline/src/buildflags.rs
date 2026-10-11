@@ -1273,9 +1273,7 @@ mod tests {
         // A duplicate is met once the first of its id resolves: a socket here.
         #[cfg(unix)]
         {
-            let dir = std::env::temp_dir().join(format!("shards-ssh-spec-{}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&dir);
-            std::fs::create_dir_all(&dir).unwrap();
+            let dir = shards_testdir::TempDir::new("ssh-spec").unwrap();
             let sock = dir.join("agent");
             let _listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
             let at = sock.to_string_lossy().into_owned();

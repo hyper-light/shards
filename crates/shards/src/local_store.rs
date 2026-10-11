@@ -292,28 +292,24 @@ mod tests {
     use super::*;
 
     /// A path a test made, removed when it goes, however the test ends.
-    struct Gone(PathBuf);
+    /// A path in a directory of its own, which goes with it.
+    struct Gone(
+        #[expect(dead_code, reason = "held for its drop")] shards_testdir::TempDir,
+        PathBuf,
+    );
 
     impl std::ops::Deref for Gone {
         type Target = Path;
         fn deref(&self) -> &Path {
-            &self.0
-        }
-    }
-
-    impl Drop for Gone {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0).or_else(|_| std::fs::remove_file(&self.0));
+            &self.1
         }
     }
 
     /// An engine on a socket of its own that answers each request with the next of
     /// `answers`, and hands back the request lines it was sent.
     fn fake_engine(answers: Vec<String>) -> (Gone, std::thread::JoinHandle<Vec<String>>) {
-        static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let socket = PathBuf::from(format!("/tmp/shards-ls-{}-{n}.sock", std::process::id()));
-        let _ = std::fs::remove_file(&socket);
+        let dir = shards_testdir::TempDir::new("ls").unwrap();
+        let socket = dir.join("s.sock");
         let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
         let served = std::thread::spawn(move || {
             let mut asked = Vec::new();
@@ -344,13 +340,12 @@ mod tests {
             }
             asked
         });
-        (Gone(socket), served)
+        (Gone(dir, socket), served)
     }
 
     /// A disk in a directory of its own, which goes with the guard.
-    fn disk() -> (Gone, PathBuf, Digest) {
-        let dir = Gone(std::env::temp_dir().join(format!("shards-ls-disk-{}", std::process::id())));
-        std::fs::create_dir_all(&*dir).unwrap();
+    fn disk() -> (shards_testdir::TempDir, PathBuf, Digest) {
+        let dir = shards_testdir::TempDir::new("ls-disk").unwrap();
         let disk = dir.join("disk.erofs");
         std::fs::write(&disk, vec![7u8; 8192]).unwrap();
         let source = Digest::parse(&format!("sha256:{}", "ab".repeat(32))).unwrap();
@@ -397,9 +392,9 @@ mod tests {
         let gone = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n".to_string();
         // The first removal is held until the others are queued.
         let (slow, slow_served) = fake_engine(vec![gone.clone(), gone.clone()]);
-        let gate = Gone(slow.with_extension("gate"));
-        let _ = std::fs::remove_file(&*gate);
-        let gate_listener = std::os::unix::net::UnixListener::bind(&*gate).unwrap();
+        // Beside the engine's socket, in its directory.
+        let gate = slow.with_extension("gate");
+        let gate_listener = std::os::unix::net::UnixListener::bind(&gate).unwrap();
         let (asked, heard) = std::sync::mpsc::channel();
         let (release, released) = std::sync::mpsc::channel::<()>();
         let held = std::thread::spawn(move || {
@@ -468,7 +463,8 @@ mod tests {
 
     #[test]
     fn the_engine_is_found_as_the_cli_finds_it() {
-        let dir = std::env::temp_dir().join(format!("shards-engine-{}", std::process::id()));
+        let dir_guard = shards_testdir::TempDir::new("engine").unwrap();
+        let dir = dir_guard.join("engine");
         let _ = std::fs::remove_dir_all(&dir);
         let sock = dir.join("docker.sock");
         std::fs::create_dir_all(

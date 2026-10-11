@@ -14,3 +14,6 @@ workspace = true
 libc = { workspace = true }
 shards-netring = { path = "../netring" }
 shards-ipc = { path = "../ipc" }
+
+[dev-dependencies]
+shards-testdir = { path = "../testdir" }

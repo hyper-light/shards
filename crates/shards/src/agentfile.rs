@@ -355,8 +355,7 @@ mod tests {
                 Ok(())
             }
         }
-        let dir = std::env::temp_dir().join(format!("shards-agentfile-root-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = shards_testdir::TempDir::new("agentfile-root").unwrap();
         let root_with = |name: &str, node: Option<(Kind, Vec<u8>)>| {
             let meta = |mode| Meta {
                 mode,

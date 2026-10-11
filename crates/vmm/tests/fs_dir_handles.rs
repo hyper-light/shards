@@ -78,9 +78,7 @@ const READDIR: u32 = 28;
 /// a copy of it each was host memory without bound, a handle's worth for one request.
 #[test]
 fn directory_handles_hold_no_listing() {
-    let dir = std::env::temp_dir().join(format!("shards-dir-handles-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = shards_testdir::TempDir::new("dir-handles").unwrap();
     for i in 0..2000 {
         std::fs::write(dir.join(format!("entry-{i:0>14}")), "").unwrap();
     }

@@ -2688,14 +2688,12 @@ mod tests {
         (err, out[16..].to_vec())
     }
 
-    fn dir() -> (std::path::PathBuf, Server) {
-        static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let p = std::env::temp_dir().join(format!("shards-fs-{}-{n}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&p);
-        std::fs::create_dir_all(&p).unwrap();
+    /// A share of a directory of the test's own, removed as it goes.
+    fn dir() -> (shards_testdir::TempDir, Server) {
+        let p = shards_testdir::TempDir::new("fs").unwrap();
         let fd = std::fs::File::open(&p).unwrap();
-        (p, Server::new(fd.into(), false, None).unwrap())
+        let server = Server::new(fd.into(), false, None).unwrap();
+        (p, server)
     }
 
     /// A join share's volumes (D119): each reached from the share's empty root by its name
@@ -2952,7 +2950,8 @@ mod tests {
     fn a_mode_change_follows_no_symlink() {
         use std::os::unix::fs::PermissionsExt as _;
         let (path, s) = dir();
-        let outside = path.with_extension("outside");
+        let elsewhere = shards_testdir::TempDir::new("fs-outside").unwrap();
+        let outside = elsewhere.join("outside");
         std::fs::write(&outside, "secret").unwrap();
         std::fs::set_permissions(&outside, std::fs::Permissions::from_mode(0o600)).unwrap();
         let mut body = name("link");
@@ -3190,7 +3189,8 @@ mod tests {
         let (path, _) = dir();
         std::fs::create_dir_all(path.join("a/b")).unwrap();
         std::fs::create_dir_all(path.join("other")).unwrap();
-        let outside = path.with_extension("outside");
+        let elsewhere = shards_testdir::TempDir::new("fs-outside").unwrap();
+        let outside = elsewhere.join("outside");
         std::fs::create_dir_all(outside.join("b")).unwrap();
         // A budget of one: each request on one directory lets the other go.
         let s = small(&path, 1);

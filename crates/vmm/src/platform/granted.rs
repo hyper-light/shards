@@ -205,9 +205,7 @@ mod tests {
     /// one granted read-only refuses writing; other paths open as files.
     #[test]
     fn granted_paths_open_as_their_descriptors() {
-        let dir = std::env::temp_dir().join(format!("shards-granted-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = shards_testdir::TempDir::new("granted").unwrap();
         let real = dir.join("real");
         std::fs::write(&real, b"granted").unwrap();
         let named = dir.join("named-not-there");

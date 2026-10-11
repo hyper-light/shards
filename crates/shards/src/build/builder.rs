@@ -233,6 +233,10 @@ const SOCKET_PATH: usize = 104 - 1 - 11;
 #[cfg(unix)]
 fn socket_dir() -> Result<PathBuf, String> {
     use std::os::unix::ffi::OsStringExt;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the builder's sockets' directory, made by mkdtemp(3) and removed with the builder (DirGuard)"
+    )]
     let tmp = std::env::temp_dir();
     let base = if tmp.as_os_str().len() + "/shards-XXXXXX/v".len() <= SOCKET_PATH {
         tmp

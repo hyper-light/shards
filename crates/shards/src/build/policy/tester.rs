@@ -936,7 +936,8 @@ mod tests {
     fn policy_tests_run_as_buildx_runs_them() {
         let cases: serde_json::Value =
             serde_json::from_str(include_str!("../../../testdata/policy/tester.json")).unwrap();
-        let base = std::env::temp_dir().join(format!("shards-policy-tester-{}", std::process::id()));
+        let base_dir = shards_testdir::TempDir::new("policy-tester").unwrap();
+        let base = base_dir.join("policy-tester");
         let _ = std::fs::remove_dir_all(&base);
         let mut failures = Vec::new();
         for (i, c) in cases.as_array().unwrap().iter().enumerate() {

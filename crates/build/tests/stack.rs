@@ -147,13 +147,8 @@ fn base_layer(tree: &Tree, data: &mut dyn Source) -> Vec<u8> {
 
 /// `layer` as a source of `mem`'s, in a file of its own.
 fn keep(layer: &[u8], mem: &mut Sources) -> u32 {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    static N: AtomicUsize = AtomicUsize::new(0);
-    let path = std::env::temp_dir().join(format!(
-        "shards-stack-layer-{}-{}",
-        std::process::id(),
-        N.fetch_add(1, Ordering::Relaxed)
-    ));
+    let dir = shards_testdir::TempDir::new("stack-layer").unwrap();
+    let path = dir.join("layer");
     File::create(&path).unwrap().write_all(layer).unwrap();
     let id = mem.archive(File::open(&path).unwrap()).unwrap();
     // Open, it stays readable once its name is gone.
@@ -360,11 +355,7 @@ fn check(case: &Value) -> Path {
             Path::Snapshot
         }
     };
-    CONTEXT_DIRS.with(|d| {
-        for dir in d.borrow_mut().drain(..) {
-            std::fs::remove_dir_all(dir).unwrap();
-        }
-    });
+    CONTEXT_DIRS.with(|d| d.borrow_mut().clear());
     path
 }
 

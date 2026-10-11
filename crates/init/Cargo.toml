@@ -17,3 +17,6 @@ shards-archive = { path = "../archive" }
 shards-cmdline = { path = "../cmdline" }
 shards-devcgroup = { path = "../devcgroup" }
 shards-user = { path = "../user" }
+
+[dev-dependencies]
+shards-testdir = { path = "../testdir" }

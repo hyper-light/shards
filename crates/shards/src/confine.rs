@@ -505,7 +505,8 @@ mod tests {
         if let Ok(dir) = std::env::var("SEAL_CHILD") {
             seal_child(&dir);
         }
-        let dir = std::env::temp_dir().join(format!("shards-seal-{}", std::process::id()));
+        let dir_guard = shards_testdir::TempDir::new("seal").unwrap();
+        let dir = dir_guard.join("seal");
         let _ = std::fs::remove_dir_all(&dir);
         for d in ["out", "snap"] {
             std::fs::create_dir_all(dir.join(d)).unwrap();
@@ -550,7 +551,8 @@ mod tests {
         if let Ok(dir) = std::env::var("LANDLOCK_CHILD") {
             landlock_child(&dir);
         }
-        let dir = std::env::temp_dir().join(format!("shards-landlock-{}", std::process::id()));
+        let dir_guard = shards_testdir::TempDir::new("landlock").unwrap();
+        let dir = dir_guard.join("landlock");
         let _ = std::fs::remove_dir_all(&dir);
         for d in ["out", "socks"] {
             std::fs::create_dir_all(dir.join(d)).unwrap();

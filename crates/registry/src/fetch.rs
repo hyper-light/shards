@@ -700,10 +700,8 @@ mod tests {
         Registry::new(client, &reference, Credentials::Anonymous).unwrap()
     }
 
-    fn store(name: &str) -> (Store, std::path::PathBuf) {
-        let root = std::env::temp_dir().join(format!("shards-fetch-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).unwrap();
+    fn store(name: &str) -> (Store, shards_testdir::TempDir) {
+        let root = shards_testdir::TempDir::new(&format!("fetch-{name}")).unwrap();
         (Store::open(&root).unwrap(), root)
     }
 

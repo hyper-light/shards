@@ -989,6 +989,7 @@ dependencies = [
  "shards-seccomp",
  "shards-sigstore",
  "shards-template",
+ "shards-testdir",
  "shards-testguest",
  "shards-tuf",
  "shards-tui",
@@ -1010,6 +1011,7 @@ name = "shards-apple"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "shards-testdir",
 ]
 
 [[package]]
@@ -1018,6 +1020,7 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "serde_json",
+ "shards-testdir",
  "windows-sys 0.61.2",
 ]
 
@@ -1033,6 +1036,7 @@ dependencies = [
  "shards-abi",
  "shards-dockerfile",
  "shards-image",
+ "shards-testdir",
  "unicode-normalization",
 ]
 
@@ -1047,6 +1051,7 @@ dependencies = [
  "serde_json",
  "shards-image",
  "shards-template",
+ "shards-testdir",
 ]
 
 [[package]]
@@ -1085,6 +1090,7 @@ version = "0.1.0"
 dependencies = [
  "flate2",
  "sha1-checked",
+ "shards-testdir",
 ]
 
 [[package]]
@@ -1113,6 +1119,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "shards-testdir",
 ]
 
 [[package]]
@@ -1124,6 +1131,7 @@ dependencies = [
  "shards-archive",
  "shards-cmdline",
  "shards-devcgroup",
+ "shards-testdir",
  "shards-user",
 ]
 
@@ -1132,6 +1140,7 @@ name = "shards-ipc"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "shards-testdir",
 ]
 
 [[package]]
@@ -1141,6 +1150,7 @@ dependencies = [
  "libc",
  "shards-ipc",
  "shards-netring",
+ "shards-testdir",
 ]
 
 [[package]]
@@ -1179,6 +1189,7 @@ dependencies = [
  "shards-apple",
  "shards-image",
  "shards-ipc",
+ "shards-testdir",
  "time",
  "windows-sys 0.61.2",
 ]
@@ -1210,6 +1221,7 @@ dependencies = [
  "libc",
  "rcgen",
  "rustls",
+ "shards-testdir",
 ]
 
 [[package]]
@@ -1234,6 +1246,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "shards-testdir"
+version = "0.1.0"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "shards-testguest"
 version = "0.1.0"
 dependencies = [
@@ -1251,6 +1270,7 @@ dependencies = [
  "serde_json",
  "shards-dockerfile",
  "shards-gitsign",
+ "shards-testdir",
 ]
 
 [[package]]
@@ -1270,6 +1290,7 @@ dependencies = [
  "shards-cmdline",
  "shards-ipc",
  "shards-net",
+ "shards-testdir",
  "shards-vmm",
  "windows-sys 0.61.2",
 ]
@@ -1281,6 +1302,7 @@ dependencies = [
  "libc",
  "shards-abi",
  "shards-netring",
+ "shards-testdir",
  "windows-sys 0.61.2",
 ]
 

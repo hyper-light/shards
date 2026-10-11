@@ -944,7 +944,9 @@ fn clients_past_the_cap_wait_their_turn() {
 /// whatever order its names go in. One that takes the socket first, which the daemon then
 /// listens at again, and the rest after, the lock among them, fails to remove the
 /// directory, not empty: the daemon, seeing its lock gone, exits and removes what it made.
-/// Before, it listened on in a home holding nothing but its socket. No VM needed.
+/// Before, it listened on in a home holding nothing but its socket. So too what it writes
+/// as the removal goes, a network's file: before, the home stayed, holding it, a test's
+/// home among hundreds left. No VM needed.
 #[test]
 fn a_home_removed_once_is_gone_with_its_daemon() {
     let home = TempDir::new("daemon-home-once");
@@ -975,6 +977,10 @@ fn a_home_removed_once_is_gone_with_its_daemon() {
         std::fs::remove_dir(&path).is_err(),
         "removed with the socket in it"
     );
+    // What the daemon writes as a removal goes, past the names the removal took: its
+    // predefined networks, made the first time they are asked for.
+    std::fs::create_dir(path.join("networks")).unwrap();
+    std::fs::write(path.join("networks").join("made-as-it-went.json"), "{}").unwrap();
     std::fs::remove_file(&lock).unwrap();
     eventually("the daemon outlived its home", || !alive(daemon));
     eventually("what was left of the home was left", || !path.exists());
