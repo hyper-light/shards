@@ -1784,6 +1784,14 @@ impl<D: Disk> Daemon<D> {
                 self.not_again(id);
             }
         };
+        // dockerd's create route first, before its daemon checks anything (moby
+        // handleSysctlBC): an interface's sysctl given as the container's own is refused.
+        if again.is_none()
+            && let Err(e) = network::interface_sysctl(&run)
+        {
+            refused(&e);
+            return None;
+        }
         // Its networks as dockerd checks them before it makes the container; what fails
         // as it starts fails once the container is made.
         // Connected to one user network from the default bridge: on it alone (D46).
@@ -2124,6 +2132,12 @@ impl<D: Disk> Daemon<D> {
                         .push(format!("caps={}", a.caps(&run)).into_bytes());
                 }
                 prepared.spec.setup.extend(network_setup.iter().cloned());
+                // Its endpoint's sysctls, on its interface once it has its addresses (PM M171).
+                prepared.spec.setup.extend(
+                    crate::setup::endpoint_sysctls(&run)
+                        .into_iter()
+                        .map(|kv| format!("endpoint-sysctl={kv}").into_bytes()),
+                );
                 let kernel = crate::guest::version_of(crate::run::kernel_of(&prepared.boot))?;
                 prepared
                     .spec

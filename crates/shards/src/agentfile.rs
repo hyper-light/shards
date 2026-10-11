@@ -62,8 +62,14 @@ impl Agentfile {
                 .unwrap_or("a capability");
             return Err(beside::capability(name, reach));
         }
+        // A container's own and its endpoint's (`driver-opt=…endpoint.sysctls`), each net.*.
         if self.uplink
-            && let Some(s) = run.sysctls.iter().find(|s| s.starts_with("net."))
+            && let Some(s) = run
+                .sysctls
+                .iter()
+                .find(|s| s.starts_with("net."))
+                .cloned()
+                .or_else(|| crate::setup::endpoint_sysctls(run).into_iter().next())
         {
             return Err(beside::sysctl(s.split_once('=').map_or(s.as_str(), |(k, _)| k)));
         }

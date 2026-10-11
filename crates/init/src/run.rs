@@ -467,7 +467,9 @@ impl Beside {
                     return Err(setup_failed(beside::capability(name, reach)));
                 }
             }
-            if let Some(kv) = entry.strip_prefix(b"sysctl=")
+            if let Some(kv) = entry
+                .strip_prefix(b"sysctl=")
+                .or_else(|| entry.strip_prefix(b"endpoint-sysctl="))
                 && self.uplink
                 && kv.starts_with(b"net.")
             {
@@ -537,6 +539,7 @@ fn sort_setup(entries: &[Vec<u8>], into: &mut Inherited) -> Result<Vec<Vec<u8>>,
             || entry == b"pid=host"
             || entry == b"pid=workload"
             || entry.starts_with(b"pid=joiner=")
+            || entry.starts_with(b"endpoint-sysctl=")
         {
             // Init's, as the run starts (`Standby::start`).
         } else if entry.starts_with(b"devices=") {
@@ -2154,6 +2157,19 @@ impl Standby {
         // Sysctls, by init; the rest by the standby, in its namespaces.
         let mut inherited = Inherited::default();
         let setup = sort_setup(&spec.setup, &mut inherited)?;
+        // Its endpoint's, after its own, as libnetwork sets them on the interface it
+        // configures after runc's (PM M171).
+        for kv in spec
+            .setup
+            .iter()
+            .filter_map(|e| e.strip_prefix(b"endpoint-sysctl="))
+        {
+            crate::setup::endpoint_sysctl("eth0", &String::from_utf8_lossy(kv)).map_err(|e| {
+                setup_failed(format!(
+                    "failed to set up container networking: failed to add interface eth0 to sandbox: {e}"
+                ))
+            })?;
+        }
         let _ = WORKLOAD.set(inherited.clone());
         standby
             .launch(spec, false, setup, &inherited)
@@ -3024,6 +3040,7 @@ fn joiner_takes(setup: &[Vec<u8>]) -> Result<(), Failure> {
         } else if entry.starts_with(b"dns=")
             || entry.starts_with(b"address=")
             || entry.starts_with(b"address6=")
+            || entry.starts_with(b"endpoint-sysctl=")
             || entry == b"confine-eth0"
             || entry.starts_with(b"domains-seccomp")
         {

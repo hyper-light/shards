@@ -2885,6 +2885,21 @@ the daemon elected (D31).
   (networks.rs) and the CLI's consolidation (daemon/networks.rs) held to Docker's answers
   in unit tests.
 
+An endpoint's sysctls (`--network NAME,driver-opt=com.docker.network.endpoint.sysctls=…`),
+as dockerd sets them (PM M171): written on eth0 by init, its name in place of `IFNAME`
+(or `ifname`, as the CLI lowercases it), after the container's own sysctls, as libnetwork
+writes them on the interface it configures after runc's; libnetwork's checks and words (a
+key with no file "… is not a sysctl file", a value the kernel refuses "unable to write
+to …", the start failing "failed to set up container networking: failed to add interface
+eth0 to sandbox: …", where dockerd names its veth); a value already set is not written;
+none on `none`, which has no interface, as dockerd sets none. An interface's sysctl given
+as the container's own (`--sysctl net.X.Y.ethN.Z`) is refused as moby's create route
+refuses it (handleSysctlBC, API 1.48 and on), before anything else is checked, for any
+network of the container's own. Beside an Agentfile's agents whose flows cross the
+command's namespace, refused as any net.* sysctl is (D115). Tested
+(`an_endpoints_sysctls_are_its_interfaces`, mutation-checked: written before the
+container's own, eth0 kept all's; `interface_sysctls_are_endpoints`).
+
 Unlike Docker, by the microVM: a microVM has one network device, so it is on one network.
 One left on the default bridge and connected to one user network is on that network
 alone, which under default deny gives it all the bridge would. A microVM on two user

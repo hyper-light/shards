@@ -33,6 +33,31 @@ fn clean(p: &str) -> String {
     }
 }
 
+/// The driver option an endpoint's sysctls come in (moby libnetwork netlabel.EndpointSysctls).
+pub const ENDPOINT_SYSCTLS: &str = "com.docker.network.endpoint.sysctls";
+
+/// The sysctls the endpoint of `run`'s own network gives its interface (D46, PM M171),
+/// each `net.X.Y.IFNAME.Z=V` as given: none on `none`, which has no interface, where
+/// dockerd ignores them.
+pub fn endpoint_sysctls(run: &Run) -> Vec<String> {
+    if run.network == "none" {
+        return Vec::new();
+    }
+    let ours = |n: &str| {
+        n == run.network
+            || matches!(
+                (n, run.network.as_str()),
+                ("bridge", "default") | ("default", "bridge")
+            )
+    };
+    run.endpoints
+        .iter()
+        .find(|e| ours(&e.network))
+        .and_then(|e| e.driver_opts.iter().find(|(k, _)| k == ENDPOINT_SYSCTLS))
+        .map(|(_, v)| v.split(',').filter(|s| !s.is_empty()).map(String::from).collect())
+        .unwrap_or_default()
+}
+
 /// docker/cli's map of `--tmpfs`: each destination's options, the last given for it
 /// (container/opts.go).
 fn tmpfs_map(run: &Run) -> std::collections::BTreeMap<String, String> {
