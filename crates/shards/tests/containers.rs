@@ -3727,7 +3727,8 @@ fn run_limits_resources_as_docker_run_does() {
         let limit_kib = limit.trim_end_matches('m').parse::<u64>().unwrap() * 1024;
         assert!(
             available_kib >= limit_kib,
-            "{limit}: {available_kib} KiB available"
+            "{limit}: {available_kib} KiB available, of\n{}",
+            meminfo.stdout.replace("\\n", "\n")
         );
     }
     // Past its limit, the workload is killed, as the kernel kills it in its cgroup.

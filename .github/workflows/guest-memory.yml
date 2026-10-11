@@ -43,3 +43,12 @@ jobs:
           cd ../m155 && cargo build --locked -p shards --profile test-release
       - name: Diagnose
         run: docs/research/measurements/guest-memory/diagnose.sh "$PWD/target/test-release/shards" "$(cd ../m155 && pwd)/target/test-release/shards"
+      # The test that found `-m` short, alone and among the rest of its binary, as CI runs
+      # it: where it fails, it says the guest's whole meminfo.
+      - name: The test, alone and among its binary's
+        if: always()
+        env:
+          SHARDS_REQUIRE_VMS: "1"
+        run: |
+          cargo test --locked --profile test-release -p shards --test containers -- --exact run_limits_resources_as_docker_run_does || true
+          cargo test --locked --profile test-release -p shards --test containers || true
