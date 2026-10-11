@@ -7,8 +7,12 @@
 
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::Once;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Mutex, Once, PoisonError};
+
+/// How many of this process's directories are live: its own directory goes with the last,
+/// and is made, or found, under this lock alone, so that none is made in it as it goes.
+static LIVE: Mutex<usize> = Mutex::new(0);
 
 /// Every test process's directories' parent.
 #[expect(
@@ -35,16 +39,10 @@ impl TempDir {
         let dir = parent
             .join(std::process::id().to_string())
             .join(format!("{name}-{n}"));
-        // Another of this process's going may take the process's directory, empty, from
-        // under this one as it is made: made again.
-        let mut made = std::fs::create_dir_all(&dir);
-        for _ in 0..8 {
-            match &made {
-                Err(e) if e.kind() == io::ErrorKind::NotFound => made = std::fs::create_dir_all(&dir),
-                _ => break,
-            }
-        }
-        made.map_err(|e| io::Error::new(e.kind(), format!("{}: {e}", dir.display())))?;
+        let mut live = LIVE.lock().unwrap_or_else(PoisonError::into_inner);
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| io::Error::new(e.kind(), format!("{}: {e}", dir.display())))?;
+        *live += 1;
         Ok(TempDir(dir))
     }
 
@@ -75,8 +73,12 @@ impl AsRef<std::ffi::OsStr> for TempDir {
 impl Drop for TempDir {
     fn drop(&mut self) {
         remove(&self.0);
-        // The process's own directory, once it holds no other of its tests'.
-        if let Some(own) = self.0.parent() {
+        // The process's own directory, with its last.
+        let mut live = LIVE.lock().unwrap_or_else(PoisonError::into_inner);
+        *live = live.saturating_sub(1);
+        if *live == 0
+            && let Some(own) = self.0.parent()
+        {
             let _ = std::fs::remove_dir(own);
         }
     }
@@ -182,6 +184,23 @@ mod tests {
             drop(dir);
             assert!(!path.exists());
         }
+    }
+
+    /// Directories made and dropped on many threads at once are each made: the process's
+    /// own goes only with its last, never from under one being made (before, mkdir there
+    /// failed, EINVAL on macOS, as another's drop took it).
+    #[test]
+    fn many_at_once_are_each_made() {
+        std::thread::scope(|s| {
+            for t in 0..16 {
+                s.spawn(move || {
+                    for i in 0..200 {
+                        let dir = TempDir::new(&format!("race-{t}")).unwrap();
+                        std::fs::write(dir.join("f"), i.to_string()).unwrap();
+                    }
+                });
+            }
+        });
     }
 
     #[cfg(unix)]
