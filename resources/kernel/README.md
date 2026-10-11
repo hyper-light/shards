@@ -19,6 +19,10 @@ shards builds its own guest kernel. Firecracker's CI kernel lacks EROFS, which i
 - **Patches:** `patches/*.patch`, applied in order with no fuzz. Each says what it fixes
   and why:
   - `0001`: an arm64 guest's first exec from a DAX-mapped file oopsed in `fs/dax.c`.
+  - `0002`: an exec's process event named the process by its PIDs alone, so a listener
+    raced the process for its command line in /proc, and a short-lived one had often
+    ended by then (PM M176). The event now carries the command line the exec laid out,
+    for the record of a run's processes (D123).
 - **The toolchain:** `builder.env` pins a Debian image by its multi-architecture index
   digest, and installs its compiler, linker and tools from Debian's snapshot archive at a
   fixed time. So every build of the same inputs gets the same toolchain, and a new
