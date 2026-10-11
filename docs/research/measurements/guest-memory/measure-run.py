@@ -3,17 +3,26 @@
 M123 measured cold boots alone): `shards run -m LIMIT`, through the daemon, its VM a
 template of its size restored. For each VM size, the limit the daemon sizes to exactly it
 (resources::memory_mib over the table this host's architecture uses, read from
-crates/shards/src/resources.rs), run N times; each size's first run makes the template,
-the rest restore it. Prints each run, then per size: n, the overhead's p50, p90, p99 and
-max (the VM's KiB less MemAvailable), and the least margin over the limit (MemAvailable
-less the limit), which a run needs at least 0 of.
+crates/shards/src/resources.rs), run N times on each of B templates: each template a boot
+of its own (the daemon stopped and the home's templates removed before it), made by its
+first run, the rest restoring it. A template's runs keep what its boot left, so the boots
+are the samples (M179: three runners' boots differed by up to 7.5 MiB at a size). Prints
+each run, with the meminfo fields that say where the memory went, then per size: the
+boots, runs, the overhead's p50, p90, p99 and max (the VM's KiB less MemAvailable), and
+the least margin over the limit (MemAvailable less the limit), which a run needs at least
+0 of.
 
-    SHARDS_HOME=$(mktemp -d) measure-run.py target/release/shards [N]
+    SHARDS_HOME=$(mktemp -d) measure-run.py target/release/shards [N] [B]
 """
-import os, platform, re, statistics, subprocess, sys
+import os, platform, re, shutil, statistics, subprocess, sys
 
 shards = sys.argv[1]
 n = int(sys.argv[2]) if len(sys.argv) > 2 else 20
+boots = int(sys.argv[3]) if len(sys.argv) > 3 else 1
+home = os.environ["SHARDS_HOME"]
+# Where a boot's memory went: the fields of /proc/meminfo that differ between boots.
+FIELDS = ("MemTotal", "MemFree", "Cached", "Shmem", "SReclaimable", "SUnreclaim", "KernelStack",
+          "PageTables", "Percpu", "AnonPages", "AnonHugePages", "Mapped")
 image = "alpine@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6"
 here = os.path.dirname(os.path.abspath(__file__))
 source = open(os.path.join(here, "..", "..", "..", "..", "crates", "shards", "src", "resources.rs")).read()
@@ -62,8 +71,18 @@ subprocess.run([shards, "pull", "-q", image], check=True, stdout=subprocess.DEVN
 most = host_mib() // 2
 sizes = sorted(s for s in {s for s, _ in table} | {(a + b) // 2 // 2 * 2 for (a, _), (b, _) in zip(table, table[1:])}
                if s <= most)
-print(f"host {platform.system()} {platform.machine()}, {host_mib()} MiB; n {n} a size, sizes to {most} MiB")
-print("mib limit_kib run memavailable_kib overhead_kib margin_kib")
+print(f"host {platform.system()} {platform.machine()}, {host_mib()} MiB; n {n} a boot, {boots} boots a size, "
+      f"sizes to {most} MiB")
+print("mib limit_kib boot run memavailable_kib overhead_kib margin_kib " + " ".join(FIELDS))
+
+
+def new_boot():
+    """The next run boots its template again: the daemon, which keeps warm VMs of the
+    templates it has, stopped, and the home's templates gone."""
+    subprocess.run([shards, "stop", "daemon"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    shutil.rmtree(os.path.join(home, "templates"), ignore_errors=True)
+
+
 summary = []
 for mib in sizes:
     limit = mib * 1024 - overhead_kib(mib)
@@ -71,14 +90,19 @@ for mib in sizes:
         print(f"{mib}: no limit the daemon sizes to it; skipped")
         continue
     overheads, margins = [], []
-    for i in range(n):
-        out = subprocess.run([shards, "run", "--rm", "-m", f"{limit}k", image, "cat", "/proc/meminfo"],
-                             capture_output=True, text=True, check=True).stdout
-        avail = int(re.search(r"^MemAvailable:\s+(\d+) kB", out, re.M).group(1))
-        overheads.append(mib * 1024 - avail)
-        margins.append(avail - limit)
-        print(mib, limit, i, avail, mib * 1024 - avail, avail - limit, flush=True)
+    for b in range(boots):
+        if boots > 1:
+            new_boot()
+        for i in range(n):
+            out = subprocess.run([shards, "run", "--rm", "-m", f"{limit}k", image, "cat", "/proc/meminfo"],
+                                 capture_output=True, text=True, check=True).stdout
+            info = {k: int(v) for k, v in re.findall(r"^(\w+):\s+(\d+) kB", out, re.M)}
+            avail = info["MemAvailable"]
+            overheads.append(mib * 1024 - avail)
+            margins.append(avail - limit)
+            print(mib, limit, b, i, avail, mib * 1024 - avail, avail - limit,
+                  " ".join(str(info.get(f, "-")) for f in FIELDS), flush=True)
     summary.append((mib, overhead_kib(mib), overheads, min(margins)))
-print("mib table_kib n p50 p90 p99 max least_margin")
+print("mib table_kib boots n p50 p90 p99 max least_margin")
 for mib, kib, o, m in summary:
-    print(mib, kib, len(o), statistics.median(o), pct(o, 90), pct(o, 99), max(o), m)
+    print(mib, kib, boots, len(o), statistics.median(o), pct(o, 90), pct(o, 99), max(o), m)
