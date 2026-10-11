@@ -1977,6 +1977,59 @@ fn a_refused_start_leaves_its_container_as_it_was() {
     ok(&["rm", "left"]);
 }
 
+/// `start -a` passes signals on as docker/cli's start does: to a container without a
+/// terminal, whose command hears them; not to one with a terminal, whose own keys are its
+/// signals: the client ends by the signal alone, the container running on.
+#[test]
+fn start_attached_passes_signals_on_as_docker_start_does() {
+    let Some((home, image)) = home("containers-start-signals") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    for (name, options) in [("plain", &[][..]), ("terminal", &["-t"][..])] {
+        let mut args = vec!["create", "--pull", "never", "--name", name];
+        args.extend(options);
+        args.extend([image.as_str(), "trap", "TERM"]);
+        let made = shards(&args);
+        assert_eq!(made.status, Some(0), "{made}");
+    }
+    let attached = |name: &str| -> Child {
+        let mut child = common::command()
+            .args(["start", "-a", name])
+            .env("SHARDS_HOME", &*home)
+            .env("SHARDS_KERNEL", kernel())
+            .env("SHARDS_INIT", guest_init())
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let mut line = String::new();
+        BufReader::new(child.stdout.as_mut().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        assert!(line.starts_with("ready"), "{name}: {line:?}");
+        child
+    };
+    let term = |child: &Child| {
+        // SAFETY: kill(2) of a child of this test's, not yet waited for.
+        unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) };
+    };
+    let mut plain = attached("plain");
+    term(&plain);
+    assert_eq!(exit(&mut plain), Some(0));
+    let logged = shards(&["logs", "plain"]);
+    assert!(logged.stdout.contains("got 15"), "{logged}");
+    let mut terminal = attached("terminal");
+    term(&terminal);
+    assert_eq!(exit(&mut terminal), None, "the client ends by the signal");
+    let state = shards(&["inspect", "-f", "{{.State.Status}}", "terminal"]);
+    assert_eq!(state.stdout, "running\n", "{state}");
+    let logged = shards(&["logs", "terminal"]);
+    assert!(!logged.stdout.contains("got 15"), "{logged}");
+    assert_eq!(shards(&["rm", "-f", "terminal"]).status, Some(0));
+}
+
 #[test]
 fn start_runs_a_stopped_microvm_again_over_its_own_files() {
     let Some((home, image)) = home("containers-start") else {

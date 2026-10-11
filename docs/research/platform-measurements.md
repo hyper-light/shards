@@ -5697,3 +5697,29 @@ revision before comparing a changed API/implementation.
   no resolved memory per VM. A share's workers start as it is activated: the lazy start
   tried saved nothing resolved, and was left out. RSS, which counts a template's shared
   pages in each process, is not what a microVM costs.
+
+### M171. dockerd's endpoint sysctls, as a container sees them (D46, for its open item)
+
+- **Method.** `docs/research/measurements/endpoint-sysctls/probe.sh`, Docker 29.3.1 in
+  `shards-dind`, `alpine:3.22`, each container `--rm` and unnamed; 2026-10-10.
+- **Found.**
+  - `--network name=bridge,driver-opt=com.docker.network.endpoint.sysctls=net.ipv4.conf.IFNAME.log_martians=1`:
+    eth0's file reads 1; `ifname` in lower case and two in one option alike; an IPv6 one
+    (`disable_ipv6`) alike.
+  - The endpoint's comes after the container's own: `--sysctl net.ipv4.conf.all.forwarding=1`
+    with the endpoint's eth0 `forwarding=0` leaves all 1, eth0 0; the other way round, 0
+    and 1.
+  - A key with no file fails the start (125): "failed to set up container networking:
+    failed to add interface vethNNNNNNN to sandbox: /proc/sys/net/ipv4/conf/eth0/nonexistent
+    is not a sysctl file"; a value the kernel refuses: "… unable to write to
+    '/proc/sys/net/ipv4/conf/eth0/log_martians': write /proc/sys/net/ipv4/conf/eth0/log_martians:
+    invalid argument" (libnetwork osl/interface_linux.go, setSysctls).
+  - On `none`, which has no interface, an endpoint sysctl is ignored: the run succeeds.
+  - An interface's key given as `--sysctl` (`net.X.Y.eth*.Z`) is refused as the container
+    is made, `create` (1) and `run` (125), on `bridge` and on `none`, for eth0 and eth1
+    alike: "interface specific sysctl setting \"KEY\" must be supplied using driver option
+    'com.docker.network.endpoint.sysctls'" (moby daemon/server/router/container,
+    handleSysctlBC, API ≥ 1.48), before any of the daemon's own checks.
+- **Consequence.** Not yet built: init would write each on eth0 after the run's own
+  sysctls, in libnetwork's words, the daemon passing them on and refusing an interface's
+  key given as `--sysctl` first; they stay refused up front meanwhile.

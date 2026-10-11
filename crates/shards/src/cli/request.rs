@@ -117,7 +117,8 @@ pub fn create(path: &str, args: &[OsString]) -> ExitCode {
         Ok(cid) => cid,
         Err(e) => return refuse(&e),
     };
-    send(&mut request, term::DETACH_KEYS, &mut cid)
+    // docker/cli's create passes no signal on: SIGINT and SIGTERM end it.
+    send(&mut request, term::DETACH_KEYS, &mut cid, false)
 }
 
 /// Starts the containers the command line `args` names, the words after `path` (`shards
@@ -148,13 +149,27 @@ pub fn start(path: &str, args: &[OsString]) -> ExitCode {
         if parsed.args.len() > 1 {
             return refuse("you cannot start and attach multiple containers at once");
         }
+        let Some(container) = parsed.args.first().cloned() else {
+            return crate::cli::failed("a container is required");
+        };
+        // ContainerInspect first, as docker/cli's start does: the container's terminal,
+        // which takes the client's raw input and size, and with which signals are not
+        // passed on (the terminal's own keys are); and whether it reads a stdin, which `-i`
+        // attaches.
+        #[cfg(unix)]
+        let (tty, open_stdin) = match inspected(&container) {
+            Ok((_, _, _, tty, open_stdin)) => (tty, open_stdin),
+            Err(answered) => return answered,
+        };
+        #[cfg(not(unix))]
+        let (tty, open_stdin) = (false, false);
         let mut request = Run {
-            again: parsed.args.first().cloned(),
-            interactive,
-            tty: std::io::stdout().is_terminal().then(stdout_size),
+            again: Some(container),
+            interactive: interactive && open_stdin,
+            tty: tty.then(stdout_size),
             ..Run::default()
         };
-        return send(&mut request, &detach_keys, &mut None);
+        return send(&mut request, &detach_keys, &mut None, !tty);
     }
     // startContainersWithoutAttachments: each named as it starts, the others' errors
     // said, and their names after.
@@ -165,7 +180,8 @@ pub fn start(path: &str, args: &[OsString]) -> ExitCode {
             detach: true,
             ..Run::default()
         };
-        if send(&mut request, &detach_keys, &mut None) != ExitCode::SUCCESS {
+        // Started alone, as docker/cli's start passes no signal on to it.
+        if send(&mut request, &detach_keys, &mut None, false) != ExitCode::SUCCESS {
             failed.push(container.as_str());
         }
     }
@@ -203,21 +219,23 @@ pub fn restart(path: &str, args: &[OsString]) -> ExitCode {
             stop_timeout: timeout,
             ..Run::default()
         };
-        if send(&mut request, term::DETACH_KEYS, &mut None) != ExitCode::SUCCESS {
+        // docker/cli's restart passes no signal on.
+        if send(&mut request, term::DETACH_KEYS, &mut None, false) != ExitCode::SUCCESS {
             status = ExitCode::FAILURE;
         }
     }
     status
 }
 
-/// Sends `request` to the daemon as a run, answered as one.
-fn send(request: &mut Run, detach_keys: &[u8], cid: &mut Option<CidFile>) -> ExitCode {
+/// Sends `request` to the daemon as a run, answered as one, the signals this process gets
+/// passed on to its command with `sig_proxy`.
+fn send(request: &mut Run, detach_keys: &[u8], cid: &mut Option<CidFile>, sig_proxy: bool) -> ExitCode {
     match resolve(request) {
         #[cfg(unix)]
-        Ok((home, daemon)) => crate::cli::client::run(&home, &daemon, request, detach_keys, true, cid),
+        Ok((home, daemon)) => crate::cli::client::run(&home, &daemon, request, detach_keys, sig_proxy, cid),
         #[cfg(not(unix))]
         Ok(_) => {
-            let _ = (detach_keys, cid);
+            let _ = (detach_keys, cid, sig_proxy);
             crate::cli::failed(
                 "running a command needs the daemon, which needs Unix sockets, which shards does not support on this platform yet",
             )
@@ -305,6 +323,43 @@ pub fn exec(path: &str, args: &[OsString]) -> ExitCode {
     }
 }
 
+/// Container `container`, inspected as docker/cli inspects one before attaching to it: the
+/// home and daemon asked, the daemon's identity, and whether it has a terminal and reads a
+/// stdin (`Config.Tty`, `Config.OpenStdin`); or the answer given, its status.
+#[cfg(unix)]
+fn inspected(container: &str) -> Result<(PathBuf, PathBuf, Identity, bool, bool), ExitCode> {
+    let daemon = crate::cli::shardsd().map_err(|e| crate::cli::failed(&e))?;
+    let identity =
+        Identity::of_build(&daemon).map_err(|e| crate::cli::failed(&format!("{}: {e}", daemon.display())))?;
+    let home = shards_ipc::home().map_err(|e| crate::cli::failed(&e))?;
+    let probe = shards_ipc::Command {
+        argv: [
+            "inspect",
+            "--type",
+            "container",
+            "--format",
+            "{{.Config.Tty}} {{.Config.OpenStdin}}",
+            container,
+        ]
+        .map(String::from)
+        .to_vec(),
+        daemon: identity,
+        ..shards_ipc::Command::default()
+    };
+    match crate::cli::client::ask(&home, &daemon, &probe, &[]) {
+        Ok((0, out, _)) => {
+            let out = String::from_utf8_lossy(&out);
+            let mut words = out.split_whitespace();
+            let (tty, open_stdin) = (words.next() == Some("true"), words.next() == Some("true"));
+            Ok((home, daemon, identity, tty, open_stdin))
+        }
+        Ok(_) => Err(refuse(&format!(
+            "Error response from daemon: No such container: {container}"
+        ))),
+        Err(e) => Err(crate::cli::failed(&e)),
+    }
+}
+
 /// Runs the command line `args`, the words after `path` (`shards attach`), as `docker
 /// attach` does (docker/cli cli/command/container/attach.go): the container inspected for
 /// its terminal and its stdin, refused as the CLI refuses it, then attached until its
@@ -334,45 +389,10 @@ pub fn attach(path: &str, args: &[OsString]) -> ExitCode {
     let (no_stdin, sig_proxy) = (parsed.bool("no-stdin"), parsed.bool("sig-proxy"));
     #[cfg(unix)]
     {
-        let daemon = match crate::cli::shardsd() {
-            Ok(daemon) => daemon,
-            Err(e) => return crate::cli::failed(&e),
-        };
-        let identity = match Identity::of_build(&daemon) {
-            Ok(identity) => identity,
-            Err(e) => return crate::cli::failed(&format!("{}: {e}", daemon.display())),
-        };
-        let home = match shards_ipc::home() {
-            Ok(home) => home,
-            Err(e) => return crate::cli::failed(&e),
-        };
         // ContainerInspect first: its terminal, and whether it reads a stdin.
-        let probe = shards_ipc::Command {
-            argv: [
-                "inspect",
-                "--type",
-                "container",
-                "--format",
-                "{{.Config.Tty}} {{.Config.OpenStdin}}",
-                container.as_str(),
-            ]
-            .map(String::from)
-            .to_vec(),
-            daemon: identity,
-            ..shards_ipc::Command::default()
-        };
-        let (tty, open_stdin) = match crate::cli::client::ask(&home, &daemon, &probe, &[]) {
-            Ok((0, out, _)) => {
-                let out = String::from_utf8_lossy(&out);
-                let mut words = out.split_whitespace();
-                (words.next() == Some("true"), words.next() == Some("true"))
-            }
-            Ok(_) => {
-                return refuse(&format!(
-                    "Error response from daemon: No such container: {container}"
-                ));
-            }
-            Err(e) => return crate::cli::failed(&e),
+        let (home, daemon, identity, tty, open_stdin) = match inspected(&container) {
+            Ok(inspected) => inspected,
+            Err(answered) => return answered,
         };
         // In().CheckTty(!NoStdin, Tty).
         if tty && !no_stdin && !std::io::stdin().is_terminal() {
