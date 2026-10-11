@@ -3537,6 +3537,44 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode
 waits on the user.
 
+### D132. A guest that is itself a hypervisor: EL2 on Hypervisor.framework
+
+D13 plans KVM on arm64 Linux hosts. GitHub's arm64 runners give no nested
+virtualization, so the record's test path is a guest booted at EL2 by shards' own HVF
+backend, its kernel a KVM host (docs/research/measurements/nested-kvm). That path now
+works: `shards run --kernel K --nested` boots a guest at EL2 on a Mac that gives one (an
+M3 or later on macOS 15), and its KVM comes up as a hypervisor.
+
+- **The VM.** `hv_vm_config_set_el2_enabled` (macOS 15), bound on first use as every
+  framework call is (`hv_vm_config_get_el2_supported` says whether this Mac can). The
+  framework gives no reset state (Apple's answer on its forum, thread 775546), so every
+  entry, boot or PSCI CPU_ON, sets PSTATE to EL2h with DAIF masked and puts back the
+  SCTLR_EL2 the framework had at creation, MMU and caches off, as booting.rst asks.
+- **PSCI by SMC.** At EL2 the kernel's own HVCs are its own (its hyp stub), so the DT
+  names `smc`; the backend already served PSCI by either.
+- **The GIC's virtualization interface.** The DT gives the GIC its maintenance interrupt,
+  PPI 9 (INTID 25, `HV_GIC_INT_MAINTENANCE`); the EL2 physical timer was already the
+  timer's fourth interrupt (PPI 10).
+- **EL2 registers the framework holds** trap to the VMM when the guest reaches them
+  (CNTHCTL_EL2 first, as Linux sets its timer access): for an EL2 VM each of the 25 in
+  hv_vcpu_types.h is read or written through the framework, where before every trapped
+  write was dropped.
+- **No SME at EL2.** The M5 has SME, but the framework leaves SMCR_EL2 undefined at the
+  guest's EL2, where Linux's `__finalise_el2` sets the streaming vector length: the
+  instruction faulted for ever (ESR_EL2 EC 0, ELR at `msr SMCR_EL2, x0`). An EL2 VM's
+  ID_AA64PFR1_EL1 says no SME.
+- **No snapshot.** The EL2 state is not saved, so a snapshot of such a VM is refused, and
+  `--nested` with `--snapshot-dir` up front. x86_64 refuses `--nested` until it is
+  built there.
+- **The kernel.** KVM is not in the kernel every guest boots: the pinned kernel's `kvm`
+  variant (resources/kernel/kvm.config), built and released by the same reproducible
+  workflow, carries it. KVM costs no boot or restore time measurably (PM M192), but its
+  800 KiB of text would be in every guest's image for a need few runs have.
+- **Tested** on an M5 Max, macOS 26.4.1: with 1 and 4 vCPUs the guest says "CPU: All
+  CPU(s) started at EL2" and "kvm [1]: Hyp nVHE mode initialized successfully", its
+  vgic on IRQ 9, and powers off by PSCI over SMC. `devicetree_matches_the_boot_contract`
+  holds the DT both ways.
+
 ### D131. A throttle waited out within the window the registry names
 
 CI's pulls from ghcr.io failed on a throttle that outlasted shards' waits (PM M191). The

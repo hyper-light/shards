@@ -6444,3 +6444,31 @@ revision before comparing a changed API/implementation.
     **Fixed** by D131: such a throttle is waited out within the minute it names.
 - **Consequence.** D131, and the handshake of `common::run_watching` and the test guest's
   `await`.
+
+### M192. KVM in the arm64 guest kernel: what it costs a boot and a restore (D132)
+
+- **Question.** Should the kernel every arm64 guest boots carry KVM, so that any guest can
+  be a hypervisor, or should a variant carry it?
+- **Method.** `docs/research/measurements/kernel-ab/ab.py`, brought up to today's CLI
+  (`run --kernel`, `restore`). A: the pinned kernel (Image-6.18.48-aarch64,
+  4b8900bdffdd). B: the same config with `resources/kernel/kvm.config`, built by the same
+  pinned builder (the nested-kvm workflow's artifact, run 37861188483). Both booted at
+  EL1, with 1 vCPU and 256 MiB, each sample a fresh process, pairs alternating A B, B A,
+  3 warm-ups, n = 100. Apple M5 Max, macOS 26.4.1, revision 8c3aa37c, 2026-10-11.
+- **Results** (µs):
+
+  | metric | kernel | p50 | p90 | p99 | max |
+  |---|---|---|---|---|---|
+  | boot_kernel | A | 17813 | 18845 | 20000 | 22862 |
+  | boot_kernel | B | 17812 | 19054 | 19924 | 20341 |
+  | boot_to_init | A | 20193 | 21720 | 22445 | 25226 |
+  | boot_to_init | B | 20467 | 21744 | 22633 | 23058 |
+  | restore | A | 2384 | 2558 | 2859 | 2932 |
+  | restore | B | 2406 | 2638 | 3012 | 3014 |
+
+  - The boots are the same. The restores differ by 22 µs at p50, within the tens of µs
+    one template's restores differ from another's (PM M29).
+  - The image grows by 800 KiB, 19,081,728 to 19,900,928 bytes (4.3%).
+- **Consequence.** D132: KVM goes in a `kvm` variant of the kernel, not in the one every
+  guest boots. It saves nothing measurable at boot either way, and its text would be in
+  every guest.

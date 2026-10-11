@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Builds the shards guest kernel in the pinned builder (resources/kernel/builder.env):
 #   scripts/build-kernel-in-builder.sh x86_64|aarch64 OUT_DIR [VARIANT]
-# Output: what scripts/build-kernel.sh writes, plus OUT_DIR/toolchain-<arch>.txt, the exact
-# compiler, linker and package versions. Needs Docker; the builder runs the host's
+# Output: what scripts/build-kernel.sh writes, plus OUT_DIR/toolchain-<arch>[-VARIANT].txt,
+# the exact compiler, linker and package versions. Needs Docker; the builder runs the host's
 # architecture, which must be the kernel's.
 set -euo pipefail
 
@@ -28,7 +28,7 @@ docker run --rm -v "$repo:/src:ro" -v "$out:/out" \
             gcc --version | head -1
             ld --version | head -1
             dpkg-query -W -f="\${Package} \${Version}\n" $PACKAGES gcc-12 binutils libc6-dev
-        } > "/out/toolchain-$ARCH_.txt"
+        } > "/out/toolchain-$ARCH_${VARIANT_:+-$VARIANT_}.txt"
         /src/scripts/build-kernel.sh "$ARCH_" /out "$VARIANT_"
         chown -R "'"$(id -u):$(id -g)"'" /out
     '

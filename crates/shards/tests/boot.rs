@@ -7,7 +7,7 @@ mod common;
 
 use std::time::Duration;
 
-use common::{KERNEL_NR_CPUS, cannot_run_vms, guest_init, kernel, run_shards, vm_run};
+use common::{KERNEL_NR_CPUS, cannot_run_vms, guest_init, kernel, run_shards, test_guest, vm_run};
 
 const TIMEOUT: Duration = Duration::from_secs(60);
 const EXIT_RESET: i32 = 3;
@@ -270,4 +270,66 @@ fn cli_reports_usage_and_rejects_unknown_commands() {
     assert!(short.stdout.starts_with("shards version "), "{short}");
     let server = run_shards(&["version", "-f", "{{.Server.Platform.Name}}"], &none, TIMEOUT);
     assert_eq!(server.stdout, "shards\n", "{server}");
+}
+
+/// A guest given virtualization of its own (`--nested`, D132) boots at EL2 on a Mac that
+/// gives one, its secondary CPUs brought up by PSCI over SMC, and its KVM comes up as a
+/// hypervisor: the pinned kernel's `kvm` variant. A snapshot of such a guest is refused up
+/// front; an x86_64 host refuses `--nested` until it is built there.
+#[test]
+fn a_nested_guest_is_a_kvm_host() {
+    if cannot_run_vms() {
+        return;
+    }
+    let refused = vm_run(
+        &[
+            "--kernel",
+            kernel().to_str().unwrap(),
+            "--nested",
+            "--snapshot-dir",
+            "nowhere",
+        ],
+        TIMEOUT,
+    );
+    assert_eq!(refused.status, Some(2), "{refused}");
+    assert!(refused.stderr.contains("--nested with --snapshot-dir"), "{refused}");
+    let Some(nested) = common::nested_kernel() else {
+        let r = vm_run(&["--kernel", kernel().to_str().unwrap(), "--nested"], TIMEOUT);
+        assert!(
+            r.stderr.contains("virtualization of a guest's own is not given on x86_64 yet"),
+            "{r}"
+        );
+        return;
+    };
+    let r = vm_run(
+        &[
+            "--kernel",
+            nested.to_str().unwrap(),
+            "--init",
+            test_guest().to_str().unwrap(),
+            "--nested",
+            "--cpus",
+            "2",
+            "--memory",
+            "512",
+            "--cmdline",
+            "console=ttyS0 panic=-1 shards_test=kmsg",
+        ],
+        TIMEOUT,
+    );
+    if r.stderr.contains("this Mac gives a guest no EL2") {
+        eprintln!("SKIP: this Mac gives a guest no EL2");
+        return;
+    }
+    assert_eq!(r.status, Some(0), "{r}");
+    for line in [
+        "psci: SMC Calling Convention",
+        "smp: Brought up 1 node, 2 CPUs",
+        "CPU: All CPU(s) started at EL2",
+        "kvm [1]: vgic interrupt IRQ9",
+        "mode initialized successfully",
+        "SHARDS-TEST PASS",
+    ] {
+        assert!(r.stdout.contains(line), "missing {line:?}: {r}");
+    }
 }

@@ -175,6 +175,22 @@ pub fn kernel() -> &'static Path {
     })
 }
 
+/// The pinned kernel's `kvm` variant, for a guest that is itself a KVM host (`--nested`,
+/// D132); none where it is not built, arm64 alone so far.
+pub fn nested_kernel() -> Option<&'static Path> {
+    static K: OnceLock<Option<PathBuf>> = OnceLock::new();
+    K.get_or_init(|| {
+        pinned::KERNEL_NESTED.map(|k| {
+            fetch(&Artifact {
+                name: k.name,
+                url: k.url,
+                sha256: k.sha256,
+            })
+        })
+    })
+    .as_deref()
+}
+
 /// Builds guest package `name` (static musl, `guest` profile) and returns its binary.
 fn guest_binary(name: &str) -> PathBuf {
     guest_binary_in(name, "target/guest", &[])
