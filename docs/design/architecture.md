@@ -3490,6 +3490,33 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode
 waits on the user.
 
+### D122. The members an `EXPOSE` is for: one receiver for each incoming port
+
+An `EXPOSE … FOR <network>` opened a port of the microVM for every member of the network.
+On a network of one member that is a receiver; on a network of several, a connection
+coming in had none, and shards refused it. Default deny asks that every grant name who, to
+whom, on which ports and which way (CLAUDE.md), and an incoming TCP connection or UDP
+datagram is delivered to one socket bound to its port, as Docker's `-p` delivers to the one
+process a container listens with (docs.docker.com/reference/cli/docker/container/run,
+`--publish`). So (AGENTFILE_ARCH §4.1, the user's syntax, 2026-10-11):
+
+- **`--agents=`, `--harnesses=`, `--mcps=`** name the members a port is for, each flag
+  members of its own kind: an agent and a harness may share a name, and a name never
+  resolves to the wrong kind (§4.10). A name of another kind, or of no member of a network
+  the `EXPOSE` names, is a build error that says what the name is. Without them, the port
+  is every member's, as before.
+- **One receiver for an incoming port**, across the three flags and across `EXPOSE`s: two
+  members claiming one port is a build error naming both. Egress, the destination port of
+  connections going out, names any number.
+- **`<port>:<member_port>`**, ingress's alone, in `-p`'s order (outside, then inside), so
+  two members that both listen on one port are each reached.
+- **Shown**: `shards read ports <microvm>` lists each published port with its member and
+  that member's kind, in shards' own grammar; `shards port` keeps Docker's output where it
+  is piped. A published port no member claims reaches the run's own command, as Docker's.
+
+Built after `--link-local-ip`. `--mcps=` waits on local MCP servers joining networks: today
+each caller runs its own instance over stdio, in its own confinement (D60, §9.6).
+
 ### D121. Docker's AppArmor mount rule, in guests that have no AppArmor
 
 Where AppArmor is enforced, as on Ubuntu, Docker confines every container with its

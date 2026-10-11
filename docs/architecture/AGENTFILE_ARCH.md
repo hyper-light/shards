@@ -44,10 +44,11 @@ directly or through another component (§9).
 
 ## 4. Directives
 
-### 4.1 `EXPOSE`, with `AS` and `FOR`
+### 4.1 `EXPOSE`, with `AS`, `FOR` and the members it is for
 
 ```
-EXPOSE <port> [AS <egress|ingress>] FOR [<network_name_a> <network_name_b> ...]
+EXPOSE [--agents=<name>[,<name>...]] [--harnesses=<name>[,<name>...]] [--mcps=<name>[,<name>...]]
+    <port>[:<member_port>] [AS <egress|ingress>] FOR [<network_name_a> <network_name_b> ...]
 ```
 
 `[]` marks what is optional.
@@ -62,6 +63,32 @@ EXPOSE <port> [AS <egress|ingress>] FOR [<network_name_a> <network_name_b> ...]
 
 - **`FOR <network_name_a> <network_name_b> ...`** lets the named networks (§4.6)
   communicate beyond the microVM on that port, the microVM's port, as its `AS` allows.
+- **The members it is for** (decided 2026-10-11, D122). `--agents`, `--harnesses` and
+  `--mcps` name which of those networks' members the port is for, each flag members of
+  its own kind, so a name never resolves to the wrong kind (§4.10). A name of another
+  kind, or of no member of a network after `FOR`, is a build error that says what the
+  name is. Without any of the three, the port is every member's of those networks, of
+  every kind, as before.
+- **An incoming port has one receiver.** A connection coming in on a port goes to one
+  member, so a port open for ingress (`AS ingress`, or no `AS`) names one member across
+  the three flags, or its networks have one member. Two members claiming one port, in one
+  `EXPOSE` or in two, is a build error naming both and their lines. A port open for
+  egress alone may name any number of members, of any kinds.
+- **`<port>:<member_port>`** is ingress's alone: the microVM's port, then the member's.
+  `EXPOSE --agents=api 8081:80 AS ingress FOR front` delivers what comes in on the
+  microVM's 8081 to `api`'s 80, so two members that both listen on 80 are each reached.
+- **Published, and shown.** `shards run -p HOST:PORT` publishes the microVM's `PORT`,
+  which reaches its member; a published port no member claims reaches the run's own
+  command, as Docker's `-p` reaches a container's. `shards read ports <microvm>` lists
+  each published port with the member it reaches and that member's kind; `shards port`
+  keeps Docker's output where it is piped.
+
+```dockerfile
+NETWORK --ingress=3000 --ingress=4000 front FOR web console
+EXPOSE --agents=web 3000 AS ingress FOR front
+EXPOSE --harnesses=console 4000 AS ingress FOR front
+EXPOSE --agents=web --harnesses=console 443 AS egress FOR front
+```
 
 This extension is intentional, and part of the default deny.
 
