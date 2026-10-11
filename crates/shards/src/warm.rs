@@ -720,7 +720,8 @@ fn joiner(link: &UnixStream, range: Result<(u64, u64), String>, to: &'static ToG
                 &|guest| id.store(guest, std::sync::atomic::Ordering::SeqCst),
                 &|| {
                     let_go_of_layer();
-                    let _ = shards_ipc::send(link, kind::STARTED, &[], &[]);
+                    let guest = id.load(std::sync::atomic::Ordering::SeqCst);
+                    let _ = shards_ipc::send(link, kind::STARTED, &guest.to_be_bytes(), &[]);
                 },
             )
         });

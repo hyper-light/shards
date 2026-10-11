@@ -81,7 +81,8 @@ pub mod kind {
     /// first take what every run has sent, see what any client has seen.
     pub const DONE: u8 = 9;
     /// Warm VM → daemon: the command is executing: it started, where `DONE` without this
-    /// means it never did.
+    /// means it never did. A joiner's (D119) carries its exec's id in its provider's guest
+    /// (u32, big-endian), by which another joiner may join its PID namespace.
     pub const STARTED: u8 = 10;
     /// Client → daemon: a container command (`ps`, `wait`, `rm`, ...) and its arguments,
     /// as a list of strings, for the daemon to run and answer with `OUT`, `ERR` and `END`.

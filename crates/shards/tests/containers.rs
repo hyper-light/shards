@@ -267,22 +267,6 @@ fn a_joiner_is_a_container_of_its_own() {
         &["--network", "container:nope"],
         "joining network namespace of container: No such container: nope",
     );
-    // What shards does not do for a joiner yet, by name: another joiner's PID namespace.
-    let mut again = start(&home, &image, &["--name", "prov2"], &["sleep"]);
-    let other = run_in(
-        &home,
-        &image,
-        &["-d", "--name", "j2", "--network", "container:prov2"],
-        &["sleep"],
-    );
-    assert_eq!(other.status, Some(0), "{other}");
-    refused(
-        &["--network", "container:j2", "--pid", "container:j2"],
-        "--pid container:NAME of a container that joins another's network is not supported in a container joining another's network yet",
-    );
-    assert_eq!(shards(&["stop", "-t", "1", "j2"]).status, Some(0));
-    assert_eq!(shards(&["stop", "prov2"]).status, Some(0));
-    let _ = exit(&mut again);
 }
 
 /// A joiner's volumes, as a container's (D119), through its microVM's join share: a host
@@ -627,6 +611,87 @@ fn a_joiner_may_share_its_providers_pid_namespace() {
         "\"--pid container:NAME\" is not supported by shards yet without \"--network container:NAME\" of the same container",
     );
     refused(&["--pid", "container:nope"], "No such container: nope");
+    assert_eq!(shards(&["stop", "-t", "1", "prov"]).status, Some(0));
+    let _ = exit(&mut provider);
+}
+
+/// A joiner may share another joiner's PID namespace, as Docker's `--pid container:NAME`
+/// takes that of NAME's process (D119): its PID 1 is that joiner's command; a container
+/// naming it is in the same namespace; one naming a joiner in its provider's is in its
+/// provider's; and as the joiner whose namespace it is ends, so does all in it, as the
+/// kernel ends a namespace whose first process has gone, and as Docker's ends.
+#[test]
+fn a_joiner_may_share_another_joiners_pid_namespace() {
+    let Some((home, image)) = home("containers-joiner-pid-joiner") else {
+        return;
+    };
+    let mut provider = start(&home, &image, &["--name", "prov"], &["sleep"]);
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let run = |options: &[&str], command: &[&str]| {
+        let r = run_in(&home, &image, options, command);
+        assert_eq!(r.status, Some(0), "{options:?}: {r}");
+        r
+    };
+    run(
+        &["-d", "--name", "j1", "--network", "container:prov"],
+        &["trap", "TERM"],
+    );
+    run(
+        &[
+            "-d",
+            "--name",
+            "j2",
+            "--network",
+            "container:j1",
+            "--pid",
+            "container:j1",
+        ],
+        &["fs", "sleep:600000"],
+    );
+    let first = shards(&["exec", "j2", "/bin/testguest", "fs", "print:/proc/1/cmdline"]);
+    assert_eq!(first.stdout, "/bin/testguest\0trap\0TERM\0", "{first}");
+    // Through j2, in j1's: the same namespace, and not the provider's.
+    let listed = run(
+        &["--rm", "--network", "container:j2", "--pid", "container:j2"],
+        &["ps"],
+    );
+    assert!(
+        listed.stdout.contains("testguest trap TERM")
+            && listed.stdout.contains("testguest fs sleep:600000")
+            && !listed.stdout.contains("testguest sleep"),
+        "{listed}"
+    );
+    // A joiner in its provider's namespace passes that one on.
+    run(
+        &[
+            "-d",
+            "--name",
+            "j3",
+            "--network",
+            "container:prov",
+            "--pid",
+            "container:prov",
+        ],
+        &["fs", "sleep:600000"],
+    );
+    let theirs = run(
+        &["--rm", "--network", "container:j3", "--pid", "container:j3"],
+        &["ps"],
+    );
+    assert!(theirs.stdout.contains("testguest sleep"), "{theirs}");
+    // j1's end is its namespace's: j2's command goes with it, killed.
+    assert_eq!(shards(&["stop", "-t", "1", "j1"]).status, Some(0));
+    let state = || shards(&["inspect", "-f", "{{.State.Status}} {{.State.ExitCode}}", "j2"]).stdout;
+    let deadline = Instant::now() + TIMEOUT;
+    while state() != "exited 137\n" {
+        assert!(
+            Instant::now() < deadline,
+            "j2 outlived its namespace: {}",
+            state()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(shards(&["stop", "-t", "1", "j3"]).status, Some(0));
     assert_eq!(shards(&["stop", "-t", "1", "prov"]).status, Some(0));
     let _ = exit(&mut provider);
 }
@@ -6424,9 +6489,13 @@ fn run_mounts_binds_volumes_and_tmpfs_as_docker_run_does() {
     std::fs::write(shared.join("a"), "host").unwrap();
     let file = home.join("one");
     std::fs::write(&file, "alone").unwrap();
+    // A link to it, bound as the file it leads to on the host, as Docker's bind takes it.
+    let link = home.join("link");
+    std::os::unix::fs::symlink(&file, &link).unwrap();
     let bind = format!("{}:/data", shared.display());
     let ro = format!("{}:/ro:ro", shared.display());
     let single = format!("{}:/etc/one:ro", file.display());
+    let linked = format!("{}:/etc/linked:ro", link.display());
     let ran = run_in(
         &home,
         &image,
@@ -6442,12 +6511,18 @@ fn run_mounts_binds_volumes_and_tmpfs_as_docker_run_does() {
             "tools:/bin",
             "--mount",
             "type=tmpfs,dst=/t,tmpfs-size=1m",
+            "-v",
+            &linked,
         ],
-        &["stat", "/data/a", "/etc/one", "/proc/self/mounts"],
+        &["stat", "/data/a", "/etc/one", "/etc/linked", "/proc/self/mounts"],
     );
     assert_eq!(ran.status, Some(0), "{ran}");
     assert!(ran.stdout.contains("/data/a file 644 0:0 4\n= host\n"), "{ran}");
     assert!(ran.stdout.contains("/etc/one file 644 0:0 5\n= alone\n"), "{ran}");
+    assert!(
+        ran.stdout.contains("/etc/linked file 644 0:0 5\n= alone\n"),
+        "{ran}"
+    );
     for mount in [
         "shards0 /data virtiofs rw,",
         "shards1 /ro virtiofs ro,",

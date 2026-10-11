@@ -28,24 +28,38 @@ pub struct Join {
 
 /// Whose PID namespace a joiner's processes are in: one of its own, its command that
 /// namespace's PID 1, as a container's is; the workload's whose network it joins
-/// (`--pid container:NAME`, `pid=workload`), the one other container's the daemon lets it
-/// join; or the microVM's own, init's (`--pid host`).
+/// (`--pid container:NAME`, `pid=workload`); that of another joiner of the microVM, its
+/// command's process here (`--pid container:NAME` of a joiner, `pid=joiner=ID`); or the
+/// microVM's own, init's (`--pid host`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pid {
     Own,
     Workload,
+    Joiner(libc::pid_t),
     Host,
 }
 
-/// The PID namespace `setup` asks for.
-pub fn pid(setup: &[Vec<u8>]) -> Pid {
+/// The PID namespace `setup` asks for: another joiner's found by its exec's id among
+/// `joiners`, each an id and its command's process.
+pub fn pid(setup: &[Vec<u8>], joiners: &[(u32, libc::pid_t)]) -> Result<Pid, String> {
     if setup.iter().any(|e| e == b"pid=host") {
-        Pid::Host
-    } else if setup.iter().any(|e| e == b"pid=workload") {
-        Pid::Workload
-    } else {
-        Pid::Own
+        return Ok(Pid::Host);
     }
+    if setup.iter().any(|e| e == b"pid=workload") {
+        return Ok(Pid::Workload);
+    }
+    let Some(id) = setup.iter().find_map(|e| e.strip_prefix(b"pid=joiner=")) else {
+        return Ok(Pid::Own);
+    };
+    let id: u32 = std::str::from_utf8(id)
+        .ok()
+        .and_then(|id| id.parse().ok())
+        .ok_or("a malformed pid=joiner entry")?;
+    joiners
+        .iter()
+        .find(|(j, _)| *j == id)
+        .map(|&(_, pid)| Pid::Joiner(pid))
+        .ok_or_else(|| "the container whose PID namespace it joins is not running".to_string())
 }
 
 /// An image's user database, `/etc/passwd` and `/etc/group`, where it has them.

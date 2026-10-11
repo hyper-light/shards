@@ -460,6 +460,8 @@ struct Inbox {
     incoming: shards_ipc::Incoming,
     /// [`Keep::visit`].
     visit: bool,
+    /// A joiner's exec's id in its provider's guest, from its start on (D119).
+    guest: Option<u32>,
 }
 
 /// A part of the working set run `id`'s VM recorded (`kind::WORKING_SET`), which the
@@ -1834,22 +1836,6 @@ impl<D: Disk> Daemon<D> {
                 return None;
             }
         };
-        // What a container joining another's network does not take yet (D119), refused by
-        // name before its container is made: the PID namespace of another joiner, which
-        // init knows by that joiner's exec's id and the daemon does not.
-        if let network::Start::Join(_) = &start {
-            let what = run
-                .pid
-                .strip_prefix("container:")
-                .is_some_and(|p| self.joined_run(p))
-                .then_some("--pid container:NAME of a container that joins another's network");
-            if let Some(what) = what {
-                refused(&format!(
-                    "{what} is not supported in a container joining another's network yet"
-                ));
-                return None;
-            }
-        }
         // The container's ID first: it names the command's host unless the run does
         // (moby daemon/container.go).
         let (again, id, container_log) = match again {
@@ -2097,6 +2083,15 @@ impl<D: Disk> Daemon<D> {
         let shared = crate::volumes::open(&points, first, &crate::volumes::Store::new(&self.home)).and_then(
             |opened| {
                 prepared.spec.setup = crate::setup::setup(&run, &opened.mounts)?;
+                // `--pid container:` of a joiner (D119): the PID namespace its run took.
+                if let Some(other) = run.pid.strip_prefix("container:")
+                    && self.joined_run(other)
+                {
+                    let entry = self.joiners_pid(other)?;
+                    for e in prepared.spec.setup.iter_mut().filter(|e| *e == b"pid=workload") {
+                        e.clone_from(&entry);
+                    }
+                }
                 // Beside agents whose flows past the microVM cross the command's network
                 // namespace, Docker's default CAP_NET_RAW is not the command's (D115).
                 if let Some(a) = prepared.agentfile.as_ref().filter(|a| a.domains > 0 && a.uplink) {
@@ -3223,6 +3218,7 @@ impl<D: Disk> Daemon<D> {
             named,
             incoming: shards_ipc::Incoming::default(),
             visit,
+            guest: None,
         }));
         let tracked = Tracked {
             base: Arc::new(Base {
@@ -3283,7 +3279,12 @@ impl<D: Disk> Daemon<D> {
                 }
             };
             match m.kind {
-                kind::STARTED => self.run_started(id, inbox),
+                kind::STARTED => {
+                    inbox.guest = <[u8; 4]>::try_from(m.payload.as_slice())
+                        .ok()
+                        .map(u32::from_be_bytes);
+                    self.run_started(id, inbox);
+                }
                 kind::DONE => self.run_ended(id, inbox, Some(&m.payload)),
                 kind::LOST => self.log_lost(id, &m.payload),
                 kind::OOM => self.oom_killed(id),
@@ -3860,6 +3861,36 @@ impl<D: Disk> Daemon<D> {
                 }
             }
         }
+    }
+
+    /// The PID namespace of joiner `id` (D119), as another's `--pid container:` takes it,
+    /// dockerd's `/proc/PID/ns/pid` of its process (moby daemon/oci_linux.go): the one its
+    /// own run took, its own (by its exec's id in its provider's guest), its provider's
+    /// (that of another joiner, followed), or the microVM's. As a setup entry.
+    fn joiners_pid(&self, id: &str) -> Result<Vec<u8>, String> {
+        let mut at = id.to_string();
+        // Each names one made before it, so no chain loops; bounded all the same.
+        for _ in 0..64 {
+            let dir = lock(&self.containers).dir(&at);
+            let run = std::fs::read(dir.join(REQUEST))
+                .ok()
+                .and_then(|b| Run::decode(&b))
+                .ok_or_else(|| format!("container {at}: its request is lost"))?;
+            if run.pid == "host" {
+                return Ok(b"pid=host".to_vec());
+            }
+            match run.pid.strip_prefix("container:") {
+                Some(other) if self.joined_run(other) => at = other.to_string(),
+                Some(_) => return Ok(b"pid=workload".to_vec()),
+                None => {
+                    let guest = self.inbox_of(&at).and_then(|inbox| lock(&inbox).guest);
+                    return guest
+                        .map(|g| format!("pid=joiner={g}").into_bytes())
+                        .ok_or_else(|| format!("container {at} is not running"));
+                }
+            }
+        }
+        Err(format!("container {id}: its PID namespace is too far removed"))
     }
 
     /// The hostname and domain name of the container `name` names, as its run gave them
