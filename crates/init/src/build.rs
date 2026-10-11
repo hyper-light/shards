@@ -135,6 +135,9 @@ struct Builder {
     /// The step's SSH agent sockets, listened on here and relayed to the host while it
     /// runs: each mount's listener, the agent's id and the host's token for it.
     ssh: Vec<(std::os::unix::net::UnixListener, Vec<u8>, [u8; 16])>,
+    /// Whether the builder's memory is plugged as the build needs it (D133): then each
+    /// step has a cgroup of its own, under the build's, as runc gives each container one.
+    plugging: bool,
 }
 
 /// Starts the builder: the host's layers and steps, until it hangs up.
@@ -150,8 +153,11 @@ pub fn main() -> ! {
 
 fn serve() -> io::Result<()> {
     std::fs::create_dir_all(B)?;
-    // Layers live in memory, or on swap once memory runs short.
-    mount("tmpfs", Path::new(B), "tmpfs", 0, "mode=0755,size=100%")?;
+    // Layers live in memory, or on swap once memory runs short: as much of it as the
+    // builder may have, where it is plugged as the build needs it (D133).
+    let plug = crate::plug::plug()?;
+    let size = plug.map_or_else(|| "size=100%".to_string(), |p| p.tmpfs());
+    mount("tmpfs", Path::new(B), "tmpfs", 0, &format!("mode=0755,{size}"))?;
     for d in [LAYERS, EMPTY, ROOT, "/dev", "/proc"] {
         std::fs::create_dir_all(Path::new(B).join(d.trim_start_matches('/')))?;
     }
@@ -166,6 +172,10 @@ fn serve() -> io::Result<()> {
         return Err(os_err("chroot"));
     }
     std::env::set_current_dir("/")?;
+    if let Some(plug) = plug {
+        plug.raise_limits()?;
+        plug.hold()?;
+    }
     swap_on()?;
     loopback_up()?;
     // A builder with a network: eth0 as the host named it, which a step with the default
@@ -180,6 +190,7 @@ fn serve() -> io::Result<()> {
         writing: None,
         serial: 0,
         ssh: Vec::new(),
+        plugging: plug.is_some(),
     };
     let mut h = [0u8; run::HEADER];
     let mut payload = Vec::new();
@@ -531,7 +542,7 @@ impl Builder {
             | libc::CLONE_NEWCGROUP;
         // Its limits, where it has any: a cgroup of its own it starts in, whose namespace
         // is rooted there, as a container's is.
-        let cgroup = step_cgroup(&step.cgroup)?;
+        let cgroup = step_cgroup(&step.cgroup, self.plugging)?;
         let mut args = crate::domains::CloneArgs {
             flags: flags as u64,
             exit_signal: libc::SIGCHLD as u64,
@@ -1480,37 +1491,25 @@ fn find_executable(file: &[u8]) -> Result<(), String> {
 }
 
 /// A step's own cgroup, under the builder's `steps`, with its limits written in order
-/// (`Step::cgroup`, runc's files): open, and where it is; none for a step without limits.
-/// The controllers its files need are enabled on the way down. A swap file absent, as
-/// where the kernel has no swap, is skipped for "max" or "0", as runc skips it.
-fn step_cgroup(files: &[(Vec<u8>, Vec<u8>)]) -> io::Result<Option<(OwnedFd, PathBuf)>> {
+/// (`Step::cgroup`, runc's files): open, and where it is; none for a step without limits,
+/// unless the builder's memory is `plugging` (D133), where every step has one under the
+/// build's cgroup, whose `memory.high` holds it. The controllers its files need are enabled
+/// on the way down. A swap file absent, as where the kernel has no swap, is skipped for
+/// "max" or "0", as runc skips it.
+fn step_cgroup(files: &[(Vec<u8>, Vec<u8>)], plugging: bool) -> io::Result<Option<(OwnedFd, PathBuf)>> {
     use std::os::unix::fs::OpenOptionsExt;
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    if files.is_empty() {
+    if files.is_empty() && !plugging {
         return Ok(None);
     }
     let root = Path::new("/sys/fs/cgroup");
     // The builder's own cgroup2, mounted by the first step with limits.
-    if !root.join("cgroup.controllers").exists() {
-        std::fs::create_dir_all(root)?;
-        // SAFETY: mount(2) of cgroup2 with NUL-terminated literals.
-        let rc = unsafe {
-            libc::mount(
-                c"cgroup2".as_ptr(),
-                c"/sys/fs/cgroup".as_ptr(),
-                c"cgroup2".as_ptr(),
-                libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC,
-                std::ptr::null(),
-            )
-        };
-        if rc != 0 {
-            return Err(err(format!(
-                "mounting the builder's cgroup2: {}",
-                io::Error::last_os_error()
-            )));
-        }
-    }
-    let steps = root.join("steps");
+    crate::plug::mount_cgroups()?;
+    let steps = if plugging {
+        Path::new(crate::plug::BUILD).join("steps")
+    } else {
+        root.join("steps")
+    };
     let enable = |dir: &Path| std::fs::write(dir.join("cgroup.subtree_control"), "+memory +cpu +cpuset");
     enable(root).map_err(|e| err(format!("enabling the builder's cgroup controllers: {e}")))?;
     match std::fs::create_dir(&steps) {

@@ -337,3 +337,119 @@ fn a_nested_guest_is_a_kvm_host() {
         assert!(r.stdout.contains(line), "missing {line:?}: {r}");
     }
 }
+
+/// Memory plugged as the guest asks for it (`--memory-max`, D133). A guest booted with 256
+/// MiB asks for 1 GiB more, its kernel brings it all online, and the guest fills seven
+/// eighths of it, which the VM process then holds; it frees it and asks for none, its kernel
+/// gives it all back, the VM process's own memory falls by it, and the VM process holds
+/// none of the pages the guest wrote as it ends (`hotplug_held_kib`: on macOS a page out of
+/// the hypervisor's mappings is out of the footprint, held or not, PM M193). Asked for more
+/// than it may have, it is given what it may. A snapshot of such a guest is refused up
+/// front. On the hosts whose VMs it measures the memory of (`process_usage`): Windows runs
+/// none yet.
+#[cfg(unix)]
+#[test]
+fn a_guest_grows_and_gives_back_its_memory() {
+    use std::io::{BufRead, Write};
+    if cannot_run_vms() {
+        return;
+    }
+    let refused = vm_run(
+        &[
+            "--kernel",
+            kernel().to_str().unwrap(),
+            "--memory-max",
+            "1024",
+            "--snapshot-dir",
+            "nowhere",
+        ],
+        TIMEOUT,
+    );
+    assert_eq!(refused.status, Some(2), "{refused}");
+    assert!(
+        refused.stderr.contains("--memory-max with --snapshot-dir"),
+        "{refused}"
+    );
+    let mut child = common::command()
+        .env("SHARDS_TIMING", "1")
+        .args(["run", "--kernel", kernel().to_str().unwrap()])
+        .args(["--init", test_guest().to_str().unwrap()])
+        .args(["--memory", "256", "--memory-max", "1280", "--cmdline"])
+        .arg("console=ttyS0 panic=-1 shards_test=hotplug shards_plug_mib=1024 memhp_default_state=online_movable")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    // `shards run --kernel` becomes the VM process: the same pid.
+    let pid = child.id();
+    let mut stdin = child.stdin.take().unwrap();
+    // Its stderr drained as it runs, so that what it writes there never waits on the test.
+    let mut stderr = child.stderr.take().unwrap();
+    let err = std::thread::spawn(move || {
+        let mut err = String::new();
+        let _ = std::io::Read::read_to_string(&mut stderr, &mut err);
+        err
+    });
+    let (tx, lines) = std::sync::mpsc::channel();
+    let out = child.stdout.take().unwrap();
+    std::thread::spawn(move || {
+        for line in std::io::BufReader::new(out).lines().map_while(Result::ok) {
+            if tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    let start = std::time::Instant::now();
+    let mut said = String::new();
+    let mut until = |marker: &str| -> String {
+        loop {
+            let left = TIMEOUT.saturating_sub(start.elapsed());
+            let Ok(line) = lines.recv_timeout(left) else {
+                let _ = child.kill();
+                panic!("no {marker:?} within {TIMEOUT:?}:\n{said}");
+            };
+            said.push_str(&line);
+            said.push('\n');
+            if line.contains("SHARDS-TEST FAIL") {
+                let _ = child.kill();
+                panic!("{said}");
+            }
+            if let Some((_, rest)) = line.split_once(marker) {
+                return rest.trim().to_string();
+            }
+        }
+    };
+    let footprint = || shards_vmm::platform::process_usage(pid).unwrap().footprint;
+    let plugged_ms: u64 = until("SHARDS-TEST PLUGGED").parse().unwrap();
+    let full = footprint();
+    stdin.write_all(b"\n").unwrap();
+    let unplugged_ms: u64 = until("SHARDS-TEST UNPLUGGED").parse().unwrap();
+    let given_back = footprint();
+    stdin.write_all(b"\n").unwrap();
+    until("SHARDS-TEST PASS");
+    eprintln!(
+        "1 GiB plugged in {plugged_ms} ms, unplugged in {unplugged_ms} ms; the VM process held {} MiB, then {} MiB",
+        full >> 20,
+        given_back >> 20
+    );
+    // The guest wrote 896 MiB of what was plugged: the host gave that, and has it back.
+    assert!(full >= 896 << 20, "the VM process held {full} bytes");
+    assert!(
+        full.saturating_sub(given_back) >= 768 << 20,
+        "the VM process held {full} bytes, then {given_back}"
+    );
+    let status = child.wait().unwrap();
+    let err = err.join().unwrap();
+    assert!(status.success(), "{err}");
+    let timing: serde_json::Value = err
+        .lines()
+        .find_map(|l| l.strip_prefix("shards-timing "))
+        .map(|t| serde_json::from_str(t).unwrap())
+        .unwrap_or_else(|| panic!("no timing line: {err}"));
+    let held = timing["hotplug_held_kib"].as_u64().unwrap();
+    assert!(
+        held < 16 << 10,
+        "the VM process held {held} KiB of the memory it gave back"
+    );
+}

@@ -70,6 +70,15 @@ pub mod control {
     /// guest's init was built with. shards-init writes it as it starts, a snapshot keeps it,
     /// and the host hands a workload only to a guest whose init wrote the host's own.
     pub const ABI: u64 = 0x18;
+    /// Read, 64 bits in one access: the most memory the guest may have plugged beyond the
+    /// RAM it booted with, in bytes, through its virtio-mem device (D133); 0 where it has
+    /// none.
+    pub const HOTPLUG_SIZE: u64 = 0x20;
+    /// Write, 64 bits in one access: how much memory the guest asks to have plugged, in
+    /// bytes. The VMM rounds it up to the device's blocks, at most [`HOTPLUG_SIZE`], and asks
+    /// the guest's driver to plug or unplug to it (the device's `requested_size`, VIRTIO 1.3
+    /// §5.15). Read: what is asked for now.
+    pub const HOTPLUG_REQUEST: u64 = 0x28;
 
     pub const SNAPSHOT_NOW: u32 = 1;
 }

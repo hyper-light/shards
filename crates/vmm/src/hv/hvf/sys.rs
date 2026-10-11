@@ -135,15 +135,12 @@ impl Vm {
     /// mapped until it is unmapped here or the VM is destroyed.
     pub unsafe fn map(&self, host: *mut u8, gpa: u64, size: usize, perms: Perms) -> Result<()> {
         // SAFETY: forwarded caller contract.
-        check("hv_vm_map", unsafe {
-            ffi::hv_vm_map(host as *mut c_void, gpa, size, perms.0)
-        })
+        unsafe { map(host, gpa, size, perms) }
     }
 
     /// Unmaps `size` bytes at guest-physical `gpa`.
     pub fn unmap(&self, gpa: u64, size: usize) -> Result<()> {
-        // SAFETY: no host memory is passed.
-        check("hv_vm_unmap", unsafe { ffi::hv_vm_unmap(gpa, size) })
+        unmap(gpa, size)
     }
 
     /// Creates the in-kernel GICv3. Must happen before any vCPU is created.
@@ -180,6 +177,24 @@ impl Vm {
             res.map(|()| Gic(()))
         }
     }
+}
+
+/// Maps `size` bytes of host memory at `host` to guest-physical `gpa` in the process's VM,
+/// which must exist: [`Vm::map`]'s, for a holder of a handle the VM made.
+///
+/// # Safety
+/// As for [`Vm::map`].
+pub unsafe fn map(host: *mut u8, gpa: u64, size: usize, perms: Perms) -> Result<()> {
+    // SAFETY: forwarded caller contract.
+    check("hv_vm_map", unsafe {
+        ffi::hv_vm_map(host as *mut c_void, gpa, size, perms.0)
+    })
+}
+
+/// Unmaps `size` bytes at guest-physical `gpa` in the process's VM, which must exist.
+pub fn unmap(gpa: u64, size: usize) -> Result<()> {
+    // SAFETY: no host memory is passed.
+    check("hv_vm_unmap", unsafe { ffi::hv_vm_unmap(gpa, size) })
 }
 
 impl Drop for Vm {

@@ -196,6 +196,30 @@ pub struct VmConfig {
     pub vcpus: u32,
 }
 
+/// What maps the memory a virtio-mem device plugs into the guest ([`Vm::add_hotplug`]):
+/// nothing, on KVM, whose stage 2 follows the host's mapping of it. The host withholds a
+/// block's pages and leaves it inaccessible (`platform::withhold`), and KVM's MMU notifiers
+/// unmap it from the guest; a guest touching it then fails its vCPU's run (EFAULT), as it
+/// promised not to (VIRTIO_MEM_F_UNPLUGGED_INACCESSIBLE).
+#[derive(Debug, Clone, Copy)]
+pub struct Stage2(());
+
+impl Stage2 {
+    /// Maps nothing: the memslot covers the memory, and the host's mapping is the guest's.
+    ///
+    /// # Safety
+    /// As every backend's: `host..host+len` must stay mapped in this process until
+    /// unmapped here or the VM is destroyed.
+    pub unsafe fn map(&self, _host: *mut u8, _gpa: u64, _len: usize) -> Result<()> {
+        Ok(())
+    }
+
+    /// Unmaps nothing: the host withholding the memory takes it from the guest.
+    pub fn unmap(&self, _gpa: u64, _len: usize) -> Result<()> {
+        Ok(())
+    }
+}
+
 /// The VM. It must outlive every [`Vcpu`], and guest memory must outlive it.
 #[derive(Debug)]
 pub struct Vm {
@@ -308,6 +332,19 @@ impl Vm {
         };
         // SAFETY: forwarded caller contract.
         unsafe { self.fd.set_user_memory_region(&region) }.map_err(call("KVM_SET_USER_MEMORY_REGION"))
+    }
+
+    /// Gives the guest the memory a virtio-mem device plugs, `len` bytes at `host` seen at
+    /// `gpa` (D133), as one memslot: KVM's stage 2 follows the host's mapping of it, through
+    /// its MMU notifiers (Documentation/virt/kvm/mmu.rst), so what the host withholds the
+    /// guest cannot reach, and the [`Stage2`] this returns has nothing to map.
+    ///
+    /// # Safety
+    /// `host..host+len` must stay mapped in this process until the VM is destroyed.
+    pub unsafe fn add_hotplug(&self, host: *mut u8, gpa: u64, len: usize) -> Result<Stage2> {
+        // SAFETY: forwarded caller contract.
+        unsafe { self.map_ram(host, gpa, len) }?;
+        Ok(Stage2(()))
     }
 
     /// Maps device memory (a virtio-pmem region) at `gpa`, writable by the guest only if

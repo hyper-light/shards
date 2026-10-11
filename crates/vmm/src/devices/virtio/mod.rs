@@ -7,6 +7,7 @@
 pub mod block;
 #[cfg(unix)]
 pub mod fs;
+pub mod mem;
 pub mod mmio;
 #[cfg(unix)]
 pub mod net;
@@ -141,6 +142,13 @@ pub trait VirtioDevice: Send {
     fn queue_max_sizes(&self) -> &[u16];
     fn read_config(&self, offset: u64, data: &mut [u8]);
     fn write_config(&mut self, offset: u64, data: &[u8]);
+    /// What the device's configuration has changed by on its own, as a count: the
+    /// transport's ConfigGeneration adds it (virtio 1.3 §4.2.2.1), so a driver reading a
+    /// field in two accesses sees whether it changed between them. Its sizes are what
+    /// virtio-mem's changes; no other device's does.
+    fn config_generation(&self) -> u32 {
+        0
+    }
     /// Starts processing. On error the transport reports DEVICE_NEEDS_RESET.
     fn activate(&mut self, activation: Activation) -> Result<(), String>;
     /// Called on a vCPU thread when the driver notifies `queue`. Must not block: work that

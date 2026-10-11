@@ -137,6 +137,56 @@ fn reserve_huge(len: usize, huge: usize) -> io::Result<NonNull<u8>> {
     NonNull::new(aligned as *mut u8).ok_or_else(|| io::Error::other("mmap returned NULL"))
 }
 
+/// Gives the pages of `ptr..ptr+len` back to the host and leaves the range inaccessible:
+/// fresh anonymous memory, PROT_NONE, mapped over it (mmap(2) MAP_FIXED), which frees the
+/// pages it held, where MADV_FREE_REUSABLE and MADV_FREE gave nothing back while
+/// Hypervisor.framework mapped them (PM M193). On a hypervisor whose stage 2 holds the
+/// pages it maps (`hv::Stage2`), the range must be unmapped from the VM first: replaced in
+/// the host alone, it left the guest the old pages, and the guest's writes no longer
+/// reached the host's (M193).
+///
+/// # Safety
+/// `ptr..ptr+len` must be page-aligned, within one mapping from [`reserve`] or
+/// [`reserve_ram`], and accessed by no host thread meanwhile.
+pub unsafe fn withhold(ptr: NonNull<u8>, len: usize) -> io::Result<()> {
+    // SAFETY: MAP_FIXED over the caller's own mapping, which nothing accesses meanwhile.
+    let p = unsafe {
+        libc::mmap(
+            ptr.as_ptr().cast(),
+            len,
+            libc::PROT_NONE,
+            libc::MAP_PRIVATE | libc::MAP_ANON | libc::MAP_FIXED | noreserve(),
+            -1,
+            0,
+        )
+    };
+    if p == libc::MAP_FAILED {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// Makes `ptr..ptr+len`, which [`withhold`] left inaccessible, readable and writable again,
+/// zero-filled as it is first touched; on Linux advised as [`reserve_ram`] advises guest
+/// RAM, MADV_HUGEPAGE, which the mapping `withhold` made does not inherit.
+///
+/// # Safety
+/// As for [`withhold`].
+pub unsafe fn grant(ptr: NonNull<u8>, len: usize) -> io::Result<()> {
+    // SAFETY: mprotect(2) of the caller's own mapping.
+    if unsafe { libc::mprotect(ptr.as_ptr().cast(), len, libc::PROT_READ | libc::PROT_WRITE) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    #[cfg(all(target_os = "linux", not(miri)))]
+    if huge_page_size().is_some_and(|huge| len >= huge)
+        // SAFETY: madvise(2) of the caller's own mapping; advice only.
+        && unsafe { libc::madvise(ptr.as_ptr().cast(), len, libc::MADV_HUGEPAGE) } != 0
+    {
+        crate::debug!("MADV_HUGEPAGE: {}", io::Error::last_os_error());
+    }
+    Ok(())
+}
+
 /// # Safety
 /// `ptr..ptr+len` must be a mapping returned by `reserve` or `reserve_ram` and not used
 /// afterwards.
@@ -1340,11 +1390,15 @@ impl FileWatch {
     }
 }
 
-/// What a process uses of the host: its resident memory, in bytes, and the CPU time it
-/// has had, user and system together, in nanoseconds.
+/// What a process uses of the host: its resident memory and its own, in bytes, and the
+/// CPU time it has had, user and system together, in nanoseconds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Usage {
     pub resident: u64,
+    /// Its own memory, as memory per VM is counted (PM M30): macOS's physical footprint,
+    /// which counts a page a guest touched as long as the process holds it, mapped into the
+    /// guest or not (PM M193); Linux's anonymous resident pages (`RssAnon`, proc(5)).
+    pub footprint: u64,
     pub cpu_ns: u64,
 }
 
@@ -1377,9 +1431,9 @@ pub fn launched(pid: u32) -> Option<bool> {
 }
 
 /// [`Usage`] of process `pid`, as the kernel keeps it: macOS's proc_pidinfo
-/// (PROC_PIDTASKINFO), its times in Mach absolute-time units converted by the timebase;
-/// Linux's /proc/PID/stat (utime, stime, in clock ticks) and /proc/PID/statm (resident
-/// pages).
+/// (PROC_PIDTASKINFO), its times in Mach absolute-time units converted by the timebase,
+/// and proc_pid_rusage (RUSAGE_INFO_V2); Linux's /proc/PID/stat (utime, stime, in clock
+/// ticks), /proc/PID/statm (resident pages) and /proc/PID/status (`RssAnon`).
 pub fn process_usage(pid: u32) -> io::Result<Usage> {
     #[cfg(target_os = "macos")]
     {
@@ -1412,8 +1466,23 @@ pub fn process_usage(pid: u32) -> io::Result<Usage> {
         } else {
             ticks * u128::from(base.numer) / u128::from(base.denom)
         };
+        // SAFETY: a zeroed rusage_info_v2 is a valid out-parameter for its flavor, which
+        // proc_pid_rusage(2) fills.
+        let mut rusage: libc::rusage_info_v2 = unsafe { std::mem::zeroed() };
+        // SAFETY: as above.
+        if unsafe {
+            libc::proc_pid_rusage(
+                pid,
+                libc::RUSAGE_INFO_V2,
+                (&raw mut rusage).cast::<libc::rusage_info_t>(),
+            )
+        } != 0
+        {
+            return Err(io::Error::last_os_error());
+        }
         Ok(Usage {
             resident: info.pti_resident_size,
+            footprint: rusage.ri_phys_footprint,
             cpu_ns: u64::try_from(ns).unwrap_or(u64::MAX),
         })
     }
@@ -1437,8 +1506,15 @@ pub fn process_usage(pid: u32) -> io::Result<Usage> {
             .nth(1)
             .and_then(|f| f.parse().ok())
             .unwrap_or(0);
+        let anon_kib: u64 = std::fs::read_to_string(format!("/proc/{pid}/status"))?
+            .lines()
+            .find_map(|l| l.strip_prefix("RssAnon:"))
+            .and_then(|v| v.trim().strip_suffix("kB"))
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap_or(0);
         Ok(Usage {
             resident: pages.saturating_mul(page_size()? as u64),
+            footprint: anon_kib.saturating_mul(1024),
             cpu_ns: ticks.saturating_mul(1_000_000_000 / hz),
         })
     }
@@ -1466,6 +1542,7 @@ mod usage_tests {
         }
         std::hint::black_box(x);
         assert!(after.resident > 0);
+        assert!(after.footprint > 0);
         assert!(after.cpu_ns > before.cpu_ns, "{before:?} {after:?}");
     }
 }

@@ -2,13 +2,15 @@
 //! Markers are timestamped on arrival, which is how boot and restore time are measured
 //! end to end, in the manner of Firecracker's boot-timer device
 //! (docs/research/boot-latency.md). The guest also asks for snapshots here, reads how
-//! many restores precede it, and says which contract its init speaks.
+//! many restores precede it, says which contract its init speaks, and asks for memory to
+//! be plugged (D133).
 
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use shards_abi::{control, marker};
 
+use super::virtio::mem::Sizes;
 use super::{MmioDevice, get_le, put_le};
 use crate::snapshot::codec::{Reader, Result, Writer};
 
@@ -28,6 +30,8 @@ pub struct Control {
     /// The identity the guest's init announced (`control::ABI`), or 0 before it does.
     abi: AtomicU64,
     on_snapshot: OnceLock<SnapshotRequest>,
+    /// The virtio-mem device's sizes, where the guest has memory to plug.
+    hotplug: OnceLock<std::sync::Arc<Sizes>>,
 }
 
 impl std::fmt::Debug for Control {
@@ -57,6 +61,12 @@ impl Control {
         let _ = self.on_snapshot.set(request);
     }
 
+    /// Where the guest's requests for memory go: its virtio-mem device's sizes (D133).
+    /// Without them, the guest has none to plug.
+    pub fn on_hotplug(&self, sizes: std::sync::Arc<Sizes>) {
+        let _ = self.hotplug.set(sizes);
+    }
+
     pub fn generation(&self) -> u32 {
         self.generation.load(Ordering::Acquire)
     }
@@ -80,6 +90,8 @@ impl MmioDevice for Control {
             control::GENERATION => u64::from(self.generation()),
             // In one access only: halves read apart could straddle a carry.
             control::HOST_TIME if data.len() == 8 => host_time_ns(),
+            control::HOTPLUG_SIZE if data.len() == 8 => self.hotplug.get().map_or(0, |s| s.most()),
+            control::HOTPLUG_REQUEST if data.len() == 8 => self.hotplug.get().map_or(0, |s| s.requested()),
             _ => 0,
         };
         put_le(data, value);
@@ -89,6 +101,12 @@ impl MmioDevice for Control {
         // In one access only, as it is read.
         if offset == control::ABI && data.len() == 8 {
             self.abi.store(get_le(data), Ordering::Release);
+            return;
+        }
+        if offset == control::HOTPLUG_REQUEST && data.len() == 8 {
+            if let Some(sizes) = self.hotplug.get() {
+                sizes.request(get_le(data));
+            }
             return;
         }
         if data.len() != 4 {
@@ -163,6 +181,41 @@ mod tests {
         let mut seen: Vec<u32> = came.iter().map(|&(m, _)| m).collect();
         seen.sort_unstable();
         assert_eq!(seen, [marker::INIT_STARTED, marker::CONNECTED]);
+    }
+
+    /// The guest asks for memory here, 64 bits in one access: rounded up to the device's
+    /// blocks, at most what it may have; without a device it may have none.
+    #[test]
+    fn the_guest_asks_for_memory_within_what_it_may_have() {
+        use crate::devices::virtio::mem::BLOCK;
+        let read = |c: &Control, at| {
+            let mut v = [0u8; 8];
+            c.read(at, &mut v);
+            u64::from_le_bytes(v)
+        };
+        let c = Control::default();
+        c.write(control::HOTPLUG_REQUEST, &(64 * BLOCK).to_le_bytes());
+        assert_eq!(
+            (
+                read(&c, control::HOTPLUG_SIZE),
+                read(&c, control::HOTPLUG_REQUEST)
+            ),
+            (0, 0)
+        );
+
+        let sizes = std::sync::Arc::new(Sizes::new(1 << 32, 64 * BLOCK, 48 * BLOCK));
+        c.on_hotplug(sizes.clone());
+        assert_eq!(read(&c, control::HOTPLUG_SIZE), 48 * BLOCK);
+        c.write(control::HOTPLUG_REQUEST, &(BLOCK + 1).to_le_bytes());
+        assert_eq!(read(&c, control::HOTPLUG_REQUEST), 2 * BLOCK);
+        // Only in one 64-bit access.
+        c.write(control::HOTPLUG_REQUEST, &(8 * BLOCK as u32).to_le_bytes());
+        assert_eq!(sizes.requested(), 2 * BLOCK);
+        let mut half = [0u8; 4];
+        c.read(control::HOTPLUG_SIZE, &mut half);
+        assert_eq!(half, [0; 4]);
+        c.write(control::HOTPLUG_REQUEST, &u64::MAX.to_le_bytes());
+        assert_eq!(read(&c, control::HOTPLUG_REQUEST), 48 * BLOCK);
     }
 
     #[test]

@@ -10,7 +10,7 @@ use windows_sys::Win32::Storage::FileSystem::{
 };
 use windows_sys::Win32::System::IO::OVERLAPPED;
 use windows_sys::Win32::System::Memory::{
-    MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_READWRITE, VirtualAlloc, VirtualFree,
+    MEM_COMMIT, MEM_DECOMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_READWRITE, VirtualAlloc, VirtualFree,
 };
 use windows_sys::Win32::System::SystemInformation::{GetSystemInfo, SYSTEM_INFO};
 
@@ -48,6 +48,33 @@ pub fn reserve_ram(len: usize) -> io::Result<NonNull<u8>> {
 
 /// Guest RAM on base pages, as `reserve_ram`'s always is here: nothing to do.
 pub fn small_pages(_ptr: NonNull<u8>, _len: usize) {}
+
+/// Gives the pages of `ptr..ptr+len` back and leaves the range inaccessible: decommitted,
+/// still reserved (VirtualFree MEM_DECOMMIT).
+///
+/// # Safety
+/// `ptr..ptr+len` must be page-aligned, within one region from [`reserve`] or
+/// [`reserve_ram`], and accessed by no host thread meanwhile.
+pub unsafe fn withhold(ptr: NonNull<u8>, len: usize) -> io::Result<()> {
+    // SAFETY: decommits part of the caller's own region.
+    if unsafe { VirtualFree(ptr.as_ptr().cast(), len, MEM_DECOMMIT) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// Commits `ptr..ptr+len`, which [`withhold`] decommitted, again: read/write, zero-filled.
+///
+/// # Safety
+/// As for [`withhold`].
+pub unsafe fn grant(ptr: NonNull<u8>, len: usize) -> io::Result<()> {
+    // SAFETY: commits part of the caller's own reserved region.
+    let p = unsafe { VirtualAlloc(ptr.as_ptr().cast(), len, MEM_COMMIT, PAGE_READWRITE) };
+    if p.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
 
 /// # Safety
 /// `ptr` must come from `reserve` or `reserve_ram` and not be used afterwards.

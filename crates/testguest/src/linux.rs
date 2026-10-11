@@ -29,6 +29,8 @@ pub fn main() {
             "vsock_snapshot_held" => vsock_snapshot_held(),
             "pmem" => pmem(),
             "erofs" => erofs(),
+            "hotplug" => hotplug(),
+            "limits" => limits(),
             other => Err(format!("unknown test {other:?}")),
         },
     );
@@ -341,6 +343,23 @@ impl ControlPage {
     fn read(&self, offset: u64) -> u32 {
         // SAFETY: an aligned register inside the mapped page.
         unsafe { self.regs.add(offset as usize / 4).read_volatile() }
+    }
+
+    /// A 64-bit register, in one access.
+    fn write64(&self, offset: u64, value: u64) {
+        // SAFETY: an aligned 64-bit register inside the mapped page.
+        unsafe {
+            self.regs
+                .add(offset as usize / 4)
+                .cast::<u64>()
+                .write_volatile(value)
+        };
+    }
+
+    /// A 64-bit register, in one access.
+    fn read64(&self, offset: u64) -> u64 {
+        // SAFETY: an aligned 64-bit register inside the mapped page.
+        unsafe { self.regs.add(offset as usize / 4).cast::<u64>().read_volatile() }
     }
 }
 
@@ -1049,6 +1068,107 @@ fn memory_walk() -> Result<(), String> {
         read.as_nanos()
     );
     idle()
+}
+
+/// `MemTotal` of /proc/meminfo, in bytes: the RAM the kernel has, plugged memory as it
+/// comes online included.
+fn mem_total() -> Result<u64, String> {
+    let meminfo = std::fs::read_to_string("/proc/meminfo").map_err(|e| format!("/proc/meminfo: {e}"))?;
+    meminfo
+        .lines()
+        .find_map(|l| l.strip_prefix("MemTotal:"))
+        .and_then(|v| v.trim().strip_suffix("kB"))
+        .and_then(|kb| kb.trim().parse::<u64>().ok())
+        .map(|kb| kb << 10)
+        .ok_or_else(|| "/proc/meminfo: no MemTotal".to_string())
+}
+
+/// Waits for a line from the host on the console: its turn, at a point the guest names.
+fn host_turn() -> Result<(), String> {
+    let mut byte = [0u8; 1];
+    loop {
+        // SAFETY: read(2) of one byte from the console, init's stdin.
+        match unsafe { libc::read(0, byte.as_mut_ptr().cast(), 1) } {
+            1 if byte == *b"\n" => return Ok(()),
+            1 => {}
+            0 => return Err("the console closed".into()),
+            _ if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted => {}
+            _ => return Err(format!("the console: {}", io::Error::last_os_error())),
+        }
+    }
+}
+
+/// Memory plugged as the guest asks for it (D133): asks the control page for
+/// `shards_plug_mib` MiB, waits until the kernel has it all (`MemTotal`), writes and checks
+/// seven eighths of it, more than the guest booted with, and says `SHARDS-TEST PLUGGED
+/// <ms>`, the time from asking to having; the host looks at its memory and sends a line.
+/// Then frees it, asks for none, waits until the kernel has given it all back, says
+/// `SHARDS-TEST UNPLUGGED <ms>`, and waits for the host again. Last, it asks for more than
+/// it may have, is given what it may, and asks for none again, until it has none.
+fn hotplug() -> Result<(), String> {
+    use shards_abi::control::{HOTPLUG_REQUEST, HOTPLUG_SIZE};
+    let control = ControlPage::map()?;
+    let most = control.read64(HOTPLUG_SIZE);
+    let want = env_u64("shards_plug_mib")? << 20;
+    if most < want {
+        return Err(format!("{want} bytes asked for; the guest may plug {most}"));
+    }
+    let before = mem_total()?;
+    let began = Instant::now();
+    control.write64(HOTPLUG_REQUEST, want);
+    waiting("the memory asked for", || match mem_total()? {
+        now if now >= before + want => Ok(()),
+        now => Err(format!("MemTotal {now}, {before} before")),
+    });
+    let plugged = began.elapsed();
+    let used = usize::try_from(want - want / 8).map_err(|e| e.to_string())?;
+    let mut buf = Aligned::new(used)?;
+    for (i, page) in buf.slice(used).chunks_mut(4096).enumerate() {
+        page.fill(i as u8);
+    }
+    if let Some(i) = buf
+        .slice(used)
+        .chunks(4096)
+        .enumerate()
+        .find_map(|(i, page)| page.iter().any(|&b| b != i as u8).then_some(i))
+    {
+        return Err(format!("page {i} of the plugged memory lost what was written"));
+    }
+    let _ = writeln!(io::stdout(), "SHARDS-TEST PLUGGED {}", plugged.as_millis());
+    host_turn()?;
+    drop(buf);
+    let began = Instant::now();
+    control.write64(HOTPLUG_REQUEST, 0);
+    waiting("the memory to go back", || match mem_total()? {
+        now if now <= before => Ok(()),
+        now => Err(format!("MemTotal {now}, {before} before")),
+    });
+    let _ = writeln!(
+        io::stdout(),
+        "SHARDS-TEST UNPLUGGED {}",
+        began.elapsed().as_millis()
+    );
+    host_turn()?;
+    control.write64(HOTPLUG_REQUEST, u64::MAX);
+    let given = control.read64(HOTPLUG_REQUEST);
+    control.write64(HOTPLUG_REQUEST, 0);
+    if given != most {
+        return Err(format!("asked for everything, given {given} of {most}"));
+    }
+    waiting("the memory to go back again", || match mem_total()? {
+        now if now <= before => Ok(()),
+        now => Err(format!("MemTotal {now}, {before} before")),
+    });
+    Ok(())
+}
+
+/// The limits the kernel sized by the memory it booted with (shards_testguest::LIMITS)
+/// and its MemTotal: what a builder's init raises to the memory it may have (D133),
+/// checked against a guest booted with all of it.
+fn limits() -> Result<(), String> {
+    crate::workload::limits()?;
+    let _ = writeln!(io::stdout(), "SHARDS-TEST LIMIT MemTotal {}", mem_total()?);
+    Ok(())
 }
 
 /// A running guest, for measuring any VMM that restores it (the Firecracker comparison):

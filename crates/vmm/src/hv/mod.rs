@@ -13,7 +13,8 @@
 //! Device accesses complete inside `Vcpu::run` through [`Io`]. Firmware power management
 //! (PSCI on arm64) stays inside the backend, and a powered-off vCPU parks inside `run`. The
 //! caller sees only an [`Exit`]. Each backend exports the same names: `Vm`, `Vcpu`, `Kicker`,
-//! `Error`, `check_host`, `max_vcpus`, plus the architecture's interrupt-controller types.
+//! `Stage2`, `Error`, `check_host`, `max_vcpus`, plus the architecture's interrupt-controller
+//! types.
 
 #[cfg(hv = "hvf")]
 pub mod hvf;

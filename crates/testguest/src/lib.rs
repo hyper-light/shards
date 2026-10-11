@@ -37,3 +37,31 @@ pub fn pattern_hash(salt: u64, len: u64) -> u64 {
     }
     hash
 }
+
+/// The sysctls a Linux kernel sizes by its memory at boot (kernel/fork.c `set_max_threads`
+/// and `init_user_ns`'s maxima, fs/file_table.c `files_maxfiles_init`, net/ipv4/tcp.c
+/// `tcp_init`, net/ipv4/udp.c `udp_init`, fs/notify/inotify/inotify_user.c,
+/// fs/eventpoll.c): what a builder whose memory is plugged as its build needs it raises to
+/// all of it (D133), each said `SHARDS-TEST LIMIT NAME VALUE`, its values joined by
+/// commas, by the guest booted with all of it and by a step in the builder alike.
+pub const LIMITS: &[&str] = &[
+    "kernel.threads-max",
+    "user.max_user_namespaces",
+    "user.max_pid_namespaces",
+    "user.max_uts_namespaces",
+    "user.max_ipc_namespaces",
+    "user.max_net_namespaces",
+    "user.max_mnt_namespaces",
+    "user.max_cgroup_namespaces",
+    "user.max_time_namespaces",
+    "user.max_inotify_watches",
+    "fs.file-max",
+    "fs.inotify.max_user_watches",
+    "fs.epoll.max_user_watches",
+    "net.ipv4.tcp_mem",
+    "net.ipv4.udp_mem",
+    "net.ipv4.tcp_rmem",
+    "net.ipv4.tcp_wmem",
+    "net.ipv4.tcp_max_orphans",
+    "net.ipv4.tcp_max_tw_buckets",
+];

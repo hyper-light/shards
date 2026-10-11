@@ -228,7 +228,7 @@ impl MmioDevice for MmioTransport {
             STATUS => s.status,
             // No shared memory regions: length reads as all-ones (§4.2.2).
             SHM_LEN_LOW | SHM_LEN_HIGH => u32::MAX,
-            CONFIG_GENERATION => s.config_generation,
+            CONFIG_GENERATION => s.config_generation.wrapping_add(s.device.config_generation()),
             _ => 0,
         };
         put_le(data, u64::from(v));

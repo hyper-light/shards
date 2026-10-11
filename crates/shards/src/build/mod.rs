@@ -756,11 +756,12 @@ fn builder_cpus() -> u32 {
     std::thread::available_parallelism().map_or(1, |n| u32::try_from(n.get()).unwrap_or(u32::MAX))
 }
 
-/// A builder's memory, in MiB: `SHARDS_BUILD_MEMORY` if set, else half the host's, as
-/// Docker Desktop's VM has on macOS (64 GiB of this host's 128, measured 2026-10-02), so
-/// that a build has what it would have under Docker. Its steps and its layers share it.
-/// What it costs at boot grows with it (PM M82), until memory is plugged as a build
-/// needs it.
+/// The most memory a builder may have, in MiB: `SHARDS_BUILD_MEMORY` if set, else half the
+/// host's, as Docker Desktop's VM has on macOS (64 GiB of this host's 128, measured
+/// 2026-10-02), so that a build has what it would have under Docker. Its steps and its
+/// layers share it. It boots with little of it, and the rest is plugged as the build needs
+/// it (builder::BOOT_MEMORY_MIB, D133): what it costs at boot grows with what it boots with
+/// (PM M82).
 fn builder_memory_mib() -> u64 {
     if let Some(m) = std::env::var("SHARDS_BUILD_MEMORY")
         .ok()
