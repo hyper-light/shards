@@ -199,7 +199,12 @@ struct State {
     joined: bool,
     volumes: HashMap<u64, Volume>,
     named: HashMap<CString, u64>,
+    /// How many node IDs have been drawn, and the keys they are drawn with: each a keyed
+    /// hash (SipHash) of its count, so that no ID can be guessed from another, nor a handle
+    /// to a node forged (open_by_handle_at, which takes a node's ID): a join share's guest
+    /// holds every joiner's nodes in one file system, and each joiner may see its own IDs.
     next_node: u64,
+    ids: std::hash::RandomState,
     handles: HashMap<u64, Handle>,
     next_handle: u64,
     /// Each node's open handles.
@@ -753,7 +758,8 @@ impl Server {
                 joined: false,
                 volumes: HashMap::new(),
                 named: HashMap::new(),
-                next_node: ROOT + 1,
+                next_node: 0,
+                ids: std::hash::RandomState::new(),
                 handles: HashMap::new(),
                 next_handle: 1,
                 opened: HashMap::new(),
@@ -797,8 +803,7 @@ impl Server {
         if s.named.contains_key(&name) {
             return Err(format!("volume {name:?} is served already"));
         }
-        let id = s.next_node;
-        s.next_node += 1;
+        let id = fresh_node(&mut s);
         let (dev, ino) = key(&st);
         s.nodes.insert(
             id,
@@ -1872,8 +1877,7 @@ fn lookup(s: &mut State, parent: u64, name: &CStr) -> Result<(u64, libc::stat, O
             id
         }
         None => {
-            let id = s.next_node;
-            s.next_node += 1;
+            let id = fresh_node(s);
             s.nodes.insert(
                 id,
                 Node {
@@ -1891,6 +1895,19 @@ fn lookup(s: &mut State, parent: u64, name: &CStr) -> Result<(u64, libc::stat, O
     };
     let owner = node_owner(s, id, Some(&st))?;
     Ok((id, st, owner))
+}
+
+/// A node ID no node has, nor the root's or [`NO_VOLUME`]: the next of the share's keyed
+/// hashes of a count.
+fn fresh_node(s: &mut State) -> u64 {
+    use std::hash::BuildHasher as _;
+    loop {
+        s.next_node = s.next_node.wrapping_add(1);
+        let id = s.ids.hash_one(s.next_node);
+        if id != NO_VOLUME && id != ROOT && !s.nodes.contains_key(&id) {
+            return id;
+        }
+    }
 }
 
 /// Forgets all the guest's kernel knew of the share as its session ends: it sends DESTROY
@@ -2688,14 +2705,12 @@ mod tests {
         (err, out[16..].to_vec())
     }
 
-    fn dir() -> (std::path::PathBuf, Server) {
-        static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let p = std::env::temp_dir().join(format!("shards-fs-{}-{n}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&p);
-        std::fs::create_dir_all(&p).unwrap();
+    /// A share of a directory of the test's own, removed as it goes.
+    fn dir() -> (shards_testdir::TempDir, Server) {
+        let p = shards_testdir::TempDir::new("fs").unwrap();
         let fd = std::fs::File::open(&p).unwrap();
-        (p, Server::new(fd.into(), false, None).unwrap())
+        let server = Server::new(fd.into(), false, None).unwrap();
+        (p, server)
     }
 
     /// A join share's volumes (D119): each reached from the share's empty root by its name
@@ -2747,6 +2762,33 @@ mod tests {
         s.remove(&c("b"));
         assert_eq!(answer(&s, &req(op::LOOKUP, ROOT, 0, &name("b"))).0, -ENOENT);
         assert_eq!(answer(&s, &req(op::LOOKUP, vb, 0, &name("y"))).0, -ESTALE);
+    }
+
+    /// Node IDs are not guessed from one another: one file's next to the last's is no
+    /// neighbour of it, and two servers of one directory number its files apart, so that a
+    /// handle to a node no path reaches cannot be forged (open_by_handle_at).
+    #[test]
+    fn node_ids_are_not_guessed_from_one_another() {
+        let (root, s) = dir();
+        for n in ["a", "b", "c"] {
+            std::fs::write(root.join(n), n).unwrap();
+        }
+        let other = Server::new(std::fs::File::open(&root).unwrap().into(), false, None).unwrap();
+        let ids = |s: &Server| -> Vec<u64> {
+            ["a", "b", "c"]
+                .iter()
+                .map(|n| {
+                    let (e, entry) = answer(s, &req(op::LOOKUP, ROOT, 0, &name(n)));
+                    assert_eq!(e, 0);
+                    u64::from_le_bytes(entry[0..8].try_into().unwrap())
+                })
+                .collect()
+        };
+        let (mine, theirs) = (ids(&s), ids(&other));
+        for pair in mine.windows(2) {
+            assert!(pair[0].abs_diff(pair[1]) > 1 << 16, "{mine:?}");
+        }
+        assert!(mine.iter().all(|id| !theirs.contains(id)), "{mine:?} {theirs:?}");
     }
 
     /// The end of a session (DESTROY, or the next INIT) forgets every node and handle the
@@ -2952,7 +2994,8 @@ mod tests {
     fn a_mode_change_follows_no_symlink() {
         use std::os::unix::fs::PermissionsExt as _;
         let (path, s) = dir();
-        let outside = path.with_extension("outside");
+        let elsewhere = shards_testdir::TempDir::new("fs-outside").unwrap();
+        let outside = elsewhere.join("outside");
         std::fs::write(&outside, "secret").unwrap();
         std::fs::set_permissions(&outside, std::fs::Permissions::from_mode(0o600)).unwrap();
         let mut body = name("link");
@@ -3190,7 +3233,8 @@ mod tests {
         let (path, _) = dir();
         std::fs::create_dir_all(path.join("a/b")).unwrap();
         std::fs::create_dir_all(path.join("other")).unwrap();
-        let outside = path.with_extension("outside");
+        let elsewhere = shards_testdir::TempDir::new("fs-outside").unwrap();
+        let outside = elsewhere.join("outside");
         std::fs::create_dir_all(outside.join("b")).unwrap();
         // A budget of one: each request on one directory lets the other go.
         let s = small(&path, 1);

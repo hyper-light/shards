@@ -43,7 +43,30 @@ pub enum Start {
 }
 
 /// The driver option whose value sets the endpoint's interface sysctls.
-const SYSCTLS: &str = "com.docker.network.endpoint.sysctls";
+use crate::setup::ENDPOINT_SYSCTLS as SYSCTLS;
+
+/// moby's create route (daemon/server/router/container, handleSysctlBC, API 1.48 and on):
+/// a sysctl of an interface (`net.X.Y.ethN.Z`) given a container on a network of its
+/// own (not `host`, not `container:`) is refused before anything else is checked; it is
+/// an endpoint's (`driver-opt=com.docker.network.endpoint.sysctls=…`).
+pub fn interface_sysctl(run: &Run) -> Result<(), String> {
+    if run.network == "host" || run.network.starts_with("container:") {
+        return Ok(());
+    }
+    for kv in &run.sysctls {
+        let key = kv.split_once('=').map_or(kv.as_str(), |(k, _)| k);
+        let parts: Vec<&str> = key.splitn(5, '.').collect();
+        if let [net, _, _, iface, _] = parts.as_slice()
+            && *net == "net"
+            && iface.starts_with("eth")
+        {
+            return Err(format!(
+                "interface specific sysctl setting \"{key}\" must be supplied using driver option '{SYSCTLS}'"
+            ));
+        }
+    }
+    Ok(())
+}
 
 /// The subnets of a network, of both versions: a user network's, or those of dockerd's
 /// predefined networks (the default bridge's IPv4 subnet for `bridge`; none has IPv6),
@@ -147,9 +170,6 @@ pub fn check(
         }
         if !e.link_local.is_empty() {
             return unsupported("link-local-ip");
-        }
-        if e.driver_opts.iter().any(|(k, _)| k == SYSCTLS) {
-            return unsupported("driver-opt");
         }
     }
     // As it starts: the mode's network, then the rest.
@@ -549,6 +569,7 @@ mod tests {
             }),
             unsupported("link-local-ip")
         );
+        // An endpoint's sysctls are taken (PM M171).
         assert_eq!(
             check(
                 &run(&[
@@ -557,13 +578,66 @@ mod tests {
                 docker,
                 |_| false
             ),
-            unsupported("driver-opt")
+            Ok(Start::Attach(Net::Bridge))
         );
         // dockerd runs `none` then `bridge`; it refuses `bridge` then `none`, and so are both.
         assert_eq!(
             check(&run(&["none", "bridge"]), docker, |_| false),
             Ok(Start::Fails("failed to set up container networking: container cannot be connected to multiple networks with one of the networks in private (none) mode".into()))
         );
+    }
+
+    /// An interface's sysctl given as a container's own is refused as moby's create route
+    /// refuses it, on any network of the container's own, `none` too, for eth0 and any
+    /// other; on `host`, or another's network, it is not; other sysctls pass (PM M171). An
+    /// endpoint's sysctls are its network's, none on `none`.
+    #[test]
+    fn interface_sysctls_are_endpoints() {
+        let with = |network: &str, sysctls: &[&str]| Run {
+            network: network.into(),
+            sysctls: sysctls.iter().map(|s| s.to_string()).collect(),
+            ..Run::default()
+        };
+        let refused = |key: &str| {
+            Err(format!(
+                "interface specific sysctl setting \"{key}\" must be supplied using driver option 'com.docker.network.endpoint.sysctls'"
+            ))
+        };
+        for network in ["default", "bridge", "none", "mine"] {
+            for key in ["net.ipv4.conf.eth0.log_martians", "net.ipv6.conf.eth1.forwarding"] {
+                assert_eq!(
+                    interface_sysctl(&with(network, &[&format!("{key}=1")])),
+                    refused(key),
+                    "{network} {key}"
+                );
+            }
+        }
+        for (network, sysctl) in [
+            ("host", "net.ipv4.conf.eth0.log_martians=1"),
+            ("container:x", "net.ipv4.conf.eth0.log_martians=1"),
+            ("bridge", "net.ipv4.conf.all.forwarding=1"),
+            ("bridge", "net.ipv4.ip_forward=1"),
+            ("bridge", "kernel.shmmax=1"),
+        ] {
+            assert_eq!(
+                interface_sysctl(&with(network, &[sysctl])),
+                Ok(()),
+                "{network} {sysctl}"
+            );
+        }
+        let opt = "com.docker.network.endpoint.sysctls=net.ipv4.conf.IFNAME.log_martians=1,net.ipv4.conf.ifname.accept_redirects=0";
+        let given = run(&[&format!("name=bridge,\"driver-opt={opt}\"")]);
+        // Lower case, as docker/cli hands driver options on (moby: "the CLI converts to
+        // lower case").
+        assert_eq!(
+            crate::setup::endpoint_sysctls(&given),
+            [
+                "net.ipv4.conf.ifname.log_martians=1",
+                "net.ipv4.conf.ifname.accept_redirects=0"
+            ]
+        );
+        let none = run(&[&format!("name=none,\"driver-opt={opt}\"")]);
+        assert!(crate::setup::endpoint_sysctls(&none).is_empty());
     }
 
     /// The bridge is the one the daemon elected: an address is checked against its subnet,

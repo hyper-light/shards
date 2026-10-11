@@ -763,7 +763,8 @@ mod tests {
     /// rest of the copies ahead (review 1.19).
     #[test]
     fn written_pages_past_a_run_that_fails_are_copied() {
-        let path = std::env::temp_dir().join(format!("shards-copy-written-{}", std::process::id()));
+        let path_dir = shards_testdir::TempDir::new("copy-written").unwrap();
+        let path = path_dir.join("copy-written");
         let file = std::fs::OpenOptions::new()
             .read(true)
             .write(true)

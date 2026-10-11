@@ -599,7 +599,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_templates_origin_is_beside_it_and_never_followed() {
-        let home = std::env::temp_dir().join(format!("shards-origin-{}", std::process::id()));
+        let home_dir = shards_testdir::TempDir::new("origin").unwrap();
+        let home = home_dir.join("origin");
         let _ = std::fs::remove_dir_all(&home);
         let templates = home.join("templates");
         let dir = templates.join("0abc");

@@ -33,6 +33,31 @@ fn clean(p: &str) -> String {
     }
 }
 
+/// The driver option an endpoint's sysctls come in (moby libnetwork netlabel.EndpointSysctls).
+pub const ENDPOINT_SYSCTLS: &str = "com.docker.network.endpoint.sysctls";
+
+/// The sysctls the endpoint of `run`'s own network gives its interface (D46, PM M171),
+/// each `net.X.Y.IFNAME.Z=V` as given: none on `none`, which has no interface, where
+/// dockerd ignores them.
+pub fn endpoint_sysctls(run: &Run) -> Vec<String> {
+    if run.network == "none" {
+        return Vec::new();
+    }
+    let ours = |n: &str| {
+        n == run.network
+            || matches!(
+                (n, run.network.as_str()),
+                ("bridge", "default") | ("default", "bridge")
+            )
+    };
+    run.endpoints
+        .iter()
+        .find(|e| ours(&e.network))
+        .and_then(|e| e.driver_opts.iter().find(|(k, _)| k == ENDPOINT_SYSCTLS))
+        .map(|(_, v)| v.split(',').filter(|s| !s.is_empty()).map(String::from).collect())
+        .unwrap_or_default()
+}
+
 /// docker/cli's map of `--tmpfs`: each destination's options, the last given for it
 /// (container/opts.go).
 fn tmpfs_map(run: &Run) -> std::collections::BTreeMap<String, String> {
@@ -87,14 +112,16 @@ pub fn capabilities(run: &Run) -> u64 {
 /// A container's `--security-opt`, as dockerd reads them as it makes one (moby
 /// daemon/daemon_unix.go, parseSecurityOpt): each `KEY=VALUE`, else `KEY:VALUE` (which it
 /// calls deprecated), but `no-new-privileges`, `writable-cgroups` and `disable` alone.
-/// Labels and AppArmor profiles are kept, as on a host without SELinux or AppArmor,
-/// which the guest kernel has neither of.
+/// Labels are kept, as on a host without SELinux, which the guest kernel has none of; an
+/// AppArmor profile's name says only whether docker-default's mount rule holds (`MOUNTS`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Security {
     pub no_new_privileges: bool,
     pub writable_cgroups: Option<bool>,
     /// `seccomp=`'s value: `unconfined`, `builtin`, a profile's JSON, or none.
     pub seccomp: Option<String>,
+    /// `apparmor=`'s value: `unconfined`, a profile's name, or none.
+    pub apparmor: Option<String>,
 }
 
 pub fn security(run: &Run) -> Result<Security, String> {
@@ -125,7 +152,8 @@ pub fn security(run: &Run) -> Result<Security, String> {
         };
         let two = || format!("invalid --security-opt 2: {}", shards_cmdline::go::quote(opt));
         match k {
-            "label" | "apparmor" => {}
+            "label" => {}
+            "apparmor" => out.apparmor = Some(v.to_string()),
             "seccomp" => out.seccomp = Some(v.to_string()),
             "no-new-privileges" => {
                 out.no_new_privileges = shards_cmdline::go::parse_bool(v).map_err(|_| two())?
@@ -198,13 +226,46 @@ pub fn seccomp(
         None | Some("" | "builtin") => shards_seccomp::DEFAULT,
         Some(json) => json.as_bytes(),
     };
+    compiled(profile, run, kernel, b"seccomp=")
+}
+
+/// What docker-default, Docker's AppArmor profile, keeps from a container with
+/// CAP_SYS_ADMIN where AppArmor is enforced (`deny mount,`), as a filter of its own, for
+/// guests, which have no AppArmor (`seccomp-mounts=`, shards_seccomp::MOUNTS): none for a
+/// privileged container or `apparmor=unconfined`, as Docker's has none, nor without the
+/// capability, which every mount needs, refused EPERM before AppArmor is asked. So a
+/// container given SYS_ADMIN mounts nothing of its microVM's, its shares among them.
+pub fn mounts(
+    run: &Run,
+    security: &Security,
+    kernel: shards_seccomp::Kernel,
+) -> Result<Option<Vec<u8>>, String> {
+    const CAP_SYS_ADMIN: u32 = 21;
+    if run.privileged
+        || security.apparmor.as_deref() == Some("unconfined")
+        || capabilities(run) & (1 << CAP_SYS_ADMIN) == 0
+    {
+        return Ok(None);
+    }
+    compiled(shards_seccomp::MOUNTS, run, kernel, b"seccomp-mounts=")
+}
+
+/// `profile` compiled for `run`'s capabilities on `kernel`, as the setup entry `name`
+/// names: its seccomp(2) flags, then its instructions. Each profile, set of capabilities
+/// and kernel is compiled once.
+fn compiled(
+    profile: &[u8],
+    run: &Run,
+    kernel: shards_seccomp::Kernel,
+    name: &[u8],
+) -> Result<Option<Vec<u8>>, String> {
     let arch = shards_seccomp::Arch::host().ok_or("seccomp needs an amd64 or arm64 guest")?;
     let version = kernel;
     let caps = capability_names(run);
-    type Key = (Vec<u8>, Vec<String>, shards_seccomp::Kernel);
+    type Key = (Vec<u8>, Vec<u8>, Vec<String>, shards_seccomp::Kernel);
     static COMPILED: std::sync::Mutex<std::collections::BTreeMap<Key, Option<Vec<u8>>>> =
         std::sync::Mutex::new(std::collections::BTreeMap::new());
-    let key = (profile.to_vec(), caps, version);
+    let key = (name.to_vec(), profile.to_vec(), caps, version);
     let cached = COMPILED
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -215,11 +276,11 @@ pub fn seccomp(
     }
     let c = shards_seccomp::Container {
         arch,
-        caps: &key.1,
+        caps: &key.2,
         kernel: version,
     };
     let entry = shards_seccomp::compile(profile, &c)?.map(|p| {
-        let mut e = b"seccomp=".to_vec();
+        let mut e = name.to_vec();
         e.extend_from_slice(&p.flags.to_le_bytes());
         for i in &p.insns {
             e.extend_from_slice(&i.to_ne_bytes());
@@ -511,6 +572,11 @@ pub fn security_setup(run: &Run, kernel: shards_seccomp::Kernel) -> Result<Vec<V
     if security.no_new_privileges {
         out.push(b"nnp".to_vec());
     }
+    // Docker's AppArmor's mount rule first, so that its profile's errno is the one a
+    // syscall both refuse returns (the most recent filter's).
+    if let Some(filter) = mounts(run, &security, kernel)? {
+        out.push(filter);
+    }
     if let Some(filter) = seccomp(run, &security, kernel)? {
         out.push(filter);
     }
@@ -667,5 +733,52 @@ mod tests {
                 "readonly",
             ]
         );
+    }
+
+    /// Docker's AppArmor's mount rule is a filter of its own for a container given
+    /// CAP_SYS_ADMIN, before Docker's profile; none without the capability, for a
+    /// privileged container, or with `apparmor=unconfined`, as Docker's has none then.
+    #[test]
+    fn a_container_given_sys_admin_has_apparmors_mount_rule() {
+        let kernel = shards_seccomp::Kernel(6, 1);
+        let entries = |run: &Run| {
+            security_setup(run, kernel)
+                .unwrap()
+                .into_iter()
+                .filter_map(|e| {
+                    let name = e.split(|&b| b == b'=').next().unwrap_or_default().to_vec();
+                    name.starts_with(b"seccomp")
+                        .then(|| String::from_utf8(name).unwrap())
+                })
+                .collect::<Vec<_>>()
+        };
+        // As the CLI hands capabilities on, normalized (docker/cli opts.NormalizeCapability).
+        let admin = Run {
+            cap_add: vec!["CAP_SYS_ADMIN".into()],
+            ..Run::default()
+        };
+        assert_eq!(entries(&admin), ["seccomp-mounts", "seccomp"]);
+        assert_eq!(entries(&Run::default()), ["seccomp"]);
+        let all = Run {
+            cap_add: vec!["ALL".into()],
+            ..Run::default()
+        };
+        assert_eq!(entries(&all), ["seccomp-mounts", "seccomp"]);
+        let unconfined = Run {
+            security_opt: vec!["apparmor=unconfined".into()],
+            ..admin.clone()
+        };
+        assert_eq!(entries(&unconfined), ["seccomp"]);
+        let privileged = Run {
+            privileged: true,
+            ..Run::default()
+        };
+        assert!(entries(&privileged).is_empty());
+        // `seccomp=unconfined` leaves AppArmor's rule, as Docker's leaves its profile.
+        let no_seccomp = Run {
+            security_opt: vec!["seccomp=unconfined".into()],
+            ..admin.clone()
+        };
+        assert_eq!(entries(&no_seccomp), ["seccomp-mounts"]);
     }
 }

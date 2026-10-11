@@ -457,11 +457,8 @@ mod tests {
         ]
     }
 
-    fn scratch(name: &str) -> std::path::PathBuf {
-        let d = std::env::temp_dir().join(format!("shards-d113-check-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
-        d
+    fn scratch(name: &str) -> shards_testdir::TempDir {
+        shards_testdir::TempDir::new(&format!("d113-check-{name}")).unwrap()
     }
 
     /// The image check reads a host tree as `shards build`'s snapshot is read: a symlink

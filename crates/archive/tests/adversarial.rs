@@ -11,13 +11,13 @@ use std::path::PathBuf;
 use shards_archive::tar::{Format, Header, TYPE_REG, Time, Writer};
 use shards_archive::{UnpackOptions, unpack};
 
-fn tmp(name: &str) -> PathBuf {
-    let dir = fs::canonicalize(std::env::temp_dir())
-        .unwrap()
-        .join(format!("shards-archive-adv-{}-{name}", std::process::id()));
-    let _ = fs::remove_dir_all(&dir);
+/// A directory of the test's own, its path free of symlinks (macOS's /var is one), with
+/// a `dest` in it; it goes with the guard.
+fn tmp(name: &str) -> (shards_testdir::TempDir, PathBuf) {
+    let guard = shards_testdir::TempDir::new(&format!("archive-adv-{name}")).unwrap();
+    let dir = fs::canonicalize(&guard).unwrap();
     fs::create_dir_all(dir.join("dest")).unwrap();
-    dir
+    (guard, dir)
 }
 
 fn opts() -> UnpackOptions {
@@ -32,7 +32,7 @@ fn opts() -> UnpackOptions {
 /// system's path limit), not a crash, and nothing appears beside the destination.
 #[test]
 fn deep_names_end_without_exhausting_the_stack() {
-    let dir = tmp("deep");
+    let (_dir, dir) = tmp("deep");
     let mut name = b"a/".repeat(200_000);
     name.extend_from_slice(b"x");
     let mut tw = Writer::new(Vec::new());
@@ -79,7 +79,7 @@ fn sparse_maps_are_bounded() {
     for _ in 0..4096 {
         archive.extend_from_slice(&ext);
     }
-    let dir = tmp("sparse");
+    let (_dir, dir) = tmp("sparse");
     let err = unpack(archive.as_slice(), &dir.join("dest"), &opts()).unwrap_err();
     assert_eq!(err.to_string(), "archive/tar: sparse map too long");
     fs::remove_dir_all(&dir).unwrap();

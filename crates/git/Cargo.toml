@@ -14,3 +14,6 @@ workspace = true
 flate2 = { version = "1", default-features = false, features = ["zlib-rs", "runtime_detection"] }
 # Git's object names are SHA-1 with collision detection, as git's own (sha1dc).
 sha1-checked = { version = "0.10", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+shards-testdir = { path = "../testdir" }

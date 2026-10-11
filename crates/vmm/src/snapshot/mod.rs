@@ -973,19 +973,16 @@ mod tests {
 
         /// A directory of its own under the system's temporary directory, holding the
         /// files [`sample`] names, removed on drop.
-        struct Scratch(PathBuf);
+        /// Its path, canonical, and the directory that goes with it.
+        struct Scratch(
+            PathBuf,
+            #[expect(dead_code, reason = "held for its drop")] shards_testdir::TempDir,
+        );
 
         impl Scratch {
             fn new(name: &str) -> Scratch {
-                static N: AtomicU64 = AtomicU64::new(0);
-                let dir = std::env::temp_dir().join(format!(
-                    "shards-snap-{name}-{}-{}",
-                    std::process::id(),
-                    N.fetch_add(1, Ordering::Relaxed)
-                ));
-                let _ = fs::remove_dir_all(&dir);
-                fs::create_dir_all(&dir).unwrap();
-                let s = Scratch(fs::canonicalize(&dir).unwrap());
+                let dir = shards_testdir::TempDir::new(&format!("snap-{name}")).unwrap();
+                let s = Scratch(fs::canonicalize(&dir).unwrap(), dir);
                 s.file("a.img", 4096, 1);
                 s.file("b.img", 4096, 2);
                 s.file("base.erofs", 8192, 3);

@@ -3,3 +3,9 @@ allow-expect-in-tests = true
 allow-panic-in-tests = true
 allow-indexing-slicing-in-tests = true
 allow-print-in-tests = true
+# A test's directories are shards_testdir::TempDir's, removed as they go and, a killed test
+# process's, as the next one starts: none is made by hand in the system's temporary
+# directory, where hundreds were left before (2026-10-10).
+disallowed-methods = [
+  { path = "std::env::temp_dir", reason = "a test's directory is shards_testdir::TempDir's, which removes it" },
+]

@@ -196,7 +196,8 @@ mod tests {
     /// may hold, in `shards build`'s words: a set-ID file refused, nothing laid out.
     #[test]
     fn layers_are_held_then_laid_out_as_shards_build_holds_them() {
-        let root = std::env::temp_dir().join(format!("shards-osi-{}", std::process::id()));
+        let root_dir = shards_testdir::TempDir::new("osi").unwrap();
+        let root = root_dir.join("osi");
         let _ = std::fs::remove_dir_all(&root);
         let layers = root.join("layers");
         let out = root.join("out");

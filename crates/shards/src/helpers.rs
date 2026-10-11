@@ -176,7 +176,8 @@ mod tests {
         if !carried::PRESENT {
             return;
         }
-        let root = std::env::temp_dir().join(format!("shards-helpers-{}", std::process::id()));
+        let root_dir = shards_testdir::TempDir::new("helpers").unwrap();
+        let root = root_dir.join("helpers");
         let _ = fs::remove_dir_all(&root);
         write_out(&root, "test").unwrap();
         let dir = root.join("test");

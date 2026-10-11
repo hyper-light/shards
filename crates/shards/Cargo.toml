@@ -75,6 +75,7 @@ windows-sys = { workspace = true }
 sha2 = "0.11"
 
 [dev-dependencies]
+shards-testdir = { path = "../testdir" }
 shards-testguest = { path = "../testguest" }
 # `load`'s archives of every compression (tests/containers.rs), written in-process.
 bzip2 = "0.6"

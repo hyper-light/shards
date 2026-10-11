@@ -159,19 +159,21 @@ mod tests {
         let null = std::fs::OpenOptions::new().write(true).open("/dev/null").unwrap();
         assert!(null.sync_all().is_err(), "std's sync_all took F_FULLFSYNC here");
         sync_durable(&null).unwrap();
-        let dir = std::fs::File::open(std::env::temp_dir()).unwrap();
+        let held = shards_testdir::TempDir::new("sync").unwrap();
+        let dir = std::fs::File::open(&held).unwrap();
         sync_entries(&dir).unwrap();
     }
 
-    fn temp_file(tag: &str, contents: &[u8]) -> (std::path::PathBuf, File) {
-        let path = std::env::temp_dir().join(format!("shards-platform-{tag}-{}", std::process::id()));
+    fn temp_file(tag: &str, contents: &[u8]) -> (shards_testdir::TempDir, File) {
+        let dir = shards_testdir::TempDir::new(&format!("platform-{tag}")).unwrap();
+        let path = dir.join("it");
         std::fs::File::create(&path).unwrap().write_all(contents).unwrap();
         let file = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
             .open(&path)
             .unwrap();
-        (path, file)
+        (dir, file)
     }
 
     /// Whether `fd` is readable now.
@@ -273,7 +275,8 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn a_control_groups_task_limit_is_the_least_up_to_its_root() {
-        let root = std::env::temp_dir().join(format!("pids-max-{}", std::process::id()));
+        let root_dir = shards_testdir::TempDir::new("pids-max").unwrap();
+        let root = root_dir.join("pids-max");
         let write = |at: &str, text: &str| {
             let path = root.join(at);
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -351,9 +354,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_watch_sees_a_directory_and_its_file_change() {
-        let dir = std::env::temp_dir().join(format!("shards-platform-watch-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = shards_testdir::TempDir::new("platform-watch").unwrap();
         let append = |name: &str| {
             std::fs::OpenOptions::new()
                 .create(true)
@@ -411,7 +412,7 @@ mod tests {
 
     #[test]
     fn positional_io_round_trips_and_reports_end_of_file() {
-        let (path, file) = temp_file("io", b"0123456789");
+        let (_dir, file) = temp_file("io", b"0123456789");
         let mut buf = [0u8; 4];
         // SAFETY: `buf` is a live 4-byte buffer.
         assert_eq!(unsafe { read_at(&file, buf.as_mut_ptr(), 4, 3) }.unwrap(), 4);
@@ -427,7 +428,6 @@ mod tests {
         let short = read_exact_at(&file, &mut [0u8; 4], 13).unwrap_err();
         assert_eq!(short.kind(), io::ErrorKind::UnexpectedEof);
         drop(file);
-        let _ = std::fs::remove_file(path);
     }
 
     #[test]

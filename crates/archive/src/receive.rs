@@ -256,7 +256,8 @@ mod tests {
 
     /// The test's own ids: what a file it makes is owned by.
     fn own() -> (u32, u32) {
-        let probe = std::env::temp_dir().join(format!("receive-own-{}", std::process::id()));
+        let probe_dir = shards_testdir::TempDir::new("receive-own").unwrap();
+        let probe = probe_dir.join("receive-own");
         std::fs::write(&probe, b"").unwrap();
         let p = std::fs::metadata(&probe).unwrap();
         std::fs::remove_file(&probe).unwrap();
@@ -272,7 +273,8 @@ mod tests {
     /// asked for, emptied of the rest; no symlink takes a write outside it.
     #[test]
     fn a_tree_is_received_as_fsutil_receives_it() {
-        let tmp = std::env::temp_dir().join(format!("receive-{}", std::process::id()));
+        let tmp_dir = shards_testdir::TempDir::new("receive").unwrap();
+        let tmp = tmp_dir.join("receive");
         let _ = std::fs::remove_dir_all(&tmp);
         let dest = tmp.join("a/b");
         std::fs::create_dir_all(tmp.join("outside")).unwrap();
@@ -330,7 +332,8 @@ mod tests {
     }
 
     fn umask() -> u32 {
-        let probe = std::env::temp_dir().join(format!("receive-umask-{}", std::process::id()));
+        let probe_dir = shards_testdir::TempDir::new("receive-umask").unwrap();
+        let probe = probe_dir.join("receive-umask");
         std::fs::DirBuilder::new().create(&probe).unwrap();
         let mode = std::fs::metadata(&probe).unwrap().permissions().mode() & 0o777;
         std::fs::remove_dir(&probe).unwrap();

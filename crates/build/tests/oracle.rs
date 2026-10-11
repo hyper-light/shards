@@ -70,11 +70,7 @@ fn file_operations_and_layers_match_buildkit() {
         }
         let mut mem = Sources::default();
         let got = run(case, &mut mem);
-        CONTEXT_DIRS.with(|d| {
-            for dir in d.borrow_mut().drain(..) {
-                std::fs::remove_dir_all(dir).unwrap();
-            }
-        });
+        CONTEXT_DIRS.with(|d| d.borrow_mut().clear());
         let want_err = answer["error"].as_str().unwrap_or("");
         match got {
             Err(e) if e == want_err => {}

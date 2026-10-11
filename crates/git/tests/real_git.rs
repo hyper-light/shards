@@ -41,9 +41,7 @@ fn packs_git_writes_are_read_object_for_object() {
         eprintln!("SKIP: no git on this host");
         return;
     }
-    let dir = std::env::temp_dir().join(format!("shards-git-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = shards_testdir::TempDir::new("git").unwrap();
     git(&dir, &["init", "-q", "-b", "main"]);
     // Many versions of one file, so that git deltifies them against one another.
     let mut text = String::new();
@@ -164,7 +162,8 @@ fn a_shallow_fetch_from_git_checks_out_as_git_does() {
         eprintln!("SKIP: no git on this host");
         return;
     }
-    let dir = std::env::temp_dir().join(format!("shards-git-fetch-{}", std::process::id()));
+    let dir_guard = shards_testdir::TempDir::new("git-fetch").unwrap();
+    let dir = dir_guard.join("git-fetch");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("a/b")).unwrap();
     git(&dir, &["init", "-q", "-b", "main"]);
@@ -274,9 +273,7 @@ fn refs_resolve_as_buildkit_resolves_them() {
         eprintln!("SKIP: no git on this host");
         return;
     }
-    let dir = std::env::temp_dir().join(format!("shards-git-refs-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = shards_testdir::TempDir::new("git-refs").unwrap();
     git(&dir, &["init", "-q", "-b", "trunk"]);
     std::fs::write(dir.join("f"), "1\n").unwrap();
     git(&dir, &["add", "-A"]);
@@ -336,7 +333,8 @@ fn a_kept_git_dir_is_one_git_reads_as_its_own() {
         eprintln!("SKIP: no git on this host");
         return;
     }
-    let base = std::env::temp_dir().join(format!("shards-git-keep-{}", std::process::id()));
+    let base_dir = shards_testdir::TempDir::new("git-keep").unwrap();
+    let base = base_dir.join("git-keep");
     let _ = std::fs::remove_dir_all(&base);
     let (dir, out) = (base.join("origin"), base.join("checkout"));
     std::fs::create_dir_all(dir.join("a/b")).unwrap();
@@ -459,7 +457,8 @@ fn a_git_daemon_serves_as_smart_http_does() {
         eprintln!("SKIP: no git on this host");
         return;
     }
-    let base = std::env::temp_dir().join(format!("shards-git-daemon-{}", std::process::id()));
+    let base_dir = shards_testdir::TempDir::new("git-daemon").unwrap();
+    let base = base_dir.join("git-daemon");
     let _ = std::fs::remove_dir_all(&base);
     let dir = base.join("repo.git");
     std::fs::create_dir_all(&dir).unwrap();

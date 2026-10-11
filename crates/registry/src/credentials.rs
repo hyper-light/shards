@@ -425,11 +425,8 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
 
-    fn temp(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("shards-creds-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    fn temp(name: &str) -> shards_testdir::TempDir {
+        shards_testdir::TempDir::new(&format!("creds-{name}")).unwrap()
     }
 
     fn auth(user_password: &str) -> String {

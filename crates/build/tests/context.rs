@@ -35,9 +35,7 @@ fn mode_of(m: u64) -> u64 {
 fn contexts_are_sent_as_buildx_sends_them() {
     let spec: Value = serde_json::from_str(include_str!("../testdata/contexts.json")).unwrap();
     let answers: Value = serde_json::from_str(include_str!("../testdata/contexts-answers.json")).unwrap();
-    let tmp = std::env::temp_dir().join(format!("shards-context-test-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&tmp);
-    std::fs::create_dir_all(&tmp).unwrap();
+    let tmp = shards_testdir::TempDir::new("context-test").unwrap();
     common::make(&tmp, &spec["tree"]);
     let root = std::fs::canonicalize(&tmp).unwrap();
     let mut failed = Vec::new();
@@ -96,11 +94,8 @@ fn contexts_are_sent_as_buildx_sends_them() {
     );
 }
 
-fn tmp(name: &str) -> std::path::PathBuf {
-    let d = std::env::temp_dir().join(format!("shards-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    d
+fn tmp(name: &str) -> shards_testdir::TempDir {
+    shards_testdir::TempDir::new(name).unwrap()
 }
 
 /// The bug a build that reads in place would have: an edit after the context is read,

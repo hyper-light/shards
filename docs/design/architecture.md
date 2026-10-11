@@ -2885,6 +2885,21 @@ the daemon elected (D31).
   (networks.rs) and the CLI's consolidation (daemon/networks.rs) held to Docker's answers
   in unit tests.
 
+An endpoint's sysctls (`--network NAME,driver-opt=com.docker.network.endpoint.sysctls=…`),
+as dockerd sets them (PM M171): written on eth0 by init, its name in place of `IFNAME`
+(or `ifname`, as the CLI lowercases it), after the container's own sysctls, as libnetwork
+writes them on the interface it configures after runc's; libnetwork's checks and words (a
+key with no file "… is not a sysctl file", a value the kernel refuses "unable to write
+to …", the start failing "failed to set up container networking: failed to add interface
+eth0 to sandbox: …", where dockerd names its veth); a value already set is not written;
+none on `none`, which has no interface, as dockerd sets none. An interface's sysctl given
+as the container's own (`--sysctl net.X.Y.ethN.Z`) is refused as moby's create route
+refuses it (handleSysctlBC, API 1.48 and on), before anything else is checked, for any
+network of the container's own. Beside an Agentfile's agents whose flows cross the
+command's namespace, refused as any net.* sysctl is (D115). Tested
+(`an_endpoints_sysctls_are_its_interfaces`, mutation-checked: written before the
+container's own, eth0 kept all's; `interface_sysctls_are_endpoints`).
+
 Unlike Docker, by the microVM: a microVM has one network device, so it is on one network.
 One left on the default bridge and connected to one user network is on that network
 alone, which under default deny gives it all the bridge would. A microVM on two user
@@ -3452,6 +3467,51 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode
 waits on the user.
 
+### D121. Docker's AppArmor mount rule, in guests that have no AppArmor
+
+Where AppArmor is enforced, as on Ubuntu, Docker confines every container with its
+docker-default profile (moby profiles/apparmor/template.go), whose `deny mount,` keeps even
+a container given CAP_SYS_ADMIN from mounting anything; `--security-opt apparmor=unconfined`
+and `--privileged` lift it, `seccomp=unconfined` does not. A shards guest has no AppArmor,
+and its devices are its microVM's, reachable by name: a container given SYS_ADMIN could
+mount a virtio-fs tag of its own microVM, its provider's shares or the join share (D119),
+and remount a read-only volume writable. So shards holds every container to docker-default's
+mount rule itself, on every guest kernel, with seccomp, which all have:
+
+- **The rule as a filter of its own** (`shards_seccomp::MOUNTS`, `seccomp-mounts=`): mount,
+  mount_setattr, the new mount API (fsopen, fsconfig, fsmount, fspick, move_mount,
+  open_tree) and pivot_root, each EACCES, as AppArmor denies them; umount left to it, as
+  docker-default allows it. Compiled as Docker's profile is, for the native and compat
+  syscall tables (x86_64 with x86 and x32, arm64 with arm), so no `int 0x80` gets past it.
+- **Only where Docker's AppArmor would refuse**: for a container with CAP_SYS_ADMIN, not
+  privileged, not `apparmor=unconfined`. Without the capability every mount is refused
+  EPERM by the kernel and Docker's seccomp profile before AppArmor is asked, so no filter
+  is given that would answer EACCES instead. Installed before Docker's profile, whose errno
+  then wins where both refuse (seccomp_filter.rst: the most recent filter's).
+- **For all a container runs**: the workload, its execs (the run's filters are theirs, as
+  runc's exec takes the container's) and joiners.
+- **Tested** (`a_container_given_sys_admin_mounts_nothing_as_apparmor_keeps_it`: a mount, a
+  remount of a read-only file, fsopen, open_tree and its microVM's own share refused EACCES,
+  in an exec and a joiner too; umount of its own tmpfs made; `apparmor=unconfined` and
+  `--privileged` mounting; EPERM without the capability; mutation-checked: without the
+  filter, the mount went through; `a_container_given_sys_admin_has_apparmors_mount_rule`:
+  who is given it). Docker's own behaviour where AppArmor is enforced is probed on GitHub's
+  Ubuntu runners (`docs/research/measurements/docker-apparmor-mount`).
+- **Not taken from docker-default**: its /proc and /sys write rules, which Docker's masked
+  and read-only paths cover in every container already, and its ptrace and signal rules,
+  which PID namespaces keep between containers.
+- **What CAP_SYS_ADMIN still reaches, as with Docker.** Docker's own seccomp profile gives
+  a container with the capability `bpf` and `perf_event_open`, whose tracing programs read
+  the kernel's memory, and with it every container's in the microVM, as on a Docker host
+  every container's on the host: the capability is the kernel's, AppArmor or not. So the
+  rule is held where Docker holds it, and no further: under `apparmor=unconfined` a
+  container may mount its microVM's shares, a joiner its provider's, as it may read them
+  through the kernel. What a container without the capability could reach of another's is
+  closed: the join share's volumes by names and node IDs none can guess (D119), so
+  CAP_DAC_READ_SEARCH opens no other joiner's file by handle. Kernel lockdown
+  (`lockdown=confidentiality`) in the guest would close the kernel to the capability too,
+  past Docker; not built.
+
 ### D119. `--network container:NAME`: a container joins another's microVM
 
 Docker's container network mode gives a container another's network namespace and
@@ -3650,13 +3710,13 @@ the boundary is a container's, which is what the mode asks for.
   again; mutation-checked: the bind's read-only remount left out; unit tests of the
   server's volumes, sessions and listings, and of a link's volumes going as it closes, each
   mutation-checked).
-- **Its boundary is a container's, within the microVM.** As between two of Docker's
-  containers on one host, which Docker's defaults keep: a joiner given `CAP_SYS_ADMIN` may
-  mount the microVM's shares, its provider's and the join share (whose volumes it reaches
-  only by names it has learned), where Docker's leans on AppArmor or SELinux and the guest
-  kernel has neither; one given `CAP_DAC_READ_SEARCH` may open what the guest's kernel
-  holds of them by handle (open_by_handle_at, Docker's reason to withhold it); a
-  privileged one has the whole microVM, as a privileged Docker container has its host.
+- **Its boundary is a container's, within the microVM.** A joiner given `CAP_SYS_ADMIN`
+  mounts none of the microVM's shares: docker-default's mount rule holds it, as it holds
+  every container (D121); under `apparmor=unconfined` the join share's root shows nothing
+  and its volumes are reached only by names it has learned. One given
+  `CAP_DAC_READ_SEARCH` may open what the guest's kernel holds of the join share by handle
+  (open_by_handle_at, Docker's reason to withhold it); a privileged one has the whole
+  microVM, as a privileged Docker container has its host.
 - **Not yet, refused by name before anything starts:** an Agentfile's image.
 - **No count of holders.** A VM process runs one VM, so its join disk is a `static` of
   that process's (`Join::new` is a `const fn`), its device given `&'static Join`; a

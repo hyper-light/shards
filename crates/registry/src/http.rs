@@ -2086,7 +2086,8 @@ mod tests {
             tcp.shutdown(Shutdown::Write).unwrap();
             std::thread::sleep(Duration::from_millis(500));
         });
-        let path = std::env::temp_dir().join(format!("shards-early-{}", std::process::id()));
+        let path_dir = shards_testdir::TempDir::new("early").unwrap();
+        let path = path_dir.join("early");
         std::fs::write(&path, vec![0u8; 64 << 20]).unwrap();
         let file = std::fs::File::open(&path).unwrap();
         let url = at("http", "127.0.0.1", port);
@@ -2132,7 +2133,8 @@ mod tests {
                 tls.flush().unwrap();
                 std::thread::sleep(Duration::from_millis(500));
             });
-            let path = std::env::temp_dir().join(format!("shards-early-tls-{}", std::process::id()));
+            let path_dir = shards_testdir::TempDir::new("early-tls").unwrap();
+            let path = path_dir.join("early-tls");
             std::fs::write(&path, vec![0u8; 64 << 20]).unwrap();
             let file = std::fs::File::open(&path).unwrap();
             let client = Client::new(

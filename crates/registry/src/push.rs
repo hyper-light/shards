@@ -209,9 +209,7 @@ mod tests {
     /// what the registry has no copy of is uploaded first.
     #[test]
     fn an_index_is_pushed_after_its_manifests() {
-        let dir = std::env::temp_dir().join(format!("shards-push-index-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = shards_testdir::TempDir::new("push-index").unwrap();
         let store = Store::open(&dir).unwrap();
         let put = |bytes: &[u8], media_type: &str| {
             let desc = described(media_type, bytes);
@@ -303,9 +301,7 @@ mod tests {
     /// registry's 404 for that.
     #[test]
     fn missing_content_and_a_registrys_404_are_told_apart() {
-        let dir = std::env::temp_dir().join(format!("shards-push-kinds-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = shards_testdir::TempDir::new("push-kinds").unwrap();
         let store = Store::open(&dir).unwrap();
         let server = route(None, |_| {
             Some((
@@ -367,9 +363,7 @@ mod tests {
     /// containerd's words; with wrong ones, its first check of what is there.
     #[test]
     fn refused_authorization_is_reported_as_dockerd_reports_it() {
-        let dir = std::env::temp_dir().join(format!("shards-push-refused-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = shards_testdir::TempDir::new("push-refused").unwrap();
         let store = Store::open(&dir).unwrap();
         let [config, manifest] = layerless();
         for (desc, bytes) in [&config, &manifest] {

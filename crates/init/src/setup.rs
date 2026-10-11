@@ -72,6 +72,85 @@ pub fn write_sysctl(key: &str, value: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Sets an endpoint's sysctl `kv`, `net.X.Y.IFNAME.Z=V`, on interface `ifname`, as
+/// libnetwork sets it as it configures the interface (moby
+/// daemon/libnetwork/osl/interface_linux.go, setSysctls): the interface's name in place of
+/// the fourth part; one that is no regular file refused; one that holds the value already
+/// left unwritten; each failure in its words. Written beneath init's own `/proc/sys`.
+pub fn endpoint_sysctl(ifname: &str, kv: &str) -> Result<(), String> {
+    let (key, value) = kv
+        .split_once('=')
+        .ok_or_else(|| format!("expected sysctl '{kv}' to have format name=value"))?;
+    let parts: Vec<&str> = key.split('.').collect();
+    let [a, b, c, _, z] = parts.as_slice() else {
+        return Err(format!("expected sysctl '{kv}' to have format net.X.Y.IFNAME.Z"));
+    };
+    // Go's filepath.Join: empty parts and doubled slashes cleaned away.
+    let path: Vec<&str> = [*a, *b, *c, ifname, *z]
+        .iter()
+        .flat_map(|p| p.split('/'))
+        .filter(|p| !p.is_empty())
+        .collect();
+    let (rel, shown) = (path.join("/"), format!("/proc/sys/{}", path.join("/")));
+    let not_sysctl = || format!("{shown} is not a sysctl file");
+    let dir = PROC_SYS.get().ok_or_else(not_sysctl)?;
+    let c = CString::new(rel).map_err(|_| not_sysctl())?;
+    let open = |flags: libc::c_int| -> io::Result<OwnedFd> {
+        // SAFETY: openat(2) of a NUL-terminated path below our own descriptor, no link
+        // followed.
+        let fd = unsafe {
+            libc::openat(
+                dir.as_raw_fd(),
+                c.as_ptr(),
+                flags | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            )
+        };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: a fresh descriptor nothing else owns.
+        Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+    };
+    // Read first, as libnetwork reads it (os.Stat, then os.ReadFile).
+    let read = match open(libc::O_RDONLY) {
+        Ok(fd) => fd,
+        Err(e) if matches!(e.raw_os_error(), Some(libc::ENOENT | libc::ENOTDIR | libc::ELOOP)) => {
+            return Err(not_sysctl());
+        }
+        Err(e) => {
+            return Err(format!(
+                "unable to read '{shown}': open {shown}: {}",
+                errno_words(&e)
+            ));
+        }
+    };
+    // SAFETY: fstat(2) into a zeroed stat buffer, of a descriptor we hold.
+    let mut st: libc::stat = unsafe { std::mem::zeroed() };
+    // SAFETY: as above.
+    if unsafe { libc::fstat(read.as_raw_fd(), &mut st) } != 0 || st.st_mode & libc::S_IFMT != libc::S_IFREG {
+        return Err(not_sysctl());
+    }
+    let mut now = Vec::new();
+    std::io::Read::read_to_end(&mut std::fs::File::from(read), &mut now)
+        .map_err(|e| format!("unable to read '{shown}': read {shown}: {}", errno_words(&e)))?;
+    // Already so: not written, as /proc/sys/net may be read-only.
+    if String::from_utf8_lossy(&now).trim() == value {
+        return Ok(());
+    }
+    let write = open(libc::O_WRONLY | libc::O_TRUNC)
+        .map_err(|e| format!("unable to write to '{shown}': open {shown}: {}", errno_words(&e)))?;
+    // SAFETY: write(2) of a live buffer, of its length.
+    let n = unsafe { libc::write(write.as_raw_fd(), value.as_ptr().cast(), value.len()) };
+    if n < 0 {
+        let e = io::Error::last_os_error();
+        return Err(format!(
+            "unable to write to '{shown}': write {shown}: {}",
+            errno_words(&e)
+        ));
+    }
+    Ok(())
+}
+
 /// A tmpfs's options as runc's parseMountOptions reads them: mount flags, propagation
 /// flags, and the rest as the filesystem's data.
 pub struct MountOptions {
@@ -238,7 +317,7 @@ fn mkdir_all(path: &str) -> io::Result<()> {
 pub fn apply(entry: &[u8]) -> Result<(), i32> {
     let last = || io::Error::last_os_error().raw_os_error().unwrap_or(libc::EIO);
     // The process's own, done last, as it execs (run.rs `child`).
-    if entry.starts_with(b"seccomp=") || entry == b"nnp" {
+    if entry.starts_with(b"seccomp=") || entry.starts_with(b"seccomp-mounts=") || entry == b"nnp" {
         return Ok(());
     }
     // Init's, for the domains it starts (D59), and the volumes it gives them alone (D111).

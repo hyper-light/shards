@@ -133,11 +133,8 @@ mod tests {
     use crate::testing::demanding_registry;
     use crate::tls::client_config;
 
-    fn home(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("shards-certs-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    fn home(name: &str) -> shards_testdir::TempDir {
+        shards_testdir::TempDir::new(&format!("certs-{name}")).unwrap()
     }
 
     fn pem(der: &CertificateDer<'_>) -> String {
@@ -155,7 +152,11 @@ mod tests {
     }
 
     /// A certs.d directory for `host` in a fresh home, and an environment naming that home.
-    fn certs_d(name: &str, host: &str, files: &[(&str, &str)]) -> (PathBuf, HashMap<String, String>) {
+    fn certs_d(
+        name: &str,
+        host: &str,
+        files: &[(&str, &str)],
+    ) -> (shards_testdir::TempDir, HashMap<String, String>) {
         let home = home(name);
         let dir = home.join(".docker").join("certs.d").join(if cfg!(windows) {
             host.replace(':', "")

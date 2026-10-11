@@ -821,6 +821,7 @@ mod tests {
             }),
         );
         let policy = "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if {\n\tinput.image.hasProvenance\n\tsome sig in input.image.signatures\n\tdocker_github_builder_signature(sig, \"moby/buildkit\")\n}\n\ndecision := {\"allow\": allow}\n";
+        let cwd = shards_testdir::TempDir::new("signatures-cwd").unwrap();
         let policies = super::super::Policies::configure(super::super::Setup {
             default: super::super::Opt {
                 files: vec![super::super::FileSpec {
@@ -832,7 +833,7 @@ mod tests {
             },
             configs: &[],
             env: super::super::Env::default(),
-            cwd: std::env::temp_dir(),
+            cwd: cwd.to_path_buf(),
             default_platform: platform.clone(),
             debug: false,
             default_policy: false,

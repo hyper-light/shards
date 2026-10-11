@@ -445,23 +445,10 @@ mod tests {
     use super::*;
 
     /// A store of its own, removed when dropped.
-    struct Temp(PathBuf);
-
-    impl Drop for Temp {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
-
-    fn store() -> (Temp, Store) {
-        use std::sync::atomic::{AtomicU32, Ordering};
-        static NEXT: AtomicU32 = AtomicU32::new(0);
-        let n = NEXT.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!("shards-mounts-{}-{n}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
+    fn store() -> (shards_testdir::TempDir, Store) {
+        let dir = shards_testdir::TempDir::new("mounts").unwrap();
         let store = Store::open(&dir).unwrap();
-        (Temp(dir), store)
+        (dir, store)
     }
 
     fn layer(n: u8) -> MountLayer {

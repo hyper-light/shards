@@ -1026,7 +1026,8 @@ mod tests {
             mpidrs: vec![0],
         })
         .unwrap();
-        let path = std::env::temp_dir().join(format!("shards-m17-{}.img", std::process::id()));
+        let path_dir = shards_testdir::TempDir::new("m17.img").unwrap();
+        let path = path_dir.join("m17.img");
         std::fs::write(&path, vec![1u8; 2 << 20]).unwrap();
         let file = std::fs::File::open(&path).unwrap();
         let len = 2usize << 20;

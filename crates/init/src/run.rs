@@ -467,7 +467,9 @@ impl Beside {
                     return Err(setup_failed(beside::capability(name, reach)));
                 }
             }
-            if let Some(kv) = entry.strip_prefix(b"sysctl=")
+            if let Some(kv) = entry
+                .strip_prefix(b"sysctl=")
+                .or_else(|| entry.strip_prefix(b"endpoint-sysctl="))
                 && self.uplink
                 && kv.starts_with(b"net.")
             {
@@ -537,6 +539,7 @@ fn sort_setup(entries: &[Vec<u8>], into: &mut Inherited) -> Result<Vec<Vec<u8>>,
             || entry == b"pid=host"
             || entry == b"pid=workload"
             || entry.starts_with(b"pid=joiner=")
+            || entry.starts_with(b"endpoint-sysctl=")
         {
             // Init's, as the run starts (`Standby::start`).
         } else if entry.starts_with(b"devices=") {
@@ -545,6 +548,7 @@ fn sort_setup(entries: &[Vec<u8>], into: &mut Inherited) -> Result<Vec<Vec<u8>>,
             if entry.starts_with(b"ulimit=")
                 || entry.starts_with(b"oom=")
                 || entry.starts_with(b"seccomp=")
+                || entry.starts_with(b"seccomp-mounts=")
                 || entry == b"nnp"
             {
                 into.setup.push(entry.clone());
@@ -2153,6 +2157,19 @@ impl Standby {
         // Sysctls, by init; the rest by the standby, in its namespaces.
         let mut inherited = Inherited::default();
         let setup = sort_setup(&spec.setup, &mut inherited)?;
+        // Its endpoint's, after its own, as libnetwork sets them on the interface it
+        // configures after runc's (PM M171).
+        for kv in spec
+            .setup
+            .iter()
+            .filter_map(|e| e.strip_prefix(b"endpoint-sysctl="))
+        {
+            crate::setup::endpoint_sysctl("eth0", &String::from_utf8_lossy(kv)).map_err(|e| {
+                setup_failed(format!(
+                    "failed to set up container networking: failed to add interface eth0 to sandbox: {e}"
+                ))
+            })?;
+        }
         let _ = WORKLOAD.set(inherited.clone());
         standby
             .launch(spec, false, setup, &inherited)
@@ -2427,6 +2444,13 @@ fn standby(ends: Ends, isolation: Isolation) -> ! {
         filter: p.as_ptr().cast_mut(),
     });
     let seccomp = filter.as_ref().map(|(f, _)| *f).zip(fprog.as_ref());
+    // Docker's AppArmor's mount rule (`seccomp-mounts=`), loaded before the profile.
+    let mounts_filter = crate::setup::filter_named(&o.setup, b"seccomp-mounts=");
+    let mounts_prog = mounts_filter.as_ref().map(|(_, p)| libc::sock_fprog {
+        len: u16::try_from(p.len()).unwrap_or(u16::MAX),
+        filter: p.as_ptr().cast_mut(),
+    });
+    let mounts = mounts_filter.as_ref().map(|(f, _)| *f).zip(mounts_prog.as_ref());
     let nnp = o.setup.iter().any(|e| e == b"nnp");
     // SAFETY: this process is the child of a fork of single-threaded init, and `child`
     // runs on data built above.
@@ -2443,6 +2467,7 @@ fn standby(ends: Ends, isolation: Isolation) -> ! {
             candidates: &candidates,
             explicit: o.explicit,
             last_cap,
+            mounts,
             seccomp,
             nnp,
             argv: argv_ptrs.as_ptr(),
@@ -3015,6 +3040,7 @@ fn joiner_takes(setup: &[Vec<u8>]) -> Result<(), Failure> {
         } else if entry.starts_with(b"dns=")
             || entry.starts_with(b"address=")
             || entry.starts_with(b"address6=")
+            || entry.starts_with(b"endpoint-sysctl=")
             || entry == b"confine-eth0"
             || entry.starts_with(b"domains-seccomp")
         {
@@ -3962,7 +3988,10 @@ struct Child<'a> {
     explicit: bool,
     /// The kernel's last capability, for the bounding set's.
     last_cap: u32,
-    /// Its seccomp filter and its seccomp(2) flags, and whether no_new_privs is set.
+    /// The filter that stands in for Docker's AppArmor's mount rule, loaded before its
+    /// seccomp filter; that filter; each with its seccomp(2) flags; and whether
+    /// no_new_privs is set.
+    mounts: Option<(u32, &'a libc::sock_fprog)>,
     seccomp: Option<(u32, &'a libc::sock_fprog)>,
     nnp: bool,
     argv: *const *const libc::c_char,
@@ -4036,11 +4065,12 @@ unsafe fn child(c: &Child<'_>) -> ! {
         };
         // Without no_new_privs, loading a filter needs CAP_SYS_ADMIN: before the
         // capabilities go (runc, standard_init_linux.go).
-        if !c.nnp
-            && let Some(f) = c.seccomp
-            && !load(f)
-        {
-            fail(step::SECCOMP);
+        if !c.nnp {
+            for f in [c.mounts, c.seccomp].into_iter().flatten() {
+                if !load(f) {
+                    fail(step::SECCOMP);
+                }
+            }
         }
         // A container's capabilities (crate::defaults), as runc applies them
         // (finalizeNamespace): the bounding set first, the rest kept across the change of
@@ -4072,10 +4102,10 @@ unsafe fn child(c: &Child<'_>) -> ! {
             if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
                 fail(step::NNP);
             }
-            if let Some(f) = c.seccomp
-                && !load(f)
-            {
-                fail(step::SECCOMP);
+            for f in [c.mounts, c.seccomp].into_iter().flatten() {
+                if !load(f) {
+                    fail(step::SECCOMP);
+                }
             }
         }
         for (i, path) in c.candidates.iter().enumerate() {

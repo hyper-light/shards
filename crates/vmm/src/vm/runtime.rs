@@ -752,7 +752,8 @@ mod tests {
     /// at its size rounded up to the alignment pmem maps it at, beside the RAM.
     #[test]
     fn a_granted_pmem_files_pages_count() {
-        let file = std::env::temp_dir().join(format!("shards-guest-pages-{}", std::process::id()));
+        let file_dir = shards_testdir::TempDir::new("guest-pages").unwrap();
+        let file = file_dir.join("guest-pages");
         std::fs::write(&file, vec![0u8; 3 << 20]).unwrap();
         let granted = std::path::PathBuf::from(format!("/nowhere/shards-{}.erofs", std::process::id()));
         platform::grant_input(granted.clone(), Some(std::fs::File::open(&file).unwrap().into()));

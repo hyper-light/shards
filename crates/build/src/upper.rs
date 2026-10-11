@@ -237,7 +237,8 @@ mod tests {
         let mut upper = lower.clone();
         upper.begin();
 
-        let dir = std::env::temp_dir().join(format!("shards-upper-{}", std::process::id()));
+        let dir_guard = shards_testdir::TempDir::new("upper").unwrap();
+        let dir = dir_guard.join("upper");
         let mut staging = File::options()
             .create(true)
             .truncate(true)
@@ -337,7 +338,8 @@ mod tests {
         let mut fs = empty();
         fs.create(b"/file", 0o644).unwrap();
         fs.begin();
-        let path = std::env::temp_dir().join(format!("shards-upper-bad-{}", std::process::id()));
+        let path_dir = shards_testdir::TempDir::new("upper-bad").unwrap();
+        let path = path_dir.join("upper-bad");
         let mut staging = File::create(&path).unwrap();
         let mut bytes = stream(&[(
             changes::Entry {

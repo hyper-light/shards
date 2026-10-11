@@ -317,7 +317,8 @@ mod tests {
     fn a_joiners_volumes_go_as_its_link_closes() {
         use shards_ipc::kind;
         use std::os::fd::AsFd as _;
-        let at = std::env::temp_dir().join(format!("shards-share-joiner-{}", std::process::id()));
+        let at_dir = shards_testdir::TempDir::new("share-joiner").unwrap();
+        let at = at_dir.join("share-joiner");
         let (root, vol) = (at.join("root"), at.join("vol"));
         for dir in [&root, &vol] {
             std::fs::create_dir_all(dir).unwrap();

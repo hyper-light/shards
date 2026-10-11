@@ -1043,7 +1043,10 @@ fn udp_echo(port: &str, stop: &str) -> i32 {
 /// `rm:P`, `rmdir:P` (and what it holds), `chmod:OCTAL:P`, `chown:UID:GID:P` (not
 /// followed), `mknod:b|c:MAJOR:MINOR:P`, `open:r|w:P`, `dev:P`, which prints a device
 /// node's type, numbers and mode, `print:P`, which prints a file, `readn:N:P`, which reads
-/// N bytes of P, and `sleep:MS`. Stops at the first that fails, saying which.
+/// N bytes of P, and `sleep:MS`; and the mount family, each its syscall alone:
+/// `mount:FSTYPE:SOURCE:TARGET`, `umount:TARGET`, `remount-rw:TARGET` (a bind's flags
+/// changed), `fsopen:FSTYPE` and `open-tree:P` (a detached clone). Stops at the first that
+/// fails, saying which.
 fn fs(ops: &[String]) -> i32 {
     use std::os::unix::fs::PermissionsExt as _;
     for op in ops {
@@ -1071,6 +1074,7 @@ fn fs(ops: &[String]) -> i32 {
                     .and_then(|m| std::fs::set_permissions(p, std::fs::Permissions::from_mode(m)))
             }
             "mknod" => mknod(rest),
+            "mount" | "umount" | "remount-rw" | "fsopen" | "open-tree" => mounts(kind, rest),
             "chown" => {
                 let mut parts = rest.splitn(3, ':');
                 let id = |p: Option<&str>| p.and_then(|n| n.parse::<u32>().ok());
@@ -1130,6 +1134,86 @@ fn fs(ops: &[String]) -> i32 {
 }
 
 /// `KIND:MAJOR:MINOR:PATH`'s node, mode 0600.
+/// The mount family's syscalls, as `fs` names them, each made once.
+fn mounts(kind: &str, spec: &str) -> io::Result<()> {
+    let c = |s: &str| std::ffi::CString::new(s).map_err(io::Error::other);
+    let said = |r: libc::c_long| {
+        if r < 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
+    };
+    // The new mount API's numbers, the same on x86_64 and arm64 (asm-generic/unistd.h).
+    const OPEN_TREE: libc::c_long = 428;
+    const FSOPEN: libc::c_long = 430;
+    match kind {
+        "mount" => {
+            let mut parts = spec.splitn(3, ':');
+            let (Some(fstype), Some(source), Some(target)) = (parts.next(), parts.next(), parts.next())
+            else {
+                return Err(io::Error::other("a malformed mount"));
+            };
+            let (fstype, source, target) = (c(fstype)?, c(source)?, c(target)?);
+            // SAFETY: mount(2) of NUL-terminated strings that outlive the call.
+            let r = unsafe {
+                libc::mount(
+                    source.as_ptr(),
+                    target.as_ptr(),
+                    fstype.as_ptr(),
+                    0,
+                    std::ptr::null(),
+                )
+            };
+            said(r.into())
+        }
+        "umount" => {
+            let target = c(spec)?;
+            // SAFETY: umount2(2) of a NUL-terminated path.
+            said(unsafe { libc::umount2(target.as_ptr(), 0) }.into())
+        }
+        "remount-rw" => {
+            let target = c(spec)?;
+            let flags = libc::MS_REMOUNT | libc::MS_BIND;
+            // SAFETY: mount(2) of a NUL-terminated target, no source, type or data.
+            let r = unsafe {
+                libc::mount(
+                    std::ptr::null(),
+                    target.as_ptr(),
+                    std::ptr::null(),
+                    flags,
+                    std::ptr::null(),
+                )
+            };
+            said(r.into())
+        }
+        "fsopen" => {
+            let fstype = c(spec)?;
+            // SAFETY: fsopen(2) of a NUL-terminated type.
+            let fd = unsafe { libc::syscall(FSOPEN, fstype.as_ptr(), 0) };
+            if let Ok(fd) = libc::c_int::try_from(fd)
+                && fd >= 0
+            {
+                // SAFETY: closing the descriptor just made.
+                unsafe { libc::close(fd) };
+            }
+            said(fd)
+        }
+        _ => {
+            let path = c(spec)?;
+            // SAFETY: open_tree(2) of a NUL-terminated path, OPEN_TREE_CLONE.
+            let fd = unsafe { libc::syscall(OPEN_TREE, libc::AT_FDCWD, path.as_ptr(), 1) };
+            if let Ok(fd) = libc::c_int::try_from(fd)
+                && fd >= 0
+            {
+                // SAFETY: closing the descriptor just made.
+                unsafe { libc::close(fd) };
+            }
+            said(fd)
+        }
+    }
+}
+
 fn mknod(spec: &str) -> io::Result<()> {
     let mut parts = spec.splitn(4, ':');
     let bad = || io::Error::other("a malformed mknod");

@@ -632,7 +632,8 @@ mod tests {
     /// host ports past the snapshot's without reusing a held one.
     #[test]
     fn restores_reset_held_streams_first_and_keep_their_ports() {
-        let dir = std::env::temp_dir().join(format!("shards-vsock-restore-{}", std::process::id()));
+        let dir_guard = shards_testdir::TempDir::new("vsock-restore").unwrap();
+        let dir = dir_guard.join("v");
         let mut m = Muxer::new(VsockHost::at(dir.clone()), 3).unwrap();
         let mut target = dir.clone().into_os_string();
         target.push("_5000");
@@ -774,7 +775,8 @@ mod tests {
     /// again, round-trips.
     #[test]
     fn a_save_before_a_restores_resets_go_out_reads_back() {
-        let dir = std::env::temp_dir().join(format!("shards-vsock-resave-{}", std::process::id()));
+        let dir_guard = shards_testdir::TempDir::new("vsock-resave").unwrap();
+        let dir = dir_guard.join("v");
         let mut m = Muxer::new(VsockHost::at(dir), 3).unwrap();
         let full = MAX_CONNECTIONS + MAX_STRAY_RSTS;
         let ports: Vec<(u32, u32)> = (0..full as u32)
@@ -800,7 +802,8 @@ mod tests {
         assert!(read.ports.iter().all(|p| ports.contains(p) || own.contains(p)));
         assert_eq!(read.ports.len(), full + MAX_CONNECTIONS);
         // Saved more than a restore reads, it keeps the newest.
-        let mut big = Muxer::new(VsockHost::at(std::env::temp_dir().join("shards-vsock-big")), 3).unwrap();
+        let big_dir = shards_testdir::TempDir::new("vsock-big").unwrap();
+        let mut big = Muxer::new(VsockHost::at(big_dir.join("v")), 3).unwrap();
         let many: Vec<(u32, u32)> = (0..(MAX_SAVED + 5) as u32).map(|i| (i, i)).collect();
         big.stray_rsts.extend(many);
         let saved = big.saved();
@@ -827,7 +830,8 @@ mod tests {
 
     #[test]
     fn local_ports_stay_in_range_and_unique() {
-        let dir = std::env::temp_dir().join(format!("shards-vsock-ports-{}", std::process::id()));
+        let dir_guard = shards_testdir::TempDir::new("vsock-ports").unwrap();
+        let dir = dir_guard.join("v");
         let mut m = Muxer::new(VsockHost::at(dir.clone()), 3).unwrap();
         m.last_local_port = u32::MAX - 1;
         let a = m.allocate_local_port();

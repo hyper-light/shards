@@ -12,3 +12,6 @@ workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = { workspace = true }
+
+[dev-dependencies]
+shards-testdir = { path = "../testdir" }

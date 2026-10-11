@@ -1200,7 +1200,8 @@ mod tests {
         // A file of each call's own: the tests run at once in one process.
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!("shards-upload-{}-{n}", std::process::id()));
+        let path_dir = shards_testdir::TempDir::new(&format!("upload-{n}")).unwrap();
+        let path = path_dir.join("it");
         std::fs::write(&path, blob).unwrap();
         let file = std::fs::File::open(&path).unwrap();
         let server = route(None, move |seen| Some((answer(seen), After::Keep)));
@@ -1474,10 +1475,7 @@ mod tests {
                 held.lock().unwrap().push(req.clone());
                 Some(answer(req, n.fetch_add(1, Ordering::SeqCst)))
             });
-            let dir =
-                std::env::temp_dir().join(format!("shards-encodings-{}-{}", std::process::id(), server.port));
-            let _ = std::fs::remove_dir_all(&dir);
-            std::fs::create_dir_all(&dir).unwrap();
+            let dir = shards_testdir::TempDir::new(&format!("encodings-{}", server.port)).unwrap();
             let store = Store::open(&dir).unwrap();
             let reference = Reference::parse(&format!("127.0.0.1:{}/test/image:v1", server.port)).unwrap();
             let http = Client::new(
@@ -1725,9 +1723,7 @@ mod tests {
             let registry = Registry::new(http, &reference, Credentials::Anonymous).unwrap();
             (server, registry)
         };
-        let dir = std::env::temp_dir().join(format!("shards-refusal-words-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = shards_testdir::TempDir::new("refusal-words").unwrap();
         let store = Store::open(&dir).unwrap();
         let digest = format!("sha256:{}", "c".repeat(64));
         let desc = Descriptor {

@@ -1,0 +1,15 @@
+[package]
+name = "shards-testdir"
+version = "0.1.0"
+description = "A directory of a test's own, removed as it goes, for shards' tests"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
+[lints]
+workspace = true

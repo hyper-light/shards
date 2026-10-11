@@ -929,15 +929,13 @@ fn run_shards_with<S: AsRef<std::ffi::OsStr>>(
 }
 
 /// A fresh directory, short enough for sockaddr_un paths, removed with everything in it
-/// (sockets, snapshots) when dropped. Declare it before the VMs that use it.
-pub struct TempDir(PathBuf);
+/// (sockets, snapshots) when dropped (shards_testdir: a killed test's, as the next test
+/// process starts). Declare it before the VMs that use it.
+pub struct TempDir(shards_testdir::TempDir);
 
 impl TempDir {
     pub fn new(name: &str) -> TempDir {
-        let dir = std::env::temp_dir().join(format!("shards-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        TempDir(dir)
+        TempDir(shards_testdir::TempDir::new(name).unwrap())
     }
 }
 
@@ -951,22 +949,24 @@ impl std::ops::Deref for TempDir {
 impl Drop for TempDir {
     fn drop(&mut self) {
         // A failing test's daemon and clients said why in files that go with the
-        // directory: shown first, straight to stderr, which libtest does not capture.
+        // directory: shown first, straight to stderr, which libtest does not capture. The
+        // directory goes after, as the field drops.
         if std::thread::panicking() {
             show_why(&self.0);
         }
-        let _ = std::fs::remove_dir_all(&self.0);
     }
 }
 
-/// What a home's runs wrote to stderr (`*.stderr`), and its daemon's log's last lines.
+/// What a home's runs wrote to stderr (`*.stderr`), the stacks the daemon sampled of a VM
+/// that stalled before its first request for access (`vm-PID.sample`, daemon.rs `grant`),
+/// and its daemon's log's last lines: shown before the home goes, with them.
 fn show_why(home: &Path) {
     let mut err = std::io::stderr().lock();
     let mut said: Vec<PathBuf> = std::fs::read_dir(home)
         .into_iter()
         .flatten()
         .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| p.extension().is_some_and(|x| x == "stderr"))
+        .filter(|p| p.extension().is_some_and(|x| x == "stderr" || x == "sample"))
         .collect();
     said.sort();
     for path in said {

@@ -605,8 +605,7 @@ mod tests {
     /// leaves the first address their end; one past the address space is refused.
     #[test]
     fn pmem_regions_go_one_after_another() {
-        let dir = std::env::temp_dir().join(format!("shards-pmem-regions-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = shards_testdir::TempDir::new("pmem-regions").unwrap();
         let (a, b) = (dir.join("a"), dir.join("b"));
         std::fs::write(&a, vec![0u8; 4096]).unwrap();
         std::fs::write(&b, vec![0u8; 3 << 20]).unwrap();
@@ -632,9 +631,7 @@ mod tests {
     /// machine's own MAC; a device without its host side is refused.
     #[test]
     fn virtio_devices_come_in_probe_order() {
-        let dir = std::env::temp_dir().join(format!("shards-virtio-devices-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = shards_testdir::TempDir::new("virtio-devices").unwrap();
         let disk = dir.join("disk");
         std::fs::write(&disk, vec![0u8; 8 * 512]).unwrap();
         let image = dir.join("image");

@@ -548,9 +548,7 @@ mod tests {
     /// and left alone while another holds it, which may be writing it (review 8.5).
     #[test]
     fn unfinished_files_go_only_when_none_may_be_writing_them() {
-        let dir = std::env::temp_dir().join(format!("shards-guest-hold-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
+        let dir = shards_testdir::TempDir::new("guest-hold").unwrap();
         let files = [
             "storing.1",
             "kernel.2",
@@ -592,7 +590,8 @@ mod tests {
     /// holds the store, then write it under their own hold.
     #[test]
     fn guests_are_written_under_the_stores_hold() {
-        let home = std::env::temp_dir().join(format!("shards-guest-writers-{}", std::process::id()));
+        let home_dir = shards_testdir::TempDir::new("guest-writers").unwrap();
+        let home = home_dir.join("guest-writers");
         let _ = fs::remove_dir_all(&home);
         let dir = home.join("guest");
         fs::create_dir_all(&dir).unwrap();

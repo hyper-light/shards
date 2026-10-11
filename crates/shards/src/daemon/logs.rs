@@ -773,32 +773,8 @@ mod tests {
     use super::*;
 
     /// A directory of its own, removed when dropped, whether its test passes or panics.
-    struct Temp(std::path::PathBuf);
-
-    impl std::ops::Deref for Temp {
-        type Target = std::path::Path;
-        fn deref(&self) -> &std::path::Path {
-            &self.0
-        }
-    }
-
-    impl AsRef<std::path::Path> for Temp {
-        fn as_ref(&self) -> &std::path::Path {
-            &self.0
-        }
-    }
-
-    impl Drop for Temp {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-
-    fn temp(tag: &str) -> Temp {
-        let dir = std::env::temp_dir().join(format!("shards-logs-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        Temp(dir)
+    fn temp(tag: &str) -> shards_testdir::TempDir {
+        shards_testdir::TempDir::new(&format!("logs-{tag}")).unwrap()
     }
 
     /// Writes records as the workload's `Logger` does, with or without an index.

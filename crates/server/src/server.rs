@@ -748,7 +748,8 @@ mod tests {
     fn an_instance_answers_its_own_caller_alone() {
         use rustls::pki_types::ServerName;
         use rustls::pki_types::pem::PemObject as _;
-        let base = std::env::temp_dir().join(format!("shards-server-{}", std::process::id()));
+        let base_dir = shards_testdir::TempDir::new("server").unwrap();
+        let base = base_dir.join("server");
         // SAFETY: getgid(2).
         let gid = unsafe { libc::getgid() };
         let dirs: Vec<String> = ["x", "y"]
@@ -891,8 +892,7 @@ mod tests {
     }
 
     fn prepare_for_test() -> Prepared {
-        let d = std::env::temp_dir().join(format!("shards-server-bounds-{}", std::process::id()));
-        std::fs::create_dir_all(&d).unwrap();
+        let d = shards_testdir::TempDir::new("server-bounds").unwrap();
         // SAFETY: getgid(2).
         prepare(d.to_str().unwrap(), "agent t", unsafe { libc::getgid() }).unwrap()
     }

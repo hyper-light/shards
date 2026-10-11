@@ -45,7 +45,7 @@ pub fn bookmark(path: &Path) -> Result<Vec<u8>, String> {
 mod tests {
     #[test]
     fn a_directory_has_a_bookmark() {
-        let dir = std::env::temp_dir();
+        let dir = shards_testdir::TempDir::new("bookmark").unwrap();
         let b = super::bookmark(&dir).unwrap();
         assert!(!b.is_empty());
         assert!(super::bookmark(std::path::Path::new("/no/such/place/at/all")).is_err());

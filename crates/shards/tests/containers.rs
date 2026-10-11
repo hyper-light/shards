@@ -1977,6 +1977,193 @@ fn a_refused_start_leaves_its_container_as_it_was() {
     ok(&["rm", "left"]);
 }
 
+/// An endpoint's sysctls are its interface's, as dockerd sets them (PM M171): eth0's, after
+/// the container's own; two in one option, in either case; a key the kernel has no file
+/// for, or a value it refuses, failing the start in libnetwork's words; none on `none`;
+/// and an interface's sysctl given as the container's own refused as it is made.
+#[test]
+fn an_endpoints_sysctls_are_its_interfaces() {
+    let Some((home, image)) = home("containers-endpoint-sysctls") else {
+        return;
+    };
+    let ep = "com.docker.network.endpoint.sysctls";
+    let conf = "/proc/sys/net/ipv4/conf";
+    let run = |network: String, more: &[&str], command: &[&str]| {
+        let mut options = vec!["--rm", "--network", network.as_str()];
+        options.extend(more);
+        run_in(&home, &image, &options, command)
+    };
+    let read = |network: String, more: &[&str], files: &[&str]| {
+        let mut command = vec!["fs".to_string()];
+        command.extend(files.iter().map(|f| format!("print:{conf}/{f}")));
+        let command: Vec<&str> = command.iter().map(String::as_str).collect();
+        let r = run(network, more, &command);
+        assert_eq!(r.status, Some(0), "{r}");
+        r.stdout
+    };
+    assert_eq!(
+        read(
+            format!("name=bridge,driver-opt={ep}=net.ipv4.conf.IFNAME.log_martians=1"),
+            &[],
+            &["eth0/log_martians"]
+        ),
+        "1\n"
+    );
+    assert_eq!(
+        read(
+            format!(
+                "name=bridge,\"driver-opt={ep}=net.ipv4.conf.ifname.log_martians=1,net.ipv4.conf.IFNAME.accept_redirects=0\""
+            ),
+            &[],
+            &["eth0/log_martians", "eth0/accept_redirects"]
+        ),
+        "1\n0\n"
+    );
+    // The endpoint's after the container's own: all.forwarding sets every interface's.
+    assert_eq!(
+        read(
+            format!("name=bridge,driver-opt={ep}=net.ipv4.conf.IFNAME.forwarding=0"),
+            &["--sysctl", "net.ipv4.conf.all.forwarding=1"],
+            &["all/forwarding", "eth0/forwarding"]
+        ),
+        "1\n0\n"
+    );
+    let failed = |network: String, said: &str| {
+        let r = run(network, &[], &["exit", "0"]);
+        assert!(r.status == Some(125) && r.stderr.contains(said), "{r}");
+    };
+    failed(
+        format!("name=bridge,driver-opt={ep}=net.ipv4.conf.IFNAME.nonexistent=1"),
+        "failed to set up container networking: failed to add interface eth0 to sandbox: /proc/sys/net/ipv4/conf/eth0/nonexistent is not a sysctl file",
+    );
+    failed(
+        format!("name=bridge,driver-opt={ep}=net.ipv4.conf.IFNAME.log_martians=abc"),
+        "failed to set up container networking: failed to add interface eth0 to sandbox: unable to write to '/proc/sys/net/ipv4/conf/eth0/log_martians': write /proc/sys/net/ipv4/conf/eth0/log_martians: invalid argument",
+    );
+    // `none` has no interface: dockerd sets none, and the run goes on.
+    let none = run(
+        format!("name=none,driver-opt={ep}=net.ipv4.conf.IFNAME.log_martians=1"),
+        &[],
+        &["exit", "0"],
+    );
+    assert_eq!(none.status, Some(0), "{none}");
+    // An interface's sysctl as the container's own: refused as it is made.
+    let said = "interface specific sysctl setting \"net.ipv4.conf.eth0.log_martians\" must be supplied using driver option 'com.docker.network.endpoint.sysctls'";
+    let own = run_in(
+        &home,
+        &image,
+        &["--rm", "--sysctl", "net.ipv4.conf.eth0.log_martians=1"],
+        &["exit", "0"],
+    );
+    assert!(own.status == Some(125) && own.stderr.contains(said), "{own}");
+    let made = shards_in(
+        &home,
+        &["create", "--sysctl", "net.ipv4.conf.eth0.log_martians=1", &image],
+    );
+    assert_eq!(
+        (made.status, made.stderr.as_str()),
+        (Some(1), format!("Error response from daemon: {said}\n").as_str()),
+        "{made}"
+    );
+}
+
+/// A container given CAP_SYS_ADMIN mounts nothing, as Docker's default AppArmor profile
+/// keeps one where AppArmor is enforced (docker-default, `deny mount,`), which the guest
+/// has not: a mount, a remount of a read-only file, the new mount API and its microVM's own
+/// shares refused, EACCES, an exec and a joiner too; umount left to it. `apparmor=unconfined`
+/// and `--privileged` lift it, as Docker's do; without the capability, Docker's seccomp
+/// profile refuses first, EPERM.
+#[test]
+fn a_container_given_sys_admin_mounts_nothing_as_apparmor_keeps_it() {
+    let Some((home, image)) = home("containers-mounts") else {
+        return;
+    };
+    let shared = home.join("shared");
+    std::fs::create_dir(&shared).unwrap();
+    let bind = format!("{}:/data", shared.display());
+    let fs = |options: &[&str], op: &str| run_in(&home, &image, options, &["fs", op]);
+    let admin = ["--rm", "-u", "0", "--cap-add", "SYS_ADMIN"];
+    let refused = |options: &[&str], op: &str, said: &str| {
+        let r = fs(options, op);
+        assert!(
+            r.status == Some(1) && r.stderr.contains(&format!("{op}: {said}")),
+            "{options:?} {op}: {r}"
+        );
+    };
+    for op in [
+        "mount:tmpfs:none:/mnt",
+        "fsopen:tmpfs",
+        "open-tree:/etc",
+        "remount-rw:/etc/hostname",
+    ] {
+        refused(&admin, op, "Permission denied");
+    }
+    // Its microVM's own share, whose tag it knows.
+    let with_share: Vec<&str> = admin.iter().copied().chain(["-v", bind.as_str()]).collect();
+    refused(&with_share, "mount:virtiofs:shards0:/mnt", "Permission denied");
+    // umount is left to it, as docker-default leaves it: a tmpfs of its own.
+    let with_tmpfs: Vec<&str> = admin.iter().copied().chain(["--tmpfs", "/t"]).collect();
+    let unmounted = fs(&with_tmpfs, "umount:/t");
+    assert_eq!(unmounted.status, Some(0), "{unmounted}");
+    // Lifted as Docker's is.
+    for options in [
+        &[
+            "--rm",
+            "-u",
+            "0",
+            "--cap-add",
+            "SYS_ADMIN",
+            "--security-opt",
+            "apparmor=unconfined",
+        ][..],
+        &["--rm", "-u", "0", "--privileged"][..],
+    ] {
+        let made = run_in(&home, &image, options, &["fs", "mkdir:/m", "mount:tmpfs:none:/m"]);
+        assert_eq!(made.status, Some(0), "{options:?}: {made}");
+    }
+    // Without the capability, Docker's seccomp profile refuses first.
+    refused(
+        &["--rm", "-u", "0"],
+        "mount:tmpfs:none:/mnt",
+        "Operation not permitted",
+    );
+    // An exec takes it, and a joiner.
+    let up = run_in(
+        &home,
+        &image,
+        &["-d", "--name", "admin", "--cap-add", "SYS_ADMIN"],
+        &["sleep"],
+    );
+    assert_eq!(up.status, Some(0), "{up}");
+    let exec = shards_in(
+        &home,
+        &[
+            "exec",
+            "-u",
+            "0",
+            "admin",
+            "/bin/testguest",
+            "fs",
+            "mount:tmpfs:none:/mnt",
+        ],
+    );
+    assert!(exec.stderr.contains("Permission denied"), "{exec}");
+    refused(
+        &[
+            "--rm",
+            "-u",
+            "0",
+            "--cap-add",
+            "SYS_ADMIN",
+            "--network",
+            "container:admin",
+        ],
+        "mount:tmpfs:none:/mnt",
+        "Permission denied",
+    );
+    assert_eq!(shards_in(&home, &["rm", "-f", "admin"]).status, Some(0));
+}
+
 /// `start -a` passes signals on as docker/cli's start does: to a container without a
 /// terminal, whose command hears them; not to one with a terminal, whose own keys are its
 /// signals: the client ends by the signal alone, the container running on.
@@ -5532,7 +5719,8 @@ fn ustar(bytes: &[u8]) -> Vec<(String, u32, Vec<u8>)> {
 #[test]
 fn an_interrupted_save_leaves_nothing_behind() {
     use std::os::unix::process::{CommandExt as _, ExitStatusExt as _};
-    let home = TempDir::new("containers-save-interrupted");
+    // Named short: a socket is bound in it by its whole path (sockaddr_un).
+    let home = TempDir::new("save-int");
     let _daemon = std::os::unix::net::UnixListener::bind(home.join("daemon.sock")).unwrap();
     let out = TempDir::new("containers-save-interrupted-out");
     let dest = out.join("image.tar");

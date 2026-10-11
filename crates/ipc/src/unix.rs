@@ -1203,7 +1203,8 @@ pub(crate) mod tests {
         let null = std::fs::OpenOptions::new().write(true).open("/dev/null").unwrap();
         assert!(null.sync_all().is_err(), "std's sync_all took F_FULLFSYNC here");
         sync_durable(&null).unwrap();
-        let dir = std::fs::File::open(std::env::temp_dir()).unwrap();
+        let held = shards_testdir::TempDir::new("sync").unwrap();
+        let dir = std::fs::File::open(&held).unwrap();
         sync_durable(&dir).unwrap();
     }
 

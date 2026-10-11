@@ -7,12 +7,10 @@
 use super::*;
 use std::net::{TcpListener, TcpStream};
 
-/// A directory of its own, removed with the proxy.
-fn scratch(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("shards-proxy-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+/// A directory of its own, removed with the proxy: named short, as the proxy's socket in it
+/// must be (sockaddr_un), whatever its test.
+fn scratch(_: &str) -> shards_testdir::TempDir {
+    shards_testdir::TempDir::new("proxy").unwrap()
 }
 
 /// A server answering each request with what `answer` makes of its head (method, target,
@@ -151,7 +149,8 @@ fn with_proxy_deciding<T: Send>(
     allow: fn(&str) -> bool,
     client: impl FnOnce(&Path, &[u8]) -> T + Send,
 ) -> (T, Vec<String>, Capture) {
-    let mut proxy = Proxy::new(scratch(name), &shards_image::store::Limits::none()).unwrap();
+    let scratch = scratch(name);
+    let mut proxy = Proxy::new(scratch.to_path_buf(), &shards_image::store::Limits::none()).unwrap();
     if let Some(root) = roots {
         proxy.tls = shards_registry::tls::client_config(vec![root], None).unwrap();
     }
@@ -658,7 +657,8 @@ fn read_until(c: &mut UnixStream, end: &[u8]) -> Vec<u8> {
 /// between one request and the next is not bounded, only each head from its first byte.
 #[test]
 fn heads_are_waited_for_so_long_alone() {
-    let mut proxy = Proxy::new(scratch("head-time"), &shards_image::store::Limits::none()).unwrap();
+    let scratch = scratch("head-time");
+    let mut proxy = Proxy::new(scratch.to_path_buf(), &shards_image::store::Limits::none()).unwrap();
     proxy.head_time = Duration::from_millis(300);
     let ((cut, waited, first, second), _, _) = serving(
         &proxy,
@@ -707,7 +707,8 @@ fn heads_are_waited_for_so_long_alone() {
 /// until one of them ends.
 #[test]
 fn a_step_holds_so_many_connections_at_once() {
-    let mut proxy = Proxy::new(scratch("connections"), &shards_image::store::Limits::none()).unwrap();
+    let scratch = scratch("connections");
+    let mut proxy = Proxy::new(scratch.to_path_buf(), &shards_image::store::Limits::none()).unwrap();
     proxy.connections = 2;
     let ((before, after), _, _) = serving(
         &proxy,
@@ -741,7 +742,8 @@ fn a_step_holds_so_many_connections_at_once() {
 /// request upstream).
 #[test]
 fn requests_no_one_answers_are_refused() {
-    let proxy = Proxy::new(scratch("unanswered"), &shards_image::store::Limits::none()).unwrap();
+    let scratch = scratch("unanswered");
+    let proxy = Proxy::new(scratch.to_path_buf(), &shards_image::store::Limits::none()).unwrap();
     let raw = b"GET http://127.0.0.1:9/ HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n";
     for dropped_before in [true, false] {
         let (session, questions) =
@@ -882,7 +884,8 @@ fn request_bodies_stop_short_of_the_room_kept() {
         },
         ..shards_image::store::Limits::none()
     };
-    let dir = scratch("room");
+    let scratch = scratch("room");
+    let dir = scratch.to_path_buf();
     let mut proxy = Proxy::new(dir.clone(), &limits).unwrap();
     proxy.reach = |_| true;
     let (got, checked, _) = serving(
@@ -1364,12 +1367,12 @@ fn answering_as_a_build(q: Questions, done: &AtomicBool, policy: bool) {
                         .to_vec(),
                 ),
             }],
-            context_dir: Some(dir.clone()),
+            context_dir: Some(dir.to_path_buf()),
             ..policy::Opt::default()
         },
         configs: &[],
         env: policy::Env::default(),
-        cwd: dir,
+        cwd: dir.to_path_buf(),
         default_platform: shards_dockerfile::platform::Platform::new("linux", "arm64"),
         debug: false,
         default_policy: false,
@@ -1457,7 +1460,8 @@ fn request_costs() {
     };
     let mut timings: Vec<(&str, Vec<u128>)> = Vec::new();
     for policy in [false, true] {
-        let mut proxy = Proxy::new(scratch("measure"), &shards_image::store::Limits::none()).unwrap();
+        let scratch = scratch("measure");
+        let mut proxy = Proxy::new(scratch.to_path_buf(), &shards_image::store::Limits::none()).unwrap();
         proxy.tls = shards_registry::tls::client_config(vec![root.clone()], None).unwrap();
         proxy.reach = |_| true;
         let (session, questions) =

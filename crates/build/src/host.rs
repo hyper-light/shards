@@ -648,13 +648,11 @@ mod tests {
     use super::*;
 
     /// A file of `bytes` in a directory of the test's own.
-    fn file(name: &str, bytes: &[u8]) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("shards-host-{name}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
+    fn file(name: &str, bytes: &[u8]) -> (shards_testdir::TempDir, PathBuf) {
+        let dir = shards_testdir::TempDir::new(&format!("host-{name}")).unwrap();
         let path = dir.join("f");
         fs::write(&path, bytes).unwrap();
-        path
+        (dir, path)
     }
 
     #[test]
@@ -686,7 +684,7 @@ mod tests {
     /// opens it for writing meanwhile waits until it goes; none is granted while one has.
     #[test]
     fn a_lease_keeps_writers_off_while_it_is_held() {
-        let path = file("lease", b"one");
+        let (_dir, path) = file("lease", b"one");
         let f = open(&path).unwrap();
         assert!(lease(&f), "{}", io::Error::last_os_error());
         let held = std::time::Duration::from_millis(200);

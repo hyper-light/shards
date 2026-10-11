@@ -489,14 +489,12 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// A temporary directory, its path free of symlinks (macOS's /var is one).
-fn tmp(name: &str) -> PathBuf {
-    let base = fs::canonicalize(std::env::temp_dir()).unwrap();
-    // SAFETY: getpid has no preconditions.
-    let dir = base.join(format!("shards-archive-{}-{name}", unsafe { libc::getpid() }));
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir).unwrap();
-    dir
+/// A temporary directory, its path free of symlinks (macOS's /var is one); it goes with
+/// the guard.
+fn tmp(name: &str) -> (shards_testdir::TempDir, PathBuf) {
+    let guard = shards_testdir::TempDir::new(&format!("archive-{name}")).unwrap();
+    let dir = fs::canonicalize(&guard).unwrap();
+    (guard, dir)
 }
 
 fn umask() {
@@ -602,7 +600,7 @@ fn pack_as_go_archive() {
     let cases = load("cases.json");
     let answers = load("answers.json");
     let trees = trees();
-    let work = tmp("pack");
+    let (_work, work) = tmp("pack");
     let mut built = BTreeMap::new();
     let mut failures = Vec::new();
     for case in cases["pack"].as_array().unwrap() {
@@ -733,7 +731,7 @@ fn unpack_as_go_archive() {
     let cases = load("cases.json");
     let answers = load("answers.json");
     let trees = trees();
-    let work = tmp("unpack");
+    let (_work, work) = tmp("unpack");
     let mut failures = Vec::new();
     for case in cases["unpack"].as_array().unwrap() {
         if !runs(case) {
@@ -773,7 +771,7 @@ fn layer_as_go_archive() {
     let cases = load("cases.json");
     let answers = load("answers.json");
     let trees = trees();
-    let work = tmp("layer");
+    let (_work, work) = tmp("layer");
     let mut failures = Vec::new();
     for case in cases["layer"].as_array().unwrap() {
         if !runs(case) {
@@ -824,7 +822,7 @@ fn copy_as_go_archive() {
     let cases = load("cases.json");
     let answers = load("answers.json");
     let trees = trees();
-    let work = tmp("copy");
+    let (_work, work) = tmp("copy");
     let mut failures = Vec::new();
     for case in cases["copy"].as_array().unwrap() {
         let name = case["name"].as_str().unwrap();

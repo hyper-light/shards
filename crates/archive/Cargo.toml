@@ -17,4 +17,5 @@ libc = { workspace = true }
 windows-sys = { workspace = true }
 
 [dev-dependencies]
+shards-testdir = { path = "../testdir" }
 serde_json = "1"

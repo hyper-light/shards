@@ -231,7 +231,8 @@ mod tests {
             Ok(())
         })
         .unwrap();
-        let path = std::env::temp_dir().join(format!("shards-sync-{}", std::process::id()));
+        let path_dir = shards_testdir::TempDir::new("sync").unwrap();
+        let path = path_dir.join("sync");
         let mut staging = File::options()
             .create(true)
             .truncate(true)

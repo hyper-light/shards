@@ -475,7 +475,8 @@ mod tests {
 
     #[test]
     fn a_kernels_release_is_read_from_its_banner() {
-        let dir = std::env::temp_dir().join(format!("shards-banner-{}", std::process::id()));
+        let dir_guard = shards_testdir::TempDir::new("banner").unwrap();
+        let dir = dir_guard.join("banner");
         std::fs::write(
             &dir,
             b"\x00\x01junk Linux version 6.18.48 (builder@ci) #1 SMP\x00more",

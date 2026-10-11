@@ -361,9 +361,7 @@ mod tests {
     fn a_spawner_grants_what_a_vm_asks_for() {
         use shards_vmm::platform::open_input;
         use std::io::{Read as _, Write as _};
-        let dir = std::env::temp_dir().join(format!("shards-grant-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = shards_testdir::TempDir::new("grant").unwrap();
         let (kernel, disk, absent, made) = (
             dir.join("kernel"),
             dir.join("disk"),
@@ -421,7 +419,8 @@ mod tests {
     fn a_restores_template_is_granted_beneath_it_alone() {
         use shards_vmm::platform::open_input;
         use std::io::Read as _;
-        let dir = std::env::temp_dir().join(format!("shards-grant-template-{}", std::process::id()));
+        let dir_guard = shards_testdir::TempDir::new("grant-template").unwrap();
+        let dir = dir_guard.join("grant-template");
         let _ = std::fs::remove_dir_all(&dir);
         let (template, outside) = (dir.join("template"), dir.join("outside"));
         std::fs::create_dir_all(template.join("g-1")).unwrap();
@@ -510,9 +509,7 @@ mod tests {
     #[test]
     fn a_vms_vsock_is_bound_and_dialled_for_it() {
         use std::os::unix::net::{UnixListener, UnixStream};
-        let dir = std::env::temp_dir().join(format!("shards-dial-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = shards_testdir::TempDir::new("dial").unwrap();
         let vsock = dir.join("v");
         // Bound, never listened on: a copy another test's spawn may inherit (std's
         // sockets are close-on-exec only after they are made, on macOS) answers nothing

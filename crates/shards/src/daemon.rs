@@ -727,6 +727,9 @@ struct Daemon<D: Disk = Real> {
     next_cold: AtomicU64,
     /// The home's lock, held while this daemon lives.
     home_lock: File,
+    /// The home's device and inode as this daemon took it: the directory it removes what
+    /// is left of as its removal goes, and no other made at its path.
+    home_id: Option<(u64, u64)>,
 }
 
 /// The daemon's threads: each borrows the daemon and is joined before it goes, so none
@@ -1127,6 +1130,8 @@ impl<D: Disk> Daemon<D> {
         disk: D,
         home_lock: File,
     ) -> io::Result<Daemon<D>> {
+        use std::os::unix::fs::MetadataExt as _;
+        let home_id = std::fs::symlink_metadata(&home).ok().map(|m| (m.dev(), m.ino()));
         Ok(Daemon {
             home,
             bridge: settings.bridge,
@@ -1199,6 +1204,7 @@ impl<D: Disk> Daemon<D> {
             booting: Mutex::default(),
             next_cold: AtomicU64::new(0),
             home_lock,
+            home_id,
         })
     }
 
@@ -1338,6 +1344,18 @@ impl<D: Disk> Daemon<D> {
         use std::os::unix::fs::MetadataExt as _;
         std::fs::symlink_metadata(&self.home).is_err()
             || self.home_lock.metadata().is_ok_and(|m| m.nlink() == 0)
+    }
+
+    /// Whether the home this daemon took is being removed where it is: its lock unlinked,
+    /// and its path still the directory this daemon started in.
+    fn removed_here(&self) -> bool {
+        use std::os::unix::fs::MetadataExt as _;
+        self.home_lock.metadata().is_ok_and(|m| m.nlink() == 0)
+            && self.home_id.is_some()
+            && std::fs::symlink_metadata(&self.home)
+                .ok()
+                .map(|m| (m.dev(), m.ino()))
+                == self.home_id
     }
 
     /// Wakes the listener: something it waits for may have happened.
@@ -1546,11 +1564,6 @@ impl<D: Disk> Daemon<D> {
     fn finish(&self) {
         let _ = std::fs::remove_file(self.home.join("daemon.pid"));
         let _ = std::fs::remove_file(self.home.join(shards_ipc::STOPPING));
-        // A home being removed is removed: the socket the listener made again as its
-        // removal went may have kept it (rmdir(2): ENOTEMPTY). Only once empty.
-        if self.home_gone.load(Ordering::SeqCst) {
-            let _ = std::fs::remove_dir(&self.home);
-        }
         let state = lock(&self.state);
         let waiting = state.pools.values().flat_map(|p| p.ready.iter().map(|r| &r.vm));
         for vm in waiting.chain(state.starting.values()) {
@@ -1561,6 +1574,15 @@ impl<D: Disk> Daemon<D> {
         self.await_recorded();
         self.await_made();
         log("exiting");
+        // A home being removed is removed whole, once nothing more is written in it: what
+        // this daemon made in it as the removal went kept it before (rmdir(2): ENOTEMPTY),
+        // the socket its listener made again, its records, its networks' files, its log.
+        // Only the directory it started in, and only once its lock is unlinked, which none
+        // but a removal of the home does: a home moved away, or one made anew at its
+        // path, stays as it is.
+        if self.home_gone.load(Ordering::SeqCst) && self.removed_here() {
+            let _ = std::fs::remove_dir_all(&self.home);
+        }
         // SAFETY: flock(2) on the lock's own descriptor.
         unsafe { libc::flock(self.home_lock.as_raw_fd(), libc::LOCK_UN) };
         lock(&self.stoppers).clear();
@@ -1762,6 +1784,14 @@ impl<D: Disk> Daemon<D> {
                 self.not_again(id);
             }
         };
+        // dockerd's create route first, before its daemon checks anything (moby
+        // handleSysctlBC): an interface's sysctl given as the container's own is refused.
+        if again.is_none()
+            && let Err(e) = network::interface_sysctl(&run)
+        {
+            refused(&e);
+            return None;
+        }
         // Its networks as dockerd checks them before it makes the container; what fails
         // as it starts fails once the container is made.
         // Connected to one user network from the default bridge: on it alone (D46).
@@ -2102,6 +2132,12 @@ impl<D: Disk> Daemon<D> {
                         .push(format!("caps={}", a.caps(&run)).into_bytes());
                 }
                 prepared.spec.setup.extend(network_setup.iter().cloned());
+                // Its endpoint's sysctls, on its interface once it has its addresses (PM M171).
+                prepared.spec.setup.extend(
+                    crate::setup::endpoint_sysctls(&run)
+                        .into_iter()
+                        .map(|kv| format!("endpoint-sysctl={kv}").into_bytes()),
+                );
                 let kernel = crate::guest::version_of(crate::run::kernel_of(&prepared.boot))?;
                 prepared
                     .spec
@@ -5249,7 +5285,7 @@ mod tests {
     /// (audit A06).
     struct Test<D: Disk = Real> {
         daemon: Daemon<D>,
-        home: PathBuf,
+        home: shards_testdir::TempDir,
         /// The processes of the warm VMs played, ended with the test.
         vms: Mutex<Vec<Arc<shards_ipc::Child>>>,
     }
@@ -5268,16 +5304,14 @@ mod tests {
             // as its test ends, and must not make it in another test's home.
             static HOMES: AtomicUsize = AtomicUsize::new(0);
             let n = HOMES.fetch_add(1, Ordering::Relaxed);
-            let home = std::env::temp_dir().join(format!("shards-daemon-{tag}-{}-{n}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&home);
-            std::fs::create_dir_all(&home).unwrap();
+            let home = shards_testdir::TempDir::new(&format!("daemon-{tag}-{n}")).unwrap();
             let containers = Registry::open_on(home.join("containers"), &disk, &mut |note| {
                 panic!("noted: {note}")
             })
             .unwrap();
             let home_lock = File::create(home.join("daemon.lock")).unwrap();
             let daemon = Daemon::new(
-                home.clone(),
+                home.to_path_buf(),
                 PathBuf::from("shards-vm"),
                 Identity::default(),
                 Settings {

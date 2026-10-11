@@ -269,7 +269,8 @@ mod tests {
     /// from the cache alone, the repository unreachable, which the status says.
     #[test]
     fn the_carried_root_serves_its_trusted_root_while_current() {
-        let dir = std::env::temp_dir().join(format!("shards-tuf-{}", std::process::id()));
+        let dir_guard = shards_testdir::TempDir::new("tuf").unwrap();
+        let dir = dir_guard.join("tuf");
         let _ = std::fs::remove_dir_all(&dir);
         let (got, status) = trusted_root(&dir, &Unreachable, when("2026-09-01T00:00:00Z"));
         let want = EMBEDDED
