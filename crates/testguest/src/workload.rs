@@ -98,6 +98,7 @@ pub fn main() -> ! {
         "loopback" => loopback(),
         "fs" => fs(args.get(1..).unwrap_or_default()),
         "addrs" => addrs(),
+        "spawn" => spawn(args.get(1..).unwrap_or_default()),
         "tcp" => tcp(arg(1)),
         "fetch" => fetch(args.get(1..).unwrap_or_default()),
         "ask" => ask(arg(1)),
@@ -1036,6 +1037,23 @@ fn udp_echo(port: &str, stop: &str) -> i32 {
                 let _ = writeln!(io::stdout(), "udp error {e}");
                 return 1;
             }
+        }
+    }
+}
+
+/// Runs `/bin/testguest ARGS` as a child and waits for it: `spawned PID code N`, a fork,
+/// an exec and an exit for a record of processes to hold (D123).
+fn spawn(args: &[String]) -> i32 {
+    match std::process::Command::new("/bin/testguest").args(args).spawn() {
+        Ok(mut child) => {
+            let pid = child.id();
+            let code = child.wait().ok().and_then(|s| s.code()).unwrap_or(-1);
+            let _ = writeln!(io::stdout(), "spawned {pid} code {code}");
+            0
+        }
+        Err(e) => {
+            let _ = writeln!(io::stdout(), "spawn error {e}");
+            1
         }
     }
 }

@@ -37,6 +37,8 @@ mod netplan;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod orders;
 #[cfg(target_os = "linux")]
+mod procevents;
+#[cfg(target_os = "linux")]
 mod procs;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod proxyca;

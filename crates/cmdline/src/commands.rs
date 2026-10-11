@@ -1940,6 +1940,30 @@ pub static READ_PORTS: Command = Command {
     error_prefix: "",
 };
 
+/// `shards read processes` (D123): the processes a microVM's members started and ended.
+pub static READ_PROCESSES: Command = Command {
+    usage: "MICROVM",
+    about: "Show the processes a microVM's command, agents and harnesses started and ended",
+    aliases: "shards read processes",
+    args: Args::Exactly(1),
+    flags: &[HELP],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards watch processes` (D123): [`READ_PROCESSES`], then each as it comes.
+pub static WATCH_PROCESSES: Command = Command {
+    usage: "MICROVM",
+    about: "Follow the processes a microVM's command, agents and harnesses start and end",
+    aliases: "shards watch processes",
+    args: Args::Exactly(1),
+    flags: &[HELP],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
 /// `shards logs`.
 pub static LOGS: Command = Command {
     usage: "[OPTIONS] CONTAINER",
@@ -2520,6 +2544,8 @@ pub fn find(words: &[&str]) -> Option<(&'static Command, &'static str, usize)> {
         ["container", "kill", ..] => (&KILL, "shards container kill", 2),
         ["port", ..] => (&PORT, "shards port", 1),
         ["read", "ports", ..] => (&READ_PORTS, "shards read ports", 2),
+        ["read", "processes", ..] => (&READ_PROCESSES, "shards read processes", 2),
+        ["watch", "processes", ..] => (&WATCH_PROCESSES, "shards watch processes", 2),
         ["images", ..] => (&IMAGES, "shards images", 1),
         ["tag", ..] => (&TAG, "shards tag", 1),
         ["save", ..] => (&SAVE, "shards save", 1),

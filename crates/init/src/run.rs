@@ -81,7 +81,12 @@ pub fn main(device: &str, template: bool) -> ! {
     let signals = dial(run::SIGNAL_PORT, false).ok();
     let started = standby.and_then(|standby| {
         let spec = receive(&conn)?;
+        // What processes the run's members start and end (D123), listened to before any
+        // starts; none of a visit to a stopped container's files, which runs nothing.
+        let procs = (spec.builtin != run::builtin::HOLD)
+            .then(|| crate::procevents::Listener::new().map_err(|e| e.to_string()));
         let (mut workload, declared) = standby.start(&spec)?;
+        workload.procs = procs;
         // A visit to a stopped container's files (`HOLD`, D37) runs nothing of the image's:
         // no command, and no agent or harness.
         if spec.builtin == run::builtin::HOLD {
@@ -1697,6 +1702,9 @@ struct Workload {
     domains: Vec<crate::domains::Started>,
     /// Their memory, watched, where there are any.
     memory: Option<crate::domains::Memory>,
+    /// The process events connector, listened to for the run's record of processes (D123),
+    /// or why it could not be.
+    procs: Option<Result<crate::procevents::Listener, String>>,
 }
 
 /// A pty's master, and the path of its peer, which the standby opens as the workload's
@@ -2183,6 +2191,7 @@ impl Standby {
                 _held: Some(orders),
                 domains: Vec::new(),
                 memory: None,
+                procs: None,
             };
             return Ok((held, None));
         }
@@ -2383,6 +2392,7 @@ impl Standby {
                 _held: None,
                 domains: Vec::new(),
                 memory: None,
+                procs: None,
             });
         };
         // The terminal carries everything; the pipes go unused.
@@ -2400,6 +2410,7 @@ impl Standby {
             _held: None,
             domains: Vec::new(),
             memory: None,
+            procs: None,
         })
     }
 }
@@ -3363,6 +3374,8 @@ enum Owner {
     Domain(usize),
     /// The domains' memory.
     Memory,
+    /// The process events connector (D123).
+    Procs,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -3531,6 +3544,14 @@ impl Workload {
                 self.memory.as_ref().map(crate::domains::Memory::fd),
                 libc::POLLIN,
                 Owner::Memory,
+            );
+            poll(
+                self.procs
+                    .as_ref()
+                    .and_then(|p| p.as_ref().ok())
+                    .map(crate::procevents::Listener::fd),
+                libc::POLLIN,
+                Owner::Procs,
             );
             for (i, e) in execs.iter().enumerate() {
                 let conn_events = if !e.connected {
@@ -3790,6 +3811,28 @@ impl Workload {
                         });
                         if eof {
                             d.out = None;
+                        }
+                    }
+                    Owner::Procs => {
+                        if let Some(Ok(p)) = self.procs.as_mut() {
+                            let mut records = Vec::new();
+                            p.read(&mut records);
+                            // In frames of whole records, each a CHUNK at most, as output goes.
+                            let mut rest = records.as_slice();
+                            while !rest.is_empty() {
+                                let most = rest.len().min(CHUNK);
+                                let at = match rest
+                                    .get(..most)
+                                    .and_then(|r| r.iter().rposition(|&b| b == b'\n'))
+                                {
+                                    Some(end) if most < rest.len() => end + 1,
+                                    _ => most,
+                                };
+                                let (frame, after) = rest.split_at(at);
+                                let len = u32::try_from(frame.len()).unwrap_or(u32::MAX);
+                                to_host.extend(&[&run::header(kind::PROCESS, len), frame]);
+                                rest = after;
+                            }
                         }
                     }
                     Owner::Memory => {

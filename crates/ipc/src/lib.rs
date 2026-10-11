@@ -224,6 +224,9 @@ pub mod kind {
     /// Daemon → a VM's network process: the guest's link-local addresses on its network
     /// (PM M175), each a length, 4 or 16, then its octets; answered `NET_LINK_LOCAL`.
     pub const NET_LINK_LOCAL: u8 = 46;
+    /// A VM → its daemon, as they come: records of the processes its run's members started
+    /// and ended (D123), as shards-init writes them, for the container's record.
+    pub const PROCESS: u8 = 47;
 }
 
 /// An `ATTACH_RUN` flag: the client's stdin goes to the command's.

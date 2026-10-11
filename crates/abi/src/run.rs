@@ -92,6 +92,9 @@ pub mod kind {
     /// writable layer uses (a big-endian u64), counted as containerd's snapshots count
     /// it, for inspect's SizeRw once it has stopped.
     pub const USAGE: u8 = 29;
+    /// Guest to host, on the workload's connection, as they come: what processes the run's
+    /// members started and ended (D123), as shards-init's `procevents` writes the records.
+    pub const PROCESS: u8 = 30;
 }
 
 /// Why an exec did not start, as its [`kind::SYSTEM_ERR`] says first: the runtime could

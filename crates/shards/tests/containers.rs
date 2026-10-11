@@ -2610,6 +2610,91 @@ fn a_runs_link_local_addresses_are_its_own_as_dockerd_gives_them() {
     let _ = exit(&mut client);
 }
 
+/// A microVM's record of the processes its members start and end (D123): its command's
+/// exec, a child it forks, that child's exec and its exit code, and its own exit, each the
+/// command's, in order, read once the run has ended; an exec's processes too, followed as
+/// they come by `shards watch processes`, which ends with the run.
+#[test]
+fn a_runs_processes_are_recorded_as_they_start_and_end() {
+    use std::io::BufRead as _;
+    let Some((home, image)) = home("containers-processes") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let ran = run_in(&home, &image, &["--name", "procs"], &["spawn", "exit", "3"]);
+    assert_eq!(ran.status, Some(0), "{ran}");
+    let read = shards(&["read", "processes", "procs"]);
+    assert_eq!(read.status, Some(0), "{read}");
+    // TIME, MEMBER (the command's, one word), PID, EVENT, then what it says.
+    let rows: Vec<Vec<&str>> = read
+        .stdout
+        .lines()
+        .skip(1)
+        .map(|l| l.split_whitespace().collect())
+        .collect();
+    let said = |r: &[&str]| r.get(4..).map(|w| w.join(" ")).unwrap_or_default();
+    let at = |event: &str, says: &str| {
+        rows.iter()
+            .position(|r| r.get(1) == Some(&"command") && r.get(3) == Some(&event) && said(r) == says)
+            .unwrap_or_else(|| panic!("no {event} {says:?} in\n{}", read.stdout))
+    };
+    let (own, child) = (
+        at("exec", "/bin/testguest spawn exit 3"),
+        at("exec", "/bin/testguest exit 3"),
+    );
+    assert!(own < child, "{}", read.stdout);
+    let pid = |row: usize| rows[row][2];
+    let (parent, kid) = (pid(own), pid(child));
+    let fork = at("fork", &format!("from {parent}"));
+    assert!(pid(fork) == kid && own < fork && fork < child, "{}", read.stdout);
+    let exited = |p: &str| {
+        rows.iter()
+            .position(|r| r.get(2) == Some(&p) && r.get(3) == Some(&"exit"))
+            .unwrap_or_else(|| panic!("no exit of {p} in\n{}", read.stdout))
+    };
+    assert_eq!(said(&rows[exited(kid)]), "code 3");
+    assert_eq!(said(&rows[exited(parent)]), "code 0");
+    assert!(exited(kid) < exited(parent), "{}", read.stdout);
+    // Followed: an exec's, as it comes; the follow ends with the run.
+    let mut c = start(&home, &image, &["--name", "watched"], &["sleep"]);
+    let mut watcher = common::command()
+        .args(["watch", "processes", "watched"])
+        .env("SHARDS_HOME", &*home)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let out = watcher.stdout.take().unwrap();
+    std::thread::spawn(move || {
+        for line in BufReader::new(out).lines().map_while(Result::ok) {
+            let _ = tx.send(line);
+        }
+    });
+    let execed = shards(&["exec", "watched", "/bin/testguest", "exit", "4"]);
+    assert_eq!(execed.status, Some(4), "{execed}");
+    let deadline = Instant::now() + TIMEOUT;
+    let mut seen = Vec::new();
+    while !seen
+        .iter()
+        .any(|l: &String| l.contains(" exit ") && l.ends_with(" code 4"))
+    {
+        let left = deadline.saturating_duration_since(Instant::now());
+        match rx.recv_timeout(left) {
+            Ok(line) => seen.push(line),
+            Err(_) => panic!("the exec's exit not followed: {seen:#?}"),
+        }
+    }
+    assert!(
+        seen.iter()
+            .any(|l| l.contains(" exec ") && l.ends_with("/bin/testguest exit 4")),
+        "{seen:#?}"
+    );
+    assert_eq!(shards(&["rm", "-f", "watched"]).status, Some(0));
+    assert!(exit(&mut watcher).is_some(), "the follow ended with the run");
+    let _ = exit(&mut c);
+}
+
 /// A container given CAP_SYS_ADMIN mounts nothing, as Docker's default AppArmor profile
 /// keeps one where AppArmor is enforced (docker-default, `deny mount,`), which the guest
 /// has not: a mount, a remount of a read-only file, the new mount API and its microVM's own
