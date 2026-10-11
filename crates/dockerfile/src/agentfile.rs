@@ -1414,12 +1414,23 @@ pub fn connections(directives: &[Directive]) -> Result<(), Vec<u8>> {
     Ok(())
 }
 
+/// Who a port coming in past the microVM reaches (D122): the microVM's range, the
+/// member's (the same unless an `EXPOSE` maps one to the other), and the member.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Receiver {
+    pub at: (u8, u16, u16),
+    pub to: (u8, u16, u16),
+    pub kind: TargetKind,
+    pub name: Vec<u8>,
+}
+
 /// What an Agentfile lets in past its microVM (§4.1, §4.6, §12 answer 6, D122): a
 /// network's ports both boundaries open inward reach one member each, the one an `EXPOSE`
 /// names for them (`--agents`, `--harnesses`), else the network's one member. A member
 /// named on no network its `EXPOSE` is for, a port two members claim, and a port of a
-/// network of several that names none are refused, naming them, rather than guessed at.
-pub fn ingress(directives: &[Directive]) -> Result<(), Vec<u8>> {
+/// network of several that names none are refused, naming them, rather than guessed at;
+/// else each port's receiver.
+pub fn ingress(directives: &[Directive]) -> Result<Vec<Receiver>, Vec<u8>> {
     // Each name's kind: as a CONNECT says it, else the one kind it is declared as.
     let declared = |name: &[u8], kind: TargetKind| {
         directives.iter().any(|d| match (d, kind) {
@@ -1495,6 +1506,7 @@ pub fn ingress(directives: &[Directive]) -> Result<(), Vec<u8>> {
             }
         }
     }
+    let mut out: Vec<Receiver> = Vec::new();
     for (net, members) in &nets {
         // What the network itself lets in to its members (`NETWORK --ingress`,
         // `--expose`): none of an internal one.
@@ -1511,7 +1523,12 @@ pub fn ingress(directives: &[Directive]) -> Result<(), Vec<u8>> {
         // Who each microVM port coming in is claimed for: the member an EXPOSE names,
         // else every member. One mapped to a member's port crosses the network's
         // boundary at the member's.
-        let mut claims: Vec<((u8, u16, u16), Option<(Option<TargetKind>, Vec<u8>)>)> = Vec::new();
+        type Claim = (
+            (u8, u16, u16),
+            (u8, u16, u16),
+            Option<(Option<TargetKind>, Vec<u8>)>,
+        );
+        let mut claims: Vec<Claim> = Vec::new();
         for d in directives {
             let Directive::Expose(e) = d else { continue };
             if e.direction == Direction::Egress || !e.networks.iter().any(|n| n == net) {
@@ -1540,14 +1557,14 @@ pub fn ingress(directives: &[Directive]) -> Result<(), Vec<u8>> {
                 };
                 if o != i {
                     if own.iter().any(|&(q, a, b)| q == iproto && a <= ilo && ihi <= b) {
-                        claims.push(((proto, lo, hi), receivers.first().cloned()));
+                        claims.push(((proto, lo, hi), (iproto, ilo, ihi), receivers.first().cloned()));
                     }
                     continue;
                 }
                 for &(q, a, b) in &own {
                     let (lo, hi) = (lo.max(a), hi.min(b));
                     if proto == q && lo <= hi {
-                        claims.push(((proto, lo, hi), receivers.first().cloned()));
+                        claims.push(((proto, lo, hi), (proto, lo, hi), receivers.first().cloned()));
                     }
                 }
             }
@@ -1565,7 +1582,7 @@ pub fn ingress(directives: &[Directive]) -> Result<(), Vec<u8>> {
             }
             .into_bytes()
         };
-        for (i, (range, who)) in claims.iter().enumerate() {
+        for (i, (range, to, who)) in claims.iter().enumerate() {
             match who {
                 None if members.len() > 1 => {
                     return Err([
@@ -1581,10 +1598,19 @@ pub fn ingress(directives: &[Directive]) -> Result<(), Vec<u8>> {
                     ]
                     .concat());
                 }
-                None => {}
+                None => {
+                    if let Some(&(k, m)) = members.first() {
+                        out.push(Receiver {
+                            at: *range,
+                            to: *to,
+                            kind: k.unwrap_or(TargetKind::Agent),
+                            name: m.to_vec(),
+                        });
+                    }
+                }
                 Some((k, m)) => {
                     let overlaps = |(p, a, b): (u8, u16, u16)| p == range.0 && a <= range.2 && range.1 <= b;
-                    if let Some((_, Some((k2, m2)))) = claims.iter().skip(i + 1).find(|(r, other)| {
+                    if let Some((_, _, Some((k2, m2)))) = claims.iter().skip(i + 1).find(|(r, _, other)| {
                         overlaps(*r) && other.as_ref().is_some_and(|o| o != &(*k, m.clone()))
                     }) {
                         return Err([
@@ -1600,11 +1626,18 @@ pub fn ingress(directives: &[Directive]) -> Result<(), Vec<u8>> {
                         ]
                         .concat());
                     }
+                    out.push(Receiver {
+                        at: *range,
+                        to: *to,
+                        kind: k.unwrap_or(TargetKind::Agent),
+                        name: m.clone(),
+                    });
                 }
             }
         }
     }
-    Ok(())
+    out.dedup();
+    Ok(out)
 }
 
 /// The ports an Agentfile lets some domain open flows to past its microVM: of each network

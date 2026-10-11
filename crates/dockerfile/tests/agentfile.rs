@@ -814,6 +814,7 @@ fn ingress_reaches_a_networks_one_member() {
             })
             .collect();
         shards_dockerfile::agentfile::ingress(&directives)
+            .map(drop)
             .map_err(|e| String::from_utf8_lossy(&e).into_owned())
     };
     let base = "FROM alpine\nAGENT a FROM ./a\nAGENT b FROM ./b\n";

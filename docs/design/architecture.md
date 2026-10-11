@@ -3534,16 +3534,28 @@ process a container listens with (docs.docker.com/reference/cli/docker/container
   the `EXPOSE` names, is a build error that says what the name is. Without them, the port
   is every member's, as before.
 - **One receiver for an incoming port**, across the three flags and across `EXPOSE`s: two
-  members claiming one port is a build error naming both. Egress, the destination port of
-  connections going out, names any number.
+  members claiming one port is a build error naming both, and so is an unnamed port of a
+  network of several. Egress, the destination port of connections going out, names any
+  number.
 - **`<port>:<member_port>`**, ingress's alone, in `-p`'s order (outside, then inside), so
   two members that both listen on one port are each reached.
 - **Shown**: `shards read ports <microvm>` lists each published port with its member and
   that member's kind, in shards' own grammar; `shards port` keeps Docker's output where it
   is piped. A published port no member claims reaches the run's own command, as Docker's.
 
-Built after `--link-local-ip`. `--mcps=` waits on local MCP servers joining networks: today
-each caller runs its own instance over stdio, in its own confinement (D60, §9.6).
+- **At run**, init gives each domain the ports named for it, as pairs of the microVM's
+  range and the member's: the uplink's DNAT translates a mapped port (nft_nat's proto
+  register, as nft's `dnat to ADDR:PORT` writes it), and its forward chain, the switch and
+  the domain's gate match the member's port. The image's ExposedPorts keep the microVM's
+  port, where BuildKit's own `EXPOSE 8081:80` keeps the second.
+- **Tested**: `each_agent_answers_the_port_its_expose_names` (two agents both on 7100, web
+  at the microVM's 7100 and api at its 7101; `shards read ports`; the unnamed case refused
+  at build; mutation-checked, the DNAT without the port's translation reaching no one);
+  `ingress_reaches_a_networks_one_member` and the parser's cases; init's
+  `ingress_goes_to_the_member_its_expose_names`.
+
+`--mcps=` waits on local MCP servers joining networks: today each caller runs its own
+instance over stdio, in its own confinement (D60, §9.6).
 
 ### D121. Docker's AppArmor mount rule, in guests that have no AppArmor
 

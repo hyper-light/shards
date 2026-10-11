@@ -1928,6 +1928,18 @@ pub static PORT: Command = Command {
     error_prefix: "",
 };
 
+/// `shards read ports` (D122): which member of a microVM each published port reaches.
+pub static READ_PORTS: Command = Command {
+    usage: "MICROVM",
+    about: "Show which agent, harness or command each published port of a microVM reaches",
+    aliases: "shards read ports",
+    args: Args::Exactly(1),
+    flags: &[HELP],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
 /// `shards logs`.
 pub static LOGS: Command = Command {
     usage: "[OPTIONS] CONTAINER",
@@ -2507,6 +2519,7 @@ pub fn find(words: &[&str]) -> Option<(&'static Command, &'static str, usize)> {
         ["container", "exec", ..] => (&EXEC, "shards container exec", 2),
         ["container", "kill", ..] => (&KILL, "shards container kill", 2),
         ["port", ..] => (&PORT, "shards port", 1),
+        ["read", "ports", ..] => (&READ_PORTS, "shards read ports", 2),
         ["images", ..] => (&IMAGES, "shards images", 1),
         ["tag", ..] => (&TAG, "shards tag", 1),
         ["save", ..] => (&SAVE, "shards save", 1),

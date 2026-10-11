@@ -33,6 +33,8 @@ pub struct Agentfile {
     /// Whether their flows past the microVM, out or in, or their names, cross init's
     /// network namespace, the command's, on their way to eth0 (D59, D115).
     pub uplink: bool,
+    /// Who each port coming in past the microVM reaches (D122), for `shards read ports`.
+    pub receivers: Vec<shards_dockerfile::agentfile::Receiver>,
 }
 
 impl Agentfile {
@@ -182,7 +184,7 @@ pub fn agentfile(rootfs: &std::path::Path, digest: &str) -> Result<Agentfile, St
     let directives = af::from_spec(&json).map_err(fail)?;
     let said = |e: Vec<u8>| fail(String::from_utf8_lossy(&e).into_owned());
     af::connections(&directives).map_err(said)?;
-    af::ingress(&directives).map_err(said)?;
+    let receivers = af::ingress(&directives).map_err(said)?;
     af::reach(&directives).map_err(said)?;
     let text = |b: &[u8]| {
         String::from_utf8(b.to_vec()).map_err(|_| fail("a volume's name or path that is not UTF-8".into()))
@@ -227,6 +229,7 @@ pub fn agentfile(rootfs: &std::path::Path, digest: &str) -> Result<Agentfile, St
         uplink: !grants.egress.is_empty() || !grants.mcp.is_empty() || grants.dns || ingress,
         grants,
         domains: u32::try_from(domains).map_err(|_| fail("more agents and harnesses than uids".into()))?,
+        receivers,
     };
     read.lock()
         .unwrap_or_else(PoisonError::into_inner)
