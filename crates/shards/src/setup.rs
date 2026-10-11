@@ -43,6 +43,15 @@ pub fn endpoint_sysctls(run: &Run) -> Vec<String> {
     if run.network == "none" {
         return Vec::new();
     }
+    own_endpoint(run)
+        .and_then(|e| e.driver_opts.iter().find(|(k, _)| k == ENDPOINT_SYSCTLS))
+        .map(|(_, v)| v.split(',').filter(|s| !s.is_empty()).map(String::from).collect())
+        .unwrap_or_default()
+}
+
+/// The endpoint of `run`'s own network, its mode's: the default bridge's whichever name
+/// says it.
+pub fn own_endpoint(run: &Run) -> Option<&shards_ipc::Endpoint> {
     let ours = |n: &str| {
         n == run.network
             || matches!(
@@ -50,12 +59,7 @@ pub fn endpoint_sysctls(run: &Run) -> Vec<String> {
                 ("bridge", "default") | ("default", "bridge")
             )
     };
-    run.endpoints
-        .iter()
-        .find(|e| ours(&e.network))
-        .and_then(|e| e.driver_opts.iter().find(|(k, _)| k == ENDPOINT_SYSCTLS))
-        .map(|(_, v)| v.split(',').filter(|s| !s.is_empty()).map(String::from).collect())
-        .unwrap_or_default()
+    run.endpoints.iter().find(|e| ours(&e.network))
 }
 
 /// docker/cli's map of `--tmpfs`: each destination's options, the last given for it

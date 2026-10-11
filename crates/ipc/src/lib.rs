@@ -218,6 +218,9 @@ pub mod kind {
     /// `NAME\0MODE\0ONLY` (`ro` or `rw`, and the one name of it a file is bound by, or
     /// none), with its directory; answered `TAKEN`, or `ERR` and why.
     pub const JOIN_VOLUME: u8 = 44;
+    /// Daemon → a VM's network process: the guest's MAC from its run on (6 bytes), which
+    /// its frames come from and go to, as init gives eth0 it (D46); answered `NET_MAC`.
+    pub const NET_MAC: u8 = 45;
 }
 
 /// An `ATTACH_RUN` flag: the client's stdin goes to the command's.

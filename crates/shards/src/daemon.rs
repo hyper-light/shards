@@ -373,6 +373,9 @@ struct Keep<'a> {
     egress: Option<Vec<u8>>,
     /// Its image's Agentfile (D109), for its execs (D115).
     agentfile: Option<crate::agentfile::Agentfile>,
+    /// Its own MAC (D46, PM M173), for its VM's network process (`NET_MAC`): none where it
+    /// has no interface of its own.
+    mac: Option<[u8; 6]>,
 }
 
 /// A run in progress: its VM's socket, to signal the command, and the VM itself.
@@ -2106,6 +2109,34 @@ impl<D: Disk> Daemon<D> {
             .made(&id)
             .map(|c| (c.mounts.clone(), c.started.is_none()))
             .unwrap_or_default();
+        // Its own MAC where it has an interface of its own (D46, PM M173): given
+        // (`--mac-address`, its endpoint's `mac-address`), or made for it, as dockerd makes
+        // each endpoint's, so that no two runs of one template share its MAC.
+        let run_mac: Option<Vec<u8>> = match start {
+            network::Start::Attach(network::Net::Bridge | network::Net::User) => {
+                match crate::setup::own_endpoint(&run)
+                    .map(|e| e.mac.trim())
+                    .filter(|m| !m.is_empty())
+                {
+                    Some(given) => match shards_cmdline::network::mac_octets(given) {
+                        Some(octets) => Some(octets),
+                        None => {
+                            refuse(&format!("{given} is not a valid mac address"));
+                            abandon(&id);
+                            return None;
+                        }
+                    },
+                    None => match shards_net::random_mac() {
+                        Ok(made) => Some(made.to_vec()),
+                        Err(e) => {
+                            log(format!("container {id}: a MAC of its own: {e}"));
+                            None
+                        }
+                    },
+                }
+            }
+            _ => None,
+        };
         // A joiner's shared directories (D119), each with the name it goes by in its microVM's
         // join share, given to the share as it joins (`join_vm`).
         let mut join_volumes = Vec::new();
@@ -2130,6 +2161,13 @@ impl<D: Disk> Daemon<D> {
                         .spec
                         .setup
                         .push(format!("caps={}", a.caps(&run)).into_bytes());
+                }
+                // Its MAC first, which init gives eth0 before its addresses.
+                if let Some(mac) = &run_mac {
+                    prepared
+                        .spec
+                        .setup
+                        .push(format!("mac={}", shards_cmdline::network::mac_string(mac)).into_bytes());
                 }
                 prepared.spec.setup.extend(network_setup.iter().cloned());
                 // Its endpoint's sysctls, on its interface once it has its addresses (PM M171).
@@ -2307,6 +2345,7 @@ impl<D: Disk> Daemon<D> {
                 visit: false,
                 egress,
                 agentfile: prepared.agentfile.clone(),
+                mac: run_mac.as_deref().and_then(|m| m.first_chunk::<6>().copied()),
             },
             || match &start {
                 network::Start::Join(name) => self.join_vm(threads, &id, name, &prepared, &join_volumes),
@@ -2355,7 +2394,7 @@ impl<D: Disk> Daemon<D> {
             }
         };
         for _ in 0..HANDOFF_TRIES {
-            let ready = acquire().map_err(|e| failed(&e))?;
+            let mut ready = acquire().map_err(|e| failed(&e))?;
             // Every way on leaves `Handing` while `ready` holds the socket it names.
             if let Err(said) = self.commit(id, ready.socket.as_raw_fd()) {
                 // A joiner's VM is its provider's, in no pool: only its connection goes.
@@ -2363,6 +2402,18 @@ impl<D: Disk> Daemon<D> {
                     self.give_back(threads, ready);
                 }
                 return Err(said);
+            }
+            // Its own MAC (D46): what its VM's network process frames to and from it from
+            // here on, as init gives eth0 it. One whose process does not take it goes, and
+            // another is tried, as one that does not take its ports.
+            if let (Some(mac), Some(net)) = (keep.mac, &ready.net) {
+                if let Err(e) = networks::ask_net(net, kind::NET_MAC, &mac, &[]) {
+                    log(format!("warm VM {}'s MAC: {e}", ready.vm.id()));
+                    ready.end();
+                    self.uncommit(id);
+                    continue;
+                }
+                ready.mac = Some(mac);
             }
             // Its published ports go to its VM's network process before the VM has the
             // run, so that none of their connections wait on its start; taken, they are
@@ -3220,6 +3271,7 @@ impl<D: Disk> Daemon<D> {
             visit,
             egress: _,
             agentfile,
+            mac: _,
         } = keep;
         if layer_pending {
             lock(&self.settling).insert(id.to_string());
@@ -5509,6 +5561,7 @@ mod tests {
                         visit: false,
                         egress: None,
                         agentfile: None,
+                        mac: None,
                     },
                     acquire,
                 )?;
@@ -5795,6 +5848,7 @@ mod tests {
                             visit: false,
                             egress: None,
                             agentfile: None,
+                            mac: None,
                         },
                         || {
                             offered
@@ -7419,6 +7473,7 @@ mod tests {
                 visit: false,
                 egress: None,
                 agentfile: None,
+                mac: None,
             };
             let _inbox = t.daemon.register(ready, &id, keep);
             say(&vm, kind::STARTED, &[]);

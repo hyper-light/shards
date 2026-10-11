@@ -165,9 +165,6 @@ pub fn check(
         return Ok(Start::Join(name.to_string()));
     }
     for e in &endpoints {
-        if !e.mac.is_empty() {
-            return unsupported("mac-address");
-        }
         if !e.link_local.is_empty() {
             return unsupported("link-local-ip");
         }
@@ -555,13 +552,14 @@ mod tests {
             check(&run(&["container:web"]), docker, |n| n == "web"),
             Ok(Start::Join("web".into()))
         );
+        // An endpoint's MAC is taken (D46, PM M173).
         assert_eq!(
             check(
                 &run(&["name=bridge,mac-address=02:11:22:33:44:55"]),
                 docker,
                 |_| false
             ),
-            unsupported("mac-address")
+            Ok(Start::Attach(Net::Bridge))
         );
         assert_eq!(
             check(&run(&["name=bridge,link-local-ip=169.254.1.1"]), docker, |_| {

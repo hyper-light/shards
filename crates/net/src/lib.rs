@@ -730,6 +730,7 @@ impl Control {
                 kind,
                 shards_ipc::kind::PUBLISH
                     | shards_ipc::kind::NET_ADDRESS
+                    | shards_ipc::kind::NET_MAC
                     | shards_ipc::kind::NET_PEER
                     | shards_ipc::kind::NET_NAMES
                     | shards_ipc::kind::NET_POLICY
@@ -902,6 +903,12 @@ fn control(
                 return false;
             }
             shards_ipc::send(sock, shards_ipc::kind::NET_ADDRESS, &[], &[])
+        } else if m.kind == shards_ipc::kind::NET_MAC {
+            let Ok(mac) = <[u8; 6]>::try_from(m.payload.as_slice()) else {
+                return false;
+            };
+            stack.remac(mac);
+            shards_ipc::send(sock, shards_ipc::kind::NET_MAC, &[], &[])
         } else if m.kind == shards_ipc::kind::NET_NAMES {
             let Some(names) = dns::Names::decode(&m.payload) else {
                 return false;
@@ -1304,6 +1311,13 @@ impl<'r> Stack<'r> {
         self.cfg.gateway_ip6 = v6.map(|(_, gateway)| gateway);
         self.frames.gateway_mac = self.cfg.gateway_mac;
         true
+    }
+
+    /// The guest's own MAC from its run on (`NET_MAC`, D46): what its frames come from,
+    /// and what those made here go to.
+    fn remac(&mut self, mac: [u8; 6]) {
+        self.cfg.guest_mac = mac;
+        self.frames.guest_mac = mac;
     }
 
     /// A peer (`NET_PEER`): its guest's address, then its IPv6 one on a network with
@@ -1959,22 +1973,15 @@ mod tests {
         }
     }
 
-    /// A connection's timer is armed once for its deadline, however often it settles,
-    /// and armed again when it fires: the timers hold a connection once, not once a
-    /// change (review 2.14).
-    #[test]
-    fn a_connections_timer_is_armed_once() {
-        let region = Region::map(shards_netring::memory().unwrap()).unwrap();
-        let (_, rings) = shards_netring::doorbell().unwrap();
-        let bridge = bridge::Bridge::elect(&[]).unwrap();
-        let cfg = Config::on_bridge(Policy::DenyAll, [2, 0, 0, 0, 0, 1], &bridge);
-        let mut stack = Stack {
+    /// A stack as the network process makes one, sending to the guest on `to_guest`.
+    fn stack(cfg: Config, to_guest: Producer<'_>) -> Stack<'_> {
+        Stack {
             frames: Frames {
                 gateway_mac: cfg.gateway_mac,
                 guest_mac: cfg.guest_mac,
             },
             cfg,
-            to_guest: region.producer(1, rings),
+            to_guest,
             backlog: VecDeque::new(),
             tcp: Tcp::default(),
             udp: HashMap::new(),
@@ -1995,7 +2002,67 @@ mod tests {
             names: None,
             #[cfg(target_os = "linux")]
             ports_confined: false,
+        }
+    }
+
+    /// The guest's MAC as its run gives it (`NET_MAC`, D46): the one this side's frames
+    /// go to from then on, and the one frames are heard from; its template's is no longer
+    /// heard.
+    #[test]
+    fn a_runs_mac_is_the_one_frames_go_to() {
+        let region = Region::map(shards_netring::memory().unwrap()).unwrap();
+        let (cw, pr) = shards_netring::doorbell().unwrap();
+        let (_, cr) = shards_netring::doorbell().unwrap();
+        let mut consumer = region.consumer(1, cr, cw);
+        let bridge = bridge::Bridge::elect(&[]).unwrap();
+        let (template, run) = ([2, 0, 0, 0, 0, 1], [2, 0x42, 0xac, 0x11, 0, 0x99]);
+        let mut stack = stack(
+            Config::on_bridge(Policy::DenyAll, template, &bridge),
+            region.producer(1, pr),
+        );
+        stack.remac(run);
+        // An ARP request for the gateway, from `mac`.
+        let ask = |mac: [u8; 6], stack: &Stack<'_>| {
+            let mut f = vec![0u8; wire::VNET];
+            f.extend_from_slice(&[0xff; 6]);
+            f.extend_from_slice(&mac);
+            f.extend_from_slice(&wire::ETHERTYPE_ARP.to_be_bytes());
+            f.extend_from_slice(&[0, 1, 8, 0, 6, 4, 0, 1]);
+            f.extend_from_slice(&mac);
+            f.extend_from_slice(&stack.cfg.guest_ip.octets());
+            f.extend_from_slice(&[0; 6]);
+            f.extend_from_slice(&stack.cfg.gateway_ip.octets());
+            f
         };
+        let (old, new) = (ask(template, &stack), ask(run, &stack));
+        stack.on_guest_frame(&old);
+        stack.on_guest_frame(&new);
+        let mut take = || {
+            consumer
+                .pop(|n, copy| {
+                    let mut f = vec![0u8; n];
+                    copy(0, f.as_mut_ptr(), n);
+                    f
+                })
+                .unwrap()
+        };
+        let reply = take().unwrap();
+        let e = wire::eth(reply.get(wire::VNET..).unwrap()).unwrap();
+        assert_eq!((e.dst, e.kind), (run, wire::ETHERTYPE_ARP));
+        assert_eq!(e.payload.get(18..24), Some(&run[..]), "the reply's target");
+        assert_eq!(take(), None, "the template's MAC is not heard");
+    }
+
+    /// A connection's timer is armed once for its deadline, however often it settles,
+    /// and armed again when it fires: the timers hold a connection once, not once a
+    /// change (review 2.14).
+    #[test]
+    fn a_connections_timer_is_armed_once() {
+        let region = Region::map(shards_netring::memory().unwrap()).unwrap();
+        let (_, rings) = shards_netring::doorbell().unwrap();
+        let bridge = bridge::Bridge::elect(&[]).unwrap();
+        let cfg = Config::on_bridge(Policy::DenyAll, [2, 0, 0, 0, 0, 1], &bridge);
+        let mut stack = stack(cfg, region.producer(1, rings));
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let _client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
         let (sock, _) = listener.accept().unwrap();
@@ -2175,34 +2242,7 @@ mod tests {
         let region = Region::map(shards_netring::memory().unwrap()).unwrap();
         let (_, rings) = shards_netring::doorbell().unwrap();
         let guest_ip = cfg.guest_ip;
-        let mut stack = Stack {
-            frames: Frames {
-                gateway_mac: cfg.gateway_mac,
-                guest_mac: cfg.guest_mac,
-            },
-            cfg,
-            to_guest: region.producer(1, rings),
-            backlog: VecDeque::new(),
-            tcp: Tcp::default(),
-            udp: HashMap::new(),
-            udp_ids: HashMap::new(),
-            next_udp: 0,
-            poller: poll::Poller::new().unwrap(),
-            timers: BinaryHeap::new(),
-            blocked: VecDeque::new(),
-            buf: vec![0u8; 2048],
-            scratch: Vec::new(),
-            isn_key: [0; 16],
-            began: Instant::now(),
-            published: Vec::new(),
-            inbound: HashMap::new(),
-            inbound_ports: HashMap::new(),
-            next_port: *EPHEMERAL.start(),
-            peers: Vec::new(),
-            names: None,
-            #[cfg(target_os = "linux")]
-            ports_confined: false,
-        };
+        let mut stack = stack(cfg, region.producer(1, rings));
         let syn = |stack: &mut Stack<'_>, to: IpAddr, port: u16| {
             let mut frame = Vec::new();
             stack.frames.tcp_headers(

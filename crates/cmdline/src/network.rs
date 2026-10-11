@@ -217,6 +217,8 @@ pub struct TopLevel {
     pub aliases: Vec<String>,
     pub ipv4: Option<Addr>,
     pub ipv6: Option<Addr>,
+    /// `--mac-address`, as given.
+    pub mac: String,
 }
 
 impl TopLevel {
@@ -234,6 +236,11 @@ impl TopLevel {
         if a.ipv6.is_some() && self.ipv6.is_some() {
             return Err("conflicting options: cannot specify both --ip6 and per-network IPv6 address".into());
         }
+        if !a.mac.is_empty() && !self.mac.is_empty() {
+            return Err(
+                "conflicting options: cannot specify both --mac-address and per-network MAC address".into(),
+            );
+        }
         if !self.aliases.is_empty() {
             a.aliases.clone_from(&self.aliases);
         }
@@ -242,6 +249,9 @@ impl TopLevel {
         }
         if self.ipv6.is_some() {
             a.ipv6.clone_from(&self.ipv6);
+        }
+        if !self.mac.is_empty() {
+            a.mac.clone_from(&self.mac);
         }
         Ok(())
     }
@@ -273,30 +283,65 @@ fn atoi(s: &str) -> Result<i64, &'static str> {
 /// `net.ParseMAC` succeeds: 6, 8 or 20 octets, as `xx:xx…`, `xx-xx…`, `xxxx.xxxx…` or bare
 /// hex.
 pub fn parse_mac(s: &str) -> bool {
+    mac_octets(s).is_some()
+}
+
+/// `net.ParseMAC(s)`'s octets (Go 1.26 net/mac.go): 6, 8 or 20, as `xx:xx…`, `xx-xx…`,
+/// `xxxx.xxxx…` or bare hex; none for what it refuses.
+pub fn mac_octets(s: &str) -> Option<Vec<u8>> {
     let b = s.as_bytes();
-    // xtoi2 of a two-byte slice: two hex digits.
-    let hex2 = |at: usize| {
-        b.get(at).is_some_and(u8::is_ascii_hexdigit) && b.get(at + 1).is_some_and(u8::is_ascii_hexdigit)
+    // xtoi2: two hex digits from `at`, then `sep` unless they end the string.
+    let hex2 = |at: usize, sep: Option<u8>| -> Option<u8> {
+        let digits = b.get(at..at + 2)?;
+        if let Some(sep) = sep
+            && b.len() > at + 2
+            && b.get(at + 2) != Some(&sep)
+        {
+            return None;
+        }
+        let text = std::str::from_utf8(digits).ok()?;
+        if !text.bytes().all(|c| c.is_ascii_hexdigit()) {
+            return None;
+        }
+        u8::from_str_radix(text, 16).ok()
     };
-    // xtoi2 of the rest from `at`: two hex digits, then `sep` unless they end it.
-    let hex2_then = |at: usize, sep: u8| hex2(at) && (b.len() <= at + 2 || b.get(at + 2) == Some(&sep));
     let octets = |n: usize| matches!(n, 6 | 8 | 20);
     if b.len() < 12 {
-        return false;
+        return None;
     }
     match (b.get(2), b.get(4)) {
         (Some(&sep @ (b':' | b'-')), _) => {
             let n = (b.len() + 1) / 3;
-            (b.len() + 1).is_multiple_of(3) && octets(n) && (0..n).all(|i| hex2_then(i * 3, sep))
+            if !(b.len() + 1).is_multiple_of(3) || !octets(n) {
+                return None;
+            }
+            (0..n).map(|i| hex2(i * 3, Some(sep))).collect()
         }
         (_, Some(&dot @ b'.')) => {
             let n = 2 * (b.len() + 1) / 5;
-            (b.len() + 1).is_multiple_of(5)
-                && octets(n)
-                && (0..n / 2).all(|i| hex2(i * 5) && hex2_then(i * 5 + 2, dot))
+            if !(b.len() + 1).is_multiple_of(5) || !octets(n) {
+                return None;
+            }
+            (0..n / 2)
+                .flat_map(|i| [hex2(i * 5, None), hex2(i * 5 + 2, Some(dot))])
+                .collect()
         }
-        _ => b.len().is_multiple_of(2) && octets(b.len() / 2) && (0..b.len() / 2).all(|i| hex2(i * 2)),
+        _ => {
+            if !b.len().is_multiple_of(2) || !octets(b.len() / 2) {
+                return None;
+            }
+            (0..b.len() / 2).map(|i| hex2(i * 2, None)).collect()
+        }
     }
+}
+
+/// Go's `HardwareAddr.String`: each octet in lower-case hex, colon-separated.
+pub fn mac_string(octets: &[u8]) -> String {
+    octets
+        .iter()
+        .map(|o| format!("{o:02x}"))
+        .collect::<Vec<_>>()
+        .join(":")
 }
 
 /// `netip.ParseAddr(s)`, or its error's text.

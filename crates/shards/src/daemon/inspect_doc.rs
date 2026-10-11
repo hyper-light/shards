@@ -999,6 +999,17 @@ fn network_settings(f: &Facts<'_>, run: &Run) -> Value {
     };
     let net = f.net.as_ref().filter(|_| running && mode == "bridge");
     let addr = |a: Option<Ipv4Addr>| a.map(|a| a.to_string()).unwrap_or_default();
+    // Its MAC as its interface has it (D46, PM M173): its own while it runs, and before its
+    // first start the one given it, its first six octets; none once it has run, until it
+    // runs again. dockerd echoes one given whole (an EUI-64's eight octets), and on `none`
+    // and `host`, where no interface has it.
+    let given_mac = || match c.state {
+        Life::Created => crate::setup::own_endpoint(run)
+            .and_then(|e| shards_cmdline::network::mac_octets(e.mac.trim()))
+            .and_then(|o| o.get(..6).map(shards_cmdline::network::mac_string))
+            .unwrap_or_default(),
+        Life::Running | Life::Exited => String::new(),
+    };
     if let Some(u) = &f.user_net {
         let mode = u.name.as_str();
         let asked = run.endpoints.iter().find(|e| e.network == mode);
@@ -1023,7 +1034,10 @@ fn network_settings(f: &Facts<'_>, run: &Run) -> Value {
             .field("EndpointID", s(&u.endpoint))
             .field("Gateway", s(&addr(u.gateway)))
             .field("IPAddress", s(&addr(u.ip)))
-            .field("MacAddress", s(&u.mac))
+            .field(
+                "MacAddress",
+                s(&if running { u.mac.clone() } else { given_mac() }),
+            )
             .field(
                 "IPPrefixLen",
                 int(i64::from(if u.ip.is_some() { u.prefix } else { 0 })),
@@ -1061,10 +1075,11 @@ fn network_settings(f: &Facts<'_>, run: &Run) -> Value {
         .field("IPAddress", s(&addr(net.map(|n| n.ip))))
         .field(
             "MacAddress",
-            s(&net
-                .and_then(|n| n.mac)
-                .map(|m| shards_net::Mac(m).to_string())
-                .unwrap_or_default()),
+            s(&match net {
+                Some(n) => n.mac.map(|m| shards_net::Mac(m).to_string()).unwrap_or_default(),
+                None if mode == "bridge" => given_mac(),
+                None => String::new(),
+            }),
         )
         .field("IPPrefixLen", int(net.map_or(0, |n| i64::from(n.prefix))))
         .field("IPv6Gateway", s(""))
