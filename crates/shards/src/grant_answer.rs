@@ -212,6 +212,16 @@ fn dial(listening: Option<&Path>, port: u32) -> Result<std::os::unix::net::UnixS
 /// names, making the directories it writes in first. A path that cannot be granted ends
 /// the answers with why.
 pub fn serve(link: &std::os::unix::net::UnixStream, template: Option<&Path>) -> Result<(), String> {
+    serve_waiting(link, template, &mut |_| {})
+}
+
+/// [`serve`], calling `wait` with how many messages the VM has sent before each wait for
+/// its next: a caller's watch on a VM that goes quiet (the daemon's, `grant`).
+pub fn serve_waiting(
+    link: &std::os::unix::net::UnixStream,
+    template: Option<&Path>,
+    wait: &mut dyn FnMut(usize),
+) -> Result<(), String> {
     use shards_ipc::kind;
     use std::os::fd::AsFd as _;
     // The vsock path granted, beside which alone dials go.
@@ -226,7 +236,10 @@ pub fn serve(link: &std::os::unix::net::UnixStream, template: Option<&Path>) -> 
     // has started, its guest running. It asks for no access after that, so a request is
     // one its guest has taken it over to make, and ends the answers.
     let mut started = false;
+    let mut sent = 0usize;
     loop {
+        wait(sent);
+        sent = sent.saturating_add(1);
         let asked = shards_ipc::recv(link).map_err(|e| format!("a VM's request for access: {e}"))?;
         held.clear();
         let Some(asked) = asked else {
@@ -351,6 +364,29 @@ mod tests {
         assert!(decode(&bad_access).is_none(), "an access with no meaning");
         let long = PathBuf::from(format!("/{}", "x".repeat(MAX_PATH)));
         assert!(encode(&[(Access::Read, long)]).is_err());
+    }
+
+    /// The caller's wait comes before each of the VM's messages, told how many it has sent,
+    /// and before the end it reads: the daemon's watch sees a VM gone quiet between two
+    /// requests as before its first.
+    #[test]
+    fn a_wait_comes_before_every_message() {
+        let dir = shards_testdir::TempDir::new("grant-wait").unwrap();
+        let kernel = dir.join("kernel");
+        std::fs::write(&kernel, b"k").unwrap();
+        let (vm, spawner) = std::os::unix::net::UnixStream::pair().unwrap();
+        let mut waits = Vec::new();
+        std::thread::scope(|scope| {
+            let serving = scope.spawn(|| serve_waiting(&spawner, None, &mut |sent| waits.push(sent)));
+            for _ in 0..2 {
+                obtain(&vm, &[(Access::Read, kernel.clone())]).unwrap();
+            }
+            drop(vm);
+            assert_eq!(serving.join().unwrap(), Ok(()));
+        });
+        // Two requests, each answered with a file (the VM's next request says it has it),
+        // and the end.
+        assert_eq!(waits, [0, 1, 2]);
     }
 
     /// A VM's request is answered as asked: a file it reads, read-only (it reads, and

@@ -5050,34 +5050,45 @@ fn new_log(dir: &Path) -> io::Result<Log> {
 const GRANT_STALL: Duration = Duration::from_secs(10);
 
 /// Answers what VM `pid` asks to reach until it has all it needs and closes the link,
-/// each request within [`READY_TIMEOUT`] (macOS, grant). A VM that has asked nothing in
-/// [`GRANT_STALL`] is sampled (Apple's sample(1), 3 s of its threads' stacks) into the
-/// home, beside daemon.log, as it goes on being waited for; a wait that then fails says
-/// where.
+/// each request within [`READY_TIMEOUT`] (macOS, grant). A VM that has said nothing for
+/// [`GRANT_STALL`], before its first request or between two, is sampled once (Apple's
+/// sample(1), 3 s of its threads' stacks) into the home, beside daemon.log, as it goes on
+/// being waited for; a wait that then fails says where.
 #[cfg(target_os = "macos")]
 fn grant(link: &UnixStream, pid: u32, template: Option<&Path>) -> Result<(), GrantError> {
     use std::os::fd::AsRawFd as _;
-    let mut first = libc::pollfd {
-        fd: link.as_raw_fd(),
-        events: libc::POLLIN,
-        revents: 0,
-    };
-    let stall = i32::try_from(GRANT_STALL.as_millis()).unwrap_or(i32::MAX);
-    // SAFETY: poll(2) of one pollfd of ours.
-    let asked = unsafe { libc::poll(&raw mut first, 1, stall) };
+    let started = |why: String| GrantError { why, started: true };
+    link.set_read_timeout(Some(READY_TIMEOUT))
+        .map_err(|e| started(format!("VM {pid}: {e}")))?;
     // A VM the host has not let run yet: its stacks would hold nothing (PM M166).
-    let unstarted = || asked == 0 && shards_vmm::platform::launched(pid) == Some(false);
-    if unstarted() {
-        log(format!(
-            "VM {pid}: not started by the host in {GRANT_STALL:?}: it has run nothing yet, \
-             as macOS admits each launch after it has assessed the executables launched \
-             before it (PM M166)"
-        ));
-    }
-    let sampled = (asked == 0 && !unstarted()).then(|| {
+    let unstarted = || shards_vmm::platform::launched(pid) == Some(false);
+    let mut sampled: Option<String> = None;
+    let served = crate::grant_answer::serve_waiting(link, template, &mut |sent| {
+        if sampled.is_some() {
+            return;
+        }
+        let mut next = libc::pollfd {
+            fd: link.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let stall = i32::try_from(GRANT_STALL.as_millis()).unwrap_or(i32::MAX);
+        // SAFETY: poll(2) of one pollfd of ours.
+        if unsafe { libc::poll(&raw mut next, 1, stall) } != 0 {
+            return;
+        }
+        if sent == 0 && unstarted() {
+            log(format!(
+                "VM {pid}: not started by the host in {GRANT_STALL:?}: it has run nothing yet, \
+                 as macOS admits each launch after it has assessed the executables launched \
+                 before it (PM M166)"
+            ));
+            return;
+        }
         let file = format!("vm-{pid}.sample");
         log(format!(
-            "VM {pid}: no request for access in {GRANT_STALL:?}; sampling its stacks to {file}"
+            "VM {pid}: nothing said in {GRANT_STALL:?} after {sent} messages; sampling its \
+             stacks to {file}"
         ));
         // Made as every child of the daemon is, by its spawner (PM M158).
         let spawned = File::open("/dev/null").and_then(|null| {
@@ -5095,12 +5106,9 @@ fn grant(link: &UnixStream, pid: u32, template: Option<&Path>) -> Result<(), Gra
             }
             Err(e) => log(format!("VM {pid}: sampling it: {e}")),
         }
-        file
+        sampled = Some(file);
     });
-    let started = |why: String| GrantError { why, started: true };
-    link.set_read_timeout(Some(READY_TIMEOUT))
-        .map_err(|e| started(format!("VM {pid}: {e}")))?;
-    crate::grant_answer::serve(link, template).map_err(|e| {
+    served.map_err(|e| {
         if unstarted() {
             return GrantError {
                 why: format!(
@@ -5111,7 +5119,9 @@ fn grant(link: &UnixStream, pid: u32, template: Option<&Path>) -> Result<(), Gra
             };
         }
         started(match &sampled {
-            Some(file) => format!("VM {pid}: {e} (its stacks at {GRANT_STALL:?}: {file} in the home)"),
+            Some(file) => {
+                format!("VM {pid}: {e} (its stacks once quiet {GRANT_STALL:?}: {file} in the home)")
+            }
             None => format!("VM {pid}: {e}"),
         })
     })
