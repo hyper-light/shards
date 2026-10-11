@@ -3485,6 +3485,17 @@ mount rule itself, on every guest kernel, with seccomp, which all have:
 - **Not taken from docker-default**: its /proc and /sys write rules, which Docker's masked
   and read-only paths cover in every container already, and its ptrace and signal rules,
   which PID namespaces keep between containers.
+- **What CAP_SYS_ADMIN still reaches, as with Docker.** Docker's own seccomp profile gives
+  a container with the capability `bpf` and `perf_event_open`, whose tracing programs read
+  the kernel's memory, and with it every container's in the microVM, as on a Docker host
+  every container's on the host: the capability is the kernel's, AppArmor or not. So the
+  rule is held where Docker holds it, and no further: under `apparmor=unconfined` a
+  container may mount its microVM's shares, a joiner its provider's, as it may read them
+  through the kernel. What a container without the capability could reach of another's is
+  closed: the join share's volumes by names and node IDs none can guess (D119), so
+  CAP_DAC_READ_SEARCH opens no other joiner's file by handle. Kernel lockdown
+  (`lockdown=confidentiality`) in the guest would close the kernel to the capability too,
+  past Docker; not built.
 
 ### D119. `--network container:NAME`: a container joins another's microVM
 
