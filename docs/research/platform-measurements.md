@@ -6239,3 +6239,24 @@ revision before comparing a changed API/implementation.
     where `-f` named a local one.
 - **Consequence.** D127: both `shards build` and shards' frontend take the time as
   v0.33.0 with dockerfile 1.27.1 does, and the frontend reads `-f`'s Dockerfile.
+
+### M187. CI's musl jobs: how long each part takes, runner to runner
+
+- **Question.** Why did CI's x86_64 musl test job run out of its step's 45 minutes on
+  3c77279f's push, and how should its work be shared between the musl jobs?
+- **Method.** GitHub's records of the musl jobs of five pushes to dev (2026-10-11:
+  4862d7d7, 45902169, 004cffbd, c3188dee, 3c77279f), and the phases of two of their job
+  logs (c3188dee's, 3c77279f's) by their timestamps.
+- **Results.**
+  - The x86_64 test job (clippy, the test-release build and tests, the release build of
+    the Rego stack guards and their run) took 42.1, 42.7, 45.1, 29.7 and 45.3 minutes.
+    The last ran out of time in its last test binary.
+  - The x86_64 release job took 10.5 to 15.1 minutes. The aarch64 test job took 25.9 to
+    31.9; its release job 12.2 to 13.3.
+  - **Runner to runner.** Every phase was about 1.7 times as long on the slower runner:
+    - clippy 3 m 17 s and 5 m 50 s;
+    - the test-release build 13 m 32 s and 22 m 41 s;
+    - the unit tests 46 s and 75 s;
+    - `containers.rs` 125 s and 190 s.
+- **Consequence.** The lints and the Rego stack guards (built on release) move to the
+  release job. That job builds release anyway, and has some 30 minutes to spare.

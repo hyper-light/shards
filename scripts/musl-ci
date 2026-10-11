@@ -1,10 +1,11 @@
 #!/bin/sh
 # CI's musl jobs, inside their pinned rust:alpine image on the runner's own architecture
-# (.github/workflows/ci.yml, `musl`): lints, tests and builds $TARGET; with MUSL_CI=test,
-# lints and tests it alone, and with MUSL_CI=build (.github/workflows/release.yml, and
-# CI's other musl job), builds it alone. Packages are added
-# as root; everything else runs as the user that owns the checkout, as shards runs: never
-# as root, which permission bits and much else do not stop.
+# (.github/workflows/ci.yml, `musl`): lints, tests and builds $TARGET. With MUSL_CI=test it
+# runs the tests alone; with MUSL_CI=release (CI's other musl job), the lints, the release
+# build and the tests measured on release; with MUSL_CI=build (.github/workflows/
+# release.yml), the release build alone. Packages are added as root; everything else runs
+# as the user that owns the checkout, as shards runs: never as root, which permission bits
+# and much else do not stop.
 #
 #   docker run ... -v "$PWD:/work" -w /work -e TARGET ... IMAGE scripts/musl-ci
 set -eu
@@ -25,13 +26,18 @@ adduser -D -u "$uid" -h /home/shards shards
 exec su -m shards -s /bin/sh -c '
 	set -eu
 	export HOME=/home/shards CARGO_HOME=/home/shards/.cargo
-	if [ "${MUSL_CI:-}" != build ]; then
+	part=${MUSL_CI:-all}
+	if [ "$part" = all ] || [ "$part" = release ]; then
 		cargo clippy --locked --workspace --all-targets --target "$TARGET" -- -D warnings
+	fi
+	if [ "$part" = all ] || [ "$part" = test ]; then
 		cargo test --locked --workspace --profile test-release --no-fail-fast --target "$TARGET"
+	fi
+	if [ "$part" != test ]; then
+		cargo build --locked --release -p shards --target "$TARGET"
+	fi
+	if [ "$part" = all ] || [ "$part" = release ]; then
 		# The stack guards, on release, which they were measured on (M159).
 		cargo test --locked --release -p shards-rego --test builtins --test deep --test depth --target "$TARGET"
-	fi
-	if [ "${MUSL_CI:-}" != test ]; then
-		cargo build --locked --release -p shards --target "$TARGET"
 	fi
 '

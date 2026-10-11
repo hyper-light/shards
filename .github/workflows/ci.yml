@@ -218,11 +218,13 @@ jobs:
           path: target/bench-samples/
           if-no-files-found: warn
 
-  # Each musl target in two jobs at once: lints and tests, and the release build whose
-  # executable must be static. One after the other they took 43 of the step's 45 minutes
-  # on x86_64 (M156).
+  # Each musl target in two jobs at once: the tests; and the lints, the release build whose
+  # executable must be static, and the tests measured on release. One after the other
+  # they took 43 of the step's 45 minutes on x86_64 (M156). With the lints and the release
+  # tests beside the tests instead, the x86_64 tests took 30 to 45 minutes, slower runners
+  # 1.7 times as long as the fastest, and one ran out of time (M187).
   musl:
-    name: ${{ matrix.target }}${{ matrix.part == 'build' && ' release' || '' }}
+    name: ${{ matrix.target }}${{ matrix.part == 'release' && ' release' || '' }}
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -230,8 +232,8 @@ jobs:
         include:
           - { target: x86_64-unknown-linux-musl, runner: ubuntu-24.04, part: test }
           - { target: aarch64-unknown-linux-musl, runner: ubuntu-24.04-arm, part: test }
-          - { target: x86_64-unknown-linux-musl, runner: ubuntu-24.04, part: build }
-          - { target: aarch64-unknown-linux-musl, runner: ubuntu-24.04-arm, part: build }
+          - { target: x86_64-unknown-linux-musl, runner: ubuntu-24.04, part: release }
+          - { target: aarch64-unknown-linux-musl, runner: ubuntu-24.04-arm, part: release }
     runs-on: ${{ matrix.runner }}
     env:
       TARGET: ${{ matrix.target }}
@@ -260,7 +262,7 @@ jobs:
         if: failure()
         run: sudo dmesg | grep -iE 'seccomp|type=1326' | tail -40 || true
       - name: The executable is static
-        if: matrix.part == 'build'
+        if: matrix.part == 'release'
         run: |
           bin="target/$TARGET/release/shards"
           if readelf --program-headers "$bin" | grep -q INTERP; then
