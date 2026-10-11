@@ -7,7 +7,9 @@
 //! (`NET_PUBLISHED`). The daemon keeps its own copy of each until the guest's socket goes
 //! (`UNBIND`), or the run ends. That process answers each port's letting go once it has
 //! closed its copies, which a bind of the same port, refused meanwhile, waits for: a server
-//! that closes its socket and binds its port again at once has it, as on the host.
+//! that closes its socket and binds its port again at once has it, as on the host. Each
+//! socket is its container's: the run's own, or a joiner's of its network (D119), whose
+//! ports go as it ends while the rest stay.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -28,16 +30,25 @@ const ENETDOWN: i32 = 100;
 const EADDRINUSE: i32 = 98;
 
 /// A run's sockets on the host's network: its VM's network process, what has come of its
-/// answers, and how many of them are owed; each socket by its number, with its protocol
-/// and whether that process has it.
+/// answers, and how many of them are owed; each socket by its number.
 #[derive(Debug)]
 pub(super) struct HostNet {
     net: UnixStream,
     incoming: shards_ipc::Incoming,
     owed: u32,
     patience: Duration,
-    sockets: HashMap<u32, (OwnedFd, u8, bool)>,
+    sockets: HashMap<u32, Hosted>,
     next: u32,
+}
+
+/// A socket of the host's for the guest's: its protocol, whether the network process has
+/// it, and the container whose it is ([`HostBind::owner`]).
+#[derive(Debug)]
+struct Hosted {
+    fd: OwnedFd,
+    proto: u8,
+    published: bool,
+    owner: u32,
 }
 
 impl HostNet {
@@ -110,7 +121,15 @@ impl HostNet {
             Ok((fd, port)) => {
                 let number = self.next;
                 self.next = self.next.wrapping_add(1);
-                self.sockets.insert(number, (fd, b.proto, false));
+                self.sockets.insert(
+                    number,
+                    Hosted {
+                        fd,
+                        proto: b.proto,
+                        published: false,
+                        owner: b.owner,
+                    },
+                );
                 HostBound {
                     request: b.request,
                     errno: 0,
@@ -136,38 +155,58 @@ impl HostNet {
             port: 0,
             number: l.number,
         };
-        let Some((fd, proto, published)) = self.sockets.get_mut(&l.number) else {
+        let Some(h) = self.sockets.get_mut(&l.number) else {
             return answer(EBADF);
         };
-        if *proto == TCP {
+        if h.proto == TCP {
             let backlog = libc::c_int::try_from(l.backlog).unwrap_or(libc::c_int::MAX);
             // SAFETY: listen(2) of a socket of ours.
-            if unsafe { libc::listen(fd.as_raw_fd(), backlog) } != 0 {
+            if unsafe { libc::listen(h.fd.as_raw_fd(), backlog) } != 0 {
                 return answer(linux_errno(errno()));
             }
         }
-        if *published {
+        if h.published {
             return answer(0);
         }
         let mut payload = l.number.to_be_bytes().to_vec();
         payload.extend_from_slice(&l.guest_port.to_be_bytes());
-        payload.push(*proto);
+        payload.push(h.proto);
         match shards_ipc::send(
             &self.net,
             shards_ipc::kind::NET_PUBLISHED,
             &payload,
-            &[fd.as_fd()],
+            &[h.fd.as_fd()],
         ) {
             Ok(()) => {
-                *published = true;
+                h.published = true;
                 answer(0)
             }
             Err(_) => answer(ENETDOWN),
         }
     }
 
+    /// Waits, [`patience`](Self::new) at most, until the network process has closed every
+    /// copy it was told to: the ports let go are the host's to bind again.
+    pub(super) fn settle(&mut self) {
+        self.answers(true);
+    }
+
+    /// Lets go of the ports of container `owner`, which has ended: its own, or a joiner's
+    /// (D119), the rest kept for the containers still running.
+    pub(super) fn release(&mut self, owner: u32) {
+        let theirs: Vec<u32> = self
+            .sockets
+            .iter()
+            .filter(|(_, h)| h.owner == owner)
+            .map(|(&n, _)| n)
+            .collect();
+        for number in theirs {
+            self.unbind(number);
+        }
+    }
+
     fn unbind(&mut self, number: u32) {
-        if let Some((_, _, true)) = self.sockets.remove(&number)
+        if self.sockets.remove(&number).is_some_and(|h| h.published)
             && shards_ipc::send(
                 &self.net,
                 shards_ipc::kind::NET_UNPUBLISHED,
@@ -306,6 +345,7 @@ mod tests {
         let mut h = HostNet::new(daemon, Duration::from_secs(1));
         let ask = |request, port| HostBind {
             request,
+            owner: 0,
             proto: TCP,
             addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             port,

@@ -118,6 +118,9 @@ pub mod kind {
 pub struct HostBind {
     /// Its number, which the answer names.
     pub request: u32,
+    /// The container whose process bound: 0 for the run's own, or a joiner's exec id
+    /// (D119), whose ports go as it ends.
+    pub owner: u32,
     /// TCP's (6) or UDP's (17).
     pub proto: u8,
     pub addr: core::net::IpAddr,
@@ -130,8 +133,9 @@ pub struct HostBind {
 
 impl HostBind {
     pub fn encode(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(4 + 2 + 16 + 3);
+        let mut out = Vec::with_capacity(4 + 4 + 2 + 16 + 3);
         out.extend_from_slice(&self.request.to_be_bytes());
+        out.extend_from_slice(&self.owner.to_be_bytes());
         out.push(self.proto);
         match self.addr {
             core::net::IpAddr::V4(a) => {
@@ -150,6 +154,7 @@ impl HostBind {
 
     pub fn decode(b: &[u8]) -> Option<HostBind> {
         let (request, b) = b.split_first_chunk::<4>()?;
+        let (owner, b) = b.split_first_chunk::<4>()?;
         let (&[proto, family], b) = b.split_first_chunk::<2>()?;
         let (addr, b) = match family {
             4 => {
@@ -165,6 +170,7 @@ impl HostBind {
         let [p0, p1, flags] = <[u8; 3]>::try_from(b).ok()?;
         Some(HostBind {
             request: u32::from_be_bytes(*request),
+            owner: u32::from_be_bytes(*owner),
             proto,
             addr,
             port: u16::from_be_bytes([p0, p1]),
@@ -352,6 +358,10 @@ pub const CAP_NAMES: [&str; 41] = [
 /// What a run on the host's network (`--network host`, D124) is told as it starts, on
 /// stderr, as a warning.
 pub const NETWORK_HOST: &str = "--network host puts this microVM on your host's network: ports its processes listen on are your host's, reachable from every network your host is on, and they reach your host's own services and every network your host reaches";
+
+/// What a container joining the network of one on the host's network (D119, D124) is told
+/// as it starts, as [`NETWORK_HOST`] is.
+pub const NETWORK_HOST_JOINED: &str = "the container whose network this one joins is on your host's network, and so is this one: ports its processes listen on are your host's, reachable from every network your host is on, and they reach your host's own services and every network your host reaches";
 
 /// What a run of an image whose Agentfile declares agents or harnesses keeps from its own
 /// command, beside them (D115): the daemon refuses each as it reads the run, and shards-init
@@ -772,6 +782,7 @@ mod tests {
         for bind in [
             HostBind {
                 request: 7,
+                owner: 0,
                 proto: 6,
                 addr: core::net::IpAddr::from([127, 0, 0, 1]),
                 port: 8080,
@@ -781,6 +792,7 @@ mod tests {
             },
             HostBind {
                 request: u32::MAX,
+                owner: 3,
                 proto: 17,
                 addr: core::net::IpAddr::from([0u16; 8]),
                 port: 0,
@@ -791,7 +803,11 @@ mod tests {
         ] {
             assert_eq!(HostBind::decode(&bind.encode()), Some(bind));
         }
-        assert_eq!(HostBind::decode(&[0, 0, 0, 1, 6, 5]), None, "no family 5");
+        assert_eq!(
+            HostBind::decode(&[0, 0, 0, 1, 0, 0, 0, 0, 6, 5]),
+            None,
+            "no family 5"
+        );
         let bound = HostBound {
             request: 7,
             errno: 98,

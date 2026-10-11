@@ -2281,7 +2281,7 @@ impl Standby {
         };
         let mut w = standby.launch(spec, false, setup, &inherited)?;
         if let (Some(hosts), Some(listener)) = (&hosts, w.binds.take()) {
-            hosts.listener(&listener);
+            hosts.listener(&listener, 0);
         }
         w.hosts = hosts;
         Ok((w, declared))
@@ -3313,9 +3313,15 @@ impl Exec {
         };
         match started {
             Ok(w) => {
-                // Its filter's listener, on the host's network (D124).
+                // Its filter's listener, on the host's network (D124): its container's, a
+                // joiner's own or the joiner it runs in (D119), or the run's.
                 if let (Some(hosts), Some(listener)) = (hosts, &w.binds) {
-                    hosts.listener(listener);
+                    let owner = if exec.joined {
+                        id
+                    } else {
+                        into.flatten().unwrap_or(0)
+                    };
+                    hosts.listener(listener, owner);
                 }
                 exec.pid = w.pid;
                 exec.tty = w.tty;
@@ -4334,7 +4340,7 @@ unsafe fn child(c: &Child<'_>) -> ! {
                 if listener < 0 {
                     return false;
                 }
-                let given = crate::hostbind::send_fd(c.err, crate::hostbind::LISTENER, listener, 0);
+                let given = crate::hostbind::send_fd(c.err, &[crate::hostbind::LISTENER], listener, 0);
                 libc::close(listener);
                 if !given {
                     return false;

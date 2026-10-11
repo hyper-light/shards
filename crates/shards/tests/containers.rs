@@ -5045,13 +5045,19 @@ fn a_run_on_network_none_reaches_nothing() {
 /// ready on (`ready PORT`).
 fn serving(home: &Path, image: &str, command: &[&str]) -> (Child, u16) {
     let options = ["--rm", "-u", "root", "--network", "host"];
+    ready_on(home, &run_args(image, &options, command))
+}
+
+/// `shards ARGS` left going, its stderr in the home: its client, and the port its server
+/// says it is ready on (`ready PORT`).
+fn ready_on(home: &Path, args: &[String]) -> (Child, u16) {
     let stderr = std::fs::File::create(home.join(format!(
         "serving-{}.stderr",
-        command.join("-").replace(['/', ':'], "_")
+        args.join("-").replace(['/', ':'], "_")
     )))
     .unwrap();
     let mut child = common::command()
-        .args(run_args(image, &options, command))
+        .args(args)
         .env("SHARDS_HOME", home)
         .env("SHARDS_KERNEL", kernel())
         .env("SHARDS_INIT", guest_init())
@@ -5068,13 +5074,13 @@ fn serving(home: &Path, image: &str, command: &[&str]) -> (Child, u16) {
         assert_eq!(
             std::io::Read::read(out, &mut byte).unwrap(),
             1,
-            "{command:?} ended unready"
+            "{args:?} ended unready"
         );
         line.extend_from_slice(&byte);
     }
     let line = String::from_utf8(line).unwrap();
     let port = line.strip_prefix("ready ").and_then(|p| p.trim().parse().ok());
-    let port = port.unwrap_or_else(|| panic!("{command:?}: {line}"));
+    let port = port.unwrap_or_else(|| panic!("{args:?}: {line}"));
     (child, port)
 }
 
@@ -5241,6 +5247,27 @@ fn a_run_on_the_hosts_network_is_on_the_hosts_network() {
     let ran = run_in(&home, &image, &host, &["rebind", "0.0.0.0:0", "50"]);
     assert_eq!(ran.status, Some(0), "{ran}");
     assert!(ran.stdout.starts_with("rebound "), "{ran}");
+    // A run's ports are the host's to bind again once its end is told, a server killed
+    // with it too (PM M181), as dockerd's are.
+    for i in 0..3 {
+        let name = format!("ended{i}");
+        let (mut child, port) = ready_on(
+            &home,
+            &run_args(
+                &image,
+                &["--name", &name, "-u", "root", "--network", "host"],
+                &["listen", "0.0.0.0:0", "9"],
+            ),
+        );
+        let killed = shards_in(&home, &["kill", &name]);
+        assert_eq!(killed.status, Some(0), "{killed}");
+        let _ = exit(&mut child);
+        let bound = std::net::TcpListener::bind(("0.0.0.0", port));
+        assert!(
+            bound.is_ok(),
+            "{i}: port {port} held past its run's end: {bound:?}"
+        );
+    }
 
     // What dockerd refuses on the host's network, in its words; runc's sysctl refusal
     // without containerd's and runc's prefixes, as every start's.
@@ -5271,6 +5298,112 @@ fn a_run_on_the_hosts_network_is_on_the_hosts_network() {
     }
 }
 
+/// A container joining one on the host's network is on it too (D119, D124; PM M181), as
+/// dockerd's is: told so, which dockerd is not; its servers the host's ports, while its
+/// provider runs and after the provider has ended, a server it starts then too; the
+/// provider's ports free once its end is told, the joiner's once its own is.
+#[test]
+fn a_joiner_of_a_container_on_the_hosts_network_is_on_it_too() {
+    let Some((home, image)) = home("containers-host-join") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let args = |options: &[&str], command: &[&str]| run_args(&image, options, command);
+    let (mut provider, theirs) = ready_on(
+        &home,
+        &args(
+            &["--name", "hprov", "-u", "root", "--network", "host"],
+            &["listen", "0.0.0.0:0", "9"],
+        ),
+    );
+    let (mut joiner, ours) = ready_on(
+        &home,
+        &args(
+            &["--name", "hjoin", "-u", "root", "--network", "container:hprov"],
+            &["listen", "0.0.0.0:0", "9"],
+        ),
+    );
+    let said = std::fs::read_dir(&*home)
+        .unwrap()
+        .filter_map(|e| std::fs::read_to_string(e.unwrap().path()).ok())
+        .any(|t| t.contains(&format!("WARNING: {}", shards_abi::run::NETWORK_HOST_JOINED)));
+    assert!(said, "the joiner was not told it is on the host's network");
+    let loopback = |port| std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    let gateway = bridge().gateway();
+    assert_eq!(talk(loopback(theirs), "a"), format!("from {gateway}\na"));
+    assert_eq!(talk(loopback(ours), "b"), format!("from {gateway}\nb"));
+    // The provider's command ends: its port is the host's to bind again at once, while
+    // the joiner's server goes on, and a server the joiner starts now is the host's too.
+    let killed = shards(&["kill", "hprov"]);
+    assert_eq!(killed.status, Some(0), "{killed}");
+    let _ = exit(&mut provider);
+    drop(std::net::TcpListener::bind(("0.0.0.0", theirs)).expect("the provider's port, free at its end"));
+    assert_eq!(talk(loopback(ours), "c"), format!("from {gateway}\nc"));
+    let (mut late, port) = ready_on(
+        &home,
+        &["exec", "hjoin", "/bin/testguest", "listen", "127.0.0.1:0", "1"].map(String::from),
+    );
+    assert_eq!(talk(loopback(port), "d"), "from 127.0.0.1\nd");
+    assert_eq!(exit(&mut late), Some(0));
+    // The joiner's end: its port the host's to bind again at once.
+    let killed = shards(&["kill", "hjoin"]);
+    assert_eq!(killed.status, Some(0), "{killed}");
+    let _ = exit(&mut joiner);
+    drop(std::net::TcpListener::bind(("0.0.0.0", ours)).expect("the joiner's port, free at its end"));
+}
+
+/// PM M181: whether a port of the host's that a run on the host's network served is the
+/// host's to bind again once the run's end is told, its server killed with it: `M181_N`
+/// runs alone, then as many containers joining one such run (D119), each port bound on
+/// the host as soon as its client has ended, as a shell's next command would.
+#[test]
+#[ignore = "a measurement: docs/research/measurements/network-host/release.sh"]
+fn ports_held_past_their_containers_end() {
+    let Some((home, image)) = home("containers-m181") else {
+        return;
+    };
+    let n: usize = std::env::var("M181_N")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(100);
+    let loopback = |port| std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    let serve = |name: &str, network: &str| {
+        ready_on(
+            &home,
+            &run_args(
+                &image,
+                &["--name", name, "-u", "root", "--network", network],
+                &["listen", "0.0.0.0:0", "9"],
+            ),
+        )
+    };
+    let killed = |child: &mut Child, name: &str| {
+        let killed = shards_in(&home, &["kill", name]);
+        assert_eq!(killed.status, Some(0), "{killed}");
+        // As a shell waits: at once, not polled.
+        let _ = child.wait();
+    };
+    let (mut runs, mut joiners) = (0, 0);
+    for i in 0..n {
+        let name = format!("a{i}");
+        let (mut run, port) = serve(&name, "host");
+        let _ = talk(loopback(port), "x");
+        killed(&mut run, &name);
+        runs += usize::from(std::net::TcpListener::bind(("0.0.0.0", port)).is_err());
+    }
+    for i in 0..n {
+        let (p, j) = (format!("p{i}"), format!("j{i}"));
+        let (mut provider, _) = serve(&p, "host");
+        let (mut joiner, port) = serve(&j, &format!("container:{p}"));
+        let _ = talk(loopback(port), "x");
+        killed(&mut joiner, &j);
+        joiners += usize::from(std::net::TcpListener::bind(("0.0.0.0", port)).is_err());
+        killed(&mut provider, &p);
+    }
+    println!("runs: held {runs} of {n}");
+    println!("joiners: held {joiners} of {n}");
+}
+
 /// A run's gateway is its neighbor from its start, its MAC the one its network process
 /// answers ARP and neighbor solicitations with, for good (PM M180): on the default bridge,
 /// past a MAC of its own (which flushes eth0's neighbors), on a network of its own, IPv6's
@@ -5281,12 +5414,15 @@ fn a_runs_gateway_is_its_neighbor_from_its_start() {
     let Some((home, image)) = home("containers-gateway-mac") else {
         return;
     };
+    // Its unicast neighbors: a multicast group's (`noarp`), which the kernel makes as it
+    // sends MLD's reports on a network with IPv6, asks no one.
     let neighbors = |options: &[&str]| -> Vec<String> {
         let r = run_in(&home, &image, &[&["--rm"][..], options].concat(), &["neighbors"]);
         assert_eq!(r.status, Some(0), "{options:?}: {r}");
         r.stdout
             .lines()
             .filter_map(|l| l.strip_prefix("neighbor "))
+            .filter(|n| !n.ends_with(" noarp"))
             .map(String::from)
             .collect()
     };

@@ -3601,15 +3601,28 @@ host networking does for its VM's containers (M177).
   and, at the run's end, which spares the relays, what their connections hold, for up to
   a second, the network process's own grace. The VM puts what the guest sent in the
   network process's ring before the daemon's word to close a port, which that process
-  takes first.
+  takes first. As a container ends, before its end is told, its ports go (PM M181): the
+  VM asks the daemon to let go of them (`HOST_RELEASE`), which closes its copies, waits
+  for the network process to close its own, then answers; the host may bind them again
+  once `run` has returned, as dockerd's may.
+- **Joiners: on the host's network too** (D119, PM M181). A container joining one on the
+  host's network is in its microVM's network namespace, which is the host's network, as
+  dockerd's joiner is in the host's network namespace: its binds the host's by the same
+  process of init's (the run's `seccomp-binds=` filter is the joiner's too, its listener
+  given to that process), each socket of the host's its container's (`HostBind::owner`:
+  0 the run's own, a joiner's exec id), so that each container's ports go as it ends
+  and the rest stay. Its servers stay the host's past its provider's command, and one
+  it starts then is the host's too: the daemon follows the provider's microVM while
+  containers joined to it run, as dockerd's joiner keeps the host's network namespace.
+  It is told so as it starts (`shards_abi::run::NETWORK_HOST_JOINED`), which dockerd's
+  is not.
 - **No boundary.** A run on the host's network reaches what the host reaches, as it was
   asked to (AGENTFILE_ARCH §9.9); default deny is the bridge's and an Agentfile's, which
   refuses this beside its members.
 - **Cost** (M178): a bind is a round trip to the host. A TCP listener, two: p50 0.24 to
   0.26 ms, where the bridge's is 1 µs; a UDP bind, one: p50 0.15 to 0.17 ms.
-- **Open.** A container joining a host-network container's network (`--network
-  container:NAME`). A bind to one of the host's own addresses (its LAN address) is the
-  guest's kernel's to refuse (EADDRNOTAVAIL), as Docker Desktop's container's is. A
+- **Open.** A bind to one of the host's own addresses (its LAN address) is the guest's
+  kernel's to refuse (EADDRNOTAVAIL), as Docker Desktop's container's is. A
   program on the host's network that installs a seccomp filter with a listener of its
   own gets EBUSY: the kernel allows one listener in a process's filters
   (kernel/seccomp.c, has_duplicate_listener).
@@ -3620,13 +3633,22 @@ host networking does for its VM's containers (M177).
   sees; a UDP server's
   answer, sent as the server ends, twelve times, by the relay and from the gateway; a
   port the host holds refused with EADDRINUSE; a port closed and bound again 50 times at
-  once; dockerd's refusals in its words), run 25 times, passing each time, and 20 more
+  once; a killed server's port the host's to bind once its run's client has ended, three
+  times; dockerd's refusals in its words), run 25 times, passing each time, and 20 more
   with IPv6, and mutation-checked: without the relays spared and drained at the run's
   end, without a relay's flows passed on as its socket goes, without the VM's flush
   before a port is let go, without the bind asked again behind the letting go, without
   `::1` local on eth0, with IPv6's UDP checksum zero, without the accept rules for the
-  guest's own `::1` ports, it fails; without the daemon's wait for the network process,
-  the daemon's `a_guests_bind_is_the_hosts` fails. `a_runs_gateway_is_its_neighbor_from_its_start`
+  guest's own `::1` ports, without the ports let go before the end is told, it fails;
+  without the daemon's wait for the network process, the daemon's
+  `a_guests_bind_is_the_hosts` fails. `a_joiner_of_a_container_on_the_hosts_network_is_on_it_too`
+  (told so; its server and its provider's the host's ports; its server the host's past
+  its provider's end, and one it starts then; the provider's port free once its end is
+  told, the joiner's once its own is), run 10 times, passing each time, and
+  mutation-checked: without the binds' filter, with every listener the run's own, it
+  fails; without the daemon following the provider's microVM past its end, or with
+  every port let go at the provider's end, the joiner's late bind is never answered.
+  `a_runs_gateway_is_its_neighbor_from_its_start`
   (below) fails without the gateway's entry at boot, after a new MAC, on a network of
   the run's own, or for IPv6's gateway. Init's
   `a_bind_goes_where_its_address_says`, `a_gone_sockets_cookie_is_read_from_its_message`
@@ -3646,6 +3668,14 @@ host networking does for its VM's containers (M177).
 - **Found and closed: UDP's answers over IPv6** carried a zero checksum, which Linux
   drops (D99's note): the guest's UDP to the host's `::1` went unanswered until each
   answer carried its own.
+- **Found and closed: ports held past a run's end (PM M181).** At a run's end the daemon
+  closed its copies of the run's host sockets and told the network process nothing, whose
+  copies stayed until it ended, 3 to 10 ms later: a port a killed server held was still
+  held once `run` returned, in 96 of 100 runs under load, where dockerd's is free. The
+  VM now has the daemon let go of a container's ports before it tells its end, and the
+  daemon waits for the network process (none of 100, quiet and loaded). A joiner's are
+  let go so too; without it, the daemon's own letting go at the joiner's end came first
+  in each of 100 runs, which nothing but timing ordered.
 
 ### D123. A run's record of processes: from the kernel, every one, whole
 
@@ -3699,7 +3729,10 @@ the container's directory.
   the relay does, from one reader of the connection for its whole life (the relay's own
   had read past its end and lost what it held), and reads on until the guest closes it;
   saying first that it asks no more, which init, its joiners ended, waits for before it
-  powers off, rather than for a layer the host may not have asked for yet.
+  powers off, rather than for a layer the host may not have asked for yet. The daemon
+  reads them too (2026-10-11, D124's joiners): it followed the run's connection only to
+  its command's end, or its layer's, and the records its joiners' processes made past it
+  went unread; it follows it now while containers joined to the microVM run.
 - **Tested**: `a_runs_processes_are_recorded_as_they_start_and_end` (a child's fork, exec
   and end in order; 200 children, each over at once and reaped by its parent, each
   recorded whole; a child the run's end kills outside the command's namespace, freeing

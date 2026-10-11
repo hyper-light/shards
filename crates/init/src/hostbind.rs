@@ -123,11 +123,13 @@ impl Supervisor {
         self.pid
     }
 
-    /// Gives the process a launched process's listener; false once it has gone.
-    pub fn listener(&self, listener: &OwnedFd) -> bool {
+    /// Gives the process a launched process's listener, the process container `owner`'s
+    /// (0 the run's own, or a joiner's exec id, D119); false once it has gone.
+    pub fn listener(&self, listener: &OwnedFd, owner: u32) -> bool {
+        let [a, b, c, d] = owner.to_be_bytes();
         send_fd(
             self.sock.as_raw_fd(),
-            LISTENER,
+            &[LISTENER, a, b, c, d],
             listener.as_raw_fd(),
             libc::MSG_DONTWAIT,
         )
@@ -197,13 +199,12 @@ pub fn seqpacket() -> io::Result<(OwnedFd, OwnedFd)> {
     Ok(unsafe { (OwnedFd::from_raw_fd(a), OwnedFd::from_raw_fd(b)) })
 }
 
-/// Sends `tag`, with descriptor `fd` (SCM_RIGHTS), on `channel`: async-signal-safe calls
-/// alone, for the child of init's fork too.
-pub fn send_fd(channel: RawFd, tag: u8, fd: RawFd, flags: libc::c_int) -> bool {
-    let mut byte = [tag];
+/// Sends `message`, with descriptor `fd` (SCM_RIGHTS), on `channel`: whether all of it
+/// went. Async-signal-safe calls alone, for the child of init's fork too.
+pub fn send_fd(channel: RawFd, message: &[u8], fd: RawFd, flags: libc::c_int) -> bool {
     let mut iov = libc::iovec {
-        iov_base: byte.as_mut_ptr().cast(),
-        iov_len: 1,
+        iov_base: message.as_ptr().cast_mut().cast(),
+        iov_len: message.len(),
     };
     // Room for one descriptor's control message, aligned as cmsghdr is.
     let mut control = [0u64; 4];
@@ -226,8 +227,9 @@ pub fn send_fd(channel: RawFd, tag: u8, fd: RawFd, flags: libc::c_int) -> bool {
         (*cmsg).cmsg_len = libc::CMSG_LEN(size_of::<RawFd>() as u32) as _;
         std::ptr::write_unaligned(libc::CMSG_DATA(cmsg).cast::<RawFd>(), fd);
     }
-    // SAFETY: sendmsg(2) of a message of ours.
-    unsafe { libc::sendmsg(channel, &raw const msg, flags | libc::MSG_NOSIGNAL) == 1 }
+    // SAFETY: sendmsg(2) of a message of ours, which it only reads.
+    let sent = unsafe { libc::sendmsg(channel, &raw const msg, flags | libc::MSG_NOSIGNAL) };
+    usize::try_from(sent).is_ok_and(|n| n == message.len())
 }
 
 /// One message from `channel` into `buf`, with the descriptor it carries, if any: its
@@ -495,6 +497,8 @@ struct Held {
     relay: Option<Relay>,
     /// It keeps its port on the guest's loopback, a server's there.
     kept: bool,
+    /// The container whose process bound it ([`HostBind::owner`]).
+    owner: u32,
 }
 
 /// A relay to a held socket that eth0's address does not reach: its socket there, at a
@@ -629,7 +633,8 @@ struct Supervise {
     own: Option<Ipv4Addr>,
     /// eth0's IPv6 address and its gateway's, where it has IPv6.
     own6: Option<(Ipv6Addr, Ipv6Addr)>,
-    listeners: Vec<Option<OwnedFd>>,
+    /// Each launched process's listener, and the container whose process it is.
+    listeners: Vec<Option<(OwnedFd, u32)>>,
     pending: HashMap<u32, Pending>,
     next: u32,
     held: HashMap<u64, Held>,
@@ -682,7 +687,7 @@ fn serve(ctl: OwnedFd, diag: OwnedFd) {
         }
         watched.push((s.diag.as_raw_fd(), libc::POLLIN, Owner::Diag));
         for (i, l) in s.listeners.iter().enumerate() {
-            if let Some(l) = l {
+            if let Some((l, _)) = l {
                 watched.push((l.as_raw_fd(), libc::POLLIN, Owner::Listener(i)));
             }
         }
@@ -782,7 +787,9 @@ impl Supervise {
             match recv_fd(self.ctl.as_raw_fd(), &mut buf, libc::MSG_DONTWAIT) {
                 Ok((0, _)) => return false,
                 Ok((n, fd)) => match (buf.get(..n), fd) {
-                    (Some([LISTENER]), Some(fd)) => self.listeners.push(Some(fd)),
+                    (Some(&[LISTENER, a, b, c, d]), Some(fd)) => {
+                        self.listeners.push(Some((fd, u32::from_be_bytes([a, b, c, d]))));
+                    }
                     (Some([ANSWER, bound @ ..]), _) => {
                         if let Some(b) = HostBound::decode(bound) {
                             self.answered(b);
@@ -830,7 +837,7 @@ impl Supervise {
 
     fn respond(&self, notif: Notif, answer: Answer) {
         let Some((slot, id)) = notif else { return };
-        let Some(listener) = self.listeners.get(slot).and_then(Option::as_ref) else {
+        let Some((listener, _)) = self.listeners.get(slot).and_then(Option::as_ref) else {
             return;
         };
         let mut resp = libc::seccomp_notif_resp {
@@ -857,11 +864,11 @@ impl Supervise {
 
     /// One notification of listener `slot`'s, answered, or to be once the host has.
     fn notified(&mut self, slot: usize) {
-        let Some(listener) = self
+        let Some((listener, owner)) = self
             .listeners
             .get(slot)
             .and_then(Option::as_ref)
-            .map(AsRawFd::as_raw_fd)
+            .map(|(l, owner)| (l.as_raw_fd(), *owner))
         else {
             return;
         };
@@ -872,11 +879,12 @@ impl Supervise {
             return;
         }
         let notif = Some((slot, n.id));
-        let answer = self.take(listener, notif, &n);
+        let answer = self.take(listener, notif, &n, owner);
         self.respond(notif, answer);
     }
 
-    fn take(&mut self, listener: RawFd, notif: Notif, n: &libc::seccomp_notif) -> Answer {
+    /// Notification `n` of a process of container `owner`'s.
+    fn take(&mut self, listener: RawFd, notif: Notif, n: &libc::seccomp_notif, owner: u32) -> Answer {
         let Some(call) = call(n) else {
             return Answer::Continue;
         };
@@ -912,7 +920,7 @@ impl Supervise {
                 let Some(m) = mapping(guest, v6only, self.own, self.own6.map(|(a, _)| a)) else {
                     return Answer::Continue;
                 };
-                self.bind(notif, sock, guest, port, proto, m, None)
+                self.bind(notif, sock, (guest, port), proto, m, None, owner)
             }
             Call::Listen { backlog, .. } => {
                 if proto != libc::IPPROTO_TCP as u8 {
@@ -928,7 +936,7 @@ impl Supervise {
                             IpAddr::V4(Ipv4Addr::UNSPECIFIED)
                         };
                         match mapping(any, v6only, self.own, self.own6.map(|(a, _)| a)) {
-                            Some(m) => self.bind(notif, sock, any, 0, proto, m, Some(backlog)),
+                            Some(m) => self.bind(notif, sock, (any, 0), proto, m, Some(backlog), owner),
                             None => Answer::Continue,
                         }
                     }
@@ -939,22 +947,23 @@ impl Supervise {
         }
     }
 
-    /// Asks the host to bind `port` for the guest's `sock`, of protocol `proto`, to bind it
-    /// to `guest` once the host has.
+    /// Asks the host to bind `port` for the guest's `sock`, of protocol `proto`, a process
+    /// of container `owner`'s, to bind it to `guest` once the host has.
     #[allow(clippy::too_many_arguments)]
     fn bind(
         &mut self,
         notif: Notif,
         sock: OwnedFd,
-        guest: IpAddr,
-        port: u16,
+        (guest, port): (IpAddr, u16),
         proto: u8,
         m: Mapping,
         listen: Option<u32>,
+        owner: u32,
     ) -> Answer {
         let flag = |level, name| sockopt(&sock, level, name).is_some_and(|v| v != 0);
         let ask = HostBind {
             request: 0,
+            owner,
             proto,
             addr: m.host,
             port,
@@ -1033,11 +1042,12 @@ impl Supervise {
         tries: usize,
         listen: Option<(OwnedFd, u32)>,
     ) -> Answer {
-        let Some(proto) = self.held.get(&cookie).map(|h| h.proto) else {
+        let Some((proto, owner)) = self.held.get(&cookie).map(|h| (h.proto, h.owner)) else {
             return Answer::Errno(libc::EBADF);
         };
         let ask = HostBind {
             request: 0,
+            owner,
             proto,
             addr: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
             port: 0,
@@ -1145,6 +1155,7 @@ impl Supervise {
                         asked: false,
                         relay: None,
                         kept: false,
+                        owner: b.ask.owner,
                     },
                 );
                 // A UDP socket's datagrams come as it is bound: answered at once, the

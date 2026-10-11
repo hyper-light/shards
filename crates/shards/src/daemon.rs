@@ -491,8 +491,14 @@ struct Inbox {
     visit: bool,
     /// A joiner's exec's id in its provider's guest, from its start on (D119).
     guest: Option<u32>,
-    /// On the host's network (D124): its guest's sockets of the host's.
+    /// On the host's network (D124): its guest's sockets of the host's, its joiners' too.
     host_net: Option<hostnet::HostNet>,
+    /// How many containers joining its microVM's network run (D119): its VM, which runs on
+    /// for them past its own command, is followed until it ends, for what their processes
+    /// ask of the host's network and record (D123, D124).
+    joiners: u32,
+    /// A joiner's: its provider's run, whose microVM it runs in.
+    provider: Option<Arc<Mutex<Inbox>>>,
 }
 
 /// A part of the working set run `id`'s VM recorded (`kind::WORKING_SET`), which the
@@ -1919,6 +1925,9 @@ impl<D: Disk> Daemon<D> {
                 self.make_spare();
             }
         };
+        // A joiner of a container on the host's network is on it too (D124), as dockerd's
+        // is, in the host's network namespace.
+        let joins_host = matches!(&start, network::Start::Join(name) if self.joins_hosts_network(name));
         // A joiner's names are its provider's, as dockerd gives a joiner the other's
         // (initializeNetworking): its hostname and domain name.
         if let network::Start::Join(name) = &start
@@ -2107,9 +2116,12 @@ impl<D: Disk> Daemon<D> {
                 return None;
             }
         };
-        // The host's network, said each time it is given (D124; the user's, 2026-10-11).
+        // The host's network, said each time it is given (D124; the user's, 2026-10-11): a
+        // joiner's too, which dockerd says nothing of.
         if start == network::Start::Attach(network::Net::Host) {
             say(&format!("WARNING: {}", shards_abi::run::NETWORK_HOST));
+        } else if joins_host {
+            say(&format!("WARNING: {}", shards_abi::run::NETWORK_HOST_JOINED));
         }
         // Its name is a member's name on its network (DNSNames' first).
         self.name_member(&id, &name);
@@ -2254,6 +2266,11 @@ impl<D: Disk> Daemon<D> {
                     .spec
                     .setup
                     .extend(crate::setup::security_setup(&run, kernel)?);
+                // A joiner of a container on the host's network: its binds the host's too,
+                // by its provider's process for them (D124).
+                if joins_host {
+                    prepared.spec.setup.extend(crate::setup::binds(&run, kernel)?);
+                }
                 // An Agentfile's image: the filter its domains run under (D59). Its init
                 // starts no domain without one.
                 if prepared.agentfile.is_some() {
@@ -3420,6 +3437,11 @@ impl<D: Disk> Daemon<D> {
                 .map_err(|e| log(format!("holding a detached client's connection: {e}")))
                 .ok()
         });
+        // A joiner's provider (D119), which follows its microVM on for it.
+        let provider = ready.joined.as_deref().and_then(|p| self.inbox_of(p));
+        if let Some(p) = &provider {
+            lock(p).joiners += 1;
+        }
         let inbox = Arc::new(Mutex::new(Inbox {
             socket: socket.clone(),
             pid: ready.vm.id(),
@@ -3438,6 +3460,8 @@ impl<D: Disk> Daemon<D> {
             visit,
             guest: None,
             host_net,
+            joiners: 0,
+            provider,
         }));
         let tracked = Tracked {
             base: Arc::new(Base {
@@ -3480,8 +3504,9 @@ impl<D: Disk> Daemon<D> {
     /// ended.
     fn take_messages(&self, id: &str, inbox: &Mutex<Inbox>) -> bool {
         let mut guard = lock(inbox);
-        // Followed past its end while its writable layer is still to come (D37).
-        while !guard.ended || guard.layer_pending {
+        // Followed past its end while its writable layer is still to come (D37), and while
+        // containers joining its network run in its microVM (D119).
+        while !guard.ended || guard.layer_pending || guard.joiners > 0 {
             let inbox = &mut *guard;
             let m = match inbox.incoming.take(&inbox.socket.stream) {
                 Ok(shards_ipc::Took::Message(m)) => m,
@@ -3491,6 +3516,9 @@ impl<D: Disk> Daemon<D> {
                     if !inbox.ended {
                         self.run_ended(id, inbox, None);
                     }
+                    // Its VM has gone, and its joiners with it.
+                    inbox.joiners = 0;
+                    inbox.host_net = None;
                     if inbox.layer_pending {
                         self.settle_layer(id, inbox, false);
                     }
@@ -3518,6 +3546,21 @@ impl<D: Disk> Daemon<D> {
                     {
                         log(format!(
                             "container {id}: answering its bind on the host's network: {e}"
+                        ));
+                    }
+                }
+                // A container in its microVM ending (D124): its ports of the host's let go,
+                // the network process's copies too, before its end is told.
+                kind::HOST_RELEASE => {
+                    if let (Some(h), Ok(owner)) =
+                        (inbox.host_net.as_mut(), <[u8; 4]>::try_from(m.payload.as_slice()))
+                    {
+                        h.release(u32::from_be_bytes(owner));
+                        h.settle();
+                    }
+                    if let Err(e) = inbox.socket.send(kind::HOST_RELEASE, &m.payload, &[]) {
+                        log(format!(
+                            "container {id}: answering its ports' release on the host's network: {e}"
                         ));
                     }
                 }
@@ -3563,7 +3606,7 @@ impl<D: Disk> Daemon<D> {
                 _ => {}
             }
         }
-        guard.ended && !guard.layer_pending
+        guard.ended && !guard.layer_pending && guard.joiners == 0
     }
 
     /// Container `id`'s writable layer, as its VM left it (D37): kept if it came `whole`;
@@ -3739,8 +3782,22 @@ impl<D: Disk> Daemon<D> {
         // microVM's join share ends with its VM, the daemon's connection to it let go (D119).
         lock(&self.joiner_links).remove(id);
         lock(&self.join_shares).remove(id);
-        // On the host's network (D124): the host's ports of its guest's binds let go.
-        inbox.host_net = None;
+        // On the host's network (D124): the host's ports of its guest's binds let go, but
+        // its joiners', which go as each of them ends (D119).
+        if inbox.joiners == 0 {
+            inbox.host_net = None;
+        } else if let Some(h) = inbox.host_net.as_mut() {
+            h.release(0);
+        }
+        // A joiner's: its provider's microVM followed for it no more, and its ports there
+        // let go.
+        if let Some(provider) = inbox.provider.take() {
+            let mut p = lock(&provider);
+            p.joiners = p.joiners.saturating_sub(1);
+            if let (Some(h), Some(guest)) = (p.host_net.as_mut(), inbox.guest) {
+                h.release(guest);
+            }
+        }
         inbox.ended = true;
         // A visit's end is its own: the container stays as it was.
         if inbox.visit {
@@ -4138,6 +4195,21 @@ impl<D: Disk> Daemon<D> {
             .hostname
             .unwrap_or_else(|| id.get(..12).unwrap_or(&id).to_string());
         Some((hostname, run.domainname))
+    }
+
+    /// Whether the container `name` names, whose network a joiner joins (D119), is on the
+    /// host's network (D124): its microVM's run is, its provider's where it is a joiner
+    /// itself, as [`Self::join_vm`] finds that microVM.
+    fn joins_hosts_network(&self, name: &str) -> bool {
+        let Ok(found) = self.resolve(name) else {
+            return false;
+        };
+        let provider = match lock(&self.runs).get(&found) {
+            Some(RunState::Tracked(t)) if !t.visit => t.joined.clone().unwrap_or_else(|| found.clone()),
+            _ => found,
+        };
+        self.inbox_of(&provider)
+            .is_some_and(|inbox| lock(&inbox).host_net.is_some())
     }
 
     /// The microVM container `id` joins (D119): that of the container `name` names, found

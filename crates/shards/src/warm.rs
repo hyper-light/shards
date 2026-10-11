@@ -50,6 +50,23 @@ static PUBLISHED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool:
 /// The VM's network device's flush (`--net`), asked as the run ends.
 static FLUSH: std::sync::OnceLock<shards_vmm::devices::virtio::net::TxFlush> = std::sync::OnceLock::new();
 
+/// On the host's network (D124): the daemon's connection the guest's asks go on, the
+/// containers whose processes asked for a port of the host's, and those whose ports the
+/// daemon has said it let go of (`HOST_RELEASE`).
+static HOST: Host = Host {
+    daemon: std::sync::OnceLock::new(),
+    asked: std::sync::Mutex::new(Vec::new()),
+    released: std::sync::Mutex::new(Vec::new()),
+    said: std::sync::Condvar::new(),
+};
+
+struct Host {
+    daemon: std::sync::OnceLock<UnixStream>,
+    asked: std::sync::Mutex<Vec<u32>>,
+    released: std::sync::Mutex<Vec<u32>>,
+    said: std::sync::Condvar,
+}
+
 /// Takes `flush` as [`FLUSH`].
 pub fn adopt_flush(flush: shards_vmm::devices::virtio::net::TxFlush) {
     let _ = FLUSH.set(flush);
@@ -414,6 +431,16 @@ fn relay_signals(conn: &UnixStream, to: &'static ToGuest, from: From<'_>) {
             kind::HOST_BOUND if matches!(from, From::Daemon(_)) => {
                 workload::bound_guest(to, &message.payload);
             }
+            // A container's ports of the host's, let go as it ends (`release_host`).
+            kind::HOST_RELEASE if matches!(from, From::Daemon(_)) => {
+                if let Ok(owner) = <[u8; 4]>::try_from(message.payload.as_slice()) {
+                    HOST.released
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .push(u32::from_be_bytes(owner));
+                    HOST.said.notify_all();
+                }
+            }
             kind::SIGNAL => {
                 if let Ok(signal) = <[u8; 4]>::try_from(message.payload.as_slice()) {
                     let signal = u32::from_be_bytes(signal);
@@ -733,6 +760,12 @@ fn joiner(link: &UnixStream, range: Result<(u64, u64), String>, to: &'static ToG
             Ok((ended, conn)) => (Ok(ended), Some(conn)),
             Err(e) => (Err(e), None),
         };
+        // Its ports of the host's let go before its end is told (D124): a joiner's that
+        // started, whose id is never the run's own, 0.
+        let started = id.load(std::sync::atomic::Ordering::SeqCst);
+        if started != 0 {
+            release_host(started);
+        }
         joined_finish(link, client.as_ref(), said_to, &ended);
         // Those attached hear its status as its own client does.
         workload::end_joiner(
@@ -906,6 +939,7 @@ pub fn finish(
         });
     }
     release_ports();
+    release_host(0);
     let _ = shards_ipc::send(&link.daemon, kind::DONE, &done, &[]);
     if let Some(client) = client {
         let mut payload = vec![said_status];
@@ -931,7 +965,67 @@ pub fn host_net(link: &Link, frame: &[u8]) {
     {
         flush.flush(std::time::Instant::now() + std::time::Duration::from_secs(1));
     }
+    // Whose processes have ports of the host's, to be let go as each ends.
+    if let Some((&shards_abi::run::kind::BIND, bind)) = frame.split_first()
+        && let Some(bind) = shards_abi::run::HostBind::decode(bind)
+    {
+        if HOST.daemon.get().is_none()
+            && let Ok(daemon) = link.daemon.try_clone()
+        {
+            let _ = HOST.daemon.set(daemon);
+        }
+        let mut asked = HOST
+            .asked
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !asked.contains(&bind.owner) {
+            asked.push(bind.owner);
+        }
+    }
     let _ = shards_ipc::send(&link.daemon, kind::HOST_NET, frame, &[]);
+}
+
+/// Has the daemon let go of container `owner`'s ports of the host's (D124) as it ends,
+/// before its end is told, waiting up to a second for it to say it has: the daemon's
+/// copies and its network process's closed, so that the host may bind them again once
+/// the end is told, as dockerd's may (PM M181). Nothing to do for one that asked for none.
+fn release_host(owner: u32) {
+    {
+        let mut asked = HOST
+            .asked
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(at) = asked.iter().position(|&o| o == owner) else {
+            return;
+        };
+        asked.swap_remove(at);
+    }
+    let Some(daemon) = HOST.daemon.get() else {
+        return;
+    };
+    if shards_ipc::send(daemon, kind::HOST_RELEASE, &owner.to_be_bytes(), &[]).is_err() {
+        return;
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    let mut released = HOST
+        .released
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    loop {
+        if let Some(at) = released.iter().position(|&o| o == owner) {
+            released.swap_remove(at);
+            return;
+        }
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            return;
+        }
+        released = HOST
+            .said
+            .wait_timeout(released, left)
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .0;
+    }
 }
 
 /// Tells the daemon the container's writable layer is whole where it asked for it.

@@ -257,10 +257,10 @@ pub fn mounts(
     compiled(shards_seccomp::MOUNTS, run, kernel, b"seccomp-mounts=", false)
 }
 
-/// On the host's network (`--network host`, D124): the filter by which init makes each
-/// bind(2) and listen(2) of the run's processes the host's (`seccomp-binds=`,
-/// shards_seccomp::BINDS), loaded first and for a listener.
-fn binds(run: &Run, kernel: shards_seccomp::Kernel) -> Result<Option<Vec<u8>>, String> {
+/// On the host's network (`--network host`, D124), or joining a container there: the
+/// filter by which init makes each bind(2) and listen(2) of the run's processes the host's
+/// (`seccomp-binds=`, shards_seccomp::BINDS), loaded first and for a listener.
+pub fn binds(run: &Run, kernel: shards_seccomp::Kernel) -> Result<Option<Vec<u8>>, String> {
     compiled(shards_seccomp::BINDS, run, kernel, b"seccomp-binds=", true)
 }
 

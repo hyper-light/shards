@@ -243,6 +243,12 @@ pub mod kind {
     /// Daemon → a VM on the host's network: the host's answer to its guest's `BIND` or
     /// `LISTEN` (`shards_abi::run::HostBound`), for its guest.
     pub const HOST_BOUND: u8 = 51;
+    /// A VM on the host's network → its daemon, as a container in it ends, before its end
+    /// is told: its ports of the host's let go (`shards_abi::run::HostBind::owner`, a
+    /// big-endian u32); answered with the same kind and owner once the daemon's copies and
+    /// the network process's are closed, so that the host may bind them again once the
+    /// end is told, as dockerd's may.
+    pub const HOST_RELEASE: u8 = 52;
 }
 
 /// An `ATTACH_RUN` flag: the client's stdin goes to the command's.

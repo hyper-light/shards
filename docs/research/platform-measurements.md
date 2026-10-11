@@ -5985,3 +5985,37 @@ revision before comparing a changed API/implementation.
   run's first answer to a client. What remains of the same kind: a datagram to a member
   of the run's network (on its link, so asked for by ARP), and frames in eth0's queueing
   discipline (pfifo_fast) while the device's ring is full, as a command ends.
+
+### M181. A container joining a host-network container's network, and ports past a container's end (D124, D119)
+
+- **Question.** What dockerd gives a container joining the network of one on the host's
+  network (`--network container:NAME`), and whether a port a container on the host's
+  network served is the host's to bind again once its end is told.
+- **Docker** (`docs/research/measurements/network-host/joiner.sh`, Docker 29.3.1 in
+  `shards-dind`, `alpine:3.22`, 2026-10-11):
+  - The joiner's names and files are the host's (its hostname, the 7 lines of its
+    hosts file, its resolvers, its 16 interfaces); nothing is said on its stderr.
+  - A port its listener takes is the host's (`hi` from the host); one the host holds
+    fails its bind, "nc: bind: Address in use".
+  - inspect: `NetworkSettings.Networks` `{}`, `HostConfig.NetworkMode`
+    `container:ID`, `Config.Hostname` the host's.
+  - Its provider stopped, it runs on: its first listener still the host's, and one it
+    starts then is the host's too.
+  - Joining a stopped one: "docker: Error response from daemon: cannot join network
+    namespace of a non running container: container nhj-probe-p is exited", 125.
+- **Ports past their end, method.** `docs/research/measurements/network-host/release.sh`,
+  the ignored test `ports_held_past_their_containers_end`: a server on the host's network
+  serves one connection from this host and is killed with its container (`shards kill`);
+  its client waited for at once, as a shell waits, then the server's port bound on the
+  host; 100 runs alone, then 100 containers joining one such run, each killed while its
+  provider runs; quiet (load average 26 to 21, others' builds) and with 16 busy loops.
+  Apple M5 Max (18 cores), macOS 26.4.1, the release build of 04e5bc1a.
+- **Results.** Ports still held as the port was bound: runs 0 of 100 and joiners 0 of
+  100, quiet and loaded. Before the change, the same loop in a test-release build of
+  that tree with the VM's letting go removed, under 16 busy loops (load average to 116):
+  runs 96 of 100, each free 3 to 10 ms later (the network process's copies, closed only
+  as that process ended); joiners 0 of 100 (the daemon's own letting go at a joiner's end
+  came first each time).
+- **Consequence.** D124: a container's ports of the host's go before its end is told
+  (`HOST_RELEASE`), as dockerd's do; a joiner of a container on the host's network is on
+  it too, told so, its ports its own (`HostBind::owner`).
