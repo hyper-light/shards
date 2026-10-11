@@ -15,7 +15,7 @@ pub mod profile;
 mod tables;
 
 pub use compiler::{ACT_ALLOW, ACT_KILL_PROCESS, ACT_KILL_THREAD, ACT_LOG, ACT_TRAP, Program, act_errno};
-pub use profile::{Arch, Container, DEFAULT, Kernel};
+pub use profile::{Arch, Container, DEFAULT, Kernel, MOUNTS};
 
 /// The filter `profile` (a profile's JSON) makes for container `c`, or none where it asks
 /// for none (no default action and no rules: unconfined).

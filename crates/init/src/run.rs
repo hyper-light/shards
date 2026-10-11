@@ -545,6 +545,7 @@ fn sort_setup(entries: &[Vec<u8>], into: &mut Inherited) -> Result<Vec<Vec<u8>>,
             if entry.starts_with(b"ulimit=")
                 || entry.starts_with(b"oom=")
                 || entry.starts_with(b"seccomp=")
+                || entry.starts_with(b"seccomp-mounts=")
                 || entry == b"nnp"
             {
                 into.setup.push(entry.clone());
@@ -2427,6 +2428,13 @@ fn standby(ends: Ends, isolation: Isolation) -> ! {
         filter: p.as_ptr().cast_mut(),
     });
     let seccomp = filter.as_ref().map(|(f, _)| *f).zip(fprog.as_ref());
+    // Docker's AppArmor's mount rule (`seccomp-mounts=`), loaded before the profile.
+    let mounts_filter = crate::setup::filter_named(&o.setup, b"seccomp-mounts=");
+    let mounts_prog = mounts_filter.as_ref().map(|(_, p)| libc::sock_fprog {
+        len: u16::try_from(p.len()).unwrap_or(u16::MAX),
+        filter: p.as_ptr().cast_mut(),
+    });
+    let mounts = mounts_filter.as_ref().map(|(f, _)| *f).zip(mounts_prog.as_ref());
     let nnp = o.setup.iter().any(|e| e == b"nnp");
     // SAFETY: this process is the child of a fork of single-threaded init, and `child`
     // runs on data built above.
@@ -2443,6 +2451,7 @@ fn standby(ends: Ends, isolation: Isolation) -> ! {
             candidates: &candidates,
             explicit: o.explicit,
             last_cap,
+            mounts,
             seccomp,
             nnp,
             argv: argv_ptrs.as_ptr(),
@@ -3962,7 +3971,10 @@ struct Child<'a> {
     explicit: bool,
     /// The kernel's last capability, for the bounding set's.
     last_cap: u32,
-    /// Its seccomp filter and its seccomp(2) flags, and whether no_new_privs is set.
+    /// The filter that stands in for Docker's AppArmor's mount rule, loaded before its
+    /// seccomp filter; that filter; each with its seccomp(2) flags; and whether
+    /// no_new_privs is set.
+    mounts: Option<(u32, &'a libc::sock_fprog)>,
     seccomp: Option<(u32, &'a libc::sock_fprog)>,
     nnp: bool,
     argv: *const *const libc::c_char,
@@ -4036,11 +4048,12 @@ unsafe fn child(c: &Child<'_>) -> ! {
         };
         // Without no_new_privs, loading a filter needs CAP_SYS_ADMIN: before the
         // capabilities go (runc, standard_init_linux.go).
-        if !c.nnp
-            && let Some(f) = c.seccomp
-            && !load(f)
-        {
-            fail(step::SECCOMP);
+        if !c.nnp {
+            for f in [c.mounts, c.seccomp].into_iter().flatten() {
+                if !load(f) {
+                    fail(step::SECCOMP);
+                }
+            }
         }
         // A container's capabilities (crate::defaults), as runc applies them
         // (finalizeNamespace): the bounding set first, the rest kept across the change of
@@ -4072,10 +4085,10 @@ unsafe fn child(c: &Child<'_>) -> ! {
             if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
                 fail(step::NNP);
             }
-            if let Some(f) = c.seccomp
-                && !load(f)
-            {
-                fail(step::SECCOMP);
+            for f in [c.mounts, c.seccomp].into_iter().flatten() {
+                if !load(f) {
+                    fail(step::SECCOMP);
+                }
             }
         }
         for (i, path) in c.candidates.iter().enumerate() {

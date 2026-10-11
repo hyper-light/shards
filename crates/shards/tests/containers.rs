@@ -1977,6 +1977,103 @@ fn a_refused_start_leaves_its_container_as_it_was() {
     ok(&["rm", "left"]);
 }
 
+/// A container given CAP_SYS_ADMIN mounts nothing, as Docker's default AppArmor profile
+/// keeps one where AppArmor is enforced (docker-default, `deny mount,`), which the guest
+/// has not: a mount, a remount of a read-only file, the new mount API and its microVM's own
+/// shares refused, EACCES, an exec and a joiner too; umount left to it. `apparmor=unconfined`
+/// and `--privileged` lift it, as Docker's do; without the capability, Docker's seccomp
+/// profile refuses first, EPERM.
+#[test]
+fn a_container_given_sys_admin_mounts_nothing_as_apparmor_keeps_it() {
+    let Some((home, image)) = home("containers-mounts") else {
+        return;
+    };
+    let shared = home.join("shared");
+    std::fs::create_dir(&shared).unwrap();
+    let bind = format!("{}:/data", shared.display());
+    let fs = |options: &[&str], op: &str| run_in(&home, &image, options, &["fs", op]);
+    let admin = ["--rm", "-u", "0", "--cap-add", "SYS_ADMIN"];
+    let refused = |options: &[&str], op: &str, said: &str| {
+        let r = fs(options, op);
+        assert!(
+            r.status == Some(1) && r.stderr.contains(&format!("{op}: {said}")),
+            "{options:?} {op}: {r}"
+        );
+    };
+    for op in [
+        "mount:tmpfs:none:/mnt",
+        "fsopen:tmpfs",
+        "open-tree:/etc",
+        "remount-rw:/etc/hostname",
+    ] {
+        refused(&admin, op, "Permission denied");
+    }
+    // Its microVM's own share, whose tag it knows.
+    let with_share: Vec<&str> = admin.iter().copied().chain(["-v", bind.as_str()]).collect();
+    refused(&with_share, "mount:virtiofs:shards0:/mnt", "Permission denied");
+    // umount is left to it, as docker-default leaves it: a tmpfs of its own.
+    let with_tmpfs: Vec<&str> = admin.iter().copied().chain(["--tmpfs", "/t"]).collect();
+    let unmounted = fs(&with_tmpfs, "umount:/t");
+    assert_eq!(unmounted.status, Some(0), "{unmounted}");
+    // Lifted as Docker's is.
+    for options in [
+        &[
+            "--rm",
+            "-u",
+            "0",
+            "--cap-add",
+            "SYS_ADMIN",
+            "--security-opt",
+            "apparmor=unconfined",
+        ][..],
+        &["--rm", "-u", "0", "--privileged"][..],
+    ] {
+        let made = run_in(&home, &image, options, &["fs", "mkdir:/m", "mount:tmpfs:none:/m"]);
+        assert_eq!(made.status, Some(0), "{options:?}: {made}");
+    }
+    // Without the capability, Docker's seccomp profile refuses first.
+    refused(
+        &["--rm", "-u", "0"],
+        "mount:tmpfs:none:/mnt",
+        "Operation not permitted",
+    );
+    // An exec takes it, and a joiner.
+    let up = run_in(
+        &home,
+        &image,
+        &["-d", "--name", "admin", "--cap-add", "SYS_ADMIN"],
+        &["sleep"],
+    );
+    assert_eq!(up.status, Some(0), "{up}");
+    let exec = shards_in(
+        &home,
+        &[
+            "exec",
+            "-u",
+            "0",
+            "admin",
+            "/bin/testguest",
+            "fs",
+            "mount:tmpfs:none:/mnt",
+        ],
+    );
+    assert!(exec.stderr.contains("Permission denied"), "{exec}");
+    refused(
+        &[
+            "--rm",
+            "-u",
+            "0",
+            "--cap-add",
+            "SYS_ADMIN",
+            "--network",
+            "container:admin",
+        ],
+        "mount:tmpfs:none:/mnt",
+        "Permission denied",
+    );
+    assert_eq!(shards_in(&home, &["rm", "-f", "admin"]).status, Some(0));
+}
+
 /// `start -a` passes signals on as docker/cli's start does: to a container without a
 /// terminal, whose command hears them; not to one with a terminal, whose own keys are its
 /// signals: the client ends by the signal alone, the container running on.

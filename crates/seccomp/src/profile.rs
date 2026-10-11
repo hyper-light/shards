@@ -93,6 +93,14 @@ pub struct Profile {
 /// generated from its DefaultProfile).
 pub const DEFAULT: &[u8] = include_bytes!("../data/default.json");
 
+/// What Docker's default AppArmor profile (docker-default, `deny mount,`) keeps from a
+/// container where AppArmor is enforced, for guests, which have none: no mount made,
+/// moved, remounted or changed, no new mount API, no pivot_root, each EACCES, as AppArmor
+/// denies them; umount left to it, as docker-default allows it. Installed before Docker's
+/// seccomp profile, so that where that denies too, its errno is the one returned (the
+/// most recent filter's, seccomp_filter.rst).
+pub const MOUNTS: &[u8] = include_bytes!("../data/mounts.json");
+
 fn type_error(value: &Json, path: &str, ty: &str) -> String {
     let value = match value {
         Json::Number(n) => format!("number {n}"),
