@@ -2502,44 +2502,50 @@ fn a_runs_link_local_addresses_are_its_own_as_dockerd_gives_them() {
             "--network",
             "name=llnet6,link-local-ip=fe80::2:10",
         ],
-        &["serve", "7000", "1"],
+        &["serve", "7000", "2"],
     );
-    let mac = shards(&[
-        "exec",
-        "ll-six",
-        "/bin/testguest",
-        "fs",
-        "print:/sys/class/net/eth0/address",
-    ]);
-    let o: Vec<u8> = mac
-        .stdout
-        .trim()
-        .split(':')
-        .map(|h| u8::from_str_radix(h, 16).unwrap())
-        .collect();
-    let kernels = std::net::Ipv6Addr::from([
-        0xfe,
-        0x80,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        o[0] ^ 2,
-        o[1],
-        o[2],
-        0xff,
-        0xfe,
-        o[3],
-        o[4],
-        o[5],
-    ]);
+    // The address a microVM's kernel makes of its MAC, RFC 4291's modified EUI-64.
+    let kernels = |name: &str| {
+        let mac = shards(&[
+            "exec",
+            name,
+            "/bin/testguest",
+            "fs",
+            "print:/sys/class/net/eth0/address",
+        ]);
+        let o: Vec<u8> = mac
+            .stdout
+            .trim()
+            .split(':')
+            .map(|h| u8::from_str_radix(h, 16).unwrap())
+            .collect();
+        std::net::Ipv6Addr::from([
+            0xfe,
+            0x80,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            o[0] ^ 2,
+            o[1],
+            o[2],
+            0xff,
+            0xfe,
+            o[3],
+            o[4],
+            o[5],
+        ])
+    };
     let has = shards(&["exec", "ll-six", "/bin/testguest", "addrs"]);
     assert!(
-        has.stdout.contains(&format!("eth0 {kernels}/64")) && has.stdout.contains("eth0 fe80::2:10/64"),
+        has.stdout.contains(&format!("eth0 {}/64", kernels("ll-six")))
+            && has.stdout.contains("eth0 fe80::2:10/64"),
         "{has}"
     );
+    // At once, from its address on the network or its own link-local one, whichever its
+    // kernel takes while that one is still being checked (duplicate address detection).
     let asked = run_in(
         &home,
         &image,
@@ -2547,10 +2553,61 @@ fn a_runs_link_local_addresses_are_its_own_as_dockerd_gives_them() {
         &["ask", "[fe80::2:10%2]:7000"],
     );
     assert!(
-        asked.status == Some(0) && asked.stdout.starts_with("ask from fe80::"),
+        asked.status == Some(0)
+            && (asked.stdout.starts_with("ask from fd7d::") || asked.stdout.starts_with("ask from fe80::")),
+        "{asked}"
+    );
+    // Once its own is checked (no longer tentative in /proc/net/if_inet6, IFA_F_TENTATIVE
+    // 0x40): from the address its kernel made of its MAC, which the server's network
+    // process knows it by.
+    let mut client = start(
+        &home,
+        &image,
+        &["--name", "ll-client", "--network", "llnet6"],
+        &["sleep"],
+    );
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+        let table = shards(&[
+            "exec",
+            "ll-client",
+            "/bin/testguest",
+            "fs",
+            "print:/proc/net/if_inet6",
+        ]);
+        let checked = table.stdout.lines().any(|l| {
+            let f: Vec<&str> = l.split_whitespace().collect();
+            f.first().is_some_and(|a| a.starts_with("fe80"))
+                && f.get(4)
+                    .and_then(|x| u8::from_str_radix(x, 16).ok())
+                    .is_some_and(|x| x & 0x40 == 0)
+        });
+        if checked {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "its link-local address stayed tentative: {table}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let asked = shards(&[
+        "exec",
+        "ll-client",
+        "/bin/testguest",
+        "ask",
+        "[fe80::2:10%2]:7000",
+    ]);
+    assert!(
+        asked.status == Some(0)
+            && asked
+                .stdout
+                .starts_with(&format!("ask from {}", kernels("ll-client"))),
         "{asked}"
     );
     assert_eq!(exit(&mut srv), Some(0));
+    assert_eq!(shards(&["rm", "-f", "ll-client"]).status, Some(0));
+    let _ = exit(&mut client);
 }
 
 /// A container given CAP_SYS_ADMIN mounts nothing, as Docker's default AppArmor profile
