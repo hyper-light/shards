@@ -5771,3 +5771,28 @@ revision before comparing a changed API/implementation.
 - **Consequence.** Built (D46): a run's own MAC, given or made, eth0's and its network
   process's, shown by inspect as dockerd shows it but where dockerd shows one no interface
   has; two given one MAC reach each other, as on dockerd's bridge they do not.
+
+### M174. What Docker's AppArmor profile leaves a container of mounts (D121)
+
+- **Method.** `docs/research/measurements/docker-apparmor-mount/probe.sh` by its workflow
+  (`docker-apparmor-probe.yml`), run 38101649596 at dev 329c5000, 2026-10-11, on GitHub's
+  ubuntu-24.04 (Linux 6.17.0-1022-azure x86_64) and ubuntu-24.04-arm (aarch64): Docker
+  28.0.4, AppArmor enabled, docker-default enforced; each step's return and errno from
+  python's ctypes in `python:3.13-alpine`.
+- **Found**, alike on both:
+  - Default capabilities: mount, umount2, fsopen and open_tree's clone EPERM (Docker's
+    seccomp profile).
+  - `--cap-add SYS_ADMIN`: mount EACCES (docker-default's `deny mount,`); fsopen and
+    open_tree's clone succeed; umount2 of a mount (MNT_DETACH of /etc/hostname) succeeds.
+    BusyBox's mount says "mount: mounting none on /mnt/t failed: Permission denied", 255.
+  - With `seccomp=unconfined` too: the same. Without the capability, `seccomp=unconfined`:
+    mount EACCES, since the kernel asks the LSM before it checks the capability (Linux
+    fs/namespace.c path_mount: security_sb_mount, then may_mount); the rest EPERM.
+  - `apparmor=unconfined` with the capability, and `--privileged`: every step succeeds.
+  - An unknown profile (`apparmor=no-such-profile`): the start fails, 127, runc unable to
+    apply it.
+- **Consequence.** docker-default refuses mount(2) of these, and lets the new mount API
+  through where the capability is given. shards' filter refuses both (D121): a detached
+  mount (fsopen, fsmount, then files through its descriptor) needs no mount point, and
+  would reach a microVM's own virtio-fs shares past the rule. It refuses mount(2) EACCES
+  under `seccomp=unconfined` without the capability too, as the kernel asks AppArmor first.

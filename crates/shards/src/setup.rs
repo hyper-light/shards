@@ -233,21 +233,24 @@ pub fn seccomp(
     compiled(profile, run, kernel, b"seccomp=")
 }
 
-/// What docker-default, Docker's AppArmor profile, keeps from a container with
-/// CAP_SYS_ADMIN where AppArmor is enforced (`deny mount,`), as a filter of its own, for
-/// guests, which have no AppArmor (`seccomp-mounts=`, shards_seccomp::MOUNTS): none for a
-/// privileged container or `apparmor=unconfined`, as Docker's has none, nor without the
-/// capability, which every mount needs, refused EPERM before AppArmor is asked. So a
-/// container given SYS_ADMIN mounts nothing of its microVM's, its shares among them.
+/// What docker-default, Docker's AppArmor profile, refuses a container of mounts where
+/// AppArmor is enforced (`deny mount,`, PM M174), as a filter of its own, for guests, which
+/// have no AppArmor (`seccomp-mounts=`, shards_seccomp::MOUNTS): mount(2), which the kernel
+/// asks AppArmor of before it checks the capability, and with CAP_SYS_ADMIN the new mount
+/// API and pivot_root, past docker-default (D121). So a container given SYS_ADMIN mounts
+/// nothing of its microVM's, its shares among them. None for a privileged container or
+/// `apparmor=unconfined`, as Docker's has none, nor where Docker's seccomp profile refuses
+/// mount(2) first, without the capability, as it would change no answer.
 pub fn mounts(
     run: &Run,
     security: &Security,
     kernel: shards_seccomp::Kernel,
 ) -> Result<Option<Vec<u8>>, String> {
     const CAP_SYS_ADMIN: u32 = 21;
+    let dockers = matches!(security.seccomp.as_deref(), None | Some("" | "builtin"));
     if run.privileged
         || security.apparmor.as_deref() == Some("unconfined")
-        || capabilities(run) & (1 << CAP_SYS_ADMIN) == 0
+        || (dockers && capabilities(run) & (1 << CAP_SYS_ADMIN) == 0)
     {
         return Ok(None);
     }
@@ -740,8 +743,9 @@ mod tests {
     }
 
     /// Docker's AppArmor's mount rule is a filter of its own for a container given
-    /// CAP_SYS_ADMIN, before Docker's profile; none without the capability, for a
-    /// privileged container, or with `apparmor=unconfined`, as Docker's has none then.
+    /// CAP_SYS_ADMIN, before Docker's profile, and for one without it where Docker's
+    /// profile would not refuse mount(2) first; none for a privileged container, or with
+    /// `apparmor=unconfined`, as Docker's has none then (PM M174).
     #[test]
     fn a_container_given_sys_admin_has_apparmors_mount_rule() {
         let kernel = shards_seccomp::Kernel(6, 1);
@@ -784,5 +788,19 @@ mod tests {
             ..admin.clone()
         };
         assert_eq!(entries(&no_seccomp), ["seccomp-mounts"]);
+        // Without the capability, where Docker's profile does not refuse mount(2) first.
+        for opt in [
+            "seccomp=unconfined",
+            "seccomp={\"defaultAction\":\"SCMP_ACT_ALLOW\"}",
+        ] {
+            let run = Run {
+                security_opt: vec![opt.into()],
+                ..Run::default()
+            };
+            assert!(
+                entries(&run).first().is_some_and(|e| e == "seccomp-mounts"),
+                "{opt}"
+            );
+        }
     }
 }

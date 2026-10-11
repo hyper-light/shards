@@ -3503,23 +3503,38 @@ mount rule itself, on every guest kernel, with seccomp, which all have:
 
 - **The rule as a filter of its own** (`shards_seccomp::MOUNTS`, `seccomp-mounts=`): mount,
   mount_setattr, the new mount API (fsopen, fsconfig, fsmount, fspick, move_mount,
-  open_tree) and pivot_root, each EACCES, as AppArmor denies them; umount left to it, as
-  docker-default allows it. Compiled as Docker's profile is, for the native and compat
-  syscall tables (x86_64 with x86 and x32, arm64 with arm), so no `int 0x80` gets past it.
-- **Only where Docker's AppArmor would refuse**: for a container with CAP_SYS_ADMIN, not
-  privileged, not `apparmor=unconfined`. Without the capability every mount is refused
-  EPERM by the kernel and Docker's seccomp profile before AppArmor is asked, so no filter
-  is given that would answer EACCES instead. Installed before Docker's profile, whose errno
-  then wins where both refuse (seccomp_filter.rst: the most recent filter's).
+  open_tree) and pivot_root, each EACCES, AppArmor's answer to mount(2) (PM M174); umount
+  left to it, as docker-default allows it. Compiled as Docker's profile is, for the native
+  and compat syscall tables (x86_64 with x86 and x32, arm64 with arm), so no `int 0x80`
+  gets past it.
+- **Past docker-default, by design.** docker-default refuses mount(2) and lets fsopen and
+  open_tree's clone through to a container with the capability (PM M174). A detached
+  mount needs no mount point: fsopen, fsconfig and fsmount make one, and its descriptor
+  opens its files, so the rule that refused mount(2) alone would leave a microVM's own
+  virtio-fs shares, a provider's and the join share, to any container given the
+  capability. shards refuses the new mount API too; a program that mounts gets EACCES
+  from its first step instead of from mount(2) or move_mount.
+- **Where Docker's AppArmor would answer**: not for a privileged container, nor under
+  `apparmor=unconfined`, which Docker leaves unconfined. mount(2) is refused every other
+  container, since the kernel asks AppArmor before it checks the capability (Linux
+  fs/namespace.c path_mount: security_sb_mount, then may_mount): under `seccomp=unconfined`
+  one without the capability is refused EACCES, as on Docker (PM M174). The new mount API
+  and pivot_root are refused only with CAP_SYS_ADMIN, which the kernel checks for them
+  first, EPERM without it. Installed before Docker's profile, whose errno then wins where
+  both refuse (seccomp_filter.rst: the most recent filter's); where that profile refuses
+  mount(2) itself, Docker's default without the capability, no filter is given, as it would
+  change no answer.
 - **For all a container runs**: the workload, its execs (the run's filters are theirs, as
   runc's exec takes the container's) and joiners.
 - **Tested** (`a_container_given_sys_admin_mounts_nothing_as_apparmor_keeps_it`: a mount, a
   remount of a read-only file, fsopen, open_tree and its microVM's own share refused EACCES,
   in an exec and a joiner too; umount of its own tmpfs made; `apparmor=unconfined` and
-  `--privileged` mounting; EPERM without the capability; mutation-checked: without the
-  filter, the mount went through; `a_container_given_sys_admin_has_apparmors_mount_rule`:
+  `--privileged` mounting; EPERM without the capability, and under `seccomp=unconfined`
+  mount(2)'s EACCES and the rest's EPERM; mutation-checked: without the filter, the mount
+  went through, and the filter given without the capability only where it changes an
+  answer, its new mount API rule only with the capability; `a_container_given_sys_admin_has_apparmors_mount_rule`:
   who is given it). Docker's own behaviour where AppArmor is enforced is probed on GitHub's
-  Ubuntu runners (`docs/research/measurements/docker-apparmor-mount`).
+  Ubuntu runners (`docs/research/measurements/docker-apparmor-mount`, PM M174).
 - **Not taken from docker-default**: its /proc and /sys write rules, which Docker's masked
   and read-only paths cover in every container already, and its ptrace and signal rules,
   which PID namespaces keep between containers.
