@@ -306,6 +306,25 @@ pub mod beside {
         )
     }
 
+    /// The link-local /30 init's network namespace keeps for the link to its domains'
+    /// switch, past which eth0 is (D59): its first address init's, its second the switch's.
+    pub const UPLINK_NET: ([u8; 4], u8) = ([169, 254, 77, 0], 30);
+
+    /// Whether IPv4 address `ip` lies in [`UPLINK_NET`].
+    pub fn in_uplink(ip: [u8; 4]) -> bool {
+        let (net, bits) = UPLINK_NET;
+        let mask = u32::MAX.checked_shl(32 - u32::from(bits)).unwrap_or(0);
+        u32::from_be_bytes(ip) & mask == u32::from_be_bytes(net) & mask
+    }
+
+    /// Refusing link-local address `ip` on eth0 where the domains' flows cross the
+    /// command's namespace by [`UPLINK_NET`] (PM M175).
+    pub fn link_local(ip: &str) -> String {
+        format!(
+            "cannot give eth0 link-local address {ip}: the image's agents reach past the microVM by 169.254.77.0/30, a link of init's that the address would lie in"
+        )
+    }
+
     /// Refusing sysctl `key` where the domains' flows cross the command's namespace.
     pub fn sysctl(key: &str) -> String {
         format!(

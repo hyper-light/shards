@@ -110,10 +110,8 @@ pub fn configure(addr: Ipv4Addr, prefix: u8, gateway: Ipv4Addr) -> io::Result<()
     request(&sock, RTM_NEWROUTE, NLM_F_CREATE | NLM_F_EXCL, &r)
 }
 
-/// Gives `eth0` the MAC `mac`, its run's own rather than its template's, as libnetwork sets
-/// an endpoint's (setInterfaceMAC: RTM_NEWLINK with IFLA_ADDRESS). virtio-net changes it
-/// with the link up, the device not told (no control queue).
-pub fn set_mac(mac: [u8; 6]) -> io::Result<()> {
+/// eth0's index, and a route netlink socket to change it by.
+fn eth0() -> io::Result<(OwnedFd, u32)> {
     // SAFETY: if_nametoindex(3) with a NUL-terminated name.
     let index = unsafe { libc::if_nametoindex(c"eth0".as_ptr()) };
     if index == 0 {
@@ -131,7 +129,14 @@ pub fn set_mac(mac: [u8; 6]) -> io::Result<()> {
         return Err(io::Error::last_os_error());
     }
     // SAFETY: a descriptor just made.
-    let sock = unsafe { OwnedFd::from_raw_fd(fd) };
+    Ok((unsafe { OwnedFd::from_raw_fd(fd) }, index))
+}
+
+/// Gives `eth0` the MAC `mac`, its run's own rather than its template's, as libnetwork sets
+/// an endpoint's (setInterfaceMAC: RTM_NEWLINK with IFLA_ADDRESS). virtio-net changes it
+/// with the link up, the device not told (no control queue).
+pub fn set_mac(mac: [u8; 6]) -> io::Result<()> {
+    let (sock, index) = eth0()?;
     let index_i32 = i32::try_from(index).map_err(|_| io::Error::other("an interface index past i32"))?;
     // struct ifinfomsg: family, pad, type, index, flags, change; then its address.
     let mut link = Vec::new();
@@ -142,6 +147,31 @@ pub fn set_mac(mac: [u8; 6]) -> io::Result<()> {
     link.extend_from_slice(&0u32.to_ne_bytes());
     attr(&mut link, IFLA_ADDRESS, &mac);
     request(&sock, RTM_NEWLINK, 0, &link)
+}
+
+/// Gives `eth0` link-local address `ip`/`prefix` (PM M175), as libnetwork adds an
+/// endpoint's (setInterfaceLinkLocalIPs, netlink's AddrAdd): exclusively, so that one it
+/// has already fails with EEXIST; IPv4's with its broadcast address and the kernel's
+/// default scope, IPv6's without duplicate address detection, as [`address6`]'s.
+pub fn add_link_local(ip: std::net::IpAddr, prefix: u8) -> io::Result<()> {
+    let (sock, index) = eth0()?;
+    let (family, flags) = match ip {
+        std::net::IpAddr::V4(_) => (libc::AF_INET as u8, 0),
+        std::net::IpAddr::V6(_) => (libc::AF_INET6 as u8, IFA_F_NODAD),
+    };
+    let octets: Vec<u8> = match ip {
+        std::net::IpAddr::V4(v4) => v4.octets().to_vec(),
+        std::net::IpAddr::V6(v6) => v6.octets().to_vec(),
+    };
+    let mut a = vec![family, prefix, flags, RT_SCOPE_UNIVERSE];
+    a.extend_from_slice(&index.to_ne_bytes());
+    attr(&mut a, IFA_LOCAL, &octets);
+    attr(&mut a, IFA_ADDRESS, &octets);
+    if let std::net::IpAddr::V4(v4) = ip {
+        let mask = u32::MAX.checked_shr(u32::from(prefix)).unwrap_or(0);
+        attr(&mut a, IFA_BROADCAST, &(u32::from(v4) | mask).to_be_bytes());
+    }
+    request(&sock, RTM_NEWADDR, NLM_F_CREATE | NLM_F_EXCL, &a)
 }
 
 /// Moves `eth0` from the address its template booted with, `from`, to `to`, and its default

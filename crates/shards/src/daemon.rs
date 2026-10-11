@@ -376,6 +376,8 @@ struct Keep<'a> {
     /// Its own MAC (D46, PM M173), for its VM's network process (`NET_MAC`): none where it
     /// has no interface of its own.
     mac: Option<[u8; 6]>,
+    /// Its link-local addresses (PM M175), for its network process and its peers'.
+    link_local: Vec<std::net::IpAddr>,
 }
 
 /// A run in progress: its VM's socket, to signal the command, and the VM itself.
@@ -2137,6 +2139,22 @@ impl<D: Disk> Daemon<D> {
             }
             _ => None,
         };
+        // Its link-local addresses where it has an interface of its own (PM M175), as
+        // libnetwork adds them: an IPv4-mapped one as IPv4, a zone gone.
+        let link_local: Vec<std::net::IpAddr> = match start {
+            network::Start::Attach(network::Net::Bridge | network::Net::User) => {
+                crate::setup::own_endpoint(&run)
+                    .map(|e| {
+                        e.link_local
+                            .iter()
+                            .filter_map(|s| shards_cmdline::network::parse_addr(s).ok())
+                            .map(|a| a.unmap().ip)
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            }
+            _ => Vec::new(),
+        };
         // A joiner's shared directories (D119), each with the name it goes by in its microVM's
         // join share, given to the share as it joins (`join_vm`).
         let mut join_volumes = Vec::new();
@@ -2170,6 +2188,12 @@ impl<D: Disk> Daemon<D> {
                         .push(format!("mac={}", shards_cmdline::network::mac_string(mac)).into_bytes());
                 }
                 prepared.spec.setup.extend(network_setup.iter().cloned());
+                // Its link-local addresses, each with its family's prefix, /16 or /64, which
+                // libnetwork gives after its addresses (setInterfaceLinkLocalIPs).
+                prepared.spec.setup.extend(link_local.iter().map(|a| {
+                    let bits = if a.is_ipv4() { 16 } else { 64 };
+                    format!("link-local={a}/{bits}").into_bytes()
+                }));
                 // Its endpoint's sysctls, on its interface once it has its addresses (PM M171).
                 prepared.spec.setup.extend(
                     crate::setup::endpoint_sysctls(&run)
@@ -2346,6 +2370,7 @@ impl<D: Disk> Daemon<D> {
                 egress,
                 agentfile: prepared.agentfile.clone(),
                 mac: run_mac.as_deref().and_then(|m| m.first_chunk::<6>().copied()),
+                link_local: link_local.clone(),
             },
             || match &start {
                 network::Start::Join(name) => self.join_vm(threads, &id, name, &prepared, &join_volumes),
@@ -2434,7 +2459,7 @@ impl<D: Disk> Daemon<D> {
             }
             // On a network of its own: its address, peers and names, before it has the run.
             if let Some(net) = &ready.net
-                && let Err(e) = self.give_network(id, net, ready.mac)
+                && let Err(e) = self.give_network(id, net, ready.mac, &keep.link_local)
             {
                 log(format!("warm VM {}'s network: {e}", ready.vm.id()));
                 ready.end();
@@ -3272,6 +3297,7 @@ impl<D: Disk> Daemon<D> {
             egress: _,
             agentfile,
             mac: _,
+            link_local: _,
         } = keep;
         if layer_pending {
             lock(&self.settling).insert(id.to_string());
@@ -5572,6 +5598,7 @@ mod tests {
                         egress: None,
                         agentfile: None,
                         mac: None,
+                        link_local: Vec::new(),
                     },
                     acquire,
                 )?;
@@ -5859,6 +5886,7 @@ mod tests {
                             egress: None,
                             agentfile: None,
                             mac: None,
+                            link_local: Vec::new(),
                         },
                         || {
                             offered
@@ -7484,6 +7512,7 @@ mod tests {
                 egress: None,
                 agentfile: None,
                 mac: None,
+                link_local: Vec::new(),
             };
             let _inbox = t.daemon.register(ready, &id, keep);
             say(&vm, kind::STARTED, &[]);

@@ -5798,3 +5798,38 @@ revision before comparing a changed API/implementation.
   `seccomp=unconfined`, shards' answer to mount(2) is the kernel's EPERM, not AppArmor's
   EACCES: a filter for that errno alone would be a seccomp filter on a container asked to
   have none.
+
+### M175. dockerd's link-local addresses, as a container sees them and inspect shows them (D46)
+
+- **Method.** `docs/research/measurements/link-local-ip/probe.sh`, Docker 29.3.1 in
+  `shards-dind`, `alpine:3.22`, each container and network removed after; 2026-10-11.
+- **Found.**
+  - Given, by `--link-local-ip` or the endpoint's `link-local-ip`, each is on eth0 after its
+    address: IPv4's as /16, `scope global`, broadcast 169.254.255.255, with the kernel's
+    route 169.254.0.0/16 on eth0 from the first; IPv6's as /64, beside the address the
+    kernel makes of the MAC, on a network with IPv6.
+  - One not link-local (10.9.8.7, fd00::7, the network's own 172.17.0.200) fails the
+    start, 125: "failed to set up container networking: invalid link local IP address:
+    10.9.8.7": after "network … not found", the first bad one of several, on `none` too,
+    never on another's network. An unspecified one (0.0.0.0) is refused as the container is
+    made: "invalid config for network bridge: invalid endpoint settings:\ninvalid
+    link-local IP address: 0.0.0.0".
+  - IPv6 on a network without it fails the start with 126, docker/cli's status for an error
+    that says "permission denied": "… error setting interface \"vethNNNNNNN\" link local
+    IPs to [fe80::1234/64]: permission denied". The same address twice: "… link local IPs
+    to [169.254.8.1/16 169.254.8.1/16]: file exists", 125.
+  - Both ways at once, the CLI's "conflicting options: cannot specify both --link-local-ip
+    and per-network link-local IP addresses"; a malformed one is dropped by the CLI, the
+    run going on.
+  - An IPv4-mapped one (::ffff:169.254.10.1) is on eth0 as 169.254.10.1/16, and inspect
+    shows it so; a zone (fe80::1%eth0) inspect keeps.
+  - On `none`, taken, and no interface has it; on another's network, taken and nothing of
+    the joiner's own has it.
+  - inspect's `IPAMConfig.LinkLocalIPs`: as given, created, running, exited and restarted
+    alike; `null` where none is given. `network inspect` shows none; /etc/hosts names none.
+  - On a user network: from a container with a link-local address of its own to another's,
+    reached (`nc`, 1 of 1); from one without, to an IPv4 one, not (1 of 1); to an IPv6 one
+    (`fe80::2:10%eth0`), with or without, reached; from off the network, not.
+- **Consequence.** Built (D46): each as dockerd gives it, init adding it to eth0, the daemon
+  checking it in dockerd's words; members reach each other's as on dockerd's bridge, each
+  network process knowing the link-local addresses of its guest and its peers.

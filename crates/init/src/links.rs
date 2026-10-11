@@ -75,9 +75,15 @@ const SWITCH_IFINDEX: i32 = 100;
 /// switch, `agents0` in init's, each index this; on a link-local /30 of their own (RFC
 /// 3927), which no network of the guest's or the host's takes.
 const UPLINK_IFINDEX: i32 = 99;
-const UPLINK_INIT: Ipv4Addr = Ipv4Addr::new(169, 254, 77, 1);
-const UPLINK_SWITCH: Ipv4Addr = Ipv4Addr::new(169, 254, 77, 2);
-const UPLINK_PREFIX: u8 = 30;
+const UPLINK_INIT: Ipv4Addr = {
+    let [a, b, c, d] = shards_abi::run::beside::UPLINK_NET.0;
+    Ipv4Addr::new(a, b, c, d + 1)
+};
+const UPLINK_SWITCH: Ipv4Addr = {
+    let [a, b, c, d] = shards_abi::run::beside::UPLINK_NET.0;
+    Ipv4Addr::new(a, b, c, d + 2)
+};
+const UPLINK_PREFIX: u8 = shards_abi::run::beside::UPLINK_NET.1;
 /// The mark init's forward chain gives what an agent sends past the microVM, by which its
 /// postrouting chain gives it eth0's address.
 const MARK_AGENTS: u32 = 0x5a59_0001;

@@ -159,6 +159,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 egress: None,
                 agentfile: None,
                 mac: None,
+                link_local: Vec::new(),
             },
             || self.warm_for(threads, &prepared, &start, &|_| {}),
         );

@@ -33,6 +33,9 @@ pub(super) struct Member {
     /// What its peers' resolver answers for it (DNSNames): its name, aliases, short ID
     /// and host name, the first its PTR's.
     pub dns_names: Vec<String>,
+    /// Its link-local addresses while it runs (PM M175): those given it, and on a network
+    /// with IPv6 the one its kernel makes of its MAC.
+    pub link_local: Vec<std::net::IpAddr>,
 }
 
 /// Sends a network process `which` and waits for it to say it took it, as published
@@ -767,6 +770,7 @@ impl<D: Disk> Daemon<D> {
             name: String::new(),
             endpoint: new_id()?,
             mac: String::new(),
+            link_local: Vec::new(),
             ip,
             ip6,
             dns_names,
@@ -823,6 +827,7 @@ impl<D: Disk> Daemon<D> {
         id: &str,
         net: &std::os::unix::net::UnixStream,
         mac: Option<[u8; 6]>,
+        link_local: &[std::net::IpAddr],
     ) -> Result<(), String> {
         let _held = nets::lock();
         let Some((network, mut me)) = self.membership(id) else {
@@ -832,10 +837,21 @@ impl<D: Disk> Daemon<D> {
             return Ok(());
         };
         me.mac = mac.map(|m| shards_net::Mac(m).to_string()).unwrap_or_default();
+        // Its link-local addresses (PM M175): those given it, and on a network with IPv6
+        // the one its kernel makes of its MAC as IPv6 comes on (RFC 4291 Appendix A's
+        // modified EUI-64, the kernel's addr_gen_mode 0), which its peers reach it at too.
+        me.link_local = link_local.to_vec();
+        if let (Some(_), Some([a, b, c, d, e, f])) = (me.ip6, mac) {
+            let kernels = Ipv6Addr::from([0xfe, 0x80, 0, 0, 0, 0, 0, 0, a ^ 2, b, c, 0xff, 0xfe, d, e, f]);
+            if !me.link_local.contains(&std::net::IpAddr::V6(kernels)) {
+                me.link_local.push(std::net::IpAddr::V6(kernels));
+            }
+        }
         if let Some(list) = lock(&self.members).get_mut(&network.id)
             && let Some(m) = list.iter_mut().find(|m| m.container == id)
         {
             m.mac.clone_from(&me.mac);
+            m.link_local.clone_from(&me.link_local);
         }
         let [a, b, c, d] = me.ip.octets();
         let [g0, g1, g2, g3] = pool.gateway.octets();
@@ -850,6 +866,14 @@ impl<D: Disk> Daemon<D> {
             address.extend_from_slice(&gateway6.octets());
         }
         ask_net(net, shards_ipc::kind::NET_ADDRESS, &address, &[])?;
+        if !me.link_local.is_empty() {
+            ask_net(
+                net,
+                shards_ipc::kind::NET_LINK_LOCAL,
+                &shards_net::encode_addresses(&me.link_local),
+                &[],
+            )?;
+        }
         for peer in self
             .members_of(&network.id)
             .into_iter()
@@ -861,10 +885,18 @@ impl<D: Disk> Daemon<D> {
             let (ours_end, their_end) =
                 std::os::unix::net::UnixStream::pair().map_err(|e| format!("a peer's link: {e}"))?;
             use std::os::fd::AsFd as _;
-            // Each peer's address, then its IPv6 one where it has one.
+            // Each peer's address, its IPv6 one's length (0 or 16) and that address, then
+            // its link-local addresses.
             let addresses = |m: &Member| -> Vec<u8> {
                 let mut v = m.ip.octets().to_vec();
-                v.extend(m.ip6.iter().flat_map(|a| a.octets()));
+                match m.ip6 {
+                    Some(a) => {
+                        v.push(16);
+                        v.extend(a.octets());
+                    }
+                    None => v.push(0),
+                }
+                v.extend(shards_net::encode_addresses(&m.link_local));
                 v
             };
             ask_net(

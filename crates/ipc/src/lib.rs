@@ -221,6 +221,9 @@ pub mod kind {
     /// Daemon → a VM's network process: the guest's MAC from its run on (6 bytes), which
     /// its frames come from and go to, as init gives eth0 it (D46); answered `NET_MAC`.
     pub const NET_MAC: u8 = 45;
+    /// Daemon → a VM's network process: the guest's link-local addresses on its network
+    /// (PM M175), each a length, 4 or 16, then its octets; answered `NET_LINK_LOCAL`.
+    pub const NET_LINK_LOCAL: u8 = 46;
 }
 
 /// An `ATTACH_RUN` flag: the client's stdin goes to the command's.

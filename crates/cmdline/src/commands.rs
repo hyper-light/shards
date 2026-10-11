@@ -153,6 +153,12 @@ pub static RUN: Command = Command {
         Flag::many("dns-option", None, "list", "Set DNS options"),
         Flag::value("ip", None, "ip", "IPv4 address (e.g., 172.30.100.104)").defaulting("<nil>"),
         Flag::value("ip6", None, "ip", "IPv6 address (e.g., 2001:db8::33)").defaulting("<nil>"),
+        Flag::many(
+            "link-local-ip",
+            None,
+            "list",
+            "Container IPv4/IPv6 link-local addresses",
+        ),
         Flag::string(
             "mac-address",
             None,
@@ -349,7 +355,6 @@ io-maxiops - s 0 -\n\
 ipc - s - -\n\
 isolation - s - -\n\
 link - m - -\n\
-link-local-ip - m - -\n\
 log-driver - s - -\n\
 log-opt - m - -\n\
 runtime - s - -\n\
@@ -496,6 +501,12 @@ pub static CREATE: Command = Command {
         Flag::many("dns-option", None, "list", "Set DNS options"),
         Flag::value("ip", None, "ip", "IPv4 address (e.g., 172.30.100.104)").defaulting("<nil>"),
         Flag::value("ip6", None, "ip", "IPv6 address (e.g., 2001:db8::33)").defaulting("<nil>"),
+        Flag::many(
+            "link-local-ip",
+            None,
+            "list",
+            "Container IPv4/IPv6 link-local addresses",
+        ),
         Flag::string(
             "mac-address",
             None,
@@ -692,7 +703,6 @@ io-maxiops - s 0 -\n\
 ipc - s - -\n\
 isolation - s - -\n\
 link - m - -\n\
-link-local-ip - m - -\n\
 log-driver - s - -\n\
 log-opt - m - -\n\
 runtime - s - -\n\

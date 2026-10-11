@@ -2925,6 +2925,34 @@ told, init not setting it, inspect not showing a created run's; the network proc
 `a_runs_mac_is_the_one_frames_go_to`; the CLI's parser held to Go 1.26.1's ParseMAC and
 `HardwareAddr.String`, `macs_parse_as_net_parses_them`).
 
+A run's link-local addresses (`--link-local-ip`, its endpoint's `link-local-ip`), as dockerd
+gives them (PM M175):
+
+- **On eth0** once it has its addresses, as libnetwork adds them (setInterfaceLinkLocalIPs):
+  IPv4's as /16 with its broadcast, IPv6's as /64 without duplicate address detection, an
+  IPv4-mapped one as IPv4 and a zone dropped.
+- **dockerd's checks, in its words.** An unspecified one is refused as the container is
+  made (validateEndpointSettings). One that is not link-local fails the start after the
+  network is found, on `none` too (libnetwork's createEndpoint). IPv6 where its network has
+  none fails with "permission denied", 126 as docker/cli's status says it, and one given
+  twice with "file exists". On `none` and another's network one is taken, and nothing has
+  it. inspect's `IPAMConfig.LinkLocalIPs` holds them as given, as dockerd keeps the request's.
+- **Reach, as on dockerd's bridge.** The daemon tells each network process its guest's
+  (`NET_LINK_LOCAL`), and each peer's beside its addresses (`NET_PEER`). A packet goes to a
+  peer at any address of the peer's that the sender's link reaches: a link-local IPv6 one
+  always, as fe80::/64 is every interface's; a link-local IPv4 one only from a guest with
+  one of its own, whose route makes 169.254.0.0/16 its link's. A packet from a link-local
+  address goes nowhere past the link (RFC 3927 §2.7, RFC 4291 §2.5.6). On a network with
+  IPv6, a member's link-local addresses include the one its kernel makes of its MAC (RFC
+  4291's modified EUI-64), the run's own (PM M173).
+- **Beside an image's agents**, whose flows past the microVM cross init's link
+  169.254.77.0/30 (D59), a link-local address in that link is refused, in shards' words, by
+  the daemon as the container is made and by init as it starts.
+- **Tested** (`a_runs_link_local_addresses_are_its_own_as_dockerd_gives_them`; the network
+  process's `link_local_addresses_reach_their_peers_alone`; the CLI's
+  `top_level_flags_land_on_endpoints_as_run_puts_them`, held to docker/cli's own
+  applyContainerOptions).
+
 Unlike Docker, by the microVM: a microVM has one network device, so it is on one network.
 One left on the default bridge and connected to one user network is on that network
 alone, which under default deny gives it all the bridge would. A microVM on two user

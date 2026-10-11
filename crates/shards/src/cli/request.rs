@@ -488,6 +488,7 @@ fn request(parsed: &Parsed) -> Result<Run, String> {
         ipv4: address("ip")?,
         ipv6: address("ip6")?,
         mac: mac.to_string(),
+        link_local: parsed.many("link-local-ip").to_vec(),
     };
     let endpoints = network::endpoints(&attachments, &top)?
         .into_iter()

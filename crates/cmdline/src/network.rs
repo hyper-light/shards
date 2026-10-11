@@ -211,7 +211,7 @@ pub fn endpoints(given: &[Attachment], top: &TopLevel) -> Result<Vec<Attachment>
 }
 
 /// The flags `run` sets its first network's endpoint by (`--network-alias`, `--ip`,
-/// `--ip6`), as applyContainerOptions sets them.
+/// `--ip6`, `--mac-address`, `--link-local-ip`), as applyContainerOptions sets them.
 #[derive(Debug, Clone, Default)]
 pub struct TopLevel {
     pub aliases: Vec<String>,
@@ -219,6 +219,9 @@ pub struct TopLevel {
     pub ipv6: Option<Addr>,
     /// `--mac-address`, as given.
     pub mac: String,
+    /// `--link-local-ip`, as given: counted as given for the conflict, then what netip
+    /// does not read dropped, as docker/cli's toNetipAddrSlice drops it.
+    pub link_local: Vec<String>,
 }
 
 impl TopLevel {
@@ -241,6 +244,12 @@ impl TopLevel {
                 "conflicting options: cannot specify both --mac-address and per-network MAC address".into(),
             );
         }
+        if !a.link_local.is_empty() && !self.link_local.is_empty() {
+            return Err(
+                "conflicting options: cannot specify both --link-local-ip and per-network link-local IP addresses"
+                    .into(),
+            );
+        }
         if !self.aliases.is_empty() {
             a.aliases.clone_from(&self.aliases);
         }
@@ -252,6 +261,13 @@ impl TopLevel {
         }
         if !self.mac.is_empty() {
             a.mac.clone_from(&self.mac);
+        }
+        if !self.link_local.is_empty() {
+            a.link_local = self
+                .link_local
+                .iter()
+                .filter_map(|s| parse_addr(s).ok())
+                .collect();
         }
         Ok(())
     }

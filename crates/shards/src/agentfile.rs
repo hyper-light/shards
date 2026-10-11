@@ -73,6 +73,17 @@ impl Agentfile {
         {
             return Err(beside::sysctl(s.split_once('=').map_or(s.as_str(), |(k, _)| k)));
         }
+        // A link-local address of its own in the link to the domains' switch (PM M175).
+        if self.uplink
+            && let Some(ip) = crate::setup::own_endpoint(run)
+                .into_iter()
+                .flat_map(|e| e.link_local.iter())
+                .filter_map(|s| shards_cmdline::network::parse_addr(s).ok())
+                .map(|a| a.unmap().ip)
+                .find(|ip| matches!(ip, std::net::IpAddr::V4(v4) if beside::in_uplink(v4.octets())))
+        {
+            return Err(beside::link_local(&ip.to_string()));
+        }
         self.ids(&run.user, &run.group_add)?;
         let granted = !self.grants.egress.is_empty() || !self.grants.mcp.is_empty() || self.grants.dns;
         if run.network == "none" && (granted || self.uplink) {
@@ -251,6 +262,17 @@ mod tests {
             r
         };
         let caps = |list: &[&str]| run(&|r| r.cap_add = list.iter().map(|s| (*s).to_string()).collect());
+        // A link-local address of its own (PM M175), on the default bridge.
+        let link_local = |a: &str| {
+            run(&|r| {
+                r.network = "default".into();
+                r.endpoints = vec![shards_ipc::Endpoint {
+                    network: "default".into(),
+                    link_local: vec![a.to_string()],
+                    ..Default::default()
+                }];
+            })
+        };
         for (r, uplink, said) in [
             (run(&|r| r.privileged = true), false, "cannot run privileged"),
             (
@@ -304,6 +326,16 @@ mod tests {
                 true,
                 "cannot run without a network",
             ),
+            (
+                link_local("169.254.77.2"),
+                true,
+                "cannot give eth0 link-local address 169.254.77.2",
+            ),
+            (
+                link_local("::ffff:169.254.77.1"),
+                true,
+                "cannot give eth0 link-local address 169.254.77.1",
+            ),
         ] {
             let got = beside(uplink).refuse(&r);
             assert!(
@@ -322,9 +354,11 @@ mod tests {
             run(&|r| r.sysctls = vec!["net.ipv4.ip_forward=0".into(), "kernel.shmmax=1".into()]),
             run(&|r| r.user = "1000:200002".into()),
             run(&|r| r.security_opt = vec!["seccomp=unconfined".into()]),
+            link_local("169.254.77.2"),
         ] {
             assert_eq!(beside(false).refuse(&r), Ok(()));
         }
+        assert_eq!(beside(true).refuse(&link_local("169.254.78.1")), Ok(()));
         assert_eq!(
             beside(true).refuse(&run(&|r| r.sysctls = vec!["kernel.shmmax=1".into()])),
             Ok(())
