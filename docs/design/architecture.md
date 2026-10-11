@@ -334,6 +334,24 @@ virtio-pmem with DAX ([image-storage](../research/image-storage.md) R1, R2). The
     runtime takes it once asked. A script's `shards run ... &` starts with SIGINT and
     SIGQUIT ignored, and macOS drops an ignored signal even for a thread in `sigwait`
     [PM M28].
+  - Only `run`, `attach` and `start -a` pass signals on, as docker/cli's do: `start -a`
+    inspects the container first and passes them only to one without a terminal, whose
+    own keys are its signals (docker/cli container/start.go), and attaches its stdin
+    only where `-i` asks and the container keeps one open. `create`, `restart` and a
+    detached `start` pass none on, where they did once their container was made: a
+    SIGINT to `shards restart` reached the container it restarted
+    (`start_attached_passes_signals_on_as_docker_start_does`, mutation-checked: passed
+    to a container with a terminal, its command heard it).
+  - Deliberately unlike docker/cli: a command that passes no signal on is ended by
+    SIGINT or SIGTERM, the signal's default action, where docker/cli cancels its
+    request and exits 128 and the signal's number (cmd/docker notifyContext,
+    getExitCode). Its shell's `$?` is the same; what differs is that the shell sees a
+    child the signal ended. A script interrupted at the terminal gets the SIGINT too, and
+    bash acts on its own only where its child died of it, taking a child that exited to
+    have caught it (bash jobs.c: `child_caught_sigint` set when the shell saw SIGINT and
+    the child exited or died of another signal, cleared when it died of SIGINT): so the
+    script stops there, where Docker's exit lets it go on. The daemon sees the
+    connection end either way.
 - **Terminals** (`run -t`), as Docker gives a container one
   (docs/research/tty-and-interactive-runs.md):
   - shards-init opens a pty per request with runc's steps: a new master from
