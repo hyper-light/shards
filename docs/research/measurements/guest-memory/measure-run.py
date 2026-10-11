@@ -73,7 +73,7 @@ sizes = sorted(s for s in {s for s, _ in table} | {(a + b) // 2 // 2 * 2 for (a,
                if s <= most)
 print(f"host {platform.system()} {platform.machine()}, {host_mib()} MiB; n {n} a boot, {boots} boots a size, "
       f"sizes to {most} MiB")
-print("mib limit_kib boot run memavailable_kib overhead_kib margin_kib " + " ".join(FIELDS))
+print("mib limit_kib boot run memavailable_kib overhead_kib margin_kib " + " ".join(FIELDS) + " pcp_kib cpus")
 
 
 def new_boot():
@@ -94,14 +94,20 @@ for mib in sizes:
         if boots > 1:
             new_boot()
         for i in range(n):
-            out = subprocess.run([shards, "run", "--rm", "-m", f"{limit}k", image, "cat", "/proc/meminfo"],
+            out = subprocess.run([shards, "run", "--rm", "-m", f"{limit}k", image, "cat", "/proc/meminfo",
+                                  "/proc/zoneinfo"],
                                  capture_output=True, text=True, check=True).stdout
             info = {k: int(v) for k, v in re.findall(r"^(\w+):\s+(\d+) kB", out, re.M)}
             avail = info["MemAvailable"]
             overheads.append(mib * 1024 - avail)
             margins.append(avail - limit)
+            # Free pages the CPUs' page lists hold, which MemFree leaves out
+            # (mm/page_alloc.c, free_pcppages_bulk; /proc/zoneinfo's pagesets), and how
+            # many CPUs hold them.
+            pcp = sum(int(c) for c in re.findall(r"^\s+count:\s+(\d+)$", out, re.M)) * 4
+            cpus = len(set(re.findall(r"^\s+cpu:\s+(\d+)$", out, re.M)))
             print(mib, limit, b, i, avail, mib * 1024 - avail, avail - limit,
-                  " ".join(str(info.get(f, "-")) for f in FIELDS), flush=True)
+                  " ".join(str(info.get(f, "-")) for f in FIELDS), pcp, cpus, flush=True)
     summary.append((mib, overhead_kib(mib), overheads, min(margins)))
 print("mib table_kib boots n p50 p90 p99 max least_margin")
 for mib, kib, o, m in summary:
