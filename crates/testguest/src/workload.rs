@@ -107,6 +107,10 @@ pub fn main() -> ! {
         "resolve" => resolve(arg(1)),
         "udp" => udp(arg(1)),
         "serve" => serve(arg(1), arg(2).parse().unwrap_or(1)),
+        "listen" => listen(arg(1), arg(2).parse().unwrap_or(1)),
+        "rebind" => rebind(arg(1), arg(2).parse().unwrap_or(1)),
+        "binds" => binds(arg(1).parse().unwrap_or(1)),
+        "udp-serve" => udp_serve(arg(1)),
         "agent" => agent(),
         "vsock-agent" => vsock_agent(arg(1).parse().unwrap_or(1028)),
         "hold" => hold(arg(1)),
@@ -925,6 +929,121 @@ fn serve(port: &str, connections: usize) -> i32 {
         }
     }
     0
+}
+
+/// Listens on TCP at exactly `addr` (port 0 for one of the kernel's choosing), says
+/// `ready PORT`, then serves `connections` connections as [`serve`] does; `listen error E`
+/// where it cannot bind.
+fn listen(addr: &str, connections: usize) -> i32 {
+    let listener = match std::net::TcpListener::bind(addr) {
+        Ok(l) => l,
+        Err(e) => {
+            let _ = writeln!(io::stdout(), "listen error {e}");
+            return 1;
+        }
+    };
+    let port = listener.local_addr().map(|a| a.port()).unwrap_or_default();
+    let _ = writeln!(io::stdout(), "ready {port}");
+    for _ in 0..connections {
+        let served = listener.accept().and_then(|(mut c, peer)| {
+            writeln!(c, "from {}", peer.ip().to_canonical())?;
+            let mut read = c.try_clone()?;
+            io::copy(&mut read, &mut c)?;
+            c.shutdown(std::net::Shutdown::Write)
+        });
+        if let Err(e) = served {
+            let _ = writeln!(io::stdout(), "listen error {e}");
+            return 1;
+        }
+    }
+    0
+}
+
+/// Listens on TCP at `addr`, then `times` times closes the listener and at once listens
+/// on the same address and port again, as a server restarting does: `rebound PORT`, or
+/// `rebind error E` at the first that fails.
+fn rebind(addr: &str, times: usize) -> i32 {
+    let rebound = std::net::TcpListener::bind(addr).and_then(|mut l| {
+        let at = l.local_addr()?;
+        for _ in 0..times {
+            drop(l);
+            l = std::net::TcpListener::bind(at)?;
+        }
+        Ok(at)
+    });
+    match rebound {
+        Ok(at) => {
+            let _ = writeln!(io::stdout(), "rebound {}", at.port());
+            0
+        }
+        Err(e) => {
+            let _ = writeln!(io::stdout(), "rebind error {e}");
+            1
+        }
+    }
+}
+
+/// Times `n` TCP listeners at every IPv4 address, each at a port of the kernel's choosing
+/// (bind(2) and listen(2), as std's `TcpListener::bind`), then `n` UDP sockets bound there
+/// so (bind(2) alone, as a resolver's query socket is), each closed before the next: a
+/// line of each, `binds tcp|udp n=N p50 P p90 P p99 P max M`, in microseconds.
+fn binds(n: usize) -> i32 {
+    let mut code = 0;
+    for kind in ["tcp", "udp"] {
+        let mut took = Vec::with_capacity(n);
+        for _ in 0..n {
+            let t0 = std::time::Instant::now();
+            let made = if kind == "tcp" {
+                std::net::TcpListener::bind("0.0.0.0:0").map(drop)
+            } else {
+                std::net::UdpSocket::bind("0.0.0.0:0").map(drop)
+            };
+            match made {
+                Ok(()) => took.push(t0.elapsed().as_micros()),
+                Err(e) => {
+                    let _ = writeln!(io::stdout(), "binds {kind} error {e}");
+                    code = 1;
+                    break;
+                }
+            }
+        }
+        took.sort_unstable();
+        let at = |q: usize| {
+            took.get((took.len() * q / 100).min(took.len().saturating_sub(1)))
+                .copied()
+                .unwrap_or(0)
+        };
+        let _ = writeln!(
+            io::stdout(),
+            "binds {kind} n={} p50 {} p90 {} p99 {} max {}",
+            took.len(),
+            at(50),
+            at(90),
+            at(99),
+            took.last().copied().unwrap_or(0)
+        );
+    }
+    code
+}
+
+/// Binds UDP at exactly `addr`, says `ready PORT`, then answers one datagram with
+/// `from PEER ` and the datagram: `udp-serve error E` where it cannot.
+fn udp_serve(addr: &str) -> i32 {
+    let served = std::net::UdpSocket::bind(addr).and_then(|sock| {
+        let _ = writeln!(io::stdout(), "ready {}", sock.local_addr()?.port());
+        let mut buf = [0u8; 2048];
+        let (n, peer) = sock.recv_from(&mut buf)?;
+        let mut answer = format!("from {} ", peer.ip().to_canonical()).into_bytes();
+        answer.extend_from_slice(buf.get(..n).unwrap_or_default());
+        sock.send_to(&answer, peer)
+    });
+    match served {
+        Ok(_) => 0,
+        Err(e) => {
+            let _ = writeln!(io::stdout(), "udp-serve error {e}");
+            1
+        }
+    }
 }
 
 /// Listens on TCP `port` at every address, says `ready`, then holds every connection it

@@ -491,7 +491,11 @@ fn a_rebuilt_binary_replaces_the_daemon() {
     let before = daemon_pid(&home).expect("a daemon pid");
     let bin = TempDir::new("daemon-rebuilt-bin");
     let other = bin.join("shards");
-    std::fs::copy(shards(), &other).unwrap();
+    // Copied by a process of its own: a copy this process wrote would be open for writing
+    // in each child another test's thread forks meanwhile, until that child execs, and
+    // running it then fails with ETXTBSY (x86_64 CI, 2026-10-11).
+    let copied = Command::new("cp").arg(shards()).arg(&other).status().unwrap();
+    assert!(copied.success(), "{copied}");
     let out = Command::new(&other)
         .args(["run", "--pull", "never", &image, "exit", "0"])
         .env("SHARDS_HOME", &*home)

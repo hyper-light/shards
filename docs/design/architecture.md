@@ -3518,6 +3518,101 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode
 waits on the user.
 
+### D124. `--network host`: asked for, said each time, and the host's network as Docker's container has it
+
+The user's call (2026-10-11): "We permit it, but it is an explicit opt-in and should warn
+users." dockerd's `--network host` leaves a container in its host's own network namespace
+(PM M177): its servers' ports are the host's, its clients the host's, its loopback the
+host's. A microVM has a kernel and a network namespace of its own; shards makes its
+network the host's at the layers a program can tell, TCP and UDP, as Docker Desktop's
+host networking does for its VM's containers (M177).
+
+- **Asked, and said each time.** `--network host` alone gives it; every start of such a
+  run says on stderr what it gives (`shards_abi::run::NETWORK_HOST`): its servers' ports
+  are the host's, reachable from every network the host is on, and it reaches the host's
+  own services and every network the host reaches. Docker's words where dockerd has some
+  (M177): `-p` discarded with its warning; `--ip`, `--network-alias` and a second network
+  refused as dockerd and the CLI refuse them; a `net.*` sysctl refused with runc's words,
+  without containerd's and runc's prefixes, as every start's error is. Beside an image's
+  agents and harnesses it is refused (D115): it would reach theirs.
+- **Names: the host's.** Its hostname, cut to Linux's 64 bytes; its hosts file, whole,
+  which `--add-host` adds nothing to; its resolvers as they are, loopback ones too, which
+  are the host's own there (`--dns`, `--dns-search` and `--dns-option` as on a network).
+- **Its clients: the host's.** Its network process's policy for it (`Policy::Host`) lets
+  every unicast address through, loopback and link-local too, and takes the gateway for
+  the host's loopback. The guest's loopback is the host's: its TCP and UDP to 127/8 go out
+  of eth0 by a routing table of their own, ahead of the local table, and the network
+  process takes each to the host's loopback at the address it was sent to; eth0 takes
+  their answers from 127/8 (route_localnet; net/ipv4/route.c refuses a loopback source
+  arriving otherwise). ICMP to 127/8 stays the guest's.
+- **Its servers: the host's ports.** Each bind(2) and listen(2) of the run's processes,
+  its execs' too, is notified to a process of init's (seccomp's user notification, the
+  filter `seccomp-binds=`, loaded before the run's own profile so that one refusing
+  seccomp(2) cannot keep it out; init forks it as it forks its DNS relays, having no
+  thread). A bind of a TCP or UDP socket of the run's network namespace to an address of
+  a kind the host has (every address, the loopback's, or eth0's own, which is the host's
+  every address) is asked of the host first, which binds the same port with the socket's
+  options: a port the host holds fails the guest's bind with Linux's EADDRINUSE, as on
+  the host (M177), and port 0 is one the host chose. The process then binds the socket
+  itself with the address it read and answers: what a notification shows can change
+  before the call runs (seccomp_unotify(2)), and what it bound is what the host bound. A
+  TCP socket's listen(2): the guest's socket listens, then the host's, so that none of
+  the host's connections finds it not yet listening; a UDP socket's datagrams come as it
+  is bound. What comes to the host's port reaches the guest by its network process: at
+  the socket's own port on eth0's address where it takes that address; for a socket on
+  the loopback alone, or on IPv6 alone, which eth0 has none of, at a relay of the
+  process's on eth0's address, at a port the host holds too, which passes each
+  connection or datagram on from the guest's own loopback, so that its server sees a
+  loopback peer, as one on the host's loopback does.
+- **A server's loopback port is its own.** Once a TCP socket listens, or a UDP socket is
+  bound to a port it named or to the loopback, its port at its address stays the guest's
+  on the loopback: what the guest's own processes send it there, and its answers, by
+  routing rules ahead of the host's. A client's socket, bound to a port of the kernel's
+  choosing (busybox `nc`'s, musl's resolver's), keeps no rule, so that what it sends the
+  host's loopback reaches the host.
+- **Let go.** As a socket goes, which the kernel tells sock_diag's listeners
+  (SKNLGRP_*_DESTROY), the host lets its port go; where those messages overflowed, the
+  guest's sockets, listed whole, stand in. A port closed and bound again at once is the
+  guest's: the bind that finds the host's port still held for a socket the guest no
+  longer has, or let go since it was asked, is asked again behind the letting go; the
+  network process answers a port's letting go once it has closed its copy, which the
+  daemon waits for before it binds the port again, and only then. What a relay holds is
+  passed on before it goes: a server's last datagrams, sent before its socket closed;
+  and, at the run's end, which spares the relays, what their connections hold, for up to
+  a second, the network process's own grace. The VM puts what the guest sent in the
+  network process's ring before the daemon's word to close a port, which that process
+  takes first.
+- **No boundary.** A run on the host's network reaches what the host reaches, as it was
+  asked to (AGENTFILE_ARCH §9.9); default deny is the bridge's and an Agentfile's, which
+  refuses this beside its members.
+- **Cost** (M178): a bind is a round trip to the host. A TCP listener, two: p50 0.24 to
+  0.26 ms, where the bridge's is 1 µs; a UDP bind, one: p50 0.15 to 0.17 ms.
+- **Open.** IPv6 past the guest's loopback: eth0 has no IPv6, so the guest's IPv6 flows,
+  and what it sends `::1`, are not the host's (its servers' IPv6 ports are, relayed). A
+  container joining a host-network container's network (`--network container:NAME`). A
+  bind to one of the host's own addresses (its LAN address) is the guest's kernel's to
+  refuse (EADDRNOTAVAIL), as Docker Desktop's container's is. A program on the host's
+  network that installs a seccomp filter with a listener of its own gets EBUSY: the
+  kernel allows one listener in a process's filters (kernel/seccomp.c,
+  has_duplicate_listener).
+- **Tested**: `a_run_on_the_hosts_network_is_on_the_hosts_network` (the warnings; the
+  host's name; the host's own TCP and UDP services at its loopback, by clients that bind
+  first; servers at every address, at 127.0.0.1 and at `::1`, each reached from the
+  host's loopback at the port the host chose, with the peer each sees; a UDP server's
+  answer, sent as the server ends, twelve times, by the relay and from the gateway; a
+  port the host holds refused with EADDRINUSE; a port closed and bound again 50 times at
+  once; dockerd's refusals in its words), run 25 times, passing each time, and
+  mutation-checked: without the relays spared and drained at the run's end, without a
+  relay's flows passed on as its socket goes, without the VM's flush before a port is let
+  go, without the bind asked again behind the letting go, it fails; without the daemon's
+  wait for the network process, the daemon's `a_guests_bind_is_the_hosts` fails. Init's
+  `a_bind_goes_where_its_address_says`, `a_gone_sockets_cookie_is_read_from_its_message`
+  and `a_calls_arguments_are_read_as_the_kernel_takes_them`; the network process's
+  `the_hosts_network_reaches_what_the_host_does` and
+  `a_hosted_port_is_let_go_by_its_number`; seccomp's
+  `the_hosts_networks_binds_are_notified_on_every_abi`; the ABI's
+  `host_binds_are_read_as_written`; `resolv_conf_on_the_hosts_network_is_the_hosts`.
+
 ### D123. A run's record of processes: from the kernel, every one, whole
 
 AGENTFILE_ARCH §9.9 makes each process a run's members start a record, and an audit trail:
@@ -3562,6 +3657,15 @@ the container's directory.
 - **Lost, said.** Events past the listener's 4 MiB of queue are a `lost` record, and the
   record waits for no end after one; a run whose record could not be listened to says why
   (`unrecorded`).
+- **Past the command's end.** Joiners going on past it (D119), the records of their
+  processes come on the run's connection while its writable layer is saved and after.
+  Read as the layer's own frames, they failed its saving, and the layer it had before
+  was kept: `a_joiner_is_a_container_of_its_own` found the provider's files empty, on
+  CI's x86_64 runners every time and here five times in six. The VM passes them on as
+  the relay does, from one reader of the connection for its whole life (the relay's own
+  had read past its end and lost what it held), and reads on until the guest closes it;
+  saying first that it asks no more, which init, its joiners ended, waits for before it
+  powers off, rather than for a layer the host may not have asked for yet.
 - **Tested**: `a_runs_processes_are_recorded_as_they_start_and_end` (a child's fork, exec
   and end in order; 200 children, each over at once and reaped by its parent, each
   recorded whole; a child the run's end kills outside the command's namespace, freeing

@@ -89,6 +89,9 @@ pub enum Proto {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Ports(pub Vec<(Proto, u16, u16)>);
 
+/// `NET_POLICY`'s payload for [`Policy::Host`]: its tag alone.
+pub const HOST_POLICY: [u8; 1] = [0x82];
+
 /// `NET_POLICY`'s payload: each port range as [`Ports::encode`] writes one; 0x81 where any
 /// name may be resolved past the microVM; then each name granted as 0x80, its port in
 /// network order, its length's byte and the name.
@@ -223,6 +226,13 @@ pub enum Policy {
     /// carried to the proxy's Unix socket on the host; nothing else, neither the host's
     /// networks nor the Internet, nor a resolver.
     Proxy { port: u16, socket: std::path::PathBuf },
+    /// The host's network, a run's that asked for it (`--network host`, D124): every
+    /// unicast address the host reaches, link-local ones among them, and the host itself,
+    /// the gateway being its loopback's 127.0.0.1 and a loopback address the guest sends to
+    /// (its loopback's flows to ports none of its processes hold, routed out by its init)
+    /// being the host's own. Not multicast or broadcast: flows are TCP's and UDP's, as
+    /// Docker Desktop's host network carries them.
+    Host,
 }
 
 /// The guest's link: its address and MAC, the gateway's, and the VM's policy.
@@ -433,6 +443,16 @@ impl Config {
         }
     }
 
+    /// Where a flow to `to` goes on the host: `to` itself, but for the gateway under the
+    /// host's network (D124), which is the host's own loopback, of its version.
+    fn host_side(&self, to: IpAddr) -> IpAddr {
+        match (&self.policy, to) {
+            (Policy::Host, IpAddr::V4(v4)) if v4 == self.gateway_ip => IpAddr::V4(Ipv4Addr::LOCALHOST),
+            (Policy::Host, IpAddr::V6(v6)) if Some(v6) == self.gateway_ip6 => IpAddr::V6(Ipv6Addr::LOCALHOST),
+            _ => to,
+        }
+    }
+
     /// Where a connection to `to`'s `port` goes under a build's proxy (D110): to the
     /// proxy's socket where it is the gateway's proxy port; none for anything else.
     fn proxy_flow(&self, to: IpAddr, port: u16) -> Option<std::path::PathBuf> {
@@ -456,6 +476,11 @@ impl Config {
         match &self.policy {
             // The proxy's one flow is the stack's own (`proxy_flow`), past this.
             Policy::DenyAll | Policy::Proxy { .. } => false,
+            // Every unicast address the host reaches, the host's own among them (D124).
+            Policy::Host => match to {
+                IpAddr::V4(to) => !to.is_unspecified() && !to.is_multicast() && !to.is_broadcast(),
+                IpAddr::V6(to) => !to.is_unspecified() && !to.is_multicast(),
+            },
             Policy::Ports(p) if !p.has(proto, port) && !named => false,
             // The gateway would be the host itself: never by default (rootless-security.md
             // R4.16).
@@ -654,8 +679,11 @@ struct Stack<'r> {
     /// clock's origin ([`Stack::isn`]).
     isn_key: [u8; 16],
     began: Instant,
-    /// Published ports' host sockets, each with the guest port it reaches.
-    published: Vec<(Listener, u16)>,
+    /// Published ports' host sockets, each with the guest port it reaches, in the slot its
+    /// token names; a slot emptied where the host's network let one go (D124).
+    published: Vec<Option<(Listener, u16)>>,
+    /// The host's network's ports (D124), by the daemon's number for each, at their slots.
+    hosted: HashMap<u32, usize>,
     /// Published UDP ports' flows, by their gateway ports, and those ports by their
     /// published port and peer.
     inbound: HashMap<u16, Inbound>,
@@ -808,6 +836,8 @@ impl Control {
             Control::Daemon => matches!(
                 kind,
                 shards_ipc::kind::PUBLISH
+                    | shards_ipc::kind::NET_PUBLISHED
+                    | shards_ipc::kind::NET_UNPUBLISHED
                     | shards_ipc::kind::NET_ADDRESS
                     | shards_ipc::kind::NET_MAC
                     | shards_ipc::kind::NET_LINK_LOCAL
@@ -863,6 +893,7 @@ pub fn serve(
         },
         began: Instant::now(),
         published: Vec::new(),
+        hosted: HashMap::new(),
         inbound: HashMap::new(),
         inbound_ports: HashMap::new(),
         next_port: *EPHEMERAL.start(),
@@ -942,7 +973,7 @@ pub fn serve(
                         *entry = None;
                     }
                 }
-                token::LISTENER => match stack.published.get(index as usize) {
+                token::LISTENER => match stack.published.get(index as usize).and_then(Option::as_ref) {
                     Some((Listener::Tcp(_), _)) => stack.accept(index as usize),
                     Some((Listener::Udp(_), _)) => stack.receive(index as usize),
                     None => {}
@@ -978,6 +1009,26 @@ fn control(
         let answered = if m.kind == shards_ipc::kind::PUBLISH {
             stack.publish(&m.payload, m.fds);
             shards_ipc::send(sock, shards_ipc::kind::PUBLISH, &[], &[])
+        } else if m.kind == shards_ipc::kind::NET_PUBLISHED {
+            // A port of the host's network (D124): its number, then as PUBLISH's. Not
+            // answered: the daemon holds its copy of the socket until it lets the port go.
+            let Some((id, ports)) = m.payload.split_first_chunk::<4>() else {
+                return false;
+            };
+            let at = stack.published.len();
+            stack.publish(ports, m.fds);
+            if stack.published.len() > at {
+                stack.hosted.insert(u32::from_be_bytes(*id), at);
+            }
+            Ok(())
+        } else if m.kind == shards_ipc::kind::NET_UNPUBLISHED {
+            let Ok(id) = <[u8; 4]>::try_from(m.payload.as_slice()) else {
+                return false;
+            };
+            stack.unpublish(u32::from_be_bytes(id));
+            // Answered: the port is free once this has its sockets closed, which a bind
+            // of the same port waits for (the daemon's hostnet.rs).
+            shards_ipc::send(sock, shards_ipc::kind::NET_UNPUBLISHED, &[], &[])
         } else if m.kind == shards_ipc::kind::NET_ADDRESS {
             if !stack.readdress(&m.payload) {
                 return false;
@@ -995,6 +1046,18 @@ fn control(
             };
             stack.names = Some(names);
             shards_ipc::send(sock, shards_ipc::kind::NET_NAMES, &[], &[])
+        } else if m.kind == shards_ipc::kind::NET_POLICY && m.payload == HOST_POLICY {
+            // The host's network (D124), once, as grants are: every port, which no layer of
+            // Landlock's narrows.
+            #[cfg(target_os = "linux")]
+            {
+                if stack.ports_confined {
+                    return false;
+                }
+                stack.ports_confined = true;
+            }
+            stack.cfg.policy = Policy::Host;
+            shards_ipc::send(sock, shards_ipc::kind::NET_POLICY, &[], &[])
         } else if m.kind == shards_ipc::kind::NET_POLICY {
             let Some((ports, named, dns_all)) = decode_policy(&m.payload) else {
                 return false;
@@ -1030,6 +1093,7 @@ fn control(
             // Flows left answer nobody: their sockets are gone, and the poller forgets
             // them.
             stack.published.clear();
+            stack.hosted.clear();
             shards_ipc::send(sock, shards_ipc::kind::UNPUBLISH, &[], &[])
         };
         if answered.is_err() {
@@ -1146,15 +1210,37 @@ impl<'r> Stack<'r> {
                     )
                     .is_ok()
             {
-                self.published.push((listener, u16::from_be_bytes([hi, lo])));
+                self.published
+                    .push(Some((listener, u16::from_be_bytes([hi, lo]))));
             }
         }
+    }
+
+    /// Lets go of the host's network's port the daemon numbered `id` (D124), its slot
+    /// emptied, and the flows its UDP peers had.
+    fn unpublish(&mut self, id: u32) {
+        let Some(i) = self.hosted.remove(&id) else {
+            return;
+        };
+        if let Some(slot) = self.published.get_mut(i)
+            && let Some((listener, _)) = slot.take()
+        {
+            let named = token::of(token::LISTENER, 0, u32::try_from(i).unwrap_or(u32::MAX));
+            let _ = self.poller.set(
+                listener.as_raw_fd(),
+                named,
+                poll::Interest::READ,
+                poll::Interest::NONE,
+            );
+        }
+        self.inbound_ports.retain(|(published, _), _| *published != i);
+        self.inbound.retain(|_, f| f.published != i);
     }
 
     /// Takes what published UDP port `i` holds: each datagram to the guest's port, from
     /// its peer's gateway port.
     fn receive(&mut self, i: usize) {
-        let Some((Listener::Udp(sock), guest_port)) = self.published.get(i) else {
+        let Some((Listener::Udp(sock), guest_port)) = self.published.get(i).and_then(Option::as_ref) else {
             return;
         };
         let guest_port = *guest_port;
@@ -1215,7 +1301,8 @@ impl<'r> Stack<'r> {
     /// from the gateway, as a userland proxy's connection comes from it.
     fn accept(&mut self, i: usize) {
         for _ in 0..BUDGET {
-            let Some((Listener::Tcp(listener), guest_port)) = self.published.get(i) else {
+            let Some((Listener::Tcp(listener), guest_port)) = self.published.get(i).and_then(Option::as_ref)
+            else {
                 return;
             };
             let guest_port = *guest_port;
@@ -1674,10 +1761,17 @@ impl<'r> Stack<'r> {
             if let Some(f) = self.inbound.get_mut(&u.dst_port)
                 && gateway.is_ipv4()
                 && f.guest_port == u.src_port
-                && let Some((Listener::Udp(sock), _)) = self.published.get(f.published)
+                && let Some((Listener::Udp(sock), _)) =
+                    self.published.get(f.published).and_then(Option::as_ref)
             {
                 let _ = pktinfo::send(sock, u.payload, f.peer, f.asked);
                 f.life.datagram(Instant::now(), true);
+                return;
+            }
+            // On the host's network (D124), the gateway is the host's loopback.
+            if self.cfg.policy == Policy::Host {
+                let to = (self.cfg.host_side(ip.dst), u.dst_port);
+                self.flow((u.src_port, ip.dst, u.dst_port), to, u.payload);
             }
             return;
         }
@@ -1690,7 +1784,8 @@ impl<'r> Stack<'r> {
             });
             return;
         }
-        self.flow((u.src_port, ip.dst, u.dst_port), (ip.dst, u.dst_port), u.payload);
+        let to = (self.cfg.host_side(ip.dst), u.dst_port);
+        self.flow((u.src_port, ip.dst, u.dst_port), to, u.payload);
     }
 
     /// Sends `payload` on UDP flow `key`, its host socket connected to `to`, made where
@@ -1836,7 +1931,12 @@ impl<'r> Stack<'r> {
                 }),
                 None => match proxy {
                     Some(socket) => Conn::open_unix(key, &socket, &seg, self.isn(&key)),
-                    None => Conn::open(key, &seg, self.isn(&key)),
+                    None => Conn::open_to(
+                        key,
+                        (self.cfg.host_side(ip.dst), seg.dst_port),
+                        &seg,
+                        self.isn(&key),
+                    ),
                 },
             };
             match opened {
@@ -2118,6 +2218,7 @@ mod tests {
             isn_key: [0; 16],
             began: Instant::now(),
             published: Vec::new(),
+            hosted: HashMap::new(),
             inbound: HashMap::new(),
             inbound_ports: HashMap::new(),
             next_port: *EPHEMERAL.start(),
@@ -2401,6 +2502,57 @@ mod tests {
         }
     }
 
+    /// The host's network (D124): every unicast address the host reaches, the host's own
+    /// loopback and link-local addresses among them, the gateway being the host's
+    /// 127.0.0.1; multicast and broadcast not.
+    #[test]
+    fn the_hosts_network_reaches_what_the_host_does() {
+        let bridge = bridge::Bridge::elect(&[]).unwrap();
+        let mut host = Config::on_bridge(Policy::Host, [2, 0, 0, 0, 0, 1], &bridge);
+        host.gateway_ip6 = Some("fd00:17::1".parse().unwrap());
+        let gateway = IpAddr::V4(host.gateway_ip);
+        for to in [
+            gateway,
+            IpAddr::from([8, 8, 8, 8]),
+            IpAddr::from([127, 0, 0, 1]),
+            IpAddr::from([127, 0, 0, 53]),
+            IpAddr::from([169, 254, 169, 254]),
+            "::1".parse().unwrap(),
+            "fe80::1".parse().unwrap(),
+            "2001:4860:4860::8888".parse().unwrap(),
+        ] {
+            assert!(
+                host.allows(to, Proto::Tcp, 5432) && host.allows(to, Proto::Udp, 53),
+                "{to}"
+            );
+        }
+        for to in [
+            IpAddr::from([0, 0, 0, 0]),
+            IpAddr::from([224, 0, 0, 251]),
+            IpAddr::from([255, 255, 255, 255]),
+            "ff02::1".parse().unwrap(),
+            "::".parse().unwrap(),
+        ] {
+            assert!(!host.allows(to, Proto::Tcp, 443), "{to}");
+        }
+        assert_eq!(host.host_side(gateway), IpAddr::from([127, 0, 0, 1]));
+        assert_eq!(
+            host.host_side("fd00:17::1".parse().unwrap()),
+            "::1".parse::<IpAddr>().unwrap()
+        );
+        assert_eq!(
+            host.host_side(IpAddr::from([127, 0, 0, 53])),
+            IpAddr::from([127, 0, 0, 53])
+        );
+        assert_eq!(
+            host.host_side(IpAddr::from([8, 8, 8, 8])),
+            IpAddr::from([8, 8, 8, 8])
+        );
+        // A policy of grants never makes the gateway the host's loopback.
+        let ports = Config::on_bridge(Policy::Ports(Ports::default()), [2, 0, 0, 0, 0, 1], &bridge);
+        assert_eq!(ports.host_side(gateway), gateway);
+    }
+
     /// What a build's steps reach: the Internet and the host's networks, not the host
     /// itself, a cloud's instance metadata, multicast or broadcast; a run's, by default,
     /// nothing.
@@ -2643,6 +2795,80 @@ mod tests {
         distinct.sort_unstable();
         distinct.dedup();
         assert_eq!(distinct.len(), macs.len());
+    }
+
+    /// A port of the host's network (D124), given by its number and let go by it: the host
+    /// socket the network process held is closed then, so its port is the host's again,
+    /// and a port published beside it stays.
+    #[test]
+    fn a_hosted_port_is_let_go_by_its_number() {
+        use std::os::fd::AsFd as _;
+        use std::os::unix::net::UnixStream;
+        let region = shards_netring::memory().unwrap();
+        let (net_waits, device_rings) = shards_netring::doorbell().unwrap();
+        let (device_waits, net_rings) = shards_netring::doorbell().unwrap();
+        let bridge = bridge::Bridge::elect(&[]).unwrap();
+        let cfg = Config::on_bridge(Policy::Host, [2, 0, 0, 0, 0, 1], &bridge);
+        let (daemon, daemons) = UnixStream::pair().unwrap();
+        let (vm, vms) = UnixStream::pair().unwrap();
+        let soon = || Instant::now() + Duration::from_secs(10);
+        let (hosted, kept) = (
+            std::net::TcpListener::bind("127.0.0.1:0").unwrap(),
+            std::net::TcpListener::bind("127.0.0.1:0").unwrap(),
+        );
+        let (hosted_at, kept_at) = (hosted.local_addr().unwrap(), kept.local_addr().unwrap());
+        std::thread::scope(|scope| {
+            let served = scope.spawn(move || {
+                serve(
+                    region,
+                    net_waits,
+                    net_rings,
+                    cfg,
+                    vec![(Control::Daemon, daemons), (Control::Release, vms)],
+                )
+            });
+            // Neither is answered: a PUBLISH of nothing after each, which is, says it was
+            // taken, the control socket's messages taken in order.
+            let taken = || {
+                shards_ipc::send(&daemon, shards_ipc::kind::PUBLISH, &[], &[]).unwrap();
+                let answer = shards_ipc::recv_by(&daemon, soon()).unwrap().unwrap();
+                assert_eq!(answer.kind, shards_ipc::kind::PUBLISH);
+            };
+            for (id, listener) in [(7u32, &hosted), (8, &kept)] {
+                let mut payload = id.to_be_bytes().to_vec();
+                payload.extend(8080u16.to_be_bytes());
+                payload.push(wire::PROTO_TCP);
+                shards_ipc::send(
+                    &daemon,
+                    shards_ipc::kind::NET_PUBLISHED,
+                    &payload,
+                    &[listener.as_fd()],
+                )
+                .unwrap();
+            }
+            taken();
+            drop((hosted, kept));
+            shards_ipc::send(
+                &daemon,
+                shards_ipc::kind::NET_UNPUBLISHED,
+                &7u32.to_be_bytes(),
+                &[],
+            )
+            .unwrap();
+            let answer = shards_ipc::recv_by(&daemon, soon()).unwrap().unwrap();
+            assert_eq!(answer.kind, shards_ipc::kind::NET_UNPUBLISHED);
+            assert!(
+                std::net::TcpListener::bind(hosted_at).is_ok(),
+                "its port the host's again"
+            );
+            assert!(
+                std::net::TcpListener::bind(kept_at).is_err(),
+                "the other held still"
+            );
+            // The VM gone: its doorbells closed.
+            drop((daemon, vm, device_rings, device_waits));
+            let _ = served.join();
+        });
     }
 
     /// A guest's answer to a published port's peer that is in the ring when the port's

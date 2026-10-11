@@ -54,6 +54,8 @@ const MAX_ERRNO: u32 = 4095;
 /// seccomp(2)'s flags (include/uapi/linux/seccomp.h).
 pub const FILTER_FLAG_LOG: u32 = 1 << 1;
 pub const FILTER_FLAG_SPEC_ALLOW: u32 = 1 << 2;
+/// SECCOMP_FILTER_FLAG_NEW_LISTENER: seccomp(2) answers with the notifications' descriptor.
+pub const FILTER_FLAG_NEW_LISTENER: u32 = 1 << 3;
 
 /// The kernel's largest program (BPF_MAXINSNS).
 const MAX_INSNS: usize = 4096;
@@ -62,6 +64,9 @@ const MAX_INSNS: usize = 4096;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Mode {
     Shards,
+    /// shards' own profiles whose notifications init answers (D124): SCMP_ACT_NOTIFY taken,
+    /// the filter loaded for a listener.
+    Agent,
     /// libseccomp 2.5.4's tables, runc's and libseccomp's ways: Docker's, for the tests
     /// that hold the shared parts to it.
     #[cfg(test)]
@@ -196,7 +201,7 @@ struct Build {
 impl Build {
     fn rule_add(&mut self, name: &str, action: u32, args: &[Option<ArgCmp>; 6]) -> Result<(), AddError> {
         match self.mode {
-            Mode::Shards => self.rule_add_shards(name, action, args),
+            Mode::Shards | Mode::Agent => self.rule_add_shards(name, action, args),
             #[cfg(test)]
             Mode::Docker => self.rule_add_docker(name, action, args),
         }
@@ -359,7 +364,7 @@ impl Build {
     /// The number a profile's name has on `abi`, by which runc finds its last syscall.
     fn number(&self, abi: Abi, name: &str) -> Option<i32> {
         match self.mode {
-            Mode::Shards => tables::kernel_nr(abi, name),
+            Mode::Shards | Mode::Agent => tables::kernel_nr(abi, name),
             #[cfg(test)]
             Mode::Docker => Some(tables::libseccomp::resolve_name(abi, name)),
         }
@@ -368,7 +373,7 @@ impl Build {
     /// Whether the runc rule names a syscall at all (GetSyscallFromName).
     fn known(&self, name: &str) -> bool {
         match self.mode {
-            Mode::Shards => guest_abis(self.arch)
+            Mode::Shards | Mode::Agent => guest_abis(self.arch)
                 .iter()
                 .any(|a| tables::kernel_nr(*a, name).is_some()),
             #[cfg(test)]
@@ -554,7 +559,12 @@ pub(crate) fn compile(cfg: &Config, arch: Arch, mode: Mode) -> Result<Compiled, 
         }
     }
     if cfg.syscalls.iter().any(|c| c.action == Action::Notify) {
-        return Err("SCMP_ACT_NOTIFY needs a seccomp agent (listenerPath), which shards does not run".into());
+        if mode != Mode::Agent {
+            return Err(
+                "SCMP_ACT_NOTIFY needs a seccomp agent (listenerPath), which shards does not run".into(),
+            );
+        }
+        flags |= FILTER_FLAG_NEW_LISTENER;
     }
     let mut build = Build {
         mode,
@@ -772,7 +782,7 @@ fn section(
         }
         // No syscall of the guest kernel, below the stub's line: ENOSYS, as the kernel
         // answers it (shards'; runc's stub cannot tell).
-        if mode == Mode::Shards
+        if matches!(mode, Mode::Shards | Mode::Agent)
             && default != ACT_ALLOW
             && let (Some(abi), Some(&max)) = (abi, abi.and_then(|a| last.get(&a)))
             && nr <= max
@@ -791,7 +801,7 @@ fn section(
     for &m in last.values() {
         points.insert(m.saturating_add(1));
     }
-    if mode == Mode::Shards {
+    if matches!(mode, Mode::Shards | Mode::Agent) {
         for &abi in &s.abis {
             let base = if abi == Abi::X32 {
                 X32_SYSCALL_BIT as u32

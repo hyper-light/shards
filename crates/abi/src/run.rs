@@ -95,6 +95,147 @@ pub mod kind {
     /// Guest to host, on the workload's connection, as they come: what processes the run's
     /// members started and ended (D123), as shards-init's `procevents` writes the records.
     pub const PROCESS: u8 = 30;
+    /// Guest to host, on the host's network (D124): a bind of the run's processes, to be
+    /// the host's ([`HostBind`](super::HostBind)).
+    pub const BIND: u8 = 31;
+    /// Host to guest: what the host did of a [`BIND`] or a [`LISTEN`]
+    /// ([`HostBound`](super::HostBound)).
+    pub const BOUND: u8 = 32;
+    /// Guest to host: the host's port of a [`BIND`] let go, its socket gone in the guest:
+    /// the number its [`BOUND`] gave it, a big-endian u32.
+    pub const UNBIND: u8 = 33;
+    /// Guest to host: the host's socket of a [`BIND`] to listen, its TCP socket in the
+    /// guest listening, or its UDP socket bound; what comes to it then going to the guest's
+    /// port named ([`HostListen`](super::HostListen)).
+    pub const LISTEN: u8 = 34;
+}
+
+/// A bind of the run's processes on the host's network (`--network host`, D124), as
+/// [`kind::BIND`] carries it: the host's address of the kind the guest bound (its every
+/// address, or its loopback), the port (0 for one the host chooses), and the socket's
+/// options that say what may share it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HostBind {
+    /// Its number, which the answer names.
+    pub request: u32,
+    /// TCP's (6) or UDP's (17).
+    pub proto: u8,
+    pub addr: core::net::IpAddr,
+    pub port: u16,
+    pub reuse_addr: bool,
+    pub reuse_port: bool,
+    /// IPV6_V6ONLY, of an IPv6 socket.
+    pub v6only: bool,
+}
+
+impl HostBind {
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(4 + 2 + 16 + 3);
+        out.extend_from_slice(&self.request.to_be_bytes());
+        out.push(self.proto);
+        match self.addr {
+            core::net::IpAddr::V4(a) => {
+                out.push(4);
+                out.extend_from_slice(&a.octets());
+            }
+            core::net::IpAddr::V6(a) => {
+                out.push(6);
+                out.extend_from_slice(&a.octets());
+            }
+        }
+        out.extend_from_slice(&self.port.to_be_bytes());
+        out.push(u8::from(self.reuse_addr) | u8::from(self.reuse_port) << 1 | u8::from(self.v6only) << 2);
+        out
+    }
+
+    pub fn decode(b: &[u8]) -> Option<HostBind> {
+        let (request, b) = b.split_first_chunk::<4>()?;
+        let (&[proto, family], b) = b.split_first_chunk::<2>()?;
+        let (addr, b) = match family {
+            4 => {
+                let (a, b) = b.split_first_chunk::<4>()?;
+                (core::net::IpAddr::from(*a), b)
+            }
+            6 => {
+                let (a, b) = b.split_first_chunk::<16>()?;
+                (core::net::IpAddr::from(*a), b)
+            }
+            _ => return None,
+        };
+        let [p0, p1, flags] = <[u8; 3]>::try_from(b).ok()?;
+        Some(HostBind {
+            request: u32::from_be_bytes(*request),
+            proto,
+            addr,
+            port: u16::from_be_bytes([p0, p1]),
+            reuse_addr: flags & 1 != 0,
+            reuse_port: flags & 2 != 0,
+            v6only: flags & 4 != 0,
+        })
+    }
+}
+
+/// What the host did of a [`HostBind`], as [`kind::BOUND`] carries it: Linux's errno for a
+/// bind it could not make (0 where it made it), the port it bound, and its number for
+/// [`kind::UNBIND`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HostBound {
+    pub request: u32,
+    pub errno: i32,
+    pub port: u16,
+    pub number: u32,
+}
+
+impl HostBound {
+    pub fn encode(&self) -> [u8; 14] {
+        let [r0, r1, r2, r3] = self.request.to_be_bytes();
+        let [e0, e1, e2, e3] = self.errno.to_be_bytes();
+        let [p0, p1] = self.port.to_be_bytes();
+        let [n0, n1, n2, n3] = self.number.to_be_bytes();
+        [r0, r1, r2, r3, e0, e1, e2, e3, p0, p1, n0, n1, n2, n3]
+    }
+
+    pub fn decode(b: &[u8]) -> Option<HostBound> {
+        let b = <[u8; 14]>::try_from(b).ok()?;
+        let [r0, r1, r2, r3, e0, e1, e2, e3, p0, p1, n0, n1, n2, n3] = b;
+        Some(HostBound {
+            request: u32::from_be_bytes([r0, r1, r2, r3]),
+            errno: i32::from_be_bytes([e0, e1, e2, e3]),
+            port: u16::from_be_bytes([p0, p1]),
+            number: u32::from_be_bytes([n0, n1, n2, n3]),
+        })
+    }
+}
+
+/// The host's socket numbered `number` (its [`HostBound`]) to listen with `backlog`, a TCP
+/// socket's, and its connections or datagrams to go to the guest's `guest_port`, as
+/// [`kind::LISTEN`] carries it. Answered [`kind::BOUND`], its errno alone said.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HostListen {
+    pub request: u32,
+    pub number: u32,
+    pub backlog: u32,
+    pub guest_port: u16,
+}
+
+impl HostListen {
+    pub fn encode(&self) -> [u8; 14] {
+        let [r0, r1, r2, r3] = self.request.to_be_bytes();
+        let [n0, n1, n2, n3] = self.number.to_be_bytes();
+        let [b0, b1, b2, b3] = self.backlog.to_be_bytes();
+        let [p0, p1] = self.guest_port.to_be_bytes();
+        [r0, r1, r2, r3, n0, n1, n2, n3, b0, b1, b2, b3, p0, p1]
+    }
+
+    pub fn decode(b: &[u8]) -> Option<HostListen> {
+        let [r0, r1, r2, r3, n0, n1, n2, n3, b0, b1, b2, b3, p0, p1] = <[u8; 14]>::try_from(b).ok()?;
+        Some(HostListen {
+            request: u32::from_be_bytes([r0, r1, r2, r3]),
+            number: u32::from_be_bytes([n0, n1, n2, n3]),
+            backlog: u32::from_be_bytes([b0, b1, b2, b3]),
+            guest_port: u16::from_be_bytes([p0, p1]),
+        })
+    }
 }
 
 /// Why an exec did not start, as its [`kind::SYSTEM_ERR`] says first: the runtime could
@@ -208,6 +349,10 @@ pub const CAP_NAMES: [&str; 41] = [
     "CAP_CHECKPOINT_RESTORE",
 ];
 
+/// What a run on the host's network (`--network host`, D124) is told as it starts, on
+/// stderr, as a warning.
+pub const NETWORK_HOST: &str = "--network host puts this microVM on your host's network: ports its processes listen on are your host's, reachable from every network your host is on, and they reach your host's own services and every network your host reaches";
+
 /// What a run of an image whose Agentfile declares agents or harnesses keeps from its own
 /// command, beside them (D115): the daemon refuses each as it reads the run, and shards-init
 /// again as it starts the command, in the same words.
@@ -300,6 +445,14 @@ pub mod beside {
     /// default, and which reaches the domains as `what` says.
     pub fn withheld(name: &str, what: &str) -> String {
         format!("{name} withheld from the command: {WHY}, and {name} {what}")
+    }
+
+    /// Refusing `--network host` (D124): the host's network, on which the microVM's
+    /// network process holds no flow to the grants it holds theirs to.
+    pub fn network_host() -> String {
+        format!(
+            "cannot run the command on the host's network (--network host): {WHY}, and the microVM's network process, which holds their flows past it to their grants, would hold none on the host's"
+        )
     }
 
     /// Refusing `--pid host`: the microVM's PID namespace, the parent of theirs.
@@ -613,6 +766,49 @@ impl Cursor<'_> {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
+    /// The host's network's bind and answer (D124), each as the other side reads it.
+    #[test]
+    fn host_binds_are_read_as_written() {
+        for bind in [
+            HostBind {
+                request: 7,
+                proto: 6,
+                addr: core::net::IpAddr::from([127, 0, 0, 1]),
+                port: 8080,
+                reuse_addr: true,
+                reuse_port: false,
+                v6only: false,
+            },
+            HostBind {
+                request: u32::MAX,
+                proto: 17,
+                addr: core::net::IpAddr::from([0u16; 8]),
+                port: 0,
+                reuse_addr: false,
+                reuse_port: true,
+                v6only: true,
+            },
+        ] {
+            assert_eq!(HostBind::decode(&bind.encode()), Some(bind));
+        }
+        assert_eq!(HostBind::decode(&[0, 0, 0, 1, 6, 5]), None, "no family 5");
+        let bound = HostBound {
+            request: 7,
+            errno: 98,
+            port: 1,
+            number: 3,
+        };
+        assert_eq!(HostBound::decode(&bound.encode()), Some(bound));
+        let listen = HostListen {
+            request: 9,
+            number: 3,
+            backlog: 4096,
+            guest_port: 40_000,
+        };
+        assert_eq!(HostListen::decode(&listen.encode()), Some(listen));
+        assert_eq!(HostListen::decode(&listen.encode()[..13]), None, "short");
+    }
+
     use alloc::vec;
 
     use super::*;

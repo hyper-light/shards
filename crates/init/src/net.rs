@@ -12,6 +12,8 @@ const RTM_NEWLINK: u16 = 16;
 const RTM_NEWADDR: u16 = 20;
 const RTM_DELADDR: u16 = 21;
 const RTM_NEWROUTE: u16 = 24;
+const RTM_NEWRULE: u16 = 32;
+const RTM_DELRULE: u16 = 33;
 const NLM_F_REQUEST: u16 = 1;
 const NLM_F_ACK: u16 = 4;
 const NLM_F_REPLACE: u16 = 0x100;
@@ -23,12 +25,31 @@ const IFLA_MTU: u16 = 4;
 const IFA_ADDRESS: u16 = 1;
 const IFA_LOCAL: u16 = 2;
 const IFA_BROADCAST: u16 = 4;
+const RTA_DST: u16 = 1;
 const RTA_GATEWAY: u16 = 5;
 const RTA_OIF: u16 = 4;
 const RT_TABLE_MAIN: u8 = 254;
 const RTPROT_BOOT: u8 = 3;
 const RT_SCOPE_UNIVERSE: u8 = 0;
 const RTN_UNICAST: u8 = 1;
+/// Routing rules' attributes and action (include/uapi/linux/fib_rules.h).
+const FRA_DST: u16 = 1;
+const FRA_PRIORITY: u16 = 6;
+const FRA_IP_PROTO: u16 = 22;
+const FRA_SPORT_RANGE: u16 = 23;
+const FRA_DPORT_RANGE: u16 = 24;
+const FR_ACT_TO_TBL: u8 = 1;
+const RT_TABLE_LOCAL: u8 = 255;
+/// The table a run on the host's network routes its loopback's flows by (D124): 127/8 out
+/// of eth0, to the network process, which takes it for the host's own loopback.
+const HOST_LOOPBACK: u8 = 100;
+/// Its rules' priorities: a port the guest's processes hold first, then the host's
+/// loopback, then the local table, moved after them from its 0.
+const PREF_HELD: u32 = 10;
+const PREF_HOST: u32 = 20;
+const PREF_LOCAL: u32 = 30;
+/// The loopback's network, 127.0.0.0/8.
+const LOOPBACK: [u8; 4] = [127, 0, 0, 0];
 /// The device's MTU (vmm virtio-net, MTU).
 const MTU: u32 = 65520;
 
@@ -324,6 +345,120 @@ fn attr(buf: &mut Vec<u8>, kind: u16, value: &[u8]) {
     while !buf.len().is_multiple_of(4) {
         buf.push(0);
     }
+}
+
+/// A run on the host's network (`--network host`, D124): its loopback's TCP and UDP flows to
+/// ports none of its processes holds ([`hold_loopback_port`]) go out of eth0 to the network
+/// process, which takes 127/8 there for the host's own loopback, each address the one it
+/// was sent to; their answers come back from 127/8, which eth0 takes for them
+/// (route_localnet; net/ipv4/route.c refuses a loopback source arriving otherwise). The
+/// rest of 127/8, ICMP's among it, stays the guest's, as the local table has it.
+pub fn host_loopback() -> io::Result<()> {
+    let (_, _, gateway) = current().ok_or_else(|| io::Error::other("eth0 has no address"))?;
+    crate::setup::write_sysctl("net.ipv4.conf.eth0.route_localnet", "1").map_err(io::Error::other)?;
+    let (sock, index) = eth0()?;
+    // 127.0.0.0/8 through the gateway, in a table of its own (struct rtmsg).
+    let mut r = vec![
+        libc::AF_INET as u8,
+        8,
+        0,
+        0,
+        HOST_LOOPBACK,
+        RTPROT_BOOT,
+        RT_SCOPE_UNIVERSE,
+        RTN_UNICAST,
+    ];
+    r.extend_from_slice(&0u32.to_ne_bytes());
+    attr(&mut r, RTA_DST, &LOOPBACK);
+    attr(&mut r, RTA_GATEWAY, &gateway.octets());
+    attr(&mut r, RTA_OIF, &index.to_ne_bytes());
+    request(&sock, RTM_NEWROUTE, NLM_F_CREATE | NLM_F_EXCL, &r)?;
+    // The local table after the rules, its rule at 0 moved (added again first, so that
+    // there is always one).
+    rule(&sock, RTM_NEWRULE, PREF_LOCAL, RT_TABLE_LOCAL, None, None, None)?;
+    rule(&sock, RTM_DELRULE, 0, RT_TABLE_LOCAL, None, None, None)?;
+    for proto in [libc::IPPROTO_TCP, libc::IPPROTO_UDP] {
+        rule(
+            &sock,
+            RTM_NEWRULE,
+            PREF_HOST,
+            HOST_LOOPBACK,
+            Some((Ipv4Addr::from(LOOPBACK), 8)),
+            Some(proto as u8),
+            None,
+        )?;
+    }
+    Ok(())
+}
+
+/// On the host's network (D124): keeps `port` of `proto` the guest's own on its loopback,
+/// where a server of the run's `held` it, at `addr` (127/8, for its every address): what is
+/// sent to it there, and what it sends back to its clients there, the guest's; or, no
+/// longer held, the host's loopback's again.
+pub fn hold_loopback_port(proto: u8, addr: Ipv4Addr, port: u16, held: bool) -> io::Result<()> {
+    let (sock, _) = eth0()?;
+    let kind = if held { RTM_NEWRULE } else { RTM_DELRULE };
+    let loopback = (Ipv4Addr::from(LOOPBACK), 8);
+    let to = if addr.is_unspecified() {
+        loopback
+    } else {
+        (addr, 32)
+    };
+    rule(
+        &sock,
+        kind,
+        PREF_HELD,
+        RT_TABLE_LOCAL,
+        Some(to),
+        Some(proto),
+        Some((FRA_DPORT_RANGE, port)),
+    )?;
+    rule(
+        &sock,
+        kind,
+        PREF_HELD,
+        RT_TABLE_LOCAL,
+        Some(loopback),
+        Some(proto),
+        Some((FRA_SPORT_RANGE, port)),
+    )
+}
+
+/// A routing rule (struct fib_rule_hdr: family, dst_len, src_len, tos, table, two reserved,
+/// action, flags) to look up `table` at `pref`: for the addresses `dst` names alone where
+/// given, of `proto` alone where given, and of one port, by `port`'s FRA_*PORT_RANGE, where
+/// given.
+fn rule(
+    sock: &OwnedFd,
+    kind: u16,
+    pref: u32,
+    table: u8,
+    dst: Option<(Ipv4Addr, u8)>,
+    proto: Option<u8>,
+    port: Option<(u16, u16)>,
+) -> io::Result<()> {
+    let dst_len = dst.map_or(0, |(_, len)| len);
+    let mut r = vec![libc::AF_INET as u8, dst_len, 0, 0, table, 0, 0, FR_ACT_TO_TBL];
+    r.extend_from_slice(&0u32.to_ne_bytes());
+    if let Some((addr, _)) = dst {
+        attr(&mut r, FRA_DST, &addr.octets());
+    }
+    attr(&mut r, FRA_PRIORITY, &pref.to_ne_bytes());
+    if let Some(p) = proto {
+        attr(&mut r, FRA_IP_PROTO, &[p]);
+    }
+    if let Some((which, port)) = port {
+        // struct fib_rule_port_range: start, end.
+        let mut range = port.to_ne_bytes().to_vec();
+        range.extend_from_slice(&port.to_ne_bytes());
+        attr(&mut r, which, &range);
+    }
+    let flags = if kind == RTM_NEWRULE {
+        NLM_F_CREATE | NLM_F_EXCL
+    } else {
+        0
+    };
+    request(sock, kind, flags, &r)
 }
 
 /// Sends one request and reads its acknowledgment: the kernel's error, if any.

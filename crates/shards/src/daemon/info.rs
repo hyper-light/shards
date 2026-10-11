@@ -459,7 +459,7 @@ fn os_name() -> Option<String> {
 }
 
 /// The host's name.
-fn host_name() -> Option<String> {
+pub(super) fn host_name() -> Option<String> {
     let mut buf = [0u8; 256];
     // SAFETY: gethostname(2) writes at most the buffer's length.
     if unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) } != 0 {

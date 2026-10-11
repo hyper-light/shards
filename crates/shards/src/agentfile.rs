@@ -40,9 +40,10 @@ pub struct Agentfile {
 impl Agentfile {
     /// What of `run` reaches the image's domains (D115), in the words its init refuses
     /// it with again (`shards_abi::run::beside`): a privileged command, `/proc` unmasked,
-    /// a capability that reaches them, a net.* sysctl where their flows cross the
-    /// command's network namespace, a uid or gid of theirs, and no network where they are
-    /// granted what lies past the microVM. None where it declares no domain.
+    /// the microVM's PID namespace or the host's network (D124), a capability that reaches
+    /// them, a net.* sysctl where their flows cross the command's network namespace, a uid
+    /// or gid of theirs, and no network where they are granted what lies past the microVM.
+    /// None where it declares no domain.
     pub fn refuse(&self, run: &shards_ipc::Run) -> Result<(), String> {
         use shards_abi::run::beside;
         if self.domains == 0 {
@@ -56,6 +57,9 @@ impl Agentfile {
         }
         if run.pid == "host" {
             return Err(beside::pid_host());
+        }
+        if run.network == "host" {
+            return Err(beside::network_host());
         }
         if let Some((cap, reach)) = beside::crossing(self.caps(run), self.uplink) {
             let name = shards_abi::run::CAP_NAMES

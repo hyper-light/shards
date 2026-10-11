@@ -227,6 +227,22 @@ pub mod kind {
     /// A VM → its daemon, as they come: records of the processes its run's members started
     /// and ended (D123), as shards-init writes them, for the container's record.
     pub const PROCESS: u8 = 47;
+    /// Daemon → a VM's network process: a port of the host's network (`--network host`,
+    /// D124), its guest's bind made the host's: the daemon's number for it (a big-endian
+    /// u32), then the guest port and protocol as `PUBLISH`'s, with its host socket. Not
+    /// answered: the daemon holds its own copy of the socket until it lets the port go.
+    pub const NET_PUBLISHED: u8 = 48;
+    /// Daemon → a VM's network process: the port of the host's network numbered so (a
+    /// big-endian u32) let go, as the guest's socket was; answered with the same kind once
+    /// its sockets are closed, so that a bind of the port may wait for it.
+    pub const NET_UNPUBLISHED: u8 = 49;
+    /// A VM on the host's network → its daemon (D124): its guest's ask of the host, the
+    /// guest's frame's kind (`shards_abi::run::kind::BIND`, `LISTEN` or `UNBIND`), then its
+    /// payload.
+    pub const HOST_NET: u8 = 50;
+    /// Daemon → a VM on the host's network: the host's answer to its guest's `BIND` or
+    /// `LISTEN` (`shards_abi::run::HostBound`), for its guest.
+    pub const HOST_BOUND: u8 = 51;
 }
 
 /// An `ATTACH_RUN` flag: the client's stdin goes to the command's.

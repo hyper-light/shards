@@ -5041,9 +5041,216 @@ fn a_run_on_network_none_reaches_nothing() {
     assert!(files.stdout.contains("nameserver "), "{files}");
 }
 
+/// A run serving on the host's network: its client, and the port its server says it is
+/// ready on (`ready PORT`).
+fn serving(home: &Path, image: &str, command: &[&str]) -> (Child, u16) {
+    let options = ["--rm", "-u", "root", "--network", "host"];
+    let stderr = std::fs::File::create(home.join(format!(
+        "serving-{}.stderr",
+        command.join("-").replace(['/', ':'], "_")
+    )))
+    .unwrap();
+    let mut child = common::command()
+        .args(run_args(image, &options, command))
+        .env("SHARDS_HOME", home)
+        .env("SHARDS_KERNEL", kernel())
+        .env("SHARDS_INIT", guest_init())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(stderr)
+        .spawn()
+        .unwrap();
+    // Read byte by byte: what comes after the line is the test's to read.
+    let mut line = Vec::new();
+    let out = child.stdout.as_mut().unwrap();
+    let mut byte = [0u8; 1];
+    while line.last() != Some(&b'\n') {
+        assert_eq!(
+            std::io::Read::read(out, &mut byte).unwrap(),
+            1,
+            "{command:?} ended unready"
+        );
+        line.extend_from_slice(&byte);
+    }
+    let line = String::from_utf8(line).unwrap();
+    let port = line.strip_prefix("ready ").and_then(|p| p.trim().parse().ok());
+    let port = port.unwrap_or_else(|| panic!("{command:?}: {line}"));
+    (child, port)
+}
+
+/// What a connection to `at` is first told, and what it is sent back of `sent`.
+fn talk(at: std::net::SocketAddr, sent: &str) -> String {
+    use std::io::{Read as _, Write as _};
+    let mut c = std::net::TcpStream::connect_timeout(&at, TIMEOUT).unwrap();
+    c.set_read_timeout(Some(TIMEOUT)).unwrap();
+    c.write_all(sent.as_bytes()).unwrap();
+    c.shutdown(std::net::Shutdown::Write).unwrap();
+    let mut got = String::new();
+    c.read_to_string(&mut got).unwrap();
+    got
+}
+
+/// `--network host` (D124, PM M177): asked for, and said each time; the microVM on the
+/// host's network as dockerd's container is on its host's. The host's name; its servers
+/// the host's ports, at every address and at the loopback's, TCP's and UDP's, the host
+/// choosing port 0's; a port the host holds refused as Linux refuses it, and one closed
+/// and bound again at once its own; the host's own services reached at its loopback, by
+/// clients that bind first too; and what dockerd refuses there refused in its words.
+#[test]
+fn a_run_on_the_hosts_network_is_on_the_hosts_network() {
+    let Some((home, image)) = home("containers-host") else {
+        return;
+    };
+    let host = ["--rm", "-u", "root", "--network", "host"];
+    let warning = format!("WARNING: {}\n", shards_abi::run::NETWORK_HOST);
+    let names = run_in(
+        &home,
+        &image,
+        &[&host[..], &["-p", "8080:80"]].concat(),
+        &["report"],
+    );
+    assert_eq!(names.status, Some(0), "{names}");
+    assert!(
+        names.stderr.starts_with(&format!(
+            "WARNING: Published ports are discarded when using host network mode\n{warning}"
+        )),
+        "{names}"
+    );
+    let mut name = [0u8; 256];
+    // SAFETY: gethostname(2) into a buffer of ours, of its length.
+    let got = unsafe { libc::gethostname(name.as_mut_ptr().cast(), name.len()) };
+    assert_eq!(got, 0);
+    let name = std::ffi::CStr::from_bytes_until_nul(&name)
+        .unwrap()
+        .to_string_lossy();
+    let mut cut = name.len().min(64);
+    while !name.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    assert!(
+        names
+            .stdout
+            .contains(&format!("hostname {}\n", name.get(..cut).unwrap())),
+        "{names}"
+    );
+
+    // The host's own services at the loopback, TCP's and UDP's, by clients that bind
+    // port 0 first (as the test guest's `udp` does, and musl's resolver).
+    let service = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let at = service.local_addr().unwrap();
+    let answered = std::thread::spawn(move || {
+        use std::io::Write as _;
+        let (mut c, _) = service.accept().unwrap();
+        c.write_all(b"hi").unwrap();
+    });
+    let ran = run_in(&home, &image, &host, &["tcp", &at.to_string()]);
+    assert!(ran.stdout.starts_with("tcp 2 hi"), "{ran}");
+    answered.join().unwrap();
+    let service = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let at = service.local_addr().unwrap();
+    let answered = std::thread::spawn(move || {
+        let mut buf = [0u8; 64];
+        let (_, peer) = service.recv_from(&mut buf).unwrap();
+        service.send_to(b"!!!", peer).unwrap();
+    });
+    let ran = run_in(&home, &image, &host, &["udp", &at.to_string()]);
+    assert_eq!(ran.stdout, "udp 3\n", "{ran}");
+    answered.join().unwrap();
+
+    // Its servers: at every address, reached from the gateway (eth0's own port); at the
+    // loopback's, from the loopback, by a relay of the guest's, as the host's loopback
+    // reaches its own; each at the port the host chose.
+    let loopback = |port| std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    let gateway = bridge().gateway();
+    for (addr, peer) in [
+        ("[::]:0", gateway.to_string()),
+        ("127.0.0.1:0", "127.0.0.1".to_string()),
+    ] {
+        let (mut child, port) = serving(&home, &image, &["listen", addr, "1"]);
+        assert_eq!(
+            talk(loopback(port), "echo"),
+            format!("from {peer}\necho"),
+            "{addr}"
+        );
+        assert_eq!(exit(&mut child), Some(0), "{addr}");
+    }
+    if std::net::TcpListener::bind("[::1]:0").is_ok() {
+        let (mut child, port) = serving(&home, &image, &["listen", "[::1]:0", "1"]);
+        let at = std::net::SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, port));
+        assert_eq!(talk(at, "six"), "from ::1\nsix");
+        assert_eq!(exit(&mut child), Some(0));
+    }
+    // A UDP server's answer, sent as its server ends: at the loopback's, by the relay;
+    // at every address, from the gateway. Twelve, the race between the answer and the
+    // port's letting go being the VM's to win each time.
+    let answering = [
+        ("127.0.0.1:0", "127.0.0.1".to_string()),
+        ("0.0.0.0:0", gateway.to_string()),
+    ];
+    for (i, (addr, peer)) in answering.iter().cycle().take(12).enumerate() {
+        let (mut child, port) = serving(&home, &image, &["udp-serve", addr]);
+        let client = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        client.set_read_timeout(Some(TIMEOUT)).unwrap();
+        client.send_to(b"datagram", loopback(port)).unwrap();
+        let mut buf = [0u8; 64];
+        let n = client
+            .recv(&mut buf)
+            .unwrap_or_else(|e| panic!("{i} {addr}: {e}"));
+        assert_eq!(
+            String::from_utf8_lossy(&buf[..n]),
+            format!("from {peer} datagram"),
+            "{i}"
+        );
+        assert_eq!(exit(&mut child), Some(0));
+    }
+
+    // A port the host holds is the host's (EADDRINUSE, Linux's 98); one the guest closed
+    // and binds again at once, its own, each of 50 times.
+    let held = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+    let port = held.local_addr().unwrap().port();
+    let ran = run_in(&home, &image, &host, &["listen", &format!("0.0.0.0:{port}"), "1"]);
+    assert_eq!(ran.status, Some(1), "{ran}");
+    assert!(
+        ran.stdout.starts_with("listen error ") && ran.stdout.contains("(os error 98)"),
+        "{ran}"
+    );
+    drop(held);
+    let ran = run_in(&home, &image, &host, &["rebind", "0.0.0.0:0", "50"]);
+    assert_eq!(ran.status, Some(0), "{ran}");
+    assert!(ran.stdout.starts_with("rebound "), "{ran}");
+
+    // What dockerd refuses on the host's network, in its words; runc's sysctl refusal
+    // without containerd's and runc's prefixes, as every start's.
+    for (options, said) in [
+        (
+            &["--sysctl", "net.ipv4.ip_forward=1"][..],
+            "Error response from daemon: sysctl \"net.ipv4.ip_forward\" not allowed in host network namespace\n",
+        ),
+        (
+            &["--ip", "172.17.0.9"][..],
+            "Error response from daemon: invalid config for network host: invalid endpoint settings:\n* user-specified IP address is supported on user-defined networks only\n* no configured subnet contains IP address 172.17.0.9\n",
+        ),
+        (
+            &["--network-alias", "a"][..],
+            "network-scoped aliases are only supported for user-defined networks\n",
+        ),
+        (
+            &["--network", "none"][..],
+            "Error response from daemon: failed to set up container networking: container sharing network namespace with another container or host cannot be connected to any other network\n",
+        ),
+    ] {
+        let ran = run_in(&home, &image, &[&host[..], options].concat(), &["exit", "0"]);
+        assert_eq!(ran.status, Some(125), "{options:?}: {ran}");
+        assert!(
+            ran.stderr.starts_with(&format!("shards: {said}")),
+            "{options:?}: {ran}"
+        );
+    }
+}
+
 /// What dockerd says of networks a run cannot have, and when: a network that does not
 /// exist fails the start, the container left created with 128 (`--rm` takes it); what
-/// shards does not do yet, and what dockerd refuses outright, make no container.
+/// dockerd refuses outright makes no container.
 #[test]
 fn a_run_on_a_network_it_cannot_have_says_why_as_dockerd_does() {
     let Some((home, image)) = home("containers-badnet") else {
@@ -5086,10 +5293,6 @@ fn a_run_on_a_network_it_cannot_have_says_why_as_dockerd_does() {
         std::net::Ipv4Addr::from(u32::from(bridge().subnet().0) + 9)
     );
     for (options, said) in [
-        (
-            &["--network", "host"][..],
-            "shards: Error response from daemon: \"--network host\" is not supported by shards yet",
-        ),
         (
             &["--network", on_bridge.as_str()][..],
             "shards: Error response from daemon: invalid config for network bridge: invalid endpoint settings:\nuser-specified IP address is supported on user-defined networks only",

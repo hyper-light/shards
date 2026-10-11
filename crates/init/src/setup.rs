@@ -317,7 +317,11 @@ fn mkdir_all(path: &str) -> io::Result<()> {
 pub fn apply(entry: &[u8]) -> Result<(), i32> {
     let last = || io::Error::last_os_error().raw_os_error().unwrap_or(libc::EIO);
     // The process's own, done last, as it execs (run.rs `child`).
-    if entry.starts_with(b"seccomp=") || entry.starts_with(b"seccomp-mounts=") || entry == b"nnp" {
+    if entry.starts_with(b"seccomp=")
+        || entry.starts_with(b"seccomp-mounts=")
+        || entry.starts_with(b"seccomp-binds=")
+        || entry == b"nnp"
+    {
         return Ok(());
     }
     // Init's, for the domains it starts (D59), and the volumes it gives them alone (D111).

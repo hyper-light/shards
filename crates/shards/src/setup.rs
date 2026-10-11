@@ -230,7 +230,7 @@ pub fn seccomp(
         None | Some("" | "builtin") => shards_seccomp::DEFAULT,
         Some(json) => json.as_bytes(),
     };
-    compiled(profile, run, kernel, b"seccomp=")
+    compiled(profile, run, kernel, b"seccomp=", false)
 }
 
 /// What docker-default, Docker's AppArmor profile, refuses a container with CAP_SYS_ADMIN
@@ -254,17 +254,26 @@ pub fn mounts(
     {
         return Ok(None);
     }
-    compiled(shards_seccomp::MOUNTS, run, kernel, b"seccomp-mounts=")
+    compiled(shards_seccomp::MOUNTS, run, kernel, b"seccomp-mounts=", false)
+}
+
+/// On the host's network (`--network host`, D124): the filter by which init makes each
+/// bind(2) and listen(2) of the run's processes the host's (`seccomp-binds=`,
+/// shards_seccomp::BINDS), loaded first and for a listener.
+fn binds(run: &Run, kernel: shards_seccomp::Kernel) -> Result<Option<Vec<u8>>, String> {
+    compiled(shards_seccomp::BINDS, run, kernel, b"seccomp-binds=", true)
 }
 
 /// `profile` compiled for `run`'s capabilities on `kernel`, as the setup entry `name`
-/// names: its seccomp(2) flags, then its instructions. Each profile, set of capabilities
-/// and kernel is compiled once.
+/// names: its seccomp(2) flags, then its instructions; shards' own whose notifications
+/// init answers where `agent`. Each profile, set of capabilities and kernel is compiled
+/// once.
 fn compiled(
     profile: &[u8],
     run: &Run,
     kernel: shards_seccomp::Kernel,
     name: &[u8],
+    agent: bool,
 ) -> Result<Option<Vec<u8>>, String> {
     let arch = shards_seccomp::Arch::host().ok_or("seccomp needs an amd64 or arm64 guest")?;
     let version = kernel;
@@ -286,7 +295,12 @@ fn compiled(
         caps: &key.2,
         kernel: version,
     };
-    let entry = shards_seccomp::compile(profile, &c)?.map(|p| {
+    let program = if agent {
+        shards_seccomp::compile_agent(profile, &c)?
+    } else {
+        shards_seccomp::compile(profile, &c)?
+    };
+    let entry = program.map(|p| {
         let mut e = name.to_vec();
         e.extend_from_slice(&p.flags.to_le_bytes());
         for i in &p.insns {
@@ -586,6 +600,13 @@ pub fn security_setup(run: &Run, kernel: shards_seccomp::Kernel) -> Result<Vec<V
     }
     if let Some(filter) = seccomp(run, &security, kernel)? {
         out.push(filter);
+    }
+    // On the host's network (D124): init told so, and its binds' filter, last.
+    if run.network == "host" {
+        out.push(b"network=host".to_vec());
+        if let Some(filter) = binds(run, kernel)? {
+            out.push(filter);
+        }
     }
     Ok(out)
 }

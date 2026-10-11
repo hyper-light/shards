@@ -410,6 +410,10 @@ fn relay_signals(conn: &UnixStream, to: &'static ToGuest, from: From<'_>) {
                     let _ = segments.send((u64::from_be_bytes(seq), message.fds));
                 }
             }
+            // The host's answer to the guest's ask on the host's network (D124).
+            kind::HOST_BOUND if matches!(from, From::Daemon(_)) => {
+                workload::bound_guest(to, &message.payload);
+            }
             kind::SIGNAL => {
                 if let Ok(signal) = <[u8; 4]>::try_from(message.payload.as_slice()) {
                     let signal = u32::from_be_bytes(signal);
@@ -914,6 +918,20 @@ pub fn finish(
 /// as they come.
 pub fn processes(link: &Link, records: &[u8]) {
     let _ = shards_ipc::send(&link.daemon, kind::PROCESS, records, &[]);
+}
+
+/// Gives the daemon its guest's ask of the host on the host's network (D124): the frame's
+/// kind, then its payload. A port let go (`UNBIND`) goes after what the guest sent before
+/// it, put in the network process's ring first, which it takes before the daemon's word to
+/// close the port: a server's last datagram, sent as it closed its socket, reaches its
+/// peer, as `release_ports` has a run's last reach it.
+pub fn host_net(link: &Link, frame: &[u8]) {
+    if frame.first() == Some(&shards_abi::run::kind::UNBIND)
+        && let Some(flush) = FLUSH.get()
+    {
+        flush.flush(std::time::Instant::now() + std::time::Duration::from_secs(1));
+    }
+    let _ = shards_ipc::send(&link.daemon, kind::HOST_NET, frame, &[]);
 }
 
 /// Tells the daemon the container's writable layer is whole where it asked for it.

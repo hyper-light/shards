@@ -746,6 +746,7 @@ fn serve_workload(
                                 told: None,
                                 saved: None,
                                 processes: None,
+                                host_net: None,
                             })
                         };
                         let request = if hold || SEAL.get().is_some() {
@@ -799,6 +800,7 @@ fn serve_workload(
                         };
                         let saved = |used| crate::warm::layer_saved(&link, used);
                         let processes = |records: &[u8]| crate::warm::processes(&link, records);
+                        let host_net = |frame: &[u8]| crate::warm::host_net(&link, frame);
                         let ask = || {
                             // A template this VM saved is in place before the daemon hears the
                             // VM is ready, and settles it: its commit runs as the guest does.
@@ -826,6 +828,7 @@ fn serve_workload(
                                 told: Some(&finish),
                                 saved: Some(&saved),
                                 processes: Some(&processes),
+                                host_net: Some(&host_net),
                             })
                         };
                         let served = workload::serve(

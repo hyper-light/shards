@@ -2,7 +2,8 @@
 //! checks it makes as it creates the container (daemon/create.go validateNetworkingConfig,
 //! daemon/container_operations.go validateEndpointSettings), and what fails as it starts
 //! it. Of dockerd's predefined networks, shards gives a run `bridge`, Docker's default
-//! bridge through the VM's network process (D31), and `none`.
+//! bridge through the VM's network process (D31), `none`, and `host`, the host's network as
+//! a microVM's processes can have it (D124).
 //!
 //! Where dockerd's answer depends on Go's map order (several endpoints with errors), the
 //! endpoints are taken in the order the run named them. Where it contradicts itself
@@ -24,6 +25,9 @@ pub enum Net {
     None,
     /// A user-defined network (D46), which the run's address and peers are of.
     User,
+    /// The host's network (D124): the guest on the default bridge's link, its flows
+    /// reaching what the host reaches, the host's own loopback among them.
+    Host,
 }
 
 /// A user network's IPv4 subnets, by its name or ID; none for one there is not.
@@ -154,11 +158,6 @@ pub fn check(
     if !invalid.is_empty() {
         return Err(join(&invalid));
     }
-    // What shards does not do yet, refused before a container is made for it.
-    let unsupported = |what: &str| Err(format!("\"--network {what}\" is not supported by shards yet"));
-    if mode == "host" {
-        return unsupported("host");
-    }
     if let Some(name) = container
         && exists(name)
     {
@@ -166,6 +165,28 @@ pub fn check(
     }
     // As it starts: the mode's network, then the rest.
     let fails = |why: String| Ok(Start::Fails(why));
+    if mode == "host" {
+        // libnetwork's, of a sandbox that is the host's (PM M177): no other network. Where
+        // the other is a bridge, dockerd tries its interface in the host's namespace, and
+        // fails on what that host's routes are; shards says what it says of `none`.
+        if endpoints.iter().any(|e| e.network != mode) {
+            return fails(
+                "failed to set up container networking: container sharing network namespace with another container or host cannot be connected to any other network"
+                    .into(),
+            );
+        }
+        // runc's validator (libcontainer/configs/validate, sysctl): no net.* sysctl in the
+        // host's network namespace; the first given, where runc's map order would choose.
+        let net_sysctl = run
+            .sysctls
+            .iter()
+            .map(|kv| kv.split_once('=').map_or(kv.as_str(), |(k, _)| k))
+            .find(|k| k.starts_with("net."));
+        if let Some(key) = net_sysctl {
+            return fails(format!("sysctl \"{key}\" not allowed in host network namespace"));
+        }
+        return Ok(Start::Attach(Net::Host));
+    }
     let net = match mode {
         // dockerd, which makes its bridge as it starts, does not start without one.
         "bridge" if bridge.is_none() => return Err(shards_net::bridge::NO_SUBNET.into()),
@@ -559,13 +580,33 @@ mod tests {
         check(run, "172.17.0.0/16".parse().ok(), |_| false)
     }
 
+    /// The host's network (D124, PM M177): taken alone; a `net.*` sysctl, which has no
+    /// network namespace of its own there, and a second network, fail the start in runc's
+    /// and libnetwork's words.
+    #[test]
+    fn the_hosts_network_is_taken_as_dockerd_takes_it() {
+        assert_eq!(check_with(&run(&["host"])), Ok(Start::Attach(Net::Host)));
+        let mut tuned = run(&["host"]);
+        tuned.sysctls = vec!["kernel.shmmax=1".into(), "net.core.somaxconn=1024".into()];
+        assert_eq!(
+            check_with(&tuned),
+            Ok(Start::Fails(
+                "sysctl \"net.core.somaxconn\" not allowed in host network namespace".into()
+            ))
+        );
+        assert_eq!(
+            check_with(&run(&["host", "none"])),
+            Ok(Start::Fails(
+                "failed to set up container networking: container sharing network namespace with another container or host cannot be connected to any other network".into()
+            ))
+        );
+    }
+
     /// What shards does not do yet is refused before a container is made, where dockerd
     /// would have made one.
     #[test]
     fn what_shards_does_not_do_yet_is_refused_up_front() {
         let docker: Option<Bridge> = "172.17.0.0/16".parse().ok();
-        let unsupported = |what: &str| Err(format!("\"--network {what}\" is not supported by shards yet"));
-        assert_eq!(check(&run(&["host"]), docker, |_| false), unsupported("host"));
         assert_eq!(
             check(&run(&["container:web"]), docker, |n| n == "web"),
             Ok(Start::Join("web".into()))

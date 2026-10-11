@@ -93,6 +93,33 @@ pub fn resolv_with(
     search_given: &[String],
     options_given: &[String],
 ) -> Vec<u8> {
+    made(host, Some(ipv6), dns, search_given, options_given)
+}
+
+/// `/etc/resolv.conf` on the host's network (`--network host`, D124), as dockerd makes it
+/// there (PM M177, "Based on host file" without "(legacy)"): the host's nameservers as they
+/// are, loopback and IPv6 ones too, which are the host's own there, and none added; the
+/// run's `--dns`, `--dns-search` and `--dns-option` in place of the host's, as on a bridge.
+/// The daemon's alone, which Windows has none of.
+#[cfg(unix)]
+pub fn resolv_host(
+    host: &[u8],
+    dns: &[String],
+    search_given: &[String],
+    options_given: &[String],
+) -> Vec<u8> {
+    made(host, None, dns, search_given, options_given)
+}
+
+/// [`resolv_with`] and [`resolv_host`]: the host's file made over by the legacy transform
+/// where `legacy` says whether IPv6 nameservers stay, or as it is where none.
+fn made(
+    host: &[u8],
+    legacy: Option<bool>,
+    dns: &[String],
+    search_given: &[String],
+    options_given: &[String],
+) -> Vec<u8> {
     let text = String::from_utf8_lossy(host);
     let mut nameservers: Vec<IpAddr> = Vec::new();
     let mut search: Vec<&str> = Vec::new();
@@ -131,6 +158,9 @@ pub fn resolv_with(
     if !dns.is_empty() {
         nameservers = dns.iter().filter_map(|a| a.parse::<IpAddr>().ok()).collect();
     }
+    let Some(ipv6) = legacy else {
+        return generate(&nameservers, &search, &options, &other);
+    };
     // netip's Is6 holds for an IPv4-mapped address too.
     if dns.is_empty() {
         nameservers.retain(|a| !loopback(a) && (ipv6 || a.is_ipv4()));
@@ -147,8 +177,13 @@ pub fn resolv_with(
         .filter(|a| ipv6 || a.is_ipv4())
         .collect();
     }
+    generate(&nameservers, &search, &options, &other)
+}
+
+/// A resolv.conf's lines, as resolvconf's Generate writes them without its comments.
+fn generate(nameservers: &[IpAddr], search: &[&str], options: &[&str], other: &[&str]) -> Vec<u8> {
     let mut out = String::new();
-    for ns in &nameservers {
+    for ns in nameservers {
         out.push_str(&format!("nameserver {ns}\n"));
     }
     if !search.is_empty() {
@@ -286,6 +321,23 @@ mod tests {
             String::from_utf8(resolv(b"nameserver 2001:db8::1\n", false)).unwrap(),
             "nameserver 8.8.8.8\nnameserver 8.8.4.4\n"
         );
+    }
+
+    /// On the host's network (D124, PM M177): the host's nameservers as they are, loopback
+    /// and IPv6 ones too, none added; `--dns` and the rest in place of the host's.
+    #[cfg(unix)]
+    #[test]
+    fn resolv_conf_on_the_hosts_network_is_the_hosts() {
+        let host = b"# mDNSResponder\nnameserver 127.0.0.53\nnameserver 192.168.1.1\nnameserver fe80::1\nsearch example.org\noptions ndots:2\n";
+        assert_eq!(
+            String::from_utf8(resolv_host(host, &[], &[], &[])).unwrap(),
+            "nameserver 127.0.0.53\nnameserver 192.168.1.1\nnameserver fe80::1\nsearch example.org\noptions ndots:2\n"
+        );
+        assert_eq!(
+            String::from_utf8(resolv_host(host, &["1.1.1.1".into()], &[], &[])).unwrap(),
+            "nameserver 1.1.1.1\nsearch example.org\noptions ndots:2\n"
+        );
+        assert_eq!(String::from_utf8(resolv_host(b"", &[], &[], &[])).unwrap(), "");
     }
 
     #[test]

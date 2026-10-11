@@ -19,6 +19,8 @@ mod domains;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod frames;
 #[cfg(target_os = "linux")]
+mod hostbind;
+#[cfg(target_os = "linux")]
 mod inroot;
 #[cfg(target_os = "linux")]
 mod join;

@@ -101,7 +101,9 @@ pub fn start(
         // A build's proxy alone (D110): the gateway's port, and the proxy's socket.
         shards_net::Policy::Proxy { port, socket } => ("proxy", Some((port.to_string(), socket))),
         // A run's, given as it starts (NET_POLICY): a VM starts before its run is known.
-        shards_net::Policy::Ports(_) => return Err("a VM's network starts allowing all or nothing".into()),
+        shards_net::Policy::Ports(_) | shards_net::Policy::Host => {
+            return Err("a VM's network starts allowing all or nothing".into());
+        }
     };
     let pair = || std::os::unix::net::UnixStream::pair().map_err(|e| format!("a VM's network control: {e}"));
     let (control, theirs) = pair()?;

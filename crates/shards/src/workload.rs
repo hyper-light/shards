@@ -117,6 +117,9 @@ pub struct Asked<'a> {
     pub saved: Option<&'a (dyn Fn(Option<u64>) + Sync)>,
     /// Given the records of the processes the run's members start and end (D123).
     pub processes: Option<&'a Records<'a>>,
+    /// Given its guest's asks of the host on the host's network (D124): each frame's kind,
+    /// then its payload.
+    pub host_net: Option<&'a Records<'a>>,
 }
 
 /// What hears how a served command ended (`Asked::told`).
@@ -283,6 +286,7 @@ pub fn serve(
         told,
         saved,
         processes,
+        host_net,
     } = match request {
         Request::Now { spec, interactive } => Asked {
             spec: *spec,
@@ -295,6 +299,7 @@ pub fn serve(
             told: None,
             saved: None,
             processes: None,
+            host_net: None,
         },
         Request::Later(ask) => ask()?,
     };
@@ -351,14 +356,35 @@ pub fn serve(
         })
         .map_err(|e| format!("signal connection: {e}"))?;
     let mut log = log;
-    let status = relay(&mut conn, timing, log.as_mut(), started, processes);
+    // One reader for all the guest says on the run's connection, so that what it read
+    // past one part is the next part's (review 8.20's reads, which take what has come).
+    let mut reader = io::BufReader::with_capacity(run::BUFFERED, &conn);
+    let status = relay(&mut reader, timing, log.as_mut(), started, processes, host_net);
     if let Some(told) = told {
         told(&status);
     }
+    // What the guest says past its command's end, as the relay passes it on: the records
+    // of the processes its joiners start and end (D123), and their binds on the host's
+    // network (D124), which go on past it (D119).
+    let mut beyond = |which: u8, payload: &[u8]| match which {
+        kind::PROCESS => {
+            if let Some(processes) = processes {
+                processes(payload);
+            }
+            true
+        }
+        kind::BIND | kind::LISTEN | kind::UNBIND => {
+            if let Some(host_net) = host_net {
+                host_net(&[&[which][..], payload].concat());
+            }
+            true
+        }
+        _ => false,
+    };
     // A container that stays keeps its files, as they are now its command has ended:
     // once its end is told, so that nothing waits for them that does not need them.
     if let (Ok(_), Some(out)) = (&status, layer_out) {
-        match receive_layer(&mut conn, out) {
+        match receive_layer_from(&conn, &mut reader, out, &mut beyond) {
             Ok(used) => {
                 if let Some(saved) = saved {
                     saved(used);
@@ -368,8 +394,15 @@ pub fn serve(
         }
     }
     // Containers joined to its network go on past it (D119): the guest's signal
-    // connection, and what waits for the guest, stay theirs.
+    // connection, and what waits for the guest, stay theirs; and what the guest says on
+    // the run's connection is passed on until it closes it, as it powers off. The host
+    // says it asks no more of it (no layer, or its layer had), and the guest takes that
+    // as its end of asking.
     let joined = crate::warm::joining();
+    if joined {
+        let _ = conn.shutdown(std::net::Shutdown::Write);
+        drain(&mut reader, &mut beyond);
+    }
     if !joined {
         let mut state = lock(to);
         *state = Signals::default();
@@ -392,11 +425,12 @@ pub fn serve(
 /// and stays out of the log, as dockerd keeps a failed start out of `docker logs`.
 #[cfg(unix)]
 fn relay(
-    conn: &mut UnixStream,
+    conn: &mut io::BufReader<&UnixStream>,
     timing: &Timing,
     mut log: Option<&mut Logger>,
     started: Option<&(dyn Fn() + Sync)>,
     processes: Option<&Records<'_>>,
+    host_net: Option<&Records<'_>>,
 ) -> Result<Ended, String> {
     // Grown to the longest frame yet, at most MAX_PAYLOAD, and never shrunk: a frame
     // longer than any before zeroes only its new bytes before they are read over (audit
@@ -405,8 +439,8 @@ fn relay(
     let mut not_run = None;
     let mut oom = false;
     // As much as the guest sends at once, in one read, whatever the frames it holds
-    // (review 8.20).
-    let mut conn = io::BufReader::with_capacity(run::BUFFERED, &*conn);
+    // (review 8.20): the caller's reader, whose next part reads what this one read past
+    // its end.
     loop {
         let mut h = [0u8; run::HEADER];
         conn.read_exact(&mut h)
@@ -447,6 +481,14 @@ fn relay(
             kind::PROCESS => {
                 if let Some(processes) = processes {
                     processes(payload);
+                }
+            }
+            kind::BIND | kind::LISTEN | kind::UNBIND => {
+                if let Some(host_net) = host_net {
+                    let mut frame = Vec::with_capacity(1 + payload.len());
+                    frame.push(which);
+                    frame.extend_from_slice(payload);
+                    host_net(&frame);
                 }
             }
             kind::EXIT => {
@@ -533,36 +575,81 @@ fn send_layer(conn: &mut UnixStream, mut layer: fs::File) -> io::Result<()> {
 /// [`kind::LAYER`] frames to `out` until the empty one; an error if it did not come
 /// whole: the guest's reason, where it says why ([`kind::SYSTEM_ERR`]).
 #[cfg(unix)]
-pub(crate) fn receive_layer(conn: &mut UnixStream, mut out: fs::File) -> io::Result<Option<u64>> {
-    send(conn, kind::SAVE, &[])?;
+pub(crate) fn receive_layer(conn: &mut UnixStream, out: fs::File) -> io::Result<Option<u64>> {
+    let reading = conn.try_clone()?;
+    receive_layer_from(conn, &mut io::BufReader::new(&reading), out, &mut |_, _| false)
+}
+
+/// [`receive_layer`], its frames read from `reader`, `conn`'s; each other frame the guest
+/// sends meanwhile given to `beyond`, an error where that takes none of it.
+#[cfg(unix)]
+fn receive_layer_from(
+    conn: &UnixStream,
+    reader: &mut impl Read,
+    mut out: fs::File,
+    beyond: &mut dyn FnMut(u8, &[u8]) -> bool,
+) -> io::Result<Option<u64>> {
+    let mut w = conn;
+    w.write_all(&run::header(kind::SAVE, 0))?;
     let mut frame = Vec::new();
     let mut used = None;
     loop {
         let mut h = [0u8; run::HEADER];
-        conn.read_exact(&mut h)?;
-        let len = match run::parse_header(h) {
-            Some((kind::LAYER, len)) => len as usize,
+        reader.read_exact(&mut h)?;
+        let (which, len) =
+            run::parse_header(h).ok_or_else(|| io::Error::other("the guest sent a malformed frame"))?;
+        let len = len as usize;
+        match which {
+            kind::LAYER => {}
             // Not all of it could be packed: the layer it had stays.
-            Some((kind::SYSTEM_ERR, len)) => {
-                let mut why = vec![0u8; len as usize];
-                conn.read_exact(&mut why)?;
+            kind::SYSTEM_ERR => {
+                let mut why = vec![0u8; len];
+                reader.read_exact(&mut why)?;
                 return Err(io::Error::other(String::from_utf8_lossy(&why).into_owned()));
             }
             // What the layer uses, before it (kind::USAGE).
-            Some((kind::USAGE, 8)) if used.is_none() => {
+            kind::USAGE if len == 8 && used.is_none() => {
                 let mut n = [0u8; 8];
-                conn.read_exact(&mut n)?;
+                reader.read_exact(&mut n)?;
                 used = Some(u64::from_be_bytes(n));
                 continue;
             }
-            _ => return Err(io::Error::other("the guest sent another frame amid its files")),
-        };
+            _ => {
+                frame.resize(len, 0);
+                reader.read_exact(&mut frame)?;
+                if beyond(which, &frame) {
+                    continue;
+                }
+                return Err(io::Error::other("the guest sent another frame amid its files"));
+            }
+        }
         if len == 0 {
             return out.sync_all().map(|()| used);
         }
         frame.resize(len, 0);
-        conn.read_exact(&mut frame)?;
+        reader.read_exact(&mut frame)?;
         out.write_all(&frame)?;
+    }
+}
+
+/// Passes each frame `reader` has to `beyond` until it ends: what the guest says on a
+/// run's connection once its command's end and layer are had, its joiners going on.
+#[cfg(unix)]
+fn drain(reader: &mut impl Read, beyond: &mut dyn FnMut(u8, &[u8]) -> bool) {
+    let mut frame = Vec::new();
+    loop {
+        let mut h = [0u8; run::HEADER];
+        if reader.read_exact(&mut h).is_err() {
+            return;
+        }
+        let Some((which, len)) = run::parse_header(h) else {
+            return;
+        };
+        frame.resize(len as usize, 0);
+        if reader.read_exact(&mut frame).is_err() {
+            return;
+        }
+        beyond(which, &frame);
     }
 }
 
@@ -1480,6 +1567,13 @@ pub fn will_run(to: &ToGuest) {
 #[cfg(unix)]
 pub fn signal_guest(to: &ToGuest, linux: u32) -> bool {
     to_guest(to, kind::SIGNAL, &linux.to_be_bytes())
+}
+
+/// Gives the guest the host's answer to its ask on the host's network (D124), as
+/// [`signal_guest`] sends a signal.
+#[cfg(unix)]
+pub fn bound_guest(to: &ToGuest, bound: &[u8]) -> bool {
+    to_guest(to, kind::BOUND, bound)
 }
 
 /// Sizes the workload's terminal, if it has one, as [`signal_guest`] sends a signal.

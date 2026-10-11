@@ -101,6 +101,14 @@ pub const DEFAULT: &[u8] = include_bytes!("../data/default.json");
 /// most recent filter's, seccomp_filter.rst).
 pub const MOUNTS: &[u8] = include_bytes!("../data/mounts.json");
 
+/// The host's network's binds (`--network host`, D124): bind(2) and listen(2), on every ABI
+/// the guest's kernel runs, and x86's socketcall(2) for them, notified to init, which makes
+/// each the host's; the rest allowed, for the run's own profile to say. Loaded first, so
+/// that a profile that refuses seccomp(2) itself cannot keep it out; a call another filter
+/// refuses is refused all the same (its errno outranks a notification,
+/// seccomp_filter.rst).
+pub const BINDS: &[u8] = include_bytes!("../data/binds.json");
+
 fn type_error(value: &Json, path: &str, ty: &str) -> String {
     let value = match value {
         Json::Number(n) => format!("number {n}"),

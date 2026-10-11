@@ -42,6 +42,7 @@ mod files;
 mod filters;
 mod follow;
 mod health;
+mod hostnet;
 pub(crate) mod images;
 mod import;
 mod info;
@@ -209,6 +210,28 @@ fn fail(message: &str) -> ExitCode {
 /// A message in the daemon's log.
 fn log(message: impl std::fmt::Display) {
     let _ = writeln!(io::stderr(), "shards daemon {}: {message}", std::process::id());
+}
+
+/// The host's hosts file, as a container on its network has it (D124): `/etc/hosts`, or
+/// Windows' own; none where it cannot be read.
+fn host_hosts() -> Vec<u8> {
+    #[cfg(windows)]
+    let path = std::env::var_os("SystemRoot")
+        .map(|root| std::path::PathBuf::from(root).join(r"System32\drivers\etc\hosts"))
+        .unwrap_or_default();
+    #[cfg(not(windows))]
+    let path = std::path::PathBuf::from("/etc/hosts");
+    std::fs::read(path).unwrap_or_default()
+}
+
+/// The host's name as a guest's: at most Linux's 64 bytes (HOST_NAME_MAX), cut where a
+/// character ends, as sethostname(2) takes no more.
+fn guest_hostname(name: &str) -> String {
+    let mut end = name.len().min(64);
+    while !name.is_char_boundary(end) {
+        end -= 1;
+    }
+    name.get(..end).unwrap_or_default().to_string()
 }
 
 /// A list of an Agentfile's grants as its labels write it, comma-separated (D59).
@@ -468,6 +491,8 @@ struct Inbox {
     visit: bool,
     /// A joiner's exec's id in its provider's guest, from its start on (D119).
     guest: Option<u32>,
+    /// On the host's network (D124): its guest's sockets of the host's.
+    host_net: Option<hostnet::HostNet>,
 }
 
 /// A part of the working set run `id`'s VM recorded (`kind::WORKING_SET`), which the
@@ -1902,6 +1927,9 @@ impl<D: Disk> Daemon<D> {
             run.hostname = Some(hostname);
             run.domainname = domainname;
         }
+        if run.hostname.is_none() && start == network::Start::Attach(network::Net::Host) {
+            run.hostname = info::host_name().map(|n| guest_hostname(&n));
+        }
         if run.hostname.is_none() {
             run.hostname = Some(id.get(..12).unwrap_or(&id).to_string());
         }
@@ -2050,6 +2078,10 @@ impl<D: Disk> Daemon<D> {
         let name = match made {
             // A new container's warnings, as the CLI prints ContainerCreate's.
             Ok(name) if again.is_none() => {
+                // verifyContainerSettings: before the platform's (moby daemon/container.go).
+                if start == network::Start::Attach(network::Net::Host) && !run.publish.is_empty() {
+                    say("WARNING: Published ports are discarded when using host network mode");
+                }
                 let warned = crate::resources::verify(&run.resources, crate::resources::host_cpus(), false);
                 for w in warned.unwrap_or_default() {
                     say(&format!("WARNING: {w}"));
@@ -2075,6 +2107,10 @@ impl<D: Disk> Daemon<D> {
                 return None;
             }
         };
+        // The host's network, said each time it is given (D124; the user's, 2026-10-11).
+        if start == network::Start::Attach(network::Net::Host) {
+            say(&format!("WARNING: {}", shards_abi::run::NETWORK_HOST));
+        }
         // Its name is a member's name on its network (DNSNames' first).
         self.name_member(&id, &name);
         // A new container keeps the request it was made by, for `shards start` (D37).
@@ -2195,6 +2231,12 @@ impl<D: Disk> Daemon<D> {
                     let bits = if a.is_ipv4() { 16 } else { 64 };
                     format!("link-local={a}/{bits}").into_bytes()
                 }));
+                // On the host's network (D124): the host's hosts file.
+                if start == network::Start::Attach(network::Net::Host) {
+                    let mut hosts = b"hosts-file=".to_vec();
+                    hosts.extend_from_slice(&host_hosts());
+                    prepared.spec.setup.push(hosts);
+                }
                 // Its endpoint's sysctls, on its interface once it has its addresses (PM M171).
                 prepared.spec.setup.extend(
                     crate::setup::endpoint_sysctls(&run)
@@ -2329,6 +2371,11 @@ impl<D: Disk> Daemon<D> {
         // them from the image's own normalized Agentfile, checked against its digest
         // (D109), never from its labels: its VM's network process's policy.
         let egress = match grants {
+            // The host's network (D124), which an Agentfile's agents refuse, whose grants
+            // these would be.
+            None if start == network::Start::Attach(network::Net::Host) => {
+                Some(shards_net::HOST_POLICY.to_vec())
+            }
             None => None,
             Some(g) => {
                 let ports = if g.egress.is_empty() {
@@ -2618,6 +2665,22 @@ impl<D: Disk> Daemon<D> {
     /// of the host's; `/etc/hosts`' extra lines, `host-gateway` the bridge's gateway, as
     /// dockerd's HostGatewayIPs default to its bridge's; and the domain name.
     pub(super) fn name_guest(&self, run: &Run, spec: &mut shards_abi::run::Spec) -> Result<(), String> {
+        // On the host's network (D124, PM M177): the host's resolvers as they are, loopback
+        // ones too, which are the host's own there; its hosts file, which `--add-host`
+        // adds nothing to, as dockerd's.
+        if run.network == "host" {
+            spec.resolv = Some(crate::build::step::resolv_host(
+                &crate::build::step::host_resolv(),
+                &run.dns,
+                &run.dns_search,
+                &run.dns_options,
+            ));
+            spec.hosts = Vec::new();
+            spec.domainname = run.domainname.clone().into_bytes();
+            spec.cgroup = crate::resources::cgroup(&run.resources);
+            spec.setup = crate::setup::setup(run, &[])?;
+            return Ok(());
+        }
         spec.resolv = Some(crate::build::step::resolv_with(
             &crate::build::step::host_resolv(),
             false,
@@ -3295,7 +3358,7 @@ impl<D: Disk> Daemon<D> {
             named,
             layer_pending,
             visit,
-            egress: _,
+            egress,
             agentfile,
             mac: _,
             link_local: _,
@@ -3312,6 +3375,21 @@ impl<D: Disk> Daemon<D> {
         // Runs last as long as their commands.
         let _ = ready.socket.set_read_timeout(None);
         let socket = Arc::new(RunSocket::new(ready.socket));
+        // On the host's network (D124): its VM's network process, which takes the host's
+        // sockets of its guest's binds as they listen.
+        let host_net = if egress.as_deref() == Some(&shards_net::HOST_POLICY[..]) {
+            ready
+                .net
+                .as_ref()
+                .and_then(|net| {
+                    net.try_clone()
+                        .map_err(|e| log(format!("container {id}: its network process: {e}")))
+                        .ok()
+                })
+                .map(|net| hostnet::HostNet::new(net, PUBLISH_PATIENCE))
+        } else {
+            None
+        };
         let detached = detached.and_then(|conn| {
             conn.try_clone()
                 .map_err(|e| log(format!("holding a detached client's connection: {e}")))
@@ -3334,6 +3412,7 @@ impl<D: Disk> Daemon<D> {
             incoming: shards_ipc::Incoming::default(),
             visit,
             guest: None,
+            host_net,
         }));
         let tracked = Tracked {
             base: Arc::new(Base {
@@ -3404,6 +3483,19 @@ impl<D: Disk> Daemon<D> {
                 kind::LOST => self.log_lost(id, &m.payload),
                 kind::OOM => self.oom_killed(id),
                 kind::PROCESS => self.keep_processes(id, &m.payload),
+                // Its guest's ask on the host's network (D124), answered at once: a bind
+                // and a listen are each a system call's work, and what goes to the
+                // network process is not waited for.
+                kind::HOST_NET => {
+                    let answer = inbox.host_net.as_mut().and_then(|h| h.ask(&m.payload));
+                    if let Some(answer) = answer
+                        && let Err(e) = inbox.socket.send(kind::HOST_BOUND, &answer, &[])
+                    {
+                        log(format!(
+                            "container {id}: answering its bind on the host's network: {e}"
+                        ));
+                    }
+                }
                 kind::WORKING_SET => {
                     if let Some(whole) = working_set_part(id, inbox, &m.payload) {
                         self.make_soon(whole);
@@ -3622,6 +3714,8 @@ impl<D: Disk> Daemon<D> {
         // microVM's join share ends with its VM, the daemon's connection to it let go (D119).
         lock(&self.joiner_links).remove(id);
         lock(&self.join_shares).remove(id);
+        // On the host's network (D124): the host's ports of its guest's binds let go.
+        inbox.host_net = None;
         inbox.ended = true;
         // A visit's end is its own: the container stays as it was.
         if inbox.visit {
@@ -4238,7 +4332,7 @@ impl<D: Disk> Daemon<D> {
         let bridge = match net {
             // A user network's guest boots on the bridge's template, and takes its own
             // address as it starts (D46).
-            network::Net::Bridge | network::Net::User => {
+            network::Net::Bridge | network::Net::User | network::Net::Host => {
                 Some(self.bridge.ok_or(shards_net::bridge::NO_SUBNET)?)
             }
             network::Net::None => None,

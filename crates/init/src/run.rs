@@ -444,7 +444,8 @@ static BESIDE: std::sync::OnceLock<Beside> = std::sync::OnceLock::new();
 
 impl Beside {
     /// Refuses what of `setup` reaches the domains: a privileged command (`what`, `run`
-    /// or `exec`), `/proc` unmasked, the microVM's PID namespace, a capability of
+    /// or `exec`), `/proc` unmasked, the microVM's PID namespace, the host's network
+    /// (D124), a capability of
     /// [`shards_abi::run::beside`]'s, a net.* sysctl where their flows cross the
     /// command's network namespace.
     fn refuse(&self, setup: &[Vec<u8>], what: &str) -> Result<(), Failure> {
@@ -458,6 +459,9 @@ impl Beside {
             }
             if entry == b"pid=host" {
                 return Err(setup_failed(beside::pid_host()));
+            }
+            if entry == b"network=host" {
+                return Err(setup_failed(beside::network_host()));
             }
             if let Some(caps) = entry.strip_prefix(b"caps=") {
                 let caps = std::str::from_utf8(caps)
@@ -568,6 +572,7 @@ fn sort_setup(entries: &[Vec<u8>], into: &mut Inherited) -> Result<Vec<Vec<u8>>,
                 || entry.starts_with(b"oom=")
                 || entry.starts_with(b"seccomp=")
                 || entry.starts_with(b"seccomp-mounts=")
+                || entry.starts_with(b"seccomp-binds=")
                 || entry == b"nnp"
             {
                 into.setup.push(entry.clone());
@@ -1657,7 +1662,27 @@ fn pipe() -> Result<(OwnedFd, OwnedFd), Failure> {
     Ok(unsafe { (OwnedFd::from_raw_fd(r), OwnedFd::from_raw_fd(w)) })
 }
 
-/// What the child reports through its error pipe when it cannot exec: the step that
+/// What a standby says on its error channel until it execs and the channel closes: the
+/// listener of its filter for the host's network, where it has one (D124), and its report,
+/// where it could not exec.
+fn reports(err: &OwnedFd) -> (Option<OwnedFd>, Vec<u8>) {
+    let (mut listener, mut report) = (None, Vec::new());
+    let mut buf = [0u8; 16];
+    loop {
+        match crate::hostbind::recv_fd(err.as_raw_fd(), &mut buf, 0) {
+            Ok((0, _)) => return (listener, report),
+            Ok((n, fd)) => match (buf.get(..n), fd) {
+                (Some([crate::hostbind::LISTENER]), Some(fd)) => listener = Some(fd),
+                (Some(said), _) => report.extend_from_slice(said),
+                (None, _) => {}
+            },
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(_) => return (listener, report),
+        }
+    }
+}
+
+/// What the child reports through its error channel when it cannot exec: the step that
 /// failed and errno.
 mod step {
     pub const CHDIR: u8 = 0;
@@ -1705,6 +1730,10 @@ struct Workload {
     /// The process events connector, listened to for the run's record of processes (D123),
     /// or why it could not be.
     procs: Option<Result<crate::procevents::Listener, String>>,
+    /// On the host's network (D124): its filter's listener, as it started; and the process
+    /// that makes its binds the host's, which has it and its execs' listeners.
+    binds: Option<OwnedFd>,
+    hosts: Option<crate::hostbind::Supervisor>,
 }
 
 /// A pty's master, and the path of its peer, which the standby opens as the workload's
@@ -1776,7 +1805,8 @@ struct Standby {
     reaper_ids: Option<(OwnedFd, OwnedFd)>,
     /// Where init writes the standby's orders: what to exec, and as whom.
     orders: OwnedFd,
-    /// Closes when the standby execs: bytes on it mean it could not.
+    /// Closes when the standby execs: a report on it means it could not, after the
+    /// listener of its filter for the host's network where it has one (D124).
     err: OwnedFd,
     stdin: OwnedFd,
     stdout: OwnedFd,
@@ -1889,7 +1919,8 @@ impl Standby {
         let (stdin_r, stdin_w) = pipe()?;
         let (stdout_r, stdout_w) = pipe()?;
         let (stderr_r, stderr_w) = pipe()?;
-        let (err_r, err_w) = pipe()?;
+        let (err_r, err_w) =
+            crate::hostbind::seqpacket().map_err(|e| setup_failed(format!("socketpair: {e}")))?;
         let (orders_r, orders_w) = pipe()?;
         // SIGCHLD arrives through a signalfd, so the relay can poll for it.
         // SAFETY: plain sigset operations on a local set.
@@ -2124,6 +2155,11 @@ impl Standby {
                 ))
             })?;
         }
+        // On the host's network (D124): its loopback's flows to ports none of its processes
+        // holds are the host's loopback's.
+        if spec.setup.iter().any(|e| e == b"network=host") {
+            crate::net::host_loopback().map_err(|e| setup_failed(format!("the host's loopback: {e}")))?;
+        }
         // Where its command is born (D115): where the template's standby was, PID 1 of a
         // namespace of its own, but for `--init` and `--pid host`.
         let born = if spec.builtin == run::builtin::HOLD {
@@ -2167,6 +2203,11 @@ impl Standby {
             }
             set_hostname(&spec.hostname, &spec.domainname, &spec.hosts)?;
         }
+        // On the host's network (D124): the host's hosts file, as dockerd gives a container
+        // there (PM M177).
+        if let Some(hosts) = spec.setup.iter().find_map(|e| e.strip_prefix(b"hosts-file=")) {
+            write_file("/etc/hosts", hosts)?;
+        }
         if let Some(r) = &spec.resolv {
             write_file("/etc/resolv.conf", r)?;
         }
@@ -2192,6 +2233,8 @@ impl Standby {
                 domains: Vec::new(),
                 memory: None,
                 procs: None,
+                binds: None,
+                hosts: None,
             };
             return Ok((held, None));
         }
@@ -2229,9 +2272,19 @@ impl Standby {
             })?;
         }
         let _ = WORKLOAD.set(inherited.clone());
-        standby
-            .launch(spec, false, setup, &inherited)
-            .map(|w| (w, declared))
+        // On the host's network (D124): the process that makes its binds the host's, there
+        // before its command, which may bind at once.
+        let hosts = if spec.setup.iter().any(|e| e == b"network=host") {
+            Some(crate::hostbind::start().map_err(|e| setup_failed(format!("the host's network: {e}")))?)
+        } else {
+            None
+        };
+        let mut w = standby.launch(spec, false, setup, &inherited)?;
+        if let (Some(hosts), Some(listener)) = (&hosts, w.binds.take()) {
+            hosts.listener(&listener);
+        }
+        w.hosts = hosts;
+        Ok((w, declared))
     }
 
     /// Resolves the spec as Docker and runc do, then has the standby exec it. The
@@ -2352,9 +2405,10 @@ impl Standby {
         File::from(to_standby)
             .write_all(&orders)
             .map_err(|e| setup_failed(format!("starting the workload: {e}")))?;
-        // The error pipe closes on exec: bytes on it mean the workload never started.
-        let mut report = Vec::new();
-        let _ = File::from(err).read_to_end(&mut report);
+        // The error channel closes on exec: a report on it means the workload never
+        // started.
+        let (binds, report) = reports(&err);
+        drop(err);
         if let [which, e0, e1, e2, e3, c0, c1, c2, c3] = report[..] {
             // The standby exits right after reporting.
             // SAFETY: waits for our own child.
@@ -2393,6 +2447,8 @@ impl Standby {
                 domains: Vec::new(),
                 memory: None,
                 procs: None,
+                binds,
+                hosts: None,
             });
         };
         // The terminal carries everything; the pipes go unused.
@@ -2411,6 +2467,8 @@ impl Standby {
             domains: Vec::new(),
             memory: None,
             procs: None,
+            binds,
+            hosts: None,
         })
     }
 }
@@ -2511,6 +2569,13 @@ fn standby(ends: Ends, isolation: Isolation) -> ! {
         filter: p.as_ptr().cast_mut(),
     });
     let mounts = mounts_filter.as_ref().map(|(f, _)| *f).zip(mounts_prog.as_ref());
+    // The host's network's (`seccomp-binds=`, D124), loaded before both.
+    let binds_filter = crate::setup::filter_named(&o.setup, b"seccomp-binds=");
+    let binds_prog = binds_filter.as_ref().map(|(_, p)| libc::sock_fprog {
+        len: u16::try_from(p.len()).unwrap_or(u16::MAX),
+        filter: p.as_ptr().cast_mut(),
+    });
+    let binds = binds_filter.as_ref().map(|(f, _)| *f).zip(binds_prog.as_ref());
     let nnp = o.setup.iter().any(|e| e == b"nnp");
     // SAFETY: this process is the child of a fork of single-threaded init, and `child`
     // runs on data built above.
@@ -2527,6 +2592,7 @@ fn standby(ends: Ends, isolation: Isolation) -> ! {
             candidates: &candidates,
             explicit: o.explicit,
             last_cap,
+            binds,
             mounts,
             seccomp,
             nnp,
@@ -2795,6 +2861,7 @@ fn builtin(kind: u8, args: &[Vec<u8>], joiner: Option<(libc::pid_t, u32)>) -> Re
         stdin,
         stdout: Some(stdout_r),
         stderr: Some(stderr_r),
+        binds: None,
     })
 }
 
@@ -2870,6 +2937,8 @@ struct Started {
     stdin: Option<OwnedFd>,
     stdout: Option<OwnedFd>,
     stderr: Option<OwnedFd>,
+    /// Its filter's listener, on the host's network (D124).
+    binds: Option<OwnedFd>,
 }
 
 /// Starts joiner `id` (D119): its image `range` of the join disk, joining `workload`'s
@@ -2951,6 +3020,7 @@ fn start_joiner(
             stdin: w.stdin,
             stdout: w.stdout,
             stderr: w.stderr,
+            binds: w.binds,
         }),
         // Its standby waited for as it reported why (`launch`).
         Err(f) => {
@@ -3141,6 +3211,7 @@ impl Exec {
         running: bool,
         workload: libc::pid_t,
         joiners: &[(u32, libc::pid_t)],
+        hosts: Option<&crate::hostbind::Supervisor>,
     ) -> Result<Exec, Option<(u32, String)>> {
         let (token, rest) = payload.split_at_checked(run::TOKEN).ok_or(None)?;
         let (id, spec) = rest.split_at_checked(4).ok_or(None)?;
@@ -3208,6 +3279,7 @@ impl Exec {
                     stdin: w.stdin,
                     stdout: w.stdout,
                     stderr: w.stderr,
+                    binds: w.binds,
                 }),
                 None => Err(Failure {
                     daemon: true,
@@ -3234,12 +3306,17 @@ impl Exec {
                     stdin: w.stdin,
                     stdout: w.stdout,
                     stderr: w.stderr,
+                    binds: w.binds,
                 })
         } else {
             Err(setup_failed("the container's main process has exited"))
         };
         match started {
             Ok(w) => {
+                // Its filter's listener, on the host's network (D124).
+                if let (Some(hosts), Some(listener)) = (hosts, &w.binds) {
+                    hosts.listener(listener);
+                }
                 exec.pid = w.pid;
                 exec.tty = w.tty;
                 for fd in [&w.stdin, &w.stdout, &w.stderr].into_iter().flatten() {
@@ -3376,6 +3453,8 @@ enum Owner {
     Memory,
     /// The process events connector (D123).
     Procs,
+    /// The process that makes the run's binds the host's (D124).
+    Hosts,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -3448,8 +3527,17 @@ impl Workload {
             frame_processes(&crate::procevents::unrecorded(why), &mut to_host);
             self.procs = None;
         }
+        // On the host's network (D124): the process that makes its binds the host's, which
+        // the run's end spares, and which then finishes its relays' connections before the
+        // run's end is said.
+        let mut hosts_pid = self.hosts.as_ref().map(crate::hostbind::Supervisor::pid);
         loop {
             let exited = status.is_some();
+            // The host gone, binds on its network are answered by no one: their process
+            // ends, which fails what waits (D124).
+            if host.is_none() {
+                self.hosts = None;
+            }
             // A joiner's writable layer, sent as the host asked once its end is said; its
             // layers kept until all of it is (D119).
             for e in &mut execs {
@@ -3484,12 +3572,18 @@ impl Workload {
             if exited {
                 keep_processes(&mut self.procs, &mut to_host);
             }
+            // Its end said here, its joiners having outlived it, its writable layer is
+            // the loop's to send too: the loop goes on until the host has asked for it,
+            // or closed the connection, which the run's end after the loop does not
+            // wait for again (D119).
             if exited
                 && self.stdout.is_none()
                 && self.stderr.is_none()
                 && (to_host.is_empty() || host.is_none())
                 && execs.is_empty()
                 && packing.is_none()
+                && (!reported || asked || host.is_none())
+                && (self.hosts.is_some() || hosts_pid.is_none())
                 && self.domains.iter().all(|d| d.out.is_none())
                 && (host.is_none()
                     || self
@@ -3568,6 +3662,11 @@ impl Workload {
                 libc::POLLIN,
                 Owner::Procs,
             );
+            poll(
+                self.hosts.as_ref().map(crate::hostbind::Supervisor::fd),
+                libc::POLLIN,
+                Owner::Hosts,
+            );
             for (i, e) in execs.iter().enumerate() {
                 let conn_events = if !e.connected {
                     libc::POLLOUT
@@ -3625,6 +3724,10 @@ impl Workload {
                         keep_processes(&mut self.procs, &mut to_host);
                         let main = self.pid;
                         reap(&self.sigchld, |pid, code| {
+                            if Some(pid) == hosts_pid {
+                                hosts_pid = None;
+                                self.hosts = None;
+                            }
                             if pid == main {
                                 let _ = crate::linux::control_write(control::MARKER, marker::WORKLOAD_EXITED);
                                 status = Some(code);
@@ -3642,7 +3745,12 @@ impl Workload {
                                                 .then_some(e.pid),
                                         })
                                         .collect();
-                                    kill_all_but_joiners(&spared);
+                                    kill_all_but_joiners(&[&spared[..], hosts_pid.as_slice()].concat());
+                                } else if let Some(hosts) = hosts_pid {
+                                    // Every process but init and the relays of the host's
+                                    // network, which finish what its servers sent (D124).
+                                    kill_all_but_joiners(&[hosts]);
+                                    self.hosts = None;
                                 } else {
                                     // SAFETY: kill(2) of every process but init.
                                     unsafe { libc::kill(-1, libc::SIGKILL) };
@@ -3737,6 +3845,7 @@ impl Workload {
                                 let pid = self.pid;
                                 let running = status.is_none();
                                 let pty = self.stdout.as_ref().filter(|_| self.tty).map(AsRawFd::as_raw_fd);
+                                let hosts = self.hosts.as_ref();
                                 let whole = each_frame(&mut from_signals, |which, payload| {
                                     let id_and = |p: &[u8]| {
                                         let (id, rest) = p.split_at_checked(4)?;
@@ -3767,6 +3876,7 @@ impl Workload {
                                                 .filter(|e| e.joined && e.pid > 0 && e.status.is_none())
                                                 .map(|e| (e.id, e.pid))
                                                 .collect::<Vec<_>>(),
+                                            hosts,
                                         ) {
                                             Ok(e) => execs.push(e),
                                             // Said where the host hears it, which otherwise
@@ -3802,6 +3912,13 @@ impl Workload {
                                                 resize(fd.as_raw_fd(), size);
                                             }
                                         }
+                                        // The host's answer to the run's bind on its network
+                                        // (D124).
+                                        kind::BOUND => {
+                                            if let Some(hosts) = hosts {
+                                                hosts.answer(payload);
+                                            }
+                                        }
                                         _ => {}
                                     }
                                 });
@@ -3832,6 +3949,15 @@ impl Workload {
                         }
                     }
                     Owner::Procs => keep_processes(&mut self.procs, &mut to_host),
+                    Owner::Hosts => {
+                        let alive = self
+                            .hosts
+                            .as_ref()
+                            .is_some_and(|h| h.frames(|frame| to_host.extend(&[frame])));
+                        if !alive {
+                            self.hosts = None;
+                        }
+                    }
                     Owner::Memory => {
                         if let Some(m) = self.memory.as_ref() {
                             m.relieve(&self.domains, |line| {
@@ -4119,9 +4245,11 @@ struct Child<'a> {
     explicit: bool,
     /// The kernel's last capability, for the bounding set's.
     last_cap: u32,
-    /// The filter that stands in for Docker's AppArmor's mount rule, loaded before its
+    /// The host's network's filter (D124), loaded first, whose listener init is given; the
+    /// filter that stands in for Docker's AppArmor's mount rule, loaded before its
     /// seccomp filter; that filter; each with its seccomp(2) flags; and whether
     /// no_new_privs is set.
+    binds: Option<(u32, &'a libc::sock_fprog)>,
     mounts: Option<(u32, &'a libc::sock_fprog)>,
     seccomp: Option<(u32, &'a libc::sock_fprog)>,
     nnp: bool,
@@ -4185,23 +4313,39 @@ unsafe fn child(c: &Child<'_>) -> ! {
         }
         // As root first; if root may not, again as the user (runc does the same).
         let mut chdir_ok = libc::chdir(c.cwd.as_ptr()) == 0;
-        // seccomp(2) with the filter: SECCOMP_SET_MODE_FILTER, its flags, its program.
+        // seccomp(2) with the filter: SECCOMP_SET_MODE_FILTER, its flags, its program; its
+        // listener, for a filter that notifies.
         let load = |(flags, prog): (u32, &libc::sock_fprog)| {
             libc::syscall(
                 libc::SYS_seccomp,
                 1 as libc::c_long,
                 libc::c_long::from(flags),
                 prog as *const libc::sock_fprog,
-            ) == 0
+            )
+        };
+        // The host's network's filter first (D124), so that a profile that refuses
+        // seccomp(2) itself cannot keep it out; its listener given init, and closed here,
+        // before any other filter loads.
+        let load_all = || {
+            if let Some(f) = c.binds {
+                let Ok(listener) = RawFd::try_from(load(f)) else {
+                    return false;
+                };
+                if listener < 0 {
+                    return false;
+                }
+                let given = crate::hostbind::send_fd(c.err, crate::hostbind::LISTENER, listener, 0);
+                libc::close(listener);
+                if !given {
+                    return false;
+                }
+            }
+            [c.mounts, c.seccomp].into_iter().flatten().all(|f| load(f) == 0)
         };
         // Without no_new_privs, loading a filter needs CAP_SYS_ADMIN: before the
         // capabilities go (runc, standard_init_linux.go).
-        if !c.nnp {
-            for f in [c.mounts, c.seccomp].into_iter().flatten() {
-                if !load(f) {
-                    fail(step::SECCOMP);
-                }
-            }
+        if !c.nnp && !load_all() {
+            fail(step::SECCOMP);
         }
         // A container's capabilities (crate::defaults), as runc applies them
         // (finalizeNamespace): the bounding set first, the rest kept across the change of
@@ -4233,10 +4377,8 @@ unsafe fn child(c: &Child<'_>) -> ! {
             if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
                 fail(step::NNP);
             }
-            for f in [c.mounts, c.seccomp].into_iter().flatten() {
-                if !load(f) {
-                    fail(step::SECCOMP);
-                }
+            if !load_all() {
+                fail(step::SECCOMP);
             }
         }
         for (i, path) in c.candidates.iter().enumerate() {
