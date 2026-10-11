@@ -42,8 +42,10 @@ pub fn main() -> ExitCode {
 /// The commands shards has besides the catalog's: the daemon side's own words.
 /// `daemon` and `guest` are what `run daemon`, `stop daemon` and `configure guest` are
 /// said as, and how the client starts the daemon.
-const OWN: [&str; 18] = [
+const OWN: [&str; 19] = [
     "system",
+    // shards' grammar's views of a microVM (`read ports`, D122).
+    "read",
     "agentfile",
     "agent",
     "harness",

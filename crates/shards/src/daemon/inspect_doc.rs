@@ -975,6 +975,27 @@ fn host_config(f: &Facts<'_>) -> Value {
         .value()
 }
 
+/// An endpoint's IPAMConfig as dockerd keeps it from the request: its addresses, and its
+/// link-local ones as given, an IPv4-mapped one as IPv4 and a zone kept (PM M175).
+fn ipam_config(e: &shards_ipc::Endpoint) -> Value {
+    let link_local: Vec<String> = e
+        .link_local
+        .iter()
+        .filter_map(|a| shards_cmdline::network::parse_addr(a).ok())
+        .map(|a| a.unmap().to_string())
+        .collect();
+    let link_local = if link_local.is_empty() {
+        Value::NilList(Kind::String)
+    } else {
+        Value::strings(link_local)
+    };
+    Struct::pointer("network.EndpointIPAMConfig")
+        .tagged("IPv4Address", Some("IPv4Address"), true, s(&e.ipv4))
+        .tagged("IPv6Address", Some("IPv6Address"), true, s(&e.ipv6))
+        .tagged("LinkLocalIPs", Some("LinkLocalIPs"), true, link_local)
+        .value()
+}
+
 /// NetworkSettings: its ports while it runs, and its endpoint on its network.
 fn network_settings(f: &Facts<'_>, run: &Run) -> Value {
     let c = f.container;
@@ -1013,13 +1034,11 @@ fn network_settings(f: &Facts<'_>, run: &Run) -> Value {
     if let Some(u) = &f.user_net {
         let mode = u.name.as_str();
         let asked = run.endpoints.iter().find(|e| e.network == mode);
-        let ipam = match asked.filter(|e| !e.ipv4.is_empty() || !e.ipv6.is_empty()) {
-            Some(e) => Struct::pointer("network.EndpointIPAMConfig")
-                .tagged("IPv4Address", Some("IPv4Address"), true, s(&e.ipv4))
-                .tagged("IPv6Address", Some("IPv6Address"), true, s(&e.ipv6))
-                .value(),
-            None => Struct::nil("network.EndpointIPAMConfig"),
-        };
+        let ipam =
+            match asked.filter(|e| !e.ipv4.is_empty() || !e.ipv6.is_empty() || !e.link_local.is_empty()) {
+                Some(e) => ipam_config(e),
+                None => Struct::nil("network.EndpointIPAMConfig"),
+            };
         let aliases = match asked.map(|e| &e.aliases).filter(|a| !a.is_empty()) {
             Some(a) => Value::strings(a.iter().cloned()),
             None => Value::NilList(Kind::String),
@@ -1063,8 +1082,13 @@ fn network_settings(f: &Facts<'_>, run: &Run) -> Value {
             )
             .value();
     }
+    // Its link-local addresses (PM M175), its only IPAM config off a user network.
+    let ipam = match crate::setup::own_endpoint(run).filter(|e| !e.link_local.is_empty()) {
+        Some(e) => ipam_config(e),
+        None => Struct::nil("network.EndpointIPAMConfig"),
+    };
     let endpoint = Struct::pointer("network.EndpointSettings")
-        .field("IPAMConfig", Struct::nil("network.EndpointIPAMConfig"))
+        .field("IPAMConfig", ipam)
         .field("Links", Value::NilList(Kind::String))
         .field("Aliases", Value::NilList(Kind::String))
         .field("DriverOpts", Value::NilMap(Kind::String))

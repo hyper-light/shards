@@ -1187,9 +1187,16 @@ fn instruction(node: &Node, lint: &Linter, dialect: Dialect) -> Result<Parsed1, 
             if req.args.is_empty() {
                 return Err(at_least_one("EXPOSE"));
             }
+            // The members an Agentfile's EXPOSE is for (D122); a Dockerfile's takes none.
+            if agentfile {
+                for kind in ["agents", "harnesses", "mcps"] {
+                    req.flags.add(kind, FlagType::Strings, b"");
+                }
+            }
             req.flags.parse()?;
+            let members = ["agents", "harnesses", "mcps"].map(|kind| req.flags.values(kind));
             match agentfile
-                .then(|| crate::agentfile::exposure(&req.args))
+                .then(|| crate::agentfile::exposure(&req.args, members))
                 .transpose()?
                 .flatten()
             {

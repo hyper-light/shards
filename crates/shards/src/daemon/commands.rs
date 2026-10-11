@@ -14,8 +14,8 @@ use std::time::{Duration, Instant};
 
 use shards_cmdline::commands::{
     self, COMMIT, CONTAINER_INSPECT, CONTAINER_PRUNE, DIFF, EVENTS, EXPORT, HISTORY, IMAGE_INSPECT,
-    IMAGE_PRUNE, IMAGES, INFO, KILL, LOAD, LOGS, PAUSE, PORT, PS, PULL, PUSH, RENAME, RM, RMI, SAVE, STATS,
-    STOP, SYSTEM_DF, SYSTEM_PRUNE, TAG, TOP, UNPAUSE, WAIT,
+    IMAGE_PRUNE, IMAGES, INFO, KILL, LOAD, LOGS, PAUSE, PORT, PS, PULL, PUSH, READ_PORTS, RENAME, RM, RMI,
+    SAVE, STATS, STOP, SYSTEM_DF, SYSTEM_PRUNE, TAG, TOP, UNPAUSE, WAIT,
 };
 use shards_cmdline::flags::{self, Outcome, Parsed};
 use shards_cmdline::{gotime, width};
@@ -495,6 +495,8 @@ impl<D: crate::containers::Disk> Daemon<D> {
             self.kill(&parsed, asker.styled(), reply)
         } else if std::ptr::eq(command, &PORT) {
             self.port(&parsed.args, asker.styled(), reply)
+        } else if std::ptr::eq(command, &READ_PORTS) {
+            self.read_ports(&parsed.args, reply)
         } else if std::ptr::eq(command, &IMAGES) {
             self.images(&parsed, asker, reply)
         } else if std::ptr::eq(command, &TAG) {
@@ -1210,6 +1212,79 @@ impl<D: crate::containers::Disk> Daemon<D> {
         }
         for line in lines {
             reply.out(&line);
+        }
+        0
+    }
+
+    /// `shards read ports MICROVM` (D122): each published port of a running microVM and
+    /// what it reaches, the agent or harness its image's Agentfile names for it (at its own
+    /// port, where it maps one), else the run's own command.
+    fn read_ports(&self, args: &[String], reply: &Reply<'_>) -> u8 {
+        use shards_dockerfile::agentfile::TargetKind;
+        let Some(reference) = args.first() else {
+            return 1;
+        };
+        let id = match self.resolve(reference) {
+            Ok(id) => id,
+            Err(e) => {
+                reply.err(&e);
+                return 1;
+            }
+        };
+        let ports = match lock(&self.containers).get(&id) {
+            Some(c) if c.state == Life::Running => c.ports.clone(),
+            _ => Vec::new(),
+        };
+        let receivers = match lock(&self.runs).get(&id) {
+            Some(RunState::Tracked(run)) => run
+                .base
+                .agentfile
+                .as_ref()
+                .map(|a| a.receivers.clone())
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        };
+        let mut rows: Vec<[String; 3]> = ports
+            .iter()
+            .filter_map(|p| {
+                let at = std::net::SocketAddr::new(p.ip?, p.public);
+                let proto = if p.proto == "udp" { 17 } else { 6 };
+                let reaches = match receivers
+                    .iter()
+                    .find(|r| r.at.0 == proto && r.at.1 <= p.private && p.private <= r.at.2)
+                {
+                    Some(r) => {
+                        let kind = match r.kind {
+                            TargetKind::Agent => "agent",
+                            TargetKind::Harness => "harness",
+                        };
+                        let name = String::from_utf8_lossy(&r.name);
+                        let own = r.to.1.saturating_add(p.private.saturating_sub(r.at.1));
+                        if own == p.private {
+                            format!("{kind} {name}")
+                        } else {
+                            format!("{kind} {name}, at {own}/{}", p.proto)
+                        }
+                    }
+                    None => "the command".to_string(),
+                };
+                Some([format!("{}/{}", p.private, p.proto), at.to_string(), reaches])
+            })
+            .collect();
+        rows.sort_by(|[a, at_a, _], [b, at_b, _]| {
+            shards_cmdline::ports::natural_compare(a, b).then_with(|| at_a.cmp(at_b))
+        });
+        let (port, published) = rows
+            .iter()
+            .fold(("PORT".len(), "PUBLISHED".len()), |(p, a), [x, y, _]| {
+                (p.max(x.len()), a.max(y.len()))
+            });
+        reply.out(&format!(
+            "{:<port$}  {:<published$}  REACHES",
+            "PORT", "PUBLISHED"
+        ));
+        for [p, at, reaches] in rows {
+            reply.out(&format!("{p:<port$}  {at:<published$}  {reaches}"));
         }
         0
     }

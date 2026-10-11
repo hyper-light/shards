@@ -75,9 +75,15 @@ const SWITCH_IFINDEX: i32 = 100;
 /// switch, `agents0` in init's, each index this; on a link-local /30 of their own (RFC
 /// 3927), which no network of the guest's or the host's takes.
 const UPLINK_IFINDEX: i32 = 99;
-const UPLINK_INIT: Ipv4Addr = Ipv4Addr::new(169, 254, 77, 1);
-const UPLINK_SWITCH: Ipv4Addr = Ipv4Addr::new(169, 254, 77, 2);
-const UPLINK_PREFIX: u8 = 30;
+const UPLINK_INIT: Ipv4Addr = {
+    let [a, b, c, d] = shards_abi::run::beside::UPLINK_NET.0;
+    Ipv4Addr::new(a, b, c, d + 1)
+};
+const UPLINK_SWITCH: Ipv4Addr = {
+    let [a, b, c, d] = shards_abi::run::beside::UPLINK_NET.0;
+    Ipv4Addr::new(a, b, c, d + 2)
+};
+const UPLINK_PREFIX: u8 = shards_abi::run::beside::UPLINK_NET.1;
 /// The mark init's forward chain gives what an agent sends past the microVM, by which its
 /// postrouting chain gives it eth0's address.
 const MARK_AGENTS: u32 = 0x5a59_0001;
@@ -87,8 +93,9 @@ const MARK_AGENTS: u32 = 0x5a59_0001;
 pub struct Uplink {
     pub subnets: Vec<(Ipv4Addr, u8)>,
     pub eth0: (Ipv4Addr, Ipv4Addr, u8),
-    /// The ports let in, each to the address of the domain they are for.
-    pub ingress: Vec<(Ipv4Addr, Vec<crate::netplan::Egress>)>,
+    /// The ports let in, each to the address of the domain they are for: the microVM's,
+    /// translated to the domain's where an `EXPOSE` maps them (D122).
+    pub ingress: Vec<(Ipv4Addr, Vec<crate::netplan::Ingress>)>,
     /// The ports each domain opens flows to past the microVM, from its addresses.
     pub egress: Vec<(Vec<Ipv4Addr>, Vec<crate::netplan::Egress>)>,
     /// Whether the agents' resolver asks the microVM's.
@@ -149,6 +156,7 @@ mod nft {
     pub const NFTA_IMMEDIATE_DATA: u16 = 2;
     pub const NFT_REG_VERDICT: u32 = 0;
     pub const NFT_REG_1: u32 = 1;
+    pub const NFT_REG_2: u32 = 2;
     pub const NFT_META_IIF: u32 = 4;
     pub const NFT_META_OIF: u32 = 5;
     pub const NFT_CT_STATE: u32 = 0;
@@ -178,6 +186,7 @@ mod nft {
     pub const NFTA_NAT_TYPE: u16 = 1;
     pub const NFTA_NAT_FAMILY: u16 = 2;
     pub const NFTA_NAT_REG_ADDR_MIN: u16 = 3;
+    pub const NFTA_NAT_REG_PROTO_MIN: u16 = 5;
     pub const NFT_NAT_SNAT: u32 = 0;
     pub const NFT_NAT_DNAT: u32 = 1;
     pub const NF_INET_PRE_ROUTING: u32 = 0;
@@ -1089,8 +1098,13 @@ fn ports(list: &mut Vec<u8>, (proto, lo, hi): crate::netplan::Egress) {
 
 /// Register 1, `value`.
 fn load(list: &mut Vec<u8>, value: &[u8]) {
+    load_into(list, nft::NFT_REG_1, value);
+}
+
+/// Register `reg`, `value`.
+fn load_into(list: &mut Vec<u8>, reg: u32, value: &[u8]) {
     expr(list, b"immediate\0", |d| {
-        be32(d, nft::NFTA_IMMEDIATE_DREG, nft::NFT_REG_1);
+        be32(d, nft::NFTA_IMMEDIATE_DREG, reg);
         nested(d, nft::NFTA_IMMEDIATE_DATA, |v| {
             attr(v, nft::NFTA_DATA_VALUE, value)
         });
@@ -1567,16 +1581,16 @@ fn outside(sock: &OwnedFd, eth0: u32, u: &Uplink) -> io::Result<()> {
     b.rule(b"in\0", e);
     b.chain(b"forward\0", b"filter\0", nft::NF_INET_FORWARD, 0, nft::NF_DROP);
     b.rule(b"forward\0", answers());
-    // What is let in: from eth0 to the agents' link, on its ports, once `pre` has given it
-    // the address of the domain it is for.
+    // What is let in: from eth0 to the agents' link, once `pre` has given it the address
+    // of the domain it is for, and its port there.
     for (_, ranges) in ingress {
-        for &range in ranges {
+        for &(_, at) in ranges {
             let mut e = Vec::new();
             meta(&mut e, nft::NFT_META_IIF);
             compare(&mut e, nft::NFT_CMP_EQ, &eth0.to_ne_bytes());
             meta(&mut e, nft::NFT_META_OIF);
             compare(&mut e, nft::NFT_CMP_EQ, &(UPLINK_IFINDEX as u32).to_ne_bytes());
-            ports(&mut e, range);
+            ports(&mut e, at);
             accept(&mut e);
             b.rule(b"forward\0", e);
         }
@@ -1590,16 +1604,25 @@ fn outside(sock: &OwnedFd, eth0: u32, u: &Uplink) -> io::Result<()> {
             nft::NF_ACCEPT,
         );
         for (to, ranges) in ingress {
-            for &range in ranges {
+            for &(from, at) in ranges {
                 let mut e = Vec::new();
                 meta(&mut e, nft::NFT_META_IIF);
                 compare(&mut e, nft::NFT_CMP_EQ, &eth0.to_ne_bytes());
-                ports(&mut e, range);
+                ports(&mut e, from);
                 load(&mut e, &to.octets());
+                // Mapped to the domain's own port (D122): that port, in a register of its
+                // own, as nft's `dnat to ADDR:PORT` writes it.
+                let mapped = from != at;
+                if mapped {
+                    load_into(&mut e, nft::NFT_REG_2, &at.1.to_be_bytes());
+                }
                 expr(&mut e, b"nat\0", |d| {
                     be32(d, nft::NFTA_NAT_TYPE, nft::NFT_NAT_DNAT);
                     be32(d, nft::NFTA_NAT_FAMILY, u32::from(nft::NFPROTO_IPV4));
                     be32(d, nft::NFTA_NAT_REG_ADDR_MIN, nft::NFT_REG_1);
+                    if mapped {
+                        be32(d, nft::NFTA_NAT_REG_PROTO_MIN, nft::NFT_REG_2);
+                    }
                 });
                 b.rule(b"pre\0", e);
             }

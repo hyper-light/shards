@@ -71,6 +71,10 @@ pub struct Address6 {
 /// (6 TCP, 17 UDP), and the range's ends.
 pub type Egress = (u8, u16, u16);
 
+/// A port range let in past the microVM to a domain: the microVM's, then the domain's,
+/// the same unless an `EXPOSE` maps one to the other (`<port>:<member_port>`, D122).
+pub type Ingress = (Egress, Egress);
+
 /// A domain's link: its addresses, the names it resolves (`/etc/hosts`), the ports it may
 /// reach past the microVM, and whether it opens connections and is connected to, which its
 /// Landlock rules follow.
@@ -81,9 +85,10 @@ pub struct Link {
     pub addresses6: Vec<Address6>,
     pub hosts: Vec<u8>,
     pub egress: Vec<Egress>,
-    /// The ports let in past the microVM to it: of networks it is the one member of,
-    /// those both boundaries open inward (the build refuses several members).
-    pub ingress: Vec<Egress>,
+    /// The ports let in past the microVM to it (D122): those both boundaries open inward
+    /// that an `EXPOSE` names it for, or names no one for on a network it is the one
+    /// member of (the build refuses any other).
+    pub ingress: Vec<Ingress>,
     /// Whether it may ask the microVM's resolver for names past the microVM: one of its
     /// networks, not internal, says so (`NETWORK --dns`).
     pub dns: bool,
@@ -494,7 +499,10 @@ pub fn plan(
             .filter(|n| members.iter().any(|(m, ds)| m == *n && ds.as_slice() == [d]))
             .cloned()
             .collect();
-        let ingress = boundary_of(spec, &alone, false)?;
+        let ingress = match names.get(d) {
+            Some((harness, name)) => ingress_of(spec, (*harness, name), &joined, &alone)?,
+            None => Vec::new(),
+        };
         let dns = spec
             .get("networks")
             .map(Value::array)
@@ -585,6 +593,92 @@ fn boundary_of(spec: &Value, joined: &[String], outward: bool) -> Result<Vec<Egr
                 let (lo, hi) = (lo.max(a), hi.min(b));
                 if p == q && lo <= hi && !out.contains(&(p, lo, hi)) {
                     out.push((p, lo, hi));
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// The ports let in past the microVM to the domain `d` names, a harness or not, on
+/// `joined` (D122): of each joined network that is not internal, each `EXPOSE ... FOR` it
+/// that lets ports in and names `d` (`agents`, `harnesses`), or names no one where `d` is
+/// the network's one member (`alone`); each where the network lets the domain's port in
+/// too (`NETWORK --ingress`, `--expose`): a mapped one (`<port>:<member_port>`) at the
+/// member's, which it is given at, any other where their ranges meet.
+fn ingress_of(
+    spec: &Value,
+    d: (bool, &str),
+    joined: &[String],
+    alone: &[String],
+) -> Result<Vec<Ingress>, String> {
+    let range = |p: &str| port_range(p).ok_or_else(|| format!("the port {p:?} is no port or range of ports"));
+    let mut out: Vec<Ingress> = Vec::new();
+    for n in spec.get("networks").map(Value::array).unwrap_or_default() {
+        let Some(name) = n.get("name").and_then(Value::str) else {
+            continue;
+        };
+        if matches!(n.get("internal"), Some(Value::Bool(true))) || !joined.iter().any(|j| j == name) {
+            continue;
+        }
+        // Its IP ports: a Unix socket's (`unix:<name>`) is no port of the microVM's.
+        let own: Vec<Egress> = n
+            .get("ports")
+            .map(Value::array)
+            .unwrap_or_default()
+            .iter()
+            .filter(|p| p.get("direction").and_then(Value::str) != Some("egress"))
+            .filter_map(|p| p.get("port").and_then(Value::str))
+            .filter(|p| !p.starts_with("unix:"))
+            .map(range)
+            .collect::<Result<_, _>>()?;
+        for e in spec.get("exposures").map(Value::array).unwrap_or_default() {
+            if e.get("direction").and_then(Value::str) == Some("egress")
+                || !strings(e.get("networks")).iter().any(|x| x == name)
+            {
+                continue;
+            }
+            let (agents, harnesses) = (strings(e.get("agents")), strings(e.get("harnesses")));
+            let named = if d.0 { &harnesses } else { &agents };
+            let for_d = if agents.is_empty() && harnesses.is_empty() {
+                alone.iter().any(|a| a == name)
+            } else {
+                named.iter().any(|m| m == d.1)
+            };
+            if !for_d {
+                continue;
+            }
+            for p in strings(e.get("ports"))
+                .into_iter()
+                .filter(|p| !p.starts_with("unix:"))
+            {
+                // `<port>:<member_port>[/proto]`: the microVM's and the member's.
+                let (ports, proto) = p.rsplit_once('/').map_or((p.as_str(), ""), |(a, b)| (a, b));
+                let with = |q: &str| {
+                    if proto.is_empty() {
+                        q.to_string()
+                    } else {
+                        format!("{q}/{proto}")
+                    }
+                };
+                match ports.split_once(':') {
+                    Some((o, i)) => {
+                        let (o, i) = (range(&with(o))?, range(&with(i))?);
+                        if own.iter().any(|&(q, a, b)| q == i.0 && a <= i.1 && i.2 <= b)
+                            && !out.contains(&(o, i))
+                        {
+                            out.push((o, i));
+                        }
+                    }
+                    None => {
+                        let (q, lo, hi) = range(&p)?;
+                        for &(r, a, b) in &own {
+                            let (lo, hi) = (lo.max(a), hi.min(b));
+                            if q == r && lo <= hi && !out.contains(&((q, lo, hi), (q, lo, hi))) {
+                                out.push(((q, lo, hi), (q, lo, hi)));
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -733,7 +827,7 @@ mod tests {
         assert_eq!(a.egress, vec![(6, 443, 443), (17, 53, 53)]);
         assert!(a.connects, "egress lets it connect");
         // 8080 both boundaries open inward, to out's one member.
-        assert_eq!(a.ingress, vec![(6, 8080, 8080)]);
+        assert_eq!(a.ingress, vec![((6, 8080, 8080), (6, 8080, 8080))]);
         assert!(a.accepts, "ingress lets it be connected to");
         let b = p.links[1].as_ref().unwrap();
         assert!(
@@ -742,6 +836,32 @@ mod tests {
         );
         assert!(!b.connects);
         assert!(p.uplink);
+    }
+
+    /// Ports coming in to a network of several members (D122): each to the member its
+    /// EXPOSE names, an agent or a harness of one name told apart, a mapped one at the
+    /// member's own port, and none to a member no EXPOSE names; a Unix socket the network
+    /// lets in is no port of the microVM's.
+    #[test]
+    fn ingress_goes_to_the_member_its_expose_names() {
+        let spec = crate::json::parse(
+            br#"{"networks":[{"name":"front","internal":false,"subnets":[],"gateways":[],
+                             "ports":[{"port":"3000","direction":"ingress"},{"port":"80","direction":"ingress"},
+                                      {"port":"unix:tools","direction":"ingress"}]}],
+                "exposures":[{"ports":["3000"],"direction":"ingress","networks":["front"],"agents":["web"]},
+                             {"ports":["8081:80"],"direction":"ingress","networks":["front"],"harnesses":["web"]},
+                             {"ports":["9000"],"direction":"ingress","networks":["front"],"agents":["web"]}],
+                "connections":[{"kind":null,"from":["web"],"bothWays":true,"to":["api"],"on":["front"]},
+                               {"kind":"harness","from":["web"],"bothWays":true,"to":["web"],"on":["front"]}]}"#,
+        )
+        .unwrap();
+        let names: Vec<Name> = vec![(false, "web".into()), (false, "api".into()), (true, "web".into())];
+        let p = plan(&spec, &names, None, None).unwrap();
+        let ingress = |d: usize| p.links[d].as_ref().unwrap().ingress.clone();
+        // 9000 the network lets no member have.
+        assert_eq!(ingress(0), vec![((6, 3000, 3000), (6, 3000, 3000))]);
+        assert_eq!(ingress(1), vec![], "named by no EXPOSE, on a network of several");
+        assert_eq!(ingress(2), vec![((6, 8081, 8081), (6, 80, 80))]);
     }
 
     /// A remote MCP server reaches the agents its FOR names, or every agent, at its port,

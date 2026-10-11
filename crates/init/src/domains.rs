@@ -979,7 +979,8 @@ fn gate_of(
             .map(|(from, _, ports)| (addrs(*from), ports.clone()))
             .collect(),
         egress: link.egress.clone(),
-        ingress: link.ingress.clone(),
+        // Past the uplink's translation, at the domain's own ports (D122).
+        ingress: link.ingress.iter().map(|&(_, at)| at).collect(),
         dns: link.dns || !link.mcp.is_empty(),
         own6: link.addresses6.iter().map(|a| a.addr).collect(),
         opens6: pairs
@@ -1021,7 +1022,7 @@ fn switch(
                 .map(|l| (i, l.egress.clone()))
         })
         .collect();
-    let ingress: Vec<(usize, Vec<crate::netplan::Egress>)> = domains
+    let ingress: Vec<(usize, Vec<crate::netplan::Ingress>)> = domains
         .iter()
         .enumerate()
         .filter_map(|(i, d)| {
@@ -1030,6 +1031,12 @@ fn switch(
                 .filter(|l| !l.ingress.is_empty())
                 .map(|l| (i, l.ingress.clone()))
         })
+        .collect();
+    // The switch forwards what comes in at the domain's own ports, past the uplink's
+    // translation (D122).
+    let ingress_at: Vec<(usize, Vec<crate::netplan::Egress>)> = ingress
+        .iter()
+        .map(|(i, ranges)| (*i, ranges.iter().map(|&(_, at)| at).collect()))
         .collect();
     let dns: Vec<usize> = domains
         .iter()
@@ -1126,7 +1133,7 @@ fn switch(
     let ipv6 = domains
         .iter()
         .any(|d| d.link.as_ref().is_some_and(|l| !l.addresses6.is_empty()));
-    let switch = crate::links::Switch::new(pairs, &egress, &ingress, &dns, uplink.as_ref(), ipv6)?;
+    let switch = crate::links::Switch::new(pairs, &egress, &ingress_at, &dns, uplink.as_ref(), ipv6)?;
     // The agents' resolver, for those granted names.
     let mut askers: Vec<crate::agentdns::Asker> = Vec::new();
     for &i in &dns {

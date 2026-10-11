@@ -224,6 +224,8 @@ fn expose_takes_a_direction_and_networks_and_stays_dockers_without_them() {
             ports: vec![b("3000"), b("3001/udp")],
             direction: Direction::Ingress,
             networks: vec![b("front"), b("back")],
+            agents: vec![],
+            harnesses: vec![],
         })
     );
     assert_eq!(
@@ -231,7 +233,9 @@ fn expose_takes_a_direction_and_networks_and_stays_dockers_without_them() {
         Directive::Expose(Exposure {
             ports: vec![b("443")],
             direction: Direction::Egress,
-            networks: vec![]
+            networks: vec![],
+            agents: vec![],
+            harnesses: vec![],
         })
     );
     assert_eq!(
@@ -242,6 +246,39 @@ fn expose_takes_a_direction_and_networks_and_stays_dockers_without_them() {
     assert!(refused("EXPOSE 80 AS sideways").contains("ingress or egress, not \"sideways\""));
     assert!(refused("EXPOSE 80 AS ingress egress").contains("AS takes one word"));
     assert!(refused("EXPOSE 80 FOR").contains("FOR names no network"));
+    // The members it is for (D122): each flag its own kind, a list comma-separated or
+    // given again; a port mapped to a member's, ingress's alone, one port to one.
+    assert_eq!(
+        one("EXPOSE --agents=web,api --agents=db --harnesses=ci 443 AS egress FOR front"),
+        Directive::Expose(Exposure {
+            ports: vec![b("443")],
+            direction: Direction::Egress,
+            networks: vec![b("front")],
+            agents: vec![b("web"), b("api"), b("db")],
+            harnesses: vec![b("ci")],
+        })
+    );
+    assert_eq!(
+        one("EXPOSE --agents=api 8081:80/udp AS ingress FOR front"),
+        Directive::Expose(Exposure {
+            ports: vec![b("8081:80/udp")],
+            direction: Direction::Ingress,
+            networks: vec![b("front")],
+            agents: vec![b("api")],
+            harnesses: vec![],
+        })
+    );
+    assert_eq!(
+        shards_dockerfile::agentfile::outside(b"8081:80/udp"),
+        b("8081/udp")
+    );
+    assert_eq!(shards_dockerfile::agentfile::inside(b"8081:80/udp"), b("80/udp"));
+    assert!(refused("EXPOSE --agents=web 3000").contains("name members of the networks after FOR"));
+    assert!(refused("EXPOSE --mcps=search 3000 FOR front").contains("MCP servers do not join networks yet"));
+    assert!(refused("EXPOSE 8081:80 AS egress FOR front").contains("ingress's alone"));
+    assert!(refused("EXPOSE 8081:80 FOR front").contains("ingress's alone"));
+    assert!(refused("EXPOSE 8081-8082:80 AS ingress FOR front").contains("one port to one port"));
+    assert!(refused("EXPOSE --agents=web! 3000 FOR front").contains("an agent"));
 }
 
 #[test]
@@ -662,6 +699,8 @@ fn a_normalized_agentfile_reads_back_as_its_grants() {
          EXPOSE 443 AS egress FOR world\n\
          EXPOSE 9005-9020 53/udp FOR world\n\
          EXPOSE 8080 AS ingress FOR world\n\
+         EXPOSE --agents=other 8081:8080 AS ingress FOR world\n\
+         EXPOSE --agents=main,other --harnesses=ci 9001 AS egress FOR world\n\
          FROM base\n\
          SKILL ./more.md FOR main\n",
         "FROM scratch\nAGENT a FROM ./a\n",
@@ -775,6 +814,7 @@ fn ingress_reaches_a_networks_one_member() {
             })
             .collect();
         shards_dockerfile::agentfile::ingress(&directives)
+            .map(drop)
             .map_err(|e| String::from_utf8_lossy(&e).into_owned())
     };
     let base = "FROM alpine\nAGENT a FROM ./a\nAGENT b FROM ./b\n";
@@ -784,14 +824,47 @@ fn ingress_reaches_a_networks_one_member() {
         )),
         Ok(())
     );
+    let several = format!("{base}NETWORK --ingress=8080 front\nCONNECT --port=8080 a WITH b ON front\n");
+    let e = check(&format!("{several}EXPOSE 8080 AS ingress FOR front\n")).unwrap_err();
+    assert!(
+        e.contains("network front lets port 8080 in past the microVM to its members agent a, agent b: name the one it is for"),
+        "{e}"
+    );
+    // Named, one member a port (D122); a port claimed twice, and a claim of two, refused.
+    assert_eq!(
+        check(&format!("{several}EXPOSE --agents=a 8080 AS ingress FOR front\n")),
+        Ok(())
+    );
     let e = check(&format!(
-        "{base}NETWORK --ingress=8080 front\nEXPOSE 8080 AS ingress FOR front\nCONNECT --port=8080 a WITH b ON front\n"
+        "{several}EXPOSE --agents=a 8080 AS ingress FOR front\nEXPOSE --agents=b 8080 FOR front\n"
     ))
     .unwrap_err();
     assert!(
-        e.contains("network front lets ports in past the microVM to its members a, b"),
+        e.contains("port 8080 on network front comes in to two members, agent a and agent b"),
         "{e}"
     );
+    let e = check(&format!(
+        "{several}EXPOSE --agents=a,b 8080 AS ingress FOR front\n"
+    ))
+    .unwrap_err();
+    assert!(
+        e.contains("names agent a, agent b: a port coming in goes to one member"),
+        "{e}"
+    );
+    // Each its own port, the second mapped to its member's 8080 at the network's
+    // boundary; egress by both.
+    assert_eq!(
+        check(&format!(
+            "{several}EXPOSE --agents=a 8080 AS ingress FOR front\nEXPOSE --agents=b 9090:8080 AS ingress FOR front\nEXPOSE --agents=a,b 443 AS egress FOR front\n"
+        )),
+        Ok(())
+    );
+    // One the network's members do not hold.
+    let e = check(&format!(
+        "{several}AGENT c FROM ./c\nEXPOSE --agents=c 8080 AS ingress FOR front\n"
+    ))
+    .unwrap_err();
+    assert!(e.contains("agent c is on no network after FOR"), "{e}");
     // One boundary alone lets nothing in: several members are no question then.
     assert_eq!(
         check(&format!(

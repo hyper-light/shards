@@ -104,6 +104,63 @@ fn values_read_as_network_opt_reads_them() {
     }
 }
 
+/// run's top-level network flags land on its endpoints as applyContainerOptions puts them:
+/// `--link-local-ip` counted as given for the conflict and what netip does not read
+/// dropped, a MAC as Go writes a HardwareAddr.
+#[test]
+fn top_level_flags_land_on_endpoints_as_run_puts_them() {
+    let golden = golden();
+    for case in golden["applied"].as_array().unwrap() {
+        let args = list(&case["args"]);
+        let mut top = network::TopLevel::default();
+        let mut given = Vec::new();
+        for pair in args.chunks(2) {
+            let [flag, value] = pair else { panic!("{args:?}") };
+            match flag.as_str() {
+                "--network" => given.push(network::attachment(value).unwrap()),
+                "--network-alias" => top.aliases.push(value.clone()),
+                "--ip" => top.ipv4 = Some(network::parse_addr(value).unwrap()),
+                "--ip6" => top.ipv6 = Some(network::parse_addr(value).unwrap()),
+                "--mac-address" => top.mac.clone_from(value),
+                "--link-local-ip" => top.link_local.push(value.clone()),
+                other => panic!("{other}"),
+            }
+        }
+        match network::endpoints(&given, &top) {
+            Err(e) => assert_eq!(e, text(&case["err"]), "{args:?}"),
+            Ok(endpoints) => {
+                assert_eq!(text(&case["err"]), "", "{args:?}");
+                let ours: BTreeMap<String, Value> = endpoints
+                    .into_iter()
+                    .map(|a| {
+                        let addr = |a: &Option<network::Addr>| {
+                            a.as_ref().map(ToString::to_string).unwrap_or_default()
+                        };
+                        let mac = network::mac_octets(a.mac.trim())
+                            .map(|o| network::mac_string(&o))
+                            .unwrap_or_default();
+                        let e = serde_json::json!({
+                            "aliases": a.aliases,
+                            "ipv4": addr(&a.ipv4),
+                            "ipv6": addr(&a.ipv6),
+                            "link_local": a.link_local.iter().map(ToString::to_string).collect::<Vec<_>>(),
+                            "mac": mac,
+                        });
+                        (a.target, e)
+                    })
+                    .collect();
+                let want: BTreeMap<String, Value> = case["endpoints"]
+                    .as_object()
+                    .unwrap()
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
+                assert_eq!(ours, want, "{args:?}");
+            }
+        }
+    }
+}
+
 #[test]
 fn runs_ask_for_the_networks_run_asks_for() {
     let golden = golden();

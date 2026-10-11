@@ -97,6 +97,7 @@ pub fn main() -> ! {
         "vsock" => vsock(args.get(1..).unwrap_or_default()),
         "loopback" => loopback(),
         "fs" => fs(args.get(1..).unwrap_or_default()),
+        "addrs" => addrs(),
         "tcp" => tcp(arg(1)),
         "fetch" => fetch(args.get(1..).unwrap_or_default()),
         "ask" => ask(arg(1)),
@@ -1037,6 +1038,63 @@ fn udp_echo(port: &str, stop: &str) -> i32 {
             }
         }
     }
+}
+
+/// Every address of every interface, one a line, `NAME ADDR/PREFIX`, as getifaddrs(3)
+/// lists them: what `ip addr` would show of each.
+fn addrs() -> i32 {
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+    let mut list: *mut libc::ifaddrs = std::ptr::null_mut();
+    // SAFETY: getifaddrs(3) into a list it allocates, freed below.
+    if unsafe { libc::getifaddrs(&raw mut list) } != 0 {
+        let _ = writeln!(io::stderr(), "getifaddrs: {}", io::Error::last_os_error());
+        return 1;
+    }
+    let mut at = list;
+    while !at.is_null() {
+        // SAFETY: a node of the list getifaddrs made, read before it is freed.
+        let ifa = unsafe { &*at };
+        at = ifa.ifa_next;
+        if ifa.ifa_addr.is_null() || ifa.ifa_netmask.is_null() {
+            continue;
+        }
+        // SAFETY: the name getifaddrs gives each node, NUL-terminated.
+        let name = unsafe { std::ffi::CStr::from_ptr(ifa.ifa_name) }.to_string_lossy();
+        // SAFETY: a sockaddr getifaddrs made; its family says which one it is.
+        let (addr, prefix) = match i32::from(unsafe { (*ifa.ifa_addr).sa_family }) {
+            libc::AF_INET => {
+                // SAFETY: AF_INET's address and mask are sockaddr_in.
+                let (a, m) = unsafe {
+                    (
+                        &*ifa.ifa_addr.cast::<libc::sockaddr_in>(),
+                        &*ifa.ifa_netmask.cast::<libc::sockaddr_in>(),
+                    )
+                };
+                (
+                    IpAddr::V4(Ipv4Addr::from(u32::from_be(a.sin_addr.s_addr))),
+                    m.sin_addr.s_addr.count_ones(),
+                )
+            }
+            libc::AF_INET6 => {
+                // SAFETY: AF_INET6's address and mask are sockaddr_in6.
+                let (a, m) = unsafe {
+                    (
+                        &*ifa.ifa_addr.cast::<libc::sockaddr_in6>(),
+                        &*ifa.ifa_netmask.cast::<libc::sockaddr_in6>(),
+                    )
+                };
+                (
+                    IpAddr::V6(Ipv6Addr::from(a.sin6_addr.s6_addr)),
+                    m.sin6_addr.s6_addr.iter().map(|b| b.count_ones()).sum(),
+                )
+            }
+            _ => continue,
+        };
+        let _ = writeln!(io::stdout(), "{name} {addr}/{prefix}");
+    }
+    // SAFETY: the list getifaddrs made, freed once.
+    unsafe { libc::freeifaddrs(list) };
+    0
 }
 
 /// File operations, in order: `mkdir:P`, `write:P=DATA`, `link:OLD:NEW`, `symlink:T:P`,

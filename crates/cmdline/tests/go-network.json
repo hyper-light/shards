@@ -1251,6 +1251,211 @@
       "endpoints": null
     }
   ],
+  "applied": [
+    {
+      "args": [
+        "--link-local-ip",
+        "169.254.1.1",
+        "--link-local-ip",
+        "fe80::1"
+      ],
+      "endpoints": {
+        "default": {
+          "aliases": [],
+          "ipv4": "",
+          "ipv6": "",
+          "link_local": [
+            "169.254.1.1",
+            "fe80::1"
+          ],
+          "mac": ""
+        }
+      }
+    },
+    {
+      "args": [
+        "--link-local-ip",
+        "nope"
+      ],
+      "endpoints": {
+        "default": {
+          "aliases": [],
+          "ipv4": "",
+          "ipv6": "",
+          "link_local": [],
+          "mac": ""
+        }
+      }
+    },
+    {
+      "args": [
+        "--link-local-ip",
+        "nope",
+        "--link-local-ip",
+        "169.254.1.2"
+      ],
+      "endpoints": {
+        "default": {
+          "aliases": [],
+          "ipv4": "",
+          "ipv6": "",
+          "link_local": [
+            "169.254.1.2"
+          ],
+          "mac": ""
+        }
+      }
+    },
+    {
+      "args": [
+        "--link-local-ip",
+        "169.254.9.1",
+        "--network",
+        "name=bridge,link-local-ip=169.254.9.2"
+      ],
+      "err": "conflicting options: cannot specify both --link-local-ip and per-network link-local IP addresses"
+    },
+    {
+      "args": [
+        "--link-local-ip",
+        "nope",
+        "--network",
+        "name=bridge,link-local-ip=169.254.9.2"
+      ],
+      "err": "conflicting options: cannot specify both --link-local-ip and per-network link-local IP addresses"
+    },
+    {
+      "args": [
+        "--link-local-ip",
+        "fe80::1%eth0",
+        "--link-local-ip",
+        "::ffff:169.254.10.1"
+      ],
+      "endpoints": {
+        "default": {
+          "aliases": [],
+          "ipv4": "",
+          "ipv6": "",
+          "link_local": [
+            "fe80::1%eth0",
+            "::ffff:169.254.10.1"
+          ],
+          "mac": ""
+        }
+      }
+    },
+    {
+      "args": [
+        "--link-local-ip",
+        "169.254.1.1",
+        "--network",
+        "mine"
+      ],
+      "endpoints": {
+        "mine": {
+          "aliases": [],
+          "ipv4": "",
+          "ipv6": "",
+          "link_local": [
+            "169.254.1.1"
+          ],
+          "mac": ""
+        }
+      }
+    },
+    {
+      "args": [
+        "--link-local-ip",
+        "169.254.1.1",
+        "--network",
+        "none"
+      ],
+      "endpoints": {
+        "none": {
+          "aliases": [],
+          "ipv4": "",
+          "ipv6": "",
+          "link_local": [
+            "169.254.1.1"
+          ],
+          "mac": ""
+        }
+      }
+    },
+    {
+      "args": [
+        "--network",
+        "name=bridge,link-local-ip=169.254.3.3,link-local-ip=fe80::3"
+      ],
+      "endpoints": {
+        "bridge": {
+          "aliases": [],
+          "ipv4": "",
+          "ipv6": "",
+          "link_local": [
+            "169.254.3.3",
+            "fe80::3"
+          ],
+          "mac": ""
+        }
+      }
+    },
+    {
+      "args": [
+        "--mac-address",
+        "02-42-AC-11-00-02"
+      ],
+      "endpoints": {
+        "default": {
+          "aliases": [],
+          "ipv4": "",
+          "ipv6": "",
+          "link_local": [],
+          "mac": "02:42:ac:11:00:02"
+        }
+      }
+    },
+    {
+      "args": [
+        "--mac-address",
+        "02:42:ac:11:00:02:00:01",
+        "--network",
+        "mine"
+      ],
+      "endpoints": {
+        "mine": {
+          "aliases": [],
+          "ipv4": "",
+          "ipv6": "",
+          "link_local": [],
+          "mac": "02:42:ac:11:00:02:00:01"
+        }
+      }
+    },
+    {
+      "args": [
+        "--network-alias",
+        "x",
+        "--ip",
+        "10.1.2.3",
+        "--ip6",
+        "fd00::3",
+        "--network",
+        "mine"
+      ],
+      "endpoints": {
+        "mine": {
+          "aliases": [
+            "x"
+          ],
+          "ipv4": "10.1.2.3",
+          "ipv6": "fd00::3",
+          "link_local": [],
+          "mac": ""
+        }
+      }
+    }
+  ],
   "ports": [
     {
       "publish": [

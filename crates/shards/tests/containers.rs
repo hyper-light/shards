@@ -2273,6 +2273,343 @@ fn a_runs_mac_is_its_own_as_dockerd_gives_it() {
     assert_eq!(exit(&mut srv), Some(0));
 }
 
+/// A run's link-local addresses, as dockerd gives them (PM M175): each on eth0 with its
+/// family's prefix, given either way, an IPv4-mapped one as IPv4, a malformed one dropped
+/// as docker/cli drops it; dockerd's refusals and failures in its words; none on `none`,
+/// and none of a joiner's own; inspect's LinkLocalIPs while created, running and exited.
+/// On a network, two given them reach each other at them and one without reaches neither;
+/// on one with IPv6, a member reaches another's at the address its kernel makes of its
+/// MAC, as on dockerd's bridge.
+#[test]
+fn a_runs_link_local_addresses_are_its_own_as_dockerd_gives_them() {
+    let Some((home, image)) = home("containers-link-local") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let eth0 = |options: &[&str]| -> Vec<String> {
+        let mut o = vec!["--rm"];
+        o.extend(options);
+        let r = run_in(&home, &image, &o, &["addrs"]);
+        assert_eq!(r.status, Some(0), "{options:?}: {r}");
+        r.stdout
+            .lines()
+            .filter_map(|l| l.strip_prefix("eth0 "))
+            .map(String::from)
+            .collect()
+    };
+    for (options, want) in [
+        (&["--link-local-ip", "169.254.1.1"][..], &["169.254.1.1/16"][..]),
+        (
+            &[
+                "--network",
+                "name=bridge,link-local-ip=169.254.1.2,link-local-ip=169.254.7.7",
+            ],
+            &["169.254.1.2/16", "169.254.7.7/16"],
+        ),
+        (&["--link-local-ip", "::ffff:169.254.10.1"], &["169.254.10.1/16"]),
+    ] {
+        let got = eth0(options);
+        for w in want {
+            assert!(got.iter().any(|a| a == w), "{options:?}: {got:?}");
+        }
+    }
+    let got = eth0(&["--link-local-ip", "nope"]);
+    assert!(!got.iter().any(|a| a.starts_with("169.254.")), "{got:?}");
+    let failed = "failed to set up container networking:";
+    for (options, status, said) in [
+        (
+            &["--link-local-ip", "10.9.8.7"][..],
+            125,
+            format!("{failed} invalid link local IP address: 10.9.8.7"),
+        ),
+        (
+            &["--network", "none", "--link-local-ip", "10.9.8.7"],
+            125,
+            format!("{failed} invalid link local IP address: 10.9.8.7"),
+        ),
+        (
+            &["--link-local-ip", "169.254.12.1", "--link-local-ip", "10.9.8.6"],
+            125,
+            format!("{failed} invalid link local IP address: 10.9.8.6"),
+        ),
+        (
+            &["--link-local-ip", "fe80::1234"],
+            126,
+            format!(
+                "{failed} failed to add interface eth0 to sandbox: error setting interface \"eth0\" link local IPs to [fe80::1234/64]: permission denied"
+            ),
+        ),
+        (
+            &["--link-local-ip", "169.254.8.1", "--link-local-ip", "169.254.8.1"],
+            125,
+            format!(
+                "{failed} failed to add interface eth0 to sandbox: error setting interface \"eth0\" link local IPs to [169.254.8.1/16 169.254.8.1/16]: file exists"
+            ),
+        ),
+        (
+            &["--link-local-ip", "0.0.0.0"],
+            125,
+            "invalid config for network bridge: invalid endpoint settings:\ninvalid link-local IP address: 0.0.0.0".to_string(),
+        ),
+        (
+            &[
+                "--link-local-ip",
+                "169.254.9.1",
+                "--network",
+                "name=bridge,link-local-ip=169.254.9.2",
+            ],
+            125,
+            "conflicting options: cannot specify both --link-local-ip and per-network link-local IP addresses".to_string(),
+        ),
+    ] {
+        let r = run_in(&home, &image, &[&["--rm"][..], options].concat(), &["exit", "0"]);
+        assert!(r.status == Some(status) && r.stderr.contains(&said), "{options:?}: {r}");
+    }
+    // `none`: taken, and no interface but lo has it.
+    let r = run_in(
+        &home,
+        &image,
+        &["--rm", "--network", "none", "--link-local-ip", "169.254.1.3"],
+        &["addrs"],
+    );
+    assert!(r.status == Some(0) && !r.stdout.contains("169.254."), "{r}");
+    // inspect, as dockerd keeps it from the request: created, running and exited alike.
+    let ll = "{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{json $v.IPAMConfig}}{{end}}";
+    let shown = |name: &str| shards(&["inspect", "-f", ll, name]).stdout;
+    for (name, options, want) in [
+        (
+            "ll-made",
+            &[
+                "--link-local-ip",
+                "169.254.5.1",
+                "--link-local-ip",
+                "::ffff:169.254.5.2",
+            ][..],
+            "bridge {\"LinkLocalIPs\":[\"169.254.5.1\",\"169.254.5.2\"]}\n",
+        ),
+        (
+            "ll-zoned",
+            &["--link-local-ip", "fe80::1%eth0"],
+            "bridge {\"LinkLocalIPs\":[\"fe80::1%eth0\"]}\n",
+        ),
+        (
+            "ll-none",
+            &["--network", "none", "--link-local-ip", "169.254.14.1"],
+            "none {\"LinkLocalIPs\":[\"169.254.14.1\"]}\n",
+        ),
+        ("ll-unset", &[], "bridge null\n"),
+    ] {
+        let mut args = vec!["create", "--pull", "never", "--name", name];
+        args.extend(options);
+        args.extend([image.as_str(), "exit", "0"]);
+        let created = shards(&args);
+        assert_eq!(created.status, Some(0), "{created}");
+        assert_eq!(shown(name), want, "{name}");
+    }
+    let ran = shards(&["start", "-a", "ll-made"]);
+    assert_eq!(ran.status, Some(0), "{ran}");
+    assert_eq!(
+        shown("ll-made"),
+        "bridge {\"LinkLocalIPs\":[\"169.254.5.1\",\"169.254.5.2\"]}\n"
+    );
+    // A joiner: taken, and nothing of its own, its interface its provider's.
+    let mut prov = start(
+        &home,
+        &image,
+        &["--name", "ll-prov", "--link-local-ip", "169.254.6.2"],
+        &["sleep"],
+    );
+    assert_eq!(
+        shown("ll-prov"),
+        "bridge {\"LinkLocalIPs\":[\"169.254.6.2\"]}\n",
+        "while it runs"
+    );
+    let joined = run_in(
+        &home,
+        &image,
+        &[
+            "--rm",
+            "--network",
+            "container:ll-prov",
+            "--link-local-ip",
+            "169.254.6.1",
+        ],
+        &["addrs"],
+    );
+    assert!(
+        joined.status == Some(0)
+            && !joined.stdout.contains("169.254.6.1")
+            && joined.stdout.contains("eth0 169.254.6.2/16"),
+        "{joined}"
+    );
+    assert_eq!(shards(&["rm", "-f", "ll-prov"]).status, Some(0));
+    let _ = exit(&mut prov);
+    // On a network: two given them reach each other at them; one without, neither.
+    let made = shards(&["network", "create", "llnet"]);
+    assert_eq!(made.status, Some(0), "{made}");
+    let mut srv = start(
+        &home,
+        &image,
+        &[
+            "--name",
+            "ll-srv",
+            "--network",
+            "name=llnet,link-local-ip=169.254.2.10",
+        ],
+        &["serve", "7000", "1"],
+    );
+    let asked = run_in(
+        &home,
+        &image,
+        &["--rm", "--network", "name=llnet,link-local-ip=169.254.2.11"],
+        &["ask", "169.254.2.10:7000"],
+    );
+    assert!(
+        asked.status == Some(0) && asked.stdout.starts_with("ask from 169.254.2.11"),
+        "{asked}"
+    );
+    assert_eq!(exit(&mut srv), Some(0));
+    let mut srv = start(
+        &home,
+        &image,
+        &[
+            "--name",
+            "ll-srv2",
+            "--network",
+            "name=llnet,link-local-ip=169.254.2.12",
+        ],
+        &["serve", "7000", "1"],
+    );
+    let unasked = run_in(
+        &home,
+        &image,
+        &["--rm", "--network", "llnet"],
+        &["ask", "169.254.2.12:7000"],
+    );
+    assert_ne!(unasked.status, Some(0), "{unasked}");
+    assert_eq!(shards(&["rm", "-f", "ll-srv2"]).status, Some(0));
+    let _ = exit(&mut srv);
+    // A network with IPv6: its kernel's link-local address is its MAC's (RFC 4291's
+    // modified EUI-64), and a member that was given none reaches another's at it.
+    let made = shards(&["network", "create", "--ipv6", "--subnet", "fd7d::/64", "llnet6"]);
+    assert_eq!(made.status, Some(0), "{made}");
+    let mut srv = start(
+        &home,
+        &image,
+        &[
+            "--name",
+            "ll-six",
+            "--network",
+            "name=llnet6,link-local-ip=fe80::2:10",
+        ],
+        &["serve", "7000", "2"],
+    );
+    // The address a microVM's kernel makes of its MAC, RFC 4291's modified EUI-64.
+    let kernels = |name: &str| {
+        let mac = shards(&[
+            "exec",
+            name,
+            "/bin/testguest",
+            "fs",
+            "print:/sys/class/net/eth0/address",
+        ]);
+        let o: Vec<u8> = mac
+            .stdout
+            .trim()
+            .split(':')
+            .map(|h| u8::from_str_radix(h, 16).unwrap())
+            .collect();
+        std::net::Ipv6Addr::from([
+            0xfe,
+            0x80,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            o[0] ^ 2,
+            o[1],
+            o[2],
+            0xff,
+            0xfe,
+            o[3],
+            o[4],
+            o[5],
+        ])
+    };
+    let has = shards(&["exec", "ll-six", "/bin/testguest", "addrs"]);
+    assert!(
+        has.stdout.contains(&format!("eth0 {}/64", kernels("ll-six")))
+            && has.stdout.contains("eth0 fe80::2:10/64"),
+        "{has}"
+    );
+    // At once, from its address on the network or its own link-local one, whichever its
+    // kernel takes while that one is still being checked (duplicate address detection).
+    let asked = run_in(
+        &home,
+        &image,
+        &["--rm", "--network", "llnet6"],
+        &["ask", "[fe80::2:10%2]:7000"],
+    );
+    assert!(
+        asked.status == Some(0)
+            && (asked.stdout.starts_with("ask from fd7d::") || asked.stdout.starts_with("ask from fe80::")),
+        "{asked}"
+    );
+    // Once its own is checked (no longer tentative in /proc/net/if_inet6, IFA_F_TENTATIVE
+    // 0x40): from the address its kernel made of its MAC, which the server's network
+    // process knows it by.
+    let mut client = start(
+        &home,
+        &image,
+        &["--name", "ll-client", "--network", "llnet6"],
+        &["sleep"],
+    );
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+        let table = shards(&[
+            "exec",
+            "ll-client",
+            "/bin/testguest",
+            "fs",
+            "print:/proc/net/if_inet6",
+        ]);
+        let checked = table.stdout.lines().any(|l| {
+            let f: Vec<&str> = l.split_whitespace().collect();
+            f.first().is_some_and(|a| a.starts_with("fe80"))
+                && f.get(4)
+                    .and_then(|x| u8::from_str_radix(x, 16).ok())
+                    .is_some_and(|x| x & 0x40 == 0)
+        });
+        if checked {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "its link-local address stayed tentative: {table}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let asked = shards(&[
+        "exec",
+        "ll-client",
+        "/bin/testguest",
+        "ask",
+        "[fe80::2:10%2]:7000",
+    ]);
+    assert!(
+        asked.status == Some(0)
+            && asked
+                .stdout
+                .starts_with(&format!("ask from {}", kernels("ll-client"))),
+        "{asked}"
+    );
+    assert_eq!(exit(&mut srv), Some(0));
+    assert_eq!(shards(&["rm", "-f", "ll-client"]).status, Some(0));
+    let _ = exit(&mut client);
+}
+
 /// A container given CAP_SYS_ADMIN mounts nothing, as Docker's default AppArmor profile
 /// keeps one where AppArmor is enforced (docker-default, `deny mount,`), which the guest
 /// has not: a mount, a remount of a read-only file, the new mount API and its microVM's own

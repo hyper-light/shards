@@ -33,6 +33,8 @@ pub struct Agentfile {
     /// Whether their flows past the microVM, out or in, or their names, cross init's
     /// network namespace, the command's, on their way to eth0 (D59, D115).
     pub uplink: bool,
+    /// Who each port coming in past the microVM reaches (D122), for `shards read ports`.
+    pub receivers: Vec<shards_dockerfile::agentfile::Receiver>,
 }
 
 impl Agentfile {
@@ -72,6 +74,17 @@ impl Agentfile {
                 .or_else(|| crate::setup::endpoint_sysctls(run).into_iter().next())
         {
             return Err(beside::sysctl(s.split_once('=').map_or(s.as_str(), |(k, _)| k)));
+        }
+        // A link-local address of its own in the link to the domains' switch (PM M175).
+        if self.uplink
+            && let Some(ip) = crate::setup::own_endpoint(run)
+                .into_iter()
+                .flat_map(|e| e.link_local.iter())
+                .filter_map(|s| shards_cmdline::network::parse_addr(s).ok())
+                .map(|a| a.unmap().ip)
+                .find(|ip| matches!(ip, std::net::IpAddr::V4(v4) if beside::in_uplink(v4.octets())))
+        {
+            return Err(beside::link_local(&ip.to_string()));
         }
         self.ids(&run.user, &run.group_add)?;
         let granted = !self.grants.egress.is_empty() || !self.grants.mcp.is_empty() || self.grants.dns;
@@ -171,7 +184,7 @@ pub fn agentfile(rootfs: &std::path::Path, digest: &str) -> Result<Agentfile, St
     let directives = af::from_spec(&json).map_err(fail)?;
     let said = |e: Vec<u8>| fail(String::from_utf8_lossy(&e).into_owned());
     af::connections(&directives).map_err(said)?;
-    af::ingress(&directives).map_err(said)?;
+    let receivers = af::ingress(&directives).map_err(said)?;
     af::reach(&directives).map_err(said)?;
     let text = |b: &[u8]| {
         String::from_utf8(b.to_vec()).map_err(|_| fail("a volume's name or path that is not UTF-8".into()))
@@ -216,6 +229,7 @@ pub fn agentfile(rootfs: &std::path::Path, digest: &str) -> Result<Agentfile, St
         uplink: !grants.egress.is_empty() || !grants.mcp.is_empty() || grants.dns || ingress,
         grants,
         domains: u32::try_from(domains).map_err(|_| fail("more agents and harnesses than uids".into()))?,
+        receivers,
     };
     read.lock()
         .unwrap_or_else(PoisonError::into_inner)
@@ -251,6 +265,17 @@ mod tests {
             r
         };
         let caps = |list: &[&str]| run(&|r| r.cap_add = list.iter().map(|s| (*s).to_string()).collect());
+        // A link-local address of its own (PM M175), on the default bridge.
+        let link_local = |a: &str| {
+            run(&|r| {
+                r.network = "default".into();
+                r.endpoints = vec![shards_ipc::Endpoint {
+                    network: "default".into(),
+                    link_local: vec![a.to_string()],
+                    ..Default::default()
+                }];
+            })
+        };
         for (r, uplink, said) in [
             (run(&|r| r.privileged = true), false, "cannot run privileged"),
             (
@@ -304,6 +329,16 @@ mod tests {
                 true,
                 "cannot run without a network",
             ),
+            (
+                link_local("169.254.77.2"),
+                true,
+                "cannot give eth0 link-local address 169.254.77.2",
+            ),
+            (
+                link_local("::ffff:169.254.77.1"),
+                true,
+                "cannot give eth0 link-local address 169.254.77.1",
+            ),
         ] {
             let got = beside(uplink).refuse(&r);
             assert!(
@@ -322,9 +357,11 @@ mod tests {
             run(&|r| r.sysctls = vec!["net.ipv4.ip_forward=0".into(), "kernel.shmmax=1".into()]),
             run(&|r| r.user = "1000:200002".into()),
             run(&|r| r.security_opt = vec!["seccomp=unconfined".into()]),
+            link_local("169.254.77.2"),
         ] {
             assert_eq!(beside(false).refuse(&r), Ok(()));
         }
+        assert_eq!(beside(true).refuse(&link_local("169.254.78.1")), Ok(()));
         assert_eq!(
             beside(true).refuse(&run(&|r| r.sysctls = vec!["kernel.shmmax=1".into()])),
             Ok(())
@@ -441,6 +478,8 @@ mod tests {
             ports: vec![b("443")],
             direction: Direction::Both,
             networks: vec![b("out")],
+            agents: Vec::new(),
+            harnesses: Vec::new(),
         });
 
         let good = spec(&[
@@ -534,6 +573,8 @@ mod tests {
                         ports: vec![b("8080")],
                         direction: Direction::Both,
                         networks: vec![b("pub")],
+                        agents: Vec::new(),
+                        harnesses: Vec::new(),
                     }),
                     Directive::Connect(Connect {
                         kind: None,
@@ -544,7 +585,7 @@ mod tests {
                         ports: vec![b("8080")],
                     }),
                 ],
-                "lets ports in past the microVM to its members",
+                "lets port 8080 in past the microVM to its members agent a, agent b: name the one it is for",
             ),
             (
                 "port",

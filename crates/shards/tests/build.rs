@@ -8523,6 +8523,131 @@ fn agents_answer_what_their_networks_let_in() {
     let _ = shards(&["rm", "-f", "front"]);
 }
 
+/// Each member of a network answers the port its `EXPOSE` names it for (D122): two agents
+/// that both listen on 7100 are each reached, web at the microVM's 7100 and api at its
+/// 7101, mapped to api's 7100, each answering with its host name; with no member named, a
+/// network of two that lets a port in is refused as it is built.
+#[test]
+fn each_agent_answers_the_port_its_expose_names() {
+    use std::io::Read as _;
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let (port, _repos) = common::writable_registry();
+    let home = TempDir::new("members-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let mut agents = String::new();
+    for name in ["web", "api"] {
+        let dir = TempDir::new(&format!("members-{name}"));
+        std::fs::create_dir_all(dir.join("bin")).unwrap();
+        std::fs::copy(common::test_guest(), dir.join("bin/testguest")).unwrap();
+        std::fs::write(
+            dir.join("agent.json"),
+            format!(
+                r#"{{"name":"{name}","run":{{"command":["bin/testguest","confined","listen","7100"]}}}}"#
+            ),
+        )
+        .unwrap();
+        let tag = format!("127.0.0.1:{port}/team/members-{name}:1");
+        let made = shards(&["build", "agent", dir.to_str().unwrap(), "-t", &tag]);
+        assert_eq!(made.status, Some(0), "{}", made.stderr);
+        let pushed = shards(&["push", "agent", &tag]);
+        assert_eq!(pushed.status, Some(0), "{}", pushed.stderr);
+        agents.push_str(&format!("AGENT {name} FROM {tag}\n"));
+    }
+    let base = format!(
+        "FROM {image}\n{agents}NETWORK --ingress=7100 front\nCONNECT web WITH web ON front\nCONNECT api WITH api ON front\n"
+    );
+    let ctx = context("members-ctx", &format!("FROM {image}\n"));
+    std::fs::write(
+        ctx.join("Agentfile"),
+        format!("{base}EXPOSE 7100 AS ingress FOR front\n"),
+    )
+    .unwrap();
+    let built = shards(&["build", "-t", "members:0", ctx.to_str().unwrap()]);
+    assert_ne!(built.status, Some(0), "{}", built.stdout);
+    assert!(
+        built
+            .stderr
+            .contains("network front lets port 7100 in past the microVM to its members agent web, agent api: name the one it is for"),
+        "{}",
+        built.stderr
+    );
+    std::fs::write(
+        ctx.join("Agentfile"),
+        format!(
+            "{base}EXPOSE --agents=web 7100 AS ingress FOR front\nEXPOSE --agents=api 7101:7100 AS ingress FOR front\n"
+        ),
+    )
+    .unwrap();
+    let built = shards(&["build", "-t", "members:1", ctx.to_str().unwrap()]);
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    let ran = shards(&[
+        "run",
+        "-d",
+        "--name",
+        "pair",
+        "-p",
+        "127.0.0.1::7100",
+        "-p",
+        "127.0.0.1::7101",
+        "members:1",
+        "sleep",
+    ]);
+    assert_eq!(ran.status, Some(0), "{}{}", ran.stdout, ran.stderr);
+    let listed = shards(&["port", "pair"]);
+    assert_eq!(listed.status, Some(0), "{}", listed.stderr);
+    let host_port = |container: &str| -> u16 {
+        listed
+            .stdout
+            .lines()
+            .find(|l| l.starts_with(&format!("{container}/tcp")))
+            .and_then(|l| l.rsplit(':').next())
+            .and_then(|p| p.parse().ok())
+            .unwrap_or_else(|| panic!("no {container} in {}", listed.stdout))
+    };
+    // What a connection to the host's published port reads, in 3 s at most; once its agent
+    // listens, as until then a connection finds no one.
+    let read = |p: u16| -> String {
+        let deadline = std::time::Instant::now() + TIMEOUT;
+        loop {
+            let mut got = String::new();
+            if let Ok(mut c) = std::net::TcpStream::connect(("127.0.0.1", p)) {
+                let _ = c.set_read_timeout(Some(std::time::Duration::from_secs(3)));
+                let _ = c.read_to_string(&mut got);
+            }
+            if !got.is_empty() || std::time::Instant::now() >= deadline {
+                return got;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    };
+    assert_eq!(read(host_port("7100")), "hello from agent-web\n");
+    assert_eq!(read(host_port("7101")), "hello from agent-api\n");
+    // Which member each published port reaches, in shards' grammar.
+    let shown = shards(&["read", "ports", "pair"]);
+    assert_eq!(shown.status, Some(0), "{}", shown.stderr);
+    let (web, api) = (
+        format!("127.0.0.1:{}", host_port("7100")),
+        format!("127.0.0.1:{}", host_port("7101")),
+    );
+    let w = web.len().max(api.len());
+    assert_eq!(
+        shown.stdout,
+        format!(
+            "PORT      {:<w$}  REACHES\n7100/tcp  {web:<w$}  agent web\n7101/tcp  {api:<w$}  agent api, at 7100/tcp\n",
+            "PUBLISHED"
+        )
+    );
+    let _ = shards(&["rm", "-f", "pair"]);
+}
+
 /// A remote MCP server is a grant of that server alone (D59, AGENTFILE_ARCH.md §4.4, §9.6;
 /// networks are default deny): the agent its `FOR` names reaches the server's port, at the
 /// addresses its host resolves to and no other, may ask for that host's name and no other,

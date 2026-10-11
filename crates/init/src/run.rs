@@ -467,6 +467,18 @@ impl Beside {
                     return Err(setup_failed(beside::capability(name, reach)));
                 }
             }
+            // A link-local address in the link to the domains' switch (PM M175).
+            if let Some(cidr) = entry.strip_prefix(b"link-local=")
+                && self.uplink
+            {
+                let text = String::from_utf8_lossy(cidr);
+                let ip = text.split_once('/').map_or(&*text, |(ip, _)| ip);
+                if let Ok(std::net::IpAddr::V4(v4)) = ip.parse::<std::net::IpAddr>()
+                    && beside::in_uplink(v4.octets())
+                {
+                    return Err(setup_failed(beside::link_local(ip)));
+                }
+            }
             if let Some(kv) = entry
                 .strip_prefix(b"sysctl=")
                 .or_else(|| entry.strip_prefix(b"endpoint-sysctl="))
@@ -541,6 +553,7 @@ fn sort_setup(entries: &[Vec<u8>], into: &mut Inherited) -> Result<Vec<Vec<u8>>,
             || entry.starts_with(b"pid=joiner=")
             || entry.starts_with(b"endpoint-sysctl=")
             || entry.starts_with(b"mac=")
+            || entry.starts_with(b"link-local=")
         {
             // Init's, as the run starts (`Standby::start`).
         } else if entry.starts_with(b"devices=") {
@@ -2081,6 +2094,28 @@ impl Standby {
             beside.refuse(&spec.setup, "run")?;
             let _ = BESIDE.set(beside);
         }
+        // Its link-local addresses (PM M175), as libnetwork adds them once eth0 has its
+        // addresses (setInterfaceLinkLocalIPs), the start failing in its words, which name
+        // them all.
+        let link_local: Vec<String> = spec
+            .setup
+            .iter()
+            .filter_map(|e| e.strip_prefix(b"link-local="))
+            .map(|e| String::from_utf8_lossy(e).into_owned())
+            .collect();
+        for cidr in &link_local {
+            let (ip, bits) = cidr
+                .split_once('/')
+                .and_then(|(ip, bits)| Some((ip.parse().ok()?, bits.parse().ok()?)))
+                .ok_or_else(|| setup_failed(format!("a malformed link-local entry: {cidr}")))?;
+            crate::net::add_link_local(ip, bits).map_err(|e| {
+                setup_failed(format!(
+                    "failed to set up container networking: failed to add interface eth0 to sandbox: error setting interface \"eth0\" link local IPs to [{}]: {}",
+                    link_local.join(" "),
+                    shards_cmdline::go::linux_error(e.raw_os_error().unwrap_or(libc::EIO))
+                ))
+            })?;
+        }
         // Where its command is born (D115): where the template's standby was, PID 1 of a
         // namespace of its own, but for `--init` and `--pid host`.
         let born = if spec.builtin == run::builtin::HOLD {
@@ -3070,6 +3105,7 @@ fn joiner_takes(setup: &[Vec<u8>]) -> Result<(), Failure> {
             || entry.starts_with(b"address6=")
             || entry.starts_with(b"endpoint-sysctl=")
             || entry.starts_with(b"mac=")
+            || entry.starts_with(b"link-local=")
             || entry == b"confine-eth0"
             || entry.starts_with(b"domains-seccomp")
         {

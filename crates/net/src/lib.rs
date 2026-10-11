@@ -236,6 +236,9 @@ pub struct Config {
     /// else, and the guest's IPv6 frames are dropped.
     pub guest_ip6: Option<Ipv6Addr>,
     pub gateway_ip6: Option<Ipv6Addr>,
+    /// The guest's link-local addresses on its network (`NET_LINK_LOCAL`, PM M175): its
+    /// own beside its addresses, which reach its peers' alone and nothing past the link.
+    pub guest_link_local: Vec<IpAddr>,
     pub policy: Policy,
     /// The resolvers a guest's names past the microVM are asked of, the host's own
     /// (`/etc/resolv.conf`, or `SHARDS_DNS`): asked only under [`Policy::Ports`], for a
@@ -284,6 +287,44 @@ impl std::str::FromStr for Mac {
             None => Ok(Mac(mac)),
         }
     }
+}
+
+/// Addresses as the daemon and a network process pass them (`NET_LINK_LOCAL`, `NET_PEER`):
+/// each its length, 4 or 16, then its octets.
+pub fn encode_addresses(addresses: &[IpAddr]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for a in addresses {
+        match a {
+            IpAddr::V4(v4) => {
+                out.push(4);
+                out.extend_from_slice(&v4.octets());
+            }
+            IpAddr::V6(v6) => {
+                out.push(16);
+                out.extend_from_slice(&v6.octets());
+            }
+        }
+    }
+    out
+}
+
+/// [`encode_addresses`]'s addresses; none of a list cut short or of another length.
+fn decode_addresses(mut b: &[u8]) -> Option<Vec<IpAddr>> {
+    let mut out = Vec::new();
+    while let Some((&len, rest)) = b.split_first() {
+        let (address, rest) = match len {
+            4 => rest
+                .split_first_chunk::<4>()
+                .map(|(o, rest)| (IpAddr::from(*o), rest))?,
+            16 => rest
+                .split_first_chunk::<16>()
+                .map(|(o, rest)| (IpAddr::from(*o), rest))?,
+            _ => return None,
+        };
+        out.push(address);
+        b = rest;
+    }
+    Some(out)
 }
 
 /// A fresh guest MAC, random, locally administered and unicast, as current Docker gives
@@ -340,12 +381,23 @@ impl Config {
             gateway_ip: bridge.gateway(),
             guest_ip6: None,
             gateway_ip6: None,
+            guest_link_local: Vec::new(),
             policy,
             resolvers: Vec::new(),
             named: Vec::new(),
             learned: HashSet::new(),
             dns_all: false,
         }
+    }
+
+    /// Whether `ip` is one of the guest's own: its address of that version, or one of its
+    /// link-local addresses.
+    fn guests(&self, ip: IpAddr) -> bool {
+        let address = match ip {
+            IpAddr::V4(v4) => v4 == self.guest_ip,
+            IpAddr::V6(v6) => Some(v6) == self.guest_ip6,
+        };
+        address || self.guest_link_local.contains(&ip)
     }
 
     /// The gateway of `ip`'s version: the address the guest reaches this process at.
@@ -604,6 +656,8 @@ struct Peer {
     ip: Ipv4Addr,
     /// Its IPv6 address, on a network with IPv6.
     ip6: Option<Ipv6Addr>,
+    /// Its link-local addresses (PM M175), which its guest's alone reach.
+    link_local: Vec<IpAddr>,
     sock: std::os::unix::net::UnixStream,
     /// What of the frame being sent the socket has yet to take.
     unsent: Vec<u8>,
@@ -731,6 +785,7 @@ impl Control {
                 shards_ipc::kind::PUBLISH
                     | shards_ipc::kind::NET_ADDRESS
                     | shards_ipc::kind::NET_MAC
+                    | shards_ipc::kind::NET_LINK_LOCAL
                     | shards_ipc::kind::NET_PEER
                     | shards_ipc::kind::NET_NAMES
                     | shards_ipc::kind::NET_POLICY
@@ -947,6 +1002,12 @@ fn control(
             stack.cfg.named = named;
             stack.cfg.dns_all = dns_all;
             shards_ipc::send(sock, shards_ipc::kind::NET_POLICY, &[], &[])
+        } else if m.kind == shards_ipc::kind::NET_LINK_LOCAL {
+            let Some(addresses) = decode_addresses(&m.payload) else {
+                return false;
+            };
+            stack.cfg.guest_link_local = addresses;
+            shards_ipc::send(sock, shards_ipc::kind::NET_LINK_LOCAL, &[], &[])
         } else if m.kind == shards_ipc::kind::NET_PEER {
             stack.add_peer(&m.payload, m.fds);
             shards_ipc::send(sock, shards_ipc::kind::NET_PEER, &[], &[])
@@ -1223,8 +1284,8 @@ impl<'r> Stack<'r> {
         match e.kind {
             wire::ETHERTYPE_ARP => {
                 if let Some(req) = wire::arp_request(e.payload)
-                    && req.sender_ip == self.cfg.guest_ip
-                    && req.target_ip != self.cfg.guest_ip
+                    && self.cfg.guests(IpAddr::V4(req.sender_ip))
+                    && !self.cfg.guests(IpAddr::V4(req.target_ip))
                 {
                     self.out().built(|frames, f| frames.arp_reply(f, &req));
                 }
@@ -1236,14 +1297,16 @@ impl<'r> Stack<'r> {
             wire::ETHERTYPE_IPV6 => {
                 // No IPv6 on the guest's network: its frames (link-local chatter, router
                 // and multicast listener messages) reach nothing.
-                let Some(guest6) = self.cfg.guest_ip6 else { return };
+                if self.cfg.guest_ip6.is_none() {
+                    return;
+                }
                 let Some(ip) = wire::ipv6(e.payload) else { return };
                 // Neighbor discovery for any address but its own: the gateway's MAC, as
                 // ARP is answered. The guest may ask from its link-local address (Linux
                 // solicits from the address the waiting packet has, else that one); the
                 // frame is its own, by its MAC, either way.
                 if let Some(ns) = wire::neighbor_solicit(&ip) {
-                    if ns.target != guest6 {
+                    if !self.cfg.guests(IpAddr::V6(ns.target)) {
                         self.out().built(|frames, f| frames.neighbor_advert(f, &ns));
                     }
                     return;
@@ -1254,25 +1317,40 @@ impl<'r> Stack<'r> {
         }
     }
 
-    /// The guest's IP packet `ip`, of either version, in frame `f`: to a peer, or to the
-    /// stack, only from the guest's own address of its version.
+    /// The guest's IP packet `ip`, of either version, in frame `f`, from one of its own
+    /// addresses: to a peer, or to the stack, only from its address of that version.
     fn on_guest_ip(&mut self, f: &[u8], ip: &wire::Ip<'_>) {
+        if !self.cfg.guests(ip.src) {
+            return;
+        }
+        // A member of its network (a peer), at any of its addresses the guest's link
+        // reaches, to its VM whole, past the policy, as a bridge's members reach one
+        // another: its address, and its link-local ones, which IPv6 always reaches
+        // (fe80::/64 is every interface's) and IPv4 only from a guest with a link-local
+        // address of its own, whose route makes 169.254.0.0/16 its link's (PM M175).
+        let on_link = match ip.dst {
+            IpAddr::V4(_) => self.cfg.guest_link_local.iter().any(IpAddr::is_ipv4),
+            IpAddr::V6(_) => true,
+        };
+        if let Some(i) = self.peers.iter().position(|p| {
+            p.as_ref().is_some_and(|p| {
+                let address = match ip.dst {
+                    IpAddr::V4(dst) => p.ip == dst,
+                    IpAddr::V6(dst) => p.ip6 == Some(dst),
+                };
+                address || on_link && p.link_local.contains(&ip.dst)
+            })
+        }) {
+            self.forward_to_peer(i, f);
+            return;
+        }
+        // Past the link, from its address alone: no router forwards what comes from a
+        // link-local one (RFC 3927 §2.7, RFC 4291 §2.5.6).
         let own = match ip.src {
             IpAddr::V4(src) => src == self.cfg.guest_ip,
             IpAddr::V6(src) => Some(src) == self.cfg.guest_ip6,
         };
         if !own {
-            return;
-        }
-        // A peer's, on the guest's network: to its VM whole, past the policy, as a
-        // bridge's members reach one another.
-        if let Some(i) = self.peers.iter().position(|p| {
-            p.as_ref().is_some_and(|p| match ip.dst {
-                IpAddr::V4(dst) => p.ip == dst,
-                IpAddr::V6(dst) => p.ip6 == Some(dst),
-            })
-        }) {
-            self.forward_to_peer(i, f);
             return;
         }
         match ip.proto {
@@ -1328,10 +1406,16 @@ impl<'r> Stack<'r> {
         else {
             return;
         };
-        let ip6 = match rest.len() {
-            0 => None,
-            16 => rest.first_chunk::<16>().map(|o| Ipv6Addr::from(*o)),
+        let (ip6, rest) = match rest.split_first() {
+            Some((0, rest)) => (None, rest),
+            Some((16, rest)) => match rest.split_first_chunk::<16>() {
+                Some((o, rest)) => (Some(Ipv6Addr::from(*o)), rest),
+                None => return,
+            },
             _ => return,
+        };
+        let Some(link_local) = decode_addresses(rest) else {
+            return;
         };
         let sock = std::os::unix::net::UnixStream::from(fd);
         if sock.set_nonblocking(true).is_err() {
@@ -1358,6 +1442,7 @@ impl<'r> Stack<'r> {
         let peer = Peer {
             ip: Ipv4Addr::new(a, b, c, d),
             ip6,
+            link_local,
             sock,
             unsent: Vec::new(),
             received: Vec::new(),
@@ -1464,6 +1549,10 @@ impl<'r> Stack<'r> {
                 frames.push((peer.ip, peer.ip6, frame));
             }
         }
+        let theirs: Vec<IpAddr> = match self.peers.get(i) {
+            Some(Some(peer)) => peer.link_local.clone(),
+            _ => Vec::new(),
+        };
         for (from, from6, mut frame) in frames {
             let Some(eth) = frame.get(wire::VNET..).and_then(wire::eth) else {
                 continue;
@@ -1474,11 +1563,13 @@ impl<'r> Stack<'r> {
                 _ => None,
             };
             let Some(ip) = ip else { continue };
-            let theirs_to_ours = match (ip.src, ip.dst) {
-                (IpAddr::V4(src), IpAddr::V4(dst)) => src == from && dst == self.cfg.guest_ip,
-                (IpAddr::V6(src), IpAddr::V6(dst)) => from6 == Some(src) && self.cfg.guest_ip6 == Some(dst),
-                _ => false,
-            };
+            // From one of the peer's own addresses to one of the guest's: its address of
+            // that version, or a link-local one (PM M175).
+            let from_theirs = match ip.src {
+                IpAddr::V4(src) => src == from,
+                IpAddr::V6(src) => from6 == Some(src),
+            } || theirs.contains(&ip.src);
+            let theirs_to_ours = from_theirs && self.cfg.guests(ip.dst);
             if !theirs_to_ours {
                 continue;
             }
@@ -2051,6 +2142,120 @@ mod tests {
         assert_eq!((e.dst, e.kind), (run, wire::ETHERTYPE_ARP));
         assert_eq!(e.payload.get(18..24), Some(&run[..]), "the reply's target");
         assert_eq!(take(), None, "the template's MAC is not heard");
+    }
+
+    /// The guest's link-local addresses (PM M175), as members of one bridge reach one
+    /// another: a packet to a peer's link-local address goes to that peer, from the guest's
+    /// link-local address or, its route being on the link, its address; from a link-local
+    /// address to one no peer has, nowhere; ARP asked from one is answered; a peer's frame
+    /// from its link-local address to the guest's reaches the guest; and a guest with no
+    /// IPv4 link-local address of its own, whose route to 169.254.0.0/16 is its gateway,
+    /// reaches no peer's.
+    #[test]
+    fn link_local_addresses_reach_their_peers_alone() {
+        use std::io::{Read as _, Write as _};
+        let region = Region::map(shards_netring::memory().unwrap()).unwrap();
+        let (cw, pr) = shards_netring::doorbell().unwrap();
+        let (_, cr) = shards_netring::doorbell().unwrap();
+        let mut consumer = region.consumer(1, cr, cw);
+        let mut take = || {
+            consumer
+                .pop(|n, copy| {
+                    let mut f = vec![0u8; n];
+                    copy(0, f.as_mut_ptr(), n);
+                    f
+                })
+                .unwrap()
+        };
+        let bridge = bridge::Bridge::elect(&[]).unwrap();
+        let cfg = Config::on_bridge(Policy::DenyAll, [2, 0, 0, 0, 0, 1], &bridge);
+        let (guest_mac, gateway_mac, guest_ip) = (cfg.guest_mac, cfg.gateway_mac, cfg.guest_ip);
+        let mut stack = stack(cfg, region.producer(1, pr));
+        let (ours, theirs) = (Ipv4Addr::new(169, 254, 1, 1), Ipv4Addr::new(169, 254, 1, 2));
+        stack.cfg.guest_link_local = vec![IpAddr::V4(ours)];
+        let (mut peer, end) = std::os::unix::net::UnixStream::pair().unwrap();
+        let mut payload = Ipv4Addr::new(172, 17, 0, 9).octets().to_vec();
+        payload.push(0);
+        payload.extend(encode_addresses(&[IpAddr::V4(theirs)]));
+        stack.add_peer(&payload, vec![end.into()]);
+        // An IPv4 datagram from the guest, src to dst.
+        let datagram = |src: Ipv4Addr, dst: Ipv4Addr| {
+            let mut f = vec![0u8; wire::VNET];
+            f.extend_from_slice(&gateway_mac);
+            f.extend_from_slice(&guest_mac);
+            f.extend_from_slice(&wire::ETHERTYPE_IPV4.to_be_bytes());
+            f.extend_from_slice(&[0x45, 0, 0, 28, 0, 0, 0, 0, 64, wire::PROTO_UDP, 0, 0]);
+            f.extend_from_slice(&src.octets());
+            f.extend_from_slice(&dst.octets());
+            f.extend_from_slice(&[0x30, 0x39, 0x1b, 0x58, 0, 8, 0, 0]);
+            f
+        };
+        let mut len = [0u8; 4];
+        let mut forwarded = |peer: &mut std::os::unix::net::UnixStream| {
+            peer.read_exact(&mut len).unwrap();
+            let mut got = vec![0u8; u32::from_be_bytes(len) as usize];
+            peer.read_exact(&mut got).unwrap();
+            let ip = wire::ipv4(wire::eth(got.get(wire::VNET..).unwrap()).unwrap().payload).unwrap();
+            (ip.src, ip.dst)
+        };
+        for src in [ours, guest_ip] {
+            stack.on_guest_frame(&datagram(src, theirs));
+            assert_eq!(forwarded(&mut peer), (IpAddr::V4(src), IpAddr::V4(theirs)));
+        }
+        // From its link-local one to an address no peer has: nowhere, as no router
+        // forwards it.
+        stack.on_guest_frame(&datagram(ours, Ipv4Addr::new(169, 254, 9, 9)));
+        peer.set_nonblocking(true).unwrap();
+        assert_eq!(
+            peer.read(&mut [0u8; 4]).unwrap_err().kind(),
+            io::ErrorKind::WouldBlock,
+            "nothing more reached the peer"
+        );
+        assert_eq!(take(), None, "nor the guest");
+        // Its ARP for the peer's link-local address, asked from its own: answered.
+        let mut arp = vec![0u8; wire::VNET];
+        arp.extend_from_slice(&[0xff; 6]);
+        arp.extend_from_slice(&guest_mac);
+        arp.extend_from_slice(&wire::ETHERTYPE_ARP.to_be_bytes());
+        arp.extend_from_slice(&[0, 1, 8, 0, 6, 4, 0, 1]);
+        arp.extend_from_slice(&guest_mac);
+        arp.extend_from_slice(&ours.octets());
+        arp.extend_from_slice(&[0; 6]);
+        arp.extend_from_slice(&theirs.octets());
+        stack.on_guest_frame(&arp);
+        let reply = take().unwrap();
+        let e = wire::eth(reply.get(wire::VNET..).unwrap()).unwrap();
+        assert_eq!((e.dst, e.kind), (guest_mac, wire::ETHERTYPE_ARP));
+        // The peer's frame, from its link-local address to the guest's: to the guest.
+        let frame = datagram(theirs, ours);
+        peer.set_nonblocking(false).unwrap();
+        peer.write_all(&u32::try_from(frame.len()).unwrap().to_be_bytes())
+            .unwrap();
+        peer.write_all(&frame).unwrap();
+        let ready = poll::Event {
+            token: 0,
+            read: true,
+            write: false,
+            ended: false,
+        };
+        stack.on_peer(0, &ready);
+        let delivered = take().unwrap();
+        let e = wire::eth(delivered.get(wire::VNET..).unwrap()).unwrap();
+        let ip = wire::ipv4(e.payload).unwrap();
+        assert_eq!(
+            (e.dst, ip.src, ip.dst),
+            (guest_mac, IpAddr::V4(theirs), IpAddr::V4(ours))
+        );
+        // No IPv4 link-local address of its own: its gateway takes the packet, which no
+        // grant lets past, saying so (ICMP's communication administratively prohibited).
+        stack.cfg.guest_link_local.clear();
+        stack.on_guest_frame(&datagram(guest_ip, theirs));
+        let refused = take().unwrap();
+        let ip = wire::ipv4(wire::eth(refused.get(wire::VNET..).unwrap()).unwrap().payload).unwrap();
+        assert_eq!(
+            (ip.proto, ip.payload.first(), ip.payload.get(1)),
+            (wire::PROTO_ICMP, Some(&3), Some(&13))
+        );
     }
 
     /// A connection's timer is armed once for its deadline, however often it settles,

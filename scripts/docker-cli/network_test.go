@@ -68,6 +68,22 @@ type shardsRun struct {
 	Endpoints []string `json:"endpoints"`
 }
 
+// What run's top-level network flags (--network-alias, --ip, --ip6, --mac-address,
+// --link-local-ip) put on each endpoint, as applyContainerOptions puts them.
+type shardsApplied struct {
+	Args      []string                  `json:"args"`
+	Err       string                    `json:"err,omitempty"`
+	Endpoints map[string]shardsEndpoint `json:"endpoints,omitempty"`
+}
+
+type shardsEndpoint struct {
+	Aliases   []string `json:"aliases"`
+	IPv4      string   `json:"ipv4"`
+	IPv6      string   `json:"ipv6"`
+	LinkLocal []string `json:"link_local"`
+	Mac       string   `json:"mac"`
+}
+
 func shardsAddrString(a netip.Addr) string {
 	if !a.IsValid() {
 		return ""
@@ -85,6 +101,7 @@ func TestShardsNetwork(t *testing.T) {
 		Macs        []shardsMac        `json:"macs"`
 		Attachments []shardsAttachment `json:"attachments"`
 		Runs        []shardsRun        `json:"runs"`
+		Applied     []shardsApplied    `json:"applied"`
 		Ports       []shardsPorts      `json:"ports"`
 		PortArgs    []shardsPortArg    `json:"port_args"`
 		Natural     []string           `json:"natural"`
@@ -176,6 +193,42 @@ func TestShardsNetwork(t *testing.T) {
 			sort.Strings(r.Endpoints)
 		}
 		answers.Runs = append(answers.Runs, r)
+	}
+	for _, args := range [][]string{
+		{"--link-local-ip", "169.254.1.1", "--link-local-ip", "fe80::1"},
+		{"--link-local-ip", "nope"},
+		{"--link-local-ip", "nope", "--link-local-ip", "169.254.1.2"},
+		{"--link-local-ip", "169.254.9.1", "--network", "name=bridge,link-local-ip=169.254.9.2"},
+		{"--link-local-ip", "nope", "--network", "name=bridge,link-local-ip=169.254.9.2"},
+		{"--link-local-ip", "fe80::1%eth0", "--link-local-ip", "::ffff:169.254.10.1"},
+		{"--link-local-ip", "169.254.1.1", "--network", "mine"},
+		{"--link-local-ip", "169.254.1.1", "--network", "none"},
+		{"--network", "name=bridge,link-local-ip=169.254.3.3,link-local-ip=fe80::3"},
+		{"--mac-address", "02-42-AC-11-00-02"},
+		{"--mac-address", "02:42:ac:11:00:02:00:01", "--network", "mine"},
+		{"--network-alias", "x", "--ip", "10.1.2.3", "--ip6", "fd00::3", "--network", "mine"},
+	} {
+		r := shardsApplied{Args: args}
+		_, _, nw, err := parseRun(append(append([]string{}, args...), "img"))
+		if err != nil {
+			r.Err = err.Error()
+		} else {
+			r.Endpoints = map[string]shardsEndpoint{}
+			for k, s := range nw.EndpointsConfig {
+				e := shardsEndpoint{Aliases: s.Aliases, LinkLocal: []string{}, Mac: s.MacAddress.String()}
+				if e.Aliases == nil {
+					e.Aliases = []string{}
+				}
+				if s.IPAMConfig != nil {
+					e.IPv4, e.IPv6 = shardsAddrString(s.IPAMConfig.IPv4Address), shardsAddrString(s.IPAMConfig.IPv6Address)
+					for _, l := range s.IPAMConfig.LinkLocalIPs {
+						e.LinkLocal = append(e.LinkLocal, l.String())
+					}
+				}
+				r.Endpoints[k] = e
+			}
+		}
+		answers.Applied = append(answers.Applied, r)
 	}
 	for _, publish := range [][]string{
 		{"80"}, {"80/udp"}, {"80/SCTP"}, {"8080:80"}, {"127.0.0.1:8080:80"}, {"127.0.0.1::80"},

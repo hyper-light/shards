@@ -164,11 +164,6 @@ pub fn check(
     {
         return Ok(Start::Join(name.to_string()));
     }
-    for e in &endpoints {
-        if !e.link_local.is_empty() {
-            return unsupported("link-local-ip");
-        }
-    }
     // As it starts: the mode's network, then the rest.
     let fails = |why: String| Ok(Start::Fails(why));
     let net = match mode {
@@ -208,7 +203,30 @@ pub fn check(
         };
         return fails(format!("failed to set up container networking: {why}"));
     }
+    // As libnetwork makes the endpoint (network.go createEndpoint), on `none` too: each of
+    // its link-local addresses one, else the first that is not fails the start (PM M175).
+    if let Some(bad) = endpoints
+        .iter()
+        .find(|e| e.network == mode)
+        .into_iter()
+        .flat_map(|e| e.link_local.iter().filter_map(|s| parse_addr(s).ok()))
+        .find(|a| !link_local_unicast(a))
+    {
+        return fails(format!(
+            "failed to set up container networking: invalid link local IP address: {}",
+            bad.unmap().ip
+        ));
+    }
     Ok(Start::Attach(net))
+}
+
+/// Go's `net.IP.IsLinkLocalUnicast` of an address as net.IP holds it, its zone gone and an
+/// IPv4-mapped one as IPv4: 169.254.0.0/16 and fe80::/10.
+pub fn link_local_unicast(a: &Addr) -> bool {
+    match a.unmap().ip {
+        IpAddr::V4(v4) => v4.is_link_local(),
+        IpAddr::V6(v6) => v6.is_unicast_link_local(),
+    }
 }
 
 /// validateEndpointSettings: Ok, or the errors joined under "invalid endpoint settings:".
@@ -561,11 +579,35 @@ mod tests {
             ),
             Ok(Start::Attach(Net::Bridge))
         );
+        // Link-local addresses are taken; one that is not link-local fails the start after
+        // the network is found, on `none` too, the first of several (PM M175).
         assert_eq!(
             check(&run(&["name=bridge,link-local-ip=169.254.1.1"]), docker, |_| {
                 false
             }),
-            unsupported("link-local-ip")
+            Ok(Start::Attach(Net::Bridge))
+        );
+        for (networks, bad) in [
+            (&["name=bridge,link-local-ip=10.9.8.7"][..], "10.9.8.7"),
+            (&["name=none,link-local-ip=fd00::7"], "fd00::7"),
+            (
+                &["name=bridge,link-local-ip=169.254.1.1,link-local-ip=::ffff:10.1.1.1"],
+                "10.1.1.1",
+            ),
+        ] {
+            assert_eq!(
+                check(&run(networks), docker, |_| false),
+                Ok(Start::Fails(format!(
+                    "failed to set up container networking: invalid link local IP address: {bad}"
+                ))),
+                "{networks:?}"
+            );
+        }
+        assert_eq!(
+            check(&run(&["name=nope,link-local-ip=10.9.8.7"]), docker, |_| false),
+            Ok(Start::Fails(
+                "failed to set up container networking: network nope not found".into()
+            ))
         );
         // An endpoint's sysctls are taken (PM M171).
         assert_eq!(

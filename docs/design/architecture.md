@@ -2925,6 +2925,34 @@ told, init not setting it, inspect not showing a created run's; the network proc
 `a_runs_mac_is_the_one_frames_go_to`; the CLI's parser held to Go 1.26.1's ParseMAC and
 `HardwareAddr.String`, `macs_parse_as_net_parses_them`).
 
+A run's link-local addresses (`--link-local-ip`, its endpoint's `link-local-ip`), as dockerd
+gives them (PM M175):
+
+- **On eth0** once it has its addresses, as libnetwork adds them (setInterfaceLinkLocalIPs):
+  IPv4's as /16 with its broadcast, IPv6's as /64 without duplicate address detection, an
+  IPv4-mapped one as IPv4 and a zone dropped.
+- **dockerd's checks, in its words.** An unspecified one is refused as the container is
+  made (validateEndpointSettings). One that is not link-local fails the start after the
+  network is found, on `none` too (libnetwork's createEndpoint). IPv6 where its network has
+  none fails with "permission denied", 126 as docker/cli's status says it, and one given
+  twice with "file exists". On `none` and another's network one is taken, and nothing has
+  it. inspect's `IPAMConfig.LinkLocalIPs` holds them as given, as dockerd keeps the request's.
+- **Reach, as on dockerd's bridge.** The daemon tells each network process its guest's
+  (`NET_LINK_LOCAL`), and each peer's beside its addresses (`NET_PEER`). A packet goes to a
+  peer at any address of the peer's that the sender's link reaches: a link-local IPv6 one
+  always, as fe80::/64 is every interface's; a link-local IPv4 one only from a guest with
+  one of its own, whose route makes 169.254.0.0/16 its link's. A packet from a link-local
+  address goes nowhere past the link (RFC 3927 §2.7, RFC 4291 §2.5.6). On a network with
+  IPv6, a member's link-local addresses include the one its kernel makes of its MAC (RFC
+  4291's modified EUI-64), the run's own (PM M173).
+- **Beside an image's agents**, whose flows past the microVM cross init's link
+  169.254.77.0/30 (D59), a link-local address in that link is refused, in shards' words, by
+  the daemon as the container is made and by init as it starts.
+- **Tested** (`a_runs_link_local_addresses_are_its_own_as_dockerd_gives_them`; the network
+  process's `link_local_addresses_reach_their_peers_alone`; the CLI's
+  `top_level_flags_land_on_endpoints_as_run_puts_them`, held to docker/cli's own
+  applyContainerOptions).
+
 Unlike Docker, by the microVM: a microVM has one network device, so it is on one network.
 One left on the default bridge and connected to one user network is on that network
 alone, which under default deny gives it all the bridge would. A microVM on two user
@@ -3489,6 +3517,45 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 2026-10-07): every path between domains is a grant, and the build refuses any that joins
 an internal-only domain to the world (D58), so there is no data to label. Code mode
 waits on the user.
+
+### D122. The members an `EXPOSE` is for: one receiver for each incoming port
+
+An `EXPOSE … FOR <network>` opened a port of the microVM for every member of the network.
+On a network of one member that is a receiver; on a network of several, a connection
+coming in had none, and shards refused it. Default deny asks that every grant name who, to
+whom, on which ports and which way (CLAUDE.md), and an incoming TCP connection or UDP
+datagram is delivered to one socket bound to its port, as Docker's `-p` delivers to the one
+process a container listens with (docs.docker.com/reference/cli/docker/container/run,
+`--publish`). So (AGENTFILE_ARCH §4.1, the user's syntax, 2026-10-11):
+
+- **`--agents=`, `--harnesses=`, `--mcps=`** name the members a port is for, each flag
+  members of its own kind: an agent and a harness may share a name, and a name never
+  resolves to the wrong kind (§4.10). A name of another kind, or of no member of a network
+  the `EXPOSE` names, is a build error that says what the name is. Without them, the port
+  is every member's, as before.
+- **One receiver for an incoming port**, across the three flags and across `EXPOSE`s: two
+  members claiming one port is a build error naming both, and so is an unnamed port of a
+  network of several. Egress, the destination port of connections going out, names any
+  number.
+- **`<port>:<member_port>`**, ingress's alone, in `-p`'s order (outside, then inside), so
+  two members that both listen on one port are each reached.
+- **Shown**: `shards read ports <microvm>` lists each published port with its member and
+  that member's kind, in shards' own grammar; `shards port` keeps Docker's output where it
+  is piped. A published port no member claims reaches the run's own command, as Docker's.
+
+- **At run**, init gives each domain the ports named for it, as pairs of the microVM's
+  range and the member's: the uplink's DNAT translates a mapped port (nft_nat's proto
+  register, as nft's `dnat to ADDR:PORT` writes it), and its forward chain, the switch and
+  the domain's gate match the member's port. The image's ExposedPorts keep the microVM's
+  port, where BuildKit's own `EXPOSE 8081:80` keeps the second.
+- **Tested**: `each_agent_answers_the_port_its_expose_names` (two agents both on 7100, web
+  at the microVM's 7100 and api at its 7101; `shards read ports`; the unnamed case refused
+  at build; mutation-checked, the DNAT without the port's translation reaching no one);
+  `ingress_reaches_a_networks_one_member` and the parser's cases; init's
+  `ingress_goes_to_the_member_its_expose_names`.
+
+`--mcps=` waits on local MCP servers joining networks: today each caller runs its own
+instance over stdio, in its own confinement (D60, §9.6).
 
 ### D121. Docker's AppArmor mount rule, in guests that have no AppArmor
 

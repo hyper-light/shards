@@ -179,9 +179,46 @@ pub struct Attach {
 /// the networks named, or for none until a grant gives them (§4.1, §8 Q7, §12.6).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Exposure {
+    /// Each as written: the microVM's port, or for ingress `<port>:<member_port>`, the
+    /// microVM's then its member's (D122).
     pub ports: Vec<Vec<u8>>,
     pub direction: Direction,
     pub networks: Vec<Vec<u8>>,
+    /// The members it is for (`--agents`, `--harnesses`, D122): every member of the
+    /// networks where none is named.
+    pub agents: Vec<Vec<u8>>,
+    pub harnesses: Vec<Vec<u8>>,
+}
+
+/// An `EXPOSE`'s port as the microVM has it: of `<port>:<member_port>[/proto]` (D122) the
+/// first, with its protocol; any other as written.
+pub fn outside(p: &[u8]) -> Vec<u8> {
+    mapping(p).0
+}
+
+/// An `EXPOSE`'s port as its member has it: of `<port>:<member_port>[/proto]` the second,
+/// with its protocol; any other as written.
+pub fn inside(p: &[u8]) -> Vec<u8> {
+    mapping(p).1
+}
+
+/// `<port>:<member_port>[/proto]`'s two ports, each with the protocol; a port as written,
+/// twice, where there is no `:`.
+fn mapping(p: &[u8]) -> (Vec<u8>, Vec<u8>) {
+    let (ports, proto) = match p.iter().rposition(|&b| b == b'/') {
+        Some(at) => p.split_at(at),
+        None => (p, &b""[..]),
+    };
+    match ports.iter().position(|&b| b == b':') {
+        Some(at) => {
+            let (a, b) = ports.split_at(at);
+            (
+                [a, proto].concat(),
+                [b.get(1..).unwrap_or_default(), proto].concat(),
+            )
+        }
+        None => (p.to_vec(), p.to_vec()),
+    }
 }
 
 /// `VOLUME` with options, a name or `FOR` (§4.5, §12.8): mount points, the named volume
@@ -607,13 +644,21 @@ fn attach(req: &mut Req<'_>) -> Result<Attach, Vec<u8>> {
     }
 }
 
-/// `EXPOSE <port>… [AS <ingress|egress>] [FOR <network>…]`, where it is written with either
-/// keyword: `None` for a Dockerfile's `EXPOSE`.
-pub(crate) fn exposure(args: &[Vec<u8>]) -> Result<Option<Exposure>, Vec<u8>> {
+/// `EXPOSE [--agents=…] [--harnesses=…] [--mcps=…] <port>… [AS <ingress|egress>]
+/// [FOR <network>…]`, where it is written with either keyword: `None` for a Dockerfile's
+/// `EXPOSE`. `members` are the three flags' names, each list given comma-separated.
+pub(crate) fn exposure(args: &[Vec<u8>], members: [Vec<Vec<u8>>; 3]) -> Result<Option<Exposure>, Vec<u8>> {
     let as_at = args.iter().position(|w| is(w, b"as"));
     let for_at = args.iter().position(|w| is(w, b"for"));
+    let [agents, harnesses, mcps] = members;
     if as_at.is_none() && for_at.is_none() {
+        if !agents.is_empty() || !harnesses.is_empty() || !mcps.is_empty() {
+            return Err(b"EXPOSE --agents, --harnesses and --mcps name members of the networks after FOR: EXPOSE --agents=<agent> <port> AS ingress FOR <network>".to_vec());
+        }
         return Ok(None);
+    }
+    if !mcps.is_empty() {
+        return Err(b"EXPOSE --mcps: MCP servers do not join networks yet (architecture.md D122); name agents with --agents and harnesses with --harnesses".to_vec());
     }
     let ports_end = as_at.or(for_at).unwrap_or(args.len());
     let ports = args.get(..ports_end).unwrap_or_default().to_vec();
@@ -648,10 +693,39 @@ pub(crate) fn exposure(args: &[Vec<u8>]) -> Result<Option<Exposure>, Vec<u8>> {
             _ => return Err(b"EXPOSE ... FOR names no network".to_vec()),
         },
     };
+    // A mapping, the microVM's port then its member's, is ingress's alone, and one port
+    // each side (D122).
+    for p in ports.iter().filter(|p| p.contains(&b':')) {
+        if direction != Direction::Ingress {
+            return Err(errf(&[
+                b"EXPOSE ",
+                p,
+                b": a port mapped to a member's, <port>:<member_port>, is ingress's alone; write AS ingress",
+            ]));
+        }
+        let one = |q: &[u8]| port_range(q).is_some_and(|(_, lo, hi)| lo == hi);
+        if !one(&outside(p)) || !one(&inside(p)) {
+            return Err(errf(&[
+                b"EXPOSE ",
+                p,
+                b": a mapping is one port to one port, <port>:<member_port>[/tcp|/udp]",
+            ]));
+        }
+    }
+    let split = |list: Vec<Vec<u8>>, what: &str| -> Result<Vec<Vec<u8>>, Vec<u8>> {
+        let words: Vec<Vec<u8>> = list
+            .iter()
+            .flat_map(|l| l.split(|&b| b == b','))
+            .map(<[u8]>::to_vec)
+            .collect();
+        names(&words, what)
+    };
     Ok(Some(Exposure {
         ports,
         direction,
         networks,
+        agents: split(agents, "an agent")?,
+        harnesses: split(harnesses, "a harness")?,
     }))
 }
 
@@ -869,6 +943,12 @@ pub fn check(ins: &crate::instructions::Instructions) -> Result<(), crate::instr
                     for n in &e.networks {
                         declared_network(&seen, n, line, "EXPOSE")?;
                     }
+                    for n in &e.agents {
+                        kind_of(&seen, n, Some(TargetKind::Agent), line, "EXPOSE --agents")?;
+                    }
+                    for n in &e.harnesses {
+                        kind_of(&seen, n, Some(TargetKind::Harness), line, "EXPOSE --harnesses")?;
+                    }
                 }
                 Directive::Attach(a) => {
                     for n in &a.agents {
@@ -1066,12 +1146,22 @@ pub fn boundary(directives: &[Directive], net: &[u8], outward: bool) -> Vec<(u8,
         }
     }
     let mut vms = Vec::new();
+    // A port mapped to a member's (D122): the microVM's, where the network lets the
+    // member's in.
+    let mut mapped = Vec::new();
     for d in directives {
         if let Directive::Expose(e) = d
             && e.direction != away
             && e.networks.iter().any(|n| n == net)
         {
-            vms.extend(e.ports.iter().filter_map(|p| port_range(p)));
+            for p in &e.ports {
+                let (o, i) = (outside(p), inside(p));
+                match (port_range(&o), port_range(&i)) {
+                    (Some(o), Some(i)) if o != i => mapped.push((o, i)),
+                    (Some(o), _) => vms.push(o),
+                    _ => {}
+                }
+            }
         }
     }
     let mut out: Vec<(u8, u16, u16)> = Vec::new();
@@ -1081,6 +1171,11 @@ pub fn boundary(directives: &[Directive], net: &[u8], outward: bool) -> Vec<(u8,
             if p == q && lo <= hi && !out.contains(&(p, lo, hi)) {
                 out.push((p, lo, hi));
             }
+        }
+    }
+    for (o, (q, a, b)) in mapped {
+        if ours.iter().any(|&(p, lo, hi)| p == q && lo <= a && b <= hi) && !out.contains(&o) {
+            out.push(o);
         }
     }
     out
@@ -1152,11 +1247,11 @@ pub const EGRESS_DECLARED_LABEL: &[u8] = b"vnd.osi.agentfile.egress-declared";
 /// ingress, as Docker writes them, each once.
 pub fn egress_declared(directives: &[Directive]) -> Vec<Vec<u8>> {
     let mut out: Vec<Vec<u8>> = Vec::new();
-    let inward: Vec<&[u8]> = directives
+    let inward: Vec<Vec<u8>> = directives
         .iter()
         .filter_map(|d| match d {
             Directive::Expose(e) if e.direction != Direction::Egress => {
-                Some(e.ports.iter().map(Vec::as_slice))
+                Some(e.ports.iter().map(|p| outside(p)))
             }
             _ => None,
         })
@@ -1167,7 +1262,7 @@ pub fn egress_declared(directives: &[Directive]) -> Vec<Vec<u8>> {
             && e.direction == Direction::Egress
         {
             for p in &e.ports {
-                if !inward.contains(&p.as_slice()) && !out.contains(p) {
+                if !inward.contains(p) && !out.contains(p) {
                     out.push(p.clone());
                 }
             }
@@ -1319,12 +1414,45 @@ pub fn connections(directives: &[Directive]) -> Result<(), Vec<u8>> {
     Ok(())
 }
 
-/// What an Agentfile lets in past its microVM (§4.1, §4.6, §12 answer 6): a network's
-/// ports both boundaries open inward reach its member, as `shards run -p` publishes them.
-/// Which of several members a connection is for no directive says yet, so a network with
-/// such ports and more than one member is refused, naming them, rather than guessed at.
-pub fn ingress(directives: &[Directive]) -> Result<(), Vec<u8>> {
-    let mut nets: Vec<(&[u8], Vec<&[u8]>)> = Vec::new();
+/// Who a port coming in past the microVM reaches (D122): the microVM's range, the
+/// member's (the same unless an `EXPOSE` maps one to the other), and the member.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Receiver {
+    pub at: (u8, u16, u16),
+    pub to: (u8, u16, u16),
+    pub kind: TargetKind,
+    pub name: Vec<u8>,
+}
+
+/// What an Agentfile lets in past its microVM (§4.1, §4.6, §12 answer 6, D122): a
+/// network's ports both boundaries open inward reach one member each, the one an `EXPOSE`
+/// names for them (`--agents`, `--harnesses`), else the network's one member. A member
+/// named on no network its `EXPOSE` is for, a port two members claim, and a port of a
+/// network of several that names none are refused, naming them, rather than guessed at;
+/// else each port's receiver.
+pub fn ingress(directives: &[Directive]) -> Result<Vec<Receiver>, Vec<u8>> {
+    // Each name's kind: as a CONNECT says it, else the one kind it is declared as.
+    let declared = |name: &[u8], kind: TargetKind| {
+        directives.iter().any(|d| match (d, kind) {
+            (Directive::Agent(a), TargetKind::Agent) => a.name == name,
+            (Directive::Harness(h), TargetKind::Harness) => h.name == name,
+            _ => false,
+        })
+    };
+    let kind = |name: &[u8], said: Option<TargetKind>| {
+        said.or_else(|| {
+            match (
+                declared(name, TargetKind::Agent),
+                declared(name, TargetKind::Harness),
+            ) {
+                (true, false) => Some(TargetKind::Agent),
+                (false, true) => Some(TargetKind::Harness),
+                _ => None,
+            }
+        })
+    };
+    type Member<'a> = (Option<TargetKind>, &'a [u8]);
+    let mut nets: Vec<(&[u8], Vec<Member<'_>>)> = Vec::new();
     for d in directives {
         if let Directive::Connect(c) = d {
             for n in &c.on {
@@ -1337,28 +1465,179 @@ pub fn ingress(directives: &[Directive]) -> Result<(), Vec<u8>> {
                 };
                 if let Some((_, members)) = nets.get_mut(at) {
                     for m in c.from.iter().chain(&c.to) {
-                        if !members.contains(&m.as_slice()) {
-                            members.push(m);
+                        let member = (kind(m, c.kind), m.as_slice());
+                        if !members.contains(&member) {
+                            members.push(member);
                         }
                     }
                 }
             }
         }
     }
-    for (net, members) in nets {
-        if members.len() > 1 && !boundary(directives, net, false).is_empty() {
-            let names: Vec<&[u8]> = members;
-            return Err([
-                b"network ".as_slice(),
-                net,
-                b" lets ports in past the microVM to its members ",
-                &names.join(&b", "[..]),
-                b": which of them a connection is for, no directive says yet (AGENTFILE_ARCH.md \xc2\xa712 answer 6); give each its own network",
-            ]
-            .concat());
+    let shown = |(k, name): Member<'_>| -> Vec<u8> {
+        let what: &[u8] = match k {
+            Some(TargetKind::Harness) => b"harness ",
+            _ => b"agent ",
+        };
+        [what, name].concat()
+    };
+    let named = |e: &'_ Exposure| -> Vec<(Option<TargetKind>, Vec<u8>)> {
+        e.agents
+            .iter()
+            .map(|a| (Some(TargetKind::Agent), a.clone()))
+            .chain(e.harnesses.iter().map(|h| (Some(TargetKind::Harness), h.clone())))
+            .collect()
+    };
+    // Each member named is on a network its EXPOSE is for.
+    for d in directives {
+        let Directive::Expose(e) = d else { continue };
+        for (k, m) in named(e) {
+            let on = e.networks.iter().any(|n| {
+                nets.iter()
+                    .any(|(x, ms)| *x == n.as_slice() && ms.contains(&(k, m.as_slice())))
+            });
+            if !on {
+                return Err([
+                    b"EXPOSE: ".as_slice(),
+                    &shown((k, &m)),
+                    b" is on no network after FOR; attach it with CONNECT ... ON one of them",
+                ]
+                .concat());
+            }
         }
     }
-    Ok(())
+    let mut out: Vec<Receiver> = Vec::new();
+    for (net, members) in &nets {
+        // What the network itself lets in to its members (`NETWORK --ingress`,
+        // `--expose`): none of an internal one.
+        let own: Vec<(u8, u16, u16)> = directives
+            .iter()
+            .filter_map(|d| match d {
+                Directive::Network(n) if n.name == *net && !n.internal => Some(&n.ports),
+                _ => None,
+            })
+            .flatten()
+            .filter(|(_, d)| *d != Direction::Egress)
+            .filter_map(|(p, _)| port_range(p))
+            .collect();
+        // Who each microVM port coming in is claimed for: the member an EXPOSE names,
+        // else every member. One mapped to a member's port crosses the network's
+        // boundary at the member's.
+        type Claim = (
+            (u8, u16, u16),
+            (u8, u16, u16),
+            Option<(Option<TargetKind>, Vec<u8>)>,
+        );
+        let mut claims: Vec<Claim> = Vec::new();
+        for d in directives {
+            let Directive::Expose(e) = d else { continue };
+            if e.direction == Direction::Egress || !e.networks.iter().any(|n| n == net) {
+                continue;
+            }
+            let receivers = named(e);
+            if receivers.len() > 1 {
+                return Err([
+                    b"EXPOSE for network ".as_slice(),
+                    net,
+                    b" names ",
+                    &receivers
+                        .iter()
+                        .map(|(k, m)| shown((*k, m)))
+                        .collect::<Vec<_>>()
+                        .join(&b", "[..]),
+                    b": a port coming in goes to one member; write an EXPOSE for each, each its own port",
+                ]
+                .concat());
+            }
+            for p in &e.ports {
+                let (o, i) = (outside(p), inside(p));
+                let (Some((proto, lo, hi)), Some((iproto, ilo, ihi))) = (port_range(&o), port_range(&i))
+                else {
+                    continue;
+                };
+                if o != i {
+                    if own.iter().any(|&(q, a, b)| q == iproto && a <= ilo && ihi <= b) {
+                        claims.push(((proto, lo, hi), (iproto, ilo, ihi), receivers.first().cloned()));
+                    }
+                    continue;
+                }
+                for &(q, a, b) in &own {
+                    let (lo, hi) = (lo.max(a), hi.min(b));
+                    if proto == q && lo <= hi {
+                        claims.push(((proto, lo, hi), (proto, lo, hi), receivers.first().cloned()));
+                    }
+                }
+            }
+        }
+        let port = |(proto, lo, hi): (u8, u16, u16)| -> Vec<u8> {
+            let range = if lo == hi {
+                lo.to_string()
+            } else {
+                format!("{lo}-{hi}")
+            };
+            if proto == 17 {
+                format!("{range}/udp")
+            } else {
+                range
+            }
+            .into_bytes()
+        };
+        for (i, (range, to, who)) in claims.iter().enumerate() {
+            match who {
+                None if members.len() > 1 => {
+                    return Err([
+                        b"network ".as_slice(),
+                        net,
+                        b" lets port ",
+                        &port(*range),
+                        b" in past the microVM to its members ",
+                        &members.iter().map(|m| shown(*m)).collect::<Vec<_>>().join(&b", "[..]),
+                        b": name the one it is for, EXPOSE --agents=<agent> (or --harnesses=<harness>) <port> AS ingress FOR ",
+                        net,
+                        b" (architecture.md D122)",
+                    ]
+                    .concat());
+                }
+                None => {
+                    if let Some(&(k, m)) = members.first() {
+                        out.push(Receiver {
+                            at: *range,
+                            to: *to,
+                            kind: k.unwrap_or(TargetKind::Agent),
+                            name: m.to_vec(),
+                        });
+                    }
+                }
+                Some((k, m)) => {
+                    let overlaps = |(p, a, b): (u8, u16, u16)| p == range.0 && a <= range.2 && range.1 <= b;
+                    if let Some((_, _, Some((k2, m2)))) = claims.iter().skip(i + 1).find(|(r, _, other)| {
+                        overlaps(*r) && other.as_ref().is_some_and(|o| o != &(*k, m.clone()))
+                    }) {
+                        return Err([
+                            b"port ".as_slice(),
+                            &port(*range),
+                            b" on network ",
+                            net,
+                            b" comes in to two members, ",
+                            &shown((*k, m)),
+                            b" and ",
+                            &shown((*k2, m2)),
+                            b": a port coming in goes to one member",
+                        ]
+                        .concat());
+                    }
+                    out.push(Receiver {
+                        at: *range,
+                        to: *to,
+                        kind: k.unwrap_or(TargetKind::Agent),
+                        name: m.clone(),
+                    });
+                }
+            }
+        }
+    }
+    out.dedup();
+    Ok(out)
 }
 
 /// The ports an Agentfile lets some domain open flows to past its microVM: of each network
@@ -1769,6 +2048,16 @@ pub fn spec(directives: &[Directive]) -> Vec<u8> {
                 o.push_str(direction(e.direction));
                 field(&mut o, "networks");
                 write_strings(&mut o, &e.networks);
+                // The members it is for (D122), where it names any: an image built before
+                // them reads the same.
+                if !e.agents.is_empty() {
+                    field(&mut o, "agents");
+                    write_strings(&mut o, &e.agents);
+                }
+                if !e.harnesses.is_empty() {
+                    field(&mut o, "harnesses");
+                    write_strings(&mut o, &e.harnesses);
+                }
                 7
             }
             Directive::Volume(v) => {
@@ -2026,6 +2315,16 @@ pub fn from_spec(text: &[u8]) -> Result<Vec<Directive>, String> {
                         ports: strings(v, "ports")?,
                         direction: direction(v)?,
                         networks: strings(v, "networks")?,
+                        agents: if v.get("agents").is_some() {
+                            strings(v, "agents")?
+                        } else {
+                            Vec::new()
+                        },
+                        harnesses: if v.get("harnesses").is_some() {
+                            strings(v, "harnesses")?
+                        } else {
+                            Vec::new()
+                        },
                     }),
                     _ => Directive::Volume(Volume {
                         source: maybe(v, "source")?,

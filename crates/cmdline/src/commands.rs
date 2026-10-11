@@ -153,6 +153,12 @@ pub static RUN: Command = Command {
         Flag::many("dns-option", None, "list", "Set DNS options"),
         Flag::value("ip", None, "ip", "IPv4 address (e.g., 172.30.100.104)").defaulting("<nil>"),
         Flag::value("ip6", None, "ip", "IPv6 address (e.g., 2001:db8::33)").defaulting("<nil>"),
+        Flag::many(
+            "link-local-ip",
+            None,
+            "list",
+            "Container IPv4/IPv6 link-local addresses",
+        ),
         Flag::string(
             "mac-address",
             None,
@@ -349,7 +355,6 @@ io-maxiops - s 0 -\n\
 ipc - s - -\n\
 isolation - s - -\n\
 link - m - -\n\
-link-local-ip - m - -\n\
 log-driver - s - -\n\
 log-opt - m - -\n\
 runtime - s - -\n\
@@ -496,6 +501,12 @@ pub static CREATE: Command = Command {
         Flag::many("dns-option", None, "list", "Set DNS options"),
         Flag::value("ip", None, "ip", "IPv4 address (e.g., 172.30.100.104)").defaulting("<nil>"),
         Flag::value("ip6", None, "ip", "IPv6 address (e.g., 2001:db8::33)").defaulting("<nil>"),
+        Flag::many(
+            "link-local-ip",
+            None,
+            "list",
+            "Container IPv4/IPv6 link-local addresses",
+        ),
         Flag::string(
             "mac-address",
             None,
@@ -692,7 +703,6 @@ io-maxiops - s 0 -\n\
 ipc - s - -\n\
 isolation - s - -\n\
 link - m - -\n\
-link-local-ip - m - -\n\
 log-driver - s - -\n\
 log-opt - m - -\n\
 runtime - s - -\n\
@@ -1918,6 +1928,18 @@ pub static PORT: Command = Command {
     error_prefix: "",
 };
 
+/// `shards read ports` (D122): which member of a microVM each published port reaches.
+pub static READ_PORTS: Command = Command {
+    usage: "MICROVM",
+    about: "Show which agent, harness or command each published port of a microVM reaches",
+    aliases: "shards read ports",
+    args: Args::Exactly(1),
+    flags: &[HELP],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
 /// `shards logs`.
 pub static LOGS: Command = Command {
     usage: "[OPTIONS] CONTAINER",
@@ -2497,6 +2519,7 @@ pub fn find(words: &[&str]) -> Option<(&'static Command, &'static str, usize)> {
         ["container", "exec", ..] => (&EXEC, "shards container exec", 2),
         ["container", "kill", ..] => (&KILL, "shards container kill", 2),
         ["port", ..] => (&PORT, "shards port", 1),
+        ["read", "ports", ..] => (&READ_PORTS, "shards read ports", 2),
         ["images", ..] => (&IMAGES, "shards images", 1),
         ["tag", ..] => (&TAG, "shards tag", 1),
         ["save", ..] => (&SAVE, "shards save", 1),
