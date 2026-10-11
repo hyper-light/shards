@@ -2,9 +2,9 @@ name: Guest memory
 
 # What a run's guest keeps of its microVM's memory on x86_64 KVM, on the path a run takes,
 # for `-m`'s table (crates/shards/src/resources.rs, PM M155, M179): measure-run.py at each
-# of the table's sizes, 8 boots of its template a size and 2 runs a boot (a template's
-# runs keep what its boot left), on three runners, as CI's x86_64 jobs run on runners of
-# more than one kind.
+# of the table's sizes at 1, 2 and 4 vCPUs (a runner's 4 CPUs; PM M183), 4 boots of its
+# template each and a run a boot (a template's runs keep what its boot left), on three
+# runners, as CI's x86_64 jobs run on runners of more than one kind.
 on:
   push:
     paths:
@@ -43,4 +43,4 @@ jobs:
           nproc
           free -m
           export SHARDS_HOME=$(mktemp -d)
-          python3 docs/research/measurements/guest-memory/measure-run.py target/release/shards 2 8
+          python3 docs/research/measurements/guest-memory/measure-run.py target/release/shards 1 4 1,2,4
