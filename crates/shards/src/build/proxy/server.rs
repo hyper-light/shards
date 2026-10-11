@@ -1171,9 +1171,17 @@ impl<'p> Session<'p> {
             }
         }
         // However the tunnel ends, its TLS ends with a close_notify, as Go's tls.Conn.Close
-        // ends BuildKit's.
+        // ends BuildKit's. What the client still sends, its own close_notify among it, is
+        // read and dropped until it ends, within a request head's time, so that the close
+        // finds nothing unread: Linux resets a Unix socket closed with bytes unread
+        // (af_unix.c, unix_release_sock), and the client's reading of the end then fails.
         reader.get_mut().conn.send_close_notify();
         let _ = reader.get_mut().flush();
+        let _ = sock.shutdown(std::net::Shutdown::Write);
+        if sock.set_read_timeout(Some(self.proxy.head_time)).is_ok() {
+            let mut sink = [0u8; 4096];
+            while matches!((&*sock).read(&mut sink), Ok(n) if n > 0) {}
+        }
     }
 
     /// Reads a request's body whole, in memory or, past [`IN_MEMORY`], a file of the

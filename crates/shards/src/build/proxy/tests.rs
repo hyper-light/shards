@@ -1173,6 +1173,35 @@ fn tunnels_are_read_as_buildkits_proxy_reads_them() {
     assert!(failed.is_empty(), "{}", failed.join("\n"));
 }
 
+/// A tunnel the proxy ends with more of the client's still to read, here a malformed
+/// request with 256 KiB behind it, ends as one with nothing left does: with its TLS's
+/// close_notify and the socket's end, which Linux would make a reset had the proxy closed
+/// with bytes unread (af_unix.c, unix_release_sock), and did once on CI's x86_64 for the
+/// oracle's "malformed inside", whose close_notify came after the request.
+#[test]
+fn a_tunnel_ends_whole_with_the_clients_bytes_unread() {
+    let mut raw = b"GARBAGE\r\n\r\n".to_vec();
+    raw.extend(std::iter::repeat_n(b'x', 256 << 10));
+    let ((established, handshake, response, ended), checked, _) = with_proxy_deciding(
+        "tunnel-unread",
+        None,
+        true,
+        |_| false,
+        |socket, ca| {
+            tunnel_exchange(
+                socket,
+                ca,
+                b"CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n",
+                "example.com",
+                &raw,
+            )
+        },
+    );
+    assert_eq!(established, b"HTTP/1.1 200 Connection Established\r\n\r\n");
+    assert!(handshake && ended, "handshake {handshake} ended {ended}");
+    assert!(response.is_empty() && checked.is_empty());
+}
+
 /// The oracle's upstream: what it answers, raw, by the path asked.
 static ORACLE_UPSTREAM: std::sync::OnceLock<HashMap<String, Vec<u8>>> = std::sync::OnceLock::new();
 
