@@ -16,6 +16,10 @@ shards builds its own guest kernel. Firecracker's CI kernel lacks EROFS, which i
   `shards-<arch>.config` where there is one (`shards-aarch64.config`: a 1,000 Hz tick, PM
   M66); no option is named by both. Each line says why. The build fails if
   any of them does not survive `make olddefconfig`.
+- **The `kvm` variant:** `kvm.config`, merged last, for a guest that is itself a KVM host,
+  booted at EL2 (`run --kernel --nested`, D132): `Image-<version>-aarch64-kvm`. The kernel
+  every other guest boots stays without KVM's 800 KiB of text, which saves or spends no
+  boot or restore time (PM M192).
 - **Patches:** `patches/*.patch`, applied in order with no fuzz. Each says what it fixes
   and why:
   - `0001`: an arm64 guest's first exec from a DAX-mapped file oopsed in `fs/dax.c`.

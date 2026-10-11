@@ -193,6 +193,10 @@ pub struct Machine<'a> {
     pub virtio: &'a [MmioDevice],
     /// Seeds the guest CRNG before any driver runs (`/chosen/rng-seed`).
     pub rng_seed: [u8; 64],
+    /// Whether the vCPUs have EL2: the kernel, entered there, is a hypervisor, and its
+    /// own calls to EL2 are its own, so PSCI is reached by SMC; the GIC's virtualization
+    /// interface raises its maintenance interrupt.
+    pub el2: bool,
 }
 
 const PHANDLE_GIC: u32 = 1;
@@ -263,6 +267,11 @@ pub fn build_fdt(m: &Machine<'_>) -> Result<Vec<u8>, FdtError> {
         "reg",
         &[m.gic_dist.0, m.gic_dist.1, m.gic_redist.0, m.gic_redist.1],
     );
+    if m.el2 {
+        // The maintenance interrupt, PPI 9 (INTID 25), as the GICv3 binding and the
+        // framework have it (hv_gic_types.h, HV_GIC_INT_MAINTENANCE).
+        f.prop_cells("interrupts", &[GIC_PPI, 9, IRQ_LEVEL_HIGH]);
+    }
     f.prop_u32("phandle", PHANDLE_GIC);
     f.end_node();
 
@@ -300,7 +309,7 @@ pub fn build_fdt(m: &Machine<'_>) -> Result<Vec<u8>, FdtError> {
 
     f.begin_node("psci");
     f.prop_strs("compatible", &["arm,psci-1.0", "arm,psci-0.2", "arm,psci"]);
-    f.prop_str("method", "hvc");
+    f.prop_str("method", if m.el2 { "smc" } else { "hvc" });
     f.end_node();
 
     f.begin_node(&format!("uart@{:x}", layout::UART));
@@ -382,6 +391,7 @@ mod tests {
             gic_redist: (layout::GIC_REDIST, 3 * 0x2_0000),
             virtio: &virtio,
             rng_seed: [7; 64],
+            el2: false,
         };
         let root = decode::parse(&build_fdt(&m).unwrap());
         assert_eq!((root.u32("#address-cells"), root.u32("#size-cells")), (2, 2));
@@ -414,5 +424,14 @@ mod tests {
             root.path("virtio_mmio@a000000").cells("interrupts"),
             vec![0, 16, 1]
         );
+        // At EL1 the kernel calls PSCI by HVC, and the GIC raises no maintenance interrupt.
+        assert_eq!(root.path("psci").str("method"), "hvc");
+        assert!(!gic.props.contains_key("interrupts"));
+        // At EL2 the kernel is the hypervisor: PSCI by SMC, the GIC's maintenance interrupt
+        // PPI 9 (INTID 25), and the EL2 physical timer still the timer's fourth (PPI 10).
+        let at_el2 = decode::parse(&build_fdt(&Machine { el2: true, ..m }).unwrap());
+        assert_eq!(at_el2.path("psci").str("method"), "smc");
+        assert_eq!(at_el2.path("intc@8000000").cells("interrupts"), vec![1, 9, 4]);
+        assert_eq!(&at_el2.path("timer").cells("interrupts")[9..12], &[1, 10, 4]);
     }
 }

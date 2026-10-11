@@ -95,6 +95,9 @@ pub struct MachineConfig {
     /// Whether a join share follows the shared directories (D119): served by none in every
     /// snapshot, and the restore's own.
     pub join_share: bool,
+    /// Whether the guest has virtualization of its own (nested: on arm64, EL2). Never in a
+    /// snapshot: its state at EL2 is not saved, so a snapshot of it is refused.
+    pub nested: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -261,6 +264,11 @@ fn path_from(bytes: &[u8]) -> codec::Result<PathBuf> {
 }
 
 fn encode(s: &Snapshot, generation: &str, identities: &[Identity]) -> Result<Vec<u8>, String> {
+    if s.config.nested {
+        return Err(
+            "a snapshot of a VM with virtualization of its own is refused: its EL2 state is not saved".into(),
+        );
+    }
     let disks = s
         .config
         .disks
@@ -380,6 +388,7 @@ fn decode(bytes: &[u8]) -> codec::Result<Decoded> {
                 shares,
                 join,
                 join_share,
+                nested: false,
             },
             arch: arch_state,
             devices,
@@ -852,6 +861,7 @@ mod tests {
                 shares: 2,
                 join: true,
                 join_share: true,
+                nested: false,
             },
             arch: vec![marker, 2, 3],
             devices: vec![9; 100],

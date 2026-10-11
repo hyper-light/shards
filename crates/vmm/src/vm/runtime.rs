@@ -768,6 +768,7 @@ mod tests {
                 shares: 0,
                 join: false,
                 join_share: false,
+                nested: false,
             },
             arch: Vec::new(),
             devices: Vec::new(),

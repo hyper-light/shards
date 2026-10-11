@@ -83,6 +83,21 @@ pub mod sysreg {
     pub const SCTLR_EL1_MMU_CACHES: u64 = 1 | (1 << 2) | (1 << 12);
     /// PSTATE for entry at EL1h with D, A, I, F masked (Linux booting.rst).
     pub const PSTATE_EL1H_DAIF: u64 = 0x3c5;
+    /// PSTATE for entry at EL2h with D, A, I, F masked, where the guest has EL2: the
+    /// level booting.rst recommends, the kernel then a hypervisor.
+    pub const PSTATE_EL2H_DAIF: u64 = 0x3c9;
+    pub const SCTLR_EL2: u16 = enc(3, 4, 1, 0, 0);
+    /// ID_AA64PFR1_EL1.SME, bits 27:24: whether the CPU has the Scalable Matrix Extension.
+    pub const ID_AA64PFR1_SME: u64 = 0xf << 24;
+    /// The EL2 registers Hypervisor.framework holds for a guest that has EL2
+    /// (hv_vcpu_types.h, macOS 15): CNTHCTL, CNTHP_CTL, CNTHP_CVAL, CNTHP_TVAL, CNTVOFF,
+    /// CPTR, ELR, ESR, FAR, HCR, HPFAR, MAIR, MDCR, SCTLR, SPSR, SP, TCR, TPIDR, TTBR0,
+    /// TTBR1, VBAR, VMPIDR, VPIDR, VTCR and VTTBR, each `_EL2`.
+    pub const EL2_HELD: [u16; 25] = [
+        0xe708, 0xe711, 0xe712, 0xe710, 0xe703, 0xe08a, 0xe201, 0xe290, 0xe300, 0xe088, 0xe304, 0xe510,
+        0xe089, 0xe080, 0xe200, 0xf208, 0xe102, 0xe682, 0xe100, 0xe101, 0xe600, 0xe005, 0xe000, 0xe10a,
+        0xe108,
+    ];
 }
 
 /// ID_AA64MMFR0_EL1.PARange encoding for a physical address width, if architected.

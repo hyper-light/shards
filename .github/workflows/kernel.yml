@@ -20,13 +20,17 @@ permissions:
 
 jobs:
   build:
-    name: build (${{ matrix.arch }}, ${{ matrix.copy }})
+    name: build (${{ matrix.arch }}${{ matrix.variant && format('-{0}', matrix.variant) || '' }}, ${{ matrix.copy }})
     timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
         arch: [x86_64, aarch64]
+        variant: ['', kvm]
         copy: [a, b]
+        exclude:
+          # KVM in an x86_64 guest waits on nested virtualization there.
+          - { arch: x86_64, variant: kvm }
         include:
           - { arch: x86_64, runner: ubuntu-24.04 }
           - { arch: aarch64, runner: ubuntu-24.04-arm }
@@ -34,10 +38,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
       - name: Build in the pinned builder
-        run: scripts/build-kernel-in-builder.sh ${{ matrix.arch }} out
+        run: scripts/build-kernel-in-builder.sh ${{ matrix.arch }} out ${{ matrix.variant }}
       - uses: actions/upload-artifact@v7.0.1
         with:
-          name: kernel-${{ matrix.arch }}-${{ matrix.copy }}
+          name: kernel-${{ matrix.arch }}${{ matrix.variant && format('-{0}', matrix.variant) || '' }}-${{ matrix.copy }}
           path: out/
           if-no-files-found: error
 
@@ -53,11 +57,11 @@ jobs:
           path: builds
       - name: Both builds of each architecture made the same bytes
         run: |
-          for arch in x86_64 aarch64; do
-            diff -r "builds/kernel-$arch-a" "builds/kernel-$arch-b"
+          for kernel in x86_64 aarch64 aarch64-kvm; do
+            diff -r "builds/kernel-$kernel-a" "builds/kernel-$kernel-b"
           done
           mkdir out
-          cp builds/kernel-x86_64-a/* builds/kernel-aarch64-a/* out/
+          cp builds/kernel-x86_64-a/* builds/kernel-aarch64-a/* builds/kernel-aarch64-kvm-a/* out/
       - name: Release
         env:
           GH_TOKEN: ${{ github.token }}

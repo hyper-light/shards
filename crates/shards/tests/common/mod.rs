@@ -175,6 +175,23 @@ pub fn kernel() -> &'static Path {
     })
 }
 
+/// The pinned kernel's `kvm` variant (resources/kernel/kvm.config), for a guest that is
+/// itself a KVM host (`--nested`, D132): arm64 alone so far, where a guest can have EL2.
+/// Its release rebuilt the pinned kernels byte for byte.
+pub fn nested_kernel() -> Option<&'static Path> {
+    static K: OnceLock<Option<PathBuf>> = OnceLock::new();
+    K.get_or_init(|| {
+        (ARCH == "aarch64").then(|| {
+            fetch(&Artifact {
+                name: "Image-6.18.48-aarch64-kvm-13af2abd3f30",
+                url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-13af2abd3f30/Image-6.18.48-aarch64-kvm",
+                sha256: "5bf30280278fd8c4a01785c0e1449e57eedc26958ca3e317cbd1b798c91d6d1e",
+            })
+        })
+    })
+    .as_deref()
+}
+
 /// Builds guest package `name` (static musl, `guest` profile) and returns its binary.
 fn guest_binary(name: &str) -> PathBuf {
     guest_binary_in(name, "target/guest", &[])

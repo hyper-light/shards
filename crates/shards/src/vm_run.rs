@@ -18,7 +18,7 @@ use shards_vmm::vm::{
 use crate::spec::Options;
 use crate::terminal::RawTerminal;
 
-const RUN_USAGE: &str = "usage: shards run --kernel PATH [--initrd PATH | --init PATH] [--cmdline STR] [--cpus N] [--memory MIB] [--disk PATH[:ro]]... [--pmem PATH]... [--vsock PATH] [--no-console] [--snapshot-dir DIR [--snapshot-then stop|resume]]
+const RUN_USAGE: &str = "usage: shards run --kernel PATH [--initrd PATH | --init PATH] [--cmdline STR] [--cpus N] [--memory MIB] [--disk PATH[:ro]]... [--pmem PATH]... [--vsock PATH] [--nested] [--no-console] [--snapshot-dir DIR [--snapshot-then stop|resume]]
        shards run --kernel PATH --init SHARDS-INIT --rootfs IMAGE [OPTIONS] [WORKLOAD OPTIONS] -- COMMAND [ARG...]
        shards run --kernel PATH --init SHARDS-INIT --rootfs IMAGE --snapshot-dir DIR [OPTIONS]
   --pmem: a read-only virtio-pmem device backed by PATH: /dev/pmem0, pmem1, ... in order.
@@ -31,6 +31,9 @@ const RUN_USAGE: &str = "usage: shards run --kernel PATH [--initrd PATH | --init
   --vsock: a vsock device. Host programs connect to the Unix socket PATH and send
            `CONNECT <port>`; the guest's connections to host port P reach PATH_P.
   --snapshot-dir: where to write a snapshot when the guest asks for one (then stop, by default)
+  --nested: virtualization for the guest itself: on arm64 its vCPUs have EL2, entered
+            there, so that its kernel may be a hypervisor (KVM); an M3 or later on
+            macOS 15 or later. Not with --snapshot-dir: its EL2 state is not saved.
   Console escape: Ctrl-A x stops the VM.";
 
 const RESTORE_USAGE: &str = "usage: shards restore DIR [--hold] [--vsock PATH] [--no-console] [--backing PATH[:ro]]... [--snapshot-dir DIR [--snapshot-then stop|resume]]
@@ -244,6 +247,7 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
             #[cfg(unix)]
             "--join-share" => cfg.join_share = Some(give_join_share()),
             "--pmem" => cfg.pmem.push(PathBuf::from(value("--pmem")?)),
+            "--nested" => cfg.nested = true,
             "--rootfs" => rootfs = Some(PathBuf::from(value("--rootfs")?)),
             "--warm" => {
                 let fd = text(value("--warm")?)?;
@@ -261,6 +265,9 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
         }
     }
     common.check_workload()?;
+    if cfg.nested && common.snapshot_dir.is_some() {
+        return Err("--nested with --snapshot-dir: a VM with virtualization of its own is not snapshotted, its EL2 state not saved".into());
+    }
     cfg.kernel = kernel.ok_or("--kernel is required")?;
     cfg.snapshot = common.policy();
     cfg.console = common.console;

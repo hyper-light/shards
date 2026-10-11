@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
 # Builds the shards guest kernel for one architecture, reproducibly:
-#   scripts/build-kernel.sh x86_64|aarch64 OUT_DIR
+#   scripts/build-kernel.sh x86_64|aarch64 OUT_DIR [VARIANT]
 # Output: OUT_DIR/vmlinux-<version>-x86_64 (ELF) or OUT_DIR/Image-<version>-aarch64, and
-# OUT_DIR/config-<version>-<arch>. Needs a Linux host with gcc, make, bc, bison, flex,
+# OUT_DIR/config-<version>-<arch>. A VARIANT adds resources/kernel/VARIANT.config to the
+# fragments and `-VARIANT` to each name (`kvm`: a guest that is itself a KVM host). Needs a Linux host with gcc, make, bc, bison, flex,
 # patch, libelf and libssl headers; scripts/build-kernel-in-builder.sh runs it in the
 # pinned builder, which releases use. resources/kernel/README.md explains the inputs.
 set -euo pipefail
 
-arch=${1:?usage: build-kernel.sh x86_64|aarch64 OUT_DIR}
-out=${2:?usage: build-kernel.sh x86_64|aarch64 OUT_DIR}
+arch=${1:?usage: build-kernel.sh x86_64|aarch64 OUT_DIR [VARIANT]}
+out=${2:?usage: build-kernel.sh x86_64|aarch64 OUT_DIR [VARIANT]}
+variant=${3:-}
 
 version=6.18.48
 # From kernel.org's sha256sums.asc, signed by the Kernel.org checksum autosigner
@@ -53,6 +55,11 @@ fragments=("$repo/resources/kernel/shards.config")
 if [ -e "$repo/resources/kernel/shards-$arch.config" ]; then
     fragments+=("$repo/resources/kernel/shards-$arch.config")
 fi
+suffix=
+if [ -n "$variant" ]; then
+    fragments+=("$repo/resources/kernel/$variant.config")
+    suffix=-$variant
+fi
 named=$(sed -nE 's/^(CONFIG_[A-Za-z0-9_]+)=.*/\1/p; s/^# (CONFIG_[A-Za-z0-9_]+) is not set$/\1/p' "${fragments[@]}" | sort | uniq -d)
 if [ -n "$named" ]; then
     echo "named by more than one fragment: $named" >&2
@@ -77,6 +84,6 @@ export KBUILD_BUILD_TIMESTAMP='1970-01-01T00:00:00Z'
 export KBUILD_BUILD_USER=shards KBUILD_BUILD_HOST=shards KBUILD_BUILD_VERSION=1
 make -C "$src" ARCH=$karch -j"$(nproc)" "$target"
 
-cp "$src/$built" "$out/$name-$version-$arch"
-cp "$src/.config" "$out/config-$version-$arch"
-(cd "$out" && sha256sum "$name-$version-$arch" "config-$version-$arch")
+cp "$src/$built" "$out/$name-$version-$arch$suffix"
+cp "$src/.config" "$out/config-$version-$arch$suffix"
+(cd "$out" && sha256sum "$name-$version-$arch$suffix" "config-$version-$arch$suffix")

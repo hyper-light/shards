@@ -65,6 +65,17 @@ impl Perms {
 pub struct VmConfig {
     /// Guest physical address width; `None` keeps the framework default (36 bits).
     pub ipa_bits: Option<u32>,
+    /// Whether the vCPUs have EL2 (macOS 15, on a Mac that can give it).
+    pub el2: bool,
+}
+
+/// Whether this Mac gives a guest EL2 (`hv_vm_config_get_el2_supported`): nested
+/// virtualization, from the M3 on macOS 15.
+pub fn el2_supported() -> bool {
+    let mut supported = false;
+    // SAFETY: a pointer to a local bool, written on success.
+    let res = unsafe { ffi::hv_vm_config_get_el2_supported(&mut supported) };
+    res == ffi::HV_SUCCESS && supported
 }
 
 static VM_EXISTS: AtomicBool = AtomicBool::new(false);
@@ -94,6 +105,12 @@ impl Vm {
                 res = check(
                     "hv_vm_config_set_ipa_size",
                     ffi::hv_vm_config_set_ipa_size(cfg, bits),
+                );
+            }
+            if res.is_ok() && config.el2 {
+                res = check(
+                    "hv_vm_config_set_el2_enabled",
+                    ffi::hv_vm_config_set_el2_enabled(cfg, true),
                 );
             }
             if res.is_ok() {
