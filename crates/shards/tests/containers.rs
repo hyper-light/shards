@@ -3714,12 +3714,21 @@ fn run_limits_resources_as_docker_run_does() {
     assert_eq!(raw.stdout, "512 <no value>\n", "{raw}");
     // The microVM holds what the limit allows: what the kernel says may be allocated, and
     // the free pages its CPUs' lists hold, which it leaves out of that (M179), is at least
-    // the limit, across the sizes where its own share steps up, as a run's guest keeps it.
-    for limit in ["700m", "2500m"] {
+    // the limit, across the sizes where its own share steps up, as a run's guest keeps it;
+    // with every CPU of the host's too, each vCPU keeping memory of its own (M183).
+    let every = std::thread::available_parallelism()
+        .map_or(1, usize::from)
+        .to_string();
+    for (limit, cpus) in [
+        ("700m", "1"),
+        ("2500m", "1"),
+        ("700m", every.as_str()),
+        ("2500m", every.as_str()),
+    ] {
         let read = run_in(
             &home,
             &image,
-            &["-m", limit],
+            &["-m", limit, "--cpus", cpus],
             &["stat", "/proc/meminfo", "/proc/zoneinfo"],
         );
         assert_eq!(read.status, Some(0), "{read}");
@@ -3738,7 +3747,7 @@ fn run_limits_resources_as_docker_run_does() {
         let limit_kib = limit.trim_end_matches('m').parse::<u64>().unwrap() * 1024;
         assert!(
             available_kib + listed_kib >= limit_kib,
-            "{limit}: {available_kib} KiB available, {listed_kib} KiB on its CPUs' lists"
+            "{limit}, {cpus} vCPUs: {available_kib} KiB available, {listed_kib} KiB on its CPUs' lists"
         );
     }
     // Past its limit, the workload is killed, as the kernel kills it in its cgroup.

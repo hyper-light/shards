@@ -6100,3 +6100,42 @@ revision before comparing a changed API/implementation.
   fast sender to a one-vCPU member lose at the member's socket and, past a ring, in its
   network process, where Docker's container, reading on a core of its own as the bridge
   delivers, loses none.
+
+### M183. What each vCPU costs a run, and what one vCPU costs its programs (`--cpus`, -m)
+
+- **Question.** A run's microVM has one vCPU unless `--cpus`, the quota or the cpuset
+  asks for more; Docker's container has every CPU of its host unless limited. What does
+  each vCPU cost a run, in its start and its memory, and what does one cost its programs?
+- **Method.** `docs/research/measurements/vcpus/run.py`: `shards run --rm --cpus C
+  alpine true`, timed by its client, 50 a count at 1, 2, 4, 8 and 18 vCPUs, the counts in
+  turn once each one's template is made, quiet (load average 3) and with 16 busy loops;
+  then each count's guest memory and its VM process's resident memory. measure-run.py at
+  each size and count (`CPUS`): arm64 here (2 boots of each of 29 sizes at 1, 2, 4, 8 and
+  18), x86_64 on three GitHub runners (AMD EPYC 7763, 4 boots each of 24 sizes at 1, 2
+  and 4, run 38140736249). Apple M5 Max (18 cores), macOS 26.4.1, the release build of
+  the vcpus branch, 2026-10-11.
+- **Start.** Not one: p50 5.46 to 5.99 ms at every count quiet, 6.28 to 6.48 ms loaded;
+  p99 9.3 to 13.9 ms quiet, 14.5 to 19.9 ms loaded, at no count more than another.
+- **Memory.** A 256 MiB VM's memory that may be allocated (MemAvailable and the CPUs'
+  listed pages) was 1.8, 4.1, 7.5 and 21.0 MiB less at 2, 4, 8 and 18 vCPUs than at one;
+  its VM process held 22.9, 23.8, 25.3, 27.6 and 30.6 MiB. Over every size, the most the
+  vCPUs past the first kept: arm64 1,900 KiB at 2, 4,040 at 4, 7,720 at 8, 20,024 at 18;
+  x86_64 120 at 2, 1,576 at 4. `-m` took none of it: 700m with 8 vCPUs left the
+  workload 5,100 KiB short, with 18, 17,428 KiB short; 2500m with 18, 3,552 KiB.
+- **Found: a microVM of many vCPUs ended as its template was saved.** The VM process
+  said "vCPU 6: guest memory at 0x82f62e40 faults with its access given back" and was
+  ended, the run saying "VM … ended before it was ready": while its working set is
+  recorded (HVF), a page read goes back read-only and a page written goes back writable,
+  and a read's page given back after another vCPU's write had it writable took the write
+  away; the writer faulted again on a page it had just had back whole, which the VMM took
+  for an access that can never succeed. 4 of 60 templates of 18 vCPUs failed so. With a
+  page any vCPU wrote kept writable, and each page given back under the recording's lock,
+  none of 180 did (60 quiet at 18 vCPUs; 60 at 18 and 60 at 8 under 16 busy loops).
+- **What one vCPU costs its programs.** `nproc` is 1, where Docker's is the host's; a
+  member receiving a fast burst of 1,000 UDP datagrams read 269 to 515 of them with one
+  vCPU and 996 to 1,000 with four (`exit-drain/shards-fast-burst.sh`), as Docker's
+  container read all (M182): one vCPU both takes the frames and runs the reader.
+- **Consequence.** `-m` takes what each vCPU keeps (`resources::VCPUS`: the second's,
+  and each past it, the most measured), and the test of limits runs with every CPU of
+  the host's too. HVF's working-set recording gives pages back as above. How many vCPUs a
+  run has when nothing asks is the user's call, with these costs.

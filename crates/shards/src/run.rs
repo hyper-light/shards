@@ -364,14 +364,18 @@ pub fn prepare(
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| vec!["/bin/sh".into(), "-c".into()]),
         labels,
-        size: (
-            crate::resources::vcpus(&request.resources, crate::resources::host_cpus()),
-            crate::resources::memory_mib(
-                request.resources.memory,
-                shards_vmm::vm::MEMORY_MIB,
-                crate::build::host_memory(),
-            ),
-        ),
+        size: {
+            let vcpus = crate::resources::vcpus(&request.resources, crate::resources::host_cpus());
+            (
+                vcpus,
+                crate::resources::memory_mib(
+                    request.resources.memory,
+                    shards_vmm::vm::MEMORY_MIB,
+                    crate::build::host_memory(),
+                    vcpus,
+                ),
+            )
+        },
         image_volumes: image
             .config
             .config

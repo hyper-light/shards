@@ -818,7 +818,11 @@ is `crates/shards/src/run.rs` and `crates/shards/src/guest.rs`.
     each page goes back on its first fault, read-only if read, so a later write is seen
     too. Recording slows that run's command about sixfold, on a run that is a boot
     anyway. The boot's set covered 99.7–100% of what warm VMs touched while serving a
-    run.
+    run. A page any vCPU has written goes back writable to every vCPU after, and each
+    page goes back under the recording's lock, in the order decided: a read's page given
+    back read-only after another vCPU's write had it writable took the write away, and the
+    writer, faulting on a page it had just had back whole, ended the VM (4 of 60 templates
+    of 18 vCPUs; none of 180 since, PM M183).
   - **KVM: the first warm restore without one** (`vm::RESTORES_RECORD`), from its restore
     on, for up to 1 s past its command's start [PM M33]. A restore's memory is mapped
     from files, copy-on-write, afresh, so the pages its host maps when the recording ends
@@ -1530,8 +1534,9 @@ its record after it, until `shards rm` removes it; `--rm` removes it once it end
   init writes the limits as runc v1.5.1 does (fs2 Manager.Set, after moby's and runc's
   translations: `--cpus` as `cpu.max` over 100 ms, shares to a weight, swap less memory).
   The microVM is sized to hold them: as many vCPUs as `--cpus`, the quota or the cpuset
-  needs, and memory whose MemAvailable holds `-m`, from the guest kernel's own share
-  measured by size (PM M117). Where Docker limits a container below the host, shards does
+  needs, and memory of which what may be allocated (MemAvailable, and the free pages the
+  CPUs' lists hold, PM M179) holds `-m`, from the guest kernel's own share measured by
+  size and by vCPU (PM M117, M179, M183: each vCPU keeps up to 1.9 MiB of its own). Where Docker limits a container below the host, shards does
   both: the limit binds inside a VM no larger than it needs. A process the guest kernel
   kills for want of memory is reported as dockerd reports containerd's OOM:
   State.OOMKilled until the next start, and an `oom` event. Two differences:

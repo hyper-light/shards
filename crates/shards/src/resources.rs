@@ -265,11 +265,11 @@ pub fn vcpus(r: &Resources, cpus: usize) -> u32 {
     u32::try_from(need).unwrap_or(1)
 }
 
-/// The memory a microVM needs, in MiB, for its workload to use `limit` bytes: the least
-/// even size, as the VM takes it, whose memory less what its kernel keeps
+/// The memory a microVM of `vcpus` vCPUs needs, in MiB, for its workload to use `limit`
+/// bytes: the least even size, as the VM takes it, whose memory less what its kernel keeps
 /// ([`overhead_kib`]) holds the limit; at least `default_mib`; and at most the host's
 /// memory, past which a limit limits nothing.
-pub fn memory_mib(limit: i64, default_mib: u64, host: Option<u64>) -> u64 {
+pub fn memory_mib(limit: i64, default_mib: u64, host: Option<u64>, vcpus: u32) -> u64 {
     if limit <= 0 {
         return default_mib;
     }
@@ -278,8 +278,8 @@ pub fn memory_mib(limit: i64, default_mib: u64, host: Option<u64>) -> u64 {
     let mut mib = even(limit_kib.div_ceil(1024).max(default_mib));
     // The overhead does not fall as the VM grows, so each step only grows the VM, and
     // the first size that holds the limit is the least.
-    while mib.saturating_mul(1024).saturating_sub(overhead_kib(mib)) < limit_kib {
-        let need = limit_kib.saturating_add(overhead_kib(mib)).div_ceil(1024);
+    while mib.saturating_mul(1024).saturating_sub(overhead_kib(mib, vcpus)) < limit_kib {
+        let need = limit_kib.saturating_add(overhead_kib(mib, vcpus)).div_ceil(1024);
         mib = even(need.max(mib + 2));
     }
     match host {
@@ -288,11 +288,11 @@ pub fn memory_mib(limit: i64, default_mib: u64, host: Option<u64>) -> u64 {
     }
 }
 
-/// What the guest kernel keeps for itself of a VM of `mib` MiB, in KiB, on the path a run
-/// takes, as measured on this architecture's guest kernel (platform-measurements.md M179):
-/// the overhead of the next measured size up, and past the last, its slope from 8 to 16
-/// GiB.
-fn overhead_kib(mib: u64) -> u64 {
+/// What the guest kernel keeps for itself of a VM of `mib` MiB and `vcpus` vCPUs, in KiB,
+/// on the path a run takes, as measured on this architecture's guest kernel
+/// (platform-measurements.md M179, M183): the overhead of the next measured size up, and
+/// past the last, its slope from 8 to 16 GiB; and what each vCPU past the first keeps.
+fn overhead_kib(mib: u64, vcpus: u32) -> u64 {
     // On the path a run takes (M179): what the guest keeps, its VM's KiB less what may be
     // allocated (MemAvailable, and the free pages its CPUs' lists hold, which MemAvailable
     // leaves out), each size's most of 48 boots of its template on three GitHub x86_64
@@ -331,50 +331,67 @@ fn overhead_kib(mib: u64) -> u64 {
     /// KiB a MiB past the last size: (592,948 − 417,136) / 8,192 is 21.5.
     #[cfg(target_arch = "x86_64")]
     const SLOPE: u64 = 22;
+    /// KiB the second vCPU keeps, and each past it (M183): the most the second kept at any
+    /// size (12 boots of each of 24 sizes on three runners), and the most each past it kept
+    /// on average at 4, the runners' CPUs ((1,576 − 120) / 2); past 4, measured nowhere.
+    #[cfg(target_arch = "x86_64")]
+    const VCPUS: [u64; 2] = [120, 728];
     // On the path a run takes (M179): what the guest keeps, its VM's KiB less what may be
     // allocated (MemAvailable, and the free pages its CPU's list holds, 4 to 9 MiB here),
-    // each size's most of 4 boots of its template, 2 runs each, on an Apple M5 Max, guest
-    // kernel kernel-6.18.48-4b8900bdffdd; the boots of a size differed by 156 KiB at most.
+    // each size's most of 6 boots of its template (M179's 4, M183's 2), and of the sizes
+    // between it and the last below, on an Apple M5 Max, guest kernel
+    // kernel-6.18.48-4b8900bdffdd; the boots of a size differed by 156 KiB at most.
     #[cfg(not(target_arch = "x86_64"))]
     const MEASURED: [(u64, u64); 29] = [
         (256, 40_104),
-        (320, 43_476),
-        (384, 43_964),
-        (448, 46_436),
-        (512, 46_860),
+        (320, 43_524),
+        (384, 43_988),
+        (448, 46_464),
+        (512, 46_888),
         (640, 80_540),
         (768, 82_816),
-        (896, 85_104),
+        (896, 85_108),
         (1024, 87_456),
         (1280, 96_456),
-        (1536, 101_076),
-        (1792, 105_676),
+        (1536, 101_088),
+        (1792, 105_684),
         (2048, 110_292),
         (2560, 224_416),
         (3072, 235_648),
-        (3328, 241_260),
+        (3328, 241_268),
         (3584, 246_896),
         (3840, 252_520),
-        (4096, 258_100),
+        (4096, 258_132),
         (4352, 276_780),
         (4608, 282_404),
-        (5376, 299_268),
-        (6144, 316_148),
+        (5376, 299_288),
+        (6144, 316_160),
         (7168, 338_656),
         (8192, 361_160),
         (10_240, 423_968),
-        (12_288, 470_888),
-        (14_336, 519_964),
-        (16_384, 569_112),
+        (12_288, 470_904),
+        (14_336, 519_972),
+        (16_384, 569_116),
     ];
     /// KiB a MiB past the last size: (569,112 − 361,160) / 8,192 is 25.4.
     #[cfg(not(target_arch = "x86_64"))]
     const SLOPE: u64 = 26;
+    /// KiB the second vCPU keeps, and each past it (M183): the most the second kept at any
+    /// size (2 boots of each of 29 sizes to 16 GiB), and the most of what each past it kept
+    /// on average, from 4, 8 and 18 vCPUs ((20,024 − 1,900) / 16 at 18).
+    #[cfg(not(target_arch = "x86_64"))]
+    const VCPUS: [u64; 2] = [1900, 1133];
     let past = |&(size, kib): &(u64, u64)| kib.saturating_add(mib.saturating_sub(size).saturating_mul(SLOPE));
-    match MEASURED.iter().find(|(size, _)| *size >= mib) {
+    let one = match MEASURED.iter().find(|(size, _)| *size >= mib) {
         Some(&(_, kib)) => kib,
         None => MEASURED.last().map_or(0, past),
-    }
+    };
+    let [second, each] = VCPUS;
+    let more = match vcpus {
+        0 | 1 => 0,
+        n => second.saturating_add(u64::from(n - 2).saturating_mul(each)),
+    };
+    one.saturating_add(more)
 }
 
 #[cfg(test)]
@@ -551,20 +568,24 @@ mod tests {
             ),
             8
         );
-        assert_eq!(memory_mib(0, 256, None), 256);
-        assert_eq!(memory_mib(1, 256, None), 256);
-        assert_eq!(memory_mib(1 << 50, 256, Some(16 << 30)), 16 << 10);
-        // Each measured VM holds the limit it is chosen for, and the least that does.
-        for limit_mib in [64u64, 255, 256, 400, 700, 1000, 2000, 3000, 8000, 20_000] {
-            let limit = i64::try_from(limit_mib << 20).unwrap();
-            let mib = memory_mib(limit, 256, None);
-            assert_eq!(mib % 2, 0);
-            assert!(mib * 1024 - overhead_kib(mib) >= limit_mib * 1024, "{limit_mib}");
-            let less = mib - 2;
-            assert!(
-                less < 256 || less * 1024 - overhead_kib(less) < limit_mib * 1024,
-                "{limit_mib}: {mib} is not the least"
-            );
+        assert_eq!(memory_mib(0, 256, None, 1), 256);
+        assert_eq!(memory_mib(1, 256, None, 1), 256);
+        assert_eq!(memory_mib(1 << 50, 256, Some(16 << 30), 1), 16 << 10);
+        // Each measured VM holds the limit it is chosen for, and the least that does, as
+        // many vCPUs as it has.
+        for vcpus in [1, 2, 18] {
+            for limit_mib in [64u64, 255, 256, 400, 700, 1000, 2000, 3000, 8000, 20_000] {
+                let limit = i64::try_from(limit_mib << 20).unwrap();
+                let mib = memory_mib(limit, 256, None, vcpus);
+                assert_eq!(mib % 2, 0);
+                let holds = |mib: u64| mib * 1024 - overhead_kib(mib, vcpus) >= limit_mib * 1024;
+                assert!(holds(mib), "{limit_mib} with {vcpus}");
+                let less = mib - 2;
+                assert!(
+                    less < 256 || !holds(less),
+                    "{limit_mib} with {vcpus}: {mib} is not the least"
+                );
+            }
         }
     }
 
@@ -574,7 +595,7 @@ mod tests {
     fn the_guests_share_never_falls_as_its_vm_grows() {
         let mut last = 0;
         for mib in (2..40_000).step_by(2) {
-            let kept = overhead_kib(mib);
+            let kept = overhead_kib(mib, 1);
             assert!(kept >= last, "{mib} MiB: {kept} KiB, below {last}");
             last = kept;
         }

@@ -284,40 +284,66 @@ impl Watch {
     /// Stops recording and gives the guest all its memory back. Returns the pages touched
     /// since [`Watch::start`], in the order of their first touch; none if it never started.
     /// Callable from any thread, while vCPUs run: a vCPU that faulted before the memory
-    /// came back gets its page back in [`Vcpu::run`].
+    /// came back gets its page back in [`Vcpu::run`]. Under the recording's lock, as each
+    /// page a vCPU gets back ([`Watch::give`]).
     pub fn stop(&self) -> Vec<Touch> {
-        let recorded = lock(&self.recording).take();
+        let mut recording = lock(&self.recording);
+        let recorded = recording.take();
         if recorded.is_some() {
             for r in lock(&self.regions).iter() {
                 // It fails only once the VM is gone, with nothing left to give back.
                 let _ = sys::protect(r.gpa, r.len, r.perms);
             }
         }
+        drop(recording);
         recorded.map(|r| r.touches).unwrap_or_default()
     }
 
-    /// Notes a fault on `page`, in memory the guest may access with `full`; returns the
-    /// access it gets back.
-    fn touched(&self, page: u64, write: bool, full: sys::Perms) -> sys::Perms {
+    /// Gives `page` back after a fault on it, `write` if a write, in memory the guest may
+    /// access with `full`: what it gets back ([`Recording::touched`]), given under the
+    /// recording's lock, so that the access each vCPU is given lands in the order it was
+    /// decided. A page given back read-only for one vCPU's read, after another's write had
+    /// it back writable, took the write away again, and the writer faulted on a page it had
+    /// just had back whole (PM M183). `again`: the faulting vCPU had this page back whole
+    /// at its last exit, so that a fault on it now, still whole, is no taking away of the
+    /// watch's: none is given then.
+    fn give(&self, page: u64, write: bool, full: sys::Perms, again: bool) -> Result<Option<sys::Perms>> {
         let mut recording = lock(&self.recording);
-        let Some(r) = recording.as_mut() else {
-            return full;
+        let perms = match recording.as_mut() {
+            Some(r) => r.touched(page, write, full),
+            None => full,
         };
-        match r.seen.entry(page) {
-            Slot::Occupied(at) => {
-                if let Some(t) = r.touches.get_mut(*at.get()) {
+        if perms == full && again {
+            return Ok(None);
+        }
+        sys::protect(page, PAGE, perms)?;
+        Ok(Some(perms))
+    }
+}
+
+impl Recording {
+    /// Notes a fault on `page`, `write` if a write: the access the page gets back, the most
+    /// it may have (`full`) once any vCPU has written it, and read-only before, so that a
+    /// later write is noted.
+    fn touched(&mut self, page: u64, write: bool, full: sys::Perms) -> sys::Perms {
+        let written = match self.seen.entry(page) {
+            Slot::Occupied(at) => match self.touches.get_mut(*at.get()) {
+                Some(t) => {
                     t.written |= write;
+                    t.written
                 }
-            }
+                None => write,
+            },
             Slot::Vacant(at) => {
-                at.insert(r.touches.len());
-                r.touches.push(Touch {
+                at.insert(self.touches.len());
+                self.touches.push(Touch {
                     gpa: page,
                     written: write,
                 });
+                write
             }
-        }
-        if write { full } else { sys::Perms::RX }
+        };
+        if written { full } else { sys::Perms::RX }
     }
 }
 
@@ -433,13 +459,11 @@ impl Vcpu {
             return Ok(None);
         }
         let page = ipa & !(PAGE - 1);
-        let perms = self.watch.touched(page, write, region.perms);
-        if perms == region.perms && last == Some(page) {
+        let Some(perms) = self.watch.give(page, write, region.perms, last == Some(page))? else {
             return Err(Error::Guest(format!(
                 "guest memory at {ipa:#x} faults with its access given back"
             )));
-        }
-        sys::protect(page, PAGE, perms)?;
+        };
         Ok((perms == region.perms).then_some(page))
     }
 
@@ -895,6 +919,26 @@ impl Drop for Scratch {
 mod tests {
     use super::*;
     use std::sync::mpsc;
+
+    /// A page any vCPU has written is given back writable to every vCPU that faults on it
+    /// after, a reader's too: one given back read-only after a write took the write away
+    /// from the writer (PM M183).
+    #[test]
+    fn a_page_written_stays_writable_for_every_vcpu() {
+        let full = sys::Perms::RWX;
+        let mut r = Recording::default();
+        assert_eq!(r.touched(0x1000, false, full), sys::Perms::RX);
+        assert_eq!(r.touched(0x1000, true, full), full);
+        assert_eq!(r.touched(0x1000, false, full), full, "a read after the write");
+        assert_eq!(r.touched(0x2000, true, full), full);
+        assert_eq!(
+            r.touched(0x2000, false, full),
+            full,
+            "a read after the first write"
+        );
+        assert_eq!(r.touches.len(), 2);
+        assert!(r.touches.iter().all(|t| t.written));
+    }
 
     /// Real HVF, one VM (the per-process limit): this is the crate's only test that
     /// creates one.
