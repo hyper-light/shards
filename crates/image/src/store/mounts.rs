@@ -426,7 +426,12 @@ impl Store {
         let aside = self.records_dir().join(format!(".{id}-{}", std::process::id()));
         match fs::rename(self.mount_dir(id)?, &aside) {
             Ok(()) => {}
-            Err(e) if matches!(e.kind(), io::ErrorKind::PermissionDenied | io::ErrorKind::NotFound) => {
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::PermissionDenied | io::ErrorKind::NotFound
+                ) =>
+            {
                 return Ok(());
             }
             Err(e) => return Err(e.into()),

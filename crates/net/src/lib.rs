@@ -2054,7 +2054,10 @@ mod tests {
         let ports = Ports(vec![(Proto::Tcp, 80, 81), (Proto::Udp, 9000, 9000)]);
         let named = vec![("mcp.example".to_string(), 8443)];
         let at = |port| vec![(Ipv4Addr::LOCALHOST, port), (Ipv4Addr::LOCALHOST, 7)];
-        assert_eq!(policy_tcp_ports(&ports, &named, false, &at(35353)), [80, 81, 8443, 35353]);
+        assert_eq!(
+            policy_tcp_ports(&ports, &named, false, &at(35353)),
+            [80, 81, 8443, 35353]
+        );
         assert_eq!(policy_tcp_ports(&ports, &[], true, &at(53)), [80, 81, 53]);
         assert_eq!(policy_tcp_ports(&ports, &[], false, &at(53)), [80, 81]);
         assert_eq!(policy_tcp_ports(&ports, &named, true, &[]), [80, 81, 8443]);
