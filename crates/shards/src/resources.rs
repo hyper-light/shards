@@ -319,28 +319,28 @@ fn overhead_kib(mib: u64) -> u64 {
     /// KiB a MiB past the last size: (592,948 − 417,136) / 8,192 is 21.5.
     #[cfg(target_arch = "x86_64")]
     const SLOPE: u64 = 22;
-    // On the path a run takes (M155): its VM a template of its size, restored, its guest
-    // the run's. Each size's most of 30 runs; a cold boot (M117) kept 0.1 to 2.7 MiB less,
-    // so `-m` fell short of its limit at each size here.
+    // On the path a run takes (M179, as M155): its VM a template of its size, restored,
+    // its guest the run's, on guest kernel kernel-6.18.48-4b8900bdffdd. Each size's most
+    // of 30 runs; M155's, on the kernel before, kept 0.1 to 1.1 MiB less.
     #[cfg(not(target_arch = "x86_64"))]
     const MEASURED: [(u64, u64); 15] = [
-        (256, 43_784),
-        (384, 47_700),
-        (512, 50_488),
-        (768, 88_668),
-        (1024, 93_524),
-        (1536, 106_936),
-        (2048, 116_160),
-        (3072, 241_524),
-        (3584, 252_728),
-        (4096, 263_956),
-        (4608, 290_332),
-        (6144, 324_016),
-        (8192, 368_980),
-        (12_288, 478_824),
-        (16_384, 577_468),
+        (256, 44_364),
+        (384, 48_304),
+        (512, 51_196),
+        (768, 89_276),
+        (1024, 93_880),
+        (1536, 107_548),
+        (2048, 116_768),
+        (3072, 242_124),
+        (3584, 253_332),
+        (4096, 264_552),
+        (4608, 290_920),
+        (6144, 324_644),
+        (8192, 369_776),
+        (12_288, 479_960),
+        (16_384, 577_552),
     ];
-    /// KiB a MiB past the last size: (577,468 − 368,980) / 8,192 is 25.4.
+    /// KiB a MiB past the last size: (577,552 − 369,776) / 8,192 is 25.4.
     #[cfg(not(target_arch = "x86_64"))]
     const SLOPE: u64 = 26;
     let past = |&(size, kib): &(u64, u64)| kib.saturating_add(mib.saturating_sub(size).saturating_mul(SLOPE));
