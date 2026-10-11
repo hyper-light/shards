@@ -3535,6 +3535,85 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode
 waits on the user.
 
+### D130. Frontend inputs, as docker/dockerfile:1.27.1 reads them
+
+shards' frontend (D113) refused frontend inputs: definitions a client gives the frontend
+whole, which BuildKit hands it through the gateway's `Inputs` call. It now reads them as
+dockerfile's frontend does, so these builds work through it:
+
+- **What buildx v0.37.1 gives as inputs:**
+  - **bake's `target:` contexts.** `contexts = { base = "target:base" }` builds `base`
+    first and gives its result as the input `base`, `context:base=input:base`, and its
+    image config in `input-metadata:base`. A build of several platforms gives one each,
+    `base::linux/arm64` and the like.
+  - **A remote bake definition's target in a directory of it.** buildx copies the
+    directory out of the repository (`set context to DIR`) and gives the copy as both
+    the `context` and the `dockerfile` inputs.
+  - **A Git context with a query**, where `BUILDX_SEND_GIT_QUERY_AS_INPUT` is set: buildx
+    makes the Git source itself and gives it as both inputs.
+- **Where dockerui reads them** (`initContext`, `NamedContext`, `forwardGateway`):
+  - Where the context is the client's, not Git or HTTP: the Dockerfile from the
+    `dockerfile` input unless `dockerfilekey` names the client's, and the context from
+    the `context` input. The context is scoped by `contextsubdir`, and no `.dockerignore`
+    applies to it.
+  - An `input:NAME` context, where it is loaded; with a Git or HTTP context, that is the
+    only read, and it fails as the inputs do.
+  - A build handed on to another frontend gets each input marshalled anew.
+- **`llb.NewDefinitionOp`, exactly:**
+  - Each op is written again as it came, so its digest and those its readers name stay
+    the same. Ops nothing reads are left out.
+  - Each output of an op that is read is a vertex of its own (DefinitionOp's input
+    cache), and each adds the op's source locations again.
+  - Metadata is kept as `NewOpMetadata` and `mergeMetadata` keep it: every capability
+    marked needed, export cache and progress group as given. An op that is the same as
+    one of the build's own is one op, its metadata merged (`marshal`'s cache by digest).
+    The root's capabilities follow from all of it.
+  - Source maps are written where the marshal first meets them, one kept of those alike
+    (`equalSourceMap`: the same file, language and data). A bake whose targets share a
+    Dockerfile writes it once. Each map's own definition is marshalled anew, as
+    `sourceMapCollector` does. Maps within maps are read without recursion.
+- **Refused in BuildKit's words:**
+  - `NewDefinitionOp`'s refusals, prefixed `failed to get frontend inputs:` where
+    initContext reads the inputs: a definition of no metadata, an op that is no `pb.Op`,
+    a location in a map the definition lacks, a last op that reads nothing.
+  - The marshal's refusals (`DefinitionOp.Validate`): an op of no metadata, and a root
+    read at a negative output.
+- **Deliberately unlike docker/dockerfile, recorded:**
+  - **The marshal's refusals come when the input is read.** BuildKit's frontend refuses
+    only once a marshal reaches the op, so it ignores a broken input the build never
+    uses. It also crashes on an op that reads one the definition lacks (a nil
+    dereference) or an output at a negative index (a slice index). shards refuses all of
+    these up front.
+  - **A context input's source map is compared with the Dockerfile's by file, language
+    and data alone.** In a build of several platforms, or with
+    `SOURCE_DATE_EPOCH=context`, BuildKit also compares the two maps' definitions once an
+    earlier marshal has set one, so its answer depends on what it marshalled before. No
+    BuildKit client sends a context input that has source maps.
+  - **Malformed protobuf is refused in protobuf-go's words**, without its checks of an
+    op's every field. BuildKit's server decodes every input before it sends one, so it
+    sends none malformed, and its solver checks an op's fields when the op reaches it.
+- **Found while measuring, fixed:**
+  - dockerui reads Docker's other casing, `dockerfile`, from whatever it reads the
+    Dockerfile from. shards' frontend tried it only in the client's directory. It now
+    tries it in a Git or HTTP context and in an input too.
+  - A capability the worker lacks, refused before the Dockerfile's source or an HTTP
+    context is solved, is the client's own error. dockerui says it after `failed to
+    resolve dockerfile:` (`failed to resolve httpcontext:`), and shards' frontend now
+    does too (`Gateway::solve_as`). Docker's own BuildKit lacks `source.git.mtime`, which a
+    Git context needs under SOURCE_DATE_EPOCH, so such a build is refused there by both.
+- **Tested:**
+  - `scripts/frontend/compare` on Docker's own BuildKit (v0.28.1) through `buildx bake`
+    and `buildx build`: `target:` contexts with one Dockerfile shared, with one each, and
+    for two platforms; a remote bake target in a directory; Git queries given as inputs,
+    one with a lowercase `dockerfile`; on BuildKit v0.33.0, a Git context with a lowercase
+    `dockerfile`; on Docker's, a Git context refused. The repositories are served over
+    git:// in `shards-dind` (`scripts/frontend/git-serve`). Every case is equal to
+    docker/dockerfile step by step, image by image and refusal by refusal (PM M190).
+  - `a_definition_given_is_marshalled_anew_as_it_came`,
+    `a_definition_given_is_refused_as_buildkit_refuses_it` and
+    `a_refused_capability_is_said_as_readentrypoint_says_it` (frontend).
+  - The merge, source map and refusal tests in `llb`.
+
 ### D129. SBOM attestations from shards' frontend, as docker/dockerfile:1.27.1 makes them
 
 shards' frontend (D113) refused `attest:sbom` ("makes no SBOM attestations yet"), so
@@ -4823,9 +4902,9 @@ and BuildKit build an Agentfile, no shards installed. The frontend is `shards` i
   builds the image. It is laid out as BuildKit's own docker/dockerfile is: one binary
   COPYed onto scratch, `moby.buildkit.frontend.network.none=true` (BuildKit then runs it
   with no network), `moby.buildkit.frontend.caps`, and the entrypoint. The caps label
-  lists what the frontend serves (subrequests, named contexts, Git query strings, zstd
-  contexts); a test holds it to `frontend::CAPS`. It leaves out frontend inputs, so that
-  BuildKit itself refuses a build that sends them, before the frontend runs.
+  lists what the frontend serves, as docker/dockerfile:1.27.1's does (frontend inputs
+  since D130, subrequests, named contexts, Git query strings, zstd contexts); a test holds
+  it to `frontend::CAPS`.
 - **Named** `ghcr.io/hyper-light/shards:<version>`, under the project's own GitHub
   organization, where its releases are (`release.yml`). `shards build` takes an Agentfile
   whose `# syntax=` names it, at any tag, as its own (`plan::SHARDS_FRONTEND`). Publishing
@@ -4904,12 +4983,13 @@ and BuildKit build an Agentfile, no shards installed. The frontend is `shards` i
   - an error carries no Go stack trace (`stack.Stack+json`), since shards has none;
   - the platforms of a multi-platform build are planned and solved one after another,
     where dockerui's Build runs them in an errgroup.
-- **Refused by name, not left out, until each is built:** frontend inputs (which BuildKit
-  itself refuses first, by the caps label), and OSI artifacts (AGENT, HARNESS and MCP from
-  a registry), until BuildKit's fetching of one is measured. SOURCE_DATE_EPOCH taken from a
-  source was among them until D127, SBOM attestations until D129. Subrequests other than
-  `frontend.subrequests.describe`, `frontend.outline`, `frontend.targets` and
-  `frontend.lint` are answered as dockerui answers them, unsupported.
+- **Refused by name, not left out:** an OSI artifact (AGENT, HARNESS, MCP) from a context
+  other than an OCI layout, since BuildKit gives a frontend no artifact's manifest
+  (measured below). Until each was built, SOURCE_DATE_EPOCH taken from a source was
+  refused too (D127), SBOM attestations (D129) and frontend inputs (D130).
+- Subrequests other than `frontend.subrequests.describe`, `frontend.outline`,
+  `frontend.targets` and `frontend.lint` are answered as dockerui answers them,
+  unsupported.
 - **Found in `shards-dind`, 2026-10-10: one gateway call from a frontend ends Docker's
   daemon.** A frontend asked `ResolveSourceMeta` for the attestation chain of an image
   that is one manifest, no index (an OSI agent, with no config asked).

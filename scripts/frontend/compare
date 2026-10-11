@@ -12,7 +12,11 @@ its `context` file, a context other than its directory (a Git or HTTP URL); its 
 file, a BuildKit image to build on instead of Docker's own, through a buildx builder of
 it (a docker-container one on dind's network, the registry's HTTP allowed); a `no-image`
 file in it, that its images are not compared, as where no SOURCE_DATE_EPOCH resolves and
-each image carries the time it was built.
+each image carries the time it was built. A `bake` file builds the case with
+`buildx bake` instead, in its directory, its lines bake's arguments, the target compared
+last (D130); a `repo` directory in it is made a Git repository, served over git:// in dind
+(scripts/frontend/git-serve) at `$REPO`, which flags, context and bake lines may name; an
+`env` file gives buildx more environment, one KEY=VALUE a line.
 
     scripts/frontend/compare BINARY [CASE...]
 
@@ -29,10 +33,12 @@ import os
 import re
 import subprocess
 import sys
+import time
 
 DIND = "shards-dind"
 ROOT = "/opt/shards-d113"
 REGISTRY = "127.0.0.1:15113"
+GIT_PORT = "15114"
 BUILDX = "/opt/shards-bx37/buildx"
 DOCKERFILE_1 = "docker/dockerfile:1.27.1@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e"
 EPOCH = "1700000000"
@@ -46,8 +52,9 @@ def run(argv, check=True, timeout=900):
     return p
 
 
-def dind(*argv, check=True, timeout=900):
-    return run(["docker", "exec", DIND, *argv], check=check, timeout=timeout)
+def dind(*argv, check=True, timeout=900, cwd=None, env=()):
+    opts = (["-w", cwd] if cwd else []) + [x for kv in env for x in ("-e", kv)]
+    return run(["docker", "exec", *opts, DIND, *argv], check=check, timeout=timeout)
 
 
 def setup(binary):
@@ -68,12 +75,61 @@ def setup(binary):
     return image, digest
 
 
-def flags_of(case):
-    path = os.path.join(HERE, "cases", case, "flags")
+def lines_of(case, name):
+    """A case file's lines, `$CASE` its directory in dind and `$REPO` its repository's URL."""
+    path = os.path.join(HERE, "cases", case, name)
     if not os.path.exists(path):
         return []
     with open(path) as f:
-        return [line.rstrip("\n").replace("$CASE", f"{ROOT}/cases/{case}") for line in f if line.strip()]
+        return [line.rstrip("\n").replace("$CASE", f"{ROOT}/cases/{case}").replace("$REPO", repo_url(case))
+                for line in f if line.strip()]
+
+
+def flags_of(case):
+    return lines_of(case, "flags")
+
+
+def bake_targets(case):
+    """The targets a case's bake files define, local and in its repository."""
+    names = []
+    for root, _, files in os.walk(os.path.join(HERE, "cases", case)):
+        for f in files:
+            if f.endswith(".hcl"):
+                with open(os.path.join(root, f)) as hcl:
+                    names += re.findall(r'^target\s+"([^"]+)"', hcl.read(), flags=re.M)
+    return names
+
+
+def repo_url(case):
+    return f"git://127.0.0.1:{GIT_PORT}/{case}"
+
+
+def serve_repo(case):
+    """The case's `repo` directory as a Git repository of one commit, at a fixed time so
+    that its commit is the same each run, served over git:// (started once)."""
+    src = os.path.join(HERE, "cases", case, "repo")
+    if not os.path.isdir(src):
+        return
+    path = f"{ROOT}/repos/{case}"
+    dind("rm", "-rf", path)
+    dind("mkdir", "-p", f"{ROOT}/repos")
+    run(["docker", "cp", src, f"{DIND}:{path}"])
+    # Owned by the user git runs as, which it otherwise refuses ("dubious ownership").
+    dind("chown", "-R", "root:root", path)
+    stamp = ["GIT_AUTHOR_DATE=2023-11-14T22:13:20Z", "GIT_COMMITTER_DATE=2023-11-14T22:13:20Z"]
+    who = ["-c", "user.name=shards", "-c", "user.email=shards@localhost"]
+    dind("git", "-C", path, "init", "-q", "-b", "main")
+    dind("git", "-C", path, "add", "-A")
+    dind("git", "-C", path, *who, "commit", "-q", "-m", case, env=stamp)
+    if dind("test", "-e", f"{ROOT}/git-serve.pid", check=False).returncode != 0:
+        run(["docker", "cp", os.path.join(HERE, "git-serve"), f"{DIND}:{ROOT}/git-serve"])
+        run(["docker", "exec", "-d", DIND, "python3", f"{ROOT}/git-serve", f"{ROOT}/repos", GIT_PORT,
+             f"{ROOT}/git-serve.pid"])
+    for _ in range(100):
+        if dind("git", "ls-remote", repo_url(case), check=False).returncode == 0:
+            return
+        time.sleep(0.1)
+    raise SystemExit(f"{repo_url(case)}: not served")
 
 
 def builder_of(case):
@@ -96,14 +152,11 @@ def builder_of(case):
 
 
 def context_of(case):
-    path = os.path.join(HERE, "cases", case, "context")
-    if not os.path.exists(path):
-        return f"{ROOT}/cases/{case}"
-    with open(path) as f:
-        return f.read().strip()
+    given = lines_of(case, "context")
+    return given[0].strip() if given else f"{ROOT}/cases/{case}"
 
 
-def normalize(text, frontends, images=True, sbom=False):
+def normalize(text, frontends, images=True, sbom=False, targets=()):
     """What buildx printed, as far as a frontend decides it: each step's lines, the steps
     in their names' order, then what followed them. BuildKit's own timing is set aside:
     which steps run at once and so their numbers, the order of a step's statuses and
@@ -112,7 +165,9 @@ def normalize(text, frontends, images=True, sbom=False):
     the build's warnings in (each varies from run to run with either frontend). So is the
     frontend's own image, whose name and digest differ by design, and where `images` is
     false, the digests of what is exported, which carry the times it was built. A step's
-    logs keep their order."""
+    logs keep their order. In a bake, buildx says a step under the target whose build
+    reported it (`[app internal] ...`), and a step two targets share is reported by
+    whichever comes first, as it happens: `targets`' names are set aside."""
     for name in frontends:
         text = text.replace(name, "FRONTEND")
     text = re.sub(r"\x1b\[[0-9;]*m", "", text)
@@ -132,7 +187,11 @@ def normalize(text, frontends, images=True, sbom=False):
             if line:
                 rest.append(line)
             continue
-        said = re.sub(r"\b\d+\.\d+s\b", "Xs", m.group(2)).replace(" Xs done", " done")
+        said = m.group(2)
+        for t in targets:
+            said = re.sub(rf"^\[{re.escape(t)}\] ", "", said)
+            said = re.sub(rf"^\[{re.escape(t)} ", "[", said)
+        said = re.sub(r"\b\d+\.\d+s\b", "Xs", said).replace(" Xs done", " done")
         said = re.sub(r"^\d+\.\d+ ", "T ", said)
         steps.setdefault(int(m.group(1)), []).append(said)
     blocks = []
@@ -232,6 +291,19 @@ def sbom_view(index, blobs):
 
 def build(case, frontend, side, flags):
     out = f"{ROOT}/out/{case}-{side}.tar"
+    env = lines_of(case, "env")
+    bake = lines_of(case, "bake")
+    if bake:
+        argv = [
+            # bake asks the output's directory, outside the case's, be allowed.
+            BUILDX, "bake", f"--allow=fs.write={ROOT}/out", "--progress=plain", "--no-cache", "--provenance=false",
+            "--set", f"*.args.SOURCE_DATE_EPOCH={EPOCH}",
+            "--set", f"*.args.BUILDKIT_SYNTAX={frontend}",
+            "--set", f"{bake[-1]}.output=type=oci,dest={out},rewrite-timestamp=true",
+            *flags, *bake,
+        ]
+        p = dind(*argv, check=False, cwd=f"{ROOT}/cases/{case}", env=env)
+        return p.returncode, p.stdout + p.stderr, (None if p.returncode != 0 else out)
     argv = [
         BUILDX, "build", "--progress=plain", "--no-cache", "--provenance=false",
         "--build-arg", f"SOURCE_DATE_EPOCH={EPOCH}",
@@ -244,12 +316,13 @@ def build(case, frontend, side, flags):
     calls = any(f.startswith("--call") or f == "--check" for f in flags)
     if not calls:
         argv += ["--output", f"type=oci,dest={out},rewrite-timestamp=true"]
-    p = dind(*argv, context_of(case), check=False)
+    p = dind(*argv, context_of(case), check=False, env=env)
     return p.returncode, p.stdout + p.stderr, (None if calls or p.returncode != 0 else out)
 
 
 def compare(case, frontends):
     run(["docker", "cp", os.path.join(HERE, "cases", case), f"{DIND}:{ROOT}/cases/"])
+    serve_repo(case)
     flags = flags_of(case)
     # Each frontend twice, in turn: the second builds find BuildKit as the first left it,
     # each the other's (its cache, the context it synced), and their outputs are compared;
@@ -267,7 +340,7 @@ def compare(case, frontends):
         result["exit"] += [t[0] for t in again]
     images = not os.path.exists(os.path.join(HERE, "cases", case, "no-image"))
     sbom = os.path.exists(os.path.join(HERE, "cases", case, "sbom"))
-    said = [normalize(t[1], frontends, images, sbom) for t in again]
+    said = [normalize(t[1], frontends, images, sbom, bake_targets(case)) for t in again]
     if said[0] != said[1]:
         differs.append("output")
         result["output"] = said
@@ -317,7 +390,11 @@ def main():
         r = compare(case, frontends)
         failed |= not r["equal"]
         print(json.dumps(r, sort_keys=True), flush=True)
-    dind("rm", "-rf", f"{ROOT}/cases", f"{ROOT}/out", check=False)
+    pid = dind("cat", f"{ROOT}/git-serve.pid", check=False)
+    if pid.returncode == 0 and pid.stdout.strip().isdigit():
+        dind("kill", pid.stdout.strip(), check=False)
+    dind("rm", "-rf", f"{ROOT}/cases", f"{ROOT}/out", f"{ROOT}/repos", f"{ROOT}/git-serve",
+         f"{ROOT}/git-serve.pid", check=False)
     if "--clean" in sys.argv:
         dind("docker", "rmi", "-f", image, check=False)
         dind("docker", "rm", "-f", "-v", "shards-d113-registry", check=False)

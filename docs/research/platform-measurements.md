@@ -6361,3 +6361,49 @@ revision before comparing a changed API/implementation.
     - the statements, subjects included;
     - for `attest-unknown`, the refusal.
 - **Consequence.** D129. The harness's `sbom` cases compare that way.
+
+### M190. Frontend inputs, by docker/dockerfile:1.27.1 and by shards' frontend (D130)
+
+- **Question.** Given frontend inputs as buildx v0.37.1 sends them, does shards' frontend
+  make what docker/dockerfile:1.27.1 makes: the same steps, the same images, the same
+  refusals?
+- **Method.**
+  - `scripts/frontend/compare` in shards-dind (Docker 29.3.1, its BuildKit v0.28.1,
+    buildx v0.37.1), each case built twice in turn by both frontends. Bake cases run
+    `buildx bake` in the case's directory. The cases' repositories are served over
+    git:// from dind by `scripts/frontend/git-serve`, whose `git upload-pack` is dind's
+    own git (dind's git has no daemon).
+    - `bake-target`: `contexts = { base = "target:base" }`, both targets one Dockerfile;
+    - `bake-target-other`: the same, a Dockerfile each;
+    - `bake-target-platforms`: the same for `linux/amd64` and `linux/arm64`;
+    - `bake-remote`: a remote bake definition's target in a directory of the repository;
+    - `git-query-input`: a Git context with a query, `BUILDX_SEND_GIT_QUERY_AS_INPUT=1`;
+    - `input-lowercase`: the same, the repository's Dockerfile named `dockerfile`;
+    - `git-lowercase`: a Git context whose Dockerfile is named `dockerfile`, on BuildKit
+      v0.33.0;
+    - `git-mtime-refused`: a Git context on Docker's own BuildKit.
+  - Then every case of the harness.
+  - Apple M5 Max, macOS 26.4.1, Docker Desktop's VM, 2026-10-11.
+- **Results.**
+  - **The first bake runs failed on both sides alike**, from the harness: bake asks that
+    an output outside its directory be allowed (`--allow=fs.write`), now passed.
+  - **A step's names in a bake depend on timing, with either frontend.** A step two
+    targets share (the Dockerfile's load, `.dockerignore`'s, the base's COPY run in the
+    app's build) is said under whichever target's build reported it first:
+    `[base internal] load .dockerignore` beside `[app internal] load .dockerignore` in one
+    run, not in the next. The harness sets the targets' names aside.
+  - **Docker's BuildKit lacks `source.git.mtime`**, which a Git context needs under
+    SOURCE_DATE_EPOCH (dockerui's `GitMTimeCommit`). Both frontends refuse such a build,
+    and docker/dockerfile says it after `failed to resolve dockerfile:`. shards' frontend
+    said it bare, as it did any capability refused before a solve, and dockerui wraps
+    those where it solves the Dockerfile and an HTTP context. Fixed (`Gateway::solve_as`).
+  - **docker/dockerfile reads a lowercase `dockerfile` from any Dockerfile source.**
+    shards' frontend tried it only in the client's directory; it now tries it in a Git or
+    HTTP context and in an input too.
+  - **With those, all eight cases were equal**: each step, the images byte for byte,
+    including the config the base target's `input-metadata` carries (`ENV`, `WORKDIR`),
+    and the refusal word for word.
+  - **Every case of the harness, 35, was equal** at the final revision: the eight above,
+    and the 27 before them, unchanged by what D130 changed in the LLB writer (metadata,
+    capabilities, source maps).
+- **Consequence.** D130. The harness gains `bake`, `repo` and `env` case files.

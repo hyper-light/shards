@@ -32,16 +32,18 @@ use shards_gateway::grpc;
 use crate::build::{gitobject, sbom, skills};
 
 mod check;
+mod inputs;
 mod osi;
 
 /// The most a file the frontend reads may be: dockerui's maxFileSize, containerd's
 /// DefaultMaxRecvMsgSize, 16 MiB.
 const MAX_FILE: i64 = 16 << 20;
 
-/// What this frontend can do of what a client may ask (builder/caps.go's enabledCaps, but
-/// `moby.buildkit.frontend.inputs`, which it does not read yet): the label its image
-/// carries, so that BuildKit refuses a build that needs more before it runs it.
-pub(crate) const CAPS: [&str; 4] = [
+/// What this frontend can do of what a client may ask (builder/caps.go's enabledCaps):
+/// the label its image carries, so that BuildKit refuses a build that needs more before it
+/// runs it.
+pub(crate) const CAPS: [&str; 5] = [
+    "moby.buildkit.frontend.inputs",
     "moby.buildkit.frontend.subrequests",
     "moby.buildkit.frontend.contexts",
     "moby.buildkit.frontend.gitquerystring",
@@ -457,6 +459,8 @@ fn config(opts: &mut BTreeMap<String, String>, env: &Env, caps: &Caps) -> Result
         build_platforms: vec![build_platform],
         default_platform: Some(env.own.clone()),
         no_client: false,
+        inputs: BTreeMap::new(),
+        inputs_failed: None,
         build_args: filter(opts, "build-arg:"),
         target: opt(opts, "target").as_bytes().to_vec(),
         all_stages: false,
@@ -730,6 +734,8 @@ fn local_definition(name: &str, follow: &[&str], session: &str, key: &str, custo
     meta.description
         .insert(b"llb.customname".to_vec(), custom.as_bytes().to_vec());
     Definition {
+        sources: Vec::new(),
+        source_order: Vec::new(),
         ops: vec![Op {
             inputs: Vec::new(),
             kind: OpKind::Source {
@@ -785,11 +791,8 @@ impl<R: Read, W: Write> Gateway<'_, R, W> {
         cache_imports: &[CacheImport],
         evaluate: bool,
     ) -> Result<Option<Ref>, Failure> {
-        // In one order: the worker's map order chose which BuildKit's client names.
-        for cap in &def.caps {
-            if let Some(e) = self.caps.llb_refusal(cap, &self.env.product) {
-                return Err(Failure::new(e));
-            }
+        if let Some(e) = self.refused(def) {
+            return Err(Failure::new(e));
         }
         let mut frontend_opt = BTreeMap::new();
         for k in ["cache-imports", "cache-from"] {
@@ -823,6 +826,30 @@ impl<R: Read, W: Write> Gateway<'_, R, W> {
         Ok(solved.single)
     }
 
+    /// The capability of `def`'s the worker lacks, refused in BuildKit's client's words, if
+    /// any: in one order, where the worker's map order chose which BuildKit's names.
+    fn refused(&self, def: &Marshalled) -> Option<String> {
+        def.caps
+            .iter()
+            .find_map(|cap| self.caps.llb_refusal(cap, &self.env.product))
+    }
+
+    /// [`Gateway::solve`], a capability's refusal (the client's own error, which ToGRPC
+    /// says whole) said after `wrap`, as the caller's `errors.Wrapf` says it. BuildKit's
+    /// statuses stay their own.
+    fn solve_as(
+        &self,
+        def: &Marshalled,
+        cache_imports: &[CacheImport],
+        evaluate: bool,
+        wrap: &str,
+    ) -> Result<Option<Ref>, Failure> {
+        if let Some(e) = self.refused(def) {
+            return Err(Failure::new(format!("{wrap}: {e}")));
+        }
+        self.solve(def, cache_imports, evaluate)
+    }
+
     /// One blob of the OCI layout the client serves as content store `store`, by `digest`
     /// (BuildKit's `oci-layout+blob` source, which `llb.OCILayoutBlob` makes), as a file
     /// named `blob`.
@@ -848,6 +875,8 @@ impl<R: Read, W: Write> Gateway<'_, R, W> {
     /// index's or a config's.
     fn read_layout_blob(&self, store: &[u8], digest: &str, most: u64) -> Result<Vec<u8>, Failure> {
         let def = Definition {
+            sources: Vec::new(),
+            source_order: Vec::new(),
             ops: vec![self.layout_blob(store, digest)?],
             metadata: vec![Meta::default()],
             root: Some(Input { op: 0, index: 0 }),
@@ -999,6 +1028,8 @@ impl<R: Read, W: Write> Gateway<'_, R, W> {
         // Its report solved and read before the build goes on: a refusal fails it here.
         let (o, md): (Vec<Op>, Vec<Meta>) = ops.iter().cloned().unzip();
         let def = Definition {
+            sources: Vec::new(),
+            source_order: Vec::new(),
             ops: o,
             metadata: md,
             root: Some(Input {
@@ -1692,35 +1723,51 @@ fn read_entrypoint<R: Read, W: Write>(
     // A remote context is loaded whatever is read (an HTTP one solved, its head read); the
     // file is read from it unless `dockerfilekey` names the client's (ReadEntrypoint's
     // forceLocalDockerfile).
-    if let Some((def, filename)) = remote_context(g, config)?
-        && !config.force_local_dockerfile
-    {
-        return read_from(g, &def, &filename, None);
-    }
+    let remote = remote_context(g, config)?;
     if g.caps.has_frontend("frontend.inputs") {
-        let inputs = g.client.borrow_mut().inputs().map_err(Failure::call)?;
-        let dockerfile =
-            !config.force_local_dockerfile && inputs.contains_key(config.dockerfile_local.as_str());
-        if dockerfile || inputs.contains_key("context") {
-            return Err(Failure::new(
-                "shards' frontend reads no frontend inputs yet: give the Dockerfile and the context from the client",
-            ));
+        if remote.is_none() {
+            // initContext reads the frontend's inputs where the context is the client's:
+            // the Dockerfile's and the context's, where the client gives them so.
+            config.options.inputs = read_inputs(g).map_err(|e| match e {
+                Unread::Refused(f) => f,
+                Unread::Bad(e) => Failure::new(format!("failed to get frontend inputs: {e}")),
+            })?;
+            if config.options.inputs.contains_key(b"context".as_slice()) {
+                config.options.main_context = MainContext::Input;
+            }
+        } else if config.options.contexts.values().any(|v| v.starts_with(b"input:")) {
+            // Otherwise an `input:NAME` context reads them, and fails as they do.
+            match read_inputs(g) {
+                Ok(inputs) => config.options.inputs = inputs,
+                Err(Unread::Refused(f)) => config.options.inputs_failed = Some(f.message.into_bytes()),
+                Err(Unread::Bad(e)) => config.options.inputs_failed = Some(e.into_bytes()),
+            }
         }
+    }
+    // dockerfile is also supported casing moby/moby#10858, whatever the file is read from.
+    if let Some((def, filename)) = remote {
+        if !config.force_local_dockerfile {
+            return read_from(g, &def, &filename, other_casing(&filename).as_deref());
+        }
+    } else if !config.force_local_dockerfile
+        && let Some(given) = config.options.inputs.get(config.dockerfile_local.as_bytes())
+    {
+        let mut graph = shards_dockerfile::llb::Graph::default();
+        let st = shards_dockerfile::llb::State {
+            output: graph
+                .embed(&given.definition)
+                .map_err(|e| Failure::new(format!("failed to marshal local source: {e}")))?,
+            ..shards_dockerfile::llb::State::scratch()
+        };
+        let def = graph.marshal(&st, &g.env.own);
+        let filename = config.filename.clone();
+        return read_from(g, &def, &filename, other_casing(&filename).as_deref());
     }
     let filename = config.filename.clone();
     let mut follow = vec![filename.clone(), format!("{filename}.dockerignore")];
-    // dockerfile is also supported casing moby/moby#10858: path.Join(path.Dir(f), "dockerfile").
-    let (dir, base) = match filename.rfind('/') {
-        Some(i) => (
-            filename.get(..i).unwrap_or_default(),
-            filename.get(i + 1..).unwrap_or_default(),
-        ),
-        None => ("", filename.as_str()),
-    };
-    let lower =
-        String::from_utf8_lossy(&shards_image::go::join(&[dir.as_bytes(), b"dockerfile"])).into_owned();
-    if base == "Dockerfile" {
-        follow.push(lower.clone());
+    let lower = other_casing(&filename);
+    if let Some(l) = &lower {
+        follow.push(l.clone());
     }
     let local = &config.dockerfile_local;
     let session = g
@@ -1736,8 +1783,50 @@ fn read_entrypoint<R: Read, W: Write>(
         local,
         &format!("[internal] load build definition from {filename}"),
     );
-    let lower = (base == "Dockerfile").then_some(lower);
     read_from(g, &def, &filename, lower.as_deref())
+}
+
+/// Docker's other casing of `filename` (moby/moby#10858), where it is a `Dockerfile`:
+/// `path.Join(path.Dir(f), "dockerfile")`.
+fn other_casing(filename: &str) -> Option<String> {
+    let (dir, base) = match filename.rfind('/') {
+        Some(i) => (
+            filename.get(..i).unwrap_or_default(),
+            filename.get(i + 1..).unwrap_or_default(),
+        ),
+        None => ("", filename),
+    };
+    (base == "Dockerfile").then(|| {
+        String::from_utf8_lossy(&shards_image::go::join(&[dir.as_bytes(), b"dockerfile"])).into_owned()
+    })
+}
+
+/// Why the frontend's inputs could not be read: BuildKit's refusal of the call, as it
+/// came; or the words of the refusal of one of them.
+enum Unread {
+    Refused(Failure),
+    Bad(String),
+}
+
+/// The frontend's inputs, each read as `grpcclient.Inputs` reads it, with the metadata
+/// its `input-metadata:NAME` option gives.
+fn read_inputs<R: Read, W: Write>(
+    g: &Gateway<'_, R, W>,
+) -> Result<BTreeMap<Vec<u8>, plan::FrontendInput>, Unread> {
+    let given = g.client.borrow_mut().inputs().map_err(|e| match e {
+        grpc::Error::Transport(t) => Unread::Bad(t),
+        status @ grpc::Error::Status(_) => Unread::Refused(Failure::call(status)),
+    })?;
+    let mut out = BTreeMap::new();
+    for (name, def) in given {
+        let definition = inputs::read(&def, &g.env.own).map_err(Unread::Bad)?;
+        let metadata = g
+            .opts
+            .get(&format!("input-metadata:{name}"))
+            .map(|m| m.as_bytes().to_vec());
+        out.insert(name.into_bytes(), plan::FrontendInput { definition, metadata });
+    }
+    Ok(out)
 }
 
 /// The file `filename` of what `def` loads (Docker's other casing, `lower`, where the
@@ -1753,7 +1842,7 @@ fn read_from<R: Read, W: Write>(
     let definition_json = pb::definition_json(def, &Carried::default())
         .ok_or_else(|| Failure::new("failed to marshal local source"))?;
     let r = g
-        .solve(&marshalled, &[], false)?
+        .solve_as(&marshalled, &[], false, "failed to resolve dockerfile")?
         .ok_or_else(|| Failure::new("failed to resolve dockerfile: no result"))?;
     // "failed to read dockerfile: ", which ToGRPC keeps of no status of BuildKit's.
     let data = match g.read_file(&r, filename) {
@@ -1801,7 +1890,7 @@ fn remote_context<R: Read, W: Write>(
         ..base.clone()
     };
     match config.options.main_context.clone() {
-        MainContext::Local => Ok(None),
+        MainContext::Local | MainContext::Input => Ok(None),
         main @ MainContext::Git { .. } => {
             let def = plan::context_definition(&unscoped(main))
                 .map_err(|e| Failure::new(String::from_utf8_lossy(&e)))?;
@@ -1817,7 +1906,7 @@ fn remote_context<R: Read, W: Write>(
             let m = pb::definition(&def, &Carried::default())
                 .ok_or_else(|| Failure::new("failed to marshal httpcontext"))?;
             let r = g
-                .solve(&m, &[], false)?
+                .solve_as(&m, &[], false, "failed to resolve httpcontext")?
                 .ok_or_else(|| Failure::new("failed to resolve httpcontext: no result"))?;
             let head = g
                 .client
@@ -1848,9 +1937,16 @@ fn forward<R: Read, W: Write>(
     let mut opts = g.opts.clone();
     opts.insert("cmdline".into(), cmdline.to_string());
     opts.insert("source".into(), source.to_string());
+    // Each input marshalled anew (forwardGateway).
     let mut inputs = BTreeMap::new();
     if g.caps.has_frontend("frontend.inputs") {
-        inputs = g.client.borrow_mut().inputs().map_err(Failure::call)?;
+        for (name, given) in read_inputs(g).map_err(|e| match e {
+            Unread::Refused(f) => f,
+            Unread::Bad(e) => Failure::new(format!("failed to get frontend inputs: {e}")),
+        })? {
+            let (def, _) = inputs::canonical(&given.definition, &g.env.own).map_err(Failure::new)?;
+            inputs.insert(String::from_utf8_lossy(&name).into_owned(), def);
+        }
     }
     let solved = g
         .client
@@ -2925,6 +3021,8 @@ mod tests {
         let mut meta = Meta::default();
         meta.locations.push(vec![(2, 2)]);
         Definition {
+            sources: Vec::new(),
+            source_order: Vec::new(),
             ops: vec![
                 Op {
                     inputs: Vec::new(),
@@ -3042,6 +3140,37 @@ mod tests {
         );
     }
 
+    /// A capability the worker lacks, refused before the Dockerfile's source is solved,
+    /// is said after "failed to resolve dockerfile", as ReadEntrypoint wraps it: the
+    /// client's own error, not a status of BuildKit's (a Git context's `git.mtime`, which
+    /// BuildKit v0.28.1 lacks).
+    #[test]
+    fn a_refused_capability_is_said_as_readentrypoint_says_it() {
+        let def = Definition {
+            ops: vec![Op {
+                inputs: Vec::new(),
+                kind: OpKind::Source {
+                    identifier: b"git://127.0.0.1/repo".to_vec(),
+                    attrs: BTreeMap::from([(b"git.mtime".to_vec(), b"commit".to_vec())]),
+                },
+                platform: None,
+            }],
+            metadata: vec![Meta::default()],
+            root: Some(Input { op: 0, index: 0 }),
+            sources: Vec::new(),
+            source_order: Vec::new(),
+        };
+        let mut out = Vec::new();
+        gateway_over(fake_server(&[]), &mut out, |g| {
+            let refusal = g.caps.llb_refusal("source.git.mtime", &g.env.product).unwrap();
+            let Err(f) = read_from(g, &def, "Dockerfile", other_casing("Dockerfile").as_deref()) else {
+                panic!("read");
+            };
+            assert_eq!(f.message, format!("failed to resolve dockerfile: {refusal}"));
+        });
+        assert!(messages(&out).is_empty(), "nothing asked of BuildKit");
+    }
+
     /// A skill the check refuses fails the build with the check's words, its excerpt the
     /// SKILL's line.
     #[test]
@@ -3086,6 +3215,8 @@ mod tests {
     #[test]
     fn the_frontends_own_image_reads_from_its_definition() {
         let def = Definition {
+            sources: Vec::new(),
+            source_order: Vec::new(),
             ops: vec![my_image()],
             metadata: vec![Meta::default()],
             root: Some(Input { op: 0, index: 0 }),
@@ -3113,6 +3244,8 @@ mod tests {
         );
         guarded.locations.push(vec![(2, 2)]);
         let def = Definition {
+            sources: Vec::new(),
+            source_order: Vec::new(),
             ops: vec![
                 Op {
                     inputs: Vec::new(),
@@ -3371,6 +3504,8 @@ mod tests {
             assert_eq!(r.config, config.to_vec());
             // The build's definition: its source in the layout step's place.
             let mut def = Definition {
+                sources: Vec::new(),
+                source_order: Vec::new(),
                 ops: vec![Op {
                     inputs: Vec::new(),
                     kind: OpKind::Source {

@@ -1,0 +1,71 @@
+#!/usr/bin/env python3
+"""Serves the Git repositories under BASE over git:// (git daemon's protocol, which dind's
+git lacks) for scripts/frontend/compare: each connection's first pkt-line asks
+`git-upload-pack /PATH`, protocol v2 where it says `version=2`, and `git upload-pack`
+runs on BASE/PATH with the connection as its input and output. Writes its pid to PIDFILE
+once it listens.
+
+    git-serve BASE PORT PIDFILE
+"""
+import os
+import socket
+import socketserver
+import subprocess
+import sys
+
+
+def read_exactly(sock, n):
+    data = b""
+    while len(data) < n:
+        chunk = sock.recv(n - len(data))
+        if not chunk:
+            return None
+        data += chunk
+    return data
+
+
+class Handler(socketserver.BaseRequestHandler):
+    def handle(self):
+        sock = self.request
+        head = read_exactly(sock, 4)
+        if head is None:
+            return
+        try:
+            n = int(head, 16)
+        except ValueError:
+            return
+        line = read_exactly(sock, n - 4) if n > 4 else b""
+        if line is None:
+            return
+        parts = line.split(b"\0")
+        service, _, path = parts[0].partition(b" ")
+        if service != b"git-upload-pack":
+            return
+        base = os.path.realpath(self.server.base)
+        repo = os.path.realpath(os.path.join(base, path.decode().lstrip("/")))
+        if not repo.startswith(base + os.sep) or not os.path.isdir(repo):
+            return
+        env = dict(os.environ)
+        versions = [p.decode() for p in parts[2:] if p.startswith(b"version=")]
+        if versions:
+            env["GIT_PROTOCOL"] = ":".join(versions)
+        subprocess.run(["git", "upload-pack", repo], stdin=sock.fileno(), stdout=sock.fileno(), env=env,
+                       check=False)
+
+
+class Server(socketserver.ThreadingTCPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+
+
+def main():
+    base, port, pidfile = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+    with Server(("127.0.0.1", port), Handler) as server:
+        server.base = base
+        with open(pidfile, "w") as f:
+            f.write(str(os.getpid()))
+        server.serve_forever()
+
+
+if __name__ == "__main__":
+    main()

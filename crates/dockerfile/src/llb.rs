@@ -7,7 +7,7 @@
 //!
 //! Strings are Go strings, bytes.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::go;
 use crate::platform::Platform;
@@ -57,11 +57,19 @@ pub struct LinuxResources {
 pub struct Meta {
     pub ignore_cache: bool,
     pub description: BTreeMap<Vec<u8>, Vec<u8>>,
+    /// `pb.ExportCache`'s value, which only a definition given whole sets here.
+    pub export_cache: Option<bool>,
+    /// The capabilities a definition given whole names in an op's metadata, beside those
+    /// its kind needs ([`crate::caps::op`]); each said to be needed, as `mergeMetadata`
+    /// says every one it merges.
+    pub caps: BTreeSet<Vec<u8>>,
     pub progress_group: Option<ProgressGroup>,
     pub linux_resources: Option<LinuxResources>,
     /// Where in the Dockerfile it comes from (`llb.SourceMap.Location`): each a set of
     /// lines, of every vertex marshalled to the op, in the order they were (D80).
     pub locations: Vec<crate::instructions::Location>,
+    /// Where in the source maps of definitions given whole it comes from.
+    pub given_locations: Vec<GivenLocation>,
 }
 
 impl Meta {
@@ -71,24 +79,65 @@ impl Meta {
         for (k, v) in &other.description {
             self.description.insert(k.clone(), v.clone());
         }
+        if other.export_cache.is_some() {
+            self.export_cache = other.export_cache;
+        }
+        self.caps.extend(other.caps.iter().cloned());
         if other.progress_group.is_some() {
             self.progress_group.clone_from(&other.progress_group);
         }
         if other.linux_resources.is_some() {
             self.linux_resources.clone_from(&other.linux_resources);
         }
-        // sourceMapCollector.Add: each vertex's locations, appended.
+        // sourceMapCollector.Add: each vertex's locations, appended after those before.
+        let before = self.locations.len();
+        self.given_locations
+            .extend(other.given_locations.iter().map(|g| GivenLocation {
+                after: before + g.after,
+                ..g.clone()
+            }));
         self.locations.extend(other.locations.iter().cloned());
     }
 }
 
-/// `pb.ProgressGroup`. Its ID is the group's place among the plan's groups, where
-/// BuildKit draws a random one.
+/// `pb.ProgressGroup`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProgressGroup {
-    pub id: usize,
+    pub id: GroupId,
     pub name: Vec<u8>,
     pub weak: bool,
+}
+
+/// A progress group's ID: the group's place among the plan's groups, where BuildKit
+/// draws a random one; or, of a definition given whole, the one it came with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GroupId {
+    Ours(usize),
+    Given(Vec<u8>),
+}
+
+/// `pb.Position`, as a definition given whole has one.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Position {
+    pub line: i32,
+    pub character: i32,
+}
+
+/// `pb.Range`: where it starts and ends, each where set.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Range {
+    pub start: Option<Position>,
+    pub end: Option<Position>,
+}
+
+/// A location in a source map of a definition given whole: the map (one of
+/// [`Graph::sources`]), its ranges, and how many of the op's own [`Meta::locations`] come
+/// before it, which keeps the order `sourceMapCollector.Add` appends them in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GivenLocation {
+    pub source: usize,
+    pub ranges: Vec<Range>,
+    pub after: usize,
 }
 
 /// `pb.ChownOpt`: a user and a group, each by ID or by a name looked up in the target.
@@ -311,6 +360,59 @@ pub enum Kind {
         input: Output,
         name: Vec<u8>,
     },
+    /// An operation of a definition given whole, as `llb.NewDefinitionOp` keeps one (a
+    /// frontend's input): the bytes it was marshalled as, written again as they are, so
+    /// that its digest and those its readers name stay what they were; the outputs it
+    /// reads, each another such operation; and, where it is one, the source it is. Its
+    /// metadata and locations are the vertex's [`Meta`].
+    Raw {
+        bytes: Vec<u8>,
+        inputs: Vec<Output>,
+        source: Option<RawSource>,
+    },
+}
+
+/// The source an operation given whole is (`pb.SourceOp`): its identifier and attributes.
+pub type RawSource = (Vec<u8>, BTreeMap<Vec<u8>, Vec<u8>>);
+
+/// A definition given whole (`pb.Definition`), as a frontend's input is: its operations,
+/// the last its root, which names its output; and the source maps their locations name.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Embedded {
+    pub ops: Vec<EmbeddedOp>,
+    pub sources: Vec<GivenSource>,
+}
+
+/// An operation of an [`Embedded`]: its bytes, what it reads (a digest and an output
+/// each, as its bytes name them), its metadata where the definition has any for it, its
+/// source locations (an index into the definition's sources, and the location's ranges)
+/// and, where it is one, the source it is.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct EmbeddedOp {
+    pub bytes: Vec<u8>,
+    pub inputs: Vec<(Vec<u8>, i64)>,
+    pub metadata: Option<Meta>,
+    pub locations: Vec<(usize, Vec<Range>)>,
+    pub source: Option<RawSource>,
+}
+
+/// A source map of a definition given whole (`pb.SourceInfo`): its file, data and
+/// language, and the definition that loads it as `sourceMapCollector.Marshal` writes it
+/// again (the one it came with, marshalled anew), as protobuf and as encoding/json writes
+/// it, where it came with one.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GivenSource {
+    pub filename: Vec<u8>,
+    pub data: Vec<u8>,
+    pub language: Vec<u8>,
+    pub definition: Option<(Vec<u8>, String)>,
+}
+
+/// A source map an op is located in: the Dockerfile's, or one of [`Graph::sources`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SourceRef {
+    Own,
+    Given(usize),
 }
 
 /// A vertex: what it does, the platform it runs for (sources of images and commands
@@ -349,6 +451,7 @@ impl Vertex {
             }
             Kind::Merge { inputs } => inputs.iter().copied().for_each(add),
             Kind::Skills { input, .. } => add(*input),
+            Kind::Raw { inputs, .. } => inputs.iter().copied().for_each(add),
         }
         out
     }
@@ -449,11 +552,14 @@ impl State {
     }
 }
 
-/// The plan's vertices.
+/// The plan's vertices, and the source maps of the definitions given whole in it.
 #[derive(Debug, Default)]
 pub struct Graph {
     pub vertices: Vec<Vertex>,
     progress_groups: usize,
+    pub sources: Vec<GivenSource>,
+    /// Whether a definition was given whole into it, whose ops may be ones of its own.
+    given: bool,
 }
 
 /// A command for `Graph::run`.
@@ -744,33 +850,128 @@ pub enum OpKind {
     Skills {
         name: Vec<u8>,
     },
+    /// A [`Kind::Raw`]: its bytes as they came, and the source it is, if one.
+    Raw {
+        bytes: Vec<u8>,
+        source: Option<RawSource>,
+    },
 }
 
 /// `llb.Definition`: the operations a state needs, each once, every input before what
-/// reads it; each one's metadata; and the state's own output.
+/// reads it; each one's metadata; and the state's own output. `sources` are the source
+/// maps definitions given whole carry ([`Graph::sources`]); `source_order`, each map an
+/// op is located in, in the order the marshal first meets it (`sourceMapCollector.Add`).
 #[derive(Debug, Clone, Default)]
 pub struct Definition {
     pub ops: Vec<Op>,
     pub metadata: Vec<Meta>,
     pub root: Option<Input>,
+    pub sources: Vec<GivenSource>,
+    pub source_order: Vec<SourceRef>,
 }
 
 impl Graph {
     /// `State.Marshal`: the definition of what `state` needs. A command with no platform
     /// of its own runs for `platform`, as the marshal's default constraint.
     pub fn marshal(&self, state: &State, platform: &Platform) -> Definition {
-        let mut m = Marshal {
-            graph: self,
-            platform,
-            def: Definition::default(),
-            by_content: HashMap::new(),
-            of_vertex: HashMap::new(),
-        };
+        let mut m = Marshal::new(self, platform);
         if let Some(out) = state.output {
             m.visit(out.vertex);
             m.def.root = m.input(out);
         }
         m.def
+    }
+
+    /// `llb.NewDefinitionOp`: the output `def`'s root names, a vertex of its bytes for
+    /// each operation it needs and each output of it read (DefinitionOp's input cache),
+    /// every one after what it reads; none for a definition of no operations, which is
+    /// scratch. Refuses what the marshal of one refuses (`DefinitionOp.Validate`): an op
+    /// of no metadata, a root read at a negative output; and what crashes BuildKit's,
+    /// which reads an op that is not there, or an output at a negative index, before it
+    /// validates: here the same refusals.
+    pub fn embed(&mut self, def: &Embedded) -> Result<Option<Output>, String> {
+        let Some(root) = def.ops.last() else {
+            return Ok(None);
+        };
+        let Some(root_input) = root.inputs.first() else {
+            return Err("invalid definition with no inputs on last vertex".into());
+        };
+        let by_digest: HashMap<Vec<u8>, &EmbeddedOp> =
+            def.ops.iter().map(|o| (crate::pb::digest(&o.bytes), o)).collect();
+        let base = self.sources.len();
+        let mut made: HashMap<(Vec<u8>, i64), VertexId> = HashMap::new();
+        let mut open: std::collections::HashSet<(Vec<u8>, i64)> = std::collections::HashSet::new();
+        // Depth first, each read output before its reader, in the order the op reads them.
+        let mut stack = vec![(root_input.clone(), false)];
+        while let Some((key, ready)) = stack.pop() {
+            if made.contains_key(&key) {
+                continue;
+            }
+            let (digest, index) = &key;
+            let op = by_digest
+                .get(digest)
+                .ok_or_else(|| format!("invalid definition op with unknown op {}", go::quote(digest)))?;
+            if *index < 0 {
+                return Err("invalid definition op with invalid index".into());
+            }
+            if !ready {
+                if !open.insert(key.clone()) {
+                    return Err("a definition whose operations read each other in a cycle".into());
+                }
+                stack.push((key, true));
+                for input in op.inputs.iter().rev() {
+                    if !made.contains_key(input) {
+                        stack.push((input.clone(), false));
+                    }
+                }
+                continue;
+            }
+            let mut meta = op
+                .metadata
+                .clone()
+                .ok_or_else(|| format!("invalid definition op with unknown metas {}", go::quote(digest)))?;
+            meta.given_locations = op
+                .locations
+                .iter()
+                .map(|(source, ranges)| GivenLocation {
+                    source: base + source,
+                    ranges: ranges.clone(),
+                    after: 0,
+                })
+                .collect();
+            let inputs = op
+                .inputs
+                .iter()
+                .map(|input| {
+                    made.get(input).map(|&vertex| Output {
+                        vertex,
+                        index: input.1,
+                    })
+                })
+                .collect::<Option<Vec<Output>>>()
+                .ok_or("a definition whose operations read each other in a cycle")?;
+            let id = self.add(Vertex {
+                kind: Kind::Raw {
+                    bytes: op.bytes.clone(),
+                    inputs,
+                    source: op.source.clone(),
+                },
+                platform: None,
+                meta,
+            });
+            open.remove(&key);
+            made.insert(key, id);
+        }
+        let vertex = made
+            .get(root_input)
+            .copied()
+            .ok_or("invalid definition op with no root")?;
+        self.sources.extend(def.sources.iter().cloned());
+        self.given = true;
+        Ok(Some(Output {
+            vertex,
+            index: root_input.1,
+        }))
     }
 
     /// [`Graph::marshal`] of `state`, and after its operations those `also` needs, which
@@ -782,13 +983,7 @@ impl Graph {
         also: &[&State],
         platform: &Platform,
     ) -> (Definition, Vec<Option<Input>>) {
-        let mut m = Marshal {
-            graph: self,
-            platform,
-            def: Definition::default(),
-            by_content: HashMap::new(),
-            of_vertex: HashMap::new(),
-        };
+        let mut m = Marshal::new(self, platform);
         if let Some(out) = state.output {
             m.visit(out.vertex);
             m.def.root = m.input(out);
@@ -810,9 +1005,57 @@ struct Marshal<'g> {
     def: Definition,
     by_content: HashMap<Op, usize>,
     of_vertex: HashMap<VertexId, usize>,
+    /// Where a definition was given whole: each op's digest, and the op of each, by
+    /// which an op given and one of our own that are the same are one (`marshal`'s cache).
+    digests: Vec<Vec<u8>>,
+    by_digest: HashMap<Vec<u8>, usize>,
 }
 
-impl Marshal<'_> {
+impl<'g> Marshal<'g> {
+    fn new(graph: &'g Graph, platform: &'g Platform) -> Marshal<'g> {
+        Marshal {
+            graph,
+            platform,
+            def: Definition {
+                sources: graph.sources.clone(),
+                ..Definition::default()
+            },
+            by_content: HashMap::new(),
+            of_vertex: HashMap::new(),
+            digests: Vec::new(),
+            by_digest: HashMap::new(),
+        }
+    }
+
+    /// `op`'s digest, where a definition was given whole: its bytes, its inputs named by
+    /// theirs.
+    fn digest(&self, op: &Op) -> Option<Vec<u8>> {
+        if !self.graph.given {
+            return None;
+        }
+        let inputs: Vec<Vec<u8>> = op
+            .inputs
+            .iter()
+            .map(|i| self.digests.get(i.op).filter(|d| !d.is_empty()).cloned())
+            .collect::<Option<_>>()?;
+        crate::pb::op(op, &inputs).map(|b| crate::pb::digest(&b))
+    }
+
+    /// sourceMapCollector.Add: the maps `meta`'s locations are in, each where first met.
+    fn meet_sources(&mut self, meta: &Meta) {
+        let mut meet = |r: SourceRef| {
+            if !self.def.source_order.contains(&r) {
+                self.def.source_order.push(r);
+            }
+        };
+        if !meta.locations.is_empty() {
+            meet(SourceRef::Own);
+        }
+        for g in &meta.given_locations {
+            meet(SourceRef::Given(g.source));
+        }
+    }
+
     fn input(&self, o: Output) -> Option<Input> {
         self.of_vertex
             .get(&o.vertex)
@@ -842,18 +1085,44 @@ impl Marshal<'_> {
                 continue;
             }
             let op = self.op(vertex);
-            let index = match self.by_content.get(&op) {
-                Some(&i) => i,
+            let digest = self.digest(&op);
+            let found = self
+                .by_content
+                .get(&op)
+                .or_else(|| digest.as_ref().and_then(|d| self.by_digest.get(d)))
+                .copied();
+            let index = match found {
+                Some(i) => {
+                    // An op given whole and one of our own that is the same: ours, whose
+                    // kind says the capabilities it needs; both are its bytes.
+                    if let Some(slot) = self.def.ops.get_mut(i)
+                        && matches!(slot.kind, OpKind::Raw { .. })
+                        && !matches!(op.kind, OpKind::Raw { .. })
+                    {
+                        *slot = op.clone();
+                    }
+                    self.by_content.entry(op).or_insert(i);
+                    i
+                }
                 None => {
+                    let i = self.def.ops.len();
                     self.def.ops.push(op.clone());
                     self.def.metadata.push(Meta::default());
-                    self.by_content.insert(op, self.def.ops.len() - 1);
-                    self.def.ops.len() - 1
+                    self.by_content.insert(op, i);
+                    if self.graph.given {
+                        // One for every op, empty where none is known, so they line up.
+                        self.digests.push(digest.clone().unwrap_or_default());
+                    }
+                    if let Some(d) = digest {
+                        self.by_digest.insert(d, i);
+                    }
+                    i
                 }
             };
             if let Some(md) = self.def.metadata.get_mut(index) {
                 md.merge(&vertex.meta);
             }
+            self.meet_sources(&vertex.meta);
             self.of_vertex.insert(v, index);
         }
     }
@@ -1037,6 +1306,18 @@ impl Marshal<'_> {
                 }
                 OpKind::Skills { name: name.clone() }
             }
+            // Its inputs only order it after what it reads: its bytes name them.
+            Kind::Raw {
+                bytes,
+                inputs: reads,
+                source,
+            } => {
+                inputs.extend(reads.iter().filter_map(|o| self.input(*o)));
+                OpKind::Raw {
+                    bytes: bytes.clone(),
+                    source: source.clone(),
+                }
+            }
         };
         // Commands and image sources are for a platform: theirs, or the default.
         let platform = match &kind {
@@ -1167,6 +1448,389 @@ fn file_action(a: &Action, base_dir: &[u8], base: i64) -> OpActionKind {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    /// A message's fields, each its number and its value's bytes (a varint's as written).
+    fn fields(b: &[u8]) -> Vec<(u64, Vec<u8>)> {
+        let varint = |b: &[u8], at: &mut usize| {
+            let (mut v, mut shift) = (0u64, 0);
+            loop {
+                let c = b[*at];
+                *at += 1;
+                v |= u64::from(c & 0x7f) << shift;
+                shift += 7;
+                if c < 0x80 {
+                    return v;
+                }
+            }
+        };
+        let (mut out, mut at) = (Vec::new(), 0);
+        while at < b.len() {
+            let tag = varint(b, &mut at);
+            let start = at;
+            let value = if tag & 7 == 0 {
+                varint(b, &mut at);
+                b[start..at].to_vec()
+            } else {
+                let n = varint(b, &mut at) as usize;
+                at += n;
+                b[at - n..at].to_vec()
+            };
+            out.push((tag >> 3, value));
+        }
+        out
+    }
+
+    fn values(b: &[u8], field: u64) -> Vec<Vec<u8>> {
+        fields(b)
+            .into_iter()
+            .filter(|(f, _)| *f == field)
+            .map(|(_, v)| v)
+            .collect()
+    }
+
+    /// A map's entries, by key.
+    fn entries(b: &[u8], field: u64) -> BTreeMap<Vec<u8>, Vec<u8>> {
+        values(b, field)
+            .iter()
+            .map(|e| (values(e, 1).concat(), values(e, 2).concat()))
+            .collect()
+    }
+
+    fn source_op(id: &[u8]) -> Op {
+        Op {
+            inputs: Vec::new(),
+            kind: OpKind::Source {
+                identifier: id.to_vec(),
+                attrs: BTreeMap::new(),
+            },
+            platform: None,
+        }
+    }
+
+    fn named(name: &[u8]) -> Meta {
+        let mut m = Meta::default();
+        m.description.insert(b"llb.customname".to_vec(), name.to_vec());
+        m
+    }
+
+    fn lines(a: i32, b: i32) -> Vec<Range> {
+        let at = |line| Some(Position { line, character: 0 });
+        vec![Range {
+            start: at(a),
+            end: at(b),
+        }]
+    }
+
+    fn mkfile(path: &[u8]) -> Action {
+        Action::Mkfile {
+            path: path.to_vec(),
+            mode: 0o644,
+            data: b"x".to_vec(),
+            chown: None,
+            created: None,
+        }
+    }
+
+    /// A definition given whole (`llb.NewDefinitionOp`): the state is what its root names,
+    /// each operation it needs written again as it came, so that its digest and those its
+    /// readers name stay; one it holds that nothing needs left out; each one's metadata
+    /// written as `client/llb` writes it again, its capabilities and all; its source map
+    /// where the marshal first meets it, before the Dockerfile's here, and its locations
+    /// naming it.
+    #[test]
+    fn a_definition_given_whole_is_written_as_it_came() {
+        let src = crate::pb::op(&source_op(b"local://context"), &[]).unwrap();
+        let unused = crate::pb::op(&source_op(b"local://other"), &[]).unwrap();
+        let src_digest = crate::pb::digest(&src);
+        let mut src_meta = named(b"[base 1/1] load");
+        src_meta.caps.insert(b"source.local".to_vec());
+        src_meta.progress_group = Some(ProgressGroup {
+            id: GroupId::Given(b"given-group".to_vec()),
+            name: b"loading".to_vec(),
+            weak: false,
+        });
+        let given = Embedded {
+            ops: vec![
+                EmbeddedOp {
+                    bytes: src.clone(),
+                    metadata: Some(src_meta),
+                    locations: vec![(0, lines(1, 1))],
+                    ..EmbeddedOp::default()
+                },
+                EmbeddedOp {
+                    bytes: unused.clone(),
+                    metadata: Some(Meta::default()),
+                    ..EmbeddedOp::default()
+                },
+                EmbeddedOp {
+                    bytes: crate::pb::root(&src_digest, 0),
+                    inputs: vec![(src_digest.clone(), 0)],
+                    metadata: Some(Meta::default()),
+                    ..EmbeddedOp::default()
+                },
+            ],
+            sources: vec![GivenSource {
+                filename: b"Dockerfile".to_vec(),
+                data: b"FROM scratch AS base\n".to_vec(),
+                language: b"Dockerfile".to_vec(),
+                definition: Some((b"its-definition".to_vec(), "{}".to_string())),
+            }],
+        };
+        let mut g = Graph::default();
+        let mut st = State::scratch();
+        st.output = g.embed(&given).unwrap();
+        let mut own = named(b"[app 1/1] RUN");
+        own.locations.push(vec![(2, 2)]);
+        let made = g.file(&st, vec![mkfile(b"/x")], own);
+        let def = g.marshal(&made, &Platform::new("linux", "arm64"));
+        let ours = b"FROM base\nRUN x\n";
+        let carried = crate::pb::Carried {
+            source: Some(crate::pb::SourceInfo {
+                filename: b"Dockerfile",
+                language: b"Dockerfile",
+                data: ours,
+                definition: Some(b"our-definition"),
+            }),
+            ..crate::pb::Carried::default()
+        };
+        let m = crate::pb::definition(&def, &carried).unwrap();
+        assert_eq!(m.digests.len(), 2, "the op nothing needs is left out");
+        assert_eq!(m.digests[0], src_digest);
+        let ops = values(&m.bytes, 1);
+        assert_eq!(ops[0], src);
+        assert!(!ops.contains(&unused));
+        let metadata = entries(&m.bytes, 2);
+        let src_md = &metadata[&src_digest];
+        assert_eq!(
+            entries(src_md, 2)[b"llb.customname".as_slice()],
+            b"[base 1/1] load"
+        );
+        assert_eq!(entries(src_md, 5).keys().collect::<Vec<_>>(), [b"source.local"]);
+        assert_eq!(values(&values(src_md, 6)[0], 1), [b"given-group"]);
+        assert!(entries(&metadata[&m.root], 5).contains_key(b"meta.description".as_slice()));
+        assert!(m.caps.contains("source.local"));
+        // The given map first, met first; the Dockerfile's second.
+        let source = &values(&m.bytes, 3)[0];
+        let infos = values(source, 2);
+        assert_eq!(infos.len(), 2);
+        assert_eq!(values(&infos[0], 2), [b"FROM scratch AS base\n"]);
+        assert_eq!(values(&infos[0], 3), [b"its-definition"]);
+        assert_eq!(values(&infos[1], 2), [ours]);
+        let locations = entries(source, 1);
+        let src_loc = &values(&locations[&src_digest], 1)[0];
+        assert!(values(src_loc, 1).is_empty(), "index 0, left out");
+        let file_loc = &values(&locations[&m.digests[1]], 1)[0];
+        assert_eq!(values(file_loc, 1), [vec![1]]);
+        // No operations: scratch.
+        assert_eq!(g.embed(&Embedded::default()), Ok(None));
+    }
+
+    /// A map given whole and the Dockerfile's that are alike (file, language and data)
+    /// are one (`equalSourceMap`): the first met kept, every location naming it.
+    #[test]
+    fn source_maps_alike_are_one() {
+        let src = crate::pb::op(&source_op(b"local://context"), &[]).unwrap();
+        let src_digest = crate::pb::digest(&src);
+        let text = b"FROM scratch AS base\nFROM base\n";
+        let given = Embedded {
+            ops: vec![
+                EmbeddedOp {
+                    bytes: src.clone(),
+                    metadata: Some(Meta::default()),
+                    locations: vec![(0, lines(1, 1))],
+                    ..EmbeddedOp::default()
+                },
+                EmbeddedOp {
+                    bytes: crate::pb::root(&src_digest, 0),
+                    inputs: vec![(src_digest.clone(), 0)],
+                    metadata: Some(Meta::default()),
+                    ..EmbeddedOp::default()
+                },
+            ],
+            sources: vec![GivenSource {
+                filename: b"Dockerfile".to_vec(),
+                data: text.to_vec(),
+                language: b"Dockerfile".to_vec(),
+                definition: None,
+            }],
+        };
+        let mut g = Graph::default();
+        let mut st = State::scratch();
+        st.output = g.embed(&given).unwrap();
+        let mut own = Meta::default();
+        own.locations.push(vec![(2, 2)]);
+        let made = g.file(&st, vec![mkfile(b"/x")], own);
+        let def = g.marshal(&made, &Platform::new("linux", "arm64"));
+        let carried = crate::pb::Carried {
+            source: Some(crate::pb::SourceInfo {
+                filename: b"Dockerfile",
+                language: b"Dockerfile",
+                data: text,
+                definition: Some(b"ours"),
+            }),
+            ..crate::pb::Carried::default()
+        };
+        let m = crate::pb::definition(&def, &carried).unwrap();
+        let source = &values(&m.bytes, 3)[0];
+        let infos = values(source, 2);
+        assert_eq!(infos.len(), 1);
+        assert!(
+            values(&infos[0], 3).is_empty(),
+            "the given one, which came with none"
+        );
+        let locations = entries(source, 1);
+        for d in &m.digests {
+            assert!(values(&values(&locations[d], 1)[0], 1).is_empty());
+        }
+    }
+
+    /// An op given whole and one of our own that is the same are one op (`marshal`'s
+    /// cache by digest), its metadata merged: the descriptions, the later over the
+    /// earlier; the capabilities its kind needs and those given.
+    #[test]
+    fn an_op_given_and_one_of_ours_alike_are_one() {
+        let src = crate::pb::op(&source_op(b"local://context"), &[]).unwrap();
+        let src_digest = crate::pb::digest(&src);
+        let mut given_meta = named(b"given");
+        given_meta.caps.insert(b"given.cap".to_vec());
+        given_meta.export_cache = Some(true);
+        let given = Embedded {
+            ops: vec![
+                EmbeddedOp {
+                    bytes: src.clone(),
+                    metadata: Some(given_meta),
+                    ..EmbeddedOp::default()
+                },
+                EmbeddedOp {
+                    bytes: crate::pb::root(&src_digest, 0),
+                    inputs: vec![(src_digest.clone(), 0)],
+                    metadata: Some(Meta::default()),
+                    ..EmbeddedOp::default()
+                },
+            ],
+            sources: Vec::new(),
+        };
+        let mut g = Graph::default();
+        let given_out = g.embed(&given).unwrap();
+        let own = g.source(b"local://context".to_vec(), BTreeMap::new(), None, named(b"ours"));
+        let merged = g.merge(&[given_out, own.output], Meta::default());
+        let st = State {
+            output: merged,
+            ..State::scratch()
+        };
+        let def = g.marshal(&st, &Platform::new("linux", "arm64"));
+        assert_eq!(def.ops.len(), 2, "the source once, and the merge");
+        assert!(
+            matches!(def.ops[0].kind, OpKind::Source { .. }),
+            "ours, whose kind is known"
+        );
+        let m = crate::pb::definition(&def, &crate::pb::Carried::default()).unwrap();
+        assert_eq!(m.digests[0], src_digest);
+        let metadata = entries(&m.bytes, 2);
+        let md = &metadata[&src_digest];
+        assert_eq!(entries(md, 2)[b"llb.customname".as_slice()], b"ours");
+        let caps = entries(md, 5);
+        assert!(caps.contains_key(b"given.cap".as_slice()) && caps.contains_key(b"source.local".as_slice()));
+        assert_eq!(values(md, 4), [vec![8, 1]], "export_cache, its Value true");
+        assert!(entries(&metadata[&m.root], 5).contains_key(b"meta.exportcache".as_slice()));
+    }
+
+    /// Each output of an op given whole that is read is a vertex of its own
+    /// (DefinitionOp's input cache), each adding the op's locations again.
+    #[test]
+    fn each_output_read_adds_its_locations() {
+        let a = crate::pb::op(&source_op(b"local://a"), &[]).unwrap();
+        let a_digest = crate::pb::digest(&a);
+        let reader = Op {
+            inputs: vec![Input { op: 0, index: 0 }, Input { op: 0, index: 1 }],
+            kind: OpKind::Merge,
+            platform: None,
+        };
+        let b = crate::pb::op(&reader, &[a_digest.clone(), a_digest.clone()]).unwrap();
+        let b_digest = crate::pb::digest(&b);
+        let given = Embedded {
+            ops: vec![
+                EmbeddedOp {
+                    bytes: a,
+                    metadata: Some(Meta::default()),
+                    locations: vec![(0, lines(3, 3))],
+                    ..EmbeddedOp::default()
+                },
+                EmbeddedOp {
+                    bytes: b,
+                    inputs: vec![(a_digest.clone(), 0), (a_digest.clone(), 1)],
+                    metadata: Some(Meta::default()),
+                    ..EmbeddedOp::default()
+                },
+                EmbeddedOp {
+                    bytes: crate::pb::root(&b_digest, 0),
+                    inputs: vec![(b_digest.clone(), 0)],
+                    metadata: Some(Meta::default()),
+                    ..EmbeddedOp::default()
+                },
+            ],
+            sources: vec![GivenSource::default()],
+        };
+        let mut g = Graph::default();
+        let st = State {
+            output: g.embed(&given).unwrap(),
+            ..State::scratch()
+        };
+        let def = g.marshal(&st, &Platform::new("linux", "arm64"));
+        assert_eq!(def.ops.len(), 2);
+        assert_eq!(def.metadata[0].given_locations.len(), 2);
+    }
+
+    /// What BuildKit's marshal of a definition given whole refuses, refused when it is
+    /// given: a root that reads nothing, an op of no metadata, a root at a negative
+    /// output; and, where BuildKit's crashes, an op it reads that is not there.
+    #[test]
+    fn a_definition_given_whole_is_refused_where_buildkit_refuses_it() {
+        let src = crate::pb::op(&source_op(b"local://context"), &[]).unwrap();
+        let src_digest = crate::pb::digest(&src);
+        let with = |metadata: Option<Meta>, index: i64, read: &[u8]| Embedded {
+            ops: vec![
+                EmbeddedOp {
+                    bytes: src.clone(),
+                    metadata,
+                    ..EmbeddedOp::default()
+                },
+                EmbeddedOp {
+                    bytes: crate::pb::root(read, index),
+                    inputs: vec![(read.to_vec(), index)],
+                    metadata: Some(Meta::default()),
+                    ..EmbeddedOp::default()
+                },
+            ],
+            sources: Vec::new(),
+        };
+        let mut g = Graph::default();
+        assert!(g.embed(&with(Some(Meta::default()), 0, &src_digest)).is_ok());
+        let no_input = Embedded {
+            ops: vec![EmbeddedOp::default()],
+            sources: Vec::new(),
+        };
+        assert_eq!(
+            g.embed(&no_input),
+            Err("invalid definition with no inputs on last vertex".to_string())
+        );
+        let quoted = go::quote(&src_digest);
+        assert_eq!(
+            g.embed(&with(None, 0, &src_digest)),
+            Err(format!("invalid definition op with unknown metas {quoted}"))
+        );
+        assert_eq!(
+            g.embed(&with(Some(Meta::default()), -1, &src_digest)),
+            Err("invalid definition op with invalid index".to_string())
+        );
+        assert_eq!(
+            g.embed(&with(Some(Meta::default()), 0, b"sha256:00")),
+            Err(format!(
+                "invalid definition op with unknown op {}",
+                go::quote(b"sha256:00")
+            ))
+        );
+    }
 
     /// Adding entries together leaves what adding them one by one does: keys already
     /// there and keys given twice end up where they are added last.

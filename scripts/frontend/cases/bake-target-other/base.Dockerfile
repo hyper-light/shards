@@ -1,0 +1,3 @@
+FROM scratch
+COPY a /a
+ENV FROM_BASE=1

@@ -77,6 +77,12 @@ pub struct Options {
     pub contexts: BTreeMap<Vec<u8>, Vec<u8>>,
     /// Each local named context's `sharedkey:localdir:KEY` option, by KEY.
     pub context_keys: BTreeMap<Vec<u8>, Vec<u8>>,
+    /// The frontend's inputs (dockerui's `Inputs`), by name: definitions given whole, as
+    /// buildx bake gives one target's to another, which `input:NAME` contexts name.
+    pub inputs: BTreeMap<Vec<u8>, FrontendInput>,
+    /// Why the inputs could not be read, where the frontend read them only for an
+    /// `input:NAME` context: what loading one says.
+    pub inputs_failed: Option<Vec<u8>>,
     /// Each local named context's `.dockerignore` patterns, by its local name.
     pub context_excludes: BTreeMap<Vec<u8>, Vec<Vec<u8>>>,
     /// The frontend's `no-cache` option (dockerui's `ignoreCache`): the stages whose steps
@@ -136,6 +142,8 @@ pub enum MainContext {
     /// The client's directory, sent as `local://context`.
     #[default]
     Local,
+    /// The frontend's `context` input (initContext): a definition given whole.
+    Input,
     /// A Git repository (`DetectGitContext`): its URL as written, and whether
     /// BUILDKIT_CONTEXT_KEEP_GIT_DIR keeps its `.git`.
     Git { url: Vec<u8>, keep_git_dir: bool },
@@ -143,6 +151,15 @@ pub enum MainContext {
     /// (dockerui reads its first 1024 bytes), else it is the Dockerfile, alone in the
     /// context.
     Http { url: Vec<u8>, archive: bool },
+}
+
+/// A frontend's input: the definition given whole, and the metadata its
+/// `input-metadata:NAME` option gives with it (a JSON object of base64 values, its image
+/// config under `containerimage.config`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FrontendInput {
+    pub definition: llb::Embedded,
+    pub metadata: Option<Vec<u8>>,
 }
 
 /// A named context a stage or base name is given (dockerui's NamedContext): its name (the
@@ -1205,15 +1222,22 @@ fn context_git_attrs(attrs: &mut BTreeMap<Vec<u8>, Vec<u8>>, g: &git::GitRef, de
 fn single_source(def: &llb::Definition) -> Option<SourceOp> {
     let mut found = None;
     for op in &def.ops {
-        if let llb::OpKind::Source { identifier, attrs } = &op.kind {
-            if found.is_some() {
-                return None;
-            }
-            found = Some(SourceOp {
-                identifier: identifier.clone(),
-                attrs: attrs.clone(),
-            });
+        let (identifier, attrs) = match &op.kind {
+            llb::OpKind::Source { identifier, attrs } => (identifier, attrs),
+            // A source of a definition given whole (a frontend's input), as it came.
+            llb::OpKind::Raw {
+                source: Some((identifier, attrs)),
+                ..
+            } => (identifier, attrs),
+            _ => continue,
+        };
+        if found.is_some() {
+            return None;
         }
+        found = Some(SourceOp {
+            identifier: identifier.clone(),
+            attrs: attrs.clone(),
+        });
     }
     found
 }
@@ -1403,7 +1427,18 @@ fn named_epoch_op(n: &Named, resolver: &dyn Resolver, opts: &Options) -> Result<
             attrs.insert(b"oci.store".to_vec(), store);
             Ok(op([b"oci-layout://".as_slice(), &dummy].concat(), attrs))
         }
-        b"input" => Err(Fail::new(errb(&[b"invalid input ", rest, b" for ", key]))),
+        // sourceOpFromState of the definition given whole: its one source, if one.
+        b"input" => {
+            if let Some(e) = &opts.inputs_failed {
+                return Err(Fail::new(e.clone()));
+            }
+            let Some(given) = opts.inputs.get(rest) else {
+                return Err(Fail::new(errb(&[b"invalid input ", rest, b" for ", key])));
+            };
+            let mut graph = Graph::default();
+            let (state, _) = input_context(&mut graph, given)?;
+            Ok(single_source(&graph.marshal(&state, &opts.target_platform)))
+        }
         other => Err(Fail::new(errb(&[
             b"unsupported context source ",
             other,
@@ -4018,7 +4053,7 @@ impl Planner<'_> {
             copy_meta.ignore_cache = ignore_cache;
             copy_meta.locations.push(cfg.location.clone());
             copy_meta.progress_group = Some(ProgressGroup {
-                id: group,
+                id: llb::GroupId::Ours(group),
                 name: pg_name.clone(),
                 weak: true,
             });
@@ -4035,7 +4070,7 @@ impl Planner<'_> {
             merge_meta.ignore_cache = ignore_cache;
             merge_meta.locations.push(cfg.location.clone());
             merge_meta.progress_group = Some(ProgressGroup {
-                id: group,
+                id: llb::GroupId::Ours(group),
                 name: pg_name,
                 weak: false,
             });
@@ -4248,8 +4283,17 @@ impl Planner<'_> {
                 with_image_config(&mut state, &img);
                 Ok((state, Some(img)))
             }
-            // buildx gives the frontend no inputs for a context it names.
-            b"input" => Err(Fail::new(errb(&[b"invalid input ", rest, b" for ", &n.key]))),
+            // A definition the frontend was given whole (buildx bake gives one target's to
+            // another), its image config where its metadata gives one.
+            b"input" => {
+                if let Some(e) = &self.opts.inputs_failed {
+                    return Err(Fail::new(e.clone()));
+                }
+                let Some(given) = self.opts.inputs.get(rest) else {
+                    return Err(Fail::new(errb(&[b"invalid input ", rest, b" for ", &n.key])));
+                };
+                input_context(&mut self.graph, given)
+            }
             other => Err(Fail::new(errb(&[
                 b"unsupported context source ",
                 other,
@@ -5811,6 +5855,83 @@ fn domain_dir(dom: &crate::agentfile::Domain, harness: bool) -> Result<Vec<u8>, 
     }
 }
 
+/// dockerui's input context: the definition given whole, and where its metadata gives
+/// an image config, that config (`State.WithImageConfig`, then the image for the stage).
+fn input_context(graph: &mut Graph, given: &FrontendInput) -> Result<(State, Option<Image>), Fail> {
+    let mut state = State::scratch();
+    state.output = graph
+        .embed(&given.definition)
+        .map_err(|e| Fail::new(e.into_bytes()))?;
+    let Some(md) = &given.metadata else {
+        return Ok((state, None));
+    };
+    let config = input_image_config(md)
+        .map_err(|e| Fail::new(errb(&[b"failed to parse input metadata ", md, b": ", &e])))?;
+    let Some(config) = config else {
+        return Ok((state, None));
+    };
+    let img = Image::from_json(&config).map_err(Fail::new)?;
+    with_image_config(&mut state, &img);
+    Ok((state, Some(img)))
+}
+
+/// The image config of an input's metadata (`containerimage.config`), as Go's
+/// `json.Unmarshal` into a `map[string][]byte` reads it: an object of base64 strings or
+/// nulls, the last of a key named twice the one kept.
+fn input_image_config(md: &[u8]) -> Result<Option<Vec<u8>>, Vec<u8>> {
+    use crate::json::Value;
+    use base64::Engine as _;
+    let kind = |v: &Value| match v {
+        Value::Null => "null",
+        Value::Bool(_) => "bool",
+        Value::Number(_) => "number",
+        Value::String(..) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    };
+    let parsed = crate::json::parse(md)?;
+    let members = match &parsed {
+        Value::Object(members) => members,
+        Value::Null => return Ok(None),
+        other => {
+            return Err(format!(
+                "json: cannot unmarshal {} into Go value of type map[string][]uint8",
+                kind(other)
+            )
+            .into_bytes());
+        }
+    };
+    let mut config = None;
+    for (k, v) in members {
+        let bytes = match v {
+            Value::Null => None,
+            Value::String(s, _) => {
+                Some(base64::engine::general_purpose::STANDARD.decode(s).map_err(|e| {
+                    let at = match e {
+                        base64::DecodeError::InvalidByte(at, _)
+                        | base64::DecodeError::InvalidLastSymbol { offset: at, .. } => at,
+                        base64::DecodeError::InvalidLength(n) => n,
+                        _ => s.len(),
+                    };
+                    format!("illegal base64 data at input byte {at}").into_bytes()
+                })?)
+            }
+            other => {
+                return Err(format!(
+                    "json: cannot unmarshal {} into Go struct field .{} of type []uint8",
+                    kind(other),
+                    String::from_utf8_lossy(k)
+                )
+                .into_bytes());
+            }
+        };
+        if k == b"containerimage.config" {
+            config = bytes;
+        }
+    }
+    Ok(config)
+}
+
 /// `State.WithImageConfig`: the image's environment (each variable added), working
 /// directory and platform.
 fn with_image_config(state: &mut State, img: &Image) {
@@ -6040,6 +6161,18 @@ fn main_context(graph: &mut Graph, opts: &Options) -> Result<State, Fail> {
             git::Parsed::BadGit(e) => return Err(Fail::new(e)),
             git::Parsed::NotGit => return Err(Fail::new(errb(&[b"invalid git context ", url]))),
         },
+        // The frontend's `context` input (initContext's `bctx.context`), given whole.
+        MainContext::Input => {
+            let given = opts
+                .inputs
+                .get(b"context".as_slice())
+                .ok_or_else(|| Fail::new(b"the frontend's context input is gone".to_vec()))?;
+            let mut st = State::scratch();
+            st.output = graph
+                .embed(&given.definition)
+                .map_err(|e| Fail::new(e.into_bytes()))?;
+            st
+        }
         MainContext::Http { url, archive } => {
             let mut attrs = BTreeMap::new();
             attrs.insert(b"http.filename".to_vec(), b"context".to_vec());

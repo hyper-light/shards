@@ -892,6 +892,10 @@ fn op_v(op: &shards_dockerfile::llb::Op, md: &shards_dockerfile::llb::Meta, orde
         OpKind::Skills { name } => {
             o.insert("skills".into(), serde_json::json!({ "name": ustr(name) }));
         }
+        // Given whole, which no plan of the oracle's holds.
+        OpKind::Raw { bytes, .. } => {
+            o.insert("raw".into(), serde_json::json!({ "len": bytes.len() }));
+        }
     }
     o.insert("metadata".into(), meta_v(md));
     // Every op has its source map entry, the Dockerfile's (source 0), each location
@@ -1084,6 +1088,8 @@ fn options_of(file: &str) -> shards_dockerfile::plan::Options {
         build_platforms: vec![Platform::new("linux", "amd64")],
         // The generator plans with no client.
         no_client: true,
+        inputs: std::collections::BTreeMap::new(),
+        inputs_failed: None,
         default_platform: None,
         build_args: map(&opts_v["build_args"]),
         target: opts_v["target"].as_str().unwrap_or_default().as_bytes().to_vec(),

@@ -8,11 +8,14 @@
 //! it does.
 //! What provenance's `mode=max` records of a build (its LLB definition) is these.
 
+use std::collections::{BTreeSet, HashMap};
+
 use sha2::Digest as _;
 
 use crate::llb::{
-    Definition, Device, LinuxResources, Meta, NetMode, Op, OpAction, OpActionKind, OpChown, OpKind, OpMount,
-    OpMountKind, OpUser, Process, Security, Sharing,
+    Definition, Device, GivenLocation, GivenSource, GroupId, LinuxResources, Meta, NetMode, Op, OpAction,
+    OpActionKind, OpChown, OpKind, OpMount, OpMountKind, OpUser, Position, Process, ProgressGroup, Range,
+    Security, Sharing, SourceRef,
 };
 use crate::platform::Platform;
 
@@ -82,6 +85,10 @@ impl W {
 
 /// `op`'s bytes, its inputs named by `digests` (each input's op's digest, in order).
 pub fn op(op: &Op, digests: &[Vec<u8>]) -> Option<Vec<u8>> {
+    // Given whole: its bytes as they came, which name its inputs themselves.
+    if let OpKind::Raw { bytes, .. } = &op.kind {
+        return Some(bytes.clone());
+    }
     let mut w = W::default();
     for (input, digest) in op.inputs.iter().zip(digests) {
         let mut i = W::default();
@@ -169,6 +176,8 @@ pub fn op(op: &Op, digests: &[Vec<u8>]) -> Option<Vec<u8>> {
             k.bytes(1, name);
             w.message(SKILLS, k);
         }
+        // Returned above, as it came.
+        OpKind::Raw { .. } => {}
     }
     Some(w.0)
 }
@@ -224,7 +233,7 @@ pub struct Marshalled {
     pub bytes: Vec<u8>,
     pub digests: Vec<Vec<u8>>,
     pub root: Vec<u8>,
-    pub caps: std::collections::BTreeSet<&'static str>,
+    pub caps: BTreeSet<String>,
 }
 
 /// `def` as `llb.Definition.ToPB` holds it (`pb.Definition`), written as protobuf-go's
@@ -232,8 +241,8 @@ pub struct Marshalled {
 /// order, which nothing reads): each op's bytes, the root last, which names the result;
 /// each op's metadata by its digest, with the capabilities `client/llb` records
 /// (crate::caps); and the source map: each op's locations, empty for an op that has none
-/// and none for the root, and the file they are in where any op has one
-/// (`sourceMapCollector`). A definition of nothing (scratch) is empty.
+/// and none for the root, and the files they are in (`sourceMapCollector`). A definition
+/// of nothing (scratch) is empty.
 pub fn definition(def: &Definition, carried: &Carried<'_>) -> Option<Marshalled> {
     let Some(root_input) = def.root else {
         return Some(Marshalled::default());
@@ -259,15 +268,15 @@ pub fn definition(def: &Definition, carried: &Carried<'_>) -> Option<Marshalled>
     }
     // map<string, OpMetadata>, by digest.
     let mut metadata: Vec<(&[u8], W)> = Vec::with_capacity(ops.len());
-    let mut all_caps = std::collections::BTreeSet::new();
+    let mut all_caps = BTreeSet::new();
     for (i, (o, md)) in def.ops.iter().zip(&def.metadata).enumerate() {
-        let caps = crate::caps::op(o, md, carried.sets_default_path);
+        let caps = op_caps(o, md, carried.sets_default_path);
         metadata.push((digests.get(i)?, op_metadata(md, &caps, carried.group_prefix)));
-        all_caps.extend(caps);
+        all_caps.extend(caps.iter().map(|c| String::from_utf8_lossy(c).into_owned()));
     }
-    let root_caps = crate::caps::root(&def.metadata);
+    let root_caps = root_caps(&def.metadata);
     metadata.push((&root_digest, op_metadata(&Meta::default(), &root_caps, "")));
-    all_caps.extend(root_caps);
+    all_caps.extend(root_caps.iter().map(|c| String::from_utf8_lossy(c).into_owned()));
     metadata.sort_by(|a, b| a.0.cmp(b.0));
     // A digest named twice would be one op twice, which the marshal never makes.
     metadata.dedup_by(|a, b| a.0 == b.0);
@@ -277,32 +286,26 @@ pub fn definition(def: &Definition, carried: &Carried<'_>) -> Option<Marshalled>
         entry.message(2, m);
         w.message(2, entry);
     }
+    let (kept, maps) = source_maps(def, carried)?;
     let mut source = W::default();
-    let mut locations: Vec<(&[u8], &Meta)> = digests.iter().map(Vec::as_slice).zip(&def.metadata).collect();
+    let mut locations: Vec<(&[u8], W)> = Vec::with_capacity(def.ops.len());
+    for (d, md) in digests.iter().zip(&def.metadata) {
+        locations.push((d, op_locations(md, &maps)?));
+    }
     locations.sort_by(|a, b| a.0.cmp(b.0));
     locations.dedup_by(|a, b| a.0 == b.0);
-    for (d, md) in &locations {
-        let mut ls = W::default();
-        for l in &md.locations {
-            let mut loc = W::default();
-            // Every location is in the one source: index 0, left out.
-            for &(start, end) in l {
-                let mut range = W::default();
-                range.message(1, position(start));
-                range.message(2, position(end));
-                loc.message(2, range);
-            }
-            ls.message(1, loc);
-        }
+    for (d, ls) in locations {
         let mut entry = W::default();
         entry.always(1, d);
         entry.message(2, ls);
         source.message(1, entry);
     }
-    if let Some(info) = carried.source
-        && def.metadata.iter().any(|m| !m.locations.is_empty())
-    {
-        source.always(2, &source_info(&info));
+    for r in &kept {
+        let info = match r {
+            SourceRef::Own => source_info(&carried.source?),
+            SourceRef::Given(at) => given_source_info(def.sources.get(*at)?),
+        };
+        source.always(2, &info);
     }
     w.message(3, source);
     Some(Marshalled {
@@ -311,6 +314,120 @@ pub fn definition(def: &Definition, carried: &Carried<'_>) -> Option<Marshalled>
         root: root_digest,
         caps: all_caps,
     })
+}
+
+/// The capabilities `o`'s metadata names: those its kind needs (crate::caps::op), and
+/// those a definition given whole named for it.
+fn op_caps(o: &Op, md: &Meta, sets_default_path: bool) -> BTreeSet<Vec<u8>> {
+    let mut caps: BTreeSet<Vec<u8>> = crate::caps::op(o, md, sets_default_path)
+        .into_iter()
+        .map(|c| c.as_bytes().to_vec())
+        .collect();
+    caps.extend(md.caps.iter().cloned());
+    caps
+}
+
+/// The root's capabilities (crate::caps::root).
+fn root_caps(metadata: &[Meta]) -> BTreeSet<Vec<u8>> {
+    crate::caps::root(metadata)
+        .into_iter()
+        .map(|c| c.as_bytes().to_vec())
+        .collect()
+}
+
+/// sourceMapCollector's maps: those `def`'s ops are located in, in the order the marshal
+/// first met them, one kept of those alike (`equalSourceMap`: the same file, language and
+/// data; a given map has no definition when first met, so no definitions are compared);
+/// and the index among those kept of each map met. The Dockerfile's is there only where
+/// `carried` has it.
+fn source_maps(def: &Definition, carried: &Carried<'_>) -> Option<(Vec<SourceRef>, HashMap<SourceRef, i32>)> {
+    let content = |r: SourceRef| -> Option<(&[u8], &[u8], &[u8])> {
+        match r {
+            SourceRef::Own => carried.source.map(|s| (s.filename, s.language, s.data)),
+            SourceRef::Given(at) => def
+                .sources
+                .get(at)
+                .map(|g| (g.filename.as_slice(), g.language.as_slice(), g.data.as_slice())),
+        }
+    };
+    let mut kept: Vec<SourceRef> = Vec::new();
+    let mut index = HashMap::new();
+    for &r in &def.source_order {
+        let Some(c) = content(r) else {
+            continue;
+        };
+        let at = match kept.iter().position(|&k| content(k) == Some(c)) {
+            Some(at) => at,
+            None => {
+                kept.push(r);
+                kept.len() - 1
+            }
+        };
+        index.insert(r, i32::try_from(at).ok()?);
+    }
+    Some((kept, index))
+}
+
+/// An op's locations (`pb.Locations`): its own and those given whole, in the order they
+/// were added, each naming its map's index.
+fn op_locations(md: &Meta, maps: &HashMap<SourceRef, i32>) -> Option<W> {
+    let mut ls = W::default();
+    let own = maps.get(&SourceRef::Own).copied().unwrap_or(0);
+    let given_at = |g: &GivenLocation| maps.get(&SourceRef::Given(g.source)).copied();
+    let mut given = md.given_locations.iter().peekable();
+    let write_given = |ls: &mut W, g: &GivenLocation| -> Option<()> {
+        let mut loc = W::default();
+        loc.int32(1, given_at(g)?);
+        for r in &g.ranges {
+            loc.message(2, given_range(r));
+        }
+        ls.message(1, loc);
+        Some(())
+    };
+    for (i, l) in md.locations.iter().enumerate() {
+        while let Some(g) = given.next_if(|g| g.after <= i) {
+            write_given(&mut ls, g)?;
+        }
+        let mut loc = W::default();
+        loc.int32(1, own);
+        for &(start, end) in l {
+            let mut range = W::default();
+            range.message(1, position(start));
+            range.message(2, position(end));
+            loc.message(2, range);
+        }
+        ls.message(1, loc);
+    }
+    for g in given {
+        write_given(&mut ls, g)?;
+    }
+    Some(ls)
+}
+
+/// A range given whole as `pb.Range`: each end where it has one.
+fn given_range(r: &Range) -> W {
+    let mut w = W::default();
+    for (field, p) in [(1, r.start), (2, r.end)] {
+        if let Some(p) = p {
+            let mut pw = W::default();
+            pw.int32(1, p.line);
+            pw.int32(2, p.character);
+            w.message(field, pw);
+        }
+    }
+    w
+}
+
+/// A source map given whole as `pb.SourceInfo`.
+fn given_source_info(g: &GivenSource) -> Vec<u8> {
+    let mut i = W::default();
+    i.bytes(1, &g.filename);
+    i.bytes(2, &g.data);
+    if let Some((d, _)) = &g.definition {
+        i.always(3, d);
+    }
+    i.bytes(4, &g.language);
+    i.0
 }
 
 /// A definition of a source map's own (no source of its own, as dockerui's loads of the
@@ -330,11 +447,6 @@ pub fn definition_json(def: &Definition, carried: &Carried<'_>) -> Option<String
         return Some(out);
     }
     let b64 = |b: &[u8]| base64::engine::general_purpose::STANDARD.encode(b);
-    let str_json = |s: &[u8]| {
-        let mut o = String::new();
-        crate::json::write_string(&mut o, s);
-        o
-    };
     // Each op's bytes, again, as `definition` wrote them, the root last.
     let mut ops: Vec<String> = Vec::with_capacity(def.ops.len() + 1);
     for o in &def.ops {
@@ -353,12 +465,12 @@ pub fn definition_json(def: &Definition, carried: &Carried<'_>) -> Option<String
     out.push_str(&format!("\"def\":[{}]", ops.join(",")));
     let mut metadata: Vec<(Vec<u8>, String)> = Vec::new();
     for ((o, md), d) in def.ops.iter().zip(&def.metadata).zip(&marshalled.digests) {
-        let caps = crate::caps::op(o, md, carried.sets_default_path);
+        let caps = op_caps(o, md, carried.sets_default_path);
         metadata.push((d.clone(), op_metadata_json(md, &caps, carried.group_prefix)));
     }
     metadata.push((
         marshalled.root.clone(),
-        op_metadata_json(&Meta::default(), &crate::caps::root(&def.metadata), ""),
+        op_metadata_json(&Meta::default(), &root_caps(&def.metadata), ""),
     ));
     metadata.sort_by(|a, b| a.0.cmp(&b.0));
     let entries: Vec<String> = metadata
@@ -366,29 +478,10 @@ pub fn definition_json(def: &Definition, carried: &Carried<'_>) -> Option<String
         .map(|(d, m)| format!("{}:{m}", str_json(d)))
         .collect();
     out.push_str(&format!(",\"metadata\":{{{}}}", entries.join(",")));
+    let (kept, maps) = source_maps(def, carried)?;
     let mut locations: Vec<(Vec<u8>, String)> = Vec::new();
     for (md, d) in def.metadata.iter().zip(&marshalled.digests) {
-        let locs: Vec<String> = md
-            .locations
-            .iter()
-            .map(|l| {
-                let ranges: Vec<String> = l
-                    .iter()
-                    .map(|&(a, b)| format!("{{\"start\":{},\"end\":{}}}", position_json(a), position_json(b)))
-                    .collect();
-                if ranges.is_empty() {
-                    "{}".to_string()
-                } else {
-                    format!("{{\"ranges\":[{}]}}", ranges.join(","))
-                }
-            })
-            .collect();
-        let entry = if locs.is_empty() {
-            "{}".to_string()
-        } else {
-            format!("{{\"locations\":[{}]}}", locs.join(","))
-        };
-        locations.push((d.clone(), entry));
+        locations.push((d.clone(), op_locations_json(md, &maps)?));
     }
     locations.sort_by(|a, b| a.0.cmp(&b.0));
     locations.dedup_by(|a, b| a.0 == b.0);
@@ -396,11 +489,112 @@ pub fn definition_json(def: &Definition, carried: &Carried<'_>) -> Option<String
         .iter()
         .map(|(d, l)| format!("{}:{l}", str_json(d)))
         .collect();
-    out.push_str(&format!(
-        ",\"Source\":{{\"locations\":{{{}}}}}}}",
-        entries.join(",")
-    ));
+    out.push_str(&format!(",\"Source\":{{\"locations\":{{{}}}", entries.join(",")));
+    // The maps given whole its ops are located in: it has no file of its own.
+    let infos: Vec<String> = kept
+        .iter()
+        .filter_map(|r| match r {
+            SourceRef::Given(at) => def.sources.get(*at).map(given_source_info_json),
+            SourceRef::Own => None,
+        })
+        .collect();
+    if !infos.is_empty() {
+        out.push_str(&format!(",\"infos\":[{}]", infos.join(",")));
+    }
+    out.push_str("}}");
     Some(out)
+}
+
+/// `s` as a JSON string.
+fn str_json(s: &[u8]) -> String {
+    let mut o = String::new();
+    crate::json::write_string(&mut o, s);
+    o
+}
+
+/// [`op_locations`] as encoding/json writes `pb.Locations`.
+fn op_locations_json(md: &Meta, maps: &HashMap<SourceRef, i32>) -> Option<String> {
+    let location = |index: i32, ranges: Vec<String>| {
+        let mut f: Vec<String> = Vec::new();
+        if index != 0 {
+            f.push(format!("\"sourceIndex\":{index}"));
+        }
+        if !ranges.is_empty() {
+            f.push(format!("\"ranges\":[{}]", ranges.join(",")));
+        }
+        format!("{{{}}}", f.join(","))
+    };
+    let given_json = |g: &GivenLocation| -> Option<String> {
+        let index = *maps.get(&SourceRef::Given(g.source))?;
+        let ranges = g.ranges.iter().map(given_range_json).collect();
+        Some(location(index, ranges))
+    };
+    let own = maps.get(&SourceRef::Own).copied().unwrap_or(0);
+    let mut locs: Vec<String> = Vec::new();
+    let mut given = md.given_locations.iter().peekable();
+    for (i, l) in md.locations.iter().enumerate() {
+        while let Some(g) = given.next_if(|g| g.after <= i) {
+            locs.push(given_json(g)?);
+        }
+        let ranges = l
+            .iter()
+            .map(|&(a, b)| format!("{{\"start\":{},\"end\":{}}}", position_json(a), position_json(b)))
+            .collect();
+        locs.push(location(own, ranges));
+    }
+    for g in given {
+        locs.push(given_json(g)?);
+    }
+    Some(if locs.is_empty() {
+        "{}".to_string()
+    } else {
+        format!("{{\"locations\":[{}]}}", locs.join(","))
+    })
+}
+
+/// A range given whole as encoding/json writes `pb.Range`: each end where it has one,
+/// its zero fields left out.
+fn given_range_json(r: &Range) -> String {
+    let p = |p: &Position| {
+        let mut f: Vec<String> = Vec::new();
+        if p.line != 0 {
+            f.push(format!("\"line\":{}", p.line));
+        }
+        if p.character != 0 {
+            f.push(format!("\"character\":{}", p.character));
+        }
+        format!("{{{}}}", f.join(","))
+    };
+    let mut f: Vec<String> = Vec::new();
+    if let Some(s) = &r.start {
+        f.push(format!("\"start\":{}", p(s)));
+    }
+    if let Some(e) = &r.end {
+        f.push(format!("\"end\":{}", p(e)));
+    }
+    format!("{{{}}}", f.join(","))
+}
+
+/// A source map given whole as encoding/json writes `pb.SourceInfo`.
+fn given_source_info_json(g: &GivenSource) -> String {
+    use base64::Engine as _;
+    let mut f: Vec<String> = Vec::new();
+    if !g.filename.is_empty() {
+        f.push(format!("\"filename\":{}", str_json(&g.filename)));
+    }
+    if !g.data.is_empty() {
+        f.push(format!(
+            "\"data\":\"{}\"",
+            base64::engine::general_purpose::STANDARD.encode(&g.data)
+        ));
+    }
+    if let Some((_, json)) = &g.definition {
+        f.push(format!("\"definition\":{json}"));
+    }
+    if !g.language.is_empty() {
+        f.push(format!("\"language\":{}", str_json(&g.language)));
+    }
+    format!("{{{}}}", f.join(","))
 }
 
 /// BuildKit's errdefs.Source error detail (type URL
@@ -451,7 +645,7 @@ fn position_json(line: usize) -> String {
 
 /// pb.OpMetadata as encoding/json writes it (JSON tags ignore_cache, description,
 /// export_cache, caps, progress_group, linux_resources).
-fn op_metadata_json(md: &Meta, caps: &std::collections::BTreeSet<&'static str>, prefix: &str) -> String {
+fn op_metadata_json(md: &Meta, caps: &BTreeSet<Vec<u8>>, prefix: &str) -> String {
     let s = |b: &[u8]| {
         let mut o = String::new();
         crate::json::write_string(&mut o, b);
@@ -469,13 +663,20 @@ fn op_metadata_json(md: &Meta, caps: &std::collections::BTreeSet<&'static str>, 
             .collect();
         fields.push(format!("\"description\":{{{}}}", d.join(",")));
     }
+    if let Some(v) = md.export_cache {
+        fields.push(if v {
+            "\"export_cache\":{\"Value\":true}".to_string()
+        } else {
+            "\"export_cache\":{}".to_string()
+        });
+    }
     if !caps.is_empty() {
-        let c: Vec<String> = caps.iter().map(|c| format!("{}:true", s(c.as_bytes()))).collect();
+        let c: Vec<String> = caps.iter().map(|c| format!("{}:true", s(c))).collect();
         fields.push(format!("\"caps\":{{{}}}", c.join(",")));
     }
     if let Some(g) = &md.progress_group {
         let mut p: Vec<String> = Vec::new();
-        p.push(format!("\"id\":{}", s(format!("{prefix}{}", g.id).as_bytes())));
+        p.push(format!("\"id\":{}", s(&group_id(g, prefix))));
         if !g.name.is_empty() {
             p.push(format!("\"name\":{}", s(&g.name)));
         }
@@ -539,9 +740,9 @@ fn position(line: usize) -> W {
     p
 }
 
-/// `pb.OpMetadata`: whether the cache is ignored, the description, the capabilities, the
-/// progress group (its ID `prefix` and its number) and the step's limits.
-fn op_metadata(md: &Meta, caps: &std::collections::BTreeSet<&'static str>, prefix: &str) -> W {
+/// `pb.OpMetadata`: whether the cache is ignored, the description, whether the cache is
+/// exported, the capabilities, the progress group and the step's limits.
+fn op_metadata(md: &Meta, caps: &BTreeSet<Vec<u8>>, prefix: &str) -> W {
     let mut w = W::default();
     w.bool(1, md.ignore_cache);
     for (k, v) in &md.description {
@@ -550,17 +751,22 @@ fn op_metadata(md: &Meta, caps: &std::collections::BTreeSet<&'static str>, prefi
         entry.always(2, v);
         w.message(2, entry);
     }
+    if let Some(v) = md.export_cache {
+        let mut e = W::default();
+        e.bool(1, v);
+        w.message(4, e);
+    }
     // A set's order is its keys'.
     for c in caps {
         let mut entry = W::default();
-        entry.always(1, c.as_bytes());
+        entry.always(1, c);
         entry.tag(2, VARINT);
         entry.varint(1);
         w.message(5, entry);
     }
     if let Some(g) = &md.progress_group {
         let mut p = W::default();
-        p.bytes(1, format!("{prefix}{}", g.id).as_bytes());
+        p.bytes(1, &group_id(g, prefix));
         p.bytes(2, &g.name);
         p.bool(3, g.weak);
         w.message(6, p);
@@ -569,6 +775,14 @@ fn op_metadata(md: &Meta, caps: &std::collections::BTreeSet<&'static str>, prefi
         w.message(7, linux_resources(r));
     }
     w
+}
+
+/// A progress group's ID: ours, `prefix` and its number; or the one given with it.
+fn group_id(g: &ProgressGroup, prefix: &str) -> Vec<u8> {
+    match &g.id {
+        GroupId::Ours(n) => format!("{prefix}{n}").into_bytes(),
+        GroupId::Given(id) => id.clone(),
+    }
 }
 
 fn linux_resources(r: &LinuxResources) -> W {

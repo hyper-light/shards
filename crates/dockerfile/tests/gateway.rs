@@ -144,6 +144,8 @@ fn dockerfile_definition_of(session: &[u8]) -> Definition {
         }],
         metadata: vec![meta],
         root: Some(Input { op: 0, index: 0 }),
+        sources: Vec::new(),
+        source_order: Vec::new(),
     }
 }
 

@@ -1014,6 +1014,8 @@ pub fn dockerfile_definition(
     attrs.insert(b"local.session".to_vec(), session.as_bytes().to_vec());
     attrs.insert(b"local.sharedkeyhint".to_vec(), local.as_bytes().to_vec());
     Definition {
+        sources: Vec::new(),
+        source_order: Vec::new(),
         ops: vec![Op {
             inputs: Vec::new(),
             kind: OpKind::Source {
@@ -1194,6 +1196,11 @@ pub fn op_json(op: &shards_dockerfile::llb::Op) -> Json {
                 Json::obj(vec![("name", Json::s(String::from_utf8_lossy(name)))]),
             )]
         }
+        // A frontend's input, given whole, which shards build plans none of: its digest.
+        OpKind::Raw { bytes, .. } => vec![(
+            "raw",
+            Json::s(String::from_utf8_lossy(&shards_dockerfile::pb::digest(bytes))),
+        )],
     };
     let mut out = vec![("Op", Json::obj(kind))];
     if let Some(p) = &op.platform {

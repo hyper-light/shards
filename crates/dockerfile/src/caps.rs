@@ -164,8 +164,9 @@ pub fn op(op: &Op, meta: &Meta, sets_default_path: bool) -> BTreeSet<&'static st
         OpKind::Merge => {
             caps.insert("mergeop");
         }
-        // shards' own step (D54) needs nothing BuildKit names.
-        OpKind::Skills { .. } => {}
+        // shards' own step (D54) needs nothing BuildKit names; an operation given whole
+        // carries its own in its metadata, as it came.
+        OpKind::Skills { .. } | OpKind::Raw { .. } => {}
     }
     caps
 }
@@ -179,6 +180,9 @@ pub fn root(metadata: &[Meta]) -> BTreeSet<&'static str> {
     }
     if metadata.iter().any(|m| !m.description.is_empty()) {
         caps.insert("meta.description");
+    }
+    if metadata.iter().any(|m| m.export_cache.is_some()) {
+        caps.insert("meta.exportcache");
     }
     caps
 }

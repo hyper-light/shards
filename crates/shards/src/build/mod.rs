@@ -2855,6 +2855,8 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
         // The build's own platform, as the frontend's is BuildKit's worker's.
         default_platform: None,
         no_client: false,
+        inputs: BTreeMap::new(),
+        inputs_failed: None,
         build_args: build_args(parsed.many("build-arg"), true),
         target: parsed.string("target").as_bytes().to_vec(),
         labels: build_args(parsed.many("label"), false),
@@ -3647,6 +3649,14 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
                 let outs = exec.file(&[input], &actions, &name).map_err(|e| fail(&v, &e))?;
                 progress.borrow().done(&v);
                 outs
+            }
+            // A frontend's input, given whole, is BuildKit's to run: shards build plans
+            // none.
+            OpKind::Raw { .. } => {
+                return Err(
+                    "failed to build: failed to solve: a definition given whole, which only BuildKit runs"
+                        .into(),
+                );
             }
             OpKind::File { actions } => {
                 let v = progress.borrow_mut().start(&name);
