@@ -183,7 +183,8 @@ fn alive(pid: i32) -> bool {
 #[test]
 fn a_client_waiting_for_its_daemon_ends_on_sigterm() {
     use std::os::fd::AsRawFd;
-    let home = TempDir::new("daemon-client-waits");
+    // Named short: a socket is bound in it by its whole path (sockaddr_un).
+    let home = TempDir::new("client-waits");
     let lock = std::fs::File::create(home.join("daemon.lock")).unwrap();
     // SAFETY: flock(2) on a descriptor this test holds, released as it closes.
     let locked = unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };

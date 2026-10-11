@@ -5532,7 +5532,8 @@ fn ustar(bytes: &[u8]) -> Vec<(String, u32, Vec<u8>)> {
 #[test]
 fn an_interrupted_save_leaves_nothing_behind() {
     use std::os::unix::process::{CommandExt as _, ExitStatusExt as _};
-    let home = TempDir::new("containers-save-interrupted");
+    // Named short: a socket is bound in it by its whole path (sockaddr_un).
+    let home = TempDir::new("save-int");
     let _daemon = std::os::unix::net::UnixListener::bind(home.join("daemon.sock")).unwrap();
     let out = TempDir::new("containers-save-interrupted-out");
     let dest = out.join("image.tar");
