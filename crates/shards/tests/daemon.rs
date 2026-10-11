@@ -1056,6 +1056,7 @@ fn a_daemon_out_of_descriptors_waits_for_room() {
     let daemon = start_daemon(&home, Some(48));
     let sock = home.join("daemon.sock");
     let log = home.join("daemon.log");
+    let began = Instant::now();
     let silent: Vec<UnixStream> = (0..64).map(|_| connect_patiently(&sock)).collect();
     // The daemon's own words: EMFILE's text is the C library's, and musl's differs.
     eventually("the daemon never ran out of descriptors", || {
@@ -1085,7 +1086,16 @@ fn a_daemon_out_of_descriptors_waits_for_room() {
             unsafe { libc::poll(&mut pfd, 1, 0) > 0 }
         })
         .count();
-    assert_eq!(dropped, 0, "waiting clients were dropped");
+    // A client that sends no request in the daemon's time for one (daemon.rs,
+    // REQUEST_TIMEOUT, 10 s) is let go, as the daemon says: on a host slow enough, the
+    // first clients' time is up before this looks. Any other is dropped for want of room.
+    let said = std::fs::read_to_string(&log).unwrap_or_default();
+    let timed_out = said.matches("a client sent no request in").count();
+    assert!(
+        dropped == 0 || (dropped <= timed_out && began.elapsed() >= Duration::from_secs(10)),
+        "{dropped} waiting clients were dropped, {timed_out} for sending nothing, {:?} after the first connected; the daemon's log:\n{said}",
+        began.elapsed()
+    );
     // A collection due meanwhile waits: its files would take what clients wait for.
     let left = home.join("images").join("ingest").join("left");
     std::fs::create_dir_all(left.parent().unwrap()).unwrap();

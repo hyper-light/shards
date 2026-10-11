@@ -724,6 +724,29 @@ impl<D: Disk> Daemon<D> {
         hostname: &str,
     ) -> Result<(Network, Member), String> {
         let fail = |e: &str| format!("failed to set up container networking: {e}");
+        // An asked address held by a run that has ended, its end not yet taken, is free once
+        // it is, as dockerd's is once `run` returns: taken first, without the networks'
+        // lock, which its leaving takes (PM M182).
+        if !asked_ip.is_empty() || !asked_ip6.is_empty() {
+            let holders: Vec<String> = {
+                let _held = nets::lock();
+                self.user_network(term)
+                    .map(|n| self.members_of(&n.id))
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|m| {
+                        asked_ip.trim_start_matches("::ffff:").parse() == Ok(m.ip)
+                            || m.ip6.is_some_and(|ip6| asked_ip6.parse() == Ok(ip6))
+                    })
+                    .map(|m| m.container)
+                    .collect()
+            };
+            for holder in holders {
+                if let Some(inbox) = self.inbox_of(&holder) {
+                    self.take_messages(&holder, &inbox);
+                }
+            }
+        }
         let _held = nets::lock();
         let network = self
             .user_network(term)

@@ -5415,6 +5415,112 @@ fn ports_held_past_their_containers_end() {
     println!("joiners: held {joiners} of {n}");
 }
 
+/// An address a run asked for on its network is free once the run's end is told, as
+/// dockerd's is once `run --rm` returns (PM M182): a run asking for it at once after, each
+/// of 10 times, the last one's end not yet taken.
+#[test]
+fn an_asked_address_is_free_once_its_run_has_ended() {
+    let Some((home, image)) = home("containers-ip-reuse") else {
+        return;
+    };
+    let made = shards_in(&home, &["network", "create", "--subnet", "10.78.2.0/24", "reuse"]);
+    assert_eq!(made.status, Some(0), "{made}");
+    for i in 0..10 {
+        let ran = run_in(
+            &home,
+            &image,
+            &["--rm", "--network", "reuse", "--ip", "10.78.2.9"],
+            &["exit", "0"],
+        );
+        assert_eq!(ran.status, Some(0), "{i}: {ran}");
+    }
+}
+
+/// PM M182: what a command's datagrams to a member of its network come to as it ends: one,
+/// to a member the sender's guest never sent to (so asked for by ARP), the command ending
+/// at once, or after 500 ms; a burst of 1,400-byte datagrams, ending at once, or after a
+/// second. `M182_N` of each, interleaved; the member's count of what came.
+#[test]
+#[ignore = "a measurement: docs/research/measurements/exit-drain/run.sh"]
+fn datagrams_a_command_sends_as_it_ends() {
+    let Some((home, image)) = home("containers-m182") else {
+        return;
+    };
+    let n: usize = std::env::var("M182_N")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(20);
+    let burst: usize = std::env::var("M182_BURST")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(20_000);
+    let made = shards_in(&home, &["network", "create", "--subnet", "10.78.1.0/24", "drain"]);
+    assert_eq!(made.status, Some(0), "{made}");
+    let cases = [
+        ("one, ending at once", 1, 64, 0),
+        ("one, ending after 500 ms", 1, 64, 500),
+        ("a burst, ending at once", burst, 1400, 0),
+        ("a burst, ending after 1 s", burst, 1400, 1000),
+    ];
+    let mut got: Vec<Vec<u64>> = vec![Vec::new(); cases.len()];
+    for i in 0..n * cases.len() {
+        let c = i % cases.len();
+        let (_, count, size, linger) = cases[c];
+        let (mut counter, port) = ready_on(
+            &home,
+            &run_args(
+                &image,
+                &["--rm", "--network", "drain", "--ip", "10.78.1.50"],
+                &["udp-count", "0.0.0.0:0", "1000"],
+            ),
+        );
+        let sent = run_in(
+            &home,
+            &image,
+            &["--rm", "--network", "drain"],
+            &[
+                "udp-send",
+                &format!("10.78.1.50:{port}"),
+                &count.to_string(),
+                &size.to_string(),
+                &linger.to_string(),
+            ],
+        );
+        assert_eq!(sent.status, Some(0), "{sent}");
+        let mut rest = String::new();
+        std::io::Read::read_to_string(counter.stdout.as_mut().unwrap(), &mut rest).unwrap();
+        let _ = counter.wait();
+        let n: u64 = rest
+            .lines()
+            .find_map(|l| l.strip_prefix("got "))
+            .and_then(|v| v.parse().ok())
+            .unwrap_or_else(|| panic!("{rest}"));
+        if std::env::var_os("M182_COUNTERS").is_some() {
+            println!(
+                "{} sender: {}",
+                cases[c].0,
+                sent.stdout.lines().last().unwrap_or_default()
+            );
+            println!(
+                "{} receiver: {}",
+                cases[c].0,
+                rest.lines().last().unwrap_or_default()
+            );
+        }
+        got[c].push(n);
+    }
+    for ((name, count, _, _), got) in cases.iter().zip(&mut got) {
+        got.sort_unstable();
+        let short = got.iter().filter(|&&g| g < *count as u64).count();
+        println!(
+            "{name}: sent {count}, short in {short} of {n}; got min {} p50 {} max {}",
+            got.first().unwrap(),
+            got[got.len() / 2],
+            got.last().unwrap()
+        );
+    }
+}
+
 /// A run's gateway is its neighbor from its start, its MAC the one its network process
 /// answers ARP and neighbor solicitations with, for good (PM M180): on the default bridge,
 /// past a MAC of its own (which flushes eth0's neighbors), on a network of its own, IPv6's

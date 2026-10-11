@@ -1675,7 +1675,8 @@ mod tests {
             arrived.recv_timeout(std::time::Duration::from_secs(5)),
             Ok(Ok(_))
         ));
-        assert!(pending().is_empty());
+        // Its own wait is over; the list is every test's, which others add to meanwhile.
+        assert!(!pending().iter().any(|w| w.token == token));
     }
 
     /// An exec's frame carries its token and id beside its spec, and is refused past what

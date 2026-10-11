@@ -1520,6 +1520,24 @@ impl<'r> Stack<'r> {
         if sock.set_nonblocking(true).is_err() {
             return;
         }
+        // A ring's worth each way (shards_netring::RING), so that what a VM's ring passes
+        // on in a burst reaches its peer's, rather than finding the link full: macOS gives
+        // a socket pair 8 KiB (net.local.stream.sendspace, recvspace), five full-size
+        // frames (PM M182). Linux keeps an unprivileged process to twice net.core's
+        // wmem_max and rmem_max.
+        for option in [libc::SO_SNDBUF, libc::SO_RCVBUF] {
+            let size = libc::c_int::try_from(shards_netring::RING).unwrap_or(libc::c_int::MAX);
+            // SAFETY: setsockopt(2) of a socket of ours, with a c_int of its length.
+            unsafe {
+                libc::setsockopt(
+                    sock.as_raw_fd(),
+                    libc::SOL_SOCKET,
+                    option,
+                    (&raw const size).cast(),
+                    size_of::<libc::c_int>() as libc::socklen_t,
+                )
+            };
+        }
         let i = self
             .peers
             .iter()

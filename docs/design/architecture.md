@@ -2866,7 +2866,10 @@ the daemon elected (D31).
   this guest's, and given the gateway's MAC as a routed frame; every peer is reached
   through the gateway's MAC, which the process answers ARP with. A frame a full socket
   cannot take whole waits only for the frame before it; others are dropped, as a full
-  switch port drops them, and TCP sends them again. Members reach each other past the
+  switch port drops them, and TCP sends them again. Each end holds a ring's worth each way
+  (1 MiB, `shards_netring::RING`): macOS gave a socket pair 8 KiB, five full-size frames,
+  and of a fast sender's bursts of 200 datagrams the link lost 35 to 54% (PM M182).
+  Members reach each other past the
   default deny; nothing else is opened (D31): a network is what Docker's `--internal`
   one is, and a name off it is SERVFAIL, as Docker's internal networks answer.
 - **Names, at Docker's address.** A microVM on a network has Docker's resolver address,
@@ -2880,7 +2883,9 @@ the daemon elected (D31).
   (nginx's `resolver`) work unchanged.
 - **Members.** A microVM is a member while its run lasts: from its start, under the
   network's lock (no two take one address), to its end; one whose start fails is no
-  member, however it failed. `network rm` refuses a network with members in dockerd's
+  member, however it failed. An address a run asked for is free once its end is told,
+  as dockerd's is once `run --rm` returns: a run asking for it takes the holder's end
+  first, if it has come, as a name's is (PM M182). `network rm` refuses a network with members in dockerd's
   words; inspect lists them, and a microVM's NetworkSettings carry its endpoint as
   dockerd's, its network's ID and DNS names kept while it is stopped.
 - **Measured and tested** (containers.rs `microvms_on_a_network_reach_one_another_by_name`):

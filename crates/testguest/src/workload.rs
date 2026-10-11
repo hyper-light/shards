@@ -112,6 +112,13 @@ pub fn main() -> ! {
         "rebind" => rebind(arg(1), arg(2).parse().unwrap_or(1)),
         "binds" => binds(arg(1).parse().unwrap_or(1)),
         "udp-serve" => udp_serve(arg(1), arg(2) == "forget"),
+        "udp-send" => udp_send(
+            arg(1),
+            arg(2).parse().unwrap_or(1),
+            arg(3).parse().unwrap_or(64),
+            arg(4).parse().unwrap_or(0),
+        ),
+        "udp-count" => udp_count(arg(1), arg(2).parse().unwrap_or(500)),
         "agent" => agent(),
         "vsock-agent" => vsock_agent(arg(1).parse().unwrap_or(1028)),
         "hold" => hold(arg(1)),
@@ -1025,6 +1032,82 @@ fn binds(n: usize) -> i32 {
         );
     }
     code
+}
+
+/// Sends `count` datagrams of `size` bytes to `addr` as fast as it can, then lingers
+/// `linger_ms` and exits: `sent N`, or `udp-send error E`. Exiting at once, what it sent
+/// is the guest's to send still as its command ends (PM M182).
+fn udp_send(addr: &str, count: usize, size: usize, linger_ms: u64) -> i32 {
+    let payload = vec![7u8; size];
+    let sent = std::net::UdpSocket::bind("0.0.0.0:0").and_then(|sock| {
+        let mut sent = 0;
+        for _ in 0..count {
+            sock.send_to(&payload, addr)?;
+            sent += 1;
+        }
+        Ok(sent)
+    });
+    match sent {
+        Ok(n) => {
+            let _ = writeln!(io::stdout(), "sent {n}");
+            std::thread::sleep(std::time::Duration::from_millis(linger_ms));
+            let _ = writeln!(io::stdout(), "{}", net_counters());
+            0
+        }
+        Err(e) => {
+            let _ = writeln!(io::stdout(), "udp-send error {e}");
+            1
+        }
+    }
+}
+
+/// The guest's UDP counters (/proc/net/snmp's `Udp:`) and eth0's packets and drops
+/// (/sys/class/net/eth0/statistics), on one line: where a datagram went.
+fn net_counters() -> String {
+    let snmp = std::fs::read_to_string("/proc/net/snmp").unwrap_or_default();
+    let mut udp = snmp.lines().filter(|l| l.starts_with("Udp:"));
+    let (names, values) = (udp.next().unwrap_or_default(), udp.next().unwrap_or_default());
+    let mut out: Vec<String> = names
+        .split_whitespace()
+        .zip(values.split_whitespace())
+        .skip(1)
+        .map(|(n, v)| format!("{n}={v}"))
+        .collect();
+    for stat in ["rx_packets", "rx_dropped", "tx_packets", "tx_dropped"] {
+        let v = std::fs::read_to_string(format!("/sys/class/net/eth0/statistics/{stat}")).unwrap_or_default();
+        out.push(format!("{stat}={}", v.trim()));
+    }
+    out.join(" ")
+}
+
+/// Binds UDP at `addr`, says `ready PORT`, then counts the datagrams that come until
+/// `quiet_ms` pass without one after the first, or 10 s without a first: `got N`.
+fn udp_count(addr: &str, quiet_ms: u64) -> i32 {
+    let counted = std::net::UdpSocket::bind(addr).and_then(|sock| {
+        let _ = writeln!(io::stdout(), "ready {}", sock.local_addr()?.port());
+        let mut buf = vec![0u8; 65536];
+        sock.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
+        if sock.recv(&mut buf).is_err() {
+            return Ok(0);
+        }
+        sock.set_read_timeout(Some(std::time::Duration::from_millis(quiet_ms.max(1))))?;
+        let mut got = 1u64;
+        while sock.recv(&mut buf).is_ok() {
+            got += 1;
+        }
+        Ok(got)
+    });
+    match counted {
+        Ok(n) => {
+            let _ = writeln!(io::stdout(), "got {n}");
+            let _ = writeln!(io::stdout(), "{}", net_counters());
+            0
+        }
+        Err(e) => {
+            let _ = writeln!(io::stdout(), "udp-count error {e}");
+            1
+        }
+    }
 }
 
 /// Binds UDP at exactly `addr`, says `ready PORT`, then answers one datagram with

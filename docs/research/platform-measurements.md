@@ -6056,3 +6056,47 @@ revision before comparing a changed API/implementation.
 - **Consequence.** D124: a container's ports of the host's go before its end is told
   (`HOST_RELEASE`), as dockerd's do; a joiner of a container on the host's network is on
   it too, told so, its ports its own (`HostBind::owner`).
+
+### M182. What a command's datagrams to its network's members come to as it ends, and in bursts (D31, D46)
+
+- **Question.** Do a command's last datagrams to a member of its network (on its link,
+  so asked for by ARP, which M180's permanent gateway entry does not cover) reach it when
+  the command ends at once? And bursts: does what the sender's guest sends reach the
+  member's?
+- **Method.** `docs/research/measurements/exit-drain/run.sh`, the ignored test
+  `datagrams_a_command_sends_as_it_ends`: on a user network, a member counts the
+  datagrams that come (the test guest's `udp-count`); another, whose guest never sent to
+  it, sends one 64-byte datagram, or a burst of 1,400-byte datagrams as fast as it can
+  (`udp-send`), and ends at once, or after 500 ms or a second; N of each, interleaved,
+  quiet and with 16 busy loops. With `M182_COUNTERS`, each side's UDP counters and
+  eth0's packets. Docker: `docker-burst.sh` (python3 on both sides) and
+  `docker-fast-burst.sh` (the test guest's own `udp-send` and `udp-count`), Docker 29.3.1
+  in `shards-dind`, network and containers its own; `shards-burst.sh`, the python3
+  probe through shards. Apple M5 Max, macOS 26.4.1, 2026-10-11.
+- **Results.**
+  - One datagram to a member never sent to, its command ending at once: none lost of 50
+    quiet (load average 4.8) and 50 under 16 busy loops (to 21), the release build of
+    6bfe22b6; before the harness, 260 more across five runs of the loop, 100 of them under
+    16 busy loops (load average to 60): none lost.
+  - Bursts, before: of the fast sender's 200, its eth0 sent 112 to 200 and the member's
+    eth0 had 51 to 130 (the link between the two network processes lost 35 to 54%):
+    the link is a socket pair, to which macOS gives 8 KiB each way
+    (net.local.stream.sendspace, recvspace), five full-size frames, and a frame a full
+    link cannot take is dropped (D46). Each end now holds a ring's worth: every frame
+    reached the member's eth0 (8 of 8 bursts of 200; 1,000 of 1,000 in bursts of 1,000).
+  - Bursts, as they are (the harness, bursts of 200): short in 29 and 23 of 50 quiet
+    (ending at once, after a second; least 121 and 143, medians 197 and 200), 26 and 21
+    of 50 loaded (least 3 and 92, medians 199 and 200). The member's guest drops what
+    its socket's buffer cannot hold (RcvbufErrors): 43 to 65 of 200 in 3 of 8 bursts,
+    517 to 662 of 1,000 in each; past a ring's worth of waiting frames the member's
+    network process drops too (of 5,000, 1,835 to 2,661 reached its eth0).
+  - Docker delivers each: 200, 1,000 and 5,000, 5 of 5 each, from either sender. Python
+    bursts through shards: 200, 1,000 and 5,000, 5 of 5 each, with or without the
+    link's change (python3 sends slowly enough).
+- **Consequence.** A command's last datagram to a member is not lost as it ends: no drain
+  of the guest's neighbor queue is needed. The peer link holds a ring each way (D46). An
+  address a run asked for (`--ip`) is free once its end is told, as found here: a run
+  asking for it at once found it held, once in about 200 under load. Open: bursts from a
+  fast sender to a one-vCPU member lose at the member's socket and, past a ring, in its
+  network process, where Docker's container, reading on a core of its own as the bridge
+  delivers, loses none.

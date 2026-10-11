@@ -7724,6 +7724,51 @@ mod tests {
         });
     }
 
+    /// An address a run asked for on its network is the next run's to ask for once the run
+    /// has said its end, though nothing has taken that yet, as dockerd's is once `run
+    /// --rm` has returned (PM M182); while it runs, it is refused in dockerd's words.
+    #[test]
+    fn an_asked_address_is_free_once_its_holder_has_said_its_end() {
+        let t = Test::new("ip-held");
+        t.run(|t| {
+            let made = t.ask(&["network", "create", "--subnet", "10.78.3.0/24", "n"]);
+            assert_eq!(made.0, 0, "{made:?}");
+            let id = t.create("holder");
+            t.daemon
+                .join_network(&id, "n", "10.78.3.9", "", &[], "h")
+                .unwrap();
+            let (ready, vm) = t.warm_vm(None);
+            // Followed by nothing: what it sends waits until it is taken.
+            let keep = Keep {
+                detached: None,
+                options: crate::spec::Options::default(),
+                health: None,
+                published: Vec::new(),
+                named: None,
+                layer_pending: false,
+                visit: false,
+                egress: None,
+                agentfile: None,
+                mac: None,
+                link_local: Vec::new(),
+            };
+            let _inbox = t.daemon.register(ready, &id, keep);
+            say(&vm, kind::STARTED, &[]);
+            let asker = t.create("asker");
+            let ask = || {
+                t.daemon
+                    .join_network(&asker, "n", "10.78.3.9", "", &[], "a")
+                    .map(|_| ())
+            };
+            assert_eq!(
+                ask(),
+                Err("failed to set up container networking: Address already in use".to_string())
+            );
+            say(&vm, kind::DONE, &[0]);
+            assert_eq!(ask(), Ok(()));
+        });
+    }
+
     /// A run that publishes nothing, as one on `--network none` never does, holds nothing:
     /// a record of no addresses, one a run, would only grow (review 2.11, 2.18).
     #[test]
