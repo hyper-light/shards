@@ -1271,17 +1271,14 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 Some([format!("{}/{}", p.private, p.proto), at.to_string(), reaches])
             })
             .collect();
-        rows.sort_by(|a, b| {
-            shards_cmdline::ports::natural_compare(&a[0], &b[0]).then_with(|| a[1].cmp(&b[1]))
+        rows.sort_by(|[a, at_a, _], [b, at_b, _]| {
+            shards_cmdline::ports::natural_compare(a, b).then_with(|| at_a.cmp(at_b))
         });
-        let width = |i: usize, head: &str| {
-            rows.iter()
-                .map(|r| r[i].len())
-                .chain([head.len()])
-                .max()
-                .unwrap_or(0)
-        };
-        let (port, published) = (width(0, "PORT"), width(1, "PUBLISHED"));
+        let (port, published) = rows
+            .iter()
+            .fold(("PORT".len(), "PUBLISHED".len()), |(p, a), [x, y, _]| {
+                (p.max(x.len()), a.max(y.len()))
+            });
         reply.out(&format!(
             "{:<port$}  {:<published$}  REACHES",
             "PORT", "PUBLISHED"
