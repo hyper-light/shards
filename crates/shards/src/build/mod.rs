@@ -871,14 +871,18 @@ impl Bases<'_> {
         if let Some(r) = self.answered.borrow().get(&id) {
             return Ok(r.clone());
         }
-
         // The policies first, as bridge.resolveSourceMetadata asks them before it resolves:
-        // a refusal resolves nothing; a source converted is resolved in its place.
+        // a refusal resolves nothing; a source converted is resolved in its place. An OCI
+        // layout is asked of as itself, whose input buildx does not build (PM M186): never
+        // as the registry's image its stand-in name names.
         if let Some(p) = self.policies {
             let normalized = Reference::parse(&name)
                 .map(|r| r.to_string())
                 .map_err(|e| e.to_string().into_bytes())?;
-            let source = policy::Source::new(format!("docker-image://{normalized}"));
+            let source = match scheme {
+                "oci-layout://" => policy::Source::new(format!("{scheme}{name}")),
+                _ => policy::Source::new(format!("docker-image://{normalized}")),
+            };
             match p.evaluate(&source, platform, &PolicyMeta { bases: self }, self.policy_log) {
                 Ok(None) => {}
                 Ok(Some(to)) => {
@@ -1840,7 +1844,17 @@ impl<'a> PolicyStep<'a> {
         w
     }
 
-    /// Close(err) of a refusal: the step failed with the build's error.
+    /// Close(nil): the step done, as buildx ends it for every error but a denial.
+    fn close(&self) {
+        if self.closed.replace(true) {
+            return;
+        }
+        if let Some((v, _)) = self.window.borrow_mut().take() {
+            self.progress.borrow().done(&v);
+        }
+    }
+
+    /// Close(err) of a denial: the step failed with the build's error.
     fn fail(&self, error: &str) {
         if self.closed.replace(true) || self.index.get() == 0 {
             return;
@@ -1922,12 +1936,7 @@ impl Drop for PolicyStep<'_> {
         // The build of the next platform logs on under this step's number.
         let index = self.index.get();
         multi::with(|sub| sub.policy_step = index);
-        if self.closed.replace(true) {
-            return;
-        }
-        if let Some((v, _)) = self.window.borrow_mut().take() {
-            self.progress.borrow().done(&v);
-        }
+        self.close();
     }
 }
 
@@ -2677,14 +2686,22 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
         &policy_step,
     )
     .map_err(|e| format!("failed to build: {e}"))?;
-    // A source a policy refused: its step failed with the build's error, the failed steps
-    // recapped as the display ends, then the policy's messages, as buildx's main says them.
+    // A source a policy refused: a denial's step failed with the build's error (any other
+    // error's done), the failed steps recapped as the display ends, then the policy's
+    // messages, as buildx's main says them.
     let refused = |r: policy::Refused, at: &str| -> String {
         let e = format!(
-            "failed to solve: {at}failed to load LLB: error evaluating the source policy: {}",
-            r.error
+            "failed to solve: {}",
+            r.said(format!(
+                "{at}failed to load LLB: error evaluating the source policy: {}",
+                r.error
+            ))
         );
-        policy_step.fail(&e);
+        if r.denied() {
+            policy_step.fail(&e);
+        } else {
+            policy_step.close();
+        }
         progress.borrow().recap();
         policy_said(&r.messages);
         format!("failed to build: {e}")
@@ -2992,14 +3009,21 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
     let mut plan = match plan::plan(&text, &opts, &bases) {
         Ok(p) => p,
         Err(e) => {
-            // A base a policy refused: its step failed with the build's error, and the
-            // policy's messages said first, as buildx's main says them.
-            let denied = bases.refused.borrow_mut().take();
-            if denied.is_some() {
-                policy_step.fail(&format!("failed to solve: {}", show(&e.message)));
+            // A base a policy refused: a denial's step failed with the build's error (any
+            // other error's done), and the policy's messages said first, as buildx's main
+            // says them. A policy's own error is the build's as the policy said it.
+            let refusal = bases.refused.borrow_mut().take();
+            let message = match &refusal {
+                Some(r) => r.said(show(&e.message)),
+                None => show(&e.message),
+            };
+            match &refusal {
+                Some(r) if r.denied() => policy_step.fail(&format!("failed to solve: {message}")),
+                Some(_) => policy_step.close(),
+                None => {}
             }
             progress.borrow().recap();
-            if let Some(r) = denied {
+            if let Some(r) = refusal {
                 policy_said(&r.messages);
             }
             let mut out = String::new();
@@ -3008,7 +3032,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
             }
             let _ = write!(std::io::stderr(), "{out}");
             print_warnings(&e.warnings, quiet, debug, &name, &text);
-            return Err(format!("failed to build: failed to solve: {}", show(&e.message)));
+            return Err(format!("failed to build: failed to solve: {message}"));
         }
     };
     {

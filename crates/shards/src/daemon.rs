@@ -672,6 +672,9 @@ struct Daemon<D: Disk = Real> {
     stopping: AtomicBool,
     /// The socket is gone: no client arrives from here on.
     closed: AtomicBool,
+    /// Held as the socket is removed by [`close`](Self::close) and as the listener binds
+    /// it again ([`relisten`](Self::relisten)): a daemon's own removal is never undone.
+    socket_at: Mutex<()>,
     /// The connections of `shards daemon stop`, held open until this daemon has let go
     /// of its home, which is how they learn it has exited.
     stoppers: Mutex<Vec<UnixStream>>,
@@ -1199,6 +1202,7 @@ impl<D: Disk> Daemon<D> {
             last: Mutex::new(Instant::now()),
             stopping: AtomicBool::new(false),
             closed: AtomicBool::new(false),
+            socket_at: Mutex::new(()),
             stoppers: Mutex::default(),
             runs: Mutex::default(),
             resolved: Condvar::new(),
@@ -1247,8 +1251,37 @@ impl<D: Disk> Daemon<D> {
 
     /// Removes the socket, once: no client arrives from here on.
     fn close(&self) {
+        let _at = lock(&self.socket_at);
         if !self.closed.swap(true, Ordering::SeqCst) {
             let _ = std::fs::remove_file(self.socket);
+        }
+    }
+
+    /// Binds the socket again where someone removed it while the daemon serves.
+    ///
+    /// `closing` is what the listener read as its pass began. A stop since, handled on
+    /// another thread, has closed the daemon and removed the socket itself, so whether it
+    /// has is asked again under `socket_at`, which [`close`](Self::close) holds. Read once,
+    /// a stopping daemon took its own removal for another's and listened again. Its stop's
+    /// next client then reached it as it exited, and its run failed: "the command's
+    /// microVM stopped before the command ended" (CI's guest-memory runs, PM M188).
+    fn relisten(&self, closing: bool, listener: &mut UnixListener) {
+        if closing || std::fs::symlink_metadata(self.socket).is_ok() {
+            return;
+        }
+        let _at = lock(&self.socket_at);
+        if self.closed.load(Ordering::SeqCst) || std::fs::symlink_metadata(self.socket).is_ok() {
+            return;
+        }
+        match UnixListener::bind(self.socket).and_then(|l| l.set_nonblocking(true).map(|()| l)) {
+            Ok(l) => {
+                log(format!(
+                    "{} was removed; listening there again",
+                    self.home.join(self.socket).display()
+                ));
+                *listener = l;
+            }
+            Err(e) => log(format!("{}: {e}", self.home.join(self.socket).display())),
         }
     }
 
@@ -1286,18 +1319,7 @@ impl<D: Disk> Daemon<D> {
             }
             // Someone may remove the socket while the daemon runs; a removal of the home,
             // which takes the lock too, is seen above once it has.
-            if !closing && std::fs::symlink_metadata(self.socket).is_err() {
-                match UnixListener::bind(self.socket).and_then(|l| l.set_nonblocking(true).map(|()| l)) {
-                    Ok(l) => {
-                        log(format!(
-                            "{} was removed; listening there again",
-                            self.home.join(self.socket).display()
-                        ));
-                        listener = l;
-                    }
-                    Err(e) => log(format!("{}: {e}", self.home.join(self.socket).display())),
-                }
-            }
+            self.relisten(closing, &mut listener);
             let mut starved = false;
             while self.busy.load(Ordering::SeqCst) < self.max_clients {
                 // An accept that fails for want of a descriptor drops its client on macOS
@@ -6569,6 +6591,38 @@ mod tests {
             &io::Error::from_raw_os_error(libc::ENOENT).to_string()
         ));
         assert!(!short_of_descriptors("a store record that names no blob"));
+    }
+
+    /// A socket someone removes while the daemon serves is bound again; one a stop removed
+    /// is not, though the listener's pass began before the stop, `closing` read false: a
+    /// daemon told to stop never listens again (PM M188).
+    #[test]
+    fn a_daemon_told_to_stop_never_listens_again() {
+        let mut t = Test::new("rl");
+        let path = t.home.join("daemon.sock");
+        t.daemon.socket = Box::leak(path.clone().into_boxed_path());
+        let mut listener = UnixListener::bind(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        t.daemon.relisten(false, &mut listener);
+        assert!(path.exists(), "a removed socket was not bound again");
+        assert!(UnixStream::connect(&path).is_ok());
+        t.daemon.close();
+        assert!(!path.exists());
+        t.daemon.relisten(false, &mut listener);
+        assert!(!path.exists(), "a daemon told to stop listened again");
+    }
+
+    /// A daemon that has closed starts no warm VM: a waiting one that ends as it exits is
+    /// replaced by none, which would only end with it as the next daemon starts.
+    #[test]
+    fn a_closed_daemon_refills_nothing() {
+        let mut t = Test::new("rf");
+        t.daemon.socket = Box::leak(t.home.join("daemon.sock").into_boxed_path());
+        t.run(|t| {
+            t.daemon.close();
+            t.t.daemon.refill_soon(t.threads, Some(&t.home.join("template")));
+            assert!(!t.daemon.refills.started.load(Ordering::SeqCst));
+        });
     }
 
     /// No collection starts while the listener is out of descriptors, which its files

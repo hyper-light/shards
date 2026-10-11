@@ -3535,6 +3535,42 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode
 waits on the user.
 
+### D128. Build policies over OCI layouts, and a policy's own errors, as buildx ends a build
+
+Found while D127 measured OCI layout contexts: `shards build` asked its policies (D101) of
+an OCI layout as if it were a registry's image, and it said a policy's own errors as
+BuildKit says a denial. Both now go as buildx v0.37.1 on BuildKit v0.28.1 has them (PM
+M186).
+
+- **An OCI layout is asked of as itself.**
+  - buildx builds no policy input for an `oci-layout://` source ("oci-layout not
+    supported yet", policy/validate.go). A build under any policy with an OCI layout named
+    context fails: "failed to solve: failed to build policy input: unsupported source
+    scheme: oci-layout".
+  - `shards build` asked of the layout's image as `docker-image://docker.io/library/NAME@DIGEST`,
+    the stand-in name dockerui gives a layout, NAME being the context's. A policy that
+    allows `alpine` by name allowed a layout named `alpine`, whatever it held.
+  - It now asks of the layout as itself and is refused as buildx is.
+  - An input of shards' own for layouts would be a schema buildx has not defined, which a
+    policy written for buildx would misread. When buildx defines one, shards takes it.
+- **A policy's own error is the build's, said alone.** Such an error is its input not
+  built, or its Rego failing (`eval_conflict_error`).
+  - buildx's callback answers BuildKit with a gRPC status.
+  - BuildKit's grpcerrors says an error whose chain holds a status as that status, its
+    wrappings dropped (ToGRPC, errorHasMoreContext).
+  - buildx thus prints "failed to solve: Dockerfile.rego:7: eval_conflict_error: complete
+    rules must not produce multiple outputs" at the FROM line's excerpt.
+  - shards wrapped it as BuildKit wraps a denial ("IMAGE: failed to resolve source
+    metadata for IMAGE: could not resolve image due to policy: ...").
+  - `policy::Refused` now says who refused: a decision, the policy itself, or BuildKit's
+    evaluator.
+- **The policies' step fails only for a denial.** buildx closes it with the build's error
+  only where DenyMessages or isPolicyEvaluationError finds a denial; for any other error it
+  ends done. shards failed it for every refusal.
+- **Tested**: `a_policys_own_error_ends_the_build_as_buildx_ends_it` (a Rego conflict
+  over an image and over the Dockerfile's own source, and an OCI layout context, each
+  word for word as measured, the step done); `refusals_say_who_refused`; mutation-checked.
+
 ### D127. SOURCE_DATE_EPOCH from a build's sources, as docker/dockerfile:1.27.1 takes it
 
 docker/dockerfile:1.27.1 lets SOURCE_DATE_EPOCH name where a build's time comes from,

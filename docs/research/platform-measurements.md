@@ -6240,6 +6240,42 @@ revision before comparing a changed API/implementation.
 - **Consequence.** D127: both `shards build` and shards' frontend take the time as
   v0.33.0 with dockerfile 1.27.1 does, and the frontend reads `-f`'s Dockerfile.
 
+### M186. How buildx ends a build a policy's own error stops, and an OCI layout under a policy (D128)
+
+- **Question.** When a build policy itself fails (its input not built, its Rego in
+  error), what do buildx v0.37.1 and BuildKit v0.28.1 print, and how does the policies'
+  step end? What does a policy see of an OCI layout given as a named context?
+- **Method.** buildx v0.37.1 in the shards-dind container (Docker 29.3.1, its BuildKit
+  v0.28.1, its built-in Dockerfile frontend), each build run from inside its context as
+  `.`:
+  - `FROM alpine:3.20`, with a `Dockerfile.rego` whose two complete rules give different
+    decisions for an image;
+  - the same, the two rules for the Dockerfile's own (`local`) source;
+  - for contrast, one rule denying images;
+  - `FROM src`, with `--build-context src=oci-layout://../layout:v1` (a two-image layout)
+    and a policy allowing everything.
+  - Apple M5 Max, macOS 26.4.1, Docker Desktop's VM, 2026-10-11.
+- **Results.**
+  - **Rego's conflict over an image.** The error is the policy's alone: `ERROR: failed
+    to build: failed to solve: Dockerfile.rego:7: eval_conflict_error: complete rules
+    must not produce multiple outputs`, after the FROM line's excerpt. The policies'
+    step ends `DONE`; no recap of it is printed.
+  - **The same over the Dockerfile's source.** The same error and the step done, with no
+    excerpt: the Dockerfile was not read.
+  - **A denial.** The step fails and is recapped (` > loading policies
+    Dockerfile.rego:` and its lines). The error is wrapped: `failed to solve:
+    alpine:3.20: failed to resolve source metadata for docker.io/library/alpine:3.20:
+    could not resolve image due to policy: source
+    "docker-image://docker.io/library/alpine:3.20" not allowed by policy: action DENY`.
+  - **The OCI layout.** The build fails at its FROM line, before any of the layout is
+    resolved, with no step for it: `failed to solve: failed to build policy input:
+    unsupported source scheme: oci-layout`. The step ends `DONE`.
+  - **Why the texts differ.** A denial is BuildKit's error. A policy's own error is
+    buildx's callback's, a gRPC status, which BuildKit's grpcerrors keeps over its
+    wrappings. buildx fails the step only where its error names a denial
+    (isPolicyEvaluationError).
+- **Consequence.** D128.
+
 ### M187. CI's musl jobs: how long each part takes, runner to runner
 
 - **Question.** Why did CI's x86_64 musl test job run out of its step's 45 minutes on
@@ -6260,3 +6296,36 @@ revision before comparing a changed API/implementation.
     - `containers.rs` 125 s and 190 s.
 - **Consequence.** The lints and the Rego stack guards (built on release) move to the
   release job. That job builds release anyway, and has some 30 minutes to spare.
+
+### M188. A daemon told to stop listened again, and its stop's next run failed
+
+- **Question.** Why did CI's guest-memory measurement (`measure-run.py`, which stops the
+  daemon before each run) fail twice in a row, each time on one run of hundreds: "the
+  command's microVM stopped before the command ended"?
+- **Method.**
+  - The jobs' logs. In 3c77279f's, measure (b) failed at `-m 4773044k --cpus 1`, its
+    third boot.
+  - The harness's pattern alone on an M5 Max (macOS 26.4.1), 2026-10-11:
+    `shards stop daemon`, the home's templates removed, `shards run --rm -m 1048576k
+    --cpus 1 alpine cat /proc/meminfo`, again and again. Each run's daemon.log lines were
+    read, and test-release builds of dev (19fca87d) and of the fix compared.
+- **Results.**
+  - **CI.** The run's daemon (38842) logged that its socket "was removed; listening there
+    again", then that it was exiting. No daemon started for the failing run. Its client
+    connected to that daemon's re-bound socket, and the daemon exited under it, 4 ms
+    after the previous run's output.
+  - **Here, unfixed: 2 of 200 stops** left a daemon listening again. Each time the next
+    client found the socket dead, started a new daemon, and its run passed.
+  - **The cause.** The listener reads `closed` as its pass begins, then asks whether the
+    socket is there. A stop, handled on another thread, closes the daemon and removes
+    the socket between the two. The listener took that removal for someone else's and
+    bound the socket again, so a stopping daemon listened for clients until it exited.
+  - **With a log line in `close()` before its removal**, as a probe: 0 of 1,300 stops.
+    The line delayed the removal past the listener's look.
+  - **Fixed.** `close()` and the listener's re-bind take one lock, and the re-bind asks
+    `closed` again under it. In 600 stops (601 daemons), none listened again and no run
+    failed, where the unfixed build had listened again after 2 of 200.
+- **Consequence.** The fix, with `a_daemon_told_to_stop_never_listens_again`, which
+  plays the listener's late look and fails without the re-check. Also: a closed daemon
+  starts no warm VM. A waiting one that ended as the daemon exited had been replaced by
+  one that ended with it (`a_closed_daemon_refills_nothing`).

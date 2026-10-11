@@ -447,19 +447,52 @@ enum Step {
     Retry,
 }
 
-/// A source the policies would not have, in BuildKit's words, and the messages the
-/// policy that refused it gave (policysession.DenyMessagesError).
+/// A source the policies would not have, in BuildKit's words, the messages the policy
+/// that refused it gave (policysession.DenyMessagesError), and who refused it.
 #[derive(Debug, Clone)]
 pub struct Refused {
     pub error: String,
     pub messages: Vec<String>,
+    pub by: By,
+}
+
+/// Who refused a source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum By {
+    /// A policy's decision.
+    Decision,
+    /// A policy's own error: its input not built, or its Rego failing. buildx's callback
+    /// answers BuildKit with it as a gRPC status, whose message BuildKit's grpcerrors keeps
+    /// over all that wraps it (errorHasMoreContext, measured: PM M186).
+    Policy,
+    /// BuildKit's evaluator: too many requests, a metadata request failing.
+    BuildKit,
+}
+
+impl Refused {
+    /// The build's error, which BuildKit says `wrapped`: a policy's own error alone.
+    pub fn said(&self, wrapped: String) -> String {
+        match self.by {
+            By::Policy => self.error.clone(),
+            By::Decision | By::BuildKit => wrapped,
+        }
+    }
+
+    /// Whether the policies' step fails with the build: for a decision only, as buildx
+    /// closes it with the build's error only for a denial (DenyMessages,
+    /// isPolicyEvaluationError); any other error ends it done.
+    pub fn denied(&self) -> bool {
+        self.by == By::Decision
+    }
 }
 
 impl From<String> for Refused {
+    /// An error of BuildKit's evaluator.
     fn from(error: String) -> Refused {
         Refused {
             error,
             messages: Vec::new(),
+            by: By::BuildKit,
         }
     }
 }
@@ -1631,7 +1664,14 @@ impl Policies {
         let mut converted = false;
         let mut meta = Meta::default();
         for _ in 0..MAX_RESOLVES {
-            match self.answer(&source, platform, &meta, resolver, log)? {
+            let answer = self
+                .answer(&source, platform, &meta, resolver, log)
+                .map_err(|error| Refused {
+                    error,
+                    messages: Vec::new(),
+                    by: By::Policy,
+                })?;
+            match answer {
                 Answer::Resolve(request) => {
                     meta = resolver
                         .resolve(&source, &request)
@@ -1651,6 +1691,7 @@ impl Policies {
                             shards_cmdline::go::quote(&source.identifier)
                         ),
                         messages,
+                        by: By::Decision,
                     });
                 }
             }
@@ -2343,6 +2384,44 @@ mod tests {
 
     fn scratch(name: &str) -> shards_testdir::TempDir {
         shards_testdir::TempDir::new(&format!("policy-{name}")).unwrap()
+    }
+
+    /// Who refused: a denial is the policy's decision, said wrapped and failing the
+    /// policies' step; the input buildx builds no input for (an OCI layout) and Rego's own
+    /// errors are the policy's, said alone (PM M186).
+    #[test]
+    fn refusals_say_who_refused() {
+        let dir = scratch("refusals");
+        let p = policy_in(
+            &dir,
+            "package docker\n\ndefault decision := {\"allow\": true}\n\ndecision := {\"allow\": true} if input.image\n\ndecision := {\"allow\": false} if input.image\n\ndecision := {\"allow\": false} if input.http\n",
+        );
+        let log = Lines(RefCell::new(Vec::new()));
+        let refused = |identifier: &str| {
+            p.evaluate(&Source::new(identifier), None, &NoMeta, &log)
+                .err()
+                .map(|r| (r.by, r.said("wrapped".into()), r.denied()))
+        };
+        assert_eq!(
+            refused("https://example.com/x"),
+            Some((By::Decision, "wrapped".into(), true))
+        );
+        assert_eq!(
+            refused("oci-layout://docker.io/library/src@sha256:0000"),
+            Some((
+                By::Policy,
+                "failed to build policy input: unsupported source scheme: oci-layout".into(),
+                false
+            ))
+        );
+        let (by, said, denied) = refused("docker-image://docker.io/library/alpine:3.20").unwrap();
+        assert_eq!((by, denied), (By::Policy, false));
+        assert!(
+            said.ends_with(":7: eval_conflict_error: complete rules must not produce multiple outputs"),
+            "{said}"
+        );
+        assert_eq!(refused("local://dockerfile"), None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The deepest a policy goes, run on its thread: a JSON document of 10000 levels,

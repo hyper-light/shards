@@ -11444,6 +11444,108 @@ fn policies_hold_over_remote_contexts() {
     assert_eq!(near.status, Some(1), "{}", near.stderr);
 }
 
+/// A policy's own error ends a build in the policy's words alone, as BuildKit's gRPC keeps
+/// the status buildx's callback answered with over all that wraps it, and the policies'
+/// step ends done, as buildx fails it for a denial only. An OCI layout given as a named
+/// context is asked of as itself, which buildx builds no input for: refused, never taken
+/// for the registry's image its stand-in name names (D128, measured: PM M186).
+#[test]
+fn a_policys_own_error_ends_the_build_as_buildx_ends_it() {
+    let (image, _) = served();
+    let home = TempDir::new("build-policy-err-home");
+    let env = [("SHARDS_HOME", home.as_os_str())];
+    // Built from inside its context, as `.`, as measured.
+    let build = |ctx: &std::path::Path, extra: &[&str]| {
+        let mut args = vec!["build", "--progress=plain"];
+        args.extend_from_slice(extra);
+        args.push(".");
+        common::run_shards_env_in(ctx, &[], &args, &env, TIMEOUT)
+    };
+    let tail = |s: &str| s.lines().last().unwrap_or_default().to_string();
+    let conflict = |on: &str| {
+        format!(
+            "package docker\n\ndefault decision := {{\"allow\": true}}\n\ndecision := {{\"allow\": true}} if input.{on}\n\ndecision := {{\"allow\": false}} if input.{on}\n"
+        )
+    };
+    let rego_error = "ERROR: failed to build: failed to solve: Dockerfile.rego:7: eval_conflict_error: complete rules must not produce multiple outputs";
+    let dockerfile = format!("FROM {image}\nCOPY Dockerfile /x\n");
+    // Two complete rules of different outputs for an image, then for the Dockerfile's
+    // own source: Rego's conflict, said alone; the step done, so no recap of it.
+    for (name, on) in [("policy-err-image", "image"), ("policy-err-local", "local")] {
+        let ctx = context(name, &dockerfile);
+        std::fs::write(ctx.join("Dockerfile.rego"), conflict(on)).unwrap();
+        let failed = build(&ctx, &[]);
+        assert_eq!(failed.status, Some(1), "{}", failed.stderr);
+        assert_eq!(tail(&failed.stderr), rego_error, "{}", failed.stderr);
+        assert!(
+            !failed.stderr.contains(" > loading policies"),
+            "{}",
+            failed.stderr
+        );
+        let step = failed
+            .stderr
+            .lines()
+            .find_map(|l| l.strip_suffix(" loading policies Dockerfile.rego"))
+            .unwrap_or_else(|| panic!("{}", failed.stderr));
+        assert!(
+            failed
+                .stderr
+                .lines()
+                .any(|l| l.starts_with(&format!("{step} DONE "))),
+            "{}",
+            failed.stderr
+        );
+        if on == "image" {
+            assert!(
+                failed.stderr.contains(&format!(
+                    "Dockerfile:1\n--------------------\n   1 | >>> FROM {image}\n"
+                )),
+                "{}",
+                failed.stderr
+            );
+        }
+    }
+    // An OCI layout, under any policy: refused before anything of it is resolved.
+    let out = TempDir::new("build-policy-err-out");
+    let layout = out.join("layout");
+    let first = context("policy-err-laid", &dockerfile);
+    let made = build(
+        &first,
+        &[
+            "-t",
+            "laid:v1",
+            "-o",
+            &format!("type=oci,tar=false,dest={}", layout.to_str().unwrap()),
+        ],
+    );
+    assert_eq!(made.status, Some(0), "{}", made.stderr);
+    let ctx = context("policy-err-layout", "FROM src\nCOPY Dockerfile /x\n");
+    std::fs::write(
+        ctx.join("Dockerfile.rego"),
+        "package docker\n\ndefault decision := {\"allow\": true}\n",
+    )
+    .unwrap();
+    let named = format!("src=oci-layout://{}:v1", layout.to_str().unwrap());
+    let refused = build(&ctx, &["--build-context", &named]);
+    assert_eq!(refused.status, Some(1), "{}", refused.stderr);
+    assert_eq!(
+        tail(&refused.stderr),
+        "ERROR: failed to build: failed to solve: failed to build policy input: unsupported source scheme: oci-layout"
+    );
+    assert!(
+        refused
+            .stderr
+            .contains("Dockerfile:1\n--------------------\n   1 | >>> FROM src\n"),
+        "{}",
+        refused.stderr
+    );
+    assert!(
+        !refused.stderr.contains("load metadata for"),
+        "{}",
+        refused.stderr
+    );
+}
+
 /// Build policies (D101): the Dockerfile's own `Dockerfile.rego` and each `--policy`,
 /// asked of every source the build loads as buildx v0.37.1 asks them and BuildKit v0.28.1
 /// heeds them, each line and refusal in their words (measured in `shards-dind`).

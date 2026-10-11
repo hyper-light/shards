@@ -33,7 +33,7 @@ pub(super) struct Planned {
 pub(super) struct Refills {
     asked: Mutex<Asked>,
     queued: Condvar,
-    started: AtomicBool,
+    pub(super) started: AtomicBool,
     /// The thread is to return: a test's daemon's, as its scope ends.
     ended: AtomicBool,
 }
@@ -58,8 +58,12 @@ impl Refills {
 impl<D: Disk> Daemon<D> {
     /// Has `pool` refilled, if given, and a spare container made, on the refiller's
     /// thread, which the first ask starts. Waits for nothing: its callers may hold the
-    /// pools' lock.
+    /// pools' lock. A daemon that has closed starts none: no run will claim it, and it
+    /// would end with the daemon as the next one starts.
     pub(super) fn refill_soon<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>, pool: Option<&Path>) {
+        if self.closed.load(Ordering::SeqCst) {
+            return;
+        }
         let r = &self.refills;
         {
             let mut asked = lock(&r.asked);
