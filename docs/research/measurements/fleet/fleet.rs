@@ -268,31 +268,34 @@ fn fleet() {
             "warm VMs after the bursts {warm_after} | daemon stop {stop_ms:.0} ms | VMs left {}",
             processes_with(&templates.to_string_lossy()).len()
         );
-        stalls(&home);
+        println!("{}", stalls(&home));
     }
 }
 
 /// What the daemon said of VMs that stalled before their first request for access
 /// (daemon.rs `grant`: its log's lines, and the stacks it sampled of each, `vm-PID.sample`),
-/// printed before the home goes with them.
-fn stalls(home: &Path) {
+/// to print before the home goes with them.
+fn stalls(home: &Path) -> String {
+    use std::fmt::Write as _;
     let log = std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default();
     let said: Vec<&str> = log
         .lines()
         .filter(|l| l.contains("request for access") || l.contains("not started by the host"))
         .collect();
-    println!("stalls said: {}", said.len());
+    let mut out = format!("stalls said: {}", said.len());
     for line in said {
-        println!("  {line}");
+        let _ = write!(out, "\n  {line}");
     }
     for entry in std::fs::read_dir(home).unwrap().flatten() {
         let path = entry.path();
         if path.extension().is_some_and(|x| x == "sample") {
-            println!(
-                "--- {}\n{}",
+            let _ = write!(
+                out,
+                "\n--- {}\n{}",
                 path.display(),
                 std::fs::read_to_string(&path).unwrap_or_default()
             );
         }
     }
+    out
 }
