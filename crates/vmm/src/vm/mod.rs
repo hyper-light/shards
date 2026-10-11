@@ -264,6 +264,7 @@ fn machine_config(cfg: &Config) -> Result<crate::snapshot::MachineConfig, String
         join_share: cfg.join_share.is_some(),
         #[cfg(not(unix))]
         join_share: false,
+        nested: cfg.nested,
     })
 }
 
@@ -325,6 +326,10 @@ pub struct Config {
     /// A join disk, after the disks: empty until the VM process gives a joining
     /// container's image a range of it (D119).
     pub join: Option<&'static crate::devices::virtio::block::Join>,
+    /// Virtualization for the guest itself (nested): on arm64 its vCPUs have EL2, so
+    /// that its kernel may be a hypervisor (KVM). Refused where the host cannot give it,
+    /// and its snapshot refused, its EL2 state not saved.
+    pub nested: bool,
     /// The join share's slot (D119), which a server of its VM's joiners' volumes fills.
     #[cfg(unix)]
     pub join_share: Option<&'static crate::devices::virtio::fs::Slot>,
@@ -389,6 +394,7 @@ impl Config {
             join: None,
             #[cfg(unix)]
             join_share: None,
+            nested: false,
         }
     }
 }
@@ -545,6 +551,7 @@ mod tests {
             shares: 0,
             join: false,
             join_share: false,
+            nested: false,
         }
     }
 

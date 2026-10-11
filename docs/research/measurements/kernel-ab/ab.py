@@ -4,8 +4,8 @@
     ab.py --bin DIR --init FILE --guest FILE --a KERNEL --b KERNEL [--runs N]
           [--a-cmdline ARGS] [--b-cmdline ARGS]
 
---bin is a directory holding shards, shardsd and shards-vm (on macOS, signed copies such
-as the E2E tests' target/e2e/shards-*). --init is shards-init, which boots; --guest is
+--bin is a directory holding shards (on macOS, as the E2E tests' target/e2e/ copy has
+it: one binary, carrying its signed VM process). --init is shards-init, which boots; --guest is
 the test guest (crates/testguest), whose `resume` mode takes the snapshot restored.
 --a-cmdline and --b-cmdline add to each arm's kernel command line, so one kernel can be
 set against itself booted another way (`preempt=full`).
@@ -65,7 +65,7 @@ def shards(bin_dir, *args):
 
 def boot(bin_dir, kernel, init, extra):
     t = shards(
-        bin_dir, "vm", "run", "--kernel", kernel, "--init", init, "--cpus", "1",
+        bin_dir, "run", "--kernel", kernel, "--init", init, "--cpus", "1",
         "--memory", "256", "--cmdline", f"quiet panic=-1 {extra}".strip(), "--no-console",
     )
     init_us = marker(t, INIT_STARTED)
@@ -74,14 +74,14 @@ def boot(bin_dir, kernel, init, extra):
 
 def snapshot(bin_dir, kernel, guest, dir, extra):
     shards(
-        bin_dir, "vm", "run", "--kernel", kernel, "--init", guest, "--cpus", "1",
+        bin_dir, "run", "--kernel", kernel, "--init", guest, "--cpus", "1",
         "--memory", "256", "--cmdline", f"quiet panic=-1 shards_test=resume {extra}".strip(),
         "--no-console", "--snapshot-dir", dir,
     )
 
 
 def restore(bin_dir, dir):
-    return {"restore": marker(shards(bin_dir, "vm", "restore", dir, "--no-console"), RESUMED)}
+    return {"restore": marker(shards(bin_dir, "restore", dir, "--no-console"), RESUMED)}
 
 
 def percentile(v, p):

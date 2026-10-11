@@ -228,9 +228,16 @@ fn assemble(
         .collect();
     let ipa_bits = ipa_bits(top)?;
     let mpidrs: Vec<u64> = (0..config.vcpus).map(aarch64::mpidr).collect();
+    if config.nested && !hv::el2_supported() {
+        return Err(
+            "this Mac gives a guest no EL2: virtualization of a guest's own needs an M3 or later, on macOS 15 or later"
+                .into(),
+        );
+    }
     let vm = hv::Vm::new(hv::VmConfig {
         ipa_bits,
         mpidrs: mpidrs.clone(),
+        el2: config.nested,
     })
     .map_err(|e| e.to_string())?;
     for (gpa, host, len) in memory.regions() {
@@ -363,6 +370,7 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
         gic_redist: (layout::GIC_REDIST, a.redist_total),
         virtio: &a.virtio,
         rng_seed,
+        el2: cfg.nested,
     })
     .map_err(|e| e.to_string())?;
     memory

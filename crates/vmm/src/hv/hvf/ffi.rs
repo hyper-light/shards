@@ -130,6 +130,10 @@ hypervisor! {
     fn hv_vm_config_create() -> hv_vm_config_t = std::ptr::null_mut();
     fn hv_vm_config_get_max_ipa_size(bits: *mut u32) -> hv_return_t = MISSING;
     fn hv_vm_config_set_ipa_size(config: hv_vm_config_t, bits: u32) -> hv_return_t = MISSING;
+    // macOS 15: whether this Mac gives a guest EL2 (nested virtualization), and a VM whose
+    // vCPUs have it, so that its kernel may be a hypervisor.
+    fn hv_vm_config_get_el2_supported(supported: *mut bool) -> hv_return_t = MISSING;
+    fn hv_vm_config_set_el2_enabled(config: hv_vm_config_t, enabled: bool) -> hv_return_t = MISSING;
     fn hv_vm_create(config: hv_vm_config_t) -> hv_return_t = MISSING;
     fn hv_vm_destroy() -> hv_return_t = MISSING;
     fn hv_vm_map(addr: *mut c_void, ipa: hv_ipa_t, size: usize, flags: hv_memory_flags_t) -> hv_return_t = MISSING;

@@ -264,6 +264,9 @@ fn assemble(
     // Device memory (pmem regions) goes above 4 GiB, after any high RAM.
     let first = (layout::MMIO_GAP_END + ram.saturating_sub(layout::MMIO_GAP)).next_multiple_of(GIB);
     let (regions, _) = super::pmem_regions(config, first)?;
+    if config.nested {
+        return Err("virtualization of a guest's own is not given on x86_64 yet".into());
+    }
     let vm = hv::Vm::new(hv::VmConfig { vcpus: config.vcpus }).map_err(|e| e.to_string())?;
     for (gpa, host, len) in memory.regions() {
         // SAFETY: `memory` outlives the VM: `Machine` and `Running` drop the VM first.

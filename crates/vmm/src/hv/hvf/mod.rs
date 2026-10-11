@@ -89,6 +89,14 @@ pub struct VmConfig {
     pub ipa_bits: u32,
     /// MPIDR of each vCPU, by index.
     pub mpidrs: Vec<u64>,
+    /// Whether the vCPUs have EL2, entered there: the guest's kernel may be a hypervisor
+    /// (nested virtualization; [`el2_supported`]).
+    pub el2: bool,
+}
+
+/// Whether this Mac gives a guest EL2: nested virtualization, from the M3 on macOS 15.
+pub fn el2_supported() -> bool {
+    sys::el2_supported()
 }
 
 /// The process's VM. It must outlive every [`Vcpu`], and guest memory must outlive it.
@@ -98,6 +106,7 @@ pub struct Vm {
     power: Arc<power::Table>,
     mpidrs: Vec<u64>,
     ipa_bits: u32,
+    el2: bool,
     /// Base and per-vCPU size of the redistributor frames, once the GIC exists.
     redist: OnceLock<(u64, u64)>,
     watch: Arc<Watch>,
@@ -107,12 +116,14 @@ impl Vm {
     pub fn new(config: VmConfig) -> Result<Vm> {
         let sys = sys::Vm::new(sys::VmConfig {
             ipa_bits: (config.ipa_bits > 36).then_some(config.ipa_bits),
+            el2: config.el2,
         })?;
         Ok(Vm {
             sys,
             power: Arc::new(power::Table::new(&config.mpidrs)),
             mpidrs: config.mpidrs,
             ipa_bits: config.ipa_bits,
+            el2: config.el2,
             redist: OnceLock::new(),
             watch: Arc::new(Watch::default()),
         })
@@ -216,12 +227,29 @@ impl Vm {
                 );
             }
         }
+        // Where it has EL2, its SCTLR_EL2 as the framework resets it, MMU and caches off,
+        // which each entry puts back; and no SME: the framework leaves SMCR_EL2 undefined
+        // at the guest's EL2, where Linux's `__finalise_el2` sets its vector length, and
+        // faults there for ever (M5 Max, macOS 26.4.1).
+        let el2 = if self.el2 {
+            let pfr1 = vcpu.sys_reg(sysreg::ID_AA64PFR1_EL1)?;
+            if pfr1 & sysreg::ID_AA64PFR1_SME != 0 {
+                vcpu.set_sys_reg(sysreg::ID_AA64PFR1_EL1, pfr1 & !sysreg::ID_AA64PFR1_SME)?;
+                if vcpu.sys_reg(sysreg::ID_AA64PFR1_EL1)? & sysreg::ID_AA64PFR1_SME != 0 {
+                    return Err(guest("a vCPU at EL2 keeps SME, which it cannot use there".into()));
+                }
+            }
+            Some(vcpu.sys_reg(sysreg::SCTLR_EL2)?)
+        } else {
+            None
+        };
         Ok(Vcpu {
             kicker: Kicker {
                 sys: vcpu.kicker(),
                 power: self.power.clone(),
                 index,
             },
+            el2,
             sys: vcpu,
             power: self.power.clone(),
             index,
@@ -354,6 +382,8 @@ pub struct Vcpu {
     power: Arc<power::Table>,
     kicker: Kicker,
     index: usize,
+    /// Where the VM has EL2: the SCTLR_EL2 an entry puts back.
+    el2: Option<u64>,
     /// Powered on. Only a powered-off vCPU consults the shared power table, so exits
     /// in the running guest take no lock.
     on: bool,
@@ -468,9 +498,18 @@ impl Vcpu {
     }
 
     /// Architectural entry state for boot and CPU_ON: EL1h with DAIF masked, MMU and
-    /// caches off, X0 as given, other GPRs zero (Linux booting.rst; PSCI 1.1 §6.4).
+    /// caches off, X0 as given, other GPRs zero (Linux booting.rst; PSCI 1.1 §6.4). Where
+    /// the VM has EL2, EL2h instead, its MMU and caches off as the framework reset them.
     fn enter(&mut self, entry: Entry) -> Result<()> {
-        self.sys.set_reg(sys::Reg::CPSR, sysreg::PSTATE_EL1H_DAIF)?;
+        match self.el2 {
+            Some(sctlr) => {
+                self.sys.set_reg(sys::Reg::CPSR, sysreg::PSTATE_EL2H_DAIF)?;
+                self.sys.set_sys_reg(sysreg::SCTLR_EL2, sctlr)?;
+            }
+            None => {
+                self.sys.set_reg(sys::Reg::CPSR, sysreg::PSTATE_EL1H_DAIF)?;
+            }
+        }
         self.sys.set_sys_reg(sysreg::SCTLR_EL1, sysreg::SCTLR_EL1_RESET)?;
         self.sys.set_x(0, entry.x0)?;
         for n in 1..=30 {
@@ -540,6 +579,18 @@ impl Vcpu {
             if a.read { "read" } else { "write" },
             a.encoding
         );
+        // At EL2, an EL2 register the framework holds traps to be read or written there:
+        // the guest's own hypervisor programs it (its timers, CNTHCTL_EL2 first).
+        if self.el2.is_some() && sysreg::EL2_HELD.contains(&a.encoding) {
+            if a.read {
+                let value = self.sys.sys_reg(a.encoding)?;
+                self.sys.set_x(a.reg, value)?;
+            } else {
+                let value = self.sys.x(a.reg)?;
+                self.sys.set_sys_reg(a.encoding, value)?;
+            }
+            return self.advance_pc(syndrome);
+        }
         if a.read {
             self.sys.set_x(a.reg, 0)?;
         }
@@ -959,6 +1010,7 @@ mod tests {
         let vm = Vm::new(VmConfig {
             ipa_bits: 36,
             mpidrs: vec![0, 1],
+            el2: false,
         })
         .unwrap();
         // SAFETY: the reservation is never unmapped.
@@ -1068,6 +1120,7 @@ mod tests {
         let vm = Vm::new(VmConfig {
             ipa_bits: 36,
             mpidrs: vec![0],
+            el2: false,
         })
         .unwrap();
         let path_dir = shards_testdir::TempDir::new("m17.img").unwrap();
