@@ -1,8 +1,9 @@
 name: Guest memory
 
-# Where a run's guest keeps its microVM's memory on x86_64 KVM, this revision against
-# M155's (088ee68d, which brought its table to dev), built and run on one runner, on three
-# runners: docs/research/measurements/guest-memory/diagnose.sh.
+# What a run's guest keeps of its microVM's memory on x86_64 KVM, on the path a run takes,
+# for `-m`'s table (crates/shards/src/resources.rs, PM M155, M179): measure-run.py at each
+# of the table's sizes, 10 runs a size, on three runners, as CI's x86_64 jobs run on
+# runners of more than one kind.
 on:
   push:
     paths:
@@ -17,29 +18,28 @@ env:
   TOOLCHAIN: 1.98.0 # keep in sync with rust-toolchain.toml
 
 jobs:
-  diagnose:
-    name: diagnose (${{ matrix.copy }})
+  measure:
+    name: measure (${{ matrix.copy }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 75
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
         copy: [a, b, c]
     steps:
       - uses: actions/checkout@v7.0.1
-        with:
-          fetch-depth: 0
       - name: Install pinned Rust
         run: rustup toolchain install "$TOOLCHAIN" --profile minimal --target x86_64-unknown-linux-musl
       - name: zig
         run: scripts/install-zig
       - name: KVM access
         run: sudo chmod 666 /dev/kvm
-      - name: This revision
-        run: cargo build --locked -p shards --profile test-release
-      - name: M155's revision
+      - name: Build
+        run: cargo build --locked -p shards --release
+      - name: Measure
         run: |
-          git worktree add ../m155 088ee68d
-          cd ../m155 && cargo build --locked -p shards --profile test-release
-      - name: Diagnose
-        run: docs/research/measurements/guest-memory/diagnose.sh "$PWD/target/test-release/shards" "$(cd ../m155 && pwd)/target/test-release/shards"
+          lscpu | grep -E 'Model name' || true
+          nproc
+          free -m
+          export SHARDS_HOME=$(mktemp -d)
+          python3 docs/research/measurements/guest-memory/measure-run.py target/release/shards 10
