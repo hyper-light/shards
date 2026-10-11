@@ -3518,6 +3518,60 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode
 waits on the user.
 
+### D123. A run's record of processes: from the kernel, every one, whole
+
+AGENTFILE_ARCH §9.9 makes each process a run's members start a record, and an audit trail:
+`shards read processes MICROVM` shows it, `shards watch processes MICROVM` follows it, in
+shards' grammar (`ACTION THING`, the user's, 2026-10-11). Docker has none; `docker top`
+is a moment's list, which `shards top` keeps. Each record is a fork and its parent, an
+exec and its command line, or an end and its code or signal, with the time, the member
+(`command`, `agent NAME`, `harness NAME`, `joiner ID`) and the process's PID in the
+microVM. Kept as the log is: segments of `--log-opt max-size`, as many as `max-file`, in
+the container's directory.
+
+- **From the kernel's process events** (`drivers/connector/cn_proc.c`), which init, in
+  the initial PID and user namespaces, listens to as the run starts. They name a process
+  by its PIDs alone; read with /proc, a shell's loop of 201 short-lived processes lost 42
+  to 53 of them, and 33 to 38 of the rest their command lines (PM M176): a process gone
+  by then has no /proc.
+- **Whose a process is: its parent's.** A process a member's forks is that member's, as
+  the fork's event says, which /proc need not; members cannot move a process between
+  cgroups (§9.9). Only the processes init starts for a member, its own children, are the
+  member their cgroup names (`/workload`, `/domains/<kind>-<name>`, `/join-<id>`), and
+  init reads the events waiting before it reaps a child, so that a child's /proc is there.
+  A process init moves into its cgroup after its fork (an exec, a joiner, a server
+  instance) is recorded from its exec.
+- **Its command line: the kernel's.** Linux sends none with an exec's event. Tracing
+  would (perf's sched_process_exec with the new user stack), and Firecracker's config,
+  ours, has no FTRACE; the audit subsystem would, and puts every system call of every
+  audited task on its slow path (kernel/auditsc.c); seccomp's user notification shows a
+  call's memory, which can change before the call runs, and §9.9 refuses it. So shards'
+  guest kernel carries a patch (resources/kernel/patches/0002, kernel-6.18.48-4b8900bdffdd):
+  an exec's event carries the command line the exec laid out, before the program runs,
+  as much as a page holds with its whole length. Every exec whole, at no cost resolved
+  (M176). The record keeps 4 KiB of one and says how much more there was. A kernel
+  without the patch leaves /proc, read as the event is: the process's name, in brackets
+  as ps shows one without a command line, where it ended first, or that nothing could
+  be read, each said as such.
+- **Its end.** The kernel queues an exit's event after the parent is told
+  (kernel/exit.c, exit_notify then proc_exit_connector), so a run's record ends once
+  every process whose start it holds has its end in it: the end of a run kills the rest,
+  and their ends are waited for as they come. A PID namespace's first process ends only
+  after the rest of it (kernel/pid_namespace.c, zap_pid_ns_processes); a process outside
+  the command's, as under `--pid host`, is waited for.
+- **Lost, said.** Events past the listener's 4 MiB of queue are a `lost` record, and the
+  record waits for no end after one; a run whose record could not be listened to says why
+  (`unrecorded`).
+- **Tested**: `a_runs_processes_are_recorded_as_they_start_and_end` (a child's fork, exec
+  and end in order; 200 children, each over at once and reaped by its parent, each
+  recorded whole; a child the run's end kills outside the command's namespace, freeing
+  256 MiB as it ends, its end awaited; an exec followed by `shards watch processes`),
+  mutation-checked: without the kernel's command line, without the parent's member,
+  with netlink's padding read as arguments, without the wait for the last ends, it
+  fails, and on the pinned kernel before this one, as M176 measured; init's
+  `a_members_processes_are_recorded_from_their_events` and
+  `an_event_is_as_long_as_its_message_says`; the daemon's segments and rendering.
+
 ### D122. The members an `EXPOSE` is for: one receiver for each incoming port
 
 An `EXPOSE … FOR <network>` opened a port of the microVM for every member of the network.

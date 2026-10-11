@@ -349,7 +349,20 @@ impl Warm {
         assert!(exited.success(), "the warm VM exited with {exited}");
         let mut said = Vec::new();
         let mut done = false;
+        let mut records = Vec::new();
         while let Some(m) = shards_ipc::recv(&self.daemon).unwrap() {
+            // The records of the processes its run started and ended (D123), whole lines of
+            // tab-separated fields, before the end.
+            if m.kind == kind::PROCESS {
+                assert!(!done, "a record of processes after DONE");
+                let text = String::from_utf8_lossy(&m.payload).into_owned();
+                assert!(
+                    text.ends_with('\n') && text.lines().all(|l| l.split('\t').count() >= 5),
+                    "a malformed record: {text:?}"
+                );
+                records.push(text);
+                continue;
+            }
             // What a restore recorded, where the backend records restores', goes to the
             // daemon before the end, in well-formed parts.
             if m.kind == kind::WORKING_SET {
@@ -363,6 +376,11 @@ impl Warm {
             done |= m.kind == kind::DONE;
             said.push((m.kind, m.payload));
         }
+        let records = records.concat();
+        assert!(
+            !started || records.lines().any(|l| l.split('\t').nth(3) == Some("exec")),
+            "no exec of its command in {records:?}"
+        );
         let mut expected = Vec::new();
         if started {
             expected.push((kind::STARTED, Vec::new()));

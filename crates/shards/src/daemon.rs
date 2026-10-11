@@ -51,6 +51,7 @@ mod load;
 mod logs;
 mod network;
 mod networks;
+mod processes;
 mod ps;
 mod publish;
 mod pull;
@@ -3402,6 +3403,7 @@ impl<D: Disk> Daemon<D> {
                 kind::DONE => self.run_ended(id, inbox, Some(&m.payload)),
                 kind::LOST => self.log_lost(id, &m.payload),
                 kind::OOM => self.oom_killed(id),
+                kind::PROCESS => self.keep_processes(id, &m.payload),
                 kind::WORKING_SET => {
                     if let Some(whole) = working_set_part(id, inbox, &m.payload) {
                         self.make_soon(whole);

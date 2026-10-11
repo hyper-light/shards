@@ -910,6 +910,12 @@ pub fn finish(
     }
 }
 
+/// Gives the daemon records of the processes the run's members started and ended (D123),
+/// as they come.
+pub fn processes(link: &Link, records: &[u8]) {
+    let _ = shards_ipc::send(&link.daemon, kind::PROCESS, records, &[]);
+}
+
 /// Tells the daemon the container's writable layer is whole where it asked for it.
 pub fn layer_saved(link: &Link, used: Option<u64>) {
     let payload = used.map(u64::to_be_bytes);

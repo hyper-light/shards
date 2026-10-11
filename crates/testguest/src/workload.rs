@@ -91,6 +91,7 @@ pub fn main() -> ! {
         }
         "clean-cache" => clean_cache(arg(1)),
         "orphan" => orphan(),
+        "heavy" => heavy(arg(1).parse().unwrap_or(0)),
         "trap" => trap(arg(1)),
         "ignore" => ignore(arg(1)),
         "tty" => tty(arg(1)),
@@ -98,6 +99,8 @@ pub fn main() -> ! {
         "loopback" => loopback(),
         "fs" => fs(args.get(1..).unwrap_or_default()),
         "addrs" => addrs(),
+        "spawn" => spawn(args.get(1..).unwrap_or_default()),
+        "spawns" => spawns(arg(1).parse().unwrap_or(1), args.get(2..).unwrap_or_default()),
         "tcp" => tcp(arg(1)),
         "fetch" => fetch(args.get(1..).unwrap_or_default()),
         "ask" => ask(arg(1)),
@@ -1040,6 +1043,41 @@ fn udp_echo(port: &str, stop: &str) -> i32 {
     }
 }
 
+/// Runs `/bin/testguest ARGS` as a child and waits for it: `spawned PID code N`, a fork,
+/// an exec and an exit for a record of processes to hold (D123).
+fn spawn(args: &[String]) -> i32 {
+    match std::process::Command::new("/bin/testguest").args(args).spawn() {
+        Ok(mut child) => {
+            let pid = child.id();
+            let code = child.wait().ok().and_then(|s| s.code()).unwrap_or(-1);
+            let _ = writeln!(io::stdout(), "spawned {pid} code {code}");
+            0
+        }
+        Err(e) => {
+            let _ = writeln!(io::stdout(), "spawn error {e}");
+            1
+        }
+    }
+}
+
+/// Runs `/bin/testguest ARGS I` as a child `n` times, one after another, I its round, each
+/// waited for: as many forks, execs and exits, each process over at once and reaped by its
+/// parent, for a record of processes to hold whole (D123); `spawned N` once all have.
+fn spawns(n: u32, args: &[String]) -> i32 {
+    for i in 0..n {
+        if let Err(e) = std::process::Command::new("/bin/testguest")
+            .args(args)
+            .arg(i.to_string())
+            .status()
+        {
+            let _ = writeln!(io::stdout(), "spawn error {e}");
+            return 1;
+        }
+    }
+    let _ = writeln!(io::stdout(), "spawned {n}");
+    0
+}
+
 /// Every address of every interface, one a line, `NAME ADDR/PREFIX`, as getifaddrs(3)
 /// lists them: what `ip addr` would show of each.
 fn addrs() -> i32 {
@@ -1384,6 +1422,52 @@ fn orphan() -> i32 {
     }
     let _ = io::stdout().write_all(b"parent done\n");
     0
+}
+
+/// Leaves a child holding `mib` MiB, its output closed, and exits once the child holds
+/// them: the run's end kills the child after its command and output have ended, and the
+/// child's end takes freeing them, for a record of processes to wait for (D123).
+fn heavy(mib: usize) -> i32 {
+    let mut fds = [0; 2];
+    // SAFETY: pipe(2) into a two-element array.
+    if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+        return 1;
+    }
+    // SAFETY: fork(2) of this single-threaded process; the child touches memory, says so
+    // and sleeps.
+    match unsafe { libc::fork() } {
+        0 => {
+            if let Ok(null) = std::fs::OpenOptions::new().write(true).open("/dev/null") {
+                use std::os::fd::AsRawFd as _;
+                // SAFETY: dup2(2) of a descriptor of ours onto stdout and stderr.
+                unsafe {
+                    libc::dup2(null.as_raw_fd(), 1);
+                    libc::dup2(null.as_raw_fd(), 2);
+                }
+            }
+            let mut held: Vec<Vec<u8>> = Vec::new();
+            for _ in 0..mib {
+                held.push(vec![1u8; 1 << 20]);
+            }
+            // SAFETY: write(2) of a byte of ours to the pipe's write end.
+            unsafe { libc::write(fds[1], b"r".as_ptr().cast(), 1) };
+            loop {
+                // SAFETY: blocks until a signal arrives.
+                unsafe { libc::pause() };
+            }
+        }
+        pid if pid > 0 => {
+            let mut ready = 0u8;
+            // SAFETY: close(2) of our write end; read(2) of a byte into a local.
+            let n = unsafe {
+                libc::close(fds[1]);
+                libc::read(fds[0], (&raw mut ready).cast(), 1)
+            };
+            let _ = writeln!(io::stdout(), "holding {mib} MiB in {pid}");
+            i32::from(n != 1)
+        }
+        _ => 1,
+    }
 }
 
 /// Dials each host vsock port (CID 2) and prints `PORT connected`, then what the host

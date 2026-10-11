@@ -14,8 +14,8 @@ use std::time::{Duration, Instant};
 
 use shards_cmdline::commands::{
     self, COMMIT, CONTAINER_INSPECT, CONTAINER_PRUNE, DIFF, EVENTS, EXPORT, HISTORY, IMAGE_INSPECT,
-    IMAGE_PRUNE, IMAGES, INFO, KILL, LOAD, LOGS, PAUSE, PORT, PS, PULL, PUSH, READ_PORTS, RENAME, RM, RMI,
-    SAVE, STATS, STOP, SYSTEM_DF, SYSTEM_PRUNE, TAG, TOP, UNPAUSE, WAIT,
+    IMAGE_PRUNE, IMAGES, INFO, KILL, LOAD, LOGS, PAUSE, PORT, PS, PULL, PUSH, READ_PORTS, READ_PROCESSES,
+    RENAME, RM, RMI, SAVE, STATS, STOP, SYSTEM_DF, SYSTEM_PRUNE, TAG, TOP, UNPAUSE, WAIT,
 };
 use shards_cmdline::flags::{self, Outcome, Parsed};
 use shards_cmdline::{gotime, width};
@@ -497,6 +497,10 @@ impl<D: crate::containers::Disk> Daemon<D> {
             self.port(&parsed.args, asker.styled(), reply)
         } else if std::ptr::eq(command, &READ_PORTS) {
             self.read_ports(&parsed.args, reply)
+        } else if std::ptr::eq(command, &READ_PROCESSES) {
+            self.read_processes(&parsed.args, false, asker.client, reply)
+        } else if std::ptr::eq(command, &commands::WATCH_PROCESSES) {
+            self.read_processes(&parsed.args, true, asker.client, reply)
         } else if std::ptr::eq(command, &IMAGES) {
             self.images(&parsed, asker, reply)
         } else if std::ptr::eq(command, &TAG) {
@@ -3344,7 +3348,7 @@ impl Window {
 }
 
 /// Waits until one of `fds` is readable, or hung up; which are.
-fn wait_readable(fds: &[BorrowedFd<'_>; 3]) -> io::Result<[bool; 3]> {
+pub(super) fn wait_readable(fds: &[BorrowedFd<'_>; 3]) -> io::Result<[bool; 3]> {
     let mut polled = fds.map(|fd| libc::pollfd {
         fd: fd.as_raw_fd(),
         events: libc::POLLIN,

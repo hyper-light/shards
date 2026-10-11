@@ -115,11 +115,17 @@ pub struct Asked<'a> {
     pub told: Option<&'a Told<'a>>,
     /// Told the layer is saved whole.
     pub saved: Option<&'a (dyn Fn(Option<u64>) + Sync)>,
+    /// Given the records of the processes the run's members start and end (D123).
+    pub processes: Option<&'a Records<'a>>,
 }
 
 /// What hears how a served command ended (`Asked::told`).
 #[cfg(unix)]
 pub type Told<'a> = dyn Fn(&Result<Ended, String>) + Sync + 'a;
+
+/// What is given a run's records of processes as they come (`Asked::processes`, D123).
+#[cfg(unix)]
+pub type Records<'a> = dyn Fn(&[u8]) + Sync + 'a;
 
 /// How a served command ended: its exit status, and if it never ran, why not, in the
 /// guest's words.
@@ -276,6 +282,7 @@ pub fn serve(
         layer_out,
         told,
         saved,
+        processes,
     } = match request {
         Request::Now { spec, interactive } => Asked {
             spec: *spec,
@@ -287,6 +294,7 @@ pub fn serve(
             layer_out: None,
             told: None,
             saved: None,
+            processes: None,
         },
         Request::Later(ask) => ask()?,
     };
@@ -343,7 +351,7 @@ pub fn serve(
         })
         .map_err(|e| format!("signal connection: {e}"))?;
     let mut log = log;
-    let status = relay(&mut conn, timing, log.as_mut(), started);
+    let status = relay(&mut conn, timing, log.as_mut(), started, processes);
     if let Some(told) = told {
         told(&status);
     }
@@ -388,6 +396,7 @@ fn relay(
     timing: &Timing,
     mut log: Option<&mut Logger>,
     started: Option<&(dyn Fn() + Sync)>,
+    processes: Option<&Records<'_>>,
 ) -> Result<Ended, String> {
     // Grown to the longest frame yet, at most MAX_PAYLOAD, and never shrunk: a frame
     // longer than any before zeroes only its new bytes before they are read over (audit
@@ -435,6 +444,11 @@ fn relay(
             kind::SYSTEM_ERR => not_run = Some(String::from_utf8_lossy(payload).into_owned()),
             kind::EXEC_FAILED => exec_failed(payload),
             kind::OOM => oom = true,
+            kind::PROCESS => {
+                if let Some(processes) = processes {
+                    processes(payload);
+                }
+            }
             kind::EXIT => {
                 let _ = timing.answered_us.set(shards_vmm::log::uptime_us());
                 let status: [u8; 4] = payload.try_into().map_err(|_| "malformed exit status")?;

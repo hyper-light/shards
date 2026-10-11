@@ -81,7 +81,12 @@ pub fn main(device: &str, template: bool) -> ! {
     let signals = dial(run::SIGNAL_PORT, false).ok();
     let started = standby.and_then(|standby| {
         let spec = receive(&conn)?;
+        // What processes the run's members start and end (D123), listened to before any
+        // starts; none of a visit to a stopped container's files, which runs nothing.
+        let procs = (spec.builtin != run::builtin::HOLD)
+            .then(|| crate::procevents::Listener::new().map_err(|e| e.to_string()));
         let (mut workload, declared) = standby.start(&spec)?;
+        workload.procs = procs;
         // A visit to a stopped container's files (`HOLD`, D37) runs nothing of the image's:
         // no command, and no agent or harness.
         if spec.builtin == run::builtin::HOLD {
@@ -1697,6 +1702,9 @@ struct Workload {
     domains: Vec<crate::domains::Started>,
     /// Their memory, watched, where there are any.
     memory: Option<crate::domains::Memory>,
+    /// The process events connector, listened to for the run's record of processes (D123),
+    /// or why it could not be.
+    procs: Option<Result<crate::procevents::Listener, String>>,
 }
 
 /// A pty's master, and the path of its peer, which the standby opens as the workload's
@@ -2183,6 +2191,7 @@ impl Standby {
                 _held: Some(orders),
                 domains: Vec::new(),
                 memory: None,
+                procs: None,
             };
             return Ok((held, None));
         }
@@ -2383,6 +2392,7 @@ impl Standby {
                 _held: None,
                 domains: Vec::new(),
                 memory: None,
+                procs: None,
             });
         };
         // The terminal carries everything; the pipes go unused.
@@ -2400,6 +2410,7 @@ impl Standby {
             _held: None,
             domains: Vec::new(),
             memory: None,
+            procs: None,
         })
     }
 }
@@ -3363,6 +3374,8 @@ enum Owner {
     Domain(usize),
     /// The domains' memory.
     Memory,
+    /// The process events connector (D123).
+    Procs,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -3430,6 +3443,11 @@ impl Workload {
         let mut packing: Option<libc::pid_t> = None;
         // Reused each turn: six for the workload, four for each exec.
         let (mut set, mut owners) = (Vec::<libc::pollfd>::new(), Vec::<Owner>::new());
+        // A record of processes that cannot be kept says so.
+        if let Some(Err(why)) = &self.procs {
+            frame_processes(&crate::procevents::unrecorded(why), &mut to_host);
+            self.procs = None;
+        }
         loop {
             let exited = status.is_some();
             // A joiner's writable layer, sent as the host asked once its end is said; its
@@ -3461,6 +3479,11 @@ impl Workload {
                 ]);
                 reported = true;
             }
+            // The ends of the processes the run's end killed, as they come: the run's
+            // record of processes ends with every end it can have (D123).
+            if exited {
+                keep_processes(&mut self.procs, &mut to_host);
+            }
             if exited
                 && self.stdout.is_none()
                 && self.stderr.is_none()
@@ -3468,6 +3491,11 @@ impl Workload {
                 && execs.is_empty()
                 && packing.is_none()
                 && self.domains.iter().all(|d| d.out.is_none())
+                && (host.is_none()
+                    || self
+                        .procs
+                        .as_ref()
+                        .is_none_or(|p| p.as_ref().is_ok_and(|p| p.settled())))
             {
                 break;
             }
@@ -3532,6 +3560,14 @@ impl Workload {
                 libc::POLLIN,
                 Owner::Memory,
             );
+            poll(
+                self.procs
+                    .as_ref()
+                    .and_then(|p| p.as_ref().ok())
+                    .map(crate::procevents::Listener::fd),
+                libc::POLLIN,
+                Owner::Procs,
+            );
             for (i, e) in execs.iter().enumerate() {
                 let conn_events = if !e.connected {
                     libc::POLLOUT
@@ -3584,6 +3620,9 @@ impl Workload {
                 let fd = p.fd;
                 match owner {
                     Owner::Sigchld => {
+                        // The events waiting first, while the children ended are there
+                        // in /proc to say whose they are (procevents).
+                        keep_processes(&mut self.procs, &mut to_host);
                         let main = self.pid;
                         reap(&self.sigchld, |pid, code| {
                             if pid == main {
@@ -3792,6 +3831,7 @@ impl Workload {
                             d.out = None;
                         }
                     }
+                    Owner::Procs => keep_processes(&mut self.procs, &mut to_host),
                     Owner::Memory => {
                         if let Some(m) = self.memory.as_ref() {
                             m.relieve(&self.domains, |line| {
@@ -3893,6 +3933,32 @@ impl Workload {
 
 /// Reaps every exited child, telling `exited` each one's pid and status: its code, or
 /// 128 and the signal that ended it.
+/// The process events waiting (D123), each a record, for the host.
+fn keep_processes(procs: &mut Option<Result<crate::procevents::Listener, String>>, to_host: &mut Outbox) {
+    if let Some(Ok(p)) = procs.as_mut() {
+        let mut records = Vec::new();
+        p.read(&mut records);
+        frame_processes(&records, to_host);
+    }
+}
+
+/// `records`, whole lines, in frames of whole records for the host, each a CHUNK at most,
+/// as output goes.
+fn frame_processes(records: &[u8], to_host: &mut Outbox) {
+    let mut rest = records;
+    while !rest.is_empty() {
+        let most = rest.len().min(CHUNK);
+        let at = match rest.get(..most).and_then(|r| r.iter().rposition(|&b| b == b'\n')) {
+            Some(end) if most < rest.len() => end + 1,
+            _ => most,
+        };
+        let (frame, after) = rest.split_at(at);
+        let len = u32::try_from(frame.len()).unwrap_or(u32::MAX);
+        to_host.extend(&[&run::header(kind::PROCESS, len), frame]);
+        rest = after;
+    }
+}
+
 fn reap(sigchld: &OwnedFd, mut exited: impl FnMut(libc::pid_t, u32)) {
     let mut info = [0u8; std::mem::size_of::<libc::signalfd_siginfo>()];
     while read(sigchld.as_raw_fd(), &mut info).is_ok_and(|n| n > 0) {}

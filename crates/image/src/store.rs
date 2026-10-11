@@ -1815,6 +1815,7 @@ impl Store {
     pub fn collect(&self) -> Result<(Collected, Whole), Error> {
         let whole = self.lease_file()?;
         whole.lock()?;
+        self.sweep_mounts()?;
         let (blobs, rootfs) = self.roots(true)?;
         let mut collected = Collected::default();
         let mut remove = |path: &Path, count: &mut u64| {

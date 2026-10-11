@@ -5833,3 +5833,35 @@ revision before comparing a changed API/implementation.
 - **Consequence.** Built (D46): each as dockerd gives it, init adding it to eth0, the daemon
   checking it in dockerd's words; members reach each other's as on dockerd's bridge, each
   network process knowing the link-local addresses of its guest and its peers.
+
+### M176. What a run's record of processes holds of short-lived processes, and what an exec's command line costs (D123)
+
+- **Question.** The record listens to the kernel's process events (cn_proc), which name a
+  process by its PIDs alone, and read the rest from /proc. How much of a shell's loop of
+  processes that end at once does it hold, and what does the guest kernel's patch, which
+  sends an exec's command line with its event (resources/kernel/patches/0002), cost an
+  exec?
+- **Method.** `docs/research/measurements/process-record/measure.sh`: in `alpine:3.22`,
+  `sh -c 'for i in $(seq 2000); do /bin/true; done'`, timed in the guest by
+  /proc/uptime (10 ms in 2000 execs, 5 µs an exec), then the run's record read
+  (`shards read processes`); 20 rounds a kernel, the pinned kernel-6.18.48-9199fc6fad00
+  and the patched kernel-6.18.48-4b8900bdffdd (the same bytes, built locally in the
+  pinned builder first), interleaved, the order turned each round; one shards-init, this
+  decision's. Apple M5 Max, macOS 26.4.1, load average 22 to 28, 2026-10-11. Before,
+  with the record as first built (each process's member read from /proc at each event),
+  the same loop of 200, three runs.
+- **Results.**
+  - As first built: of the 201 processes the shell started, 148 to 159 recorded at all;
+    of those, 33 to 38 execs without a command line. A process gone by the time its
+    event was read had no /proc to name its member, nor a command line.
+  - Each process its parent's member, as the fork's event says: every process recorded,
+    on both kernels (2003 forks, 2004 exits, every round; none lost).
+  - The pinned kernel: 1,881 to 1,992 of the 2,000 execs with their command line; 8 to
+    121 (p50 54) without, the process ended before /proc was read, its name alone said
+    where it was not yet reaped.
+  - The patched kernel: 2,000 of 2,000, every round.
+  - An exec, µs, n / p50 / p90 / p99 / max: pinned 20 / 135 / 145 / 150 / 150; patched
+    20 / 130 / 135 / 145 / 145. No cost resolved at this resolution.
+- **Consequence.** D123: members by inheritance, and each exec's command line from the
+  kernel, sent with its event by shards' guest kernel. A kernel without the patch leaves
+  /proc, read as the event is, each exec it misses said as such.

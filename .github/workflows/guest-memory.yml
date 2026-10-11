@@ -1,0 +1,45 @@
+name: Guest memory
+
+# Where a run's guest keeps its microVM's memory on x86_64 KVM, this revision against
+# M155's (088ee68d, which brought its table to dev), built and run on one runner, on three
+# runners: docs/research/measurements/guest-memory/diagnose.sh.
+on:
+  push:
+    paths:
+      - docs/research/measurements/guest-memory/**
+      - .github/workflows/guest-memory.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  TOOLCHAIN: 1.98.0 # keep in sync with rust-toolchain.toml
+
+jobs:
+  diagnose:
+    name: diagnose (${{ matrix.copy }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        copy: [a, b, c]
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Install pinned Rust
+        run: rustup toolchain install "$TOOLCHAIN" --profile minimal --target x86_64-unknown-linux-musl
+      - name: zig
+        run: scripts/install-zig
+      - name: KVM access
+        run: sudo chmod 666 /dev/kvm
+      - name: This revision
+        run: cargo build --locked -p shards --profile test-release
+      - name: M155's revision
+        run: |
+          git worktree add ../m155 088ee68d
+          cd ../m155 && cargo build --locked -p shards --profile test-release
+      - name: Diagnose
+        run: docs/research/measurements/guest-memory/diagnose.sh "$PWD/target/test-release/shards" "$(cd ../m155 && pwd)/target/test-release/shards"

@@ -1129,12 +1129,13 @@ fn a_command_is_pid_1_as_a_containers_is() {
         .unwrap()
         .as_secs()
         .to_string();
-    for (name, flags, command, timeout, quick, exit) in [
-        ("pid1", &[][..], &["sleep", "1000"][..], "2", false, "137\n"),
+    for (name, flags, command, ready, timeout, quick, exit) in [
+        ("pid1", &[][..], &["sleep", "1000"][..], None, "2", false, "137\n"),
         (
             "reaped",
             &["--init"][..],
             &["sleep", "1000"][..],
+            None,
             "10",
             true,
             "143\n",
@@ -1142,7 +1143,12 @@ fn a_command_is_pid_1_as_a_containers_is() {
         (
             "trapped",
             &[][..],
-            &["sh", "-c", "trap 'exit 7' TERM; while :; do sleep 0.1; done"][..],
+            &[
+                "sh",
+                "-c",
+                "trap 'exit 7' TERM; echo trapping; while :; do sleep 0.1; done",
+            ][..],
+            Some("trapping"),
             "10",
             true,
             "7\n",
@@ -1154,6 +1160,16 @@ fn a_command_is_pid_1_as_a_containers_is() {
         args.extend_from_slice(command);
         let started = shards(&args);
         assert_eq!(started.status, Some(0), "{started}");
+        // Its handler set before it is stopped: PID 1 of a namespace discards a signal it
+        // neither handles nor blocks (kernel/signal.c, sig_task_ignored), as a container's
+        // does under Docker, and a shell may not have run `trap` as `run -d` returns.
+        if let Some(ready) = ready {
+            let deadline = Instant::now() + TIMEOUT;
+            while !shards(&["logs", name]).stdout.contains(ready) {
+                assert!(Instant::now() < deadline, "{name} never said {ready:?}");
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
         let at = Instant::now();
         let stopped = shards(&["stop", "-t", timeout, name]);
         let took = at.elapsed();
@@ -2608,6 +2624,169 @@ fn a_runs_link_local_addresses_are_its_own_as_dockerd_gives_them() {
     assert_eq!(exit(&mut srv), Some(0));
     assert_eq!(shards(&["rm", "-f", "ll-client"]).status, Some(0));
     let _ = exit(&mut client);
+}
+
+/// A microVM's record of the processes its members start and end (D123): its command's
+/// exec, a child it forks, that child's exec and its exit code, and its own exit, each the
+/// command's, in order, read once the run has ended; 200 children, each over at once,
+/// each recorded whole; a child the run's end kills, which takes a while to end after the
+/// run's output has; an exec's processes too, followed as they come by `shards watch
+/// processes`, which ends with the run.
+#[test]
+fn a_runs_processes_are_recorded_as_they_start_and_end() {
+    use std::io::BufRead as _;
+    let Some((home, image)) = home("containers-processes") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let ran = run_in(&home, &image, &["--name", "procs"], &["spawn", "exit", "3"]);
+    assert_eq!(ran.status, Some(0), "{ran}");
+    let read = shards(&["read", "processes", "procs"]);
+    assert_eq!(read.status, Some(0), "{read}");
+    // TIME, MEMBER (the command's, one word), PID, EVENT, then what it says.
+    let rows: Vec<Vec<&str>> = read
+        .stdout
+        .lines()
+        .skip(1)
+        .map(|l| l.split_whitespace().collect())
+        .collect();
+    let said = |r: &[&str]| r.get(4..).map(|w| w.join(" ")).unwrap_or_default();
+    let at = |event: &str, says: &str| {
+        rows.iter()
+            .position(|r| r.get(1) == Some(&"command") && r.get(3) == Some(&event) && said(r) == says)
+            .unwrap_or_else(|| panic!("no {event} {says:?} in\n{}", read.stdout))
+    };
+    let (own, child) = (
+        at("exec", "/bin/testguest spawn exit 3"),
+        at("exec", "/bin/testguest exit 3"),
+    );
+    assert!(own < child, "{}", read.stdout);
+    let pid = |row: usize| rows[row][2];
+    let (parent, kid) = (pid(own), pid(child));
+    let fork = at("fork", &format!("from {parent}"));
+    assert!(pid(fork) == kid && own < fork && fork < child, "{}", read.stdout);
+    let exited = |p: &str| {
+        rows.iter()
+            .position(|r| r.get(2) == Some(&p) && r.get(3) == Some(&"exit"))
+            .unwrap_or_else(|| panic!("no exit of {p} in\n{}", read.stdout))
+    };
+    assert_eq!(said(&rows[exited(kid)]), "code 3");
+    assert_eq!(said(&rows[exited(parent)]), "code 0");
+    assert!(exited(kid) < exited(parent), "{}", read.stdout);
+    // Many, one after another, each over at once and reaped by its parent: every one
+    // recorded whole, its fork, its command line and its end, which the kernel sends with
+    // the exec's event, before the program runs (patches/0002, PM M176).
+    let burst = run_in(
+        &home,
+        &image,
+        &["--name", "burst"],
+        &["spawns", "200", "exit", "0"],
+    );
+    assert_eq!(burst.status, Some(0), "{burst}");
+    let read = shards(&["read", "processes", "burst"]);
+    assert_eq!(read.status, Some(0), "{read}");
+    let rows: Vec<Vec<&str>> = read
+        .stdout
+        .lines()
+        .skip(1)
+        .map(|l| l.split_whitespace().collect())
+        .collect();
+    let has = |pid: &str, event: &str, says: &str| {
+        rows.iter()
+            .any(|r| r.get(2) == Some(&pid) && r.get(3) == Some(&event) && said(r) == says)
+    };
+    let spawner = rows
+        .iter()
+        .find(|r| r.get(3) == Some(&"exec") && said(r) == "/bin/testguest spawns 200 exit 0")
+        .and_then(|r| r.get(2))
+        .unwrap_or_else(|| panic!("no spawner in\n{}", read.stdout));
+    for i in 0..200 {
+        let pid = rows
+            .iter()
+            .find(|r| r.get(3) == Some(&"exec") && said(r) == format!("/bin/testguest exit 0 {i}"))
+            .and_then(|r| r.get(2))
+            .unwrap_or_else(|| panic!("no exec of round {i} in\n{}", read.stdout));
+        assert!(
+            has(pid, "fork", &format!("from {spawner}")),
+            "round {i}:\n{}",
+            read.stdout
+        );
+        assert!(has(pid, "exit", "code 0"), "round {i}:\n{}", read.stdout);
+    }
+    assert!(has(spawner, "exit", "code 0"), "{}", read.stdout);
+    // A process the run's end kills after its command and output have ended, whose end
+    // takes freeing what it holds: recorded too, as the run's record waits for it. In the
+    // microVM's PID namespace, as `--pid host` leaves it: the end of a namespace's first
+    // process waits for the rest of it (kernel/pid_namespace.c, zap_pid_ns_processes).
+    let held = run_in(
+        &home,
+        &image,
+        &["--name", "heavy", "-m", "1g", "--pid", "host"],
+        &["heavy", "256"],
+    );
+    assert_eq!(held.status, Some(0), "{held}");
+    let read = shards(&["read", "processes", "heavy"]);
+    assert_eq!(read.status, Some(0), "{read}");
+    let rows: Vec<Vec<&str>> = read
+        .stdout
+        .lines()
+        .skip(1)
+        .map(|l| l.split_whitespace().collect())
+        .collect();
+    let row = |event: &str, says: &str| {
+        rows.iter()
+            .find(|r| r.get(3) == Some(&event) && said(r) == says)
+            .and_then(|r| r.get(2))
+            .unwrap_or_else(|| panic!("no {event} {says:?} in\n{}", read.stdout))
+    };
+    let child = row(
+        "fork",
+        &format!("from {}", row("exec", "/bin/testguest heavy 256")),
+    );
+    assert!(
+        rows.iter()
+            .any(|r| r.get(2) == Some(child) && r.get(3) == Some(&"exit") && said(r) == "signal 9 (SIGKILL)"),
+        "{}",
+        read.stdout
+    );
+    // Followed: an exec's, as it comes; the follow ends with the run.
+    let mut c = start(&home, &image, &["--name", "watched"], &["sleep"]);
+    let mut watcher = common::command()
+        .args(["watch", "processes", "watched"])
+        .env("SHARDS_HOME", &*home)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let out = watcher.stdout.take().unwrap();
+    std::thread::spawn(move || {
+        for line in BufReader::new(out).lines().map_while(Result::ok) {
+            let _ = tx.send(line);
+        }
+    });
+    let execed = shards(&["exec", "watched", "/bin/testguest", "exit", "4"]);
+    assert_eq!(execed.status, Some(4), "{execed}");
+    let deadline = Instant::now() + TIMEOUT;
+    let mut seen = Vec::new();
+    while !seen
+        .iter()
+        .any(|l: &String| l.contains(" exit ") && l.ends_with(" code 4"))
+    {
+        let left = deadline.saturating_duration_since(Instant::now());
+        match rx.recv_timeout(left) {
+            Ok(line) => seen.push(line),
+            Err(_) => panic!("the exec's exit not followed: {seen:#?}"),
+        }
+    }
+    assert!(
+        seen.iter()
+            .any(|l| l.contains(" exec ") && l.ends_with("/bin/testguest exit 4")),
+        "{seen:#?}"
+    );
+    assert_eq!(shards(&["rm", "-f", "watched"]).status, Some(0));
+    assert!(exit(&mut watcher).is_some(), "the follow ended with the run");
+    let _ = exit(&mut c);
 }
 
 /// A container given CAP_SYS_ADMIN mounts nothing, as Docker's default AppArmor profile
