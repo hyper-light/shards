@@ -2,7 +2,7 @@
 //! inside an image by shards-init (crates/shards/tests/run.rs).
 
 use std::io::{self, Read, Write};
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
 use shards_testguest::fill;
 
@@ -134,6 +134,12 @@ pub fn main() -> ! {
         // An SBOM generator, as BuildKit's protocol runs one (D81).
         "sbomscan" => sbom_scan(),
         "await" => await_process(arg(1), arg(2).parse().unwrap_or(1), arg(3)),
+        // `await`, `arg(1)` ms late, as a command slow to start under load is: the host must
+        // not signal it before it waits (`run_watching`).
+        "await-late" => {
+            std::thread::sleep(std::time::Duration::from_millis(arg(1).parse().unwrap_or(0)));
+            await_process("late", 1, "")
+        }
         // A workload's own Unix sockets, open to anyone: a pathname one at arg 1, mode
         // 0777, and an abstract one named arg 2; held while it awaits arg 3's processes.
         "unix-listen" => {
@@ -2874,22 +2880,42 @@ fn offered_command(json: &str, name: &str) -> Option<Vec<String>> {
     }
 }
 
+/// Set by SIGUSR1's handler: the host's go-ahead came before [`await_process`] blocked it.
+static GONE_AHEAD: AtomicBool = AtomicBool::new(false);
+
+extern "C" fn go_ahead(_: libc::c_int) {
+    GONE_AHEAD.store(true, Ordering::SeqCst);
+}
+
 /// Waits for the host's go-ahead, SIGUSR1, which it sends once `count` of the microVM's
 /// processes are named `name` (`shards top`; the workload sees none of its agents', its
 /// PID namespace being its own, D115), none for a count of 0; then, where an address is
 /// given, says whether this process reaches it, in 3 s. A minute without one is a timeout.
+/// The signal is caught first, which the host waits to see (`shards top -o caught`): a
+/// process that neither handles nor blocks it would lose it as its PID namespace's first
+/// (kernel/signal.c, `sig_task_ignored`); then blocked and waited for, unless it came
+/// between the two.
 fn await_process(name: &str, count: usize, then: &str) -> i32 {
-    // SAFETY: a signal set of our own, SIGUSR1 blocked, then waited for, a minute at most.
+    // SAFETY: sigaction(2) of a handler that only stores to an atomic, async-signal-safe;
+    // a signal set of our own, SIGUSR1 blocked, then waited for, a minute at most.
     let got = (count > 0).then(|| unsafe {
+        let mut act: libc::sigaction = std::mem::zeroed();
+        act.sa_sigaction = go_ahead as extern "C" fn(libc::c_int) as libc::sighandler_t;
+        libc::sigemptyset(&mut act.sa_mask);
+        libc::sigaction(libc::SIGUSR1, &act, std::ptr::null_mut());
         let mut set: libc::sigset_t = std::mem::zeroed();
         libc::sigemptyset(&mut set);
         libc::sigaddset(&mut set, libc::SIGUSR1);
         libc::sigprocmask(libc::SIG_BLOCK, &set, std::ptr::null_mut());
-        let minute = libc::timespec {
-            tv_sec: 60,
-            tv_nsec: 0,
-        };
-        libc::sigtimedwait(&set, std::ptr::null_mut(), &minute)
+        if GONE_AHEAD.load(Ordering::SeqCst) {
+            libc::SIGUSR1
+        } else {
+            let minute = libc::timespec {
+                tv_sec: 60,
+                tv_nsec: 0,
+            };
+            libc::sigtimedwait(&set, std::ptr::null_mut(), &minute)
+        }
     });
     if got.is_some_and(|s| s != libc::SIGUSR1) {
         let _ = writeln!(io::stdout(), "await timeout {name}");

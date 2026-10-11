@@ -934,7 +934,7 @@ mod tests {
 
     /// [`fake`], whose CDN holds `hold`'s blob until its condition holds (or 10 s pass).
     fn fake_holding(image: Image, hold: Hold) -> Fake {
-        fake_with(image, None, 0, None, Some(hold))
+        fake_with(image, None, 0, None, b"", Some(hold))
     }
 
     fn fake_throttling(
@@ -943,16 +943,23 @@ mod tests {
         throttles: usize,
         retry_after: Option<&'static str>,
     ) -> Fake {
-        fake_with(image, cut, throttles, retry_after, None)
+        fake_with(image, cut, throttles, retry_after, b"", None)
     }
 
     /// [`fake`], whose registry first answers `throttles` of its `/v2/` requests with a
-    /// 429, and `retry_after` if there is one.
+    /// 429 that says `said`.
+    fn fake_saying(image: Image, throttles: usize, said: &'static [u8]) -> Fake {
+        fake_with(image, None, throttles, None, said, None)
+    }
+
+    /// [`fake`], whose registry first answers `throttles` of its `/v2/` requests with a
+    /// 429, and `retry_after` if there is one, its body `said`.
     fn fake_with(
         image: Image,
         cut: Option<String>,
         throttles: usize,
         retry_after: Option<&'static str>,
+        said: &'static [u8],
         hold: Option<Hold>,
     ) -> Fake {
         let throttled = AtomicUsize::new(0);
@@ -1012,7 +1019,7 @@ mod tests {
                     .map(|a| ("Retry-After", a.to_string()))
                     .into_iter()
                     .collect();
-                return Some((http("429 Too Many Requests", &fields, b""), After::Keep));
+                return Some((http("429 Too Many Requests", &fields, said), After::Keep));
             }
             if path == "/token" {
                 let token = format!(r#"{{"token":"{TOKEN}","expires_in":300}}"#);
@@ -1485,6 +1492,35 @@ mod tests {
             let registry = Registry::new(client(), &reference, Credentials::Anonymous).unwrap();
             let got = pull(&registry, &store, &reference, &arm64(), &Limits::none(), &|_| {});
             assert_eq!(got.is_ok(), pulled, "{retry_after:?}: {got:?}");
+            let _ = std::fs::remove_dir_all(&root);
+        }
+    }
+
+    /// A registry naming a window of a minute or less for its allowance, as ghcr.io's
+    /// refusals do, is waited out within it past the schedule; one counting over an hour
+    /// is not, nor one naming none, and its refusal still says what the registry said
+    /// (D131, PM M191).
+    #[test]
+    fn a_throttle_named_for_a_short_window_is_waited_out_within_it() {
+        const GHCR: &str = r#"{"errors":[{"code":"TOOMANYREQUESTS","message":"retry-after: 301.718µs, allowed: 44000/minute"}]}"#;
+        const HOURLY: &str = r#"{"errors":[{"code":"TOOMANYREQUESTS","message":"allowed: 100/hour"}]}"#;
+        // One more throttle than the schedule waits out.
+        let throttles = crate::registry::THROTTLED.len() + 1;
+        for (said, pulled) in [(GHCR, true), (HOURLY, false), ("", false)] {
+            let image = image("arm64", &[("a", b"a")], true);
+            let fake = fake_saying(image, throttles, said.as_bytes());
+            let reference =
+                Reference::parse(&format!("127.0.0.1:{}/test/image:v1", fake.registry.port)).unwrap();
+            let root = temp("windowed");
+            let store = Store::open(&root).unwrap();
+            let registry = Registry::new(client(), &reference, Credentials::Anonymous).unwrap();
+            let got = pull(&registry, &store, &reference, &arm64(), &Limits::none(), &|_| {});
+            assert_eq!(got.is_ok(), pulled, "{said:?}: {got:?}");
+            if let Err(e) = got
+                && !said.is_empty()
+            {
+                assert!(e.to_string().contains("allowed: 100/hour"), "{e}");
+            }
             let _ = std::fs::remove_dir_all(&root);
         }
     }

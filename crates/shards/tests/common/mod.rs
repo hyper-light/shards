@@ -753,6 +753,14 @@ pub fn run_shards_env<S: AsRef<std::ffi::OsStr>>(
 /// -o fields`, each process a row of its columns, until `ready` says of the rows that it
 /// is, and then sends the command the signal. What the run said, as [`run_shards_env`]
 /// says it.
+///
+/// The signal goes once the command catches it, as `top` shows (`caught`): without
+/// `--init` the command is its PID namespace's first process, of which the kernel drops a
+/// signal it neither handles nor blocks (kernel/signal.c, `sig_task_ignored`), and with it
+/// the reaper passes it on to a command that it would end. (`blocked` cannot say: the
+/// kernel takes a signal waited for out of the blocked set while it waits, into
+/// `real_blocked`.) `ready`, once it says so, is asked no more: what it kept of the rows
+/// is of that moment.
 pub fn run_watching(
     env: &[(&str, &std::ffi::OsStr)],
     args: &[&str],
@@ -762,13 +770,15 @@ pub fn run_watching(
     timeout: Duration,
 ) -> Run {
     // `shards top`'s table needs a `pid` column to key its rows (procps ps), so every
-    // field list leads with it; a row is pid, then the fields asked.
-    let with_pid = format!("pid,{fields}");
+    // field list leads with it; then the caught signals and the name, which say whether
+    // the command awaits; a row is those, then the fields asked.
+    let with_pid = format!("pid,caught,comm,{fields}");
     let start = Instant::now();
     std::thread::scope(|scope| {
         let ran = scope.spawn(|| run_shards_env(&[], args, env, timeout));
         let mut last = String::new();
         let mut signalled = false;
+        let mut was_ready = false;
         while !ran.is_finished() && start.elapsed() < timeout {
             let top = run_shards_env(
                 &["top"],
@@ -776,14 +786,24 @@ pub fn run_watching(
                 env,
                 Duration::from_secs(30),
             );
-            // The pid column dropped: each row is its fields, in the order asked.
-            let rows: Vec<Vec<String>> = top
+            let all: Vec<Vec<String>> = top
                 .stdout
                 .lines()
                 .skip(1)
                 .map(|l| l.split_whitespace().skip(1).map(str::to_string).collect())
                 .collect();
-            if top.status == Some(0) && ready(&rows) {
+            // The test guest awaiting: SIGUSR1 (10) among the signals it catches, the mask
+            // in hex (`<` before its low 32 bits where higher ones are set too).
+            let awaiting = all.iter().any(|r| {
+                r.get(1).is_some_and(|c| c == "testguest")
+                    && r.first()
+                        .and_then(|m| u64::from_str_radix(m.trim_start_matches('<'), 16).ok())
+                        .is_some_and(|m| (m & (1 << (10 - 1))) != 0)
+            });
+            // Each row its fields, in the order asked.
+            let rows: Vec<Vec<String>> = all.into_iter().map(|r| r.into_iter().skip(2).collect()).collect();
+            was_ready = was_ready || (top.status == Some(0) && ready(&rows));
+            if was_ready && awaiting {
                 let sent = run_shards_env(
                     &["kill"],
                     &["-s", "USR1", container],
@@ -797,7 +817,7 @@ pub fn run_watching(
             // What the host last saw, for a handshake that never completes (libtest shows
             // a test's output only when it fails).
             last = format!(
-                "top status={:?} rows={rows:?} stderr={:?}",
+                "top status={:?} ready={was_ready} awaiting={awaiting} rows={rows:?} stderr={:?}",
                 top.status,
                 top.stderr.trim()
             );

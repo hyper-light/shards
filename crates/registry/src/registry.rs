@@ -28,13 +28,19 @@ const PAUSE: Duration = Duration::from_millis(50);
 /// then 100, 200, 400 and 800, each a random share of it. ECR Public throttles
 /// anonymous requests at random, at 1 a second already, and less the slower they come
 /// (PM M112): containerd asks again at once, five times, and a pull's burst still fails.
-const THROTTLED: [Duration; 5] = [
+pub(crate) const THROTTLED: [Duration; 5] = [
     Duration::from_millis(50),
     Duration::from_millis(100),
     Duration::from_millis(200),
     Duration::from_millis(400),
     Duration::from_millis(800),
 ];
+/// What a wait grows to past [`THROTTLED`], doubling, where the registry names the window
+/// its allowance is counted over ([`allowance_window`]): the most of each wait after.
+const THROTTLED_MOST: Duration = Duration::from_millis(6400);
+/// The longest window a throttle is waited out within: an allowance counted over longer
+/// (Docker Hub's, over six hours) is a quota spent, not a moment's crowd.
+const WINDOW_MOST: Duration = Duration::from_secs(60);
 /// What resolving accepts, in containerd's order (resolver.go:170-178).
 const RESOLVE_ACCEPT: &str = "application/vnd.docker.distribution.manifest.v2+json, \
      application/vnd.docker.distribution.manifest.list.v2+json, \
@@ -319,8 +325,10 @@ impl Registry {
     /// - 408 is tried again, and 500, 503 or 504 once, unless it repeats.
     ///
     /// A 429 is tried again, as containerd tries it, but after a wait ([`throttle`]), and
-    /// never for a quota spent: Docker Hub counts pulls over hours (§3.2). Returns the
-    /// response and the method that got it.
+    /// never for a quota spent: Docker Hub counts pulls over hours (§3.2). Where the
+    /// registry names a window of a minute or less that its allowance is counted over, it
+    /// is waited out within that window (D131). Returns the response and the method that
+    /// got it.
     pub(crate) fn request<'a>(
         &self,
         method: &'a str,
@@ -343,6 +351,7 @@ impl Registry {
         let mut last: Option<u16> = None;
         let mut attempt = 0;
         let mut throttled = 0;
+        let mut waited = Duration::ZERO;
         loop {
             attempt += 1;
             // The registry's own host, once it answered HTTPS in plain HTTP, is asked so.
@@ -396,17 +405,29 @@ impl Registry {
                     true
                 }
                 408 => true,
-                429 => match throttle(&response, throttled) {
-                    Some(wait) => {
-                        // Not an attempt: the registry asked for patience, not a repair.
-                        throttled += 1;
-                        attempt -= 1;
-                        let _ = io::copy(&mut (&mut response).take(2 << 10), &mut io::sink());
-                        std::thread::sleep(wait);
-                        continue;
+                429 => {
+                    // What the registry says of it, read ahead: a refusal passed on still
+                    // says it.
+                    let said = response.peek(2 << 10).map(<[u8]>::to_vec).unwrap_or_default();
+                    match throttle(&response, &said, throttled, waited) {
+                        Some(wait) => {
+                            // Not an attempt: the registry asked for patience, not a repair.
+                            throttled += 1;
+                            waited += wait;
+                            attempt -= 1;
+                            // A HEAD's refusal says nothing: a manifest's is asked again as
+                            // a GET, whose refusal says how long the throttle may last, as
+                            // containerd asks a refused HEAD's body with a GET.
+                            if method == "HEAD" && url.target().contains("/manifests/") {
+                                method = "GET";
+                            }
+                            let _ = io::copy(&mut (&mut response).take(2 << 10), &mut io::sink());
+                            std::thread::sleep(wait);
+                            continue;
+                        }
+                        None => false,
                     }
-                    None => false,
-                },
+                }
                 500 | 503 | 504 => !repeated,
                 _ => false,
             };
@@ -1110,14 +1131,29 @@ fn dockerd(status: u16, body: &[u8]) -> Said {
 /// up: a `Retry-After` longer than the waits left is never waited out, nor a quota spent
 /// (Docker Hub's `ratelimit-remaining` at 0, its window hours long) that names no wait
 /// that fits; a throttle is.
-fn throttle(response: &Response, n: usize) -> Option<Duration> {
-    let most = *THROTTLED.get(n)?;
-    let left: Duration = THROTTLED.iter().skip(n).sum();
+fn throttle(response: &Response, said: &[u8], n: usize, waited: Duration) -> Option<Duration> {
+    // A window of a minute or less named for the allowance: a crowd's throttle, over by the
+    // window's end, so waited out within it, the waits doubling past the schedule. ghcr.io
+    // throttled CI's pulls past the schedule's 1.55 s, naming `allowed: 44000/minute`
+    // (PM M191).
+    let window = allowance_window(response, said).filter(|w| *w <= WINDOW_MOST);
+    let most = match (THROTTLED.get(n), window) {
+        (Some(most), _) => *most,
+        (None, Some(_)) => {
+            let past = u32::try_from(n + 1 - THROTTLED.len()).unwrap_or(u32::MAX).min(16);
+            THROTTLED_MOST.min(Duration::from_millis(800u64.saturating_mul(1 << past)))
+        }
+        (None, None) => return None,
+    };
+    let left = match window {
+        Some(w) => w.saturating_sub(waited),
+        None => THROTTLED.iter().skip(n).sum(),
+    };
     // Full jitter: a share of the most, at random, so a pull's requests do not come back
     // together; at least that, however little the registry names, as `Retry-After` is how
     // long a client ought to wait (RFC 9110 §10.2.3): ghcr.io named under a millisecond in
     // a 429's body (`retry-after: 900.208µs`), and a pull failed on it.
-    let share = most.mul_f64(jitter());
+    let share = most.mul_f64(jitter()).min(left);
     match response.header("retry-after").map(|v| v.trim().parse::<u64>()) {
         // The wait it names, where the waits left hold it, a quota spent or not: it says
         // when.
@@ -1125,15 +1161,43 @@ fn throttle(response: &Response, n: usize) -> Option<Duration> {
             .filter(|d| *d <= left)
             .map(|d| d.max(share)),
         // None named, an HTTP date or nothing readable: waited as one naming no wait,
-        // but a quota spent.
+        // but a quota spent, unless the window it is spent in is the short one named.
         _ => {
-            let spent = response
-                .header("ratelimit-remaining")
-                .and_then(|v| v.split(';').next())
-                .is_some_and(|left| left.trim() == "0");
-            (!spent).then_some(share)
+            let spent = window.is_none()
+                && response
+                    .header("ratelimit-remaining")
+                    .and_then(|v| v.split(';').next())
+                    .is_some_and(|left| left.trim() == "0");
+            (!spent && !left.is_zero()).then_some(share)
         }
     }
+}
+
+/// The window a throttling registry counts its allowance over, where it names one: the
+/// `w` of its `RateLimit-Limit` field (`100;w=21600`, Docker Hub's, in seconds), or its
+/// refusal's words, `allowed: N/second` (or `minute`, `hour`, `day`), as ghcr.io's say it
+/// (`retry-after: 301.718µs, allowed: 44000/minute`).
+fn allowance_window(response: &Response, said: &[u8]) -> Option<Duration> {
+    if let Some(w) = response
+        .header("ratelimit-limit")
+        .and_then(|v| v.split(';').find_map(|p| p.trim().strip_prefix("w=")))
+        .and_then(|w| w.trim().parse::<u64>().ok())
+    {
+        return Some(Duration::from_secs(w));
+    }
+    let text = String::from_utf8_lossy(said);
+    let rest = text.split("allowed: ").nth(1)?;
+    let (count, unit) = rest.split_once('/')?;
+    count.trim().parse::<u64>().ok()?;
+    let unit: String = unit.chars().take_while(char::is_ascii_alphabetic).collect();
+    let secs = match unit.as_str() {
+        "second" => 1,
+        "minute" => 60,
+        "hour" => 3600,
+        "day" => 86400,
+        _ => return None,
+    };
+    Some(Duration::from_secs(secs))
 }
 
 /// A number in [0, 1), from the process's random hash keys and the time.

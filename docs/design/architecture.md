@@ -675,7 +675,9 @@ A pull resolves, fetches and checks as containerd v2.4.1 does
     and one that cannot be read is waited as none: ghcr.io named under a millisecond in a
     429's body (`retry-after: 900.208µs`), and a pull failed on it, where before a
     `Retry-After` of 0 was waited not at all and an unreadable one was given up on
-    (`throttles_are_waited_out_and_long_waits_are_not`, mutation-checked).
+    (`throttles_are_waited_out_and_long_waits_are_not`, mutation-checked). Where the
+    registry names a window of a minute or less for its allowance, the throttle is waited
+    out within it (D131).
 - **Resolve** follows containerd's `Resolve`:
   - a HEAD of the tag or digest with its `Accept` list;
   - the digest comes from the reference, else from `Docker-Content-Digest` with a
@@ -3534,6 +3536,37 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 2026-10-07): every path between domains is a grant, and the build refuses any that joins
 an internal-only domain to the world (D58), so there is no data to label. Code mode
 waits on the user.
+
+### D131. A throttle waited out within the window the registry names
+
+CI's pulls from ghcr.io failed on a throttle that outlasted shards' waits (PM M191). The
+waits, up to 50, 100, 200, 400 and 800 ms, a random share of each, were chosen for ECR
+Public's random throttling (PM M112). ghcr.io says more: its 429 names the window its
+allowance is counted over, `retry-after: 301.718µs, allowed: 44000/minute`. A throttle
+counted over a minute is a crowd's, and ends within that minute.
+
+- **Waited out within the window.** Where the registry names a window of a minute or
+  less, a 429 is waited out within it. The window comes from `allowed: N/second` (or
+  `minute`) in its refusal, or from the `w` of its `RateLimit-Limit` field. The waits go
+  on past the schedule, doubling to 6.4 s each, a random share of each, until the
+  window is spent. Within such a window, `ratelimit-remaining: 0` is a crowd's, not a
+  quota spent.
+- **A quota counted over longer is still not waited for**, unless `Retry-After` says
+  when: Docker Hub counts pulls over six hours (`w=21600`), and an hour's or a day's
+  allowance is a quota alike.
+- **A HEAD's refusal says nothing.** A throttled manifest HEAD is asked again as a GET,
+  whose refusal names the window, as containerd asks for a refused HEAD's body with a GET
+  (405, and 403's `withGETErrorBody`). A blob's HEAD keeps its method, since a GET would
+  fetch the blob.
+- **What the registry said stays said.** The client reads a 429's body ahead
+  (`Response::peek`), so a refusal passed on still carries the registry's words.
+- **Unlike Docker, recorded:** dockerd gives up on TOOMANYREQUESTS at once
+  (`retryOnError` marks it `DoNotRetry`, moby v29 daemon/internal/distribution), and
+  containerd asks again at once, five times.
+- **Tested:** `a_throttle_named_for_a_short_window_is_waited_out_within_it` (registry
+  pull): six throttles, one past the schedule, pulled under a minute's window, and not
+  under an hour's or where none is named. The refusal still says the registry's words.
+  Mutation-checked: the window, its one-minute bound, the GET and the read-ahead.
 
 ### D130. Frontend inputs, as docker/dockerfile:1.27.1 reads them
 

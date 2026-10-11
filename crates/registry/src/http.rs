@@ -227,6 +227,16 @@ pub struct Response<'c> {
     url: Url,
     headers: Vec<(String, String)>,
     body: Body<'c>,
+    ahead: Ahead,
+}
+
+/// The body's first bytes, read ahead ([`Response::peek`]): reads give them before the
+/// rest. `given`, how many a read has given; `past`, whether a read has gone past them.
+#[derive(Debug, Default)]
+struct Ahead {
+    bytes: Vec<u8>,
+    given: usize,
+    past: bool,
 }
 
 impl Response<'_> {
@@ -270,10 +280,47 @@ impl Response<'_> {
             .filter(move |(n, _)| n.eq_ignore_ascii_case(name))
             .map(|(_, v)| v.as_str())
     }
+
+    /// Up to `most` bytes of the body from its start, read ahead of any read and kept, so
+    /// that reads still give them: what a refusal says, looked at before it is passed on.
+    /// Fewer where the body ends sooner; none once a read has begun it.
+    pub fn peek(&mut self, most: usize) -> io::Result<&[u8]> {
+        let a = &mut self.ahead;
+        if a.given == 0 && !a.past {
+            let mut chunk = [0u8; 512];
+            while a.bytes.len() < most {
+                let want = (most - a.bytes.len()).min(chunk.len());
+                let n = match chunk.get_mut(..want) {
+                    Some(buf) => self.body.read(buf)?,
+                    None => 0,
+                };
+                if n == 0 {
+                    break;
+                }
+                a.bytes.extend_from_slice(chunk.get(..n).unwrap_or_default());
+            }
+        }
+        if a.given > 0 || a.past {
+            return Ok(&[]);
+        }
+        Ok(&a.bytes)
+    }
 }
 
 impl Read for Response<'_> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let a = &mut self.ahead;
+        if let Some(left) = a.bytes.get(a.given..)
+            && !left.is_empty()
+        {
+            let n = left.len().min(buf.len());
+            if let (Some(to), Some(from)) = (buf.get_mut(..n), left.get(..n)) {
+                to.copy_from_slice(from);
+            }
+            a.given += n;
+            return Ok(n);
+        }
+        a.past = true;
         self.body.read(buf)
     }
 }
@@ -529,6 +576,7 @@ impl Client {
             url: req.url.clone(),
             headers,
             body,
+            ahead: Ahead::default(),
         })
     }
 

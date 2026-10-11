@@ -9242,6 +9242,34 @@ fn an_agent_reaches_no_socket_of_the_runs_own() {
     );
 }
 
+/// The host signals a run's awaiting command only once it waits (`run_watching`): a
+/// command slow to block the signal, as one starting under load is, is its PID namespace's
+/// first process, which loses a signal it neither handles nor blocks (kernel/signal.c,
+/// `sig_task_ignored`) and would then wait a minute for nothing. Here what the host waits
+/// for holds from its first look, and the command blocks the signal 3 s after it starts.
+#[test]
+fn an_awaiting_command_is_signalled_once_it_waits() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("late-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let ran = common::run_watching(
+        &env,
+        &["run", "--rm", "--name", "aw-late", &image, "await-late", "3000"],
+        "aw-late",
+        "comm",
+        &mut |_| true,
+        TIMEOUT,
+    );
+    assert_eq!(ran.status, Some(0), "{}{}", ran.stdout, ran.stderr);
+}
+
 /// Agents filling their memory, scratch included, end whole and never take the run's own
 /// command's (D59): x alone, at the limit its config asks (`asks.memory`, 64 MiB); y, asking
 /// none, at what the domains together may take, the memory the microVM has as they start

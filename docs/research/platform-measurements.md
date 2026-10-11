@@ -6407,3 +6407,40 @@ revision before comparing a changed API/implementation.
     and the 27 before them, unchanged by what D130 changed in the LLB writer (metadata,
     capabilities, source maps).
 - **Consequence.** D130. The harness gains `bake`, `repo` and `env` case files.
+
+### M191. Two CI failures of dev b753f6e4: a dropped go-ahead and a throttle outlasting the waits
+
+- **Question.** CI run 38168340510 (dev b753f6e4, 2026-10-11) failed two tests, each of
+  which had passed before. What failed, at the root?
+- **Method.** The jobs' logs (`gh api …/jobs/ID/logs`, colours stripped). Then the
+  failure was made to happen at will, and the fixes were mutation-checked against it.
+- **Results.**
+  - **`agents_out_of_memory_end_whole_and_spare_the_run` (x86_64 glibc): the host's
+    SIGUSR1 was dropped.** The run's command (`outlive 64`) waited out its minute
+    (`await timeout filling`), although agent y filled 60 MiB and was ended, and the host
+    signalled it (`run_watching` printed no "never ready").
+    - Without `--init` the command is the first process of its PID namespace. The kernel
+      drops a signal sent to such a process that neither handles nor blocks it
+      (kernel/signal.c, `sig_task_ignored`: SIGNAL_UNKILLABLE).
+    - `outlive` blocked SIGUSR1 only after taking its 64 MiB. In a microVM of 128 MiB,
+      with y filling, that took longer than y's filling and ending. The go-ahead arrived
+      first and was dropped.
+    - Made to happen at will: `await-late 3000`, a command that waits 3 s before it
+      awaits, watched with a condition true from the first look. With the old handshake
+      it timed out every time.
+    - `top`'s `blocked` cannot say when a command waits. The kernel takes the signals
+      waited for out of the blocked set while `sigtimedwait` waits (into `real_blocked`),
+      so SigBlk read 0000000000000000 as the command waited.
+    - **Fixed:** the test guest catches SIGUSR1 first (a handler that sets a flag),
+      then blocks it, checks the flag and waits. The host signals only once `top`'s
+      `caught` shows SIGUSR1 for a `testguest` process, and asks its condition no more
+      once it has held. `an_awaiting_command_is_signalled_once_it_waits` passes, and
+      fails with the old handshake (mutation-checked).
+  - **`an_s6_overlay_image_runs_as_pid_1` (x86_64 musl): ghcr.io throttled past the
+    waits.** The pull of `ghcr.io/linuxserver/baseimage-alpine` failed after 4.4 s:
+    "error from registry: retry-after: 301.718µs, allowed: 44000/minute". The waits
+    allowed at most 1.55 s in all (PM M112's schedule). Docker would have failed sooner:
+    dockerd gives up on TOOMANYREQUESTS at once, and containerd asks again at once.
+    **Fixed** by D131: such a throttle is waited out within the minute it names.
+- **Consequence.** D131, and the handshake of `common::run_watching` and the test guest's
+  `await`.
