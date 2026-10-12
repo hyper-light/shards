@@ -8,6 +8,9 @@
 //! - what WSAPoll reports of one: before data, with data, after the peer's half-close and
 //!   close, and writability as its send buffer fills and drains;
 //! - scatter-gather through WSASend and WSARecv;
+//! - what WSAEventSelect records of one: FD_WRITE as associated and after a send refused
+//!   for want of room, FD_READ, FD_CLOSE on the peer's half-close, and whether a wait to
+//!   write on a half-closed socket waits rather than wakes at once;
 //! - a socket's inheritance into a child process, which writes through it;
 //! - throughput (1 GiB in 64 KiB writes) and a one-byte round trip's latency, beside
 //!   loopback TCP's.
@@ -197,6 +200,90 @@ fn polled(s: SOCKET) -> String {
     format!("n={n} revents={:#x} [{}]", fd.revents, names.join("|"))
 }
 
+/// What WSAEventSelect recorded for `s` within `ms` milliseconds: the event reset, then
+/// the socket's network events read (and cleared).
+fn events(s: SOCKET, ev: WSAEVENT, ms: u32) -> String {
+    let handle = ev as windows_sys::Win32::Foundation::HANDLE;
+    // SAFETY: one event handle of ours.
+    let waited = unsafe { WSAWaitForMultipleEvents(1, &raw const handle, 0, ms, 0) };
+    if waited == WSA_WAIT_TIMEOUT {
+        return "timeout".into();
+    }
+    // SAFETY: as above.
+    unsafe { WSAResetEvent(ev) };
+    let mut ne = WSANETWORKEVENTS::default();
+    // SAFETY: a socket of ours, its events read into `ne`; the event already reset.
+    if unsafe { WSAEnumNetworkEvents(s, 0, &raw mut ne) } != 0 {
+        return error("WSAEnumNetworkEvents");
+    }
+    let names: Vec<&str> = [(FD_READ, "READ"), (FD_WRITE, "WRITE"), (FD_CLOSE, "CLOSE")]
+        .iter()
+        .filter(|(b, _)| ne.lNetworkEvents as u32 & *b != 0)
+        .map(|(_, n)| *n)
+        .collect();
+    format!("[{}]", names.join("|"))
+}
+
+/// Fills `s`'s send buffer until a send is refused for want of room.
+fn fill(s: SOCKET) -> usize {
+    let chunk = [5u8; 4096];
+    let mut filled = 0usize;
+    while filled < 256 << 20 {
+        // SAFETY: 4096 bytes of `chunk`.
+        let n = unsafe { send(s, chunk.as_ptr(), chunk.len() as i32, 0) };
+        if n <= 0 {
+            break;
+        }
+        filled += n as usize;
+    }
+    filled
+}
+
+fn drain(s: SOCKET, mut left: usize) -> Result<(), String> {
+    let mut sink = vec![0u8; 1 << 20];
+    while left > 0 {
+        let n = recv_some(s, &mut sink)?;
+        if n == 0 {
+            break;
+        }
+        left = left.saturating_sub(n);
+    }
+    Ok(())
+}
+
+fn event_select(dir: &std::path::Path) -> Result<(), String> {
+    let (a, b) = unix_pair(dir, PAIRS + 10)?;
+    // SAFETY: no arguments.
+    let ev = unsafe { WSACreateEvent() };
+    // SAFETY: a socket and an event of ours.
+    if unsafe { WSAEventSelect(b, ev, (FD_READ | FD_WRITE | FD_CLOSE) as i32) } != 0 {
+        return Err(error("WSAEventSelect"));
+    }
+    println!("select associated: {}", events(b, ev, 0));
+    send_all(a, b"x")?;
+    println!("select data: {}", events(b, ev, 1000));
+    let mut one = [0u8; 1];
+    let _ = recv_some(b, &mut one)?;
+    let filled = fill(b);
+    println!("select full ({filled} bytes): {}", events(b, ev, 100));
+    drain(a, filled)?;
+    println!("select drained: {}", events(b, ev, 1000));
+    // SAFETY: our own socket.
+    unsafe { shutdown(a, SD_SEND) };
+    println!("select peer half-closed: {}", events(b, ev, 1000));
+    let eof = recv_some(b, &mut one)?;
+    let filled = fill(b);
+    println!(
+        "select full after end-of-stream (read {eof}, {filled} bytes): {}",
+        events(b, ev, 100)
+    );
+    drain(a, filled)?;
+    println!("select drained after end-of-stream: {}", events(b, ev, 1000));
+    close(a);
+    close(b);
+    Ok(())
+}
+
 fn summary(v: &mut [Duration]) -> String {
     v.sort();
     let n = v.len();
@@ -376,6 +463,7 @@ fn probe() -> Result<(), String> {
     );
     close(a);
     close(b);
+    event_select(&dir)?;
     // Inheritance: the child writes through an inherited socket.
     let (a, b) = unix_pair(&dir, PAIRS + 4)?;
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
