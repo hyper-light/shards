@@ -272,14 +272,16 @@ pub fn reap(net: &shards_ipc::Child) {
 }
 
 /// The VM's side of its network (Windows, D142): the ring and its two doorbells, handed
-/// to the VM process by name ([`VmSide::given`]). No ports are published there yet, a
-/// daemon's, so it has no control nor release, as a builder's on Unix uses neither.
+/// to the VM process by name ([`VmSide::given`], [`VmSide::shared`]): the event it sleeps
+/// on, and the AF_UNIX socket it rings its network process by, which that process waits on
+/// with its sockets (PM M213). No ports are published there yet, a daemon's, so it has no
+/// control nor release, as a builder's on Unix uses neither.
 #[cfg(windows)]
 #[derive(Debug)]
 pub struct VmSide {
     pub region: std::os::windows::io::OwnedHandle,
     pub sleeps: std::os::windows::io::OwnedHandle,
-    pub rings: std::os::windows::io::OwnedHandle,
+    pub rings: shards_vmm::platform::UnixStream,
 }
 
 #[cfg(windows)]
@@ -289,8 +291,8 @@ impl VmSide {
         shards_net::Mac(*mac).to_string()
     }
 
-    /// The ring and doorbells, by the names a VM process takes them by.
-    pub fn given(&self) -> [shards_ipc::Given<'_>; 3] {
+    /// The ring and the doorbell it sleeps on, by the names a VM process takes them by.
+    pub fn given(&self) -> [shards_ipc::Given<'_>; 2] {
         use std::os::windows::io::AsHandle as _;
         [
             shards_ipc::Given {
@@ -301,11 +303,15 @@ impl VmSide {
                 name: "net-wake-me",
                 handle: self.sleeps.as_handle(),
             },
-            shards_ipc::Given {
-                name: "net-wake-peer",
-                handle: self.rings.as_handle(),
-            },
         ]
+    }
+
+    /// The doorbell it rings, a socket, by the name a VM process takes it by.
+    pub fn shared(&self) -> shards_ipc::Shared<'_> {
+        shards_ipc::Shared {
+            name: "net-wake-peer",
+            socket: self.rings.raw() as u64,
+        }
     }
 }
 
@@ -315,7 +321,7 @@ impl VmSide {
 #[derive(Debug)]
 pub struct Ready {
     region: std::os::windows::io::OwnedHandle,
-    sleeps: std::os::windows::io::OwnedHandle,
+    sleeps: shards_vmm::platform::UnixStream,
     rings: std::os::windows::io::OwnedHandle,
     args: Vec<std::ffi::OsString>,
     /// A build's proxy's socket, which its spawner dials for it (D110).
@@ -332,8 +338,18 @@ pub fn prepare(
 ) -> Result<(Ready, VmSide), String> {
     let at = |e: std::io::Error| format!("a VM's network: {e}");
     let region = shards_netring::memory().map_err(at)?;
-    let (vm_sleeps, net_rings) = shards_netring::doorbell().map_err(at)?;
-    let (net_sleeps, vm_rings) = shards_netring::doorbell().map_err(at)?;
+    // The VM sleeps on an event its network process rings; the network process on a
+    // socket its port names with its sockets (PM M213), which its VM rings.
+    let (shards_netring::Bell::Event(vm_sleeps), shards_netring::Bell::Event(net_rings)) =
+        shards_netring::doorbell().map_err(at)?
+    else {
+        return Err("a VM's network: a doorbell of events".into());
+    };
+    let (shards_netring::Bell::Socket(net_sleeps), shards_netring::Bell::Socket(vm_rings)) =
+        shards_netring::socket_doorbell().map_err(at)?
+    else {
+        return Err("a VM's network: a doorbell of sockets".into());
+    };
     let (policy, proxy) = policy_args(policy)?;
     let mut args: Vec<std::ffi::OsString> = vec![
         "--policy".into(),
@@ -405,10 +421,16 @@ pub fn start(ready: Ready, vm: &shards_ipc::Suspended) -> Result<NetProcess, Str
         .map_err(|e| format!("a VM's network: its VM's process: {e}"))?;
     let (ours, theirs) =
         shards_vmm::platform::UnixStream::pair().map_err(|e| format!("a network process's dialer: {e}"))?;
-    let sockets = [shards_ipc::Shared {
-        name: "dialer",
-        socket: theirs.raw() as u64,
-    }];
+    let sockets = [
+        shards_ipc::Shared {
+            name: "dialer",
+            socket: theirs.raw() as u64,
+        },
+        shards_ipc::Shared {
+            name: "net-wake-me",
+            socket: ready.sleeps.raw() as u64,
+        },
+    ];
     let args: Vec<&std::ffi::OsStr> = ready.args.iter().map(std::ffi::OsString::as_os_str).collect();
     let err = std::io::stderr();
     let env = child_env();
@@ -420,10 +442,6 @@ pub fn start(ready: Ready, vm: &shards_ipc::Suspended) -> Result<NetProcess, Str
             shards_ipc::Given {
                 name: "net-region",
                 handle: ready.region.as_handle(),
-            },
-            shards_ipc::Given {
-                name: "net-wake-me",
-                handle: ready.sleeps.as_handle(),
             },
             shards_ipc::Given {
                 name: "net-wake-peer",

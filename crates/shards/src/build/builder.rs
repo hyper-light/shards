@@ -511,10 +511,13 @@ fn launch(
         stdin: None,
         stdout: err.as_handle(),
         stderr: err.as_handle(),
-        sockets: &[shards_ipc::Shared {
-            name: ATTACH,
-            socket: attach.raw_socket() as u64,
-        }],
+        sockets: &[
+            shards_ipc::Shared {
+                name: ATTACH,
+                socket: attach.raw_socket() as u64,
+            },
+            side.shared(),
+        ],
         env: &crate::netproc::env_pairs(&env),
         container: Some(&container),
         holds: shards_ipc::Holds::Hypervisor,

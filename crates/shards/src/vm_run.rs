@@ -1528,12 +1528,13 @@ fn net_host(spec: &str) -> Result<shards_vmm::devices::virtio::net::NetHost, Str
 /// `--net MAC` (Windows): the frame ring and doorbells its spawner handed this process by
 /// name (`net-region`, `net-wake-me`, `net-wake-peer`), which it owns from here on, as no
 /// spawner can know a handle's value in a child before it hands it over; and the guest's
-/// MAC.
+/// MAC. The doorbell it rings its network process by is an AF_UNIX socket, which that
+/// process waits on with its sockets (PM M213); the one it sleeps on, an event.
 #[cfg(windows)]
 fn net_host(spec: &str) -> Result<shards_vmm::devices::virtio::net::NetHost, String> {
     use std::os::windows::io::{FromRawHandle as _, OwnedHandle};
     let mut given = GIVEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    let mut take = |name: &str| -> Result<std::sync::Arc<OwnedHandle>, String> {
+    let mut take = |name: &str| -> Result<OwnedHandle, String> {
         let at = given
             .iter()
             .position(|(n, h)| n == name && matches!(h, shards_ipc::Handed::Handle(v) if *v != 0))
@@ -1543,13 +1544,25 @@ fn net_host(spec: &str) -> Result<shards_vmm::devices::virtio::net::NetHost, Str
         };
         // SAFETY: a handle the spawner duplicated into this process for this alone, owned
         // from here on.
-        Ok(std::sync::Arc::new(unsafe {
-            OwnedHandle::from_raw_handle(value as std::os::windows::io::RawHandle)
-        }))
+        Ok(unsafe { OwnedHandle::from_raw_handle(value as std::os::windows::io::RawHandle) })
     };
-    let region = take("net-region")?;
-    let wake_me = take("net-wake-me")?;
-    let wake_peer = take("net-wake-peer")?;
+    let region = std::sync::Arc::new(take("net-region")?);
+    let wake_me = std::sync::Arc::new(shards_netring::Bell::Event(take("net-wake-me")?));
+    let wake_peer = {
+        let at = given
+            .iter()
+            .position(|(n, h)| n == "net-wake-peer" && matches!(h, shards_ipc::Handed::Socket(_)))
+            .ok_or("--net: no net-wake-peer socket was given")?;
+        let shards_ipc::Handed::Socket(info) = given.swap_remove(at).1 else {
+            return Err("--net: net-wake-peer is no socket".into());
+        };
+        let rings = shards_vmm::platform::UnixStream::from_shared(&info)
+            .map_err(|e| format!("--net: net-wake-peer: {e}"))?;
+        rings
+            .set_nonblocking(true)
+            .map_err(|e| format!("--net: net-wake-peer: {e}"))?;
+        std::sync::Arc::new(shards_netring::Bell::Socket(rings))
+    };
     let mac = spec
         .parse::<shards_net::Mac>()
         .map_err(|e| format!("--net: {e}"))?

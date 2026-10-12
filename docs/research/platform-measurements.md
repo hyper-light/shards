@@ -7286,7 +7286,9 @@ revision before comparing a changed API/implementation.
   musl gives 0 first, and its `pthread_key_delete` blocks application signals around its
   work and then sets the mask back; glibc's deletes without a syscall. The filter allows
   rt_sigprocmask's SIG_BLOCK and SIG_SETMASK: a thread's own mask, which grants it
-  nothing.
+  nothing. Run again with it (922fcbda, run 38291399493), musl: every test passed under
+  strace and none was refused; each of the 652 filtered network processes made
+  rt_sigprocmask twice, its mask blocked and set back.
 
 ### M210. What a network process costs its host as its connections grow (D31, E2)
 
@@ -7456,3 +7458,56 @@ revision before comparing a changed API/implementation.
   checks an address by binding to it, then connects from it: one call, exact as it dials,
   where the host's addresses change. Its connects' times on Windows, and 1,000 and 10,000
   connections held, come from the next `net costs` run.
+
+### M213. What waking a network process's loop costs on Windows, by how it waits (D142)
+
+- **Question.** A network process's loop waits on its sockets, its VM's doorbell and its
+  VM's process. On Windows shards' poller (crates/net/src/poll.rs) sleeps on one event
+  every socket's network events set (WSAEventSelect) and then looks at every socket
+  (WSAPoll). The memory bench's cases of 10,000 connections ran past 15 minutes there
+  (M210, M212). What does a wake cost as connections grow, and what would another way of
+  waiting cost?
+- **Method.** `docs/research/measurements/whp-run/src/bin/m213.rs` on CI's windows-2022
+  and windows-2025 (`whp run`): between two threads, 10,000 round trips each, timed by
+  the side that starts them. A byte's round trip on one loopback TCP connection beside
+  0, 100, 1,000 and 10,000 idle ones, the loop waiting as shards' poller does; on an I/O
+  completion port its sockets are registered with, level-triggered
+  (ProcessSocketNotifications, Windows 11 and Server 2022 on), which names the ready
+  ones; and on the one event, the port asked without waiting which sockets are ready
+  (both registrations on each socket), so that the ring's events could stay waited on
+  beside it. A doorbell's round trip: two auto-reset events (shards' ring, M204);
+  a byte on an AF_UNIX socket, waited on with recv and on a completion port; and an event
+  a thread-pool wait posts to a port (RegisterWaitForSingleObject), as a loop on a port
+  would need for the ring's events. 0ddd895f (run 38297680093) and ba8b226e (run
+  38299243996, which added the last way), 2026-10-12.
+- **Results** (µs, p50 / p99, windows-2022 then windows-2025):
+
+  | beside N idle | event + WSAPoll | completion port |
+  |---|---|---|
+  | 0 | 38.6 / 53.7; 43.3 / 68.9 | 37.7 / 51.0; 41.0 / 69.1 |
+  | 100 | 40.1 / 73.8; 41.2 / 80.6 | 36.9 / 56.4; 39.7 / 64.1 |
+  | 1,000 | 678.8 / 843.7; 562.0 / 1,177.4 | 37.2 / 47.0; 40.2 / 67.4 |
+  | 10,000 | 54,413.8 / 62,052.8; 38,904.2 / 63,701.6 | 37.4 / 50.9; 40.9 / 72.9 |
+
+  The event with the port asked: 42.2 to 43.9 µs at p50 at every count on windows-2025,
+  but its slowest round trip 105 to 115 ms at every count, each the 100 ms the probe
+  bounds a wait by: the event did not come, where the port had the socket ready. On
+  windows-2022 it stalled so often that the job's 20 minutes ran out on its first count.
+  The completion port alone was slowest at 8.1 ms (10,000 idle, windows-2025).
+
+  | doorbell | windows-2022 | windows-2025 |
+  |---|---|---|
+  | two events | 22.6 / 43.1 | 26.7 / 49.0 |
+  | AF_UNIX byte, recv | 29.3 / 40.1 | 33.1 / 58.1 |
+  | AF_UNIX byte, port | 29.0 / 38.4 | 33.6 / 59.1 |
+  | event, thread-pool wait, port | 37.6 / 51.9 | 42.6 / 65.3 |
+
+- **Consequence (D142).** The network process waits on a completion port, its sockets
+  registered with it as their interest changes (ProcessSocketNotifications,
+  level-triggered), which names those ready: a wake costs what it does beside none, at
+  every count. The doorbell its VM rings it by is an AF_UNIX socket, registered with the
+  port as its sockets are, a byte a ring: 6.5 to 7.4 µs a round trip more than an event,
+  where an event a thread-pool wait posts would cost 15 µs more; its hang-up says its VM
+  has gone, as a pipe's does on Unix. The doorbell it rings its VM by stays an event,
+  which the VM process's worker waits on with its own. One event and the port asked
+  together is not taken: its wakes were lost.

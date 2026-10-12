@@ -14,9 +14,11 @@
 //!
 //! On Unix the memory is a memory file and a doorbell a pipe, whose read end a side sleeps
 //! on and whose hang-up says its peer has gone. On Windows the memory is a pagefile-backed
-//! section and a doorbell an auto-reset event, as cheap to ring as an AF_UNIX socket and
-//! made in microseconds where a socket pair takes 0.6 ms (PM M199, M204); a side learns
-//! its peer has gone from the peer's process handle, which its spawner gives it.
+//! section and a doorbell an auto-reset event, made in microseconds where a socket pair
+//! takes 0.6 ms (PM M199, M204), which a side learns its peer has gone by from the peer's
+//! process handle; or, for a side that waits on its sockets on a completion port, as a
+//! network process does, an AF_UNIX socket a byte rings, which that port names with its
+//! sockets and whose hang-up says its peer has gone (PM M213).
 
 #[cfg(unix)]
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd as Owned, RawFd};
@@ -27,15 +29,50 @@ use std::io;
 use std::ptr;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering, fence};
 
-/// What a side waits on: a descriptor on Unix, a handle on Windows.
+/// What a side waits on: a descriptor on Unix; on Windows an event's handle, or a socket.
 #[cfg(unix)]
 pub type RawWait = RawFd;
 #[cfg(windows)]
-pub type RawWait = RawHandle;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RawWait {
+    Event(RawHandle),
+    Socket(shards_afunix::RawSocket),
+}
 
 /// What a region's memory and a doorbell are held by: a descriptor on Unix, a handle on
 /// Windows.
 pub type Handle = Owned;
+
+/// A doorbell's end: a pipe's on Unix.
+#[cfg(unix)]
+pub type Bell = Handle;
+
+/// A doorbell's end on Windows: an auto-reset event, or an AF_UNIX socket a byte rings.
+#[cfg(windows)]
+#[derive(Debug)]
+pub enum Bell {
+    Event(Handle),
+    Socket(shards_afunix::UnixStream),
+}
+
+#[cfg(windows)]
+impl Bell {
+    /// Another hold of the same doorbell.
+    pub fn try_clone(&self) -> io::Result<Bell> {
+        Ok(match self {
+            Bell::Event(h) => Bell::Event(h.try_clone()?),
+            Bell::Socket(s) => Bell::Socket(s.try_clone()?),
+        })
+    }
+
+    /// What a side waits on it by.
+    pub fn raw(&self) -> RawWait {
+        match self {
+            Bell::Event(h) => RawWait::Event(h.as_raw_handle()),
+            Bell::Socket(s) => RawWait::Socket(s.raw()),
+        }
+    }
+}
 
 /// The largest frame a record holds: a virtio-net header and a 64 KiB Ethernet frame
 /// (an MTU of 65535 and its 14-byte header), as the device carries them.
@@ -174,7 +211,7 @@ impl Region {
 
     /// The producer end of direction `d`, ringing `doorbell` for its consumer; its ring
     /// starts empty.
-    pub fn producer(&self, d: usize, doorbell: Handle) -> Producer<'_> {
+    pub fn producer(&self, d: usize, doorbell: Bell) -> Producer<'_> {
         let (control, ring) = self.direction(d & 1);
         let producer = Producer {
             _region: self,
@@ -189,7 +226,7 @@ impl Region {
 
     /// The consumer end of direction `d`, ringing `doorbell` for its producer; it starts
     /// at the ring's start.
-    pub fn consumer(&self, d: usize, doorbell: Handle, waits_on: Handle) -> Consumer<'_> {
+    pub fn consumer(&self, d: usize, doorbell: Bell, waits_on: Bell) -> Consumer<'_> {
         let (control, ring) = self.direction(d & 1);
         let consumer = Consumer {
             _region: self,
@@ -233,7 +270,7 @@ pub fn memory() -> io::Result<Handle> {
 /// holds. On Unix a pipe's two ends, both nonblocking: a ring already rung needs no more.
 /// On Windows an auto-reset event, held twice: a ring sets it, and a wait resets it.
 #[cfg(windows)]
-pub fn doorbell() -> io::Result<(Handle, Handle)> {
+pub fn doorbell() -> io::Result<(Bell, Bell)> {
     use windows_sys::Win32::System::Threading::CreateEventW;
     // SAFETY: an unnamed auto-reset event, unset, owned below.
     let raw = unsafe { CreateEventW(ptr::null(), 0, 0, ptr::null()) };
@@ -243,7 +280,19 @@ pub fn doorbell() -> io::Result<(Handle, Handle)> {
     // SAFETY: a handle just made, which nothing else owns.
     let sleeps = unsafe { Handle::from_raw_handle(raw) };
     let rings = sleeps.try_clone()?;
-    Ok((sleeps, rings))
+    Ok((Bell::Event(sleeps), Bell::Event(rings)))
+}
+
+/// A doorbell for a side that waits on its sockets on a completion port (Windows, PM
+/// M213): an AF_UNIX socket pair, both ends nonblocking, the side that sleeps holding one
+/// and the side that wakes it the other. A ring is a byte; one the socket has no room for
+/// finds a ring pending already.
+#[cfg(windows)]
+pub fn socket_doorbell() -> io::Result<(Bell, Bell)> {
+    let (sleeps, rings) = shards_afunix::UnixStream::pair()?;
+    sleeps.set_nonblocking(true)?;
+    rings.set_nonblocking(true)?;
+    Ok((Bell::Socket(sleeps), Bell::Socket(rings)))
 }
 
 /// A doorbell (Unix).
@@ -284,9 +333,18 @@ fn ring_bell(fd: &Handle) {
 }
 
 #[cfg(windows)]
-fn ring_bell(event: &Handle) {
-    // SAFETY: an event we hold; one already set needs no more.
-    unsafe { windows_sys::Win32::System::Threading::SetEvent(event.as_raw_handle()) };
+fn ring_bell(bell: &Bell) {
+    match bell {
+        // SAFETY: an event we hold; one already set needs no more.
+        Bell::Event(event) => unsafe {
+            windows_sys::Win32::System::Threading::SetEvent(event.as_raw_handle());
+        },
+        // A socket with no room has a ring pending already.
+        Bell::Socket(s) => {
+            use std::io::Write as _;
+            let _ = (&*s).write(&[1]);
+        }
+    }
 }
 
 /// Why a ring was given up on: the peer broke its rules.
@@ -309,7 +367,7 @@ pub struct Producer<'r> {
     head: u64,
     /// Rung for the consumer. A producer short of room is rung on its process's own
     /// doorbell, which its consumer of the other direction sleeps on.
-    doorbell: Handle,
+    doorbell: Bell,
 }
 
 // SAFETY: as Region's: atomics and raw-pointer copies alone.
@@ -418,8 +476,8 @@ pub struct Consumer<'r> {
     /// Bytes consumed so far: this side's own, of which the shared `tail` is a copy.
     tail: u64,
     /// Rung for the producer once room is made; slept on for frames.
-    doorbell: Handle,
-    waits_on: Handle,
+    doorbell: Bell,
+    waits_on: Bell,
 }
 
 // SAFETY: as Region's.
@@ -432,12 +490,12 @@ impl Consumer<'_> {
     }
 
     /// What this side sleeps on, to wait for it among others: a descriptor, or on
-    /// Windows an event.
+    /// Windows an event or a socket.
     pub fn waits_on(&self) -> RawWait {
         #[cfg(unix)]
         return self.waits_on.as_raw_fd();
         #[cfg(windows)]
-        return self.waits_on.as_raw_handle();
+        return self.waits_on.raw();
     }
 
     /// The producer's position, if it can be believed: not behind this side's, and not
@@ -671,23 +729,42 @@ mod tests {
         while unsafe { libc::read(fd, buf.as_mut_ptr().cast(), buf.len()) } > 0 {}
     }
 
-    /// Sleeps on `event` until it rings, which resets it.
+    /// Sleeps on `bell` until it rings, which resets an event; a socket's bytes are taken.
     #[cfg(windows)]
-    fn sleep(event: RawWait) {
-        // SAFETY: an event of the test's.
-        unsafe { windows_sys::Win32::System::Threading::WaitForSingleObject(event, u32::MAX) };
+    fn sleep(bell: RawWait) {
+        match bell {
+            // SAFETY: an event of the test's.
+            RawWait::Event(event) => unsafe {
+                windows_sys::Win32::System::Threading::WaitForSingleObject(event, u32::MAX);
+            },
+            RawWait::Socket(s) => {
+                use windows_sys::Win32::Networking::WinSock::{POLLRDNORM, WSAPOLLFD, WSAPoll, recv};
+                let mut fd = WSAPOLLFD {
+                    fd: s,
+                    events: POLLRDNORM,
+                    revents: 0,
+                };
+                let mut buf = [0u8; 64];
+                // SAFETY: one entry; then a buffer of its own length, from a nonblocking
+                // socket of the test's.
+                unsafe {
+                    WSAPoll(&raw mut fd, 1, -1);
+                    while recv(s, buf.as_mut_ptr(), buf.len() as i32, 0) > 0 {}
+                }
+            }
+        }
     }
 
     /// What a doorbell is waited on by.
-    fn raw(h: &Handle) -> RawWait {
+    fn raw(h: &Bell) -> RawWait {
         #[cfg(unix)]
         return h.as_raw_fd();
         #[cfg(windows)]
-        return h.as_raw_handle();
+        return h.raw();
     }
 
     /// Writes one frame of `parts`, sleeping on `wait` while there is no room.
-    fn push(p: &mut Producer<'_>, wait: &Handle, parts: &[&[u8]]) -> Result<bool, Broken> {
+    fn push(p: &mut Producer<'_>, wait: &Bell, parts: &[&[u8]]) -> Result<bool, Broken> {
         loop {
             match p.try_push(parts)? {
                 Some(fit) => return Ok(fit),
@@ -747,6 +824,42 @@ mod tests {
         });
         assert!(take(&mut consumer).is_none());
         assert_eq!(producer.try_push_with(MAX_FRAME + 1, |_| ()), Ok(Some(false)));
+    }
+
+    /// The network process's direction on Windows (PM M213): its consumer sleeps on an
+    /// AF_UNIX socket its producer rings a byte on, the producer on an event the consumer
+    /// rings for room. Frames cross in order as they do between events, and a ring a full
+    /// socket finds pending loses none.
+    #[cfg(windows)]
+    #[test]
+    fn frames_cross_with_a_socket_doorbell() {
+        let region = region();
+        let (c_wait, p_ring) = socket_doorbell().unwrap();
+        let (p_wait, c_ring) = doorbell().unwrap();
+        let mut producer = region.producer(0, p_ring);
+        let mut consumer = region.consumer(0, c_ring, c_wait);
+        let sizes = [0usize, 1, 60, 1514, 9014, MAX_FRAME];
+        let n = 20_000u32;
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                for i in 0..n {
+                    let f = frame(i, sizes[i as usize % sizes.len()]);
+                    assert!(push(&mut producer, &p_wait, &[&f]).unwrap());
+                }
+            });
+            for i in 0..n {
+                loop {
+                    if let Some(f) = take(&mut consumer) {
+                        assert_eq!(f, frame(i, sizes[i as usize % sizes.len()]), "frame {i}");
+                        break;
+                    }
+                    if !consumer.arm().unwrap() {
+                        sleep(consumer.waits_on());
+                    }
+                }
+            }
+        });
+        assert!(take(&mut consumer).is_none());
     }
 
     /// A peer that writes nonsense into its shared position or a length is caught, and

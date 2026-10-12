@@ -1,7 +1,8 @@
 //! Waiting on the network process's descriptors (review 2.14): each registered once, its
 //! interest changed only when what it waits for does, so that a wait costs what is
-//! ready, not what is watched: epoll(7) on Linux, kqueue(2) on macOS. Level-triggered,
-//! as poll(2) is: a descriptor stays ready while what it is ready for is left.
+//! ready, not what is watched: epoll(7) on Linux, kqueue(2) on macOS, and on Windows a
+//! completion port. Level-triggered, as poll(2) is: a descriptor stays ready while what
+//! it is ready for is left.
 //!
 //! A descriptor closed is forgotten by both (epoll(7) once its last reference closes,
 //! kqueue(2) at close), so the caller never removes one it is closing: a change made
@@ -9,12 +10,14 @@
 //! closed is not forgotten, and its handle's value may name the next socket made: the
 //! caller makes a socket's interest NONE before it closes it ([`Poller::set`]).
 //!
-//! On Windows (D142) each socket's interest selects its network events onto one event
-//! (WSAEventSelect), once, as it changes; a wait reads each socket's state with a WSAPoll
-//! that does not wait, and sleeps on that event and on the handles watched beside the
-//! sockets (a doorbell's event, a peer's process), as the vsock device's poller does
-//! (vmm vsock/poll.rs; PM M199: WSAPoll alone reports a peer's half-close as a hangup
-//! whatever is asked, which a wait to write would spin on).
+//! On Windows (D142) each socket is registered with a completion port as its interest
+//! changes (ProcessSocketNotifications, level-triggered), and a wait takes the port's
+//! packets, which name the sockets ready: one event every socket set, and a look at every
+//! socket after each wake, cost a round trip 39 to 54 ms beside 10,000 idle sockets,
+//! where the port costs what it does beside none (PM M213). A handle watched beside the
+//! sockets (a peer's process) comes as a packet a thread-pool wait posts. A hangup is a
+//! read's and never a write's (PM M199: a peer's half-close is a hangup whatever is
+//! asked, which a wait to write would spin on).
 
 #[cfg(unix)]
 use std::io;
@@ -228,61 +231,137 @@ mod windows {
     use std::cell::RefCell;
     use std::collections::HashMap;
     use std::io;
-    use std::os::windows::io::RawHandle;
+    use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle, RawHandle};
     use std::time::Duration;
 
+    use windows_sys::Win32::Foundation::{HANDLE, INVALID_HANDLE_VALUE, WAIT_TIMEOUT};
     use windows_sys::Win32::Networking::WinSock::{
-        FD_ACCEPT, FD_CLOSE, FD_CONNECT, FD_READ, FD_WRITE, POLLERR, POLLHUP, POLLNVAL, POLLRDNORM,
-        POLLWRNORM, WSA_INVALID_EVENT, WSACloseEvent, WSACreateEvent, WSAEVENT, WSAEventSelect,
-        WSAGetLastError, WSAPOLLFD, WSAPoll, WSAResetEvent, WSAWaitForMultipleEvents,
+        ProcessSocketNotifications, SOCK_NOTIFY_EVENT_ERR, SOCK_NOTIFY_EVENT_HANGUP, SOCK_NOTIFY_EVENT_IN,
+        SOCK_NOTIFY_EVENT_OUT, SOCK_NOTIFY_EVENT_REMOVE, SOCK_NOTIFY_OP_ENABLE, SOCK_NOTIFY_OP_REMOVE,
+        SOCK_NOTIFY_REGISTER_EVENT_HANGUP, SOCK_NOTIFY_REGISTER_EVENT_IN, SOCK_NOTIFY_REGISTER_EVENT_OUT,
+        SOCK_NOTIFY_REGISTRATION, SOCK_NOTIFY_TRIGGER_LEVEL, SOCK_NOTIFY_TRIGGER_PERSISTENT,
     };
-    use windows_sys::Win32::System::Threading::WaitForSingleObject;
+    use windows_sys::Win32::System::IO::{
+        CreateIoCompletionPort, GetQueuedCompletionStatusEx, OVERLAPPED_ENTRY, PostQueuedCompletionStatus,
+    };
+    use windows_sys::Win32::System::Threading::{
+        INFINITE, RegisterWaitForSingleObject, UnregisterWaitEx, WT_EXECUTEINWAITTHREAD, WT_EXECUTEONLYONCE,
+    };
 
     use super::{Event, Interest};
     use crate::sys::RawSock;
 
-    /// A handle watched beside the sockets: under `token`, its being signaled an end where
-    /// `ends` (a peer's process), and otherwise a read (a doorbell's event).
-    #[derive(Debug, Clone, Copy)]
-    struct Watched {
-        handle: RawHandle,
-        token: u64,
-        ends: bool,
+    /// What a watched handle's packets carry for their bytes, which no socket's
+    /// notification does: its events are bits below 256.
+    const WATCHED: u32 = 1 << 16;
+
+    /// Packets a wait takes at most; more wait for the next.
+    const AT_ONCE: usize = 256;
+
+    /// What a watched handle's wait posts to the port, kept where the wait can reach it
+    /// until the wait is gone.
+    struct Post {
+        port: usize,
+        key: usize,
     }
 
-    #[derive(Debug)]
+    /// A handle watched beside the sockets: the thread-pool wait that posts its signal to
+    /// the port (RegisterWaitForSingleObject, PM M213), under `token`, an end where `ends`
+    /// (a peer's process), a read otherwise (a doorbell's event).
+    struct Watched {
+        wait: HANDLE,
+        token: u64,
+        ends: bool,
+        _post: Box<Post>,
+    }
+
+    /// A completion port its sockets are registered with as their interest changes
+    /// (ProcessSocketNotifications, level-triggered), which names those ready: a wait
+    /// costs what is ready, not what is watched (PM M213: a round trip beside 10,000 idle
+    /// sockets 37 to 41 µs, where a look at each cost 39 to 54 ms).
     pub struct Poller {
-        /// The event every socket's network events set.
-        event: WSAEVENT,
+        port: OwnedHandle,
         sockets: RefCell<HashMap<RawSock, (u64, Interest)>>,
+        /// Each socket's interest by its token, which its notifications name.
+        interests: RefCell<HashMap<u64, Interest>>,
         watched: RefCell<Vec<Watched>>,
+    }
+
+    impl std::fmt::Debug for Poller {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("Poller")
+                .field("sockets", &self.sockets.borrow().len())
+                .field("watched", &self.watched.borrow().len())
+                .finish()
+        }
     }
 
     impl Drop for Poller {
         fn drop(&mut self) {
-            // SAFETY: our own event.
-            unsafe { WSACloseEvent(self.event) };
+            for w in self.watched.borrow_mut().drain(..) {
+                // SAFETY: a wait of ours, ended, its callbacks done, before what it posts
+                // goes with it.
+                unsafe { UnregisterWaitEx(w.wait, INVALID_HANDLE_VALUE) };
+            }
         }
     }
 
-    fn last() -> io::Error {
-        // SAFETY: no arguments.
-        io::Error::from_raw_os_error(unsafe { WSAGetLastError() })
+    /// Posts a watched handle's signal to its port.
+    unsafe extern "system" fn posted(context: *mut core::ffi::c_void, _: bool) {
+        // SAFETY: the Post the wait was registered with, which outlives it.
+        let post = unsafe { &*context.cast::<Post>() };
+        // SAFETY: a port the poller holds open while the wait lives; no overlapped.
+        unsafe { PostQueuedCompletionStatus(post.port as HANDLE, WATCHED, post.key, std::ptr::null()) };
     }
 
     impl Poller {
         pub fn new() -> io::Result<Poller> {
             shards_afunix::startup()?;
-            // SAFETY: no arguments; closed as the poller drops.
-            let event = unsafe { WSACreateEvent() };
-            if event == WSA_INVALID_EVENT {
-                return Err(last());
+            // SAFETY: a new port, owned below.
+            let raw = unsafe { CreateIoCompletionPort(INVALID_HANDLE_VALUE, std::ptr::null_mut(), 0, 1) };
+            if raw.is_null() {
+                return Err(io::Error::last_os_error());
             }
             Ok(Poller {
-                event,
+                // SAFETY: a handle just made, which nothing else owns.
+                port: unsafe { OwnedHandle::from_raw_handle(raw) },
                 sockets: RefCell::new(HashMap::new()),
+                interests: RefCell::new(HashMap::new()),
                 watched: RefCell::new(Vec::new()),
             })
+        }
+
+        /// Registers `sock` with the port under `token` for `filter`, or removes it.
+        fn register(&self, sock: RawSock, token: u64, filter: u32, operation: u32) -> io::Result<()> {
+            let key = usize::try_from(token).map_err(|_| io::Error::other("a token past a key"))?;
+            let mut reg = SOCK_NOTIFY_REGISTRATION {
+                socket: sock,
+                completionKey: std::ptr::without_provenance_mut(key),
+                eventFilter: u16::try_from(filter).map_err(|_| io::Error::other("an event filter"))?,
+                operation: u8::try_from(operation).map_err(|_| io::Error::other("an operation"))?,
+                triggerFlags: u8::try_from(SOCK_NOTIFY_TRIGGER_PERSISTENT | SOCK_NOTIFY_TRIGGER_LEVEL)
+                    .map_err(|_| io::Error::other("a trigger"))?,
+                registrationResult: 0,
+            };
+            // SAFETY: one registration of our port's; no wait, no packet taken.
+            let r = unsafe {
+                ProcessSocketNotifications(
+                    self.port.as_raw_handle(),
+                    1,
+                    &raw mut reg,
+                    0,
+                    0,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                )
+            };
+            if r != 0 && r != WAIT_TIMEOUT {
+                return Err(io::Error::from_raw_os_error(r as i32));
+            }
+            if reg.registrationResult != 0 {
+                return Err(io::Error::from_raw_os_error(reg.registrationResult as i32));
+            }
+            Ok(())
         }
 
         /// Makes `sock`'s interest `now`, named `token`: NONE forgets it, as the caller
@@ -293,105 +372,127 @@ mod windows {
             }
             let mut sockets = self.sockets.borrow_mut();
             if now == Interest::NONE {
-                if sockets.remove(&sock).is_some() {
-                    // SAFETY: a socket of the caller's, its events selected onto nothing.
-                    unsafe { WSAEventSelect(sock, 0, 0) };
+                if let Some((token, _)) = sockets.remove(&sock) {
+                    self.interests.borrow_mut().remove(&token);
+                    // Its removal's own notice, as a packet, is let go of in `wait`.
+                    let _ = self.register(sock, token, 0, SOCK_NOTIFY_OP_REMOVE);
                 }
                 return Ok(());
             }
-            let mut events = 0;
+            let mut filter = SOCK_NOTIFY_REGISTER_EVENT_HANGUP;
             if now.read {
-                events |= FD_READ | FD_ACCEPT | FD_CLOSE;
+                filter |= SOCK_NOTIFY_REGISTER_EVENT_IN;
             }
             if now.write {
-                events |= FD_WRITE | FD_CONNECT | FD_CLOSE;
+                filter |= SOCK_NOTIFY_REGISTER_EVENT_OUT;
             }
-            // SAFETY: a socket of the caller's and our own event.
-            if unsafe { WSAEventSelect(sock, self.event, events as i32) } != 0 {
-                return Err(last());
+            self.register(sock, token, filter, SOCK_NOTIFY_OP_ENABLE)?;
+            if let Some((old, _)) = sockets.insert(sock, (token, now))
+                && old != token
+            {
+                self.interests.borrow_mut().remove(&old);
             }
-            sockets.insert(sock, (token, now));
+            self.interests.borrow_mut().insert(token, now);
             Ok(())
         }
 
         /// Watches `handle` beside the sockets, under `token`: a doorbell's event, which a
-        /// wait it wakes resets; or, where `ends`, a peer's process, whose end it says.
-        pub fn watch(&self, handle: RawHandle, token: u64, ends: bool) {
-            self.watched.borrow_mut().push(Watched { handle, token, ends });
+        /// wait it wakes resets; or, where `ends`, a peer's process, whose end it says,
+        /// once. Its signal comes as a packet a thread-pool wait posts (PM M213).
+        pub fn watch(&self, handle: RawHandle, token: u64, ends: bool) -> io::Result<()> {
+            let key = usize::try_from(token).map_err(|_| io::Error::other("a token past a key"))?;
+            let post = Box::new(Post {
+                port: self.port.as_raw_handle() as usize,
+                key,
+            });
+            let mut wait: HANDLE = std::ptr::null_mut();
+            let once = if ends { WT_EXECUTEONLYONCE } else { 0 };
+            // SAFETY: a handle its owner keeps open while it is watched; the Post outlives
+            // the wait, which Drop ends first.
+            let ok = unsafe {
+                RegisterWaitForSingleObject(
+                    &raw mut wait,
+                    handle,
+                    Some(posted),
+                    std::ptr::from_ref::<Post>(&post).cast(),
+                    INFINITE,
+                    WT_EXECUTEINWAITTHREAD | once,
+                )
+            };
+            if ok == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            self.watched.borrow_mut().push(Watched {
+                wait,
+                token,
+                ends,
+                _post: post,
+            });
+            Ok(())
         }
 
         /// Waits until something registered is ready, or `timeout` passes (`None`: for as
         /// long as it takes), and puts what is in `out`, which it empties first.
         pub fn wait(&self, out: &mut Vec<Event>, timeout: Option<Duration>) -> io::Result<()> {
             out.clear();
-            // SAFETY: our own event, set again by any network event from here on.
-            unsafe { WSAResetEvent(self.event) };
-            self.look(out)?;
-            if !out.is_empty() || timeout == Some(Duration::ZERO) {
-                return Ok(());
-            }
             // Rounded up, so that a deadline is never missed by waking a moment early;
             // none waits without end (INFINITE).
-            let ms = timeout.map_or(u32::MAX, |t| {
-                u32::try_from(t.as_micros().div_ceil(1000)).unwrap_or(u32::MAX - 1)
+            let ms = timeout.map_or(INFINITE, |t| {
+                u32::try_from(t.as_micros().div_ceil(1000)).unwrap_or(INFINITE - 1)
             });
-            let handles: Vec<RawHandle> = std::iter::once(self.event as RawHandle)
-                .chain(self.watched.borrow().iter().map(|w| w.handle))
-                .collect();
-            // SAFETY: our own event and the handles watched, which their owner keeps open.
-            unsafe { WSAWaitForMultipleEvents(handles.len() as u32, handles.as_ptr(), 0, ms, 0) };
-            self.look(out)
-        }
-
-        /// What is ready now: each socket's state as a WSAPoll that does not wait reads it,
-        /// end of stream (a hangup) a read's and never a write's (PM M199); and each handle
-        /// watched that is signaled, a doorbell's taken as it is looked at.
-        fn look(&self, out: &mut Vec<Event>) -> io::Result<()> {
-            let sockets = self.sockets.borrow();
-            let mut fds: Vec<WSAPOLLFD> = sockets
-                .iter()
-                .map(|(&fd, &(_, interest))| WSAPOLLFD {
-                    fd,
-                    events: if interest.read { POLLRDNORM } else { 0 }
-                        | if interest.write { POLLWRNORM } else { 0 },
-                    revents: 0,
-                })
-                .collect();
-            if !fds.is_empty() {
-                // SAFETY: an array of its own length; no wait.
-                let n = unsafe { WSAPoll(fds.as_mut_ptr(), fds.len() as u32, 0) };
-                if n < 0 {
-                    return Err(last());
+            let mut entries = [OVERLAPPED_ENTRY::default(); AT_ONCE];
+            let mut got = 0u32;
+            // SAFETY: our port and an array of its own length.
+            let ok = unsafe {
+                GetQueuedCompletionStatusEx(
+                    self.port.as_raw_handle(),
+                    entries.as_mut_ptr(),
+                    AT_ONCE as u32,
+                    &raw mut got,
+                    ms,
+                    0,
+                )
+            };
+            if ok == 0 {
+                let e = io::Error::last_os_error();
+                if e.raw_os_error() == Some(WAIT_TIMEOUT as i32) {
+                    return Ok(());
                 }
+                return Err(e);
             }
-            for fd in &fds {
-                let r = fd.revents;
-                if r == 0 {
+            let interests = self.interests.borrow();
+            let watched = self.watched.borrow();
+            for entry in entries.iter().take(got as usize) {
+                let token = entry.lpCompletionKey as u64;
+                let bits = entry.dwNumberOfBytesTransferred;
+                if bits & WATCHED != 0 {
+                    if let Some(w) = watched.iter().find(|w| w.token == token) {
+                        out.push(Event {
+                            token,
+                            read: true,
+                            write: false,
+                            ended: w.ends,
+                        });
+                    }
                     continue;
                 }
-                let Some(&(token, interest)) = sockets.get(&fd.fd) else {
+                // A registration removed, or one changed since its notice was queued.
+                if bits & SOCK_NOTIFY_EVENT_REMOVE != 0 {
+                    continue;
+                }
+                let Some(&interest) = interests.get(&token) else {
                     continue;
                 };
-                let ended = r & (POLLHUP | POLLERR | POLLNVAL) != 0;
-                let read = interest.read && (r & POLLRDNORM != 0 || ended);
-                let write = interest.write && (r & POLLWRNORM != 0 || r & (POLLERR | POLLNVAL) != 0);
+                // End of stream (a hangup) a read's and never a write's (PM M199).
+                let ended = bits & (SOCK_NOTIFY_EVENT_HANGUP | SOCK_NOTIFY_EVENT_ERR) != 0;
+                let read = interest.read && (bits & SOCK_NOTIFY_EVENT_IN != 0 || ended);
+                let write = interest.write && bits & (SOCK_NOTIFY_EVENT_OUT | SOCK_NOTIFY_EVENT_ERR) != 0;
                 if read || write || ended {
                     out.push(Event {
                         token,
                         read: read || ended,
                         write,
                         ended,
-                    });
-                }
-            }
-            for w in self.watched.borrow().iter() {
-                // SAFETY: a handle its owner keeps open; no wait.
-                if unsafe { WaitForSingleObject(w.handle, 0) } == 0 {
-                    out.push(Event {
-                        token: w.token,
-                        read: true,
-                        write: false,
-                        ended: w.ends,
                     });
                 }
             }
@@ -497,8 +598,12 @@ mod tests {
     fn handles_watched_are_ready_when_signaled() {
         use std::os::windows::io::AsRawHandle as _;
         let p = Poller::new().unwrap();
-        let (sleeps, rings) = shards_netring::doorbell().unwrap();
-        p.watch(sleeps.as_raw_handle(), 5, false);
+        let (shards_netring::Bell::Event(sleeps), shards_netring::Bell::Event(rings)) =
+            shards_netring::doorbell().unwrap()
+        else {
+            panic!("a doorbell of events");
+        };
+        p.watch(sleeps.as_raw_handle(), 5, false).unwrap();
         assert_eq!(ready(&p), []);
         // SAFETY: an event of the test's.
         unsafe { windows_sys::Win32::System::Threading::SetEvent(rings.as_raw_handle()) };

@@ -13,7 +13,7 @@ use std::io;
 #[cfg(unix)]
 use std::os::fd::AsRawFd;
 
-use shards_netring::Handle;
+use shards_netring::{Bell, Handle};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
@@ -52,8 +52,8 @@ const S_LINK_UP: u16 = 1;
 #[derive(Debug, Clone)]
 pub struct NetHost {
     pub region: Arc<Handle>,
-    pub wake_me: Arc<Handle>,
-    pub wake_peer: Arc<Handle>,
+    pub wake_me: Arc<Bell>,
+    pub wake_peer: Arc<Bell>,
     pub mac: [u8; 6],
     pub flush: TxFlush,
 }
@@ -110,8 +110,8 @@ impl TxFlush {
     }
 }
 
-fn dup(fd: &Handle) -> io::Result<Handle> {
-    fd.try_clone()
+fn dup(bell: &Bell) -> io::Result<Bell> {
+    bell.try_clone()
 }
 
 /// The queues' notifications: a doorbell of the worker's own (shards_netring), a self-pipe
@@ -123,9 +123,18 @@ struct Waker {
 }
 
 impl Waker {
+    #[cfg(unix)]
     fn new() -> io::Result<Waker> {
         let (read, write) = shards_netring::doorbell()?;
         Ok(Waker { read, write })
+    }
+
+    #[cfg(windows)]
+    fn new() -> io::Result<Waker> {
+        match shards_netring::doorbell()? {
+            (Bell::Event(read), Bell::Event(write)) => Ok(Waker { read, write }),
+            _ => Err(io::Error::other("a doorbell of events")),
+        }
     }
 
     fn wake(&self) {
@@ -207,7 +216,7 @@ impl std::fmt::Debug for Net {
 
 impl Net {
     pub fn new(host: NetHost) -> Result<Net, String> {
-        let region = Region::map(dup(&host.region).map_err(|e| format!("virtio-net: {e}"))?)
+        let region = Region::map(host.region.try_clone().map_err(|e| format!("virtio-net: {e}"))?)
             .map_err(|e| format!("virtio-net: the frame ring: {e}"))?;
         Ok(Net {
             host,
@@ -452,9 +461,15 @@ fn run(
         // Both events auto-reset: the wait that one wakes takes its ring.
         #[cfg(windows)]
         {
+            // The network process rings this side by an event: a socket here would be
+            // waited on as nothing.
+            let shards_netring::RawWait::Event(rings) = rx.waits_on() else {
+                debug!("virtio-net: the frame ring's doorbell is no event; device needs reset");
+                return s;
+            };
             let events = [
                 std::os::windows::io::AsRawHandle::as_raw_handle(&waker.read),
-                rx.waits_on(),
+                rings,
             ];
             // SAFETY: two events of ours, held open by the waker and the ring.
             unsafe {

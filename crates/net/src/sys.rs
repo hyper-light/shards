@@ -393,8 +393,8 @@ pub fn set_buffers(sock: RawSock, size: usize) {
     }
 }
 
-/// Takes what rang a doorbell: a pipe's bytes on Unix; nothing on Windows, whose event a
-/// wait has reset already.
+/// Takes what rang a doorbell: a pipe's bytes on Unix, a socket's on Windows; nothing of
+/// an event's, which a wait has reset already.
 pub fn drain(bell: shards_netring::RawWait) {
     #[cfg(unix)]
     {
@@ -403,5 +403,12 @@ pub fn drain(bell: shards_netring::RawWait) {
         while unsafe { libc::read(bell, buf.as_mut_ptr().cast(), buf.len()) } > 0 {}
     }
     #[cfg(windows)]
-    let _ = bell;
+    if let shards_netring::RawWait::Socket(s) = bell {
+        let mut buf = [0u8; 64];
+        // SAFETY: a local buffer of its own length, from a nonblocking socket.
+        while unsafe {
+            windows_sys::Win32::Networking::WinSock::recv(s, buf.as_mut_ptr(), buf.len() as i32, 0)
+        } > 0
+        {}
+    }
 }

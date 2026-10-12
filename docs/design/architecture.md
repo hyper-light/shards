@@ -3635,8 +3635,15 @@ its network the network process's (D142).
 AGENTFILE_ARCH.md §11 row 975: a VM's flows go through a network process of its own (D31)
 on Windows as on Linux and macOS.
 
-- **Its ring** is a pagefile-backed section, and its doorbells auto-reset events, 23-35 µs
-  a round trip (PM M204); an AF_UNIX socket pair takes 0.6 ms to make (M199).
+- **Its ring** is a pagefile-backed section, the doorbell its VM sleeps on an auto-reset
+  event, 23-35 µs a round trip (PM M204), and the one it sleeps on an AF_UNIX socket its
+  VM rings a byte on, 29-34 µs (PM M213); a socket pair takes 0.6 ms to make (M199).
+- **It waits on a completion port** its sockets and that doorbell are registered with as
+  their interest changes (ProcessSocketNotifications, level-triggered, Windows 11 and
+  Server 2022 on), which names those ready: a round trip beside 10,000 idle connections
+  costs what one beside none does, 37-41 µs, where one event every socket set and a look
+  at every socket after each wake cost 39-54 ms (PM M213). One event to wake on with the
+  port asked which sockets are ready lost wakes, and is not used.
 - **Confined** in an AppContainer that holds `internetClient`, `internetClientServer` and
   `privateNetworkClientServer` (M204): it reaches the networks and never this host's
   loopback or own addresses, nor a file or socket by its path. Its spawner dials those for
@@ -3654,9 +3661,9 @@ on Windows as on Linux and macOS.
   dials, and to no other. A step reaches its host's own services as Docker's do
   (`run_steps_reach_the_network_unless_it_is_none`, which failed without it, M204's
   finding).
-- **Its VM's end** it learns from the VM's process, a handle it may only wait on: a
-  doorbell does not hang up there as a pipe does. Its spawner gives it that handle before
-  the VM runs (D143).
+- **Its VM's end** it learns as its doorbell's socket hangs up, as a pipe's does on Unix,
+  and from the VM's process, a handle it may only wait on, which a thread-pool wait posts
+  to its port once it ends. Its spawner gives it that handle before the VM runs (D143).
 - **No published ports yet**: those are the daemon's, which Windows has none of; a
   builder publishes none.
 

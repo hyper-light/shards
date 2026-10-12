@@ -36,6 +36,7 @@ use wire::Frames;
 
 #[cfg(windows)]
 pub use dial::Dialer;
+pub use shards_netring::Bell;
 
 /// The ports a published connection comes from, at the gateway: IANA's dynamic range
 /// (RFC 6335 §6), 49152 to 65535.
@@ -850,8 +851,8 @@ impl Control {
 /// nothing.
 pub fn serve(
     region: Handle,
-    wake_me: Handle,
-    wake_peer: Handle,
+    wake_me: shards_netring::Bell,
+    wake_peer: shards_netring::Bell,
     #[cfg(windows)] vm: std::os::windows::io::OwnedHandle,
     #[cfg(windows)] dialer: Option<Dialer>,
     cfg: Config,
@@ -913,15 +914,22 @@ pub fn serve(
         poll::Interest::NONE,
         poll::Interest::READ,
     )?;
+    // Its VM's doorbell on Windows: an AF_UNIX socket its port names with its sockets (PM
+    // M213), whose hang-up says its VM has gone; or an event. Its VM's process is watched
+    // too, its end said once.
     #[cfg(windows)]
     {
         use std::os::windows::io::AsRawHandle as _;
-        stack
-            .poller
-            .watch(doorbell, token::of(token::DOORBELL, 0, 0), false);
-        stack
-            .poller
-            .watch(vm.as_raw_handle(), token::of(token::DOORBELL, 0, 0), true);
+        let named = token::of(token::DOORBELL, 0, 0);
+        match doorbell {
+            shards_netring::RawWait::Socket(s) => {
+                stack
+                    .poller
+                    .set(s, named, poll::Interest::NONE, poll::Interest::READ)?;
+            }
+            shards_netring::RawWait::Event(h) => stack.poller.watch(h, named, false)?,
+        }
+        stack.poller.watch(vm.as_raw_handle(), named, true)?;
     }
     for (i, (_, sock, _)) in controls.iter().flatten().enumerate() {
         let named = token::of(token::CONTROL, 0, u32::try_from(i).unwrap_or(u32::MAX));

@@ -270,12 +270,7 @@ fn run() -> Result<(), String> {
             _ => Err(format!("--grants: {name} is no handle")),
         }
     };
-    let (region, me, peer, vm) = (
-        handle("net-region")?,
-        handle("net-wake-me")?,
-        handle("net-wake-peer")?,
-        handle("vm")?,
-    );
+    let (region, peer, vm) = (handle("net-region")?, handle("net-wake-peer")?, handle("vm")?);
     let mut socket = |name: &str| -> Result<shards_net::sys::UnixStream, String> {
         match take(name)? {
             shards_ipc::Handed::Socket(info) => {
@@ -284,6 +279,10 @@ fn run() -> Result<(), String> {
             shards_ipc::Handed::Handle(_) => Err(format!("--grants: {name} is no socket")),
         }
     };
+    // Its VM's doorbell, an AF_UNIX socket its port names with its sockets (PM M213).
+    let me = socket("net-wake-me")?;
+    me.set_nonblocking(true)
+        .map_err(|e| format!("net-wake-me: {e}"))?;
     let dialer = match a.dialer.take() {
         Some(name) => Some(
             shards_net::Dialer::new(socket(&name)?, std::mem::take(&mut a.host_addresses))
@@ -296,5 +295,14 @@ fn run() -> Result<(), String> {
         .iter()
         .map(|(role, name)| Ok((*role, socket(name)?)))
         .collect::<Result<_, String>>()?;
-    shards_net::serve(region, me, peer, vm, dialer, cfg, controls).map_err(|e| e.to_string())
+    shards_net::serve(
+        region,
+        shards_net::Bell::Socket(me),
+        shards_net::Bell::Event(peer),
+        vm,
+        dialer,
+        cfg,
+        controls,
+    )
+    .map_err(|e| e.to_string())
 }
