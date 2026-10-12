@@ -785,10 +785,16 @@ pub(crate) fn host_memory() -> Option<u64> {
     u64::try_from(pages).ok()?.checked_mul(u64::try_from(size).ok()?)
 }
 
-/// Where shards starts no builder yet (`builder::Builder`), nothing asks.
-#[cfg(not(unix))]
+/// The host's physical memory, in bytes (GlobalMemoryStatusEx).
+#[cfg(windows)]
 pub(crate) fn host_memory() -> Option<u64> {
-    None
+    use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+    let mut status = MEMORYSTATUSEX {
+        dwLength: size_of::<MEMORYSTATUSEX>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: a structure of its own length for the call to fill.
+    (unsafe { GlobalMemoryStatusEx(&raw mut status) } != 0).then_some(status.ullTotalPhys)
 }
 
 /// A base image as the build resolved it.

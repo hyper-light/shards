@@ -931,15 +931,8 @@ fn record_id() -> Result<String, String> {
     Ok(String::from_utf8_lossy(id).into_owned())
 }
 
-#[cfg(unix)]
 fn entropy(buf: &mut [u8]) -> Result<(), String> {
     shards_net::entropy(buf).map_err(|e| format!("a cache record's id: {e}"))
-}
-
-/// No builder runs on Windows yet (builder.rs), so no step there mounts a cache.
-#[cfg(not(unix))]
-fn entropy(_: &mut [u8]) -> Result<(), String> {
-    Err("RUN steps run in a builder microVM, which shards starts on Linux and macOS hosts only so far".into())
 }
 
 /// Cgroup v2 files and what each holds, in the order written.
@@ -1025,19 +1018,12 @@ fn ssh_id(id: &[u8]) -> String {
     }
 }
 
-/// A token of an SSH mount's own, from the kernel's random source, which its relay
-/// presents to the host.
-#[cfg(unix)]
+/// A token of an SSH mount's own, from the OS's random source, which its relay presents
+/// to the host.
 fn ssh_token() -> Result<[u8; 16], String> {
     let mut token = [0u8; 16];
     shards_net::entropy(&mut token).map_err(|e| format!("an SSH mount's token: {e}"))?;
     Ok(token)
-}
-
-/// No builder runs on Windows yet (builder.rs), so no step there reaches an agent.
-#[cfg(not(unix))]
-fn ssh_token() -> Result<[u8; 16], String> {
-    Err("RUN steps run in a builder microVM, which shards starts on Linux and macOS hosts only so far".into())
 }
 
 /// Secret `id`'s bytes, if the build was given it.
