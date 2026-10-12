@@ -852,6 +852,36 @@ fn image_root(skel: &OwnedFd, lower: std::os::fd::BorrowedFd<'_>) -> io::Result<
 /// other is ended for memory it still holds.
 pub struct Memory {
     events: OwnedFd,
+    /// Whether each domain's end by the kernel's OOM killer was said, by its place among
+    /// the domains.
+    said: std::cell::RefCell<Vec<bool>>,
+}
+
+/// A domain's `memory.events` counts of the kernel's OOM handling
+/// (Documentation/admin-guide/cgroup-v2.rst): `oom`, its own limit reached with nothing
+/// left to reclaim, which the kernel counts before it chooses whom to kill
+/// (mm/memcontrol.c, `mem_cgroup_oom`) and never for the microVM's memory as a whole; and
+/// `oom_kill`, its processes the OOM killer ended, for either.
+struct Ooms {
+    oom: u64,
+    oom_kill: u64,
+}
+
+impl Ooms {
+    fn of(cgroup: &str) -> Ooms {
+        let events = std::fs::read_to_string(format!("{cgroup}/memory.events")).unwrap_or_default();
+        let count = |key: &str| {
+            events
+                .lines()
+                .find_map(|l| l.split_once(' ').filter(|(k, _)| *k == key))
+                .and_then(|(_, v)| v.trim().parse::<u64>().ok())
+                .unwrap_or(0)
+        };
+        Ooms {
+            oom: count("oom"),
+            oom_kill: count("oom_kill"),
+        }
+    }
 }
 
 impl Memory {
@@ -876,7 +906,10 @@ impl Memory {
                 io::Error::last_os_error()
             ));
         }
-        Ok(Memory { events })
+        Ok(Memory {
+            events,
+            said: std::cell::RefCell::new(Vec::new()),
+        })
     }
 
     pub fn fd(&self) -> RawFd {
@@ -898,6 +931,29 @@ impl Memory {
             std::fs::read_to_string(format!("{}/cgroup.events", d.cgroup))
                 .is_ok_and(|e| e.lines().any(|l| l == "populated 1"))
         };
+        // A domain the kernel's OOM killer ended, whole (`memory.oom.group`), once: at its
+        // own limit, where it counted an `oom`, or for the microVM's memory. Said, as
+        // init's own ending of one is below.
+        {
+            let mut said = self.said.borrow_mut();
+            said.resize(domains.len(), false);
+            for (d, said) in domains.iter().zip(said.iter_mut()).filter(|(_, s)| !**s) {
+                let ooms = Ooms::of(&d.cgroup);
+                if ooms.oom_kill == 0 {
+                    continue;
+                }
+                *said = true;
+                let why = if ooms.oom > 0 {
+                    match number(&format!("{}/memory.max", d.cgroup)) {
+                        Some(max) => format!("its memory reached its limit, {max} bytes"),
+                        None => "its memory reached its limit".to_string(),
+                    }
+                } else {
+                    "the microVM's memory ran out, and the kernel's OOM killer chose it".to_string()
+                };
+                say(format!("[{}] shards-init: ended: {why}\n", d.label).as_bytes());
+            }
+        }
         let (Some(current), Some(high)) = (
             number(&format!("{CGROUPS}/memory.current")),
             number(&format!("{CGROUPS}/memory.high")),

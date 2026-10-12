@@ -9867,10 +9867,11 @@ fn an_awaiting_command_is_signalled_once_it_waits() {
 }
 
 /// Agents filling their memory, scratch included, end whole and never take the run's own
-/// command's (D59): x alone, at the limit its config asks (`asks.memory`, 64 MiB); y, asking
-/// none, at what the domains together may take, the memory the microVM has as they start
-/// less what the workload's `-m` still promises it, chosen by init over z, which holds more
-/// resident memory and no scratch, and which the kernel's choice would end first.
+/// command's (D59): x alone, at the limit its config asks (`asks.memory`, 32 MiB, below the
+/// domains' share on every host measured, 66.8 to 80.9 MiB); y, asking none, at what the
+/// domains together may take, the memory the microVM has as they start less what the
+/// workload's `-m` still promises it, chosen by init over z, which holds more resident
+/// memory and no scratch, and which the kernel's choice would end first.
 #[test]
 fn agents_out_of_memory_end_whole_and_spare_the_run() {
     if cannot_run_vms() {
@@ -9908,7 +9909,7 @@ fn agents_out_of_memory_end_whole_and_spare_the_run() {
         assert_eq!(pushed.status, Some(0), "{}", pushed.stderr);
         format!("AGENT {name} FROM {tag}\n")
     };
-    let x = agent("x", &["fill"], r#","asks":{"memory":67108864}"#);
+    let x = agent("x", &["fill"], r#","asks":{"memory":33554432}"#);
     // y fills only once z holds its memory and says so (`CONNECT z TO y`): z, started after
     // y, must hold more resident memory than y's filler as y is ended, which a y that
     // started filling at once outran on a slow host (CI run 38203829846), and then nothing
@@ -9917,34 +9918,36 @@ fn agents_out_of_memory_end_whole_and_spare_the_run() {
         + &agent("z", &["hold-tell", "agent y|holding"], "")
         + "NETWORK --ingress=7000 n\nCONNECT --port=7000 z TO y ON n\n";
     // The run's own command holds 64 MiB and waits for the host (D115: it sees none of the
-    // agents' processes, so the host watches them in `shards top`). The host waits until a
-    // domain has filled (`filling` seen) and then been ended whole (`filling` and its
-    // `held` sibling gone), takes that snapshot, and signals the command; its survival
-    // proves it was spared. `innocent` (the holding agent z) still there means z was
-    // spared. The command's survival and the agents' own output are the rest of the proof.
-    let run = |name: &str, tag: &str, agents: &str| -> (Vec<String>, String) {
+    // agents' processes, so the host watches them in `shards top`). Init says in the run's
+    // log, which keeps it, as an agent is ended (`said`); the host then waits for a look at
+    // the processes in which the filler's `filling` and its `held` sibling are gone, takes
+    // that snapshot, and signals the command; its survival proves it was spared.
+    // `innocent` (the holding agent z) still there means z was spared. The command's
+    // survival and the agents' own output are the rest of the proof.
+    let run = |name: &str, tag: &str, agents: &str, said: &str| -> (Vec<String>, String) {
         let ctx = context(&format!("oom-ctx-{tag}"), &format!("FROM {image}\n"));
         std::fs::write(ctx.join("Agentfile"), format!("FROM {image}\n{agents}")).unwrap();
         let built = shards(&["build", "-t", tag, ctx.to_str().unwrap()]);
         assert_eq!(built.status, Some(0), "{}", built.stderr);
-        let mut seen_filling = false;
+        let mut told = false;
         let mut ended: Vec<String> = Vec::new();
         let mut ready = |rows: &[Vec<String>]| {
             let comms: Vec<&str> = rows.iter().filter_map(|r| r.last().map(String::as_str)).collect();
-            let there = comms.contains(&"filling") || comms.contains(&"held");
-            // A filler may fill and be ended between two looks at /proc, each a whole `shards
-            // top`, which under load come further apart than it lives: the run's log, which
-            // keeps its lines, says it filled where no look caught it.
-            seen_filling |= comms.contains(&"filling")
-                || (!there && {
-                    let logged = shards(&["logs", name]);
-                    format!("{}{}", logged.stdout, logged.stderr).contains(" confined filled ")
-                });
-            let gone = seen_filling && !there;
-            if gone {
+            // Each call's rows are a look taken after the call before it returned: once the
+            // log has said so, a look without the filler's processes is one after its end.
+            // A look before the filler forked lists neither either, nor z as `innocent`
+            // where z had yet to name itself (CI run 38264181419).
+            if told && !(comms.contains(&"filling") || comms.contains(&"held")) {
                 ended = comms.iter().map(|c| (*c).to_string()).collect();
+                return true;
             }
-            gone
+            if !told {
+                let logged = shards(&["logs", name]);
+                told = format!("{}{}", logged.stdout, logged.stderr)
+                    .lines()
+                    .any(|l| l.starts_with(said));
+            }
+            false
         };
         let ran = common::run_watching(
             &env,
@@ -9955,6 +9958,10 @@ fn agents_out_of_memory_end_whole_and_spare_the_run() {
             TIMEOUT,
         );
         let all = format!("{}{}", ran.stdout, ran.stderr);
+        assert!(
+            all.lines().any(|l| l.starts_with(said)),
+            "init never said {said:?}:\n{all}"
+        );
         // The command held 64 MiB throughout and was not ended with the agents.
         assert_eq!(
             ran.status,
@@ -9976,16 +9983,27 @@ fn agents_out_of_memory_end_whole_and_spare_the_run() {
         );
         (ended, all)
     };
-    // x ends at its own limit, where its memory is its resident 9 MiB and its scratch.
-    let (_, all) = run("aw-oom-x", "oom-x:1", &x);
+    // x ends at its own limit, where its memory is its resident 9 MiB and its scratch, and
+    // init says so.
+    let (_, all) = run(
+        "aw-oom-x",
+        "oom-x:1",
+        &x,
+        "[agent x] shards-init: ended: its memory reached its limit, 33554432 bytes",
+    );
     let x_filled = all
         .lines()
         .filter_map(|l| l.strip_prefix("[agent x] confined filled "))
         .filter_map(|v| v.parse::<u64>().ok())
         .max()
         .unwrap_or(0);
-    assert!(x_filled > 32 && x_filled < 64, "x filled {x_filled} MiB:\n{all}");
-    let (ended, all) = run("aw-oom-yz", "oom-yz:1", &yz);
+    assert!(x_filled > 16 && x_filled < 32, "x filled {x_filled} MiB:\n{all}");
+    let (ended, all) = run(
+        "aw-oom-yz",
+        "oom-yz:1",
+        &yz,
+        "[agent y] shards-init: ended: the agents' memory",
+    );
     // z, holding memory but no scratch, is spared where the kernel's own choice (most
     // resident memory) would have ended it: it is still there when y's domain is gone.
     // z held its memory before y began filling: y heard it say so.
@@ -9999,10 +10017,10 @@ fn agents_out_of_memory_end_whole_and_spare_the_run() {
         ended.contains(&"innocent".to_string()),
         "z was ended with y:\n{all}"
     );
+    // Nor did the kernel's OOM killer end z, which init would have said.
     assert!(
-        all.lines()
-            .any(|l| l.starts_with("[agent y] shards-init: ended: the agents' memory")),
-        "init did not end y:\n{all}"
+        !all.lines().any(|l| l.starts_with("[agent z] shards-init: ended")),
+        "z was ended:\n{all}"
     );
 }
 
