@@ -2,7 +2,8 @@
 # sees of its processor and its hypervisor, and what an exit costs (PM M197, src/main.rs);
 # an AP's start, interrupts, register access, doorbells and cancels (PM M198, src/bin/m198.rs);
 # a partition run from an AppContainer (PM M200, src/bin/m200.rs); the VM process confined as
-# shards would confine it (PM M201, src/bin/m201.rs).
+# shards would confine it (PM M201, src/bin/m201.rs); dynamic code forbidden after setup (PM
+# M202, src/bin/m202.rs).
 [package]
 name = "whp-run"
 version = "0.1.0"
