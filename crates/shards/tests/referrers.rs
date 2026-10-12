@@ -37,6 +37,7 @@ fn cosign_key() -> (String, String, Vec<u8>) {
 }
 
 /// The PKCS #8 of the oracle's key `name`.
+#[cfg(unix)]
 fn oracle_pkcs8(name: &str) -> Vec<u8> {
     let oracle: serde_json::Value =
         serde_json::from_str(include_str!("../../sigstore/testdata/cosign/oracle.json")).unwrap();
@@ -60,6 +61,8 @@ fn oracle_pkcs8(name: &str) -> Vec<u8> {
 /// policy's message said; signed, allowed, from the store where it was signed and from
 /// the registry by a build that pulls it with its signature; with another key named,
 /// refused again.
+// Its builds run in a builder VM, which no host but Unix has yet (builder.rs).
+#[cfg(unix)]
 #[test]
 fn policies_hold_an_agent_to_its_signature() {
     // Its build runs in a VM, and the test image it builds from carries a test guest
@@ -285,6 +288,8 @@ fn policies_hold_an_agent_to_its_signature() {
 /// run over the agent's content as a build's result is scanned (D81), its config left out;
 /// kept with it as a referrer of type `application/spdx+json` whose one layer is the
 /// scanner's SPDX document, listed by `inspect`, and pushed with it.
+// Its scanner's build runs in a builder VM, as above.
+#[cfg(unix)]
 #[test]
 fn an_agents_sbom_is_a_referrer_scanned_as_buildkit_scans() {
     if common::cannot_run_vms() {

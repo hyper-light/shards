@@ -14,7 +14,7 @@ use windows_sys::Win32::System::Memory::{
     CreateFileMappingW, MEM_COMMIT, MEM_DECOMMIT, MEM_PRESERVE_PLACEHOLDER, MEM_RELEASE,
     MEM_REPLACE_PLACEHOLDER, MEM_RESERVE, MEM_RESERVE_PLACEHOLDER, MEMORY_MAPPED_VIEW_ADDRESS,
     MapViewOfFile3, PAGE_NOACCESS, PAGE_READONLY, PAGE_READWRITE, UnmapViewOfFile2, VirtualAlloc,
-    VirtualAlloc2, VirtualFree,
+    VirtualAlloc2, VirtualFree, VirtualProtect,
 };
 use windows_sys::Win32::System::SystemInformation::{GetSystemInfo, SYSTEM_INFO};
 use windows_sys::Win32::System::Threading::GetCurrentProcess;
@@ -88,19 +88,27 @@ pub unsafe fn release(ptr: NonNull<u8>, _len: usize) {
     unsafe { VirtualFree(ptr.as_ptr().cast(), 0, MEM_RELEASE) };
 }
 
-/// The first `mapped` bytes of `file` read-only, then zeros, `len` bytes in all at one
-/// address: a placeholder of `len` bytes (VirtualAlloc2), split at `mapped`, the file's
-/// view in the first (MapViewOfFile3, MEM_REPLACE_PLACEHOLDER: page-aligned, not 64 KiB,
-/// its base and size the placeholder's) and committed zeros in the second, both read-only.
-/// Every VM that maps one file shares its pages in the cache, as on Unix. `mapped` is
-/// page-aligned and at most `len`.
-pub fn map_file_padded(file: &File, mapped: usize, len: usize) -> io::Result<NonNull<u8>> {
-    if mapped > len || mapped == 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("{mapped} bytes of a file in {len}"),
-        ));
-    }
+/// The `size` bytes of `file` read-only, then zeros, `len` bytes in all at one address; and
+/// how many of them are the file's view. A placeholder of `len` bytes (VirtualAlloc2), split
+/// where the file's last whole page ends: its whole pages a view of the file
+/// (MapViewOfFile3, MEM_REPLACE_PLACEHOLDER: page-aligned, its base and size the
+/// placeholder's), whose pages every VM that maps the file shares in the cache, as on Unix;
+/// the rest committed memory, the file's last partial page copied into it, then read-only.
+/// A view may not run past its section's end, which is the file's size: one rounded up to
+/// a page is refused (ERROR_ACCESS_DENIED, CI run 38217982469). `len` is page-aligned.
+pub fn map_file_padded(file: &File, size: u64, len: usize) -> io::Result<(NonNull<u8>, usize)> {
+    let page = page_size()?;
+    let size = usize::try_from(size)
+        .ok()
+        .filter(|&s| s > 0 && s <= len && len.is_multiple_of(page))
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{size} bytes of a file in {len}"),
+            )
+        })?;
+    let whole = size - size % page;
+    let tail = len - whole;
     // SAFETY: the pseudo-handle of this process, which needs no closing.
     let process = unsafe { GetCurrentProcess() };
     // SAFETY: a fresh placeholder, which only this function references.
@@ -116,12 +124,13 @@ pub fn map_file_padded(file: &File, mapped: usize, len: usize) -> io::Result<Non
         )
     };
     let base = NonNull::new(base.cast::<u8>()).ok_or_else(io::Error::last_os_error)?;
-    let tail = len - mapped;
-    // Frees what is mapped of `base` so far, on a failure: the view, then the tail.
-    let undo = |view: bool, rest: bool| {
-        // SAFETY: placeholders and views this function made, which nothing references.
+    // Frees, on a failure, what is at `base` and at `base + whole`: a view, an allocation
+    // or a placeholder, each released whole.
+    let undo = |viewed: bool| {
+        // SAFETY: placeholders, views and allocations this function made, which nothing
+        // references.
         unsafe {
-            if view {
+            if viewed {
                 UnmapViewOfFile2(
                     process,
                     MEMORY_MAPPED_VIEW_ADDRESS {
@@ -132,103 +141,129 @@ pub fn map_file_padded(file: &File, mapped: usize, len: usize) -> io::Result<Non
             } else {
                 VirtualFree(base.as_ptr().cast(), 0, MEM_RELEASE);
             }
-            if rest {
-                VirtualFree(base.as_ptr().add(mapped).cast(), 0, MEM_RELEASE);
+            if whole > 0 && tail > 0 {
+                VirtualFree(base.as_ptr().add(whole).cast(), 0, MEM_RELEASE);
             }
         }
     };
-    if tail > 0 {
+    if whole > 0 && tail > 0 {
         // SAFETY: splits our own placeholder in two at a page boundary within it.
         let split = unsafe {
             VirtualFree(
                 base.as_ptr().cast(),
-                mapped,
+                whole,
                 MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER,
             )
         };
         if split == 0 {
             let e = io::Error::last_os_error();
-            undo(false, false);
+            // SAFETY: the placeholder, still whole.
+            unsafe { VirtualFree(base.as_ptr().cast(), 0, MEM_RELEASE) };
             return Err(e);
         }
     }
-    // SAFETY: a read-only section of the whole file, closed once its view holds it.
-    let section = unsafe {
-        CreateFileMappingW(
-            file.as_raw_handle(),
-            std::ptr::null(),
-            PAGE_READONLY,
-            0,
-            0,
-            std::ptr::null(),
-        )
-    };
-    if section.is_null() {
-        let e = io::Error::last_os_error();
-        undo(false, tail > 0);
-        return Err(e);
-    }
-    // SAFETY: the view replaces the first placeholder, at its base and of its size.
-    let view = unsafe {
-        MapViewOfFile3(
-            section,
-            process,
-            base.as_ptr().cast(),
-            0,
-            mapped,
-            MEM_REPLACE_PLACEHOLDER,
-            PAGE_READONLY,
-            std::ptr::null_mut(),
-            0,
-        )
-    };
-    let mapped_err = view.Value.is_null().then(io::Error::last_os_error);
-    // SAFETY: the section handle, which the view (if any) keeps alive by itself.
-    unsafe { CloseHandle(section) };
-    if let Some(e) = mapped_err {
-        undo(false, tail > 0);
-        return Err(e);
-    }
-    if tail > 0 {
-        // SAFETY: committed zeros replace the second placeholder, at its base and size.
-        let zeros = unsafe {
-            VirtualAlloc2(
+    if whole > 0 {
+        // SAFETY: a read-only section of the whole file, closed once its view holds it.
+        let section = unsafe {
+            CreateFileMappingW(
+                file.as_raw_handle(),
+                std::ptr::null(),
+                PAGE_READONLY,
+                0,
+                0,
+                std::ptr::null(),
+            )
+        };
+        if section.is_null() {
+            let e = io::Error::last_os_error();
+            undo(false);
+            return Err(e);
+        }
+        // SAFETY: the view replaces the first placeholder, at its base and of its size,
+        // within the section.
+        let view = unsafe {
+            MapViewOfFile3(
+                section,
                 process,
-                base.as_ptr().add(mapped).cast(),
-                tail,
-                MEM_RESERVE | MEM_COMMIT | MEM_REPLACE_PLACEHOLDER,
+                base.as_ptr().cast(),
+                0,
+                whole,
+                MEM_REPLACE_PLACEHOLDER,
                 PAGE_READONLY,
                 std::ptr::null_mut(),
                 0,
             )
         };
-        if zeros.is_null() {
-            let e = io::Error::last_os_error();
-            // The second placeholder is still one: released as such.
-            undo(true, true);
+        let failed = view.Value.is_null().then(io::Error::last_os_error);
+        // SAFETY: the section handle, which the view (if any) keeps alive by itself.
+        unsafe { CloseHandle(section) };
+        if let Some(e) = failed {
+            undo(false);
             return Err(e);
         }
     }
-    Ok(base)
+    if tail > 0 {
+        // SAFETY: committed zeros replace the last placeholder, at its base and size.
+        let rest = unsafe {
+            VirtualAlloc2(
+                process,
+                base.as_ptr().add(whole).cast(),
+                tail,
+                MEM_RESERVE | MEM_COMMIT | MEM_REPLACE_PLACEHOLDER,
+                PAGE_READWRITE,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        if rest.is_null() {
+            let e = io::Error::last_os_error();
+            undo(whole > 0);
+            return Err(e);
+        }
+        let mut copied = whole;
+        while copied < size {
+            // SAFETY: within the committed tail, which nothing else references yet.
+            let n = match unsafe { read_at(file, base.as_ptr().add(copied), size - copied, copied as u64) } {
+                Ok(0) => break,
+                Ok(n) => n,
+                Err(e) => {
+                    undo(whole > 0);
+                    return Err(e);
+                }
+            };
+            copied += n;
+        }
+        let mut old = 0u32;
+        // SAFETY: the committed tail, read-only from here on.
+        if unsafe { VirtualProtect(base.as_ptr().add(whole).cast(), tail, PAGE_READONLY, &raw mut old) } == 0
+        {
+            let e = io::Error::last_os_error();
+            undo(whole > 0);
+            return Err(e);
+        }
+    }
+    Ok((base, whole))
 }
 
-/// Unmaps what [`map_file_padded`] mapped: the view, then the zeros after it.
+/// Unmaps what [`map_file_padded`] mapped: the view, then what follows it.
 ///
 /// # Safety
-/// `ptr`, `mapped` and `len` are a mapping's from [`map_file_padded`], which nothing uses
+/// `ptr`, `viewed` and `len` are a mapping's from [`map_file_padded`], which nothing uses
 /// any more: no hypervisor maps it.
-pub unsafe fn unmap_file_padded(ptr: NonNull<u8>, mapped: usize, len: usize) {
+pub unsafe fn unmap_file_padded(ptr: NonNull<u8>, viewed: usize, len: usize) {
     // SAFETY: forwarded caller contract.
     unsafe {
-        UnmapViewOfFile2(
-            GetCurrentProcess(),
-            MEMORY_MAPPED_VIEW_ADDRESS {
-                Value: ptr.as_ptr().cast(),
-            },
-            0,
-        );
-        if len > mapped {
-            VirtualFree(ptr.as_ptr().add(mapped).cast(), 0, MEM_RELEASE);
+        if viewed > 0 {
+            UnmapViewOfFile2(
+                GetCurrentProcess(),
+                MEMORY_MAPPED_VIEW_ADDRESS {
+                    Value: ptr.as_ptr().cast(),
+                },
+                0,
+            );
+        }
+        if len > viewed {
+            VirtualFree(ptr.as_ptr().add(viewed).cast(), 0, MEM_RELEASE);
         }
     }
 }

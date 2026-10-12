@@ -397,10 +397,22 @@ pub unsafe fn map_file_readonly(file: &File, len: usize, at: NonNull<u8>) -> io:
     Ok(())
 }
 
-/// The first `mapped` bytes of `file` read-only, then zeros, `len` bytes in all at one
-/// address: a reservation with the file mapped over its start ([`map_file_readonly`]).
-/// `mapped` is page-aligned and at most `len`.
-pub fn map_file_padded(file: &File, mapped: usize, len: usize) -> io::Result<NonNull<u8>> {
+/// The `size` bytes of `file` read-only, then zeros, `len` bytes in all at one address; and
+/// how many of them are the file's mapping: a reservation with the file mapped over its
+/// start, to the page its last byte is in ([`map_file_readonly`]), whose rest the kernel
+/// fills with zeros. `len` is page-aligned.
+pub fn map_file_padded(file: &File, size: u64, len: usize) -> io::Result<(NonNull<u8>, usize)> {
+    let page = page_size()?;
+    let mapped = usize::try_from(size)
+        .ok()
+        .and_then(|s| s.checked_next_multiple_of(page))
+        .filter(|&m| m <= len && m > 0)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{size} bytes of a file in {len}"),
+            )
+        })?;
     let host = reserve(len)?;
     // SAFETY: `host..host+len` is a fresh reservation nothing references; `mapped` is
     // page-aligned and within it.
@@ -409,15 +421,15 @@ pub fn map_file_padded(file: &File, mapped: usize, len: usize) -> io::Result<Non
         unsafe { release(host, len) };
         return Err(e);
     }
-    Ok(host)
+    Ok((host, mapped))
 }
 
 /// Unmaps what [`map_file_padded`] mapped.
 ///
 /// # Safety
-/// `ptr`, `mapped` and `len` are a mapping's from [`map_file_padded`], which nothing uses
+/// `ptr`, `viewed` and `len` are a mapping's from [`map_file_padded`], which nothing uses
 /// any more: no hypervisor maps it.
-pub unsafe fn unmap_file_padded(ptr: NonNull<u8>, _mapped: usize, len: usize) {
+pub unsafe fn unmap_file_padded(ptr: NonNull<u8>, _viewed: usize, len: usize) {
     // SAFETY: forwarded caller contract; one munmap undoes the reservation and the file
     // mapped over it.
     unsafe { release(ptr, len) };

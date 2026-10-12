@@ -6974,3 +6974,31 @@ revision before comparing a changed API/implementation.
   where WHP needs it (windows-2022). Files and other handles reach it by DuplicateHandle
   alone; sockets it makes itself, in a directory of its own whose DACL grants its SID.
 
+
+### M202. Dynamic code forbidden once a partition is set up
+
+- **Question.** On windows-2022 a process spawned with ACG (no dynamic code) cannot set a
+  partition up (M201). A process may forbid itself dynamic code later, for good
+  (SetProcessMitigationPolicy, ProcessDynamicCodePolicy). Does every WHP call the VMM makes
+  after a partition's setup still work then, so that the VM process can turn ACG on before
+  it reads anything a guest wrote?
+- **Method.** `docs/research/measurements/whp-run/src/bin/m202.rs`, by `whp-run.yml`, run
+  38220452267 on branch `whp`, 2026-10-12, on a windows-2022 (AMD EPYC 7763) and a
+  windows-2025 (Windows NT 10.0.26100) runner: a partition of two vCPUs set up, then ACG
+  turned on, then each call that follows setup in a VM's life: guest memory mapped, a vCPU
+  created on the main thread and one on another thread, registers set, a run to its exit
+  (a port write), an interrupt asked, a run canceled, part of guest memory unmapped and
+  mapped again, a vCPU's CPUID read, a vCPU deleted; last, a second partition's setup.
+- **Found:**
+  - ACG turns on (SetProcessMitigationPolicy returns 1) and every call after the setup
+    works on both runners. The run exits at the guest's port write (0x501), as it does
+    without ACG.
+  - A second partition's setup works on windows-2025 and fails on windows-2022 with
+    HRESULT_FROM_WIN32(ERROR_DYNAMIC_CODE_BLOCKED) (0x80070677), as a process spawned with
+    ACG fails its first (M201).
+  - The vCPU's CPUID leaf 0x40000005 reads 0 here as in M197's partitions: this partition
+    was not offered the synthetic features, which a VM's is (D140).
+- **Consequence (D141).** The VM process sets its one partition up, then forbids itself
+  dynamic code before it loads the kernel or runs a vCPU, on every Windows the runners
+  have. Nothing it does after that point needs dynamic code. The library never does this
+  itself: tests set up many partitions in one process, which windows-2022 refuses after ACG.
