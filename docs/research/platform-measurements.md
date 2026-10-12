@@ -7090,3 +7090,30 @@ revision before comparing a changed API/implementation.
   shares them, as it binds a VM's vsock socket (M203), and dials for it what is on the
   host's loopback. A doorbell costs what AF_UNIX's round trip does (29.1 / 31.3 µs at
   p50, M199).
+
+### M205. AF_UNIX connects that do not wait, on Windows
+
+- **Question.** A nonblocking connect to a Unix socket on Linux and macOS connects at once, or
+  is refused (ECONNREFUSED where nothing listens, EAGAIN where the backlog is full): what
+  shards' vsock device and its network stack's proxy dial take. On Windows both refused
+  every connection (CI run 38235548677: a guest's connection to a host port reset, the
+  proxy's never made). What does afunix.sys answer?
+- **Method.** `docs/research/measurements/windows-afunix` (`m205`), by `windows-afunix.yml`,
+  run 38239766177 on branch `whp`, 2026-10-12, on a windows-2025 and a windows-2022 runner:
+  1,000 nonblocking connects to a listener with room, each's return and the time until
+  WSAPoll says its socket may be written; one to a path whose listener has closed; up to 64
+  to a listener of backlog 1 that accepts none, then one accept; and a blocking connect to
+  that full backlog, an accept coming 500 ms later.
+- **Found** (windows-2025 / windows-2022 alike):
+  - Every nonblocking connect to a listener with room returned WSAEWOULDBLOCK (10035) and
+    was writable (POLLWRNORM) 11.7 / 10.4 µs later at p50, 19.8 / 15.6 at p99, 62.0 / 39.9 at
+    most (n = 1,000).
+  - Where nothing listens: WSAECONNREFUSED (10061) at once.
+  - A backlog of 1 took five connects, each under way then writable in microseconds; every
+    later one was refused at once with WSAENOBUFS (10055), and stayed refused after an
+    accept made room.
+  - A blocking connect to the full backlog failed with WSAENOBUFS in 140-215 µs, not
+    waiting for the accept.
+- **Consequence (D141).** shards' AF_UNIX connect that does not wait waits out Windows'
+  "under way", which ends in microseconds where the listener has room: so it connects at
+  once or is refused, as Unix's does; WSAENOBUFS is Unix's EAGAIN, a full backlog.

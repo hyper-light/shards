@@ -15,11 +15,11 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use windows_sys::Win32::Networking::WinSock::{
-    AF_UNIX, FIONBIO, FROM_PROTOCOL_INFO, INVALID_SOCKET, POLLRDNORM, SD_BOTH, SD_RECEIVE, SD_SEND, SO_ERROR,
-    SOCK_STREAM, SOCKADDR_UN, SOCKET, SOL_SOCKET, SOMAXCONN, WSA_FLAG_NO_HANDLE_INHERIT, WSABUF, WSADATA,
-    WSADuplicateSocketW, WSAGetLastError, WSAPOLLFD, WSAPROTOCOL_INFOW, WSAPoll, WSARecv, WSASend,
-    WSASocketW, WSAStartup, accept, bind, closesocket, connect, getpeername, getsockopt, ioctlsocket, listen,
-    recv, send, shutdown,
+    AF_UNIX, FIONBIO, FROM_PROTOCOL_INFO, INVALID_SOCKET, POLLRDNORM, POLLWRNORM, SD_BOTH, SD_RECEIVE,
+    SD_SEND, SO_ERROR, SOCK_STREAM, SOCKADDR_UN, SOCKET, SOL_SOCKET, SOMAXCONN, WSA_FLAG_NO_HANDLE_INHERIT,
+    WSABUF, WSADATA, WSADuplicateSocketW, WSAEWOULDBLOCK, WSAGetLastError, WSAPOLLFD, WSAPROTOCOL_INFOW,
+    WSAPoll, WSARecv, WSASend, WSASocketW, WSAStartup, accept, bind, closesocket, connect, getpeername,
+    getsockopt, ioctlsocket, listen, recv, send, shutdown,
 };
 
 /// A socket, as WSAPoll and WSAEventSelect name it.
@@ -215,14 +215,35 @@ impl UnixStream {
         Ok(UnixStream::wrap(s))
     }
 
-    /// Connects without blocking: a listener whose backlog is full refuses at once.
+    /// Connects without blocking on the listener: connected at once, or refused, as Unix's
+    /// connect is (a full backlog refuses at once, WSAENOBUFS, Unix's EAGAIN). Windows
+    /// says every such connect is under way (WSAEWOULDBLOCK) and ends it in microseconds
+    /// where the listener has room (PM M205: 62 µs at most): it is waited out here.
     pub fn connect_nonblocking(path: &Path) -> io::Result<UnixStream> {
         let addr = address(path)?;
         let s = Socket::new()?;
         s.set_nonblocking(true)?;
         // SAFETY: an address of its own length.
         if unsafe { connect(s.0, (&raw const addr).cast(), ADDRESS_LEN) } != 0 {
-            return Err(last());
+            let e = last();
+            if e.raw_os_error() != Some(WSAEWOULDBLOCK) {
+                return Err(e);
+            }
+            let mut fd = WSAPOLLFD {
+                fd: s.0,
+                events: POLLWRNORM,
+                revents: 0,
+            };
+            // SAFETY: one entry, a socket this function owns; until the connect ends, which
+            // the kernel ends without its listener's process.
+            if unsafe { WSAPoll(&raw mut fd, 1, -1) } < 0 {
+                return Err(last());
+            }
+            let stream = UnixStream::wrap(s);
+            if let Some(e) = stream.take_error()? {
+                return Err(e);
+            }
+            return Ok(stream);
         }
         Ok(UnixStream::wrap(s))
     }
@@ -596,6 +617,27 @@ mod tests {
         let mut buf = [0u8; 2];
         (&accepted).read_exact(&mut buf).unwrap();
         assert_eq!(&buf, b"in");
+    }
+
+    /// A connect that does not wait connects at once where a listener has room, and is
+    /// refused where none listens (PM M205).
+    #[test]
+    fn a_connect_that_does_not_wait_connects_or_is_refused() {
+        let dir = shards_testdir::TempDir::new("afunix-nowait").unwrap();
+        let path = dir.join("l.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        let client = UnixStream::connect_nonblocking(&path).unwrap();
+        client.peer_addr().expect("connected at once");
+        let (accepted, ()) = listener.accept().unwrap();
+        (&client).write_all(b"now").unwrap();
+        let mut buf = [0u8; 3];
+        accepted
+            .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+            .unwrap();
+        (&accepted).read_exact(&mut buf).unwrap();
+        assert_eq!(&buf, b"now");
+        drop(listener);
+        assert!(UnixStream::connect_nonblocking(&path).is_err(), "nothing listens");
     }
 
     /// A socket bound and not yet listening refuses a client; listening, it takes one.

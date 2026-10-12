@@ -191,3 +191,32 @@ fn the_vm_process_is_confined() {
         FreeSid(sid);
     }
 }
+
+/// Two vCPUs booted in this process to their end, their console written to this process's
+/// output as a VM process writes its own: the control that tells the console's path apart
+/// from the confinement where the confined SMP boots stall (boot.rs's in-process boot
+/// discards its console).
+#[test]
+fn two_vcpus_boot_to_their_end_with_their_console() {
+    use shards_vmm::vm::{self, Config, Console, ExitReason};
+    if cannot_run_vms() {
+        return;
+    }
+    let mut cfg = Config::new(kernel().to_path_buf(), None);
+    cfg.vcpus = 2;
+    cfg.memory_mib = 512;
+    cfg.cmdline = "console=ttyS0 panic=-1".into();
+    cfg.console = Console::Stdout;
+    let (handle, running) = vm::start(&cfg).unwrap_or_else(|e| panic!("{e}"));
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(running.wait());
+    });
+    match rx.recv_timeout(TIMEOUT) {
+        Ok(reason) => assert_eq!(reason, ExitReason::Reset),
+        Err(_) => {
+            handle.stop();
+            panic!("two vCPUs with their console did not reach their end in {TIMEOUT:?} in this process");
+        }
+    }
+}
