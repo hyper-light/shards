@@ -40,10 +40,10 @@ echo "# shards-vm"
 python3 "$(dirname "$0")/parse.py" "$out"/*.trace
 echo "# shards-net"
 python3 "$(dirname "$0")/parse.py" --program shards-net "$out"/*.trace
-# What it makes once confined: after Landlock's last step (confine.rs, at_start), where
-# its filter goes.
-echo "# shards-net, once confined"
-python3 "$(dirname "$0")/parse.py" --program shards-net --after landlock_restrict_self "$out"/*.trace
+# What it makes once filtered: after its filter's install (confine.rs, filter), which
+# must allow all of it; refusals are below.
+echo "# shards-net, once filtered"
+python3 "$(dirname "$0")/parse.py" --program shards-net --after seccomp "$out"/*.trace
 # What a filter refused, as strace reports the SIGSYS it raised.
 echo "## refused"
 grep -h -o 'SIGSYS {[^}]*si_syscall=[^,}]*' "$out"/*.trace | grep -o 'si_syscall=[^,}]*' | sort | uniq -c || echo "none"

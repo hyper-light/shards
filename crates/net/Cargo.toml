@@ -18,6 +18,9 @@ shards-ipc = { path = "../ipc" }
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+shards-syscall-filter = { path = "../syscall-filter" }
+
 [target.'cfg(windows)'.dependencies]
 shards-afunix = { path = "../afunix" }
 windows-sys = { workspace = true, features = [

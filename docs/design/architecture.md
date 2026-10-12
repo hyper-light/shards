@@ -1930,9 +1930,14 @@ stack inside the VMM, is superseded by it.
     `at_start_leaves_no_file_and_no_port_of_its_own` and
     `to_ports_reaches_the_granted_ports_alone` (Linux, each in a process of its own),
     `the_network_process_runs_in_app_sandbox_alone` (macOS; mutation-checked: the
-    self-check off), and every networked E2E through the confined process. Open: seccomp's
-    allowlist, which needs the syscalls it makes measured on Linux first, as the VM
-    process's were (M52).
+    self-check off), and every networked E2E through the confined process. Linux x86_64
+    (2026-10-12, PM M209): a seccomp filter after Landlock's first layer, of the syscalls a
+    network process is seen to make once confined, with glibc and with musl, its sockets
+    held to IPv4, IPv6 and Unix, ioctl to FIONBIO, fcntl to close-on-exec and duplicates,
+    prctl to no_new_privs and its name, socket options to the socket's and TCP's levels;
+    no exec, process, thread or file (`the_filter_ends_a_process_that_makes_what_none_makes`,
+    and every networked E2E through the filtered process). arm64 Linux's, as the VM
+    process's, once its KVM backend runs VMs to measure it on.
 - **The guest's side.** A virtio-net device in the VM process, configured before the
   template is saved, with a static address, no DHCP or duplicate-address detection, and
   its gateway's MAC as a permanent neighbor, so that restores do no network work

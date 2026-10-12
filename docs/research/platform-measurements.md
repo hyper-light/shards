@@ -7235,6 +7235,43 @@ revision before comparing a changed API/implementation.
   (`SHARDS_LOG`, `SHARDS_TIMING`) and this process's `LOCALAPPDATA` and `SystemRoot` alone;
   its temporary directory is its container's own.
 
+### M209. What a network process asks of its kernel, once confined (D31)
+
+- **Question.** A network process parses what its guest and the Internet send. Landlock
+  keeps it from files and from the TCP ports it is not granted, but every syscall stays
+  open to it. Which does it make, so that a filter allows those alone
+  (rootless-security.md R3), as the VM process's allows its own (M52)?
+- **Method.** `docs/research/measurements/vmm-syscalls/collect.sh`: every VM E2E test
+  binary under `strace -f` on a KVM host, `build`'s steps that reach the network or a
+  proxy among them; `parse.py --program shards-net` counts what each network process
+  makes over its life, and with `--after landlock_restrict_self` what it makes once
+  Landlock's first layer holds it, where its filter goes. glibc on CI's ubuntu-24.04 and
+  musl in rust:1.98.0-alpine, x86_64, b09a55ae, run 38269376753, 2026-10-12: about 640
+  network processes each, every one single-threaded.
+- **Results.** Over its life, 47 syscalls (glibc), most of them its start's: the dynamic
+  loader's (openat, pread64, mprotect, arch_prctl, access) and the runtime's (poll,
+  rt_sigaction, prlimit64, sched_getaffinity, rseq, set_robust_list, set_tid_address).
+  Once confined, 33 with glibc and 32 with musl:
+
+  | | syscalls |
+  |---|---|
+  | its flows | socket, connect, bind, accept4, shutdown, getpeername, getsockopt, setsockopt, recvfrom, sendto, recvmsg, sendmsg, read, write, writev, close |
+  | its loop | epoll_create1, epoll_ctl, epoll_wait (glibc) or epoll_pwait (musl) |
+  | memory | mmap, munmap, mremap, brk (glibc alone) |
+  | the rest | fcntl, ioctl, fstat (the ring's size), getrandom, sigaltstack (at its exit), exit_group |
+  | its policy's Landlock layer | landlock_create_ruleset, landlock_add_rule, landlock_restrict_self, prctl |
+
+  Their arguments: sockets AF_INET, AF_INET6 and AF_UNIX; ioctl FIONBIO; fcntl
+  F_DUPFD_CLOEXEC and F_SETFD; prctl PR_SET_NO_NEW_PRIVS; setsockopt SO_RCVBUF and
+  SO_SNDBUF of SOL_SOCKET and TCP_NODELAY of SOL_TCP; getsockopt SO_ERROR of SOL_SOCKET.
+  None execs, makes a process or a thread, or opens a file.
+- **Consequence (D31).** The network process installs a filter of these, glibc's and
+  musl's together, after Landlock's first layer (`confine::filter`): each argument above
+  held to its values, setsockopt to the socket's and TCP's levels, prctl's to
+  no_new_privs and the thread's name its refusals' report reads, and clock_gettime too,
+  which the vDSO answers but where it cannot read the host's clocksource. A syscall
+  outside it ends the process with SIGSYS, the syscall named.
+
 ### M210. What a network process costs its host as its connections grow (D31, E2)
 
 - **Question.** A VM's network process holds a host socket and a record for each of its
