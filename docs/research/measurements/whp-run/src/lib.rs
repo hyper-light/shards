@@ -2,6 +2,8 @@
 //! shards binds them, so that a probe starts where they are not; and what the probes share.
 //! The probes: `main.rs` (PM M197) and `bin/m198.rs` (PM M198).
 
+pub mod confine;
+
 use std::ffi::c_void;
 use std::time::Duration;
 

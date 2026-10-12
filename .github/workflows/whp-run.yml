@@ -5,7 +5,8 @@ name: whp run
 # start, interrupts, register access, doorbells and cancels (PM M198); a partition run from
 # an AppContainer (PM M200); the VM process confined as shards would confine it (PM M201);
 # dynamic code forbidden once a partition is set up (PM M202); sockets and files a confined VM
-# process is handed (PM M203). Runs when the probes change,
+# process is handed (PM M203); what a confined network process may reach, and its doorbells
+# (PM M204). Runs when the probes change,
 # or when asked.
 on:
   push:
@@ -76,3 +77,8 @@ jobs:
         shell: bash
         working-directory: docs/research/measurements/whp-run
         run: cargo run --release --bin m203
+      - name: M204
+        if: ${{ !cancelled() }}
+        shell: bash
+        working-directory: docs/research/measurements/whp-run
+        run: cargo run --release --bin m204

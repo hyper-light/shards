@@ -24,58 +24,33 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use windows_sys::Win32::Foundation::{
-    CloseHandle, DUPLICATE_SAME_ACCESS, DuplicateHandle, ERROR_INVALID_PARAMETER, GENERIC_ALL, HANDLE,
-    HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, LocalFree, SetHandleInformation,
+    CloseHandle, DUPLICATE_SAME_ACCESS, DuplicateHandle, GENERIC_ALL, HANDLE, INVALID_HANDLE_VALUE, LocalFree,
 };
 use windows_sys::Win32::Networking::WinSock::*;
 use windows_sys::Win32::Security::Authorization::{
     EXPLICIT_ACCESS_W, GetSecurityInfo, NO_MULTIPLE_TRUSTEE, SE_FILE_OBJECT, SET_ACCESS, SetEntriesInAclW,
     SetNamedSecurityInfoW, TRUSTEE_IS_SID, TRUSTEE_IS_UNKNOWN, TRUSTEE_W,
 };
-use windows_sys::Win32::Security::Isolation::{CreateAppContainerProfile, DeleteAppContainerProfile};
 use windows_sys::Win32::Security::{
-    ACCESS_ALLOWED_ACE, ACL, CreateWellKnownSid, DACL_SECURITY_INFORMATION, FreeSid, GetAce, GetLengthSid,
+    ACCESS_ALLOWED_ACE, ACL, CreateWellKnownSid, DACL_SECURITY_INFORMATION, GetAce, GetLengthSid,
     GetTokenInformation, NO_INHERITANCE, PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
-    SECURITY_CAPABILITIES, SID_AND_ATTRIBUTES, SUB_CONTAINERS_AND_OBJECTS_INHERIT, TOKEN_QUERY, TOKEN_USER,
-    TokenUser, WinBuiltinAdministratorsSid, WinLocalSystemSid,
+    SUB_CONTAINERS_AND_OBJECTS_INHERIT, TOKEN_QUERY, TOKEN_USER, TokenUser, WinBuiltinAdministratorsSid,
+    WinLocalSystemSid,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, FILE_NAME_NORMALIZED, FILE_NAME_OPENED, FILE_SHARE_READ, FILE_SHARE_WRITE,
     GetFinalPathNameByHandleW, OPEN_EXISTING, READ_CONTROL, ReadFile, WriteFile,
 };
-use windows_sys::Win32::System::JobObjects::{
-    CreateJobObjectW, JOB_OBJECT_LIMIT_ACTIVE_PROCESS, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation, SetInformationJobObject,
-};
 use windows_sys::Win32::System::Pipes::CreatePipe;
-use windows_sys::Win32::System::SystemServices::SE_GROUP_ENABLED;
 use windows_sys::Win32::System::Threading::{
-    CREATE_SUSPENDED, CreateProcessW, DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT,
-    GetCurrentProcess, GetExitCodeProcess, INFINITE, InitializeProcThreadAttributeList,
-    LPPROC_THREAD_ATTRIBUTE_LIST, OpenProcessToken, PROC_THREAD_ATTRIBUTE_CHILD_PROCESS_POLICY,
-    PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROC_THREAD_ATTRIBUTE_JOB_LIST, PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY,
-    PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, PROCESS_INFORMATION, ResumeThread, STARTF_USESTDHANDLES,
-    STARTUPINFOEXW, UpdateProcThreadAttribute, WaitForSingleObject,
+    GetCurrentProcess, GetExitCodeProcess, INFINITE, OpenProcessToken, ResumeThread,
+    WaitForSingleObject,
 };
-
-/// D141's: no child processes (PROCESS_CREATION_CHILD_PROCESS_RESTRICTED); strict handle
-/// checks, no Win32k, no extension points, no remote or low-label images; no FSCTLs in the
-/// second word, which windows-2022 refuses (M201).
-const CHILD_PROCESS_RESTRICTED: u32 = 0x01;
-const MITIGATIONS: [u64; 2] = [(1 << 24) | (1 << 28) | (1 << 32) | (1 << 52) | (1 << 56), 1 << 56];
 
 /// Dials through the spawner, each way.
 const DIALS: usize = 200;
 /// WSAPROTOCOL_INFOW's size, which a dial's answer carries whole.
 const INFO: usize = std::mem::size_of::<WSAPROTOCOL_INFOW>();
-
-fn wide(s: &str) -> Vec<u16> {
-    s.encode_utf16().chain([0]).collect()
-}
-
-fn last() -> String {
-    std::io::Error::last_os_error().to_string()
-}
 
 fn wsa() -> String {
     // SAFETY: no arguments.
@@ -256,6 +231,8 @@ fn dup_into(h: HANDLE, process: HANDLE) -> Result<usize, String> {
     }
     Ok(out as usize)
 }
+
+use whp_run::confine::{Container, job, last, spawn, wide};
 
 // ---- The child ----
 
@@ -498,148 +475,6 @@ fn videxo_capabilities() -> Result<Vec<Vec<u8>>, String> {
     Ok(found)
 }
 
-fn job() -> Result<HANDLE, String> {
-    // SAFETY: an anonymous job.
-    let job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
-    if job.is_null() {
-        return Err(format!("CreateJobObjectW: {}", last()));
-    }
-    let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
-    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_ACTIVE_PROCESS;
-    limits.BasicLimitInformation.ActiveProcessLimit = 1;
-    // SAFETY: limits of their own size.
-    if unsafe {
-        SetInformationJobObject(
-            job,
-            JobObjectExtendedLimitInformation,
-            (&raw const limits).cast(),
-            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
-        )
-    } == 0
-    {
-        return Err(format!("SetInformationJobObject: {}", last()));
-    }
-    Ok(job)
-}
-
-/// A suspended child of `exe` in the AppContainer `sid` holding `caps`, in `job`, with
-/// D141's policy and mitigations (the second word left off where refused), inheriting
-/// standard output and `pipe` alone.
-fn spawn(exe: &Path, args: &str, sid: PSID, caps: &[Vec<u8>], job: HANDLE, pipe: HANDLE) -> Result<PROCESS_INFORMATION, String> {
-    let out = std::io::stdout().as_raw_handle() as HANDLE;
-    let mut handles = vec![out];
-    if !pipe.is_null() {
-        handles.push(pipe);
-    }
-    for &h in &handles {
-        // SAFETY: our handles, inheritable for the list below alone.
-        unsafe { SetHandleInformation(h, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) };
-    }
-    let mut held: Vec<SID_AND_ATTRIBUTES> = caps
-        .iter()
-        .map(|b| SID_AND_ATTRIBUTES {
-            Sid: b.as_ptr().cast_mut().cast(),
-            Attributes: SE_GROUP_ENABLED as u32,
-        })
-        .collect();
-    let capabilities = SECURITY_CAPABILITIES {
-        AppContainerSid: sid,
-        Capabilities: held.as_mut_ptr(),
-        CapabilityCount: held.len() as u32,
-        Reserved: 0,
-    };
-    let jobs = [job];
-    let policy = CHILD_PROCESS_RESTRICTED;
-    for words in [2usize, 1] {
-        let mut cmd = wide(&format!("\"{}\" {args}", exe.display()));
-        let mut size = 0usize;
-        // SAFETY: the size query.
-        unsafe { InitializeProcThreadAttributeList(std::ptr::null_mut(), 5, 0, &raw mut size) };
-        let mut list = vec![0usize; size.div_ceil(8)];
-        let attrs = list.as_mut_ptr() as LPPROC_THREAD_ATTRIBUTE_LIST;
-        // SAFETY: a buffer of the size asked.
-        if unsafe { InitializeProcThreadAttributeList(attrs, 5, 0, &raw mut size) } == 0 {
-            return Err(format!("InitializeProcThreadAttributeList: {}", last()));
-        }
-        let update = |attr: u32, value: *const c_void, size: usize| {
-            // SAFETY: values that outlive the list.
-            unsafe { UpdateProcThreadAttribute(attrs, 0, attr as usize, value, size, std::ptr::null_mut(), std::ptr::null()) }
-        };
-        update(PROC_THREAD_ATTRIBUTE_HANDLE_LIST, handles.as_ptr().cast(), handles.len() * 8);
-        update(PROC_THREAD_ATTRIBUTE_JOB_LIST, jobs.as_ptr().cast(), 8);
-        update(PROC_THREAD_ATTRIBUTE_CHILD_PROCESS_POLICY, (&raw const policy).cast(), 4);
-        update(PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY, MITIGATIONS.as_ptr().cast(), words * 8);
-        update(
-            PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
-            (&raw const capabilities).cast(),
-            std::mem::size_of::<SECURITY_CAPABILITIES>(),
-        );
-        let mut si = STARTUPINFOEXW::default();
-        si.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
-        si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
-        si.StartupInfo.hStdOutput = out;
-        si.StartupInfo.hStdError = out;
-        si.lpAttributeList = attrs;
-        let mut pi = PROCESS_INFORMATION::default();
-        // SAFETY: a command line we own; the startup info and its attributes alive.
-        let made = unsafe {
-            CreateProcessW(
-                std::ptr::null(),
-                cmd.as_mut_ptr(),
-                std::ptr::null(),
-                std::ptr::null(),
-                1,
-                EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED,
-                std::ptr::null(),
-                std::ptr::null(),
-                (&raw const si).cast(),
-                &raw mut pi,
-            )
-        };
-        let error = std::io::Error::last_os_error();
-        // SAFETY: the list initialized above.
-        unsafe { DeleteProcThreadAttributeList(attrs) };
-        if made != 0 {
-            return Ok(pi);
-        }
-        if words == 1 || error.raw_os_error() != Some(ERROR_INVALID_PARAMETER as i32) {
-            return Err(format!("CreateProcessW: {error}"));
-        }
-    }
-    Err("CreateProcessW: no attempt left".into())
-}
-
-struct Container {
-    name: Vec<u16>,
-    sid: PSID,
-}
-
-impl Container {
-    fn new(tag: &str) -> Result<Container, String> {
-        let name = wide(&format!("shards.m203.{tag}.{}", std::process::id()));
-        let mut sid: PSID = std::ptr::null_mut();
-        // SAFETY: a name we own; the SID freed and the profile deleted as this drops.
-        let hr = unsafe {
-            DeleteAppContainerProfile(name.as_ptr());
-            CreateAppContainerProfile(name.as_ptr(), name.as_ptr(), name.as_ptr(), std::ptr::null(), 0, &raw mut sid)
-        };
-        if hr < 0 {
-            return Err(format!("CreateAppContainerProfile: {:#010x}", hr as u32));
-        }
-        Ok(Container { name, sid })
-    }
-}
-
-impl Drop for Container {
-    fn drop(&mut self) {
-        // SAFETY: what `new` made.
-        unsafe {
-            DeleteAppContainerProfile(self.name.as_ptr());
-            FreeSid(self.sid);
-        }
-    }
-}
-
 /// Serves the child's dials on `link`, dialing `host` for each, until it says it is done.
 fn serve_dials(link: SOCKET, host: &Path, process: HANDLE, pid: u32) -> Result<(usize, usize), String> {
     let mut held: Vec<SOCKET> = Vec::new();
@@ -759,7 +594,7 @@ fn private_dir(dir: &Path) -> Result<(), String> {
 
 /// Runs `exe child-hello` confined, and says how it ended.
 fn hello_from(exe: &Path, caps: &[Vec<u8>]) -> String {
-    let container = match Container::new("hello") {
+    let container = match Container::new("m203", "hello") {
         Ok(c) => c,
         Err(e) => return e,
     };
@@ -767,7 +602,7 @@ fn hello_from(exe: &Path, caps: &[Vec<u8>]) -> String {
         Ok(j) => j,
         Err(e) => return e,
     };
-    let result = match spawn(exe, "child-hello", container.sid, caps, job, std::ptr::null_mut()) {
+    let result = match spawn(exe, "child-hello", container.sid, caps, job, &[]) {
         Ok(pi) => {
             let mut code = 0u32;
             // SAFETY: the child we made, waited on, then its handles closed.
@@ -829,7 +664,7 @@ fn spawner() -> Result<(), String> {
     }
     println!("a dial of the spawner's own: {}", whp_run::summary(&mut direct));
 
-    let container = Container::new("vm")?;
+    let container = Container::new("m203", "vm")?;
     let job = job()?;
     let (mut pr, mut pw): (HANDLE, HANDLE) = (std::ptr::null_mut(), std::ptr::null_mut());
     // SAFETY: two handles for the call to fill.
@@ -837,7 +672,7 @@ fn spawner() -> Result<(), String> {
         return Err(format!("CreatePipe: {}", last()));
     }
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let pi = spawn(&exe, &format!("child {}", pr as usize), container.sid, &caps, job, pr)?;
+    let pi = spawn(&exe, &format!("child {}", pr as usize), container.sid, &caps, job, &[pr])?;
     let t = Instant::now();
     let given = (|| -> Result<String, String> {
         let l2_info = info_for(l2, pi.dwProcessId)?;
