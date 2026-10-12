@@ -752,7 +752,8 @@ impl Coordinator {
     }
 }
 
-#[cfg(test)]
+// Of granted inputs, which only Unix hosts have.
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 

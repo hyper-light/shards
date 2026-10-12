@@ -5,8 +5,10 @@ use std::path::PathBuf;
 #[cfg(hv)]
 use std::sync::Arc;
 
+#[cfg(all(hv, unix))]
+use crate::devices::virtio::vsock;
 #[cfg(hv)]
-use crate::devices::virtio::{mem, pmem, vsock};
+use crate::devices::virtio::{mem, pmem};
 
 #[cfg(all(hv, target_arch = "aarch64"))]
 mod aarch64;
@@ -16,12 +18,13 @@ use aarch64 as machine;
 mod x86_64;
 #[cfg(all(hv, target_arch = "x86_64"))]
 use x86_64 as machine;
-/// Whether this build's VMs can be snapshotted and restored: every backend's can.
-pub const SNAPSHOTS: bool = cfg!(hv);
+/// Whether this build's VMs can be snapshotted and restored: HVF's and KVM's can, WHP's
+/// not yet (D140).
+pub const SNAPSHOTS: bool = cfg!(any(hv = "hvf", hv = "kvm"));
 /// Whether a VM resumed from its snapshot records its working set, for restores to
-/// prefetch: every backend's can, HVF's at stage 2 (hv::hvf::Watch), KVM's from the
-/// pages its host maps (vm::x86_64::recorder).
-pub const WORKING_SETS: bool = cfg!(hv);
+/// prefetch: HVF's at stage 2 (hv::hvf::Watch), KVM's from the pages its host maps
+/// (vm::x86_64::recorder).
+pub const WORKING_SETS: bool = SNAPSHOTS;
 /// Which run records it. HVF's: the one that saves the template, whose command recording
 /// slows sixfold (PM M30), on a run that boots anyway. KVM's: the first warm restore
 /// without one, for which recording costs nothing, and whose pages later restores touch,
@@ -252,11 +255,19 @@ fn virtio_devices(
     for (region, gpa) in regions {
         devices.push(Box::new(pmem::Pmem::new(region.clone(), *gpa)));
     }
+    #[cfg(unix)]
     if config.vsock {
         let host = hosts
             .vsock
             .ok_or("the machine has a vsock device but no host side for it")?;
         devices.push(Box::new(vsock::Vsock::new(host.clone(), vsock::GUEST_CID)?));
+    }
+    #[cfg(not(unix))]
+    if config.vsock {
+        return Err(
+            "a vsock device's host side is a Unix socket, which shards does not serve on this host yet"
+                .into(),
+        );
     }
     #[cfg(unix)]
     if let Some(mac) = config.net {
@@ -620,7 +631,9 @@ fn initrd(cfg: &Config, room: u64) -> Result<Option<Vec<u8>>, String> {
 mod tests {
     use super::*;
     use crate::hv::Touch;
-    use crate::snapshot::{MachineConfig, Snapshot};
+    use crate::snapshot::MachineConfig;
+    #[cfg(unix)]
+    use crate::snapshot::Snapshot;
 
     fn machine(vsock: bool, net: Option<[u8; 6]>) -> MachineConfig {
         MachineConfig {
@@ -638,6 +651,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     fn net_host() -> (crate::devices::virtio::net::NetHost, [std::os::fd::OwnedFd; 2]) {
         let (net_waits, device_rings) = shards_netring::doorbell().unwrap();
         let (device_waits, net_rings) = shards_netring::doorbell().unwrap();
@@ -653,6 +667,7 @@ mod tests {
 
     /// A restore's host sides match its snapshot's devices: a vsock device and a socket
     /// for it, a network device and a network process for it, together or not at all.
+    #[cfg(unix)]
     #[test]
     fn a_restores_hosts_match_its_snapshots_devices() {
         let vsock = VsockHost::at(PathBuf::from("/nowhere"));
@@ -717,9 +732,11 @@ mod tests {
     }
 
     /// Maps nothing: the order test's memory to plug is never plugged.
+    #[cfg(unix)]
     #[derive(Debug, Clone)]
     struct Unmapped;
 
+    #[cfg(unix)]
     impl mem::Mapper for Unmapped {
         unsafe fn map(&self, _host: *mut u8, _gpa: u64, _len: usize) -> Result<(), String> {
             Ok(())
@@ -733,6 +750,7 @@ mod tests {
     /// A machine's virtio devices come in the guest's probe order, disks, pmem, vsock,
     /// network and memory to plug last, no more than the machine has room for; the network
     /// device takes the machine's own MAC; a device without its host side is refused.
+    #[cfg(unix)]
     #[test]
     fn virtio_devices_come_in_probe_order() {
         let dir = shards_testdir::TempDir::new("virtio-devices").unwrap();

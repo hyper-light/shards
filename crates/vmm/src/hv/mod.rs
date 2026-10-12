@@ -5,6 +5,7 @@
 //! |---|---|
 //! | `hvf` | macOS on arm64: Hypervisor.framework |
 //! | `kvm` | Linux on x86_64: KVM |
+//! | `whp` | Windows on x86_64: the Windows Hypervisor Platform |
 //!
 //! Every other target in the platform matrix (docs/design/architecture.md D13) builds
 //! without a backend until its backend lands, and reports that VMs cannot run there.
@@ -26,11 +27,18 @@ pub mod kvm;
 #[cfg(hv = "kvm")]
 pub use kvm::*;
 
+#[cfg(hv = "whp")]
+pub mod whp;
+#[cfg(hv = "whp")]
+pub use whp::*;
+
 /// The backend this build drives VMs with, if any.
 pub const BACKEND: Option<&str> = if cfg!(hv = "hvf") {
     Some("hvf")
 } else if cfg!(hv = "kvm") {
     Some("kvm")
+} else if cfg!(hv = "whp") {
+    Some("whp")
 } else {
     None
 };

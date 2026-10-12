@@ -212,6 +212,24 @@ pub unsafe fn untouched(_ptr: *const u8, _len: usize, _page: usize) -> io::Resul
     Ok(None)
 }
 
+/// Faults pages in writable ahead of a restored guest (unix.rs `populate_writable`): no
+/// snapshot is restored on Windows yet (vm::SNAPSHOTS).
+pub fn populate_writable(_ptr: *mut u8, _len: usize) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "pages are not faulted in ahead on Windows: it restores no snapshot yet",
+    ))
+}
+
+/// The pages mapped of a range, for a restore's working set (unix.rs `mapped_pages`): no
+/// snapshot is restored on Windows yet (vm::SNAPSHOTS).
+pub fn mapped_pages(_ptr: *const u8, _len: usize) -> io::Result<Vec<(usize, bool)>> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "working sets are not recorded on Windows: it restores no snapshot yet",
+    ))
+}
+
 /// The names in the directory `dir` holds open. No container logs are kept on Windows.
 pub fn names_in(_dir: &File) -> io::Result<Vec<std::ffi::OsString>> {
     Err(io::Error::new(

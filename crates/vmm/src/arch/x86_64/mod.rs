@@ -5,6 +5,8 @@
 pub mod acpi;
 pub mod boot;
 pub mod cpuid;
+pub mod ioapic;
+pub mod mmio;
 
 /// Guest-physical memory map (research doc §6.4, after Firecracker's layout).
 pub mod layout {
@@ -43,7 +45,7 @@ pub mod layout {
     pub const VIRTIO_MMIO_STRIDE: u64 = 0x200;
     /// GSIs 5-22 are free IOAPIC pins: at most 18 virtio devices.
     pub const VIRTIO_MMIO_MAX: u64 = 18;
-    /// KVM's in-kernel IOAPIC and LAPIC.
+    /// The IOAPIC (KVM's in-kernel one, the VMM's own on WHP) and the LAPIC.
     pub const IOAPIC: u64 = 0xfec0_0000;
     pub const LAPIC: u64 = 0xfee0_0000;
     /// Pages KVM reserves on Intel for the real-mode identity map and TSS.

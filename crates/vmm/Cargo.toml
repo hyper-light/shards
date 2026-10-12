@@ -18,7 +18,7 @@ libc = { workspace = true }
 shards-netring = { path = "../netring" }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { workspace = true }
+windows-sys = { workspace = true, features = ["Win32_System_Hypervisor", "Win32_System_LibraryLoader"] }
 
 [dev-dependencies]
 shards-testdir = { path = "../testdir" }
