@@ -371,8 +371,8 @@ fn reason(r: WHV_RUN_VP_EXIT_REASON) -> String {
     }
 }
 
-/// A partition of `vcpus` vCPUs, its APIC emulated, with `SYNTHETIC` of what the host offers.
-fn partition(api: &Api, vcpus: u32, bank: u64) -> Result<WHV_PARTITION_HANDLE, String> {
+/// A partition of `vcpus` vCPUs, its APIC emulated, offered the synthetic `features`.
+fn partition(api: &Api, vcpus: u32, features: u64) -> Result<WHV_PARTITION_HANDLE, String> {
     let mut p: WHV_PARTITION_HANDLE = 0;
     // SAFETY: each call on the partition this function makes.
     unsafe {
@@ -390,7 +390,7 @@ fn partition(api: &Api, vcpus: u32, bank: u64) -> Result<WHV_PARTITION_HANDLE, S
             BanksCount: 1,
             Reserved0: 0,
             Anonymous: WHV_SYNTHETIC_PROCESSOR_FEATURES_BANKS_0 {
-                AsUINT64: [SYNTHETIC & bank],
+                AsUINT64: [features],
             },
         };
         check(
@@ -427,10 +427,69 @@ fn ram(api: &Api, p: WHV_PARTITION_HANDLE) -> Result<Mem, String> {
     Ok(Mem(ram))
 }
 
+/// Whether a partition offered `features` (with its APIC emulated) sets up: the host
+/// refuses some sets of synthetic features (HV_STATUS_INVALID_PARAMETER), so which bits
+/// need which is measured, not assumed: the host's whole bank less each bit, and
+/// `SYNTHETIC` with each other bit of the bank.
+fn combinations(api: &Api, bank: u64) {
+    let sets_up = |features: u64| -> String {
+        let mut p: WHV_PARTITION_HANDLE = 0;
+        // SAFETY: each call on the partition made here, deleted at the end.
+        unsafe {
+            if (api.create_partition)(&raw mut p) < 0 {
+                return "WHvCreatePartition failed".into();
+            }
+            let vcpus: u32 = 1;
+            let mode: WHV_X64_LOCAL_APIC_EMULATION_MODE = WHvX64LocalApicEmulationModeXApic;
+            let banks = WHV_SYNTHETIC_PROCESSOR_FEATURES_BANKS {
+                BanksCount: 1,
+                Reserved0: 0,
+                Anonymous: WHV_SYNTHETIC_PROCESSOR_FEATURES_BANKS_0 { AsUINT64: [features] },
+            };
+            let mut hr = (api.set_property)(p, WHvPartitionPropertyCodeProcessorCount, (&raw const vcpus).cast(), 4);
+            if hr >= 0 {
+                hr = (api.set_property)(p, WHvPartitionPropertyCodeLocalApicEmulationMode, (&raw const mode).cast(), 4);
+            }
+            if hr >= 0 {
+                hr = (api.set_property)(
+                    p,
+                    WHvPartitionPropertyCodeSyntheticProcessorFeaturesBanks,
+                    (&raw const banks).cast(),
+                    std::mem::size_of_val(&banks) as u32,
+                );
+            }
+            if hr >= 0 {
+                hr = (api.setup_partition)(p);
+            }
+            (api.delete_partition)(p);
+            if hr >= 0 { "ok".into() } else { format!("{:#010x}", hr as u32) }
+        }
+    };
+    println!("features full bank {bank:#x}: {}", sets_up(bank));
+    for bit in (0..64).filter(|b| bank & (1u64 << b) != 0) {
+        println!("features bank less bit {bit}: {}", sets_up(bank & !(1u64 << bit)));
+    }
+    let ours = SYNTHETIC & bank;
+    println!("features ours {ours:#x}: {}", sets_up(ours));
+    for bit in (0..64).filter(|b| bank & !ours & (1u64 << b) != 0) {
+        println!("features ours with bit {bit}: {}", sets_up(ours | 1u64 << bit));
+    }
+    for (label, set) in [
+        ("presence", 0b11),
+        ("time", 0b11 | 1 << 3 | 1 << 9 | 1 << 11),
+        ("time+hypercalls+vp_index", 0b11 | 1 << 3 | 1 << 7 | 1 << 8 | 1 << 9 | 1 << 11),
+        ("ours less ipi/flush", ours & !(7 << 24)),
+        ("ours less timers", ours & !(1 << 5 | 1 << 22)),
+        ("ours less apic msrs", ours & !(1 << 6)),
+    ] {
+        println!("features {label} {:#x}: {}", set & bank, sets_up(set & bank));
+    }
+}
+
 /// What an application processor does as created: its activity state and APIC base, and
 /// its first exit when run alone, the boot processor never run.
-fn ap_as_created(api: &Api, bank: u64) -> Result<(), String> {
-    let p = partition(api, 2, bank)?;
+fn ap_as_created(api: &Api, features: u64) -> Result<(), String> {
+    let p = partition(api, 2, features)?;
     let _ram = ram(api, p)?;
     // SAFETY: vCPUs of this partition.
     unsafe {
@@ -479,8 +538,8 @@ struct ApRun {
     after: Duration,
 }
 
-fn probe(api: &Api, bank: u64) -> Result<(), String> {
-    let p = partition(api, 2, bank)?;
+fn probe(api: &Api, features: u64) -> Result<(), String> {
+    let p = partition(api, 2, features)?;
     let mem = ram(api, p)?;
     mem.put(CODE, &bsp_code());
     mem.put(HANDLER, &handler_code());
@@ -889,10 +948,25 @@ fn main() {
         SYNTHETIC & bank,
         SYNTHETIC & !bank
     );
-    if let Err(e) = ap_as_created(&api, bank) {
+    combinations(&api, bank);
+    // Ours where the host sets a partition up with them, else the whole bank, so that the
+    // rest is measured either way.
+    let features = match partition(&api, 1, SYNTHETIC & bank) {
+        Ok(p) => {
+            // SAFETY: the partition just made.
+            unsafe { (api.delete_partition)(p) };
+            SYNTHETIC & bank
+        }
+        Err(e) => {
+            println!("ours refused ({e}); measuring with the whole bank");
+            bank
+        }
+    };
+    println!("features={features:#x}");
+    if let Err(e) = ap_as_created(&api, features) {
         println!("as-created failed: {e}");
     }
-    if let Err(e) = probe(&api, bank) {
+    if let Err(e) = probe(&api, features) {
         println!("probe failed: {e}");
     }
 }
