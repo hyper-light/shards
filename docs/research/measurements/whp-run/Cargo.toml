@@ -6,7 +6,8 @@
 # M202, src/bin/m202.rs); sockets and files a confined VM process is handed (PM M203,
 # src/bin/m203.rs); what a confined network process may reach, and its doorbells (PM M204,
 # src/bin/m204.rs); the CPUID a partition's vCPUs see, and what a VMM may change of it (PM
-# M206, src/bin/m206.rs).
+# M206, src/bin/m206.rs); the environment a child in an AppContainer must be given (PM M208,
+# src/bin/m208.rs).
 [package]
 name = "whp-run"
 version = "0.1.0"

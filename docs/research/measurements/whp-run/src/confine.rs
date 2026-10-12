@@ -17,7 +17,7 @@ use windows_sys::Win32::System::JobObjects::{
 };
 use windows_sys::Win32::System::SystemServices::SE_GROUP_ENABLED;
 use windows_sys::Win32::System::Threading::{
-    CREATE_SUSPENDED, CreateProcessW, DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT,
+    CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessW, DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT,
     InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST, PROC_THREAD_ATTRIBUTE_CHILD_PROCESS_POLICY,
     PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROC_THREAD_ATTRIBUTE_JOB_LIST, PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY,
     PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, PROCESS_INFORMATION, STARTF_USESTDHANDLES, STARTUPINFOEXW,
@@ -86,6 +86,22 @@ pub fn spawn_with_output(
     inherit: &[HANDLE],
     out: HANDLE,
 ) -> Result<PROCESS_INFORMATION, String> {
+    spawn_with_env(exe, args, sid, caps, job, inherit, out, None)
+}
+
+/// [`spawn_with_output`], its environment `env` (a Unicode block) where given, else this
+/// process's.
+#[allow(clippy::too_many_arguments)]
+pub fn spawn_with_env(
+    exe: &Path,
+    args: &str,
+    sid: PSID,
+    caps: &[Vec<u8>],
+    job: HANDLE,
+    inherit: &[HANDLE],
+    out: HANDLE,
+    env: Option<&[u16]>,
+) -> Result<PROCESS_INFORMATION, String> {
     let mut handles = vec![out];
     handles.extend(inherit.iter().copied().filter(|h| !h.is_null()));
     for &h in &handles {
@@ -146,8 +162,8 @@ pub fn spawn_with_output(
                 std::ptr::null(),
                 std::ptr::null(),
                 1,
-                EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED,
-                std::ptr::null(),
+                EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT,
+                env.map_or(std::ptr::null(), |e| e.as_ptr().cast()),
                 std::ptr::null(),
                 (&raw const si).cast(),
                 &raw mut pi,
