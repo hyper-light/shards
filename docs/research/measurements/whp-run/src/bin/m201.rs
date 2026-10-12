@@ -481,6 +481,8 @@ struct Variant {
     child_policy: bool,
     /// The mitigation words given: 0, the first, or both.
     mitigations: usize,
+    /// The first word's bits, where given.
+    first: u64,
 }
 
 /// A suspended child in an AppContainer of `sid` holding `caps`, in `job` where the variant
@@ -551,10 +553,11 @@ fn spawn(
             )?;
         }
     }
+    let words = [variant.first, MITIGATIONS[1]];
     if variant.mitigations > 0 {
         update(
             PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY,
-            MITIGATIONS.as_ptr().cast(),
+            words.as_ptr().cast(),
             variant.mitigations * std::mem::size_of::<u64>(),
         )?;
     }
@@ -758,6 +761,7 @@ fn lifeline() -> Result<(), String> {
         job: true,
         child_policy: false,
         mitigations: 0,
+        first: 0,
     };
     let pi = spawn("child-sleep", None, &mut [], job, plain, std::ptr::null_mut())?;
     // SAFETY: the child we made.
@@ -805,24 +809,43 @@ fn main() {
         }
     };
     println!("VidExo grants {} capability SID(s)", caps.len());
-    let variants = [
-        (false, false, false, 0),
-        (true, false, false, 0),
-        (true, true, false, 0),
-        (true, true, true, 0),
-        (true, true, true, 1),
-        (true, true, true, 2),
+    // Each mitigation of the first word alone, then all of them, then both words.
+    let bits: [(u64, &str); 6] = [
+        (1 << 24, "strict handle checks"),
+        (1 << 28, "no Win32k"),
+        (1 << 32, "no extension points"),
+        (1 << 36, "no dynamic code"),
+        (1 << 52, "no remote images"),
+        (1 << 56, "no low-label images"),
     ];
-    for (n, (profile, job, child_policy, mitigations)) in variants.into_iter().enumerate() {
+    let mut n = 0;
+    for (bit, label) in bits {
         let v = Variant {
-            profile,
-            job,
-            child_policy,
-            mitigations,
+            profile: true,
+            job: true,
+            child_policy: true,
+            mitigations: 1,
+            first: bit,
         };
+        println!("== {label}");
         if let Err(e) = confined_run(v, n, &caps) {
             println!("confined {v:?}: {e}");
         }
+        n += 1;
+    }
+    for mitigations in [1, 2] {
+        let v = Variant {
+            profile: true,
+            job: true,
+            child_policy: true,
+            mitigations,
+            first: MITIGATIONS[0],
+        };
+        println!("== all of {mitigations} word(s)");
+        if let Err(e) = confined_run(v, n, &caps) {
+            println!("confined {v:?}: {e}");
+        }
+        n += 1;
     }
     // What a profile per VM costs: made and deleted, each timed.
     let (mut made, mut deleted) = (Vec::new(), Vec::new());

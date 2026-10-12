@@ -12,6 +12,10 @@
 //!   for want of room, FD_READ, FD_CLOSE on the peer's half-close, and whether a wait to
 //!   write on a half-closed socket waits rather than wakes at once;
 //! - a socket's inheritance into a child process, which writes through it;
+//! - what a peer reads of what a process wrote before it exited: having closed nothing,
+//!   having closed its socket, having shut its writing down, or both; and what a child
+//!   writes through a socket whose parent closed its own copy first, by closesocket or by
+//!   CloseHandle;
 //! - throughput (1 GiB in 64 KiB writes) and a one-byte round trip's latency, beside
 //!   loopback TCP's.
 
@@ -361,6 +365,52 @@ fn latency(label: &str, (a, b): (SOCKET, SOCKET)) -> Result<(), String> {
     Ok(())
 }
 
+/// A child writing through an inherited socket, and how it ends; what the parent reads once
+/// it has gone.
+fn exits(dir: &std::path::Path) -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    for (n, mode) in ["exit", "close", "shutdown", "shutdown-close"].iter().enumerate() {
+        let (a, b) = unix_pair(dir, PAIRS + 20 + n)?;
+        let status = std::process::Command::new(&exe)
+            .args(["child-exit", &(a as usize).to_string(), mode])
+            .status()
+            .map_err(|e| e.to_string())?;
+        close(a);
+        std::thread::sleep(Duration::from_millis(100));
+        let mut buf = [0u8; 64];
+        let got = recv_some(b, &mut buf);
+        println!(
+            "exit after write ({mode}): child {status}; read {:?}",
+            got.map(|n| String::from_utf8_lossy(&buf[..n]).into_owned())
+        );
+        close(b);
+    }
+    for (n, how) in ["closesocket", "CloseHandle"].iter().enumerate() {
+        let (a, b) = unix_pair(dir, PAIRS + 30 + n)?;
+        let mut child = std::process::Command::new(&exe)
+            .args(["child-late", &(a as usize).to_string()])
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        // SAFETY: our own copy of the socket the child inherited.
+        unsafe {
+            if *how == "closesocket" {
+                closesocket(a);
+            } else {
+                windows_sys::Win32::Foundation::CloseHandle(a as windows_sys::Win32::Foundation::HANDLE);
+            }
+        }
+        let mut buf = [0u8; 64];
+        let got = recv_some(b, &mut buf);
+        let status = child.wait().map_err(|e| e.to_string())?;
+        println!(
+            "parent's copy closed by {how} first: read {:?}; child {status}",
+            got.map(|n| String::from_utf8_lossy(&buf[..n]).into_owned())
+        );
+        close(b);
+    }
+    Ok(())
+}
+
 fn probe() -> Result<(), String> {
     startup()?;
     let dir = std::env::temp_dir();
@@ -464,6 +514,7 @@ fn probe() -> Result<(), String> {
     close(a);
     close(b);
     event_select(&dir)?;
+    exits(&dir)?;
     // Inheritance: the child writes through an inherited socket.
     let (a, b) = unix_pair(&dir, PAIRS + 4)?;
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
@@ -489,6 +540,36 @@ fn probe() -> Result<(), String> {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("child-exit") {
+        let _ = startup();
+        let s = args.get(2).and_then(|v| v.parse::<usize>().ok()).unwrap_or(0) as SOCKET;
+        let _ = send_all(s, b"written before the end");
+        // SAFETY: the inherited socket, ended as the mode says.
+        unsafe {
+            match args.get(3).map(String::as_str) {
+                Some("close") => {
+                    closesocket(s);
+                }
+                Some("shutdown") => {
+                    shutdown(s, SD_SEND);
+                }
+                Some("shutdown-close") => {
+                    shutdown(s, SD_SEND);
+                    closesocket(s);
+                }
+                _ => {}
+            }
+        }
+        std::process::exit(0);
+    }
+    if args.get(1).map(String::as_str) == Some("child-late") {
+        let _ = startup();
+        std::thread::sleep(Duration::from_millis(300));
+        let s = args.get(2).and_then(|v| v.parse::<usize>().ok()).unwrap_or(0) as SOCKET;
+        let r = send_all(s, b"after the parent closed");
+        std::thread::sleep(Duration::from_millis(300));
+        std::process::exit(if r.is_ok() { 0 } else { 3 });
+    }
     if args.get(1).map(String::as_str) == Some("child") {
         let _ = startup();
         let s = args.get(2).and_then(|v| v.parse::<usize>().ok()).unwrap_or(0) as SOCKET;
