@@ -6866,6 +6866,13 @@ revision before comparing a changed API/implementation.
     drained; FD_CLOSE on the peer's half-close; and after end-of-stream has been read,
     again nothing while full and FD_WRITE once drained.
   - Inherited, a socket works in the child: 14 bytes written there, read here.
+  - What a writer wrote before it exited is read whole once it has gone, whether it closed
+    nothing, closed its socket, shut its writing down, or both, while the parent still holds
+    a copy; a parent's copy closed first, by closesocket or by CloseHandle, leaves the
+    child's working (runs 38218844747, 38219105752). But **where the writer's exit closes
+    the socket's last reference, the peer's read fails, WSAECONNRESET (10054), and what was
+    written is lost**; shut down and closed before the exit, it is read whole (run
+    38219105752).
   - Throughput: AF_UNIX 11,954 / 9,020 MB/s, loopback TCP 3,277 / 2,694. A one-byte round
     trip: AF_UNIX p50 29.1 / 31.3 µs, p99 44.0 / 63.1; TCP 37.0 / 39.1, p99 69.3 / 116.8.
 - **Consequence.** shards' Windows streams are AF_UNIX sockets, as its Unix hosts' are:
@@ -6874,7 +6881,9 @@ revision before comparing a changed API/implementation.
   wait to write on a socket whose peer has half-closed: it reports the hangup at once,
   whatever is asked, so such a wait would spin. WSAEventSelect's events have no such fault:
   the vsock device's Windows poller sleeps on them, and reads each socket's state with a
-  WSAPoll that does not wait, end-of-stream (HUP) a read's and never a write's.
+  WSAPoll that does not wait, end-of-stream (HUP) a read's and never a write's. And a
+  Windows process of shards' shuts down and closes its sockets before it exits: an exit
+  that leaves the last reference to the system loses what the peer has not yet read.
 
 ### M200. A WHP partition from a confined process, and from a standard user
 
@@ -6915,4 +6924,53 @@ revision before comparing a changed API/implementation.
   file but the handles its spawner gives it, holding the capability VidExo's DACL grants,
   and that alone: read from the device's own descriptor as the VM process is spawned, not
   written into shards, so a Windows that grants another reaches no stale SID.
+
+### M201. The Windows VM process confined as shards would confine it
+
+- **Questions.** Each part of the design D141 builds on M200's AppContainer: does one need
+  a profile, or does a SID derived from a name suffice (nothing per VM left in the
+  registry or on disk)? Do handles given by DuplicateHandle into a suspended child work
+  there, so that none is ever inheritable but a pipe that tells the child their values?
+  Does a Job that kills the child as its last handle closes, and lets it run no process,
+  hold; and do Windows' mitigations leave WHP working? Can the child reach an AF_UNIX socket
+  in a directory whose DACL grants its SID, and not one in a directory whose DACL does
+  not? What does a profile per VM cost?
+- **Method.** `docs/research/measurements/whp-run/src/bin/m201.rs`, by `whp-run.yml`, runs
+  38218366702, 38218592189 and 38218844759 on branch `whp`, 2026-10-12, each on a
+  windows-2022 and a windows-2025 runner: the capability SIDs read from `\\?\VidExo`'s DACL
+  (M200); a child made suspended in an AppContainer holding them (a profile made by
+  CreateAppContainerProfile, or a SID from DeriveAppContainerSidFromAppContainerName alone),
+  in a Job (PROC_THREAD_ATTRIBUTE_JOB_LIST: JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE and an active
+  process limit of 1), with the child process policy (PROCESS_CREATION_CHILD_PROCESS_RESTRICTED)
+  and the mitigations, each alone and together (strict handle checks, no Win32k, no
+  extension points, no dynamic code, no images from remote devices or of a low label; and
+  the second word's no-FSCTL); given a file and a socket by DuplicateHandle, their values
+  through a pipe, its one inheritable handle; then resumed. The child reads the file,
+  writes the socket, dials a socket in a directory granted its SID (SetEntriesInAclW,
+  GENERIC_ALL, inherited) and one in a directory not, runs a partition, and starts a
+  process. A child left running is ended by closing its Job's handle. Profiles made and
+  deleted, 20 of each, timed.
+- **Found** (both runners alike but where said):
+  - With no profile, CreateProcessW refuses the AppContainer (ERROR_FILE_NOT_FOUND). With
+    one, the child runs: it reads the file and writes the socket given it, dials the socket
+    in the directory granted its SID and is refused the other (WSAEACCES, 10013), and runs
+    the partition (3.3-3.9 ms, partition made to port write).
+  - The Job's process limit refuses the child a process (ERROR_NOT_ENOUGH_QUOTA, 1816), and
+    the child process policy refuses it apart from the Job (ERROR_CHILD_PROCESS_BLOCKED,
+    367). Closing the Job's last handle ends the child 0.7-1.1 ms
+    later.
+  - Every mitigation leaves WHP working on windows-2025, both words together. On
+    windows-2022, **no dynamic code** (ACG) makes WHvSetupPartition fail
+    (HRESULT_FROM_WIN32(ERROR_DYNAMIC_CODE_BLOCKED), 0x80070677), and CreateProcessW refuses
+    the second word (ERROR_INVALID_PARAMETER); every other mitigation leaves it working.
+  - A profile costs 4.4 / 5.7 ms at p50 to make (p99 553 / 6.5 ms), 1.8 / 2.1 ms to delete.
+  - A socket given by DuplicateHandle and written by the child was read by no one once the
+    child had exited: the child held its last reference (M199: an exit that closes it
+    loses what was unread).
+- **Consequence (D141).** The VM process runs in an AppContainer of its own, a profile made
+  for it and deleted after it (made ahead of a request where a start's time counts),
+  holding the capabilities VidExo's DACL grants; in a Job that ends it with its spawner and
+  lets it start nothing; with the mitigations its Windows takes, which dynamic code is not
+  where WHP needs it (windows-2022). Files and other handles reach it by DuplicateHandle
+  alone; sockets it makes itself, in a directory of its own whose DACL grants its SID.
 
