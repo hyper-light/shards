@@ -187,7 +187,7 @@ pub fn max_vcpus() -> Result<u32> {
     if let Some(max) = MAX.get() {
         return Ok(*max);
     }
-    features().map_err(Error::Guest)?;
+    let features = features().map_err(Error::Guest)?;
     let mut handle: WHV_PARTITION_HANDLE = 0;
     // SAFETY: a handle for the call to fill.
     check("WHvCreatePartition", unsafe {
@@ -198,6 +198,17 @@ pub fn max_vcpus() -> Result<u32> {
         WHvPartitionPropertyCodeProcessorCount,
         &1u32,
         "WHvSetPartitionProperty(ProcessorCount)",
+    )?;
+    // Offered what a VM's guest is, without which its guest has no hypervisor leaves to read
+    // (PM M202: 0 there).
+    partition.set(
+        WHvPartitionPropertyCodeSyntheticProcessorFeaturesBanks,
+        &WHV_SYNTHETIC_PROCESSOR_FEATURES_BANKS {
+            BanksCount: 1,
+            Reserved0: 0,
+            Anonymous: WHV_SYNTHETIC_PROCESSOR_FEATURES_BANKS_0 { AsUINT64: [features] },
+        },
+        "WHvSetPartitionProperty(SyntheticProcessorFeaturesBanks)",
     )?;
     // SAFETY: the partition just configured, then its one vCPU, its CPUID read into a value
     // of its own size.
@@ -215,7 +226,12 @@ pub fn max_vcpus() -> Result<u32> {
         WHvDeleteVirtualProcessor(partition.0, 0);
         out
     };
-    let max = limits.Eax.clamp(1, 254);
+    if limits.Eax == 0 {
+        return Err(Error::Guest(
+            "the hypervisor gives a partition's guest no limit to its vCPUs (CPUID 0x40000005)".into(),
+        ));
+    }
+    let max = limits.Eax.min(254);
     Ok(*MAX.get_or_init(|| max))
 }
 
