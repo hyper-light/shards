@@ -194,7 +194,15 @@ fn rejects_invalid_vm_configuration() {
         (&["--kernel", k, "--cpus", "100000"], "vCPUs requested"),
         (&["--kernel", k, "--memory", "63"], "even number of MiB"),
         (&["--kernel", k, "--memory", "65"], "even number of MiB"),
-        (&["--kernel", "/nonexistent/kernel"], "/nonexistent/kernel"),
+        // Named whole, as the VM process resolved it: Windows gives it a drive.
+        (
+            &["--kernel", "/nonexistent/kernel"],
+            if cfg!(windows) {
+                r"\nonexistent\kernel"
+            } else {
+                "/nonexistent/kernel"
+            },
+        ),
         (&["--kernel", init], not_a_kernel()),
         (
             &["--kernel", k, "--init", init, "--initrd", init],
@@ -230,6 +238,7 @@ fn this_host_has_its_hypervisor_backend() {
     let expected = match (std::env::consts::OS, common::ARCH) {
         ("macos", "aarch64") => Some("hvf"),
         ("linux", "x86_64") => Some("kvm"),
+        ("windows", "x86_64") => Some("whp"),
         _ => None,
     };
     assert_eq!(shards_vmm::hv::BACKEND, expected);

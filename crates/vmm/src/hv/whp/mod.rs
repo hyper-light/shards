@@ -175,10 +175,26 @@ pub fn check_host() -> std::result::Result<(), String> {
     features().map(drop)
 }
 
-/// The most vCPUs one VM can have: 254, since the MADT carries 8-bit APIC ids. WHP sets up
-/// partitions of 1,024 (PM M198).
+/// The most vCPUs one VM can have: the hypervisor's own limit, which its leaf 0x40000005
+/// gives every partition, the root included (Hyper-V TLFS, "Implementation Limits"),
+/// and at most 254, since the MADT carries 8-bit APIC ids. A partition sets up with more
+/// (PM M198), but its 241st vCPU's creation fails on GitHub's runners, whose guests read
+/// 240 there (HV_STATUS_INVALID_VP_INDEX).
 pub fn max_vcpus() -> Result<u32> {
-    Ok(254)
+    use std::arch::x86_64::__cpuid;
+    // CPUID is unprivileged, and changes nothing.
+    let vendor = __cpuid(0x4000_0000);
+    let microsoft = [vendor.ebx, vendor.ecx, vendor.edx]
+        .iter()
+        .flat_map(|r| r.to_le_bytes())
+        .eq(*b"Microsoft Hv");
+    if !microsoft || vendor.eax < 0x4000_0005 {
+        return Err(Error::Guest(
+            "no Hyper-V answers this host's CPUID: no partition can run".into(),
+        ));
+    }
+    let limits = __cpuid(0x4000_0005);
+    Ok(limits.eax.clamp(1, 254))
 }
 
 /// A partition: deleted, its vCPUs with it, once nothing holds it.

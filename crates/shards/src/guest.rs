@@ -26,7 +26,6 @@ const USAGE: &str = "usage: shards guest use --kernel FILE --init FILE
   SHARDS_KERNEL_URL: where to download the default kernel, whose SHA-256 is still checked.";
 
 /// The shards-init this build carries, built for this host's guests by build.rs.
-#[cfg(unix)]
 const INIT: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/shards-init"));
 
 /// The in-VM server this build carries (D60), built for this host's guests by build.rs.
@@ -261,14 +260,8 @@ pub fn default(
     Ok(guest)
 }
 
-#[cfg(unix)]
 fn init_bytes() -> Result<&'static [u8], String> {
     Ok(INIT)
-}
-
-#[cfg(not(unix))]
-fn init_bytes() -> Result<&'static [u8], String> {
-    Err("shards runs no guests on this platform yet".into())
 }
 
 /// The digest of this build's init, hashed once.

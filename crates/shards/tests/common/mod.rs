@@ -236,7 +236,13 @@ fn guest_binary_in(name: &str, target_dir: &str, env: &[(&str, &str)]) -> PathBu
         let tool = |name: &str| {
             let script = workspace().join("scripts").join(name);
             if cfg!(windows) {
-                format!("sh {}", script.display())
+                // As a POSIX shell on Windows (Git's, MSYS) takes a path: forward slashes,
+                // and no verbatim prefix (`\\?\`), whose backslashes it reads as escapes.
+                let text = script.display().to_string();
+                format!(
+                    "sh {}",
+                    text.strip_prefix(r"\\?\").unwrap_or(&text).replace('\\', "/")
+                )
             } else {
                 script.display().to_string()
             }
