@@ -6,8 +6,8 @@
 //! of its own, in a Job, under D141's mitigations, given each of several environments
 //! (this process's own, none, and `SystemRoot` with each of `LOCALAPPDATA`, `USERPROFILE`,
 //! `TEMP` and `TMP` and without them), says whether it was made, and if it was, every
-//! variable it has, its temporary directory and whether it may write a file there, and
-//! whether Winsock starts in it.
+//! variable it has, its temporary directory and whether it may write a file there, whether
+//! Winsock starts in it, and whether it makes an AF_UNIX and an AF_INET socket.
 
 use std::io::{Read as _, Write as _};
 use std::os::windows::ffi::OsStrExt as _;
@@ -16,7 +16,10 @@ use std::time::Duration;
 
 use whp_run::confine::{Container, job, spawn_with_env};
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
-use windows_sys::Win32::Networking::WinSock::{WSADATA, WSAStartup};
+use windows_sys::Win32::Networking::WinSock::{
+    AF_INET, AF_UNIX, INVALID_SOCKET, SOCK_STREAM, WSA_FLAG_OVERLAPPED, WSADATA, WSAGetLastError, WSASocketW,
+    WSAStartup, closesocket,
+};
 use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::Threading::{ResumeThread, TerminateProcess, WaitForSingleObject};
 
@@ -43,6 +46,28 @@ fn child() {
     // SAFETY: a WSADATA for the call to fill.
     let started = unsafe { WSAStartup(0x0202, &raw mut data) };
     let _ = writeln!(out, "  WSAStartup {started}");
+    // A socket of each family shards makes: its provider is loaded as one is made.
+    for (name, family) in [("AF_UNIX", AF_UNIX), ("AF_INET", AF_INET)] {
+        // SAFETY: plain arguments; the socket closed below.
+        let s = unsafe {
+            WSASocketW(
+                i32::from(family),
+                SOCK_STREAM,
+                0,
+                std::ptr::null(),
+                0,
+                WSA_FLAG_OVERLAPPED,
+            )
+        };
+        if s == INVALID_SOCKET {
+            // SAFETY: no arguments.
+            let _ = writeln!(out, "  socket {name}: WSA error {}", unsafe { WSAGetLastError() });
+        } else {
+            let _ = writeln!(out, "  socket {name}: made");
+            // SAFETY: the socket just made.
+            unsafe { closesocket(s) };
+        }
+    }
 }
 
 /// An environment given a child: each variable's name and value; `None`, this process's own.
@@ -108,6 +133,7 @@ fn main() {
             "LOCALAPPDATA USERPROFILE",
             Some(with(&["LOCALAPPDATA", "USERPROFILE"])),
         ),
+        ("LOCALAPPDATA", Some(with(&["LOCALAPPDATA"]))),
     ];
     for (n, (label, vars)) in cases.into_iter().enumerate() {
         println!("M208 {label}:");
