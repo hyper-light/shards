@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
   "crates/abi",
+  "crates/afunix",
   "crates/apple",
   "crates/archive",
   "crates/build",
@@ -37,7 +38,7 @@ members = [
 ]
 # The guest's binaries (init, the in-VM server) only build for Linux guests; host builds
 # default to the rest.
-default-members = ["crates/abi", "crates/apple", "crates/archive", "crates/build", "crates/cmdline", "crates/devcgroup", "crates/dockerfile", "crates/flate", "crates/gateway", "crates/git", "crates/image", "crates/ipc", "crates/net", "crates/net-process", "crates/netring", "crates/gitsign", "crates/tuf", "crates/sigstore", "crates/registry", "crates/rego", "crates/seccomp", "crates/shards", "crates/template", "crates/testdir", "crates/tui", "crates/user", "crates/vm-process", "crates/vmm", "crates/zstd"]
+default-members = ["crates/abi", "crates/afunix", "crates/apple", "crates/archive", "crates/build", "crates/cmdline", "crates/devcgroup", "crates/dockerfile", "crates/flate", "crates/gateway", "crates/git", "crates/image", "crates/ipc", "crates/net", "crates/net-process", "crates/netring", "crates/gitsign", "crates/tuf", "crates/sigstore", "crates/registry", "crates/rego", "crates/seccomp", "crates/shards", "crates/template", "crates/testdir", "crates/tui", "crates/user", "crates/vm-process", "crates/vmm", "crates/zstd"]
 # Vendored crates are built as published, under their own lints (vendor/README.md).
 exclude = ["vendor"]
 

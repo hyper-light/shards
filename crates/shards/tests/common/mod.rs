@@ -1511,6 +1511,37 @@ pub struct Vm {
     child: std::process::Child,
     lines: std::sync::mpsc::Receiver<String>,
     pub seen: Vec<String>,
+    /// Every line it has printed, read or not: what a test that stalls says.
+    log: Log,
+}
+
+/// Lines a process printed, as they came.
+pub type Log = Arc<std::sync::Mutex<Vec<String>>>;
+
+/// Runs `f`, failing with `log` where it does not end within `within`: a test that
+/// stalls says where, and what its VM said, rather than holding the whole binary.
+pub fn within<T: Send + 'static>(
+    what: &str,
+    within: Duration,
+    log: &Log,
+    f: impl FnOnce() -> T + Send + 'static,
+) -> T {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let _ = tx.send(f());
+    });
+    match rx.recv_timeout(within) {
+        Ok(v) => v,
+        // Ended without sending: it panicked, and says why.
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => match worker.join() {
+            Err(panic) => std::panic::resume_unwind(panic),
+            Ok(()) => panic!("{what}: ended with no result"),
+        },
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            let said = log.lock().map(|l| l.join("\n")).unwrap_or_default();
+            panic!("{what}: not done in {within:?}; the VM said:\n{said}")
+        }
+    }
 }
 
 impl Vm {
@@ -1523,11 +1554,15 @@ impl Vm {
             .spawn()
             .unwrap();
         let (tx, lines) = std::sync::mpsc::channel();
+        let log = Log::default();
         let (out, err) = (child.stdout.take().unwrap(), child.stderr.take().unwrap());
         for stream in [Box::new(out) as Box<dyn Read + Send>, Box::new(err)] {
-            let tx = tx.clone();
+            let (tx, log) = (tx.clone(), log.clone());
             std::thread::spawn(move || {
                 for line in BufReader::new(stream).lines().map_while(Result::ok) {
+                    if let Ok(mut log) = log.lock() {
+                        log.push(line.clone());
+                    }
                     let _ = tx.send(line);
                 }
             });
@@ -1536,7 +1571,13 @@ impl Vm {
             child,
             lines,
             seen: Vec::new(),
+            log,
         }
+    }
+
+    /// Every line it has printed so far, and those to come.
+    pub fn log(&self) -> Log {
+        self.log.clone()
     }
 
     /// The `shards` process's ID.

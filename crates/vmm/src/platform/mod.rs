@@ -22,9 +22,7 @@ pub use windows::*;
 
 /// AF_UNIX stream sockets, std's on Unix and shards' own on Windows (PM M199).
 #[cfg(windows)]
-mod afunix;
-#[cfg(windows)]
-pub use afunix::{RawSocket, UnixListener, UnixStream, startup as winsock};
+pub use shards_afunix::{RawSocket, UnixListener, UnixStream, startup as winsock};
 #[cfg(unix)]
 pub use std::os::unix::net::{UnixListener, UnixStream};
 /// A socket as the vsock device's poller names it.
@@ -47,6 +45,20 @@ impl AsRawSocket for UnixStream {
 impl AsRawSocket for UnixListener {
     fn raw_socket(&self) -> RawSocket {
         std::os::fd::AsRawFd::as_raw_fd(self)
+    }
+}
+
+#[cfg(windows)]
+impl AsRawSocket for UnixStream {
+    fn raw_socket(&self) -> RawSocket {
+        self.raw()
+    }
+}
+
+#[cfg(windows)]
+impl AsRawSocket for UnixListener {
+    fn raw_socket(&self) -> RawSocket {
+        self.raw()
     }
 }
 

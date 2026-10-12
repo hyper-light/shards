@@ -446,8 +446,10 @@ pub fn serve(link: &crate::grant::Link, to: &dyn Recipient) -> Result<(), String
     use std::os::windows::io::AsHandle as _;
     let mut listening: Option<PathBuf> = None;
     // Sockets sent with the last answer, held until the VM says it has them or asks again,
-    // as macOS holds its descriptors; a socket shared works without (PM M203).
+    // as macOS holds its descriptors: a connection shared works without (PM M203), and a
+    // bound socket is held as well.
     let mut held: Vec<shards_vmm::platform::UnixStream> = Vec::new();
+    let mut held_bound: Vec<shards_vmm::platform::UnixListener> = Vec::new();
     let mut started = false;
     let refuse = |e: String| {
         let _ = shards_ipc::send(&link.to, kind::ERR, e.as_bytes());
@@ -456,6 +458,7 @@ pub fn serve(link: &crate::grant::Link, to: &dyn Recipient) -> Result<(), String
     loop {
         let asked = shards_ipc::recv(&link.from).map_err(|e| format!("a VM's request for access: {e}"))?;
         held.clear();
+        held_bound.clear();
         let Some(asked) = asked else {
             return Ok(());
         };
@@ -512,6 +515,7 @@ pub fn serve(link: &crate::grant::Link, to: &dyn Recipient) -> Result<(), String
                     match socket.share_with(to.id()) {
                         Ok(info) => {
                             listening = Some(path.clone());
+                            held_bound.push(socket);
                             info
                         }
                         Err(e) => return refuse(format!("{}: sharing its socket: {e}", path.display())),

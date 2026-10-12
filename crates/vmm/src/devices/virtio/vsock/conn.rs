@@ -87,6 +87,18 @@ impl std::fmt::Debug for Conn {
     }
 }
 
+/// A connection ends with its write side shut down, then its socket closed, as Unix's
+/// close ends it: on Windows a socket whose last reference its process's exit closes loses
+/// what its peer had not read, and one shut down and closed first keeps it (PM M199).
+#[cfg(windows)]
+impl Drop for Conn {
+    fn drop(&mut self) {
+        if !self.host_write_shut {
+            let _ = self.stream.shutdown(Shutdown::Write);
+        }
+    }
+}
+
 impl Conn {
     fn new(stream: UnixStream, guest_cid: u64, local_port: u32, peer_port: u32, phase: Phase) -> Conn {
         Conn {

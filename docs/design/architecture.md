@@ -1843,7 +1843,34 @@ audit's "Security and test coverage").
     [PM M68].
   A path is only for the user's `--vsock PATH`, Firecracker's interface, which host
   clients dial and whose `<path>_<port>` sockets other ports reach.
-- **Windows:** nothing yet.
+- **Windows: an AppContainer, a Job and Windows' mitigations** (D141; [PM M200-M203]).
+  - `shards-vm` runs in an AppContainer of its own, a profile made for it and deleted after
+    it, holding the capabilities `\\?\VidExo`'s DACL grants, without which it runs no
+    partition [PM M200]: it reaches no file and no socket of its user's. As macOS's VM
+    does, it asks its spawner (`--grants`, a pipe each way) for what its arguments name:
+    each file a handle its spawner opened, read-only for what it only reads, duplicated
+    into it with the path the spawner found it at, which an AppContainer may not ask; for a
+    `--vsock PATH`, a socket its spawner binds there, and each host port its guest
+    connects to dialled for it, each shared with it as Winsock documents
+    (WSADuplicateSocketW) [PM M203].
+  - In a Job that ends it as its spawner ends, even killed (the spawner holds the Job's
+    only handle; 0.7-1.1 ms later [PM M201]), and lets it start no process, as the
+    child-process policy it is made with does.
+  - Windows' mitigations from its start: strict handle checks, no Win32k, no extension
+    points, no images from remote devices or of a low label, and no FSCTLs where the
+    Windows takes that word (windows-2022 does not [PM M201]). Dynamic code it forbids
+    itself once its partition is set up, before anything of its guest's is read:
+    windows-2022's WHP sets up no partition in a process that forbids it [PM M201, M202].
+  - It fails closed: a VM process outside an AppContainer starts no VM.
+  - A profile costs 4.4 / 5.7 ms to make at p50 and 1.8 / 2.1 ms to delete [PM M201], on
+    `shards run --kernel`'s path; a dial through the spawner 100-111 µs at p50, where the
+    spawner's own costs 38-41 [PM M203]. A profile is recorded while it lives, in a file
+    its spawner holds open, so that the next spawner deletes what a killed one left.
+  - Its connections end shut down, then closed: on Windows an exit that closes a socket's
+    last reference loses what the peer had not read [PM M199].
+  - Tested on real VMs: `the_vm_process_is_confined` reads each of these from the running
+    VM process as Windows reports it, and its end with its killed spawner; the `vsock`
+    tests run through its spawner.
 
 ### Networking: a network process per VM (D31, design)
 
@@ -3539,6 +3566,42 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode is
 D136.
 
+### D141. The Windows VM process confined
+
+AGENTFILE_ARCH.md §11 row 975, after D140: a VM process on Windows reaches no more of its
+host than one on macOS or Linux does (D30). Windows' own primitives, each measured before it
+was built on [PM M200-M203]:
+
+- **An AppContainer of its own**, as macOS's App Sandbox: no file or socket of its user's,
+  but what its spawner hands it. A profile per VM, not a SID derived from a name, which
+  CreateProcessW refuses an AppContainer without (ERROR_FILE_NOT_FOUND) [PM M201]; holding
+  the capabilities `\\?\VidExo`'s DACL grants, read from the device as it starts, without
+  which WHP sets up no partition in it [PM M200].
+- **Grants as macOS's, over a pipe each way.** Files by DuplicateHandle, each with the path
+  its spawner found it at (GetFinalPathNameByHandleW refuses an AppContainer [PM M203]);
+  sockets by WSADuplicateSocketW, as Winsock documents, 6-10 µs more a dial than
+  DuplicateHandle at p50 [PM M203]. The spawner of `shards run --kernel` answers in its own
+  process, since Windows has no exec: the VM is its child, which takes the console's Ctrl-C.
+  Nothing more is granted once its vsock path is, and without one the link closes.
+- **A Job and Windows' mitigations**, given as the process is made, suspended, its handles
+  duplicated into it and their values told it through a pipe, its one inherited handle:
+  none is made inheritable where another child could take it [PM M201]. Dynamic code it
+  forbids itself once its partition is set up (SetProcessMitigationPolicy), since
+  windows-2022 sets no partition up without it, while every call a VM makes after its
+  setup works [PM M202]; the library never does, as a test's process sets up many.
+- **No profile left behind.** Each lives with a record its spawner holds open
+  (`%LOCALAPPDATA%\shards\containers`); the next spawner deletes the profile of each record
+  no process holds.
+- **The partition that reads WHP's vCPU limit is made as a VM's** (D140 fixed): offered the
+  synthetic features without its APICs emulated, WHP refused it (HV_STATUS_INVALID_PARAMETER),
+  and with it every VM (CI run 38222358454).
+
+Tested on real VMs (`the_vm_process_is_confined`): the VM process's token is an
+AppContainer's, it is in a Job, each mitigation is on, dynamic code forbidden once its guest
+runs; killed with its spawner; and the profile its killed spawner left is deleted by the next.
+The `vsock` tests run through the spawner's grants on Windows: both directions, eight streams
+at once, refusals.
+
 ### D140. microVMs on Windows hosts: the WHP backend
 
 AGENTFILE_ARCH.md §11 row 975 (`RUN` on Windows hosts) starts here: shards' VMM drives the
@@ -3557,7 +3620,7 @@ network process (D142) and its builder (D143) follow.
   TLB-flush and cluster-IPI hypercalls its hints recommend; not synthetic timers, which the
   host refuses without the SynIC, nor anything of VMBus's (M198). As many vCPUs as the
   hypervisor tells a partition's guest it supports (leaf 0x40000005, read once a process
-  from a partition of one offered the synthetic features a VM's is, without which the leaf
+  from a partition of one made as a VM's is, without whose synthetic features the leaf
   reads 0 (M202): 240 on GitHub's runners, fewer than the host's own CPUID says), and at
   most 254.
 - **The IOAPIC is the VMM's** (`arch::x86_64::ioapic`), as KVM's in-kernel one presents

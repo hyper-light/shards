@@ -20,9 +20,11 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
-use common::{TempDir, Vm, cannot_run_vms, cannot_snapshot, echo, kernel, test_guest, vsock_connect};
+use common::{TempDir, Vm, cannot_run_vms, cannot_snapshot, echo, kernel, test_guest, vsock_connect, within};
 
 const TIMEOUT: Duration = Duration::from_secs(60);
+/// The most a test's streams take, past which it fails saying what its VM said.
+const STREAMING: Duration = Duration::from_secs(300);
 const ECHO_PORT: u32 = 1234;
 
 fn guest_args(mode: &str, vsock: &Path) -> Vec<std::ffi::OsString> {
@@ -77,17 +79,24 @@ fn host_and_guest_connect_both_ways_and_stream_in_parallel() {
         return;
     }
     let dir = TempDir::new("vsock-both");
-    let (_vm, sock) = boot_echo_guest(&dir);
+    let (vm, sock) = boot_echo_guest(&dir);
     // Eight streams at once, each far past every credit window and socket buffer.
-    let streams: Vec<_> = (0..8u64)
-        .map(|salt| {
-            let sock = sock.clone();
-            thread::spawn(move || echo(&sock, ECHO_PORT, salt, 8 << 20).unwrap())
-        })
-        .collect();
-    for s in streams {
-        s.join().unwrap();
-    }
+    within(
+        "eight streams through the echo",
+        STREAMING,
+        &vm.log(),
+        move || {
+            let streams: Vec<_> = (0..8u64)
+                .map(|salt| {
+                    let sock = sock.clone();
+                    thread::spawn(move || echo(&sock, ECHO_PORT, salt, 8 << 20).unwrap())
+                })
+                .collect();
+            for s in streams {
+                s.join().unwrap();
+            }
+        },
+    );
 }
 
 #[test]
@@ -96,22 +105,24 @@ fn refused_ports_and_bad_handshakes_close_the_host_socket() {
         return;
     }
     let dir = TempDir::new("vsock-refuse");
-    let (_vm, sock) = boot_echo_guest(&dir);
-    assert!(
-        vsock_connect(&sock, 4321, TIMEOUT).is_err(),
-        "a port nobody listens on was accepted"
-    );
-    let mut s = UnixStream::connect(&sock).unwrap();
-    s.set_read_timeout(Some(TIMEOUT)).unwrap();
-    s.write_all(b"HELLO 1234\n").unwrap();
-    let mut rest = Vec::new();
-    assert_eq!(
-        s.read_to_end(&mut rest).unwrap(),
-        0,
-        "a bad handshake got {rest:?}"
-    );
-    // The device still serves after both.
-    echo(&sock, ECHO_PORT, 99, 1 << 20).unwrap();
+    let (vm, sock) = boot_echo_guest(&dir);
+    within("refusals, then an echo", STREAMING, &vm.log(), move || {
+        assert!(
+            vsock_connect(&sock, 4321, TIMEOUT).is_err(),
+            "a port nobody listens on was accepted"
+        );
+        let mut s = UnixStream::connect(&sock).unwrap();
+        s.set_read_timeout(Some(TIMEOUT)).unwrap();
+        s.write_all(b"HELLO 1234\n").unwrap();
+        let mut rest = Vec::new();
+        assert_eq!(
+            s.read_to_end(&mut rest).unwrap(),
+            0,
+            "a bad handshake got {rest:?}"
+        );
+        // The device still serves after both.
+        echo(&sock, ECHO_PORT, 99, 1 << 20).unwrap();
+    });
 }
 
 #[test]

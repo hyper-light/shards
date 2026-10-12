@@ -1,9 +1,12 @@
 //! AF_UNIX stream sockets on Windows (afunix.sys, Windows 10 1803 and later), for what
-//! shards carries over Unix sockets on its other hosts: a VM's vsock streams and its
-//! builder's sockets. std has Unix sockets on Unix alone; these are the subset shards uses,
-//! made as std makes them there: not inherited by children unless handed to one, and
-//! blocking until set otherwise. Measured: PM M199 (9-12 GB/s, 3.4-3.7 times loopback
-//! TCP's; half-close; scatter-gather; WSAPoll and WSAEventSelect).
+//! shards carries over Unix sockets on its other hosts: a VM's vsock streams, its network
+//! process's controls and its builder's sockets. std has Unix sockets on Unix alone; these
+//! are the subset shards uses, made as std makes them there: not inherited by children
+//! unless handed to one, and blocking until set otherwise. Measured: PM M199 (9-12 GB/s,
+//! 3.4-3.7 times loopback TCP's; half-close; scatter-gather; WSAPoll and WSAEventSelect)
+//! and M203 (shared with a confined process). Nothing on other hosts.
+
+#![cfg(windows)]
 
 use std::io::{self, Read, Write};
 use std::net::Shutdown;
@@ -158,13 +161,12 @@ const ADDRESS_LEN: i32 = std::mem::size_of::<SOCKADDR_UN>() as i32;
 #[derive(Debug)]
 pub struct UnixStream(Socket);
 
-impl super::AsRawSocket for UnixStream {
-    fn raw_socket(&self) -> RawSocket {
+impl UnixStream {
+    /// The socket, as Winsock's calls name it; this value still owns it.
+    pub fn raw(&self) -> RawSocket {
         self.0.0
     }
-}
 
-impl UnixStream {
     /// Connects to the listener at `path`.
     pub fn connect(path: impl AsRef<Path>) -> io::Result<UnixStream> {
         let addr = address(path.as_ref())?;
@@ -385,13 +387,12 @@ impl Write for UnixStream {
 #[derive(Debug)]
 pub struct UnixListener(Socket);
 
-impl super::AsRawSocket for UnixListener {
-    fn raw_socket(&self) -> RawSocket {
+impl UnixListener {
+    /// The socket, as Winsock's calls name it; this value still owns it.
+    pub fn raw(&self) -> RawSocket {
         self.0.0
     }
-}
 
-impl UnixListener {
     /// Listens at `path`, which must not exist.
     pub fn bind(path: impl AsRef<Path>) -> io::Result<UnixListener> {
         let listener = UnixListener::bound(path)?;
@@ -504,6 +505,25 @@ mod tests {
             "{e:?}"
         );
         assert!(UnixStream::from_shared(&[0; 3]).is_err());
+    }
+
+    /// A socket bound and not yet listening, shared, listens in its copy, which takes a
+    /// client, as a VM's vsock socket does from its spawner (D141).
+    #[test]
+    fn a_shared_bound_socket_listens_in_its_copy() {
+        let dir = shards_testdir::TempDir::new("afunix-shared").unwrap();
+        let path = dir.join("s.sock");
+        let bound = UnixListener::bound(&path).unwrap();
+        let copy = UnixListener::from_shared(&bound.share_with(std::process::id()).unwrap()).unwrap();
+        drop(bound);
+        assert!(UnixStream::connect(&path).is_err(), "refused until it listens");
+        copy.listen().unwrap();
+        let client = UnixStream::connect(&path).unwrap();
+        let (accepted, ()) = copy.accept().unwrap();
+        (&client).write_all(b"in").unwrap();
+        let mut buf = [0u8; 2];
+        (&accepted).read_exact(&mut buf).unwrap();
+        assert_eq!(&buf, b"in");
     }
 
     /// A socket bound and not yet listening refuses a client; listening, it takes one.

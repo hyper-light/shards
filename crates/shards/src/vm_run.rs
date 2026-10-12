@@ -1274,12 +1274,14 @@ fn restore_vm(cfg: &RestoreConfig) -> Result<(Handle, Running), String> {
     vm::restore_from(cfg, pinned)
 }
 
-/// `path` made whole against the working directory.
+/// `path` made whole against the working directory, and normalized as
+/// `std::path::absolute` normalizes it (on Windows, its separators made `\`).
 fn absolute(path: &Path) -> Result<PathBuf, String> {
-    match CWD.get() {
-        Some(cwd) if path.is_relative() => Ok(cwd.join(path)),
-        _ => std::path::absolute(path).map_err(|e| format!("{}: {e}", path.display())),
-    }
+    let whole = match CWD.get() {
+        Some(cwd) if path.is_relative() => cwd.join(path),
+        _ => path.to_path_buf(),
+    };
+    std::path::absolute(&whole).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// The files a restore's spawner gives it to restore against (`--backing PATH[:ro]`): a

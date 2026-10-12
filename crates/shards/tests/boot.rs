@@ -84,6 +84,35 @@ fn brings_up_every_vcpu() {
     }
 }
 
+/// Two vCPUs booted in this process, unconfined, to their end: the kernel panics for want
+/// of a root and resets, as `panic=-1` has it. The control for the SMP boots above, which
+/// run in a confined VM process. The one VM this binary makes in its own process
+/// (Hypervisor.framework allows one a process).
+#[test]
+fn two_vcpus_boot_to_their_end_in_this_process() {
+    use shards_vmm::vm::{self, Config, Console, ExitReason};
+    if cannot_run_vms() {
+        return;
+    }
+    let mut cfg = Config::new(kernel().to_path_buf(), None);
+    cfg.vcpus = 2;
+    cfg.memory_mib = 512;
+    cfg.cmdline = "console=ttyS0 panic=-1".into();
+    cfg.console = Console::Discard;
+    let (handle, running) = vm::start(&cfg).unwrap_or_else(|e| panic!("{e}"));
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(running.wait());
+    });
+    match rx.recv_timeout(TIMEOUT) {
+        Ok(reason) => assert_eq!(reason, ExitReason::Reset),
+        Err(_) => {
+            handle.stop();
+            panic!("two vCPUs did not reach their end in {TIMEOUT:?} in this process");
+        }
+    }
+}
+
 #[test]
 fn boots_the_hosts_maximum_vcpu_count() {
     if cannot_run_vms() {

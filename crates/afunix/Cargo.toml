@@ -1,0 +1,18 @@
+[package]
+name = "shards-afunix"
+version = "0.1.0"
+description = "AF_UNIX stream sockets on Windows, as std has them on Unix, for shards' processes"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true }
+
+[target.'cfg(windows)'.dev-dependencies]
+shards-testdir = { path = "../testdir" }
+
+[lints]
+workspace = true

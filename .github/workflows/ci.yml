@@ -126,7 +126,7 @@ jobs:
             Linux) ls -l /dev/kvm 2>&1 || true ;;
             macOS) sysctl kern.hv_support || true ;;
             Windows) powershell -NoProfile -Command \
-              "(Get-CimInstance Win32_ComputerSystem).HypervisorPresent; (Get-WindowsOptionalFeature -Online -FeatureName HypervisorPlatform).State" || true ;;
+              "(Get-CimInstance Win32_Processor).Name; (Get-CimInstance Win32_ComputerSystem).HypervisorPresent; (Get-WindowsOptionalFeature -Online -FeatureName HypervisorPlatform).State" || true ;;
           esac
       - name: Lints (production code never panics; clippy.toml exempts tests)
         shell: bash

@@ -632,7 +632,8 @@ pub struct Given<'a> {
 #[derive(Debug)]
 pub struct Spawn<'a> {
     pub program: &'a Path,
-    /// Its arguments: `--grants HANDLE` follows them, the pipe its handles are told on.
+    /// Its arguments: `--grants HANDLE`, the pipe its handles are told on, goes after the
+    /// first, its command, so that it comes before any `--` and what follows that.
     pub args: &'a [&'a OsStr],
     pub given: &'a [Given<'a>],
     /// Its standard input, if any, output and error: each inherited, where this process has
@@ -650,10 +651,12 @@ pub struct Spawn<'a> {
 pub fn spawn(s: &Spawn<'_>) -> io::Result<Child> {
     let (pipe_read, pipe_write) = pipe()?;
     let pipe_value = pipe_read.as_raw_handle() as usize;
-    let mut args: Vec<&OsStr> = s.args.to_vec();
     let pipe_arg = pipe_value.to_string();
+    let mut args: Vec<&OsStr> = Vec::with_capacity(s.args.len() + 2);
+    args.extend(s.args.first());
     args.push(OsStr::new("--grants"));
     args.push(OsStr::new(&pipe_arg));
+    args.extend(s.args.iter().skip(1));
     let mut line = command_line(s.program, &args);
     let job = Job::new()?;
     let caps: &[Vec<u8>] = if s.hypervisor {
