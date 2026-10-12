@@ -97,6 +97,10 @@ fn main() {
                         let v = cases.iter().map(|c| c.slab.unwrap_or_default()).collect();
                         rows.push(support::stats(&name("host slab"), "MiB", v));
                     }
+                    if n > 0 {
+                        let connect = cases.iter().flat_map(|c| c.connect.iter().copied()).collect();
+                        rows.push(support::stats(&name("connect"), "us", connect));
+                    }
                     let rtt = cases.iter().flat_map(|c| c.rtt.iter().copied()).collect();
                     rows.push(support::stats(&name("rtt"), "us", rtt));
                 }
@@ -208,11 +212,12 @@ impl Server {
 }
 
 /// One case's numbers: each process's memory by what its host counts, in MiB; the host's
-/// slab where it says (Linux); and the step's round trips, in µs.
+/// slab where it says (Linux); and the step's connects and round trips, in µs.
 struct Case {
     net: Vec<(&'static str, f64)>,
     vm: Vec<(&'static str, f64)>,
     slab: Option<f64>,
+    connect: Vec<f64>,
     rtt: Vec<f64>,
 }
 
@@ -296,6 +301,7 @@ fn case(
         net: memory(net),
         vm: memory(vm),
         slab: slab_mib(),
+        connect: Vec::new(),
         rtt: Vec::new(),
     };
     let _ = go.send(());
@@ -321,7 +327,22 @@ fn case(
         .split_whitespace()
         .map(|v| v.parse().unwrap())
         .collect();
-    Case { rtt, ..measured }
+    let connect: Vec<f64> = err
+        .lines()
+        .filter_map(|l| l.split_once(" conns connect-us ").map(|(_, v)| v))
+        .flat_map(str::split_whitespace)
+        .map(|v| v.parse().unwrap())
+        .collect();
+    assert_eq!(
+        u64::try_from(connect.len()).ok(),
+        Some(n),
+        "each connect's time\n{err}"
+    );
+    Case {
+        connect,
+        rtt,
+        ..measured
+    }
 }
 
 /// Every process under `root`, at any depth, by pid with its name.

@@ -1388,8 +1388,12 @@ fn conns(addr: &str, n: usize, trips: usize, bytes: u64) -> i32 {
     };
     let mut buf = vec![0u8; 64 * 1024];
     let mut held = Vec::with_capacity(n);
+    // Each connect's time, the guest's SYN to its SYN-ACK taken.
+    let mut connects: Vec<u128> = Vec::with_capacity(n);
     for _ in 0..n {
+        let t = std::time::Instant::now();
         let opened = std::net::TcpStream::connect(addr).and_then(|mut c| {
+            connects.push(t.elapsed().as_micros());
             if bytes == 0 {
                 c.write_all(b"i")?;
                 c.read_exact(buf.get_mut(..1).unwrap_or_default())?;
@@ -1450,6 +1454,11 @@ fn conns(addr: &str, n: usize, trips: usize, bytes: u64) -> i32 {
         }
     }
     drop(held);
+    // A thousand to a line, which keeps each short where there are many.
+    for some in connects.chunks(1000) {
+        let each: Vec<String> = some.iter().map(u128::to_string).collect();
+        let _ = writeln!(io::stdout(), "conns connect-us {}", each.join(" "));
+    }
     let each: Vec<String> = took.iter().map(u128::to_string).collect();
     let _ = writeln!(io::stdout(), "conns rtt-us {}", each.join(" "));
     took.sort_unstable();

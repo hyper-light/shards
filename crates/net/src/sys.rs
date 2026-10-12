@@ -119,10 +119,29 @@ pub fn connect_tcp(to: SocketAddr) -> io::Result<TcpStream> {
 /// overlapped-capable and inherited by no child, then a connect that would block.
 #[cfg(windows)]
 pub fn connect_tcp(to: SocketAddr) -> io::Result<TcpStream> {
+    connect_tcp_from(to, None)
+}
+
+/// A TCP socket connecting to `to` from `to`'s own address, without waiting (Windows): one
+/// the host holds as it binds, which binding to it proves (WSAEADDRNOTAVAIL otherwise), the
+/// unspecified address refused.
+#[cfg(windows)]
+pub fn connect_tcp_to_itself(to: SocketAddr) -> io::Result<TcpStream> {
+    if to.ip().is_unspecified() {
+        return Err(io::Error::new(
+            io::ErrorKind::AddrNotAvailable,
+            "the unspecified address",
+        ));
+    }
+    connect_tcp_from(to, Some(SocketAddr::new(to.ip(), 0)))
+}
+
+#[cfg(windows)]
+fn connect_tcp_from(to: SocketAddr, from: Option<SocketAddr>) -> io::Result<TcpStream> {
     use std::os::windows::io::FromRawSocket as _;
     use windows_sys::Win32::Networking::WinSock::{
         AF_INET, AF_INET6, INVALID_SOCKET, IPPROTO_TCP, SOCK_STREAM, WSA_FLAG_NO_HANDLE_INHERIT,
-        WSA_FLAG_OVERLAPPED, WSAEWOULDBLOCK, WSAGetLastError, WSASocketW, connect,
+        WSA_FLAG_OVERLAPPED, WSAEWOULDBLOCK, WSAGetLastError, WSASocketW, bind, connect,
     };
     let family = if to.is_ipv6() { AF_INET6 } else { AF_INET };
     // SAFETY: plain arguments; the socket is owned below.
@@ -142,6 +161,14 @@ pub fn connect_tcp(to: SocketAddr) -> io::Result<TcpStream> {
     }
     // SAFETY: a socket just made, which nothing else owns.
     let sock = unsafe { TcpStream::from_raw_socket(raw as u64) };
+    if let Some(from) = from {
+        let (addr, len) = winsock_addr(from);
+        // SAFETY: an address of its own length.
+        if unsafe { bind(raw, (&raw const addr).cast(), len) } != 0 {
+            // SAFETY: no arguments.
+            return Err(io::Error::from_raw_os_error(unsafe { WSAGetLastError() }));
+        }
+    }
     sock.set_nonblocking(true)?;
     sock.set_nodelay(true)?;
     let (addr, len) = winsock_addr(to);

@@ -284,14 +284,17 @@ fn run() -> Result<(), String> {
             shards_ipc::Handed::Handle(_) => Err(format!("--grants: {name} is no socket")),
         }
     };
-    if let Some(name) = a.dialer.take() {
-        shards_net::tcp::set_dialer(socket(&name)?).map_err(|e| e.to_string())?;
-    }
-    shards_net::tcp::set_host_addresses(std::mem::take(&mut a.host_addresses)).map_err(|e| e.to_string())?;
+    let dialer = match a.dialer.take() {
+        Some(name) => Some(
+            shards_net::Dialer::new(socket(&name)?, std::mem::take(&mut a.host_addresses))
+                .map_err(|e| format!("--dialer: {e}"))?,
+        ),
+        None => None,
+    };
     let controls = a
         .controls
         .iter()
         .map(|(role, name)| Ok((*role, socket(name)?)))
         .collect::<Result<_, String>>()?;
-    shards_net::serve(region, me, peer, vm, cfg, controls).map_err(|e| e.to_string())
+    shards_net::serve(region, me, peer, vm, dialer, cfg, controls).map_err(|e| e.to_string())
 }

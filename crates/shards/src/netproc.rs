@@ -458,54 +458,126 @@ pub fn start(ready: Ready, vm: &shards_ipc::Suspended) -> Result<NetProcess, Str
     })
 }
 
-/// Dials for the network process `pid`, in an AppContainer, each time it asks over `link`
-/// (`kind::DIAL`): with nothing named, the build's proxy at `proxy`; with an address and a
-/// port, a TCP connection to the host's own address or its loopback (PM M204), begun here
-/// and connected there, refused to any other address. The connection is shared with it
-/// (WSADuplicateSocketW, PM M203) and kept until it says it has its own (`kind::TAKEN`); or
-/// `kind::ERR` says why not. Ends as the network process goes.
+/// Dials for the network process `pid`, in an AppContainer, as it asks over `link`
+/// (`kind::DIAL`, each ask numbered): with nothing named, the build's proxy at `proxy`; with
+/// an address and a port, a TCP connection to the host's own address or its loopback (PM
+/// M204), refused to any other address. Each is answered once connected, as Windows
+/// documents a shared socket's use, one process making the connection and another
+/// exchanging data on it (WSADuplicateSocketW, PM M203): shared with it, and kept until it
+/// says it has its own (`kind::TAKEN`); or `kind::ERR` says why not. The connects under way
+/// are each waited on beside the link, so that none holds up another's answer. Ends as the
+/// network process goes.
 #[cfg(windows)]
 fn serve_dials(link: &shards_vmm::platform::UnixStream, proxy: Option<&std::path::Path>, pid: u32) {
     use shards_ipc::kind;
     use std::os::windows::io::AsRawSocket as _;
-    // The connection is held, and closed as it drops, until the process has its own.
+    use windows_sys::Win32::Networking::WinSock::{
+        POLLERR, POLLHUP, POLLNVAL, POLLRDNORM, POLLWRNORM, WSAPOLLFD, WSAPoll,
+    };
+    // A connection is held, and closed as it drops, until the process has its own.
     type Held = Box<dyn std::any::Any>;
-    while let Ok(Some(asked)) = shards_ipc::recv(link) {
-        if asked.kind != kind::DIAL {
+    let answer = |id: u32, kind: u8, rest: &[u8]| {
+        let mut payload = id.to_be_bytes().to_vec();
+        payload.extend(rest);
+        shards_ipc::send(link, kind, &payload)
+    };
+    let mut connecting: Vec<(u32, std::net::TcpStream)> = Vec::new();
+    let mut held: Vec<(u32, Held)> = Vec::new();
+    loop {
+        let mut fds: Vec<WSAPOLLFD> = std::iter::once(link.raw())
+            .map(|fd| (fd, POLLRDNORM))
+            .chain(
+                connecting
+                    .iter()
+                    .map(|(_, s)| (s.as_raw_socket() as usize, POLLWRNORM)),
+            )
+            .map(|(fd, events)| WSAPOLLFD {
+                fd,
+                events,
+                revents: 0,
+            })
+            .collect();
+        // SAFETY: an array of its own length, waited on until one is ready.
+        if unsafe { WSAPoll(fds.as_mut_ptr(), fds.len() as u32, -1) } < 0 {
             return;
         }
-        let dialed = if asked.payload.is_empty() {
-            proxy
-                .ok_or_else(|| std::io::Error::other("no build proxy to dial"))
-                .and_then(shards_vmm::platform::UnixStream::connect)
-                .and_then(|conn| conn.share_with(pid).map(|info| (Box::new(conn) as Held, info)))
-        } else {
-            host_tcp(&asked.payload).and_then(|conn| {
-                shards_ipc::share_socket(conn.as_raw_socket(), pid).map(|info| (Box::new(conn) as Held, info))
-            })
+        // Each connect that ended, answered: connected, or why not. A peer that took the
+        // connection and closed it at once leaves it ended too, its end the network
+        // process's to see.
+        let ended: Vec<(usize, i16)> = fds
+            .iter()
+            .skip(1)
+            .map(|fd| fd.revents)
+            .enumerate()
+            .filter(|&(_, r)| r != 0)
+            .collect();
+        for (i, r) in ended.into_iter().rev() {
+            if i >= connecting.len() {
+                continue;
+            }
+            let (id, sock) = connecting.swap_remove(i);
+            let shared = match sock.take_error() {
+                Ok(Some(e)) | Err(e) => Err(e),
+                Ok(None) if sock.peer_addr().is_ok() => shards_ipc::share_socket(sock.as_raw_socket(), pid),
+                Ok(None) if r & (POLLERR | POLLHUP | POLLNVAL) != 0 => {
+                    Err(std::io::Error::other("the connection failed"))
+                }
+                Ok(None) => {
+                    connecting.push((id, sock));
+                    continue;
+                }
+            };
+            let sent = match shared {
+                Ok(info) => answer(id, kind::GRANTED, &info).map(|()| held.push((id, Box::new(sock)))),
+                Err(e) => answer(id, kind::ERR, e.to_string().as_bytes()),
+            };
+            if sent.is_err() {
+                return;
+            }
+        }
+        if fds.first().map_or(0, |fd| fd.revents) == 0 {
+            continue;
+        }
+        let Ok(Some(asked)) = shards_ipc::recv(link) else {
+            return;
         };
-        match dialed {
-            Ok((conn, info)) => {
-                if shards_ipc::send(link, kind::GRANTED, &info).is_err() {
+        let Some((id, rest)) = asked.payload.split_first_chunk::<4>() else {
+            return;
+        };
+        let id = u32::from_be_bytes(*id);
+        match asked.kind {
+            kind::TAKEN => held.retain(|(i, _)| *i != id),
+            kind::DIAL if rest.is_empty() => {
+                let dialed = proxy
+                    .ok_or_else(|| std::io::Error::other("no build proxy to dial"))
+                    .and_then(shards_vmm::platform::UnixStream::connect)
+                    .and_then(|conn| conn.share_with(pid).map(|info| (conn, info)));
+                let sent = match dialed {
+                    Ok((conn, info)) => {
+                        answer(id, kind::GRANTED, &info).map(|()| held.push((id, Box::new(conn))))
+                    }
+                    Err(e) => answer(id, kind::ERR, e.to_string().as_bytes()),
+                };
+                if sent.is_err() {
                     return;
                 }
-                match shards_ipc::recv(link) {
-                    Ok(Some(m)) if m.kind == kind::TAKEN => drop(conn),
-                    _ => return,
-                }
             }
-            Err(e) => {
-                if shards_ipc::send(link, kind::ERR, e.to_string().as_bytes()).is_err() {
-                    return;
+            kind::DIAL => match host_tcp(rest) {
+                Ok(sock) => connecting.push((id, sock)),
+                Err(e) => {
+                    if answer(id, kind::ERR, e.to_string().as_bytes()).is_err() {
+                        return;
+                    }
                 }
-            }
+            },
+            _ => return,
         }
     }
 }
 
 /// A TCP connection begun, without waiting, to the address (4 or 16 bytes) and port
-/// (big-endian) `asked` names: only to the host's own addresses, as they are now, and its
-/// loopback, which a network process's AppContainer keeps it from (D142); its own
+/// (big-endian) `asked` names, from that address: only one the host holds as it binds, its
+/// own or its loopback, which a network process's AppContainer keeps it from (D142); its own
 /// capabilities reach the rest.
 #[cfg(windows)]
 fn host_tcp(asked: &[u8]) -> std::io::Result<std::net::TcpStream> {
@@ -523,10 +595,13 @@ fn host_tcp(asked: &[u8]) -> std::io::Result<std::net::TcpStream> {
             .into(),
         _ => return Err(refused("a dial of no address")),
     };
-    if !ip.is_loopback() && !shards_net::bridge::host_addresses().contains(&ip) {
-        return Err(refused("not one of this host's addresses"));
-    }
-    shards_net::sys::connect_tcp(std::net::SocketAddr::new(ip, port))
+    shards_net::sys::connect_tcp_to_itself(std::net::SocketAddr::new(ip, port)).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::AddrNotAvailable {
+            refused("not one of this host's addresses")
+        } else {
+            e
+        }
+    })
 }
 
 /// Waits for a network process whose VM is gone, [`GRACE`] at most, then ends it (Windows):

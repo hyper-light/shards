@@ -244,6 +244,33 @@ pub trait ToGuest {
     ) -> bool;
 }
 
+/// What a connection takes of the guest's SYN: its sequence number, window and options.
+#[derive(Debug, Clone, Copy)]
+pub struct Syn {
+    seq: u32,
+    window: u16,
+    wscale: Option<u8>,
+    mss: Option<u16>,
+}
+
+impl From<&wire::Tcp<'_>> for Syn {
+    fn from(seg: &wire::Tcp<'_>) -> Syn {
+        Syn {
+            seq: seg.seq,
+            window: seg.window,
+            wscale: seg.wscale,
+            mss: seg.mss,
+        }
+    }
+}
+
+impl Syn {
+    /// The sequence number the guest's SYN took.
+    pub fn seq(&self) -> u32 {
+        self.seq
+    }
+}
+
 impl Conn {
     /// A connection for the guest's SYN: its host socket connecting, without blocking.
     pub fn open(key: Key, seg: &wire::Tcp<'_>, isn: u32) -> io::Result<Conn> {
@@ -255,8 +282,8 @@ impl Conn {
     pub fn open_to(key: Key, to: (IpAddr, u16), seg: &wire::Tcp<'_>, isn: u32) -> io::Result<Conn> {
         Ok(Conn::opened(
             key,
-            HostSock::Tcp(connect_tcp(SocketAddr::from(to))?),
-            seg,
+            HostSock::Tcp(crate::sys::connect_tcp(SocketAddr::from(to))?),
+            &Syn::from(seg),
             isn,
         ))
     }
@@ -265,19 +292,31 @@ impl Conn {
     /// connection to `socket`, made at once or refused: one the proxy's backlog cannot take
     /// now is reset, as a full backlog's SYN goes unanswered, never waited on.
     pub fn open_unix(key: Key, socket: &Path, seg: &wire::Tcp<'_>, isn: u32) -> io::Result<Conn> {
-        Ok(Conn::opened(key, HostSock::Unix(connect_unix(socket)?), seg, isn))
+        Ok(Conn::opened(
+            key,
+            HostSock::Unix(connect_unix(socket)?),
+            &Syn::from(seg),
+            isn,
+        ))
     }
 
-    fn opened(key: Key, sock: HostSock, seg: &wire::Tcp<'_>, isn: u32) -> Conn {
+    /// A connection for the guest's `syn`, its host socket one the spawner's dialer
+    /// connected (Windows, D142; dial.rs).
+    #[cfg(windows)]
+    pub fn dialed(key: Key, sock: HostSock, syn: &Syn, isn: u32) -> Conn {
+        Conn::opened(key, sock, syn, isn)
+    }
+
+    fn opened(key: Key, sock: HostSock, syn: &Syn, isn: u32) -> Conn {
         Conn {
             key,
             sock,
             state: State::Connecting,
-            rcv_nxt: seg.seq.wrapping_add(1),
-            guest_wnd: u32::from(seg.window),
-            guest_wscale: seg.wscale.unwrap_or(0).min(14),
-            guest_mss: seg.mss.unwrap_or(536),
-            scaled: seg.wscale.is_some(),
+            rcv_nxt: syn.seq.wrapping_add(1),
+            guest_wnd: u32::from(syn.window),
+            guest_wscale: syn.wscale.unwrap_or(0).min(14),
+            guest_mss: syn.mss.unwrap_or(536),
+            scaled: syn.wscale.is_some(),
             snd_una: isn,
             snd_nxt: isn,
             snd_max: isn,
@@ -1069,74 +1108,19 @@ fn write_now(mut sock: impl Write, parts: Payload<'_>) -> io::Result<usize> {
     Ok(done)
 }
 
-/// Where what a process App Sandbox or an AppContainer keeps from it is dialled (macOS,
-/// D31; Windows, D142): its spawner's end of a link, over which it asks for a connection
-/// and is given one, as a confined VM asks for its vsock host ports (`kind::DIAL`): a
-/// build's proxy's socket, and on Windows the host's own addresses and its loopback.
+/// Where what App Sandbox keeps a network process from is dialled (macOS, D31): its
+/// spawner's end of a link, over which it asks for a connection to a build's proxy's socket
+/// and is given one, as a confined VM asks for its vsock host ports (`kind::DIAL`). Windows'
+/// dialer is the event loop's (dial.rs).
+#[cfg(unix)]
 static DIALER: std::sync::OnceLock<std::sync::Mutex<UnixStream>> = std::sync::OnceLock::new();
 
 /// Dials through `link` what this process may not, once for the process's life.
+#[cfg(unix)]
 pub fn set_dialer(link: UnixStream) -> io::Result<()> {
     DIALER
         .set(std::sync::Mutex::new(link))
         .map_err(|_| io::Error::other("the dialer is set already"))
-}
-
-/// The host's own addresses (Windows), which an AppContainer reaches none of, nor the
-/// loopback (PM M204): its flows to them go through its spawner's dialer.
-#[cfg(windows)]
-static HOST: std::sync::OnceLock<Vec<IpAddr>> = std::sync::OnceLock::new();
-
-/// The host's own addresses, as its spawner gave them, once for the process's life.
-#[cfg(windows)]
-pub fn set_host_addresses(addresses: Vec<IpAddr>) -> io::Result<()> {
-    HOST.set(addresses)
-        .map_err(|_| io::Error::other("the host's addresses are set already"))
-}
-
-/// A TCP connection to `to` without blocking: on Windows, to the host's own addresses or its
-/// loopback through the spawner's dialer, which connects it and shares it (D142); else
-/// connected here.
-fn connect_tcp(to: SocketAddr) -> io::Result<TcpStream> {
-    #[cfg(windows)]
-    if let Some(link) = DIALER.get()
-        && (to.ip().is_loopback() || HOST.get().is_some_and(|h| h.contains(&to.ip())))
-    {
-        return dial_tcp(link, to);
-    }
-    crate::sys::connect_tcp(to)
-}
-
-/// A TCP connection to `to` (Windows), asked of the spawner over `link`: `kind::DIAL` with
-/// the address (its family's 4 or 16 bytes) and the port, big-endian; given as a socket its
-/// spawner made, began connecting and shared with this process, whose connection then ends
-/// as any other's does here.
-#[cfg(windows)]
-fn dial_tcp(link: &std::sync::Mutex<UnixStream>, to: SocketAddr) -> io::Result<TcpStream> {
-    use shards_ipc::kind;
-    let mut asked = match to.ip() {
-        IpAddr::V4(v4) => v4.octets().to_vec(),
-        IpAddr::V6(v6) => v6.octets().to_vec(),
-    };
-    asked.extend(to.port().to_be_bytes());
-    // A request and its answer at a time.
-    let link = link.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    shards_ipc::send(&*link, kind::DIAL, &asked)?;
-    let answer = shards_ipc::recv(&*link)?
-        .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "the dialer went"))?;
-    match answer.kind {
-        kind::GRANTED => {
-            let sock = TcpStream::from(shards_ipc::adopt_socket(&answer.payload)?);
-            let _ = shards_ipc::send(&*link, kind::TAKEN, &[]);
-            sock.set_nonblocking(true)?;
-            Ok(sock)
-        }
-        kind::ERR => Err(io::Error::new(
-            io::ErrorKind::ConnectionRefused,
-            String::from_utf8_lossy(&answer.payload).into_owned(),
-        )),
-        _ => Err(io::Error::other("the dialer answered with something else")),
-    }
 }
 
 /// A connection to the build's proxy, from the spawner's dialer: asked for, given as a
@@ -1167,38 +1151,11 @@ fn dial(link: &std::sync::Mutex<UnixStream>) -> io::Result<UnixStream> {
     }
 }
 
-/// A connection to the build's proxy, from the spawner's dialer (Windows): asked for, and
-/// given as a socket its spawner shared with this process (WSADuplicateSocketW, PM M203),
-/// which an AppContainer could not dial (PM M201).
-#[cfg(windows)]
-fn dial(link: &std::sync::Mutex<UnixStream>) -> io::Result<UnixStream> {
-    use shards_ipc::kind;
-    // A request and its answer at a time; one that names nothing is for the proxy.
-    let link = link.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    shards_ipc::send(&*link, kind::DIAL, &[])?;
-    let answer = shards_ipc::recv(&*link)?
-        .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "the proxy's dialer went"))?;
-    match answer.kind {
-        kind::GRANTED => {
-            let sock = UnixStream::from_shared(&answer.payload)?;
-            let _ = shards_ipc::send(&*link, kind::TAKEN, &[]);
-            sock.set_nonblocking(true)?;
-            Ok(sock)
-        }
-        kind::ERR => Err(io::Error::new(
-            io::ErrorKind::ConnectionRefused,
-            String::from_utf8_lossy(&answer.payload).into_owned(),
-        )),
-        _ => Err(io::Error::other(
-            "the proxy's dialer answered with something else",
-        )),
-    }
-}
-
 /// A Unix connection to the build's proxy at `path` without blocking: through the
-/// spawner's dialer where there is one, else connected at once, or the error that refused
-/// it (a backlog with no room says EAGAIN).
+/// spawner's dialer where there is one (macOS), else connected at once, or the error that
+/// refused it (a backlog with no room says EAGAIN).
 fn connect_unix(path: &Path) -> io::Result<UnixStream> {
+    #[cfg(unix)]
     if let Some(link) = DIALER.get() {
         return dial(link);
     }
