@@ -10,7 +10,10 @@
 //! (networking.md R1; RootlessKit's pasta went from 0.24 to 31.9 Gbps with the MTU alone).
 
 use std::io;
-use std::os::fd::{AsRawFd, OwnedFd};
+#[cfg(unix)]
+use std::os::fd::AsRawFd;
+
+use shards_netring::{Bell, Handle};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
@@ -48,9 +51,9 @@ const S_LINK_UP: u16 = 1;
 /// its owner asks of the device as the guest's command ends.
 #[derive(Debug, Clone)]
 pub struct NetHost {
-    pub region: Arc<OwnedFd>,
-    pub wake_me: Arc<OwnedFd>,
-    pub wake_peer: Arc<OwnedFd>,
+    pub region: Arc<Handle>,
+    pub wake_me: Arc<Bell>,
+    pub wake_peer: Arc<Bell>,
     pub mac: [u8; 6],
     pub flush: TxFlush,
 }
@@ -107,28 +110,50 @@ impl TxFlush {
     }
 }
 
-fn dup(fd: &OwnedFd) -> io::Result<OwnedFd> {
-    fd.try_clone()
+fn dup(bell: &Bell) -> io::Result<Bell> {
+    bell.try_clone()
 }
 
-/// A self-pipe for the queues' notifications.
+/// The queues' notifications: a doorbell of the worker's own (shards_netring), a self-pipe
+/// on Unix and an event on Windows.
 #[derive(Debug)]
 struct Waker {
-    read: OwnedFd,
-    write: OwnedFd,
+    read: Handle,
+    write: Handle,
 }
 
 impl Waker {
+    #[cfg(unix)]
     fn new() -> io::Result<Waker> {
         let (read, write) = shards_netring::doorbell()?;
         Ok(Waker { read, write })
     }
 
-    fn wake(&self) {
-        // SAFETY: one byte from a valid buffer to our own non-blocking descriptor.
-        unsafe { libc::write(self.write.as_raw_fd(), [1u8].as_ptr().cast(), 1) };
+    #[cfg(windows)]
+    fn new() -> io::Result<Waker> {
+        match shards_netring::doorbell()? {
+            (Bell::Event(read), Bell::Event(write)) => Ok(Waker { read, write }),
+            _ => Err(io::Error::other("a doorbell of events")),
+        }
     }
 
+    fn wake(&self) {
+        #[cfg(unix)]
+        // SAFETY: one byte from a valid buffer to our own non-blocking descriptor.
+        unsafe {
+            libc::write(self.write.as_raw_fd(), [1u8].as_ptr().cast(), 1)
+        };
+        #[cfg(windows)]
+        // SAFETY: an event of our own; one already set needs no more.
+        unsafe {
+            windows_sys::Win32::System::Threading::SetEvent(std::os::windows::io::AsRawHandle::as_raw_handle(
+                &self.write,
+            ))
+        };
+    }
+
+    /// Takes the pipe's bytes; an event's wait takes its ring itself.
+    #[cfg(unix)]
     fn drain(&self) {
         let mut buf = [0u8; 64];
         // SAFETY: into a local buffer, from our own non-blocking descriptor.
@@ -191,7 +216,7 @@ impl std::fmt::Debug for Net {
 
 impl Net {
     pub fn new(host: NetHost) -> Result<Net, String> {
-        let region = Region::map(dup(&host.region).map_err(|e| format!("virtio-net: {e}"))?)
+        let region = Region::map(host.region.try_clone().map_err(|e| format!("virtio-net: {e}"))?)
             .map_err(|e| format!("virtio-net: the frame ring: {e}"))?;
         Ok(Net {
             host,
@@ -412,24 +437,45 @@ fn run(
         }
         // Wait for a notification or a frame: the network process rings this side for a
         // frame, or for room once it has drained a full ring.
-        let mut fds = [
-            libc::pollfd {
-                fd: waker.read.as_raw_fd(),
-                events: libc::POLLIN,
-                revents: 0,
-            },
-            libc::pollfd {
-                fd: rx.waits_on(),
-                events: libc::POLLIN,
-                revents: 0,
-            },
-        ];
-        // SAFETY: two pollfds.
-        unsafe { libc::poll(fds.as_mut_ptr(), 2, -1) };
-        waker.drain();
-        let mut buf = [0u8; 64];
-        // SAFETY: draining our own non-blocking doorbell into a local buffer.
-        while unsafe { libc::read(rx.waits_on(), buf.as_mut_ptr().cast(), buf.len()) } > 0 {}
+        #[cfg(unix)]
+        {
+            let mut fds = [
+                libc::pollfd {
+                    fd: waker.read.as_raw_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+                libc::pollfd {
+                    fd: rx.waits_on(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+            ];
+            // SAFETY: two pollfds.
+            unsafe { libc::poll(fds.as_mut_ptr(), 2, -1) };
+            waker.drain();
+            let mut buf = [0u8; 64];
+            // SAFETY: draining our own non-blocking doorbell into a local buffer.
+            while unsafe { libc::read(rx.waits_on(), buf.as_mut_ptr().cast(), buf.len()) } > 0 {}
+        }
+        // Both events auto-reset: the wait that one wakes takes its ring.
+        #[cfg(windows)]
+        {
+            // The network process rings this side by an event: a socket here would be
+            // waited on as nothing.
+            let shards_netring::RawWait::Event(rings) = rx.waits_on() else {
+                debug!("virtio-net: the frame ring's doorbell is no event; device needs reset");
+                return s;
+            };
+            let events = [
+                std::os::windows::io::AsRawHandle::as_raw_handle(&waker.read),
+                rings,
+            ];
+            // SAFETY: two events of ours, held open by the waker and the ring.
+            unsafe {
+                windows_sys::Win32::System::Threading::WaitForMultipleObjects(2, events.as_ptr(), 0, u32::MAX)
+            };
+        }
     }
     s
 }

@@ -21,6 +21,11 @@
 //! number and the architecture, `JEQ`, `JGT`, `JA` and `RET`. A syscall its rule allows
 //! whatever its arguments never runs the filter there; the loads of arguments are what
 //! keep the others from the cache.
+//!
+//! The VM process installs one (shards' `confine.rs`, D30), and the network process its
+//! own (`shards_net::confine`, D31).
+
+#![cfg(target_os = "linux")]
 
 use std::io;
 
@@ -629,7 +634,7 @@ mod tests {
             let out = std::process::Command::new(std::env::current_exe().unwrap())
                 .args([
                     "--exact",
-                    "platform::seccomp::tests::a_filter_allows_what_it_lists_and_names_what_it_refuses",
+                    "tests::a_filter_allows_what_it_lists_and_names_what_it_refuses",
                     "--nocapture",
                     "--test-threads",
                     "1",
@@ -675,7 +680,7 @@ mod tests {
         let out = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
-                "platform::seccomp::tests::a_failed_syscall_returns_its_error",
+                "tests::a_failed_syscall_returns_its_error",
                 "--nocapture",
                 "--test-threads",
                 "1",

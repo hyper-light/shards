@@ -19,9 +19,10 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::OsString;
 use std::io::{self, Read as _};
-use std::os::fd::{AsRawFd, FromRawFd};
+#[cfg(unix)]
+use std::os::fd::FromRawFd;
+#[cfg(unix)]
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
@@ -32,6 +33,7 @@ use super::packet::{HOST_CID, Header, TYPE_STREAM, op};
 use super::poll::{Interest, Ready};
 use crate::debug;
 use crate::memory::GuestMemory;
+use crate::platform::{AsRawSocket, UnixListener, UnixStream};
 use crate::snapshot::codec::{self, Reader, Writer};
 use crate::vm::VsockHost;
 
@@ -341,7 +343,7 @@ impl Muxer {
 
     /// Adds what the sockets wait for.
     pub fn interests(&self, out: &mut Vec<Interest<Option<Token>>>) {
-        let mut add = |fd: i32, read: bool, write: bool, token: Token| {
+        let mut add = |fd: crate::platform::RawSocket, read: bool, write: bool, token: Token| {
             out.push(Interest {
                 fd,
                 read,
@@ -352,10 +354,10 @@ impl Muxer {
         if let Some((_, listener)) = &self.listener
             && self.open() < MAX_CONNECTIONS
         {
-            add(listener.as_raw_fd(), true, false, Token::Listener);
+            add(listener.raw_socket(), true, false, Token::Listener);
         }
         for (i, h) in self.handshakes.iter().enumerate() {
-            add(h.stream.as_raw_fd(), true, false, Token::Handshake(i));
+            add(h.stream.raw_socket(), true, false, Token::Handshake(i));
         }
         for (key, c) in &self.conns {
             let (read, write) = c.interest();
@@ -542,6 +544,14 @@ fn parse_connect(line: &[u8]) -> Option<u32> {
 
 /// Connects without blocking: a host listener whose backlog is full refuses at once
 /// instead of stalling the device.
+#[cfg(windows)]
+fn connect_nonblocking(path: &Path) -> io::Result<UnixStream> {
+    UnixStream::connect_nonblocking(path)
+}
+
+/// Connects without blocking: a host listener whose backlog is full refuses at once
+/// instead of stalling the device.
+#[cfg(unix)]
 fn connect_nonblocking(path: &Path) -> io::Result<UnixStream> {
     let bytes = path.as_os_str().as_bytes();
     // SAFETY: an all-zero sockaddr_un is a valid value.

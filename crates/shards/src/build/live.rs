@@ -52,7 +52,7 @@ pub(super) struct Live {
 impl Live {
     /// A live display, if stderr is a colour terminal.
     pub(super) fn new() -> Option<Live> {
-        let paint = crate::cli::look::styled_err()?;
+        let paint = crate::cli::terminal::styled_err()?;
         Some(Live {
             paint,
             began: Instant::now(),
@@ -173,7 +173,7 @@ impl Live {
     }
 
     fn draw(&mut self) {
-        let (rows, cols) = match crate::cli::look::err_size() {
+        let (rows, cols) = match crate::cli::terminal::err_size() {
             (0, _) | (_, 0) => (40, 80),
             (r, c) => (r, c),
         };

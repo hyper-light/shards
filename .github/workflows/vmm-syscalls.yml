@@ -1,8 +1,8 @@
 name: vmm syscalls
 
-# What shards-vm asks of the kernel, by thread, on a KVM host: the evidence for its
-# seccomp filters (docs/research/measurements/vmm-syscalls). Runs when the harness
-# changes, or when asked.
+# What shards-vm and shards-net ask of the kernel, by thread, on a KVM host: the evidence
+# for their seccomp filters (docs/research/measurements/vmm-syscalls; PM M52, M209). Runs
+# when the harness changes, or when asked.
 on:
   push:
     paths:
@@ -20,10 +20,13 @@ env:
 jobs:
   collect:
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v7.0.1
       - run: rustup toolchain install "$TOOLCHAIN" --profile minimal --target x86_64-unknown-linux-musl
+      # The guests' C (AWS-LC, for the in-VM server's TLS) is compiled by the pinned zig
+      # (crates/shards/build.rs).
+      - run: scripts/install-zig
       - run: sudo apt-get install -y strace
       - run: sudo chmod 666 /dev/kvm
       - run: docs/research/measurements/vmm-syscalls/collect.sh target/vmm-syscalls
@@ -32,7 +35,7 @@ jobs:
   # isatty()): the same collection, in the Alpine image CI's musl jobs build in.
   collect-musl:
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 150
     env:
       MUSL_IMAGE: rust:1.98.0-alpine@sha256:a10e64dd139b7387337c7fbe8aca31b959b57b2fd4c8ae20a02cf1d6ea424dce
     steps:
@@ -40,11 +43,16 @@ jobs:
       - run: sudo chmod 666 /dev/kvm
       - name: Collect, in Alpine
         run: |
-          # strace needs ptrace inside the container.
+          # strace needs ptrace inside the container. Packages and zig are added as root;
+          # the collection runs as the checkout's owner, as shards runs (scripts/musl-ci).
           docker run --rm --device /dev/kvm --cap-add SYS_PTRACE --security-opt seccomp=unconfined \
             -v "$PWD:/work" -w /work \
             -e CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=cc \
             "$MUSL_IMAGE" sh -eu -c '
-              apk add --no-cache build-base curl strace python3
-              docs/research/measurements/vmm-syscalls/collect.sh target/vmm-syscalls
+              apk add --no-cache build-base curl xz strace python3
+              zig=$(RUNNER_TEMP=/opt GITHUB_PATH= scripts/install-zig)
+              chmod -R a+rX "$zig"
+              adduser -D -u "$(stat -c %u /work)" -h /home/shards shards
+              export PATH="$zig:$PATH" HOME=/home/shards CARGO_HOME=/home/shards/.cargo
+              exec su -m shards -s /bin/sh -c "docs/research/measurements/vmm-syscalls/collect.sh target/vmm-syscalls"
             '

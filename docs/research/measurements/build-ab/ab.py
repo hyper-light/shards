@@ -14,7 +14,10 @@ AB_FLAGS adds `run` options, split at spaces, before the image: `AB_FLAGS=--rm` 
 run's container removed as it ends.
 
 ENV_OLD and ENV_NEW add `K=V` pairs to one arm's environment, and so to the daemon its
-first run starts: one build can be compared with itself under a setting.
+first run starts: one build can be compared with itself under a setting. FLAGS_OLD and
+FLAGS_NEW add `run` options to one arm's runs, after AB_FLAGS: with both arms one DIR,
+`FLAGS_NEW="--network none"` is what a run's network costs it (D31, E1), each arm
+restoring its own template.
 
 Samples are the client's wall clock, spawn to reap, of `shards run --pull never IMAGE
 COMMAND...`, split by the timing line SHARDS_TIMING adds into the command's time in the
@@ -46,13 +49,14 @@ arms = {}
 for name, d in (("old", old), ("new", new)):
     env = dict(os.environ, SHARDS_HOME=os.path.join(d, "home"), SHARDS_TIMING="1")
     env.update(kv.split("=", 1) for kv in os.environ.get("ENV_" + name.upper(), "").split())
-    arms[name] = (os.path.join(d, "shards"), env)
+    flags = os.environ.get("AB_FLAGS", "").split() + os.environ.get("FLAGS_" + name.upper(), "").split()
+    arms[name] = (os.path.join(d, "shards"), env, flags)
 
 
-def run(shards, env):
+def run(shards, env, flags):
     start = time.perf_counter()
     done = subprocess.run(
-        [shards, "run", *os.environ.get("AB_FLAGS", "").split(), "--pull", "never", image] + command,
+        [shards, "run", *flags, "--pull", "never", image] + command,
         env=env,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
@@ -68,17 +72,17 @@ def run(shards, env):
 burst = int(os.environ.get("AB_BURST", "1"))
 
 
-def turn(shards, env):
+def turn(shards, env, flags):
     """One arm's turn: `burst` runs at once, each one's (wall, command)."""
     if burst == 1:
-        return [run(shards, env)]
+        return [run(shards, env, flags)]
     with concurrent.futures.ThreadPoolExecutor(burst) as pool:
-        return list(pool.map(lambda _: run(shards, env), range(burst)))
+        return list(pool.map(lambda _: run(shards, env, flags), range(burst)))
 
 
-for shards, env in arms.values():
+for shards, env, flags in arms.values():
     for _ in range(4):
-        turn(shards, env)
+        turn(shards, env, flags)
         time.sleep(float(os.environ.get("AB_PAUSE", "0.3")))
 turns = {name: [] for name in arms}
 for i in range(n):
@@ -117,5 +121,5 @@ for part, of in (("wall", lambda w, c: w), ("command", lambda w, c: c), ("outsid
         boot = sorted(q([rng.choice(d) for _ in d], 0.5) for _ in range(2000))
         print(f"{part:8} new - old, paired per burst's {stat}: median {q(d, .5):+.0f} us, "
               f"95% [{boot[50]:+.0f}, {boot[1949]:+.0f}]")
-for shards, env in arms.values():
+for shards, env, _ in arms.values():
     subprocess.run([shards, "daemon", "stop"], env=env)

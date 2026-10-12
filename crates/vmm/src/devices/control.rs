@@ -32,6 +32,8 @@ pub struct Control {
     on_snapshot: OnceLock<SnapshotRequest>,
     /// The virtio-mem device's sizes, where the guest has memory to plug.
     hotplug: OnceLock<std::sync::Arc<Sizes>>,
+    /// The MAC the VMM was given for the guest's network device (`control::MAC`), or 0.
+    mac: AtomicU64,
 }
 
 impl std::fmt::Debug for Control {
@@ -67,6 +69,14 @@ impl Control {
         let _ = self.hotplug.set(sizes);
     }
 
+    /// The MAC the VMM was given for the guest's network device, which the guest reads
+    /// (`control::MAC`): a restored VM's own, where its guest still has its template's.
+    pub fn on_mac(&self, mac: [u8; 6]) {
+        let [a, b, c, d, e, f] = mac;
+        self.mac
+            .store(u64::from_le_bytes([a, b, c, d, e, f, 0, 0]), Ordering::Release);
+    }
+
     pub fn generation(&self) -> u32 {
         self.generation.load(Ordering::Acquire)
     }
@@ -92,6 +102,7 @@ impl MmioDevice for Control {
             control::HOST_TIME if data.len() == 8 => host_time_ns(),
             control::HOTPLUG_SIZE if data.len() == 8 => self.hotplug.get().map_or(0, |s| s.most()),
             control::HOTPLUG_REQUEST if data.len() == 8 => self.hotplug.get().map_or(0, |s| s.requested()),
+            control::MAC if data.len() == 8 => self.mac.load(Ordering::Acquire),
             _ => 0,
         };
         put_le(data, value);
@@ -216,6 +227,22 @@ mod tests {
         assert_eq!(half, [0; 4]);
         c.write(control::HOTPLUG_REQUEST, &u64::MAX.to_le_bytes());
         assert_eq!(read(&c, control::HOTPLUG_REQUEST), 48 * BLOCK);
+    }
+
+    /// The MAC the VMM was given reads whole, in one 64-bit access, its first octet lowest;
+    /// none, 0; a half of it, nothing (D31, E1).
+    #[test]
+    fn the_guest_reads_the_mac_its_vm_was_given() {
+        let c = Control::default();
+        let mut word = [0u8; 8];
+        c.read(control::MAC, &mut word);
+        assert_eq!(u64::from_le_bytes(word), 0);
+        c.on_mac([0x02, 0x42, 0xac, 0x11, 0x00, 0x05]);
+        c.read(control::MAC, &mut word);
+        assert_eq!(word, [0x02, 0x42, 0xac, 0x11, 0x00, 0x05, 0, 0]);
+        let mut half = [0u8; 4];
+        c.read(control::MAC, &mut half);
+        assert_eq!(half, [0; 4]);
     }
 
     #[test]

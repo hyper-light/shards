@@ -3,6 +3,7 @@ use std::io;
 use std::os::windows::io::AsRawHandle;
 use std::ptr::NonNull;
 
+use windows_sys::Win32::Foundation::CloseHandle;
 use windows_sys::Win32::Foundation::ERROR_HANDLE_EOF;
 use windows_sys::Win32::Security::Cryptography::{BCRYPT_USE_SYSTEM_PREFERRED_RNG, BCryptGenRandom};
 use windows_sys::Win32::Storage::FileSystem::{
@@ -10,9 +11,40 @@ use windows_sys::Win32::Storage::FileSystem::{
 };
 use windows_sys::Win32::System::IO::OVERLAPPED;
 use windows_sys::Win32::System::Memory::{
-    MEM_COMMIT, MEM_DECOMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_READWRITE, VirtualAlloc, VirtualFree,
+    CreateFileMappingW, MEM_COMMIT, MEM_DECOMMIT, MEM_PRESERVE_PLACEHOLDER, MEM_RELEASE,
+    MEM_REPLACE_PLACEHOLDER, MEM_RESERVE, MEM_RESERVE_PLACEHOLDER, MEMORY_MAPPED_VIEW_ADDRESS,
+    MapViewOfFile3, PAGE_NOACCESS, PAGE_READONLY, PAGE_READWRITE, UnmapViewOfFile2, VirtualAlloc,
+    VirtualAlloc2, VirtualFree, VirtualProtect,
 };
 use windows_sys::Win32::System::SystemInformation::{GetSystemInfo, SYSTEM_INFO};
+use windows_sys::Win32::System::Threading::GetCurrentProcess;
+
+/// Waits until any of `sockets` has something to read, its end, or an error (WSAPoll,
+/// which reports a peer's half-close as a hangup, PM M199), or `timeout` passes: which
+/// did. For the few sockets one thread waits on at a time.
+pub fn wait_readable(
+    sockets: &[super::RawSocket],
+    timeout: Option<std::time::Duration>,
+) -> io::Result<Vec<bool>> {
+    use windows_sys::Win32::Networking::WinSock::{POLLRDNORM, WSAPOLLFD, WSAPoll};
+    let mut polled: Vec<WSAPOLLFD> = sockets
+        .iter()
+        .map(|&fd| WSAPOLLFD {
+            fd,
+            events: POLLRDNORM,
+            revents: 0,
+        })
+        .collect();
+    // Rounded up, so that a wait never ends early.
+    let ms = timeout.map_or(-1, |t| {
+        i32::try_from(t.as_micros().div_ceil(1000)).unwrap_or(i32::MAX)
+    });
+    // SAFETY: `polled.len()` entries of sockets the caller holds.
+    if unsafe { WSAPoll(polled.as_mut_ptr(), polled.len() as u32, ms) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(polled.iter().map(|p| p.revents != 0).collect())
+}
 
 /// Makes `dir` and its missing parents. Under `%LOCALAPPDATA%`, they inherit ACLs that
 /// admit this user alone.
@@ -81,6 +113,215 @@ pub unsafe fn grant(ptr: NonNull<u8>, len: usize) -> io::Result<()> {
 pub unsafe fn release(ptr: NonNull<u8>, _len: usize) {
     // SAFETY: forwarded caller contract; MEM_RELEASE requires size 0.
     unsafe { VirtualFree(ptr.as_ptr().cast(), 0, MEM_RELEASE) };
+}
+
+/// The path of the file `file` has open, links resolved (GetFinalPathNameByHandleW): what a
+/// VM's spawner tells it of each file it hands it, as an AppContainer may not ask (PM M203).
+pub fn final_path(file: &File) -> io::Result<std::path::PathBuf> {
+    use std::os::windows::ffi::OsStringExt as _;
+    use windows_sys::Win32::Storage::FileSystem::{FILE_NAME_NORMALIZED, GetFinalPathNameByHandleW};
+    let mut buf = vec![0u16; 1024];
+    loop {
+        // SAFETY: an open handle, and a buffer of the length given.
+        let n = unsafe {
+            GetFinalPathNameByHandleW(
+                file.as_raw_handle(),
+                buf.as_mut_ptr(),
+                u32::try_from(buf.len()).unwrap_or(u32::MAX),
+                FILE_NAME_NORMALIZED,
+            )
+        } as usize;
+        if n == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // Too small: `n` is the length it needs, its NUL counted.
+        if n >= buf.len() {
+            buf.resize(n + 1, 0);
+            continue;
+        }
+        buf.truncate(n);
+        return Ok(std::path::PathBuf::from(std::ffi::OsString::from_wide(&buf)));
+    }
+}
+
+/// The `size` bytes of `file` read-only, then zeros, `len` bytes in all at one address; and
+/// how many of them are the file's view. A placeholder of `len` bytes (VirtualAlloc2), split
+/// where the file's last whole page ends: its whole pages a view of the file
+/// (MapViewOfFile3, MEM_REPLACE_PLACEHOLDER: page-aligned, its base and size the
+/// placeholder's), whose pages every VM that maps the file shares in the cache, as on Unix;
+/// the rest committed memory, the file's last partial page copied into it, then read-only.
+/// A view may not run past its section's end, which is the file's size: one rounded up to
+/// a page is refused (ERROR_ACCESS_DENIED, CI run 38217982469). `len` is page-aligned.
+pub fn map_file_padded(file: &File, size: u64, len: usize) -> io::Result<(NonNull<u8>, usize)> {
+    let page = page_size()?;
+    let size = usize::try_from(size)
+        .ok()
+        .filter(|&s| s > 0 && s <= len && len.is_multiple_of(page))
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{size} bytes of a file in {len}"),
+            )
+        })?;
+    let whole = size - size % page;
+    let tail = len - whole;
+    // SAFETY: the pseudo-handle of this process, which needs no closing.
+    let process = unsafe { GetCurrentProcess() };
+    // SAFETY: a fresh placeholder, which only this function references.
+    let base = unsafe {
+        VirtualAlloc2(
+            process,
+            std::ptr::null(),
+            len,
+            MEM_RESERVE | MEM_RESERVE_PLACEHOLDER,
+            PAGE_NOACCESS,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    let base = NonNull::new(base.cast::<u8>()).ok_or_else(io::Error::last_os_error)?;
+    // Frees, on a failure, what is at `base` and at `base + whole`: a view, an allocation
+    // or a placeholder, each released whole.
+    let undo = |viewed: bool| {
+        // SAFETY: placeholders, views and allocations this function made, which nothing
+        // references.
+        unsafe {
+            if viewed {
+                UnmapViewOfFile2(
+                    process,
+                    MEMORY_MAPPED_VIEW_ADDRESS {
+                        Value: base.as_ptr().cast(),
+                    },
+                    0,
+                );
+            } else {
+                VirtualFree(base.as_ptr().cast(), 0, MEM_RELEASE);
+            }
+            if whole > 0 && tail > 0 {
+                VirtualFree(base.as_ptr().add(whole).cast(), 0, MEM_RELEASE);
+            }
+        }
+    };
+    if whole > 0 && tail > 0 {
+        // SAFETY: splits our own placeholder in two at a page boundary within it.
+        let split = unsafe {
+            VirtualFree(
+                base.as_ptr().cast(),
+                whole,
+                MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER,
+            )
+        };
+        if split == 0 {
+            let e = io::Error::last_os_error();
+            // SAFETY: the placeholder, still whole.
+            unsafe { VirtualFree(base.as_ptr().cast(), 0, MEM_RELEASE) };
+            return Err(e);
+        }
+    }
+    if whole > 0 {
+        // SAFETY: a read-only section of the whole file, closed once its view holds it.
+        let section = unsafe {
+            CreateFileMappingW(
+                file.as_raw_handle(),
+                std::ptr::null(),
+                PAGE_READONLY,
+                0,
+                0,
+                std::ptr::null(),
+            )
+        };
+        if section.is_null() {
+            let e = io::Error::last_os_error();
+            undo(false);
+            return Err(e);
+        }
+        // SAFETY: the view replaces the first placeholder, at its base and of its size,
+        // within the section.
+        let view = unsafe {
+            MapViewOfFile3(
+                section,
+                process,
+                base.as_ptr().cast(),
+                0,
+                whole,
+                MEM_REPLACE_PLACEHOLDER,
+                PAGE_READONLY,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        let failed = view.Value.is_null().then(io::Error::last_os_error);
+        // SAFETY: the section handle, which the view (if any) keeps alive by itself.
+        unsafe { CloseHandle(section) };
+        if let Some(e) = failed {
+            undo(false);
+            return Err(e);
+        }
+    }
+    if tail > 0 {
+        // SAFETY: committed zeros replace the last placeholder, at its base and size.
+        let rest = unsafe {
+            VirtualAlloc2(
+                process,
+                base.as_ptr().add(whole).cast(),
+                tail,
+                MEM_RESERVE | MEM_COMMIT | MEM_REPLACE_PLACEHOLDER,
+                PAGE_READWRITE,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        if rest.is_null() {
+            let e = io::Error::last_os_error();
+            undo(whole > 0);
+            return Err(e);
+        }
+        let mut copied = whole;
+        while copied < size {
+            // SAFETY: within the committed tail, which nothing else references yet.
+            let n = match unsafe { read_at(file, base.as_ptr().add(copied), size - copied, copied as u64) } {
+                Ok(0) => break,
+                Ok(n) => n,
+                Err(e) => {
+                    undo(whole > 0);
+                    return Err(e);
+                }
+            };
+            copied += n;
+        }
+        let mut old = 0u32;
+        // SAFETY: the committed tail, read-only from here on.
+        if unsafe { VirtualProtect(base.as_ptr().add(whole).cast(), tail, PAGE_READONLY, &raw mut old) } == 0
+        {
+            let e = io::Error::last_os_error();
+            undo(whole > 0);
+            return Err(e);
+        }
+    }
+    Ok((base, whole))
+}
+
+/// Unmaps what [`map_file_padded`] mapped: the view, then what follows it.
+///
+/// # Safety
+/// `ptr`, `viewed` and `len` are a mapping's from [`map_file_padded`], which nothing uses
+/// any more: no hypervisor maps it.
+pub unsafe fn unmap_file_padded(ptr: NonNull<u8>, viewed: usize, len: usize) {
+    // SAFETY: forwarded caller contract.
+    unsafe {
+        if viewed > 0 {
+            UnmapViewOfFile2(
+                GetCurrentProcess(),
+                MEMORY_MAPPED_VIEW_ADDRESS {
+                    Value: ptr.as_ptr().cast(),
+                },
+                0,
+            );
+        }
+        if len > viewed {
+            VirtualFree(ptr.as_ptr().add(viewed).cast(), 0, MEM_RELEASE);
+        }
+    }
 }
 
 /// A file view cannot replace part of a `VirtualAlloc` region without placeholders
@@ -210,6 +451,24 @@ pub fn open_in(_dir: &File, _name: &str) -> io::Result<File> {
 /// As unix.rs `untouched`.
 pub unsafe fn untouched(_ptr: *const u8, _len: usize, _page: usize) -> io::Result<Option<Vec<bool>>> {
     Ok(None)
+}
+
+/// Faults pages in writable ahead of a restored guest (unix.rs `populate_writable`): no
+/// snapshot is restored on Windows yet (vm::SNAPSHOTS).
+pub fn populate_writable(_ptr: *mut u8, _len: usize) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "pages are not faulted in ahead on Windows: it restores no snapshot yet",
+    ))
+}
+
+/// The pages mapped of a range, for a restore's working set (unix.rs `mapped_pages`): no
+/// snapshot is restored on Windows yet (vm::SNAPSHOTS).
+pub fn mapped_pages(_ptr: *const u8, _len: usize) -> io::Result<Vec<(usize, bool)>> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "working sets are not recorded on Windows: it restores no snapshot yet",
+    ))
 }
 
 /// The names in the directory `dir` holds open. No container logs are kept on Windows.

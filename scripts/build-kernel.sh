@@ -3,9 +3,11 @@
 #   scripts/build-kernel.sh x86_64|aarch64 OUT_DIR [VARIANT]
 # Output: OUT_DIR/vmlinux-<version>-x86_64 (ELF) or OUT_DIR/Image-<version>-aarch64, and
 # OUT_DIR/config-<version>-<arch>. A VARIANT adds resources/kernel/VARIANT.config to the
-# fragments and `-VARIANT` to each name (`kvm`: a guest that is itself a KVM host). Needs a Linux host with gcc, make, bc, bison, flex,
-# patch, libelf and libssl headers; scripts/build-kernel-in-builder.sh runs it in the
-# pinned builder, which releases use. resources/kernel/README.md explains the inputs.
+# fragments and `-VARIANT` to each name (`kvm`: a guest that is itself a KVM host; `hyperv`:
+# a Windows host's guest, which keeps Hyper-V's time). Needs a Linux host with gcc, make,
+# bc, bison, flex, patch, libelf and libssl headers; scripts/build-kernel-in-builder.sh
+# runs it in the pinned builder, which releases use. resources/kernel/README.md explains
+# the inputs.
 set -euo pipefail
 
 arch=${1:?usage: build-kernel.sh x86_64|aarch64 OUT_DIR [VARIANT]}

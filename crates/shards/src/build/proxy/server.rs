@@ -1,9 +1,9 @@
 //! The proxy's server (D110): its Unix socket, a step's session on it, and each of the
 //! step's connections, plain or tunnelled, served on threads of the step's.
 
+use shards_vmm::platform::{AsRawSocket as _, UnixListener, UnixStream};
 use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader, Read, Write};
-use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, mpsc};
@@ -31,6 +31,31 @@ pub const PORT: u16 = 3128;
 
 /// A request body kept in memory up to this; past it, in a file of the proxy's own.
 const IN_MEMORY: usize = 64 << 10;
+
+/// How long a connection's end waits for its client to close too (Go's net/http
+/// rstAvoidanceDelay).
+const RST_AVOIDANCE: Duration = Duration::from_millis(500);
+
+/// Ends a connection as Go's server ends one it reads no more of (`closeWriteAndWait`):
+/// its writing shut, then what the client still sends read and dropped until it closes too
+/// or [`RST_AVOIDANCE`] passes, so that the close resets nothing the client has yet to
+/// read. Windows' AF_UNIX loses what a reset connection's peer had not read (PM M199), as
+/// a TCP peer's stack may (golang/go#3595); where Go only waits, this reads the client's
+/// bytes away, and so resets nothing, and is done as soon as the client closes.
+fn close_gracefully(sock: &UnixStream) {
+    let _ = sock.shutdown(std::net::Shutdown::Write);
+    let deadline = Instant::now() + RST_AVOIDANCE;
+    let mut dropped = [0u8; 4096];
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() || sock.set_read_timeout(Some(left)).is_err() {
+            return;
+        }
+        if !matches!((&*sock).read(&mut dropped), Ok(n) if n > 0) {
+            return;
+        }
+    }
+}
 
 /// Whether a request may go to `ip`: never the host itself (its loopback, unspecified,
 /// link-local, multicast and broadcast addresses, nor IPv4-compatible IPv6), as the
@@ -223,19 +248,17 @@ enum Spooled {
     Failed(String),
 }
 
-/// A new file of the proxy's own for a request's body (mode 0600, a name no other has).
+/// A new file of the proxy's own for a request's body (mode 0600, a name no other has; on
+/// Windows in the user's own temporary directory, whose ACLs admit the user alone).
 fn spool_file(dir: &Path) -> io::Result<(std::fs::File, PathBuf)> {
-    use std::os::unix::fs::OpenOptionsExt as _;
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = NEXT.fetch_add(1, Ordering::Relaxed);
     let path = dir.join(format!("body-{n}"));
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&path)?;
-    Ok((file, path))
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true).write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    Ok((options.open(&path)?, path))
 }
 
 /// Reads and drops what is left of a request's body BuildKit's handler never read, as Go's
@@ -793,21 +816,14 @@ impl<'p> Session<'p> {
     /// Serves the step's connections, each on a thread of `scope`, until `stop` ends
     /// (its other end closed).
     pub fn serve<'s>(&'s self, scope: &'s std::thread::Scope<'s, '_>, stop: &'s UnixStream) {
-        use std::os::fd::AsRawFd as _;
         loop {
-            let mut polled = [self.proxy.listener.as_raw_fd(), stop.as_raw_fd()].map(|fd| libc::pollfd {
-                fd,
-                events: libc::POLLIN,
-                revents: 0,
-            });
-            // SAFETY: poll(2) on two descriptors of ours.
-            if unsafe { libc::poll(polled.as_mut_ptr(), 2, -1) } < 0 {
-                if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
-                    continue;
-                }
+            let Ok(ready) = shards_vmm::platform::wait_readable(
+                &[self.proxy.listener.raw_socket(), stop.raw_socket()],
+                None,
+            ) else {
                 return;
-            }
-            if polled[1].revents != 0 || self.ended.load(Ordering::SeqCst) {
+            };
+            if ready.get(1) != Some(&false) || self.ended.load(Ordering::SeqCst) {
                 return;
             }
             if self.live.lock().unwrap_or_else(PoisonError::into_inner).1.len() >= self.proxy.connections {
@@ -825,6 +841,7 @@ impl<'p> Session<'p> {
                 .spawn_scoped(scope, move || {
                     let _ = conn.set_nonblocking(false);
                     self.connection(&conn);
+                    close_gracefully(&conn);
                     self.let_go(id);
                 });
             if spawned.is_err() {

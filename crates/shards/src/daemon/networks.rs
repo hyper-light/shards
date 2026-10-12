@@ -56,6 +56,72 @@ pub(super) fn ask_net(
     }
 }
 
+/// What a warm VM's network process is told before the VM has its run (D31, E1): each
+/// ask sent as it comes, and their answers read after the last, so that all of them cost
+/// one round trip, not one each. Each answer says which ask it is by its kind, and comes
+/// in the order asked. The descriptors an ask hands over are kept until its answer has
+/// come: XNU drops a socket in flight that no process holds (M24).
+pub(super) struct Asks<'n> {
+    net: &'n std::os::unix::net::UnixStream,
+    /// Each ask's kind, and what it is, to say where it is not taken.
+    asked: Vec<(u8, &'static str)>,
+    held: Vec<std::os::fd::OwnedFd>,
+}
+
+impl<'n> Asks<'n> {
+    pub(super) fn new(net: &'n std::os::unix::net::UnixStream) -> Result<Asks<'n>, String> {
+        net.set_read_timeout(Some(super::PUBLISH_PATIENCE))
+            .map_err(|e| format!("network process: {e}"))?;
+        Ok(Asks {
+            net,
+            asked: Vec::new(),
+            held: Vec::new(),
+        })
+    }
+
+    /// Sends `which`, `what` it is, with `payload` and `fds`, which the caller keeps
+    /// until [`Asks::answered`].
+    pub(super) fn ask(
+        &mut self,
+        what: &'static str,
+        which: u8,
+        payload: &[u8],
+        fds: &[std::os::fd::BorrowedFd<'_>],
+    ) -> Result<(), String> {
+        shards_ipc::send(self.net, which, payload, fds)
+            .map_err(|e| format!("{what}: the network process: {e}"))?;
+        self.asked.push((which, what));
+        Ok(())
+    }
+
+    /// As [`Asks::ask`], the descriptors handed over held here until answered.
+    pub(super) fn ask_owning(
+        &mut self,
+        what: &'static str,
+        which: u8,
+        payload: &[u8],
+        fds: Vec<std::os::fd::OwnedFd>,
+    ) -> Result<(), String> {
+        use std::os::fd::AsFd as _;
+        let borrowed: Vec<std::os::fd::BorrowedFd<'_>> = fds.iter().map(|f| f.as_fd()).collect();
+        self.ask(what, which, payload, &borrowed)?;
+        self.held.extend(fds);
+        Ok(())
+    }
+
+    /// Each ask's answer, in the order asked: the first not taken says which.
+    pub(super) fn answered(self) -> Result<(), String> {
+        for (which, what) in &self.asked {
+            match shards_ipc::recv(self.net) {
+                Ok(Some(m)) if m.kind == *which => {}
+                Ok(_) => return Err(format!("{what}: the network process did not take it")),
+                Err(e) => return Err(format!("{what}: the network process: {e}")),
+            }
+        }
+        Ok(())
+    }
+}
+
 /// The time `ns` as Go's RFC3339Nano writes it in UTC.
 fn rfc3339_nano(ns: u128) -> String {
     let secs = i64::try_from(ns / 1_000_000_000).unwrap_or(i64::MAX);
@@ -858,15 +924,16 @@ impl<D: Disk> Daemon<D> {
         spec.resolv = Some(resolv.into_bytes());
     }
 
-    /// MicroVM `id`'s network process, on `net`, given its address, a link to each other
-    /// member's, and the names they all answer to (D46): before its VM has the run, so
-    /// that none of its first frames finds no peer. The other members are each given
-    /// their link to it as it is made. Each is answered before the next is asked, and
-    /// the daemon's copies of the links close once both have them (M24).
+    /// MicroVM `id`'s network process, through `asks`, given its address, a link to each
+    /// other member's, and the names they all answer to (D46): before its VM has the run,
+    /// so that none of its first frames finds no peer. The other members are each given
+    /// their link to it as it is made, each answered before the next is asked: their
+    /// processes' sockets are others' to use too. The daemon's copies of the links close
+    /// once both have them (M24).
     pub(super) fn give_network(
         &self,
         id: &str,
-        net: &std::os::unix::net::UnixStream,
+        asks: &mut Asks<'_>,
         mac: Option<[u8; 6]>,
         link_local: &[std::net::IpAddr],
     ) -> Result<(), String> {
@@ -906,10 +973,10 @@ impl<D: Disk> Daemon<D> {
             address.push(bits);
             address.extend_from_slice(&gateway6.octets());
         }
-        ask_net(net, shards_ipc::kind::NET_ADDRESS, &address, &[])?;
+        asks.ask("network", shards_ipc::kind::NET_ADDRESS, &address, &[])?;
         if !me.link_local.is_empty() {
-            ask_net(
-                net,
+            asks.ask(
+                "network",
                 shards_ipc::kind::NET_LINK_LOCAL,
                 &shards_net::encode_addresses(&me.link_local),
                 &[],
@@ -940,11 +1007,11 @@ impl<D: Disk> Daemon<D> {
                 v.extend(shards_net::encode_addresses(&m.link_local));
                 v
             };
-            ask_net(
-                net,
+            asks.ask_owning(
+                "network",
                 shards_ipc::kind::NET_PEER,
                 &addresses(&peer),
-                &[ours_end.as_fd()],
+                vec![ours_end.into()],
             )?;
             // A peer that cannot take it has gone; its own end comes soon.
             let _ = ask_net(
@@ -954,8 +1021,13 @@ impl<D: Disk> Daemon<D> {
                 &[their_end.as_fd()],
             );
         }
-        // Its own first, whose run is not yet followed, then the rest.
-        ask_net(net, shards_ipc::kind::NET_NAMES, &self.names_table(&network), &[])?;
+        // Its own, whose run is not yet followed, then the rest's.
+        asks.ask(
+            "network",
+            shards_ipc::kind::NET_NAMES,
+            &self.names_table(&network),
+            &[],
+        )?;
         self.tell_names(&network);
         Ok(())
     }

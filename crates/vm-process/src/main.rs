@@ -10,10 +10,10 @@ use std::process::ExitCode;
 
 #[path = "../../shards/src/confine.rs"]
 mod confine;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 #[path = "../../shards/src/grant.rs"]
 mod grant;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 #[path = "../../shards/src/grant_ask.rs"]
 mod grant_ask;
 // Made by the daemon alone; the logger's tests make them as it does.

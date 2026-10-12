@@ -63,13 +63,10 @@ pub fn hosts(hostname: &[u8], extra: &[HostIp]) -> Vec<u8> {
     out
 }
 
-/// The host's resolvers, as BuildKit and dockerd read them (shards_net::bridge::host_resolv);
-/// none where there is no resolv.conf.
+/// The host's resolvers, as BuildKit and dockerd read them (shards_net::bridge::host_resolv;
+/// on Windows each up adapter's).
 pub fn host_resolv() -> Vec<u8> {
-    #[cfg(unix)]
-    return shards_net::bridge::host_resolv();
-    #[cfg(not(unix))]
-    Vec::new()
+    shards_net::bridge::host_resolv()
 }
 
 /// `/etc/resolv.conf` made from the host's as BuildKit makes it for a step without the

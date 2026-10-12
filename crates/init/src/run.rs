@@ -61,10 +61,14 @@ pub fn main(device: &str, template: bool) -> ! {
             let _ = writeln!(io::stderr(), "shards-init: requesting a snapshot: {e}");
             power_off()
         }
-        // A restored VM continues here, with its snapshot's wall clock.
+        // A restored VM continues here, with its snapshot's wall clock and its template's
+        // MAC, which it trades for its own before it takes a run.
         let _ = crate::linux::control_write(control::MARKER, marker::RESUMED);
         if let Err(e) = crate::linux::sync_clock() {
             let _ = writeln!(io::stderr(), "shards-init: setting the clock: {e}");
+        }
+        if let Err(e) = crate::net::adopt_mac() {
+            let _ = writeln!(io::stderr(), "shards-init: eth0's MAC: {e}");
         }
     }
     let conn = match dial(run::PORT, true) {

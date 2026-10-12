@@ -9,6 +9,8 @@
 //! normalize.rs). The hypervisor bit is always set: without it the guest never looks for
 //! kvmclock (arch/x86/kernel/kvm.c:887-906).
 
+use std::collections::BTreeMap;
+
 /// One CPUID leaf/subleaf as the hypervisor reports it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Leaf {
@@ -46,6 +48,72 @@ pub fn without_lone_tile_config(template: &mut [Leaf]) {
             l.eax &= !XTILE_CFG;
         }
     }
+}
+
+/// Invariant TSC: CPUID 0x80000007 EDX bit 8 (AMD64 APM Vol. 3 E.4.6; Intel SDM Vol. 2A).
+pub const INVARIANT_TSC: u32 = 1 << 8;
+
+/// A CPUID result as a hypervisor that keeps its guests' CPUID takes one (WHP's
+/// CpuidResultList2, PM M206): only the bits of `mask` are the result's, the rest stay the
+/// hypervisor's own; for one vCPU, or for every vCPU (`vcpu` None).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Masked {
+    pub function: u32,
+    pub index: u32,
+    /// The result is the subleaf's alone ([`SIGNIFICANT_INDEX`]).
+    pub subleaf: bool,
+    pub vcpu: Option<u32>,
+    pub value: [u32; 4],
+    pub mask: [u32; 4],
+}
+
+/// What each of `vcpus` vCPUs is given of [`for_vcpu`], told to a hypervisor that already
+/// gives every vCPU `template` (with each vCPU's own APIC id in it): each leaf only in the
+/// bits that differ from `template`, so that the bits the hypervisor keeps per vCPU and as
+/// the guest runs (OSXSAVE, the APIC's enable) stay its own; with invariant TSC where
+/// `invariant_tsc`. A result every vCPU has alike is told once, for all of them.
+pub fn masked(template: &[Leaf], vcpus: u32, invariant_tsc: bool) -> Vec<Masked> {
+    let mut by_leaf: BTreeMap<(u32, u32), Vec<Masked>> = BTreeMap::new();
+    for vcpu in 0..vcpus {
+        let mut leaves = for_vcpu(template, vcpu, vcpus, false);
+        if invariant_tsc {
+            for l in leaves.iter_mut().filter(|l| l.function == 0x8000_0007) {
+                l.edx |= INVARIANT_TSC;
+            }
+        }
+        for l in leaves {
+            let mask = match template
+                .iter()
+                .find(|t| t.function == l.function && t.index == l.index)
+            {
+                Some(t) => [l.eax ^ t.eax, l.ebx ^ t.ebx, l.ecx ^ t.ecx, l.edx ^ t.edx],
+                None => [!0; 4],
+            };
+            if mask == [0; 4] {
+                continue;
+            }
+            by_leaf.entry((l.function, l.index)).or_default().push(Masked {
+                function: l.function,
+                index: l.index,
+                subleaf: l.flags & SIGNIFICANT_INDEX != 0,
+                vcpu: Some(vcpu),
+                value: [l.eax, l.ebx, l.ecx, l.edx],
+                mask,
+            });
+        }
+    }
+    let mut results = Vec::new();
+    for (_, each) in by_leaf {
+        let alike = each.len() == vcpus as usize
+            && each
+                .windows(2)
+                .all(|w| matches!(w, [a, b] if (a.value, a.mask) == (b.value, b.mask)));
+        match each.first() {
+            Some(first) if alike => results.push(Masked { vcpu: None, ..*first }),
+            _ => results.extend(each),
+        }
+    }
+    results
 }
 
 /// The CPUID vCPU `index` of `count` sees.
@@ -238,6 +306,81 @@ mod tests {
                 assert_eq!((got.ebx, got.ecx, got.edx), (host.ebx, host.ecx, host.edx));
             }
         }
+    }
+
+    /// CPUID as WHP gives vCPU 0 of a partition set up as shards' are, on an AMD EPYC 7763
+    /// under Windows Server 2025 (PM M206).
+    fn whp_template() -> Vec<Leaf> {
+        let mut v = vec![
+            leaf(0, 0xd, 0x6874_7541, 0x444d_4163, 0x6974_6e65),
+            leaf(1, 0x00a0_0f11, 0x0000_0800, 0xf6da_3203, 0x078b_fbff),
+            leaf(0x8000_0000, 0x8000_0021, 0x6874_7541, 0x444d_4163, 0x6974_6e65),
+            leaf(0x8000_0007, 0, 0, 0, 0),
+            leaf(0x8000_0008, 0x3030, 0x2000_0015, 0, 0x0001_0000),
+            leaf(0x8000_001e, 0, 0, 0, 0),
+        ];
+        let caches = [
+            (0x121, 0x01c0_003f, 0x3f, 0),
+            (0x122, 0x01c0_003f, 0x3f, 0),
+            (0x143, 0x01c0_003f, 0x3ff, 2),
+            (0x163, 0x03c0_003f, 0x7fff, 1),
+            (0, 0, 0, 0),
+        ];
+        for (index, (eax, ebx, ecx, edx)) in (0..).zip(caches) {
+            v.push(Leaf {
+                function: 0x8000_001d,
+                index,
+                flags: SIGNIFICANT_INDEX,
+                eax,
+                ebx,
+                ecx,
+                edx,
+            });
+        }
+        v
+    }
+
+    #[test]
+    fn a_hypervisor_that_keeps_cpuid_is_told_only_the_bits_that_change() {
+        let m = masked(&whp_template(), 4, true);
+        let find = |function, index, vcpu| {
+            m.iter()
+                .find(|r| r.function == function && r.index == index && r.vcpu == vcpu)
+        };
+        // Invariant TSC, the package's four threads and two APIC id bits, and the L3 all
+        // four share: once, for every vCPU.
+        let tsc = find(0x8000_0007, 0, None).unwrap();
+        assert_eq!(tsc.mask, [0, 0, 0, INVARIANT_TSC]);
+        assert_eq!(tsc.value[3], INVARIANT_TSC);
+        let threads = find(0x8000_0008, 0, None).unwrap();
+        assert_eq!((threads.value[2], threads.mask), (0x2003, [0, 0, 0x2003, 0]));
+        let l3 = find(0x8000_001d, 3, None).unwrap();
+        assert_eq!(
+            (l3.value[0] >> 14 & 0xfff, l3.mask[0], l3.subleaf),
+            (3, 3 << 14, true)
+        );
+        // Leaf 1, for each vCPU: its APIC id where not 0, the count and HTT; OSXSAVE and
+        // the rest the hypervisor's.
+        for vcpu in 0..4 {
+            let l1 = find(1, 0, Some(vcpu)).unwrap();
+            assert_eq!(l1.value[1], vcpu << 24 | 4 << 16 | 0x800);
+            assert_eq!(l1.mask, [0, vcpu << 24 | 4 << 16, 0, HTT]);
+        }
+        // 0x8000001E: vCPU 0's is the hypervisor's own; the others name their cores.
+        assert!(find(0x8000_001e, 0, Some(0)).is_none());
+        let topo = find(0x8000_001e, 0, Some(3)).unwrap();
+        assert_eq!((topo.value, topo.mask), ([3, 3, 0, 0], [3, 3, 0, 0]));
+        assert_eq!(m.len(), 3 + 4 + 3, "{m:#x?}");
+        // A hypervisor that gives invariant TSC is not told it; one vCPU has no HTT.
+        let mut offered = whp_template();
+        for l in offered.iter_mut().filter(|l| l.function == 0x8000_0007) {
+            l.edx = INVARIANT_TSC;
+        }
+        let solo = masked(&offered, 1, true);
+        assert!(solo.iter().all(|r| r.function != 0x8000_0007));
+        assert_eq!(solo.len(), 1, "{solo:#x?}");
+        assert_eq!((solo[0].function, solo[0].vcpu), (1, None));
+        assert_eq!(solo[0].mask, [0, 1 << 16, 0, 0]);
     }
 
     #[test]

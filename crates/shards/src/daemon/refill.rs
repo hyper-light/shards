@@ -239,7 +239,15 @@ impl<D: Disk> Daemon<D> {
             }
         }
         for started in 0..count {
-            if let Err(e) = self.start(threads, &args, net, For::Pool(dir.clone())) {
+            // Its own MAC, made as it is, as dockerd makes each start one (PM M173): its
+            // network process frames to it, and its guest takes it as it resumes, before
+            // any run comes (D31, E1).
+            let started_vm = net
+                .map(|_| shards_net::random_mac())
+                .transpose()
+                .map_err(|e| format!("a warm VM's MAC: {e}"))
+                .and_then(|mac| self.start(threads, &args, mac, For::Pool(dir.clone())));
+            if let Err(e) = started_vm {
                 let e = format!("starting a warm VM of {}: {e}", dir.display());
                 log(&e);
                 if let Some(pool) = lock(&self.state).pools.get_mut(&dir) {

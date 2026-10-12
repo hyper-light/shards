@@ -401,7 +401,6 @@ pub fn restore_from(cfg: &RestoreConfig, pinned: snapshot::Pinned) -> Result<(Ha
         cfg.console,
         super::Hosts {
             vsock: cfg.vsock.as_ref(),
-            #[cfg(unix)]
             net: cfg.net.as_ref(),
             #[cfg(unix)]
             shares: &cfg.shares,
@@ -752,7 +751,8 @@ impl Coordinator {
     }
 }
 
-#[cfg(test)]
+// Of granted inputs, which only Unix hosts have.
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 

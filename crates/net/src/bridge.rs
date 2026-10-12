@@ -177,12 +177,141 @@ pub fn elected_here(note: &mut dyn FnMut(String)) -> Option<Bridge> {
 /// systemd-resolved's stub, 127.0.0.53, which within a guest is the guest's own address;
 /// then the servers systemd-resolved forwards to, which it lists in
 /// /run/systemd/resolve/resolv.conf.
+#[cfg(unix)]
 pub fn host_resolv() -> Vec<u8> {
     pick_resolv(std::fs::read("/etc/resolv.conf").unwrap_or_default(), || {
         std::fs::read("/run/systemd/resolve/resolv.conf").unwrap_or_default()
     })
 }
 
+/// The host's resolvers on Windows, which keeps them per adapter, not in a file: each up
+/// adapter's DNS servers (GetAdaptersAddresses), in its order, as resolv.conf's lines, which
+/// the rest reads as it reads a Unix host's.
+#[cfg(windows)]
+pub fn host_resolv() -> Vec<u8> {
+    use windows_sys::Win32::NetworkManagement::IpHelper::{
+        GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_FRIENDLY_NAME, GAA_FLAG_SKIP_MULTICAST, GAA_FLAG_SKIP_UNICAST,
+        GetAdaptersAddresses, IP_ADAPTER_ADDRESSES_LH,
+    };
+    use windows_sys::Win32::NetworkManagement::Ndis::IfOperStatusUp;
+    use windows_sys::Win32::Networking::WinSock::{AF_INET, AF_UNSPEC, SOCKADDR_IN};
+    let flags =
+        GAA_FLAG_SKIP_UNICAST | GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_FRIENDLY_NAME;
+    // Asked again with the size it says, as the list may grow between two asks.
+    let mut size: u32 = 16 << 10;
+    for _ in 0..4 {
+        let mut buf = vec![0u64; (size as usize).div_ceil(8)];
+        let first = buf.as_mut_ptr().cast::<IP_ADAPTER_ADDRESSES_LH>();
+        // SAFETY: a buffer of `size` bytes, aligned for the list, for the call to fill.
+        let r = unsafe {
+            GetAdaptersAddresses(
+                u32::from(AF_UNSPEC),
+                flags,
+                std::ptr::null(),
+                first,
+                &raw mut size,
+            )
+        };
+        // ERROR_BUFFER_OVERFLOW: `size` says what it needs.
+        if r == 111 {
+            continue;
+        }
+        if r != 0 {
+            return Vec::new();
+        }
+        let mut text = String::new();
+        // SAFETY: the list the call wrote into `buf`, walked by its own links, each within
+        // the buffer, which outlives the walk.
+        unsafe {
+            let mut adapter = first;
+            while !adapter.is_null() {
+                if (*adapter).OperStatus == IfOperStatusUp {
+                    let mut dns = (*adapter).FirstDnsServerAddress;
+                    while !dns.is_null() {
+                        let sa = (*dns).Address.lpSockaddr;
+                        if !sa.is_null() && (*sa).sa_family == AF_INET {
+                            let sin = sa.cast::<SOCKADDR_IN>().read_unaligned();
+                            let ip = Ipv4Addr::from(sin.sin_addr.S_un.S_addr.to_ne_bytes());
+                            text.push_str(&format!("nameserver {ip}\n"));
+                        }
+                        dns = (*dns).Next;
+                    }
+                }
+                adapter = (*adapter).Next;
+            }
+        }
+        return text.into_bytes();
+    }
+    Vec::new()
+}
+
+/// The host's own addresses on Windows: each up adapter's unicast ones
+/// (GetAdaptersAddresses), IPv4's and IPv6's. An AppContainer reaches none of them, nor the
+/// loopback (PM M204), so a network process's flows to them are its spawner's to dial
+/// (D142).
+#[cfg(windows)]
+pub fn host_addresses() -> Vec<std::net::IpAddr> {
+    use windows_sys::Win32::NetworkManagement::IpHelper::{
+        GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_DNS_SERVER, GAA_FLAG_SKIP_FRIENDLY_NAME,
+        GAA_FLAG_SKIP_MULTICAST, GetAdaptersAddresses, IP_ADAPTER_ADDRESSES_LH,
+    };
+    use windows_sys::Win32::NetworkManagement::Ndis::IfOperStatusUp;
+    use windows_sys::Win32::Networking::WinSock::{AF_INET, AF_INET6, AF_UNSPEC, SOCKADDR_IN, SOCKADDR_IN6};
+    let flags = GAA_FLAG_SKIP_ANYCAST
+        | GAA_FLAG_SKIP_MULTICAST
+        | GAA_FLAG_SKIP_DNS_SERVER
+        | GAA_FLAG_SKIP_FRIENDLY_NAME;
+    // Asked again with the size it says, as the list may grow between two asks.
+    let mut size: u32 = 16 << 10;
+    for _ in 0..4 {
+        let mut buf = vec![0u64; (size as usize).div_ceil(8)];
+        let first = buf.as_mut_ptr().cast::<IP_ADAPTER_ADDRESSES_LH>();
+        // SAFETY: a buffer of `size` bytes, aligned for the list, for the call to fill.
+        let r = unsafe {
+            GetAdaptersAddresses(
+                u32::from(AF_UNSPEC),
+                flags,
+                std::ptr::null(),
+                first,
+                &raw mut size,
+            )
+        };
+        // ERROR_BUFFER_OVERFLOW: `size` says what it needs.
+        if r == 111 {
+            continue;
+        }
+        if r != 0 {
+            return Vec::new();
+        }
+        let mut found = Vec::new();
+        // SAFETY: the list the call wrote into `buf`, walked by its own links, each within
+        // the buffer, which outlives the walk.
+        unsafe {
+            let mut adapter = first;
+            while !adapter.is_null() {
+                if (*adapter).OperStatus == IfOperStatusUp {
+                    let mut unicast = (*adapter).FirstUnicastAddress;
+                    while !unicast.is_null() {
+                        let sa = (*unicast).Address.lpSockaddr;
+                        if !sa.is_null() && (*sa).sa_family == AF_INET {
+                            let sin = sa.cast::<SOCKADDR_IN>().read_unaligned();
+                            found.push(Ipv4Addr::from(sin.sin_addr.S_un.S_addr.to_ne_bytes()).into());
+                        } else if !sa.is_null() && (*sa).sa_family == AF_INET6 {
+                            let sin6 = sa.cast::<SOCKADDR_IN6>().read_unaligned();
+                            found.push(std::net::Ipv6Addr::from(sin6.sin6_addr.u.Byte).into());
+                        }
+                        unicast = (*unicast).Next;
+                    }
+                }
+                adapter = (*adapter).Next;
+            }
+        }
+        return found;
+    }
+    Vec::new()
+}
+
+#[cfg_attr(windows, allow(dead_code, reason = "systemd-resolved is Linux's"))]
 fn pick_resolv(main: Vec<u8>, systemd: impl FnOnce() -> Vec<u8>) -> Vec<u8> {
     let text = String::from_utf8_lossy(&main);
     let servers: Vec<std::net::IpAddr> = text
@@ -294,7 +423,7 @@ fn dump_routes(sock: &std::os::fd::OwnedFd, seq: u32) -> io::Result<Option<Vec<P
 /// The on-link routes of one datagram of a route dump answering request `seq`, added to
 /// `routes`, and whether the kernel said the table changed during it; whether the dump is
 /// done.
-#[cfg(any(target_os = "linux", test))]
+#[cfg(any(target_os = "linux", all(test, unix)))]
 fn routes_of(
     mut data: &[u8],
     seq: u32,
@@ -430,7 +559,7 @@ pub fn on_link_routes() -> io::Result<Vec<Prefix>> {
 }
 
 /// The on-link routes of an XNU route dump.
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", all(test, unix)))]
 fn dumped_routes(mut data: &[u8]) -> io::Result<Vec<Prefix>> {
     // struct rt_msghdr (net/route.h): rtm_msglen, rtm_version, rtm_type, rtm_index, then
     // rtm_flags and rtm_addrs, as ints, at 8 and 12; the addresses follow its 92 bytes.
@@ -513,12 +642,40 @@ fn dumped_routes(mut data: &[u8]) -> io::Result<Vec<Prefix>> {
     Ok(routes)
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+/// The IPv4 routes of the host's own links: those with no next hop but the default
+/// (GetIpForwardTable2's rows whose NextHop is 0.0.0.0), the subnets this host is on and its
+/// addresses' own, as Windows' route table lists them. dockerd has no Windows bridge of this
+/// kind; this is its rule with Windows' table (D142).
+#[cfg(windows)]
 pub fn on_link_routes() -> io::Result<Vec<Prefix>> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "reading this host's routes is not supported on this platform",
-    ))
+    use windows_sys::Win32::NetworkManagement::IpHelper::{
+        FreeMibTable, GetIpForwardTable2, MIB_IPFORWARD_TABLE2,
+    };
+    use windows_sys::Win32::Networking::WinSock::AF_INET;
+    let mut table: *mut MIB_IPFORWARD_TABLE2 = std::ptr::null_mut();
+    // SAFETY: a table pointer for the call to fill, freed below.
+    let r = unsafe { GetIpForwardTable2(AF_INET, &raw mut table) };
+    if r != 0 {
+        return Err(io::Error::from_raw_os_error(r as i32));
+    }
+    let mut routes = Vec::new();
+    // SAFETY: the table the call made, its rows read in place, then freed once.
+    unsafe {
+        let rows = std::slice::from_raw_parts((*table).Table.as_ptr(), (*table).NumEntries as usize);
+        for row in rows {
+            let prefix = row.DestinationPrefix;
+            if prefix.Prefix.si_family != AF_INET || prefix.PrefixLength == 0 || prefix.PrefixLength > 32 {
+                continue;
+            }
+            if row.NextHop.si_family != AF_INET || row.NextHop.Ipv4.sin_addr.S_un.S_addr != 0 {
+                continue;
+            }
+            let dst = Ipv4Addr::from(prefix.Prefix.Ipv4.sin_addr.S_un.S_addr.to_ne_bytes());
+            routes.push((dst, prefix.PrefixLength));
+        }
+        FreeMibTable(table.cast());
+    }
+    Ok(routes)
 }
 
 #[cfg(test)]
@@ -612,11 +769,13 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     /// One RTM_NEWROUTE of a dump: `rtmsg` and its RTA_DST.
     fn route(seq: u32, dst: [u8; 4], dst_len: u8, table: u8, scope: u8, flags: u32) -> Vec<u8> {
         routed(seq, 2, dst, dst_len, table, scope, flags)
     }
 
+    #[cfg(unix)]
     /// [`route`], with the message's own flags.
     fn routed(
         seq: u32,
@@ -641,6 +800,7 @@ mod tests {
         m
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_linux_route_dump_gives_the_main_tables_on_link_routes() {
         let mut d = Vec::new();
@@ -705,6 +865,7 @@ mod tests {
         assert_eq!((libc::RTA_DST, libc::RTA_NETMASK, libc::RTAX_MAX), (0x1, 0x4, 8));
     }
 
+    #[cfg(unix)]
     /// One message of an XNU route dump: its header, then the addresses `addrs` names.
     fn rt(flags: u32, addrs: &[(u32, Vec<u8>)]) -> Vec<u8> {
         let mut m = vec![0u8; 92];
@@ -727,6 +888,7 @@ mod tests {
         m
     }
 
+    #[cfg(unix)]
     fn sin(a: [u8; 4]) -> Vec<u8> {
         let mut s = vec![16, 2, 0, 0];
         s.extend_from_slice(&a);
@@ -734,6 +896,7 @@ mod tests {
         s
     }
 
+    #[cfg(unix)]
     #[test]
     fn an_xnu_route_dump_gives_the_routes_without_a_gateway() {
         let link = vec![20u8, 18, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];

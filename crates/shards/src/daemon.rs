@@ -2183,8 +2183,10 @@ impl<D: Disk> Daemon<D> {
             .map(|c| (c.mounts.clone(), c.started.is_none()))
             .unwrap_or_default();
         // Its own MAC where it has an interface of its own (D46, PM M173): given
-        // (`--mac-address`, its endpoint's `mac-address`), or made for it, as dockerd makes
-        // each endpoint's, so that no two runs of one template share its MAC.
+        // (`--mac-address`, its endpoint's `mac-address`), which its VM takes as the run
+        // comes; else made for it, as dockerd makes each endpoint's, so that no two runs of
+        // one template share its MAC: its VM's own, made with the VM, which the VM's guest
+        // took before the run came (D31, E1).
         let run_mac: Option<Vec<u8>> = match start {
             network::Start::Attach(network::Net::Bridge | network::Net::User) => {
                 match crate::setup::own_endpoint(&run)
@@ -2199,13 +2201,7 @@ impl<D: Disk> Daemon<D> {
                             return None;
                         }
                     },
-                    None => match shards_net::random_mac() {
-                        Ok(made) => Some(made.to_vec()),
-                        Err(e) => {
-                            log(format!("container {id}: a MAC of its own: {e}"));
-                            None
-                        }
-                    },
+                    None => None,
                 }
             }
             _ => None,
@@ -2521,76 +2517,24 @@ impl<D: Disk> Daemon<D> {
                 }
                 return Err(said);
             }
-            // Its own MAC (D46): what its VM's network process frames to and from it from
-            // here on, as init gives eth0 it. One whose process does not take it goes, and
-            // another is tried, as one that does not take its ports.
-            if let (Some(mac), Some(net)) = (keep.mac, &ready.net) {
-                if let Err(e) = networks::ask_net(net, kind::NET_MAC, &mac, &[]) {
-                    log(format!("warm VM {}'s MAC: {e}", ready.vm.id()));
-                    ready.end();
-                    self.uncommit(id);
-                    continue;
-                }
-                ready.mac = Some(mac);
-            }
-            // On the host's network (D124): its network process told its IPv6 link, its
-            // IPv4 one the bridge's, as its template booted on.
-            if keep.egress.as_deref() == Some(&shards_net::HOST_POLICY[..])
-                && let (Some(net), Some(bridge)) = (&ready.net, self.bridge)
-            {
-                let (guest6, gateway6) = self.host_ipv6();
-                let mut address = bridge.guest().octets().to_vec();
-                address.push(bridge.subnet().1);
-                address.extend_from_slice(&bridge.gateway().octets());
-                address.extend_from_slice(&guest6.octets());
-                address.push(64);
-                address.extend_from_slice(&gateway6.octets());
-                if let Err(e) = networks::ask_net(net, kind::NET_ADDRESS, &address, &[]) {
-                    log(format!("warm VM {}'s addresses: {e}", ready.vm.id()));
-                    ready.end();
-                    self.uncommit(id);
-                    continue;
-                }
-            }
-            // Its published ports go to its VM's network process before the VM has the
-            // run, so that none of their connections wait on its start; taken, they are
-            // that process's alone, which closes them as the run ends. Committed first:
-            // a VM given them never goes back to its pool. One that does not take them
-            // goes, and another is tried, rather than a run whose ports answer nobody.
-            if !keep.published.is_empty() {
-                let given = match &ready.net {
-                    Some(net) => give_ports(net, &keep.published),
-                    None => Err(std::io::Error::other("no network process")),
-                };
-                if let Err(e) = given {
-                    log(format!("warm VM {}'s published ports: {e}", ready.vm.id()));
-                    ready.end();
-                    self.uncommit(id);
-                    continue;
-                }
-            }
-            // On a network of its own: its address, peers and names, before it has the run.
-            if let Some(net) = &ready.net
-                && let Err(e) = self.give_network(id, net, ready.mac, &keep.link_local)
-            {
-                log(format!("warm VM {}'s network: {e}", ready.vm.id()));
+            // Its VM's network process told, before the VM has the run, all it takes for
+            // it, in one round trip (E1): its own MAC (D46), what its VM's network process
+            // frames to and from it from here on, as init gives eth0 it; on the host's
+            // network (D124), its IPv6 link and its IPv4 one the bridge's, as its template
+            // booted on; its published ports, so that none of their connections wait on
+            // its start, which are that process's alone once taken, closed as the run
+            // ends; on a network of its own, its address, peers and names; and its agents'
+            // egress grants (D59). Committed first: a VM given ports never goes back to its
+            // pool. One whose process does not take them all goes, and another is tried,
+            // rather than a run whose network answers nobody.
+            if let Err(e) = self.tell_net(id, &ready, &keep) {
+                log(format!("warm VM {}'s {e}", ready.vm.id()));
                 ready.end();
                 self.uncommit(id);
                 continue;
             }
-            // Its agents' egress grants (D59), before it has the run. One whose network
-            // process does not take them goes, as one that does not take its ports.
-            if let Some(ports) = &keep.egress {
-                let given = match &ready.net {
-                    Some(net) => networks::ask_net(net, kind::NET_POLICY, ports, &[]),
-                    None => Err("no network process".into()),
-                };
-                if let Err(e) = given {
-                    log(format!("warm VM {}'s egress grants: {e}", ready.vm.id()));
-                    ready.end();
-                    self.uncommit(id);
-                    continue;
-                }
+            if ready.net.is_some() && keep.mac.is_some() {
+                ready.mac = keep.mac;
             }
             let handed = hand_over(&ready.socket, payload, fds);
             // Only now, so that starting its successor delays no run: on the refiller's
@@ -3312,6 +3256,54 @@ impl<D: Disk> Daemon<D> {
                 self.drop_anonymous(&removal.container);
             }
         }
+    }
+
+    /// What warm VM `ready`'s network process takes before the VM has run `id` (D31, E1),
+    /// asked in one round trip; where one is not taken, which it was. Its published ports
+    /// go at most a message's descriptors at a time, the daemon keeping its copies until
+    /// the run has started (M24).
+    fn tell_net(&self, id: &str, ready: &Ready, keep: &Keep<'_>) -> Result<(), String> {
+        let Some(net) = &ready.net else {
+            if !keep.published.is_empty() {
+                return Err("published ports: no network process".into());
+            }
+            if keep.egress.is_some() {
+                return Err("egress grants: no network process".into());
+            }
+            return Ok(());
+        };
+        let mut asks = networks::Asks::new(net)?;
+        if let Some(mac) = keep.mac {
+            asks.ask("MAC", kind::NET_MAC, &mac, &[])?;
+        }
+        if keep.egress.as_deref() == Some(&shards_net::HOST_POLICY[..])
+            && let Some(bridge) = self.bridge
+        {
+            let (guest6, gateway6) = self.host_ipv6();
+            let mut address = bridge.guest().octets().to_vec();
+            address.push(bridge.subnet().1);
+            address.extend_from_slice(&bridge.gateway().octets());
+            address.extend_from_slice(&guest6.octets());
+            address.push(64);
+            address.extend_from_slice(&gateway6.octets());
+            asks.ask("addresses", kind::NET_ADDRESS, &address, &[])?;
+        }
+        for batch in keep.published.chunks(shards_ipc::MAX_FDS) {
+            let ports: Vec<u8> = batch
+                .iter()
+                .flat_map(|l| {
+                    let [hi, lo] = l.guest_port.to_be_bytes();
+                    [hi, lo, l.proto]
+                })
+                .collect();
+            let fds: Vec<BorrowedFd<'_>> = batch.iter().map(|l| l.fd.as_fd()).collect();
+            asks.ask("published ports", kind::PUBLISH, &ports, &fds)?;
+        }
+        self.give_network(id, &mut asks, keep.mac.or(ready.mac), &keep.link_local)?;
+        if let Some(ports) = &keep.egress {
+            asks.ask("egress grants", kind::NET_POLICY, ports, &[])?;
+        }
+        asks.answered()
     }
 
     /// Commits the run of container `id` to the warm VM in hand, unless `rm` cancelled it
@@ -5107,29 +5099,6 @@ impl<D: Disk> Daemon<D> {
         };
         self.follow_vm(threads, child, pool, net_process);
     }
-}
-
-/// Gives a VM's network process a run's published listeners, at most a message's
-/// descriptors at a time, each batch acknowledged before the next: the daemon keeps its
-/// copies until the run has started (M24).
-fn give_ports(net: &UnixStream, published: &[publish::Listener]) -> std::io::Result<()> {
-    net.set_read_timeout(Some(PUBLISH_PATIENCE))?;
-    for batch in published.chunks(shards_ipc::MAX_FDS) {
-        let ports: Vec<u8> = batch
-            .iter()
-            .flat_map(|l| {
-                let [hi, lo] = l.guest_port.to_be_bytes();
-                [hi, lo, l.proto]
-            })
-            .collect();
-        let fds: Vec<BorrowedFd<'_>> = batch.iter().map(|l| l.fd.as_fd()).collect();
-        shards_ipc::send(net, kind::PUBLISH, &ports, &fds)?;
-        match shards_ipc::recv(net)? {
-            Some(m) if m.kind == kind::PUBLISH => {}
-            _ => return Err(std::io::Error::other("it did not take them")),
-        }
-    }
-    Ok(())
 }
 
 /// Why a warm VM did not say it took a run.
@@ -7913,7 +7882,9 @@ mod tests {
             t.until("the ports were not freed", |d| lock(&d.ports_held).is_empty());
             assert!(ended.elapsed() >= crate::netproc::GRACE, "freed within the grace");
             assert!(reaped(net_pid), "the network process was not reaped");
-            assert!(reaped(vm.id()));
+            // The VM is reaped once its ports are freed (follow.rs), which the wait above
+            // could see first.
+            t.until("the VM was not reaped", |_| reaped(vm.id()));
         });
     }
 

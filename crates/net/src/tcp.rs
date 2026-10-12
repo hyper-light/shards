@@ -8,14 +8,13 @@
 //! (networking.md R1). Sequence numbers compare by their wrapping difference (RFC 9293
 //! §3.4).
 
-use std::collections::VecDeque;
 use std::io::{self, IoSlice, Read, Write};
 use std::net::{IpAddr, Shutdown, SocketAddr, TcpStream};
-use std::os::fd::{AsRawFd, FromRawFd as _, RawFd};
-use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+use crate::ring::Ring;
+use crate::sys::{AsRawSock, RawSock, UnixStream};
 use crate::wire::{self, ACK, FIN, PSH, RST, SYN};
 
 /// What a connection holds of the guest's bytes the host has not taken yet, and so the
@@ -35,6 +34,15 @@ pub const MSS: u16 = 65520 - 40;
 /// away has none, and one that answers nothing that long is gone).
 const RTO: Duration = Duration::from_millis(200);
 const RETRIES: u32 = 8;
+
+/// How long a connection's queues stay empty before it lets go of their memory: one RTO,
+/// TCP's own measure of a connection gone idle, after which it starts again from its
+/// initial window (RFC 7661 §4.4; Linux's tcp_slow_start_after_idle), so that a burst
+/// after it pays for little more than that. Kept, a queue holds its largest fill for the
+/// connection's life: 131 KiB for each of 1,000 idle connections that had moved 256 KiB
+/// each way, up to TO_GUEST and TO_HOST for each; let go each time it drained, it cost
+/// bulk transfer 2.5% (PM M210).
+pub(crate) const IDLE: Duration = RTO;
 
 /// `a < b` in sequence space.
 fn before(a: u32, b: u32) -> bool {
@@ -120,11 +128,11 @@ impl Write for &HostSock {
     }
 }
 
-impl AsRawFd for HostSock {
-    fn as_raw_fd(&self) -> RawFd {
+impl AsRawSock for HostSock {
+    fn raw_sock(&self) -> RawSock {
         match self {
-            HostSock::Tcp(s) => s.as_raw_fd(),
-            HostSock::Unix(s) => s.as_raw_fd(),
+            HostSock::Tcp(s) => s.raw_sock(),
+            HostSock::Unix(s) => s.raw_sock(),
         }
     }
 }
@@ -149,9 +157,9 @@ pub struct Conn {
     snd_max: u32,
     /// Bytes from `snd_una` sent to the guest and not yet acknowledged, then bytes not yet
     /// sent: what the guest may still need again.
-    to_guest: VecDeque<u8>,
+    to_guest: Ring,
     /// Guest bytes for the host not yet written.
-    to_host: VecDeque<u8>,
+    to_host: Ring,
     /// The guest sent FIN; the host's write side is shut once `to_host` drains.
     guest_fin: bool,
     host_shut: bool,
@@ -188,6 +196,9 @@ pub struct Conn {
     /// A connection to the host's resolver for the guest's DNS over TCP: its questions and
     /// answers read, as the guest's by UDP are.
     pub dns: Option<crate::dns::Stream>,
+    /// When both queues last drained while holding memory, which goes once they have
+    /// stayed empty for [`IDLE`].
+    drained_at: Option<Instant>,
 }
 
 /// A segment's bytes, as they lie in a queue that may wrap: one part, then the other.
@@ -207,7 +218,7 @@ fn span(parts: Payload<'_>, at: usize, n: usize) -> Payload<'_> {
 }
 
 /// `q`'s bytes `at..at + n`, where they lie in its two halves.
-fn bytes(q: &VecDeque<u8>, at: usize, n: usize) -> Payload<'_> {
+fn bytes(q: &Ring, at: usize, n: usize) -> Payload<'_> {
     span(q.as_slices().into(), at, n)
 }
 
@@ -233,6 +244,33 @@ pub trait ToGuest {
     ) -> bool;
 }
 
+/// What a connection takes of the guest's SYN: its sequence number, window and options.
+#[derive(Debug, Clone, Copy)]
+pub struct Syn {
+    seq: u32,
+    window: u16,
+    wscale: Option<u8>,
+    mss: Option<u16>,
+}
+
+impl From<&wire::Tcp<'_>> for Syn {
+    fn from(seg: &wire::Tcp<'_>) -> Syn {
+        Syn {
+            seq: seg.seq,
+            window: seg.window,
+            wscale: seg.wscale,
+            mss: seg.mss,
+        }
+    }
+}
+
+impl Syn {
+    /// The sequence number the guest's SYN took.
+    pub fn seq(&self) -> u32 {
+        self.seq
+    }
+}
+
 impl Conn {
     /// A connection for the guest's SYN: its host socket connecting, without blocking.
     pub fn open(key: Key, seg: &wire::Tcp<'_>, isn: u32) -> io::Result<Conn> {
@@ -242,31 +280,48 @@ impl Conn {
     /// A connection for the guest's SYN to `key`'s remote end, its host socket connecting
     /// to `to` instead.
     pub fn open_to(key: Key, to: (IpAddr, u16), seg: &wire::Tcp<'_>, isn: u32) -> io::Result<Conn> {
-        Ok(Conn::opened(key, HostSock::Tcp(connect(to)?), seg, isn))
+        Ok(Conn::opened(
+            key,
+            HostSock::Tcp(crate::sys::connect_tcp(SocketAddr::from(to))?),
+            &Syn::from(seg),
+            isn,
+        ))
     }
 
     /// A connection for the guest's SYN to the build's proxy (D110), its host socket a Unix
     /// connection to `socket`, made at once or refused: one the proxy's backlog cannot take
     /// now is reset, as a full backlog's SYN goes unanswered, never waited on.
     pub fn open_unix(key: Key, socket: &Path, seg: &wire::Tcp<'_>, isn: u32) -> io::Result<Conn> {
-        Ok(Conn::opened(key, HostSock::Unix(connect_unix(socket)?), seg, isn))
+        Ok(Conn::opened(
+            key,
+            HostSock::Unix(connect_unix(socket)?),
+            &Syn::from(seg),
+            isn,
+        ))
     }
 
-    fn opened(key: Key, sock: HostSock, seg: &wire::Tcp<'_>, isn: u32) -> Conn {
+    /// A connection for the guest's `syn`, its host socket one the spawner's dialer
+    /// connected (Windows, D142; dial.rs).
+    #[cfg(windows)]
+    pub fn dialed(key: Key, sock: HostSock, syn: &Syn, isn: u32) -> Conn {
+        Conn::opened(key, sock, syn, isn)
+    }
+
+    fn opened(key: Key, sock: HostSock, syn: &Syn, isn: u32) -> Conn {
         Conn {
             key,
             sock,
             state: State::Connecting,
-            rcv_nxt: seg.seq.wrapping_add(1),
-            guest_wnd: u32::from(seg.window),
-            guest_wscale: seg.wscale.unwrap_or(0).min(14),
-            guest_mss: seg.mss.unwrap_or(536),
-            scaled: seg.wscale.is_some(),
+            rcv_nxt: syn.seq.wrapping_add(1),
+            guest_wnd: u32::from(syn.window),
+            guest_wscale: syn.wscale.unwrap_or(0).min(14),
+            guest_mss: syn.mss.unwrap_or(536),
+            scaled: syn.wscale.is_some(),
             snd_una: isn,
             snd_nxt: isn,
             snd_max: isn,
-            to_guest: VecDeque::new(),
-            to_host: VecDeque::new(),
+            to_guest: Ring::new(),
+            to_host: Ring::new(),
             guest_fin: false,
             host_shut: false,
             host_eof: false,
@@ -282,6 +337,7 @@ impl Conn {
             recover: isn,
             repair: None,
             dns: None,
+            drained_at: None,
         }
     }
 
@@ -301,8 +357,8 @@ impl Conn {
             snd_una: isn,
             snd_nxt: isn.wrapping_add(1),
             snd_max: isn.wrapping_add(1),
-            to_guest: VecDeque::new(),
-            to_host: VecDeque::new(),
+            to_guest: Ring::new(),
+            to_host: Ring::new(),
             guest_fin: false,
             host_shut: false,
             host_eof: false,
@@ -318,6 +374,7 @@ impl Conn {
             recover: isn,
             repair: None,
             dns: None,
+            drained_at: None,
         };
         c.send_syn(out);
         c
@@ -410,7 +467,7 @@ impl Conn {
             let (a, b) = self.to_host.as_slices();
             match write_now(&self.sock, [a, b]) {
                 Ok(n) => {
-                    self.to_host.drain(..n);
+                    self.to_host.drain(n);
                 }
                 Err(_) => {
                     self.lost("the host's socket, after the guest's reset,", None);
@@ -509,7 +566,8 @@ impl Conn {
             let (a, b) = self.to_host.as_slices();
             match write_now(&self.sock, [a, b]) {
                 Ok(n) => {
-                    self.to_host.drain(..n);
+                    self.to_host.drain(n);
+                    self.drained();
                 }
                 Err(_) => {
                     self.reset(out);
@@ -546,17 +604,20 @@ impl Conn {
                 }
                 Ok(n) => {
                     let got = buf.get(..n).unwrap_or_default();
-                    match self.dns.as_mut() {
+                    // Where the OS gives the queue no memory, the connection is reset, as
+                    // one whose socket failed is.
+                    let queued = match self.dns.as_mut() {
                         Some(d) => {
-                            self.to_guest.extend(d.from_host(got));
+                            let answer = d.from_host(got);
                             // A resolver that stops part way through an answer holds no
                             // more than this side holds for any host.
-                            if d.held() > TO_GUEST {
-                                self.reset(out);
-                                return;
-                            }
+                            d.held() <= TO_GUEST && self.to_guest.extend(&answer).is_ok()
                         }
-                        None => self.to_guest.extend(got),
+                        None => self.to_guest.extend(got).is_ok(),
+                    };
+                    if !queued {
+                        self.reset(out);
+                        return;
                     }
                 }
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
@@ -703,7 +764,8 @@ impl Conn {
             self.syn_acked = true;
             bytes -= 1;
         }
-        self.to_guest.drain(..bytes.min(self.to_guest.len()));
+        self.to_guest.drain(bytes);
+        self.drained();
         self.snd_una = ack;
         // What a window that shrank had the guest drop came after all.
         if before(self.snd_nxt, ack) {
@@ -781,7 +843,7 @@ impl Conn {
                 return;
             }
             self.guest_reset = true;
-            self.to_guest.clear();
+            self.to_guest.release();
             self.sent_at = None;
             self.flush_to_host(out);
             return;
@@ -842,9 +904,11 @@ impl Conn {
             if let Some(d) = self.dns.as_mut() {
                 // Questions go whole, if granted; refusals where no answer is part way.
                 let granted = d.from_guest(taken);
-                self.to_host.extend(granted);
-                self.to_guest.extend(d.refusals());
-                if d.held() > TO_GUEST {
+                let refused = d.refusals();
+                if d.held() > TO_GUEST
+                    || self.to_host.extend(&granted).is_err()
+                    || self.to_guest.extend(&refused).is_err()
+                {
                     self.reset(out);
                     return;
                 }
@@ -864,8 +928,14 @@ impl Conn {
             } else {
                 0
             };
-            if self.dns.is_none() {
-                self.to_host.extend(taken.get(written..).unwrap_or_default());
+            if self.dns.is_none()
+                && self
+                    .to_host
+                    .extend(taken.get(written..).unwrap_or_default())
+                    .is_err()
+            {
+                self.reset(out);
+                return;
             }
             self.rcv_nxt = self.rcv_nxt.wrapping_add(taken.len() as u32);
             answer = true;
@@ -907,20 +977,49 @@ impl Conn {
         }
     }
 
-    /// When the next retransmission is due, if anything is unacknowledged.
+    /// When this connection's timer is next due: a retransmission, if anything is
+    /// unacknowledged, or letting go of what its empty queues hold.
     pub fn deadline(&self) -> Option<Instant> {
         if self.guest_reset {
             return None;
         }
+        match (self.retransmission(), self.idle()) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
+    }
+
+    /// When the next retransmission is due, if anything is unacknowledged.
+    fn retransmission(&self) -> Option<Instant> {
         self.sent_at.map(|t| t + RTO * 2u32.saturating_pow(self.retries))
     }
 
-    /// Sends the oldest segment unacknowledged again if its time has come, alone (RFC
-    /// 6298 §5.4); resets the connection after [`RETRIES`]. While a window is closed on
-    /// bytes waiting, probes it instead.
+    /// When its queues, empty and holding memory, have been idle for [`IDLE`].
+    fn idle(&self) -> Option<Instant> {
+        let holding = self.to_guest.capacity() > 0 || self.to_host.capacity() > 0;
+        let empty = self.to_guest.is_empty() && self.to_host.is_empty();
+        self.drained_at.filter(|_| holding && empty).map(|t| t + IDLE)
+    }
+
+    /// Notes when the queues drained, where they hold memory.
+    fn drained(&mut self) {
+        if self.to_guest.is_empty() && self.to_host.is_empty() {
+            self.drained_at = Some(Instant::now());
+        }
+    }
+
+    /// Lets go of what its queues hold, once they have stayed empty for [`IDLE`]; sends the
+    /// oldest segment unacknowledged again if its time has come, alone (RFC 6298 §5.4),
+    /// and resets the connection after [`RETRIES`]. While a window is closed on bytes
+    /// waiting, probes it instead.
     pub fn on_timer(&mut self, now: Instant, out: &mut dyn ToGuest) {
-        let Some(due) = self.deadline() else { return };
-        if now < due {
+        if self.idle().is_some_and(|due| now >= due) {
+            self.to_guest.release();
+            self.to_host.release();
+            self.drained_at = None;
+        }
+        let Some(due) = self.retransmission() else { return };
+        if self.guest_reset || now < due {
             return;
         }
         if self.state == State::Open && self.snd_nxt == self.snd_una {
@@ -987,8 +1086,8 @@ impl Conn {
         );
     }
 
-    pub fn fd(&self) -> i32 {
-        self.sock.as_raw_fd()
+    pub fn fd(&self) -> RawSock {
+        self.sock.raw_sock()
     }
 }
 
@@ -1009,26 +1108,28 @@ fn write_now(mut sock: impl Write, parts: Payload<'_>) -> io::Result<usize> {
     Ok(done)
 }
 
-/// A Unix stream socket connected to `path` without blocking: connected at once, or the
-/// error that refused it (a backlog with no room says EAGAIN).
-/// Where a build's proxy is dialled from in a process App Sandbox keeps from the proxy's
-/// socket (macOS, D31): its spawner's end of a link, over which it asks for a connection and
-/// is given one, as a sandboxed VM asks for its vsock host ports (`kind::DIAL`).
-static PROXY_DIALER: std::sync::OnceLock<std::sync::Mutex<UnixStream>> = std::sync::OnceLock::new();
+/// Where what App Sandbox keeps a network process from is dialled (macOS, D31): its
+/// spawner's end of a link, over which it asks for a connection to a build's proxy's socket
+/// and is given one, as a confined VM asks for its vsock host ports (`kind::DIAL`). Windows'
+/// dialer is the event loop's (dial.rs).
+#[cfg(unix)]
+static DIALER: std::sync::OnceLock<std::sync::Mutex<UnixStream>> = std::sync::OnceLock::new();
 
-/// Dials the build's proxy through `link`, once for the process's life.
-pub fn set_proxy_dialer(link: UnixStream) -> io::Result<()> {
-    PROXY_DIALER
+/// Dials through `link` what this process may not, once for the process's life.
+#[cfg(unix)]
+pub fn set_dialer(link: UnixStream) -> io::Result<()> {
+    DIALER
         .set(std::sync::Mutex::new(link))
-        .map_err(|_| io::Error::other("the proxy's dialer is set already"))
+        .map_err(|_| io::Error::other("the dialer is set already"))
 }
 
 /// A connection to the build's proxy, from the spawner's dialer: asked for, given as a
 /// descriptor, and acknowledged (`kind::TAKEN`), as XNU drops a socket in flight that no
 /// process holds (M24).
+#[cfg(unix)]
 fn dial(link: &std::sync::Mutex<UnixStream>) -> io::Result<UnixStream> {
     use shards_ipc::kind;
-    // A request and its answer at a time.
+    // A request and its answer at a time; one that names nothing is for the proxy.
     let link = link.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     shards_ipc::send(&link, kind::DIAL, &[], &[])?;
     let answer = shards_ipc::recv(&link)?
@@ -1050,133 +1151,15 @@ fn dial(link: &std::sync::Mutex<UnixStream>) -> io::Result<UnixStream> {
     }
 }
 
+/// A Unix connection to the build's proxy at `path` without blocking: through the
+/// spawner's dialer where there is one (macOS), else connected at once, or the error that
+/// refused it (a backlog with no room says EAGAIN).
 fn connect_unix(path: &Path) -> io::Result<UnixStream> {
-    use std::os::unix::ffi::OsStrExt as _;
-    if let Some(link) = PROXY_DIALER.get() {
+    #[cfg(unix)]
+    if let Some(link) = DIALER.get() {
         return dial(link);
     }
-    // SAFETY: an all-zero sockaddr_un is valid.
-    let mut sa: libc::sockaddr_un = unsafe { std::mem::zeroed() };
-    let bytes = path.as_os_str().as_bytes();
-    if bytes.len() >= sa.sun_path.len() || bytes.contains(&0) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "a proxy socket's path longer than sun_path holds",
-        ));
-    }
-    for (d, s) in sa.sun_path.iter_mut().zip(bytes) {
-        *d = *s as libc::c_char;
-    }
-    sa.sun_family = libc::AF_UNIX as libc::sa_family_t;
-    #[cfg(target_os = "macos")]
-    {
-        sa.sun_len = std::mem::size_of::<libc::sockaddr_un>() as u8;
-    }
-    // SAFETY: socket(2) with constant arguments; the descriptor is owned below.
-    let fd = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0) };
-    if fd < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: a descriptor just made.
-    let sock = unsafe { UnixStream::from_raw_fd(fd) };
-    sock.set_nonblocking(true)?;
-    // SAFETY: fcntl(2) on our own descriptor.
-    unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
-    // SAFETY: a sockaddr_un of its own length.
-    let r = unsafe {
-        libc::connect(
-            fd,
-            (&raw const sa).cast(),
-            std::mem::size_of::<libc::sockaddr_un>() as libc::socklen_t,
-        )
-    };
-    if r != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(sock)
-}
-
-/// A TCP socket connecting to `to`, of its address's family, without blocking.
-fn connect(to: (IpAddr, u16)) -> io::Result<TcpStream> {
-    let addr = SocketAddr::from(to);
-    let family = if addr.is_ipv6() {
-        libc::AF_INET6
-    } else {
-        libc::AF_INET
-    };
-    // SAFETY: socket(2) with constant arguments; the descriptor is owned below.
-    let fd = unsafe { libc::socket(family, libc::SOCK_STREAM, 0) };
-    if fd < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: a descriptor just made.
-    let sock = unsafe { <TcpStream as std::os::fd::FromRawFd>::from_raw_fd(fd) };
-    sock.set_nonblocking(true)?;
-    // No Nagle on the host's leg: the guest's own TCP chose what to send together.
-    sock.set_nodelay(true)?;
-    // SAFETY: fcntl(2) on our own descriptor.
-    unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
-    let r = match addr {
-        SocketAddr::V4(v4) => {
-            let sa = sockaddr_in(v4);
-            // SAFETY: a sockaddr_in of its own length.
-            unsafe {
-                libc::connect(
-                    fd,
-                    (&raw const sa).cast(),
-                    std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
-                )
-            }
-        }
-        SocketAddr::V6(v6) => {
-            let sa = sockaddr_in6(v6);
-            // SAFETY: a sockaddr_in6 of its own length.
-            unsafe {
-                libc::connect(
-                    fd,
-                    (&raw const sa).cast(),
-                    std::mem::size_of::<libc::sockaddr_in6>() as libc::socklen_t,
-                )
-            }
-        }
-    };
-    if r != 0 {
-        let e = io::Error::last_os_error();
-        if e.raw_os_error() != Some(libc::EINPROGRESS) {
-            return Err(e);
-        }
-    }
-    Ok(sock)
-}
-
-fn sockaddr_in(v4: std::net::SocketAddrV4) -> libc::sockaddr_in {
-    // SAFETY: an all-zero sockaddr_in is valid.
-    let mut sa: libc::sockaddr_in = unsafe { std::mem::zeroed() };
-    #[cfg(target_os = "macos")]
-    {
-        sa.sin_len = std::mem::size_of::<libc::sockaddr_in>() as u8;
-    }
-    sa.sin_family = libc::AF_INET as libc::sa_family_t;
-    sa.sin_port = v4.port().to_be();
-    sa.sin_addr = libc::in_addr {
-        s_addr: u32::from_ne_bytes(v4.ip().octets()),
-    };
-    sa
-}
-
-fn sockaddr_in6(v6: std::net::SocketAddrV6) -> libc::sockaddr_in6 {
-    // SAFETY: an all-zero sockaddr_in6 is valid.
-    let mut sa: libc::sockaddr_in6 = unsafe { std::mem::zeroed() };
-    #[cfg(target_os = "macos")]
-    {
-        sa.sin6_len = std::mem::size_of::<libc::sockaddr_in6>() as u8;
-    }
-    sa.sin6_family = libc::AF_INET6 as libc::sa_family_t;
-    sa.sin6_port = v6.port().to_be();
-    sa.sin6_addr = libc::in6_addr {
-        s6_addr: v6.ip().octets(),
-    };
-    sa
+    crate::sys::connect_unix(path)
 }
 
 #[cfg(test)]
@@ -1327,11 +1310,7 @@ mod tests {
         c.on_segment(&straight, &mut sent);
         // Taken at once, they never touched the queue, nor made it take memory.
         assert_eq!(c.to_host.capacity(), 0);
-        let mut q = VecDeque::with_capacity(7);
-        for &b in b"abc".iter().rev() {
-            q.push_front(b);
-        }
-        q.extend(b"defg");
+        let q = Ring::wrapped(b"abc", b"defg").unwrap();
         assert_eq!(q.as_slices(), (&b"abc"[..], &b"defg"[..]));
         c.to_host = q;
         c.on_writable(&mut sent);
@@ -1404,7 +1383,7 @@ mod tests {
         let (mut c, client) = opened(sent);
         sent.take();
         let data: Vec<u8> = (0..4000u32).map(|i| (i % 251) as u8).collect();
-        c.to_guest.extend(&data);
+        c.to_guest.extend(&data).unwrap();
         c.send_new(sent);
         let segments = sent.take();
         assert_eq!(segments.len(), 8);
@@ -1421,13 +1400,8 @@ mod tests {
         let mut sent = Sent::default();
         let (mut c, _client) = opened(&mut sent);
         let data: Vec<u8> = (0..4000u32).map(|i| (i % 253) as u8).collect();
-        // Pushed in front of an empty queue, the first 1000 bytes lie at its buffer's end
-        // and the rest at its start.
-        let mut q = VecDeque::with_capacity(data.len());
-        for &b in data[..1000].iter().rev() {
-            q.push_front(b);
-        }
-        q.extend(&data[1000..]);
+        // The first 1000 bytes at its memory's end and the rest at its start.
+        let q = Ring::wrapped(&data[..1000], &data[1000..]).unwrap();
         let (front, back) = q.as_slices();
         assert_eq!((front.len(), back.len()), (1000, 3000));
         c.to_guest = q;
@@ -1457,7 +1431,7 @@ mod tests {
         assert_eq!(c.deadline(), Some(due + 2 * RTO));
         c.on_segment(&segment(5001, 5001, ACK), &mut sent);
         assert_eq!(sent.take(), []);
-        assert_eq!(c.deadline(), None);
+        assert_eq!(c.retransmission(), None);
     }
 
     /// A duplicate acknowledgement sends the segment the guest lacks again, at once; each
@@ -1483,9 +1457,9 @@ mod tests {
         );
         c.on_segment(&segment(5001, 5001, ACK), &mut sent);
         assert_eq!(sent.take(), []);
-        assert_eq!(c.deadline(), None);
+        assert_eq!(c.retransmission(), None);
         // A later loss is repaired as the first was.
-        c.to_guest.extend(&data[..1000]);
+        c.to_guest.extend(&data[..1000]).unwrap();
         c.send_new(&mut sent);
         assert_eq!(sent.take().len(), 2);
         c.on_segment(&segment(5001, 5001, ACK), &mut sent);
@@ -1528,7 +1502,7 @@ mod tests {
         assert_eq!(sent.take(), [(1001, 5001, ACK, data[..536].to_vec())]);
         // Late, not lost: the guest had it all, and says so again for each copy.
         c.on_segment(&segment(5001, 5001, ACK), &mut sent);
-        c.to_guest.extend(&data[..2000]);
+        c.to_guest.extend(&data[..2000]).unwrap();
         c.send_new(&mut sent);
         assert_eq!(sent.take().len(), 4);
         for _ in 0..3 {
@@ -1569,7 +1543,7 @@ mod tests {
         assert_eq!(sent.take(), []);
         // Had the guest had them after all, its acknowledgement of them all is taken.
         c.on_segment(&segment(5001, 5001, ACK), &mut sent);
-        assert_eq!(c.deadline(), None);
+        assert_eq!(c.retransmission(), None);
         assert!(c.to_guest.is_empty());
     }
 
@@ -1585,7 +1559,7 @@ mod tests {
             ..segment(5001, 1001, ACK)
         };
         c.on_segment(&shut, &mut sent);
-        c.to_guest.extend(b"waiting");
+        c.to_guest.extend(b"waiting").unwrap();
         c.send_new(&mut sent);
         sent.take();
         let mut due = c.deadline().unwrap();
@@ -1612,7 +1586,7 @@ mod tests {
             ..segment(5001, 1001, ACK)
         };
         c.on_segment(&shut, &mut sent);
-        c.to_guest.extend(b"waiting");
+        c.to_guest.extend(b"waiting").unwrap();
         c.send_new(&mut sent);
         for _ in 0..RETRIES {
             c.on_timer(c.deadline().unwrap(), &mut sent);
@@ -1631,7 +1605,7 @@ mod tests {
         let mut sent = Sent::default();
         let (mut c, _client) = opened(&mut sent);
         sent.take();
-        c.to_guest.extend(b"last words");
+        c.to_guest.extend(b"last words").unwrap();
         c.host_eof = true;
         c.send_new(&mut sent);
         assert_eq!(
@@ -1674,7 +1648,7 @@ mod tests {
         };
         c.on_segment(&small(5001, 1001), &mut sent);
         let data: Vec<u8> = (0..4000u32).map(|i| (i % 251) as u8).collect();
-        c.to_guest.extend(&data);
+        c.to_guest.extend(&data).unwrap();
         c.send_new(&mut sent);
         assert_eq!(sent.take().len(), 2);
         c.on_segment(&small(5001, 1001), &mut sent);
@@ -1688,7 +1662,7 @@ mod tests {
         let mut sent = Sent::default();
         let (mut c, _client, data) = sending(&mut sent);
         // 100 bytes more for the guest, which the full ring refuses too.
-        c.to_guest.extend(&data[..100]);
+        c.to_guest.extend(&data[..100]).unwrap();
         sent.full = true;
         let dup = segment(5001, 1001, ACK);
         for _ in 0..3 {
@@ -1706,5 +1680,68 @@ mod tests {
             ]
         );
         assert!(!c.blocked());
+    }
+
+    /// A connection that moved bytes and then idles holds no memory for them: its queues
+    /// keep what they hold between bursts, and let it go once they have stayed empty for
+    /// [`IDLE`] (PM M210).
+    #[test]
+    fn a_drained_connection_holds_no_memory() {
+        let mut sent = Sent::default();
+        let (mut c, mut client) = opened(&mut sent);
+        sent.take();
+        // The host's bytes, kept for the guest until it has them all.
+        let data: Vec<u8> = (0..64u32 << 10).map(|i| (i % 251) as u8).collect();
+        client.write_all(&data).unwrap();
+        let mut buf = vec![0u8; 64 << 10];
+        let mut had = 0usize;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while had < data.len() && Instant::now() < deadline {
+            c.on_readable(&mut sent, &mut buf);
+            let segments = sent.take();
+            had += segments.iter().map(|(_, _, _, b)| b.len()).sum::<usize>();
+            if let Some((seq, _, _, b)) = segments.last() {
+                c.on_segment(&segment(5001, seq.wrapping_add(b.len() as u32), ACK), &mut sent);
+            }
+        }
+        assert_eq!(had, data.len());
+        assert!(c.to_guest.is_empty());
+        assert!(c.to_guest.capacity() > 0, "kept for the next burst");
+        let idle = c.deadline().unwrap();
+        c.on_timer(idle - Duration::from_millis(1), &mut sent);
+        assert!(c.to_guest.capacity() > 0, "kept short of an RTO idle");
+        c.on_timer(idle, &mut sent);
+        assert_eq!(c.to_guest.capacity(), 0, "let go once idle");
+        assert_eq!(c.deadline(), None, "nothing more to time");
+        assert_eq!(sent.take(), [], "nothing sent for it");
+        // The guest's bytes, more than the client's socket takes unread: the rest waits,
+        // then goes as the client reads.
+        let big: Vec<u8> = (0..TO_HOST as u32).map(|i| (i % 251) as u8).collect();
+        let mut seq = 5001u32;
+        for chunk in big.chunks(60_000) {
+            let seg = wire::Tcp {
+                payload: chunk,
+                ..segment(seq, 1001u32.wrapping_add(had as u32), ACK)
+            };
+            c.on_segment(&seg, &mut sent);
+            seq = seq.wrapping_add(chunk.len() as u32);
+        }
+        assert!(!c.to_host.is_empty());
+        let reader = std::thread::spawn(move || {
+            let mut got = vec![0u8; TO_HOST];
+            client.read_exact(&mut got).unwrap();
+            got
+        });
+        while !c.to_host.is_empty() && Instant::now() < deadline {
+            c.on_writable(&mut sent);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(reader.join().unwrap() == big);
+        assert!(c.to_host.is_empty());
+        // Held until the guest's bytes are acknowledged... they were, as they came: only
+        // the idle timer is left.
+        let idle = c.deadline().unwrap();
+        c.on_timer(idle, &mut sent);
+        assert_eq!(c.to_host.capacity(), 0, "let go once idle");
     }
 }

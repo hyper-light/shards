@@ -1,0 +1,39 @@
+# WHP partitions on real Windows hosts, before shards' WHP backend is written: what a guest
+# sees of its processor and its hypervisor, and what an exit costs (PM M197, src/main.rs);
+# an AP's start, interrupts, register access, doorbells and cancels (PM M198, src/bin/m198.rs);
+# a partition run from an AppContainer (PM M200, src/bin/m200.rs); the VM process confined as
+# shards would confine it (PM M201, src/bin/m201.rs); dynamic code forbidden after setup (PM
+# M202, src/bin/m202.rs); sockets and files a confined VM process is handed (PM M203,
+# src/bin/m203.rs); what a confined network process may reach, and its doorbells (PM M204,
+# src/bin/m204.rs); the CPUID a partition's vCPUs see, and what a VMM may change of it (PM
+# M206, src/bin/m206.rs); the environment a child in an AppContainer must be given (PM M208,
+# src/bin/m208.rs); what waking a network process's loop costs, by how it waits (PM M213,
+# src/bin/m213.rs); what changing a socket's registration with a completion port does (PM
+# M215, src/bin/m215.rs).
+[package]
+name = "whp-run"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+windows-sys = { version = "=0.61.2", features = [
+  "Win32_Foundation",
+  "Win32_Networking_WinSock",
+  "Win32_Security",
+  "Win32_Security_Authorization",
+  "Win32_Security_Isolation",
+  "Win32_Storage_FileSystem",
+  "Win32_System_Hypervisor",
+  "Win32_System_IO",
+  "Win32_System_JobObjects",
+  "Win32_System_LibraryLoader",
+  "Win32_System_Memory",
+  "Win32_System_Performance",
+  "Win32_System_Pipes",
+  "Win32_System_Registry",
+  "Win32_System_SystemServices",
+  "Win32_System_Threading",
+] }

@@ -89,7 +89,6 @@ struct Common {
     then: AfterSnapshot,
     vsock: Option<PathBuf>,
     /// A network device, and its network process's side (D31).
-    #[cfg(unix)]
     net: Option<shards_vmm::devices::virtio::net::NetHost>,
     workload: Options,
     /// Whether a workload option was given.
@@ -103,7 +102,6 @@ impl Common {
             snapshot_dir: None,
             then: AfterSnapshot::Stop,
             vsock: None,
-            #[cfg(unix)]
             net: None,
             workload: Options::default(),
             workload_options: false,
@@ -128,7 +126,6 @@ impl Common {
                 }
             }
             "--vsock" => self.vsock = Some(PathBuf::from(value("--vsock")?)),
-            #[cfg(unix)]
             "--net" => {
                 if self.net.is_some() {
                     return Err("--net given twice".into());
@@ -150,13 +147,7 @@ impl Common {
                 }
                 CWD.set(dir).map_err(|_| "--cwd given twice".to_string())?;
             }
-            "--grants" => {
-                let fd = text(value("--grants")?)?;
-                let fd = fd
-                    .parse::<i32>()
-                    .map_err(|_| format!("--grants: {fd:?} is not a descriptor"))?;
-                grants(fd)?;
-            }
+            "--grants" => grants(&text(value("--grants")?)?)?,
             "-e" | "--env" => w.env.push(text(value("--env")?)?),
             "-w" | "--workdir" => w.workdir = text(value("--workdir")?)?,
             "-u" | "--user" => w.user = text(value("--user")?)?,
@@ -206,8 +197,9 @@ struct Run {
     cfg: Config,
     mode: Mode,
     workload: Options,
-    /// `--attach FD`: the socket a builder attaches files to the VM's join disk on (D134).
-    attach: Option<i32>,
+    /// `--attach FD` (Windows: `--attach NAME`, the name its spawner handed it by): the
+    /// socket a builder attaches files to the VM's join disk on (D134).
+    attach: Option<String>,
 }
 
 fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
@@ -261,11 +253,7 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
             // and the files its steps write theirs to (D134); the VM ends as the socket
             // closes, its builder gone (D137).
             "--attach" => {
-                let fd = text(value("--attach")?)?;
-                attach = Some(
-                    fd.parse::<i32>()
-                        .map_err(|_| format!("--attach: {fd:?} is not a descriptor"))?,
-                );
+                attach = Some(text(value("--attach")?)?);
                 JOIN.take_writes();
                 cfg.join = Some(give_join_disk());
             }
@@ -306,10 +294,7 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
     cfg.snapshot = common.policy();
     cfg.console = common.console;
     cfg.vsock = common.vsock.map(VsockHost::at);
-    #[cfg(unix)]
-    {
-        cfg.net = common.net.take();
-    }
+    cfg.net = common.net.take();
     let command = !common.workload.argv.is_empty();
     if let Some(fd) = warm {
         let rootfs = rootfs.ok_or("--warm needs --rootfs")?;
@@ -416,7 +401,6 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String
         snapshot: common.policy(),
         hold,
         vsock: common.vsock.map(VsockHost::at),
-        #[cfg(unix)]
         net: common.net.take(),
         // Its slots are made once its snapshot is read (`restore_vm`).
         #[cfg(unix)]
@@ -458,8 +442,11 @@ fn give_join_disk() -> &'static shards_vmm::devices::virtio::block::Join {
 /// of its own, until it hangs up: each a file attached to the VM's join disk, read-only
 /// or writable as it asks, answered with its range, or a range let go.
 #[cfg(unix)]
-fn serve_attach(fd: i32) -> Result<(), String> {
+fn serve_attach(fd: &str) -> Result<(), String> {
     use shards_ipc::kind;
+    let fd = fd
+        .parse::<i32>()
+        .map_err(|_| format!("--attach: {fd:?} is not a descriptor"))?;
     let socket = crate::warm::inherited_socket("--attach", fd)?;
     let answer = |m: shards_ipc::Message| -> Result<(u8, Vec<u8>), String> {
         match m.kind {
@@ -511,9 +498,76 @@ fn serve_attach(fd: i32) -> Result<(), String> {
         .map_err(|e| format!("serving its builder: {e}"))
 }
 
-#[cfg(not(unix))]
-fn serve_attach(_: i32) -> Result<(), String> {
-    Err("--attach: a builder's join disk needs Unix sockets".into())
+/// [`serve_attach`] on Windows: the socket its spawner handed it as `name`, and each
+/// attached file a handle the builder duplicated into this process, its value after the
+/// mode, as a message on Windows carries no handle (shards_ipc).
+#[cfg(windows)]
+fn serve_attach(name: &str) -> Result<(), String> {
+    use shards_ipc::kind;
+    use std::os::windows::io::{FromRawHandle as _, OwnedHandle, RawHandle};
+    let socket = {
+        let mut given = GIVEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let at = given
+            .iter()
+            .position(|(n, h)| n == name && matches!(h, shards_ipc::Handed::Socket(_)))
+            .ok_or_else(|| format!("--attach: no socket {name} was given"))?;
+        let shards_ipc::Handed::Socket(info) = given.swap_remove(at).1 else {
+            return Err(format!("--attach: {name} is no socket"));
+        };
+        shards_vmm::platform::UnixStream::from_shared(&info).map_err(|e| format!("--attach: {e}"))?
+    };
+    let answer = |m: shards_ipc::Message| -> Result<(u8, Vec<u8>), String> {
+        match m.kind {
+            kind::DISK_ATTACH => {
+                let (mode, value) = m
+                    .payload
+                    .split_first()
+                    .and_then(|(mode, rest)| Some((*mode, u64::from_le_bytes(*rest.first_chunk::<8>()?))))
+                    .ok_or("an attach without its one file")?;
+                let value = usize::try_from(value)
+                    .ok()
+                    .filter(|v| *v != 0)
+                    .ok_or("an attach without its one file")?;
+                // SAFETY: a handle the builder duplicated into this process for this attach
+                // alone, owned from here on.
+                let file = std::fs::File::from(unsafe { OwnedHandle::from_raw_handle(value as RawHandle) });
+                let (start, len) = match mode {
+                    0 => JOIN.attach(file),
+                    1 => JOIN.attach_writable(file),
+                    _ => Err("an attach neither read-only nor writable".into()),
+                }?;
+                Ok((
+                    kind::DISK_ATTACH,
+                    [start.to_be_bytes(), len.to_be_bytes()].concat(),
+                ))
+            }
+            kind::DISK_DETACH => {
+                let start = m
+                    .payload
+                    .first_chunk::<8>()
+                    .map(|b| u64::from_be_bytes(*b))
+                    .ok_or("a detach without its range")?;
+                JOIN.detach(start)?;
+                Ok((kind::DISK_DETACH, Vec::new()))
+            }
+            other => Err(format!("message kind {other}")),
+        }
+    };
+    std::thread::Builder::new()
+        .name("attach".into())
+        .spawn(move || {
+            while let Ok(Some(m)) = shards_ipc::recv(&socket) {
+                let (kind, payload) = answer(m).unwrap_or_else(|e| (kind::DISK_REFUSED, e.into_bytes()));
+                if shards_ipc::send(&socket, kind, &payload).is_err() {
+                    break;
+                }
+            }
+            // Its builder is gone, even killed: so is the builder's VM, as on Unix.
+            report("its builder is gone, and so this builder ends");
+            std::process::exit(1);
+        })
+        .map(drop)
+        .map_err(|e| format!("serving its builder: {e}"))
 }
 
 /// This VM's join disk, where it has one (D119).
@@ -634,8 +688,8 @@ pub fn run(args: impl Iterator<Item = OsString>) -> ExitCode {
         Ok(run) => run,
         Err(code) => return code,
     };
-    if let Some(fd) = attach
-        && let Err(e) = serve_attach(fd)
+    if let Some(at) = attach
+        && let Err(e) = serve_attach(&at)
     {
         report(e);
         return ExitCode::FAILURE;
@@ -1169,8 +1223,20 @@ fn start(cfg: &Config) -> Result<(Handle, Running), String> {
     // A host that runs no VM says so, before its files are confined: the check reads no
     // input of the VM's.
     vm::check_host()?;
+    if cfg.snapshot.is_some() {
+        snapshots()?;
+    }
     confine(&paths)?;
     vm::start(cfg)
+}
+
+/// A host whose microVMs take no snapshots says so before a VM starts that would take or
+/// restore one (D140).
+fn snapshots() -> Result<(), String> {
+    if vm::SNAPSHOTS {
+        return Ok(());
+    }
+    Err("this host's microVMs take no snapshots yet".into())
 }
 
 /// [`start`] for a restore: the snapshot's directory, and the files it restores against.
@@ -1186,6 +1252,7 @@ fn restore_vm(cfg: &RestoreConfig) -> Result<(Handle, Running), String> {
     // A host that runs no VM says so, before its files are confined: the check reads no
     // input of the VM's.
     vm::check_host()?;
+    snapshots()?;
     let mut paths = crate::confine::Paths::default();
     // The snapshot says which files it restores against: on macOS it is granted first, to
     // be read for them.
@@ -1267,12 +1334,14 @@ fn restore_vm(cfg: &RestoreConfig) -> Result<(Handle, Running), String> {
     vm::restore_from(cfg, pinned)
 }
 
-/// `path` made whole against the working directory.
+/// `path` made whole against the working directory, and normalized as
+/// `std::path::absolute` normalizes it (on Windows, its separators made `\`).
 fn absolute(path: &Path) -> Result<PathBuf, String> {
-    match CWD.get() {
-        Some(cwd) if path.is_relative() => Ok(cwd.join(path)),
-        _ => std::path::absolute(path).map_err(|e| format!("{}: {e}", path.display())),
-    }
+    let whole = match CWD.get() {
+        Some(cwd) if path.is_relative() => cwd.join(path),
+        _ => path.to_path_buf(),
+    };
+    std::path::absolute(&whole).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// The files a restore's spawner gives it to restore against (`--backing PATH[:ro]`): a
@@ -1386,11 +1455,11 @@ fn written(paths: &mut crate::confine::Paths, snapshot: Option<&Path>, vsock: Op
     if let Some(dir) = snapshot {
         let _ = std::fs::create_dir_all(dir);
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     {
         paths.vsock = vsock.map(Path::to_path_buf);
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", windows)))]
     paths
         .sockets_under
         .extend(vsock.and_then(Path::parent).map(Path::to_path_buf));
@@ -1400,6 +1469,17 @@ fn written(paths: &mut crate::confine::Paths, snapshot: Option<&Path>, vsock: Op
 /// its VM is.
 #[cfg(target_os = "macos")]
 static GRANTS: std::sync::OnceLock<std::os::unix::net::UnixStream> = std::sync::OnceLock::new();
+
+/// The pipes this VM asks its spawner for access on (`--grants HANDLE`): taken, and so
+/// closed, once it has all it needs, unless its guest's connections to host ports go
+/// through them.
+#[cfg(windows)]
+static GRANTS: std::sync::Mutex<Option<crate::grant::Link>> = std::sync::Mutex::new(None);
+
+/// What else its spawner handed this process (`--grants HANDLE`), by name, until taken:
+/// its network's ring and doorbells (`--net`).
+#[cfg(windows)]
+static GIVEN: std::sync::Mutex<Vec<(String, shards_ipc::Handed)>> = std::sync::Mutex::new(Vec::new());
 
 /// `--net REGION,WAKE_ME,WAKE_PEER,MAC`: the frame ring and doorbells its spawner left this
 /// process at those descriptors, which it owns from here on, and the guest's MAC.
@@ -1445,16 +1525,108 @@ fn net_host(spec: &str) -> Result<shards_vmm::devices::virtio::net::NetHost, Str
     })
 }
 
-/// Takes the socket at `fd` to ask the spawner for access on (macOS).
+/// `--net MAC` (Windows): the frame ring and doorbells its spawner handed this process by
+/// name (`net-region`, `net-wake-me`, `net-wake-peer`), which it owns from here on, as no
+/// spawner can know a handle's value in a child before it hands it over; and the guest's
+/// MAC. The doorbell it rings its network process by is an AF_UNIX socket, which that
+/// process waits on with its sockets (PM M213); the one it sleeps on, an event.
+#[cfg(windows)]
+fn net_host(spec: &str) -> Result<shards_vmm::devices::virtio::net::NetHost, String> {
+    use std::os::windows::io::{FromRawHandle as _, OwnedHandle};
+    let mut given = GIVEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut take = |name: &str| -> Result<OwnedHandle, String> {
+        let at = given
+            .iter()
+            .position(|(n, h)| n == name && matches!(h, shards_ipc::Handed::Handle(v) if *v != 0))
+            .ok_or_else(|| format!("--net: no {name} was given"))?;
+        let shards_ipc::Handed::Handle(value) = given.swap_remove(at).1 else {
+            return Err(format!("--net: {name} is no handle"));
+        };
+        // SAFETY: a handle the spawner duplicated into this process for this alone, owned
+        // from here on.
+        Ok(unsafe { OwnedHandle::from_raw_handle(value as std::os::windows::io::RawHandle) })
+    };
+    let region = std::sync::Arc::new(take("net-region")?);
+    let wake_me = std::sync::Arc::new(shards_netring::Bell::Event(take("net-wake-me")?));
+    let wake_peer = {
+        let at = given
+            .iter()
+            .position(|(n, h)| n == "net-wake-peer" && matches!(h, shards_ipc::Handed::Socket(_)))
+            .ok_or("--net: no net-wake-peer socket was given")?;
+        let shards_ipc::Handed::Socket(info) = given.swap_remove(at).1 else {
+            return Err("--net: net-wake-peer is no socket".into());
+        };
+        let rings = shards_vmm::platform::UnixStream::from_shared(&info)
+            .map_err(|e| format!("--net: net-wake-peer: {e}"))?;
+        rings
+            .set_nonblocking(true)
+            .map_err(|e| format!("--net: net-wake-peer: {e}"))?;
+        std::sync::Arc::new(shards_netring::Bell::Socket(rings))
+    };
+    let mac = spec
+        .parse::<shards_net::Mac>()
+        .map_err(|e| format!("--net: {e}"))?
+        .0;
+    let flush = shards_vmm::devices::virtio::net::TxFlush::default();
+    Ok(shards_vmm::devices::virtio::net::NetHost {
+        region,
+        wake_me,
+        wake_peer,
+        mac,
+        flush,
+    })
+}
+
+/// Takes the socket at descriptor `fd` to ask the spawner for access on (macOS).
 #[cfg(target_os = "macos")]
-fn grants(fd: i32) -> Result<(), String> {
+fn grants(fd: &str) -> Result<(), String> {
+    let fd = fd
+        .parse::<i32>()
+        .map_err(|_| format!("--grants: {fd:?} is not a descriptor"))?;
     let link = crate::warm::inherited_socket("--grants", fd)?;
     GRANTS.set(link).map_err(|_| "--grants given twice".to_string())
 }
 
-#[cfg(not(target_os = "macos"))]
-fn grants(_: i32) -> Result<(), String> {
-    Err("--grants: macOS alone grants a VM its files".into())
+/// Takes what the spawner gave this process (`--grants HANDLE`, shards_ipc's pipe): the
+/// pipes to ask it for access on.
+#[cfg(windows)]
+fn grants(pipe: &str) -> Result<(), String> {
+    use std::os::windows::io::FromRawHandle as _;
+    let pipe = pipe
+        .parse::<usize>()
+        .map_err(|_| format!("--grants: {pipe:?} is not a handle"))?;
+    let given = shards_ipc::given(pipe).map_err(|e| format!("--grants: {e}"))?;
+    let handle = |name: &str| -> Result<std::fs::File, String> {
+        let value = given
+            .iter()
+            .find_map(|(n, v)| match v {
+                shards_ipc::Handed::Handle(v) if n == name && *v != 0 => Some(*v),
+                _ => None,
+            })
+            .ok_or_else(|| format!("--grants: no {name} pipe was given"))?;
+        // SAFETY: a pipe's handle the spawner duplicated into this process for it alone,
+        // owned from here on.
+        Ok(unsafe { std::fs::File::from_raw_handle(value as std::os::windows::io::RawHandle) })
+    };
+    let link = crate::grant::Link {
+        from: handle("answer")?,
+        to: handle("ask")?,
+    };
+    GIVEN
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .extend(given.into_iter().filter(|(n, _)| n != "ask" && n != "answer"));
+    let mut grants = GRANTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if grants.is_some() {
+        return Err("--grants given twice".into());
+    }
+    *grants = Some(link);
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
+fn grants(_: &str) -> Result<(), String> {
+    Err("--grants: macOS and Windows alone grant a VM its files".into())
 }
 
 /// On macOS, where the VM process is in App Sandbox from its launch, asks its spawner for
@@ -1475,17 +1647,36 @@ fn ask(wanted: &[crate::grant::Wanted]) -> Result<(), String> {
     crate::grant_ask::obtain(link, wanted)
 }
 
+/// On Windows, where the VM process is in an AppContainer from its start (D141), asks its
+/// spawner for `wanted` (grant). It fails closed: a VM process outside one, started by
+/// anything but `shards`, starts no VM.
+#[cfg(windows)]
+fn ask(wanted: &[crate::grant::Wanted]) -> Result<(), String> {
+    if !shards_ipc::in_app_container() {
+        return Err(
+            "shards-vm is not in an AppContainer, which confines every VM on Windows: start it with \
+             `shards run --kernel`, which confines it"
+                .into(),
+        );
+    }
+    let grants = GRANTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let link = grants.as_ref().ok_or(
+        "nothing was granted to this VM: start it with `shards run --kernel`, which grants it its files",
+    )?;
+    crate::grant_ask::obtain(link, wanted)
+}
+
 /// `paths` as the VM asks for them: files it reads read-only, files it writes read-write,
 /// and the directories it writes in made first. A directory cannot be granted read-only
 /// (PM M70): a restore asks for its template's files instead.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 fn granted(paths: &crate::confine::Paths) -> Result<(), String> {
     use crate::grant::Access;
     if !paths.read_under.is_empty() {
-        return Err("a directory cannot be granted read-only under App Sandbox".into());
+        return Err("a directory cannot be granted read-only to a confined VM process".into());
     }
     if !paths.sockets_under.is_empty() {
-        return Err("a directory of sockets cannot be granted under App Sandbox".into());
+        return Err("a directory of sockets cannot be granted to a confined VM process".into());
     }
     let wanted: Vec<crate::grant::Wanted> = paths
         .read
@@ -1523,6 +1714,26 @@ fn dial_through_spawner(vsock: &Path) -> Result<(), String> {
     }))
 }
 
+/// Has the spawner dial, beside `vsock`, every host port the guest connects to: an
+/// AppContainer dials no socket of its user's (PM M201, M203).
+#[cfg(windows)]
+fn dial_through_spawner(vsock: &Path) -> Result<(), String> {
+    let prefix = format!("{}_", vsock.to_str().ok_or("a vsock path that is not UTF-8")?);
+    shards_vmm::platform::set_dialer(Box::new(move |target: &Path| {
+        let port = target
+            .to_str()
+            .and_then(|t| t.strip_prefix(prefix.as_str()))
+            .and_then(|p| p.parse::<u32>().ok())
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "not a vsock host port"))?;
+        // A request and its answer at a time: the lock is held through both.
+        let grants = GRANTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let link = grants.as_ref().ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::NotConnected, "no spawner to dial through")
+        })?;
+        crate::grant_ask::dial(link, port)
+    }))
+}
+
 /// A restore's template, as a VM in App Sandbox is granted it: its pointer, then the
 /// files of the generation it names, never its directory.
 #[cfg(target_os = "macos")]
@@ -1554,7 +1765,27 @@ fn confine(paths: &crate::confine::Paths) -> Result<(), String> {
     });
     #[cfg(target_os = "linux")]
     return crate::confine::landlock(paths);
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    // As on macOS; and once its partition is set up, before anything of its guest's is
+    // read, this process forbids itself dynamic code (D141, PM M202).
+    #[cfg(windows)]
+    {
+        #[cfg(target_arch = "x86_64")]
+        shards_vmm::hv::forbid_dynamic_code_once_set_up();
+        granted(paths)?;
+        match &paths.vsock {
+            Some(vsock) => dial_through_spawner(vsock),
+            None => {
+                drop(
+                    GRANTS
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .take(),
+                );
+                Ok(())
+            }
+        }
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
     {
         let _ = paths;
         Ok(())

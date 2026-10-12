@@ -18,6 +18,9 @@ workspace = true
 [dependencies]
 shards-net = { path = "../net" }
 
+[target.'cfg(windows)'.dependencies]
+shards-ipc = { path = "../ipc" }
+
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
 

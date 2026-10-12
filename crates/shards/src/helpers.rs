@@ -36,9 +36,7 @@ pub fn vm() -> Result<PathBuf, String> {
     Ok(dir()?.join(format!("shards-vm{}", std::env::consts::EXE_SUFFIX)))
 }
 
-/// The network process's binary, written out if this build's is not yet. Only Unix
-/// hosts network their VMs yet (D31).
-#[cfg(unix)]
+/// The network process's binary, written out if this build's is not yet (D31, D142).
 pub fn net() -> Result<PathBuf, String> {
     Ok(dir()?.join(format!("shards-net{}", std::env::consts::EXE_SUFFIX)))
 }
@@ -143,6 +141,15 @@ fn private_dir(path: &Path) -> Result<(), String> {
     builder
         .create(path)
         .map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// Where the AppContainer profiles of this user's microVMs are recorded as they live, so
+/// that one whose `shards` ended without deleting it is deleted by the next (D141).
+#[cfg(windows)]
+pub fn containers() -> Result<PathBuf, String> {
+    let dir = cache()?.join("containers");
+    private_dir(&dir)?;
+    Ok(dir)
 }
 
 /// This user's cache: `~/Library/Caches/shards` on macOS, `$XDG_CACHE_HOME/shards` or

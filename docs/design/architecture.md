@@ -170,12 +170,13 @@ the guest arch is always the host arch.
 | Linux (glibc, musl) | aarch64 / arm64 | KVM | planned |
 | macOS | aarch64 / arm64 | Hypervisor.framework (arm64 API) | booting Linux; snapshots with cold and warm restore |
 | macOS | x86_64 / amd64 | Hypervisor.framework (x86 VMX API) | planned |
-| Windows | x86_64 / amd64 | Windows Hypervisor Platform | planned |
+| Windows | x86_64 / amd64 | Windows Hypervisor Platform | booting Linux: SMP, virtio-blk, pmem and vsock; no snapshots yet (D140) |
 | Windows | aarch64 / arm64 | Windows Hypervisor Platform (arm64) | planned |
 
 A Linux host runs VMs on Linux 6.10 or later with Landlock enabled (its `lsm=` list), whose
 ABI v5 is the first to govern `/dev/kvm`'s ioctls: a VM process starts under no weaker
-confinement (D30). macOS runs them under App Sandbox (D30).
+confinement (D30). macOS runs them under App Sandbox (D30). Windows runs them where its
+optional feature "Windows Hypervisor Platform" is on (D140).
 
 Every target builds and passes the lints. Until a target's backend lands, `run --kernel` there
 fails with an explanation (`vm::check_host`), as it does where the OS reports no hardware
@@ -1842,7 +1843,34 @@ audit's "Security and test coverage").
     [PM M68].
   A path is only for the user's `--vsock PATH`, Firecracker's interface, which host
   clients dial and whose `<path>_<port>` sockets other ports reach.
-- **Windows:** nothing yet.
+- **Windows: an AppContainer, a Job and Windows' mitigations** (D141; [PM M200-M203]).
+  - `shards-vm` runs in an AppContainer of its own, a profile made for it and deleted after
+    it, holding the capabilities `\\?\VidExo`'s DACL grants, without which it runs no
+    partition [PM M200]: it reaches no file and no socket of its user's. As macOS's VM
+    does, it asks its spawner (`--grants`, a pipe each way) for what its arguments name:
+    each file a handle its spawner opened, read-only for what it only reads, duplicated
+    into it with the path the spawner found it at, which an AppContainer may not ask; for a
+    `--vsock PATH`, a socket its spawner binds there, and each host port its guest
+    connects to dialled for it, each shared with it as Winsock documents
+    (WSADuplicateSocketW) [PM M203].
+  - In a Job that ends it as its spawner ends, even killed (the spawner holds the Job's
+    only handle; 0.7-1.1 ms later [PM M201]), and lets it start no process, as the
+    child-process policy it is made with does.
+  - Windows' mitigations from its start: strict handle checks, no Win32k, no extension
+    points, no images from remote devices or of a low label, and no FSCTLs where the
+    Windows takes that word (windows-2022 does not [PM M201]). Dynamic code it forbids
+    itself once its partition is set up, before anything of its guest's is read:
+    windows-2022's WHP sets up no partition in a process that forbids it [PM M201, M202].
+  - It fails closed: a VM process outside an AppContainer starts no VM.
+  - A profile costs 4.4 / 5.7 ms to make at p50 and 1.8 / 2.1 ms to delete [PM M201], on
+    `shards run --kernel`'s path; a dial through the spawner 100-111 µs at p50, where the
+    spawner's own costs 38-41 [PM M203]. A profile is recorded while it lives, in a file
+    its spawner holds open, so that the next spawner deletes what a killed one left.
+  - Its connections end shut down, then closed: on Windows an exit that closes a socket's
+    last reference loses what the peer had not read [PM M199].
+  - Tested on real VMs: `the_vm_process_is_confined` reads each of these from the running
+    VM process as Windows reports it, and its end with its killed spawner; the `vsock`
+    tests run through its spawner.
 
 ### Networking: a network process per VM (D31, design)
 
@@ -1902,9 +1930,16 @@ stack inside the VMM, is superseded by it.
     `at_start_leaves_no_file_and_no_port_of_its_own` and
     `to_ports_reaches_the_granted_ports_alone` (Linux, each in a process of its own),
     `the_network_process_runs_in_app_sandbox_alone` (macOS; mutation-checked: the
-    self-check off), and every networked E2E through the confined process. Open: seccomp's
-    allowlist, which needs the syscalls it makes measured on Linux first, as the VM
-    process's were (M52).
+    self-check off), and every networked E2E through the confined process. Linux x86_64
+    (2026-10-12, PM M209): a seccomp filter after Landlock's first layer, of the syscalls a
+    network process is seen to make once confined, with glibc and with musl, its sockets
+    held to IPv4, IPv6 and Unix, ioctl to FIONBIO, fcntl to close-on-exec and duplicates,
+    prctl to no_new_privs and its name, socket options to the socket's and TCP's levels,
+    and a thread's own signal mask to blocking and setting, which musl's
+    pthread_key_delete makes as std makes its key for thread-local destructors (PM M209);
+    no exec, process, thread or file (`the_filter_ends_a_process_that_makes_what_none_makes`,
+    and every networked E2E through the filtered process). arm64 Linux's, as the VM
+    process's, once its KVM backend runs VMs to measure it on.
 - **The guest's side.** A virtio-net device in the VM process, configured before the
   template is saved, with a static address, no DHCP or duplicate-address detection, and
   its gateway's MAC as a permanent neighbor, so that restores do no network work
@@ -1996,6 +2031,19 @@ stack inside the VMM, is superseded by it.
     epoll or kqueue, timers in a heap, the connections a full ring held back in a queue
     of their own; a round trip beside 3,500 idle connections costs what it does beside
     none (PM M106).
+  - *What a connection holds (2026-10-12, PM M210).* Each connection's queues, its
+    guest's bytes for the host and the host's for its guest, are rings over memory of
+    their own from the OS (mmap; VirtualAlloc on Windows), doubling as bytes come, which
+    the connection lets go of once both have stayed empty for an RTO, TCP's own measure of
+    a connection gone idle (RFC 7661 §4.4); memory let go of is kept an RTO for the next
+    queue that grows to its size, then unmapped. Queues on the heap kept their largest
+    fill for the connection's life, and the C library's allocator kept what they freed,
+    dirty: 1,000 connections idle after 1 MiB each way held 173 MiB of the network
+    process's footprint on macOS, and 10,000, 375 MiB; as built, 4.6 and 9.5. Letting a
+    queue go each time it drained cost bulk transfer 2.5% at p50, and fresh pages for
+    each new connection's queue 2.9%; as built, none measurable. A host connect the
+    process itself could not make (descriptors, ports, buffers) is said, beside the reset
+    the guest hears.
 - **Open, measured before it is built** (networking.md §4):
   - *The data path between the two processes* (E2), **decided (PM M83):** a ring of frame
     slots in memory the two processes share, not the datagram socket Apple's model uses
@@ -2007,9 +2055,25 @@ stack inside the VMM, is superseded by it.
     side spins: each sleeps on its doorbell as soon as its ring is empty, which costs an
     idle VM nothing, and a round trip 6.6 µs at p50, 12 at p99, with 124 to 250 Gbit/s
     one way (PM M105).
-  - *Its cost per VM* (E2, D14): RSS idle and with 1k and 10k connections, beside a VM's
-    own (M64), and the start: the network process is spawned and paired with a warm VM
-    before its request, and must cost a restore nothing (E1).
+  - *Its cost per VM* (E2, D14), **measured (PM M210):** 2.6 MiB of footprint idle and
+    about 0.7 KiB a connection at 10,000 on macOS, 0.4 KiB private on Linux, whatever they
+    carried before (above), beside the VM's own; a round trip beside 10,000 costs what it
+    does beside none. The start (E1): the network process is spawned and paired with its
+    warm VM before the request, and must cost a restore nothing. Measured (PM M210), a run
+    on the default bridge cost 0.42 ms more than one on `none` at p50 [0.29, 0.54]: init
+    setting eth0's MAC as the request came, and the daemon's round trip to give the
+    network process that MAC. **As built (2026-10-12):** each pooled VM is given its own
+    MAC as it is made, as dockerd makes each start one (PM M173), its network process
+    started with it and its guest taking it as it resumes (`control::MAC`), so a run whose
+    MAC is made has its VM's: its guest does nothing of its network as the request comes
+    (−12 µs [−72, +30]), and the daemon asks its network process nothing. What a run's
+    network process is told before its VM has the run (a given MAC, the host network's
+    addresses, published ports, a user network's address, peers and names, its agents'
+    grants) goes in one round trip, each ask sent as it comes and their answers read after
+    the last (`networks::Asks`): on a user network, −282 µs of a run's wall time at p50
+    [−464, +18]; peers on that network cost it nothing measurable (PM M210). **Open:** the
+    daemon's share measured on a quiet host; the peers' own network processes, still asked
+    one after another.
   - *Enforcement overhead* (E5) at 0, 100 and 10k rules, and the DNS conformance suite (E6).
 - **Not now:** a VM-to-VM switch (networking.md R8; VMs reach each other through published
   ports first), an administrator-provisioned TAP tier (R2), GPU networking (R9).
@@ -3538,6 +3602,187 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode is
 D136.
 
+### D143. `RUN` on Windows hosts: the builder
+
+AGENTFILE_ARCH.md §11 row 975: a Windows host runs a build's `RUN` steps in a builder
+microVM as Linux and macOS hosts do (D34), its VM process confined as D141 confines one,
+its network the network process's (D142).
+
+- **One builder, every host.** Its code is the Unix builder's: the same frames over the
+  same build port, layers sent once, caches attached to its join disk (D134), SSH agents
+  relayed, the build's proxy (D110). Its sockets are AF_UNIX on Windows too
+  (`shards-afunix`: M199, made overlapped, M207), and a wait on two of them is WSAPoll's
+  where Unix polls (`platform::wait_readable`).
+- **Started in order.** Its VM process is made suspended in its AppContainer; its network
+  process starts next in one of its own, given a handle to the VM's process that may only
+  wait for its end (PROCESS_SYNCHRONIZE); then the VM runs. A thread answers what the VM
+  asks for (its base images, its vsock socket, its dials to the build port) with a handle
+  to it that may only give it handles (PROCESS_DUP_HANDLE), and ends with it.
+- **Its caches' files** go to the VM by handle: duplicated into it, each one's value in its
+  attach message, as a message on Windows carries no handle (shards_ipc).
+- **Its sockets' directory** is in the user's own temporary directory, its lock a file
+  shared with no one, which no other process opens while its owner holds it; a later
+  build's sweep removes one whose lock opens (D137).
+- **A child's environment** is `SHARDS_LOG` and `SHARDS_TIMING`, as on Unix, and this
+  process's `LOCALAPPDATA` and `SystemRoot` (PM M208): without `LOCALAPPDATA` Windows makes
+  no child in an AppContainer, and points it at the container's own folder, the child's
+  `TEMP` at the `Temp` there; without `SystemRoot` Winsock makes no socket
+  (WSAEPROVIDERFAILEDINIT). A Windows child had its spawner's whole environment until now
+  (D141).
+
+### D142. The network process on Windows
+
+AGENTFILE_ARCH.md §11 row 975: a VM's flows go through a network process of its own (D31)
+on Windows as on Linux and macOS.
+
+- **Its ring** is a pagefile-backed section, the doorbell its VM sleeps on an auto-reset
+  event, 23-35 µs a round trip (PM M204), and the one it sleeps on an AF_UNIX socket its
+  VM rings a byte on, 29-34 µs (PM M213); a socket pair takes 0.6 ms to make (M199).
+- **It waits on a completion port** its sockets and that doorbell are registered with
+  (ProcessSocketNotifications, Windows 11 and Server 2022 on), which names those ready: a
+  round trip beside 10,000 idle connections costs what one beside none does, 37-41 µs,
+  where one event every socket set and a look at every socket after each wake cost
+  39-54 ms (PM M213). One event to wake on with the port asked which sockets are ready
+  lost wakes, and is not used.
+- **One-shot registrations** (PM M215): a notice disarms its socket's, and the next wait
+  arms it again, in the call that waits, for what the socket then waits for; one that
+  waits for nothing (its guest's window full, nothing for its host) is left as it is, and
+  its one notice let go of. A registration removed could not be made again until its
+  removal's notice came, and one filtering nothing is refused (WSAEINVAL): a connection
+  that waited for nothing for a while was reset either way (net costs runs 38303389671,
+  38308200096, 256 KiB each way).
+- **Confined** in an AppContainer that holds `internetClient`, `internetClientServer` and
+  `privateNetworkClientServer` (M204): it reaches the networks and never this host's
+  loopback or own addresses, nor a file or socket by its path. Its spawner dials those for
+  it, as on macOS a build's proxy is (D31): a build's proxy's socket, and a TCP flow to
+  the loopback or to one of the host's own addresses, each up adapter's unicast ones,
+  which it is told as it starts. Each ask is numbered and answered once its connect has
+  ended, the connection shared with it (WSADuplicateSocketW, M203), as Windows documents a
+  shared socket's use: one process makes the connection, another exchanges data on it.
+  The spawner waits on all its connects at once, and the network process asks without
+  waiting, its guest's SYN waiting for the answer as for a far end's SYN-ACK and nothing
+  else with it (`dials_are_answered_as_they_end_and_hold_up_nothing`). An earlier dialer
+  that shared connects still under way and was waited on in the network process's loop
+  left a build's 178th connection to its host unanswered for 137 s (M212). The spawner
+  connects from the address asked for, which binding to it proves the host holds as it
+  dials, and to no other. A step reaches its host's own services as Docker's do
+  (`run_steps_reach_the_network_unless_it_is_none`, which failed without it, M204's
+  finding).
+- **Its VM's end** it learns as its doorbell's socket hangs up, as a pipe's does on Unix,
+  and from the VM's process, a handle it may only wait on, which a thread-pool wait posts
+  to its port once it ends. Its spawner gives it that handle before the VM runs (D143).
+- **No published ports yet**: those are the daemon's, which Windows has none of; a
+  builder publishes none.
+
+### D141. The Windows VM process confined
+
+AGENTFILE_ARCH.md §11 row 975, after D140: a VM process on Windows reaches no more of its
+host than one on macOS or Linux does (D30). Windows' own primitives, each measured before it
+was built on [PM M200-M203]:
+
+- **An AppContainer of its own**, as macOS's App Sandbox: no file or socket of its user's,
+  but what its spawner hands it. A profile per VM, not a SID derived from a name, which
+  CreateProcessW refuses an AppContainer without (ERROR_FILE_NOT_FOUND) [PM M201]; holding
+  the capabilities `\\?\VidExo`'s DACL grants, read from the device as it starts, without
+  which WHP sets up no partition in it [PM M200].
+- **Grants as macOS's, over a pipe each way.** Files by DuplicateHandle, each with the path
+  its spawner found it at (GetFinalPathNameByHandleW refuses an AppContainer [PM M203]);
+  sockets by WSADuplicateSocketW, as Winsock documents, 6-10 µs more a dial than
+  DuplicateHandle at p50 [PM M203]. The spawner of `shards run --kernel` answers in its own
+  process, since Windows has no exec: the VM is its child, which takes the console's Ctrl-C.
+  Nothing more is granted once its vsock path is, and without one the link closes.
+- **A Job and Windows' mitigations**, given as the process is made, suspended, its handles
+  duplicated into it and their values told it through a pipe, its one inherited handle:
+  none is made inheritable where another child could take it [PM M201]. Dynamic code it
+  forbids itself once its partition is set up (SetProcessMitigationPolicy), since
+  windows-2022 sets no partition up without it, while every call a VM makes after its
+  setup works [PM M202]; the library never does, as a test's process sets up many.
+- **No profile left behind.** Each lives with a record its spawner holds open
+  (`%LOCALAPPDATA%\shards\containers`); the next spawner deletes the profile of each record
+  no process holds.
+- **The partition that reads WHP's vCPU limit is made as a VM's** (D140 fixed): offered the
+  synthetic features without its APICs emulated, WHP refused it (HV_STATUS_INVALID_PARAMETER),
+  and with it every VM (CI run 38222358454).
+
+Tested on real VMs (`the_vm_process_is_confined`): the VM process's token is an
+AppContainer's, it is in a Job, each mitigation is on, dynamic code forbidden once its guest
+runs; killed with its spawner; and the profile its killed spawner left is deleted by the next.
+The `vsock` tests run through the spawner's grants on Windows: both directions, eight streams
+at once, refusals.
+
+### D140. microVMs on Windows hosts: the WHP backend
+
+AGENTFILE_ARCH.md §11 row 975 (`RUN` on Windows hosts) starts here: shards' VMM drives the
+Windows Hypervisor Platform on x86_64 Windows, as it drives KVM and Hypervisor.framework
+(D13), and a Windows host boots shards' guests. Its VM process's confinement (D141), its
+network process (D142) and its builder (D143) follow.
+
+- **The backend (`hv::whp`).** WinHvPlatform.dll's functions are bound as first called, as
+  HVF's are (PM M113): a `shards` without the optional feature "Windows Hypervisor
+  Platform" starts, and says why it runs no VM. A partition per VM, its local APICs
+  emulated by the hypervisor (XApic), which runs HLT itself; its application processors
+  held in wait-for-SIPI as created, and started by the boot vCPU's INIT and SIPI (PM M198).
+  Its guest is offered, of the host's synthetic features, those it keeps time by (the
+  reference counter and TSC page, the frequency MSRs) and those Linux's Hyper-V setup
+  writes (hypercalls, the VP index, the APIC's synthetic MSRs and VP assist page), with the
+  TLB-flush and cluster-IPI hypercalls its hints recommend; not synthetic timers, which the
+  host refuses without the SynIC, nor anything of VMBus's (M198). As many vCPUs as the
+  hypervisor tells a partition's guest it supports (leaf 0x40000005, read once a process
+  from a partition of one made as a VM's is, without whose synthetic features the leaf
+  reads 0 (M202): 240 on GitHub's runners, fewer than the host's own CPUID says), and at
+  most 254.
+- **One package of cores, and invariant TSC** (M206). Each vCPU's CPUID is a KVM guest's
+  (`cpuid::for_vcpu`: one package of single-thread cores, private L1 and L2 caches, a
+  shared L3), told WHP as results masked to the bits they change (CpuidResultList2,
+  `cpuid::masked`), so that the hypervisor keeps each vCPU's APIC id and the bits it
+  changes as the guest runs; with invariant TSC where the host's processor has it, which
+  Windows Server 2025 leaves out of its partitions' CPUID though their TSC keeps the
+  host's one rate (within 0.02 ppm of the partition's clock over 3 s, idle and loaded) and
+  a partition never moves to another host. One list, set as the last vCPU is made: WHP
+  refuses per-vCPU results before setup (HV_STATUS_INVALID_VP_INDEX), a second list
+  replaces the first, and no vCPU runs before all are made (D5); 0.7-0.9 ms for 64 vCPUs,
+  2.9-3.7 ms for 240. Without them each AP timed the boot CPU's ticks for its own delay
+  loop (Linux's `calibrate_delay_direct`), the ticks late on a busy host: 63 APs took a
+  240-vCPU boot past a minute on a 4-CPU runner, starving every VM beside it (CI run
+  38240024887).
+- **The IOAPIC is the VMM's** (`arch::x86_64::ioapic`), as KVM's in-kernel one presents
+  itself (82093AA, version 0x11, 24 pins): its pins driven by the machine's devices, each
+  interrupt it sends asked of the hypervisor (WHvRequestInterrupt, 3.8-6.3 µs a call),
+  each level-triggered EOI taken back from its exit to clear the pin's remote IRR (M198).
+- **MMIO decoded by the VMM** (`arch::x86_64::mmio`). WHP hands the VMM an MMIO exit's
+  instruction bytes, not its length or its effect (M198). The VMM decodes the instructions
+  Linux's own decoder takes for its TDX and SEV-ES guests (`insn_decode_mmio`: MOV to and
+  from memory and of an immediate, MOVZX, MOVSX), and shards-init's control-page loads and
+  stores; at two register calls of 0.1 µs, where WinHvEmulation spends 8-11 µs (M197).
+  Anything else is refused, its bytes named, rather than its effect guessed. Port I/O is
+  completed from the exit's own registers and length.
+- **No doorbells.** A notification port's round trip was no shorter than an MMIO exit's
+  (M198): virtio's notifications are exits.
+- **A kick is a cancel**, which a run about to start takes too (M198).
+- **The guest kernel's `hyperv` variant** (resources/kernel/hyperv.config): Linux 6.18
+  marks the TSC unstable on a Hyper-V that does not offer TSC invariance, as no runner did,
+  and keeps time by Hyper-V's reference TSC page only with CONFIG_HYPERV (M197). No VMBus,
+  nor its drivers. Windows hosts boot it (`kernel::KERNEL`); KVM and HVF guests boot the
+  kernel without its code. Release kernel-6.18.48-4062e616c93a, which rebuilt the other
+  kernels byte for byte.
+- **pmem on Windows**: the image's view and the zeros after it in one range, a placeholder
+  split in two (VirtualAlloc2, MapViewOfFile3 with MEM_REPLACE_PLACEHOLDER). A view may not
+  run past its section's end, the file's size, so it holds the file's whole pages, and the
+  file's last partial page is copied into the read-only zeros after it.
+- **vsock on Windows**: AF_UNIX sockets (afunix.sys), 3.4-3.7 times loopback TCP's
+  throughput (M199), made overlapped, as std makes its sockets: Windows serializes the I/O
+  of a socket made otherwise, so that a send waits out another thread's read of the same
+  connection (M207); its worker sleeps on WSAEventSelect's events and reads each socket's
+  state with a WSAPoll that does not wait, as WSAPoll alone reports a peer's half-close as
+  a hangup whatever is asked, which would wake a writer without end (M199). Its waker is an
+  event, not a socket pair.
+- **Carried on Windows too**: shards-init and the in-VM server, built for the guest as on
+  every other host.
+- **Not yet on WHP**: snapshots, and so templates and warm pools (`vm::SNAPSHOTS`).
+- **Recorded differences** from a KVM guest's machine: its clock is Hyper-V's reference TSC
+  page where KVM's is kvm-clock; its APICs are xAPIC alone, offering neither x2APIC nor
+  TSC-deadline (M198).
+
 ### D139. Files handed across, through the in-VM server
 
 AGENTFILE_ARCH.md §9.4, §9.10 and §11 row 1001: what one domain produces reaches another only
@@ -3951,8 +4196,10 @@ given the rest as its build needs it, up to what it may have.
   for each 10 KiB, as the kernel's own sizing has it (a proportion came out short on
   x86_64); TCP's buffers within their caps; TCP's orphans and TIME-WAIT buckets by its
   table's sizing; inotify's watches, which the kernel holds at 8192 below about 1 GiB, in
-  their proportion to epoll's; and init's RLIMIT_NPROC and RLIMIT_SIGPENDING, half the
-  threads, which every step inherits.
+  their proportion to epoll's; and init's RLIMIT_SIGPENDING, half the threads, which
+  every step inherits. Its processes are Docker's build steps', unlimited, as are its open
+  files (1048576) and locked memory, whatever the memory (2026-10-12, PM M211: a step had
+  kept the builder's kernel's own, 1024 of 4096 files).
 - **No snapshot.** Memory plugged is not saved, so a snapshot of a VM with memory to plug
   is refused, and `--memory-max` with `--snapshot-dir` up front.
 - **`shards run --kernel K --memory M --memory-max N`** boots a guest with M MiB that may
@@ -8975,7 +9222,11 @@ in it, init (PID 1, whose end is the microVM's) and the run's own command includ
     changes, and past the cap ends the domain whose `memory.current`, scratch included,
     is the most, with `cgroup.kill` (Linux 5.14), saying so on the run's stderr
     (`[agent y] shards-init: ended: the agents' memory, …`). systemd-oomd and oomd choose
-    by cgroup usage in the same way. A domain ended still holds the most until it has left
+    by cgroup usage in the same way. A domain the kernel's OOM killer ended, whole, init
+    says too, once, from its `memory.events`: at its own limit where it counted an `oom`,
+    which the kernel counts before it chooses and never for the microVM's memory as a
+    whole, else for the microVM's (`[agent x] shards-init: ended: its memory reached its
+    limit, …`). A domain ended still holds the most until it has left
     its cgroup, which a process does after its namespaces, and with them its scratch, are
     gone (kernel/exit.c, `do_exit`: `exit_nsproxy_namespaces`, `exit_task_work`, then
     `cgroup_task_exit`), so no other is ended for memory it still holds; a rule waiting for
@@ -9009,18 +9260,23 @@ in it, init (PID 1, whose end is the microVM's) and the run's own command includ
 programs' default temporary directory (POSIX `TMPDIR`) is where they look.
 
 Tested on real microVMs: `agents_out_of_memory_end_whole_and_spare_the_run`, the run's
-command holding 64 MiB under `-m 128m`: x, asking 64 MiB, ends with 58 MiB written (its
-resident memory the rest); y, asking nothing, is ended by init at the domains' cap, and z,
+command holding 64 MiB under `-m 128m`: x, asking 32 MiB, below the domains' cap on every
+host measured (66.8 to 80.9 MiB; asking 64 MiB, it met the cap first on an M5 Max), ends
+with 26 MiB written (its resident memory the rest), init saying the kernel ended it at its
+limit; y, asking nothing, is ended by init at the domains' cap, and z,
 holding 16 MiB resident and no scratch, more than y's resident memory, lives; the run's
 command outlives them, and each domain ended lost its PID 1 with its filler. Each guard
 mutation-checked: without x's limit it wrote 82 MiB; without the workload's share taken
 from the cap, the kernel killed the run's command; with the cap a `memory.max`, the
 kernel ended z; with init choosing the least, z was ended; without a cap, init ended
-none; without `memory.oom.group`, a domain's PID 1 outlived its filler. Found while testing: an agent
-can fill and end between two looks at `/proc`, each a whole `shards top`, which under load
-come further apart than it lives (a D127 gate's failure, reproduced with looks 3 s apart),
-so the host reads the run's log, which keeps the filler's lines, as well; so does
-`an_agents_daemon_ends_with_it` for its daemon.
+none; without `memory.oom.group`, a domain's PID 1 outlived its filler; without init saying
+what the kernel ended, x's run fails. Found while testing: an agent can fill and end between
+two looks at `/proc`, each a whole `shards top`, which under load come further apart than it
+lives (a D127 gate's failure, reproduced with looks 3 s apart), so the host reads the run's
+log, which keeps what init says; so does `an_agents_daemon_ends_with_it` for its daemon. A
+look without the filler's processes counted as its end where it came before the filler had
+forked, and before z had named itself (CI run 38264181419): the host waits for init's line
+in the log, then for a look taken after it.
 
 ### Protocols a network carries, and Unix sockets granted (D59, part ten)
 

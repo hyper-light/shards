@@ -171,6 +171,92 @@ pub fn to_ports(ports: &[u16]) -> io::Result<()> {
     restrict(&ruleset)
 }
 
+/// The network process's seccomp filter (D31, PM M209), over its whole process, after
+/// Landlock's first layer and before it reads anything its guest sends: the syscalls a
+/// network process is seen to make once confined, over every VM test on a KVM host, with
+/// glibc and with musl, and nothing else (docs/research/rootless-security.md R3). Where an
+/// argument says what a call does, only the values it is made with pass: sockets of IPv4,
+/// IPv6 and Unix; FIONBIO alone of ioctl's requests; of fcntl's commands, a descriptor's
+/// close-on-exec flag and its duplicate; prctl's no_new_privs, which its policy's Landlock
+/// layer sets, and the thread's name, which a refusal's report reads; options of sockets'
+/// and TCP's levels alone; a thread's own signal mask blocked and set, which musl does
+/// around its work on what threads share. No exec, no process or thread, no file: its
+/// spawner hands it all it serves. clock_gettime, which the vDSO answers, where it falls
+/// back to the syscall: a host whose clocksource the vDSO cannot read.
+///
+/// Linux on x86_64, where the KVM backend is, as for the VM process; elsewhere nothing is
+/// installed yet.
+#[cfg(target_arch = "x86_64")]
+pub fn filter() -> io::Result<()> {
+    install(&program()?)
+}
+
+/// The filter's program, compiled.
+#[cfg(target_arch = "x86_64")]
+fn program() -> io::Result<shards_syscall_filter::Filter> {
+    use shards_syscall_filter::{self as seccomp, Rule};
+
+    let any = [
+        libc::SYS_read,
+        libc::SYS_write,
+        libc::SYS_writev,
+        libc::SYS_close,
+        libc::SYS_fstat,
+        libc::SYS_mmap,
+        libc::SYS_munmap,
+        libc::SYS_mremap,
+        libc::SYS_brk,
+        libc::SYS_epoll_create1,
+        libc::SYS_epoll_ctl,
+        // glibc's epoll_wait, and musl's, which calls epoll_pwait.
+        libc::SYS_epoll_wait,
+        libc::SYS_epoll_pwait,
+        libc::SYS_accept4,
+        libc::SYS_bind,
+        libc::SYS_connect,
+        libc::SYS_shutdown,
+        libc::SYS_getpeername,
+        libc::SYS_recvfrom,
+        libc::SYS_sendto,
+        libc::SYS_recvmsg,
+        libc::SYS_sendmsg,
+        libc::SYS_getrandom,
+        libc::SYS_clock_gettime,
+        libc::SYS_sigaltstack,
+        libc::SYS_exit_group,
+        // Its policy's Landlock layer (`to_ports`), which can only take rights away.
+        libc::SYS_landlock_create_ruleset,
+        libc::SYS_landlock_add_rule,
+        libc::SYS_landlock_restrict_self,
+    ];
+    let mut rules: Vec<Rule> = any.into_iter().map(Rule::any).collect();
+    let domains = [libc::AF_INET, libc::AF_INET6, libc::AF_UNIX];
+    rules.push(Rule::with(libc::SYS_socket, 0, &domains.map(|d| d as u32)));
+    rules.push(Rule::with(libc::SYS_ioctl, 1, &[libc::FIONBIO as u32]));
+    let commands = [libc::F_DUPFD_CLOEXEC, libc::F_SETFD];
+    rules.push(Rule::with(libc::SYS_fcntl, 1, &commands.map(|c| c as u32)));
+    let options = [libc::PR_SET_NO_NEW_PRIVS, libc::PR_GET_NAME];
+    rules.push(Rule::with(libc::SYS_prctl, 0, &options.map(|o| o as u32)));
+    rules.push(Rule::with(libc::SYS_getsockopt, 1, &[libc::SOL_SOCKET as u32]));
+    let levels = [libc::SOL_SOCKET, libc::IPPROTO_TCP];
+    rules.push(Rule::with(libc::SYS_setsockopt, 1, &levels.map(|l| l as u32)));
+    // musl's, around its work on what a process's threads share: application signals
+    // blocked, then the thread's mask put back. std makes its key for thread-local
+    // destructors the first time one is reached, and deletes the first key it is given
+    // where that is 0, its own mark of none (`LazyKey`): musl gives 0 first, and its
+    // pthread_key_delete blocks them (PM M209).
+    let how = [libc::SIG_BLOCK, libc::SIG_SETMASK];
+    rules.push(Rule::with(libc::SYS_rt_sigprocmask, 0, &how.map(|h| h as u32)));
+    seccomp::compile(&rules).map_err(io::Error::other)
+}
+
+/// Installs `filter` over the whole process, its refusals named.
+#[cfg(target_arch = "x86_64")]
+fn install(filter: &shards_syscall_filter::Filter) -> io::Result<()> {
+    shards_syscall_filter::name_refusals()?;
+    shards_syscall_filter::install(filter, true)
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
@@ -278,5 +364,65 @@ mod tests {
         TcpStream::connect(("127.0.0.1", granted)).unwrap();
         let refused = TcpStream::connect(("127.0.0.1", other)).map(|_| ());
         assert_eq!(refused.unwrap_err().kind(), ErrorKind::PermissionDenied);
+    }
+
+    /// Filtered, a network process still makes its sockets, of each domain it uses, and
+    /// polls them; a syscall none makes, opening a file, ends it with SIGSYS's status, the
+    /// syscall named. In a process of one thread, as a network process is: forked, the
+    /// program compiled before; a test binary's other threads make calls a network process
+    /// does not (glibc's pthread_create restores its signal mask after its thread runs).
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn the_filter_ends_a_process_that_makes_what_none_makes() {
+        use std::io::Read as _;
+        use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
+        let program = super::program().unwrap();
+        let mut fds = [0i32; 2];
+        // SAFETY: pipe2(2) into two ints of ours.
+        assert_eq!(unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) }, 0);
+        // SAFETY: the descriptors just made, owned from here on.
+        let (read, write) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
+        // SAFETY: fork(2); the child makes raw syscalls alone and ends with exit_group.
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0);
+        if pid == 0 {
+            // SAFETY: as above.
+            unsafe {
+                libc::dup2(write.as_raw_fd(), 2);
+                if super::install(&program).is_err() {
+                    libc::syscall(libc::SYS_exit_group, 1);
+                }
+                for domain in [libc::AF_INET, libc::AF_INET6, libc::AF_UNIX] {
+                    let fd = libc::socket(domain, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0);
+                    if fd < 0 {
+                        libc::syscall(libc::SYS_exit_group, 2);
+                    }
+                    libc::close(fd);
+                }
+                let ep = libc::epoll_create1(libc::EPOLL_CLOEXEC);
+                if ep < 0 {
+                    libc::syscall(libc::SYS_exit_group, 3);
+                }
+                libc::close(ep);
+                libc::syscall(libc::SYS_openat, libc::AT_FDCWD, c"/".as_ptr(), libc::O_RDONLY);
+                libc::syscall(libc::SYS_exit_group, 0);
+            }
+        }
+        drop(write);
+        let mut said = String::new();
+        std::fs::File::from(read).read_to_string(&mut said).unwrap();
+        let mut status = 0;
+        // SAFETY: waitpid(2) of the child just forked.
+        assert_eq!(unsafe { libc::waitpid(pid, &mut status, 0) }, pid);
+        assert!(libc::WIFEXITED(status), "{status:#x}: {said}");
+        assert_eq!(
+            libc::WEXITSTATUS(status),
+            shards_syscall_filter::REFUSED,
+            "{said}"
+        );
+        assert!(
+            said.contains(&format!("refused syscall {}", libc::SYS_openat)),
+            "{said}"
+        );
     }
 }

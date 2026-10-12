@@ -49,10 +49,6 @@ fn build() -> Result<(), String> {
     for var in ["CC_x86_64_unknown_linux_musl", "CC_aarch64_unknown_linux_musl"] {
         let _ = writeln!(out, "cargo::rerun-if-env-changed={var}");
     }
-    // Only Unix hosts run VMs from `shardsd` yet.
-    if env::var("CARGO_CFG_TARGET_FAMILY").is_ok_and(|f| !f.split(',').any(|f| f == "unix")) {
-        return Ok(());
-    }
     let var = |name: &str| env::var_os(name).ok_or_else(|| format!("{name} is not set"));
     let out_dir = PathBuf::from(var("OUT_DIR")?);
     // Each guest binary it carries: shards-init, and the in-VM server (D60), whose
@@ -146,9 +142,19 @@ fn compile(
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
-    // The outer build's flags are for its own target. Its library path stays: through
-    // rustup it holds the toolchain's, where rust-lld finds libLLVM on macOS.
-    for name in ["CARGO_ENCODED_RUSTFLAGS", "RUSTFLAGS", "CARGO_BUILD_RUSTFLAGS"] {
+    // The outer build's flags and tools are for its own target (cargo-xwin names clang-cl
+    // for every target as TARGET_CC). Its library path stays: through rustup it holds the
+    // toolchain's, where rust-lld finds libLLVM on macOS.
+    for name in [
+        "CARGO_ENCODED_RUSTFLAGS",
+        "RUSTFLAGS",
+        "CARGO_BUILD_RUSTFLAGS",
+        "TARGET_CC",
+        "TARGET_CXX",
+        "TARGET_AR",
+        "TARGET_CFLAGS",
+        "TARGET_CXXFLAGS",
+    ] {
         command.env_remove(name);
     }
     // Its bytes name a template (run.rs, `template`), so they must not depend on where
@@ -173,7 +179,7 @@ fn compile(
         let tool = |name: &str| {
             let script = root.join("scripts").join(name);
             if cfg!(windows) {
-                format!("sh {}", script.display())
+                format!("sh {}", sh_path(&script))
             } else {
                 script.display().to_string()
             }
@@ -417,4 +423,11 @@ fn sign(name: &str, path: &Path) -> Result<(), String> {
         return Err(format!("codesign {} failed", path.display()));
     }
     Ok(())
+}
+
+/// `path` as a POSIX shell on Windows (Git's, MSYS) takes it: forward slashes, and no
+/// verbatim prefix (`\\?\`), whose backslashes it reads as escapes.
+fn sh_path(path: &Path) -> String {
+    let text = path.display().to_string();
+    text.strip_prefix(r"\\?\").unwrap_or(&text).replace('\\', "/")
 }

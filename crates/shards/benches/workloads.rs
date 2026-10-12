@@ -5,6 +5,9 @@
 //! template's warm VMs where this build snapshots, as a user's are (D26), else booted.
 //!
 //! - `true`: `exit 0`, nothing written.
+//! - `none`: `exit 0` on `--network none`, so with no network process: `true` less it, run
+//!   by run (`network`), is what a run's network costs it, whose network process is
+//!   started with its warm VM before the request (D31, E1).
 //! - `stderr`: a line to stderr, read back exactly.
 //! - `stdout`: `bulk 16 MiB`, a pattern (shards_testguest) checked byte for byte.
 //! - `stdin`: `cat` with `-i`, 16 MiB of a pattern in, the same 16 MiB out.
@@ -106,7 +109,7 @@ fn main() {
     // One run of `workload`: its wall clock, its output checked.
     let run = |workload: &str| -> f64 {
         let (args, input): (Vec<&str>, Option<&[u8]>) = match workload {
-            "true" => (vec!["exit", "0"], None),
+            "true" | "none" => (vec!["exit", "0"], None),
             "stderr" => (vec!["stderr", "to stderr"], None),
             "stdout" => (vec!["bulk", &stream, "7"], None),
             "stdin" => (vec!["cat"], Some(&stdin_bytes)),
@@ -116,6 +119,9 @@ fn main() {
         let mut full = vec!["run", "--pull", "never"];
         if input.is_some() {
             full.push("-i");
+        }
+        if workload == "none" {
+            full.extend(["--network", "none"]);
         }
         full.push(&image);
         full.extend(args);
@@ -152,7 +158,7 @@ fn main() {
         let err_text = String::from_utf8_lossy(&err);
         assert!(done.success(), "{workload}: {done:?}: {err_text}");
         match workload {
-            "true" => assert!(out.is_empty(), "true wrote {} bytes", out.len()),
+            "true" | "none" => assert!(out.is_empty(), "{workload} wrote {} bytes", out.len()),
             "stderr" => assert_eq!(err_text, "to stderr", "stderr"),
             "stdout" => assert!(
                 out == expected_stdout,
@@ -172,16 +178,22 @@ fn main() {
         elapsed
     };
 
-    let workloads = ["true", "stderr", "stdout", "stdin", "cpu"];
+    let workloads = ["true", "none", "stderr", "stdout", "stdin", "cpu"];
     for w in workloads {
         for _ in 0..WARMUP {
             run(w);
         }
     }
     let mut samples: Vec<Vec<f64>> = vec![Vec::with_capacity(runs); workloads.len()];
-    for _ in 0..runs {
-        for (i, w) in workloads.iter().enumerate() {
-            samples[i].push(run(w));
+    for turn in 0..runs {
+        // `true` and `none` take turns going first, so that what the one before leaves the
+        // host doing (its pool refilling) falls on each alike.
+        let mut order: Vec<usize> = (0..workloads.len()).collect();
+        if turn % 2 == 1 {
+            order.swap(0, 1);
+        }
+        for i in order {
+            samples[i].push(run(workloads[i]));
         }
     }
     let _ = status(shards(&["daemon", "stop"], &[]));
@@ -196,8 +208,11 @@ fn main() {
         .zip(&samples)
         .map(|(w, v)| support::stats(w, "us", v.clone()))
         .collect();
-    rows.push(support::stats("stdout_rate", "MiB/s", mib_per_s(&samples[2])));
-    rows.push(support::stats("stdin_rate", "MiB/s", mib_per_s(&samples[3])));
+    rows.push(support::stats("stdout_rate", "MiB/s", mib_per_s(&samples[3])));
+    rows.push(support::stats("stdin_rate", "MiB/s", mib_per_s(&samples[4])));
+    // Each turn's `true` less its `none`, run one after the other.
+    let network = samples[0].iter().zip(&samples[1]).map(|(t, n)| t - n).collect();
+    rows.push(support::stats("network", "us", network));
     support::report(
         "workloads",
         &[

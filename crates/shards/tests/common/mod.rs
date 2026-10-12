@@ -50,10 +50,17 @@ pub fn spawn(command: &mut std::process::Command) -> io::Result<std::process::Ch
 }
 
 pub fn workspace() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .canonicalize()
-        .unwrap()
+        .unwrap();
+    // Windows' canonical form is verbatim (`\\?\D:\...`), which every path under it then
+    // is, and the POSIX shell that runs the guests' C compiler reads its backslashes as
+    // escapes: the plain form names the same directory.
+    match path.to_str().and_then(|p| p.strip_prefix(r"\\?\")) {
+        Some(plain) if cfg!(windows) => PathBuf::from(plain),
+        _ => path,
+    }
 }
 
 /// A downloadable test artifact pinned by content hash.
@@ -96,12 +103,17 @@ pub fn cannot_run_vms() -> bool {
 }
 
 /// Snapshots exist where this build has a backend (vm::SNAPSHOTS); tests of them skip
-/// elsewhere with a SKIP line, as [`cannot_run_vms`] does.
+/// elsewhere with a SKIP line, even where `SHARDS_REQUIRE_VMS=1` says VMs must run: a
+/// backend without snapshots (WHP's, so far) runs VMs all the same.
 pub fn cannot_snapshot() -> bool {
     if shards_vmm::vm::SNAPSHOTS {
         return false;
     }
-    skip(&format!("snapshots are not supported on {ARCH} yet"))
+    let _ = writeln!(
+        std::io::stderr(),
+        "SKIP: snapshots are not supported on {ARCH} yet"
+    );
+    true
 }
 
 /// The kernel shards pins for its guests (src/kernel.rs), which the tests boot too.
@@ -151,9 +163,11 @@ pub fn fetch(a: &Artifact) -> PathBuf {
     std::fs::create_dir_all(&dir).unwrap();
     let part = dir.join(format!("{}.{}.part", a.name, std::process::id()));
     // Every failure is retried, a connection reset in the TLS handshake as well: curl's
-    // `--retry` alone retries timeouts and some HTTP statuses (curl(1)).
+    // `--retry` alone retries timeouts and some HTTP statuses (curl(1)). Eight times, its
+    // waits doubling from a second, some four minutes in all: GitHub's release downloads
+    // answered 500 past three tries (CI run 38252923745).
     let ok = Command::new("curl")
-        .args(["-fsSL", "--retry", "3", "--retry-all-errors", "-o"])
+        .args(["-fsSL", "--retry", "8", "--retry-all-errors", "-o"])
         .arg(&part)
         .arg(a.url)
         .status()
@@ -236,7 +250,13 @@ fn guest_binary_in(name: &str, target_dir: &str, env: &[(&str, &str)]) -> PathBu
         let tool = |name: &str| {
             let script = workspace().join("scripts").join(name);
             if cfg!(windows) {
-                format!("sh {}", script.display())
+                // As a POSIX shell on Windows (Git's, MSYS) takes a path: forward slashes,
+                // and no verbatim prefix (`\\?\`), whose backslashes it reads as escapes.
+                let text = script.display().to_string();
+                format!(
+                    "sh {}",
+                    text.strip_prefix(r"\\?\").unwrap_or(&text).replace('\\', "/")
+                )
             } else {
                 script.display().to_string()
             }
@@ -1494,17 +1514,56 @@ pub fn served() -> (String, Arc<AtomicUsize>) {
 }
 
 /// A running `shards` whose output lines arrive on a channel, killed when dropped.
-#[cfg(unix)]
 pub struct Vm {
     child: std::process::Child,
     lines: std::sync::mpsc::Receiver<String>,
     pub seen: Vec<String>,
+    /// Every line it has printed, read or not: what a test that stalls says.
+    log: Log,
 }
 
-#[cfg(unix)]
+/// Lines a process printed, as they came.
+pub type Log = Arc<std::sync::Mutex<Vec<String>>>;
+
+/// Runs `f`, failing with `log` where it does not end within `within`: a test that
+/// stalls says where, and what its VM said, rather than holding the whole binary.
+pub fn within<T: Send + 'static>(
+    what: &str,
+    within: Duration,
+    log: &Log,
+    f: impl FnOnce() -> T + Send + 'static,
+) -> T {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let _ = tx.send(f());
+    });
+    match rx.recv_timeout(within) {
+        Ok(v) => v,
+        // Ended without sending: it panicked, and says why, after what the VM said.
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            let said = log.lock().map(|l| l.join("\n")).unwrap_or_default();
+            let _ = writeln!(std::io::stderr(), "{what}: failed; the VM said:\n{said}");
+            match worker.join() {
+                Err(panic) => std::panic::resume_unwind(panic),
+                Ok(()) => panic!("{what}: ended with no result"),
+            }
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            let said = log.lock().map(|l| l.join("\n")).unwrap_or_default();
+            panic!("{what}: not done in {within:?}; the VM said:\n{said}")
+        }
+    }
+}
+
 impl Vm {
     pub fn spawn<S: AsRef<std::ffi::OsStr>>(args: &[S]) -> Vm {
+        Vm::spawn_env(args, &[])
+    }
+
+    /// [`Vm::spawn`], with `env` added to shards' environment.
+    pub fn spawn_env<S: AsRef<std::ffi::OsStr>>(args: &[S], env: &[(&str, &str)]) -> Vm {
         let mut child = command()
+            .envs(env.iter().copied())
             .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -1512,11 +1571,15 @@ impl Vm {
             .spawn()
             .unwrap();
         let (tx, lines) = std::sync::mpsc::channel();
+        let log = Log::default();
         let (out, err) = (child.stdout.take().unwrap(), child.stderr.take().unwrap());
         for stream in [Box::new(out) as Box<dyn Read + Send>, Box::new(err)] {
-            let tx = tx.clone();
+            let (tx, log) = (tx.clone(), log.clone());
             std::thread::spawn(move || {
                 for line in BufReader::new(stream).lines().map_while(Result::ok) {
+                    if let Ok(mut log) = log.lock() {
+                        log.push(line.clone());
+                    }
                     let _ = tx.send(line);
                 }
             });
@@ -1525,7 +1588,24 @@ impl Vm {
             child,
             lines,
             seen: Vec::new(),
+            log,
         }
+    }
+
+    /// Every line it has printed so far, and those to come.
+    pub fn log(&self) -> Log {
+        self.log.clone()
+    }
+
+    /// The `shards` process's ID.
+    pub fn id(&self) -> u32 {
+        self.child.id()
+    }
+
+    /// Kills the `shards` process, and waits for it to go.
+    pub fn kill(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 
     /// Waits up to `timeout` for an output line containing `text`.
@@ -1578,7 +1658,6 @@ impl Vm {
     }
 }
 
-#[cfg(unix)]
 impl Drop for Vm {
     fn drop(&mut self) {
         let _ = self.child.kill();
@@ -1588,14 +1667,13 @@ impl Drop for Vm {
 
 /// Opens a stream to guest vsock port `port` through the VM's socket `sock`: `Ok` once
 /// the guest accepted (the `OK` line was read), `Err` with what came back otherwise.
-#[cfg(unix)]
 pub fn vsock_connect(
     sock: &Path,
     port: u32,
     timeout: Duration,
-) -> Result<std::os::unix::net::UnixStream, String> {
+) -> Result<shards_vmm::platform::UnixStream, String> {
     let mut s =
-        std::os::unix::net::UnixStream::connect(sock).map_err(|e| format!("{}: {e}", sock.display()))?;
+        shards_vmm::platform::UnixStream::connect(sock).map_err(|e| format!("{}: {e}", sock.display()))?;
     s.set_read_timeout(Some(timeout)).map_err(|e| e.to_string())?;
     s.write_all(format!("CONNECT {port}\n").as_bytes())
         .map_err(|e| format!("CONNECT: {e}"))?;
@@ -1620,7 +1698,6 @@ pub fn vsock_connect(
 
 /// Streams `len` bytes of pattern `salt` through the guest's echo on `port` and checks
 /// what comes back, byte for byte, after the half-close.
-#[cfg(unix)]
 pub fn echo(sock: &Path, port: u32, salt: u64, len: usize) -> Result<(), String> {
     let s = vsock_connect(sock, port, Duration::from_secs(60))?;
     let mut w = s.try_clone().map_err(|e| e.to_string())?;

@@ -218,6 +218,52 @@ pub fn set_mac(mac: [u8; 6]) -> io::Result<()> {
     Ok(())
 }
 
+/// Gives `eth0` the MAC its VM was given (`control::MAC`) where it has another: a warm VM's
+/// own, which its VMM was given as the VM was made, where its guest, restored, still has
+/// its template's. So a run's MAC is its own before its run comes, as dockerd makes each
+/// start a new one (PM M173), and the run waits for none of it (D31, E1).
+pub fn adopt_mac() -> io::Result<()> {
+    let given = crate::linux::control_read64(shards_abi::control::MAC)?;
+    if given == 0 {
+        return Ok(());
+    }
+    let [a, b, c, d, e, f, _, _] = given.to_le_bytes();
+    let mac = [a, b, c, d, e, f];
+    if current_mac()? == mac {
+        return Ok(());
+    }
+    set_mac(mac)
+}
+
+/// eth0's MAC (SIOCGIFHWADDR, netdevice(7)).
+fn current_mac() -> io::Result<[u8; 6]> {
+    // SAFETY: socket(2) with constant arguments; owned below.
+    let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM | libc::SOCK_CLOEXEC, 0) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: a descriptor just made.
+    let sock = unsafe { OwnedFd::from_raw_fd(fd) };
+    // SAFETY: an all-zero ifreq is a value; its name is filled below.
+    let mut req: libc::ifreq = unsafe { std::mem::zeroed() };
+    for (to, from) in req.ifr_name.iter_mut().zip(b"eth0") {
+        *to = libc::c_char::from_ne_bytes([*from]);
+    }
+    // SAFETY: ioctl(2) filling the ifreq of ours it is given.
+    if unsafe { libc::ioctl(sock.as_raw_fd(), libc::SIOCGIFHWADDR as _, &raw mut req) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: the hardware address the call filled, the union member it fills.
+    let data = unsafe { req.ifr_ifru.ifru_hwaddr.sa_data };
+    // c_char is i8 on x86_64 and u8 on arm64: its byte either way.
+    let octet = |c: libc::c_char| {
+        let [b] = c.to_ne_bytes();
+        b
+    };
+    let [a, b, c, d, e, f, ..] = data;
+    Ok([octet(a), octet(b), octet(c), octet(d), octet(e), octet(f)])
+}
+
 /// Gives `eth0` link-local address `ip`/`prefix` (PM M175), as libnetwork adds an
 /// endpoint's (setInterfaceLinkLocalIPs, netlink's AddrAdd): exclusively, so that one it
 /// has already fails with EEXIST; IPv4's with its broadcast address and the kernel's

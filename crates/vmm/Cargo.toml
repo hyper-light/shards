@@ -12,13 +12,22 @@ workspace = true
 
 [dependencies]
 shards-abi = { path = "../abi" }
+shards-netring = { path = "../netring" }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
-shards-netring = { path = "../netring" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+shards-syscall-filter = { path = "../syscall-filter" }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { workspace = true }
+shards-afunix = { path = "../afunix" }
+windows-sys = { workspace = true, features = [
+  "Win32_System_Hypervisor",
+  "Win32_System_LibraryLoader",
+  "Win32_System_SystemServices",
+  "Win32_System_Threading",
+] }
 
 [dev-dependencies]
 shards-testdir = { path = "../testdir" }

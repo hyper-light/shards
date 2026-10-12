@@ -24,6 +24,36 @@ pub fn disk_space(path: &std::path::Path) -> io::Result<(u64, u64)> {
     Ok((avail.saturating_mul(frsize), blocks.saturating_mul(frsize)))
 }
 
+/// Waits until any of `sockets` has something to read, its end, or an error (poll(2)), or
+/// `timeout` passes: which did. For the few sockets one thread waits on at a time.
+pub fn wait_readable(
+    sockets: &[super::RawSocket],
+    timeout: Option<std::time::Duration>,
+) -> io::Result<Vec<bool>> {
+    let mut polled: Vec<libc::pollfd> = sockets
+        .iter()
+        .map(|&fd| libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        })
+        .collect();
+    // Rounded up, so that a wait never ends early.
+    let ms = timeout.map_or(-1, |t| {
+        libc::c_int::try_from(t.as_micros().div_ceil(1000)).unwrap_or(libc::c_int::MAX)
+    });
+    loop {
+        // SAFETY: poll(2) on `polled.len()` entries of descriptors the caller holds.
+        if unsafe { libc::poll(polled.as_mut_ptr(), polled.len() as libc::nfds_t, ms) } >= 0 {
+            return Ok(polled.iter().map(|p| p.revents != 0).collect());
+        }
+        let e = io::Error::last_os_error();
+        if e.kind() != io::ErrorKind::Interrupted {
+            return Err(e);
+        }
+    }
+}
+
 /// Makes `dir`, and its missing parents, readable by this user alone (0700). An existing
 /// `dir` is made 0700 too, as containerd makes its root.
 pub fn create_private_dir(dir: &std::path::Path) -> io::Result<()> {
@@ -395,6 +425,44 @@ pub unsafe fn map_file_readonly(file: &File, len: usize, at: NonNull<u8>) -> io:
         return Err(io::Error::other("mmap(MAP_FIXED) placed the mapping elsewhere"));
     }
     Ok(())
+}
+
+/// The `size` bytes of `file` read-only, then zeros, `len` bytes in all at one address; and
+/// how many of them are the file's mapping: a reservation with the file mapped over its
+/// start, to the page its last byte is in ([`map_file_readonly`]), whose rest the kernel
+/// fills with zeros. `len` is page-aligned.
+pub fn map_file_padded(file: &File, size: u64, len: usize) -> io::Result<(NonNull<u8>, usize)> {
+    let page = page_size()?;
+    let mapped = usize::try_from(size)
+        .ok()
+        .and_then(|s| s.checked_next_multiple_of(page))
+        .filter(|&m| m <= len && m > 0)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{size} bytes of a file in {len}"),
+            )
+        })?;
+    let host = reserve(len)?;
+    // SAFETY: `host..host+len` is a fresh reservation nothing references; `mapped` is
+    // page-aligned and within it.
+    if let Err(e) = unsafe { map_file_readonly(file, mapped, host) } {
+        // SAFETY: our own reservation, never handed out.
+        unsafe { release(host, len) };
+        return Err(e);
+    }
+    Ok((host, mapped))
+}
+
+/// Unmaps what [`map_file_padded`] mapped.
+///
+/// # Safety
+/// `ptr`, `viewed` and `len` are a mapping's from [`map_file_padded`], which nothing uses
+/// any more: no hypervisor maps it.
+pub unsafe fn unmap_file_padded(ptr: NonNull<u8>, _viewed: usize, len: usize) {
+    // SAFETY: forwarded caller contract; one munmap undoes the reservation and the file
+    // mapped over it.
+    unsafe { release(ptr, len) };
 }
 
 /// Faults in the `len` bytes at `ptr` writable, copying each page a private mapping

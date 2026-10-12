@@ -12,7 +12,8 @@ pub mod packet;
 mod poll;
 
 use std::io;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+#[cfg(unix)]
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
@@ -21,6 +22,9 @@ use std::time::Instant;
 use super::queue::{Chain, Queue, QueueError, with};
 use super::{Activation, DeviceInterrupt, VirtioDevice, feature};
 use crate::memory::{Access, GuestMemory};
+#[cfg(unix)]
+use crate::platform::RawSocket;
+use crate::platform::UnixStream;
 use crate::snapshot::codec::{self, Reader, Writer};
 use crate::{debug, warn};
 use muxer::{Muxer, Saved, Token};
@@ -43,6 +47,7 @@ pub struct Span {
     pub len: usize,
 }
 
+#[cfg(unix)]
 fn iovecs(spans: &[Span], max: usize) -> Vec<libc::iovec> {
     let mut left = max;
     let mut out = Vec::with_capacity(spans.len());
@@ -60,8 +65,10 @@ fn iovecs(spans: &[Span], max: usize) -> Vec<libc::iovec> {
     out
 }
 
-/// Reads at most `max` bytes from `fd` into `spans`, in one readv(2).
-fn readv(fd: RawFd, spans: &[Span], max: usize) -> io::Result<usize> {
+/// Reads at most `max` bytes from `stream` into `spans`, in one readv(2).
+#[cfg(unix)]
+fn readv(stream: &UnixStream, spans: &[Span], max: usize) -> io::Result<usize> {
+    let fd = stream.as_raw_fd();
     let iov = iovecs(spans, max);
     if iov.is_empty() {
         return Err(io::ErrorKind::WouldBlock.into());
@@ -80,8 +87,10 @@ fn readv(fd: RawFd, spans: &[Span], max: usize) -> io::Result<usize> {
     }
 }
 
-/// Writes at most `max` bytes of `spans` to `fd`, in one writev(2).
-fn writev(fd: RawFd, spans: &[Span], max: usize) -> io::Result<usize> {
+/// Writes at most `max` bytes of `spans` to `stream`, in one writev(2).
+#[cfg(unix)]
+fn writev(stream: &UnixStream, spans: &[Span], max: usize) -> io::Result<usize> {
+    let fd = stream.as_raw_fd();
     let iov = iovecs(spans, max);
     if iov.is_empty() {
         return Ok(0);
@@ -97,6 +106,48 @@ fn writev(fd: RawFd, spans: &[Span], max: usize) -> io::Result<usize> {
             return Err(e);
         }
     }
+}
+
+/// `spans`, at most `max` bytes of them, as (pointer, length) runs.
+#[cfg(windows)]
+fn runs(spans: &[Span], max: usize) -> Vec<(*mut u8, usize)> {
+    let mut left = max;
+    let mut out = Vec::with_capacity(spans.len());
+    for s in spans {
+        if left == 0 {
+            break;
+        }
+        let n = s.len.min(left);
+        out.push((s.ptr, n));
+        left -= n;
+    }
+    out
+}
+
+/// Reads at most `max` bytes from `stream` into `spans`, in one WSARecv.
+#[cfg(windows)]
+fn readv(stream: &UnixStream, spans: &[Span], max: usize) -> io::Result<usize> {
+    let runs = runs(spans, max);
+    if runs.is_empty() {
+        return Err(io::ErrorKind::WouldBlock.into());
+    }
+    // SAFETY: every run lies in guest RAM, checked by host_ptr when its span was made;
+    // Winsock writes there without Rust aliasing it.
+    unsafe { stream.readv(&runs) }
+}
+
+/// Writes at most `max` bytes of `spans` to `stream`, in one WSASend.
+#[cfg(windows)]
+fn writev(stream: &UnixStream, spans: &[Span], max: usize) -> io::Result<usize> {
+    let runs: Vec<(*const u8, usize)> = runs(spans, max)
+        .into_iter()
+        .map(|(p, l)| (p.cast_const(), l))
+        .collect();
+    if runs.is_empty() {
+        return Ok(0);
+    }
+    // SAFETY: as in `readv`; Winsock only reads guest memory here.
+    unsafe { stream.writev(&runs) }
 }
 
 /// A pipe, close-on-exec and non-blocking: its read end, then its write end. Linux makes
@@ -115,7 +166,7 @@ fn nonblocking_pipe() -> io::Result<[OwnedFd; 2]> {
 
 /// A pipe, close-on-exec and non-blocking: macOS has no pipe2(2), so its flags are set
 /// after.
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
 fn nonblocking_pipe() -> io::Result<[OwnedFd; 2]> {
     let mut fds = [0; 2];
     // SAFETY: pipe(2) fills both descriptors on success.
@@ -138,16 +189,23 @@ fn nonblocking_pipe() -> io::Result<[OwnedFd; 2]> {
 }
 
 /// A self-pipe: vCPU threads write a byte to wake the worker out of poll(2).
+#[cfg(unix)]
 #[derive(Debug)]
 struct Waker {
     read: OwnedFd,
     write: OwnedFd,
 }
 
+#[cfg(unix)]
 impl Waker {
     fn new() -> io::Result<Waker> {
         let [read, write] = nonblocking_pipe()?;
         Ok(Waker { read, write })
+    }
+
+    /// What the worker's poller waits on.
+    fn raw(&self) -> RawSocket {
+        self.read.as_raw_fd()
     }
 
     /// Cheap enough for a vCPU thread. A full pipe already holds a wakeup.
@@ -162,6 +220,59 @@ impl Waker {
         while unsafe { libc::read(self.read.as_raw_fd(), buf.as_mut_ptr().cast(), buf.len()) } > 0 {}
     }
 }
+
+/// An event vCPU threads set to wake the worker out of its wait, which the Windows poller
+/// sleeps on beside its sockets' (poll.rs): no socket, and so no socket file a confined VM
+/// process might be refused.
+#[cfg(windows)]
+#[derive(Debug)]
+struct Waker(windows_sys::Win32::Networking::WinSock::WSAEVENT);
+
+#[cfg(windows)]
+impl Waker {
+    fn new() -> io::Result<Waker> {
+        use windows_sys::Win32::Networking::WinSock::{WSA_INVALID_EVENT, WSACreateEvent};
+        crate::platform::winsock()?;
+        // SAFETY: no arguments.
+        let event = unsafe { WSACreateEvent() };
+        if event == WSA_INVALID_EVENT {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Waker(event))
+    }
+
+    /// The event the worker's poller sleeps on.
+    fn event(&self) -> windows_sys::Win32::Networking::WinSock::WSAEVENT {
+        self.0
+    }
+
+    /// Cheap enough for a vCPU thread. A set event already holds a wakeup.
+    fn wake(&self) {
+        // SAFETY: our own event.
+        unsafe { windows_sys::Win32::Networking::WinSock::WSASetEvent(self.0) };
+    }
+
+    fn drain(&self) {
+        // SAFETY: our own event.
+        unsafe { windows_sys::Win32::Networking::WinSock::WSAResetEvent(self.0) };
+    }
+}
+
+#[cfg(windows)]
+impl Drop for Waker {
+    fn drop(&mut self) {
+        // SAFETY: our own event, which no wait uses once the waker drops: the worker that
+        // waits on it has ended (Vsock::stop joins it) or holds the waker itself.
+        unsafe { windows_sys::Win32::Networking::WinSock::WSACloseEvent(self.0) };
+    }
+}
+
+// SAFETY: an event handle, set and reset from any thread.
+#[cfg(windows)]
+unsafe impl Send for Waker {}
+// SAFETY: as above.
+#[cfg(windows)]
+unsafe impl Sync for Waker {}
 
 /// What the worker owns while it runs, handed back when it stops.
 struct Session {
@@ -395,8 +506,9 @@ fn run(
             }
         };
         interests.clear();
+        #[cfg(unix)]
         interests.push(Interest {
-            fd: waker.read.as_raw_fd(),
+            fd: waker.raw(),
             read: true,
             write: false,
             token: None,
@@ -414,7 +526,12 @@ fn run(
         ready.clear();
         let waited = match &mut poller {
             Some(p) => p.wait(&interests, timeout, &mut ready),
-            None => poll::Poller::new().and_then(|p| poller.insert(p).wait(&interests, timeout, &mut ready)),
+            None => poll::Poller::new().and_then(|p| {
+                let p = poller.insert(p);
+                #[cfg(windows)]
+                p.watch(waker.event());
+                p.wait(&interests, timeout, &mut ready)
+            }),
         };
         if let Err(e) = waited {
             // Unexpected (out of memory or descriptors): back off rather than spin.
@@ -737,7 +854,7 @@ mod tests {
         );
         // Its queues gone with it, and its sockets kept.
         assert!(vsock.worker.is_none() && vsock.paused.is_none());
-        std::os::unix::net::UnixStream::connect(&dir).unwrap();
+        crate::platform::UnixStream::connect(&dir).unwrap();
         vsock.activate(activation()).unwrap();
         assert!(vsock.worker.is_some());
         let states = vsock.pause();
@@ -746,7 +863,7 @@ mod tests {
         assert!(vsock.resume().is_err());
         super::super::worker::REFUSE.set(false);
         assert!(vsock.worker.is_none() && vsock.paused.is_some() && vsock.muxer.is_some());
-        std::os::unix::net::UnixStream::connect(&dir).unwrap();
+        crate::platform::UnixStream::connect(&dir).unwrap();
         assert_eq!(vsock.pause().len(), 3, "paused still");
         vsock.resume().unwrap();
         assert!(vsock.worker.is_some() && vsock.paused.is_none());

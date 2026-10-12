@@ -6720,3 +6720,853 @@ revision before comparing a changed API/implementation.
 - **Consequence.** D136: QuickJS-NG runs code mode's programs, a process each; its cost is
   stated as measured, a program's own 0.4 ms, and its saving as the model's turns.
 
+### M197. A WHP partition on GitHub's Windows runners: what its guest sees, and what an exit costs
+
+- **Questions.** Before shards' WHP backend (AGENTFILE_ARCH §11's Windows builder): what
+  does a partition's guest see of its processor and its hypervisor, with what it would
+  keep time by in kvm-clock's place; and what does an exit cost?
+- **Method.** `docs/research/measurements/whp-run`, by its workflow (`whp-run.yml`), run
+  38209188341 on branch `whp`, 2026-10-12: a partition of one vCPU, its local APIC
+  emulated (XApic), 2 MiB of memory, entered in long mode; its guest asks CPUID for the
+  hypervisor's leaves (0x40000000-6), leaf 1 and 0x80000007, reads
+  HV_X64_MSR_TSC_FREQUENCY and HV_X64_MSR_APIC_FREQUENCY where 0x40000003 offers them, then
+  writes MMIO 1001 times and a port 1001 times, each exit emulated by WinHvEmulation as a
+  VMM would, and timed from the host (n = 1000, the first of each left out). Twice: as
+  created, and given every synthetic processor feature the host offers. Functions bound at
+  run time (LoadLibraryExW, GetProcAddress).
+- **Found** (windows-2022: Windows Server 2022 10.0.20348, AMD EPYC 7763; windows-2025:
+  Windows Server 2025 10.0.26100, AMD EPYC 9V74):
+  - Both: HypervisorPresent 1; capability features 0x2ff (local APIC emulation among
+    them); extended exits 0x7fff; processor clock 2,445 and 2,596 MHz; interrupt clock
+    200 MHz; synthetic features 0x7f448fff and 0x6fff448fff.
+  - **As created, the guest sees no hypervisor**: leaf 1's hypervisor bit clear, the
+    0x40000000 leaves zero, no frequency MSRs. A Linux guest would have nothing to
+    calibrate its TSC by, with no PIT, HPET or PM timer in shards' hardware-reduced ACPI.
+  - **Given the host's synthetic features, it sees Hyper-V**: leaf 1's hypervisor bit set,
+    0x40000000 "Microsoft Hv" to 0x40000006, 0x40000001 "Hv#1", 0x40000003 EAX 0x00000e7f
+    (the hypercall MSR, the partition reference counter and TSC, the frequency MSRs among
+    them) and EDX bit 8 (the frequency MSRs available); the TSC's frequency
+    2,445,432,807 and 2,596,141,229 Hz and the APIC timer's 200,000,000 Hz, read from the
+    MSRs. Linux's `mshyperv.c` (CONFIG_HYPERVISOR_GUEST, in the pinned kernel) calibrates
+    both by them.
+  - Invariant TSC (0x80000007 EDX bit 8): set on windows-2022, clear on windows-2025, as
+    created or not; 0x40000003 offers no TSC-invariance bit (15) on either.
+  - **What an exit costs** (µs, p50 / p90 / p99 / max), the vCPU's run to its exit, and
+    WinHvEmulation's decode and callbacks after it:
+
+    | runner | exit | run | emulate |
+    |---|---|---|---|
+    | windows-2022 | MMIO | 12.1-13.4 / 12.2-13.6 / 12.9-16.3 / 34.6-79.1 | 8.2-9.5 / 8.3-9.6 / 10.6-11.8 / 24.3-54.4 |
+    | windows-2022 | port | 12.6 / 12.8 / 13.6-18.9 / 48.4-57.1 | 0.2 / 0.3 / 0.5-0.6 / 7.3-7.8 |
+    | windows-2025 | MMIO | 15.6 / 15.9-16.0 / 33.2-34.3 / 54.3-75.6 | 10.5-10.6 / 10.8 / 22.5-25.2 / 34.9-113.1 |
+    | windows-2025 | port | 14.5-16.2 / 14.9-16.5 / 28.8-37.2 / 47.9-48.8 | 0.3 / 0.4 / 1.0-1.1 / 10.0-11.3 |
+
+    (Ranges over the two partitions.) A partition was set up in 0.4-31.7 ms, the first of
+    a process the slowest; 2 MiB mapped in 0.04-3.6 ms; a vCPU made in 0.09-0.25 ms.
+  - Register values handed to WinHvPlatform 8-aligned (windows-sys's WHV_REGISTER_VALUE,
+    whose C declaration is `DECLSPEC_ALIGN(16)`) made the process fault
+    (STATUS_ACCESS_VIOLATION); 16-aligned, it ran. With the local APIC emulated, a HLT with
+    interrupts off never returned to the VMM.
+- **Consequence.** shards' WHP backend gives its partitions the host's synthetic features,
+  and its guest kernel the Hyper-V reference TSC (CONFIG_HYPERV) where invariant TSC is not
+  offered; hands WinHvPlatform 16-aligned register values; and takes virtio's
+  notifications by doorbell (a notification port) rather than by an exit and WinHvEmulation
+  each, a port exit costing 12.6-16.2 µs here and an MMIO exit 8-11 µs more.
+
+### M198. What shards' WHP backend leans on: an AP's start, interrupts, register access, doorbells, cancels
+
+- **Questions.** Before the backend is written, on the hosts its CI runs: which synthetic
+  features a partition sets up with; whether an application processor waits for SIPI as
+  created and starts on the emulated APIC's INIT and SIPI; what an interrupt the VMM asks
+  for costs and which EOIs come back to it; what a register read and write cost between
+  exits, as a decoder of its own would make them; whether a doorbell (a notification port)
+  beats an MMIO exit for a virtio notification; and whether a cancel made before a run, or
+  while the vCPU is halted in the hypervisor, returns the run.
+- **Method.** `docs/research/measurements/whp-run/src/bin/m198.rs`, by `whp-run.yml`, runs
+  38211215004, 38211379138 and 38211631065 on branch `whp`, 2026-10-12, each on a
+  windows-2022 and a windows-2025 runner (AMD EPYC, 2,445 or 2,596 MHz, as each run was
+  given): partitions of two vCPUs, the local APIC emulated (XApic), 2 MiB of RAM; a boot
+  processor in long mode with a GDT and an IDT, its handler counting and writing the APIC's
+  EOI; the host asking interrupts of it (WHvRequestInterrupt) one at a time, 200
+  edge-triggered and 200 level-triggered, each timed until the handler had counted it; 1,000
+  doorbell writes; 1,000 round trips each through a doorbell and through an MMIO exit whose
+  VMM thread signals the same kind of event, a host thread answering in guest memory, timed
+  by the guest's TSC; 1,000 register reads and writes on the stopped vCPU; partitions set up
+  with the host's synthetic features less each one, and with shards' set plus each other.
+- **Found:**
+  - **Features.** WHvSetupPartition refuses (HV_STATUS_INVALID_PARAMETER, 0xC0350005)
+    synthetic timers without the SynIC, and any bank without HypervisorPresent; it takes
+    shards' set, 0x7000bcb (HypervisorPresent, Hv1, the reference counter, the APIC's MSRs
+    and VP assist page, hypercalls, the VP index, the reference TSC, the frequency MSRs,
+    extended processor masks, TLB-flush and cluster-IPI hypercalls). Its guest sees
+    0x40000003 EAX 0x00000a72, EDX 0x00040130 (the frequency MSRs available, no synthetic
+    timers), and 0x40000004 EAX 0x00000e2c: remote TLB flushes, APIC access and cluster IPIs
+    by hypercall recommended. Leaf 1 offers neither x2APIC nor TSC-deadline, and leaf 0xB is
+    zero.
+  - **vCPUs.** Partitions set up with up to 1,024 (2,048 refused on windows-2022, taken on
+    windows-2025).
+  - **An AP as created** is held: its activity register's StartupSuspend set (vCPU 0's
+    clear), its APIC base 0xfee00800 (vCPU 0's 0xfee00900, the BSP's), at the reset vector;
+    run alone, it stays in the hypervisor until canceled (300 ms). INIT then SIPI written to
+    the boot processor's emulated APIC start it in real mode at the vector's page
+    (CS 0x0800), every run.
+  - **Interrupts.** A call to WHvRequestInterrupt costs 3.8-6.3 µs at p50 (p99 4.6-20.8); an
+    edge-triggered one is handled 6.5-8.0 µs after its call began (p99 7.7-34.2), a
+    level-triggered one 13.5-19.7 µs (p99 16.9-32.3), its predecessor's EOI having
+    exited to the VMM first. Every level-triggered EOI exits (WHvRunVpExitReasonX64ApicEoi,
+    with its vector), 200 of 200; no edge-triggered one does.
+  - **Registers.** A read of one register and a write of two, between exits: 0.1 µs each at
+    p50, 0.1-0.2 at p99 (max 2.8). An I/O exit carries its instruction's length (1 for OUT); an MMIO
+    exit carries its instruction's bytes (16) but no length (0), and its GPA, unmapped.
+  - **Doorbells against exits.** A doorbell write cost the guest 5.9-22.1 µs, by run and
+    runner; a round trip through one 17.4-29.0 µs; through an MMIO exit 17.1-24.4 µs. Of the
+    four pairs (the first run set no partition up), the doorbell won one, by 0.1 µs, and
+    lost three, by 0.5-4.6 µs.
+  - **Cancels.** One made before a run returns that run at once (0-1 µs), canceled; the
+    next runs on. One made while the vCPU is halted in the hypervisor returns its run 42-127
+    µs later.
+- **Consequence (D140).** The backend offers 0x7000bcb of what the host offers; leaves APs
+  held as created; emulates the IOAPIC itself, asking WHP for each interrupt by its
+  redirection entry and taking each level-triggered EOI back from its exit; decodes MMIO
+  instructions itself, at two register calls' cost, not WinHvEmulation's 8-11 µs (M197);
+  takes virtio notifications as MMIO exits, without doorbells; and kicks a vCPU with a
+  cancel, which a run about to start takes too.
+
+### M199. AF_UNIX stream sockets on Windows, before shards' Windows transport is built on them
+
+- **Questions.** Can AF_UNIX sockets carry shards' vsock streams and builder sockets on
+  Windows, as Unix sockets do elsewhere: does WSAPoll report them, does half-close work,
+  does scatter-gather, does an inherited one work in a child process; what does a connected
+  pair cost, made as Windows must make one (no socketpair()); and what are their
+  throughput and latency beside loopback TCP's?
+- **Method.** `docs/research/measurements/windows-afunix`, by `windows-afunix.yml`, run
+  38213172739 on branch `whp`, 2026-10-12, on a windows-2022 and a windows-2025 runner:
+  100 pairs made through a listener at a fresh path (bind, listen, connect, accept, the path
+  removed), each timed; a half-close and the other direction after it; WSAPoll on a
+  non-blocking end, quiet, with data, drained, after the peer's shutdown(SD_SEND) and
+  after its close, and as its send buffer fills and drains; WSASend and WSARecv of three
+  buffers; WSAEventSelect (FD_READ, FD_WRITE, FD_CLOSE) on one end, the event waited
+  for after each step: associated, data, a full send buffer and its draining, the peer's
+  half-close, and a full send buffer after end-of-stream and its draining (run
+  38213370757); a socket inherited by a child process (std's CreateProcessW inherits
+  inheritable handles), which writes through it; 1 GiB in 64 KiB writes between two
+  threads, and 10,000 one-byte round trips, each over AF_UNIX and over loopback TCP with
+  TCP_NODELAY.
+- **Found** (windows-2022 / windows-2025):
+  - A pair costs 609.5 / 699.8 µs at p50, 917.1 / 967.5 at p99, max 2,039.0 / 1,569.7.
+  - Half-close: after shutdown(SD_SEND) the peer reads the data, then end-of-stream (0);
+    data still goes the other way. Scatter-gather: three buffers sent and received whole.
+  - WSAPoll reports writability (WRNORM) as a socket is quiet; RDNORM and WRNORM with
+    data; WRNORM again once drained. A peer's half-close and its close both read
+    **WRNORM|HUP, without RDNORM**: end-of-stream is reported as a hangup, and a hangup
+    is reported whatever was asked. A full send buffer (131,072 bytes; WSAEWOULDBLOCK)
+    reports nothing, and WRNORM again once drained.
+  - WSAEventSelect records, on both runners: FD_WRITE as associated; FD_READ with data;
+    nothing while the send buffer is full (the wait times out, 100 ms), FD_WRITE once
+    drained; FD_CLOSE on the peer's half-close; and after end-of-stream has been read,
+    again nothing while full and FD_WRITE once drained.
+  - Inherited, a socket works in the child: 14 bytes written there, read here.
+  - What a writer wrote before it exited is read whole once it has gone, whether it closed
+    nothing, closed its socket, shut its writing down, or both, while the parent still holds
+    a copy; a parent's copy closed first, by closesocket or by CloseHandle, leaves the
+    child's working (runs 38218844747, 38219105752). But **where the writer's exit closes
+    the socket's last reference, the peer's read fails, WSAECONNRESET (10054), and what was
+    written is lost**; shut down and closed before the exit, it is read whole (run
+    38219105752).
+  - Throughput: AF_UNIX 11,954 / 9,020 MB/s, loopback TCP 3,277 / 2,694. A one-byte round
+    trip: AF_UNIX p50 29.1 / 31.3 µs, p99 44.0 / 63.1; TCP 37.0 / 39.1, p99 69.3 / 116.8.
+- **Consequence.** shards' Windows streams are AF_UNIX sockets, as its Unix hosts' are:
+  3.4-3.7 times loopback TCP's throughput, and a round trip 20 percent shorter. A pair
+  costs some 0.6 ms more than socketpair(2), and is made once a stream. WSAPoll cannot
+  wait to write on a socket whose peer has half-closed: it reports the hangup at once,
+  whatever is asked, so such a wait would spin. WSAEventSelect's events have no such fault:
+  the vsock device's Windows poller sleeps on them, and reads each socket's state with a
+  WSAPoll that does not wait, end-of-stream (HUP) a read's and never a write's. And a
+  Windows process of shards' shuts down and closes its sockets before it exits: an exit
+  that leaves the last reference to the system loses what the peer has not yet read.
+
+### M200. A WHP partition from a confined process, and from a standard user
+
+- **Questions.** shards confines its VM process (D30: Landlock and seccomp on Linux, App
+  Sandbox on macOS); on Windows the like is an AppContainer, which reaches no file but by a
+  handle given it. Can a process in one run a WHP partition? Can a standard user, not an
+  administrator as GitHub's runner account is? And who may open what WHP opens?
+- **Method.** `docs/research/measurements/whp-run/src/bin/m200.rs`, by `whp-run.yml`, on
+  a windows-2022 and a windows-2025 runner, 2026-10-12 (runs 38214206152, 38214574386,
+  38214718457, 38215445267): the probe launches itself as a child with exactly the handles named
+  for it (PROC_THREAD_ATTRIBUTE_HANDLE_LIST: a file of its own, opened, and its stdout
+  and stderr); the child reads the file through the handle, opens it by its path, and
+  runs a partition of one vCPU to a port write. Three ways: as the runner's user; in an
+  AppContainer of no capabilities (CreateAppContainerProfile,
+  PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES); in that AppContainer holding one
+  capability SID, the one the device's DACL names (below). Then as a standard user the
+  workflow makes (New-LocalUser), through CreateProcessWithLogonW. The device: found
+  among vid.dll's own strings, opened for READ_CONTROL alone, its descriptor read
+  (GetSecurityInfo) as SDDL; the capability's name looked for by deriving each name the
+  system knows (DeriveCapabilitySidsFromName: the registry's AllCachedCapabilities, and
+  every Capability Name of the app manifests under SystemApps and WindowsApps).
+- **Found** (both runners alike):
+  - As the runner's user, the child reads the file both ways and runs the partition.
+  - In an AppContainer of no capabilities: the handle reads, the path is refused
+    (ERROR_ACCESS_DENIED), and **WHvCreatePartition is refused (E_ACCESSDENIED)**.
+  - WinHvPlatform's functions reach the hypervisor through vid.dll, which opens
+    `\\?\VidExo`, whose descriptor is
+    `O:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;0x1201bf;;;AU)(A;;0x1201bf;;;S-1-15-3-1024-1350733694-1533467442-3402045280-1710179238-1008639688-2282869650-3611451526-669908847)S:AI(ML;;NW;;;LW)`:
+    full access for SYSTEM and Administrators; read, write and execute (0x1201bf) for
+    Authenticated Users and for one capability SID; a low integrity label.
+  - **In the AppContainer holding that capability SID, the partition runs**, and the path is
+    still refused, the handle still read.
+  - As a standard user, the partition runs.
+  - The capability's name is none of the 413 / 446 names the system knows (339 / 357
+    cached in the registry, the rest from manifests).
+- **Consequence (D140).** shards runs on Windows as a standard user, as it runs rootless
+  elsewhere. Its Windows VM process runs in an AppContainer of its own, which reaches no
+  file but the handles its spawner gives it, holding the capability VidExo's DACL grants,
+  and that alone: read from the device's own descriptor as the VM process is spawned, not
+  written into shards, so a Windows that grants another reaches no stale SID.
+
+### M201. The Windows VM process confined as shards would confine it
+
+- **Questions.** Each part of the design D141 builds on M200's AppContainer: does one need
+  a profile, or does a SID derived from a name suffice (nothing per VM left in the
+  registry or on disk)? Do handles given by DuplicateHandle into a suspended child work
+  there, so that none is ever inheritable but a pipe that tells the child their values?
+  Does a Job that kills the child as its last handle closes, and lets it run no process,
+  hold; and do Windows' mitigations leave WHP working? Can the child reach an AF_UNIX socket
+  in a directory whose DACL grants its SID, and not one in a directory whose DACL does
+  not? What does a profile per VM cost?
+- **Method.** `docs/research/measurements/whp-run/src/bin/m201.rs`, by `whp-run.yml`, runs
+  38218366702, 38218592189 and 38218844759 on branch `whp`, 2026-10-12, each on a
+  windows-2022 and a windows-2025 runner: the capability SIDs read from `\\?\VidExo`'s DACL
+  (M200); a child made suspended in an AppContainer holding them (a profile made by
+  CreateAppContainerProfile, or a SID from DeriveAppContainerSidFromAppContainerName alone),
+  in a Job (PROC_THREAD_ATTRIBUTE_JOB_LIST: JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE and an active
+  process limit of 1), with the child process policy (PROCESS_CREATION_CHILD_PROCESS_RESTRICTED)
+  and the mitigations, each alone and together (strict handle checks, no Win32k, no
+  extension points, no dynamic code, no images from remote devices or of a low label; and
+  the second word's no-FSCTL); given a file and a socket by DuplicateHandle, their values
+  through a pipe, its one inheritable handle; then resumed. The child reads the file,
+  writes the socket, dials a socket in a directory granted its SID (SetEntriesInAclW,
+  GENERIC_ALL, inherited) and one in a directory not, runs a partition, and starts a
+  process. A child left running is ended by closing its Job's handle. Profiles made and
+  deleted, 20 of each, timed.
+- **Found** (both runners alike but where said):
+  - With no profile, CreateProcessW refuses the AppContainer (ERROR_FILE_NOT_FOUND). With
+    one, the child runs: it reads the file and writes the socket given it, dials the socket
+    in the directory granted its SID and is refused the other (WSAEACCES, 10013), and runs
+    the partition (3.3-3.9 ms, partition made to port write).
+  - The Job's process limit refuses the child a process (ERROR_NOT_ENOUGH_QUOTA, 1816), and
+    the child process policy refuses it apart from the Job (ERROR_CHILD_PROCESS_BLOCKED,
+    367). Closing the Job's last handle ends the child 0.7-1.1 ms
+    later.
+  - Every mitigation leaves WHP working on windows-2025, both words together. On
+    windows-2022, **no dynamic code** (ACG) makes WHvSetupPartition fail
+    (HRESULT_FROM_WIN32(ERROR_DYNAMIC_CODE_BLOCKED), 0x80070677), and CreateProcessW refuses
+    the second word (ERROR_INVALID_PARAMETER); every other mitigation leaves it working.
+  - A profile costs 4.4 / 5.7 ms at p50 to make (p99 553 / 6.5 ms), 1.8 / 2.1 ms to delete.
+  - A socket given by DuplicateHandle and written by the child was read by no one once the
+    child had exited: the child held its last reference (M199: an exit that closes it
+    loses what was unread).
+- **Consequence (D141).** The VM process runs in an AppContainer of its own, a profile made
+  for it and deleted after it (made ahead of a request where a start's time counts),
+  holding the capabilities VidExo's DACL grants; in a Job that ends it with its spawner and
+  lets it start nothing; with the mitigations its Windows takes, which dynamic code is not
+  where WHP needs it (windows-2022). Files and other handles reach it by DuplicateHandle
+  alone; sockets it makes itself, in a directory of its own whose DACL grants its SID.
+
+
+### M202. Dynamic code forbidden once a partition is set up
+
+- **Question.** On windows-2022 a process spawned with ACG (no dynamic code) cannot set a
+  partition up (M201). A process may forbid itself dynamic code later, for good
+  (SetProcessMitigationPolicy, ProcessDynamicCodePolicy). Does every WHP call the VMM makes
+  after a partition's setup still work then, so that the VM process can turn ACG on before
+  it reads anything a guest wrote?
+- **Method.** `docs/research/measurements/whp-run/src/bin/m202.rs`, by `whp-run.yml`, run
+  38220452267 on branch `whp`, 2026-10-12, on a windows-2022 (AMD EPYC 7763) and a
+  windows-2025 (Windows NT 10.0.26100) runner: a partition of two vCPUs set up, then ACG
+  turned on, then each call that follows setup in a VM's life: guest memory mapped, a vCPU
+  created on the main thread and one on another thread, registers set, a run to its exit
+  (a port write), an interrupt asked, a run canceled, part of guest memory unmapped and
+  mapped again, a vCPU's CPUID read, a vCPU deleted; last, a second partition's setup.
+- **Found:**
+  - ACG turns on (SetProcessMitigationPolicy returns 1) and every call after the setup
+    works on both runners. The run exits at the guest's port write (0x501), as it does
+    without ACG.
+  - A second partition's setup works on windows-2025 and fails on windows-2022 with
+    HRESULT_FROM_WIN32(ERROR_DYNAMIC_CODE_BLOCKED) (0x80070677), as a process spawned with
+    ACG fails its first (M201).
+  - The vCPU's CPUID leaf 0x40000005 reads 0 here as in M197's partitions: this partition
+    was not offered the synthetic features, which a VM's is (D140).
+- **Consequence (D141).** The VM process sets its one partition up, then forbids itself
+  dynamic code before it loads the kernel or runs a vCPU, on every Windows the runners
+  have. Nothing it does after that point needs dynamic code. The library never does this
+  itself: tests set up many partitions in one process, which windows-2022 refuses after ACG.
+
+### M203. Sockets and files a confined VM process is handed
+
+- **Questions.** On Windows the VM process runs in an AppContainer that reaches no socket and
+  no file outside what its DACLs grant it (M201), so its spawner must bind its vsock
+  listener for it and dial the host ports its guest connects to, as on macOS (M67). Does a
+  listener so bound, in a directory that does not grant the container, work in the child:
+  does WSAEventSelect see a connection, WSAPoll report it, accept take it? Do connected
+  sockets so handed work? Each by DuplicateHandle and by WSADuplicateSocketW, which
+  Winsock's documentation names for sharing a socket; and by WSADuplicateSocketW with the
+  spawner's copy closed before the child makes its own. Does GetFinalPathNameByHandleW
+  name a file handed in? What does a dial through the spawner cost? Does a VM binary in a
+  directory only its user, SYSTEM and Administrators may read start in an AppContainer?
+- **Method.** `docs/research/measurements/whp-run/src/bin/m203.rs`, by `whp-run.yml`, run
+  38223223296 on branch `whp`, 2026-10-12, on a windows-2022 and a windows-2025 runner. A
+  child made as D141 makes the VM process (M201: its own AppContainer profile, VidExo's
+  capabilities, a Job of one process killed with its last handle, no child processes, the
+  mitigations) is handed two listeners, three connected sockets and a file, all in a
+  directory that does not grant its SID; the spawner dials each listener and answers each
+  connection's far end. Then 200 dials through the spawner each way, a byte asking over a
+  socket and the answer a socket's protocol info or a handle's value, timed in the child
+  from the ask to a socket it can use, each dial's socket written a byte and closed by the
+  child; and 200 dials the spawner makes for itself. Last, the probe's binary is copied to
+  a directory given a protected DACL of the user, SYSTEM and Administrators alone, and run
+  from there in an AppContainer.
+- **Found** (both runners alike):
+  - Both listeners work in the child, by either way: its event is set for the
+    connection, WSAPoll reports it (POLLRDNORM), accept takes it, and the line each way
+    arrives.
+  - The three connected sockets work in the child, each way: a line written there is read
+    by the far end, and its answer raises the child's event and is read. One made from
+    WSADuplicateSocketW's info works whose spawner closed its own copy before the child
+    ran.
+  - GetFinalPathNameByHandleW refuses the child a handed file's path, normalized and as
+    opened alike: access denied (5).
+  - A dial through the spawner takes the child 111.0 / 110.7 µs at p50, 197.4 / 196.6 at
+    p99 (windows-2022 / windows-2025) by WSADuplicateSocketW; 99.9 / 105.1 at p50, 150.9 /
+    154.6 at p99, by DuplicateHandle. The spawner's own dial: 41.0 / 38.3 µs at p50, 58.9 /
+    78.2 at p99. Every byte written through the 400 dialed connections arrived.
+  - The binary in the private directory starts in its AppContainer and exits 0, as it
+    does from the probe's own directory.
+- **Consequence (D141).** A VM process on Windows is handed its files by DuplicateHandle,
+  each with the path the spawner resolved for it, since the VM cannot ask; and its sockets
+  by WSADuplicateSocketW, the way Winsock documents, 6-10 µs more a dial at p50 than
+  DuplicateHandle. Its spawner binds its vsock listener and dials its host ports for it, as
+  on macOS. The carried VM binary needs no grant to its directory.
+
+### M204. What a confined network process may reach, and doorbells over a section
+
+- **Questions.** A VM's network process parses what a guest and the Internet send, so on
+  Windows it is to be confined as the VM process is (D141), in an AppContainer. Which of
+  its flows does an AppContainer allow: TCP and UDP to the Internet, with which
+  capabilities? A connection to a host service on the loopback, and one from the host to
+  a listener of its own, as a published port's? A listener its spawner bound and shared
+  with it? And what does a doorbell cost between two processes, an event each way over
+  shared memory, beside AF_UNIX's round trip (M199)?
+- **Method.** `docs/research/measurements/whp-run/src/bin/m204.rs`, by `whp-run.yml`, run
+  38228876254 on branch `whp`, 2026-10-12, on a windows-2025 (Intel Xeon 6973P-C) and a
+  windows-2022 (AMD EPYC 7763) runner. A child made as D141 makes the VM process (an
+  AppContainer of its own, a Job, the mitigations; M201), twice: holding no capability,
+  then the network capabilities internetClient, internetClientServer and
+  privateNetworkClientServer (S-1-15-3-1, -2, -3). Each time it connects by TCP to
+  github.com's address (resolved by its spawner) and asks 1.1.1.1:53 by UDP for github.com's
+  address; connects to a listener of its spawner's at 127.0.0.1; listens at 127.0.0.1 and at
+  the host's own non-loopback address, which its spawner dials; and accepts on a listener at
+  127.0.0.1 its spawner bound and shared (WSADuplicateSocketW). Each step is given up after
+  5 s. Then 10,000 doorbell round trips, timed at the spawner: an auto-reset event set, the
+  child woken, a count in a pagefile-backed section (CreateFileMappingW) incremented, and
+  the other event set; both events and the section handed by DuplicateHandle.
+- **Found** (both runners alike):
+  - Without a capability, its TCP to the Internet is refused at once (WSAEACCES, 10013) and
+    its DNS query goes unanswered. With the network capabilities both work: connected in
+    45.2 / 51.5 ms (the spawner's own: 38.3 / 56.1), answered alike.
+  - Loopback is closed both ways whatever it holds: its connection to its spawner's
+    listener, and its spawner's to its own listeners, at 127.0.0.1 and at the host's own
+    address alike, are answered by nothing in 5 s.
+  - A listener its spawner bound at 127.0.0.1 and shared with it takes its spawner's
+    connection, with or without capabilities.
+  - A doorbell round trip: p50 28.8 / 22.8 µs, p90 45.0 / 31.9, p99 57.3 / 49.9, max
+    152.4 / 213.5 holding no capability; 35.5 / 22.8, 48.8 / 29.6, 64.5 / 43.3, 103.3 /
+    112.4 holding the network capabilities (windows-2025 / windows-2022; n = 10,000).
+    Every round's count arrived (10,001 rounds answered, the first untimed).
+- **Consequence (D142).** A network process on Windows runs in an AppContainer of its
+  own holding the network capabilities: the Internet it reaches itself. The host's
+  loopback it reaches through its spawner, which binds a published port's listeners and
+  shares them, as it binds a VM's vsock socket (M203), and dials for it what is on the
+  host's loopback. A doorbell costs what AF_UNIX's round trip does (29.1 / 31.3 µs at
+  p50, M199).
+
+### M205. AF_UNIX connects that do not wait, on Windows
+
+- **Question.** A nonblocking connect to a Unix socket on Linux and macOS connects at once, or
+  is refused (ECONNREFUSED where nothing listens, EAGAIN where the backlog is full): what
+  shards' vsock device and its network stack's proxy dial take. On Windows both refused
+  every connection (CI run 38235548677: a guest's connection to a host port reset, the
+  proxy's never made). What does afunix.sys answer?
+- **Method.** `docs/research/measurements/windows-afunix` (`m205`), by `windows-afunix.yml`,
+  run 38239766177 on branch `whp`, 2026-10-12, on a windows-2025 and a windows-2022 runner:
+  1,000 nonblocking connects to a listener with room, each's return and the time until
+  WSAPoll says its socket may be written; one to a path whose listener has closed; up to 64
+  to a listener of backlog 1 that accepts none, then one accept; and a blocking connect to
+  that full backlog, an accept coming 500 ms later.
+- **Found** (windows-2025 / windows-2022 alike):
+  - Every nonblocking connect to a listener with room returned WSAEWOULDBLOCK (10035) and
+    was writable (POLLWRNORM) 11.7 / 10.4 µs later at p50, 19.8 / 15.6 at p99, 62.0 / 39.9 at
+    most (n = 1,000).
+  - Where nothing listens: WSAECONNREFUSED (10061) at once.
+  - A backlog of 1 took five connects, each under way then writable in microseconds; every
+    later one was refused at once with WSAENOBUFS (10055), and stayed refused after an
+    accept made room.
+  - A blocking connect to the full backlog failed with WSAENOBUFS in 140-215 µs, not
+    waiting for the accept.
+- **Consequence (D141).** shards' AF_UNIX connect that does not wait waits out Windows'
+  "under way", which ends in microseconds where the listener has room: so it connects at
+  once or is refused, as Unix's does; WSAENOBUFS is Unix's EAGAIN, a full backlog.
+
+### M206. The CPUID a WHP partition's vCPUs see, and what a VMM may change of it
+
+- **Question.** A Linux guest's AP skips calibrating its delay loop where the TSC is
+  constant and a CPU of its package is up already (`calibrate_delay_is_known`,
+  arch/x86/kernel/tsc.c; a Hyper-V guest without the TSC-invariance privilege marks its TSC
+  unstable, so only the second path is open). shards' WHP guests calibrated every AP: 63
+  of them took a 240-vCPU boot past a minute on a 4-CPU runner, starving every VM beside
+  it (CI run 38240024887). What topology and invariant TSC does a partition set up as
+  shards' are give its vCPUs, and what may the VMM change, how, and at what cost? Does the
+  guest's TSC keep one rate?
+- **Method.** `docs/research/measurements/whp-run/src/bin/m206.rs`, by `whp-run.yml`, runs
+  38246266456 and 38247442481 on branch `whp`, 2026-10-12, on a windows-2022 (Windows
+  Server 2022 10.0.20348) and a windows-2025 (Windows Server 2025 10.0.26100) runner, both
+  AMD EPYC 7763: the host's processor features (WHvGetCapability) and its own CPUID; the
+  CPUID of each of four vCPUs (WHvGetVirtualProcessorCpuidOutput) of a partition set up as
+  shards' (XApic, shards' synthetic features), checked against a guest's own CPUID on
+  vCPU 0; the same given the host's processor features, with TscInvariantSupport asked of
+  them, and with WHvPartitionPropertyCodeCpuidResultList2 results (per vCPU and for all,
+  masked) set before setup and after the vCPUs exist; a second list after a first, and an
+  empty one; a guest's TSC read against the partition's reference counter
+  (HV_X64_MSR_TIME_REF_COUNT) every 10 ms for 3 s, a pair re-read where the counter moved
+  more than 5 µs across it, the host idle and then every host CPU busy; and setting a
+  list for one package once a partition's vCPUs exist, for 64 vCPUs and for the 240 a
+  guest may have (n = 20 each).
+- **Found:**
+  - **Topology.** Each vCPU is a package of one: leaf 1's processor count 0 and HTT clear,
+    0x80000008 ECX 0 (one thread, no APIC id bits), 0x8000001E's core id 0 on every vCPU;
+    the hypervisor gives each its own APIC id in leaf 1 (EBX 31:24) and 0x8000001E EAX.
+    Leaf 0 says 0xD, so no 0xB or 0x1F. The guest's own CPUID agreed with the API's on
+    every leaf, in every partition.
+  - **Invariant TSC.** The host's own CPUID has it (0x80000007 EDX bit 8) on both. Windows
+    Server 2022 offers it (TscInvariantSupport in its processor features, bank 1 0x1cf) and
+    its partitions' guests see it; Server 2025 does not (bank 1 0x200001ed), and its
+    guests do not, as created or given the host's features; asked of the processor
+    features there, it was taken without an error and the guest still did not see it.
+  - **Results.** A list's masks say which bits are its own: a result of mask 0 changed
+    nothing; one of the whole leaf for every vCPU gave all four leaf 1's EAX 0 and APIC id
+    0. Masked, the rest stays the hypervisor's: leaf 1's count and HTT set with each vCPU's
+    APIC id kept. Per-vCPU results set before setup fail the setup,
+    HV_STATUS_INVALID_VP_INDEX (0xc035000e); set once the vCPUs exist, they are taken,
+    and so is invariant TSC set there (on Server 2025 too). A second list replaces the
+    first, and an empty one clears it.
+  - **The TSC's rate.** Over 3 s: 2,445,426,012 Hz idle and 2,445,426,003 loaded on Server
+    2022, 2,445,425,778 and 2,445,425,783 on Server 2025, each within 0.02 ppm of the
+    partition's clock (WHvCapabilityCodeProcessorClockFrequency); each 10 ms's rate within
+    3.3-4.1 ppm of the whole run's at p50, 43-101 at p99, 109 at most (n = 299 each), where
+    the pairs' 5 µs windows allow 1,000.
+  - **Cost** (µs, p50 / p90 / p99 / max, Server 2022 then 2025): setting 131 results for 64
+    vCPUs 726 / 734 / 846 / 846 and 907 / 974 / 1,179 / 1,179; 483 for 240, 2,928 / 2,961 /
+    3,347 / 3,347 and 3,709 / 3,783 / 4,035 / 4,035; against 7.6 / 9.9 ms and 29.1 / 37.2
+    ms at p50 to make the partition and its vCPUs.
+- **Consequence (D140).** shards' WHP VMs give their guests one package of single-thread
+  cores, as KVM's do (`cpuid::for_vcpu`), and invariant TSC where the host's processor has
+  it, which Server 2025 leaves out though its partitions' TSC keeps the host's one rate and
+  a partition never moves to another host; each result masked to the bits it changes, so
+  that the hypervisor keeps the bits it keeps per vCPU and as the guest runs; one list,
+  set once the last vCPU exists and before any runs. A guest's APs then take the boot
+  CPU's calibration.
+
+### M207. A send while another thread waits to read the same connection, on Windows
+
+- **Question.** On Windows CI the vsock tests' streams stalled for a minute with nothing
+  read by the VM, then went on as each client gave up (CI run 38243944747): the test's
+  client waits for the echo in a read of 60 s timeout, a WSAPoll then a recv on its
+  socket, while another thread sends through a copy of it. Does a send wait for another
+  thread's wait to read the same connection?
+- **Method.** `docs/research/measurements/windows-afunix` (`m207`), by `windows-afunix.yml`,
+  run 38251215070 on branch `whp`, 2026-10-12, on a windows-2022 and a windows-2025 runner,
+  and run 38248859064 before it, which hung at its second case: for AF_UNIX and loopback
+  TCP pairs, their sockets made without WSA_FLAG_OVERLAPPED and with it, one thread waits
+  to read a connection, by a WSAPoll of 3 s, a blocking recv, or a recv of SO_RCVTIMEO 3 s,
+  on the socket or on a copy WSADuplicateSocketW made of it; 100 ms on, another sends a
+  byte through the socket or the copy, and the peer waits for it; at 4 s the peer sends
+  the byte that ends a wait still waiting.
+- **Found** (both runners alike, AF_UNIX and TCP alike):
+  - **Made without WSA_FLAG_OVERLAPPED**, every send waited for the other thread's wait to
+    end, through the socket or the copy, on either: 2,895-2,913 ms for a WSAPoll's 3 s,
+    3,899-3,901 ms for a recv the peer's byte ended at 4 s; and SO_RCVTIMEO never ended a
+    recv, which the peer's byte did at 4 s. Run 38248859064's send behind a blocking recv
+    that only its own peer would end hung until the job's limit.
+  - **Made with it**, every send went at once (0.0-0.1 ms), the peer had the byte as soon,
+    and SO_RCVTIMEO ended each recv after 3,012-3,032 ms (WSAETIMEDOUT), on the socket and
+    on the copy alike.
+- **Consequence (D141).** Windows serializes the I/O of a handle opened for synchronous
+  I/O, and a socket made without WSA_FLAG_OVERLAPPED is one; std makes its sockets
+  overlapped. shards' AF_UNIX sockets (`shards-afunix`) are made overlapped too, so that
+  a read never holds a send; their read timeout stays a WSAPoll before the read, as
+  Winsock leaves a connection whose receive timed out in an indeterminate state. The
+  vsock tests' stall was their own client's.
+
+### M208. The environment a child in an AppContainer must be given
+
+- **Question.** shards gives its Unix children `SHARDS_LOG` and `SHARDS_TIMING` alone (the
+  processes a guest could take over carry none of their spawner's secrets). Given those and
+  `SystemRoot` on Windows, every confined child was refused (CreateProcessW:
+  ERROR_ENVVAR_NOT_FOUND, 203; CI run 38256632140). What must a child made in an
+  AppContainer be given, and what does it have then?
+- **Method.** `docs/research/measurements/whp-run/src/bin/m208.rs`, by `whp-run.yml`, runs
+  38260099347 and 38260506180 on branch `whp`, 2026-10-12, on a windows-2022 and a
+  windows-2025 runner: a child made as D141 makes the VM process (an AppContainer of its
+  own, a Job, the mitigations), given each of: this process's environment; none; and
+  `SystemRoot`, `LOCALAPPDATA`, `USERPROFILE`, `TEMP` and `TMP` in several combinations.
+  The child prints every variable it has, its temporary directory and whether it may write
+  a file there, WSAStartup's result, and whether it makes an AF_UNIX and an AF_INET socket.
+- **Found** (both runners alike):
+  - **Without `LOCALAPPDATA` no child is made** (203), whatever else it is given.
+  - **Windows rewrites what it is given**: the child's `LOCALAPPDATA` is the container's
+    own folder (`...\Packages\<profile>\AC`) and its `TEMP` and `TMP` the `Temp` in it,
+    whatever they were or were not; it may write a file there.
+  - **Without `SystemRoot`, Winsock starts and makes no socket**: WSAStartup returns 0, and
+    every socket, AF_UNIX and AF_INET alike, fails with WSAEPROVIDERFAILEDINIT (10106).
+  - `LOCALAPPDATA` and `SystemRoot` alone: the child is made, its temporary directory is
+    its container's and writable, and it makes both sockets.
+- **Consequence (D141, D142, D143).** A Windows child of shards' is given what it is told
+  (`SHARDS_LOG`, `SHARDS_TIMING`) and this process's `LOCALAPPDATA` and `SystemRoot` alone;
+  its temporary directory is its container's own.
+
+### M209. What a network process asks of its kernel, once confined (D31)
+
+- **Question.** A network process parses what its guest and the Internet send. Landlock
+  keeps it from files and from the TCP ports it is not granted, but every syscall stays
+  open to it. Which does it make, so that a filter allows those alone
+  (rootless-security.md R3), as the VM process's allows its own (M52)?
+- **Method.** `docs/research/measurements/vmm-syscalls/collect.sh`: every VM E2E test
+  binary under `strace -f` on a KVM host, `build`'s steps that reach the network or a
+  proxy among them; `parse.py --program shards-net` counts what each network process
+  makes over its life, and with `--after landlock_restrict_self` what it makes once
+  Landlock's first layer holds it, where its filter goes. glibc on CI's ubuntu-24.04 and
+  musl in rust:1.98.0-alpine, x86_64, b09a55ae, run 38269376753, 2026-10-12: about 640
+  network processes each, every one single-threaded.
+- **Results.** Over its life, 47 syscalls (glibc), most of them its start's: the dynamic
+  loader's (openat, pread64, mprotect, arch_prctl, access) and the runtime's (poll,
+  rt_sigaction, prlimit64, sched_getaffinity, rseq, set_robust_list, set_tid_address).
+  Once confined, 33 with glibc and 32 with musl:
+
+  | | syscalls |
+  |---|---|
+  | its flows | socket, connect, bind, accept4, shutdown, getpeername, getsockopt, setsockopt, recvfrom, sendto, recvmsg, sendmsg, read, write, writev, close |
+  | its loop | epoll_create1, epoll_ctl, epoll_wait (glibc) or epoll_pwait (musl) |
+  | memory | mmap, munmap, mremap, brk (glibc alone) |
+  | the rest | fcntl, ioctl, fstat (the ring's size), getrandom, sigaltstack (at its exit), exit_group |
+  | its policy's Landlock layer | landlock_create_ruleset, landlock_add_rule, landlock_restrict_self, prctl |
+
+  Their arguments: sockets AF_INET, AF_INET6 and AF_UNIX; ioctl FIONBIO; fcntl
+  F_DUPFD_CLOEXEC and F_SETFD; prctl PR_SET_NO_NEW_PRIVS; setsockopt SO_RCVBUF and
+  SO_SNDBUF of SOL_SOCKET and TCP_NODELAY of SOL_TCP; getsockopt SO_ERROR of SOL_SOCKET.
+  None execs, makes a process or a thread, or opens a file.
+- **Consequence (D31).** The network process installs a filter of these, glibc's and
+  musl's together, after Landlock's first layer (`confine::filter`): each argument above
+  held to its values, setsockopt to the socket's and TCP's levels, prctl's to
+  no_new_privs and the thread's name its refusals' report reads, and clock_gettime too,
+  which the vDSO answers but where it cannot read the host's clocksource. A syscall
+  outside it ends the process with SIGSYS, the syscall named. Run again with the filter
+  installed (8b16ffc0, run 38276224826, its count from the filter's install), glibc:
+  every test passed under strace and none was refused, and what the filtered processes
+  made is all in it; CI's every networked E2E passed through it (run 38276224802). musl:
+  CI's network processes made rt_sigprocmask (syscall 14), which none had made under
+  strace, and were refused, 482 times over its networked tests: the collection now
+  prints each refusal's process's calls before it, to find where. Every one of the 486
+  filtered network processes (320530ec, run 38282809609) was refused as its loop first
+  ran, its frame buffer allocated: `rt_sigprocmask(SIG_BLOCK, every signal but musl's
+  own three)`, which musl's `__block_app_sigs` makes. The loop's first timer reaches a
+  thread-local with a destructor, the memory a connection let go of (M210, efc9c889,
+  after b09a55ae); std then makes its key for thread-local destructors (`LazyKey`), and
+  where the C library gives it key 0, its own mark of none, makes another and deletes 0.
+  musl gives 0 first, and its `pthread_key_delete` blocks application signals around its
+  work and then sets the mask back; glibc's deletes without a syscall. The filter allows
+  rt_sigprocmask's SIG_BLOCK and SIG_SETMASK: a thread's own mask, which grants it
+  nothing. Run again with it (922fcbda, run 38291399493), musl: every test passed under
+  strace and none was refused; each of the 652 filtered network processes made
+  rt_sigprocmask twice, its mask blocked and set back.
+
+### M210. What a network process costs its host as its connections grow (D31, E2)
+
+- **Question.** A VM's network process holds a host socket and a record for each of its
+  guest's connections, and queues for the bytes between them. What does it cost in memory
+  idle and holding 1,000 and 10,000 connections, beside the VM's own (M64), fresh and after
+  they have carried bytes? Does a round trip beside them cost what it does beside none
+  (M106)?
+- **Method.** `crates/shards/benches/net_memory.rs`: a builder's `RUN` step
+  (`testguest conns`) opens N connections to a server of the bench's at this host's address
+  on its default route, each fresh or after B bytes each way, then makes 2,000 round trips
+  of 64 bytes on one more, and holds them all; 1 s later, past the network process's idle
+  time (one RTO), the bench reads the network process's and the VM process's memory
+  (macOS: `proc_pid_rusage`'s physical footprint and resident size; Linux: `smaps_rollup`;
+  Windows: `GetProcessMemoryInfo`). N = 0, 1,000, 10,000; B = 0, 256 KiB, 1 MiB; 3 rounds
+  each. Each change's cost to bulk transfer: `net-throughput/ab.py`, 32 MiB each way through
+  a published port, n = 300 per arm, the turns' paired median difference with its
+  bootstrap 95% interval. Apple M5 Max, macOS 26.4.1, load average 5.8 to 12, b09a55ae and
+  the changes below, 2026-10-12.
+- **Results.**
+  - Each connection's queues (`VecDeque`) kept their largest fill for the connection's
+    life: 1,000 connections idle after 256 KiB each way held 131 KiB each, 132.6 MiB of
+    footprint against 1.9 idle.
+  - Letting a queue's memory go each time it drained cost bulk transfer +0.2 ms at p50
+    [+0.1, +0.4] (2.5%): a streaming connection's queue empties between its host's reads.
+    Letting both go once they have stayed empty for an RTO, TCP's own measure of a
+    connection gone idle (RFC 7661 §4.4), cost none measurable (+0.1 ms [-0.1, +0.3]); but
+    the footprint stayed (173 MiB for 1,000 connections after 1 MiB each way, 375 MiB for
+    10,000): the C library's allocator keeps what is freed, dirty. A probe: 1,000 queues
+    of 1 MiB, filled and freed, left 1,006 MiB of footprint, which
+    `malloc_zone_pressure_relief` freed none of.
+  - Queues over memory of their own from the OS (mmap(2); VirtualAlloc on Windows),
+    unmapped as they are let go: the footprint follows what is held (below), but bulk
+    transfer cost +0.3 ms at p50 [+0.0, +0.5] (2.9%), each new connection's queue zeroing
+    fresh pages. Memory let go of kept an RTO for the next queue that grows to its size:
+    -0.0 ms [-0.2, +0.1].
+  - The network process, as built (footprint and resident size, MiB, p50 of 3):
+
+    | N | fresh | after 256 KiB each way | after 1 MiB each way |
+    |---|---|---|---|
+    | 0 | 2.6 / 9.8 | 2.6 / 9.8 | 2.6 / 9.8 |
+    | 1,000 | 3.8 / 11.0 | 4.6 / 11.8 | 4.6 / 11.8 |
+    | 10,000 | 9.7 / 16.9 | 9.5 / 16.7 | 9.5 / 16.7 |
+
+    0.7 KiB a connection at 10,000; the resident size's other 7.2 MiB are clean pages,
+    its binary's and the system's libraries', which the footprint leaves out.
+  - The VM process beside it, 89.5 MiB of footprint idle, +5.0 MiB for 1,000 fresh
+    connections and +44.4 MiB for 10,000: the guest kernel's own sockets, in the guest's
+    memory, as any VM's.
+  - A round trip beside them (µs, p50 / p99 / max of 6,000): 91 / 196 / 1,052 beside
+    none; 81 / 161 / 2,731 beside 10,000; after 1 MiB each way, 57 / 110 / 36,132.
+  - On Linux (CI's ubuntu-24.04, AMD EPYC 7763, Linux 6.17, 75d51558, `net costs` run
+    38283168175; private / proportional / resident, MiB, p50 of 3):
+
+    | N | fresh | after 256 KiB each way | after 1 MiB each way |
+    |---|---|---|---|
+    | 0 | 0.7 / 1.1 / 3.0 | 0.7 / 1.1 / 3.0 | 0.7 / 1.1 / 2.9 |
+    | 1,000 | 1.2 / 1.9 / 4.0 | 1.2 / 2.2 / 4.7 | 1.1 / 2.2 / 4.7 |
+    | 10,000 | 4.7 / 5.8 / 8.3 | 4.7 / 5.7 / 8.3 | 4.7 / 5.8 / 8.3 |
+
+    0.4 KiB a connection at 10,000, whatever it carried. The host's slab, which holds both
+    ends of each connection (the bench's server is on the host): +9.6 MiB for 1,000 and
+    +91.3 MiB for 10,000, 9.3 KiB a connection. The VM process: 71.7 MiB resident idle,
+    +2.6 MiB for 1,000 fresh connections, +41.3 MiB for 10,000. A round trip beside them
+    (µs, p50 / p99 / max of 6,000): 213 / 262 / 1,637 beside none, 215 / 267 / 620 beside
+    10,000.
+    The workloads bench's `network` there (n = 100): +2.5 ms at p50 of runs of 19 to 22 ms,
+    p90 +16.2 ms, where it was −0.6 ms at cc147e6: within the run-to-run spread of a loaded
+    CI host, which a paired build A/B there is to settle.
+  - The start (E1): `build-ab/ab.py`, one build compared with itself, its new arm's runs
+    on `--network none` (`FLAGS_NEW`), `exit 0` in the echo image, n = 200 per arm, load
+    5.8. A run on the default bridge costs, paired: +418 µs at p50 [+286, +536] of the
+    client's wall time (6,126 against 5,666 µs), +216 µs [+200, +227] of it in the guest
+    from the request to the command's status (1,142 against 925), and +202 µs [+87, +283]
+    outside it. The network process is started with the warm VM, before the request; what
+    costs is the request's network: the daemon asks the network process twice before it
+    hands the run over (the run's MAC, `NET_MAC`; then its address, peers and names), and
+    init sets eth0's MAC and address as the request comes. The workloads bench's
+    `network` (`true` less `none`, run by run, n = 50): +130 µs at p50. A run whose MAC
+    is made rather than given then took its VM's own, made with the VM, which the VM's
+    guest takes as it resumes (`control::MAC`), so neither the daemon nor init does
+    anything of it as the request comes: in the guest, from the request to the command's
+    status, −12 µs [−72, +30] (1,119 against 1,106 µs; n = 200 per arm, load 4.5 to 6.9).
+    Outside the guest the host's load drowned the difference ([−1,058, +320]); the daemon
+    asks the network process nothing for such a run on the default bridge. On CI's
+    ubuntu-24.04 (AMD EPYC 7763, cc147e6, before that change), the workloads bench's
+    `network`, n = 100: −645 µs at p50 of runs of 20 ms, as wide as its spread.
+  - macOS gives a host address 16,384 ports for its connections, which TIME_WAIT holds
+    30 s whatever their peer (`net.inet.ip.portrange`, `net.inet.tcp.msl` 15000), where
+    Linux reuses one for another peer: the bench's cases one after another, whose
+    connections the network process closed first, exhausted them (connect: EADDRNOTAVAIL,
+    which the network process now says). The bench closes its side first.
+  - What a run's network process is told before its VM has the run, asked one ask at a
+    time, then all at once with their answers read after the last (`networks::Asks`):
+    `build-ab/ab.py`, 922fcbda against it, one template, `--rm --network n` on a user
+    network, `exit 0`, n = 200 pairs, load 7.5 to 11 (other work on the host). Without
+    peers on it: −282 µs at p50 of wall time [−464, +18], −231 µs outside the guest
+    [−389, −11]. With two peers running on it: +105 µs [−474, +635], no difference that
+    resolves: each peer's own network process is still asked one after another, its
+    socket being others' to use too.
+  - What peers cost a run on their network: one home and its daemon, runs alternating
+    between a network with two peers running on it (`sleep` containers) and one with none
+    (`FLAGS_NEW="--network n"`, `FLAGS_OLD="--network m"`), n = 200 pairs: +6 µs in the
+    guest from the request to the command's status [−22, +24], +161 µs of wall time
+    [−222, +439]: none that resolves. A first comparison put the peers in a second home,
+    copied from the first: +1,118 µs in the guest [+1,089, +1,148]; but with no peers
+    running at all the two homes still differed by +302 µs there [+260, +345], so it
+    measured the homes, not the peers.
+- **Consequence (D31).** A network process's connections cost its host what they hold:
+  their queues over memory of their own, let go once idle for an RTO, kept that long for
+  the next connection's bytes, then handed back to the OS. Its memory beside a VM's own
+  is a few MiB, whatever its connections carried before. E1: a run whose MAC is made, on
+  the default bridge, costs its guest nothing of its network as the request comes, and
+  what a run's network process takes before the run goes in one round trip; peers on its
+  network cost it nothing measurable. Open: the daemon's share on a quiet host; the peers'
+  processes asked at once.
+
+### M211. The limits a build's `RUN` step starts with
+
+- **Question.** A container's process starts with Docker's limits (`defaults::limits`,
+  measured 2026-10-05). Does a `docker build` step start with the same, and does shards'?
+- **Method.** `RUN cat /proc/self/limits` over `alpine:3.20`, `--no-cache`, built by Docker
+  29.3.1's `docker build` (its BuildKit, in shards-dind) and by shards' (`shards build`,
+  2a3941ea), on an Apple M5 Max, 2026-10-12.
+- **Results.**
+
+  | limit | Docker | shards, before |
+  |---|---|---|
+  | open files | 1048576:1048576 | 1024:4096 |
+  | processes | unlimited | 271397 (the kernel's, by the builder's memory) |
+  | locked memory | unlimited | 8 MiB |
+  | core file | 0:unlimited | 0:unlimited |
+  | stack | 8 MiB:unlimited | 8 MiB:unlimited |
+  | pending signals | 256734 (its host's kernel's) | 271397 (the builder's) |
+
+  The rest alike. A step kept the builder's kernel's own, where Docker's inherit its
+  daemon's, which are its containers'.
+- **Consequence.** The builder's init takes Docker's limits before its first step, as a
+  run's init does (`defaults::limits`), and every step inherits them; `--ulimit` sets its
+  own over them. D133 no longer sizes processes by the builder's memory: they are Docker's,
+  unlimited. Pending signals stay the kernel's, by the builder's memory, as Docker's are by
+  its host's. `run_steps_start_with_dockers_limits` holds a step to them.
+
+### M212. A network process's connections to its host, on Windows (D142)
+
+- **Question.** A network process in an AppContainer reaches its host's own addresses and
+  loopback only through its spawner's dialer (D142, M204). Does that hold under many
+  connections, and what does a connection to the host cost to open, beside one elsewhere?
+- **Method.** `crates/shards/benches/net_memory.rs` on CI's windows-2025 (`net costs`): a
+  builder's step opens N connections, one after another, to the bench's server at the
+  host's own address on its default route; the guest times each connect, its SYN to its
+  SYN-ACK (`testguest conns`, `conns connect-us`).
+- **Results.** At 6f57f760 (run 38283168175), N = 1,000: the 178th connection's SYN went
+  unanswered, its connect timed out (ETIMEDOUT) 136.9 s into the step; the guest's kernel
+  gives a SYN up after 127 s (`tcp_syn_retries` 6), so the 177 before it took about 10 s,
+  some 55 ms each. That dialer shared each socket while its
+  connect was still under way and closed its own copy once told the network process had
+  one (`kind::TAKEN`), where Windows documents a shared socket's use as one process making
+  the connection and another exchanging data on it (WSADuplicateSocket); and the network
+  process waited for each answer in its event loop, every flow of its VM's held up the
+  while, each answer listing the host's adapters (GetAdaptersAddresses) to check the
+  address.
+- **Consequence (D142).** Each ask is numbered and answered once its connect has ended;
+  the dialer waits on all its connects and on the network process at once (WSAPoll), and
+  the network process asks without waiting, its guest's SYN waiting for the answer as for
+  a far end's SYN-ACK (`dials_are_answered_as_they_end_and_hold_up_nothing`). The dialer
+  checks an address by binding to it, then connects from it: one call, exact as it dials,
+  where the host's addresses change. Its connects' times on Windows, and 1,000 and 10,000
+  connections held, are M215's (net costs run 38314187451): a connect's p50 1.0 to
+  15.3 ms on windows-2025, the network process's working set 7.5 MiB beside 1,000 idle
+  connections and 16.2 to 16.5 MiB beside 10,000.
+
+### M213. What waking a network process's loop costs on Windows, by how it waits (D142)
+
+- **Question.** A network process's loop waits on its sockets, its VM's doorbell and its
+  VM's process. On Windows shards' poller (crates/net/src/poll.rs) sleeps on one event
+  every socket's network events set (WSAEventSelect) and then looks at every socket
+  (WSAPoll). The memory bench's cases of 10,000 connections ran past 15 minutes there
+  (M210, M212). What does a wake cost as connections grow, and what would another way of
+  waiting cost?
+- **Method.** `docs/research/measurements/whp-run/src/bin/m213.rs` on CI's windows-2022
+  and windows-2025 (`whp run`): between two threads, 10,000 round trips each, timed by
+  the side that starts them. A byte's round trip on one loopback TCP connection beside
+  0, 100, 1,000 and 10,000 idle ones, the loop waiting as shards' poller does; on an I/O
+  completion port its sockets are registered with, level-triggered
+  (ProcessSocketNotifications, Windows 11 and Server 2022 on), which names the ready
+  ones; and on the one event, the port asked without waiting which sockets are ready
+  (both registrations on each socket), so that the ring's events could stay waited on
+  beside it. A doorbell's round trip: two auto-reset events (shards' ring, M204);
+  a byte on an AF_UNIX socket, waited on with recv and on a completion port; and an event
+  a thread-pool wait posts to a port (RegisterWaitForSingleObject), as a loop on a port
+  would need for the ring's events. 0ddd895f (run 38297680093) and ba8b226e (run
+  38299243996, which added the last way), 2026-10-12.
+- **Results** (µs, p50 / p99, windows-2022 then windows-2025):
+
+  | beside N idle | event + WSAPoll | completion port |
+  |---|---|---|
+  | 0 | 38.6 / 53.7; 43.3 / 68.9 | 37.7 / 51.0; 41.0 / 69.1 |
+  | 100 | 40.1 / 73.8; 41.2 / 80.6 | 36.9 / 56.4; 39.7 / 64.1 |
+  | 1,000 | 678.8 / 843.7; 562.0 / 1,177.4 | 37.2 / 47.0; 40.2 / 67.4 |
+  | 10,000 | 54,413.8 / 62,052.8; 38,904.2 / 63,701.6 | 37.4 / 50.9; 40.9 / 72.9 |
+
+  The event with the port asked: 42.2 to 43.9 µs at p50 at every count on windows-2025,
+  but its slowest round trip 105 to 115 ms at every count, each the 100 ms the probe
+  bounds a wait by: the event did not come, where the port had the socket ready. On
+  windows-2022 it stalled so often that the job's 20 minutes ran out on its first count.
+  The completion port alone was slowest at 8.1 ms (10,000 idle, windows-2025).
+
+  | doorbell | windows-2022 | windows-2025 |
+  |---|---|---|
+  | two events | 22.6 / 43.1 | 26.7 / 49.0 |
+  | AF_UNIX byte, recv | 29.3 / 40.1 | 33.1 / 58.1 |
+  | AF_UNIX byte, port | 29.0 / 38.4 | 33.6 / 59.1 |
+  | event, thread-pool wait, port | 37.6 / 51.9 | 42.6 / 65.3 |
+
+- **Consequence (D142).** The network process waits on a completion port, its sockets
+  registered with it as their interest changes (ProcessSocketNotifications,
+  level-triggered), which names those ready: a wake costs what it does beside none, at
+  every count. The doorbell its VM rings it by is an AF_UNIX socket, registered with the
+  port as its sockets are, a byte a ring: 6.5 to 7.4 µs a round trip more than an event,
+  where an event a thread-pool wait posts would cost 15 µs more; its hang-up says its VM
+  has gone, as a pipe's does on Unix. The doorbell it rings its VM by stays an event,
+  which the VM process's worker waits on with its own. One event and the port asked
+  together is not taken: its wakes were lost.
+
+### M215. What changing a socket's registration with a completion port does (D142)
+
+- **Question.** The network process's poller registers each socket with its completion
+  port (ProcessSocketNotifications), level-triggered, and changes the registration as the
+  socket's interest changes. A connection waits for nothing for a while when its guest's
+  window is full and it has nothing for its host, then for its input again. Windows'
+  documentation says a re-registration overwrites a registration, a filter of
+  SOCK_NOTIFY_REGISTER_EVENT_NONE issues nothing, a disabled registration must not be
+  enabled until its DISABLE notice comes (no such notice is defined), and a removed one
+  posts a REMOVE notice. What does each way of waiting for nothing, then for input, do?
+  And one-shot registrations, which a notice disarms?
+- **Method.** `docs/research/measurements/whp-run/src/bin/m215.rs` on CI's windows-2022
+  and windows-2025 (`whp run`), 200 rounds of each way on a fresh loopback connection: a
+  persistent level-triggered registration for input; then OP_REMOVE, or OP_REMOVE and its
+  notice, or OP_DISABLE, or OP_ENABLE filtering nothing; a byte sent, any notice within
+  20 ms counted; OP_ENABLE for input again, its notice within a second counted. One-shot:
+  armed for input; a byte; its notice; 20 ms more; armed again; armed for output; armed
+  for input with nothing to read, then overwritten for output. 87058f85, run
+  38314187392, 2026-10-12.
+- **Results** (both runners alike; each change's p50 / p99 on windows-2022):
+
+  | way | refused | told while waiting for nothing | told when waiting again |
+  |---|---|---|---|
+  | remove, enable at once | 0 of 200 | 0 | 200 |
+  | remove, its notice, enable | 0 of 200 | 0 | 200 |
+  | disable, enable at once | 0 of 200 | 0 | 200 |
+  | enable filtering nothing | 200 of 200 (WSAEINVAL, 10022) | 200 | 200 |
+
+  - Enabling costs 0.8 to 1.5 µs, enabling a registration removed or disabled 8.1 to
+    12.2 µs at p50 (to 52.2 µs at p99), removing or disabling 0.5 to 0.6 µs.
+  - One-shot, 200 of 200 each: told of its input, then nothing while disarmed though the
+    byte is unread; told again once armed again; told of room to write once armed for
+    it; and an armed registration overwritten by OP_ENABLE of another filter is told of
+    what that filter asks.
+- **The network process on the one-shot poller** (87058f85, net costs run 38314187451,
+  windows-2025, 3 rounds each): every case passes, which none had past 1,000 connections
+  of 256 KiB each way before.
+
+  | connections held, bytes each way | case | round trip p50 | network process, working set / private |
+  |---|---|---|---|
+  | 0 | 4.0-4.1 s | 188-338 µs | 5.9-6.4 / 1.1-1.2 MiB |
+  | 1,000, none | 16.8-17.6 s | 292-307 µs | 7.5 / 2.1-2.2 MiB |
+  | 10,000, none | 109.6-120.3 s | 301-346 µs | 16.2-16.5 / 12.5-12.7 MiB |
+  | 10,000, 256 KiB | 120.5-136.7 s | 309-357 µs | 16.2 / 12.5 MiB |
+  | 10,000, 1 MiB | 134.6-138.2 s | 192-305 µs | 15.4-15.5 / 12.5-12.7 MiB |
+
+  Event + WSAPoll took 795-845 s a case of 10,000 idle connections, its round trip p50
+  65-71 ms, and timed out at 10,000 of 256 KiB (run 38297680089).
+- **Consequence (D142).** A filter of nothing is refused, which 527b4519 used for a
+  socket waiting for nothing: every connection that did was reset (net costs run
+  38308200096). Removing and enabling again at once was not refused in this probe, one
+  socket on an idle port, yet f5ac0f01, which paused sockets so, reset the sixth
+  connection of 256 KiB each way; one-shot registrations neither remove nor filter
+  nothing, and every case passes. The poller keeps each socket's registration one-shot: a
+  notice disarms it, and the next wait arms it again for what the socket then waits for,
+  in the call that waits; a socket that waits for nothing is left disarmed.

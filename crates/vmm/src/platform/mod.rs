@@ -20,38 +20,60 @@ mod windows;
 #[cfg(windows)]
 pub use windows::*;
 
+/// AF_UNIX stream sockets, std's on Unix and shards' own on Windows (PM M199).
+#[cfg(windows)]
+pub use shards_afunix::{RawSocket, UnixListener, UnixStream, startup as winsock};
+#[cfg(unix)]
+pub use std::os::unix::net::{UnixListener, UnixStream};
+/// A socket as the vsock device's poller names it.
+#[cfg(unix)]
+pub type RawSocket = std::os::fd::RawFd;
+
+/// A socket's [`RawSocket`], on every host.
+pub trait AsRawSocket {
+    fn raw_socket(&self) -> RawSocket;
+}
+
+#[cfg(unix)]
+impl AsRawSocket for UnixStream {
+    fn raw_socket(&self) -> RawSocket {
+        std::os::fd::AsRawFd::as_raw_fd(self)
+    }
+}
+
+#[cfg(unix)]
+impl AsRawSocket for UnixListener {
+    fn raw_socket(&self) -> RawSocket {
+        std::os::fd::AsRawFd::as_raw_fd(self)
+    }
+}
+
+#[cfg(windows)]
+impl AsRawSocket for UnixStream {
+    fn raw_socket(&self) -> RawSocket {
+        self.raw()
+    }
+}
+
+#[cfg(windows)]
+impl AsRawSocket for UnixListener {
+    fn raw_socket(&self) -> RawSocket {
+        self.raw()
+    }
+}
+
 #[cfg(target_os = "macos")]
 mod macos_thread;
 
-#[cfg(unix)]
 mod granted;
 #[cfg(unix)]
+pub use granted::open_beneath_input;
 pub use granted::{
-    dial_unix, grant_input, grant_listener, input_metadata, input_path, listen_unix, open_beneath_input,
-    open_input, set_dialer,
+    dial_unix, grant_input, grant_listener, input_metadata, input_path, listen_unix, open_input, set_dialer,
 };
 
-/// `path` for reading, and with `write` for writing too (a VM's inputs; granted
-/// descriptors are a Unix host's).
-#[cfg(not(unix))]
-pub fn open_input(path: &std::path::Path, write: bool) -> io::Result<File> {
-    std::fs::OpenOptions::new().read(true).write(write).open(path)
-}
-
-/// `path` resolved, links and all.
-#[cfg(not(unix))]
-pub fn input_path(path: &std::path::Path) -> io::Result<std::path::PathBuf> {
-    std::fs::canonicalize(path)
-}
-
-/// `path`'s metadata.
-#[cfg(not(unix))]
-pub fn input_metadata(path: &std::path::Path) -> io::Result<std::fs::Metadata> {
-    std::fs::metadata(path)
-}
-
 #[cfg(target_os = "linux")]
-pub mod seccomp;
+pub use shards_syscall_filter as seccomp;
 
 /// Applies the scheduling policy measured to give vCPUs precise timer wake-ups. Only
 /// macOS has a measured policy (docs/research/platform-measurements.md M8, M10); on other

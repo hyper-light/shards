@@ -8,11 +8,23 @@
 //! bsd/netinet/udp_usrreq.c, udp_check_pktinfo), and give a datagram's destination in
 //! `ipi_addr` (IPv6: `ipi6_addr`, RFC 3542 §6).
 
+//!
+//! On Windows (D142) the same, by WSARecvMsg and WSASendMsg with IP_PKTINFO and
+//! IPV6_PKTINFO, whose IN_PKTINFO's address a send takes as its source (ws2ipdef.h;
+//! Microsoft Learn, "IPPROTO_IP socket options").
+
+#[cfg(unix)]
 use std::io;
+#[cfg(unix)]
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
+#[cfg(unix)]
 use std::os::fd::{AsRawFd, BorrowedFd};
 
+#[cfg(windows)]
+pub use windows::{enable, recv, send};
+
 /// Has the UDP socket `fd`, of IPv6 if `v6`, say each datagram's destination.
+#[cfg(unix)]
 pub fn enable(fd: BorrowedFd<'_>, v6: bool) -> io::Result<()> {
     let on: libc::c_int = 1;
     let (level, name) = if v6 {
@@ -38,9 +50,11 @@ pub fn enable(fd: BorrowedFd<'_>, v6: bool) -> io::Result<()> {
     }
 }
 
+#[cfg(unix)]
 /// Room for one pktinfo control message of either family.
 const CONTROL: usize = 64;
 
+#[cfg(unix)]
 /// A datagram into `buf`: its length, its sender, and the address it came to, if the
 /// kernel said.
 pub fn recv(sock: &UdpSocket, buf: &mut [u8]) -> io::Result<(usize, SocketAddr, Option<IpAddr>)> {
@@ -82,6 +96,7 @@ pub fn recv(sock: &UdpSocket, buf: &mut [u8]) -> io::Result<(usize, SocketAddr, 
     Ok((n, peer, to))
 }
 
+#[cfg(unix)]
 /// Sends `payload` to `peer`, from host address `from` if given.
 pub fn send(sock: &UdpSocket, payload: &[u8], peer: SocketAddr, from: Option<IpAddr>) -> io::Result<usize> {
     let (mut name, namelen) = sockaddr_of(peer);
@@ -137,6 +152,7 @@ pub fn send(sock: &UdpSocket, payload: &[u8], peer: SocketAddr, from: Option<IpA
     usize::try_from(n).map_err(|_| io::Error::last_os_error())
 }
 
+#[cfg(unix)]
 /// The address in `s`, of IPv4 or IPv6.
 fn sockaddr(s: &libc::sockaddr_storage) -> Option<SocketAddr> {
     match libc::c_int::from(s.ss_family) {
@@ -160,6 +176,7 @@ fn sockaddr(s: &libc::sockaddr_storage) -> Option<SocketAddr> {
     }
 }
 
+#[cfg(unix)]
 /// `at` as a sockaddr_storage and its length.
 pub fn sockaddr_of(at: SocketAddr) -> (libc::sockaddr_storage, libc::socklen_t) {
     // SAFETY: an all-zero sockaddr_storage is valid.
@@ -197,13 +214,281 @@ pub fn sockaddr_of(at: SocketAddr) -> (libc::sockaddr_storage, libc::socklen_t) 
     (storage, len as libc::socklen_t)
 }
 
+#[cfg(windows)]
+mod windows {
+    use std::io;
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
+    use std::sync::OnceLock;
+
+    use windows_sys::Win32::Networking::WinSock::{
+        AF_INET, AF_INET6, CMSGHDR, IN_PKTINFO, IN6_PKTINFO, IP_PKTINFO, IPPROTO_IP, IPPROTO_IPV6,
+        IPV6_PKTINFO, LPFN_WSARECVMSG, SIO_GET_EXTENSION_FUNCTION_POINTER, SOCKADDR, SOCKADDR_IN,
+        SOCKADDR_IN6, SOCKADDR_INET, SOCKET_ERROR, WSABUF, WSAGetLastError, WSAID_WSARECVMSG, WSAIoctl,
+        WSAMSG, WSASendMsg, setsockopt,
+    };
+
+    use crate::sys::{AsRawSock as _, RawSock};
+
+    /// Room for one pktinfo control message of either family.
+    const CONTROL: usize = 64;
+
+    fn last() -> io::Error {
+        // SAFETY: no arguments.
+        io::Error::from_raw_os_error(unsafe { WSAGetLastError() })
+    }
+
+    /// WSA_CMSGHDR_ALIGN and WSA_CMSGDATA_ALIGN (ws2def.h): a header aligned as a
+    /// WSACMSGHDR, data as a pointer.
+    const fn align(n: usize) -> usize {
+        (n + std::mem::align_of::<usize>() - 1) & !(std::mem::align_of::<usize>() - 1)
+    }
+
+    /// Has the UDP socket `sock`, of IPv6 if `v6`, say each datagram's destination.
+    pub fn enable(sock: RawSock, v6: bool) -> io::Result<()> {
+        let on: u32 = 1;
+        let (level, name) = if v6 {
+            (IPPROTO_IPV6, IPV6_PKTINFO)
+        } else {
+            (IPPROTO_IP, IP_PKTINFO)
+        };
+        // SAFETY: a DWORD of its length, on a socket of the caller's.
+        if unsafe { setsockopt(sock, level, name, (&raw const on).cast(), 4) } != 0 {
+            return Err(last());
+        }
+        Ok(())
+    }
+
+    /// WSARecvMsg, which Winsock gives by its GUID alone (SIO_GET_EXTENSION_FUNCTION_POINTER),
+    /// asked of `sock` once a process.
+    fn recvmsg(sock: RawSock) -> io::Result<LPFN_WSARECVMSG> {
+        static FOUND: OnceLock<LPFN_WSARECVMSG> = OnceLock::new();
+        if let Some(f) = FOUND.get() {
+            return Ok(*f);
+        }
+        let guid = WSAID_WSARECVMSG;
+        let mut f: LPFN_WSARECVMSG = None;
+        let mut got = 0u32;
+        // SAFETY: the GUID in, a function pointer's room out, each of its own size.
+        let r = unsafe {
+            WSAIoctl(
+                sock,
+                SIO_GET_EXTENSION_FUNCTION_POINTER,
+                (&raw const guid).cast(),
+                std::mem::size_of_val(&guid) as u32,
+                (&raw mut f).cast(),
+                std::mem::size_of::<LPFN_WSARECVMSG>() as u32,
+                &raw mut got,
+                std::ptr::null_mut(),
+                None,
+            )
+        };
+        if r == SOCKET_ERROR || f.is_none() {
+            return Err(last());
+        }
+        Ok(*FOUND.get_or_init(|| f))
+    }
+
+    /// A datagram into `buf`: its length, its sender, and the address it came to, if
+    /// Winsock said.
+    pub fn recv(sock: &UdpSocket, buf: &mut [u8]) -> io::Result<(usize, SocketAddr, Option<IpAddr>)> {
+        let raw = sock.raw_sock();
+        let Some(recv_msg) = recvmsg(raw)? else {
+            return Err(io::Error::other("no WSARecvMsg"));
+        };
+        // SAFETY: an all-zero SOCKADDR_INET is a valid value.
+        let mut from: SOCKADDR_INET = unsafe { std::mem::zeroed() };
+        let mut control = [0u64; CONTROL / 8];
+        let mut data = WSABUF {
+            len: u32::try_from(buf.len()).unwrap_or(u32::MAX),
+            buf: buf.as_mut_ptr(),
+        };
+        let mut msg = WSAMSG {
+            name: (&raw mut from).cast::<SOCKADDR>(),
+            namelen: std::mem::size_of::<SOCKADDR_INET>() as i32,
+            lpBuffers: &raw mut data,
+            dwBufferCount: 1,
+            Control: WSABUF {
+                len: CONTROL as u32,
+                buf: control.as_mut_ptr().cast(),
+            },
+            dwFlags: 0,
+        };
+        let mut n = 0u32;
+        // SAFETY: msg names buffers of the lengths it gives, which outlive the call;
+        // synchronous.
+        if unsafe { recv_msg(raw, &raw mut msg, &raw mut n, std::ptr::null_mut(), None) } != 0 {
+            return Err(last());
+        }
+        let peer = address(&from).ok_or_else(|| io::Error::other("a datagram from no address"))?;
+        let mut to = None;
+        let have = (msg.Control.len as usize).min(CONTROL);
+        let mut at = 0usize;
+        let header = std::mem::size_of::<CMSGHDR>();
+        let bytes = control.as_ptr().cast::<u8>();
+        while at + header <= have {
+            // SAFETY: a header within what WSARecvMsg wrote, read unaligned.
+            let c = unsafe { bytes.add(at).cast::<CMSGHDR>().read_unaligned() };
+            let data_at = at + align(header);
+            if c.cmsg_len < header || at + c.cmsg_len > have {
+                break;
+            }
+            if c.cmsg_level == IPPROTO_IP && c.cmsg_type == IP_PKTINFO {
+                if data_at + std::mem::size_of::<IN_PKTINFO>() <= have {
+                    // SAFETY: the message's data, within what was written, read unaligned.
+                    let info = unsafe { bytes.add(data_at).cast::<IN_PKTINFO>().read_unaligned() };
+                    // SAFETY: an IN_ADDR's union, every field of which is its bytes.
+                    let addr = unsafe { info.ipi_addr.S_un.S_addr };
+                    to = Some(IpAddr::V4(Ipv4Addr::from(addr.to_ne_bytes())));
+                }
+            } else if c.cmsg_level == IPPROTO_IPV6
+                && c.cmsg_type == IPV6_PKTINFO
+                && data_at + std::mem::size_of::<IN6_PKTINFO>() <= have
+            {
+                // SAFETY: as above.
+                let info = unsafe { bytes.add(data_at).cast::<IN6_PKTINFO>().read_unaligned() };
+                // SAFETY: an IN6_ADDR's union, every field of which is its bytes.
+                to = Some(IpAddr::V6(Ipv6Addr::from(unsafe { info.ipi6_addr.u.Byte })));
+            }
+            at += align(c.cmsg_len);
+        }
+        Ok((n as usize, peer, to))
+    }
+
+    /// Sends `payload` to `peer`, from host address `from` if given.
+    pub fn send(
+        sock: &UdpSocket,
+        payload: &[u8],
+        peer: SocketAddr,
+        from: Option<IpAddr>,
+    ) -> io::Result<usize> {
+        let (mut name, namelen) = crate::sys::winsock_addr(peer);
+        let mut control = [0u64; CONTROL / 8];
+        let mut data = WSABUF {
+            len: u32::try_from(payload.len()).unwrap_or(u32::MAX),
+            buf: payload.as_ptr().cast_mut(),
+        };
+        let header = std::mem::size_of::<CMSGHDR>();
+        let mut control_len = 0usize;
+        if let Some(from) = from {
+            let bytes = control.as_mut_ptr().cast::<u8>();
+            let (level, kind, len) = match from {
+                IpAddr::V4(_) => (IPPROTO_IP, IP_PKTINFO, std::mem::size_of::<IN_PKTINFO>()),
+                IpAddr::V6(_) => (IPPROTO_IPV6, IPV6_PKTINFO, std::mem::size_of::<IN6_PKTINFO>()),
+            };
+            let c = CMSGHDR {
+                cmsg_len: align(header) + len,
+                cmsg_level: level,
+                cmsg_type: kind,
+            };
+            control_len = align(header) + align(len);
+            // SAFETY: a header and its data within `control`, which holds CONTROL bytes,
+            // more than either message's space; written unaligned.
+            unsafe {
+                bytes.cast::<CMSGHDR>().write_unaligned(c);
+                match from {
+                    IpAddr::V4(v4) => {
+                        // SAFETY: an all-zero IN_PKTINFO is a valid value.
+                        let mut info: IN_PKTINFO = std::mem::zeroed();
+                        info.ipi_addr.S_un.S_addr = u32::from_ne_bytes(v4.octets());
+                        bytes
+                            .add(align(header))
+                            .cast::<IN_PKTINFO>()
+                            .write_unaligned(info);
+                    }
+                    IpAddr::V6(v6) => {
+                        // SAFETY: as above.
+                        let mut info: IN6_PKTINFO = std::mem::zeroed();
+                        info.ipi6_addr.u.Byte = v6.octets();
+                        bytes
+                            .add(align(header))
+                            .cast::<IN6_PKTINFO>()
+                            .write_unaligned(info);
+                    }
+                }
+            }
+        }
+        let msg = WSAMSG {
+            name: (&raw mut name).cast::<SOCKADDR>(),
+            namelen,
+            lpBuffers: &raw mut data,
+            dwBufferCount: 1,
+            Control: WSABUF {
+                len: control_len as u32,
+                buf: if control_len == 0 {
+                    std::ptr::null_mut()
+                } else {
+                    control.as_mut_ptr().cast()
+                },
+            },
+            dwFlags: 0,
+        };
+        let mut sent = 0u32;
+        // SAFETY: msg names buffers of the lengths it gives, which outlive the call;
+        // synchronous.
+        if unsafe {
+            WSASendMsg(
+                sock.raw_sock(),
+                &raw const msg,
+                0,
+                &raw mut sent,
+                std::ptr::null_mut(),
+                None,
+            )
+        } != 0
+        {
+            return Err(last());
+        }
+        Ok(sent as usize)
+    }
+
+    /// The address in `s`, of IPv4 or IPv6.
+    fn address(s: &SOCKADDR_INET) -> Option<SocketAddr> {
+        // SAFETY: the union's family, which every member begins with.
+        match unsafe { s.si_family } {
+            AF_INET => {
+                // SAFETY: an AF_INET address is a SOCKADDR_IN.
+                let sin: &SOCKADDR_IN = unsafe { &s.Ipv4 };
+                // SAFETY: an IN_ADDR's union, every field of which is its bytes.
+                let addr = unsafe { sin.sin_addr.S_un.S_addr };
+                Some(SocketAddr::new(
+                    IpAddr::V4(Ipv4Addr::from(addr.to_ne_bytes())),
+                    u16::from_be(sin.sin_port),
+                ))
+            }
+            AF_INET6 => {
+                // SAFETY: an AF_INET6 address is a SOCKADDR_IN6.
+                let sin6: &SOCKADDR_IN6 = unsafe { &s.Ipv6 };
+                // SAFETY: an IN6_ADDR's union, every field of which is its bytes.
+                let octets = unsafe { sin6.sin6_addr.u.Byte };
+                Some(SocketAddr::new(
+                    IpAddr::V6(Ipv6Addr::from(octets)),
+                    u16::from_be(sin6.sin6_port),
+                ))
+            }
+            _ => None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::{IpAddr, Ipv6Addr, SocketAddr, UdpSocket};
+
+    /// Has `server` say each datagram's destination, as each host takes the socket.
+    fn enabled(server: &UdpSocket, v6: bool) {
+        #[cfg(unix)]
+        enable(std::os::fd::AsFd::as_fd(server), v6).unwrap();
+        #[cfg(windows)]
+        enable(crate::sys::AsRawSock::raw_sock(server), v6).unwrap();
+    }
 
     /// A datagram to a socket at every address says which it came to, and the answer
     /// leaves from it: here the host's own address, asked from its loopback, where the
-    /// route back to 127.0.0.1 would pick 127.0.0.1.
+    /// route back to 127.0.0.1 would pick 127.0.0.1. Unix's: Windows' strong host model
+    /// sends nothing from a host address to its loopback (WSAENETUNREACH, CI run
+    /// 38235548677); its published UDP ports come with its daemon (D143).
+    #[cfg(unix)]
     #[test]
     fn answers_leave_from_the_address_asked() {
         let Ok(IpAddr::V4(asked)) = UdpSocket::bind("0.0.0.0:0")
@@ -215,7 +500,7 @@ mod tests {
             return;
         };
         let server = UdpSocket::bind("0.0.0.0:0").unwrap();
-        enable(std::os::fd::AsFd::as_fd(&server), false).unwrap();
+        enabled(&server, false);
         let port = server.local_addr().unwrap().port();
         let client = UdpSocket::bind("127.0.0.1:0").unwrap();
         client
@@ -243,7 +528,7 @@ mod tests {
     #[test]
     fn ipv6_datagrams_say_where_they_came_to() {
         let server = UdpSocket::bind("[::]:0").unwrap();
-        enable(std::os::fd::AsFd::as_fd(&server), true).unwrap();
+        enabled(&server, true);
         let port = server.local_addr().unwrap().port();
         let client = UdpSocket::bind("[::1]:0").unwrap();
         client

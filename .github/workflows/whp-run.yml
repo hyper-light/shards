@@ -1,0 +1,108 @@
+name: whp run
+
+# WHP partitions run on GitHub's Windows runners (docs/research/measurements/whp-run): what
+# the hypervisor offers, what a guest sees of it, and what an exit costs (PM M197); an AP's
+# start, interrupts, register access, doorbells and cancels (PM M198); a partition run from
+# an AppContainer (PM M200); the VM process confined as shards would confine it (PM M201);
+# dynamic code forbidden once a partition is set up (PM M202); sockets and files a confined VM
+# process is handed (PM M203); what a confined network process may reach, and its doorbells
+# (PM M204); the CPUID a partition's vCPUs see, and what a VMM may change of it (PM M206);
+# the environment a child in an AppContainer must be given, and what it has (PM M208); what
+# waking a network process's loop costs, by how it waits (PM M213); what changing a socket's
+# registration with a completion port does (PM M215).
+# Runs when the probes change, or when asked.
+on:
+  push:
+    paths:
+      - docs/research/measurements/whp-run/**
+      - .github/workflows/whp-run.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  TOOLCHAIN: "1.98.0"
+
+jobs:
+  run:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [windows-2022, windows-2025]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Install pinned Rust
+        shell: bash
+        run: rustup toolchain install "$TOOLCHAIN" --profile minimal --target x86_64-pc-windows-msvc
+      - name: Host
+        shell: pwsh
+        run: |
+          (Get-CimInstance Win32_Processor).Name
+          [System.Environment]::OSVersion.VersionString
+      - name: M197
+        shell: bash
+        working-directory: docs/research/measurements/whp-run
+        run: cargo run --release --bin whp-run
+      - name: M198
+        if: ${{ !cancelled() }}
+        shell: bash
+        working-directory: docs/research/measurements/whp-run
+        run: cargo run --release --bin m198
+      # A standard user, as the runner's own is an administrator: a throwaway account of
+      # this runner's alone, its password made here and never shown.
+      - name: M200
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        working-directory: docs/research/measurements/whp-run
+        run: |
+          $chars = [char[]]'abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+          $p = -join (1..24 | ForEach-Object { $chars[(Get-Random -Maximum $chars.Length)] }) + '!7a'
+          New-LocalUser -Name shards-probe -Password (ConvertTo-SecureString $p -AsPlainText -Force) | Out-Null
+          $env:SHARDS_PROBE_USER = 'shards-probe'
+          $env:SHARDS_PROBE_PASSWORD = $p
+          cargo run --release --bin m200
+          Remove-LocalUser -Name shards-probe
+      - name: M201
+        if: ${{ !cancelled() }}
+        shell: bash
+        working-directory: docs/research/measurements/whp-run
+        run: cargo run --release --bin m201
+      - name: M202
+        if: ${{ !cancelled() }}
+        shell: bash
+        working-directory: docs/research/measurements/whp-run
+        run: cargo run --release --bin m202
+      - name: M203
+        if: ${{ !cancelled() }}
+        shell: bash
+        working-directory: docs/research/measurements/whp-run
+        run: cargo run --release --bin m203
+      - name: M204
+        if: ${{ !cancelled() }}
+        shell: bash
+        working-directory: docs/research/measurements/whp-run
+        run: cargo run --release --bin m204
+      - name: M206
+        if: ${{ !cancelled() }}
+        shell: bash
+        working-directory: docs/research/measurements/whp-run
+        run: cargo run --release --bin m206
+      - name: M208
+        if: ${{ !cancelled() }}
+        shell: bash
+        working-directory: docs/research/measurements/whp-run
+        run: cargo run --release --bin m208
+      # Before M213, whose 10,000 idle sockets take most of the job's time.
+      - name: M215
+        if: ${{ !cancelled() }}
+        shell: bash
+        working-directory: docs/research/measurements/whp-run
+        run: cargo run --release --bin m215
+      - name: M213
+        if: ${{ !cancelled() }}
+        shell: bash
+        working-directory: docs/research/measurements/whp-run
+        run: cargo run --release --bin m213

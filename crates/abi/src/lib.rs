@@ -79,6 +79,11 @@ pub mod control {
     /// the guest's driver to plug or unplug to it (the device's `requested_size`, VIRTIO 1.3
     /// §5.15). Read: what is asked for now.
     pub const HOTPLUG_REQUEST: u64 = 0x28;
+    /// Read, 64 bits in one access: the MAC the VMM was given for the guest's network
+    /// device, its six octets in the low 48 bits, the first lowest; 0 where it has none. A
+    /// VM restored from a template is given its own as it is made, which its guest takes
+    /// as it resumes, so that no run waits for it (D31, E1).
+    pub const MAC: u64 = 0x30;
 
     pub const SNAPSHOT_NOW: u32 = 1;
 }

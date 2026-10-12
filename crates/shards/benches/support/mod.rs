@@ -2,13 +2,19 @@
 //! statistics, and the host/OS/revision stamp every result carries (CLAUDE.md).
 #![allow(dead_code)]
 
+#[cfg(unix)]
 use std::io::{BufRead, BufReader, Write};
-use std::process::{Command, Stdio};
+use std::process::Command;
+#[cfg(unix)]
+use std::process::Stdio;
+#[cfg(unix)]
 use std::sync::mpsc;
+#[cfg(unix)]
 use std::time::{Duration, Instant};
 
 use crate::common;
 
+#[cfg(unix)]
 const TIMEOUT: Duration = Duration::from_secs(60);
 
 pub struct Sample {
@@ -18,15 +24,18 @@ pub struct Sample {
 /// Runs `shards-vm <args>`, the VMM's own process without the `shards` command in front,
 /// to completion. With `hold`, waits for `shards-ready` on stderr, then sends the start
 /// line.
+#[cfg(unix)]
 pub fn run(args: &[String], hold: bool) -> Sample {
     measure(common::shards_vm(), args, hold, &[])
 }
 
 /// Runs the `shards` command as a user runs it, with `env` added to its environment.
+#[cfg(unix)]
 pub fn run_env(args: &[String], hold: bool, env: &[(&str, &std::ffi::OsStr)]) -> Sample {
     measure(common::shards(), args, hold, env)
 }
 
+#[cfg(unix)]
 #[allow(clippy::zombie_processes)] // reaped by wait4, not Child::wait
 fn measure(bin: &std::path::Path, args: &[String], hold: bool, env: &[(&str, &std::ffi::OsStr)]) -> Sample {
     let start = Instant::now();
@@ -134,6 +143,19 @@ fn host() -> String {
             command_output("sysctl", &["-n", "machdep.cpu.brand_string"]),
             command_output("sysctl", &["-n", "hw.model"])
         )
+    } else if cfg!(windows) {
+        // `ProcessorNameString    REG_SZ    NAME`: the brand string, as CPUID gives it.
+        let out = command_output(
+            "reg",
+            &[
+                "query",
+                r"HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0",
+                "/v",
+                "ProcessorNameString",
+            ],
+        );
+        out.split_once("REG_SZ")
+            .map_or(out.clone(), |(_, name)| name.trim().to_string())
     } else {
         std::fs::read_to_string("/proc/cpuinfo")
             .ok()
@@ -154,6 +176,8 @@ fn os() -> String {
             command_output("sw_vers", &["-productVersion"]),
             command_output("sw_vers", &["-buildVersion"])
         )
+    } else if cfg!(windows) {
+        command_output("cmd", &["/c", "ver"])
     } else {
         format!(
             "{} {}",
@@ -163,9 +187,12 @@ fn os() -> String {
     }
 }
 
-/// The host's 1, 5 and 15 minute load averages: how busy it was with other work.
+/// The host's 1, 5 and 15 minute load averages: how busy it was with other work. Windows
+/// keeps none.
 fn load() -> String {
-    if cfg!(target_os = "macos") {
+    if cfg!(windows) {
+        "none kept".into()
+    } else if cfg!(target_os = "macos") {
         command_output("sysctl", &["-n", "vm.loadavg"])
             .trim_matches(|c: char| c == '{' || c == '}' || c.is_whitespace())
             .to_string()

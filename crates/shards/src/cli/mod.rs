@@ -27,8 +27,7 @@ mod save;
 mod screens;
 #[cfg(unix)]
 mod show;
-#[cfg(unix)]
-mod terminal;
+pub(crate) mod terminal;
 pub(crate) mod version;
 
 /// `docker run`'s status when it could not run the command at all.
@@ -929,9 +928,105 @@ fn vm(args: &[OsString]) -> ExitCode {
 }
 
 /// `shards run --kernel` and `shards restore`: become shards-vm.
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", windows)))]
 fn vm(args: &[OsString]) -> ExitCode {
     instead(args)
+}
+
+/// `shards run --kernel` and `shards restore` on Windows: shards-vm, started confined (D141):
+/// in an AppContainer of its own, which holds the hypervisor's capabilities and reaches
+/// none of its user's files or sockets; in a Job that ends it as this process ends and lets
+/// it start nothing; with Windows' mitigations (PM M200-M203). This process then answers
+/// what it asks for, as macOS's broker does (`grant_answer`), until it has all it needs,
+/// and exits as it does. Windows has no exec: the VM is a child, which takes the console's
+/// Ctrl-C itself, while this process waits to say how it ended.
+#[cfg(windows)]
+fn vm(args: &[OsString]) -> ExitCode {
+    use std::os::windows::io::{AsHandle as _, OwnedHandle};
+    if !matches!(args.first().and_then(|a| a.to_str()), Some("run" | "restore")) {
+        return instead(args);
+    }
+    let bin = match vm_binary() {
+        Ok(bin) => bin,
+        Err(e) => return failed(&e),
+    };
+    let container = match crate::helpers::containers().and_then(|records| {
+        shards_ipc::AppContainer::new("vm", &records).map_err(|e| format!("the VM's AppContainer: {e}"))
+    }) {
+        Ok(container) => container,
+        Err(e) => return failed(&e),
+    };
+    // A pipe each way: the VM's requests, and the answers.
+    let pipes = std::io::pipe().and_then(|asks| Ok((asks, std::io::pipe()?)));
+    let ((asks_from, asks_to), (answers_from, answers_to)) = match pipes {
+        Ok(pipes) => pipes,
+        Err(e) => return failed(&format!("the VM's grants: {e}")),
+    };
+    // The VM process starts where its container may not read: relative paths are of this
+    // directory.
+    let cwd = match std::env::current_dir() {
+        Ok(cwd) => cwd,
+        Err(e) => return failed(&format!("the working directory: {e}")),
+    };
+    let mut with: Vec<&std::ffi::OsStr> = Vec::with_capacity(args.len() + 2);
+    with.extend(args.first().map(OsString::as_os_str));
+    with.push("--cwd".as_ref());
+    with.push(cwd.as_os_str());
+    with.extend(args.iter().skip(1).map(OsString::as_os_str));
+    let (asks_to, answers_from) = (OwnedHandle::from(asks_to), OwnedHandle::from(answers_from));
+    let env = crate::netproc::child_env();
+    let spawned = shards_ipc::spawn(&shards_ipc::Spawn {
+        program: &bin,
+        args: &with,
+        grants_at: 1,
+        given: &[
+            shards_ipc::Given {
+                name: "ask",
+                handle: asks_to.as_handle(),
+            },
+            shards_ipc::Given {
+                name: "answer",
+                handle: answers_from.as_handle(),
+            },
+        ],
+        stdin: Some(std::io::stdin().as_handle()),
+        stdout: std::io::stdout().as_handle(),
+        stderr: std::io::stderr().as_handle(),
+        sockets: &[],
+        env: &crate::netproc::env_pairs(&env),
+        container: Some(&container),
+        holds: shards_ipc::Holds::Hypervisor,
+    });
+    // The VM's ends are its own now: its exit ends the requests.
+    drop((asks_to, answers_from));
+    let child = match spawned {
+        Ok(child) => child,
+        Err(e) => return failed(&format!("{}: {e}", bin.display())),
+    };
+    // Its Ctrl-C is the VM's, which shares this console; made after it, so that it keeps
+    // the default (SetConsoleCtrlHandler: the setting is inherited).
+    // SAFETY: no handler, ignoring Ctrl-C in this process.
+    unsafe { windows_sys::Win32::System::Console::SetConsoleCtrlHandler(None, 1) };
+    let link = crate::grant::Link {
+        from: std::fs::File::from(OwnedHandle::from(asks_from)),
+        to: std::fs::File::from(OwnedHandle::from(answers_to)),
+    };
+    let ended = std::thread::scope(|scope| {
+        let serving = std::thread::Builder::new()
+            .name("grants".into())
+            .spawn_scoped(scope, || crate::grant_answer::serve(&link, &child));
+        let ended = child.wait();
+        // What it could not grant, the VM was told and said.
+        if let Ok(serving) = serving {
+            let _ = serving.join();
+        }
+        ended
+    });
+    drop(container);
+    match ended {
+        Ok(code) => ExitCode::from(u8::try_from(code).unwrap_or(1)),
+        Err(e) => failed(&format!("waiting for the VM: {e}")),
+    }
 }
 
 fn failed(message: &str) -> ExitCode {

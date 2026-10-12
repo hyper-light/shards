@@ -10,11 +10,24 @@ rust-version.workspace = true
 [lints]
 workspace = true
 
-[target.'cfg(unix)'.dependencies]
-libc = { workspace = true }
+[dependencies]
 shards-abi = { path = "../abi" }
 shards-netring = { path = "../netring" }
 shards-ipc = { path = "../ipc" }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+shards-syscall-filter = { path = "../syscall-filter" }
+
+[target.'cfg(windows)'.dependencies]
+shards-afunix = { path = "../afunix" }
+windows-sys = { workspace = true, features = [
+  "Win32_NetworkManagement_IpHelper",
+  "Win32_NetworkManagement_Ndis",
+  "Win32_System_Threading",
+] }
 
 [dev-dependencies]
 shards-testdir = { path = "../testdir" }

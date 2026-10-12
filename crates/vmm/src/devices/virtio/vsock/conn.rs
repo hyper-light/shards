@@ -8,14 +8,13 @@
 use std::io::{self, Write as _};
 use std::net::Shutdown;
 use std::num::Wrapping;
-use std::os::fd::AsRawFd;
-use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};
 
 use super::packet::{HOST_CID, Header, TYPE_STREAM, op, shutdown};
 use super::{Span, readv, writev};
 use crate::debug;
 use crate::memory::GuestMemory;
+use crate::platform::{AsRawSocket, RawSocket, UnixStream};
 
 /// Receive buffer advertised per connection (`buf_alloc`), which bounds what we hold for
 /// a host socket that is not reading. Firecracker's CONN_TX_BUF_SIZE.
@@ -88,6 +87,18 @@ impl std::fmt::Debug for Conn {
     }
 }
 
+/// A connection ends with its write side shut down, then its socket closed, as Unix's
+/// close ends it: on Windows a socket whose last reference its process's exit closes loses
+/// what its peer had not read, and one shut down and closed first keeps it (PM M199).
+#[cfg(windows)]
+impl Drop for Conn {
+    fn drop(&mut self) {
+        if !self.host_write_shut {
+            let _ = self.stream.shutdown(Shutdown::Write);
+        }
+    }
+}
+
 impl Conn {
     fn new(stream: UnixStream, guest_cid: u64, local_port: u32, peer_port: u32, phase: Phase) -> Conn {
         Conn {
@@ -137,8 +148,8 @@ impl Conn {
         c
     }
 
-    pub fn fd(&self) -> i32 {
-        self.stream.as_raw_fd()
+    pub fn fd(&self) -> RawSocket {
+        self.stream.raw_socket()
     }
 
     pub fn has_pending_rx(&self) -> bool {
@@ -276,7 +287,7 @@ impl Conn {
             self.pending.rw = false;
             return Some(self.header(op::CREDIT_REQUEST));
         }
-        match readv(self.fd(), space, credit as usize) {
+        match readv(&self.stream, space, credit as usize) {
             Ok(0) => {
                 // A half-close: the host may still read what the guest sends.
                 self.pending.rw = false;
@@ -366,7 +377,7 @@ impl Conn {
         }
         let mut written = 0;
         if self.tx_buf.is_empty() {
-            written = match writev(self.fd(), payload, total) {
+            written = match writev(&self.stream, payload, total) {
                 Ok(n) => n,
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => 0,
                 Err(e) => return Err(e),

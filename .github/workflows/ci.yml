@@ -126,7 +126,7 @@ jobs:
             Linux) ls -l /dev/kvm 2>&1 || true ;;
             macOS) sysctl kern.hv_support || true ;;
             Windows) powershell -NoProfile -Command \
-              "(Get-CimInstance Win32_ComputerSystem).HypervisorPresent; (Get-WindowsOptionalFeature -Online -FeatureName HypervisorPlatform).State" || true ;;
+              "(Get-CimInstance Win32_Processor).Name; (Get-CimInstance Win32_ComputerSystem).HypervisorPresent; (Get-WindowsOptionalFeature -Online -FeatureName HypervisorPlatform).State" || true ;;
           esac
       - name: Lints (production code never panics; clippy.toml exempts tests)
         shell: bash
@@ -143,7 +143,10 @@ jobs:
         timeout-minutes: 30
         shell: bash
         run: |
-          if [ "${{ matrix.target }}" = x86_64-unknown-linux-gnu ]; then export SHARDS_REQUIRE_VMS=1; fi
+          case "${{ matrix.target }}" in
+            # KVM on Linux's, WHP on Windows' (D140).
+            x86_64-unknown-linux-gnu | x86_64-pc-windows-msvc) export SHARDS_REQUIRE_VMS=1 ;;
+          esac
           cargo test --locked --workspace --profile test-release --no-fail-fast --target ${{ matrix.target }}
       # The stack guards are release's (crates/rego: stack::LEAF, RULE_STEP, and the policy
       # thread's STACK): measured on release, whose fat LTO puts more in each frame than

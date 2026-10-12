@@ -1,10 +1,14 @@
 //! shards-net: one microVM's network process (docs/design/architecture.md D31). Its
 //! spawner hands it the VM's frame ring and doorbells; it serves the guest's flows until
-//! the VM goes, which its doorbell's hang-up says.
+//! the VM goes, which its doorbell's hang-up says (Windows: its VM's process's end).
 //!
 //!     shards-net --ring REGION,WAKE_ME,WAKE_PEER --policy allow|deny|proxy --mac MAC
 //!         --bridge SUBNET/BITS [--control FD] [--release FD]
 //!         [--proxy-port PORT --proxy-socket PATH]
+//!
+//! On Windows (D142) `--grants HANDLE` takes `--ring`'s place, and `--control`,
+//! `--release` and `--dialer` name sockets handed by name; `--host-address ADDR`, each of
+//! the host's own, which its spawner dials for it.
 
 use std::io::Write;
 use std::process::ExitCode;
@@ -19,6 +23,147 @@ fn main() -> ExitCode {
     }
 }
 
+/// What the command line says, on every host; where its ring, controls and dialer are,
+/// each host's own way.
+struct Args {
+    /// The daemon's socket, on which published ports come, and the VM's, on which they go:
+    /// a descriptor on Unix, a name the spawner handed it by on Windows.
+    controls: Vec<(shards_net::Control, String)>,
+    ring: Option<String>,
+    mac: Option<[u8; 6]>,
+    /// No default: a spawner that forgot to say gets an error, not open access.
+    policy: Option<Option<shards_net::Policy>>,
+    /// A build's proxy (D110): the gateway's port its one flow is to, and the socket that
+    /// flow goes to.
+    proxy_port: Option<u16>,
+    proxy_socket: Option<std::path::PathBuf>,
+    /// Its spawner's dialer: of a build's proxy's socket, and on Windows of the host's own
+    /// addresses.
+    dialer: Option<String>,
+    /// The host's own addresses (Windows), which its AppContainer keeps it from (PM M204).
+    #[cfg(windows)]
+    host_addresses: Vec<std::net::IpAddr>,
+    /// Nor a subnet of its own: the guest's is its spawner's to elect.
+    bridge: Option<shards_net::bridge::Bridge>,
+    /// The host's resolvers, which a guest granted egress asks its names of (D59).
+    resolvers: Vec<(std::net::Ipv4Addr, u16)>,
+    /// What its spawner handed it (Windows: `--grants HANDLE`, shards_ipc's pipe).
+    grants: Option<String>,
+}
+
+fn parse() -> Result<Args, String> {
+    let mut a = Args {
+        controls: Vec::new(),
+        ring: None,
+        mac: None,
+        policy: None,
+        proxy_port: None,
+        proxy_socket: None,
+        dialer: None,
+        #[cfg(windows)]
+        host_addresses: Vec::new(),
+        bridge: None,
+        resolvers: Vec::new(),
+        grants: None,
+    };
+    let mut args = std::env::args_os().skip(1);
+    while let Some(arg) = args.next() {
+        let value = |args: &mut dyn Iterator<Item = std::ffi::OsString>, name: &str| {
+            args.next()
+                .and_then(|v| v.into_string().ok())
+                .ok_or_else(|| format!("{name} needs a value"))
+        };
+        match arg.to_str() {
+            Some("--grants") => a.grants = Some(value(&mut args, "--grants")?),
+            Some("--ring") => a.ring = Some(value(&mut args, "--ring")?),
+            // The daemon's, which publishes ports, and the VM's, which lets them go.
+            Some("--control") => a
+                .controls
+                .push((shards_net::Control::Daemon, value(&mut args, "--control")?)),
+            Some("--release") => a
+                .controls
+                .push((shards_net::Control::Release, value(&mut args, "--release")?)),
+            Some("--mac") => {
+                let v = value(&mut args, "--mac")?;
+                a.mac = Some(v.parse::<shards_net::Mac>().map_err(|e| format!("--mac {e}"))?.0);
+            }
+            Some("--bridge") => {
+                a.bridge = Some(
+                    value(&mut args, "--bridge")?
+                        .parse()
+                        .map_err(|e| format!("--bridge: {e}"))?,
+                )
+            }
+            Some("--resolver") => {
+                let v = value(&mut args, "--resolver")?;
+                let at = v
+                    .parse::<std::net::SocketAddrV4>()
+                    .map_err(|e| format!("--resolver {v:?}: {e}"))?;
+                a.resolvers.push((*at.ip(), at.port()));
+            }
+            Some("--policy") => {
+                a.policy = Some(match value(&mut args, "--policy")?.as_str() {
+                    "allow" => Some(shards_net::Policy::AllowAll),
+                    "deny" => Some(shards_net::Policy::DenyAll),
+                    // Its port and socket, given apart.
+                    "proxy" => None,
+                    other => return Err(format!("--policy {other:?}: allow, deny or proxy")),
+                })
+            }
+            Some("--proxy-port") => {
+                let v = value(&mut args, "--proxy-port")?;
+                a.proxy_port = Some(v.parse::<u16>().map_err(|e| format!("--proxy-port {v:?}: {e}"))?);
+            }
+            Some("--proxy-socket") => {
+                a.proxy_socket = Some(std::path::PathBuf::from(
+                    args.next().ok_or("--proxy-socket needs a value")?,
+                ));
+            }
+            // Where its confinement keeps it from the proxy's socket (App Sandbox, D31; an
+            // AppContainer, D142), and on Windows from the host's own addresses: its
+            // spawner's dialer, which connects for it.
+            Some("--dialer") => a.dialer = Some(value(&mut args, "--dialer")?),
+            #[cfg(windows)]
+            Some("--host-address") => {
+                let v = value(&mut args, "--host-address")?;
+                a.host_addresses
+                    .push(v.parse().map_err(|e| format!("--host-address {v:?}: {e}"))?);
+            }
+            _ => return Err(format!("unknown argument {arg:?}")),
+        }
+    }
+    Ok(a)
+}
+
+impl Args {
+    /// The policy it was given, whole.
+    fn policy(&mut self) -> Result<shards_net::Policy, String> {
+        match (
+            self.policy.take().ok_or("--policy is required")?,
+            self.proxy_port,
+            self.proxy_socket.take(),
+        ) {
+            (Some(_), Some(_), _) | (Some(_), _, Some(_)) => {
+                Err("--proxy-port and --proxy-socket go with --policy proxy alone".into())
+            }
+            (Some(policy), None, None) => Ok(policy),
+            (None, Some(port), Some(socket)) => Ok(shards_net::Policy::Proxy { port, socket }),
+            (None, _, _) => Err("--policy proxy needs --proxy-port and --proxy-socket".into()),
+        }
+    }
+
+    /// The configuration of the guest's network: its policy, its bridge, its MAC (frames
+    /// from any other are not its), and the host's resolvers.
+    fn config(&mut self) -> Result<shards_net::Config, String> {
+        let policy = self.policy()?;
+        let bridge = self.bridge.take().ok_or("--bridge is required")?;
+        let mac = self.mac.ok_or("--mac is required")?;
+        let mut cfg = shards_net::Config::on_bridge(policy, mac, &bridge);
+        cfg.resolvers = std::mem::take(&mut self.resolvers);
+        Ok(cfg)
+    }
+}
+
 #[cfg(unix)]
 fn run() -> Result<(), String> {
     use std::os::fd::{FromRawFd, OwnedFd};
@@ -30,88 +175,10 @@ fn run() -> Result<(), String> {
                     (resources/net.entitlements, crates/shards/build.rs), and serves no VM outside it"
             .into());
     }
-    // The daemon's socket, on which published ports come, and the VM's, on which they go.
-    let mut controls: Vec<(shards_net::Control, String)> = Vec::new();
-    let mut ring = None;
-    let mut mac = None;
-    // No default: a spawner that forgot to say gets an error, not open access.
-    let mut policy = None;
-    // A build's proxy (D110): the gateway's port its one flow is to, and the socket that
-    // flow goes to.
-    let (mut proxy_port, mut proxy_socket) = (None, None);
-    let mut proxy_dialer: Option<String> = None;
-    // Nor a subnet of its own: the guest's is its spawner's to elect.
-    let mut bridge: Option<shards_net::bridge::Bridge> = None;
-    // The host's resolvers, which a guest granted egress asks its names of (D59).
-    let mut resolvers: Vec<(std::net::Ipv4Addr, u16)> = Vec::new();
-    let mut args = std::env::args_os().skip(1);
-    while let Some(a) = args.next() {
-        let value = |args: &mut dyn Iterator<Item = std::ffi::OsString>, name: &str| {
-            args.next()
-                .and_then(|v| v.into_string().ok())
-                .ok_or_else(|| format!("{name} needs a value"))
-        };
-        match a.to_str() {
-            Some("--ring") => ring = Some(value(&mut args, "--ring")?),
-            // The daemon's, which publishes ports, and the VM's, which lets them go.
-            Some("--control") => controls.push((shards_net::Control::Daemon, value(&mut args, "--control")?)),
-            Some("--release") => {
-                controls.push((shards_net::Control::Release, value(&mut args, "--release")?))
-            }
-            Some("--mac") => {
-                let v = value(&mut args, "--mac")?;
-                mac = Some(v.parse::<shards_net::Mac>().map_err(|e| format!("--mac {e}"))?.0);
-            }
-            Some("--bridge") => {
-                bridge = Some(
-                    value(&mut args, "--bridge")?
-                        .parse()
-                        .map_err(|e| format!("--bridge: {e}"))?,
-                )
-            }
-            Some("--resolver") => {
-                let v = value(&mut args, "--resolver")?;
-                let a = v
-                    .parse::<std::net::SocketAddrV4>()
-                    .map_err(|e| format!("--resolver {v:?}: {e}"))?;
-                resolvers.push((*a.ip(), a.port()));
-            }
-            Some("--policy") => {
-                policy = Some(match value(&mut args, "--policy")?.as_str() {
-                    "allow" => Some(shards_net::Policy::AllowAll),
-                    "deny" => Some(shards_net::Policy::DenyAll),
-                    // Its port and socket, given apart.
-                    "proxy" => None,
-                    other => return Err(format!("--policy {other:?}: allow, deny or proxy")),
-                })
-            }
-            Some("--proxy-port") => {
-                let v = value(&mut args, "--proxy-port")?;
-                proxy_port = Some(v.parse::<u16>().map_err(|e| format!("--proxy-port {v:?}: {e}"))?);
-            }
-            Some("--proxy-socket") => {
-                proxy_socket = Some(std::path::PathBuf::from(
-                    args.next().ok_or("--proxy-socket needs a value")?,
-                ));
-            }
-            // Where App Sandbox keeps it from the proxy's socket (macOS, D31): its spawner's
-            // dialer, which connects for it.
-            Some("--proxy-dialer") => proxy_dialer = Some(value(&mut args, "--proxy-dialer")?),
-            _ => return Err(format!("unknown argument {a:?}")),
-        }
-    }
-    let ring = ring.ok_or("--ring is required")?;
-    let policy = match (policy.ok_or("--policy is required")?, proxy_port, proxy_socket) {
-        (Some(_), Some(_), _) | (Some(_), _, Some(_)) => {
-            return Err("--proxy-port and --proxy-socket go with --policy proxy alone".into());
-        }
-        (Some(policy), None, None) => policy,
-        (None, Some(port), Some(socket)) => shards_net::Policy::Proxy { port, socket },
-        (None, _, _) => return Err("--policy proxy needs --proxy-port and --proxy-socket".into()),
-    };
-    let bridge = bridge.ok_or("--bridge is required")?;
-    // The guest's MAC, which the VM's device has: frames from any other are not its.
-    let mac = mac.ok_or("--mac is required")?;
+    let mut a = parse()?;
+    let ring = a.ring.take().ok_or("--ring is required")?;
+    let proxy = matches!(a.policy, Some(None));
+    let cfg = a.config()?;
     let fds: Vec<i32> = ring
         .split(',')
         .map(|v| {
@@ -135,14 +202,15 @@ fn run() -> Result<(), String> {
         Ok(unsafe { OwnedFd::from_raw_fd(fd) })
     };
     let (region, me, peer) = (adopt(*region)?, adopt(*me)?, adopt(*peer)?);
-    if let Some(fd) = proxy_dialer {
+    if let Some(fd) = a.dialer {
         let fd = fd
             .parse()
-            .map_err(|_| format!("--proxy-dialer: {fd:?} is not a descriptor"))?;
-        shards_net::tcp::set_proxy_dialer(std::os::unix::net::UnixStream::from(adopt(fd)?))
+            .map_err(|_| format!("--dialer: {fd:?} is not a descriptor"))?;
+        shards_net::tcp::set_dialer(std::os::unix::net::UnixStream::from(adopt(fd)?))
             .map_err(|e| e.to_string())?;
     }
-    let controls = controls
+    let controls = a
+        .controls
         .iter()
         .map(|(role, fd)| {
             let fd = fd
@@ -152,16 +220,89 @@ fn run() -> Result<(), String> {
         })
         .collect::<Result<_, String>>()?;
     // Confined before it reads anything a guest sends (D31): no file, no TCP port of its
-    // own, no TCP at all under a build's proxy.
+    // own, no TCP at all under a build's proxy; then the syscalls a network process makes
+    // alone (PM M209).
     #[cfg(target_os = "linux")]
-    shards_net::confine::at_start(matches!(policy, shards_net::Policy::Proxy { .. }))
-        .map_err(|e| e.to_string())?;
-    let mut cfg = shards_net::Config::on_bridge(policy, mac, &bridge);
-    cfg.resolvers = resolvers;
+    shards_net::confine::at_start(proxy).map_err(|e| e.to_string())?;
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    shards_net::confine::filter().map_err(|e| format!("its seccomp filter: {e}"))?;
+    #[cfg(not(target_os = "linux"))]
+    let _ = proxy;
     shards_net::serve(region, me, peer, cfg, controls).map_err(|e| e.to_string())
 }
 
-#[cfg(not(unix))]
+/// On Windows (D142): in an AppContainer of its own from its start, holding the network's
+/// capabilities (PM M204), or it serves no VM. What its spawner handed it comes by name:
+/// the frame ring (`net-region`) and doorbells (`net-wake-me`, `net-wake-peer`), its VM's
+/// process (`vm`), whose end is its own, the controls and the proxy's dialer, each a socket
+/// shared with it, named by its flag.
+#[cfg(windows)]
 fn run() -> Result<(), String> {
-    Err("a network process runs on Linux and macOS hosts only so far".into())
+    use std::os::windows::io::{FromRawHandle as _, OwnedHandle, RawHandle};
+    if !shards_ipc::in_app_container() {
+        return Err(
+            "not in an AppContainer: a network process is started confined (D142), \
+                    and serves no VM outside it"
+                .into(),
+        );
+    }
+    let mut a = parse()?;
+    let grants = a.grants.take().ok_or("--grants is required")?;
+    let cfg = a.config()?;
+    let pipe = grants
+        .parse::<usize>()
+        .map_err(|_| format!("--grants: {grants:?} is not a handle"))?;
+    let mut given = shards_ipc::given(pipe).map_err(|e| format!("--grants: {e}"))?;
+    let mut take = |name: &str| {
+        let at = given
+            .iter()
+            .position(|(n, _)| n == name)
+            .ok_or_else(|| format!("--grants: no {name} was given"))?;
+        Ok::<_, String>(given.swap_remove(at).1)
+    };
+    let mut handle = |name: &str| -> Result<OwnedHandle, String> {
+        match take(name)? {
+            shards_ipc::Handed::Handle(v) if v != 0 => {
+                // SAFETY: a handle the spawner duplicated into this process for this alone,
+                // owned from here on.
+                Ok(unsafe { OwnedHandle::from_raw_handle(v as RawHandle) })
+            }
+            _ => Err(format!("--grants: {name} is no handle")),
+        }
+    };
+    let (region, peer, vm) = (handle("net-region")?, handle("net-wake-peer")?, handle("vm")?);
+    let mut socket = |name: &str| -> Result<shards_net::sys::UnixStream, String> {
+        match take(name)? {
+            shards_ipc::Handed::Socket(info) => {
+                shards_net::sys::UnixStream::from_shared(&info).map_err(|e| format!("{name}: {e}"))
+            }
+            shards_ipc::Handed::Handle(_) => Err(format!("--grants: {name} is no socket")),
+        }
+    };
+    // Its VM's doorbell, an AF_UNIX socket its port names with its sockets (PM M213).
+    let me = socket("net-wake-me")?;
+    me.set_nonblocking(true)
+        .map_err(|e| format!("net-wake-me: {e}"))?;
+    let dialer = match a.dialer.take() {
+        Some(name) => Some(
+            shards_net::Dialer::new(socket(&name)?, std::mem::take(&mut a.host_addresses))
+                .map_err(|e| format!("--dialer: {e}"))?,
+        ),
+        None => None,
+    };
+    let controls = a
+        .controls
+        .iter()
+        .map(|(role, name)| Ok((*role, socket(name)?)))
+        .collect::<Result<_, String>>()?;
+    shards_net::serve(
+        region,
+        shards_net::Bell::Socket(me),
+        shards_net::Bell::Event(peer),
+        vm,
+        dialer,
+        cfg,
+        controls,
+    )
+    .map_err(|e| e.to_string())
 }

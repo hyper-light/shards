@@ -68,11 +68,23 @@ libc = { workspace = true }
 shards-apple = { path = "../apple" }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { workspace = true }
+windows-sys = { workspace = true, features = ["Win32_System_Pipes"] }
 
 [build-dependencies]
 # The helpers' digests (build.rs).
 sha2 = "0.11"
+
+[target.'cfg(windows)'.dev-dependencies]
+# What tests/confined.rs reads of a running VM process.
+windows-sys = { workspace = true, features = [
+  "Win32_Security",
+  "Win32_Security_Isolation",
+  "Win32_System_Diagnostics_ToolHelp",
+  "Win32_System_JobObjects",
+  "Win32_System_Pipes",
+  "Win32_System_ProcessStatus",
+  "Win32_System_Threading",
+] }
 
 [dev-dependencies]
 shards-testdir = { path = "../testdir" }
@@ -110,4 +122,8 @@ harness = false
 
 [[bench]]
 name = "arrival"
+harness = false
+
+[[bench]]
+name = "net_memory"
 harness = false

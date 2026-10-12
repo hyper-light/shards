@@ -46,7 +46,6 @@ pub mod gc;
 mod gha;
 mod git;
 pub(crate) mod http;
-#[cfg(unix)]
 mod live;
 pub(crate) mod multi;
 mod output;
@@ -214,7 +213,6 @@ struct Progress {
     quiet: bool,
     next: usize,
     /// On a colour terminal, shards' own display in place of the plain one.
-    #[cfg(unix)]
     live: Option<RefCell<live::Live>>,
     /// Each step's name, its last lines (the 10 progressui's printer keeps,
     /// logsBufferSize) and whether it failed: what the build's end recaps of each step
@@ -234,7 +232,6 @@ impl Progress {
         Progress {
             quiet: true,
             next: 0,
-            #[cfg(unix)]
             live: None,
             steps: RefCell::new(BTreeMap::new()),
             recapped: std::cell::Cell::new(false),
@@ -261,7 +258,6 @@ impl Progress {
     }
 
     fn say_bytes(&self, bytes: &[u8]) {
-        #[cfg(unix)]
         if self.live.is_some() {
             return;
         }
@@ -277,7 +273,6 @@ impl Progress {
             self.next,
             (name.to_string(), std::collections::VecDeque::new(), false),
         );
-        #[cfg(unix)]
         if let Some(live) = &self.live {
             live.borrow_mut().start(name);
         }
@@ -315,7 +310,6 @@ impl Progress {
     }
 
     fn line(&self, v: &Vertex, text: &str) {
-        #[cfg(unix)]
         if let Some(live) = &self.live {
             live.borrow_mut().line(v.index, text);
         }
@@ -332,7 +326,6 @@ impl Progress {
             .borrow_mut()
             .entry(index)
             .or_insert_with(|| (name.to_string(), std::collections::VecDeque::new(), false));
-        #[cfg(unix)]
         if let Some(live) = &self.live {
             live.borrow_mut().resume(index);
         }
@@ -364,7 +357,6 @@ impl Progress {
         };
         self.to(v.index);
         for line in text.strip_suffix('\n').unwrap_or(text).split('\n') {
-            #[cfg(unix)]
             if let Some(live) = &self.live {
                 live.borrow_mut().line(v.index, line);
             }
@@ -408,7 +400,6 @@ impl Progress {
     }
 
     fn done(&self, v: &Vertex) {
-        #[cfg(unix)]
         if let Some(live) = &self.live {
             live.borrow_mut().done(v.index);
         }
@@ -421,7 +412,6 @@ impl Progress {
         if let Some(step) = self.steps.borrow_mut().get_mut(&v.index) {
             step.2 = true;
         }
-        #[cfg(unix)]
         if let Some(live) = &self.live {
             live.borrow_mut().error(v.index, message);
         }
@@ -431,7 +421,6 @@ impl Progress {
 
     /// A vertex the build cache answered, as progressui says it.
     fn cached(&self, v: &Vertex) {
-        #[cfg(unix)]
         if let Some(live) = &self.live {
             live.borrow_mut().cached(v.index);
         }
@@ -441,7 +430,6 @@ impl Progress {
 
     /// A vertex the build's failure stopped.
     fn canceled(&self, v: &Vertex) {
-        #[cfg(unix)]
         if let Some(live) = &self.live {
             live.borrow_mut().canceled(v.index);
             live.borrow_mut().leave();
@@ -645,7 +633,6 @@ impl StepLog {
             return;
         };
         let out = clip.write(bytes, limits);
-        #[cfg(unix)]
         if let Some(live) = &p.live {
             live.borrow_mut().output(v.index, &out);
             return;
@@ -767,9 +754,17 @@ fn builder_memory_mib() -> u64 {
         .ok()
         .and_then(|v| v.parse().ok())
     {
-        return m;
+        return whole_blocks(m);
     }
-    host_memory().map_or(512, |bytes| (bytes / 2 / (1 << 20)).max(512))
+    whole_blocks(host_memory().map_or(512, |bytes| (bytes / 2 / (1 << 20)).max(512)))
+}
+
+/// `mib` down to whole blocks of what a builder's memory is plugged in (virtio-mem's,
+/// D133), which a VM refuses anything but: half of a host's memory need not be (Windows
+/// keeps some of a runner's 16 GiB back, and half of it was an odd number of MiB).
+fn whole_blocks(mib: u64) -> u64 {
+    let block = (shards_vmm::devices::virtio::mem::BLOCK >> 20).max(1);
+    mib - mib % block
 }
 
 /// The host's physical memory, in bytes.
@@ -785,10 +780,16 @@ pub(crate) fn host_memory() -> Option<u64> {
     u64::try_from(pages).ok()?.checked_mul(u64::try_from(size).ok()?)
 }
 
-/// Where shards starts no builder yet (`builder::Builder`), nothing asks.
-#[cfg(not(unix))]
+/// The host's physical memory, in bytes (GlobalMemoryStatusEx).
+#[cfg(windows)]
 pub(crate) fn host_memory() -> Option<u64> {
-    None
+    use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+    let mut status = MEMORYSTATUSEX {
+        dwLength: size_of::<MEMORYSTATUSEX>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: a structure of its own length for the call to fill.
+    (unsafe { GlobalMemoryStatusEx(&raw mut status) } != 0).then_some(status.ullTotalPhys)
 }
 
 /// A base image as the build resolved it.
@@ -2406,16 +2407,9 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
     };
     // --add-host: host-gateway is the builder's gateway, on the bridge it is elected.
     let gateway = || -> Result<String, String> {
-        #[cfg(unix)]
-        {
-            shards_net::bridge::elected_here(&mut |_| {})
-                .map(|b| b.gateway().to_string())
-                .ok_or_else(|| shards_net::bridge::NO_SUBNET.to_string())
-        }
-        #[cfg(not(unix))]
-        {
-            Err("the builder has no network on this platform yet".to_string())
-        }
+        shards_net::bridge::elected_here(&mut |_| {})
+            .map(|b| b.gateway().to_string())
+            .ok_or_else(|| shards_net::bridge::NO_SUBNET.to_string())
     };
     let add_hosts = buildflags::add_hosts(parsed.many("add-host"), &gateway)?;
     // --resource, after the legacy flags as buildx gathers them.
@@ -2570,7 +2564,6 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
         // A platform's build of several numbers on from the one before it.
         next: multi::with(|s| s.next).unwrap_or(0),
         // `auto` or `tty` on a colour terminal: shards' own display.
-        #[cfg(unix)]
         live: if !quiet && matches!(asked, "auto" | "tty") {
             live::Live::new().map(RefCell::new)
         } else {
@@ -5875,6 +5868,22 @@ fn redact_credentials(url: &str) -> String {
         format!("{scheme}://@{host}{path}")
     } else {
         format!("{scheme}://{masked}@{host}{path}")
+    }
+}
+
+#[cfg(test)]
+mod memory_tests {
+    /// A builder's memory is whole blocks of what it is plugged in, whatever half the host's
+    /// memory comes to: a VM refuses a builder of an odd number of MiB (CI run 38274751000,
+    /// a Windows runner's 16 GiB less what Windows keeps back).
+    #[test]
+    fn a_builders_memory_is_whole_blocks() {
+        let block = shards_vmm::devices::virtio::mem::BLOCK >> 20;
+        for mib in [512, 513, 8191, 8192, 65_535] {
+            let whole = super::whole_blocks(mib);
+            assert_eq!(whole % block, 0, "{mib}");
+            assert!(whole <= mib && mib - whole < block, "{mib}");
+        }
     }
 }
 

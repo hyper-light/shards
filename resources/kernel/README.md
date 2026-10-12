@@ -20,6 +20,11 @@ shards builds its own guest kernel. Firecracker's CI kernel lacks EROFS, which i
   booted at EL2 (`run --kernel --nested`, D132): `Image-<version>-aarch64-kvm`. The kernel
   every other guest boots stays without KVM's 800 KiB of text, which saves or spends no
   boot or restore time (PM M192).
+- **The `hyperv` variant:** `hyperv.config`, merged last, for the guests of a Windows host,
+  which runs them in Windows Hypervisor Platform partitions (D140):
+  `vmlinux-<version>-x86_64-hyperv`. Their partitions offer Hyper-V's clocks, and Linux
+  keeps time by them only with CONFIG_HYPERV (PM M197, M198); a KVM or HVF guest would
+  carry its code and use none of it.
 - **Patches:** `patches/*.patch`, applied in order with no fuzz. Each says what it fixes
   and why:
   - `0001`: an arm64 guest's first exec from a DAX-mapped file oopsed in `fs/dax.c`.
