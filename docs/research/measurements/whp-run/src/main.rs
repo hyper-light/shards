@@ -108,6 +108,12 @@ type EmuIo = unsafe extern "system" fn(
 type EmuDestroy = unsafe extern "system" fn(*const c_void) -> HRESULT;
 type CancelRun = unsafe extern "system" fn(WHV_PARTITION_HANDLE, u32, u32) -> HRESULT;
 
+/// `T` at 16 bytes' alignment, which WinHvPlatform.h gives its register values
+/// (`DECLSPEC_ALIGN(16)` on WHV_REGISTER_VALUE and WHV_UINT128) and windows-sys's
+/// declarations do not: an array of them handed over 8-aligned may fault in the DLL.
+#[repr(C, align(16))]
+struct Aligned<T>(T);
+
 /// WinHvPlatform's and WinHvEmulation's functions, bound.
 struct Api {
     get_capability: GetCapability,
@@ -464,7 +470,7 @@ fn run(api: &Api, apic: bool, synthetic: Option<u64>) -> Result<(), String> {
             WHvX64RegisterRflags,
             WHvX64RegisterRsp,
         ];
-        let values = [
+        let values = Aligned([
             reg64(0x8000_0031),
             reg64(PML4),
             reg64(0x20),
@@ -476,10 +482,16 @@ fn run(api: &Api, apic: bool, synthetic: Option<u64>) -> Result<(), String> {
             reg64(CODE),
             reg64(0x2),
             reg64(0x8000),
-        ];
+        ]);
         check(
             "registers",
-            (api.set_regs)(partition, 0, names.as_ptr(), names.len() as u32, values.as_ptr()),
+            (api.set_regs)(
+                partition,
+                0,
+                names.as_ptr(),
+                names.len() as u32,
+                values.0.as_ptr(),
+            ),
         )?;
         let mut emulated = Emulated {
             api,
@@ -520,7 +532,7 @@ fn run(api: &Api, apic: bool, synthetic: Option<u64>) -> Result<(), String> {
             let mut exits = 0usize;
             let mut seen: Vec<i32> = Vec::new();
             let ended = loop {
-                let mut exit = WHV_RUN_VP_EXIT_CONTEXT::default();
+                let mut exit = Aligned(WHV_RUN_VP_EXIT_CONTEXT::default());
                 let t = Instant::now();
                 let hr = (api.run)(
                     partition,
@@ -534,33 +546,33 @@ fn run(api: &Api, apic: bool, synthetic: Option<u64>) -> Result<(), String> {
                     break format!("WHvRunVirtualProcessor HRESULT {:#010x}", hr as u32);
                 }
                 exits += 1;
-                if !seen.contains(&exit.ExitReason) {
-                    seen.push(exit.ExitReason);
+                if !seen.contains(&exit.0.ExitReason) {
+                    seen.push(exit.0.ExitReason);
                     println!(
                         "{label} first exit {:#x} at rip {:#x} after {exits}",
-                        exit.ExitReason, exit.VpContext.Rip
+                        exit.0.ExitReason, exit.0.VpContext.Rip
                     );
                 }
                 if exits > MOST_EXITS {
-                    break format!("past {MOST_EXITS} exits, at rip {:#x}", exit.VpContext.Rip);
+                    break format!("past {MOST_EXITS} exits, at rip {:#x}", exit.0.VpContext.Rip);
                 }
-                if exit.ExitReason == WHvRunVpExitReasonX64IoPortAccess
-                    && exit.Anonymous.IoPortAccess.PortNumber == DONE
+                if exit.0.ExitReason == WHvRunVpExitReasonX64IoPortAccess
+                    && exit.0.Anonymous.IoPortAccess.PortNumber == DONE
                 {
                     break "done".to_string();
                 }
                 let t = Instant::now();
                 let mut status = WHV_EMULATOR_STATUS::default();
                 let ctx = (&raw mut emulated).cast::<c_void>();
-                match exit.ExitReason {
+                match exit.0.ExitReason {
                     r if r == WHvRunVpExitReasonMemoryAccess => {
                         if let Err(e) = check(
                             "mmio",
                             (api.emu_mmio)(
                                 emulator,
                                 ctx,
-                                &raw const exit.VpContext,
-                                &raw const exit.Anonymous.MemoryAccess,
+                                &raw const exit.0.VpContext,
+                                &raw const exit.0.Anonymous.MemoryAccess,
                                 &raw mut status,
                             ),
                         ) {
@@ -575,8 +587,8 @@ fn run(api: &Api, apic: bool, synthetic: Option<u64>) -> Result<(), String> {
                             (api.emu_io)(
                                 emulator,
                                 ctx,
-                                &raw const exit.VpContext,
-                                &raw const exit.Anonymous.IoPortAccess,
+                                &raw const exit.0.VpContext,
+                                &raw const exit.0.Anonymous.IoPortAccess,
                                 &raw mut status,
                             ),
                         ) {
@@ -587,7 +599,7 @@ fn run(api: &Api, apic: bool, synthetic: Option<u64>) -> Result<(), String> {
                     }
                     r if r == WHvRunVpExitReasonX64Halt => break "halt".to_string(),
                     other => {
-                        break format!("exit reason {other:#x} at rip {:#x}", exit.VpContext.Rip);
+                        break format!("exit reason {other:#x} at rip {:#x}", exit.0.VpContext.Rip);
                     }
                 }
                 if status.AsUINT32 & 1 == 0 {
