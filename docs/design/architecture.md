@@ -170,12 +170,13 @@ the guest arch is always the host arch.
 | Linux (glibc, musl) | aarch64 / arm64 | KVM | planned |
 | macOS | aarch64 / arm64 | Hypervisor.framework (arm64 API) | booting Linux; snapshots with cold and warm restore |
 | macOS | x86_64 / amd64 | Hypervisor.framework (x86 VMX API) | planned |
-| Windows | x86_64 / amd64 | Windows Hypervisor Platform | planned |
+| Windows | x86_64 / amd64 | Windows Hypervisor Platform | booting Linux: SMP, virtio-blk, pmem and vsock; no snapshots yet (D140) |
 | Windows | aarch64 / arm64 | Windows Hypervisor Platform (arm64) | planned |
 
 A Linux host runs VMs on Linux 6.10 or later with Landlock enabled (its `lsm=` list), whose
 ABI v5 is the first to govern `/dev/kvm`'s ioctls: a VM process starts under no weaker
-confinement (D30). macOS runs them under App Sandbox (D30).
+confinement (D30). macOS runs them under App Sandbox (D30). Windows runs them where its
+optional feature "Windows Hypervisor Platform" is on (D140).
 
 Every target builds and passes the lints. Until a target's backend lands, `run --kernel` there
 fails with an explanation (`vm::check_host`), as it does where the OS reports no hardware
@@ -3537,6 +3538,63 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 2026-10-07): every path between domains is a grant, and the build refuses any that joins
 an internal-only domain to the world (D58), so there is no data to label. Code mode is
 D136.
+
+### D140. microVMs on Windows hosts: the WHP backend
+
+AGENTFILE_ARCH.md §11 row 975 (`RUN` on Windows hosts) starts here: shards' VMM drives the
+Windows Hypervisor Platform on x86_64 Windows, as it drives KVM and Hypervisor.framework
+(D13), and a Windows host boots shards' guests. Its VM process's confinement (D141), its
+network process (D142) and its builder (D143) follow.
+
+- **The backend (`hv::whp`).** WinHvPlatform.dll's functions are bound as first called, as
+  HVF's are (PM M113): a `shards` without the optional feature "Windows Hypervisor
+  Platform" starts, and says why it runs no VM. A partition per VM, its local APICs
+  emulated by the hypervisor (XApic), which runs HLT itself; its application processors
+  held in wait-for-SIPI as created, and started by the boot vCPU's INIT and SIPI (PM M198).
+  Its guest is offered, of the host's synthetic features, those it keeps time by (the
+  reference counter and TSC page, the frequency MSRs) and those Linux's Hyper-V setup
+  writes (hypercalls, the VP index, the APIC's synthetic MSRs and VP assist page), with the
+  TLB-flush and cluster-IPI hypercalls its hints recommend; not synthetic timers, which the
+  host refuses without the SynIC, nor anything of VMBus's (M198). As many vCPUs as the
+  hypervisor tells a partition's guest it supports (leaf 0x40000005, read once a process
+  from a partition of one offered the synthetic features a VM's is, without which the leaf
+  reads 0 (M202): 240 on GitHub's runners, fewer than the host's own CPUID says), and at
+  most 254.
+- **The IOAPIC is the VMM's** (`arch::x86_64::ioapic`), as KVM's in-kernel one presents
+  itself (82093AA, version 0x11, 24 pins): its pins driven by the machine's devices, each
+  interrupt it sends asked of the hypervisor (WHvRequestInterrupt, 3.8-6.3 µs a call),
+  each level-triggered EOI taken back from its exit to clear the pin's remote IRR (M198).
+- **MMIO decoded by the VMM** (`arch::x86_64::mmio`). WHP hands the VMM an MMIO exit's
+  instruction bytes, not its length or its effect (M198). The VMM decodes the instructions
+  Linux's own decoder takes for its TDX and SEV-ES guests (`insn_decode_mmio`: MOV to and
+  from memory and of an immediate, MOVZX, MOVSX), and shards-init's control-page loads and
+  stores; at two register calls of 0.1 µs, where WinHvEmulation spends 8-11 µs (M197).
+  Anything else is refused, its bytes named, rather than its effect guessed. Port I/O is
+  completed from the exit's own registers and length.
+- **No doorbells.** A notification port's round trip was no shorter than an MMIO exit's
+  (M198): virtio's notifications are exits.
+- **A kick is a cancel**, which a run about to start takes too (M198).
+- **The guest kernel's `hyperv` variant** (resources/kernel/hyperv.config): Linux 6.18
+  marks the TSC unstable on a Hyper-V that does not offer TSC invariance, as no runner did,
+  and keeps time by Hyper-V's reference TSC page only with CONFIG_HYPERV (M197). No VMBus,
+  nor its drivers. Windows hosts boot it (`kernel::KERNEL`); KVM and HVF guests boot the
+  kernel without its code. Release kernel-6.18.48-4062e616c93a, which rebuilt the other
+  kernels byte for byte.
+- **pmem on Windows**: the image's view and the zeros after it in one range, a placeholder
+  split in two (VirtualAlloc2, MapViewOfFile3 with MEM_REPLACE_PLACEHOLDER). A view may not
+  run past its section's end, the file's size, so it holds the file's whole pages, and the
+  file's last partial page is copied into the read-only zeros after it.
+- **vsock on Windows**: AF_UNIX sockets (afunix.sys), 3.4-3.7 times loopback TCP's
+  throughput (M199); its worker sleeps on WSAEventSelect's events and reads each socket's
+  state with a WSAPoll that does not wait, as WSAPoll alone reports a peer's half-close as
+  a hangup whatever is asked, which would wake a writer without end (M199). Its waker is an
+  event, not a socket pair.
+- **Carried on Windows too**: shards-init and the in-VM server, built for the guest as on
+  every other host.
+- **Not yet on WHP**: snapshots, and so templates and warm pools (`vm::SNAPSHOTS`).
+- **Recorded differences** from a KVM guest's machine: its clock is Hyper-V's reference TSC
+  page where KVM's is kvm-clock; its APICs are xAPIC alone, offering neither x2APIC nor
+  TSC-deadline (M198).
 
 ### D139. Files handed across, through the in-VM server
 
