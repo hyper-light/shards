@@ -137,40 +137,27 @@ fn partition() -> Result<String, String> {
     }
 }
 
-/// The device paths among a DLL's strings, UTF-16 and ASCII: `\\Device\\...`.
+/// A DLL's UTF-16 strings that may name a device: those with "Device", "Vid" or "\\??\\"
+/// in them, at least 6 characters long.
 fn devices_in(dll: &std::path::Path) -> Vec<String> {
     let Ok(bytes) = std::fs::read(dll) else {
-        return Vec::new();
+        return vec![format!("(no {})", dll.display())];
     };
     let mut found: Vec<String> = Vec::new();
-    let needle: Vec<u8> = "\\Device\\".encode_utf16().flat_map(u16::to_le_bytes).collect();
-    let mut at = 0;
-    while let Some(i) = bytes[at..].windows(needle.len()).position(|w| w == needle.as_slice()) {
-        let start = at + i;
-        let units: Vec<u16> = bytes[start..]
-            .chunks_exact(2)
-            .map(|c| u16::from_le_bytes([c[0], c[1]]))
-            .take_while(|&u| u != 0 && u < 0x80)
-            .collect();
-        let s = String::from_utf16_lossy(&units);
-        if !found.contains(&s) {
-            found.push(s);
+    let mut run: Vec<u16> = Vec::new();
+    for c in bytes.chunks_exact(2) {
+        let u = u16::from_le_bytes([c[0], c[1]]);
+        if (0x20..0x7F).contains(&u) {
+            run.push(u);
+            continue;
         }
-        at = start + needle.len();
-    }
-    let ascii = b"\\Device\\";
-    let mut at = 0;
-    while let Some(i) = bytes[at..].windows(ascii.len()).position(|w| w == ascii) {
-        let start = at + i;
-        let s: String = bytes[start..]
-            .iter()
-            .take_while(|&&b| b != 0 && b.is_ascii_graphic())
-            .map(|&b| b as char)
-            .collect();
-        if !found.contains(&s) {
-            found.push(s);
+        if run.len() >= 6 {
+            let s = String::from_utf16_lossy(&run);
+            if (s.contains("Device") || s.contains("Vid") || s.contains("\\??\\")) && !found.contains(&s) {
+                found.push(s);
+            }
         }
-        at = start + ascii.len();
+        run.clear();
     }
     found
 }
@@ -463,9 +450,13 @@ fn main() {
     // The device WHP opens, and who may.
     let system32 = std::path::PathBuf::from(std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into()))
         .join("System32");
-    for dll in ["WinHvPlatform.dll", "vid.dll", "WinHvEmulation.dll"] {
-        for device in devices_in(&system32.join(dll)) {
-            println!("{dll}: {device}: {}", sddl(&device));
+    for dll in ["WinHvPlatform.dll", "vid.dll", "VidCore.dll", "WinHvEmulation.dll"] {
+        for text in devices_in(&system32.join(dll)) {
+            if text.starts_with("\\Device\\") {
+                println!("{dll}: {text}: {}", sddl(&text));
+            } else {
+                println!("{dll}: string {text:?}");
+            }
         }
     }
 }

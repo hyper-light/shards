@@ -53,8 +53,8 @@ jobs:
         run: |
           $chars = [char[]]'abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789'
           $p = -join (1..24 | ForEach-Object { $chars[(Get-Random -Maximum $chars.Length)] }) + '!7a'
-          net user shards-probe $p /add | Out-Null
+          New-LocalUser -Name shards-probe -Password (ConvertTo-SecureString $p -AsPlainText -Force) | Out-Null
           $env:SHARDS_PROBE_USER = 'shards-probe'
           $env:SHARDS_PROBE_PASSWORD = $p
           cargo run --release --bin m200
-          net user shards-probe /delete | Out-Null
+          Remove-LocalUser -Name shards-probe
