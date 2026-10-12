@@ -165,8 +165,9 @@ impl Plug {
     /// memory added; TCP's buffers within their caps; TCP's orphans and TIME-WAIT buckets
     /// by its table's sizing; inotify's watches, which the kernel holds at 8192 below
     /// about 1 GiB, in their proportion to epoll's items, within their clamps; and init's
-    /// RLIMIT_NPROC and RLIMIT_SIGPENDING, half the threads, as the kernel gives PID 1
-    /// (`fork_init`), which every step inherits.
+    /// RLIMIT_SIGPENDING, half the threads, as the kernel gives PID 1 (`fork_init`), which
+    /// every step inherits. Its processes are Docker's, unlimited (`defaults::limits`,
+    /// PM M211), not the kernel's.
     pub fn raise_limits(&self) -> io::Result<()> {
         let (to, from) = (self.full(), self.boot);
         let sysctl = |name: &str| format!("/proc/sys/{name}");
@@ -217,18 +218,16 @@ impl Plug {
             .map_err(|e| err(format!("fs.inotify.max_user_watches: {e}")))?;
         let threads = number(&sysctl("kernel/threads-max")).ok_or_else(|| err("kernel.threads-max"))?;
         let half = threads / 2;
-        for resource in [libc::RLIMIT_NPROC, libc::RLIMIT_SIGPENDING] {
-            let limit = libc::rlimit {
-                rlim_cur: half,
-                rlim_max: half,
-            };
-            // SAFETY: setrlimit(2) of PID 1's own limit; it holds CAP_SYS_RESOURCE.
-            if unsafe { libc::setrlimit(resource, &limit) } != 0 {
-                return Err(err(format!(
-                    "raising a limit to {half}: {}",
-                    io::Error::last_os_error()
-                )));
-            }
+        let limit = libc::rlimit {
+            rlim_cur: half,
+            rlim_max: half,
+        };
+        // SAFETY: setrlimit(2) of PID 1's own limit; it holds CAP_SYS_RESOURCE.
+        if unsafe { libc::setrlimit(libc::RLIMIT_SIGPENDING, &limit) } != 0 {
+            return Err(err(format!(
+                "raising a limit to {half}: {}",
+                io::Error::last_os_error()
+            )));
         }
         Ok(())
     }

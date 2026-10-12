@@ -103,7 +103,13 @@ fn run_steps_run_in_a_confined_builder_and_their_changes_are_built() {
     let root = reports
         .first()
         .unwrap_or_else(|| panic!("no step reported\n{shown}"));
-    for (k, v) in [("uid", "0"), ("gid", "0"), ("hostname", "buildkitsandbox")] {
+    // Docker's build steps' limits, as on every host (`run_steps_start_with_dockers_limits`).
+    for (k, v) in [
+        ("uid", "0"),
+        ("gid", "0"),
+        ("hostname", "buildkitsandbox"),
+        ("rlimit-nofile", "1048576:1048576"),
+    ] {
         assert_eq!(root.get(k).map(String::as_str), Some(v), "{k}\n{shown}");
     }
     assert_eq!(

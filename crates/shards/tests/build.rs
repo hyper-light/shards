@@ -264,10 +264,12 @@ fn a_builders_memory_is_plugged_as_its_build_needs_it() {
     assert_eq!(full.status, Some(0), "{full}");
     let (stepped, booted) = (limits_said(&built.stderr), limits_said(&full.stdout));
     let mut wrong = Vec::new();
+    // Processes are Docker's, unlimited, whatever the memory
+    // (`run_steps_start_with_dockers_limits`).
     for name in shards_testguest::LIMITS
         .iter()
         .copied()
-        .chain(["rlimit.nproc", "rlimit.sigpending"])
+        .chain(["rlimit.sigpending"])
     {
         let (Some(step), Some(boot)) = (stepped.get(name), booted.get(name)) else {
             panic!("no {name}: {shown}\n{full}");
@@ -647,6 +649,45 @@ fn run_steps_take_the_builds_secrets_ulimits_and_entitlements() {
         "{}",
         failed.stderr
     );
+}
+
+/// A `RUN` step without `--ulimit` starts with the limits Docker's build steps have, which
+/// are its containers' (`RUN cat /proc/self/limits` under Docker 29.3.1, PM M211): open
+/// files 1048576, processes and locked memory unlimited, no core file; not the builder's
+/// kernel's own (1024 of 4096 files, processes and locked memory by its memory).
+#[test]
+fn run_steps_start_with_dockers_limits() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("build-limits-home");
+    let ctx = context(
+        "build-limits-ctx",
+        &format!("FROM {image}\nRUN [\"/bin/testguest\", \"report\"]\n"),
+    );
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+        ("SHARDS_BUILD_MEMORY", "1024".as_ref()),
+    ];
+    let built = run_shards_env(
+        &["build"],
+        &["--progress=plain", "--no-cache", ctx.to_str().unwrap()],
+        &env,
+        TIMEOUT,
+    );
+    let shown = format!("--- stdout\n{}\n--- stderr\n{}", built.stdout, built.stderr);
+    assert_eq!(built.status, Some(0), "{shown}");
+    for line in [
+        " rlimit-nofile 1048576:1048576\n",
+        " rlimit-nproc -1:-1\n",
+        " rlimit-memlock -1:-1\n",
+        " rlimit-core 0:-1\n",
+    ] {
+        assert!(built.stderr.contains(line), "{line:?}\n{shown}");
+    }
 }
 
 /// A `RUN` step reaches the network through its builder's network process, as BuildKit's

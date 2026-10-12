@@ -153,6 +153,10 @@ struct Builder {
 
 /// Starts the builder: the host's layers and steps, until it hangs up.
 pub fn main() -> ! {
+    // Docker's limits for what it starts, which its build's steps have as its containers do
+    // (`RUN cat /proc/self/limits` under Docker 29.3.1, PM M211), inherited by every step:
+    // `--ulimit` sets its own over them.
+    defaults::limits();
     match serve() {
         Ok(()) => {}
         Err(e) => {
