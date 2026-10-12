@@ -18,7 +18,7 @@ use shards_vmm::vm::{
 use crate::spec::Options;
 use crate::terminal::RawTerminal;
 
-const RUN_USAGE: &str = "usage: shards run --kernel PATH [--initrd PATH | --init PATH] [--cmdline STR] [--cpus N] [--memory MIB] [--disk PATH[:ro]]... [--pmem PATH]... [--vsock PATH] [--nested] [--no-console] [--snapshot-dir DIR [--snapshot-then stop|resume]]
+const RUN_USAGE: &str = "usage: shards run --kernel PATH [--initrd PATH | --init PATH] [--cmdline STR] [--cpus N] [--memory MIB] [--memory-max MIB] [--disk PATH[:ro]]... [--pmem PATH]... [--vsock PATH] [--nested] [--no-console] [--snapshot-dir DIR [--snapshot-then stop|resume]]
        shards run --kernel PATH --init SHARDS-INIT --rootfs IMAGE [OPTIONS] [WORKLOAD OPTIONS] -- COMMAND [ARG...]
        shards run --kernel PATH --init SHARDS-INIT --rootfs IMAGE --snapshot-dir DIR [OPTIONS]
   --pmem: a read-only virtio-pmem device backed by PATH: /dev/pmem0, pmem1, ... in order.
@@ -34,6 +34,9 @@ const RUN_USAGE: &str = "usage: shards run --kernel PATH [--initrd PATH | --init
   --nested: virtualization for the guest itself: on arm64 its vCPUs have EL2, entered
             there, so that its kernel may be a hypervisor (KVM); an M3 or later on
             macOS 15 or later. Not with --snapshot-dir: its EL2 state is not saved.
+  --memory-max: the most memory the guest may have: --memory at boot, and up to this
+            much in all as it asks for more through shards' control page, plugged by a
+            virtio-mem device. Whole 2 MiB blocks; not with --snapshot-dir.
   Console escape: Ctrl-A x stops the VM.";
 
 const RESTORE_USAGE: &str = "usage: shards restore DIR [--hold] [--vsock PATH] [--no-console] [--backing PATH[:ro]]... [--snapshot-dir DIR [--snapshot-then stop|resume]]
@@ -210,6 +213,7 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
     let mut rootfs = None;
     let mut cfg = Config::new(PathBuf::new(), None);
     let (mut kernel, mut common, mut warm) = (None, Common::new(), None);
+    let mut memory_max = None;
     while let Some(arg) = args.next() {
         let arg = text(arg)?;
         let mut value = |name: &str| args.next().ok_or_else(|| format!("{name} needs a value"));
@@ -230,6 +234,13 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
                 cfg.memory_mib = text(value("--memory")?)?
                     .parse()
                     .map_err(|e| format!("--memory: {e}"))?
+            }
+            "--memory-max" => {
+                memory_max = Some(
+                    text(value("--memory-max")?)?
+                        .parse::<u64>()
+                        .map_err(|e| format!("--memory-max: {e}"))?,
+                )
             }
             "--disk" => cfg.disks.push(disk(value("--disk")?)),
             // Shared directories its run gives it (D38): slots, filled as the run arrives.
@@ -267,6 +278,14 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
     common.check_workload()?;
     if cfg.nested && common.snapshot_dir.is_some() {
         return Err("--nested with --snapshot-dir: a VM with virtualization of its own is not snapshotted, its EL2 state not saved".into());
+    }
+    if let Some(max) = memory_max {
+        cfg.hotplug_mib = max
+            .checked_sub(cfg.memory_mib)
+            .ok_or_else(|| format!("--memory-max {max} is less than --memory {}", cfg.memory_mib))?;
+        if cfg.hotplug_mib > 0 && common.snapshot_dir.is_some() {
+            return Err("--memory-max with --snapshot-dir: memory plugged into a VM is not saved, so it is not snapshotted".into());
+        }
     }
     cfg.kernel = kernel.ok_or("--kernel is required")?;
     cfg.snapshot = common.policy();
@@ -966,7 +985,8 @@ fn report_timing(handle: &Handle, workload: Option<&WorkloadTiming>) {
 }
 
 /// The timing line's fields, as JSON: the VM's clock readings in microseconds since the
-/// process started, 0 for any not yet taken, and the process's peak RSS so far in KiB.
+/// process started, 0 for any not yet taken; the process's peak RSS so far and its own
+/// memory now, in KiB; and what it holds of the memory to plug (D133), in KiB.
 fn timing_json(handle: &Handle, workload: Option<&WorkloadTiming>) -> String {
     let markers: Vec<String> = handle
         .markers()
@@ -986,13 +1006,14 @@ fn timing_json(handle: &Handle, workload: Option<&WorkloadTiming>) -> String {
         (0, 0)
     };
     format!(
-        "{{\"released_us\":{},\"entry_us\":{},\"exit_us\":{},\"request_us\":{request},\"answered_us\":{answered},\"prefetched\":{},\"rss_kib\":{},\"footprint_kib\":{},\"markers\":[{}]}}",
+        "{{\"released_us\":{},\"entry_us\":{},\"exit_us\":{},\"request_us\":{request},\"answered_us\":{answered},\"prefetched\":{},\"rss_kib\":{},\"footprint_kib\":{},\"hotplug_held_kib\":{},\"markers\":[{}]}}",
         handle.released_at_us().unwrap_or(0),
         handle.entered_at_us().unwrap_or(0),
         handle.exited_at_us().unwrap_or(0),
         handle.prefetched(),
         max_rss_kib(),
         footprint_kib(),
+        handle.hotplug_held().unwrap_or(0) / 1024,
         markers.join(",")
     )
 }
@@ -1558,5 +1579,58 @@ mod tests {
         assert!(e.contains("not valid UTF-8"), "{e}");
         let e = parse_restore(args(&[b"/t", b"/\xff"])).err().unwrap();
         assert!(e.contains("unexpected argument"), "{e}");
+    }
+
+    /// --memory-max is the guest's memory in all, its order among the options no matter:
+    /// what it may have plugged is the rest; less than --memory is refused, and so is a
+    /// snapshot of memory that is plugged.
+    #[test]
+    fn memory_max_is_what_the_guest_may_have_in_all() {
+        let run = parse_run(args(&[
+            b"--memory-max",
+            b"4096",
+            b"--kernel",
+            b"/k",
+            b"--memory",
+            b"512",
+        ]))
+        .unwrap();
+        assert_eq!((run.cfg.memory_mib, run.cfg.hotplug_mib), (512, 3584));
+        let run = parse_run(args(&[
+            b"--kernel",
+            b"/k",
+            b"--memory",
+            b"512",
+            b"--memory-max",
+            b"512",
+        ]))
+        .unwrap();
+        assert_eq!(run.cfg.hotplug_mib, 0);
+        let e = parse_run(args(&[
+            b"--kernel",
+            b"/k",
+            b"--memory",
+            b"512",
+            b"--memory-max",
+            b"256",
+        ]))
+        .err()
+        .unwrap();
+        assert_eq!(e, "--memory-max 256 is less than --memory 512");
+        let e = parse_run(args(&[
+            b"--kernel",
+            b"/k",
+            b"--memory-max",
+            b"1024",
+            b"--snapshot-dir",
+            b"/t",
+        ]))
+        .err()
+        .unwrap();
+        assert!(e.starts_with("--memory-max with --snapshot-dir: "), "{e}");
+        let e = parse_run(args(&[b"--kernel", b"/k", b"--memory-max", b"lots"]))
+            .err()
+            .unwrap();
+        assert!(e.starts_with("--memory-max: "), "{e}");
     }
 }

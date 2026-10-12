@@ -6475,3 +6475,106 @@ revision before comparing a changed API/implementation.
 - **Consequence.** D132: KVM goes in a `kvm` variant of the kernel, not in the one every
   guest boots. It saves nothing measurable at boot either way, and its text would be in
   every guest.
+
+### M193. A builder's memory, plugged as its build needs it (D133)
+
+- **Questions.** How does a VMM on macOS give a guest's memory back to the host once the
+  guest unplugs it? What does the guest kernel size by the memory it boots with, which a
+  builder booted small would lack? What does a builder that boots small and grows cost a
+  build, and save the host?
+- **Giving memory back** (`docs/research/measurements/hvf/hvfbench.c`, `discard`): 256 MiB
+  of anonymous memory mapped into a VM, the guest writing a word in each 16 KiB page, then
+  given back four ways, three rounds each; the process's footprint (TASK_VM_INFO
+  `phys_footprint`) after each step, and what the guest and the host read back.
+  2026-10-11, Apple M5 Max, macOS 26.4.1, load average 7.
+
+  | given back by | time | footprint change | guest reads | host reads |
+  |---|---|---|---|---|
+  | `MADV_FREE_REUSABLE` | 0.86-1.07 ms | +0.0 MiB | its old data | its old data |
+  | `MADV_FREE` | 1.07-1.25 ms | +0.0 MiB | its old data | its old data |
+  | `hv_vm_unmap`, `MAP_FIXED` anonymous memory over it, `hv_vm_map` | 2.4-3.4 ms | -256.1 MiB | zeros | zeros |
+  | `MAP_FIXED` anonymous memory over it alone, still mapped in the VM | 3.7-11.4 µs | +0.0 MiB | its old data | zeros, and none of the guest's writes after |
+
+  - Unmapping 2 MiB of a 256 MiB mapping and mapping fresh memory over it takes 15-18 µs
+    and gives 2.0 MiB back; the guest's access there exits at its address (a data abort
+    to the VMM), and mapped again it reads zeros, the rest of the region still the guest's.
+  - Hypervisor.framework's stage 2 holds the pages it maps: replaced in the host alone,
+    they stayed the guest's, and the two no longer shared memory.
+  - Reading memory the guest never touched costs the host a page per page read: after the
+    third way, the guest's read of the fresh 256 MiB took 256.1 MiB.
+  - A page the hypervisor has unmapped is out of the footprint and the resident set
+    whether the process still holds it or not: with its pages never given back, a VM
+    process's footprint fell from 974 MiB to 78 MiB as the guest unplugged 1 GiB, and it
+    held 896 MiB of it as it ended (`a_guest_grows_and_gives_back_its_memory`, mutation).
+    What the process holds of the memory to plug is asked of the OS page by page
+    (`mach_vm_page_range_query`, Linux's pagemap): 2.5 ms for 63.5 GiB.
+- **What the kernel sizes by its memory at boot** (the test guest's `limits`, the pinned
+  kernel 6.18.48, booted with each size): linear in the memory but where the kernel caps
+  it.
+
+  | limit | 512 MiB | 1 GiB | 4 GiB | 16 GiB | 64 GiB |
+  |---|---|---|---|---|---|
+  | kernel.threads-max | 3995 | 8009 | 31607 | 128038 | 513765 |
+  | user.max_*_namespaces, RLIMIT_NPROC, RLIMIT_SIGPENDING | 1997 | 4004 | 15803 | 64019 | 256882 |
+  | fs.file-max | 48903 | 100244 | 402298 | 1636622 | 6573917 |
+  | fs.inotify.max_user_watches | 8192 | 8192 | 31794 | 129321 | 519427 |
+  | fs.epoll.max_user_watches | 108989 | 223365 | 895777 | 3643481 | 14634317 |
+  | net.ipv4.tcp_mem (pages) | 5688 7585 11376 | 11361 15151 22722 | 46362 61819 92724 | 190890 254522 381780 | 768324 1024432 1536648 |
+  | net.ipv4.udp_mem (pages) | 11376 15171 22752 | 22725 30302 45450 | 92727 123638 185454 | 381783 509045 763566 | 1536648 2048864 3073296 |
+  | net.ipv4.tcp_rmem, largest | 3883872 | 7757344 | 31651456 | 33554432 | 33554432 |
+  | net.ipv4.tcp_wmem, largest | 3883872 | 4194304 | 4194304 | 4194304 | 4194304 |
+  | net.ipv4.tcp_max_orphans, tcp_max_tw_buckets | 2048 | 4096 | 16384 | 65536 | 262144 |
+  | MemTotal | 505786368 | 1031905280 | 4124942336 | 16764416000 | 67322318848 |
+
+  - inotify's watches are 1:28.17 of epoll's items at 4, 16 and 64 GiB, where the kernel
+    clamps neither: `4 × INOTIFY_WATCH_COST / EP_ITEM_COST`, 1296 and 184 bytes in this
+    kernel. Below about 1 GiB inotify's are clamped at 8192.
+  - TCP's receive buffers stop at 32 MiB, its send buffers at 4 MiB; its orphans and
+    TIME-WAIT buckets are half its established table, a power of two.
+  - Scaled from a boot of 512 MiB by the ratio of the memory, the limits in proportion to
+    it come out up to 4% above a boot with all of it: the kernel's estimate of its free
+    memory at boot, which `threads-max` is of, is MemTotal and about 17 MiB at every size.
+  - `fs.file-max` is a file for each 10 KiB of the memory the kernel has as it starts its
+    caches, less half again what it has used by then (`files_maxfiles_init`), so more
+    memory adds a file for each 10 KiB: 48903 and that from 512 MiB comes within 38 files
+    of 4 GiB's and 64 GiB's. Scaled in proportion instead, a builder booted with 512 MiB
+    that may have 2560 had 254199, 145 short of a guest booted with 2560 on x86_64 (CI run
+    38185002440); the rest of its limits were within bounds there.
+  - A builder booted with 512 MiB that may have 2560 MiB gives its steps each limit of a
+    guest booted with 2560 MiB, or up to a tenth more
+    (`a_builders_memory_is_plugged_as_its_build_needs_it`).
+- **The device on a real VM** (`a_guest_grows_and_gives_back_its_memory`, three runs): a
+  guest booted with 256 MiB asked for 1 GiB and had it online in 5-7 ms, and gave it back
+  in 10-21 ms; the VM process's footprint 974 MiB with 896 MiB of it written, 78 MiB after.
+- **What a builder costs a build** (`docs/research/measurements/builder-memory/ab.py`):
+  `shards build --no-cache` through two release builds, A the builder booted with all its
+  memory (revision d1f88191), B one booted with 512 MiB that may have the same, half the
+  host's (64 GiB); their VM processes signed with identifiers of their own; both arms each
+  turn, in random order; two turns of warm-up, then n = 20. Wall clock, spawn to exit, and
+  the builder's peak resident set. `steps`: M82's three RUNs over alpine:3.22; `grow`: one
+  RUN that writes 4 GiB to a file and removes it. 2026-10-11, Apple M5 Max, 128 GiB, macOS
+  26.4.1, load average 7.4-7.5.
+
+  | build | metric | arm | p50 | p90 | p99 | max |
+  |---|---|---|---|---|---|---|
+  | steps | wall (ms) | A | 598.5 | 971.6 | 1229.5 | 1245.9 |
+  | steps | wall (ms) | B | 443.0 | 715.5 | 899.5 | 933.6 |
+  | steps | peak RSS (MiB) | A | 1424.2 | 1424.8 | 1425.0 | 1425.0 |
+  | steps | peak RSS (MiB) | B | 95.9 | 97.0 | 97.5 | 97.6 |
+  | grow | wall (ms) | A | 1441.5 | 1563.2 | 1793.1 | 1846.2 |
+  | grow | wall (ms) | B | 1393.0 | 1538.8 | 1632.4 | 1641.6 |
+  | grow | peak RSS (MiB) | A | 5527.5 | 5527.8 | 5528.0 | 5528.0 |
+  | grow | peak RSS (MiB) | B | 4335.0 | 4335.5 | 4335.8 | 4335.8 |
+
+  - Paired, B less A: `steps` -199.3 ms [-223.4, -158.4] and -1327.9 MiB; `grow` -67.2 ms
+    [-87.6, -40.0] and -1192.6 MiB (median, bootstrap 95% interval).
+  - B's timing line, which asks the OS what it holds of its 63.5 GiB to plug as it ends,
+    costs its wall 2.5 ms, counted.
+  - A build that needs 4 GiB, its builder growing to hold them, still ends sooner than one
+    whose builder booted with 64 GiB; and its builder holds 1.2 GiB less: the page
+    structures of the 56 GiB never plugged.
+- **Consequence.** D133: a builder boots with 512 MiB and is given the rest as its build
+  needs it; unplugged memory is given back by mapping fresh inaccessible memory over it,
+  out of the VM first where its hypervisor holds the pages; the builder's limits are raised
+  to all of its memory; and what a VM process holds of its memory to plug is asked of the
+  OS, not read from its footprint.

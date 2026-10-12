@@ -150,6 +150,12 @@ GUEST(touch,
       "cbz x3, 3f\n"
       "1: str xzr, [x0]\n add x0, x0, x2\n subs x1, x1, #1\n b.ne 1b\n hvc #0\n2: b 2b\n"
       "3: ldr x4, [x0]\n add x0, x0, x2\n subs x1, x1, #1\n b.ne 3b\n hvc #0\n4: b 4b")
+// x0 = base, x1 = count, x2 = stride, x3 = value: stores x3 at each stride; hvc #0.
+GUEST(fill, "1: str x3, [x0]\n add x0, x0, x2\n subs x1, x1, #1\n b.ne 1b\n hvc #0\n2: b 2b")
+// x0 = base, x1 = count, x2 = stride: x5 = how many strides hold a nonzero word; hvc #0.
+GUEST(nonzero,
+      "mov x5, #0\n1: ldr x4, [x0]\n cmp x4, #0\n cinc x5, x5, ne\n add x0, x0, x2\n subs x1, x1, #1\n"
+      "b.ne 1b\n hvc #0\n2: b 2b")
 // Per-touch latency: x0 = base, x1 = count, x2 = stride, x3 = 1 write / 0 read,
 // x4 = results (one u32 of CNTVCT ticks per touch, fault included). hvc #0 when done.
 GUEST(touch_timed,
@@ -630,6 +636,146 @@ static void t_faults(void) {
         vm_destroy(&c.vm);
     }
     close(fd);
+}
+
+// Giving guest RAM back to the host (virtio-mem unplug, PM M193): the process's footprint
+// (task_info TASK_VM_INFO phys_footprint) once the guest has written a region, after each
+// way of discarding it, and what the guest reads there afterwards.
+static uint64_t footprint(void) {
+    task_vm_info_data_t info;
+    mach_msg_type_number_t n = TASK_VM_INFO_COUNT;
+    if (task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&info, &n) != KERN_SUCCESS) DIE("task_info");
+    return info.phys_footprint;
+}
+
+typedef struct {
+    vm_t vm;
+    size_t size;
+} discard_ctx;
+
+// Runs `prog` over `size` bytes at `base` at `stride`; returns x5 (nonzero's count).
+static uint64_t guest_pass_at(vm_t *vm, const uint8_t *prog, const uint8_t *end, uint64_t base, size_t size,
+                              size_t stride, uint64_t value) {
+    load_code(vm, prog, end);
+    vcpu_reset(vm, base, size / stride, stride, value, 0);
+    run_to_hvc(vm, "discard pass");
+    uint64_t x5 = 0;
+    CHECK(hv_vcpu_get_reg(vm->vcpu, HV_REG_X5, &x5));
+    return x5;
+}
+
+static uint64_t guest_pass(vm_t *vm, const uint8_t *prog, const uint8_t *end, size_t size, size_t stride,
+                           uint64_t value) {
+    return guest_pass_at(vm, prog, end, DATA_GPA, size, stride, value);
+}
+
+static void *discard_thread(void *arg) {
+    discard_ctx *c = arg;
+    vm_t *vm = &c->vm;
+    vcpu_create(vm);
+    const size_t size = c->size, stride = 16384, pages = size / stride;
+    const double mib = 1.0 / (1 << 20);
+    enum { REUSABLE, FREE, REMAP, FIXED_ONLY, METHODS };
+    static const char *const name[METHODS] = {
+        "MADV_FREE_REUSABLE", "MADV_FREE", "hv_vm_unmap + MAP_FIXED anon + hv_vm_map",
+        "MAP_FIXED anon alone (still hv-mapped)"};
+    for (int m = 0; m < METHODS; m++) {
+        for (int round = 0; round < 3; round++) {
+            uint8_t *mem = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON | MAP_NORESERVE, -1, 0);
+            if (mem == MAP_FAILED) DIE("mmap region");
+            CHECK(hv_vm_map(mem, DATA_GPA, size, HV_MEMORY_READ | HV_MEMORY_WRITE | HV_MEMORY_EXEC));
+            uint64_t before = footprint();
+            guest_pass(vm, g_fill, g_fill_end, size, stride, 0x5a5a5a5a5a5a5a5aull);
+            uint64_t written = footprint();
+            uint64_t t0 = ticks();
+            switch (m) {
+            case REUSABLE:
+                if (madvise(mem, size, MADV_FREE_REUSABLE)) DIE("MADV_FREE_REUSABLE");
+                break;
+            case FREE:
+                if (madvise(mem, size, MADV_FREE)) DIE("MADV_FREE");
+                break;
+            case REMAP:
+                CHECK(hv_vm_unmap(DATA_GPA, size));
+                if (mmap(mem, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON | MAP_NORESERVE | MAP_FIXED, -1,
+                         0) != mem)
+                    DIE("MAP_FIXED");
+                CHECK(hv_vm_map(mem, DATA_GPA, size, HV_MEMORY_READ | HV_MEMORY_WRITE | HV_MEMORY_EXEC));
+                break;
+            case FIXED_ONLY:
+                if (mmap(mem, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON | MAP_NORESERVE | MAP_FIXED, -1,
+                         0) != mem)
+                    DIE("MAP_FIXED");
+                break;
+            }
+            double took = tns(ticks() - t0);
+            uint64_t discarded = footprint();
+            // What the guest reads back, and what reading costs the host.
+            uint64_t stale = guest_pass(vm, g_nonzero, g_nonzero_end, size, stride, 0);
+            uint64_t read = footprint();
+            // What the host sees where the guest wrote, through its own mapping.
+            size_t host_stale = 0;
+            for (size_t o = 0; o < size; o += stride) host_stale += *(volatile uint64_t *)(mem + o) != 0;
+            if (m == REUSABLE && madvise(mem, size, MADV_FREE_REUSE)) DIE("MADV_FREE_REUSE");
+            guest_pass(vm, g_fill, g_fill_end, size, stride, 0x1111111111111111ull);
+            uint64_t rewritten = footprint();
+            // Whether the host's mapping and the guest's still agree once the guest writes.
+            size_t agree = 0;
+            for (size_t o = 0; o < size; o += stride) agree += *(volatile uint64_t *)(mem + o) == 0x1111111111111111ull;
+            printf("  %-42s round %d: %6.1f us; footprint MiB: written %+7.1f discarded %+7.1f read %+7.1f "
+                   "rewritten %+7.1f; guest reads %zu/%zu stale, host %zu/%zu stale; host sees guest's rewrite %zu/%zu\n",
+                   name[m], round, took / 1e3, (double)(written - before) * mib,
+                   ((double)discarded - (double)written) * mib, ((double)read - (double)discarded) * mib,
+                   ((double)rewritten - (double)read) * mib, (size_t)stale, pages, host_stale, pages, agree, pages);
+            CHECK(hv_vm_unmap(DATA_GPA, size));
+            munmap(mem, size);
+        }
+    }
+    // Part of a mapping given back, as one block of a plugged range is unplugged: the
+    // middle 2 MiB of a 256 MiB mapping unmapped and replaced, the rest left mapped.
+    const size_t block = 2ull << 20, at = size / 2;
+    uint8_t *mem = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON | MAP_NORESERVE, -1, 0);
+    if (mem == MAP_FAILED) DIE("mmap region");
+    CHECK(hv_vm_map(mem, DATA_GPA, size, HV_MEMORY_READ | HV_MEMORY_WRITE | HV_MEMORY_EXEC));
+    guest_pass(vm, g_fill, g_fill_end, size, stride, 0x5a5a5a5a5a5a5a5aull);
+    uint64_t written = footprint();
+    uint64_t t0 = ticks();
+    hv_return_t unmapped = hv_vm_unmap(DATA_GPA + at, block);
+    if (mmap(mem + at, block, PROT_NONE, MAP_PRIVATE | MAP_ANON | MAP_NORESERVE | MAP_FIXED, -1, 0) != mem + at)
+        DIE("MAP_FIXED block");
+    double took = tns(ticks() - t0);
+    uint64_t discarded = footprint();
+    // The guest reads below the block, then into it: an exit for an address nothing maps.
+    load_code(vm, g_nonzero, g_nonzero_end);
+    vcpu_reset(vm, DATA_GPA + at - stride, 2, stride, 0, 0);
+    CHECK(hv_vcpu_run(vm->vcpu));
+    hv_vcpu_exit_t *e = vm->exit;
+    bool faulted = e->reason == HV_EXIT_REASON_EXCEPTION && EC(e) == EC_DABT &&
+                   e->exception.physical_address == DATA_GPA + at;
+    // Plugged again: made accessible, mapped, read as zeros, and the rest still the guest's.
+    if (mprotect(mem + at, block, PROT_READ | PROT_WRITE)) DIE("mprotect block");
+    hv_return_t remapped = hv_vm_map(mem + at, DATA_GPA + at, block, HV_MEMORY_READ | HV_MEMORY_WRITE | HV_MEMORY_EXEC);
+    uint64_t in_block = guest_pass_at(vm, g_nonzero, g_nonzero_end, DATA_GPA + at, block, stride, 0);
+    uint64_t rest = guest_pass(vm, g_nonzero, g_nonzero_end, size, stride, 0);
+    printf("  part of a mapping: unmap 0x%x, map again 0x%x (0 = success); %.1f us; footprint %+.1f MiB; "
+           "an access to the unmapped block exits at it: %s; mapped again, it reads %zu/%zu nonzero, "
+           "the whole region %zu/%zu\n",
+           unmapped, remapped, took / 1e3, ((double)discarded - (double)written) * mib, faulted ? "yes" : "no",
+           (size_t)in_block, block / stride, (size_t)rest, pages);
+    CHECK(hv_vm_unmap(DATA_GPA, size));
+    munmap(mem, size);
+    CHECK(hv_vcpu_destroy(vm->vcpu));
+    return NULL;
+}
+
+static void t_discard(void) {
+    discard_ctx c = {.size = 256ull << 20};
+    printf("discard (%zu MiB region, 16 KiB stride)\n", c.size >> 20);
+    vm_create(&c.vm, false, false);
+    pthread_t th;
+    pthread_create(&th, NULL, discard_thread, &c);
+    pthread_join(th, NULL);
+    vm_destroy(&c.vm);
 }
 
 // First-touch latency distribution per backing: every stage-2 fault timed by the guest
@@ -1396,7 +1542,7 @@ int main(int argc, char **argv) {
 
     static const struct { const char *name; void (*fn)(void); } tests[] = {
         {"info", t_info}, {"guestinfo", t_guestinfo}, {"lifecycle", t_lifecycle}, {"map", t_map}, {"exits", t_exits},
-        {"faults", t_faults}, {"faulttail", t_faulttail}, {"pfault", t_pfault}, {"restore", t_restore}, {"gicregs", t_gicregs}, {"wfi", t_wfi}, {"irq", t_irq}, {"kick", t_kick}, {"vtimer", t_vtimer}, {"sleep", t_sleep},
+        {"faults", t_faults}, {"discard", t_discard}, {"faulttail", t_faulttail}, {"pfault", t_pfault}, {"restore", t_restore}, {"gicregs", t_gicregs}, {"wfi", t_wfi}, {"irq", t_irq}, {"kick", t_kick}, {"vtimer", t_vtimer}, {"sleep", t_sleep},
     };
     bool all = argc == first;
     for (size_t i = 0; i < sizeof tests / sizeof *tests; i++) {

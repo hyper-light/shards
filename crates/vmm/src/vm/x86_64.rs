@@ -233,6 +233,12 @@ struct Assembled {
     virtio: Vec<acpi::MmioDevice>,
 }
 
+/// Where the memory to plug starts (D133): above 4 GiB, at the first GiB boundary after
+/// any high RAM.
+fn plug_at(ram: u64) -> u64 {
+    (layout::MMIO_GAP_END + ram.saturating_sub(layout::MMIO_GAP)).next_multiple_of(GIB)
+}
+
 /// Guest RAM of `memory_mib`, around the MMIO gap.
 fn ram_ranges(memory_mib: u64) -> Result<(u64, Vec<(u64, usize)>), String> {
     if memory_mib < MIN_MEMORY_MIB || !memory_mib.is_multiple_of(2) {
@@ -261,8 +267,15 @@ fn assemble(
         .memory_mib
         .checked_mul(MIB)
         .ok_or_else(|| format!("{} MiB of guest memory", config.memory_mib))?;
-    // Device memory (pmem regions) goes above 4 GiB, after any high RAM.
-    let first = (layout::MMIO_GAP_END + ram.saturating_sub(layout::MMIO_GAP)).next_multiple_of(GIB);
+    // Device memory (pmem regions) goes above 4 GiB, after any high RAM and after the
+    // memory to plug (`plug_at`), at a GiB boundary.
+    let first = match memory.hotplug() {
+        None => plug_at(ram),
+        Some((gpa, _, len)) => gpa
+            .checked_add(len as u64)
+            .and_then(|end| end.checked_next_multiple_of(GIB))
+            .ok_or("pmem regions overflow the address space")?,
+    };
     let (regions, _) = super::pmem_regions(config, first)?;
     if config.nested {
         return Err("virtualization of a guest's own is not given on x86_64 yet".into());
@@ -278,10 +291,11 @@ fn assemble(
         unsafe { vm.map_device_memory(region.host(), *gpa, region.len(), false) }
             .map_err(|e| e.to_string())?;
     }
+    let (hotplug, sizes) = super::hotplug_device(&vm, memory, config)?.unzip();
     let irqs = vm.irqs();
     debug!("VM created and RAM mapped");
 
-    let devices = super::virtio_devices(config, &regions, hosts, layout::VIRTIO_MMIO_MAX)?;
+    let devices = super::virtio_devices(config, &regions, hosts, hotplug, layout::VIRTIO_MMIO_MAX)?;
     let mut bus = Bus {
         pmem: regions
             .iter()
@@ -307,6 +321,9 @@ fn assemble(
         });
     }
     let control = Arc::new(Control::default());
+    if let Some(sizes) = sizes {
+        control.on_hotplug(sizes);
+    }
     bus.mmio.insert(layout::CONTROL, 0x1000, control.clone())?;
 
     let serial = Arc::new(Serial::new(
@@ -346,7 +363,8 @@ fn assemble(
 
 pub fn build(cfg: &Config) -> Result<Machine, String> {
     let (ram, ranges) = ram_ranges(cfg.memory_mib)?;
-    let memory = Arc::new(GuestMemory::anonymous(&ranges).map_err(|e| format!("guest RAM: {e}"))?);
+    let config = super::machine_config(cfg)?;
+    let memory = Arc::new(super::guest_memory(&ranges, &config, plug_at(ram))?);
     // Before anything touches it: on huge pages, its first 2 MiB would be resident whole
     // for its boot structures' few pages (layout::SPARSE, PM M157).
     memory
@@ -359,7 +377,6 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
     let kernel = boot::load_kernel(&memory, &kernel_file, low_ram_end).map_err(|e| e.to_string())?;
     debug!("kernel loaded");
 
-    let config = super::machine_config(cfg)?;
     let hosts = super::Hosts {
         vsock: cfg.vsock.as_ref(),
         #[cfg(unix)]

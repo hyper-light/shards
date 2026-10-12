@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 #[cfg(hv)]
-use crate::devices::virtio::{pmem, vsock};
+use crate::devices::virtio::{mem, pmem, vsock};
 
 #[cfg(all(hv, target_arch = "aarch64"))]
 mod aarch64;
@@ -132,10 +132,83 @@ fn pmem_regions(config: &crate::snapshot::MachineConfig, first: u64) -> Result<(
     Ok((regions, next))
 }
 
+/// The memory `config` may have plugged (D133), `(most, region)` in bytes: its
+/// `hotplug_mib`, whole blocks of [`mem::BLOCK`], and the region that holds it, whole
+/// blocks of Linux's memory ([`mem::ALIGN`]); none where it has none.
+#[cfg(hv)]
+fn hotplug(config: &crate::snapshot::MachineConfig) -> Result<Option<(u64, u64)>, String> {
+    if config.hotplug_mib == 0 {
+        return Ok(None);
+    }
+    let too_much = || format!("{} MiB of memory to plug", config.hotplug_mib);
+    let most = config.hotplug_mib.checked_mul(1 << 20).ok_or_else(too_much)?;
+    if !most.is_multiple_of(mem::BLOCK) {
+        return Err(format!(
+            "memory to plug must be whole blocks of {} MiB",
+            mem::BLOCK >> 20
+        ));
+    }
+    let region = most.checked_next_multiple_of(mem::ALIGN).ok_or_else(too_much)?;
+    Ok(Some((most, region)))
+}
+
+/// Guest RAM of `ranges`, and the memory `config` may have plugged at `at`, withheld until
+/// plugged (D133).
+#[cfg(hv)]
+fn guest_memory(
+    ranges: &[(u64, usize)],
+    config: &crate::snapshot::MachineConfig,
+    at: u64,
+) -> Result<crate::memory::GuestMemory, String> {
+    let memory = match hotplug(config)? {
+        None => crate::memory::GuestMemory::anonymous(ranges),
+        Some((_, region)) => {
+            let len = usize::try_from(region).map_err(|_| format!("{region} bytes of memory to plug"))?;
+            crate::memory::GuestMemory::with_hotplug(ranges, at, len, mem::BLOCK)
+        }
+    };
+    memory.map_err(|e| format!("guest RAM: {e}"))
+}
+
+#[cfg(hv)]
+impl mem::Mapper for crate::hv::Stage2 {
+    unsafe fn map(&self, host: *mut u8, gpa: u64, len: usize) -> Result<(), String> {
+        // SAFETY: forwarded caller contract.
+        unsafe { crate::hv::Stage2::map(self, host, gpa, len) }.map_err(|e| e.to_string())
+    }
+
+    fn unmap(&self, gpa: u64, len: usize) -> Result<(), String> {
+        crate::hv::Stage2::unmap(self, gpa, len).map_err(|e| e.to_string())
+    }
+}
+
+/// The virtio-mem device of `memory`'s memory to plug, and the sizes the control page
+/// shares with it (D133); none where it has none. The region is the VM's from here on,
+/// mapped as the hypervisor maps it ([`crate::hv::Vm::add_hotplug`]).
+#[cfg(hv)]
+#[expect(
+    clippy::type_complexity,
+    reason = "the device and the sizes the control page shares with it, made together"
+)]
+fn hotplug_device(
+    vm: &crate::hv::Vm,
+    memory: &crate::memory::GuestMemory,
+    config: &crate::snapshot::MachineConfig,
+) -> Result<Option<(Box<dyn crate::devices::virtio::VirtioDevice>, Arc<mem::Sizes>)>, String> {
+    let (Some((gpa, host, len)), Some((most, _))) = (memory.hotplug(), hotplug(config)?) else {
+        return Ok(None);
+    };
+    // SAFETY: `memory` outlives the VM: `Machine` and `Running` drop the VM first.
+    let stage2 = unsafe { vm.add_hotplug(host, gpa, len) }.map_err(|e| e.to_string())?;
+    let sizes = Arc::new(mem::Sizes::new(gpa, len as u64, most));
+    Ok(Some((Box::new(mem::Mem::new(sizes.clone(), stage2)), sizes)))
+}
+
 /// `config`'s virtio devices in the guest's probe order, which each machine gives the
 /// next of its MMIO windows and interrupt lines: its disks, its join disk, its pmem
-/// `regions`, its vsock device, its network device, and its shared directories; at most
-/// `max` of them. The devices share the regions:
+/// `regions`, its vsock device, its network device, its shared directories, its join share,
+/// and its memory to plug (`hotplug`, last: no other device's window moves for it); at
+/// most `max` of them. The devices share the regions:
 /// `regions`, made before the VM, holds them until after it on every early return, the
 /// hypervisor mapping them until its destroy.
 #[cfg(hv)]
@@ -143,6 +216,7 @@ fn virtio_devices(
     config: &crate::snapshot::MachineConfig,
     regions: &[(Arc<pmem::Region>, u64)],
     hosts: Hosts<'_>,
+    hotplug: Option<Box<dyn crate::devices::virtio::VirtioDevice>>,
     max: u64,
 ) -> Result<Vec<Box<dyn crate::devices::virtio::VirtioDevice>>, String> {
     let slots = config.disks.len()
@@ -151,7 +225,8 @@ fn virtio_devices(
         + usize::from(config.vsock)
         + usize::from(config.net.is_some())
         + config.shares as usize
-        + usize::from(config.join_share);
+        + usize::from(config.join_share)
+        + usize::from(hotplug.is_some());
     if slots as u64 > max {
         return Err(format!("at most {max} virtio devices are supported"));
     }
@@ -218,6 +293,7 @@ fn virtio_devices(
             slot,
         )?));
     }
+    devices.extend(hotplug);
     Ok(devices)
 }
 
@@ -265,6 +341,7 @@ fn machine_config(cfg: &Config) -> Result<crate::snapshot::MachineConfig, String
         #[cfg(not(unix))]
         join_share: false,
         nested: cfg.nested,
+        hotplug_mib: cfg.hotplug_mib,
     })
 }
 
@@ -330,6 +407,10 @@ pub struct Config {
     /// that its kernel may be a hypervisor (KVM). Refused where the host cannot give it,
     /// and its snapshot refused, its EL2 state not saved.
     pub nested: bool,
+    /// Memory the guest may have plugged beyond `memory_mib`, in MiB, as it asks for it
+    /// through the control page: a virtio-mem device (D133), last of its devices; 0 for
+    /// none. Its snapshot is refused: memory plugged is not saved.
+    pub hotplug_mib: u64,
     /// The join share's slot (D119), which a server of its VM's joiners' volumes fills.
     #[cfg(unix)]
     pub join_share: Option<&'static crate::devices::virtio::fs::Slot>,
@@ -395,6 +476,7 @@ impl Config {
             #[cfg(unix)]
             join_share: None,
             nested: false,
+            hotplug_mib: 0,
         }
     }
 }
@@ -552,6 +634,7 @@ mod tests {
             join: false,
             join_share: false,
             nested: false,
+            hotplug_mib: 0,
         }
     }
 
@@ -633,9 +716,23 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A machine's virtio devices come in the guest's probe order, disks, pmem, vsock and
-    /// network, no more than the machine has room for; the network device takes the
-    /// machine's own MAC; a device without its host side is refused.
+    /// Maps nothing: the order test's memory to plug is never plugged.
+    #[derive(Debug, Clone)]
+    struct Unmapped;
+
+    impl mem::Mapper for Unmapped {
+        unsafe fn map(&self, _host: *mut u8, _gpa: u64, _len: usize) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn unmap(&self, _gpa: u64, _len: usize) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    /// A machine's virtio devices come in the guest's probe order, disks, pmem, vsock,
+    /// network and memory to plug last, no more than the machine has room for; the network
+    /// device takes the machine's own MAC; a device without its host side is refused.
     #[test]
     fn virtio_devices_come_in_probe_order() {
         let dir = shards_testdir::TempDir::new("virtio-devices").unwrap();
@@ -657,9 +754,23 @@ mod tests {
             #[cfg(unix)]
             join_share: None,
         };
-        let e = virtio_devices(&config, &regions, hosts, 4).err().unwrap();
+        let e = virtio_devices(&config, &regions, hosts, None, 4).err().unwrap();
         assert_eq!(e, "at most 4 virtio devices are supported");
-        let devices = virtio_devices(&config, &regions, hosts, 5).unwrap();
+        let plugging = || {
+            let sizes = Arc::new(mem::Sizes::new(1 << 32, mem::ALIGN, mem::ALIGN));
+            Some(Box::new(mem::Mem::new(sizes, Unmapped)) as Box<dyn crate::devices::virtio::VirtioDevice>)
+        };
+        let e = virtio_devices(&config, &regions, hosts, plugging(), 5)
+            .err()
+            .unwrap();
+        assert_eq!(e, "at most 5 virtio devices are supported");
+        let ids: Vec<u32> = virtio_devices(&config, &regions, hosts, plugging(), 6)
+            .unwrap()
+            .iter()
+            .map(|d| d.device_id())
+            .collect();
+        assert_eq!(ids, [2, 2, 27, 19, 1, mem::DEVICE_ID]);
+        let devices = virtio_devices(&config, &regions, hosts, None, 5).unwrap();
         let ids: Vec<u32> = devices.iter().map(|d| d.device_id()).collect();
         assert_eq!(ids, [2, 2, 27, 19, 1]);
         let mut mac = [0u8; 6];
@@ -678,7 +789,7 @@ mod tests {
             #[cfg(unix)]
             join_share: None,
         };
-        let e = virtio_devices(&config, &regions, missing, 5).err().unwrap();
+        let e = virtio_devices(&config, &regions, missing, None, 5).err().unwrap();
         assert!(e.contains("no host side"), "{e}");
         let missing = Hosts {
             vsock: Some(&vsock),
@@ -688,7 +799,7 @@ mod tests {
             #[cfg(unix)]
             join_share: None,
         };
-        let e = virtio_devices(&config, &regions, missing, 5).err().unwrap();
+        let e = virtio_devices(&config, &regions, missing, None, 5).err().unwrap();
         assert!(e.contains("no network process"), "{e}");
         let _ = std::fs::remove_dir_all(&dir);
     }

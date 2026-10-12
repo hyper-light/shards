@@ -99,6 +99,30 @@ pub fn el2_supported() -> bool {
     sys::el2_supported()
 }
 
+/// Maps the memory a virtio-mem device plugs into the guest and unmaps it, from whichever
+/// thread plugs it, while the VM lives ([`Vm::add_hotplug`]). The pages it maps are the
+/// VM's until it unmaps them: replaced in the host while mapped, the guest kept the old
+/// ones and its writes no longer reached the host's (PM M193).
+#[derive(Debug, Clone, Copy)]
+pub struct Stage2(());
+
+impl Stage2 {
+    /// Maps `len` bytes of host memory at `host` as guest RAM at `gpa`.
+    ///
+    /// # Safety
+    /// `host..host+len` must stay mapped in this process until unmapped here or the VM is
+    /// destroyed.
+    pub unsafe fn map(&self, host: *mut u8, gpa: u64, len: usize) -> Result<()> {
+        // SAFETY: forwarded caller contract; the handle exists only while the VM does.
+        Ok(unsafe { sys::map(host, gpa, len, sys::Perms::RWX) }?)
+    }
+
+    /// Unmaps `len` bytes at `gpa`: the guest's accesses there exit as MMIO to nothing.
+    pub fn unmap(&self, gpa: u64, len: usize) -> Result<()> {
+        Ok(sys::unmap(gpa, len)?)
+    }
+}
+
 /// The process's VM. It must outlive every [`Vcpu`], and guest memory must outlive it.
 #[derive(Debug)]
 pub struct Vm {
@@ -149,6 +173,17 @@ impl Vm {
         });
         self.power.add_ram(gpa, gpa.saturating_add(len as u64));
         Ok(())
+    }
+
+    /// Gives the guest the memory a virtio-mem device plugs, `len` bytes at `host` seen at
+    /// `gpa` (D133): none of it yet. Hypervisor.framework's stage 2 holds the pages it maps
+    /// (PM M193), so each range is mapped as it is plugged, and unmapped before its pages
+    /// are given back, through the [`Stage2`] this returns.
+    ///
+    /// # Safety
+    /// `host..host+len` must stay mapped in this process until the VM is destroyed.
+    pub unsafe fn add_hotplug(&self, _host: *mut u8, _gpa: u64, _len: usize) -> Result<Stage2> {
+        Ok(Stage2(()))
     }
 
     /// Maps device memory (a virtio-pmem region) at `gpa`, writable by the guest only if

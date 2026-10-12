@@ -41,6 +41,12 @@ use shards_image::erofs::Source;
 #[cfg(unix)]
 const BOOT_PATIENCE: Duration = Duration::from_secs(30);
 
+/// The memory a builder boots with, in MiB, where it may have more: what its page
+/// structures cost it at boot grows with it (PM M82), and the rest is plugged as the build
+/// needs it, its init asking (D133, PM M193).
+#[cfg_attr(not(unix), allow(dead_code))]
+pub const BOOT_MEMORY_MIB: u64 = 512;
+
 /// Where a snapshot's tree comes from, as a builder guest holds it. Only a builder reads
 /// one: where none starts yet (Windows), nothing does.
 #[derive(Debug)]
@@ -202,6 +208,8 @@ pub struct Boot<'a> {
     pub kernel: &'a Path,
     pub init: &'a Path,
     pub cpus: u32,
+    /// The most memory the builder may have, in MiB: it boots with [`BOOT_MEMORY_MIB`] of
+    /// it, and the rest is plugged as the build needs it (D133).
     pub memory_mib: u64,
     pub bases: &'a [PathBuf],
     /// The build's proxy (D110): where there is one, the builder's network reaches it
@@ -299,14 +307,21 @@ impl Builder {
             "--init".into(),
             boot.init.into(),
             "--cmdline".into(),
+            // Memory plugged comes online as the kernel's own, all of it usable by the
+            // kernel's allocations as well as the build's: a builder never gives it back,
+            // where memory online as movable alone could leave the kernel short with
+            // memory free (Documentation/admin-guide/mm/memory-hotplug.rst, "ZONE_MOVABLE
+            // Sizing Considerations").
             format!(
-                "console=ttyS0 earlycon panic=-1 shards_build=1 {}",
+                "console=ttyS0 earlycon panic=-1 shards_build=1 memhp_default_state=online_kernel {}",
                 bridge.cmdline()
             )
             .into(),
             "--cpus".into(),
             boot.cpus.to_string().into(),
             "--memory".into(),
+            boot.memory_mib.min(BOOT_MEMORY_MIB).to_string().into(),
+            "--memory-max".into(),
             boot.memory_mib.to_string().into(),
             "--vsock".into(),
             vsock.clone().into(),

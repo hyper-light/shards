@@ -98,6 +98,9 @@ pub struct MachineConfig {
     /// Whether the guest has virtualization of its own (nested: on arm64, EL2). Never in a
     /// snapshot: its state at EL2 is not saved, so a snapshot of it is refused.
     pub nested: bool,
+    /// Memory the guest may have plugged, in MiB, through a virtio-mem device (D133).
+    /// Never in a snapshot: memory plugged is not saved, so a snapshot of it is refused.
+    pub hotplug_mib: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -269,6 +272,9 @@ fn encode(s: &Snapshot, generation: &str, identities: &[Identity]) -> Result<Vec
             "a snapshot of a VM with virtualization of its own is refused: its EL2 state is not saved".into(),
         );
     }
+    if s.config.hotplug_mib > 0 {
+        return Err("a snapshot of a VM with memory to plug is refused: memory plugged is not saved".into());
+    }
     let disks = s
         .config
         .disks
@@ -389,6 +395,7 @@ fn decode(bytes: &[u8]) -> codec::Result<Decoded> {
                 join,
                 join_share,
                 nested: false,
+                hotplug_mib: 0,
             },
             arch: arch_state,
             devices,
@@ -862,6 +869,7 @@ mod tests {
                 join: true,
                 join_share: true,
                 nested: false,
+                hotplug_mib: 0,
             },
             arch: vec![marker, 2, 3],
             devices: vec![9; 100],
@@ -880,6 +888,21 @@ mod tests {
                 written: gpa % 0x8000 == 0,
             })
             .collect()
+    }
+
+    /// What a snapshot cannot hold is refused as it is written, not lost: a guest's EL2
+    /// state, and memory it has plugged.
+    #[test]
+    fn a_machine_with_state_a_snapshot_cannot_hold_is_refused() {
+        let ids = vec![Identity::default(); 3];
+        let mut nested = sample(&nowhere(), 1);
+        nested.config.nested = true;
+        let e = encode(&nested, "g-1", &ids).unwrap_err();
+        assert!(e.contains("EL2 state is not saved"), "{e}");
+        let mut plugging = sample(&nowhere(), 1);
+        plugging.config.hotplug_mib = 2;
+        let e = encode(&plugging, "g-1", &ids).unwrap_err();
+        assert!(e.contains("memory to plug is refused"), "{e}");
     }
 
     #[test]

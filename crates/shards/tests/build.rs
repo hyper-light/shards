@@ -195,6 +195,112 @@ fn step_reports(stderr: &str) -> Vec<std::collections::BTreeMap<String, String>>
     steps.into_iter().map(|(_, m)| m).collect()
 }
 
+/// What a guest says of its limits (`SHARDS-TEST LIMIT NAME VALUE`), by name: each value's
+/// numbers.
+fn limits_said(out: &str) -> std::collections::BTreeMap<String, Vec<u64>> {
+    out.lines()
+        .filter_map(|l| l.split_once("SHARDS-TEST LIMIT ").map(|(_, rest)| rest))
+        .filter_map(|rest| rest.trim().split_once(' '))
+        .map(|(name, v)| {
+            (
+                name.to_string(),
+                v.split(',').map(|n| n.parse().unwrap()).collect(),
+            )
+        })
+        .collect()
+}
+
+/// A builder boots with little memory and is given more as its build needs it (D133): a
+/// step that touches three times what it booted with succeeds, and so does a layer twice
+/// as large; its steps' limits, those the kernel sizes by its memory, are at least a guest's
+/// booted with all of it, and within a tenth of them; and a step that takes more than all of
+/// it fails, as one past the memory of a builder booted with all of it does.
+#[test]
+fn a_builders_memory_is_plugged_as_its_build_needs_it() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("build-plug-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+        ("SHARDS_BUILD_MEMORY", "2560".as_ref()),
+    ];
+    let ctx = context(
+        "build-plug-ctx",
+        &format!(
+            "FROM {image}\n\
+             USER root\n\
+             RUN [\"/bin/testguest\", \"alloc\", \"1536\"]\n\
+             RUN [\"/bin/testguest\", \"big\", \"/big\", \"1024\"]\n\
+             RUN [\"/bin/testguest\", \"limits\"]\n"
+        ),
+    );
+    let built = run_shards_env(
+        &["build"],
+        &["--progress=plain", "-t", "plugged:1", ctx.to_str().unwrap()],
+        &env,
+        TIMEOUT,
+    );
+    let shown = format!("--- stdout\n{}\n--- stderr\n{}", built.stdout, built.stderr);
+    assert_eq!(built.status, Some(0), "{shown}");
+    assert!(built.stderr.contains("allocated 1536"), "{shown}");
+
+    let full = common::vm_run(
+        &[
+            "--kernel",
+            kernel().to_str().unwrap(),
+            "--init",
+            common::test_guest().to_str().unwrap(),
+            "--memory",
+            "2560",
+            "--cmdline",
+            "console=ttyS0 panic=-1 shards_test=limits",
+        ],
+        TIMEOUT,
+    );
+    assert_eq!(full.status, Some(0), "{full}");
+    let (stepped, booted) = (limits_said(&built.stderr), limits_said(&full.stdout));
+    let mut wrong = Vec::new();
+    for name in shards_testguest::LIMITS
+        .iter()
+        .copied()
+        .chain(["rlimit.nproc", "rlimit.sigpending"])
+    {
+        let (Some(step), Some(boot)) = (stepped.get(name), booted.get(name)) else {
+            panic!("no {name}: {shown}\n{full}");
+        };
+        let within =
+            step.len() == boot.len() && step.iter().zip(boot).all(|(s, b)| *s >= *b && *s <= *b + *b / 10);
+        if !within {
+            wrong.push(format!(
+                "{name}: the step has {step:?}; booted with all its memory, {boot:?}"
+            ));
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+
+    let ctx = context(
+        "build-plug-over-ctx",
+        &format!("FROM {image}\nRUN [\"/bin/testguest\", \"alloc\", \"3072\"]\n"),
+    );
+    let over = run_shards_env(
+        &["build"],
+        &["--progress=plain", ctx.to_str().unwrap()],
+        &env,
+        TIMEOUT,
+    );
+    let shown = format!("--- stdout\n{}\n--- stderr\n{}", over.stdout, over.stderr);
+    assert_eq!(over.status, Some(1), "{shown}");
+    assert!(
+        over.stderr
+            .contains("did not complete successfully: exit code: 137"),
+        "{shown}"
+    );
+}
+
 /// `RUN` steps run in a builder microVM as BuildKit runs them (docs/research/
 /// buildkit-run.md, with the values Docker Desktop's BuildKit showed, 2026-10-02): PID 1
 /// of their own namespaces, `buildkitsandbox`, HOME from passwd, BuildKit's capabilities

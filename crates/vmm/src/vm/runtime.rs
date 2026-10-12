@@ -35,9 +35,17 @@ pub struct Handle {
     shared: Arc<Shared>,
     serial: Arc<Serial>,
     control: Arc<Control>,
+    memory: Arc<GuestMemory>,
 }
 
 impl Handle {
+    /// The bytes of its memory to plug whose pages this process holds (D133): pages the
+    /// guest touched and has not given back. None where it has none, or the host cannot
+    /// say which pages it holds.
+    pub fn hotplug_held(&self) -> Option<u64> {
+        self.memory.hotplug_held().ok().flatten()
+    }
+
     /// Guest markers as `(marker, µs since VMM start)`.
     pub fn markers(&self) -> Vec<(u32, u128)> {
         self.control.markers()
@@ -566,6 +574,7 @@ fn launch(
             shared,
             serial,
             control,
+            memory: memory.clone(),
         },
         Running {
             shared: handle_shared,
@@ -769,6 +778,7 @@ mod tests {
                 join: false,
                 join_share: false,
                 nested: false,
+                hotplug_mib: 0,
             },
             arch: Vec::new(),
             devices: Vec::new(),

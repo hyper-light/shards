@@ -141,7 +141,7 @@ pub(crate) fn control_write(register: u64, value: u32) -> io::Result<()> {
 }
 
 /// Writes a 64-bit register of the VMM's control page, in one access.
-fn control_write64(register: u64, value: u64) -> io::Result<()> {
+pub(crate) fn control_write64(register: u64, value: u64) -> io::Result<()> {
     let page = control_page()?;
     let offset = usize::try_from(register)
         .ok()
@@ -153,7 +153,7 @@ fn control_write64(register: u64, value: u64) -> io::Result<()> {
 }
 
 /// Reads a 64-bit register of the VMM's control page, in one access.
-fn control_read64(register: u64) -> io::Result<u64> {
+pub(crate) fn control_read64(register: u64) -> io::Result<u64> {
     let page = control_page()?;
     let offset = usize::try_from(register)
         .ok()

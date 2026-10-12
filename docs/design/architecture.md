@@ -2268,9 +2268,10 @@ microVM rather than a container on the build host's kernel.
   Dockerfile2LLB's AddUlimit gives them, the run alone.
 - **Not yet as BuildKit:** a step's network is its own loopback until the guest has a
   network (D31); BuildKit's seccomp profile; caches kept past one build; ssh from the
-  client; memory plugged as a build needs it (PM M82: a builder pays about 21
-  MiB and 4 ms per GiB of guest memory, and takes half the host's, as Docker Desktop's VM
-  has). Each is an item of AGENTFILE_ARCH.md §11.
+  client. Each is an item of AGENTFILE_ARCH.md §11. A builder may have half the host's
+  memory, as Docker Desktop's VM has, but boots with little and is given the rest as its
+  build needs it (D133): a builder paid about 21 MiB and 4 ms per GiB it booted with
+  (PM M82).
 
 ### One binary (D36)
 
@@ -3536,6 +3537,84 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 2026-10-07): every path between domains is a grant, and the build refuses any that joins
 an internal-only domain to the world (D58), so there is no data to label. Code mode
 waits on the user.
+
+### D133. A builder's memory, plugged as its build needs it (virtio-mem)
+
+A builder may have half the host's memory, as Docker Desktop's VM has, but the memory a
+guest boots with costs it its page structures as it boots: about 21 MiB and 4 ms per GiB, a
+builder of 64 GiB 1.4 GiB and 434 ms (PM M82). A builder now boots with 512 MiB, and is
+given the rest as its build needs it, up to what it may have.
+
+- **The device.** A virtio-mem device (VIRTIO 1.3 §5.15, device 24), the machine's last,
+  so no other device's window moves for it: its region at the first GiB boundary after RAM
+  (pmem regions after it), in whole Linux memory blocks (128 MiB, the unit Linux adds memory
+  in), plugged in 2 MiB blocks, the usable region the whole region. Requests are answered as
+  the specification has it: ERROR for blocks not of the usable region, unaligned, none, or
+  plugged already (unplugged already, for an UNPLUG); NACK for a plug past the size asked
+  for; BUSY where the host could not plug or unplug, which the driver retries. The driver
+  must accept VIRTIO_MEM_F_UNPLUGGED_INACCESSIBLE. Linux's driver reads a 64-bit field in
+  two halves, so the transport's ConfigGeneration counts the device's every change of
+  size.
+- **Unplugged memory is no one's.** Its pages go back to the host, and the range is left
+  inaccessible: fresh anonymous memory, PROT_NONE, mapped over it (Windows: decommitted).
+  macOS's MADV_FREE_REUSABLE and MADV_FREE gave nothing back while Hypervisor.framework
+  mapped the memory, and replacing a mapped range in the host alone left the guest the old
+  pages and its writes unseen by the host (PM M193). Hypervisor.framework's stage 2 holds
+  the pages it maps, so a block is mapped into the guest as it is plugged and unmapped
+  before its pages go back; KVM's follows the host's mapping, so the region is one memslot
+  from the start (`hv::Stage2`, `Vm::add_hotplug`). The host's devices are refused blocks
+  not plugged (`GuestMemory::host_ptr`); plugging and unplugging hold guest memory, so no
+  device's access is between finding a block plugged and touching it. A guest that touches
+  an unplugged block breaks its promise: on HVF its access is MMIO to nothing, on KVM its
+  vCPU's run fails.
+- **The guest asks, within what the host gives.** The guest knows when it needs memory, so
+  it asks, through the control page (`HOTPLUG_SIZE`, what it may have; `HOTPLUG_REQUEST`,
+  what it asks for, in whole blocks and at most that), and the device asks its driver for
+  it (`requested_size`). The host keeps the bound: what it may have is what a builder booted
+  with all of it had, and a step past it is ended as one was then.
+- **The builder's init** holds the build, itself and every step (each in a cgroup of its
+  own, as runc gives each container one), in one cgroup whose `memory.high` is what the
+  build holds and what is free, less the kernel's reserve: 64 MiB and the page structures
+  of the next memory plugged, a 64th of it. Past it the kernel slows the build's allocations
+  and ends none, and says so in `memory.events`; a process of init's in the root cgroup,
+  which nothing slows, wakes on it, asks for twice the memory the builder has, in whole
+  memory blocks (so what is plugged ahead of the build is at most what it holds, and a build
+  that comes to all of it asks a logarithm of times), raises `memory.high` as each block
+  comes online, and lifts it once all of it is plugged. Plugged memory comes online as the
+  kernel's own (`memhp_default_state=online_kernel`): a builder gives no memory back, and
+  memory online as movable alone can leave the kernel short with memory free
+  (memory-hotplug.rst, "ZONE_MOVABLE Sizing Considerations").
+- **What the kernel sized by the memory it booted with** is raised to what it sizes by all
+  of it, so that a step sees what it saw in a builder booted with all its memory: the
+  layers' tmpfs (`size=` and `nr_inodes=` of all of it, where `size=100%` would be of 512
+  MiB); `kernel.threads-max`, the user namespaces' maxima, epoll's watches, `tcp_mem` and
+  `udp_mem`, each in proportion to the memory; `fs.file-max` by the memory added, a file
+  for each 10 KiB, as the kernel's own sizing has it (a proportion came out short on
+  x86_64); TCP's buffers within their caps; TCP's orphans and TIME-WAIT buckets by its
+  table's sizing; inotify's watches, which the kernel holds at 8192 below about 1 GiB, in
+  their proportion to epoll's; and init's RLIMIT_NPROC and RLIMIT_SIGPENDING, half the
+  threads, which every step inherits.
+- **No snapshot.** Memory plugged is not saved, so a snapshot of a VM with memory to plug
+  is refused, and `--memory-max` with `--snapshot-dir` up front.
+- **`shards run --kernel K --memory M --memory-max N`** boots a guest with M MiB that may
+  have N in all.
+- **Measured** (PM M193): against a builder booted with all it may have, half the host's
+  (64 GiB), M82's three RUNs end 199 ms sooner at the median ([-223, -158]), the builder
+  holding 96 MiB at its peak where it held 1424; a RUN that writes 4 GiB, the builder growing
+  to hold it, ends 67 ms sooner ([-88, -40]), the builder holding 1.2 GiB less. A guest has
+  1 GiB online 5 to 7 ms after it asks, and gives it back in 10 to 21.
+- **Tested** on an M5 Max, macOS 26.4.1: `a_guest_grows_and_gives_back_its_memory`
+  (boot.rs) plugs 1 GiB into a guest booted with 256 MiB, which writes 896 MiB of it and
+  gives it all back, its VM process holding none of it as it ends (`hotplug_held_kib`, the
+  OS asked page by page: a page Hypervisor.framework has unmapped is out of the footprint,
+  held or not); `a_builders_memory_is_plugged_as_its_build_needs_it` (build.rs): a step that
+  touches 1.5 GiB and a layer of 1 GiB in a builder booted with 512 MiB, its steps' limits at
+  least a guest's booted with all of it and within a tenth more, and a step past all of it
+  ended with 137, as before; unit tests of the device's every answer, guest memory's
+  refusals, the control page's registers and `--memory-max`. Mutation-checked: the
+  configuration interrupt, the request's lower bound, guest memory's check of plugged
+  blocks, giving the pages back, Hypervisor.framework's mapping, init's request, its
+  `memory.high`, its raised limits and its tmpfs's size each fail one.
 
 ### D132. A guest that is itself a hypervisor: EL2 on Hypervisor.framework
 

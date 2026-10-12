@@ -188,6 +188,11 @@ fn ram_bytes(memory_mib: u64) -> Result<u64, String> {
         .ok_or_else(|| format!("{memory_mib} MiB of guest memory"))
 }
 
+/// Where the memory to plug starts (D133): the first GiB boundary after RAM.
+fn plug_at(ram: u64) -> u64 {
+    (layout::DRAM_BASE + ram).next_multiple_of(GIB)
+}
+
 /// Guest RAM: one region at DRAM_BASE.
 fn ram_ranges(ram: u64) -> Result<[(u64, usize); 1], String> {
     let len = usize::try_from(ram).map_err(|_| format!("{ram} bytes of guest memory"))?;
@@ -217,11 +222,19 @@ fn assemble(
     hosts: super::Hosts<'_>,
 ) -> Result<Assembled, String> {
     let ram = ram_bytes(config.memory_mib)?;
-    // Device memory (pmem regions) starts at the first GiB boundary after RAM, and the
-    // address space must reach its end.
+    // Memory to plug, where the guest has any, starts at the first GiB boundary after RAM
+    // (`plug_at`), device memory (pmem regions) at the first after that, and the address
+    // space must reach the last's end.
     let ram_end = layout::DRAM_BASE + ram;
-    let (regions, end) = super::pmem_regions(config, ram_end.next_multiple_of(GIB))?;
-    let top = if regions.is_empty() { ram_end } else { end };
+    let plug_end = memory
+        .hotplug()
+        .map_or(Some(ram_end), |(gpa, _, len)| gpa.checked_add(len as u64))
+        .ok_or("memory to plug overflows the address space")?;
+    let pmem_at = plug_end
+        .checked_next_multiple_of(GIB)
+        .ok_or("pmem regions overflow the address space")?;
+    let (regions, end) = super::pmem_regions(config, pmem_at)?;
+    let top = if regions.is_empty() { plug_end } else { end };
     let pmem: Vec<(u64, u64)> = regions
         .iter()
         .map(|(region, gpa)| (*gpa, region.len() as u64))
@@ -250,6 +263,7 @@ fn assemble(
         unsafe { vm.map_device_memory(region.host(), *gpa, region.len(), false) }
             .map_err(|e| e.to_string())?;
     }
+    let (hotplug, sizes) = super::hotplug_device(&vm, memory, config)?.unzip();
     debug!("VM created and RAM mapped");
 
     let gp = hv::gic_params().map_err(|e| e.to_string())?;
@@ -272,7 +286,7 @@ fn assemble(
         .map_err(|e| e.to_string())?;
     debug!("GIC created");
 
-    let devices = super::virtio_devices(config, &regions, hosts, layout::VIRTIO_MMIO_MAX)?;
+    let devices = super::virtio_devices(config, &regions, hosts, hotplug, layout::VIRTIO_MMIO_MAX)?;
     let mut bus = MmioBus::default();
     let mut virtio = Vec::with_capacity(devices.len());
     // Each virtio device takes the next MMIO window and SPI, in the guest's probe order.
@@ -301,6 +315,9 @@ fn assemble(
     bus.insert(layout::UART, 0x1000, serial.clone())?;
     bus.insert(layout::RTC, 0x1000, Arc::new(Pl031::default()))?;
     let control = Arc::new(Control::default());
+    if let Some(sizes) = sizes {
+        control.on_hotplug(sizes);
+    }
     bus.insert(layout::CONTROL, 0x1000, control.clone())?;
     let vmgenid = VmGenId::new(
         memory.clone(),
@@ -327,7 +344,8 @@ fn assemble(
 /// A machine that boots `cfg.kernel`.
 pub fn build(cfg: &Config) -> Result<Machine, String> {
     let ram = ram_bytes(cfg.memory_mib)?;
-    let memory = Arc::new(GuestMemory::anonymous(&ram_ranges(ram)?).map_err(|e| format!("guest RAM: {e}"))?);
+    let config = super::machine_config(cfg)?;
+    let memory = Arc::new(super::guest_memory(&ram_ranges(ram)?, &config, plug_at(ram))?);
     // A bad kernel fails the start before any hypervisor state exists. The image is copied,
     // not mapped: a mapped image stalled boots for up to 1 s (platform-measurements M16).
     let kernel_file = crate::platform::open_input(&cfg.kernel, false)
@@ -335,7 +353,6 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
     let kernel = boot::load_kernel(&memory, &kernel_file, ram).map_err(|e| e.to_string())?;
     debug!("kernel loaded");
 
-    let config = super::machine_config(cfg)?;
     let hosts = super::Hosts {
         vsock: cfg.vsock.as_ref(),
         #[cfg(unix)]

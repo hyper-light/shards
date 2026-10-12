@@ -61,6 +61,21 @@ pub fn main() -> ! {
             0
         }
         "exit" => arg(1).parse().unwrap_or(1),
+        "limits" => match limits() {
+            Ok(()) => 0,
+            Err(e) => {
+                let _ = writeln!(io::stderr(), "{e}");
+                1
+            }
+        },
+        // Writes a file of N MiB, a byte in each page: what a layer holds.
+        "big" => match big(arg(1), arg(2).parse().unwrap_or(0)) {
+            Ok(()) => 0,
+            Err(e) => {
+                let _ = writeln!(io::stderr(), "{}: {e}", arg(1));
+                1
+            }
+        },
         // Touches N MiB, a page at a time, then says so: what a memory limit stops.
         "alloc" => {
             let mib: usize = arg(1).parse().unwrap_or(0);
@@ -3436,4 +3451,50 @@ fn roundrobin(spec: &str) -> io::Result<()> {
         at(99)
     );
     Ok(())
+}
+
+/// Says each of shards_testguest::LIMITS, `SHARDS-TEST LIMIT NAME VALUE`, and the
+/// process's RLIMIT_NPROC and RLIMIT_SIGPENDING, soft and hard.
+pub fn limits() -> Result<(), String> {
+    let mut out = io::stdout().lock();
+    for name in shards_testguest::LIMITS {
+        let path = format!("/proc/sys/{}", name.replace('.', "/"));
+        let value = std::fs::read_to_string(&path).map_err(|e| format!("{path}: {e}"))?;
+        let value: Vec<&str> = value.split_whitespace().collect();
+        let _ = writeln!(out, "SHARDS-TEST LIMIT {name} {}", value.join(","));
+    }
+    for (name, resource) in [
+        ("nproc", libc::RLIMIT_NPROC),
+        ("sigpending", libc::RLIMIT_SIGPENDING),
+    ] {
+        let mut l = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // SAFETY: getrlimit(2) fills `l`.
+        if unsafe { libc::getrlimit(resource, &mut l) } != 0 {
+            return Err(format!("getrlimit {name}: {}", io::Error::last_os_error()));
+        }
+        let _ = writeln!(
+            out,
+            "SHARDS-TEST LIMIT rlimit.{name} {},{}",
+            l.rlim_cur, l.rlim_max
+        );
+    }
+    Ok(())
+}
+
+/// Writes `mib` MiB to `path`, a nonzero byte at each page so that none is a hole.
+fn big(path: &str, mib: u64) -> io::Result<()> {
+    let mut file = std::fs::File::create(path)?;
+    let mut chunk = vec![0u8; 1 << 20];
+    for page in chunk.chunks_mut(4096) {
+        if let Some(b) = page.first_mut() {
+            *b = 1;
+        }
+    }
+    for _ in 0..mib {
+        file.write_all(&chunk)?;
+    }
+    file.sync_all()
 }

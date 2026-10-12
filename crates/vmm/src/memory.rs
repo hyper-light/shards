@@ -24,7 +24,7 @@ use std::fs::File;
 use std::io;
 use std::ops::Range;
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicU16, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
 use crate::platform;
@@ -89,10 +89,79 @@ impl Region {
     }
 }
 
-/// Guest RAM regions, each backed by its own host reservation.
+/// Memory the guest has only where its virtio-mem device has plugged it (D133): reserved
+/// whole, as RAM is, and withheld, its pages given back and the range inaccessible, but for
+/// the blocks plugged.
+#[derive(Debug)]
+struct Hotplug {
+    gpa: u64,
+    len: usize,
+    host: NonNull<u8>,
+    block: u64,
+    /// A bit for each block, set while it is plugged: what [`GuestMemory::host_ptr`] lets
+    /// the host's devices reach.
+    plugged: Box<[AtomicU64]>,
+    /// Whether withholding an unplugged block's pages has failed and been said: once, as a
+    /// guest unplugging over and over could otherwise fill the host's log.
+    said_kept: AtomicBool,
+}
+
+impl Hotplug {
+    fn end(&self) -> u64 {
+        self.gpa + self.len as u64 // cannot wrap: checked on creation
+    }
+
+    /// The blocks `gpa..gpa+len` covers, where it lies within the region.
+    fn blocks(&self, gpa: u64, len: u64) -> Option<Range<u64>> {
+        let end = gpa.checked_add(len)?;
+        if gpa < self.gpa || end > self.end() {
+            return None;
+        }
+        let first = (gpa - self.gpa) / self.block;
+        let last = (end.max(gpa + 1) - 1 - self.gpa) / self.block;
+        Some(first..last + 1)
+    }
+
+    fn is_plugged(&self, block: u64) -> bool {
+        let word = usize::try_from(block / 64).ok().and_then(|w| self.plugged.get(w));
+        word.is_some_and(|w| w.load(Ordering::Acquire) & (1 << (block % 64)) != 0)
+    }
+
+    fn set(&self, blocks: Range<u64>, plugged: bool) {
+        for block in blocks {
+            if let Some(w) = usize::try_from(block / 64).ok().and_then(|w| self.plugged.get(w)) {
+                let bit = 1 << (block % 64);
+                if plugged {
+                    w.fetch_or(bit, Ordering::Release);
+                } else {
+                    w.fetch_and(!bit, Ordering::Release);
+                }
+            }
+        }
+    }
+
+    /// The host's address of `gpa`, within the region.
+    fn host(&self, gpa: u64) -> *mut u8 {
+        // SAFETY: callers pass an address within the region (`blocks` checked it).
+        unsafe { self.host.as_ptr().add((gpa - self.gpa) as usize) }
+    }
+}
+
+/// Whole blocks of the memory to plug ([`Access::whole_blocks`]): which, and where the
+/// host has them.
+struct Blocks<'a> {
+    h: &'a Hotplug,
+    blocks: Range<u64>,
+    at: NonNull<u8>,
+    size: usize,
+}
+
+/// Guest RAM regions, each backed by its own host reservation, and the memory a virtio-mem
+/// device plugs, where the guest has one.
 #[derive(Debug)]
 pub struct GuestMemory {
     regions: Vec<Region>,
+    hotplug: Option<Hotplug>,
     /// Mapped from a file ([`from_file`](Self::from_file)): a page it has not touched holds
     /// the file's bytes, not zeros.
     file_backed: bool,
@@ -136,6 +205,7 @@ impl GuestMemory {
         // Built incrementally so that Drop unmaps whatever was mapped if a later range fails.
         let mut mem = GuestMemory {
             regions: Vec::with_capacity(ranges.len()),
+            hotplug: None,
             file_backed: false,
             host: Mutex::new(()),
             holder: AtomicUsize::new(0),
@@ -158,6 +228,96 @@ impl GuestMemory {
         }
         mem.regions.sort_by_key(|r| r.gpa);
         Ok(mem)
+    }
+
+    /// Guest RAM of `ranges`, as [`anonymous`](Self::anonymous) makes it, and `len` bytes
+    /// at `gpa` that are the guest's only as its virtio-mem device plugs them, in blocks of
+    /// `block` bytes (D133): reserved now, and withheld until plugged ([`Access::plug`]).
+    pub fn with_hotplug(
+        ranges: &[(u64, usize)],
+        gpa: u64,
+        len: usize,
+        block: u64,
+    ) -> io::Result<GuestMemory> {
+        let invalid = |msg: String| io::Error::new(io::ErrorKind::InvalidInput, msg);
+        let page = platform::page_size()? as u64;
+        if !block.is_power_of_two() || !block.is_multiple_of(page) {
+            return Err(invalid(format!(
+                "a block of {block:#x} bytes is no power of two of host pages ({page:#x})"
+            )));
+        }
+        let end = gpa
+            .checked_add(len as u64)
+            .ok_or_else(|| invalid(format!("memory to plug at {gpa:#x}+{len:#x} wraps")))?;
+        if len == 0 || !gpa.is_multiple_of(block) || !(len as u64).is_multiple_of(block) {
+            return Err(invalid(format!(
+                "memory to plug at {gpa:#x}+{len:#x} is not in whole blocks of {block:#x}"
+            )));
+        }
+        let mut mem = GuestMemory::anonymous(ranges)?;
+        if mem.regions.iter().any(|r| gpa < r.end() && r.gpa < end) {
+            return Err(invalid("memory to plug overlaps guest RAM".into()));
+        }
+        let host = platform::reserve_ram(len)?;
+        let words = (len as u64 / block).div_ceil(64);
+        // Ownership moves into `mem`, whose Drop releases it.
+        mem.hotplug = Some(Hotplug {
+            gpa,
+            len,
+            host,
+            block,
+            plugged: (0..words).map(|_| AtomicU64::new(0)).collect(),
+            said_kept: AtomicBool::new(false),
+        });
+        // SAFETY: the reservation just made, which nothing else references.
+        unsafe { platform::withhold(host, len) }?;
+        Ok(mem)
+    }
+
+    /// `(gpa, host pointer, len)` of the memory a virtio-mem device plugs, if the guest has
+    /// any: for a hypervisor whose stage 2 follows the host's mappings, mapped whole.
+    pub fn hotplug(&self) -> Option<(u64, *mut u8, usize)> {
+        self.hotplug.as_ref().map(|h| (h.gpa, h.host.as_ptr(), h.len))
+    }
+
+    /// The bytes of the memory to plug whose pages the host holds: touched, by the guest
+    /// or a device, and not given back since ([`platform::untouched`]). Unplugging gives
+    /// them back (`platform::withhold`), where a hypervisor's unmapping of them took them out
+    /// of the process's footprint and resident set but left them its own (PM M193). None
+    /// where the guest has no memory to plug, or the host cannot say.
+    pub fn hotplug_held(&self) -> io::Result<Option<u64>> {
+        let Some(h) = &self.hotplug else {
+            return Ok(None);
+        };
+        let page = platform::page_size()?;
+        // SAFETY: the whole reservation, which this value owns.
+        let untouched = unsafe { platform::untouched(h.host.as_ptr(), h.len, page) }?;
+        Ok(untouched.map(|u| u.iter().filter(|&&never| !never).count() as u64 * page as u64))
+    }
+
+    /// How many of the blocks `gpa..gpa+len` covers are plugged, and how many it covers;
+    /// none where it is not within the memory to plug.
+    pub fn plugged(&self, gpa: u64, len: u64) -> Option<(u64, u64)> {
+        let h = self.hotplug.as_ref()?;
+        let blocks = h.blocks(gpa, len)?;
+        let total = blocks.end - blocks.start;
+        Some((blocks.filter(|&b| h.is_plugged(b)).count() as u64, total))
+    }
+
+    /// Each run of plugged blocks, `(gpa, len)`, in order.
+    pub fn plugged_runs(&self) -> Vec<(u64, u64)> {
+        let Some(h) = &self.hotplug else {
+            return Vec::new();
+        };
+        let mut runs: Vec<(u64, u64)> = Vec::new();
+        for block in (0..h.len as u64 / h.block).filter(|&b| h.is_plugged(b)) {
+            let gpa = h.gpa + block * h.block;
+            match runs.last_mut() {
+                Some((start, len)) if *start + *len == gpa => *len += h.block,
+                _ => runs.push((gpa, h.block)),
+            }
+        }
+        runs
     }
 
     /// Guest RAM backed copy-on-write by `file`, which holds each region in turn by guest
@@ -241,8 +401,15 @@ impl GuestMemory {
     /// sets the order of the page-cache folios it fills (Linux 6.17, ext4
     /// `write_begin_get_folio`), and a restore maps those folios. It holds an [`Access`]
     /// throughout, so no host thread writes meanwhile; a snapshot's is the memory of a
-    /// machine whose vCPUs and devices are paused.
+    /// machine whose vCPUs and devices are paused. Memory a virtio-mem device plugs is not
+    /// saved: a machine with it is not snapshotted (`snapshot::encode`).
     pub fn save(&self, file: &File) -> io::Result<()> {
+        if self.hotplug.is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "the memory a virtio-mem device plugs is not saved",
+            ));
+        }
         let page = platform::page_size()?;
         let _held = self.access().map_err(io::Error::other)?;
         file.set_len(0)?;
@@ -282,23 +449,29 @@ impl GuestMemory {
         file.set_len(offset)
     }
 
-    /// `(gpa, host pointer, len)` for each region, for stage-2 mapping.
+    /// `(gpa, host pointer, len)` for each region of RAM, for stage-2 mapping: not the
+    /// memory to plug ([`hotplug`](Self::hotplug)).
     pub fn regions(&self) -> impl Iterator<Item = (u64, *mut u8, usize)> + '_ {
         self.regions.iter().map(|r| (r.gpa, r.host.as_ptr(), r.len))
     }
 
-    /// Host address of `gpa..gpa+len`, which must lie within one region: for the kernel
-    /// and the hypervisor, and for an [`Access`].
+    /// Host address of `gpa..gpa+len`, which must lie within one region, or within the
+    /// memory to plug and its blocks all plugged: for the kernel and the hypervisor, and
+    /// for an [`Access`]. A device the guest points at memory it has not plugged, or has
+    /// unplugged, reaches nothing there, as its own accesses do not (VIRTIO 1.3 §5.15.6.1).
     pub fn host_ptr(&self, gpa: u64, len: usize) -> Result<*mut u8, OutOfBounds> {
         let oob = OutOfBounds { gpa, len: len as u64 };
         let end = gpa.checked_add(len as u64).ok_or(oob)?;
-        let r = self
-            .regions
-            .iter()
-            .find(|r| gpa >= r.gpa && end <= r.end())
-            .ok_or(oob)?;
-        // SAFETY: offset is within the region's mapping (checked above).
-        Ok(unsafe { r.host.as_ptr().add((gpa - r.gpa) as usize) })
+        if let Some(r) = self.regions.iter().find(|r| gpa >= r.gpa && end <= r.end()) {
+            // SAFETY: offset is within the region's mapping (checked above).
+            return Ok(unsafe { r.host.as_ptr().add((gpa - r.gpa) as usize) });
+        }
+        let h = self.hotplug.as_ref().ok_or(oob)?;
+        let mut blocks = h.blocks(gpa, len as u64).ok_or(oob)?;
+        if !blocks.all(|b| h.is_plugged(b)) {
+            return Err(oob);
+        }
+        Ok(h.host(gpa))
     }
 
     /// Keeps `gpa..gpa+len`, within one region, on the host's base pages
@@ -317,6 +490,10 @@ impl Drop for GuestMemory {
         for r in &self.regions {
             // SAFETY: each region is a reservation we made and still own.
             unsafe { platform::release(r.host, r.len) };
+        }
+        if let Some(h) = &self.hotplug {
+            // SAFETY: the memory to plug is a reservation we made and still own.
+            unsafe { platform::release(h.host, h.len) };
         }
     }
 }
@@ -341,6 +518,83 @@ impl<'a> Access<'a> {
     /// given.
     pub fn memory(&self) -> &'a GuestMemory {
         self.mem
+    }
+
+    /// Plugs `gpa..gpa+len`, whole blocks of the memory to plug, none of them plugged:
+    /// grants the host's pages ([`platform::grant`]), has `map` give them to the guest where
+    /// the hypervisor's stage 2 holds what it maps (`hv::Stage2`), then lets the host's
+    /// devices reach them. Under this access, so no host thread's access to guest memory
+    /// sees part of it. What fails is undone: the blocks stay unplugged.
+    pub fn plug(
+        &self,
+        gpa: u64,
+        len: u64,
+        map: impl FnOnce(*mut u8, u64, usize) -> Result<(), String>,
+    ) -> Result<(), String> {
+        let Blocks { h, blocks, at, size } = self.whole_blocks(gpa, len)?;
+        if blocks.clone().any(|b| h.is_plugged(b)) {
+            return Err(format!("{gpa:#x}+{len:#x} is plugged already"));
+        }
+        // SAFETY: whole blocks of the reservation, which no host thread accesses: none is
+        // plugged, so `host_ptr` gives no one a pointer into them.
+        unsafe { platform::grant(at, size) }.map_err(|e| format!("granting {gpa:#x}+{len:#x}: {e}"))?;
+        if let Err(e) = map(at.as_ptr(), gpa, size) {
+            // SAFETY: as above; the hypervisor did not map them.
+            let _ = unsafe { platform::withhold(at, size) };
+            return Err(e);
+        }
+        h.set(blocks, true);
+        Ok(())
+    }
+
+    /// Unplugs `gpa..gpa+len`, whole blocks of the memory to plug, all of them plugged:
+    /// keeps the host's devices from them, has `unmap` take them from the guest where the
+    /// hypervisor's stage 2 holds what it maps, then gives their pages back to the host
+    /// ([`platform::withhold`]). Under this access, so no host thread is between finding
+    /// them plugged and touching them. Where `unmap` fails they stay plugged; where the
+    /// host keeps their pages, the guest has them no more, and the first such failure is
+    /// said.
+    pub fn unplug(
+        &self,
+        gpa: u64,
+        len: u64,
+        unmap: impl FnOnce(u64, usize) -> Result<(), String>,
+    ) -> Result<(), String> {
+        let Blocks { h, blocks, at, size } = self.whole_blocks(gpa, len)?;
+        if !blocks.clone().all(|b| h.is_plugged(b)) {
+            return Err(format!("{gpa:#x}+{len:#x} is not plugged"));
+        }
+        h.set(blocks.clone(), false);
+        if let Err(e) = unmap(gpa, size) {
+            h.set(blocks, true);
+            return Err(e);
+        }
+        // SAFETY: whole blocks of the reservation, which no host thread holds a pointer into:
+        // `host_ptr` gives none for unplugged blocks, and none was taken under another
+        // access; the system calls of a device given one before are refused the range from
+        // here on (EFAULT).
+        if let Err(e) = unsafe { platform::withhold(at, size) }
+            && !h.said_kept.swap(true, Ordering::Relaxed)
+        {
+            crate::warn!("memory unplugged at {gpa:#x}+{len:#x} keeps its host pages: {e}");
+        }
+        Ok(())
+    }
+
+    /// The blocks `gpa..gpa+len` is, where it is whole blocks of the memory to plug.
+    fn whole_blocks(&self, gpa: u64, len: u64) -> Result<Blocks<'a>, String> {
+        let h = self
+            .mem
+            .hotplug
+            .as_ref()
+            .ok_or("the guest has no memory to plug")?;
+        let blocks = h
+            .blocks(gpa, len)
+            .filter(|_| len > 0 && gpa.is_multiple_of(h.block) && len.is_multiple_of(h.block))
+            .ok_or_else(|| format!("{gpa:#x}+{len:#x} is not whole blocks of the memory to plug"))?;
+        let size = usize::try_from(len).map_err(|e| e.to_string())?;
+        let at = NonNull::new(h.host(gpa)).ok_or("a null host address")?;
+        Ok(Blocks { h, blocks, at, size })
     }
 
     /// Copies guest memory at `gpa` into `buf`.
@@ -547,6 +801,59 @@ mod tests {
         assert!(GuestMemory::anonymous(&[(0x8000_0000, p + 1)]).is_err());
         assert!(GuestMemory::anonymous(&[(0x8000_0001, p)]).is_err());
         assert!(GuestMemory::anonymous(&[(0x8000_0000, 2 * p), (0x8000_0000 + p as u64, p)]).is_err());
+    }
+
+    /// Memory to plug is whole blocks, of whole host pages, apart from RAM; none of it is
+    /// the host's devices' until plugged, nor once unplugged, and it is not saved.
+    #[test]
+    fn memory_to_plug_is_whole_blocks_and_withheld_until_plugged() {
+        let p = page_size().unwrap();
+        let block = (2 << 20).max(p as u64);
+        let ram = [(0x8000_0000u64, 4 * p)];
+        let hot = 0x1_0000_0000u64;
+        assert!(GuestMemory::with_hotplug(&ram, hot, 4 * block as usize, block + p as u64).is_err());
+        assert!(GuestMemory::with_hotplug(&ram, hot, 4 * block as usize, p as u64 / 2).is_err());
+        assert!(GuestMemory::with_hotplug(&ram, hot + p as u64, 4 * block as usize, block).is_err());
+        assert!(GuestMemory::with_hotplug(&ram, hot, 4 * block as usize - p, block).is_err());
+        assert!(GuestMemory::with_hotplug(&ram, hot, 0, block).is_err());
+        assert!(GuestMemory::with_hotplug(&ram, u64::MAX - block + 1, 2 * block as usize, block).is_err());
+        assert!(GuestMemory::with_hotplug(&[(0, 4 * block as usize)], 0, block as usize, block).is_err());
+
+        let m = GuestMemory::with_hotplug(&ram, hot, 4 * block as usize, block).unwrap();
+        assert_eq!(
+            m.hotplug().map(|(g, _, l)| (g, l)),
+            Some((hot, 4 * block as usize))
+        );
+        assert_eq!(m.regions().count(), 1, "the memory to plug is no region of RAM");
+        assert!(m.host_ptr(hot, 1).is_err());
+        assert_eq!(m.plugged(hot, 4 * block), Some((0, 4)));
+        assert_eq!(m.plugged(hot + 4 * block, 1), None);
+        let a = m.access().unwrap();
+        assert!(
+            a.plug(hot + 1, block, |_, _, _| Ok(())).is_err(),
+            "not whole blocks"
+        );
+        assert!(a.unplug(hot, block, |_, _| Ok(())).is_err(), "not plugged");
+        a.plug(hot + block, 2 * block, |_, _, _| Ok(())).unwrap();
+        assert!(
+            a.plug(hot + 2 * block, block, |_, _, _| Ok(())).is_err(),
+            "plugged already"
+        );
+        a.write_obj(hot + 3 * block - 8, 7u64).unwrap();
+        assert!(
+            a.read_obj::<u64>(hot + 3 * block - 4).is_err(),
+            "across into an unplugged block"
+        );
+        assert_eq!(m.plugged_runs(), [(hot + block, 2 * block)]);
+        // An unmap that fails leaves the blocks plugged.
+        assert!(a.unplug(hot + block, block, |_, _| Err("no".into())).is_err());
+        assert_eq!(a.read_obj::<u64>(hot + 3 * block - 8).unwrap(), 7);
+        a.unplug(hot + 2 * block, block, |_, _| Ok(())).unwrap();
+        assert!(a.read_obj::<u64>(hot + 3 * block - 8).is_err());
+        drop(a);
+        let dir = shards_testdir::TempDir::new("plug-save").unwrap();
+        let file = std::fs::File::create(dir.join("mem")).unwrap();
+        assert!(m.save(&file).is_err(), "memory to plug is not saved");
     }
 
     #[test]
