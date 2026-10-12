@@ -6773,3 +6773,62 @@ revision before comparing a changed API/implementation.
   notifications by doorbell (a notification port) rather than by an exit and WinHvEmulation
   each, a port exit costing 12.6-16.2 µs here and an MMIO exit 8-11 µs more.
 
+### M198. What shards' WHP backend leans on: an AP's start, interrupts, register access, doorbells, cancels
+
+- **Questions.** Before the backend is written, on the hosts its CI runs: which synthetic
+  features a partition sets up with; whether an application processor waits for SIPI as
+  created and starts on the emulated APIC's INIT and SIPI; what an interrupt the VMM asks
+  for costs and which EOIs come back to it; what a register read and write cost between
+  exits, as a decoder of its own would make them; whether a doorbell (a notification port)
+  beats an MMIO exit for a virtio notification; and whether a cancel made before a run, or
+  while the vCPU is halted in the hypervisor, returns the run.
+- **Method.** `docs/research/measurements/whp-run/src/bin/m198.rs`, by `whp-run.yml`, runs
+  38211215004, 38211379138 and 38211631065 on branch `whp`, 2026-10-12, each on a
+  windows-2022 and a windows-2025 runner (AMD EPYC, 2,445 or 2,596 MHz, as each run was
+  given): partitions of two vCPUs, the local APIC emulated (XApic), 2 MiB of RAM; a boot
+  processor in long mode with a GDT and an IDT, its handler counting and writing the APIC's
+  EOI; the host asking interrupts of it (WHvRequestInterrupt) one at a time, 200
+  edge-triggered and 200 level-triggered, each timed until the handler had counted it; 1,000
+  doorbell writes; 1,000 round trips each through a doorbell and through an MMIO exit whose
+  VMM thread signals the same kind of event, a host thread answering in guest memory, timed
+  by the guest's TSC; 1,000 register reads and writes on the stopped vCPU; partitions set up
+  with the host's synthetic features less each one, and with shards' set plus each other.
+- **Found:**
+  - **Features.** WHvSetupPartition refuses (HV_STATUS_INVALID_PARAMETER, 0xC0350005)
+    synthetic timers without the SynIC, and any bank without HypervisorPresent; it takes
+    shards' set, 0x7000bcb (HypervisorPresent, Hv1, the reference counter, the APIC's MSRs
+    and VP assist page, hypercalls, the VP index, the reference TSC, the frequency MSRs,
+    extended processor masks, TLB-flush and cluster-IPI hypercalls). Its guest sees
+    0x40000003 EAX 0x00000a72, EDX 0x00040130 (the frequency MSRs available, no synthetic
+    timers), and 0x40000004 EAX 0x00000e2c: remote TLB flushes, APIC access and cluster IPIs
+    by hypercall recommended. Leaf 1 offers neither x2APIC nor TSC-deadline, and leaf 0xB is
+    zero.
+  - **vCPUs.** Partitions set up with up to 1,024 (2,048 refused on windows-2022, taken on
+    windows-2025).
+  - **An AP as created** is held: its activity register's StartupSuspend set (vCPU 0's
+    clear), its APIC base 0xfee00800 (vCPU 0's 0xfee00900, the BSP's), at the reset vector;
+    run alone, it stays in the hypervisor until canceled (300 ms). INIT then SIPI written to
+    the boot processor's emulated APIC start it in real mode at the vector's page
+    (CS 0x0800), every run.
+  - **Interrupts.** A call to WHvRequestInterrupt costs 3.8-6.3 µs at p50 (p99 4.6-20.8); an
+    edge-triggered one is handled 6.5-8.0 µs after its call began (p99 7.7-34.2), a
+    level-triggered one 13.5-19.7 µs (p99 16.9-32.3), its predecessor's EOI having
+    exited to the VMM first. Every level-triggered EOI exits (WHvRunVpExitReasonX64ApicEoi,
+    with its vector), 200 of 200; no edge-triggered one does.
+  - **Registers.** A read of one register and a write of two, between exits: 0.1 µs each at
+    p50, 0.1-0.2 at p99 (max 2.8). An I/O exit carries its instruction's length (1 for OUT); an MMIO
+    exit carries its instruction's bytes (16) but no length (0), and its GPA, unmapped.
+  - **Doorbells against exits.** A doorbell write cost the guest 5.9-22.1 µs, by run and
+    runner; a round trip through one 17.4-29.0 µs; through an MMIO exit 17.1-24.4 µs. Of the
+    four pairs (the first run set no partition up), the doorbell won one, by 0.1 µs, and
+    lost three, by 0.5-4.6 µs.
+  - **Cancels.** One made before a run returns that run at once (0-1 µs), canceled; the
+    next runs on. One made while the vCPU is halted in the hypervisor returns its run 42-127
+    µs later.
+- **Consequence (D140).** The backend offers 0x7000bcb of what the host offers; leaves APs
+  held as created; emulates the IOAPIC itself, asking WHP for each interrupt by its
+  redirection entry and taking each level-triggered EOI back from its exit; decodes MMIO
+  instructions itself, at two register calls' cost, not WinHvEmulation's 8-11 µs (M197);
+  takes virtio notifications as MMIO exits, without doorbells; and kicks a vCPU with a
+  cancel, which a run about to start takes too.
+
