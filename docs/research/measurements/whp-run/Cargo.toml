@@ -1,6 +1,7 @@
 # WHP partitions on real Windows hosts, before shards' WHP backend is written: what a guest
 # sees of its processor and its hypervisor, and what an exit costs (PM M197, src/main.rs);
-# an AP's start, interrupts, register access, doorbells and cancels (PM M198, src/bin/m198.rs).
+# an AP's start, interrupts, register access, doorbells and cancels (PM M198, src/bin/m198.rs);
+# a partition run from an AppContainer (PM M200, src/bin/m200.rs).
 [package]
 name = "whp-run"
 version = "0.1.0"
@@ -13,7 +14,10 @@ publish = false
 windows-sys = { version = "=0.61.2", features = [
   "Win32_Foundation",
   "Win32_Security",
+  "Win32_Security_Isolation",
+  "Win32_Storage_FileSystem",
   "Win32_System_Hypervisor",
+  "Win32_System_IO",
   "Win32_System_LibraryLoader",
   "Win32_System_Memory",
   "Win32_System_Performance",

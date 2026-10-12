@@ -2,8 +2,8 @@ name: whp run
 
 # WHP partitions run on GitHub's Windows runners (docs/research/measurements/whp-run): what
 # the hypervisor offers, what a guest sees of it, and what an exit costs (PM M197); an AP's
-# start, interrupts, register access, doorbells and cancels (PM M198). Runs when the probes
-# change, or when asked.
+# start, interrupts, register access, doorbells and cancels (PM M198); a partition run from
+# an AppContainer (PM M200). Runs when the probes change, or when asked.
 on:
   push:
     paths:
@@ -44,3 +44,8 @@ jobs:
         shell: bash
         working-directory: docs/research/measurements/whp-run
         run: cargo run --release --bin m198
+      - name: M200
+        if: ${{ !cancelled() }}
+        shell: bash
+        working-directory: docs/research/measurements/whp-run
+        run: cargo run --release --bin m200
