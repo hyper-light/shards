@@ -26,6 +26,12 @@ const PDPT: u64 = 0x11000;
 /// Where its MMIO writes go: a GPA nothing maps.
 const MMIO: u32 = 0xD000_0000;
 const PORT: u16 = 0x3F8;
+/// Where the guest says it is done: a port write, which exits whatever the APIC does with
+/// a HLT (with the local APIC emulated, a halted vCPU waits in the hypervisor).
+const DONE: u16 = 0x501;
+/// How long a run may take before the probe cancels it, and the most exits it takes.
+const WATCHDOG: Duration = Duration::from_secs(30);
+const MOST_EXITS: usize = 10_000;
 /// The writes of each kind timed.
 const ROUNDS: u32 = 1000;
 /// The CPUID leaves recorded: the hypervisor's (0x40000000-6), leaf 1 (its present bit) and
@@ -100,6 +106,7 @@ type EmuIo = unsafe extern "system" fn(
     *mut WHV_EMULATOR_STATUS,
 ) -> HRESULT;
 type EmuDestroy = unsafe extern "system" fn(*const c_void) -> HRESULT;
+type CancelRun = unsafe extern "system" fn(WHV_PARTITION_HANDLE, u32, u32) -> HRESULT;
 
 /// WinHvPlatform's and WinHvEmulation's functions, bound.
 struct Api {
@@ -119,6 +126,7 @@ struct Api {
     emu_mmio: EmuMmio,
     emu_io: EmuIo,
     emu_destroy: EmuDestroy,
+    cancel: CancelRun,
 }
 
 /// A system DLL, loaded from System32 alone.
@@ -165,6 +173,7 @@ fn bind() -> Result<Api, String> {
             emu_mmio: sym(e, "WHvEmulatorTryMmioEmulation")?,
             emu_io: sym(e, "WHvEmulatorTryIoEmulation")?,
             emu_destroy: sym(e, "WHvEmulatorDestroyEmulator")?,
+            cancel: sym(p, "WHvCancelRunVirtualProcessor")?,
         })
     }
 }
@@ -239,7 +248,10 @@ fn guest_code() -> Vec<u8> {
     c.push(0xB9); // mov ecx, ROUNDS
     c.extend(ROUNDS.to_le_bytes());
     c.extend([0xEE, 0xFF, 0xC9, 0x75, 0xFB]); // 1: out dx, al; dec ecx; jnz 1b
-    c.push(0xF4); // hlt
+    c.extend([0x66, 0xBA]); // mov dx, DONE
+    c.extend(DONE.to_le_bytes());
+    c.push(0xEE); // out dx, al
+    c.push(0xF4); // hlt, past which it never runs
     c
 }
 
@@ -492,61 +504,99 @@ fn run(api: &Api, apic: bool, synthetic: Option<u64>) -> Result<(), String> {
         let (mut mmio_run, mut mmio_handle, mut pio_run, mut pio_handle) =
             (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         let mut first: Option<Duration> = None;
-        let ended = loop {
-            let mut exit = WHV_RUN_VP_EXIT_CONTEXT::default();
-            let t = Instant::now();
-            let hr = (api.run)(
-                partition,
-                0,
-                (&raw mut exit).cast(),
-                std::mem::size_of::<WHV_RUN_VP_EXIT_CONTEXT>() as u32,
-            );
-            let ran = t.elapsed();
-            first.get_or_insert(ran);
-            if hr < 0 {
-                break format!("WHvRunVirtualProcessor HRESULT {:#010x}", hr as u32);
-            }
-            let t = Instant::now();
-            let mut status = WHV_EMULATOR_STATUS::default();
-            let ctx = (&raw mut emulated).cast::<c_void>();
-            match exit.ExitReason {
-                r if r == WHvRunVpExitReasonMemoryAccess => {
-                    check(
-                        "mmio",
-                        (api.emu_mmio)(
-                            emulator,
-                            ctx,
-                            &raw const exit.VpContext,
-                            &raw const exit.Anonymous.MemoryAccess,
-                            &raw mut status,
-                        ),
-                    )?;
-                    mmio_run.push(ran);
-                    mmio_handle.push(t.elapsed());
+        let done = std::sync::atomic::AtomicBool::new(false);
+        let cancel = api.cancel;
+        let ended = std::thread::scope(|scope| {
+            scope.spawn(|| {
+                let until = Instant::now() + WATCHDOG;
+                while !done.load(std::sync::atomic::Ordering::Relaxed) && Instant::now() < until {
+                    std::thread::sleep(Duration::from_millis(10));
                 }
-                r if r == WHvRunVpExitReasonX64IoPortAccess => {
-                    check(
-                        "io",
-                        (api.emu_io)(
-                            emulator,
-                            ctx,
-                            &raw const exit.VpContext,
-                            &raw const exit.Anonymous.IoPortAccess,
-                            &raw mut status,
-                        ),
-                    )?;
-                    pio_run.push(ran);
-                    pio_handle.push(t.elapsed());
+                if !done.load(std::sync::atomic::Ordering::Relaxed) {
+                    // The partition this run uses, still alive in this scope.
+                    cancel(partition, 0, 0);
                 }
-                r if r == WHvRunVpExitReasonX64Halt => break "halt".to_string(),
-                other => {
-                    break format!("exit reason {other:#x} at rip {:#x}", exit.VpContext.Rip);
+            });
+            let mut exits = 0usize;
+            let mut seen: Vec<i32> = Vec::new();
+            let ended = loop {
+                let mut exit = WHV_RUN_VP_EXIT_CONTEXT::default();
+                let t = Instant::now();
+                let hr = (api.run)(
+                    partition,
+                    0,
+                    (&raw mut exit).cast(),
+                    std::mem::size_of::<WHV_RUN_VP_EXIT_CONTEXT>() as u32,
+                );
+                let ran = t.elapsed();
+                first.get_or_insert(ran);
+                if hr < 0 {
+                    break format!("WHvRunVirtualProcessor HRESULT {:#010x}", hr as u32);
                 }
-            }
-            if status.AsUINT32 & 1 == 0 {
-                break format!("emulation failed, status {:#x}", status.AsUINT32);
-            }
-        };
+                exits += 1;
+                if !seen.contains(&exit.ExitReason) {
+                    seen.push(exit.ExitReason);
+                    println!(
+                        "{label} first exit {:#x} at rip {:#x} after {exits}",
+                        exit.ExitReason, exit.VpContext.Rip
+                    );
+                }
+                if exits > MOST_EXITS {
+                    break format!("past {MOST_EXITS} exits, at rip {:#x}", exit.VpContext.Rip);
+                }
+                if exit.ExitReason == WHvRunVpExitReasonX64IoPortAccess
+                    && exit.Anonymous.IoPortAccess.PortNumber == DONE
+                {
+                    break "done".to_string();
+                }
+                let t = Instant::now();
+                let mut status = WHV_EMULATOR_STATUS::default();
+                let ctx = (&raw mut emulated).cast::<c_void>();
+                match exit.ExitReason {
+                    r if r == WHvRunVpExitReasonMemoryAccess => {
+                        if let Err(e) = check(
+                            "mmio",
+                            (api.emu_mmio)(
+                                emulator,
+                                ctx,
+                                &raw const exit.VpContext,
+                                &raw const exit.Anonymous.MemoryAccess,
+                                &raw mut status,
+                            ),
+                        ) {
+                            break e;
+                        }
+                        mmio_run.push(ran);
+                        mmio_handle.push(t.elapsed());
+                    }
+                    r if r == WHvRunVpExitReasonX64IoPortAccess => {
+                        if let Err(e) = check(
+                            "io",
+                            (api.emu_io)(
+                                emulator,
+                                ctx,
+                                &raw const exit.VpContext,
+                                &raw const exit.Anonymous.IoPortAccess,
+                                &raw mut status,
+                            ),
+                        ) {
+                            break e;
+                        }
+                        pio_run.push(ran);
+                        pio_handle.push(t.elapsed());
+                    }
+                    r if r == WHvRunVpExitReasonX64Halt => break "halt".to_string(),
+                    other => {
+                        break format!("exit reason {other:#x} at rip {:#x}", exit.VpContext.Rip);
+                    }
+                }
+                if status.AsUINT32 & 1 == 0 {
+                    break format!("emulation failed, status {:#x}", status.AsUINT32);
+                }
+            };
+            done.store(true, std::sync::atomic::Ordering::Relaxed);
+            ended
+        });
         println!(
             "{label} ended={ended} mmio_writes={} pio_writes={}",
             emulated.mmio, emulated.pio
