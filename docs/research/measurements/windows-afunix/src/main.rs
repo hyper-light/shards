@@ -17,7 +17,10 @@
 //!   writes through a socket whose parent closed its own copy first, by closesocket or by
 //!   CloseHandle;
 //! - throughput (1 GiB in 64 KiB writes) and a one-byte round trip's latency, beside
-//!   loopback TCP's.
+//!   loopback TCP's;
+//! - with `m205` (PM M205), a connect that does not wait: what it returns where a listener
+//!   has room, where nothing listens and where the backlog is full, and how soon its
+//!   socket may be written; and whether a blocking one waits on a full backlog.
 
 use std::time::{Duration, Instant};
 
@@ -557,8 +560,159 @@ fn probe() -> Result<(), String> {
     Ok(())
 }
 
+/// A listener at a path of its own in `dir`, with a backlog of `backlog`.
+fn listener_at(dir: &std::path::Path, name: &str, backlog: i32) -> Result<(SOCKET, String), String> {
+    let path = dir.join(format!("m205-{}-{name}.sock", std::process::id()));
+    let path_s = path.to_string_lossy().to_string();
+    let addr = unix_addr(&path_s);
+    let l = socket(AF_UNIX)?;
+    // SAFETY: an address of its own length; a bound socket.
+    unsafe {
+        if bind(l, (&raw const addr).cast(), std::mem::size_of::<SOCKADDR_UN>() as i32) != 0 {
+            let e = error(&format!("bind {path_s}"));
+            close(l);
+            return Err(e);
+        }
+        if listen(l, backlog) != 0 {
+            close(l);
+            return Err(error("listen"));
+        }
+    }
+    Ok((l, path_s))
+}
+
+/// A connect to `path` without waiting: its socket, and what connect returned (0, or the
+/// WSA error).
+fn connect_nowait(path: &str) -> Result<(SOCKET, i32), String> {
+    let c = socket(AF_UNIX)?;
+    nonblocking(c)?;
+    let addr = unix_addr(path);
+    // SAFETY: an address of its own length.
+    let r = unsafe { connect(c, (&raw const addr).cast(), std::mem::size_of::<SOCKADDR_UN>() as i32) };
+    // SAFETY: no arguments.
+    Ok((c, if r == 0 { 0 } else { unsafe { WSAGetLastError() } }))
+}
+
+/// How long until WSAPoll says `s` may be written (its connect done), or errs, up to `ms`.
+fn until_writable(s: SOCKET, ms: i32) -> (Duration, String) {
+    let t = Instant::now();
+    let mut fd = WSAPOLLFD {
+        fd: s,
+        events: POLLWRNORM,
+        revents: 0,
+    };
+    // SAFETY: one descriptor.
+    let n = unsafe { WSAPoll(&raw mut fd, 1, ms) };
+    (t.elapsed(), format!("n={n} revents={:#x}", fd.revents))
+}
+
+/// A nonblocking AF_UNIX connect (PM M205): what it returns where a listener has room, and
+/// how long its socket takes to be writable; where nothing listens; where the backlog is
+/// full, nonblocking and blocking, and whether a pending one completes once the listener
+/// takes one.
+fn connects(dir: &std::path::Path) -> Result<(), String> {
+    let (l, path) = listener_at(dir, "room", 512)?;
+    let mut codes: std::collections::BTreeMap<i32, usize> = std::collections::BTreeMap::new();
+    let mut writable = Vec::new();
+    let mut polls = std::collections::BTreeMap::new();
+    for _ in 0..1000 {
+        let (c, code) = connect_nowait(&path)?;
+        *codes.entry(code).or_default() += 1;
+        let (took, polled) = until_writable(c, 1000);
+        writable.push(took);
+        *polls.entry(polled).or_insert(0usize) += 1;
+        // SAFETY: a listening socket; no address asked.
+        let a = unsafe { accept(l, std::ptr::null_mut(), std::ptr::null_mut()) };
+        if a != INVALID_SOCKET {
+            close(a);
+        }
+        close(c);
+    }
+    println!("M205 a listener with room: connect returned {codes:?} (0 or the WSA error); writable after {}; polls {polls:?}", summary(&mut writable));
+    close(l);
+    let (gone, gone_path) = listener_at(dir, "gone", 1)?;
+    close(gone);
+    let (c, code) = connect_nowait(&gone_path)?;
+    let (took, polled) = until_writable(c, 1000);
+    println!("M205 nothing listening (the path left): connect returned {code}; {polled} after {took:?}");
+    close(c);
+    // A full backlog: connects made and never accepted until one pends or is refused.
+    let (full, full_path) = listener_at(dir, "full", 1)?;
+    let mut held = Vec::new();
+    let mut seen = Vec::new();
+    for i in 0..64 {
+        let (c, code) = connect_nowait(&full_path)?;
+        let (took, polled) = until_writable(c, 200);
+        seen.push(format!("#{i}: {code}, {polled} in {} us", took.as_micros()));
+        held.push(c);
+        if code != 0 && polled.starts_with("n=0") {
+            break;
+        }
+    }
+    println!("M205 a backlog of 1, none accepted: {}", seen.join("; "));
+    // The last, pending or refused: does it complete once the listener takes one?
+    // SAFETY: a listening socket; no address asked.
+    let a = unsafe { accept(full, std::ptr::null_mut(), std::ptr::null_mut()) };
+    if let Some(&last) = held.last() {
+        let (took, polled) = until_writable(last, 1000);
+        println!("M205 after one accept: the last connect's socket {polled} after {took:?}");
+    }
+    if a != INVALID_SOCKET {
+        close(a);
+    }
+    for c in held {
+        close(c);
+    }
+    // A blocking connect to a full backlog: does it wait, until an accept makes room?
+    let (b, b_path) = listener_at(dir, "blocking", 1)?;
+    let mut fill = Vec::new();
+    for _ in 0..8 {
+        let (c, _) = connect_nowait(&b_path)?;
+        fill.push(c);
+    }
+    let started = Instant::now();
+    let accepter = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(500));
+        // SAFETY: a listening socket; no address asked.
+        let a = unsafe { accept(b, std::ptr::null_mut(), std::ptr::null_mut()) };
+        (a, b)
+    });
+    let blocking = socket(AF_UNIX)?;
+    let addr = unix_addr(&b_path);
+    // SAFETY: an address of its own length; a blocking socket.
+    let r = unsafe { connect(blocking, (&raw const addr).cast(), std::mem::size_of::<SOCKADDR_UN>() as i32) };
+    // SAFETY: no arguments.
+    let code = if r == 0 { 0 } else { unsafe { WSAGetLastError() } };
+    println!(
+        "M205 a blocking connect to a full backlog: returned {code} after {:?} (an accept came at 500 ms)",
+        started.elapsed()
+    );
+    if let Ok((a, b)) = accepter.join() {
+        if a != INVALID_SOCKET {
+            close(a);
+        }
+        close(b);
+    }
+    close(blocking);
+    for c in fill {
+        close(c);
+    }
+    Ok(())
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("m205") {
+        let dir = std::env::temp_dir().join(format!("m205-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        if startup().is_ok()
+            && let Err(e) = connects(&dir)
+        {
+            println!("M205 failed: {e}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        return;
+    }
     if args.get(1).map(String::as_str) == Some("child-exit") {
         let _ = startup();
         let s = args.get(2).and_then(|v| v.parse::<usize>().ok()).unwrap_or(0) as SOCKET;

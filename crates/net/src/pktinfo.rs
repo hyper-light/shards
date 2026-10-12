@@ -485,7 +485,10 @@ mod tests {
 
     /// A datagram to a socket at every address says which it came to, and the answer
     /// leaves from it: here the host's own address, asked from its loopback, where the
-    /// route back to 127.0.0.1 would pick 127.0.0.1.
+    /// route back to 127.0.0.1 would pick 127.0.0.1. Unix's: Windows' strong host model
+    /// sends nothing from a host address to its loopback (WSAENETUNREACH, CI run
+    /// 38235548677); its published UDP ports come with its daemon (D143).
+    #[cfg(unix)]
     #[test]
     fn answers_leave_from_the_address_asked() {
         let Ok(IpAddr::V4(asked)) = UdpSocket::bind("0.0.0.0:0")

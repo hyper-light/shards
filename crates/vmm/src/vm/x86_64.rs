@@ -779,7 +779,9 @@ mod tests {
 
     /// The written pages of a run after one that cannot be copied are copied still: a
     /// damaged working set's write to what is not RAM (read-only pmem, say) leaves the
-    /// rest of the copies ahead (review 1.19).
+    /// rest of the copies ahead (review 1.19). Where restores take working sets
+    /// (`WORKING_SETS`): Windows faults no pages in ahead yet (D140).
+    #[cfg(any(hv = "hvf", hv = "kvm"))]
     #[test]
     fn written_pages_past_a_run_that_fails_are_copied() {
         let path_dir = shards_testdir::TempDir::new("copy-written").unwrap();

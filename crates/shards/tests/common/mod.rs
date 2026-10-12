@@ -1532,11 +1532,15 @@ pub fn within<T: Send + 'static>(
     });
     match rx.recv_timeout(within) {
         Ok(v) => v,
-        // Ended without sending: it panicked, and says why.
-        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => match worker.join() {
-            Err(panic) => std::panic::resume_unwind(panic),
-            Ok(()) => panic!("{what}: ended with no result"),
-        },
+        // Ended without sending: it panicked, and says why, after what the VM said.
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            let said = log.lock().map(|l| l.join("\n")).unwrap_or_default();
+            let _ = writeln!(std::io::stderr(), "{what}: failed; the VM said:\n{said}");
+            match worker.join() {
+                Err(panic) => std::panic::resume_unwind(panic),
+                Ok(()) => panic!("{what}: ended with no result"),
+            }
+        }
         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
             let said = log.lock().map(|l| l.join("\n")).unwrap_or_default();
             panic!("{what}: not done in {within:?}; the VM said:\n{said}")
