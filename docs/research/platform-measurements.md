@@ -6632,3 +6632,38 @@ revision before comparing a changed API/implementation.
   10.6 s at worst. Not split further here: B's `filled` step ran 12.8 ms longer than
   A's at the median, mounting its layer from the join disk where A's had the tree in
   memory.
+
+### M195. What a builder's git says of a Git source, with `BUILDKIT_GIT_ADVICE` on and off (D135)
+
+- **Question.** `BUILDKIT_GIT_ADVICE` asks BuildKit's git for its advice (D92). What do
+  the builders print for a Git source with it on and off, and what of it is about the
+  repository a build keeps?
+- **Method.** In shards-dind (Docker 29.3.1): BuildKit v0.34.0 (`moby/buildkit:v0.34.0`,
+  `buildctl build` with its dockerfile frontend, its cache pruned before each build) and
+  Docker 29.3.1's own builder (BuildKit v0.28.1, `# syntax=docker/dockerfile:1.27.1`,
+  `--no-cache`), git 2.52.0 in both. `ADD https://github.com/octocat/Hello-World.git`
+  by its commit (`#7fd1a60b01f91b314f59955a4e4d4e80d8edf11d`), by its branch (`#master`),
+  and by its branch with `--keep-git-dir=true`, each with `BUILDKIT_GIT_ADVICE` 0 and 1.
+  2026-10-11.
+- **Results.**
+  - Both builders print git's lines as their step's log, each stamped (`#3 0.473 ...`),
+    whatever the setting: `Initialized empty Git repository in` a path of their snapshot
+    store (`/var/lib/buildkit/runc-overlayfs/snapshots/snapshots/9/fs/`,
+    `/var/lib/docker/containerd/daemon/io.containerd.snapshotter.v1.overlayfs/snapshots/
+    8415/fs/.git/`), by a commit's name a probe's `fatal: Not a valid object name
+    <commit>^{commit}`, `From https://github.com/octocat/Hello-World`, the refs fetched,
+    the commit; with the `.git`
+    kept, another repository of theirs initialized and fetched into from the first
+    (`From file:///var/lib/...`), and `HEAD is now at 7fd1a60 Merge pull request #6 from
+    Spaceghost/patch-1`.
+  - By commit and by branch, BuildKit v0.34.0 prints the same lines with advice on and
+    off: no advice is printed.
+  - With the `.git` kept, BuildKit v0.34.0 with advice on prints, between the fetch and
+    `HEAD is now at ...`, `Note: switching to 'FETCH_HEAD'.`, and git's advice on the
+    detached HEAD: sixteen lines, from an empty one to `Turn off this advice by setting
+    config variable advice.detachedHead to false` and an empty one. With it off, none.
+  - Docker 29.3.1 prints those lines with advice off: its BuildKit reads no `git.advice`,
+    and git advises unless told not to.
+- **Consequence.** D135: shards says what git says of the repository a build keeps (its
+  checkout's `HEAD is now at ...`, the advice when asked) and none of what it says of a
+  builder's own, each line stamped as BuildKit stamps it.

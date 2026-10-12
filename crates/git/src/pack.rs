@@ -199,6 +199,11 @@ impl Pack {
             .collect()
     }
 
+    /// The names of the objects it holds.
+    pub fn names(&self) -> impl Iterator<Item = &Oid> {
+        self.names.keys()
+    }
+
     /// How many objects it holds.
     pub fn len(&self) -> usize {
         self.entries.len()

@@ -146,6 +146,38 @@ pub fn commit(data: &[u8]) -> Result<Commit, String> {
     })
 }
 
+/// A commit's subject, as git's one-line format shows it (pretty.c `format_subject`, with
+/// `CMIT_FMT_ONELINE`'s separator): its message's first paragraph, blank lines before it
+/// skipped, each line without the whitespace it ends with, the lines joined by spaces.
+pub fn subject(data: &[u8]) -> Vec<u8> {
+    let message = data
+        .windows(2)
+        .position(|w| w == b"\n\n")
+        .and_then(|i| data.get(i + 2..))
+        .unwrap_or_default();
+    let mut out = Vec::new();
+    let mut started = false;
+    for line in message.split(|&b| b == b'\n') {
+        let end = line
+            .iter()
+            .rposition(|b| !matches!(b, b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r'))
+            .map_or(0, |i| i + 1);
+        let line = line.get(..end).unwrap_or_default();
+        if line.is_empty() {
+            if started {
+                break;
+            }
+            continue;
+        }
+        if started {
+            out.push(b' ');
+        }
+        out.extend_from_slice(line);
+        started = true;
+    }
+    out
+}
+
 /// What an annotated tag names.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tag {

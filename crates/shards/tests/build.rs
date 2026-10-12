@@ -4186,6 +4186,80 @@ fn add_fetches_git_repositories() {
         "{}",
         stat.stderr
     );
+    // What git says of the repository a kept `.git` holds as it checks it out (D135): the
+    // commit as git names it, and, where `BUILDKIT_GIT_ADVICE` asks, its advice on the
+    // detached HEAD it leaves first; nothing of a source whose `.git` goes.
+    let short = git_in(&origin, &["rev-parse", "--short", "HEAD"])
+        .trim()
+        .to_string();
+    let lines_of = |advice: &str| {
+        let plain = shards(&[
+            "build",
+            "--progress=plain",
+            "--no-cache",
+            "--build-arg",
+            &format!("BUILDKIT_GIT_ADVICE={advice}"),
+            ctx.to_str().unwrap(),
+        ]);
+        assert_eq!(plain.status, Some(0), "{}", plain.stderr);
+        let step = |what: &str| {
+            plain
+                .stderr
+                .lines()
+                .find(|l| l.contains(what))
+                .and_then(|l| l.split_whitespace().next())
+                .unwrap()
+                .to_string()
+        };
+        let said = |step: &str| -> Vec<String> {
+            plain
+                .stderr
+                .lines()
+                .filter_map(|l| l.strip_prefix(&format!("{step} ")))
+                .filter_map(|l| l.split_once(' '))
+                .filter(|(at, _)| at.parse::<f64>().is_ok())
+                .map(|(_, line)| line.to_string())
+                .collect()
+        };
+        (
+            said(&step("ADD --keep-git-dir=true")),
+            said(&step(&format!("ADD {g} /g"))),
+        )
+    };
+    let sub_head = git_in(&sub, &["rev-parse", "HEAD"]).trim().to_string();
+    let after = [
+        format!("HEAD is now at {short} two"),
+        format!("Submodule 'mods/sub' (git://127.0.0.1:{dport}/sub.git) registered for path 'mods/sub'"),
+        format!("Submodule path 'mods/sub': checked out '{sub_head}'"),
+    ];
+    let (kept, gone) = lines_of("false");
+    assert_eq!(kept, [vec![head.clone()], after.to_vec()].concat());
+    assert!(gone.iter().all(|l| !l.starts_with("HEAD is now")), "{gone:?}");
+    let (kept, _) = lines_of("true");
+    let advice = [
+        format!("Note: switching to '{head}'."),
+        String::new(),
+        "You are in 'detached HEAD' state. You can look around, make experimental".into(),
+        "changes and commit them, and you can discard any commits you make in this".into(),
+        "state without impacting any branches by switching back to a branch.".into(),
+        String::new(),
+        "If you want to create a new branch to retain commits you create, you may".into(),
+        "do so (now or later) by using -c with the switch command. Example:".into(),
+        String::new(),
+        "  git switch -c <new-branch-name>".into(),
+        String::new(),
+        "Or undo this operation with:".into(),
+        String::new(),
+        "  git switch -".into(),
+        String::new(),
+        "Turn off this advice by setting config variable advice.detachedHead to false".into(),
+        String::new(),
+    ];
+    assert_eq!(
+        kept,
+        [vec![head.clone()], advice.to_vec(), after.to_vec()].concat()
+    );
+
     // The commit's time, not the clock's at checkout.
     let times = shards(&[
         "run",

@@ -3688,7 +3688,8 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
                     pack: bound,
                     object: bound,
                 };
-                let say = |line: &str| progress.borrow().line(&v, line);
+                // As BuildKit's git source logs its commands' lines: each stamped.
+                let say = |line: &str| progress.borrow().log(&v, line);
                 let cancel = shards_registry::http::Cancel::new();
                 let auth = git::auth(&src, &secrets);
                 let r = match git::snapshot(
@@ -6303,7 +6304,8 @@ fn solve_context(
                 let v = progress.borrow_mut().start(&name);
                 let src = git::source(identifier, attrs).map_err(|e| failed(&v, &e))?;
                 let bound = usize::try_from(limits.bytes).unwrap_or(usize::MAX);
-                let say = |line: &str| progress.borrow().line(&v, line);
+                // As BuildKit's git source logs its commands' lines: each stamped.
+                let say = |line: &str| progress.borrow().log(&v, line);
                 let auth = git::auth(&src, secrets);
                 let (r, commit) = match git::snapshot(
                     exec,

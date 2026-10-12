@@ -57,6 +57,37 @@ impl Oid {
     }
 }
 
+impl Oid {
+    /// How many hexadecimal digits of `self` and `other` agree from the first.
+    fn common_digits(&self, other: &Oid) -> usize {
+        let mut n = 0;
+        for (a, b) in self.0.iter().zip(&other.0) {
+            if a == b {
+                n += 2;
+            } else {
+                return n + usize::from(a >> 4 == b >> 4);
+            }
+        }
+        n
+    }
+
+    /// How many of its hexadecimal digits git shows of it among `names`, a repository's
+    /// objects, itself among them (object-name.c `repo_find_unique_abbrev_r`, `core.abbrev`
+    /// unset): as many as the objects' count calls for, half its bits rounded up and 7 at
+    /// least, and then one more than any other object shares with it.
+    pub fn abbrev<'a>(&self, names: impl IntoIterator<Item = &'a Oid>) -> usize {
+        let (mut count, mut shared) = (0u64, 0usize);
+        for other in names {
+            count = count.saturating_add(1);
+            if other != self {
+                shared = shared.max(self.common_digits(other) + 1);
+            }
+        }
+        let bits = (u64::BITS - count.leading_zeros()) as usize;
+        bits.div_ceil(2).max(7).max(shared).min(40)
+    }
+}
+
 impl std::fmt::Debug for Oid {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.hex())

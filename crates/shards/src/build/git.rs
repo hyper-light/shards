@@ -45,6 +45,8 @@ pub struct Source {
     /// The directory of the repository to take, without its leading `/`.
     pub subdir: String,
     pub keep_git_dir: bool,
+    /// Whether git's advice is asked for (`git.advice`, `BUILDKIT_GIT_ADVICE`).
+    pub advice: bool,
     pub checksum: Option<String>,
     pub submodules: bool,
     /// The secrets that authorize its fetches: a token's (`git.authtokensecret`) and a
@@ -86,6 +88,7 @@ pub fn source(identifier: &[u8], attrs: &BTreeMap<Vec<u8>, Vec<u8>>) -> Result<S
         reference,
         subdir: clean_subdir(&subdir),
         keep_git_dir: attr(b"git.keepgitdir")?.as_deref() == Some("true"),
+        advice: attr(b"git.advice")?.as_deref() == Some("true"),
         checksum: attr(b"git.checksum")?,
         submodules: attr(b"git.skipsubmodules")?.as_deref() != Some("true"),
         auth_token: attr(b"git.authtokensecret")?,
@@ -497,6 +500,9 @@ pub fn snapshot(
     }
     let (pack, shallow) = fetch_commits(&remote, &wants, limits).map_err(|e| snap(format!("{wrap}: {e}")))?;
     let commit = commit_of(&pack, &resolved.commit).map_err(snap)?;
+    if keep {
+        checked_out(&pack, &resolved.commit, src.advice, say).map_err(snap)?;
+    }
     let stage = exec.stage().map_err(snap)?;
     let mut out = Checkout::new(
         stage.join(format!("git-{}", resolved.commit.hex())),
@@ -553,6 +559,53 @@ pub fn snapshot(
         .map(|r| (r, resolved.commit.hex()))
         .map_err(snap)
 }
+
+/// What git says as it checks a kept repository out at `commit` (D135): its advice on the
+/// detached HEAD that leaves, where `advice` asks for it, as git words it for a checkout of
+/// the commit by its name (builtin/checkout.c, advice.detachedHead), and then the commit,
+/// as `describe_detached_head` names it: its abbreviation among the repository's objects
+/// and its subject. BuildKit's git, which checks out what it fetched as `FETCH_HEAD`, says
+/// the same of that (PM M195).
+fn checked_out(pack: &Pack, commit: &Oid, advice: bool, say: &dyn Fn(&str)) -> Result<(), String> {
+    if advice {
+        say(&format!("Note: switching to '{}'.", commit.hex()));
+        for line in DETACHED_HEAD_ADVICE {
+            say(line);
+        }
+    }
+    let data = match pack.get(commit)? {
+        (ObjectKind::Commit, data) => data,
+        _ => return Err(format!("{} is not a commit", commit.hex())),
+    };
+    let hex = commit.hex();
+    let short = hex.get(..commit.abbrev(pack.names())).unwrap_or(&hex);
+    say(&format!(
+        "HEAD is now at {short} {}",
+        String::from_utf8_lossy(&object::subject(&data))
+    ));
+    Ok(())
+}
+
+/// The lines git advises a detached HEAD with, after its note of what it switched to, as
+/// git 2.52 prints them (PM M195: under BuildKit v0.34.0 and Docker 29.3.1 alike).
+const DETACHED_HEAD_ADVICE: [&str; 16] = [
+    "",
+    "You are in 'detached HEAD' state. You can look around, make experimental",
+    "changes and commit them, and you can discard any commits you make in this",
+    "state without impacting any branches by switching back to a branch.",
+    "",
+    "If you want to create a new branch to retain commits you create, you may",
+    "do so (now or later) by using -c with the switch command. Example:",
+    "",
+    "  git switch -c <new-branch-name>",
+    "",
+    "Or undo this operation with:",
+    "",
+    "  git switch -",
+    "",
+    "Turn off this advice by setting config variable advice.detachedHead to false",
+    "",
+];
 
 /// The pack of `wants`, one commit deep; from a server that will not send a commit that
 /// is no ref's tip by its name alone ("not our ref": `uploadpack.allowReachableSHA1InWant`

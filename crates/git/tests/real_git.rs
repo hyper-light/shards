@@ -515,3 +515,141 @@ fn a_git_daemon_serves_as_smart_http_does() {
     let _ = daemon.wait();
     let _ = std::fs::remove_dir_all(&base);
 }
+
+/// A commit's subject as git's one-line format shows it (`%s`): a message of one line, of
+/// a paragraph of several, after blank lines, with whitespace at the lines' ends, with
+/// none at all.
+#[test]
+fn a_commits_subject_is_gits() {
+    if Command::new("git").arg("--version").output().is_err() {
+        eprintln!("SKIP: no git on this host");
+        return;
+    }
+    let dir = shards_testdir::TempDir::new("git-subject").unwrap();
+    git(&dir, &["init", "-q", "-b", "main"]);
+    let tree = String::from_utf8(git(&dir, &["write-tree"])).unwrap();
+    let messages: [&[u8]; 7] = [
+        b"two\n",
+        b"first line\nsecond line\n\nthe body\n",
+        b"\n\n  \nafter blanks\n",
+        b"trailing  \t\n next\t \n",
+        b"no newline",
+        b"",
+        b"tab\tinside and \xc3\xa9\n",
+    ];
+    for message in messages {
+        let file = dir.join("message");
+        std::fs::write(&file, message).unwrap();
+        let commit = String::from_utf8(git(
+            &dir,
+            &["commit-tree", tree.trim(), "-F", file.to_str().unwrap()],
+        ))
+        .unwrap();
+        let commit = commit.trim();
+        let want = git(&dir, &["log", "-1", "--format=%s", commit]);
+        let data = git(&dir, &["cat-file", "commit", commit]);
+        assert_eq!(
+            object::subject(&data),
+            want.strip_suffix(b"\n").unwrap_or(&want),
+            "{:?}",
+            String::from_utf8_lossy(message)
+        );
+    }
+}
+
+/// Each object's abbreviation as git shows it (`ls-tree --abbrev`, `rev-parse --short`,
+/// `core.abbrev` unset): 7 digits in a small repository; in one of over 16,384 objects, 8,
+/// and 9 for two blobs that share their first 8.
+#[test]
+fn an_objects_abbreviation_is_gits() {
+    if Command::new("git").arg("--version").output().is_err() {
+        eprintln!("SKIP: no git on this host");
+        return;
+    }
+    let dir = shards_testdir::TempDir::new("git-abbrev").unwrap();
+    git(&dir, &["init", "-q", "-b", "main"]);
+    std::fs::write(dir.join("a"), "a\n").unwrap();
+    git(&dir, &["add", "-A"]);
+    git(&dir, &["commit", "-q", "-m", "small"]);
+    git(&dir, &["repack", "-adq"]);
+    let pack_of = |dir: &Path| {
+        let packs = dir.join(".git/objects/pack");
+        let name = std::fs::read_dir(&packs)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .find(|p| p.extension().is_some_and(|e| e == "pack"))
+            .unwrap();
+        Pack::read(std::fs::read(name).unwrap(), 1 << 30).unwrap()
+    };
+    let pack = pack_of(&dir);
+    let head = Oid::parse(
+        String::from_utf8(git(&dir, &["rev-parse", "HEAD"]))
+            .unwrap()
+            .trim()
+            .as_bytes(),
+    )
+    .unwrap();
+    let short = git(&dir, &["rev-parse", "--short", "HEAD"]);
+    assert_eq!(head.abbrev(pack.names()), short.len() - 1);
+    assert_eq!(short.len() - 1, 7);
+
+    // Two blob contents whose names share their first 8 digits, found by trying.
+    let mut seen = std::collections::HashMap::new();
+    let (mut x, mut y) = (String::new(), String::new());
+    for i in 0u64.. {
+        let content = format!("collide {i}\n");
+        let oid = Oid::of(object::Kind::Blob, content.as_bytes()).unwrap();
+        // Its first 8 digits: its first 4 bytes.
+        if let Some(other) = seen.insert(oid.0[..4].to_vec(), content.clone()) {
+            (x, y) = (other, content);
+            break;
+        }
+    }
+    let big = shards_testdir::TempDir::new("git-abbrev-big").unwrap();
+    git(&big, &["init", "-q", "-b", "main"]);
+    let mut import =
+        String::from("commit refs/heads/main\ncommitter t <t@t> 1600000000 +0000\ndata 3\nbig\n");
+    let mut blob = |path: &str, content: &str| {
+        import.push_str(&format!(
+            "M 100644 inline {path}\ndata {}\n{content}\n",
+            content.len()
+        ));
+    };
+    blob("x", &x);
+    blob("y", &y);
+    for i in 0..20_000 {
+        blob(&format!("f/{i}"), &format!("filler {i}\n"));
+    }
+    {
+        use std::io::Write as _;
+        let mut child = Command::new("git")
+            .arg("-C")
+            .arg(&big)
+            .args(["fast-import", "--quiet"])
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("HOME", big.as_os_str())
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(import.as_bytes()).unwrap();
+        assert!(child.wait().unwrap().success());
+    }
+    git(&big, &["repack", "-adq"]);
+    git(&big, &["prune-packed"]);
+    let pack = pack_of(&big);
+    assert!(pack.len() > 1 << 14, "{}", pack.len());
+    let listed = String::from_utf8(git(&big, &["ls-tree", "-r", "--abbrev", "main"])).unwrap();
+    let full = String::from_utf8(git(&big, &["ls-tree", "-r", "main"])).unwrap();
+    let mut lengths = std::collections::BTreeMap::new();
+    for (short, long) in listed.lines().zip(full.lines()) {
+        let abbreviated = short.split_whitespace().nth(2).unwrap();
+        let oid = Oid::parse(long.split_whitespace().nth(2).unwrap().as_bytes()).unwrap();
+        assert_eq!(oid.abbrev(pack.names()), abbreviated.len(), "{long}");
+        *lengths.entry(abbreviated.len()).or_insert(0) += 1;
+    }
+    assert!(lengths.get(&8).is_some_and(|&n| n > 19_000), "{lengths:?}");
+    assert!(
+        lengths.keys().any(|&l| l >= 9),
+        "the two that share 8 digits: {lengths:?}"
+    );
+}

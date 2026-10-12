@@ -3538,6 +3538,46 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode
 waits on the user.
 
+### D135. What git says as a build keeps a repository, and the advice asked for
+
+`BUILDKIT_GIT_ADVICE` (D92) asks BuildKit's git for its advice; shards' Git (D48) runs no
+git, and said none (AGENTFILE_ARCH §11 row 958). PM M195 measured what each builder says:
+BuildKit v0.34.0's and Docker 29.3.1's git print the same lines, git 2.52's, of a fetch and
+a checkout, most of them about BuildKit's own repository; and with the repository's `.git`
+kept, git's advice on the detached HEAD it is left at, which v0.34.0 prints only when asked
+and Docker always.
+
+- **What is said**, as before: the commit a ref resolved to, and each submodule's two
+  lines. And now, for a repository whose `.git` a build keeps (`ADD --keep-git-dir`, a
+  context kept by `BUILDKIT_CONTEXT_KEEP_GIT_DIR`), what git says as it checks it out:
+  `HEAD is now at <abbreviation> <subject>` (builtin/checkout.c `describe_detached_head`):
+  the commit's abbreviation as git makes it among the repository's objects (object-name.c
+  `repo_find_unique_abbrev_r`, `core.abbrev` unset: half the bits of their count, rounded
+  up, 7 digits at least, and more while another object shares them), and its one-line
+  subject (pretty.c `format_subject`: the first paragraph, each line without the
+  whitespace it ends with, joined by spaces). Before it, where the build asks
+  (`git.advice`), git's advice on the detached HEAD, git 2.52's sixteen lines as both
+  builders print them, after a note naming the commit (`Note: switching to '<commit>'.`),
+  where BuildKit's names `FETCH_HEAD`, the ref it fetches into its own repository.
+- **What is not**: git's lines about BuildKit's own repository (`Initialized empty Git
+  repository in /var/lib/buildkit/runc-overlayfs/snapshots/snapshots/34/fs/`, `From
+  file:///var/lib/...`, the refs fetched into it, a probe's `fatal: Not a valid object
+  name ...`): paths into a builder's store, which name nothing a build has.
+- **Each line stamped**, a log line of its step, as BuildKit stamps its git's (`#5 0.486
+  <commit>`); they were said without the time.
+- **Recorded difference.** Docker 29.3.1 prints the advice whatever `BUILDKIT_GIT_ADVICE`
+  says: its solver, BuildKit v0.28.1, reads no `git.advice`, and git advises unless told
+  not to. shards prints it only when asked, as BuildKit v0.34.0 does, which is what the
+  frontend's plan means by it (D92).
+- **Tested**: `add_fetches_git_repositories` (a kept repository's lines with the advice and
+  without, each stamped, and none of them for a source whose `.git` goes);
+  `a_commits_subject_is_gits` and `an_objects_abbreviation_is_gits`, against git itself:
+  subjects of every shape; 7 digits in a small repository, 8 in one of over 16,384
+  objects, 9 for two blobs that share 8. Mutation-checked: the advice not said, `git.advice`
+  not read, the commit not abbreviated, the checkout's lines not said, the abbreviation
+  not lengthened past a shared prefix or by the objects' count, a subject's lines not
+  trimmed: each fails one.
+
 ### D134. Cache mounts at virtio-blk's speed: their layers EROFS images on the builder's join disk
 
 D114 kept a cache's content as the layers its steps' changes made, and moved it in and out
